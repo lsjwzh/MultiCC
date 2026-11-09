@@ -107,6 +107,7 @@ const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session/persistence');
 const { createSessionRecords } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');
+const { createChatSessions } = require('./src/chat/sessions');
 const { createDirectoryTable } = require('./src/directory/records');
 const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
@@ -264,12 +265,17 @@ const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS); const turnLedgerRuntime = require('./src/turn-ledger/runtime').createTurnLedgerRuntime({ dataDir: MULTICC_PATHS.root, codexCmd: () => cliCommands.codex }).start(); // 终端轮次账本：hook→spool→TurnLedger，影子模式只观测不接管状态
 const auxRunLog = createAuxRunLog({ dir: MULTICC_PATHS.auxRunsDir, log: (event, detail) => console.warn(`[multicc/aux-run-log] ${event}`, detail) });
-const chatSessions = new Map();
+// One native owner holds the live chat-session table, the persisted session
+// table, the directory table and the per-session turn runtime store. It is
+// created here (before anything reads `chatSessions`) and configured below once
+// the data paths are known.
+const stateOwner = createStateOwner();
+const chatSessions = createChatSessions(stateOwner);
 let chatHistoryRuntime = null;
 let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
-const chatTurnPreparationRuntime = createTurnRuntimeStore();
+const chatTurnPreparationRuntime = createTurnRuntimeStore({ owner: stateOwner });
 let orchestrationRuntime = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null; let worktreeOrphanScanner = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability; const messageSearchRuntime = () => getSharedSearchRuntime({ dataDir: MULTICC_PATHS.root, logger }); // 消息全文索引（src/search/runtime.js）：进程内单例、按数据目录记忆化，首个 message-search 请求或启动时那次 .start() 才真正建库开扫
@@ -710,7 +716,7 @@ const DIRECTORIES_FILE = MULTICC_PATHS.directoriesFile;
 // One native owner holds the live session table, the live directory table and
 // the cross-file state journal. Boot replay and the legacy migration both use
 // it, so directories.json and sessions.json have exactly one writer.
-const stateOwner = createStateOwner().configure({
+stateOwner.configure({
   stringify: JSON.stringify,
   root: MULTICC_PATHS.root,
   directoriesFile: DIRECTORIES_FILE,
