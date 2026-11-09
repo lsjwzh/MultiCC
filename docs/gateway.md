@@ -1293,3 +1293,88 @@ Rust 工作区 658 项通过、0 失败。新 Rust 文件 `rustfmt --check` 通�
 取消升级、收尾/后台副作用、provider 选择与历史持久化仍在 Node，故不声明任何
 后端退出验收项完成，整体账本仍为 5/6。未提交、合并、推送、重启生产服务或更改
 生产配置。
+
+## 6d 聊天编排：Claude 逐事件归约器（2026-11-09）
+
+Claude 聊天车道的逐事件应用逻辑已迁入 Rust：`native/addon/src/chat_events.rs`
+导出 `chatApplyClaudeEvent(cs, sessionName, evt, forward, turn, runner,
+providerName, ports)`；`src/chat/turn-engine.js` 只剩 22 项
+`nativeChatEventPorts` 端口表和三行包装。`applyAdapterChatEvent`、
+`runAdmittedChatTurn`、`runChatTurnStreaming`、`finalizeStreamingTurn`、
+`handleChatWs` 未动，适配器中立事件路径（`applyAdapterChatEvent`）按回退约定
+留待 6d 后续步骤。
+
+执行顺序与冻结旧实现逐字节一致：`ports.isCurrent` 闸门 → `ports.scrub` →
+`touchActivity` → `observeClaude` → API 错误拦截 → assistant 内容块 →
+user tool_result 归一化 → result 处理 → system init/任务透传 → 末尾
+`forward(evt)`。API 错误状态按 runner 维度保存：key 由 uuid/requestId/正文
+组成并走 JS `Set` 去重（`Drop`）；pending 记录
+`text/httpStatus/cliError/requestId/key/appended/bodyBefore`；当前 assistant 文本
+与工具列表为空时 `Append`，否则 `Suppress`；下一条真实 assistant 消息前由
+`recoverPendingEvent` 消费记录正文。assistant 文本按 `String(v || '')` 语义
+拼接并走宿主脱敏；`tool_use` 记录 name/input/id/startedAt，更新阶段
+（editing/running/thinking）、会话状态、后台工具 id 与 TaskOutput awaiting。
+`user` 事件重写 tool_result：字符串原样脱敏，`null`/`undefined` 走
+`JSON.stringify(content == null ? '' : content)`（`'""'`），数组拆成一个文本块
+加保留的非文本块，匹配的工具调用写入 `result`/`is_error`/`endedAt` 与输出
+预览。`result` 走纯 `completion`/`compatible` 规则，仅当 `persistFinal` 报告
+持久化成功才记录 durable 用量，构造 assistant 消息
+（role/content/tools/cost/usage/ts/contextTrace/turnTimings，
+`resultEvent: true`），前推构造的 result 帧
+（total_cost_usd/usage/durationMs/num_turns/contextTrace/modelAttribution/
+timelineField），调用 `onTurnComplete`，随后与旧实现一样落到原始 result 前推。
+过期 turn/runner 在入口即无操作，并在 `persistFinal`/`recordDurableUsage` 后
+再次校验。
+
+纯核心辅助与单测在 `native/core/src/chat_events.rs`（162 行，7 项）：
+`status_of`、`api_error_key`、`is_error_only`、`envelope_body`、
+`pick_http_status`、`has_result_output`、`is_api_failure`。addon 文件
+1,094 行。删除 Node 决策/变更逻辑 150 行（`applyClaudeChatEvent` 的分支顺序、
+脱敏、API 错误状态机、工具/结果成帧），新增 32 行为端口表与包装。保留的 22
+个端口都是仍属 Node 的副作用：轮次时效（`isCurrent`）、结构脱敏（`scrub`）、
+活动/阶段/状态心跳、Claude 观察、模型归属、增量保存的调度与清除、后台工具
+id 与 TaskOutput awaiting、上下文轨迹、聊天会话映射校验、最终持久化与 durable
+用量记录、代理失败查询、用量限额轮次完成、模型归属/时间线/耗时字段、宿主错误
+信封标记与日志器。
+
+冻结基准 `tests/helpers/legacy-claude-chat-event.js`（284 行）即旧逐字节实现。
+`tests/test-chat-events-differential.js`（561 行，7 项）在每条事件后比较完整
+有序副作用日志、`cs` 快照、持久态与 turn/runner 快照；自定义序列化保留
+`undefined`、`NaN`、`-0`、孤立代理项与属性顺序，并校验两边同抛/同不抛。规模：
+1,200 条定种子随机/扰动序列、200 条二次模糊、8 个对抗单事件（结构化 429、
+孤立代理项、超 200 KB 文本、5,000 字符 tool_result、带/不带完成信息的结果、
+undefined model、null type）、过期 turn/runner、抛异常端口、重入时钟/端口调用，
+以及 `/tmp/claude-lane-capture/real` 的 8 条真实捕获轨迹（raw nowait/wait、
+init 错误、生命周期、中断、后台、hook 错误、resume）。
+
+`tests/test-chat-events-isolated.js`（330 行）在临时数据根上启动真实
+`multicc-gateway` 与 `server.js`，用复制的假 Claude CLI 和单个 WebSocket
+客户端跑 7 段：流式→结果并持久化历史；tool_use→tool_result 归一化（Edit、
+`toolu_evt_1`、`patched`）与工具 id 入史；后台 task_started/
+task_notification 活过轮次；API 错误按进程 uuid 只前推一次；已有真实输出后
+API 错误被抑制（按 `messageTurnId` 切片，首个 result 前零错误 assistant 帧）；
+无 `result` 键的中断结果（部分输出可见、历史无字面 `undefined`、会话可继续）；
+以及断线重连重放在途增量后结果落定。`npm test:core` 与
+`npm test:integration:isolated` 均已纳入。
+
+注入故障均先被捕获再还原：(1) 关闭 API 错误去重——两项差分失败；(2) 完成
+判定强制为“有输出”——随机差分失败；(3) 已完成的 result 提前返回而不下落
+——随机、模糊、对抗与真实轨迹四项差分失败；(4) API 错误 append/suppress 极性
+翻成恒抑制——差分失败且隔离测试的 append 段超时；另将极性翻成恒追加也会让
+随机、模糊与对抗差分失败。还原后重新构建到指纹
+`996ccf0a8e4c8917bc4a4f43`，两套测试复绿。
+
+Rust 工作区 665 项通过、0 失败。新 Rust 文件 `rustfmt --check` 通过；
+`multicc-core`/`multicc-addon` 的 clippy 在 `chat_events.rs` 无告警（仓库既有
+告警未动）。测试分层 847 项已分类（core 402：deterministic 330 / isolated 41
+/ flutter 31）；发行计数复核为 374 命令 / 371 个 Node 条目。源码行预算通过；
+`git diff --check` 干净。最终产物上的完整 `npm test` 退出码 0：6,545 项、
+6,542 通过、0 失败、2 跳过（本机无 Electron 桌面工具链、无 `pwsh`）、1 项既有
+S6 `# TODO`；运行均以 `MULTICC_RUST_PREBUILT_DIR` 指向该指纹目录。
+
+源码指纹 `996ccf0a8e4c8917bc4a4f43`，日志归档到主仓
+`data/rust-source/996ccf0a8e4c8917bc4a4f43/validation/chat-events/`。网关/addon
+控制协议不变（仍为 12），不需要协调部署。未发现有意行为差异。本批推进 6d 但
+未完成：适配器中立事件应用、CLI 监管、流式/收尾/后台副作用、provider 选择、
+历史持久化与 WS 处理仍在 Node，故不声明任何后端退出验收项完成，整体账本仍为
+5/6。未提交、合并、推送、重启生产服务或更改生产配置。

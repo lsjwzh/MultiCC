@@ -914,11 +914,15 @@ test('empty and _default_ attribution facts are dropped, and an empty set writes
 });
 
 test('the live result frame carries the attribution the durable stamp writes', () => {
+  // The constructed result frame is native now; the engine only supplies the
+  // same cs/turn/runner computation as a port, and the native frame spreads it.
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  const frame = source.slice(source.indexOf("forward({ type: 'result'"));
-  assert.ok(frame.length > 0, 'the result frame is still emitted from the turn engine');
-  assert.match(frame.slice(0, 400), /modelAttributionField\(cs, turn, runner\)/,
-    'the frame spreads the same cs/turn/runner computation the history stamp used');
+  assert.match(source, /modelAttribution: \(cs, turn, runner\) => modelAttributionField\(cs, turn, runner\)/,
+    'the frame port spreads the same cs/turn/runner computation the history stamp used');
+  const nativeSource = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
+  assert.match(nativeSource, /frame\.spread_from\(call\(ports\.get\(c"modelAttribution"\)/,
+    'the native result frame consumes the attribution port');
 });
 
 // server.js takes these off `createChatHostRuntime()`'s return value, not off the

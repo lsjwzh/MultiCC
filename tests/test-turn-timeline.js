@@ -75,9 +75,11 @@ test('every persist and result path carries the timeline', () => {
   const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
   const engine = read('src/chat/turn-engine.js');
   assert.match(engine, /turnTimeline\.startTurn\(cs\)/);
-  assert.match(engine, /turnTimeline\.observeClaude\(cs, evt\)/);
+  // The Claude observer is now wired through the native reducer's port table.
+  assert.match(engine, /observeClaude: \(cs, event\) => turnTimeline\.observeClaude\(cs, event\)/);
   assert.match(engine, /turnTimeline\.observeAdapter\(cs, evt\)/);
-  assert.match(engine, /\.\.\.turnTimeline\.field\(cs\) \}\);/);
+  // The result frame's timeline spread is composed natively from this port.
+  assert.match(engine, /timelineField: \(cs\) => turnTimeline\.field\(cs\)/);
   assert.match(read('src/chat/host-runtime.js'), /turnTimeline\.field\(state\)/);
   assert.match(read('src/codex/usage.js'), /turnTimeline\.field\(cs, now\(\)\)/);
   assert.match(read('src/chat/finalize-host.js'), /turnTimeline\.field\(cs, now\(\)\)/);

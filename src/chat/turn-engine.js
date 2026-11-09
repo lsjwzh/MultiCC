@@ -13,6 +13,7 @@ const claudeApiError = require('./claude-api-error-message');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
+const { getNative } = require('../native/runtime');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -34,7 +35,6 @@ const {
   planRetryBlockedFinalization,
   createTurnFinalizationExecutor,
   detectErrorEnvelope,
-  envelopeSourceFor,
   isKnownHarmlessStderrLine,
   sanitizeMessage: sanitizeApiErrorMessage,
   retryNotice,
@@ -508,159 +508,41 @@ function createChatTurnEngine(deps) {
     return report;
   }
 
+  // One native reducer owns every Claude stream-json decision (branch order,
+  // redaction, API-error state, tool/result framing). These ports are only the
+  // effects that still belong to Node owners; the object is built once per
+  // engine and closes over the live bindings above.
+  const nativeChatEventPorts = {
+    isCurrent: (cs, turn, runner) => isCurrentTurnRunner(cs, turn, runner),
+    scrub: (attempt, event) => attemptRuntime.scrubAttemptStructure(attempt, event),
+    touchActivity: (sessionName, turnId) => turnProgressHeartbeat.touchActivity(sessionName, turnId),
+    observeClaude: (cs, event) => turnTimeline.observeClaude(cs, event),
+    noteReportedModel: (sessionName, model) => noteReportedModel(sessionName, model),
+    updatePhase: (sessionName, turnId, phase, name) => turnProgressHeartbeat.updatePhase(sessionName, turnId, phase, name),
+    setSessionStatus: (sessionName, status) => setSessionStatus(sessionName, status),
+    scheduleIncrementalSave: (sessionName, cs) => scheduleIncrementalSave(sessionName, cs),
+    backgroundRecordToolUseId: (sessionName, id) => getBackgroundTaskRuntime().recordMainToolUseId(sessionName, id),
+    backgroundMarkTaskOutputAwaiting: (sessionName, input) => getBackgroundTaskRuntime().markTaskOutputAwaiting(sessionName, input),
+    clearIncrementalSave: (sessionName) => getChatHistoryRuntime().clearIncrementalSave(sessionName),
+    contextTrace: (sessionName, cs) => contextTraceFor(sessionName, cs),
+    isMapped: (sessionName, cs) => chatSessions?.get(sessionName) === cs,
+    persistFinal: (sessionName, cs, turn, runner, message, options) => persistFinalAssistantResult(sessionName, cs, turn, runner, message, options),
+    recordDurableUsage: (sessionName, runner, usage) => recordDurableTurnUsage(sessionName, runner, usage),
+    proxyFailure: (attempt) => attemptRuntime.proxyFailure?.(attempt),
+    onTurnComplete: (sessionName) => usageLimitPoller.onTurnComplete(sessionName),
+    modelAttribution: (cs, turn, runner) => modelAttributionField(cs, turn, runner),
+    timelineField: (cs) => turnTimeline.field(cs),
+    turnTimings: (sessionName, turnId) => turnTimingsField(sessionName, turnId),
+    markHostEnvelope: (event) => markHostErrorEnvelope(event),
+    logger,
+  };
+
   // Apply one claude-shaped stream-json event to chat session state, then forward
   // it to clients; shared by handleLine and runChatTurnStreaming so they never drift.
   function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, providerName = 'claude') {
-    if (!isCurrentTurnRunner(cs, turn, runner)) return;
-    evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt);
-    turnProgressHeartbeat.touchActivity(sessionName, turn.turnId); turnTimeline.observeClaude(cs, evt);
-    const apiErrorMode = claudeApiError.intercept(runner, evt, cs, { sessionId: sessionName, turnId: turn.turnId, logger });
-    if (apiErrorMode === 'drop' || apiErrorMode === 'suppress') return;
-    if (evt.type === 'assistant' && evt.message?.model) noteReportedModel(sessionName, evt.message.model);
-    if (evt.type === 'assistant' && evt.message?.content) {
-      if (apiErrorMode !== 'append') claudeApiError.recoverPendingEvent(runner, cs, evt, { sessionId: sessionName, turnId: turn.turnId, logger });
-      for (const block of evt.message.content) {
-        if (block.type === 'text') {
-          turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
-          cs.currentAssistantText = redactProviderRouteCapability(
-            cs.currentAssistantText + String(block.text || ''),
-          );
-          setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-          // Incremental save: flush the in-progress assistant message to disk
-          // every 5s so a crash/restart mid-turn doesn't lose the whole reply.
-          scheduleIncrementalSave(sessionName, cs);
-        }
-        if (block.type === 'tool_use') {
-          turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'tool', block.name);
-          // startedAt/endedAt ride in the persisted tools array: replay clients
-          // (web + app) read them to show measured durations and the trajectory
-          // strip. Sessions persisted before this field simply have neither —
-          // the clients' unknown state, never a fabricated 0ms.
-          cs.currentToolCalls.push({ name: block.name, input: block.input, id: block.id, startedAt: Date.now() });
-          getBackgroundTaskRuntime().recordMainToolUseId(sessionName, block.id);
-          if (block.name === 'TaskOutput') getBackgroundTaskRuntime().markTaskOutputAwaiting(sessionName, block.input);
-          const editTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
-          if (editTools.includes(block.name)) {
-            setSessionStatus(sessionName, { status: 'editing', currentFile: block.input?.file_path || null });
-          } else if (block.name === 'Bash') {
-            setSessionStatus(sessionName, { status: 'running', currentFile: null });
-          } else {
-            setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
-          }
-        }
-      }
-    }
-    if (evt.type === 'user' && evt.message?.content) {
-      const contentWasArray = Array.isArray(evt.message.content);
-      const normalizedContent = [];
-      for (const r of (contentWasArray ? evt.message.content : [evt.message.content])) {
-        if (r.type === 'tool_result') {
-          turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
-          const tc = cs.currentToolCalls.find(t => t.id === r.tool_use_id);
-          const normalized = normalizeClaudeToolResultContent(r.content);
-          if (tc) {
-            tc.result = normalized.text;
-            tc.is_error = r.is_error || false;
-            tc.endedAt = Date.now();
-            if (tc.result && tc.result.length > 1000) tc.result = tc.result.slice(0, 1000) + '...';
-          }
-          normalizedContent.push({ ...r, content: normalized.content });
-        } else {
-          normalizedContent.push(r);
-        }
-      }
-      evt = { ...evt, message: { ...evt.message,
-        content: contentWasArray ? normalizedContent : normalizedContent[0],
-      } };
-    }
-    if (evt.type === 'result') {
-      if (!runner.completionOutcome) {
-        runner.pendingClaudeResult = evt;
-        recordResultEvent(turn, runner, { current: true, persisted: false });
-        return;
-      }
-      turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
-      // Reasoning cannot outlive the turn: close an open Thinking span so its
-      // measured duration survives into the persisted tools array (and thus the
-      // wall-clock trajectory on replay).
-      closeOpenThinkingTool(cs);
-      cs.currentCost = evt.total_cost_usd || null;
-      const resultCompletion = runner.completionOutcome;
-      const resultSucceeded = canPersistAdapterCompletion(resultCompletion, attemptRuntime.proxyFailure?.(runner.providerAttempt));
-      const apiFailure = resultCompletion.state === 'failed' && resultCompletion.source === 'protocol';
-      const detectedErrorEnvelope = claudeApiError.apiErrorEnvelope(runner, providerName, cs.currentAssistantText) || detectErrorEnvelope(providerName, cs.currentAssistantText);
-      const envelopeError = apiFailure ? null : detectedErrorEnvelope;
-      if (envelopeError && envelopeError.body != null) {
-        // Trailing envelope appended after real output: strip the error text so it
-        // never reaches the transcript; the body is still checkpointed as a partial.
-        cs.currentAssistantText = envelopeError.body;
-      }
-      if (apiFailure || envelopeError) {
-        getChatHistoryRuntime().clearIncrementalSave(sessionName);
-        cs._sawApiError = true;
-        runner.sawApiError = true;
-        const detail = evt.error && typeof evt.error === 'object' ? evt.error : {};
-        runner.apiErrorRaw = detectedErrorEnvelope || {
-          source: envelopeSourceFor(providerName),
-          provider: providerName,
-          code: evt.startup_failure_reason || detail.code || evt.subtype || detail.type, errors: evt.errors,
-          httpStatus: detail.http_status || detail.status_code || detail.status || evt.http_status || evt.status_code || evt.status || evt.api_error_status,
-          headers: detail.headers || evt.headers, requestId: detail.request_id || evt.request_id,
-          message: detail.message || evt.result || evt.subtype || 'api_error',
-        };
-      }
-      const usage = evt.usage || {};
-      const contextTrace = contextTraceFor(sessionName, cs);
-      runner.pendingUsage = usage;
-      if (resultSucceeded && !envelopeError && (cs.currentAssistantText || cs.currentToolCalls.length)) {
-        const wasMapped = chatSessions?.get(sessionName) === cs;
-        const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
-          role: 'assistant', content: cs.currentAssistantText,
-          tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
-          cost: cs.currentCost, usage: Object.keys(usage).length ? usage : undefined, ts: Date.now(),
-          ...(contextTrace ? { contextTrace } : {}),
-          turnTimings: turnTimingsField(sessionName, turn.turnId),
-        }, { resultEvent: true });
-        if (!isCurrentTurnRunner(cs, turn, runner) || (wasMapped && chatSessions.get(sessionName) !== cs)) return;
-        if (resultDurable) {
-          recordDurableTurnUsage(sessionName, runner, usage);
-          if (!isCurrentTurnRunner(cs, turn, runner) || (wasMapped && chatSessions.get(sessionName) !== cs)) return;
-          cs.chatTurnCount++;
-          // Durability is independent of the runner's eventual completion.
-          cs._resultSaved = true;
-        }
-        // Cancel any pending incremental-save timer: the final message is now
-        // persisted, so a timer firing 0-5s later would append a stale _interim
-        // AFTER the final — a duplicate bubble on reconnect. Mirrors the cancel
-        // in the child-process close handler.
-        getChatHistoryRuntime().clearIncrementalSave(sessionName);
-      } else {
-        // An error result is a turn boundary, not a durable successful answer.
-        // Close finalization may checkpoint meaningful partial output, while an
-        // error-only envelope remains eligible for a safe bounded retry.
-        recordResultEvent(turn, runner, { current: true, persisted: false });
-      }
-      // Per-message timing for Web/App: submit -> result, plus the model timeline.
-      const _resultDurationMs = cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined;
-      forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs,
-        num_turns: cs.chatTurnCount, ...(contextTrace ? { contextTrace } : {}),
-        ...modelAttributionField(cs, turn, runner), ...turnTimeline.field(cs) });
-      // Final classification and all post-turn effects run from the owned
-      // close/finalize boundary. The result event alone is not enough: history
-      // persistence may have failed or a retry may still be planned.
-      // Refresh poll-only quota surfaces; the poller throttles by account.
-      usageLimitPoller.onTurnComplete(sessionName);
-    }
-    // Drop claude's `system init` — server already sent its own (but keep the
-    // runtime-reported model before discarding).
-    if (evt.type === 'system' && evt.subtype === 'init') { noteReportedModel(sessionName, evt.model); return; }
-    if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
-      const snapshot = normalizeClaudeAssistantSnapshot(evt, cs.currentAssistantText);
-      forward(markReplaySafeAssistantEnvelope(snapshot, providerName));
-      return;
-    }
-    forward(evt);
+    return getNative().chatApplyClaudeEvent(cs, sessionName, evt, forward, turn, runner, providerName, nativeChatEventPorts);
   }
+
   // Apply adapter-neutral events to server-owned chat state. Wire-format parsing
   // belongs to each CLI adapter; this function owns persistence, status and the
   // Claude-shaped event contract consumed by existing clients.

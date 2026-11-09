@@ -7,6 +7,7 @@ pub mod api_error_text;
 pub mod auth_security;
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
+pub mod chat_events;
 pub mod chat_turn_effects;
 pub mod chat_turn_lifecycle;
 pub mod classify_vocab;
