@@ -1,68 +1,114 @@
-//! Default model selection for a CLI lane — one implementation, here.
-//!
-//! MultiCC must never take a session's default model from the terminal's own
-//! configuration (`~/.claude/settings.json` `model` / `env`, `~/.codex/config.toml`
-//! `model`). Those files belong to the user's terminal and are routinely
-//! rewritten by ccswitch-style tools; a terminal switched to deepseek used to
-//! redirect a MultiCC session on the official account and fail with
-//! "There's an issue with the selected model (deepseek-flash)".
-//!
-//! The rule implemented here only ever chooses from the lane's own model list
-//! (the same list the picker shows):
-//!
-//! 1. provider routes keep a pinned model (`provider.model`) exactly as before;
-//! 2. otherwise the model the user selected most often on this lane wins —
-//!    explicit `session.model` values from persisted session records;
-//! 3. ties resolve to the earlier entry of the model list;
-//! 4. no usable history resolves to the first model-list entry;
-//! 5. history entries whose model is not in the current list (stale ids after
-//!    a catalog change) are ignored;
-//! 6. an empty list falls back to the last model the CLI actually reported for
-//!    this session — still not a terminal default.
-//!
-//! The host owns all I/O: it resolves the provider summary, the model list and
-//! the session records, and passes them as data. This module is pure and takes
-//! one JSON string in, one JSON string out (parsed leniently through
-//! [`crate::json_lenient`]).
+//! 默认模型的规则、历史快照和结果缓存由同一原生所有者管理。
+//! 宿主读取当前线路事实；内部直接传结构体，不经过 JSON。
+use std::collections::HashMap;
 
-use serde_json::{json, Value};
-
-const INVALID: &str = "MODEL_DEFAULT_INVALID";
-
-#[derive(Debug, Default)]
-struct ProviderInfo {
-    model: Option<String>,
-    options: Vec<String>,
-    alias_only: bool,
-    official: bool,
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ProviderInfo {
+    pub model: Option<String>,
+    pub options: Vec<String>,
+    pub alias_only: bool,
+    pub official: bool,
 }
 
-#[derive(Debug)]
-struct History {
-    cli: String,
-    provider: Option<String>,
-    model: String,
+#[derive(Clone, Debug)]
+pub struct History {
+    pub cli: String,
+    pub provider: Option<String>,
+    pub model: String,
 }
 
-fn text(value: Option<&Value>) -> Option<String> {
-    value
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Kind {
+    #[default]
+    Effective,
+    ProviderDefault,
 }
 
-fn model_list(value: Option<&Value>) -> Vec<String> {
-    let mut models: Vec<String> = Vec::new();
-    for entry in value.and_then(Value::as_array).into_iter().flatten() {
-        let Some(model) = text(Some(entry)) else {
-            continue;
-        };
-        if !models.contains(&model) {
-            models.push(model);
+/// 所有影响结果的线路事实均参与缓存键；历史代次由 Store 独立管理。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Request {
+    pub kind: Kind,
+    pub cli: String,
+    pub app_type: Option<String>,
+    pub provider_id: Option<String>,
+    pub history_provider_id: Option<String>,
+    pub provider: Option<ProviderInfo>,
+    pub models: Vec<String>,
+    pub reported_model: Option<String>,
+    pub global_provider_cli: bool,
+    pub wire_default_model: Option<String>,
+}
+
+struct Snapshot {
+    at: f64,
+    entries: Vec<History>,
+}
+
+pub struct Store {
+    ttl_ms: f64,
+    generation: u64,
+    history: Option<Snapshot>,
+    resolved: HashMap<Request, Option<String>>,
+}
+
+impl Store {
+    pub fn new(ttl_ms: f64) -> Self {
+        Self {
+            ttl_ms: if ttl_ms.is_finite() {
+                ttl_ms.max(0.0)
+            } else {
+                30_000.0
+            },
+            generation: 0,
+            history: None,
+            resolved: HashMap::new(),
         }
     }
-    models
+
+    pub fn caching(&self) -> bool {
+        self.ttl_ms > 0.0
+    }
+
+    /// 返回刷新代次。无快照时，即使时钟为 0 也不能命中空缓存。
+    /// 时钟回退或非有限值使快照失效，避免旧结果被无限延长。
+    pub fn refresh_token(&self, now: f64) -> Option<u64> {
+        let fresh = self.history.as_ref().is_some_and(|history| {
+            let elapsed = now - history.at;
+            self.caching() && elapsed.is_finite() && elapsed >= 0.0 && elapsed < self.ttl_ms
+        });
+        (!fresh).then_some(self.generation)
+    }
+
+    /// 所有宿主回调及输入读取均在发布前结束；重入已经发布更新时保留较新代次。
+    pub fn publish(&mut self, token: u64, entries: Vec<History>, at: f64) {
+        if self.generation != token {
+            return;
+        }
+        self.history = Some(Snapshot { at, entries });
+        self.generation = self.generation.wrapping_add(1);
+        self.resolved.clear();
+    }
+
+    pub fn resolve(&mut self, request: Request) -> Option<String> {
+        if self.caching() {
+            if let Some(result) = self.resolved.get(&request) {
+                return result.clone();
+            }
+        }
+        let history = self
+            .history
+            .as_ref()
+            .map_or(&[][..], |snapshot| snapshot.entries.as_slice());
+        let model = resolve(&request, history);
+        if self.caching() {
+            // 查询结果可重算；每个 runtime 设置上限，避免高基数请求在 TTL 内累积。
+            if self.resolved.len() >= 1024 {
+                self.resolved.clear();
+            }
+            self.resolved.insert(request, model.clone());
+        }
+        model
+    }
 }
 
 // `claude-exp` is the same Claude lane as `claude`; the usage the user built up
@@ -78,54 +124,6 @@ fn normalize_provider(provider: Option<&str>) -> String {
         .filter(|id| !id.is_empty() && *id != "_default_")
         .unwrap_or("")
         .to_owned()
-}
-
-fn provider_info(value: Option<&Value>) -> Option<ProviderInfo> {
-    let object = value?.as_object()?;
-    Some(ProviderInfo {
-        model: text(object.get("model")),
-        options: model_list(object.get("modelOptions")),
-        alias_only: object
-            .get("aliasOnly")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        official: object
-            .get("official")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    })
-}
-
-// Which provider scope the explicit-selection history is counted in. The host
-// sends `historyProviderId` explicitly: `null` means "the shared/official line"
-// (an empty provider key), an id means that provider route. Only an absent
-// field falls back to the request's own provider id (older callers/tests).
-fn history_provider_scope(
-    object: &serde_json::Map<String, Value>,
-    provider_id: Option<&str>,
-) -> Option<String> {
-    match object.get("historyProviderId") {
-        None => provider_id.map(str::to_owned),
-        Some(value) => text(Some(value)),
-    }
-}
-
-fn history(value: Option<&Value>) -> Vec<History> {
-    value
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let object = entry.as_object()?;
-            let cli = text(object.get("cli"))?;
-            let model = text(object.get("model"))?;
-            Some(History {
-                cli,
-                provider: text(object.get("provider")),
-                model,
-            })
-        })
-        .collect()
 }
 
 // Frequency first, list order on ties, first entry when the lane has no usable
@@ -159,137 +157,80 @@ fn pick(
     models.get(best).cloned()
 }
 
-fn resolve_effective(input: &Value) -> Result<Option<String>, String> {
-    let object = input
-        .as_object()
-        .ok_or_else(|| format!("{INVALID}: request must be an object"))?;
-    let cli = text(object.get("cli")).unwrap_or_default();
-    let app_type = text(object.get("appType"));
-    let provider_id = text(object.get("providerId"));
-    let provider = provider_info(object.get("provider"));
-    let models = model_list(object.get("models"));
-    let reported = text(object.get("reportedModel"));
-    let history = history(object.get("history"));
-    let global_provider_cli = object
-        .get("globalProviderCli")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    // Official provider entries (including the per-account ids) share the
-    // official picker line with provider-less sessions, so their history is
-    // keyed by an empty provider id on both sides.
-    let history_provider = history_provider_scope(object, provider_id.as_deref());
-
-    if provider_id.is_some() {
-        let key = history_provider.as_deref();
-        if let Some(info) = provider {
-            // Provider-pinned models are configuration, not a terminal default:
-            // keep them exactly as before.
-            if let Some(model) = info.model {
-                return Ok(Some(model));
+fn resolve_effective(input: &Request, history: &[History]) -> Option<String> {
+    let key = input.history_provider_id.as_deref();
+    if input.provider_id.is_some() {
+        if let Some(info) = &input.provider {
+            if let Some(model) = &info.model {
+                return Some(model.clone());
             }
             if !info.options.is_empty() {
-                if let Some(model) = pick(&info.options, &history, &cli, key) {
-                    return Ok(Some(model));
+                if let Some(model) = pick(&info.options, history, &input.cli, key) {
+                    return Some(model);
                 }
             }
-            // The official line has no provider-owned catalog of its own; its
-            // list is the same official CLI catalog the picker shows.
             if info.official {
-                if let Some(model) = pick(&models, &history, &cli, key) {
-                    return Ok(Some(model));
+                if let Some(model) = pick(&input.models, history, &input.cli, key) {
+                    return Some(model);
                 }
-                // Managed Codex routes own their default; a reported model may
-                // still belong to the provider we just left and must not come
-                // back just because the catalog is momentarily empty.
-                if app_type.as_deref() == Some("codex") {
-                    return Ok(None);
-                }
-                return Ok(reported);
             }
-            // Managed Codex routes own their default; a stale reported model
-            // may still belong to the provider we just left and must not come
-            // back just because the catalog is momentarily empty.
-            if app_type.as_deref() == Some("codex") {
-                return Ok(None);
+            if input.app_type.as_deref() == Some("codex") {
+                return None;
             }
-            return Ok(reported);
         }
-        // The provider id is stale (deleted/renamed). Do not invent a route
-        // model; the last reported model is the only lane-local fact left.
-        return Ok(reported);
+        return input.reported_model.clone();
     }
-
-    if global_provider_cli {
-        return Ok(reported);
+    if input.global_provider_cli {
+        return input.reported_model.clone();
     }
-
-    match app_type.as_deref() {
-        Some("claude") | Some("codex") => Ok(pick(&models, &history, &cli, None).or(reported)),
-        _ => Ok(reported),
+    match input.app_type.as_deref() {
+        Some("claude") | Some("codex") => {
+            pick(&input.models, history, &input.cli, None).or_else(|| input.reported_model.clone())
+        }
+        _ => input.reported_model.clone(),
     }
 }
 
-fn resolve_provider_default(input: &Value) -> Result<Option<String>, String> {
-    let object = input
-        .as_object()
-        .ok_or_else(|| format!("{INVALID}: request must be an object"))?;
-    let cli = text(object.get("cli")).unwrap_or_default();
-    let app_type = text(object.get("appType"));
-    let provider_id = text(object.get("providerId"));
-    let models = model_list(object.get("models"));
-    let history = history(object.get("history"));
-    let wire_default = text(object.get("wireDefaultModel"));
-    let history_provider = history_provider_scope(object, provider_id.as_deref());
-
-    if provider_id.is_none() {
-        // Only the official Claude line has a picker list without a provider.
-        // Codex profiles keep the historical "no default" answer.
-        if app_type.as_deref() == Some("claude") {
-            return Ok(pick(&models, &history, &cli, None));
-        }
-        return Ok(None);
+fn resolve_provider_default(input: &Request, history: &[History]) -> Option<String> {
+    if input.provider_id.is_none() {
+        return if input.app_type.as_deref() == Some("claude") {
+            pick(&input.models, history, &input.cli, None)
+        } else {
+            None
+        };
     }
-
-    let Some(info) = provider_info(object.get("provider")) else {
-        return Ok(None);
-    };
+    let info = input.provider.as_ref()?;
     if info.alias_only {
-        return Ok(wire_default);
+        return input.wire_default_model.clone();
     }
-    if let Some(model) = info.model {
-        return Ok(Some(model));
+    if let Some(model) = &info.model {
+        return Some(model.clone());
     }
-    let key = history_provider.as_deref();
+    let key = input.history_provider_id.as_deref();
     if !info.options.is_empty() {
-        return Ok(pick(&info.options, &history, &cli, key));
+        return pick(&info.options, history, &input.cli, key);
     }
     if info.official {
-        return Ok(pick(&models, &history, &cli, key));
+        return pick(&input.models, history, &input.cli, key);
     }
-    Ok(None)
+    None
 }
 
-/// Resolve the default model for one lane. Returns a JSON object
-/// `{"model": string|null}`; `null` means the lane has no list and the session
-/// never reported a model, so the caller must not invent one.
-pub fn resolve(input: &str) -> Result<String, String> {
-    let request: Value =
-        crate::json_lenient::from_str(input).map_err(|error| format!("{INVALID}: {error}"))?;
-    let object = request
-        .as_object()
-        .ok_or_else(|| format!("{INVALID}: request must be an object"))?;
-    let kind = text(object.get("kind")).unwrap_or_else(|| "effective".to_owned());
-    let model = match kind.as_str() {
-        "effective" => resolve_effective(&request)?,
-        "providerDefault" => resolve_provider_default(&request)?,
-        other => return Err(format!("{INVALID}: unknown kind {other}")),
-    };
-    Ok(json!({ "model": model }).to_string())
+pub fn resolve(input: &Request, history: &[History]) -> Option<String> {
+    match input.kind {
+        Kind::Effective => resolve_effective(input, history),
+        Kind::ProviderDefault => resolve_provider_default(input, history),
+    }
 }
+
+#[cfg(test)]
+#[path = "../tests/fixtures/legacy_model_default.rs"]
+mod legacy;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
 
     fn request(kind: &str, fields: Value) -> String {
         let mut object = json!({ "kind": kind, "cli": "claude", "appType": "claude" });
@@ -300,12 +241,80 @@ mod tests {
         object.to_string()
     }
 
-    fn model(input: &str) -> Option<String> {
-        let value: Value = serde_json::from_str(&resolve(input).unwrap()).unwrap();
+    fn text(value: Option<&Value>) -> Option<String> {
         value
-            .get("model")
             .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(str::to_owned)
+    }
+    fn list(value: Option<&Value>) -> Vec<String> {
+        let mut out = Vec::new();
+        for value in value.and_then(Value::as_array).into_iter().flatten() {
+            if let Some(s) = text(Some(value)) {
+                if !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+        }
+        out
+    }
+    fn facts(input: &Value) -> (Request, Vec<History>) {
+        let o = input.as_object().unwrap();
+        let provider_id = text(o.get("providerId"));
+        let req = Request {
+            kind: if text(o.get("kind")).as_deref() == Some("providerDefault") {
+                Kind::ProviderDefault
+            } else {
+                Kind::Effective
+            },
+            cli: text(o.get("cli")).unwrap_or_default(),
+            app_type: text(o.get("appType")),
+            history_provider_id: if o.contains_key("historyProviderId") {
+                text(o.get("historyProviderId"))
+            } else {
+                provider_id.clone()
+            },
+            provider_id,
+            provider: o
+                .get("provider")
+                .and_then(Value::as_object)
+                .map(|p| ProviderInfo {
+                    model: text(p.get("model")),
+                    options: list(p.get("modelOptions")),
+                    alias_only: p.get("aliasOnly").and_then(Value::as_bool).unwrap_or(false),
+                    official: p.get("official").and_then(Value::as_bool).unwrap_or(false),
+                }),
+            models: list(o.get("models")),
+            reported_model: text(o.get("reportedModel")),
+            global_provider_cli: o
+                .get("globalProviderCli")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            wire_default_model: text(o.get("wireDefaultModel")),
+        };
+        let history = o
+            .get("history")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| {
+                Some(History {
+                    cli: text(v.get("cli"))?,
+                    model: text(v.get("model"))?,
+                    provider: text(v.get("provider")),
+                })
+            })
+            .collect();
+        (req, history)
+    }
+    fn model(input: &str) -> Option<String> {
+        let value: Value = serde_json::from_str(input).unwrap();
+        let (req, history) = facts(&value);
+        let actual = resolve(&req, &history);
+        let expected: Value = serde_json::from_str(&legacy::resolve(input).unwrap()).unwrap();
+        assert_eq!(actual, text(expected.get("model")));
+        actual
     }
 
     fn history(entries: &[(&str, Option<&str>, &str)]) -> Value {
@@ -474,5 +483,100 @@ mod tests {
             }),
         );
         assert_eq!(model(&input).as_deref(), Some("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn differential_against_frozen_json_rule() {
+        let mut seed = 0x91a2b3c4_u64;
+        let mut next = |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 32) as usize % n
+        };
+        let ids = [
+            Value::Null,
+            json!("relay"),
+            json!("other"),
+            json!(" _default_ "),
+        ];
+        for _ in 0..2500 {
+            let cli = ["claude", "claude-exp", "codex", "codex-exp", "zcode"][next(5)];
+            let input = json!({
+                "kind": (["effective", "providerDefault"][next(2)]),
+                "cli": cli,
+                "appType": (["claude", "codex", "zcode"][next(3)]),
+                "providerId": ids[next(4)],
+                "historyProviderId": ids[next(4)],
+                "provider": if next(4) == 0 { Value::Null } else { json!({
+                    "model": ([Value::Null, json!("固定模型")][next(2)]),
+                    "modelOptions": ([json!([]), json!(["a", "b", "模型😀"])][next(2)]),
+                    "aliasOnly": next(2) == 0, "official": next(2) == 0,
+                }) },
+                "models": ([json!([]), json!(["b", "a", "模型😀", "b"])][next(2)]),
+                "reportedModel": ([Value::Null, json!("reported")][next(2)]),
+                "globalProviderCli": next(2) == 0,
+                "wireDefaultModel": ([Value::Null, json!("wire")][next(2)]),
+                "history": (0..next(20)).map(|_| json!({
+                    "cli": (["claude", "CLAUDE-EXP", "codex", "codex-exp"][next(4)]),
+                    "provider": ids[next(4)], "model": (["a", "b", "模型😀", "stale"][next(4)]),
+                })).collect::<Vec<_>>(),
+            });
+            model(&input.to_string());
+        }
+    }
+
+    #[test]
+    fn snapshot_ttl_initial_zero_boundary_rollback_and_nonfinite_clock() {
+        let mut store = Store::new(30.0);
+        assert_eq!(store.refresh_token(0.0), Some(0));
+        store.publish(0, vec![], 0.0);
+        assert_eq!(store.refresh_token(0.0), None);
+        assert_eq!(store.refresh_token(29.999), None);
+        for at in [30.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(store.refresh_token(at), Some(1));
+        }
+        assert!(Store::new(f64::NAN).caching());
+        assert!(!Store::new(-1.0).caching());
+        assert!(!Store::new(0.0).caching());
+    }
+
+    #[test]
+    fn reentrant_publication_cannot_restore_older_history() {
+        let mut store = Store::new(30.0);
+        let input = Request {
+            app_type: Some("claude".into()),
+            cli: "claude".into(),
+            models: vec!["a".into(), "b".into()],
+            ..Default::default()
+        };
+        let token = store.refresh_token(0.0).unwrap();
+        store.publish(
+            token,
+            vec![History {
+                cli: "claude".into(),
+                provider: None,
+                model: "b".into(),
+            }],
+            1.0,
+        );
+        store.publish(token, vec![], 2.0);
+        assert_eq!(store.resolve(input.clone()).as_deref(), Some("b"));
+        let token = store.refresh_token(31.0).unwrap();
+        store.publish(token, vec![], 31.0);
+        assert_eq!(store.resolve(input).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn typed_keys_bound_memory_without_changing_results() {
+        let mut store = Store::new(30.0);
+        store.publish(0, vec![], 0.0);
+        for n in 0..2200 {
+            let expected = format!("model-{n}");
+            let input = Request {
+                reported_model: Some(expected.clone()),
+                ..Default::default()
+            };
+            assert_eq!(store.resolve(input), Some(expected));
+            assert!(store.resolved.len() <= 1024);
+        }
     }
 }
