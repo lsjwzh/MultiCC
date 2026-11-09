@@ -234,12 +234,18 @@ test('attempt semantic DLP runs before Claude and adapter state mutation', () =>
   const claudeEnd = source.indexOf('function applyAdapterChatEvent(', claudeStart);
   const claudeBody = source.slice(claudeStart, claudeEnd);
   assert.ok(claudeStart >= 0 && claudeEnd > claudeStart);
-  assert.ok(claudeBody.indexOf('attemptRuntime.scrubAttemptStructure(')
-    < claudeBody.indexOf('cs.currentAssistantText ='),
-  'assistant content must be semantically scrubbed before transcript state changes');
-  assert.ok(claudeBody.indexOf('attemptRuntime.scrubAttemptStructure(')
-    < claudeBody.indexOf('cs.currentToolCalls.push('),
-  'tool input must be semantically scrubbed before tool state changes');
+  // The Claude decision body is native: assert the scrub port is wired and
+  // that the native reducer scrubs before it mutates transcript/tool state.
+  assert.match(source, /scrub: \(attempt, event\) => attemptRuntime\.scrubAttemptStructure\(attempt, event\)/,
+    'the Claude lane must hand semantic DLP to the native reducer as a port');
+  assert.match(claudeBody, /chatApplyClaudeEvent\(/);
+  const nativeSource = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
+  const nativeEntry = nativeSource.slice(nativeSource.indexOf('pub fn chat_apply_claude_event('));
+  assert.ok(nativeEntry.indexOf('c"scrub"') < nativeEntry.indexOf('c"currentAssistantText"'),
+    'assistant content must be semantically scrubbed before transcript state changes');
+  assert.ok(nativeEntry.indexOf('c"scrub"') < nativeEntry.indexOf('c"currentToolCalls"'),
+    'tool input must be semantically scrubbed before tool state changes');
 
   const adapterStart = claudeEnd;
   const adapterEnd = source.indexOf('function runChatTurn(', adapterStart);
@@ -1164,8 +1170,12 @@ test('production lifecycle uses append return, runner ownership and one guarded 
     'server composition must inject the authoritative assistant writer');
   assert.match(source, /context\.runner\.pendingUsage[\s\S]{0,180}\{ usage: context\.runner\.pendingUsage \}/,
     'interrupted/error assistant checkpoints must persist measured token usage');
-  assert.match(source, /const resultDurable = persistFinalAssistantResult\(/);
-  assert.match(source, /if \(resultDurable\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
+  // The durable-result branch is native; the engine only wires the port and the
+  // native reducer gates usage recording and _resultSaved on its return value.
+  assert.match(source, /persistFinal: \(sessionName, cs, turn, runner, message, options\) => persistFinalAssistantResult\(/);
+  const nativeEvents = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
+  assert.match(nativeEvents, /if durable \{[\s\S]{0,600}cs\.assign\(c"_resultSaved"/);
   assert.match(source, /runPostTurn\(context, entry\) \{[\s\S]{0,160}runDurablePostTurn\(/);
   assert.match(source, /isCurrentTurnRunner\(cs, turn, runner\)/);
   assert.equal((source.match(/runnerHandedOff = true;/g) || []).length, 2,
@@ -1274,18 +1284,19 @@ test('tool timing stamps ride in the persisted tools array (replay upgrade)', ()
   // The DSH timing arc's last gap was server-side: currentToolCalls carried
   // no timing, so every replayed tool was "unknown" forever. The stamps are
   // applied where every claude-shaped event (spawn path, streaming path, and
-  // the adapter-synthesized ones) funnels through — applyClaudeChatEvent.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  // the adapter-synthesized ones) funnels through — the native Claude reducer.
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
   // tool_use arrival stamps startedAt on the pushed call…
   assert.match(
     source,
-    /currentToolCalls\.push\(\{ name: block\.name, input: block\.input, id: block\.id, startedAt: Date\.now\(\) \}\)/,
+    /tool\.set\(c"startedAt", number\(anchor, now\(anchor\)\?\)\?\)\?;/,
   );
   // …and the matching tool_result stamps endedAt right where result/is_error
   // land, so the persisted tools array carries measured spans for replay.
   assert.match(
     source,
-    /tc\.is_error = r\.is_error \|\| false;\s*\n\s*tc\.endedAt = Date\.now\(\);/,
+    /tool\.assign\(c"is_error",[\s\S]{0,200}tool\.assign\(c"endedAt", number\(anchor, now\(anchor\)\?\)\?\)\?;/,
   );
 });
 

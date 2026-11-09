@@ -17,6 +17,7 @@ const sessionArg = args.find(value => value.startsWith('--session-id='))
 const sessionId = sessionArg ? sessionArg.slice(sessionArg.indexOf('=') + 1) : 'fake-session';
 const emit = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 if (logFile) fs.appendFileSync(logFile, `${JSON.stringify({ __fake: 'spawn', pid: process.pid, argv: args, env: process.env })}\n`);
+if (args.includes('--version')) { process.stdout.write('fake-claude 9.9.9\n'); process.exit(0); }
 const success = request => ({ type: 'control_response',
   response: { subtype: 'success', request_id: request.request_id, response: {} } });
 let initialized = false;
@@ -26,6 +27,12 @@ const hookRequests = new Map();
 function result(text, extra = {}) {
   emit({ type: 'result', subtype: 'success', is_error: false, result: text,
     num_turns: 1, session_id: sessionId, ...extra });
+}
+
+// Hosts prepend managed-context boilerplate to the prompt; echo only the
+// caller's marker so tests can assert on an exact string.
+function markerOf(text) {
+  return (text.match(/(?:PING|SLOW)_[A-Z0-9_]+/g) || []).pop() || text;
 }
 
 function handleUser(message) {
@@ -67,12 +74,81 @@ function handleUser(message) {
       session_id: sessionId, result: `No conversation found with session ID: ${sessionId}` });
     return;
   }
-  if (scenario === 'slow' || text.includes('SLOW')) { setTimeout(() => result(`slow:${text}`), 5000); return; }
+  // Chat-events scenarios: a single prompt marker drives a shaped event stream
+  // so tests/test-chat-events-isolated.js can exercise the reducer through a
+  // real gateway + server without a real model.
+  if (text.includes('EVT_TOOL_USE')) {
+    emit({ type: 'stream_event', event: { type: 'content_block_start',
+      index: 0, content_block: { type: 'tool_use', id: 'toolu_evt_1', name: 'Edit' } } });
+    emit({ type: 'assistant', session_id: sessionId, message: { role: 'assistant', model: 'fake',
+      content: [{ type: 'tool_use', id: 'toolu_evt_1', name: 'Edit', input: { file_path: '/tmp/evt.txt' } }] } });
+    emit({ type: 'user', session_id: sessionId, message: { role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'toolu_evt_1',
+        content: [{ type: 'text', text: 'patched' }] }] } });
+    emit({ type: 'assistant', session_id: sessionId, message: { role: 'assistant', model: 'fake',
+      content: [{ type: 'text', text: 'TOOL_DONE' }] } });
+    result('TOOL_DONE', { usage: { input_tokens: 11, output_tokens: 7 }, total_cost_usd: 0.02 });
+    return;
+  }
+  if (text.includes('EVT_API_ERROR')) {
+    const afterOutput = text.includes('AFTER_OUTPUT');
+    if (afterOutput) {
+      emit({ type: 'assistant', session_id: sessionId, message: { role: 'assistant', model: 'fake',
+        content: [{ type: 'text', text: 'genuine answer' }] } });
+    }
+    const error = { type: 'assistant', session_id: sessionId,
+      uuid: `api-error-${process.pid}-${afterOutput ? 'after' : 'empty'}`,
+      is_api_error_message: true, api_error_status: 500, request_id: 'req_evt_1', error: 'api_error',
+      message: { role: 'assistant', model: '<synthetic>',
+        content: [{ type: 'text', text: 'API Error: 500 upstream exploded' }] } };
+    // Real CLIs repeat the same synthetic message with the same uuid; the
+    // reducer must dedupe it. This emits it twice on purpose.
+    emit(error); emit(error);
+    if (text.includes('SUCCESS_RESULT')) {
+      // A non-retryable turn so the test observes exactly one attempt.
+      result('synthetic-error-answer', { usage: { input_tokens: 1, output_tokens: 1 }, total_cost_usd: 0 });
+      return;
+    }
+    emit({ type: 'result', subtype: 'error_during_execution', is_error: true,
+      num_turns: 1, session_id: sessionId });
+    return;
+  }
+  if (text.includes('EVT_BG_TASK')) {
+    emit({ type: 'system', subtype: 'task_started', task_id: 'bg_evt_1',
+      description: 'background probe', session_id: sessionId });
+    emit({ type: 'assistant', session_id: sessionId, message: { role: 'assistant', model: 'fake',
+      content: [{ type: 'text', text: 'BG_ACK' }] } });
+    result('BG_ACK', { usage: { input_tokens: 3, output_tokens: 2 } });
+    setTimeout(() => emit({ type: 'system', subtype: 'task_notification', task_id: 'bg_evt_1',
+      status: 'completed', summary: 'background probe', output: 'bg done', session_id: sessionId }), 300);
+    return;
+  }
+  if (text.includes('EVT_REPLAY')) {
+    emit({ type: 'stream_event', event: { type: 'content_block_delta',
+      delta: { type: 'text_delta', text: 'replay-partial' } } });
+    setTimeout(() => {
+      emit({ type: 'assistant', session_id: sessionId, message: { role: 'assistant', model: 'fake',
+        content: [{ type: 'text', text: 'replay-done' }] } });
+      result('replay-done', { usage: { input_tokens: 2, output_tokens: 2 } });
+    }, 1500);
+    return;
+  }
+  if (text.includes('EVT_ABORTED')) {
+    emit({ type: 'stream_event', event: { type: 'content_block_delta',
+      delta: { type: 'text_delta', text: 'partial-before-abort' } } });
+    emit({ type: 'assistant', session_id: sessionId, message: { role: 'assistant', model: 'fake',
+      content: [{ type: 'text', text: 'partial-before-abort' }] } });
+    // An interrupted turn ends with an error result that carries no `result` key.
+    emit({ type: 'result', subtype: 'error_during_execution', is_error: true,
+      terminal_reason: 'aborted_tools', num_turns: 1, session_id: sessionId });
+    return;
+  }
+  if (scenario === 'slow' || text.includes('SLOW')) { setTimeout(() => result(`slow:${markerOf(text)}`), 5000); return; }
   emit({ type: 'stream_event', event: { type: 'content_block_delta',
-    delta: { type: 'text_delta', text: `echo:${text}` } } });
+    delta: { type: 'text_delta', text: `echo:${markerOf(text)}` } } });
   emit({ type: 'assistant', session_id: sessionId,
-    message: { role: 'assistant', content: [{ type: 'text', text: `echo:${text}` }] } });
-  result(`echo:${text}`);
+    message: { role: 'assistant', content: [{ type: 'text', text: `echo:${markerOf(text)}` }] } });
+  result(`echo:${markerOf(text)}`);
 }
 
 const input = readline.createInterface({ input: process.stdin });

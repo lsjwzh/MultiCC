@@ -750,3 +750,116 @@ store did (`String(id || '').trim()`). This batch advances 6d but completes
 nothing: CLI supervision, streaming, cancellation escalation, finalize/background
 effects, provider selection and history persistence remain in Node, so no
 backend-exit acceptance criterion is claimed and the overall ledger stays 5/6.
+
+## 6d chat orchestration: Claude per-event reducer (2026-11-09)
+
+The per-event application logic of the Claude chat lane now lives in Rust.
+`native/addon/src/chat_events.rs` exports
+`chatApplyClaudeEvent(cs, sessionName, evt, forward, turn, runner, providerName,
+ports)`; `src/chat/turn-engine.js` keeps a 22-entry `nativeChatEventPorts` object
+and a three-line wrapper, and nothing else. `applyAdapterChatEvent`,
+`runAdmittedChatTurn`, `runChatTurnStreaming`, `finalizeStreamingTurn` and
+`handleChatWs` are untouched: only the Claude event path moved, and
+`applyAdapterChatEvent` (adapter-neutral chat contract) is explicitly deferred to
+a later 6d step.
+
+Order of operations inside the reducer is byte-faithful to the frozen legacy
+implementation. Gate `ports.isCurrent` → `ports.scrub(attempt, evt)` →
+`ports.touchActivity` → `ports.observeClaude` → API-error intercept →
+assistant content blocks → user tool_result normalization → result handling →
+system init/task passthrough → final `forward(evt)`.
+
+API-error intercept reproduces the runner-scoped `apiErrorState`: a key built
+from uuid/requestId/body is deduped through a JS `Set` (`Drop`), the pending
+record carries `text/httpStatus/cliError/requestId/key/appended/bodyBefore`, and
+the mode is `Append` when the accumulated assistant text and tool list are
+empty, otherwise `Suppress`; `recoverPendingEvent` consumes the recorded body
+before the next real assistant message. Assistant text appends with
+`String(v || '')` semantics and hosted redaction (`markHostEnvelope`/scrub are
+still host ports); `tool_use` records name/input/id/startedAt into
+`currentToolCalls`, updates phase (editing/running/thinking), session status,
+background tool-use ids and TaskOutput awaiting. `user` events rewrite
+tool_result content: a string is redacted as-is, `null`/`undefined` go through
+`JSON.stringify(content == null ? '' : content)` (`'""'`), arrays are split into
+one text block plus preserved non-text blocks, and the matching tool call gets
+`result`/`is_error`/`endedAt` plus its output preview. `result` applies the
+pure `completion`/`compatible` rules, records durable usage only when
+`persistFinal` reports durable, constructs the synthetic assistant message
+(role/content/tools/cost/usage/ts/contextTrace/turnTimings) with
+`resultEvent: true`, forwards the constructed result frame
+(total_cost_usd/usage/durationMs/num_turns/contextTrace/modelAttribution/
+timelineField), calls `onTurnComplete`, and then falls through to the raw
+result forward exactly like the original. Stale turn/runner is a no-op at entry
+and re-checked after `persistFinal`/`recordDurableUsage`.
+
+Pure helpers and their unit tests live in `native/core/src/chat_events.rs`
+(162 lines, 7 tests): `status_of`, `api_error_key`, `is_error_only`,
+`envelope_body`, `pick_http_status`, `has_result_output`, `is_api_failure`.
+The addon file is 1,094 lines including the exported entry point.
+
+Deleted Node logic: 150 lines of `applyClaudeChatEvent` (branch order,
+redaction, API-error state machine, tool/result framing) with 32 lines added for
+the port table and wrapper. The 22 ports are effects still owned by Node: turn
+currency (`isCurrent`), structural scrubbing (`scrub`), activity/phase/status
+heartbeat, Claude observation, reported-model attribution, incremental-save
+scheduling/clearing, background tool-use id and TaskOutput awaiting, context
+trace, chat-session mapping check, final persistence + durable usage recording,
+proxy failure lookup, usage-limit completion, model-attribution/timeline/timing
+fields, host error-envelope marking, and the logger.
+
+Frozen oracle `tests/helpers/legacy-claude-chat-event.js` (284 lines) is the
+byte-exact prior implementation. `tests/test-chat-events-differential.js`
+(561 lines, 7 tests) compares the complete ordered effect log, `cs` snapshot,
+persisted state and turn/runner snapshots after every event, with a custom
+serializer that preserves `undefined`, `NaN`, `-0`, lone surrogates and
+property order, and try/catch parity (both throw or neither). Volume: 1,200
+seeded randomized/perturbed sequences, a 200-sequence second fuzz pass, 8
+adversarial single events (structured 429, lone surrogate, >200 KB text, 5,000
+char tool_result, result with/without completion, undefined model, null type),
+stale turn/runner, throwing host ports, a re-entrant clock/port call, and the 8
+real captured traces under `/tmp/claude-lane-capture/real`
+(raw nowait/wait, init error, lifecycle, interrupt, background, hook error,
+resume).
+
+`tests/test-chat-events-isolated.js` (330 lines) starts the real `multicc-gateway`
+and `server.js` on a temporary data root with a copied fake Claude CLI and one
+WebSocket client (7 sections): stream→result with history persistence;
+tool_use→tool_result normalization (Edit, `toolu_evt_1`, `patched`) and tool-id
+persistence; background task_started/task_notification outliving the turn;
+API-error append-once dedupe per process uuid; API-error suppression after real
+output (zero error assistant frames in the first attempt, sliced by
+`messageTurnId`); interrupted result without a `result` key (partial surfaced,
+no literal `undefined` persisted, session stays usable); and reconnect replay of
+an in-flight delta followed by the settled result. `npm test:core` and
+`npm test:integration:isolated` both include their test.
+
+Injected mutation faults, each verified to fail and then reverted: (1) API-error
+dedupe disabled — two differential suites fail; (2) completion detection forced
+to "has output" — randomized differential fails; (3) completed result returns
+early instead of falling through — randomized, fuzz, adversarial and real-trace
+differential tests fail; (4) API-error append/suppress polarity flipped to
+always-suppress — differential fails and the isolated append section times out;
+a fifth flip to always-append also fails the randomized, fuzz and adversarial
+differential tests. The restored tree rebuilds to fingerprint
+`996ccf0a8e4c8917bc4a4f43` and both suites pass again.
+
+Rust workspace: 665 passed, 0 failed. New Rust files pass `rustfmt --check`; clippy
+for `multicc-core`/`multicc-addon` reports no warning in `chat_events.rs`
+(the repository's pre-existing warnings remain untouched). Test tiers: 847
+classified (core 402: deterministic 330 / isolated 41 / flutter 31); the
+release-count audit is re-audited to 374 commands / 371 Node entries. Source
+line budget OK (known `public/run-config.js` debt
+unchanged); `git diff --check` clean. Full `npm test` on the final artifacts
+exits 0: 6,545 tests, 6,542 passed, 0 failed, 2 skipped (the local Electron
+desktop toolchain is not installed; `pwsh` is unavailable) and 1 pre-existing S6
+`# TODO`, with `MULTICC_RUST_PREBUILT_DIR` pointing at the fingerprint directory.
+
+Fingerprint `996ccf0a8e4c8917bc4a4f43`; logs are archived under the primary
+repository's
+`data/rust-source/996ccf0a8e4c8917bc4a4f43/validation/chat-events/`. The
+gateway/addon control protocol is unchanged (12), so no coordinated deployment
+is required. No intentional behaviour difference was found. This batch advances
+6d but completes nothing: adapter-neutral event application, CLI supervision,
+streaming/finalize/background effects, provider selection, history persistence
+and WS handling remain in Node, so no backend-exit acceptance criterion is
+claimed and the overall ledger stays 5/6.
