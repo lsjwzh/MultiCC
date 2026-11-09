@@ -669,20 +669,47 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
               onDoubleTap: item.canEdit && widget.onEditQueued != null
                   ? () => _editQueued(item)
                   : null,
-              child: Container(
-                key: Key('queued-text-${item.entryId}'),
-                constraints: const BoxConstraints(maxHeight: 3 * 1.4 * 12),
-                padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
-                child: SingleChildScrollView(
-                  child: Text(
-                    '${item.position}. ${item.text.isEmpty ? t('queuedMessageFallback') : item.text}',
-                    style: const TextStyle(
-                      color: Color(0xFF31465b),
-                      fontSize: 12,
-                      height: 1.4,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    key: Key('queued-text-${item.entryId}'),
+                    constraints: const BoxConstraints(maxHeight: 3 * 1.4 * 12),
+                    padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+                    child: SingleChildScrollView(
+                      child: Text(
+                        '${item.position}. ${item.text.isEmpty ? t('queuedMessageFallback') : item.text}',
+                        style: const TextStyle(
+                          color: Color(0xFF31465b),
+                          fontSize: 12,
+                          height: 1.4,
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                  // 处于失败重试中的条目（不是单纯排队）：一行弱提示说明为什么
+                  // 不动。和 web 端同一份服务端数据（attempts/lastError），
+                  // 没有这行时「工作区恢复失败」这类错误完全看不见。
+                  if (item.isRetrying)
+                    Padding(
+                      key: Key('queued-retry-${item.entryId}'),
+                      padding: const EdgeInsets.only(left: 2, top: 2, right: 2),
+                      child: Text(
+                        t('queueRetrying', {
+                          'n': '${item.attempts}',
+                          'error': item.lastError!,
+                        }),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF8a6116),
+                          fontSize: 11,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ),

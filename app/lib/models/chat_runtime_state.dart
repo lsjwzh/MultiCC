@@ -14,6 +14,13 @@ class SessionQueueItem {
   /// insert_queued 成功后回填；UI 据此把插入按钮换成不可再点的「执行中」。
   final bool priority;
 
+  /// 失败重试次数与最后一次错误（服务端 scheduler.status 的投影，web 端
+  /// session-queue 的「第 N 次重试中」同一份数据）。>0 表示这条不是在排队
+  /// 等执行，而是已经投递失败、正处在重试退避里——面板必须说出来，否则
+  /// 看起来和普通排队一模一样（工作区恢复失败那类错误就被藏在这）。
+  final int attempts;
+  final String? lastError;
+
   const SessionQueueItem({
     required this.entryId,
     this.taskId,
@@ -21,7 +28,12 @@ class SessionQueueItem {
     required this.position,
     required this.text,
     this.priority = false,
+    this.attempts = 0,
+    this.lastError,
   });
+
+  /// 处于失败重试中（不是单纯排队）。判据与 web 的 retry 行一致。
+  bool get isRetrying => attempts > 0 && (lastError?.isNotEmpty ?? false);
 
   bool get canCancel => entryId.isNotEmpty && state == 'pending';
 
@@ -42,6 +54,8 @@ class SessionQueueItem {
       position: _positiveInt(json['position']) ?? fallbackPosition,
       text: (json['text'] ?? '').toString(),
       priority: json['priority'] == true,
+      attempts: _int(json['attempts']) ?? 0,
+      lastError: _queueError(json['lastError']),
     );
   }
 }
@@ -359,6 +373,16 @@ String? _optionalString(dynamic value) {
   if (value == null) return null;
   final text = value.toString().trim();
   return text.isEmpty ? null : text;
+}
+
+/// 队列条目的重试错误：服务端已裁成「单行 + 160 字符」，这里再兜一次——
+/// 行卡最多两行，原样塞多行 git/命令输出只会把整条队列撑爆。
+String? _queueError(dynamic value) {
+  final text = _optionalString(value);
+  if (text == null) return null;
+  final line = text.split('\n').first.trim();
+  if (line.isEmpty) return null;
+  return line.length > 160 ? line.substring(0, 160) : line;
 }
 
 Map<String, dynamic>? _optionalMap(dynamic value) =>
