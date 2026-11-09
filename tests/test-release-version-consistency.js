@@ -470,16 +470,32 @@ test('core runner covers every selected path and expands declared variants', () 
   // server.js on a temporary data root with fake codex/opencode CLIs and drives
   // assistant text, tool result, tool card and idle over loopback WebSockets,
   // so it is isolated core under npm:test:integration:isolated.
-  // 402 + 2 = 404 entries, 330 + 1 = 331 deterministic, 41 + 1 = 42 isolated,
-  // 374 + 2 = 376 commands (373 Node entries).
-  assert.equal(core.length, 404, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 404);
+  // Re-audited for the native turn-finalization planner:
+  // tests/test-chat-finalize-differential.js compares the native planner with
+  // the frozen legacy implementation over seeded randomized, table,
+  // classification/handoff and clock traces in memory (no port, filesystem or
+  // child process), so it is deterministic core under npm:test:core.
+  // tests/test-chat-finalize-isolated.js starts the real gateway and server.js
+  // on a temporary data root with a fake Claude CLI and drives clean
+  // completion, crash, no-result, queued follow-up and cancel over loopback
+  // WebSockets, so it is isolated core under npm:test:integration:isolated.
+  // Re-audited for the terminal-config regression:
+  // tests/test-session-model-terminal-config.js writes a temporary HOME with a
+  // ccswitch-style ~/.claude/settings.json and ~/.codex/config.toml, then
+  // builds the adapters and the settings override against fake provider
+  // summaries in-process (no real home, port, child CLI or service), so it is
+  // deterministic core under npm:test:core.
+  // 404 + 2 = 406 entries, 331 + 1 = 332 deterministic, 42 + 1 = 43 isolated,
+  // 376 + 2 = 378 commands (375 Node entries); this tranche adds one more of
+  // each: 407 entries, 333 deterministic, 379 commands (376 Node entries).
+  assert.equal(core.length, 407, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 407);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 331);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 42);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 333);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
@@ -488,8 +504,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 376,
-    '373 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 379,
+    '376 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

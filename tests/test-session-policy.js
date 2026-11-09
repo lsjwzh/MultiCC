@@ -11,6 +11,11 @@ const {
   createReportedModelRuntime,
   CODEX_STREAM_DISCONNECT_CONTINUE_MAX,
 } = require('../src/cli/session-policy');
+const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/routes/claude-models');
+
+// Default-model tests must see the static picker list, not a live CLI scan.
+_resetCacheForTest();
+const CLAUDE_FIRST = CLAUDE_MODELS_FALLBACK[0].model;
 
 function tempHome(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-session-policy-'));
@@ -25,6 +30,14 @@ function writeJson(file, value) {
 
 function createHarness(home, overrides = {}) {
   const summaries = new Map([
+    ['claude:claude-official', {
+      id: 'claude-official', appType: 'claude', name: 'Claude Official',
+      isOfficial: true, model: null, modelOptions: [],
+    }],
+    ['codex:codex-official', {
+      id: 'codex-official', appType: 'codex', name: 'Codex Official',
+      isOfficial: true, model: null, modelOptions: [],
+    }],
     ['claude:alias-provider', {
       id: 'alias-provider', name: 'Aliases', aliasOnly: true,
       aliasMap: { fast: { model: 'claude-real-fast' } },
@@ -33,6 +46,9 @@ function createHarness(home, overrides = {}) {
     ['claude:relay', {
       id: 'relay', name: 'Relay', baseUrl: 'https://relay.invalid',
       model: null, modelOptions: ['relay-first'],
+    }],
+    ['claude:dual', {
+      id: 'dual', name: 'Dual', model: null, modelOptions: ['dual-a', 'dual-b'],
     }],
     ['claude:primary', {
       id: 'primary', name: 'Primary', model: 'claude-primary',
@@ -62,11 +78,15 @@ function createHarness(home, overrides = {}) {
       return summaries.get(`${appType}:${providerId}`) || null;
     },
   };
-  const providers = overrides.providers || {
+  const providers = {
     WIRE_DEFAULT_MODEL: 'wire-default',
-    appTypeForCli: cli => cli === 'codex'
+    appTypeForCli: cli => cli === 'codex' || cli === 'codex-exp'
       ? 'codex'
-      : (cli === 'claude' || cli === 'opencode' ? 'claude' : null),
+      : (cli === 'claude' || cli === 'claude-exp' || cli === 'opencode' ? 'claude' : null),
+    isOfficialProviderId: (appType, providerId) => typeof providerId === 'string'
+      && (providerId === `${appType}-official` || providerId.startsWith(`${appType}-official-`)),
+    readCodexOfficialModels: () => ['gpt-5.6-sol', 'gpt-5.6-terra'],
+    ...(overrides.providers || {}),
   };
   return createSessionPolicy({
     homeDir: () => home,
@@ -74,6 +94,9 @@ function createHarness(home, overrides = {}) {
     fs: overrides.fs || fs,
     providerRouter: router,
     providers,
+    records: overrides.records || (() => []),
+    // Deterministic: no history/result caching between assertions.
+    historyTtlMs: 0,
   });
 }
 
@@ -85,20 +108,31 @@ test('session policy fails closed when provider ports are missing', () => {
   }), /appTypeForCli/);
 });
 
-test('user configuration defaults are read on demand for Claude and Codex', t => {
+test('terminal configuration never supplies the model; only effort is read', t => {
   const home = tempHome(t);
-  writeJson(path.join(home, '.claude', 'settings.json'), { model: 'claude-user', effort: 'high' });
+  // A ccswitch-style rewrite of the terminal's own config: model + routing env.
+  writeJson(path.join(home, '.claude', 'settings.json'), {
+    model: 'deepseek-flash',
+    effort: 'high',
+    env: { ANTHROPIC_BASE_URL: 'https://ccswitch.invalid', ANTHROPIC_AUTH_TOKEN: 'switched' },
+  });
   writeJson(path.join(home, '.claude', 'settings.local.json'), { thinkingEffort: 'low' });
   fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
   fs.writeFileSync(path.join(home, '.codex', 'config.toml'),
-    'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n');
+    'model = "deepseek-flash"\nmodel_reasoning_effort = "medium"\n');
   const policy = createHarness(home);
 
-  assert.equal(policy.claudeDefaultModel(), 'claude-user');
-  assert.equal(policy.codexDefaultModel(), 'gpt-5.6-sol');
+  // The terminal-default readers are gone: neither lane can pick up the model
+  // written by the user's terminal.
+  assert.equal(policy.claudeDefaultModel, undefined);
+  assert.equal(policy.codexDefaultModel, undefined);
+  assert.equal(policy.effectiveSessionModel({ cli: 'claude' }), CLAUDE_FIRST);
+  assert.notEqual(policy.effectiveSessionModel({ cli: 'claude' }), 'deepseek-flash');
+  assert.equal(policy.effectiveSessionModel({ cli: 'codex' }), 'gpt-5.6-sol');
+  assert.notEqual(policy.effectiveSessionModel({ cli: 'codex' }), 'deepseek-flash');
+  // Effort is a separate local preference and still follows the terminal.
   assert.equal(policy.claudeDefaultEffort(), 'low', 'settings.local wins');
   assert.equal(policy.codexDefaultReasoningLevel(), 'medium');
-  assert.equal(policy.effectiveSessionModel({ cli: 'codex' }), 'gpt-5.6-sol');
   assert.equal(policy.codexReasoningConfigArg({
     cli: 'codex', effort: 'ultra',
   }), 'model_reasoning_effort="ultra"');
@@ -125,11 +159,16 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'primary' }), 'claude-primary');
   assert.equal(policy.effectiveSessionModel({
     cli: 'claude', provider: 'relay', reportedModel: 'relay-runtime',
-  }), 'relay-runtime');
-  assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'relay' }), null,
+  }), 'relay-first', 'a relay picks from its own option list');
+  assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'relay' }), 'relay-first',
     'a relay-controlled model must not borrow the local Claude default');
-  assert.equal(policy.effectiveSessionModel({ cli: 'claude', reportedModel: 'runtime' }), 'claude-user');
-  assert.equal(policy.effectiveSessionModel({ cli: 'codex', reportedModel: 'gpt-runtime' }), 'gpt-runtime');
+  assert.notEqual(policy.effectiveSessionModel({ cli: 'claude', provider: 'relay' }), 'claude-user');
+  assert.equal(policy.effectiveSessionModel({ cli: 'claude', reportedModel: 'runtime' }), CLAUDE_FIRST,
+    'the picker list is authoritative when the lane has no explicit selection');
+  assert.notEqual(policy.effectiveSessionModel({ cli: 'claude', reportedModel: 'runtime' }), 'claude-user');
+  assert.equal(policy.effectiveSessionModel({ cli: 'codex', reportedModel: 'gpt-runtime' }), 'gpt-5.6-sol');
+  assert.equal(policy.effectiveSessionModel({ cli: 'codex', reportedModel: 'gpt-runtime', provider: 'codex-official' }),
+    'gpt-5.6-sol');
   assert.equal(policy.effectiveSessionModel({ cli: 'opencode' }), null,
     'OpenCode without an explicit provider must use its own native default');
   assert.equal(policy.effectiveSessionModel({ cli: 'opencode', reportedModel: 'opencode-runtime' }),
@@ -139,7 +178,8 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.effectiveSessionModel({ cli: 'zcode', reportedModel: 'vendor/default' }), 'vendor/default');
   assert.equal(policy.effectiveSessionModel({ cli: 'zcode', provider: 'zcode-primary' }), 'glm-zcode');
   assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws', model: 'explicit' }), 'explicit');
-  assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws' }), 'claude-user');
+  assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'throws' }), null,
+    'a stale/unavailable provider never reuses the terminal settings model');
   assert.equal(policy.effectiveSessionModel(null), null);
 
   assert.deepEqual(policy.serializeSubagent({ providerId: 'alias-provider', model: 'fast' }), {
@@ -149,7 +189,10 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.providerDefaultModel('claude', 'alias-provider'), 'wire-default');
   assert.equal(policy.providerDefaultModel('claude', 'relay'), 'relay-first');
   assert.equal(policy.providerDefaultModel('codex', 'codex-primary'), 'gpt-primary');
-  assert.equal(policy.providerDefaultModel('claude', null), 'claude-user');
+  assert.equal(policy.providerDefaultModel('claude', 'throws'), null);
+  assert.equal(policy.providerDefaultModel('codex', null), null,
+    'Codex profiles keep the historical no-default answer');
+  assert.equal(policy.providerDefaultModel('claude', null), CLAUDE_FIRST);
   assert.equal(policy.sessionProviderName({ cli: 'claude', provider: 'primary' }), 'Primary');
   assert.equal(policy.sessionProviderName({ cli: 'claude', provider: 'throws' }), 'throws');
   assert.equal(policy.sessionProviderName({ cli: 'zcode', provider: 'zcode-primary' }), 'ZCode Primary');
@@ -158,6 +201,47 @@ test('model resolution preserves provider aliases, relays and reported fallbacks
   assert.equal(policy.sessionProviderBaseUrl({ cli: 'claude', provider: 'primary' }), null);
   assert.equal(policy.sessionProviderBaseUrl({ cli: 'claude', provider: 'throws' }), null);
   assert.equal(policy.sessionProviderBaseUrl({ cli: 'claude' }), null);
+});
+
+test('a lane default follows the most frequent explicit selection on that line', t => {
+  const records = new Map([
+    ['s1', { id: 's1', cli: 'claude', provider: null, model: 'claude-sonnet-5' }],
+    // claude-exp is the same lane; official provider ids share the provider-less
+    // list, so their explicit picks count toward the same default.
+    ['s2', { id: 's2', cli: 'claude-exp', provider: 'claude-official', model: 'claude-sonnet-5' }],
+    ['s3', { id: 's3', cli: 'claude', provider: 'claude-official-0123456789abcdef', model: 'claude-sonnet-5' }],
+    ['s4', { id: 's4', cli: 'claude', provider: null, model: 'claude-opus-5' }],
+    // Provider-scoped picks never show up on another route.
+    ['s5', { id: 's5', cli: 'claude', provider: 'dual', model: 'dual-b' }],
+    ['s6', { id: 's6', cli: 'claude', provider: 'dual', model: 'dual-b' }],
+    ['s7', { id: 's7', cli: 'claude', provider: 'dual', model: 'dual-a' }],
+  ]);
+  const policy = createHarness(tempHome(t), { records: () => records });
+
+  assert.equal(policy.effectiveSessionModel({ cli: 'claude' }), 'claude-sonnet-5',
+    'three sonnet picks beat one opus pick on the official line');
+  assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'claude-official' }), 'claude-sonnet-5',
+    'an official provider session reads the same official-line history');
+  assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'dual' }), 'dual-b',
+    'provider lanes count only their own explicit picks');
+});
+
+test('a lane default ties resolve to model-list order and ignores stale ids', t => {
+  const tie = new Map([
+    ['t1', { id: 't1', cli: 'claude', model: 'claude-sonnet-5' }],
+    ['t2', { id: 't2', cli: 'claude', model: 'claude-opus-5' }],
+  ]);
+  const tiePolicy = createHarness(tempHome(t), { records: () => tie });
+  assert.equal(tiePolicy.effectiveSessionModel({ cli: 'claude' }), 'claude-opus-5',
+    'equal counts pick the earlier list entry (opus-5 precedes sonnet-5)');
+
+  const stale = new Map([
+    ['u1', { id: 'u1', cli: 'claude', model: 'deepseek-flash' }],
+    ['u2', { id: 'u2', cli: 'claude', model: 'deepseek-flash' }],
+  ]);
+  const stalePolicy = createHarness(tempHome(t), { records: () => stale });
+  assert.equal(stalePolicy.effectiveSessionModel({ cli: 'claude' }), CLAUDE_FIRST,
+    'selections that are no longer in the current list never win');
 });
 
 test('effort, agent and disconnect policies preserve each CLI contract', t => {
@@ -236,6 +320,8 @@ test('explicit CODEX_HOME wins and invalid config falls through to the user home
   fs.writeFileSync(path.join(explicit, 'config.toml'),
     'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "ultra"\n');
   assert.equal(policy.codexDefaultReasoningLevel(), 'ultra');
+  assert.equal(policy.effectiveSessionModel({ cli: 'codex' }), 'gpt-5.6-sol',
+    'the lane model list wins over CODEX_HOME config.toml model');
   fs.writeFileSync(path.join(explicit, 'config.toml'), 'model_reasoning_effort = "not-valid"\n');
   assert.equal(policy.codexDefaultReasoningLevel(), 'high');
 });
@@ -349,12 +435,18 @@ test('managed Codex defaults never borrow the old DeepSeek local config or repor
   fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
   fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'model = "deepseek-flash"\n');
   const summary = { isOfficial: true, model: '', modelOptions: ['gpt-5.4'] };
-  const policy = createHarness(home, { providerRouter: { getProviderSummary: () => summary } });
+  const policy = createHarness(home, {
+    providerRouter: { getProviderSummary: () => summary },
+    providers: { readCodexOfficialModels: () => [] },
+  });
   const session = { cli: 'codex', provider: 'codex-official', model: null, reportedModel: 'deepseek-flash' };
   assert.equal(policy.effectiveSessionModel(session), 'gpt-5.4');
   summary.modelOptions = [];
-  assert.equal(policy.effectiveSessionModel(session), null);
-  assert.equal(policy.effectiveSessionModel({ cli: 'codex' }), 'deepseek-flash', 'native route still uses its own config');
+  assert.equal(policy.effectiveSessionModel(session), null,
+    'an empty official catalog never resurrects a model reported on another route');
+  assert.equal(policy.effectiveSessionModel({ cli: 'codex' }), null,
+    'the terminal config.toml model is never used');
+  assert.notEqual(policy.effectiveSessionModel({ cli: 'codex' }), 'deepseek-flash');
 });
 
 

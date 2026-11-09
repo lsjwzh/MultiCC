@@ -20,8 +20,6 @@ const MIN_CANDIDATES: usize = 2;
 const MAX_CANDIDATES: usize = 32;
 const MAX_NAMED: usize = 20;
 const MAX_RECENT: usize = 5;
-const MIN_ATTEMPTS: i64 = 2;
-const MAX_ATTEMPTS: i64 = 4;
 const PROTOCOLS: [&str; 2] = ["anthropic", "openai_responses"];
 const TIERS: [&str; 6] = ["t1", "t2", "t3", "t4", "t5", "t6"];
 
@@ -198,10 +196,10 @@ impl Preset {
             Some("manual") => "manual".to_owned(),
             _ => "price".to_owned(),
         };
-        let max_allowed = std::cmp::min(MAX_ATTEMPTS as usize, candidates.len()) as i64;
-        let max_attempts = int_like(object.get("maxAttempts"))
-            .unwrap_or(MIN_ATTEMPTS)
-            .clamp(MIN_ATTEMPTS, max_allowed);
+        // A preset's attempt budget is its candidate count: the runtime keeps
+        // switching until every enabled line has failed, so a stored 2..4 (or
+        // any other legacy value) is ignored instead of being preserved.
+        let max_attempts = candidates.len() as i64;
         let sticky = object
             .get("sticky")
             .and_then(Value::as_bool)
@@ -541,7 +539,7 @@ mod tests {
         assert_eq!(preset["tiering"], "price");
         // p-b carries a valid tier, so the missing pick becomes difficulty.
         assert_eq!(preset["pick"], "difficulty");
-        // min(4, 3 candidates) = 3.
+        // The candidate count is the attempt budget, so the stored 99 is ignored.
         assert_eq!(preset["maxAttempts"], 3);
         assert!(preset.get("apiKey").is_none());
         let list = preset["candidates"].as_array().unwrap();
@@ -564,7 +562,7 @@ mod tests {
             .iter()
             .all(|candidate| candidate.get("secret").is_none()));
 
-        // No tier anywhere: pick defaults to order. maxAttempts clamps to len.
+        // No tier anywhere: pick defaults to order; maxAttempts follows the count.
         let plain = norm(json!({ "presets": [{
             "id": "plain", "name": "Plain", "protocol": "anthropic", "maxAttempts": 9,
             "candidates": candidates("p", 2),

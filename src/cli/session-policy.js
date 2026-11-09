@@ -4,6 +4,8 @@ const defaultFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { isResidentSession } = require('./cli-capability');
+const { resolveModelDefault } = require('./model-default');
+const { CLAUDE_MODELS_FALLBACK, listClaudeModelsSync } = require('../routes/claude-models');
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -35,32 +37,102 @@ function createSessionPolicy(options) {
   const env = options.env || process.env;
   const homeDir = options.homeDir || os.homedir;
   if (typeof homeDir !== 'function') throw new TypeError('[session-policy] homeDir must be a function');
+  // Explicit-selection history for the default-model rule. The host owns the
+  // records; this module only reads a snapshot and hands it to the Rust core,
+  // which owns the counting/tie-break rule. A short TTL keeps the hot listing
+  // paths (Air projects every session's effective model) from rebuilding the
+  // snapshot on every call; `historyTtlMs: 0` disables both caches.
+  const records = typeof options.records === 'function' ? options.records : () => [];
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const historyTtlMs = Number.isFinite(options.historyTtlMs)
+    ? Math.max(0, options.historyTtlMs) : 30 * 1000;
+  let historyCache = { at: 0, entries: [] };
+  let resolvedCache = new Map();
 
-  function claudeDefaultModel() {
-    try {
-      const settings = JSON.parse(fs.readFileSync(path.join(homeDir(), '.claude', 'settings.json'), 'utf8'));
-      return typeof settings.model === 'string' && settings.model ? settings.model : null;
-    } catch (_) {
-      return null;
+  const GLOBAL_PROVIDER_CLIS = new Set(['opencode', 'zcode', 'kimi']);
+
+  // The model list the picker shows for this lane. Official lanes have no
+  // provider; Claude reads the CLI-extracted list (static fallback), Codex the
+  // account catalog cache. Provider lanes pass their own modelOptions.
+  function officialModelsFor(appType, cli) {
+    if (appType === 'claude') {
+      try { return listClaudeModelsSync(); } catch (_) { return CLAUDE_MODELS_FALLBACK.map(entry => entry.model); }
     }
+    if (appType === 'codex') {
+      try { return typeof providers.readCodexOfficialModels === 'function' ? providers.readCodexOfficialModels() : []; } catch (_) { return []; }
+    }
+    return [];
   }
 
-  function codexDefaultModel() {
-    const homes = [env.CODEX_HOME, path.join(homeDir(), '.codex')].filter(Boolean);
-    for (const home of homes) {
-      try {
-        const toml = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
-        const match = toml.match(/^\s*model\s*=\s*["']([^"']+)["']\s*$/m);
-        if (match && match[1]) return match[1];
-      } catch (_) {}
-    }
-    return null;
+  // Official provider ids (the built-in alias and per-account ids) are the same
+  // picker line as a provider-less official session, so their explicit
+  // selections count toward the same history.
+  function laneProviderKey(cli, providerId) {
+    if (!providerId) return null;
+    const appType = providers.appTypeForCli(cli);
+    if (!appType || typeof providers.isOfficialProviderId !== 'function') return providerId;
+    try { return providers.isOfficialProviderId(appType, providerId) ? null : providerId; } catch (_) { return providerId; }
+  }
+
+  function collectHistory() {
+    const entries = [];
+    let source;
+    try { source = records(); } catch (_) { return entries; }
+    if (!source) return entries;
+    const values = typeof source.values === 'function' ? source.values() : source;
+    try {
+      for (const record of values) {
+        if (!record || typeof record.model !== 'string') continue;
+        const model = record.model.trim();
+        if (!model) continue;
+        const cli = record.cli || 'claude';
+        entries.push({ cli, provider: laneProviderKey(cli, record.provider), model });
+      }
+    } catch (_) { /* a half-mutated map must not break model display */ }
+    return entries;
+  }
+
+  function historySnapshot() {
+    if (historyTtlMs > 0 && now() - historyCache.at < historyTtlMs) return historyCache.entries;
+    const entries = collectHistory();
+    historyCache = { at: now(), entries };
+    resolvedCache = new Map();
+    return entries;
+  }
+
+  function providerPayload(summary) {
+    return {
+      model: typeof summary.model === 'string' && summary.model ? summary.model : null,
+      modelOptions: Array.isArray(summary.modelOptions)
+        ? summary.modelOptions.filter(model => typeof model === 'string' && model) : [],
+      aliasOnly: summary.aliasOnly === true,
+      official: summary.isOfficial === true,
+    };
+  }
+
+  function resolveDefault(request) {
+    const history = historySnapshot();
+    const provider = request.provider || null;
+    const key = [
+      request.kind, request.cli || '', request.appType || '', request.providerId || '',
+      request.historyProviderId || '', request.reportedModel || '',
+      (request.models || []).join('\u0001'),
+      provider ? `${provider.model || ''}\u0001${provider.modelOptions.join('\u0001')}` : '',
+    ].join('\u0002');
+    if (historyTtlMs > 0 && resolvedCache.has(key)) return resolvedCache.get(key);
+    const model = resolveModelDefault({
+      ...request,
+      history,
+      wireDefaultModel: typeof providers.WIRE_DEFAULT_MODEL === 'string' ? providers.WIRE_DEFAULT_MODEL : null,
+    });
+    if (historyTtlMs > 0) resolvedCache.set(key, model);
+    return model;
   }
 
   function effectiveSessionModel(session) {
     if (!session) return null;
     const appType = providers.appTypeForCli(session.cli);
-    const globalProviderCli = session.cli === 'opencode' || session.cli === 'zcode' || session.cli === 'kimi';
+    const globalProviderCli = GLOBAL_PROVIDER_CLIS.has(session.cli);
     if (!appType && !globalProviderCli) return session.model || session.reportedModel || null;
     const lookupType = globalProviderCli ? undefined : appType;
     if (session.model) {
@@ -74,21 +146,26 @@ function createSessionPolicy(options) {
       }
       return session.model;
     }
-    const providerId = session.provider;
+    // No explicit selection: ask the core for the lane default. Terminal
+    // configuration (~/.claude/settings.json, ~/.codex/config.toml) is never
+    // read — the choice comes from the lane's model list and this user's
+    // explicit selections on that list.
+    const providerId = session.provider || null;
+    let summary = null;
     if (providerId) {
-      try {
-        const provider = providerRouter.getProviderSummary(lookupType, providerId);
-        if (provider && provider.model) return provider.model;
-        // Managed Codex routes own their default. Local config / the last
-        // reported model may still belong to the provider we just left.
-        if (appType === 'codex') return provider?.modelOptions?.[0] || null;
-        if (appType === 'claude' && provider && provider.baseUrl) return session.reportedModel || null;
-      } catch (_) {}
+      try { summary = providerRouter.getProviderSummary(lookupType, providerId) || null; } catch (_) { summary = null; }
     }
-    if (globalProviderCli) return session.reportedModel || null;
-    if (appType === 'claude') return claudeDefaultModel() || session.reportedModel || null;
-    if (appType === 'codex') return codexDefaultModel() || session.reportedModel || null;
-    return session.reportedModel || null;
+    return resolveDefault({
+      kind: 'effective',
+      cli: session.cli || 'claude',
+      appType: appType || null,
+      providerId,
+      historyProviderId: summary && summary.isOfficial === true ? null : providerId,
+      provider: summary ? providerPayload(summary) : null,
+      models: officialModelsFor(appType, session.cli),
+      reportedModel: session.reportedModel || null,
+      globalProviderCli,
+    });
   }
 
   function effectiveSubagentModel(subagent) {
@@ -112,15 +189,20 @@ function createSessionPolicy(options) {
   }
 
   function providerDefaultModel(appType, providerId) {
-    if (!providerId) return appType === 'claude' ? claudeDefaultModel() : null;
-    try {
-      const provider = providerRouter.getProviderSummary(appType, providerId);
-      if (!provider) return null;
-      if (provider.aliasOnly) return providers.WIRE_DEFAULT_MODEL;
-      return provider.model || (provider.modelOptions && provider.modelOptions[0]) || null;
-    } catch (_) {
-      return null;
+    const requestedId = providerId || null;
+    let summary = null;
+    if (requestedId) {
+      try { summary = providerRouter.getProviderSummary(appType, requestedId) || null; } catch (_) { summary = null; }
     }
+    return resolveDefault({
+      kind: 'providerDefault',
+      cli: appType === 'codex' ? 'codex' : 'claude',
+      appType: appType || null,
+      providerId: requestedId,
+      historyProviderId: summary && summary.isOfficial === true ? null : requestedId,
+      provider: summary ? providerPayload(summary) : null,
+      models: officialModelsFor(appType, appType === 'codex' ? 'codex' : 'claude'),
+    });
   }
 
   function sessionProviderName(session) {
@@ -306,8 +388,6 @@ function createSessionPolicy(options) {
 
   return Object.freeze({
     codexSessionsDir: path.join(homeDir(), '.codex', 'sessions'),
-    claudeDefaultModel,
-    codexDefaultModel,
     effectiveSessionModel,
     effectiveSubagentModel,
     serializeSubagent,

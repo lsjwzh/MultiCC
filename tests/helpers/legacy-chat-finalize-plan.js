@@ -1,0 +1,412 @@
+'use strict';
+
+// Frozen pre-migration planner, kept verbatim as a differential oracle. It still
+// calls the same shared native kernels (retry policy, completion evidence,
+// runner finality) the host used before the planning composition moved to
+// native/core/src/chat_finalize.rs.
+
+const { completion, isCompleted } = require('../../src/cli-adapters/completion');
+const { decideRetry } = require('../../src/chat/retry-policy');
+const { decideRunnerFinality } = require('../../src/chat/host-coordinator');
+
+const USER_STOP_REASONS = Object.freeze(new Set(['user_cancel', 'new_user_message']));
+
+function effect(type, fields = {}) {
+  return Object.freeze({ type, ...fields });
+}
+
+function freezePlan(plan) {
+  if (plan.append) Object.freeze(plan.append);
+  if (plan.facts) Object.freeze(plan.facts);
+  if (plan.retry) Object.freeze(plan.retry);
+  if (plan.effects) Object.freeze(plan.effects);
+  return Object.freeze(plan);
+}
+
+function hasValue(value) {
+  return value !== undefined && value !== null && value !== '' && value !== false;
+}
+
+function normalizeRunnerKind(value) {
+  return value === 'stream' ? 'stream' : 'process';
+}
+
+function classifyProcessExit(input = {}) {
+  const signal = input.signal == null ? '' : String(input.signal);
+  const killReason = input.killReason == null ? '' : String(input.killReason);
+  const code = input.code == null ? 0 : Number(input.code);
+  if (signal) return killReason ? 'killed' : 'signaled';
+  if (code !== 0 && input.recoveredTransport !== true) return 'nonzero_exit';
+  if (input.resultDurable !== true && input.hasOutput !== true) return 'empty_exit';
+  return 'normal';
+}
+
+function normalizeHandoff(input = {}) {
+  const handoff = input.handoff && typeof input.handoff === 'object' ? input.handoff : {};
+  return Object.freeze({
+    pending: handoff.status === 'pending' || handoff.pending === true,
+    reusedTarget: handoff.reusedTarget === true,
+    toCli: handoff.toCli == null ? '' : String(handoff.toCli),
+  });
+}
+
+function isGuardedHandoffFailure(facts, handoff) {
+  if (!handoff.pending || !handoff.reusedTarget || handoff.toCli !== facts.cli) return false;
+  if (facts.runnerKind === 'stream') {
+    return !facts.resultDurable && !facts.hasOutput && !USER_STOP_REASONS.has(facts.killReason);
+  }
+  return !facts.isRetry && !facts.hasOutput && !facts.killReason && !facts.retryBlockedByAdapterError;
+}
+
+function retryEffects(action, retry, facts) {
+  if (action === 'continue-codex') {
+    return Object.freeze([
+      effect('mark-retry-planned'),
+      effect('reset-codex-disconnect-state'),
+      effect('set-streaming', { value: true }),
+      effect('set-status', { status: 'running' }),
+      effect('spawn-codex-continuation', { attempt: retry.attempt, cap: retry.cap }),
+    ]);
+  }
+  return Object.freeze([
+    effect('reset-native-session', { cli: facts.cli }),
+    effect('persist-native-session-reset', { bestEffort: true }),
+    effect('reset-chat-turn-count'),
+    effect('set-streaming', { value: true }),
+    effect('clear-stream-replay'),
+    effect('reset-transport-error'),
+    effect('mark-retry-planned'),
+    effect('spawn-fresh-retry', { attempt: retry.attempt, cap: retry.cap }),
+  ]);
+}
+
+function apiRetryEffects(decision) {
+  return Object.freeze([
+    effect('mark-retry-planned'),
+    effect('set-streaming', { value: true }),
+    effect('set-status', { status: 'retry_wait' }),
+    effect('schedule-api-retry', {
+      attempt: decision.attempt,
+      cap: decision.error && decision.error.maxAttempts,
+      delayMs: decision.delayMs,
+      retryAt: decision.retryAt,
+    }),
+  ]);
+}
+
+function planTurnFinalization(input = {}, deps = {}) {
+  const runnerKind = normalizeRunnerKind(input.runnerKind);
+  const cli = String(input.cli || (runnerKind === 'stream' ? 'claude' : 'codex')).toLowerCase();
+  const killReason = input.killReason == null ? '' : String(input.killReason);
+  const pendingStreamError = hasValue(input.pendingStreamError);
+  const hasOutput = input.hasOutput === true;
+  const recoveredTransport = input.recoveredTransport === true || (pendingStreamError && hasOutput);
+  const facts = {
+    completion: input.completion || completion('unknown', 'completion_missing', 'host'),
+    runnerKind,
+    cli,
+    current: input.current === true,
+    killReason,
+    apiError: input.apiError === true,
+    adapterError: input.adapterError === true && !recoveredTransport,
+    retryPlanned: input.retryPlanned === true,
+    retryUnavailable: input.retryUnavailable === true,
+    retryUnavailableReason: input.retryUnavailableReason || null,
+    resultEvent: input.resultEvent === true,
+    resultDurable: input.resultDurable === true,
+    hasOutput,
+    sameDurablePartial: input.sameDurablePartial === true,
+    isRetry: input.isRetry === true,
+    recoveredTransport,
+    pendingStreamError,
+    nativeSession: input.nativeSession === true,
+    replaySafeProviderError: input.replaySafeProviderError === true,
+    signal: input.signal == null ? '' : String(input.signal),
+    code: input.code == null ? 0 : Number(input.code),
+    apiErrorDecision: input.apiErrorDecision || null,
+  };
+  facts.retryBlockedByAdapterError = input.retryBlockedByAdapterError === true || facts.adapterError;
+
+  if (!facts.current) {
+    return freezePlan({ action: 'noop', code: 'stale_runner', facts, effects: Object.freeze([]) });
+  }
+
+  facts.exitKind = runnerKind === 'process' ? classifyProcessExit({
+    signal: facts.signal,
+    code: facts.code,
+    killReason,
+    resultDurable: facts.resultDurable,
+    hasOutput,
+    recoveredTransport,
+  }) : 'stream_end';
+  const handoff = normalizeHandoff(input);
+  facts.handoff = handoff;
+  const guardedHandoffResumeFailure = isGuardedHandoffFailure(facts, handoff)
+    && !facts.replaySafeProviderError;
+  facts.guardedHandoffResumeFailure = guardedHandoffResumeFailure;
+
+  if (!facts.retryUnavailable && runnerKind === 'process' && cli === 'codex' && pendingStreamError) {
+    const retry = decideRetry({
+      event: 'codex-stream-disconnect',
+      cli,
+      hasOutput,
+      resultSaved: facts.resultDurable,
+      killReason,
+      hasNativeSession: facts.nativeSession,
+      attempts: { codexDisconnect: Number(input.codexDisconnectAttempt || 0) },
+    }, deps.retry || {});
+    if (retry.action === 'resume') {
+      return freezePlan({
+        action: 'continue-codex', code: null, facts, retry,
+        effects: retryEffects('continue-codex', retry, facts),
+      });
+    }
+  }
+
+  if (!facts.retryUnavailable && !guardedHandoffResumeFailure
+      && facts.apiErrorDecision && facts.apiErrorDecision.action === 'retry') {
+    return freezePlan({
+      action: 'retry-api',
+      code: null,
+      facts,
+      retry: facts.apiErrorDecision,
+      effects: apiRetryEffects(facts.apiErrorDecision),
+    });
+  }
+
+  if (!facts.retryUnavailable && runnerKind === 'process' && !guardedHandoffResumeFailure && !facts.apiError && !facts.hasOutput
+      && !facts.killReason && !facts.retryBlockedByAdapterError && !facts.isRetry) {
+    const retry = decideRetry({
+      event: 'empty-exit', cli, isRetry: facts.isRetry,
+      adapterError: facts.retryBlockedByAdapterError, killReason,
+      guardedHandoff: false,
+      attempts: { freshStart: Number(input.freshStartAttempt || 0) },
+    }, deps.retry || {});
+    if (retry.action === 'retry-fresh') {
+      return freezePlan({
+        action: 'retry-fresh', code: null, facts, retry,
+        effects: retryEffects('retry-fresh', retry, facts),
+      });
+    }
+  }
+
+  const finality = decideRunnerFinality({
+    kind: runnerKind,
+    resultEvent: facts.resultEvent,
+    killReason: facts.killReason || null,
+    retryPlanned: facts.retryPlanned,
+  }, {
+    killReason: facts.killReason || null,
+    retryPlanned: facts.retryPlanned,
+    apiError: facts.apiError,
+    adapterError: facts.adapterError || !isCompleted(facts.completion),
+    normalExit: facts.exitKind === 'normal',
+    isRetry: facts.isRetry,
+  });
+  const appendRequired = !facts.resultDurable && facts.hasOutput
+    && (facts.resultEvent || !facts.sameDurablePartial);
+  const append = {
+    required: appendRequired,
+    boundary: 'close',
+    final: appendRequired && finality.final === true,
+    partial: appendRequired && finality.final !== true,
+    checkpointRequired: appendRequired && finality.final !== true,
+    requiredForPostTurn: true,
+    finalityCode: finality.code || null,
+  };
+
+  return freezePlan({
+    action: 'finalize',
+    code: null,
+    facts,
+    append,
+    effects: Object.freeze([]),
+  });
+}
+
+function planRetryBlockedFinalization(sourcePlan, overrides = {}) {
+  const facts = sourcePlan && sourcePlan.facts ? sourcePlan.facts : {};
+  return planTurnFinalization({
+    ...facts,
+    ...overrides,
+    handoff: overrides.handoff || facts.handoff,
+    apiError: true,
+    apiErrorDecision: null,
+    retryPlanned: false,
+    retryUnavailable: true,
+    retryUnavailableReason: overrides.retryUnavailableReason || 'retry_unavailable',
+  });
+}
+
+function statusEffects(plan, durableAfterAppend) {
+  const facts = plan.facts;
+  const turnEnd = (classification) => effect('classify-turn-end', {
+    classification,
+    killReason: facts.killReason || null,
+  });
+  if (!facts.apiError && !facts.killReason && !facts.guardedHandoffResumeFailure && !isCompleted(facts.completion)) return [
+    effect('set-status', { status: 'waiting', reason: 'runner-not-completed' }),
+    effect('freeze-interrupted', { reason: facts.completion.state === 'failed' ? 'error'
+      : facts.completion.state === 'cancelled' ? 'cancelled' : 'unknown_interruption' }),
+    turnEnd(facts.completion.state === 'unknown' ? 'unknown-interruption' : 'interrupted'),
+  ];
+  if (facts.runnerKind === 'process') {
+    if (facts.killReason) return [
+      effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
+      effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
+      turnEnd('interrupted'),
+    ];
+    if (facts.apiError || facts.adapterError
+        || facts.exitKind === 'nonzero_exit' || facts.exitKind === 'signaled') {
+      return [
+        effect('freeze-interrupted', { reason: 'error' }),
+        turnEnd(facts.apiError ? 'api-error' : 'interrupted'),
+      ];
+    }
+    if (durableAfterAppend) {
+      return [
+        effect('complete-session-turn'),
+        effect('classify-turn-end', { classification: 'succeeded', killReason: null }),
+      ];
+    }
+    return [
+      effect('set-status', { status: 'waiting', reason: facts.exitKind }),
+      effect('freeze-interrupted', { reason: 'unknown_interruption' }),
+      turnEnd('unknown-interruption'),
+    ];
+  }
+
+  if (facts.guardedHandoffResumeFailure) {
+    return [
+      effect('reset-interrupted-resume'),
+      effect('set-status', { status: 'idle', reason: 'handoff-resume-failed' }),
+      effect('freeze-interrupted', { reason: 'handoff_resume_failed' }),
+      turnEnd('handoff-resume-failed'),
+      effect('report-handoff-resume-failure', { preserveHandoff: true }),
+    ];
+  }
+  if (facts.apiError) return [
+    effect('freeze-interrupted', { reason: 'error' }),
+    turnEnd('api-error'),
+  ];
+  if (durableAfterAppend) {
+    return [
+      effect('reset-interrupted-resume'),
+      effect('complete-session-turn'),
+      turnEnd('succeeded'),
+      effect('emit-turn-outcome', { status: 'succeeded', notifyState: 'succeeded' }),
+    ];
+  }
+  if (facts.resultEvent) {
+    return [
+      effect('set-status', { status: 'idle', reason: 'result-not-durable' }),
+      effect('freeze-interrupted', { reason: 'message_not_durable' }),
+      turnEnd('result-not-durable'),
+      effect('report-result-persistence-failure'),
+    ];
+  }
+  if (!facts.killReason) {
+    return [
+      effect('set-status', { status: 'waiting', reason: 'unknown-interruption' }),
+      effect('freeze-interrupted', { reason: 'unknown_interruption' }),
+      turnEnd('unknown-interruption'),
+    ];
+  }
+  return [
+    effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
+    effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
+    turnEnd('interrupted'),
+  ];
+}
+
+function resolveTurnFinalization(plan, outcome = {}) {
+  if (!plan || plan.action !== 'finalize') {
+    return freezePlan({
+      action: plan && plan.action ? plan.action : 'noop',
+      code: plan && plan.code ? plan.code : 'finalize_plan_required',
+      facts: plan && plan.facts ? plan.facts : {},
+      effects: Object.freeze([]),
+    });
+  }
+  const facts = plan.facts;
+  const durableAfterAppend = outcome.resultDurable === true || facts.resultDurable;
+  const appendPersisted = outcome.appendPersisted === true;
+  const effects = [];
+
+  effects.push(effect('set-streaming', { value: false }));
+  if (facts.runnerKind === 'stream') effects.push(effect('cancel-classify'));
+  effects.push(effect('clear-stream-replay'));
+
+  if (facts.runnerKind === 'process' && facts.isRetry && !facts.hasOutput
+      && !facts.apiErrorDecision && !facts.adapterError) {
+    effects.push(effect('report-empty-retry-failure'));
+  }
+  if (facts.runnerKind === 'process' && facts.guardedHandoffResumeFailure) {
+    effects.push(effect('report-handoff-resume-failure', { preserveHandoff: true }));
+  }
+  if (facts.runnerKind === 'process') {
+    effects.push(effect('clear-active-process'));
+    effects.push(effect('clear-incremental-save'));
+  }
+
+  if (plan.append.required) {
+    effects.push(effect('append-assistant-result', {
+      boundary: plan.append.boundary,
+      final: plan.append.final,
+      partial: plan.append.partial,
+      checkpointRequired: plan.append.checkpointRequired,
+    }));
+    effects.push(effect('increment-chat-turn-count', { when: 'append-persisted' }));
+  }
+
+  if (durableAfterAppend) {
+    effects.push(effect('commit-usage', { when: 'result-durable', exactlyOnce: true }));
+  }
+
+  if (facts.runnerKind === 'stream') effects.push(effect('clear-incremental-save'));
+  if (facts.runnerKind === 'process' && facts.resultEvent && !durableAfterAppend) {
+    effects.push(effect('report-result-persistence-failure'));
+  }
+  if (facts.runnerKind === 'process' && facts.recoveredTransport && durableAfterAppend) {
+    effects.push(effect('emit-synthetic-result'));
+  }
+
+  effects.push(effect('capture-final-text'));
+  effects.push(effect('reset-turn-output', {
+    clearAdapterError: facts.runnerKind === 'process',
+    clearTransportState: facts.runnerKind === 'process',
+  }));
+  effects.push(...statusEffects(plan, durableAfterAppend));
+  effects.push(effect('stream-end'));
+
+  const interrupted = facts.runnerKind === 'stream'
+    ? !durableAfterAppend || !!facts.killReason
+    : !!facts.killReason || facts.adapterError
+      || (!facts.resultEvent && facts.exitKind !== 'normal');
+  effects.push(effect('run-post-turn', {
+    guard: 'current-runner-and-durable-final-result',
+    interrupted: interrupted || !isCompleted(facts.completion),
+    apiError: facts.apiError,
+    retryPlanned: facts.retryPlanned,
+    handoffResumeFailure: facts.guardedHandoffResumeFailure,
+  }));
+  effects.push(effect('clear-active-runner'));
+
+  return freezePlan({
+    action: 'finalize',
+    code: durableAfterAppend ? null : facts.resultEvent ? 'result_not_durable' : null,
+    facts,
+    append: plan.append,
+    result: Object.freeze({ durableAfterAppend, appendPersisted }),
+    effects: Object.freeze(effects),
+  });
+}
+
+module.exports = {
+  classifyProcessExit,
+  isGuardedHandoffFailure,
+  normalizeHandoff,
+  planTurnFinalization,
+  planRetryBlockedFinalization,
+  resolveTurnFinalization,
+};

@@ -2077,12 +2077,30 @@
       ]
     },
     {
+      "path": "tests/test-chat-finalize-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-chat-finalize-host.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-finalize-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
       ]
     },
     {
@@ -5323,6 +5341,15 @@
     {
       "path": "tests/test-session-memory-routes.js",
       "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-model-terminal-config.js",
+      "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",
       "entrypoints": [

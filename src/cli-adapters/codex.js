@@ -163,9 +163,14 @@ function createCodexAdapter(deps) {
     },
     buildInvocation(env) {
       const so = env.spawnOpts;
+      // Always hand Codex an explicit model. A provider route already supplies
+      // `rawModel`; the official lane leaves it empty, and falling through to
+      // ~/.codex/config.toml would let a terminal switched by ccswitch decide
+      // the model MultiCC runs. `effectiveModel` is the lane default computed
+      // from the lane's model list, never from terminal config.
       const session = {
         effort: so.rawEffort,
-        model: so.rawModel,
+        model: so.rawModel || so.effectiveModel || null,
         effectiveModel: so.effectiveModel,
       };
       const isFirstTurn = env.historyHandle.isFirstTurn;

@@ -15,7 +15,6 @@ function createClaudeAdapter(deps) {
     chatDisallowedTools = [],
     multiccImgHint,
     resolveSessionWireModel,
-    claudeDefaultModel,
     cliEffortLevel,
     normalizeEffort,
     debugLogClaudeInvoke,
@@ -49,7 +48,7 @@ function createClaudeAdapter(deps) {
         providerModel: so.providerModel,
         providerModels: so.providerModels,
         skipDefaultModel: so.skipDefaultModel,
-        defaultModel: claudeDefaultModel(),
+        defaultModel: so.effectiveModel || null,
       });
       const effort = cliEffortLevel({ effort: so.rawEffort });
       const payload = renderPrompt(env);

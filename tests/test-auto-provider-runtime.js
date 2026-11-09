@@ -486,7 +486,7 @@ test('observable output and non-provider failures close the cross-provider repla
 });
 
 test('failover is a blocklist: only local or request-shaped failures stay on the line', () => {
-  const blocked = ['cancel_shutdown', 'context_token_limit', 'tool_protocol', 'adapter_configuration'];
+  const blocked = ['cancel_shutdown', 'context_token_limit', 'tool_protocol'];
   for (const category of blocked) {
     for (const httpStatus of [undefined, 400, 499]) {
       const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000 });
@@ -499,9 +499,10 @@ test('failover is a blocklist: only local or request-shaped failures stay on the
       assert.equal(events.at(-1).reasonCode, 'category_not_failoverable');
     }
   }
-  // Everything else — including errors nobody has classified yet — switches.
+  // Everything else — including an opaque failure with no classified decision
+  // and a provider-specific configuration/spawn failure — switches.
   const allowed = {
-    unknown: 'failover_unknown',
+    adapter_configuration: 'failover_adapter_configuration',
     invalid_request_model: 'failover_invalid_request_model',
     provider_transient: 'failover_provider_transient',
     rate_limit: 'failover_rate_limit',
@@ -526,6 +527,13 @@ test('failover is a blocklist: only local or request-shaped failures stay on the
   // A missing category is treated as unknown, not as "not failoverable".
   assert.deepEqual(failoverSafety({ error: { phase: 'before_first_token' } }, openAttempt()),
     { ok: true, reason: 'failover_unknown' });
+  // A failure that reached Auto with no api-error decision at all (opaque
+  // crash, non-zero exit, watchdog kill) still switches to the next line.
+  const opaque = fixture({ emptyFetchedAt: 900_000 });
+  const opaqueTurn = opaque.runtime.beginTurn({ session: opaque.session, turnId: 'opaque' });
+  opaqueTurn.initial();
+  const switched = opaqueTurn.failover(null, openAttempt());
+  assert.equal(switched.invocationOptions.providerId, 'backup');
 });
 
 // Regression: the classifier reads `code: provider_error` and returns
@@ -621,17 +629,95 @@ test('HTTP 4xx still cannot cross visible-output, side-effect, or local-cancel f
   }, openAttempt()), null);
 });
 
-test('attempt budget exhaustion is terminal and never falls back to same-provider retry', () => {
+test('a legacy maxAttempts no longer limits switching: every candidate is tried once', () => {
+  // The stored value says 2, but the pool has three lines. The turn must try
+  // all three before it reports the pool exhausted, and never retry a line.
   const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000, maxAttempts: 2 });
   const turn = runtime.beginTurn({ session, turnId: 'turn-budget' });
-  turn.initial();
+  assert.equal(turn.initial().providerId, 'empty');
   assert.equal(turn.failover(quotaDecision(), openAttempt()).invocationOptions.providerId, 'backup');
-  const exhausted = turn.failover(quotaDecision(), openAttempt('backup'));
+  assert.equal(turn.failover(quotaDecision(), openAttempt('backup')).invocationOptions.providerId, 'third');
+  const exhausted = turn.failover(quotaDecision(), openAttempt('third'));
   assert.equal(exhausted.terminal, true);
   assert.equal(exhausted.invocationOptions, null);
   assert.equal(exhausted.decision.action, 'fail_fast');
-  assert.equal(exhausted.decision.reason, 'auto_attempt_budget_exhausted');
-  assert.deepEqual(events.map(event => event.routePhase), ['selected', 'switched', 'exhausted']);
+  // Terminal only after the third line failed; the name says the pool, not a
+  // legacy per-turn budget.
+  assert.equal(exhausted.decision.reason, 'auto_candidate_pool_exhausted');
+  assert.deepEqual(events.map(event => event.routePhase), ['selected', 'switched', 'switched', 'exhausted']);
+  assert.deepEqual(events.map(event => event.providerId), ['empty', 'backup', 'third', 'third']);
+});
+
+test('five candidates: four differently-classified failures reach the fifth, all five exhaust the pool', () => {
+  const now = 1_000_000;
+  const ids = ['pa', 'pb', 'pc', 'pd', 'pe'];
+  const catalog = ids.map((id, index) => ({
+    id, name: id.toUpperCase(), appType: 'claude', apiFormat: 'anthropic',
+    compatibleClis: ['claude'], model: `m${index}`, modelOptions: [`m${index}`],
+  }));
+  const providers = {
+    appTypeForCli: () => 'claude',
+    listProviders: () => catalog,
+    providerSupportsCli: provider => provider.compatibleClis.includes('claude'),
+    modelValidForProvider: (_appType, providerId, model) => catalog
+      .some(item => item.id === providerId && item.model === model),
+  };
+  const make = () => {
+    const events = [];
+    const runtime = createAutoProviderRuntime({
+      providers,
+      providerLimitCache: { get: () => null },
+      limitCacheStaleMs: 60_000,
+      now: () => now,
+      emit: (_sessionId, event) => events.push(event),
+    });
+    const session = {
+      id: 's-five', cli: 'claude', provider: 'legacy',
+      providerSelection: {
+        version: 1, mode: 'auto', protocol: 'anthropic',
+        // Legacy value; the enabled pool (five) governs.
+        maxAttempts: 2, sticky: true,
+        candidates: ids.map((providerId, index) => ({ providerId, priority: index + 1 })),
+      },
+    };
+    return { runtime, session, events };
+  };
+  const fail = (category, httpStatus) => ({
+    action: 'fail_fast',
+    error: { category, httpStatus, phase: 'before_first_token', partialOutput: false, sideEffects: false },
+  });
+  const failures = [
+    fail('rate_limit', 429),
+    fail('billing_quota'),
+    fail('network'),
+    fail('invalid_request_model', 400),
+  ];
+
+  const first = make();
+  const turn = first.runtime.beginTurn({ session: first.session, turnId: 'five-success' });
+  assert.equal(turn.initial().providerId, 'pa');
+  for (const [index, decision] of failures.entries()) {
+    const next = turn.failover(decision, openAttempt(ids[index]));
+    assert.equal(next.invocationOptions.providerId, ids[index + 1], `after ${decision.error.category}`);
+  }
+  // The fifth line is the turn's route: no terminal, no sixth attempt.
+  assert.deepEqual(first.events.map(event => event.providerId), ['pa', 'pb', 'pc', 'pd', 'pe']);
+  turn.recordSuccess({ providerId: 'pe' });
+  assert.equal(first.events.at(-1).routePhase, 'succeeded');
+
+  const second = make();
+  const all = second.runtime.beginTurn({ session: second.session, turnId: 'five-fail' });
+  assert.equal(all.initial().providerId, 'pa');
+  for (let index = 0; index < ids.length - 1; index += 1) {
+    assert.equal(all.failover(fail('network'), openAttempt(ids[index]))
+      .invocationOptions.providerId, ids[index + 1]);
+  }
+  const exhausted = all.failover(fail('network'), openAttempt('pe'));
+  assert.equal(exhausted.terminal, true);
+  assert.equal(exhausted.decision.reason, 'auto_candidate_pool_exhausted');
+  // Exactly one physical attempt per candidate, in order, then the terminal.
+  assert.deepEqual(second.events.map(event => event.providerId), [...ids, 'pe']);
+  assert.deepEqual(second.events.map(event => event.attemptNo), [1, 2, 3, 4, 5, 5]);
 });
 
 test('candidate pool exhaustion is terminal when remaining routes are freshly exhausted', () => {
@@ -956,12 +1042,15 @@ test('a lane that cannot be switched to is never planned, and a stale plan for i
 });
 
 test('the hop budget caps lane switches and a successful turn resets it', () => {
+  // The cross lane pool has four lines, so it allows four lane switches — the
+  // legacy maxAttempts: 2 no longer caps them.
   const { runtime, session, limits } = crossFixture({
     exhausted: ['claude-a', 'claude-b'], maxAttempts: 2,
   });
-  assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
-  assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
-  // Two switches is the whole budget: a pool with every lane failing would
+  for (let hop = 0; hop < 4; hop += 1) {
+    assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+  }
+  // Four switches is the whole pool: a pool with every lane failing would
   // otherwise hand the session back and forth forever.
   assert.equal(runtime.planTurn({ session, text: '继续' }), null);
 
@@ -1515,7 +1604,8 @@ test('a session with its own line, an unknown line, or a different pool ignores 
   assert.equal(unknown.runtime.beginTurn({ session: unknown.session, turnId: 'gone' }).initial().providerId, 'backup');
 
   const other = poolMemoryFixture({ remembered: { cli: 'claude', providerId: 'third', succeededAt: 900_000 } });
-  other.session.providerSelection = { ...other.session.providerSelection, maxAttempts: 2 };
+  // A policy change (not the derived attempt budget) is what starts a new pool.
+  other.session.providerSelection = { ...other.session.providerSelection, preferMaxQuota: false };
   assert.equal(other.runtime.beginTurn({ session: other.session, turnId: 'other' }).initial().providerId, 'backup');
 });
 

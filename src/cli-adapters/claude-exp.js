@@ -22,7 +22,7 @@ function createClaudeExpAdapter(deps = {}) {
         providerModel: so.providerModel,
         providerModels: so.providerModels,
         skipDefaultModel: so.skipDefaultModel,
-        defaultModel: deps.claudeDefaultModel(),
+        defaultModel: so.effectiveModel || null,
       });
       const effort = deps.cliEffortLevel({ effort: so.rawEffort });
       const args = [bridge];

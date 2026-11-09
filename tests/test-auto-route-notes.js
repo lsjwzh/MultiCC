@@ -144,7 +144,10 @@ test('a line that finishes a turn is stamped, and the pool lookup returns the la
   const records = new Map([
     ['s1', { id: 's1', cli: 'codex-exp', providerSelection: pool }],
     ['s2', { id: 's2', cli: 'codex-exp', providerSelection: JSON.parse(JSON.stringify(pool)) }],
-    ['s3', { id: 's3', cli: 'codex-exp', providerSelection: { ...pool, maxAttempts: 4 } }],
+    // A different candidate list is a different pool; a legacy maxAttempts is
+    // derived from the pool now, so it can no longer tell two pools apart.
+    ['s3', { id: 's3', cli: 'codex-exp', providerSelection: {
+      ...pool, candidates: [...pool.candidates, { providerId: 'third', priority: 3 }] } }],
   ]);
   let clock = 1_000;
   const saves = [];

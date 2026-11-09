@@ -321,10 +321,9 @@ AutoWireResult buildAutoSelection(AutoWireInput input) {
         ),
     ];
   }
-  final maxAttempts = input.maxAttempts.clamp(
-    2,
-    usable.length.clamp(2, kAutoMaxAttempts),
-  );
+  // The server derives the turn's attempt budget from the enabled pool; the
+  // wire field stays for compatibility but is always that count.
+  final maxAttempts = usable.length < 2 ? 2 : usable.length;
   final selection = SessionProviderSelection(
     protocol: protocol,
     candidates: candidates,

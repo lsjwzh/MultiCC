@@ -95,6 +95,44 @@ test('provider defaults, alias tiers and concrete model choices keep old picker 
   assert.equal(ai.modelDisplayName('glm-4.7', '', s), 'GLM 4.7');
 });
 
+test('the picker highlights the host-computed default model on that line', () => {
+  const plain = state({
+    providers: [{
+      id: 'plain', appType: 'claude', name: 'Plain', model: null,
+      modelOptions: ['p-main', 'p-fast'], aliasMap: {},
+    }],
+    defaults: { claude: 'plain', codex: null },
+  });
+
+  // Same line: the model the host will actually spawn wins over list-first.
+  const sameLine = { ...plain, effectiveModel: 'p-fast', effectiveProvider: 'plain' };
+  assert.equal(ai.defaultModelChoice('plain', sameLine), 'p-fast');
+
+  // A stale terminal model is not in the lane list, so it never becomes the
+  // highlighted default; list order decides.
+  const stale = { ...plain, effectiveModel: 'deepseek-flash', effectiveProvider: 'plain' };
+  assert.equal(ai.defaultModelChoice('plain', stale), 'p-main');
+
+  // The computed value describes the line the session is on; a different line
+  // on screen must not inherit it.
+  const switched = { ...plain, effectiveModel: 'p-fast', effectiveProvider: 'somewhere-else' };
+  assert.equal(ai.defaultModelChoice('plain', switched), 'p-main');
+
+  // Bare official alias and the account-scoped id are one line.
+  const official = state({
+    providers: [{
+      id: 'claude-official-0123456789abcdef', appType: 'claude', name: 'Official',
+      builtinOfficial: true, modelOptions: ['claude-opus-5', 'claude-sonnet-5'], aliasMap: {},
+    }],
+    defaults: {},
+    effectiveModel: 'claude-sonnet-5', effectiveProvider: 'claude-official',
+  });
+  assert.deepEqual(ai.buildModelChoices('claude-official-0123456789abcdef', official),
+    ['claude-opus-5', 'claude-sonnet-5', '__custom__'],
+    'the official picker has no blank follow-the-CLI row');
+  assert.equal(ai.defaultModelChoice('claude-official-0123456789abcdef', official), 'claude-sonnet-5');
+});
+
 test('plain provider models and CLI fallback choices never retain a stale provider model', () => {
   const plain = state({
     providers: [{

@@ -69,10 +69,13 @@ function settingsOverrideFor(sessionName, childEnv, extraSettings) {
   const env = routingEnvOf(childEnv);
   const extra = (extraSettings && typeof extraSettings === 'object') ? extraSettings : null;
   if (!Object.keys(env).length && (!extra || !Object.keys(extra).length)) return null;
-  if (Object.keys(env).length) {
-    for (const key of BLANK_WHEN_ABSENT_KEYS) {
-      if (!(key in env)) env[key] = '';
-    }
+  // Whenever an override file is written, every routing key the session's env
+  // does not define is blanked. This includes the official lane, where the
+  // routing env is empty and the only extra setting is the chosen model: the
+  // file must still neutralize a ~/.claude/settings.json that a ccswitch-style
+  // tool rewrote (model/env), so the official account cannot be redirected.
+  for (const key of BLANK_WHEN_ABSENT_KEYS) {
+    if (!(key in env)) env[key] = '';
   }
   ensurePrivateDir(OVERRIDE_DIR);
   const file = path.join(OVERRIDE_DIR, `${encodeURIComponent(String(sessionName || 'session'))}.json`);

@@ -996,28 +996,27 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
 
   List<Widget> _autoMoreSection() {
     final usable = _rows.where((row) => row.sendable).length;
-    final ceiling = usable.clamp(2, kAutoMaxAttempts);
-    final attempts = _maxAttempts.clamp(2, ceiling);
+    // The attempt budget is the number of sendable lines: the runtime keeps
+    // switching until all of them have failed. It is not a user choice, so the
+    // control is a single derived, non-interactive value.
+    final attempts = usable < 2 ? 2 : usable;
     return [
       const SizedBox(height: 4),
-      Text(
-        '最多尝试几条（${2}–$ceiling）',
-        style: const TextStyle(color: AppColors.faint, fontSize: 12),
+      const Text(
+        '最多尝试几条（按线路数自动）',
+        style: TextStyle(color: AppColors.faint, fontSize: 12),
       ),
       const SizedBox(height: 5),
       Row(
         children: [
-          for (var n = 2; n <= ceiling; n += 1) ...[
-            if (n > 2) const SizedBox(width: 6),
-            Expanded(
-              child: _segmentedButton(
-                key: Key('run-max-attempts-$n'),
-                label: '$n',
-                selected: n == attempts,
-                onTap: () => setState(() => _maxAttempts = n),
-              ),
+          Expanded(
+            child: _segmentedButton(
+              key: Key('run-max-attempts-$attempts'),
+              label: '$attempts',
+              selected: true,
+              onTap: () {},
             ),
-          ],
+          ),
         ],
       ),
       const SizedBox(height: 8),

@@ -85,9 +85,11 @@ function createCodexExpAdapter(deps = {}) {
       return `${deps.codexCmd || 'codex'} --help`;
     },
     buildInvocation(env) {
+      // Same explicit-model contract as the legacy Codex adapter: never let
+      // the terminal's own config.toml pick the model.
       const session = {
         effort: env.spawnOpts.rawEffort,
-        model: env.spawnOpts.rawModel,
+        model: env.spawnOpts.rawModel || env.spawnOpts.effectiveModel || null,
         effectiveModel: env.spawnOpts.effectiveModel,
       };
       let prompt = renderPrompt(env);
@@ -100,7 +102,7 @@ function createCodexExpAdapter(deps = {}) {
       }
       const args = [bridge, '--codex-bin', deps.codexCmd || 'codex'];
       if (env.historyHandle.cliSessionId) args.push('--thread-id', env.historyHandle.cliSessionId);
-      if (env.spawnOpts.rawModel) args.push('--model', env.spawnOpts.rawModel);
+      if (session.model) args.push('--model', session.model);
       const effort = deps.codexReasoningLevel?.(session);
       if (effort) args.push('--effort', effort);
       for (const config of configArgs(session)) args.push('--config', config);
@@ -123,7 +125,7 @@ function createCodexExpAdapter(deps = {}) {
         clientAllocatesNativeId: false,
         // Per-turn model/effort ride on turn/start, so changing either never
         // forces the resident app-server to respawn.
-        turnOptions: { model: env.spawnOpts.rawModel || null, effort: effort || null },
+        turnOptions: { model: session.model || null, effort: effort || null },
       };
     },
     decodeEvent(event) {

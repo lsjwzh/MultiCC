@@ -37,7 +37,9 @@ function sessionDetachPlan(session, providerId) {
       body.providerSelection = {
         ...selection,
         candidates,
-        maxAttempts: Math.max(2, Math.min(Number(selection.maxAttempts) || 2, enabled.length, 4)),
+        // The runtime derives the attempt budget from the enabled pool; the
+        // stored value only has to stay a legacy-valid 2..4 for old readers.
+        maxAttempts: Math.max(2, Math.min(enabled.length, 4)),
       };
       // Routing tiers can name the removed candidate; if the trimmed pool no
       // longer validates, drop to manual on the next remaining candidate.
