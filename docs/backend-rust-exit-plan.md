@@ -1351,9 +1351,9 @@ assertions, passed.
 The two pre-resume size guards now live in one Rust module.
 `src/chat/codex-rollout-guard.js` is a 157-line facade (+123/-239) and
 `src/chat/native-session-guard.js` is a 123-line facade (+93/-253) around two
-addon classes; `native/core/src/native_session_guard.rs` (1,265 lines, plus 449
+addon classes; `native/core/src/native_session_guard.rs` (1,267 lines, plus 469
 lines of unit tests in `native_session_guard/tests.rs`) owns every decision, and
-`native/addon/src/native_session_guard.rs` (159 lines) moves values over the
+`native/addon/src/native_session_guard.rs` (151 lines) moves values over the
 lossless bridge.
 
 What moved: codex rollout discovery (`sessions/**/rollout-*-<thread>.jsonl`
