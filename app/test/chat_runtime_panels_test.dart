@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show kLongPressTimeout;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -485,6 +486,65 @@ void main() {
     ]);
   });
 
+  testWidgets('long-pressing anywhere on a staged row starts a drag', (
+    tester,
+  ) async {
+    final moves = <List<Object>>[];
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: _pendingQueue(3),
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          onReorderQueued: (entryId, toIndex) async =>
+              moves.add([entryId, toIndex]),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pumpAndSettle();
+
+    // 按在正文上（不是手柄），先按住超过长按阈值再挪。
+    await _dragRowDown(
+      tester,
+      'queued-1',
+      rows: 2,
+      from: find.byKey(const Key('queued-text-queued-1')),
+      hold: kLongPressTimeout + const Duration(milliseconds: 50),
+    );
+    expect(moves, [
+      ['queued-1', 2],
+    ]);
+  });
+
+  testWidgets('a quick drag on the row body does not reorder', (tester) async {
+    final moves = <List<Object>>[];
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: _pendingQueue(3),
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          onReorderQueued: (entryId, toIndex) async =>
+              moves.add([entryId, toIndex]),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pumpAndSettle();
+
+    // 没按够长按阈值就开始挪：这是滚动，不该被当成拖排。
+    await _dragRowDown(
+      tester,
+      'queued-1',
+      rows: 2,
+      from: find.byKey(const Key('queued-text-queued-1')),
+    );
+    expect(moves, isEmpty);
+  });
+
   testWidgets('a claimed entry has no drag handle, and one message has none', (
     tester,
   ) async {
@@ -774,12 +834,14 @@ Future<void> _dragRowDown(
   WidgetTester tester,
   String entryId, {
   required double rows,
+  Finder? from,
+  Duration hold = const Duration(milliseconds: 20),
 }) async {
   final rowKey = ValueKey('queue-row-$entryId');
-  final handle = find.byKey(Key('reorder-queued-$entryId'));
+  final start = from ?? find.byKey(Key('reorder-queued-$entryId'));
   final total = tester.getSize(find.byKey(rowKey)).height * rows;
-  final gesture = await tester.startGesture(tester.getCenter(handle));
-  await tester.pump(const Duration(milliseconds: 20));
+  final gesture = await tester.startGesture(tester.getCenter(start));
+  await tester.pump(hold);
   var moved = 0.0;
   while (moved.abs() < total.abs()) {
     final delta = (total - moved).clamp(-8.0, 8.0);

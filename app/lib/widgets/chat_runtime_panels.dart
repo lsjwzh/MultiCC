@@ -603,8 +603,27 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
 
   Widget _row(SessionQueueItem item, {int? dragIndex}) {
     final showHandle = dragIndex != null && _movable(item);
-    return Container(
+    final row = _rowBody(item, dragIndex: dragIndex, showHandle: showHandle);
+    if (!showHandle) return row;
+    // 手机上用户的直觉是「长按整行拖」，只靠行首 16px 的小手柄几乎按不中；
+    // 整行再挂一层长按起拖（手柄本身仍是按下即拖）。key 必须留在最外层，
+    // ReorderableListView 靠它认行。
+    return ReorderableDelayedDragStartListener(
       key: ValueKey('queue-row-${item.entryId}'),
+      index: dragIndex,
+      enabled: !_busy && widget.enabled,
+      child: row,
+    );
+  }
+
+  Widget _rowBody(
+    SessionQueueItem item, {
+    int? dragIndex,
+    required bool showHandle,
+  }) {
+    return Container(
+      // 可拖的行由外层长按监听器带 key，这里不能重复挂同一个 key。
+      key: showHandle ? null : ValueKey('queue-row-${item.entryId}'),
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: const BoxDecoration(
@@ -616,7 +635,7 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
           if (showHandle)
             ReorderableDragStartListener(
               key: Key('reorder-queued-${item.entryId}'),
-              index: dragIndex,
+              index: dragIndex!,
               enabled: !_busy && widget.enabled,
               child: Tooltip(
                 message: t('reorderQueuedMessage'),
