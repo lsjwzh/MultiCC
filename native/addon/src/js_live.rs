@@ -60,6 +60,22 @@ impl<'env> LiveValue<'env> {
         check_status!(unsafe { sys::napi_get_element(self.env, self.value, index, &mut value) })?;
         Ok(self.with_value(value))
     }
+    /// `array[index] = value` on an array this module created.
+    pub fn set_element(self, index: u32, value: Self) -> Result<()> {
+        check_status!(unsafe { sys::napi_set_element(self.env, self.value, index, value.raw()) })
+    }
+    /// The value of the exception currently pending on this call, cleared so the
+    /// host can keep running (rollback) and rethrow it later with its identity.
+    pub fn exception_value(self) -> Result<Option<Self>> {
+        let mut pending = false;
+        check_status!(unsafe { sys::napi_is_exception_pending(self.env, &mut pending) })?;
+        if !pending {
+            return Ok(None);
+        }
+        let mut exception = ptr::null_mut();
+        check_status!(unsafe { sys::napi_get_and_clear_last_exception(self.env, &mut exception) })?;
+        Ok(Some(self.with_value(exception)))
+    }
     pub fn number_value(self) -> Result<Option<f64>> {
         if self.kind()? != sys::ValueType::napi_number {
             return Ok(None);
@@ -324,6 +340,74 @@ impl<'env> LiveValue<'env> {
             )
         })?;
         Ok(self.with_value(value))
+    }
+    fn iterator(self) -> Result<(Self, Self)> {
+        let iterator = self
+            .get_key(self.global()?.get(c"Symbol")?.get(c"iterator")?)?
+            .call(self, &[])?;
+        if iterator.primitive()? {
+            return Err(self.type_error("Iterator is not an object"));
+        }
+        let next = iterator.get(c"next")?;
+        Ok((iterator, next))
+    }
+    fn iterator_step(self, next: Self) -> Result<Option<Self>> {
+        let step = next.call(self, &[])?;
+        if step.primitive()? {
+            return Err(self.type_error("Iterator result is not an object"));
+        }
+        if step.get(c"done")?.truthy()? {
+            Ok(None)
+        } else {
+            Ok(Some(step.get(c"value")?))
+        }
+    }
+    fn iterator_close(self) -> Result<()> {
+        let close = self.get(c"return")?;
+        if !close.nullish()? && close.call(self, &[])?.primitive()? {
+            return Err(self.type_error("Iterator result is not an object"));
+        }
+        Ok(())
+    }
+    /// Array destructuring reads the entry's iterator, not numeric properties,
+    /// and closes it after two values before entering the loop body.
+    pub fn iterator_pair(self) -> Result<(Self, Self)> {
+        let (iterator, next) = self.iterator()?;
+        let absent = self.from_value(&JsValue::Undefined)?;
+        let Some(first) = iterator.iterator_step(next)? else {
+            return Ok((absent, absent));
+        };
+        let Some(second) = iterator.iterator_step(next)? else {
+            return Ok((first, absent));
+        };
+        iterator.iterator_close()?;
+        Ok((first, second))
+    }
+    /// A host iterable with for-of's body-error IteratorClose behavior. The
+    /// original exception wins even if the iterator's return hook also throws.
+    /// No native owner borrow may be held while this enters host code.
+    pub fn for_each(self, mut visit: impl FnMut(Self) -> Result<()>) -> Result<()> {
+        let (iterator, next) = self.iterator()?;
+        while let Some(value) = iterator.iterator_step(next)? {
+            if let Err(error) = visit(value) {
+                let mut pending = false;
+                check_status!(unsafe { sys::napi_is_exception_pending(self.env, &mut pending) })?;
+                let mut exception = ptr::null_mut();
+                if pending {
+                    check_status!(unsafe {
+                        sys::napi_get_and_clear_last_exception(self.env, &mut exception)
+                    })?;
+                }
+                let _ = iterator.catch(|| iterator.iterator_close());
+                if !exception.is_null() {
+                    unsafe {
+                        sys::napi_throw(self.env, exception);
+                    }
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
     }
     pub fn throw_error(self) -> Error {
         unsafe {

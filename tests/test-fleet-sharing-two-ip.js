@@ -6,11 +6,10 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const express = require('express');
-const { assertTestDir, createPaths } = require('../src/paths');
-const { mountFleetSharingRoutes } = require('../src/routes/fleet-sharing');
+const { assertTestDir } = require('../src/paths');
 
-const PAGE_FILE = path.join(__dirname, '..', 'public', 'fleet-share.html');
+const { start: startGateway } = require('./helpers/external-workspace-gateway');
+
 const PASSWORD = 'two-ip-fleet-password';
 
 function isPrivateLanIPv4(address) {
@@ -35,65 +34,9 @@ function findLanIPv4() {
   return available.find(isPrivateLanIPv4) || null;
 }
 
-function listen(app, host) {
-  return new Promise((resolve, reject) => {
-    const server = app.listen(0, host);
-    server.once('listening', () => resolve(server));
-    server.once('error', reject);
-  });
-}
-
-function closeServer(server) {
-  if (!server || !server.listening) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    server.close(error => error ? reject(error) : resolve());
-    if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
-  });
-}
-
-function serverOrigin(server) {
-  const address = server.address();
-  return `http://${address.address}:${address.port}`;
-}
-
-function createInstance({ dataDir, directories = new Map(), sessions = new Map() }) {
-  const app = express();
-  app.disable('x-powered-by');
-  app.use(express.json({ limit: '64kb' }));
-  const runtime = mountFleetSharingRoutes(app, {
-    paths: createPaths({ dataDir }),
-    directories,
-    sessions,
-    pageFile: PAGE_FILE,
-    logger: { error() {} },
-  });
-  if (directories.size) {
-    app.use((req, res, next) => runtime.sharing.authorizeRequest({
-      token: req.headers['x-multicc-fleet-token'],
-      grant: req.headers['x-multicc-fleet-grant'],
-      method: req.method,
-      pathname: req.originalUrl,
-    }) ? next() : res.status(403).json({ error: 'Fleet scope forbidden' }));
-    app.patch('/api/sessions/:id', (req, res) => {
-      const current = sessions.get(req.params.id);
-      if (!current) return res.status(404).json({ error: 'Session not found' });
-      const updated = { ...current, label: String(req.body.label || current.label) };
-      sessions.set(req.params.id, updated);
-      return res.json(updated);
-    });
-    app.post('/api/directories/:id/sessions', (req, res) => {
-      const id = `remote-created-${sessions.size + 1}`;
-      const created = { id, dirId: req.params.id, label: String(req.body.label || id), cli: 'codex', kind: 'chat' };
-      sessions.set(id, created);
-      return res.json(created);
-    });
-    app.get('/api/git/log', (req, res) => res.json({ dirId: req.query.dirId, commits: [] }));
-  }
-  return app;
-}
-
 async function requestJson(url, init) {
-  const response = await fetch(url, init);
+  const headers = new URL(url).hostname === '127.0.0.1' ? {} : { 'x-access-token': 'fixture-token' };
+  const response = await fetch(url, { ...init, headers: { ...headers, ...init?.headers } });
   const text = await response.text();
   let body;
   try { body = JSON.parse(text); }
@@ -150,23 +93,21 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
   let sourceServer;
   let targetServer;
   t.after(async () => {
-    await Promise.all([closeServer(sourceServer), closeServer(targetServer)]);
+    await Promise.all([sourceServer?.close(), targetServer?.close()]);
     assertTestDir(root);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  sourceServer = await listen(createInstance({
-    dataDir: sourceDataDir,
-    directories: sourceDirectories,
-    sessions: sourceSessions,
-  }), lanIp);
-  targetServer = await listen(createInstance({ dataDir: targetDataDir }), '127.0.0.1');
-  let sourceOrigin = serverOrigin(sourceServer);
-  let targetOrigin = serverOrigin(targetServer);
+  sourceServer = await startGateway(t, true, { dir: sourceDataDir, host: lanIp,
+    source: { directories: [...sourceDirectories.values()], sessions: [...sourceSessions.values()] },
+  });
+  targetServer = await startGateway(t, true, { dir: targetDataDir });
+  let sourceOrigin = sourceServer.origin;
+  let targetOrigin = targetServer.origin;
 
-  assert.equal(sourceServer.address().address, lanIp);
-  assert.equal(targetServer.address().address, '127.0.0.1');
-  assert.notEqual(sourceServer.address().address, targetServer.address().address);
+  assert.equal(new URL(sourceServer.origin).hostname, lanIp);
+  assert.equal(new URL(targetServer.origin).hostname, '127.0.0.1');
+  assert.notEqual(new URL(sourceServer.origin).hostname, new URL(targetServer.origin).hostname);
 
   const created = await postJson(`${sourceOrigin}/api/fleets/fleet-source/share`, {
     password: PASSWORD,
@@ -239,7 +180,7 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
     body: JSON.stringify({ label: 'Renamed through loopback target' }),
   });
   assert.equal(renamed.response.status, 200);
-  assert.equal(sourceSessions.get('private-worker-id').label, 'Renamed through loopback target',
+  assert.equal((await requestJson(`${sourceOrigin}/fixture/state`)).body.sessions.find(s => s.id === 'private-worker-id').label, 'Renamed through loopback target',
     'an imported Fleet reuses the source session mutation API');
   const refreshedAfterRename = await requestJson(`${targetOrigin}/api/external-fleets`);
   assert.equal(refreshedAfterRename.body.fleets[0].sessions
@@ -250,7 +191,7 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
     label: 'Created through imported Fleet',
   });
   assert.equal(createdRemote.response.status, 200);
-  assert.equal(sourceSessions.has(createdRemote.body.id), true,
+  assert.equal((await requestJson(`${sourceOrigin}/fixture/state`)).body.sessions.some(s => s.id === createdRemote.body.id), true,
     'new-session uses the same source lifecycle API');
 
   const deniedOtherSession = await requestJson(`${proxyBase}/api/sessions/not-in-fleet`, {
@@ -266,7 +207,7 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
   const deniedOtherGit = await requestJson(`${proxyBase}/api/git/log?dirId=other-fleet&limit=50`);
   assert.equal(deniedOtherGit.response.status, 403);
 
-  sourceSessions.set('new-remote-worker', {
+  await postJson(`${sourceOrigin}/fixture/session`, {
     id: 'new-remote-worker', dirId: 'fleet-source', label: 'New LAN Worker', cli: 'zcode', kind: 'terminal',
   });
   const refreshed = await postJson(
@@ -278,10 +219,10 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
     'the loopback target refreshes interactive Fleet state from the LAN source without the password');
   assert.equal(refreshed.body.fleet.sessions.some(session => session.id === 'new-remote-worker'), true);
 
-  await closeServer(targetServer);
+  await targetServer.close();
   targetServer = undefined;
-  targetServer = await listen(createInstance({ dataDir: targetDataDir }), '127.0.0.1');
-  targetOrigin = serverOrigin(targetServer);
+  targetServer = await startGateway(t, true, { dir: targetDataDir });
+  targetOrigin = targetServer.origin;
   const afterRestart = await requestJson(`${targetOrigin}/api/external-fleets`);
   assert.equal(afterRestart.response.status, 200);
   assert.equal(afterRestart.body.fleets.length, 1);

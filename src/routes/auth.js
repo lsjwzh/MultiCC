@@ -8,6 +8,7 @@
 // Credentials and shutdown state are read on each request, never snapshotted.
 
 const { getNative } = require('../native/runtime');
+const { isGatewayChild } = require('../gateway-child');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -30,10 +31,10 @@ function createAuthRuntime(rawDeps) {
     getAccessToken,
     getShuttingDown,
     authorizeProviderRelayRequest = () => null,
+    authorizeProviderRelayRequestAsync,
     isRequestPeerAllowed = () => true,
     authorizeScopedRequest = () => false,
     allowLegacyTokenQuery = false,
-    handleServiceRequest = () => false,
   } = deps;
 
   if (!express || typeof express.urlencoded !== 'function' || typeof express.json !== 'function') {
@@ -66,14 +67,33 @@ function createAuthRuntime(rawDeps) {
   const entryPort = Object.freeze({ authSecurity, isLocalRequest, parseCookies,
     metrics, logger, createErrorDto, getAccessToken, getShuttingDown,
     authorizeProviderRelayRequest, isRequestPeerAllowed, authorizeScopedRequest,
-    allowLegacyTokenQuery, handleServiceRequest, normalizeRedirect, escapeHtmlAttribute });
+    allowLegacyTokenQuery, normalizeRedirect, escapeHtmlAttribute });
   function authCookieHeader(req, value) {
     return getNative().httpEntryCookie(req, entryPort, value);
   }
   function isAuthenticated(req) {
     return getNative().httpEntryAuthenticated(req, entryPort);
   }
-  const gate = stage => (req, res, next) => getNative().httpEntryGate(stage, req, res, next, entryPort);
+  if (authorizeProviderRelayRequestAsync !== undefined) assertFunction(authorizeProviderRelayRequestAsync, 'authorizeProviderRelayRequestAsync');
+  const gate = stage => (req, res, next) => {
+    const native = getNative();
+    if (stage !== 'auth' || !authorizeProviderRelayRequestAsync) return native.httpEntryGate(stage, req, res, next, entryPort);
+    // Native code decides precisely where authority must be awaited. The host
+    // only schedules the Promise and resumes the same native gate with its result.
+    const deferred = {};
+    let input;
+    const prepared = native.httpEntryGate('auth-prepare', req, res, next, {
+      ...entryPort, deferProviderRelay: value => { input = value; return deferred; },
+    });
+    if (prepared !== deferred) return prepared;
+    const resume = resolver => {
+      if (res.destroyed) return;
+      return native.httpEntryGate('auth-resume', req, res, next, { ...entryPort, authorizeProviderRelayRequest: resolver });
+    };
+    return Promise.resolve().then(() => authorizeProviderRelayRequestAsync(input)).then(
+      value => resume(() => value), error => resume(() => { throw error; }),
+    ).catch(next);
+  };
 
   const route = stage => (req, res) => getNative().httpAuthRoute(stage, req, res, entryPort);
 
@@ -81,12 +101,16 @@ function createAuthRuntime(rawDeps) {
     app.use('/api', gate('shutdown'));
     app.use(gate('peer'));
 
-    app.get('/login', route('login-page'));
-    app.post('/login', express.urlencoded({ extended: false }), route('login'));
-    app.get('/logout', route('logout'));
+    if (!isGatewayChild()) {
+      app.get('/login', route('login-page'));
+      app.post('/login', express.urlencoded({ extended: false }), route('login'));
+      app.get('/logout', route('logout'));
+    }
     app.use(gate('auth'));
-    app.post('/api/auth/exchange', route('exchange'));
-    app.post('/api/auth/ws-ticket', express.json({ limit: '4kb' }), route('ws-ticket'));
+    if (!isGatewayChild()) {
+      app.post('/api/auth/exchange', route('exchange'));
+      app.post('/api/auth/ws-ticket', express.json({ limit: '4kb' }), route('ws-ticket'));
+    }
 
   }
 

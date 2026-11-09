@@ -22,6 +22,8 @@ function buildHarness(overrides = {}) {
     scopedRequest: false,
     relayAuthorizer: null,
     metrics: [],
+    warnings: [],
+    admitted: 0,
     ...overrides,
   };
   const authSecurity = {
@@ -54,12 +56,14 @@ function buildHarness(overrides = {}) {
     },
     escapeHtmlAttribute: (value) => String(value).replace(/"/g, '&quot;').replace(/</g, '&lt;'),
     metrics: { inc: (name) => state.metrics.push(name) },
-    logger: { warn: () => {} },
+    logger: { warn: (event, value) => state.warnings.push([event, value]) },
     createErrorDto: (dto) => ({ error: dto }),
     getAccessToken: () => state.accessToken,
     getShuttingDown: () => state.shuttingDown,
     authorizeProviderRelayRequest: input => typeof state.relayAuthorizer === 'function'
       ? state.relayAuthorizer(input) : null,
+    authorizeProviderRelayRequestAsync: state.asyncRelay
+      ? input => state.relayAuthorizer(input) : undefined,
     isRequestPeerAllowed: () => state.peerAllowed,
     authorizeScopedRequest: () => state.scopedRequest,
     allowLegacyTokenQuery: !!state.allowLegacyTokenQuery,
@@ -67,7 +71,10 @@ function buildHarness(overrides = {}) {
   runtime.mountRoutes(app);
   if (state.mountProtectedRoutes) state.mountProtectedRoutes(app);
   // Terminal "protected resource": only reached when the gate calls next().
-  app.use((req, res) => res.status(200).json({ ok: true, path: req.path }));
+  app.use((req, res) => {
+    state.admitted++;
+    res.status(200).json({ ok: true, path: req.path, ...(req.providerRelayShareId ? { shareId: req.providerRelayShareId } : {}) });
+  });
 
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', () => {
@@ -563,7 +570,6 @@ function entryTrace(factory, options = {}) {
     getAccessToken: () => invoke('accessToken', null, () => options.token ?? 'configured'),
     getShuttingDown: () => invoke('shuttingDown', null, () => options.shutdown || false),
     isRequestPeerAllowed: () => invoke('peer', null, () => options.peer !== false),
-    handleServiceRequest: () => invoke('service', null, () => options.service || false),
     authorizeProviderRelayRequest: value => invoke('relay', value, () => options.relay || null),
     authorizeScopedRequest: () => invoke('scope', null, () => {
       if (options.scopeMutatesPath) { request.path = '/after-scope'; request.method = 'GET'; }
@@ -602,7 +608,7 @@ test('Rust entry matches Node across public paths, credentials, methods and all 
     { headers: { cookie: 'good-cookie' } }, { headers: { 'x-access-token': 'good-token' } },
     { headers: { 'x-multicc-machine-grant': 'bad', 'x-access-token': 'good-token' } },
     { query: { token: 'good-token' } }, { legacy: true, query: { token: 'good-token' } },
-    { legacy: true, query: { token: ['good-token'] } }, { scoped: true }, { service: true },
+    { legacy: true, query: { token: ['good-token'] } }, { scoped: true },
     { headers: { accept: 'text/html' } }, { headers: { 'content-type': 'APPLICATION/PKCS7-SIGNATURE; version=1' } },
     { headers: { authorization: 'Bearer relay-token' }, relay: { ok: true, shareId: 'share-1' } },
     { headers: { authorization: 'Bearer\uFEFFrelay-token' }, relay: { ok: true } },
@@ -671,4 +677,78 @@ test('Rust auth endpoints preserve response bytes, callback order and every exce
     }
   }
   t.diagnostic(`compared ${count} auth endpoint and injected-failure cases`);
+});
+
+test('asynchronous relay authority is awaited once and failed persistence never reaches a protected route', async () => {
+  for (const outcome of ['success', 'denied', 'write-failed']) {
+    let begin, complete;
+    const began = new Promise(resolve => { begin = resolve; });
+    const pending = new Promise((resolve, reject) => { complete = outcome === 'write-failed' ? reject : resolve; });
+    let calls = 0;
+    const h = await buildHarness({ accessToken: 'sekret', local: false, asyncRelay: true,
+      relayAuthorizer: input => { calls++; begin(input); return pending; },
+    });
+    try {
+      const request = raw(h.base, '/claude-proxy/p/remote/v1/messages', {
+        method: 'POST', headers: { 'x-api-key': 'mcr1.abcdefghijklmnop.fixture-secret', accept: 'application/json' },
+      });
+      assert.deepEqual(await began, { credential: 'mcr1.abcdefghijklmnop.fixture-secret', method: 'POST', pathname: '/claude-proxy/p/remote/v1/messages' });
+      assert.equal(h.state.admitted, 0, 'no forwarding before durable authorization');
+      complete(outcome === 'write-failed'
+        ? Object.assign(new Error('secret payload must not be logged'), { code: 'STATE_WRITE_FAILED' })
+        : { ok: outcome === 'success', shareId: 'share-1' });
+      const response = await request;
+      assert.equal(response.status, outcome === 'success' ? 200 : 403, outcome);
+      assert.equal(h.state.admitted, outcome === 'success' ? 1 : 0);
+      assert.equal(calls, 1);
+      if (outcome === 'success') {
+        assert.equal((await response.json()).shareId, 'share-1');
+        assert.equal(h.state.metrics.filter(m => m === 'multicc_auth_provider_relay_share_total').length, 1);
+      }
+      if (outcome === 'write-failed') {
+        assert.deepEqual(h.state.warnings, [['provider_relay_share_auth_failed', { requestId: 'req-1', code: 'STATE_WRITE_FAILED' }]]);
+      }
+    } finally { await h.close(); }
+  }
+});
+
+test('peer denial and public-path bypass do not schedule asynchronous relay work', async () => {
+  let calls = 0;
+  const h = await buildHarness({ local: false, accessToken: 'sekret', asyncRelay: true,
+    relayAuthorizer: () => { calls++; return { ok: true }; },
+  });
+  try {
+    assert.equal((await raw(h.base, '/healthz', { headers: { 'x-api-key': 'unused' } })).status, 200);
+    assert.equal(calls, 0);
+    h.state.peerAllowed = false;
+    assert.equal((await raw(h.base, '/codex-proxy/p/responses', { method: 'POST', headers: { 'x-api-key': 'unused' } })).status, 403);
+    assert.equal(calls, 0);
+  } finally { await h.close(); }
+});
+
+test('a disconnected async relay requester cannot forward after its authorization completes', async () => {
+  const http = require('node:http');
+  let begin, finish;
+  const began = new Promise(resolve => { begin = resolve; });
+  const pending = new Promise(resolve => { finish = resolve; });
+  const h = await buildHarness({ local: false, accessToken: 'sekret', asyncRelay: true,
+    relayAuthorizer: () => { begin(); return pending; },
+  });
+  try {
+    const request = http.request(h.base + '/codex-proxy/p/responses', {
+      method: 'POST', headers: { 'x-api-key': 'fixture-secret' },
+    });
+    request.on('error', () => {});
+    request.end();
+    await began;
+    const closed = new Promise(resolve => request.on('close', resolve));
+    request.destroy();
+    await closed;
+    // Probe another HTTP request to allow the server to observe peer closure.
+    await raw(h.base, '/healthz');
+    const admitted = h.state.admitted;
+    finish({ ok: true, shareId: 'late' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.state.admitted, admitted);
+  } finally { finish({ ok: true }); await h.close(); }
 });

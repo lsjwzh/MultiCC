@@ -13,6 +13,7 @@ const {
 } = require('../src/git/service');
 const { initializeSessionWorktrees } = require('../src/session/hibernation');
 const { createSessionHibernation } = require('../src/session/hibernation-composition');
+const { recordsOf, resetTaskState } = require('./helpers/session-records');
 
 function git(cwd, args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -34,7 +35,7 @@ function wakeRuntime(t, dir, added, extra = {}) {
   const id = path.basename(added.worktreePath);
   const record = { id, dirId: 'dir', kind: 'chat', taskBoundTaskId: `tsk-${id}`,
     workspaceState: 'hibernated', worktreePath: added.worktreePath, branch: added.branch };
-  const records = new Map([[id, record]]);
+  const records = recordsOf([[id, record]]);
   const chat = { cwd: added.worktreePath };
   const events = [];
   const runtime = createSessionHibernation({
@@ -334,7 +335,7 @@ test('启动缺失任务分支后，经生产唤醒组合恢复原会话工作�
     cliSessionId: 'native-original', workspaceState: 'awake',
     worktreePath: original.worktreePath, branch: original.branch,
   };
-  const records = new Map([[id, record]]);
+  const records = recordsOf([[id, record]]);
   const directories = new Map([['dir', { id: 'dir', path: dir, baseBranch: 'main' }]]);
   const invalidSessions = new Map();
   const chat = { cwd: original.worktreePath };
@@ -387,7 +388,7 @@ test('生产任务清理删除已合并分支后，重启及唤醒保留会话�
   const history = [{ id: 'message-original', role: 'user', content: '保留历史' }];
   const record = { id, dirId: 'dir-1', kind: 'chat', taskBoundTaskId: taskId,
     cliSessionId: 'native-original', workspaceState: 'awake', worktreePath: added.worktreePath, branch: added.branch };
-  const records = new Map([[id, record]]);
+  const records = recordsOf([[id, record]]);
   const directories = new Map([['dir-1', { id: 'dir-1', path: dirPath, baseBranch: 'main' }]]);
   let persisted;
   const persistence = createSessionPersistence({ records, store: { save: value => { persisted = structuredClone(value); } } });

@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 const { classifyDisplay } = require('../src/classify/vocab');
+const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 
 function fixture({
   cli = 'opencode', goal = '已识别任务', isStreaming = true, type = 'worker',
@@ -35,7 +36,7 @@ function fixture({
     _taskShellReceiptId: taskShell ? 'sr-shell-turn' : null,
     currentToolCalls: toolCalls,
   };
-  const persistedSessions = new Map([['s1', record]]);
+  const persistedSessions = recordsOf([['s1', record]]);
   const chatSessions = new Map([['s1', chatState]]);
   const observed = {
     enqueued: 0, enqueuedTasks: [], transitions: 0,
@@ -110,6 +111,7 @@ function fixture({
       record.taskState = { ...record.taskState, ...patch };
     },
     getTaskState: value => value?.taskState || {},
+    appendClassifyHistory: (id, entry, cutoff) => appendClassifyHistory(persistedSessions, id, entry, cutoff),
     setSessionSummary: (_sessionId, summary) => observed.summaries.push(summary),
     setSessionStatus: (_sessionId, patch) => observed.statuses.push(patch),
     chatBroadcast: (_sessionId, event) => observed.broadcasts.push(event),

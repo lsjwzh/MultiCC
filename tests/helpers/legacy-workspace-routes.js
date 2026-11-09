@@ -1,8 +1,8 @@
 'use strict';
 
 const path = require('node:path');
-const { createFleetSharing, FleetSharingError } = require('../fleet-sharing');
-const { createErrorDto, requestContext } = require('../api-contract');
+const { createFleetSharing, FleetSharingError } = require('./legacy-workspace-sharing');
+const { createErrorDto, requestContext } = require('../../src/api-contract');
 
 const FAILURE_WINDOW_MS = 15 * 60_000;
 const MAX_PASSWORD_FAILURES = 10;
@@ -17,6 +17,15 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
   if (!sharing) throw new TypeError('fleet sharing service is required');
   if (!pageFile) throw new TypeError('fleet share page is required');
   const failures = new Map();
+  // Preserve the previous synchronous admission/failure order while password
+  // verification and writes run on native workers. Without this sequencing a
+  // burst could pass the limiter before any failed attempt was recorded.
+  let accessTail = Promise.resolve();
+  const serializeAccess = handler => (req, res) => {
+    const next = accessTail.then(() => handler(req, res));
+    accessTail = next.catch(() => {});
+    return next;
+  };
 
   function sendError(req, res, error, operation) {
     if (error instanceof FleetSharingError) {
@@ -95,8 +104,8 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
   }
 
   const handlers = {
-    createShare: wrap('create', (req, res) => {
-      const record = sharing.createShare(req.params.id, req.body || {});
+    createShare: wrap('create', async (req, res) => {
+      const record = await sharing.createShare(req.params.id, req.body || {});
       return res.json({
         ok: true,
         ...record,
@@ -111,13 +120,13 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
       })),
     })),
 
-    revokeShare: wrap('revoke', (req, res) => res.json({
-      ok: sharing.revokeShare(req.params.id, req.params.token),
+    revokeShare: wrap('revoke', async (req, res) => res.json({
+      ok: await sharing.revokeShare(req.params.id, req.params.token),
     })),
 
     servePage: (_req, res) => res.sendFile(pageFile),
 
-    accessShare: wrap('access', (req, res) => {
+    accessShare: wrap('access', serializeAccess(async (req, res) => {
       const key = failedAttemptKey(req);
       if (isRateLimited(key)) {
         return res.status(429).json(createErrorDto({
@@ -133,7 +142,7 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
         }));
       }
       try {
-        const payload = sharing.accessSharedFleet(req.params.token, (req.body || {}).password);
+        const payload = await sharing.accessSharedFleet(req.params.token, (req.body || {}).password);
         failures.delete(key);
         res.set('Cache-Control', 'no-store');
         return res.json(payload);
@@ -143,7 +152,7 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
         }
         throw error;
       }
-    }),
+    })),
 
     readSharedFleet: wrap('shared-state', (req, res) => {
       const payload = sharing.readSharedFleet(req.params.token, req.headers['x-multicc-fleet-grant']);
@@ -204,8 +213,8 @@ function createFleetSharingRoutes({ sharing, pageFile, logger, issueWsTicket, no
       fleets: sharing.listExternal(),
     })),
 
-    removeExternal: wrap('external-remove', (req, res) => res.json({
-      ok: sharing.removeExternal(req.params.id),
+    removeExternal: wrap('external-remove', async (req, res) => res.json({
+      ok: await sharing.removeExternal(req.params.id),
     })),
 
     refreshExternal: wrap('external-refresh', async (req, res) => res.json({

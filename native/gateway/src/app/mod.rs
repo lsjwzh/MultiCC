@@ -7,10 +7,15 @@
 //! them and the few documented differences.
 
 pub mod accept;
+pub mod auth;
 pub mod download;
 pub mod express;
+pub mod external_workspaces;
 pub mod quota_guard;
 pub mod run_config_presets;
+mod service_transport;
+pub mod services;
+pub mod source_workspaces;
 pub mod uploads;
 
 use std::net::SocketAddr;
@@ -31,6 +36,10 @@ use express::RequestCtx;
 /// case-insensitive, one optional trailing slash, raw (undecoded) path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
+    Auth(auth::Route),
+    Services(services::Route),
+    ExternalWorkspaces(external_workspaces::Route),
+    SourceWorkspaces(source_workspaces::Route),
     QuotaGuardGet,
     QuotaGuardPut,
     QuotaGuardOptions,
@@ -56,6 +65,18 @@ pub enum Route {
 /// gate and JSON gzip test `req.path.startsWith('/api/')` case-sensitively,
 /// and a differently-cased prefix took other branches there.
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
+    if let Some(route) = source_workspaces::claim(method, path) {
+        return Some(Route::SourceWorkspaces(route));
+    }
+    if let Some(route) = external_workspaces::claim(method, path) {
+        return Some(Route::ExternalWorkspaces(route));
+    }
+    if let Some(route) = services::claim(path) {
+        return Some(Route::Services(route));
+    }
+    if let Some(route) = auth::claim(method, path) {
+        return Some(Route::Auth(route));
+    }
     let rest = path.strip_prefix("/api/")?;
     let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
     match (rest.as_str(), method.as_str()) {
@@ -79,56 +100,16 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
 }
 
-/// `ACCESS_TOKEN` as the Node process currently holds it.
-///
-/// Node reads it once at start and afterwards only changes it through
-/// `POST /api/settings/access-token`, which rewrites the env file first and
-/// then swaps the in-memory value. So: the startup value, until the env
-/// file's `ACCESS_TOKEN` differs from what it was at our start; from then on
-/// whatever the file says.
-pub struct TokenSource {
-    startup: String,
-    file: PathBuf,
-    at_start: Option<String>,
-    changed: Mutex<Option<String>>,
-}
-
-fn file_token(file: &Path) -> Option<String> {
-    let bytes = std::fs::read(file).ok()?;
-    let mut env = serde_json::Map::new();
-    multicc_core::dotenv::apply(&String::from_utf8_lossy(&bytes), &mut env);
-    env.get("ACCESS_TOKEN")
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-}
-
-impl TokenSource {
-    pub fn new(startup: String, file: PathBuf) -> Self {
-        let at_start = file_token(&file);
-        Self {
-            startup,
-            file,
-            at_start,
-            changed: Mutex::new(None),
-        }
-    }
-
-    pub fn current(&self) -> String {
-        let now = file_token(&self.file);
-        let mut changed = self.changed.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(value) = now {
-            if changed.is_some() || Some(&value) != self.at_start.as_ref() {
-                *changed = Some(value);
-            }
-        }
-        changed.clone().unwrap_or_else(|| self.startup.clone())
-    }
-}
-
 pub struct App {
+    /// Static assets ship beside the canonical server entry, not the data root.
+    pub public_dir: PathBuf,
     /// `MULTICC_PATHS.root` (src/paths.js `resolveDataDir`).
     pub data_root: PathBuf,
-    pub token: TokenSource,
+    pub services: std::sync::OnceLock<Arc<services::Runtime>>,
+    pub external_workspaces:
+        std::sync::OnceLock<Arc<multicc_core::workspace_sharing::external::Runtime>>,
+    pub auth: Arc<crate::auth_control::Bridge>,
+    pub source_workspaces: Arc<crate::auth_control::Bridge>,
     pub lan_only: bool,
     pub allow_legacy_token_query: bool,
     /// Node handled each of these requests to completion on one thread; the
@@ -175,14 +156,13 @@ impl App {
         } else {
             package_root.join(raw_data)
         };
-        // src/host-env.js envPath(): where the UI writes ACCESS_TOKEN.
-        let env_file = match env_text("MULTICC_ENV_FILE") {
-            file if !file.is_empty() => options.cwd.join(file),
-            _ => package_root.join(".env"),
-        };
         Self {
+            public_dir: package_root.join("public"),
             data_root,
-            token: TokenSource::new(policy.access_token.clone(), env_file),
+            services: std::sync::OnceLock::new(),
+            external_workspaces: std::sync::OnceLock::new(),
+            auth: Arc::new(crate::auth_control::Bridge::default()),
+            source_workspaces: Arc::new(crate::auth_control::Bridge::default()),
             lan_only: policy.lan_only,
             allow_legacy_token_query: env_enabled(&env_text("MULTICC_ALLOW_LEGACY_TOKEN_QUERY")),
             store_lock: Mutex::new(()),
@@ -191,9 +171,14 @@ impl App {
         }
     }
 
-    fn gate(&self, ctx: &RequestCtx, peer: &str) -> Option<Response<Body>> {
+    fn gate(
+        &self,
+        ctx: &RequestCtx,
+        peer: &str,
+        snapshot: &multicc_core::auth_runtime::Snapshot,
+    ) -> Option<Response<Body>> {
         let policy = GatePolicy {
-            access_token: self.token.current(),
+            access_token: snapshot.secret.clone(),
             lan_only: self.lan_only,
             allow_legacy_token_query: self.allow_legacy_token_query,
         };
@@ -271,12 +256,44 @@ pub async fn handle(
     request: Request<Body>,
     client: SocketAddr,
 ) -> Response<Body> {
+    if let Route::ExternalWorkspaces(route) = route {
+        return external_workspaces::handle(app, route, request, client).await;
+    }
+    if let Route::Services(route) = route {
+        return services::handle(app, route, request, client).await;
+    }
     let (parts, body) = request.into_parts();
     let ctx = RequestCtx::new(&parts);
     // src/gateway-child.js hands Node the PROXY line's address text, which is
     // this Display form (IPv4-mapped IPv6 included).
     let peer = client.ip().to_string();
-    if let Some(refusal) = app.gate(&ctx, &peer) {
+    let snapshot = match app.auth.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => return express::error(&ctx, 503, "authentication runtime unavailable"),
+    };
+    if snapshot.shutting_down
+        && (ctx.path.to_ascii_lowercase().starts_with("/api/")
+            || ctx.path.eq_ignore_ascii_case("/api"))
+    {
+        return express::json(
+            &ctx,
+            503,
+            &http_gate::error_dto(
+                "SERVER_SHUTTING_DOWN",
+                "server is shutting down",
+                &[],
+                &ctx.ids,
+            ),
+            &[("Retry-After", "1")],
+        );
+    }
+    if let Route::Auth(route) = route {
+        return auth::handle(&app, route, &ctx, body, &peer, snapshot).await;
+    }
+    if let Route::SourceWorkspaces(route) = route {
+        return source_workspaces::handle(&app, route, &ctx, &peer, body, snapshot).await;
+    }
+    if let Some(refusal) = app.gate(&ctx, &peer, &snapshot) {
         return refusal;
     }
     // The ticket route sits in front of the global `express.json` with its
@@ -400,23 +417,5 @@ mod tests {
         assert_eq!(claim(&Method::GET, "/api/uploads/cleanup"), None);
         assert_eq!(claim(&Method::GET, "/api/files"), None);
         assert_eq!(claim(&Method::POST, "/api/upload"), None);
-    }
-
-    #[test]
-    fn token_follows_the_env_file_once_it_changes() {
-        let dir = std::env::temp_dir().join(format!("multicc-token-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join(".env");
-        std::fs::write(&file, "ACCESS_TOKEN=first-token\n").unwrap();
-        let source = TokenSource::new("from-env".into(), file.clone());
-        assert_eq!(source.current(), "from-env");
-        std::fs::write(&file, "OTHER=1\nACCESS_TOKEN=second-token\n").unwrap();
-        assert_eq!(source.current(), "second-token");
-        // Changing it back is still a UI change Node applied.
-        std::fs::write(&file, "ACCESS_TOKEN=first-token\n").unwrap();
-        assert_eq!(source.current(), "first-token");
-        std::fs::write(&file, "ACCESS_TOKEN=\n").unwrap();
-        assert_eq!(source.current(), "");
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

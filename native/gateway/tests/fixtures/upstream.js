@@ -68,6 +68,47 @@ if (mode === 'no-listen') {
 if (mode === 'exit-1-once' && run === 1) process.exit(1);
 if (mode === 'exit-75-once' && run === 1) process.exit(75);
 
+// Protocol-only fixture: production uses the Rust addon actor. No authority
+// decisions here; native gateway tests can explicitly rotate this live value.
+const crypto = require('node:crypto');
+let fixtureToken = process.env.ACCESS_TOKEN || '';
+if (!fixtureToken) {
+  try { fixtureToken = /^ACCESS_TOKEN=(.*)$/m.exec(fs.readFileSync('.env', 'utf8'))?.[1] || ''; } catch {}
+}
+let revision = 0;
+let fixtureShutdown = false;
+const controlPort = Number(process.env.MULTICC_GATEWAY_AUTH_PORT);
+const capability = process.env.MULTICC_GATEWAY_AUTH_CAPABILITY;
+delete process.env.MULTICC_GATEWAY_AUTH_PORT;
+delete process.env.MULTICC_GATEWAY_AUTH_CAPABILITY;
+const sign = text => crypto.createHmac('sha256', capability).update(text).digest('base64url');
+function controlConnect() {
+  const socket = net.connect(controlPort, '127.0.0.1');
+  let phase = 0, nonce, buffered = Buffer.alloc(0);
+  const send = value => {
+    const body = Buffer.from(JSON.stringify(value));
+    const size = Buffer.alloc(4); size.writeUInt32BE(body.length);
+    socket.write(Buffer.concat([size, body]));
+  };
+  socket.on('error', () => {});
+  socket.on('close', () => setTimeout(controlConnect, 50).unref());
+  socket.on('data', chunk => {
+    buffered = Buffer.concat([buffered, chunk]);
+    while (buffered.length >= 4) {
+      const size = buffered.readUInt32BE();
+      if (!size || size > 65536) return socket.destroy();
+      if (buffered.length < size + 4) return;
+      const value = JSON.parse(buffered.subarray(4, size + 4));
+      buffered = buffered.subarray(size + 4);
+      if (phase === 0) { nonce = value; send(sign(`child:${nonce}`)); phase = 1; }
+      else if (phase === 1) { if (value !== sign(`parent:${nonce}`)) return socket.destroy(); phase = 2; }
+      else if (value.op === 'snapshot') send({ kind: 'snapshot', secret: fixtureToken, shutting_down: fixtureShutdown, revision });
+      else send({ kind: 'invalid' });
+    }
+  });
+}
+controlConnect();
+
 const connectionsLog = path.join(stateDir, 'connections.log');
 const requestsLog = path.join(stateDir, 'requests.log');
 const closedLog = path.join(stateDir, 'closed.log');
@@ -89,6 +130,12 @@ const server = http.createServer((req, res) => {
   })}\n`);
 
   const route = req.url.split('?')[0];
+  if (route === '/fixture/rotate') {
+    const chunks = []; req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => { fixtureToken = Buffer.concat(chunks).toString(); revision++; res.end('ok'); });
+    return;
+  }
+  if (route === '/fixture/shutdown') { fixtureShutdown = true; res.end('ok'); return; }
   if (route === '/proxy') {
     const line = req.socket.__proxyLine || '';
     const body = JSON.stringify({ id, line });

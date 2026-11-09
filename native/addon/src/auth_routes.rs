@@ -1,10 +1,10 @@
 //! Authentication endpoint behavior. Express is only the temporary transport
 //! adapter; credential and ticket operations share the RustAuthSecurity owner.
 use crate::{
-    auth_login_page,
     http_entry::{cookie, host, member, text},
     js_live::LiveValue as V,
 };
+use multicc_core::auth_login_page;
 use multicc_core::js::{JsString, JsValue};
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;

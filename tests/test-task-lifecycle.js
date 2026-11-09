@@ -11,6 +11,7 @@ const { createTaskLifecycleHost } = require('../src/task-board/lifecycle-host');
 const { createTaskRetention, retentionCandidates, lastInteraction } = require('../src/task-board/retention');
 const { createTaskHistoryRetention } = require('../src/session/task-history-retention');
 const { createChatHistoryService } = require('../src/session/chat-history-service');
+const { recordsOf, resetTaskState } = require('./helpers/session-records');
 
 function harness(t, overrides = {}) {
   const purged = [];
@@ -501,14 +502,16 @@ test('purging task history retains messages jointly owned by another task and le
   const data = new Map([['s', [{ id: 'u', role: 'user', taskId: 'old', content: 'remove' },
     { id: 'shared', role: 'assistant', taskId: 'old', content: 'joint evidence' },
     { id: 'other', role: 'user', taskId: 'keep', content: 'keep' }]]]);
-  const records = new Map([['s', { id: 's', kind: 'chat', taskState: { taskId: 'old' } }]]);
+  const records = recordsOf([['s', { id: 's', kind: 'chat', taskState: { taskId: 'old' } }]]);
   const retention = createTaskHistoryRetention({ getBoard: () => board, getRecord: id => records.get(id), loadHistory: id => data.get(id) });
   const service = createChatHistoryService({ ...retention, idFactory: () => 'generated',
     history: { read: id => data.get(id), write: (id, ms) => data.set(id, ms), deleteSession: id => data.delete(id), hasPersistedDelivery: () => false } });
   const host = createTaskLifecycleHost({ records, getBoard: () => board, getShell: () => ({ stateTarget: () => ({}), purgeTasks() {} }),
     getHistory: id => service.read(id), getState: () => null, getRunState: () => 'idle', getHistoryService: () => service,
-    destroySession: () => assert.fail('source session must remain'), directories: new Map(), persist() {} });
+    destroySession: () => assert.fail('source session must remain'), directories: new Map(), persist() {},
+    resetTaskState: id => resetTaskState(records, id) });
   await host.purgeTaskData(board.tasks.old, ['old']);
   assert.deepEqual(service.read('s').map(m => m.id), ['shared', 'other']);
   assert.equal(records.has('s'), true);
+  assert.deepEqual(records.get('s').taskState, {}, 'the deleted task\'s state is reset');
 });

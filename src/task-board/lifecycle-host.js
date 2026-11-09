@@ -6,6 +6,7 @@ const { taskDirId } = require('./core');
 
 function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getState,
   getRunState, isSessionBusy = () => false, getHistoryService, destroySession, directories, persist, mutate,
+  resetTaskState,
   workspaceBroadcast, chatBroadcast, getHibernation }) {
   function worktrees(ids) {
     return Object.values(getBoard().tasks).filter(t => ids.includes(t.id) && t.worktreePath && t.branch);
@@ -135,7 +136,8 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
       const sharedHistory = otherTasks.some(t => (t.refs || []).some(r => r.sessionId === record.id && !r.userMsgId && !r.assistantMsgId));
       const kept = history.filter(m => sharedHistory || sharedIds.has(m.id) || (!ids.includes(m.taskId) && !ownedIds.has(m.id)));
       if (kept.length !== history.length) getHistoryService().replace(record.id, kept, { reason: 'task-delete' });
-      if (ids.includes(record.taskState?.taskId)) record.taskState = {};
+      // Direct record write, routed through the native record owner.
+      if (ids.includes(record.taskState?.taskId)) resetTaskState(record.id);
       if (ids.includes(getState(record.id)?._currentTaskId)) delete getState(record.id)._currentTaskId;
       const shared = otherTasks.some(t => t.chatSessionId === record.id || (t.refs || []).some(r => r.sessionId === record.id));
       if (ids.includes(record.taskBoundTaskId) && !shared) {

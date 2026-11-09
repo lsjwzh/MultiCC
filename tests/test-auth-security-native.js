@@ -7,6 +7,24 @@ const { spawnSync } = require('node:child_process');
 const legacy = require('./helpers/legacy-auth-security');
 const native = require('../src/auth-security');
 
+test('Rust owned credentials rotate atomically, reject oversized control state and retain shutdown', () => {
+  const auth = native.createAuthSecurity({ secret: 'old-fixture' });
+  const cookie = auth.createCookie();
+  auth.setAccessToken('new-fixture');
+  assert.equal(auth.accessToken(), 'new-fixture');
+  assert.equal(auth.verifyCookie(cookie), false);
+  assert.equal(auth.verifyAccessToken('new-fixture'), true);
+  assert.throws(() => auth.setAccessToken('x'.repeat(65536)), /frame limit/);
+  assert.equal(auth.accessToken(), 'new-fixture');
+  assert.throws(() => native.createAuthSecurity({ secret: '\n'.repeat(65536) }), /frame limit/);
+  assert.equal(auth.shuttingDown(), false);
+  auth.setShuttingDown(true);
+  assert.equal(auth.shuttingDown(), true);
+  auth.setAccessToken('');
+  assert.equal(auth.verifyAccessToken(''), false);
+  assert.equal(auth.shuttingDown(), true);
+});
+
 function harness(api, extra = {}) {
   const state = { time: 1_700_000_000_123, key: 'fixture-认证-key', random: 0, calls: [] };
   const auth = api.createAuthSecurity({

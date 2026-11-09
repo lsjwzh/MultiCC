@@ -74,7 +74,7 @@ test('virtual provider CRUD, durable quota failover and scoped sharing use real 
       assert.equal(requests.length - secondCall, 1, 'the empty member stays parked');
       const otherUrl = url.replace(id, second.id);
       assert.equal((await postJson(otherUrl, body, { authorization: `Bearer ${payload.authToken}`, 'x-forwarded-for': '198.51.100.2' })).response.status, 403);
-      shares.revoke(shared.body.share.id);
+      await shares.revoke(shared.body.share.id);
       assert.equal((await postJson(url, body, { authorization: `Bearer ${payload.authToken}`, 'x-forwarded-for': '198.51.100.2' })).response.status, 403);
       core.updateProvider(appType, id, { virtual: { strategy: 'ordered', members: [{ id: second.id, expiresAt: Date.now()-1000 }] } });
       assert.equal(virtual.status(core.getProvider(appType, id), core.listProviders()).availableCount, 0);

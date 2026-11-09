@@ -154,7 +154,7 @@ function mountAuth(app, metrics, providerRelayShares) {
     createErrorDto: dto => ({ error: dto }),
     getAccessToken: () => ACCESS_TOKEN,
     getShuttingDown: () => false,
-    authorizeProviderRelayRequest: input => providerRelayShares.authorize(input),
+    authorizeProviderRelayRequestAsync: input => providerRelayShares.authorize(input),
     isRequestPeerAllowed: isPrivateRequestPeer,
   });
   runtime.mountRoutes(app);

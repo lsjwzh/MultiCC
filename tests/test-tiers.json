@@ -3375,8 +3375,8 @@
     },
     {
       "path": "tests/test-fleet-sharing-routes.js",
-      "tier": "other",
-      "lane": "deterministic",
+      "tier": "core",
+      "lane": "isolated",
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
@@ -3394,7 +3394,7 @@
     {
       "path": "tests/test-fleet-sharing.js",
       "tier": "other",
-      "lane": "deterministic",
+      "lane": "isolated",
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
@@ -3431,6 +3431,15 @@
       "path": "tests/test-format.js",
       "tier": "other",
       "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-gateway-auth-native.js",
+      "tier": "core",
+      "lane": "isolated",
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"
@@ -5276,6 +5285,24 @@
       ]
     },
     {
+      "path": "tests/test-session-records-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-session-records-durable.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
       "path": "tests/test-session-rename-broadcast.js",
       "tier": "core",
       "lane": "deterministic"
@@ -6427,6 +6454,11 @@
         "docker/task-shell/run-tests.js",
         "npm:test:task-first"
       ]
+    },
+    {
+      "path": "tests/test-workspace-remote-native.js",
+      "tier": "core",
+      "lane": "isolated"
     },
     {
       "path": "tests/test-workspace-residency.js",

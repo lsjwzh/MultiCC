@@ -121,9 +121,9 @@ pub fn parse_cookies(header: Option<&str>) -> HashMap<String, String> {
 
 // ── request-locality.js ────────────────────────────────────────────────────
 
-const LOOPBACK_ADDRESSES: &[&str] = &["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+pub const LOOPBACK_ADDRESSES: &[&str] = &["127.0.0.1", "::1", "::ffff:127.0.0.1"];
 
-const FORWARDING_HEADERS: &[&str] = &[
+pub const FORWARDING_HEADERS: &[&str] = &[
     "forwarded",
     "x-real-ip",
     "via",
@@ -140,14 +140,30 @@ const FORWARDING_HEADERS: &[&str] = &[
 ];
 
 pub fn request_host(host: Option<&str>) -> String {
-    let raw = js_trim(host.unwrap_or("")).to_lowercase();
-    if raw.starts_with('[') {
-        return match raw.find(']') {
-            Some(closing) if closing > 0 => raw[1..closing].to_string(),
-            _ => raw,
-        };
-    }
-    raw.split(':').next().unwrap_or("").to_string()
+    request_host_utf16(&crate::js::JsString::from_rust_str(host.unwrap_or(""))).to_string_lossy()
+}
+
+/// Host adapters may contain isolated UTF-16 surrogates; preserve them just as
+/// String.trim().toLowerCase() does, while wire headers use the same rules.
+pub fn request_host_utf16(host: &crate::js::JsString) -> crate::js::JsString {
+    let raw = host.trim().to_lowercase();
+    let units = raw.as_units();
+    let (start, end) = if units.first() == Some(&91) {
+        match units.iter().position(|u| *u == 93) {
+            Some(end) if end > 0 => (1, end),
+            _ => (0, units.len()),
+        }
+    } else {
+        (
+            0,
+            units.iter().position(|u| *u == 58).unwrap_or(units.len()),
+        )
+    };
+    crate::js::JsString::from_units(units[start..end].to_vec())
+}
+
+pub fn local_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 pub fn has_forwarding_metadata<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
@@ -159,7 +175,7 @@ pub fn has_forwarding_metadata<'a>(names: impl IntoIterator<Item = &'a str>) -> 
 
 pub fn is_external_proxy_request(headers: &NodeHeaders) -> bool {
     let host = request_host(headers.get("host"));
-    let local_host = host == "localhost" || host == "127.0.0.1" || host == "::1";
+    let local_host = local_host(&host);
     has_forwarding_metadata(headers.names())
         || !local_host
         || host.ends_with(".ts.net")
@@ -323,7 +339,7 @@ pub fn encode_uri_component(text: &str) -> String {
 /// qs's decoder: `+` is a space, then `decodeURIComponent`, and when that
 /// throws (a `%` without two hex digits, or bytes that are not UTF-8) the
 /// whole string with only the `+` replaced.
-fn percent_decode_plus(text: &str) -> String {
+pub fn percent_decode_plus(text: &str) -> String {
     let replaced = text.replace('+', " ");
     let bytes = replaced.as_bytes();
     let nibble = |byte: u8| (byte as char).to_digit(16).map(|digit| digit as u8);
@@ -386,7 +402,7 @@ pub fn query_param(original_url: &str, name: &str) -> QueryParam {
         if key == name {
             count += 1;
             found = Some(percent_decode_plus(raw_value));
-        } else if key.starts_with(&nested) && key[nested.len()..].contains(']') {
+        } else if key.starts_with(&nested) {
             count += 2;
         }
     }
@@ -688,7 +704,7 @@ mod tests {
         assert_eq!(p("/d?path=a&path=b"), QueryParam::Other);
         assert_eq!(p("/d?path[]=a"), QueryParam::Other);
         assert_eq!(p("/d?path%5Bk%5D=a"), QueryParam::Other);
-        assert_eq!(p("/d?path[=a"), QueryParam::Missing);
+        assert_eq!(p("/d?path[=a"), QueryParam::Other);
         // decodeURIComponent throws on any stray `%`: qs keeps the whole text.
         assert_eq!(p("/d?path=a%zz%41"), QueryParam::Text("a%zz%41".into()));
         assert_eq!(p("/d?path=100%"), QueryParam::Text("100%".into()));

@@ -6,9 +6,10 @@ const {
   PersistenceError,
   createSessionPersistence,
 } = require('../src/session/persistence');
+const { recordsOf } = require('./helpers/session-records');
 
 test('required mutation saves a detached snapshot before retaining memory changes', () => {
-  const records = new Map([['s1', { id: 's1', label: 'before' }]]);
+  const records = recordsOf([['s1', { id: 's1', label: 'before' }]]);
   const writes = [];
   const service = createSessionPersistence({ records, store: { save: value => writes.push(value) } });
   const result = service.mutate('http.patch-session', map => {
@@ -29,7 +30,7 @@ test('required save failure rolls back create, update and delete and throws stab
     ['update', map => { map.get('s1').label = 'changed'; }],
     ['delete', map => map.delete('s1')],
   ]) {
-    const records = new Map([['s1', { id: 's1', label: 'before' }]]);
+    const records = recordsOf([['s1', { id: 's1', label: 'before' }]]);
     const failures = [];
     const service = createSessionPersistence({
       records,
@@ -51,7 +52,7 @@ test('required save failure rolls back create, update and delete and throws stab
 });
 
 test('mutator failure rolls memory back without attempting a save', () => {
-  const records = new Map([['s1', { id: 's1', nested: { value: 1 } }]]);
+  const records = recordsOf([['s1', { id: 's1', nested: { value: 1 } }]]);
   let saves = 0;
   const service = createSessionPersistence({ records, store: { save() { saves += 1; } } });
   assert.throws(() => service.mutate('http.validation', map => {
@@ -63,7 +64,7 @@ test('mutator failure rolls memory back without attempting a save', () => {
 });
 
 test('manual transaction can roll back validation or commit only after response data is prepared', () => {
-  const records = new Map([['s1', { id: 's1', label: 'before' }]]);
+  const records = recordsOf([['s1', { id: 's1', label: 'before' }]]);
   const writes = [];
   const service = createSessionPersistence({ records, store: { save: value => writes.push(value) } });
   let tx = service.begin('http.patch.validation');
@@ -81,7 +82,7 @@ test('manual transaction can roll back validation or commit only after response 
 });
 
 test('best-effort failure remains dirty, logs every attempt and retries only to the bound', () => {
-  const records = new Map([['s1', { id: 's1', captured: 'native-id' }]]);
+  const records = recordsOf([['s1', { id: 's1', captured: 'native-id' }]]);
   const scheduled = [];
   const failures = [];
   let saves = 0;
@@ -110,7 +111,7 @@ test('best-effort failure remains dirty, logs every attempt and retries only to 
 });
 
 test('a later successful required mutation flushes prior dirty runtime state', () => {
-  const records = new Map([['s1', { id: 's1', value: 1 }]]);
+  const records = recordsOf([['s1', { id: 's1', value: 1 }]]);
   let fail = true;
   const writes = [];
   const service = createSessionPersistence({

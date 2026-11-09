@@ -1,17 +1,10 @@
 'use strict';
 
-const { createSessionStateService } = require('../session');
-const { classifyDisplay, CLASSIFY_STATES } = require('../classify/vocab');
+const { getNative } = require('../native/runtime');
 
-const EMPTY_STATUS = Object.freeze({
-  status: 'idle',
-  currentFile: null,
-  lastActivity: 0,
-  runStartedAt: null,
-  runEndedAt: null,
-});
-const QUEUE_STATES = new Set(['idle', 'starting', 'running', 'assessing', 'frozen', 'queued']);
-// CLASSIFY_STATES (the live letters) comes from classify/vocab — declared once.
+const initial = getNative().sessionStateInitial();
+const EMPTY_STATUS = Object.freeze({ status: initial.status, currentFile: null,
+  lastActivity: initial.lastActivity, runStartedAt: initial.runStartedAt, runEndedAt: initial.runEndedAt });
 
 function assertMap(name, value) {
   if (!value || typeof value.get !== 'function' || typeof value[Symbol.iterator] !== 'function') {
@@ -47,40 +40,29 @@ function createWorkspaceRuntime(options) {
   const clock = options.clock || Date.now;
   if (typeof clock !== 'function') throw new TypeError('[workspace] clock must be a function');
 
-  const status = new Map();
+  const stateAnchor = {};
+  const stateOwner = new (getNative().RustWorkspaceState)(stateAnchor);
+  Object.defineProperty(stateOwner, Symbol('workspace host references'), { value: stateAnchor });
+  const statePorts = { records, directories, chatSessions, clock, mergeState, setTaskState, saveBestEffort, broadcast };
+  const status = Object.freeze({
+    get: id => stateOwner.status(id), has: id => stateOwner.has('status', id),
+    delete: id => stateOwner.delete('status', id), get size() { return stateOwner.size('status'); },
+  });
+  const summaries = Object.freeze({
+    get: id => stateOwner.summary(id), has: id => stateOwner.has('summary', id),
+    delete: id => stateOwner.delete('summary', id), get size() { return stateOwner.size('summary'); },
+  });
   const clients = new Map();
-  const summaries = new Map();
-  const queueStatuses = new Map();
+  const queueOwner = new (getNative().RustWorkspaceQueues)();
+  // Read-only compatibility view; there is no second queue table in Node.
+  const queueStatuses = Object.freeze({
+    get: id => queueOwner.get(id),
+    has: id => queueOwner.has(id),
+    get size() { return queueOwner.size; },
+  });
   const metaClients = new Set();
   const observers = new Set();
   let airSync = null;
-
-  const sessionState = createSessionStateService({
-    clock,
-    hasPendingWork: sessionId => {
-      const pending = chatSessions.get(sessionId)?.currentTask?.pendingDispatches;
-      return !!(pending && pending.length > 0);
-    },
-  });
-
-  function hydrate() {
-    for (const [sessionId, record] of records) {
-      if (!record) continue;
-      if (record.summary) {
-        summaries.set(sessionId, {
-          summary: record.summary,
-          ts: record.summaryTs || clock(),
-        });
-      }
-      if (record.type === 'aux' || record.type === 'gateway') continue;
-      const classifyState = record.taskState && record.taskState.classifyState;
-      if (!classifyState) continue;
-      status.set(sessionId, {
-        ...EMPTY_STATUS,
-        status: classifyDisplay(classifyState).cardStatus,
-      });
-    }
-  }
 
   function broadcastRaw(dirId, payload) {
     for (const observer of observers) { try { observer(dirId, payload); } catch (_) {} }
@@ -90,13 +72,6 @@ function createWorkspaceRuntime(options) {
   }
 
   const STATE_EVENTS = new Set(['status', 'summary', 'task_state', 'session_queue_status']);
-  let queueViewTime = 0;
-  function queueView(sessionId, queue, stateSource) {
-    // Queue clocks belong to executions; the wire clock belongs to the view.
-    // Selecting an older/empty execution must replace the previous queue too.
-    queueViewTime = Math.max(queueViewTime + 1, clock(), Number(queue?.updatedAt) || 0);
-    return { ...normalizeQueueStatus(sessionId, queue), updatedAt: queueViewTime, stateSource };
-  }
   function publishSessionView(sessionId) {
     const view = options.sessionView?.(sessionId);
     const record = records.get(sessionId);
@@ -115,9 +90,8 @@ function createWorkspaceRuntime(options) {
     broadcastRaw(record.dirId, { type: 'summary', ...envelope,
       summary: view.goal || view.summary || '', ts: view.summaryAt || null });
     const executionId = view.stateSource?.executionSessionId || sessionId;
-    const queue = queueStatuses.get(executionId);
     broadcastRaw(record.dirId, { type: 'session_queue_status',
-      ...queueView(sessionId, queue, view.stateSource), ...envelope });
+      ...queueOwner.view(sessionId, executionId, view.stateSource, clock), ...envelope });
   }
   function broadcast(dirId, payload) {
     if (!STATE_EVENTS.has(payload.type) || !payload.sessionId || !options.resolveStateTarget) {
@@ -128,76 +102,23 @@ function createWorkspaceRuntime(options) {
     // its source record, and never project an old source event over its cursor.
     if (target.executionSessionId === payload.sessionId) broadcastRaw(dirId,
       payload.type === 'session_queue_status'
-        ? { ...payload, ...queueView(payload.sessionId, payload, target) } : payload);
+        ? { ...payload, ...queueOwner.project(payload.sessionId, payload, target, clock) } : payload);
     const sources = new Set(options.stateSources?.(payload.sessionId) || []);
     if (target.executionSessionId !== payload.sessionId) sources.add(payload.sessionId);
     for (const id of sources) if (id !== payload.sessionId || target.executionSessionId !== id) publishSessionView(id);
   }
 
-  function setSummary(sessionId, summary) {
-    if (!summary) return false;
-    const record = records.get(sessionId);
-    if (!record || record.type === 'aux' || record.type === 'gateway') return false;
-    const ts = clock();
-    summaries.set(sessionId, { summary, ts });
-    const changed = record.summary !== summary;
-    if (changed) record.summary = summary;
-    if (changed || record.taskState?.lastSummary !== summary) {
-      setTaskState(sessionId, { lastSummary: summary, lastSummaryAt: ts }, { save: false });
-      saveBestEffort('runtime.session-summary');
-    }
-    broadcast(record.dirId, { type: 'summary', sessionId, summary, ts });
-    return true;
-  }
-
-  function setStatus(sessionId, patch) {
-    const record = records.get(sessionId);
-    if (!record || record.type === 'aux') return null;
-    const previous = status.get(sessionId) || EMPTY_STATUS;
-    const transition = sessionState.transition(sessionId, previous, patch);
-    const next = {
-      ...transition.state,
-      currentFile: patch.currentFile !== undefined ? patch.currentFile : previous.currentFile,
-    };
-    status.set(sessionId, next);
-    if (next.status === previous.status && next.currentFile === previous.currentFile) return next;
-    broadcast(record.dirId, {
-      type: 'status',
-      sessionId,
-      status: next.status,
-      currentFile: next.currentFile,
-      lastActivity: next.lastActivity,
-      runStartedAt: next.runStartedAt,
-      runEndedAt: next.runEndedAt,
-      mergeState: mergeState(directories.get(record.dirId), record),
-    });
-    return next;
-  }
-
-  function normalizeQueueStatus(sessionId, input = {}) {
-    const state = String(input.state || 'idle');
-    const classifyState = String(input.classifyState || '').toUpperCase();
-    return Object.freeze({
-      sessionId,
-      depth: Math.max(0, Math.floor(Number(input.depth) || 0)),
-      state: QUEUE_STATES.has(state) ? state : 'idle',
-      classifyState: CLASSIFY_STATES.has(classifyState) ? classifyState : null,
-      updatedAt: Math.max(0, Math.floor(Number(input.updatedAt) || 0)),
-    });
-  }
+  const setSummary = (sessionId, summary) => stateOwner.setSummary(sessionId, summary, statePorts);
+  const setStatus = (sessionId, patch) => stateOwner.setStatus(sessionId, patch, statePorts);
 
   function setQueueStatus(sessionId, input, { broadcast: shouldBroadcast = true } = {}) {
     const record = records.get(sessionId);
     if (!record || record.type === 'aux' || record.type === 'gateway') return null;
-    const next = normalizeQueueStatus(sessionId, input);
-    const previous = queueStatuses.get(sessionId);
-    if (previous && previous.updatedAt > next.updatedAt) return previous;
-    queueStatuses.set(sessionId, next);
-    if (shouldBroadcast && (!previous || previous.depth !== next.depth
-        || previous.state !== next.state || previous.classifyState !== next.classifyState)) {
-      broadcast(record.dirId, { type: 'session_queue_status', ...next });
+    const { value, changed } = queueOwner.update(sessionId, input);
+    if (shouldBroadcast && changed) {
+      broadcast(record.dirId, { type: 'session_queue_status', ...value });
     }
-    return next;
+    return value;
   }
 
   function hydrateQueueStatuses(items) {
@@ -213,8 +134,8 @@ function createWorkspaceRuntime(options) {
     return [...records.values()].filter(record => record.dirId === dirId).flatMap(record => {
       const target = options.resolveStateTarget?.(record.id);
       const targetId = target?.executionSessionId || record.id;
-      const queue = queueStatuses.get(targetId);
-      if (target) return [queueView(record.id, queue, target)];
+      if (target) return [queueOwner.view(record.id, targetId, target, clock)];
+      const queue = queueOwner.get(targetId);
       return queue ? [{ ...queue, sessionId: record.id }] : [];
     });
   }
@@ -268,7 +189,7 @@ function createWorkspaceRuntime(options) {
     return true;
   }
 
-  hydrate();
+  stateOwner.hydrate(statePorts);
 
   return Object.freeze({
     status,

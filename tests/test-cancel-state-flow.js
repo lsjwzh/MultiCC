@@ -34,6 +34,8 @@ const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createOutbox } = require('../src/outbox');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 const { classifyDisplay } = require('../src/classify/vocab');
+const { createSessionPersistence } = require('../src/session/persistence');
+const { recordsOf } = require('./helpers/session-records');
 
 // ── Harness ────────────────────────────────────────────────────────────────
 
@@ -67,7 +69,7 @@ function harness(t, options = {}) {
     },
   }));
 
-  const persistedSessions = new Map([['s1', {
+  const persistedSessions = recordsOf([['s1', {
     id: 'sess-1',
     kind: 'chat',
     cli: 'codex',
@@ -145,11 +147,18 @@ function harness(t, options = {}) {
   // every write, so a cancel must surface here exactly once as P → E.
   const bus = new EventEmitter();
   bus.on('task:state-changed', (sessionId, prev, next) => record({ kind: 'task_state_changed', sessionId, prev, next }));
+  // Runtime saves land on this store port, exactly where the legacy
+  // saveBestEffort seam was observable.
+  createSessionPersistence({
+    records: persistedSessions,
+    store: { save() {} },
+    setTimeoutFn: () => ({ unref() {} }),
+    clearTimeoutFn: () => {},
+  });
   const taskStateStore = createTaskStateStore({
     persistedSessions,
     bus,
     now: () => clock,
-    saveBestEffort() {},
     chatBroadcast: (sessionId, payload) => record({ kind: 'chat_broadcast', sessionId, payload }),
     workspaceBroadcast: (dirId, payload) => record({ kind: 'workspace_broadcast', dirId, payload }),
   });
@@ -216,6 +225,7 @@ function harness(t, options = {}) {
       return taskStateStore.setTaskState(sessionId, patch, opts);
     },
     getTaskState: taskStateStore.getTaskState,
+    appendClassifyHistory: (...args) => taskStateStore.appendClassifyHistory(...args),
     setSessionSummary: (sessionId, message) => record({ kind: 'session_summary', sessionId, message }),
     setSessionStatus: (sessionId, patch) => record({ kind: 'session_status', sessionId, patch }),
     chatBroadcast: (sessionId, payload) => record({ kind: 'chat_broadcast', sessionId, payload }),
@@ -854,10 +864,17 @@ function bareStore(overrides = {}) {
   const bus = new EventEmitter();
   bus.on('task:state-changed', (sessionId, prev, next) => log.push({ kind: 'bus', sessionId, prev, next }));
   let clock = 500;
-  const persistedSessions = new Map([['s1', { dirId: 'd1', taskState: { classifyState: 'P', goal: 'g' } }]]);
+  const persistedSessions = recordsOf([['s1', { dirId: 'd1', taskState: { classifyState: 'P', goal: 'g' } }]]);
+  // The save is the native owner's own best-effort writer: the store port is
+  // where the legacy `saveBestEffort` seam stayed observable.
+  createSessionPersistence({
+    records: persistedSessions,
+    store: { save: value => log.push({ kind: 'save', value }) },
+    setTimeoutFn: () => ({ unref() {} }),
+    clearTimeoutFn: () => {},
+  });
   const store = createTaskStateStore({
     persistedSessions, bus, now: () => clock,
-    saveBestEffort: source => log.push({ kind: 'save', source }),
     chatBroadcast: (sessionId, payload) => log.push({ kind: 'chat', sessionId, payload }),
     workspaceBroadcast: (dirId, payload) => log.push({ kind: 'workspace', dirId, payload }),
     ...overrides,
@@ -900,7 +917,8 @@ test('task-state store: persist, bus, save, then broadcast — in that order', (
   assert.deepEqual(log.map(entry => entry.kind), ['bus', 'save', 'chat', 'workspace']);
   assert.equal(log[0].prev.classifyState, 'P');
   assert.equal(log[0].next, next);
-  assert.equal(log[1].source, 'runtime.task-state');
+  assert.equal(log[1].value[0].taskState.classifyState, 'E', 'persisted after the bus event');
+  assert.equal(log[1].value[0].taskState.cancelledAt, 7);
   assert.equal(log[2].payload.type, 'task_state');
   assert.equal(log[2].payload.cancelledAt, 7);
   assert.equal(log[3].payload.sessionId, 's1');

@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod args;
+pub mod auth_control;
 pub mod backoff;
 pub mod daemon;
 pub mod forward;
@@ -17,7 +18,7 @@ pub mod proxy_header;
 
 /// Version of the front-door ⇄ Node contract. Must match the probe in
 /// `scripts/build-rust-kernels.js` and `src/gateway-child.js`.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 pub fn version_line() -> String {
     format!(

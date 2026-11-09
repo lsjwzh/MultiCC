@@ -13,6 +13,7 @@ const test = require('node:test');
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
 const { EventEmitter } = require('events');
+const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 
 const FAIL_FAST = Object.freeze({
   category: 'unknown', provider: 'qoder', code: 'error_during_execution',
@@ -54,7 +55,7 @@ function fixture({
     id: 'msg-1', role: 'assistant', content: 'x'.repeat(40),
     taskId: 'task-1', taskName: '定位 codex 冷启瓶颈',
   }];
-  const persistedSessions = new Map([['s1', record]]);
+  const persistedSessions = recordsOf([['s1', record]]);
   const chatSessions = new Map([['s1', chatState]]);
   const observed = {
     enqueued: 0, enqueuedTasks: [], cancelledFor: [], transitions: 0,
@@ -112,6 +113,7 @@ function fixture({
       record.taskState = { ...record.taskState, ...patch };
     },
     getTaskState: value => ({ apiError: null, cancelledAt: null, ...(value?.taskState || {}) }),
+    appendClassifyHistory: (id, entry, cutoff) => appendClassifyHistory(persistedSessions, id, entry, cutoff),
     setSessionSummary() {},
     setSessionStatus() {},
     chatBroadcast: (_sessionId, event) => observed.broadcasts.push(event),

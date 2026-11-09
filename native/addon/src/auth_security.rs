@@ -4,6 +4,7 @@
 //! a weak handle to it, so callback/metadata cycles can be collected by V8.
 //! No RefCell borrow is held while calling JavaScript.
 use crate::js_live::LiveValue as V;
+use multicc_core::auth_runtime::{AuthRuntime, Metadata};
 use multicc_core::{
     auth_security as core,
     js::{JsString, JsValue},
@@ -13,6 +14,7 @@ use napi_derive::napi;
 use std::{
     cell::{Cell, RefCell},
     ptr,
+    sync::{Arc, Mutex},
 };
 
 struct Held {
@@ -76,10 +78,20 @@ pub struct RustAuthSecurity {
     cookie_ttl: f64,
     ticket_ttl: f64,
     max_tickets: usize,
-    tickets: RefCell<core::WsTickets<u64>>,
+    state: Arc<Mutex<AuthRuntime>>,
+    owned_secret: bool,
+    control: RefCell<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl RustAuthSecurity {
+    pub(crate) fn shared_state(&self) -> Result<Arc<Mutex<AuthRuntime>>> {
+        if !self.owned_secret {
+            return Err(napi::Error::from_reason(
+                "workspace tickets require owned authentication",
+            ));
+        }
+        Ok(Arc::clone(&self.state))
+    }
     fn take_metadata<'a>(&self, env: &'a Env, slot: u64) -> Result<V<'a>> {
         let slots = self.owner.get(env)?.get(c"slots")?;
         let key = text(slots, &slot.to_string())?;
@@ -90,7 +102,18 @@ impl RustAuthSecurity {
         })?;
         Ok(value)
     }
+    fn drain_retired(&self, env: &Env) -> Result<()> {
+        let slots =
+            std::mem::take(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()).retired);
+        for slot in slots {
+            self.take_metadata(env, slot)?;
+        }
+        Ok(())
+    }
     fn secret(&self, env: &Env) -> Result<String> {
+        if self.owned_secret {
+            return Ok(self.access_token());
+        }
         let port = self.owner.get(env)?.get(c"port")?;
         Ok(string(port.get(c"getSecret")?.call_plain(&[])?)?.unwrap_or_default())
     }
@@ -135,7 +158,13 @@ impl RustAuthSecurity {
         let cookie_ttl = setting(options, c"cookieTtlMs", core::COOKIE_TTL_MS as f64)?;
         let ticket_ttl = setting(options, c"ticketTtlMs", core::TICKET_TTL_MS as f64)?;
         let max = setting(options, c"maxTickets", core::MAX_TICKETS as f64)?;
-        if port.get(c"getSecret")?.kind()? != sys::ValueType::napi_function {
+        let initial_secret = string(options.get(c"secret")?)?;
+        if let Some(secret) = &initial_secret {
+            AuthRuntime::validate_secret(secret).map_err(napi::Error::from_reason)?;
+        }
+        if initial_secret.is_none()
+            && port.get(c"getSecret")?.kind()? != sys::ValueType::napi_function
+        {
             return Err(port.type_error("createAuthSecurity requires getSecret()"));
         }
         if max <= 0.0 || max.fract() != 0.0 || max > u32::MAX as f64 {
@@ -152,8 +181,102 @@ impl RustAuthSecurity {
             cookie_ttl,
             ticket_ttl,
             max_tickets: max as usize,
-            tickets: RefCell::new(core::WsTickets::default()),
+            owned_secret: initial_secret.is_some(),
+            state: Arc::new(Mutex::new(AuthRuntime::new(
+                initial_secret.unwrap_or_default(),
+            ))),
+            control: RefCell::new(None),
         })
+    }
+
+    #[napi]
+    pub fn access_token(&self) -> String {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .secret
+            .clone()
+    }
+    #[napi]
+    pub fn set_access_token(&self, secret: String) -> Result<()> {
+        if !self.owned_secret {
+            return Err(napi::Error::from_reason(
+                "callback credentials are not mutable",
+            ));
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_secret(secret)
+            .map_err(napi::Error::from_reason)?;
+        Ok(())
+    }
+    #[napi]
+    pub fn shutting_down(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shutting_down
+    }
+    #[napi]
+    pub fn set_shutting_down(&self, value: bool) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shutting_down = value;
+    }
+    /// The connection is private, asynchronous, and never enters the JS VM.
+    #[napi]
+    pub fn connect_gateway(&self, port: u32, capability: String) -> Result<()> {
+        if !self.owned_secret
+            || port == 0
+            || port > 65535
+            || capability.len() != 43
+            || self.control.borrow().is_some()
+        {
+            return Err(napi::Error::from_reason("invalid auth control bootstrap"));
+        }
+        let state = Arc::clone(&self.state);
+        let task = napi::bindgen_prelude::spawn(async move {
+            use multicc_core::auth_control as wire;
+            loop {
+                if let Ok(mut stream) =
+                    tokio::net::TcpStream::connect(("127.0.0.1", port as u16)).await
+                {
+                    let _ = stream.set_nodelay(true);
+                    if matches!(
+                        tokio::time::timeout(
+                            wire::TIMEOUT,
+                            wire::connect(&mut stream, &capability)
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
+                        // Idle reads have no timer. A partial frame is bounded
+                        // by the peer's request deadline, which closes the stream.
+                        while let Ok(request) = wire::read(&mut stream).await {
+                            let response = state
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .respond(request);
+                            if !matches!(
+                                tokio::time::timeout(
+                                    wire::TIMEOUT,
+                                    wire::write(&mut stream, &response)
+                                )
+                                .await,
+                                Ok(Ok(()))
+                            ) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        });
+        *self.control.borrow_mut() = Some(task);
+        Ok(())
     }
 
     #[napi]
@@ -197,10 +320,11 @@ impl RustAuthSecurity {
     #[napi]
     pub fn prune_tickets(&self, env: Env) -> Result<()> {
         let now = self.now(&env)?;
-        let removed = self.tickets.borrow_mut().prune(now, self.max_tickets);
-        for slot in removed {
-            self.take_metadata(&env, slot)?;
-        }
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prune(now, self.max_tickets);
+        self.drain_retired(&env)?;
         Ok(())
     }
 
@@ -227,11 +351,17 @@ impl RustAuthSecurity {
             .get(c"slots")?
             .define_key(text(pathname, &slot.to_string())?, copied)?;
         let replaced = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .tickets
-            .borrow_mut()
-            .insert(&ticket, scope.clone(), expires, slot);
-        if let Some(slot) = replaced {
-            self.take_metadata(&env, slot)?;
+            .insert(&ticket, scope.clone(), expires, Metadata::Host(slot));
+        if let Some(metadata) = replaced {
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retire(metadata);
+            self.drain_retired(&env)?;
         }
         Ok(pathname
             .from_value(&JsValue::object(vec![
@@ -258,11 +388,23 @@ impl RustAuthSecurity {
         else {
             return Ok(null.raw());
         };
-        let record = self.tickets.borrow_mut().take(&value);
+        self.drain_retired(&env)?;
+        let record = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tickets
+            .take(&value);
         let Some(record) = record else {
             return Ok(null.raw());
         };
-        let metadata = self.take_metadata(&env, record.metadata)?;
+        let metadata = match record.metadata {
+            Metadata::Host(slot) => self.take_metadata(&env, slot)?,
+            Metadata::Native(value) => ticket.from_value(&value)?,
+            Metadata::Wire(value) => {
+                ticket.from_value(&multicc_core::js::serde::from_serde(&value))?
+            }
+        };
         // Removed before clock and scope checks, including a wrong-scope attempt.
         if record.expires_at <= self.now(&env)? || record.path != scope {
             return Ok(null.raw());
@@ -279,7 +421,19 @@ impl RustAuthSecurity {
 
     #[napi]
     pub fn ticket_count(&self) -> u32 {
-        self.tickets.borrow().len() as u32
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tickets
+            .len() as u32
+    }
+}
+
+impl Drop for RustAuthSecurity {
+    fn drop(&mut self) {
+        if let Some(task) = self.control.get_mut().take() {
+            task.abort();
+        }
     }
 }
 

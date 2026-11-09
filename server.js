@@ -1,5 +1,8 @@
 'use strict';
 
+// Capture private gateway bootstrap before modules spawn any descendants.
+const { connectAuthControl } = require('./src/gateway-child');
+
 {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 16)) {
@@ -102,7 +105,9 @@ const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
 const stateTx = require('./src/state/tx');
 const { bootstrapState } = require('./src/bootstrap/state');
-const { createSessionPersistence } = require('./src/session/persistence'); const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
+const { createSessionPersistence } = require('./src/session/persistence');
+const { createSessionRecords } = require('./src/session/records');
+const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
 const { createOrchestrationRuntime } = require('./src/orchestration/runtime');
 const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = require('./src/codex/image-bridge-runtime');
@@ -171,7 +176,7 @@ const { createTaskHistoryRetention, taskHistoryRefusal } = require('./src/sessio
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
-const { mountFleetSharingRoutes } = require('./src/routes/fleet-sharing');
+const { createFleetSharing } = require('./src/fleet-sharing');
 const { createSessionAdminRuntime } = require('./src/routes/session-admin');
 const { createSessionTriggers } = require('./src/triggers');
 const {
@@ -355,12 +360,14 @@ stateStore.setFailureReporter((error, meta) => {
 const networkPolicy = resolveNetworkPolicy(process.env);
 const app = express();
 app.locals.observability = observability;
-let _shuttingDown = false;
+
 
 // ── Access token authentication (cookie-based login) ──
-// `let` (not const): editable at runtime via /api/settings/access-token from
-// localhost, hot-reloaded without restart (persisted to .env).
-let ACCESS_TOKEN = networkPolicy.accessToken, fleetSharingRuntime = null; const authSecurity = createAuthSecurity({ getSecret: () => ACCESS_TOKEN });
+// Rust owns the live token and shutdown state. Host persistence applies
+// updates only after the .env write succeeds.
+let fleetSharingRuntime = null;
+const authSecurity = createAuthSecurity({ secret: networkPolicy.accessToken });
+connectAuthControl(authSecurity);
 const machines = require('./src/machines').createMachineRuntime({ root: MULTICC_PATHS.root, authSecurity, getWss: () => wss });
 const ALLOW_LEGACY_TOKEN_QUERY = envEnabled(process.env.MULTICC_ALLOW_LEGACY_TOKEN_QUERY);
 const ALLOW_LEGACY_WS_TOKEN = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_TOKEN);
@@ -381,9 +388,8 @@ routerToolHost.mount(app);
 // Auth gates shutdown, login and scoped grants.
 // It stays mounted before every API/relay route so mutable credentials apply
 // Downstream routes cannot bypass authentication.
-// ACCESS_TOKEN and shutdown state are read lazily on each request.
-const serviceRoutes = require('./src/service-routes').createServiceRoutes({ authenticate: req => authRuntime.isAuthenticated(req), peerAllowed: req => !networkPolicy.lanOnly || isPrivateRequestPeer(req) });
-const authRuntime = createAuthRuntime({ handleServiceRequest: serviceRoutes.handleHttp,
+// authSecurity.accessToken() and shutdown state are read lazily on each request.
+const authRuntime = createAuthRuntime({
   express,
   authSecurity,
   isLocalRequest, isRequestPeerAllowed: req => !networkPolicy.lanOnly || isPrivateRequestPeer(req),
@@ -393,9 +399,9 @@ const authRuntime = createAuthRuntime({ handleServiceRequest: serviceRoutes.hand
   metrics,
   logger,
   createErrorDto,
-  getAccessToken: () => ACCESS_TOKEN,
-  getShuttingDown: () => _shuttingDown,
-  authorizeScopedRequest: req => machines.authorize(req) || fleetSharingRuntime?.sharing.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.originalUrl }) === true, authorizeProviderRelayRequest: input => providerRelayShares.authorize(input),
+  getAccessToken: () => authSecurity.accessToken(),
+  getShuttingDown: () => authSecurity.shuttingDown(),
+  authorizeScopedRequest: req => machines.authorize(req) || fleetSharingRuntime?.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.originalUrl }) === true, authorizeProviderRelayRequestAsync: input => providerRelayShares.authorize(input),
   allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
 authRuntime.mountRoutes(app);
@@ -421,7 +427,7 @@ mountProviderRelayQuotaRoutes(app, {
 let serviceReady = false;
 const commanderMigrationState = createCommanderMigrationState();
 const healthHandlers = createHealthHandlers({
-  isReady: () => serviceReady && !_shuttingDown && commanderMigrationState.snapshot().ready,
+  isReady: () => serviceReady && !authSecurity.shuttingDown() && commanderMigrationState.snapshot().ready,
   readinessDetails: () => ({ commanderMigration: commanderMigrationState.snapshot() }),
 });
 app.get('/healthz', healthHandlers.healthz);
@@ -439,13 +445,13 @@ app.get('/metrics', (req, res) => {
     multicc_git_queue_depth: gitQueueDepth(),
     multicc_active_waits: waitStats.waits + (orchestrationRuntime ? orchestrationRuntime.pendingCount() : 0),
     ...(orchestrationRuntime?.store.metrics?.() || {}),
-    multicc_ready: serviceReady && !_shuttingDown && commanderMigrationState.snapshot().ready ? 1 : 0,
+    multicc_ready: serviceReady && !authSecurity.shuttingDown() && commanderMigrationState.snapshot().ready ? 1 : 0,
   }));
 });
 let PORT = networkPolicy.port;
 const BIND_HOST = networkPolicy.host;
 const server = http.createServer(app);
-const lanDiscovery = createLanDiscoveryRuntime({ readState: () => ({ host: BIND_HOST, port: PORT, allowRemote: networkPolicy.allowRemote, accessToken: ACCESS_TOKEN, listening: server.listening, shuttingDown: _shuttingDown }), logger });
+const lanDiscovery = createLanDiscoveryRuntime({ readState: () => ({ host: BIND_HOST, port: PORT, allowRemote: networkPolicy.allowRemote, accessToken: authSecurity.accessToken(), listening: server.listening, shuttingDown: authSecurity.shuttingDown() }), logger });
 const wss = new WebSocket.Server({ noServer: true }); // upgrades dispatched by voice-host wireUpgrade (voice WS -> proxy, chat WS -> wss)
 const isWindows = process.platform === 'win32';
 
@@ -712,35 +718,25 @@ const stateBootstrap = bootstrapState({
   randomUUID: crypto.randomUUID,
   logger: console,
 });
-const sessionsStore = stateBootstrap.sessionsStore;
 const directoriesStore = stateBootstrap.directoriesStore;
 const _state = stateBootstrap.state;
-const persistedSessions = _state.persistedSessions; mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
+// Boot import adapter: the Node loader parsed and migrated sessions.json; from
+// here the native owner owns the live table and the writer. The boot Map is
+// read once and dropped (no second table is retained).
+const persistedSessions = createSessionRecords(_state.persistedSessions);
+mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 
 // 供应商余量共享缓存：写入成功后向使用该线路的会话同步展示快照。
 const { mountProviderLimitHistoryRoutes } = require('./src/routes/provider-limit-history');
 const { providerQuotaHistory, providerLimitCache, limitRecorder, quotaBarCache, quotaGuard } = require('./src/quota/provider-runtime').createProviderQuotaRuntime({ paths: MULTICC_PATHS, persistedSessions, providers, broadcast: (id, data) => chatBroadcast(id, data), logger });
-// Host-injected store port. Production delegates directly to StateStore's
-// atomic tmp+fsync+rename write. Isolated integration tests may place a marker
-// inside their temporary MULTICC_DATA_DIR to inject EIO deterministically.
-const sessionStorePort = {
-  save(data) {
-    const marker = process.env.MULTICC_TEST_SESSION_PERSISTENCE_FAIL_FILE;
-    if (process.env.NODE_ENV === 'test' && marker) {
-      const root = path.resolve(MULTICC_PATHS.root);
-      const resolved = path.resolve(marker);
-      if ((resolved === root || resolved.startsWith(root + path.sep)) && fs.existsSync(resolved)) {
-        const error = new Error('injected sessions.json persistence failure');
-        error.code = 'EIO';
-        throw error;
-      }
-    }
-    return sessionsStore.save(data);
-  },
-};
+// The native owner writes sessions.json itself (same envelope, `.bak1..3`
+// rotation, file+directory fsync). It honours the same isolated-test failure
+// marker inside a temporary MULTICC_DATA_DIR, under NODE_ENV=test only.
 const sessionPersistence = createSessionPersistence({
   records: persistedSessions,
-  store: sessionStorePort,
+  file: SESSIONS_FILE,
+  kind: 'sessions',
+  root: MULTICC_PATHS.root,
   retryDelayMs: Math.max(50, Number(process.env.MULTICC_SESSION_PERSISTENCE_RETRY_MS) || 500),
   maxRetries: 3,
   onFailure: ({ error, mode, source, attempt, dirty }) => {
@@ -901,7 +897,7 @@ const directoryModule = createDirectoryModule({
     unmarkReady: (id) => { gitReadyDirs.delete(id); },
   },
   sessions: {
-    listByDir: (dirId) => [...persistedSessions.values()].filter(s => s.dirId === dirId),
+    listByDir: (dirId) => persistedSessions.listByDir(dirId),
     seedCommander: dir => { folderMemory.ensureShared(dir.id); return seedCommanderSession(dir); },
     destroyCascade: destroySessionCascade,
     persistRecords: () => sessionPersistence.mutate('http.directory-delete-fallback', () => {}),
@@ -1349,7 +1345,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) livenessRuntime.recordProxyActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
-machines.mount(app, express); app.use(express.json({ limit: '50mb' })); serviceRoutes.mountManagement(app);
+machines.mount(app, express); app.use(express.json({ limit: '50mb' }));
 // Codex 协议代理端点：官方 relay 与 responses-compat（XFYun 流稳定化）。
 // Responses↔Chat 转换桥已退役——主流国产服务商均已原生支持 /responses。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
@@ -1399,6 +1395,9 @@ const classifyStateMachine = createClassifyStateMachine({
   getWaitInjector: () => waitInjector,
   setTaskState,
   getTaskState,
+  // Direct classify-history writer routes through the record owner (late-bound:
+  // the task-state store is composed below, calls only happen at runtime).
+  appendClassifyHistory: (...args) => taskStates.appendClassifyHistory(...args),
   setSessionSummary: (...args) => setSessionSummary(...args),
   setSessionStatus: (...args) => setSessionStatus(...args),
   chatBroadcast: (...args) => chatBroadcast(...args),
@@ -1734,13 +1733,13 @@ const sessionLifecycleRuntime = createSessionLifecycleRuntime({
 // ── Restart the whole multicc server (graceful) ──
 // Handler + detached-scheduler debounce live in src/routes/server-restart-route.js;
 // only host wiring stays here. rootDir must be THIS file's __dirname (the package
-// root the manager script lives in), not the route module's directory. _shuttingDown
+// root the manager script lives in), not the route module's directory. authSecurity.shuttingDown()
 // is forwarded lazily so the route reads the host's live shutdown flag at request time.
 createServerRestartRoute({
   chatSessions,
   spawn,
   rootDir: __dirname,
-  getShuttingDown: () => _shuttingDown, desktopExit: reason => gracefulShutdown(reason),
+  getShuttingDown: () => authSecurity.shuttingDown(), desktopExit: reason => gracefulShutdown(reason),
 }).mountRoutes(app);
 
 // ── One-click update (runs `./multicc update`, which restarts us at the end) ──
@@ -1750,7 +1749,7 @@ const updateRoute = createUpdateRoute({
   chatSessions,
   spawn,
   rootDir: __dirname,
-  getShuttingDown: () => _shuttingDown,
+  getShuttingDown: () => authSecurity.shuttingDown(),
   getPort: () => PORT,
   fs,
   path,
@@ -1799,7 +1798,7 @@ if (readEnvFile().DEFAULT_CLI !== undefined) writeEnvFile({ DEFAULT_CLI: null })
 delete process.env.DEFAULT_CLI;
 
 // Voice settings and per-Fleet Qwen sidecars share one host-owned lifecycle.
-const voiceHost = createVoiceHost({ serviceRoutes,
+const voiceHost = createVoiceHost({
   app, server, wss, records: persistedSessions, directories, sessionPersistence,
   runtimeRoot: MULTICC_PATHS.voiceRuntimesDir,
   getBaseUrl: () => `http://127.0.0.1:${PORT}`,
@@ -1839,7 +1838,7 @@ const authHealth = require('./src/claude-auth/refresh-health').createRefreshHeal
 const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore({ onCredentialWritten: id => limitRecorder.releaseProviderFailure({ providerId: require('./src/providers/official-catalog').accountProviderId('claude', id) }) }); const cliLogin = require('./src/official-accounts-cli-login').createCliLoginDetector({ accounts: officialAccounts }); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountRefresh = require('./src/claude-auth/accounts-refresh').createClaudeAccountRefreshSupervisor({ accounts: officialAccounts, logger, health: authHealth }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger, exclusive: claudeAccountRefresh.exclusive, onNeedsRefresh: id => claudeAccountRefresh.checkAccount(id, 'read-miss') }); cliLogin.start(); claudeAccountRefresh.start(); // each own-token account is refreshed by the claude CLI under its own CLAUDE_CONFIG_DIR // the CLI's own login is only detected (panel reminder), never copied: a copy would share its single-use refresh token // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
 const apiErrorHost = createApiErrorHost({
   policy: apiErrorPolicy, logger, persistedSessions, setTaskState, chatBroadcast,
-  setSessionStatus, isShuttingDown: () => _shuttingDown,
+  setSessionStatus, isShuttingDown: () => authSecurity.shuttingDown(),
   clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
   isCurrentTurnRunner: (...args) => isCurrentTurnRunner(...args),
   recordProviderFailure: limitRecorder.recordProviderFailure, proxyFailureForAttempt: providerAttemptRuntime.proxyFailure, // revoked OAuth → park; 429 → proxy rejection
@@ -1866,8 +1865,10 @@ mountShareRoutes(app, { share, persistedSessions, loadChatHistory, parseCookies,
   chatPageFile: path.join(__dirname, 'public', 'chat.html'),
   serveHtml: staticAssetsRuntime.serveHtml,
 });
-fleetSharingRuntime = mountFleetSharingRoutes(app, { paths: MULTICC_PATHS, directories, sessions: persistedSessions, logger,
-  issueWsTicket: (pathname, metadata) => authSecurity.issueWsTicket(pathname, metadata),
+fleetSharingRuntime = createFleetSharing({ sharesFile: MULTICC_PATHS.fleetSharesFile,
+  getDirectory: id => directories.get(id),
+  listSessions: id => persistedSessions.listByDir(id).filter(session => session.type !== 'aux'),
+  authSecurity,
 });
 
 // Host/install metadata and APK selection share this boundary; live network
@@ -1879,7 +1880,7 @@ mountSystemRoutes(app, {
   rootDir: __dirname,
   networkInterfaces: () => os.networkInterfaces(),
   getPort: () => PORT, getBindHost: () => BIND_HOST,
-  authRequired: () => ACCESS_TOKEN,
+  authRequired: () => authSecurity.accessToken(),
   gitRun,
   apkDistribution, iosOta,
 });
@@ -1890,7 +1891,7 @@ mountHostReadRoutes(app, {
   getVapidPublicKey: () => vapidKeys.pubKey,
   push,
   tunnel,
-  getAccessToken: () => ACCESS_TOKEN,
+  getAccessToken: () => authSecurity.accessToken(),
   isLocalRequest,
   macosPower, batteryGuard: batteryGuardRuntime,
 });
@@ -1903,10 +1904,10 @@ mountHostWriteRoutes(app, {
   writeEnvFile,
   push,
   tunnel,
-  getAccessToken: () => ACCESS_TOKEN,
+  getAccessToken: () => authSecurity.accessToken(),
   setAccessToken: (token) => {
     process.env.ACCESS_TOKEN = token;
-    ACCESS_TOKEN = token;
+    authSecurity.setAccessToken(token);
     void lanDiscovery.reconcile();
   },
   getAllowRemote: () => networkPolicy.allowRemote,
@@ -1956,7 +1957,7 @@ const {
   atomicWriteJson,
   persistedSessions,
   savePersistedSessionsBestEffort,
-  isShuttingDown: () => _shuttingDown,
+  isShuttingDown: () => authSecurity.shuttingDown(),
   recordApiError,
   recordApiSuccess,
   appendChatMessage,
@@ -2025,7 +2026,9 @@ function dispatchTargetBusy(sid, item = null) {
   return dispatchTargetBusyReasons(sid, item).length > 0;
 }
 const taskBoardRuntime = createTaskBoardRuntime({
-  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), isSessionBusy: sid => dispatchTargetBusy(sid), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn), workspaceBroadcast, chatBroadcast, getHibernation: () => sessionHibernationRuntime }),
+  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), isSessionBusy: sid => dispatchTargetBusy(sid), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn),
+    // Late-bound: taskStates is composed below; deletion only runs at runtime.
+    resetTaskState: id => taskStates.resetTaskState(id), workspaceBroadcast, chatBroadcast, getHibernation: () => sessionHibernationRuntime }),
   file: MULTICC_PATHS.taskBoardFile,
   getPinnedTaskIds: () => require('./src/workspace/pins').readStoredPinIds(MULTICC_PATHS.airPinsFile),
   listShellTasks: () => taskShellHost.listTasks(),
@@ -2392,7 +2395,7 @@ const cleanupPushMonitor = pushRuntime.cleanup;
 // The declarations stay: hosts wired above receive these two functions before
 // this line runs (hoisting), and every caller reaches the one tested store.
 const taskStates = createTaskStateStore({
-  persistedSessions, saveBestEffort: savePersistedSessionsBestEffort, chatBroadcast, workspaceBroadcast, bus,
+  persistedSessions, chatBroadcast, workspaceBroadcast, bus,
 });
 function getTaskState(persisted) { return taskStates.getTaskState(persisted); }
 function setTaskState(sessionId, patch, opts) { return taskStates.setTaskState(sessionId, patch, opts); }
@@ -2552,7 +2555,7 @@ const chatTurnEngine = createChatTurnEngine({
   getExperimentalTuiChatRuntime: () => tuiChatMirrorRuntime, applyPendingConfiguration: cliSwitchRuntime.applyPendingConfiguration,
   getSessionHibernation: () => sessionHibernationRuntime, getWorkspaceAdmission: () => workspaceAdmission,
   getSessionGitRuntime: () => sessionGitRuntime, isCliAvailable: cli => !!cliAvailabilitySummary()[cli]?.available,
-  isShuttingDown: () => _shuttingDown,
+  isShuttingDown: () => authSecurity.shuttingDown(),
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
   persistedSessions,
@@ -2762,8 +2765,8 @@ mountWsConnectionRouter(wss, { machines,
   applyMaxClientSize,
   pushOnInput,
   handleChatWs: (ws, req, urlObj) => chatTurnEngine.handleChatWs(ws, req, urlObj),
-  getShuttingDown: () => _shuttingDown,
-  getAccessToken: () => ACCESS_TOKEN,
+  getShuttingDown: () => authSecurity.shuttingDown(),
+  getAccessToken: () => authSecurity.accessToken(),
   allowLegacyWsCookie: ALLOW_LEGACY_WS_COOKIE,
   allowLegacyWsToken: ALLOW_LEGACY_WS_TOKEN,
   fs,
@@ -2852,8 +2855,8 @@ tunnel.init();
 // Graceful shutdown and service timers live in src/host-lifecycle.js; mutable host state stays lazy via accessors.
 const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostLifecycle({
   isResidentSession,
-  getShuttingDown: () => _shuttingDown,
-  setShuttingDown: (v) => { _shuttingDown = v; },
+  getShuttingDown: () => authSecurity.shuttingDown(),
+  setShuttingDown: v => authSecurity.setShuttingDown(v),
   setServiceReady: (v) => { serviceReady = v; },
   getChatHistoryRuntime: () => chatHistoryRuntime,
   getOrchestrationRuntime: () => orchestrationRuntime,

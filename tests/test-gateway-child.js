@@ -123,7 +123,7 @@ async function startBehindGateway(t, { headerTimeoutMs, upgrade = false } = {}) 
 const httpRequest = (url = '/', extra = '') => `GET ${url} HTTP/1.1\r\nHost: 127.0.0.1\r\n${extra}\r\n`;
 
 test('protocol version and environment helpers fail closed', () => {
-  assert.equal(GATEWAY_PROTOCOL, 3);
+  assert.equal(GATEWAY_PROTOCOL, 12);
   // The three places docs/gateway.md §1 says must agree.
   const crate = fs.readFileSync(path.join(__dirname, '..', 'native', 'gateway', 'src', 'lib.rs'), 'utf8');
   assert.equal(Number(/pub const PROTOCOL_VERSION: u32 = (\d+);/.exec(crate)[1]), GATEWAY_PROTOCOL);

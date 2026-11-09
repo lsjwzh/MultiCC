@@ -77,6 +77,18 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
 
 /// `writeTextAtomic(target, text, { mode, dirMode })`.
 pub fn write_text_atomic(target: &Path, text: &str, mode: u32, dir_mode: u32) -> io::Result<()> {
+    write_text_atomic_before_rename(target, text, mode, dir_mode, || Ok(()))
+}
+
+/// Run the store's backup rotation after the new file is durable and before
+/// replacing the old primary. The hook must not publish an in-memory snapshot.
+pub fn write_text_atomic_before_rename(
+    target: &Path,
+    text: &str,
+    mode: u32,
+    dir_mode: u32,
+    before_rename: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
     let existed = dir.exists();
     fs::create_dir_all(dir)?;
@@ -106,6 +118,7 @@ pub fn write_text_atomic(target: &Path, text: &str, mode: u32, dir_mode: u32) ->
             }
         }
         drop(handle);
+        before_rename()?;
         fs::rename(&temp, target)?;
         set_mode(target, mode)?;
         fsync_dir(dir)

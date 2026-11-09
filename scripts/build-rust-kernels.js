@@ -13,7 +13,7 @@ const REMOTE_CRATE = 'multicc-remote';
 // CDP 网关（三平台同一份实现）。编不出来只让「一次审批」退化成直连，不影响启动。
 const CDPD_CRATE = 'multicc-cdpd';
 // Rust 前门（native/gateway）：占公开端口并看护 node。三个平台的所有启动入口都经它启动。
-// 编不出来就退回 `node server.js` 直接启动；Windows 上暂不构建。
+// 所有平台必需；构建或协议探针失败时停止启动。
 const GATEWAY_CRATE = 'multicc-gateway';
 
 function targetFor(platform, arch) {
@@ -79,11 +79,13 @@ function probeCdpdVersion(file, { run = spawnSync } = {}) {
   return { ok, output, status: result.status, error: result.error };
 }
 
-// --version 打印一行 `multicc-gateway 3 <crate 版本>`；协议号必须和
+// --version 打印一行 `multicc-gateway 12 <crate 版本>`；协议号必须和
 // native/gateway/src/lib.rs、src/gateway-child.js 的 GATEWAY_PROTOCOL 一致。
 // 2：加了 --stdin-lifeline，Node 以 0 退出时前门随之退出（docs/gateway.md §7）。
 // 3：L7 前门（hyper/axum，按连接独占上游 HTTP 连接）。
-const GATEWAY_PROTOCOL = 3;
+// 4：认证控制通道与 Rust 前门登录、交换、WS 票据端点。
+// 5：service 配置、HTTP 与 WS 代理进入前门，删除 Node 对应宿主。
+const GATEWAY_PROTOCOL = 12;
 const GATEWAY_VERSION_PREFIX = `${GATEWAY_CRATE} ${GATEWAY_PROTOCOL} `;
 
 function probeGatewayVersion(file, { run = spawnSync } = {}) {

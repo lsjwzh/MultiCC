@@ -78,6 +78,7 @@ function createClassifyStateMachine(rawDeps) {
     getWaitInjector,
     setTaskState,
     getTaskState,
+    appendClassifyHistory,
     setSessionSummary,
     setSessionStatus,
     chatBroadcast,
@@ -136,7 +137,8 @@ function createClassifyStateMachine(rawDeps) {
     [getTaskContextHost, 'getTaskContextHost'], [getTaskBoardRuntime, 'getTaskBoardRuntime'],
     [getUserInputSignalHost, 'getUserInputSignalHost'], [getApiErrorHost, 'getApiErrorHost'],
     [getWaitInjector, 'getWaitInjector'], [setTaskState, 'setTaskState'],
-    [getTaskState, 'getTaskState'], [setSessionSummary, 'setSessionSummary'],
+    [getTaskState, 'getTaskState'], [appendClassifyHistory, 'appendClassifyHistory'],
+    [setSessionSummary, 'setSessionSummary'],
     [setSessionStatus, 'setSessionStatus'], [chatBroadcast, 'chatBroadcast'],
     [workspaceBroadcast, 'workspaceBroadcast'], [terminalBroadcast, 'terminalBroadcast'],
     [triggerPush, 'triggerPush'], [evaluateTurnApiError, 'evaluateTurnApiError'],
@@ -230,12 +232,10 @@ function createClassifyStateMachine(rawDeps) {
       phase: phase || '', state, goalState: entryGoalState,
       error: !!error, evidence: result.evidence || undefined };
     if (persisted) {
-      const ts = persisted.taskState || {};
-      const hist = (Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [])
-        .filter(e => e.at > now - SEVEN_DAYS_MS);
-      hist.push(entry);
-      ts.classifyHistory = hist;
-      persisted.taskState = ts;
+      // Direct record write, routed through the native record owner so the
+      // history can never land outside the persistence lifecycle. The
+      // setTaskState call below persists the resulting taskState.
+      appendClassifyHistory(sessionName, entry, now - SEVEN_DAYS_MS);
     }
     // Persist BOTH goal and phase (was goal-only, leaving phase stale).
     if (sessionName) setTaskState(sessionName, finalPhase ? { goal: finalGoal || '', phase: finalPhase } : { goal: finalGoal || '' });

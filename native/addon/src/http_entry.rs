@@ -101,9 +101,9 @@ pub(crate) fn cookie<'a>(request: V<'a>, port: V<'a>, mut value: V<'a>) -> Resul
     }
     port.from_value(&JsValue::String(out))
 }
-fn relay(request: V<'_>, port: V<'_>) -> Result<bool> {
+fn relay_credential(request: V<'_>) -> Result<Option<JsString>> {
     if !http_entry::relay_path(&required_string(request.get(c"path")?)?) {
-        return Ok(false);
+        return Ok(None);
     }
     let bearer = http_entry::bearer(&string_or_empty(header(request, c"authorization")?)?);
     let api_key = header(request, c"x-api-key")?;
@@ -114,8 +114,14 @@ fn relay(request: V<'_>, port: V<'_>) -> Result<bool> {
     }
     .trim();
     if credential.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
+    Ok(Some(credential))
+}
+fn relay(request: V<'_>, port: V<'_>) -> Result<bool> {
+    let Some(credential) = relay_credential(request)? else {
+        return Ok(false);
+    };
     let scoped = (|| {
         let input = port.from_value(&JsValue::Object(Vec::new()))?;
         input.set(
@@ -279,46 +285,60 @@ pub fn http_entry_gate(
             .raw(),
         );
     }
-    if stage != "auth" {
+    if !matches!(stage.as_str(), "auth" | "auth-prepare" | "auth-resume") {
         return Err(port.type_error("Unknown HTTP entry stage"));
     }
-    if host(port, c"handleServiceRequest", &[request, response])?.truthy()? {
-        return Ok(undefined.raw());
+    if stage != "auth-resume" {
+        let path = required_string(request.get(c"path")?)?;
+        let method = required_string(request.get(c"method")?)?;
+        let method = method.as_str_lossy();
+        if http_entry::public_path(&method, &path)
+            || (http_entry::udid_callback_path(&method, &path)
+                && http_entry::udid_content_type(&{
+                    let content = header(request, c"content-type")?;
+                    if content.truthy()? {
+                        content.coerce_string()?
+                    } else {
+                        JsString::new()
+                    }
+                }))
+        {
+            return Ok(next.call_plain(&[])?.raw());
+        }
+        let api = path.as_units().starts_with(&[47, 97, 112, 105, 47]);
+        if method == "GET"
+            && !api
+            && member(
+                port.get(c"authSecurity")?,
+                c"verifyAccessToken",
+                &[request.get(c"query")?.get(c"token")?],
+            )?
+            .truthy()?
+        {
+            metric(port, "multicc_auth_bootstrap_query_total")?;
+            audit_query(request, port, "bootstrap_token_query")?;
+            let setter = response.get(c"setHeader")?;
+            let cookie = cookie(request, port, undefined)?;
+            setter.call(response, &[text(port, "Set-Cookie")?, cookie])?;
+            return Ok(next.call_plain(&[])?.raw());
+        }
     }
-    let path = required_string(request.get(c"path")?)?;
-    let method = required_string(request.get(c"method")?)?;
-    let method = method.as_str_lossy();
-    if http_entry::public_path(&method, &path)
-        || (http_entry::udid_callback_path(&method, &path)
-            && http_entry::udid_content_type(&{
-                let content = header(request, c"content-type")?;
-                if content.truthy()? {
-                    content.coerce_string()?
-                } else {
-                    JsString::new()
-                }
-            }))
-    {
-        return Ok(next.call_plain(&[])?.raw());
-    }
-    let api = path.as_units().starts_with(&[47, 97, 112, 105, 47]);
-    if method == "GET"
-        && !api
-        && member(
-            port.get(c"authSecurity")?,
-            c"verifyAccessToken",
-            &[request.get(c"query")?.get(c"token")?],
-        )?
-        .truthy()?
-    {
-        metric(port, "multicc_auth_bootstrap_query_total")?;
-        audit_query(request, port, "bootstrap_token_query")?;
-        let setter = response.get(c"setHeader")?;
-        let cookie = cookie(request, port, undefined)?;
-        setter.call(response, &[text(port, "Set-Cookie")?, cookie])?;
-        return Ok(next.call_plain(&[])?.raw());
-    }
-    if relay(request, port)? {
+    let relay_allowed = if stage == "auth-prepare" {
+        if let Some(credential) = relay_credential(request)? {
+            let input = port.from_value(&JsValue::Object(Vec::new()))?;
+            input.set(
+                c"credential",
+                port.from_value(&JsValue::String(credential))?,
+            )?;
+            input.set(c"method", request.get(c"method")?)?;
+            input.set(c"pathname", request.get(c"path")?)?;
+            return Ok(host(port, c"deferProviderRelay", &[input])?.raw());
+        }
+        false
+    } else {
+        relay(request, port)?
+    };
+    if relay_allowed {
         metric(port, "multicc_auth_proxy_relay_total")?;
         if request.get(c"providerRelayShareId")?.truthy()? {
             metric(port, "multicc_auth_provider_relay_share_total")?;

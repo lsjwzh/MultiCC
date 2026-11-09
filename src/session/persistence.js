@@ -1,13 +1,20 @@
 'use strict';
 
-// Transactional persistence boundary for the shared persistedSessions Map.
-// HTTP mutations use mutate(): snapshot memory, apply one synchronous mutation,
-// atomically save the resulting payload, then commit by retaining that Map
-// state. A save failure restores the snapshot and throws PersistenceError.
+// Runtime-facing adapter over the single native session-record owner
+// (native/addon/src/session_records.rs). The record table, the dirty/retry
+// state, the transaction snapshot, the sessions.json writer, `.bak` rotation and
+// fsyncs all live in Rust; this module only translates failures into the stable
+// `PersistenceError` shape the HTTP layer and tests assert on.
+//
+// HTTP mutations use mutate(): Rust snapshots, runs one synchronous mutator,
+// atomically saves the resulting payload, then retains that table state. A save
+// failure restores the snapshot before the error leaves this module.
 //
 // Runtime/timer paths use bestEffort() explicitly. Those callers have already
 // changed memory and cannot safely throw into an EventEmitter/timer callback, so
 // failures mark the service dirty and schedule a bounded retry instead.
+
+const { sessionRecordsOwner } = require('./records');
 
 class PersistenceError extends Error {
   constructor(message, { source = 'unknown', cause } = {}) {
@@ -24,22 +31,12 @@ function jsonClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function snapshotMap(records) {
-  return [...records.entries()].map(([key, value]) => [key, jsonClone(value)]);
-}
-
-function restoreMap(records, snapshot) {
-  records.clear();
-  for (const [key, value] of snapshot) records.set(key, jsonClone(value));
-}
-
-function payload(records) {
-  return jsonClone([...records.values()]);
-}
-
 function createSessionPersistence({
   records,
   store,
+  file,
+  kind = 'sessions',
+  root,
   onFailure = () => {},
   onState = () => {},
   retryDelayMs = 250,
@@ -48,137 +45,118 @@ function createSessionPersistence({
   clearTimeoutFn = clearTimeout,
 } = {}) {
   if (!(records instanceof Map)) throw new TypeError('session persistence requires a records Map');
-  if (!store || typeof store.save !== 'function') throw new TypeError('session persistence requires store.save');
-
-  let dirty = false;
-  let retryTimer = null;
-  let retryAttempt = 0;
-  let mutating = false;
-  let lastFailure = null;
-
-  function emitState() {
-    try { onState({ dirty, retryAttempt, retryScheduled: !!retryTimer, lastFailure }); } catch (_) {}
+  const owner = sessionRecordsOwner(records);
+  if (!owner) throw new TypeError('session persistence requires the native session record owner');
+  if (store !== undefined && (!store || typeof store.save !== 'function')) {
+    throw new TypeError('session persistence requires store.save');
   }
-
-  function report(error, fields) {
-    lastFailure = {
-      at: new Date().toISOString(),
-      source: fields.source,
-      mode: fields.mode,
-      attempt: fields.attempt || 0,
-      message: error && error.message || String(error),
-    };
-    try { onFailure({ ...fields, dirty, error }); } catch (_) {}
-    emitState();
+  if (store === undefined && (typeof file !== 'string' || file.length === 0)) {
+    throw new TypeError('session persistence requires a durable file');
   }
-
-  function cancelRetry() {
-    if (retryTimer) clearTimeoutFn(retryTimer);
-    retryTimer = null;
-    retryAttempt = 0;
+  const ports = {
+    stringify: JSON.stringify,
+    onFailure,
+    onState,
+    setTimeout: setTimeoutFn,
+    clearTimeout: clearTimeoutFn,
+    retryTick: () => owner.retryTick(),
+    retryDelayMs,
+    maxRetries,
+  };
+  if (store !== undefined) {
+    // Test seam: the historical store port receives a detached JSON snapshot.
+    ports.storeSave = value => store.save(value);
+  } else {
+    ports.file = file;
+    ports.kind = kind;
+    if (typeof root === 'string' && root.length > 0) ports.root = root;
   }
+  owner.configure(ports);
 
-  function saveCurrent() {
-    return store.save(payload(records));
-  }
-
-  function markClean() {
-    dirty = false;
-    lastFailure = null;
-    cancelRetry();
-    emitState();
-  }
-
-  function scheduleRetry(source) {
-    if (retryTimer || retryAttempt >= maxRetries) return;
-    retryTimer = setTimeoutFn(() => {
-      retryTimer = null;
-      retryAttempt += 1;
-      try {
-        saveCurrent();
-        markClean();
-      } catch (error) {
-        dirty = true;
-        report(error, { mode: 'best_effort_retry', source, attempt: retryAttempt });
-        scheduleRetry(source);
-      }
-    }, retryDelayMs);
-    if (retryTimer && typeof retryTimer.unref === 'function') retryTimer.unref();
-    emitState();
-  }
-
-  function begin(source) {
-    if (mutating) throw new PersistenceError('nested session persistence mutation', { source });
-    const before = snapshotMap(records);
-    const wasDirty = dirty;
-    mutating = true;
-    let active = true;
-    function rollback() {
-      if (!active) return;
-      restoreMap(records, before);
-      dirty = wasDirty;
-      active = false;
-      mutating = false;
-      emitState();
-    }
-    function commit() {
-      if (!active) throw new PersistenceError('session persistence transaction is closed', { source });
-      try {
-        saveCurrent();
-        active = false;
-        mutating = false;
-        markClean();
-      } catch (cause) {
-        rollback();
-        report(cause, { mode: 'required', source, attempt: 0 });
-        throw new PersistenceError('session state could not be persisted', { source, cause });
-      }
-    }
-    return Object.freeze({ commit, rollback });
+  function unexpected(status) {
+    return new PersistenceError(`session persistence returned unexpected status ${status}`);
   }
 
   // Strong path. The mutator must be synchronous so no timer/request can
-  // observe or persist a half-mutated Map between snapshot and atomic save.
+  // observe or persist a half-mutated table between snapshot and atomic save.
   function mutate(source, mutator) {
-    if (typeof mutator !== 'function') throw new TypeError('session persistence mutate requires a function');
-    const transaction = begin(source);
-    let result;
-    try {
-      result = mutator(records);
-      if (result && typeof result.then === 'function') {
+    if (typeof mutator !== 'function') {
+      throw new TypeError('session persistence mutate requires a function');
+    }
+    const outcome = owner.mutate(source, records, mutator);
+    switch (outcome.status) {
+      case 'ok': return outcome.value;
+      case 'nested':
+        throw new PersistenceError('nested session persistence mutation', { source });
+      case 'async':
+        // The mutation is already rolled back natively.
         throw new TypeError('session persistence mutator must be synchronous');
-      }
-      transaction.commit();
-      return result;
-    } catch (error) {
-      transaction.rollback();
-      throw error;
+      case 'snapshot':
+        // A record that cannot be JSON-serialized: the raw TypeError, as before.
+        throw outcome.error;
+      case 'mutator':
+        throw outcome.error;
+      case 'required':
+        throw new PersistenceError('session state could not be persisted', {
+          source, cause: outcome.error,
+        });
+      default:
+        throw unexpected(outcome.status);
     }
   }
 
-  // Runtime path. Never throws: retain the changed Map, mark it dirty and retry
-  // the newest complete snapshot a bounded number of times.
-  function bestEffort(source = 'runtime') {
-    try {
-      saveCurrent();
-      markClean();
-      return true;
-    } catch (error) {
-      dirty = true;
-      report(error, { mode: 'best_effort', source, attempt: 0 });
-      scheduleRetry(source);
-      return false;
+  // Manual transaction for handlers that validate between the mutation and the
+  // save. Mirrors the legacy frozen {commit, rollback} pair exactly.
+  function begin(source) {
+    const opened = owner.begin(source);
+    if (opened.status === 'nested') {
+      throw new PersistenceError('nested session persistence mutation', { source });
     }
+    if (opened.status === 'snapshot') throw opened.error;
+    if (opened.status !== 'ok') throw unexpected(opened.status);
+    const token = opened.token;
+    let active = true;
+    return Object.freeze({
+      commit() {
+        if (!active) {
+          throw new PersistenceError('session persistence transaction is closed', { source });
+        }
+        active = false;
+        const outcome = owner.commit(token, source);
+        if (outcome.status === 'ok') return;
+        if (outcome.status === 'required') {
+          throw new PersistenceError('session state could not be persisted', {
+            source, cause: outcome.error,
+          });
+        }
+        throw new PersistenceError('session persistence transaction is closed', { source });
+      },
+      rollback() {
+        if (!active) return;
+        active = false;
+        owner.rollback(token);
+      },
+    });
+  }
+
+  // Runtime path. Never throws: retain the changed table, mark it dirty and
+  // retry the newest complete snapshot a bounded number of times.
+  function bestEffort(source = 'runtime') {
+    return owner.bestEffort(source);
   }
 
   function status() {
-    return Object.freeze({ dirty, retryAttempt, retryScheduled: !!retryTimer, lastFailure: lastFailure && { ...lastFailure } });
+    const snapshot = owner.status();
+    return Object.freeze({
+      dirty: snapshot.dirty,
+      retryAttempt: snapshot.retryAttempt,
+      retryScheduled: snapshot.retryScheduled,
+      lastFailure: snapshot.lastFailure && { ...snapshot.lastFailure },
+    });
   }
 
   function stop() {
-    if (retryTimer) clearTimeoutFn(retryTimer);
-    retryTimer = null;
-    emitState();
+    owner.stop();
   }
 
   return Object.freeze({ begin, mutate, bestEffort, status, stop });

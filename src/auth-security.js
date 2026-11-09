@@ -13,6 +13,12 @@ function createAuthSecurity(options) {
   const runtime = new (getNative().RustAuthSecurity)(options, anchor);
   Object.defineProperty(runtime, Symbol('auth host references'), { value: anchor });
   return {
+    accessToken: () => runtime.accessToken(),
+    setAccessToken: value => runtime.setAccessToken(value),
+    shuttingDown: () => runtime.shuttingDown(),
+    setShuttingDown: value => runtime.setShuttingDown(value),
+    connectGateway: (port, capability) => runtime.connectGateway(port, capability),
+    connectWorkspaceGateway: (owner, ...args) => owner.connectGateway(...args, runtime),
     createCookie: () => runtime.createCookie(),
     verifyCookie: cookie => runtime.verifyCookie(cookie),
     verifyAccessToken: value => runtime.verifyAccessToken(value),

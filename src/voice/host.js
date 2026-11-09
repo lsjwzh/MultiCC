@@ -25,7 +25,6 @@ function createVoiceHost({
   app,
   server,
   wss,
-  serviceRoutes,
   records,
   directories,
   sessionPersistence,
@@ -128,7 +127,7 @@ function createVoiceHost({
   // Install the single 'upgrade' dispatcher: voice-child realtime sockets to
   // the proxy, every chat socket to the wss. No-op when server/wss are absent
   // (tests), and safe to call before the server listens.
-  wireUpgrade(server, wss, webProxy, serviceRoutes);
+  wireUpgrade(server, wss, webProxy);
 
   const gatewayService = gatewayRoutes.service;
 

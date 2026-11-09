@@ -437,7 +437,7 @@ function createProviderRoutes(rawDeps) {
       }
     });
 
-    app.delete('/api/providers/:appType/:id', (req, res) => {
+    app.delete('/api/providers/:appType/:id', async (req, res, next) => {
       try {
         const references = deps.findProviderReferences({
           appType: req.params.appType,
@@ -479,7 +479,7 @@ function createProviderRoutes(rawDeps) {
           log.warn?.(`[multicc] force-deleting provider ${req.params.appType}/${req.params.id}: detached ${detached.length} reference(s)`);
         }
         const ok = deps.providers.deleteProvider(req.params.appType, req.params.id);
-        if (ok) deps.providerRelayShares.revokeProvider(req.params.appType, req.params.id);
+        if (ok) await deps.providerRelayShares.revokeProvider(req.params.appType, req.params.id);
         res.json(references.length ? { ok, forced: true, detached } : { ok });
       } catch (error) {
         res.status(400).json({ error: publicError(error, 'provider delete failed') });
@@ -694,7 +694,7 @@ function createProviderRoutes(rawDeps) {
     // Each exported relay receives its own provider-scoped credential. The
     // share code discloses it once; durable inventory stores only its hash and
     // usage counters. No server-wide credential can open provider relays.
-    app.post('/api/providers/:appType/:id/relay-share', (req, res) => {
+    app.post('/api/providers/:appType/:id/relay-share', async (req, res, next) => {
       const provider = deps.providers.getProvider(req.params.appType, req.params.id);
       if (!provider) return res.status(404).json({ error: 'provider not found' });
       let parsed = null;
@@ -713,7 +713,7 @@ function createProviderRoutes(rawDeps) {
       const relayModels = relayModelsOf(summary);
       const relayName = `${provider.name || req.params.id} · 远程共享`;
       try {
-        const created = deps.providerRelayShares.create({
+        const created = await deps.providerRelayShares.create({
           appType: req.params.appType,
           providerId: req.params.id,
           providerName: provider.name || req.params.id,
@@ -758,18 +758,18 @@ function createProviderRoutes(rawDeps) {
       return res.json(result);
     });
 
-    app.get('/api/provider-relay-shares', (req, res) => {
-      res.json({
-        shares: deps.providerRelayShares.list({
+    app.get('/api/provider-relay-shares', async (req, res, next) => {
+      try { res.json({
+        shares: await deps.providerRelayShares.list({
           appType: req.query.appType,
           providerId: req.query.providerId,
         }),
-      });
+      }); } catch (error) { next(error); }
     });
 
-    app.delete('/api/provider-relay-shares/:id', (req, res) => {
+    app.delete('/api/provider-relay-shares/:id', async (req, res, next) => {
       try {
-        const share = deps.providerRelayShares.revoke(req.params.id);
+        const share = await deps.providerRelayShares.revoke(req.params.id);
         if (!share) return res.status(404).json({ error: 'relay share not found' });
         return res.json({ ok: true, share });
       } catch (error) {
@@ -781,9 +781,9 @@ function createProviderRoutes(rawDeps) {
     // kept at creation time, so the owner never has to mint a new code (and
     // re-distribute it) just to hand the same link to one more person. Revoked
     // shares and ones created before sealing existed answer 410 / 409.
-    app.get('/api/provider-relay-shares/:id/code', (req, res) => {
+    app.get('/api/provider-relay-shares/:id/code', async (req, res, next) => {
       try {
-        const found = deps.providerRelayShares.getCredential(req.params.id);
+        const found = await deps.providerRelayShares.getCredential(req.params.id);
         if (!found.ok) {
           if (found.code === 'not_found') return res.status(404).json({ error: 'relay share not found', code: found.code });
           if (found.code === 'revoked') return res.status(410).json({ error: '这条分享已撤销，无法再复制', code: found.code });

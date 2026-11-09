@@ -484,8 +484,12 @@ test('a second launcher refuses to start while the first is still booting', { ti
     assert.doesNotMatch(secondOutput, /server ready at/, 'no second server may have been started');
     assert.equal(Number(fs.readFileSync(pidFile, 'utf8').trim()), first.pid,
       'the refusal must leave the owner and its pid file untouched');
-    assert.equal(await httpStatus(`http://127.0.0.1:${port + 1}/readyz`), 0,
-      'and must not have walked on to the next port');
+    // Other test files share 127.0.0.1 and may own the ephemeral neighbour
+    // port; only a MultiCC server answers /readyz with 200/503. Any other
+    // status (or no listener at all) proves this launcher did not walk on.
+    const neighbour = await httpStatus(`http://127.0.0.1:${port + 1}/readyz`);
+    assert.ok(neighbour !== 200 && neighbour !== 503,
+      `and must not have walked on to the next port (readyz ${neighbour})`);
   } finally {
     // Async, never spawnSync: this process is the launcher's parent, so blocking
     // its loop would leave the launcher unreaped (a zombie answers pidAlive) and
