@@ -71,6 +71,46 @@ fn utf16(value: &str) -> Vec<u16> {
     value.encode_utf16().collect()
 }
 
+/// `appendAdapterAssistantText(prior, next, { delta })`. Both arguments already
+/// went through `String(value || '')`, so a non-`delta` frame separates complete
+/// snapshots with a blank line while delta frames concatenate.
+pub fn append_adapter_text(prior: &JsString, next: &JsString, delta: bool) -> JsString {
+    if delta {
+        return JsString::concat(&[prior, next]);
+    }
+    if prior.is_empty() {
+        next.clone()
+    } else {
+        JsString::concat(&[prior, &JsString::from_rust_str("\n\n"), next])
+    }
+}
+
+/// Outcome of `captureNativeSessionId(record, incoming, { fresh })` once both
+/// sides are already `String(value || '').trim() || null`.
+pub enum CaptureSessionId {
+    /// A resume may not move the logical chat onto different native history.
+    Mismatch,
+    /// Nothing to record (no incoming id, or it already matches).
+    Unchanged,
+    /// The record takes the incoming id.
+    Changed(JsString),
+}
+
+pub fn capture_session_id(
+    previous: Option<&JsString>,
+    incoming: Option<&JsString>,
+    may_replace: bool,
+) -> CaptureSessionId {
+    let Some(incoming) = incoming else {
+        return CaptureSessionId::Unchanged;
+    };
+    match previous {
+        Some(previous) if previous == incoming => CaptureSessionId::Unchanged,
+        Some(_) if !may_replace => CaptureSessionId::Mismatch,
+        _ => CaptureSessionId::Changed(incoming.clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +198,47 @@ mod tests {
         ));
         assert!(!is_api_failure(Some(&text("failed")), Some(&text("exit"))));
         assert!(!is_api_failure(None, None));
+    }
+
+    #[test]
+    fn adapter_text_appends_deltas_and_blank_lines_snapshots() {
+        assert_eq!(
+            append_adapter_text(&text(""), &text("first"), false),
+            text("first")
+        );
+        assert_eq!(
+            append_adapter_text(&text("first"), &text("second"), false),
+            text("first\n\nsecond")
+        );
+        assert_eq!(
+            append_adapter_text(&text("first"), &text("second"), true),
+            text("firstsecond")
+        );
+        assert_eq!(append_adapter_text(&text(""), &text(""), false), text(""));
+    }
+
+    #[test]
+    fn capture_accepts_only_matching_or_fresh_ids() {
+        let previous = text("ses_a");
+        assert!(matches!(
+            capture_session_id(Some(&previous), None, false),
+            CaptureSessionId::Unchanged
+        ));
+        assert!(matches!(
+            capture_session_id(Some(&previous), Some(&text("ses_a")), false),
+            CaptureSessionId::Unchanged
+        ));
+        assert!(matches!(
+            capture_session_id(Some(&previous), Some(&text("ses_b")), false),
+            CaptureSessionId::Mismatch
+        ));
+        assert!(matches!(
+            capture_session_id(Some(&previous), Some(&text("ses_b")), true),
+            CaptureSessionId::Changed(value) if value == text("ses_b")
+        ));
+        assert!(matches!(
+            capture_session_id(None, Some(&text("ses_b")), false),
+            CaptureSessionId::Changed(value) if value == text("ses_b")
+        ));
     }
 }

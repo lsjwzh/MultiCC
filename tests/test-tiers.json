@@ -1901,6 +1901,24 @@
       ]
     },
     {
+      "path": "tests/test-chat-adapter-events-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-adapter-events-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
       "path": "tests/test-chat-admit-error-feedback.js",
       "tier": "core",
       "lane": "deterministic",
