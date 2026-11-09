@@ -6,13 +6,28 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createWorkspaceRuntime } = require('../src/workspace/runtime');
+const { createWsEnvelope } = require('../src/api-contract');
 
+// The native owner writes serialized WS frames through `socket.send(data,
+// options, callback)`; the frozen host wrote payload objects through the
+// injected `send`/`broadcastClients` ports. Record both in the same shape so a
+// differential can compare them: `frames` keeps the exact bytes, `messages`
+// keeps the decoded payload with the envelope's trailing apiVersion removed.
 class FakeSocket {
-  constructor() {
+  constructor({ bufferedAmount = 0, failSend = null } = {}) {
     this.events = new Map();
     this.messages = [];
+    this.frames = [];
     this.closed = false;
-    this.isAlive = false;
+    this.closeCode = null;
+    this.closeReason = null;
+    this.readyState = 1;
+    this.bufferedAmount = bufferedAmount;
+    this.pings = 0;
+    this.terminated = false;
+    this.failSend = failSend;
+    this.autoAck = true;
+    this.pending = [];
   }
 
   on(name, callback) {
@@ -24,13 +39,35 @@ class FakeSocket {
     callbacks.push(callback);
   }
 
-  emit(name) {
-    for (const callback of this.events.get(name) || []) callback();
+  emit(name, ...args) {
+    for (const callback of this.events.get(name) || []) callback(...args);
   }
 
-  close() {
+  send(data, options, callback) {
+    if (this.failSend) throw this.failSend;
+    this.frames.push(data);
+    const parsed = JSON.parse(data);
+    delete parsed.apiVersion;
+    this.messages.push(parsed);
+    if (typeof callback !== 'function') return;
+    if (this.autoAck) callback(null);
+    else this.pending.push(callback);
+  }
+
+  ackAll() {
+    const callbacks = this.pending.splice(0);
+    for (const callback of callbacks) callback(null);
+  }
+
+  ping() { this.pings += 1; }
+
+  terminate() { this.terminated = true; }
+
+  close(code, reason) {
     this.closed = true;
-    this.emit('close');
+    this.closeCode = code ?? null;
+    this.closeReason = reason ?? null;
+    this.emit('close', code, reason);
   }
 }
 
@@ -59,9 +96,12 @@ function createHarness(overrides = {}) {
     workspaceSnapshot: id => [{ id: `session-${id}` }],
     recentEvents: id => [{ id: `event-${id}` }],
     mergeState: overrides.mergeState || ((directory, record) => ({ directory: directory?.id, session: record.id })),
-    send: overrides.send || ((socket, payload) => socket.messages.push(payload)),
+    // The frozen host handed payload objects to the transport, which then
+    // serialized them; `undefined`-valued keys therefore never reached a wire.
+    // Round-trip here so payload-level differentials compare wire semantics.
+    send: overrides.send || ((socket, payload) => socket.messages.push(JSON.parse(JSON.stringify(payload)))),
     broadcastClients: overrides.broadcastClients || ((clients, payload) => {
-      for (const socket of clients) socket.messages.push(payload);
+      for (const socket of clients) socket.messages.push(JSON.parse(JSON.stringify(payload)));
     }),
     setTaskState: overrides.setTaskState || ((id, patch, options) => {
       taskWrites.push({ id, patch, options });
@@ -103,7 +143,6 @@ test('workspace connection sends snapshot and removes the final client on close'
 
   const socket = new FakeSocket();
   assert.equal(runtime.attachWorkspace(socket, new URL('ws://localhost/ws/workspace?dirId=d1')), true);
-  assert.equal(socket.isAlive, true);
   assert.deepEqual(socket.messages[0], {
     type: 'snapshot',
     dirId: 'd1',
@@ -112,9 +151,18 @@ test('workspace connection sends snapshot and removes the final client on close'
     queues: [],
   });
   assert.equal(runtime.clients.get('d1').has(socket), true);
-  socket.isAlive = false;
+  // Liveness is owned natively: three missed 30s windows terminate, a pong
+  // resets the window counter.
+  runtime.tickHeartbeat();
+  runtime.tickHeartbeat();
   socket.emit('pong');
-  assert.equal(socket.isAlive, true);
+  runtime.tickHeartbeat();
+  runtime.tickHeartbeat();
+  runtime.tickHeartbeat();
+  assert.equal(socket.terminated, false, 'pong resets the missed windows');
+  runtime.tickHeartbeat();
+  assert.equal(socket.terminated, true);
+  assert.deepEqual(runtime.socketStats(new FakeSocket()), null);
   socket.close();
   assert.equal(runtime.clients.has('d1'), false);
 });
@@ -252,8 +300,9 @@ test('production composition delegates workspace/meta ownership to the runtime',
   );
   assert.match(source, /createWorkspaceRuntime\s*\(\s*\{/);
   assert.match(source, /mountWsConnectionRouter\(wss,/);
-  assert.match(wsRouter, /workspaceRuntime\.attachWorkspace\(ws, urlObj\)/);
-  assert.match(wsRouter, /workspaceRuntime\.attachMeta\(ws, urlObj\)/);
+  assert.match(wsRouter, /workspaceRuntime\.attachWorkspace\(ws, urlObj, heartbeat\.fields\)/);
+  assert.match(wsRouter, /workspaceRuntime\.attachMeta\(ws, urlObj, heartbeat\.fields\)/);
+  assert.match(wsRouter, /workspaceRuntime\.ownsSocket\?\.\(urlObj\)/);
   assert.doesNotMatch(source, /function\s+workspaceBroadcast\s*\(/);
   assert.doesNotMatch(source, /function\s+handleWorkspaceWs\s*\(/);
   assert.doesNotMatch(source, /function\s+handleMetaWs\s*\(/);
@@ -489,8 +538,11 @@ test('real WebSocket snapshots, status/summary events, cursor clearing and recon
     const h = createHarness({ factory, resolveStateTarget: target,
       stateSources: id => id === selected ? ['working'] : [],
       sessionView: id => ({ stateSource: target(id), status: 'idle', goal: '当前执行' }),
-      send: (ws, value) => ws.send(JSON.stringify(value)),
-      broadcastClients: (clients, value) => { for (const ws of clients) ws.send(JSON.stringify(value)); },
+      send: (ws, value) => ws.send(JSON.stringify(createWsEnvelope(value))),
+      broadcastClients: (clients, value) => {
+        const frame = JSON.stringify(createWsEnvelope(value));
+        for (const ws of clients) ws.send(frame);
+      },
     });
     h.records.set('child', { id: 'child', dirId: 'd1' });
     h.runtime.hydrateQueueStatuses([{ sessionId: 'child', depth: 2, state: 'queued', updatedAt: 5000, text: 'PRIVATE' }]);
@@ -670,12 +722,11 @@ test('native workspace owner releases opaque values and VM cycles', { timeout: 1
   assert.match(execFileSync(process.execPath, ['--expose-gc', '-e', source], { encoding: 'utf8', timeout: 10000 }), /workspace state GC passed/);
 });
 
-test('status failures before publication preserve old state; delivery failures retain committed state', () => {
+test('status failures before publication preserve old state in both owners', () => {
   function exercise(factory, mode) {
     let armed = false; const chatSessions = new Map();
     const h = createHarness({ factory, chatSessions,
       clock: () => { if(armed && mode==='clock')throw Error('clock'); return 100; },
-      broadcastClients: () => { if(armed && mode==='delivery')throw Error('delivery'); },
     });
     h.runtime.setStatus('plain',{status:'idle',currentFile:'old'});
     const socket=new FakeSocket();h.runtime.attachWorkspace(socket,new URL('http://local/?dirId=d2'));
@@ -687,7 +738,19 @@ test('status failures before publication preserve old state; delivery failures r
     try{h.runtime.setStatus('plain',patch);}catch(e){error=[e.constructor.name,e.message];}
     return {error,state:h.runtime.status.get('plain')};
   }
-  for(const mode of ['clock','pending','status','file','delivery'])assert.deepEqual(exercise(createWorkspaceRuntime,mode),exercise(legacyWorkspace,mode),mode);
+  for(const mode of ['clock','pending','status','file'])assert.deepEqual(exercise(createWorkspaceRuntime,mode),exercise(legacyWorkspace,mode),mode);
+});
+
+test('a transport send throw commits the state, disconnects the slow socket, and never escapes', () => {
+  const { runtime } = createHarness();
+  const socket = new FakeSocket({ failSend: Error('send exploded') });
+  assert.equal(runtime.attachWorkspace(socket, new URL('http://local/?dirId=d2')), true);
+  // The snapshot cannot be delivered; the owner treats it as a send error and
+  // closes with the slow-client code, exactly like ws-backpressure did.
+  assert.equal(socket.closeCode, 1013);
+  assert.match(socket.closeReason, /slow client/);
+  assert.doesNotThrow(() => runtime.setStatus('plain', { status: 'running', currentFile: 'new' }));
+  assert.equal(runtime.status.get('plain').status, 'running');
 });
 
 test('hydration closes its record iterator when a field reader throws', () => {

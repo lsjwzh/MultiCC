@@ -181,6 +181,11 @@ function probeAddon(file, node = process.execPath) {
         'commitCrossFileWrite','replayJournals'].some(key=>typeof a.RustSessionRecords.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustWorkspaceQueues!=='function'
       || ['get','has','update','project','view'].some(key=>typeof a.RustWorkspaceQueues.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustWorkspaceSockets!=='function'
+      || ['attachWorkspace','attachMeta','detach','onPong','tickHeartbeat','publish','subscribe',
+        'unsubscribe','recentEvents','hydrateEvents','appendEvent','hasEvents','clientCount',
+        'hasClient','directoryCount','fleetLen','socketStats','flushClient',
+        'backpressureResult','close'].some(key=>typeof a.RustWorkspaceSockets.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustProviderAttemptGenerations!=='function'
       || typeof a.RustProviderAttemptGenerations.prototype.next!=='function') process.exit(1);
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',

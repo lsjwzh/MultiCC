@@ -885,6 +885,9 @@ const notesStore = createNotesStore({
   atomicWriteJson,
   ensurePrivateDir,
   getWorkspaceBroadcast: () => workspaceBroadcast,
+  // The recent-event ring lives in the native workspace socket owner; this
+  // store keeps only the lazy JSONL read and the append.
+  getWorkspaceEvents: () => workspaceRuntime.events,
 });
 const {
   loadNotes,
@@ -1496,10 +1499,10 @@ const workspaceRuntime = createWorkspaceRuntime({
   sessionView: id => sessionAdmin.sessionView(id),
   recentEvents: dirId => recentEvents(dirId),
   mergeState: (directory, session) => mergeStateCached(directory, session),
-  send: (client, payload) => sendWs(client, payload),
-  broadcastClients: (clients, payload) => broadcastTo(clients, payload),
   setTaskState,
   saveBestEffort: savePersistedSessionsBestEffort,
+  metrics,
+  logger,
   clock: Date.now,
 });
 const workspaceStatus = workspaceRuntime.status;

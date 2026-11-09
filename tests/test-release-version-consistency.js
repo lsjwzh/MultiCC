@@ -432,14 +432,24 @@ test('core runner covers every selected path and expands declared variants', () 
   // deterministic core entries run by npm:test:state and touch no port or
   // external process.
   // 394 + 2 = 396 entries, 325 + 2 = 327 deterministic, 366 + 2 = 368 commands.
-  assert.equal(core.length, 396, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 396);
+  // Re-audited for the native workspace subscription owner:
+  // tests/test-workspace-ws-native.js drives the native owner against frozen
+  // raw-frame, heartbeat and backpressure oracles in memory (no port, real
+  // clock, filesystem or child process), so it is deterministic core under
+  // npm:test:core. tests/test-workspace-ws-isolated.js starts the real gateway
+  // and server.js on a temporary data root and connects real WebSocket clients
+  // over loopback and LAN, so it is isolated core under
+  // npm:test:integration:isolated.
+  // 396 + 2 = 398 entries, 327 + 1 = 328 deterministic, 38 + 1 = 39 isolated,
+  // 368 + 2 = 370 commands (367 Node entries).
+  assert.equal(core.length, 398, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 398);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 327);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 38);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 328);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 39);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
@@ -448,8 +458,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 368,
-    '365 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 370,
+    '367 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

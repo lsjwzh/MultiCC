@@ -13,6 +13,8 @@
 //     getWorkspaceBroadcast() and resolves it per call (pre-broadcast appends
 //     simply skip the fan-out, matching the old behaviour where module-level
 //     appends ran before workspace clients could exist)
+//   · the recent-event ring itself is owned by the native workspace socket
+//     owner (getWorkspaceEvents); this module keeps only the JSONL adapter.
 // The `notes` array is module-private mutable state — loadNotes() and
 // purgeNotesForSession() reassign it wholesale — so it is NEVER exposed by
 // reference; consumers go through loadNotes/saveNotes/getNotes/pendingNotesFor.
@@ -30,6 +32,7 @@ function createNotesStore(rawDeps) {
     atomicWriteJson,
     ensurePrivateDir,
     getWorkspaceBroadcast,
+    getWorkspaceEvents,
   } = deps;
 
   if (!eventsDir || typeof eventsDir !== 'string') {
@@ -53,11 +56,13 @@ function createNotesStore(rawDeps) {
   if (typeof getWorkspaceBroadcast !== 'function') {
     throw new TypeError('[notes-store] getWorkspaceBroadcast must be a function');
   }
+  if (typeof getWorkspaceEvents !== 'function') {
+    throw new TypeError('[notes-store] getWorkspaceEvents must be a function');
+  }
 
   const EVENTS_DIR = eventsDir;
   try { ensurePrivateDir(EVENTS_DIR); } catch (_) {}
   const NOTES_FILE = notesFile;
-  const eventRing = new Map();   // dirId → event[] (last 200, lazy-loaded)
   let notes = [];                // [{ id, dirId, fromSessionId, fromLabel, toSessionId, body, ts, delivered, deliveredAt }]
 
   function loadNotes() {
@@ -73,9 +78,10 @@ function createNotesStore(rawDeps) {
     catch (e) { console.error('[multicc] save notes.json failed:', e.message); }
   }
 
-  // Lazy-load a directory's recent events from disk into the ring buffer.
+  // Lazy-load a directory's recent events from disk into the native ring.
   function recentEvents(dirId) {
-    if (eventRing.has(dirId)) return eventRing.get(dirId);
+    const owner = getWorkspaceEvents();
+    if (owner.has(dirId)) return owner.recent(dirId);
     const ring = [];
     try {
       const file = path.join(EVENTS_DIR, `${dirId}.jsonl`);
@@ -85,8 +91,8 @@ function createNotesStore(rawDeps) {
         }
       }
     } catch (_) {}
-    eventRing.set(dirId, ring);
-    return ring;
+    owner.hydrate(dirId, ring);
+    return owner.recent(dirId);
   }
 
   // Append an event to a directory's log + ring buffer, and broadcast it live.
@@ -99,9 +105,8 @@ function createNotesStore(rawDeps) {
       sessionLabel: session ? (session.label || session.id) : (sessionId || null),
       detail: detail || null,
     };
-    const ring = recentEvents(dirId);
-    ring.push(evt);
-    if (ring.length > 200) ring.shift();
+    recentEvents(dirId);
+    getWorkspaceEvents().append(dirId, evt);
     try { fs.appendFileSync(path.join(EVENTS_DIR, `${dirId}.jsonl`), JSON.stringify(evt) + '\n', { mode: 0o600 }); }
     catch (_) {}
     const broadcast = getWorkspaceBroadcast();

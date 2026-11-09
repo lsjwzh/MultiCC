@@ -166,13 +166,18 @@ test('the workspace task_state broadcast carries the pair to every client', () =
     workspaceSnapshot: () => [],
     recentEvents: () => [],
     mergeState: () => null,
-    send: (socket, payload) => socket.messages.push(payload),
-    broadcastClients: (clients, payload) => { for (const socket of clients) messages.push(payload); },
     setTaskState: () => {},
     saveBestEffort: () => {},
     clock: () => 1000,
   });
-  const socket = { messages: [], on() {}, close() {}, isAlive: false };
+  const socket = {
+    messages: [], readyState: 1, bufferedAmount: 0,
+    on() {}, close() {}, ping() {}, terminate() {},
+    send(data, options, callback) {
+      messages.push(JSON.parse(String(data)));
+      if (typeof callback === 'function') callback(null);
+    },
+  };
   assert.equal(runtime.attachWorkspace(socket, { searchParams: new URLSearchParams('dirId=d1') }), true);
 
   runtime.publishSessionView('s1');

@@ -81,4 +81,5 @@ pub mod workspace_sharing;
 
 pub mod api_contract;
 pub mod workspace_queues;
+pub mod workspace_sockets;
 pub mod workspace_state;
