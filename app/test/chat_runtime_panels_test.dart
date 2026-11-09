@@ -209,6 +209,76 @@ void main() {
     expect(cancelled, ['queued-1']);
   });
 
+  testWidgets('a queued entry in retry backoff says why it is not moving', (
+    tester,
+  ) async {
+    final queue = SessionQueueState.fromEvent({
+      'state': 'running',
+      'items': [
+        {
+          'entryId': 'queued-1',
+          'state': 'pending',
+          'position': 1,
+          'text': '又需要清理存储空间了',
+          'attempts': 4,
+          'lastError':
+              'Command failed: git worktree add /tmp/wt multicc/task-x\n'
+              'error: unable to create file public/x.js: No space left on device',
+        },
+      ],
+    });
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: queue,
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pump();
+
+    expect(find.byKey(const Key('queued-retry-queued-1')), findsOneWidget);
+    // 行卡只收首行：多行 git 输出不能把队列撑开。
+    expect(
+      find.text(
+        '⚠️ 第 4 次重试中：Command failed: git worktree add /tmp/wt multicc/task-x',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('No space left on device'), findsNothing);
+  });
+
+  testWidgets('a plainly queued entry has no retry line', (tester) async {
+    final queue = SessionQueueState.fromEvent({
+      'state': 'running',
+      'items': [
+        {
+          'entryId': 'queued-1',
+          'state': 'pending',
+          'position': 1,
+          'text': 'waiting its turn',
+        },
+      ],
+    });
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: queue,
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pump();
+
+    expect(find.byKey(const Key('queued-retry-queued-1')), findsNothing);
+  });
+
   testWidgets('double-tapping a queued message opens the edit box and rewrites it', (
     tester,
   ) async {
