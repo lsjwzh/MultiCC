@@ -215,21 +215,25 @@ test('default budget is 10MB and configurable via dep', () => {
 
 test('filesystem failures fail open: action error, turn must proceed', () => {
   const { homeDir, sessionsDir } = setupHome();
-  writeRollout(sessionsDir, 'thread-x', 2048);
+  const file = writeRollout(sessionsDir, 'thread-x', 2048);
+  // The file is over budget, but a directory already occupies the archive
+  // target path, so the rename fails and the guard must surface 'error'
+  // without blocking the turn.
+  const blocker = path.join(homeDir, '.codex', ARCHIVE_DIRNAME, path.basename(file));
+  fs.mkdirSync(blocker, { recursive: true });
   const warnings = [];
   const guard = createCodexRolloutGuard({
-    // stat succeeds (file is over budget) but the archive move explodes — the
-    // guard must surface 'error' without blocking the turn.
-    fsImpl: { ...fs, renameSync: () => { throw new Error('disk exploded'); } },
     homeDir,
     maxBytes: 1024,
     logger: { warn: (name, payload) => warnings.push([name, payload]) },
   });
   const result = guard.enforce({ cli: 'codex', cliSessionId: 'thread-x' });
   assert.equal(result.action, 'error');
-  assert.match(result.error, /disk exploded/);
+  assert.match(result.error, /EISDIR|ENOTDIR|directory|Directory/i);
+  assert.equal(fs.existsSync(file), true, 'failed move leaves the rollout in place');
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0][0], 'codex_rollout_guard_error');
+  fs.rmSync(blocker, { recursive: true, force: true });
 });
 
 // --- archive TTL cleanup -----------------------------------------------------
@@ -320,9 +324,15 @@ test('托管历史确认缺失时允许宿主重建，权限错误不冒充缺�
     });
     assert.equal(missing.enforce({ cli, id: 'logical', provider: 'managed', cliSessionId: 'old' }).action, 'not_found');
   }
-  const denied = createCodexRolloutGuard({
-    fsImpl: { existsSync: () => true, readdirSync() { throw Object.assign(new Error('无法读取'), { code: 'EACCES' }); } },
-    logger: { warn() {} },
-  });
-  assert.equal(denied.enforce({ cli: 'codex-exp', cliSessionId: 'old' }).action, 'error');
+  const { homeDir } = setupHome();
+  const locked = path.join(homeDir, '.codex', 'sessions', 'locked');
+  fs.mkdirSync(locked, { recursive: true });
+  fs.chmodSync(locked, 0o000);
+  try {
+    const denied = createCodexRolloutGuard({ homeDir, logger: { warn() {} } });
+    assert.equal(denied.enforce({ cli: 'codex-exp', cliSessionId: 'old' }).action, 'error',
+      'permission errors must not masquerade as a missing history');
+  } finally {
+    fs.chmodSync(locked, 0o755);
+  }
 });

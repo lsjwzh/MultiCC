@@ -165,6 +165,20 @@ function probeAddon(file, node = process.execPath) {
     if(a.transcriptPruneDefaults().maxBytes!==2*1024*1024
       || a.transcriptProjectDir('/p/q','/h')!=='/h/.claude/projects/-p-q'
       || a.transcriptUserVisibleText('[gateway end]\\nhello')!=='hello') process.exit(1);
+    if(['codexRolloutGuardDefaults','nativeSessionGuardDefaults','RustCodexRolloutGuard','RustNativeSessionGuard'].some(key=>typeof a[key]!=='function')
+      || ['enforce','sweep'].some(key=>typeof a.RustCodexRolloutGuard.prototype[key]!=='function')
+      || ['enforce','sweep','handles','storeTruthy'].some(key=>typeof a.RustNativeSessionGuard.prototype[key]!=='function')
+      || ['maxBytes','archiveTtlMs'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustCodexRolloutGuard.prototype,key)?.get!=='function')
+      || ['maxBytes','archiveTtlMs'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustNativeSessionGuard.prototype,key)?.get!=='function')) process.exit(1);
+    const nsgHome=fs.mkdtempSync(path.join(os.tmpdir(),'multicc-nsg-probe-'));
+    try {
+      const cg=new a.RustCodexRolloutGuard({homeDir:nsgHome});
+      if(cg.maxBytes!==10*1024*1024 || cg.archiveTtlMs!==30*24*60*60*1000) process.exit(1);
+      const skipped=cg.enforce({cli:'claude',cliSessionId:'probe'},false,{});
+      if(skipped.result.action!=='skipped' || !Array.isArray(skipped.logs)) process.exit(1);
+      const ng=new a.RustNativeSessionGuard({homeDir:nsgHome});
+      if(!ng.handles('dsh') || ng.handles('constructor') || ng.maxBytes!==10*1024*1024) process.exit(1);
+    } finally { fs.rmSync(nsgHome,{recursive:true,force:true}); }
     if(['cliCompletion','cliIsCompleted','cliIsMainResult','cliResultCompletion','cliProtocolCompletion',
       'cliProxyFailureCompatible','cliCanPersistCompletion'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustCliCompletionTracker!=='function'
