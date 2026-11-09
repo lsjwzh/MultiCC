@@ -338,14 +338,19 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
   // 文案/图标/色彩全部取自中心 registry，队列面板不再自带一套状态词表。
   StatusSpec _spec(CanonicalStatus state) => statusPresentation[state]!;
 
-  /// 跑一个队列动作。返回 false 表示这次什么都没发（面板忙碌或未连接）——
-  /// 调用方据此决定要不要报「成功」，否则断线时会弹出一条假的已修改提示。
+  /// 跑一个队列动作。返回 false 表示这次没有成功——面板忙碌、未连接，或
+  /// 动作本身被服务端拒绝（失败提示由动作自己弹出）。调用方据此决定要不要
+  /// 报「成功」，否则断线或被拒时会弹出一条假的已修改提示。
   Future<bool> _run(Future<void> Function() action) async {
     if (_busy || !widget.enabled) return false;
     setState(() => _busy = true);
     try {
       await action();
       return true;
+    } catch (_) {
+      // 动作内部已把失败原因弹给用户（_runQueueAction 的 catch），这里吞掉
+      // 异常只是阻止调用方再补一条成功提示。
+      return false;
     } finally {
       if (mounted) setState(() => _busy = false);
     }

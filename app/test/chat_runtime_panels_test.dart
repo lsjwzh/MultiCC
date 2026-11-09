@@ -313,6 +313,51 @@ void main() {
     expect(find.text('已修改暂存消息'), findsNothing);
   });
 
+  testWidgets('a rejected edit never reports success', (tester) async {
+    final queue = SessionQueueState.fromEvent({
+      'state': 'queued',
+      'items': [
+        {
+          'entryId': 'queued-1',
+          'state': 'pending',
+          'position': 1,
+          'text': 'original',
+        },
+      ],
+    });
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: queue,
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          // 服务端拒绝（超长/已被领取）：动作抛错，失败提示由动作层弹出。
+          onEditQueued: (entryId, text) async {
+            throw Exception('queued_entry_text_too_long');
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('queued-text-queued-1')));
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.tap(find.byKey(const Key('queued-text-queued-1')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('queued-edit-input')),
+      'rewritten',
+    );
+    await tester.tap(find.byKey(const Key('queued-edit-save')));
+    await tester.pumpAndSettle();
+
+    // 被拒的编辑不许再盖一条「已修改」——那会把失败读成保存成功，
+    // 列表没更新、重开还是旧正文。
+    expect(find.text('已修改暂存消息'), findsNothing);
+  });
+
   testWidgets('queued entries offer insert; the prioritised one shows running', (
     tester,
   ) async {

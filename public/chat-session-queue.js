@@ -75,12 +75,19 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok !== true) {
+        // Known scheduler rejections get their own sentence: the raw code
+        // ("queued_entry_text_too_long") told the user nothing they could act
+        // on, and read as a generic failure even though the fix is theirs.
         const message = data.code === 'queued_entry_already_claimed'
           ? tr('queueEntryAlreadyClaimed')
-          : tr('queueActionFailedNamed', {
-            action: tr(ACTION_LABELS[action] || 'queueActionDefault'),
-            error: data.error || data.code || response.status,
-          });
+          : data.code === 'queued_entry_text_too_long'
+            ? tr('queueEntryTextTooLong', { n: Number(data.limit) || 20000 })
+            : data.code === 'queued_entry_text_required'
+              ? tr('queueEntryTextRequired')
+              : tr('queueActionFailedNamed', {
+                action: tr(ACTION_LABELS[action] || 'queueActionDefault'),
+                error: data.error || data.code || response.status,
+              });
         notify(message, 'error');
         throw new Error(message);
       }

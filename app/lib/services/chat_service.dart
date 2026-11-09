@@ -22,7 +22,11 @@ class ChatEvent {
 class QueueActionException implements Exception {
   final int statusCode;
   final String code;
-  const QueueActionException(this.statusCode, this.code);
+
+  /// 服务端随 queued_entry_text_too_long 回传的长度上限（字符数），
+  /// 老服务端没有这个字段时为 null，调用方用默认值兜底。
+  final int? limit;
+  const QueueActionException(this.statusCode, this.code, {this.limit});
 
   @override
   String toString() => code;
@@ -953,9 +957,11 @@ class ChatService {
       if (decoded is Map) data = Map<String, dynamic>.from(decoded);
     } catch (_) {}
     if (res.statusCode < 200 || res.statusCode >= 300 || data['ok'] != true) {
+      final rawLimit = data['limit'];
       throw QueueActionException(
         res.statusCode,
         (data['code'] ?? data['error'] ?? 'queue_action_failed').toString(),
+        limit: rawLimit is num ? rawLimit.toInt() : null,
       );
     }
     return data;

@@ -1250,6 +1250,42 @@ test('a pending queued entry can be edited in place but a leased one cannot', as
   assert.equal(tooLate.code, 'queued_entry_already_claimed');
 });
 
+test('an over-long staged message stays editable as long as the edit does not grow it', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(h, await claimOne(h));
+  // Admission does not truncate: internal producers (voice router, background
+  // notices, commander wrappers) can stage bodies past the display cap, and
+  // the dock only ever shows the first MAX_PUBLIC_MESSAGE_LENGTH characters.
+  const big = await h.scheduler.admit({
+    sessionId: 's1', text: 'x'.repeat(24000), idempotencyKey: 'big',
+  });
+
+  // Shrinking (still past the cap) must pass — under an absolute limit such an
+  // entry could never be edited at all, because the dialog only ever shows the
+  // truncated copy.
+  const shrunk = await h.scheduler.editQueued('s1', big.entry.id, { text: 'y'.repeat(21000) });
+  assert.equal(shrunk.ok, true);
+  assert.equal((await h.outbox.get(big.entry.id)).payload.message, 'y'.repeat(21000));
+
+  // Growing past the cap is the one rejection, and it carries the limit so
+  // clients can translate the code into a readable sentence.
+  const grown = await h.scheduler.editQueued('s1', big.entry.id, { text: 'z'.repeat(22000) });
+  assert.equal(grown.ok, false);
+  assert.equal(grown.code, 'queued_entry_text_too_long');
+  assert.equal(grown.limit, 20000);
+
+  // A normal entry keeps the absolute rule: anything past the cap is rejected.
+  const normal = await h.scheduler.admit({
+    sessionId: 's1', text: 'short', idempotencyKey: 'short',
+  });
+  const rejected = await h.scheduler.editQueued('s1', normal.entry.id, { text: 'w'.repeat(20001) });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'queued_entry_text_too_long');
+});
+
 // Reordering is the one queue control that must not touch the admission
 // sequence: that column is UNIQUE across every session, so swapping two values
 // would collide in the store, and renumbering a whole session would push its
