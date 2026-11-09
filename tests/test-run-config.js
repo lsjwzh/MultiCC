@@ -646,3 +646,83 @@ test('WorkBuddy / Qoder 的厂商原生线路只归自己的车道', () => {
   assert.equal(run.cliLineVerdict('qoder', { id: 'backup', protocol: 'anthropic' }).code,
     'vendor_native_only');
 });
+
+const { createCatalogLoader } = require('../public/run-config-controls');
+const deferredCatalog = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+function catalogHarness() {
+  const requests = [], published = [];
+  const loader = createCatalogLoader({
+    request(cli) { const pending = deferredCatalog(); requests.push({ cli, ...pending }); return pending.promise; },
+    normalize: value => value, onLoaded: value => published.push(value),
+  });
+  return { loader, requests, published };
+}
+
+test('目录加载合并并发请求，空结果缓存，失败仅在显式重试后重读', async () => {
+  const { loader, requests, published } = catalogHarness();
+  const first = loader.load('claude-exp');
+  assert.equal(loader.load('claude-exp'), first);
+  await Promise.resolve(); assert.equal(requests.length, 1);
+  requests[0].resolve({ providers: [] });
+  await first; await loader.load('claude-exp');
+  assert.equal(requests.length, 1); assert.equal(published.length, 1);
+  const failed = loader.load('codex-exp');
+  const rejection = assert.rejects(failed, /offline/);
+  await Promise.resolve(); requests[1].reject(new Error('offline')); await rejection;
+  await assert.rejects(loader.load('codex-exp'), /offline/);
+  assert.equal(requests.length, 2);
+  loader.errors.delete('codex-exp');
+  const retry = loader.load('codex-exp'); await Promise.resolve();
+  requests[2].resolve({ providers: ['new'] }); await retry;
+  assert.equal(published.length, 2);
+});
+
+for (const failOld of [false, true]) test(`目录失效后旧${failOld ? '失败' : '成功'}响应不能覆盖新请求或提前解除请求合并`, async () => {
+  const { loader, requests, published } = catalogHarness();
+  const old = loader.load('claude-exp'); await Promise.resolve();
+  loader.invalidate();
+  const fresh = loader.load('claude-exp'); await Promise.resolve();
+  if (failOld) requests[0].reject(new Error('old failure'));
+  else requests[0].resolve({ providers: ['stale'] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(loader.load('claude-exp'), fresh);
+  assert.equal(loader.catalogs.size, 0); assert.equal(loader.errors.size, 0);
+  requests[1].resolve({ providers: ['fresh'] });
+  assert.deepEqual(await old, await fresh);
+  assert.deepEqual(published, [{ providers: ['fresh'] }]);
+  assert.equal(requests.length, 2);
+});
+
+test('关闭目录加载器后迟到响应不发布也不启动新请求', async () => {
+  const { loader, requests, published } = catalogHarness();
+  const pending = loader.load('claude-exp'); await Promise.resolve();
+  const rejected = assert.rejects(pending, /catalog_closed/);
+  loader.close(); requests[0].resolve({ providers: ['late'] }); await rejected;
+  await assert.rejects(loader.load('claude-exp'), /catalog_closed/);
+  assert.deepEqual(published, []); assert.equal(requests.length, 1);
+});
+
+test('新目录先发布后，旧成功响应仍只能返回新快照', async () => {
+  const { loader, requests, published } = catalogHarness();
+  const old = loader.load('claude-exp'); await Promise.resolve();
+  loader.invalidate();
+  const fresh = loader.load('claude-exp'); await Promise.resolve();
+  requests[1].resolve({ providers: ['fresh'] }); await fresh;
+  requests[0].resolve({ providers: ['stale'] });
+  assert.deepEqual(await old, { providers: ['fresh'] });
+  assert.deepEqual(published, [{ providers: ['fresh'] }]);
+});
+
+test('关闭与失效发生在派发之前时，不再启动旧请求', async () => {
+  const first = catalogHarness();
+  const closed = first.loader.load('claude-exp'); first.loader.close();
+  await assert.rejects(closed, /catalog_closed/); assert.equal(first.requests.length, 0);
+  const { loader, requests, published } = catalogHarness();
+  const old = loader.load('claude-exp'); loader.invalidate();
+  const fresh = loader.load('claude-exp');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 1);
+  requests[0].resolve({ providers: ['fresh'] });
+  assert.deepEqual(await old, await fresh);
+  assert.equal(published.length, 1);
+});

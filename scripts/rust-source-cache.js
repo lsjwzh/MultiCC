@@ -158,6 +158,13 @@ function probeAddon(file, node = process.execPath) {
       'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
       'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['transcriptPruneDefaults','transcriptProjectDir','transcriptFind','transcriptPruneFile',
+      'transcriptPruneMaybe','transcriptMeasureFile','transcriptMeasure','transcriptRealUserTurn',
+      'transcriptSubstantiveTurn','transcriptUserVisibleText','transcriptTriggersFor',
+      'transcriptCompactCutIndex'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(a.transcriptPruneDefaults().maxBytes!==2*1024*1024
+      || a.transcriptProjectDir('/p/q','/h')!=='/h/.claude/projects/-p-q'
+      || a.transcriptUserVisibleText('[gateway end]\\nhello')!=='hello') process.exit(1);
     if(['cliCompletion','cliIsCompleted','cliIsMainResult','cliResultCompletion','cliProtocolCompletion',
       'cliProxyFailureCompatible','cliCanPersistCompletion'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustCliCompletionTracker!=='function'

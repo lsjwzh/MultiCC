@@ -1257,3 +1257,91 @@ aliasOnly/线路默认模型更新后错误命中缓存，再对照续批结果�
 `data/rust-source/af0a05f49780a5e04eb04080/validation/model-default-owner/`。
 下一依赖继续 CLI 尝试生命周期及收尾副作用，再处理剩余 provider 宿主、
 历史持久化与聊天 WS；本节不代表这些依赖已完成。
+
+## Native transcript governor (2026-11-09)
+
+The Claude transcript governor now lives in Rust. `src/chat/transcript-prune.js`
+is a 64-line facade (-917/+63) around twelve addon exports;
+`native/core/src/transcript_prune.rs` (1,884 lines, plus 288 lines of unit tests
+in `transcript_prune/tests.rs`) owns the decisions, and
+`native/addon/src/transcript_prune.rs` (158 lines) moves values over the
+lossless bridge.
+
+What moved: `claudeProjectDir` (project slug mapping), `findTranscriptFile`
+(newest non-pruned `.jsonl` for a session id), `measure`/`measureFile`
+(line/turn/live-byte extent, API bytes, estimated tokens, the compaction
+boundary), `pruneFile`/`maybePrune` (threshold triggers, force/strict/dry-run
+planning, the keep-turn ladder, entry elision with the 160-unit reserve and the
+image/tool-result markers, compaction prologue preservation and splice, orphan
+`tool_result` neutralisation and chain re-rooting, parentUuid capture, the
+`.pruned.jsonl` sidecar, one atomic in-place write preserving mode and inode,
+and the report), the `isRealUserTurn` / `isSubstantiveTurn` / `userVisibleText`
+predicates, and the `triggersFor` / `compactCutIndex` helpers.
+
+Rust API surface (addon exports): `transcriptPruneDefaults`,
+`transcriptProjectDir`, `transcriptFind`, `transcriptPruneFile`,
+`transcriptPruneMaybe`, `transcriptMeasureFile`, `transcriptMeasure`,
+`transcriptRealUserTurn`, `transcriptSubstantiveTurn`,
+`transcriptUserVisibleText`, `transcriptTriggersFor` and
+`transcriptCompactCutIndex`. Typed `Options`/`MeasureOptions`/`Report`/`Level`/
+`Cut` structs stay internal; only the JS boundary consumes `js::JsValue`, and
+disk lines are parsed with the exact `js::json_parse` rather than the lenient
+sanitizer, because the kernel re-serializes those lines and must keep lone
+surrogates byte-for-byte.
+
+What remains in Node: only the facade. It injects `os.homedir()` (the kernel
+takes the home directory as an argument), keeps the legacy argument spellings
+(`String(cwd || '')`, falsy session id, `file ? String(file) : null`, default
+`{}`) and re-exports the default constants. No parsing, policy or I/O decision
+remains there, and there is no fallback path.
+
+Deleted Node logic: the whole 919-line implementation. The frozen oracle is
+`tests/helpers/legacy-transcript-prune.js` (924 lines including its header).
+
+Oracle and differential coverage: `tests/test-transcript-prune-differential.js`
+(534 lines, 12 tests) drives both implementations over identical seeded temp
+files with a temporary HOME: 700 randomized prune cases, 400 randomized measure
+cases, 30 binary/CRLF/empty/no-trailing-newline variants, 80 oversized elision
+cases, 120 compact-boundary cases, orphan neutralisation and chain re-rooting,
+the fractional keep rung (the legacy destructive edge is asserted, not fixed),
+missing/symlink/unreadable paths, project-directory and file selection, 1,200
+randomized predicate values plus hand-built shapes, and 600
+trigger/compactCutIndex cases. Reports, bytes, sidecar contents, file mode and
+inode are compared.
+
+Preserved legacy behaviour: `pruneFile` still propagates a failing final write
+while sidecar append failures stay swallowed; the out-of-range or fractional
+`keepTurnsLadder` index bug (an empty candidate, so the file is rewritten as a
+single newline) is reproduced deliberately. One difference is accepted: `null`
+options are still rejected, but the native boundary throws
+`Error: transcript_prune_invalid_options: null` where JavaScript threw the
+engine's `TypeError`. Callers never pass `null` (the default parameter only
+fills `undefined`).
+
+Mutation faults (each failed the differential suite and was reverted):
+compact-boundary subtype renamed (6 failing tests), sidecar suffix renamed (5),
+elision marker text changed (4), orphan drop marker changed (4).
+
+Rust workspace: 701 passed, 0 failed. `rustfmt --check` is clean on the changed
+files and clippy reports no warning in the new core/addon modules; pre-existing
+warnings elsewhere, including the `unused_io_amount` deny in `native/cpr`, are
+untouched.
+
+Test tiers: 853 classified (core 408: deterministic 334 / isolated 43 /
+flutter 31); the audited release counts in
+`tests/test-release-version-consistency.js` move to 408 entries and 380
+commands (377 Node entries). Source line budget OK; `git diff --check` clean.
+
+Full `npm test` against the final artifact (loaded through `MULTICC_RUST_ADDON`
+and `MULTICC_RUST_PREBUILT_DIR`) passes: 6,589 tests across 28 node:test
+summary blocks, 0 failed, 2 skipped, 1 todo. Both skips and the todo are the
+pre-existing environment gates (no desktop/electron-builder toolchain, no
+`pwsh`, and the existing S6 duplicate-bubble nudge case); nothing in this batch
+is skipped. The `test:core` group runs both transcript suites.
+
+Fingerprint `9e1fd64e85717cc9e5835939`; the artifact is
+`data/rust-source/9e1fd64e85717cc9e5835939/darwin-arm64/multicc_core.node` in
+the primary repository. It was built from source with
+`node scripts/ensure-source-rust.js` and the capability probe, extended in
+`scripts/rust-source-cache.js` with the twelve new exports and three smoke
+assertions, passed.

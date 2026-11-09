@@ -972,7 +972,8 @@
     const catalogApi = scope() && scope().MultiCCProviderCatalog;
     const aiApi = scope() && scope().MultiCCChatAiConfig;
     const editorApi = scope() && scope().MultiCCAutoProviderEditor;
-    if (!doc || !catalogApi || !aiApi) throw new Error(tt('runConfigComponentsMissing', '运行配置组件没有加载。'));
+    const controls = scope() && scope().MultiCCRunConfigControls;
+    if (!doc || !catalogApi || !aiApi || !controls) throw new Error(tt('runConfigComponentsMissing', '运行配置组件没有加载。'));
     requestOverride = (options && typeof options.request === 'function') ? options.request : null;
     const draft = !entry.sessionId;
     const terminalDraft = draft && entry.purpose === 'terminal';
@@ -1003,8 +1004,11 @@
     let jev = null;
     let loading = false;
     let epoch = 0;
-    const catalogs = new Map();
-    const catalogErrors = new Map();
+    const catalogLoader = controls.createCatalogLoader({
+      request: cli => request(`/api/providers?cli=${encodeURIComponent(cli)}`, undefined, 'GET'),
+      normalize: catalogApi.normalizeCatalog, onLoaded: absorbCatalogDefaults,
+    });
+    const { catalogs, errors: catalogErrors, load: loadCatalog } = catalogLoader;
     let modelWatchKey = '';
     let stopModelWatch = null;
     let modelCatalogStatus = null;
@@ -1059,17 +1063,6 @@
     let accountVanished = '';
     let commandcodeLogin;
     let commandcodeLoginLoading = false;
-
-    function loadCatalog(cli) {
-      if (catalogs.has(cli)) return Promise.resolve(catalogs.get(cli));
-      if (catalogErrors.has(cli)) return Promise.reject(catalogErrors.get(cli));
-      return request(`/api/providers?cli=${encodeURIComponent(cli)}`, undefined, 'GET').then(raw => {
-        const catalog = catalogApi.normalizeCatalog(raw);
-        catalogs.set(cli, catalog);
-        absorbCatalogDefaults(catalog);
-        return catalog;
-      }, error => { catalogErrors.set(cli, error); throw error; });
-    }
 
     function providersOf(cli) {
       const catalog = catalogs.get(cli);
@@ -1272,9 +1265,10 @@
       control.onclick = async () => {
         await catalogApi.openManager();
         if (closed) return;
-        catalogs.clear(); catalogErrors.clear(); pickerData = null;
+        catalogLoader.invalidate(); pickerData = null;
         try {
           await loadCatalog(currentCli);
+          if (closed || !dialog.open) return;
           providers = providersOf(currentCli);
           renderFixed(); renderSub(); renderPool(); renderFooter();
           if (pickerOpen) await renderPicker();
@@ -1519,7 +1513,7 @@
     dialog.tabIndex = -1;
     try { dialog.focus({ preventScroll: true }); } catch (_) { dialog.focus(); }
     dialog.onclose = () => {
-      closed = true; ++epoch; requestOverride = null;
+      closed = true; ++epoch; requestOverride = null; catalogLoader.close();
       if (stopModelWatch) stopModelWatch();
       dialog.remove();
     };
@@ -1682,58 +1676,19 @@
         providerValue = resolved;
       }
       if (!items.some(item => item.value === providerValue)) providerValue = items[0].value;
-      lineSelect.replaceChildren(...items.map(item => option(doc, item.value, item.label)));
+      controls.syncOptions(lineSelect, items);
       lineSelect.value = providerValue;
       show(lineSelect, true);
       show(lineNote, false);
       lineNote.textContent = '';
     }
 
-    // 下拉里的选项：厂商目录自带分组的（Command Code 的 Open Source / Anthropic /
-    // OpenAI …）按原分组画 <optgroup>，没有分组信息的照旧平铺。filter 非空时只
-    // 留标签或 id 含关键字的；默认项、自定义项和当前选中的值始终保留。
-    const MODEL_SEARCH_MIN = 12;
-    function paintModelOptions(select, choices, value, state, filter, keep) {
-      const needle = String(filter || '').trim().toLowerCase();
-      const children = [];
-      let group = null;
-      let groupName = null;
-      for (const choice of choices) {
-        const label = choice === '__custom__' ? tt('runConfigModelCustom', '自定义…') : aiApi.modelChoiceLabel(choice, value, state);
-        const special = choice === '' || choice === '__custom__' || choice === keep;
-        if (needle && !special && !`${label} ${choice}`.toLowerCase().includes(needle)) continue;
-        const name = (typeof aiApi.modelChoiceGroup === 'function' && aiApi.modelChoiceGroup(choice, state)) || '';
-        if (!name) { group = null; groupName = null; children.push(option(doc, choice, label)); continue; }
-        if (!group || groupName !== name) {
-          group = doc.createElement('optgroup');
-          group.label = name;
-          groupName = name;
-          children.push(group);
-        }
-        group.append(option(doc, choice, label));
-      }
-      select.replaceChildren(...children);
-    }
-
-    function fillModel(select, custom, value, cli, preferred) {
-      const state = modelState(cli);
-      let choices = aiApi.buildModelChoices(value, state);
-      if (!Array.isArray(choices) || !choices.length) choices = ['', '__custom__'];
-      choices = [...new Set(choices)];
-      modelSearch.value = '';
-      modelSearch.hidden = choices.filter(choice => choice && choice !== '__custom__').length <= MODEL_SEARCH_MIN;
-      modelSearch.oninput = () => {
-        const keep = select.value;
-        paintModelOptions(select, choices, value, state, modelSearch.value, keep);
-        select.value = keep;
-      };
-      paintModelOptions(select, choices, value, state, '', '');
-      let selected = aiApi.normalizeModel(value, preferred || '', state);
-      if (!selected) selected = aiApi.defaultModelChoice(value, state) || '';
-      const known = choices.includes(selected);
-      select.value = known ? selected : (selected && choices.includes('__custom__') ? '__custom__' : choices[0]);
-      custom.value = known ? '' : selected;
-      show(custom, select.value === '__custom__');
+    const modelControl = controls.createModelPicker({
+      select: modelSelect, custom: modelCustom, search: modelSearch, ai: aiApi,
+      customLabel: () => tt('runConfigModelCustom', '自定义…'),
+    });
+    function fillModel(value, cli, preferred) {
+      modelControl.update(value, cli, preferred, modelState(cli));
     }
 
     function renderModel() {
@@ -1741,7 +1696,7 @@
       // 本机 CLI 实时目录，有可刷的东西；其余 CLI 的清单要么在 provider 目录里、
       // 要么是固定档位。
       show(modelRefresh, aiApi.REFRESHABLE_MODEL_CLIS.has(currentCli));
-      fillModel(modelSelect, modelCustom, providerValue, currentCli, modelValue);
+      fillModel(providerValue, currentCli, modelValue);
       modelValue = currentModelValue();
       watchSelectedModels();
       warmRelayModels();
@@ -1764,7 +1719,7 @@
           const selectedProvider = providerValue;
           const selectedCli = currentCli;
           stopModelWatch = api.watchCodexModels({ providerId: selectedProvider }, catalog => {
-            if (closed || modelWatchKey !== key) return;
+            if (closed || !dialog.open || modelWatchKey !== key) return;
             modelCatalogStatus = catalog;
             // normalizeCatalog 返回冻结记录；替换副本，不修改共享目录对象。
             for (const [cli, existing] of catalogs) {
@@ -1779,7 +1734,7 @@
             if (currentCli !== selectedCli || providerValue !== selectedProvider) return;
             // 读取当前输入，异步返回期间用户选择/输入的模型必须保留。
             const selected = currentModelValue();
-            fillModel(modelSelect, modelCustom, providerValue, currentCli, selected);
+            fillModel(providerValue, currentCli, selected);
             modelValue = currentModelValue();
             paintModelStatus();
             renderFooter();
@@ -1802,9 +1757,9 @@
       const selectedCli = currentCli;
       const selectedProvider = providerValue;
       void aiApi.warmProviderModels(selectedProvider, () => {
-        if (closed || marker !== epoch || currentCli !== selectedCli || providerValue !== selectedProvider) return;
+        if (closed || !dialog.open || marker !== epoch || currentCli !== selectedCli || providerValue !== selectedProvider) return;
         const selected = currentModelValue();
-        fillModel(modelSelect, modelCustom, providerValue, currentCli, selected);
+        fillModel(providerValue, currentCli, selected);
         modelValue = currentModelValue();
         renderFooter();
       });
@@ -1834,7 +1789,7 @@
         items.push(option(doc, choice, aiApi.modelChoiceLabel(choice, providerId, state)));
       }
       items.push(option(doc, '__custom__', tt('runConfigModelCustom', '自定义…')));
-      select.replaceChildren(...items);
+      controls.syncOptions(select, items);
       const known = !!wanted && choices.includes(wanted);
       select.value = known ? wanted : (wanted ? '__custom__' : '');
       custom.value = known ? '' : (wanted || '');
@@ -2354,7 +2309,7 @@
         if ((cli === 'codex' || cli === 'codex-exp') && provider.isOfficial) continue;
         items.push(option(doc, provider.id, aiApi.providerLabel(provider, false) + limitSuffix(provider)));
       }
-      subProviderSelect.replaceChildren(...items);
+      controls.syncOptions(subProviderSelect, items);
       const seed = subagentSeed;
       const wanted = seed ? String(seed.providerId || '') : '';
       const seedKey = [cli, wanted, seed ? (seed.model || '') : ''].join('\u0000');
@@ -2417,119 +2372,47 @@
       return [...new Set(choices)];
     }
 
-    function poolRowView(row, index) {
-      const node = el(doc, 'div', 'rc-row');
-      node.dataset.providerId = row.providerId;
-      node.dataset.cli = row.cli;
-      node.draggable = true;
-      const rank = el(doc, 'span', 'rc-rank', String(index + 1));
-      const main = el(doc, 'div', 'rc-row-main');
-      const first = el(doc, 'div', 'rc-row-l1');
-      const cliSelect = el(doc, 'select', 'rc-chip rc-row-cli');
-      cliSelect.setAttribute('aria-label', tt('runConfigRowCli', '用哪个 CLI 跑这条线路'));
-      const line = rowLine(row);
-      // 这一行自己的 CLI 永远在列表里、永远是选中的 —— 哪怕它在这个用途下跑不了，
-      // 也是「留在原位标出来」而不是让下拉空着。其余能跑的 CLI 排后面，不能跑的
-      // 置灰，理由用短标签（长句会被截断成看不懂的半截话）。原生线路（Zen / Go）
-      // 只有 OpenCode 能跑，线路名自己已经说了是哪条，所以那颗下拉就只写「OpenCode」，
-      // 名字和提示统一使用产品名，旧引擎值只保留在配置里。
-      const native = isNativeLine(row.providerId);
+    function poolProjection(row) {
+      const line = rowLine(row), native = isNativeLine(row.providerId);
       const cliValues = [...new Set([row.cli, ...availableClis().filter(item => item.ok)
         .map(item => !terminalDraft && item.cli === chatChoiceCli(row.cli) ? row.cli : item.cli)])].filter(Boolean);
-      for (const choice of cliChoicesForLine(line, cliLabel, cliValues)) {
-        const own = choice.cli === row.cli;
-        const base = native ? cliLabel(choice.cli) : cliChoiceLabel(choice.cli);
-        const label = choice.ok || own ? base : `${cliChoiceLabel(choice.cli)} · ${choice.short}`;
-        cliSelect.append(option(doc, choice.cli, label, { disabled: !choice.ok && !own }));
-      }
-      cliSelect.value = row.cli;
-      cliSelect.title = cliChoiceLabel(row.cli);
-      cliSelect.onchange = () => {
-        row.cli = cliSelect.value;
-        // 换 CLI 之后线路的模型候选也换了一份，重新挑一个默认的。
-        row.model = '';
-        row.autoModel = false;
-        renderPool();
+      const clis = cliChoicesForLine(line, cliLabel, cliValues).map(choice => ({
+        value: choice.cli, disabled: !choice.ok && choice.cli !== row.cli,
+        label: choice.ok || choice.cli === row.cli
+          ? native ? cliLabel(choice.cli) : cliChoiceLabel(choice.cli)
+          : `${cliChoiceLabel(choice.cli)} · ${choice.short}`,
+      }));
+      const models = rowModelChoices(row).map(value => ({ value, label: value === '__custom__'
+        ? tt('runConfigModelCustom', '自定义…') : aiApi.modelChoiceLabel(value, row.providerId, modelState(row.cli)) }));
+      if (pick === PICK_DIFFICULTY) models.unshift({ value: AUTO_MODEL_VALUE, label: tt('runConfigAutoModel', '自动（Jev 挑）') });
+      const tiers = pick === PICK_DIFFICULTY && tiering === DEFAULT_TIERING
+        ? TIERS.map(value => ({ value, label: tierLabelOf(value) })) : [];
+      if (tiers.length && !TIERS.includes(row.tier)) row.tier = 'medium';
+      return { key: row, id: row.providerId, cli: row.cli, cliTitle: cliChoiceLabel(row.cli), clis,
+        name: lineName(row), badge: native ? null : limitBadge(providerById(row.cli, row.providerId)),
+        issue: rowIssue(row, line, cliLabel)?.reason || '', models, tiers, tier: row.tier,
+        wanted: row.autoModel ? AUTO_MODEL_VALUE : row.model || '',
       };
-      const chip = el(doc, 'span', 'rc-cli-chip');
-      chip.append(mark(doc, row.cli, 's'), cliSelect);
-      first.append(chip, el(doc, 'b', 'rc-line-name', lineName(row)));
-      const rowLimit = isNativeLine(row.providerId) ? null : limitBadge(providerById(row.cli, row.providerId));
-      if (rowLimit) first.append(rowLimit);
-      const second = el(doc, 'div', 'rc-row-l2');
-      const issue = rowIssue(row, line, cliLabel);
-      if (issue) {
-        node.classList.add('rc-warn');
-        second.append(el(doc, 'span', 'rc-issue', `⚠ ${issue.reason}`));
-      } else {
-        const difficulty = pick === PICK_DIFFICULTY;
-        const modelSelect = el(doc, 'select', 'rc-select rc-row-model');
-        modelSelect.setAttribute('aria-label', tt('runConfigRowModel', '模型'));
-        const custom = el(doc, 'input', 'rc-row-model-custom');
-        custom.maxLength = 100;
-        const choices = rowModelChoices(row);
-        if (difficulty) {
-          modelSelect.append(option(doc, AUTO_MODEL_VALUE, tt('runConfigAutoModel', '自动（Jev 挑）')));
-        }
-        for (const choice of choices) {
-          modelSelect.append(option(doc, choice,
-            choice === '__custom__' ? tt('runConfigModelCustom', '自定义…') : aiApi.modelChoiceLabel(choice, row.providerId, modelState(row.cli))));
-        }
-        const wanted = row.autoModel ? AUTO_MODEL_VALUE : (row.model || '');
-        const known = wanted === AUTO_MODEL_VALUE || choices.includes(wanted);
-        modelSelect.value = known ? wanted : (items => (wanted && items.includes('__custom__') ? '__custom__' : choices[0]))(choices);
-        custom.value = wanted === AUTO_MODEL_VALUE || known ? '' : wanted;
-        show(custom, modelSelect.value === '__custom__');
-        modelSelect.onchange = () => {
-          row.autoModel = modelSelect.value === AUTO_MODEL_VALUE;
-          row.model = row.autoModel || modelSelect.value === '__custom__' ? '' : modelSelect.value;
-          show(custom, modelSelect.value === '__custom__');
-          renderFooter();
-        };
-        custom.oninput = () => { row.model = custom.value.trim(); renderFooter(); };
-        second.append(modelSelect, custom);
-        if (pick === PICK_DIFFICULTY && tiering === DEFAULT_TIERING) {
-          const tierSelect = el(doc, 'select', 'rc-select rc-row-tier');
-          tierSelect.setAttribute('aria-label', tt('runConfigRowTier', '档位'));
-          for (const value of TIERS) tierSelect.append(option(doc, value, tierLabelOf(value)));
-          tierSelect.value = TIERS.includes(row.tier) ? row.tier : 'medium';
-          row.tier = tierSelect.value;
-          tierSelect.onchange = () => { row.tier = tierSelect.value; renderFooter(); };
-          second.append(tierSelect);
-        }
-      }
-      main.append(first, second);
-      const ops = el(doc, 'span', 'rc-ops');
-      const handle = el(doc, 'button', 'rc-handle', '⠿');
-      handle.type = 'button';
-      handle.title = tt('runConfigRowDrag', '拖动排序');
-      const remove = el(doc, 'button', 'rc-remove', '✕');
-      remove.type = 'button';
-      remove.title = tt('runConfigRowRemove', '移除这条线路');
-      remove.onclick = () => { rows = rows.filter(item => item !== row); renderPool(); renderFooter(); };
-      ops.append(handle, remove);
-      node.append(rank, main, ops);
-      node.ondragstart = event => { dragIndex = index; if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; };
-      node.ondragover = event => { event.preventDefault(); node.classList.add('rc-drop'); };
-      node.ondragleave = () => node.classList.remove('rc-drop');
-      node.ondrop = event => {
-        event.preventDefault();
-        node.classList.remove('rc-drop');
-        rows = reorder(rows, dragIndex, index);
-        dragIndex = -1;
-        renderPool();
-      };
-      return node;
     }
+
+    const poolControl = controls.createPoolList({ host: poolList, el, mark, tt,
+      onCli(row, cli) { row.cli = cli; row.model = ''; row.autoModel = false; renderPool(); renderFooter(); },
+      onModel(row, value) {
+        row.autoModel = value === AUTO_MODEL_VALUE;
+        row.model = row.autoModel || value === '__custom__' ? '' : value; renderFooter();
+      },
+      onCustom(row, value) { row.model = value.trim(); renderFooter(); },
+      onTier(row, value) { row.tier = value; renderFooter(); },
+      onRemove(row) { rows = rows.filter(item => item !== row); renderPool(); renderPickerList(); renderFooter(); },
+      onMove(from, to) { rows = reorder(rows, rows.indexOf(from), rows.indexOf(to)); renderPool(); renderFooter(); },
+    });
 
     function tierLabelOf(value) {
       return { simple: tt('runConfigTierSimple', '简单'), medium: tt('runConfigTierMedium', '中等'), complex: tt('runConfigTierComplex', '复杂') }[value] || value;
     }
 
-    let dragIndex = -1;
-
     function renderPool() {
-      poolList.replaceChildren(...rows.map((row, index) => poolRowView(row, index)));
+      poolControl.update(rows.map(poolProjection));
       renderMore();
       // 池子第一行就是 Auto 的主线路，子任务高级块跟着它走（换主/排序要重铺）。
       renderSub();
@@ -2705,9 +2588,11 @@
         if (closed || !dialog.open || !pickerOpen || pickerListHost !== host) return null;
         pickerData = data;
       }
+      // 用户可能在等待目录时继续滚动；回填保存此刻的位置，不还原打开时的旧值。
+      const currentTop = dialog.scrollTop;
       renderPickerList();
       host.scrollTop = keepFilter;
-      dialog.scrollTop = keepTop;
+      dialog.scrollTop = currentTop;
       return host;
     }
 
@@ -3084,7 +2969,7 @@
       if (modelRefresh.disabled) return;
       const cliAtClick = currentCli;
       const providerAtClick = providerValue;
-      let selected = currentModelValue();
+      const marker = epoch;
       modelRefresh.disabled = true;
       modelRefresh.textContent = tt('runConfigModelRefreshing', '刷新中…');
       let models = [];
@@ -3092,32 +2977,31 @@
         models = await aiApi.refreshModelsForCli(cliAtClick, null,
           { force: true, providerId: providerAtClick });
       } catch (_) { models = []; }
-      if (!closed) {
-        if (currentCli === cliAtClick) {
-          // 刷新可能改掉 OpenCode 原生线路的 id（opencodego → opencode-go）或
-          // 新增/移除线路：只重画模型下拉会让旧 id 匹配不到模型、看起来像被清空。
-          // 先按新目录对齐线路与模型前缀，线路/模型一起重画。
-          if (cliAtClick === 'opencode') {
-            const resolved = resolveNativeLine(providerValue);
-            if (resolved !== providerValue) {
-              selected = rewriteNativeModel(selected, nativeLineId(providerValue), nativeLineId(resolved));
-              providerValue = resolved;
-            }
-            renderLineSelect();
+      if (!closed && dialog.open && marker === epoch && currentCli === cliAtClick && providerValue === providerAtClick) {
+        let selected = currentModelValue();
+        // 刷新可能改掉 OpenCode 原生线路的 id（opencodego → opencode-go）或
+        // 新增/移除线路：只重画模型下拉会让旧 id 匹配不到模型、看起来像被清空。
+        // 先按新目录对齐线路与模型前缀，线路/模型一起重画。
+        if (cliAtClick === 'opencode') {
+          const resolved = resolveNativeLine(providerValue);
+          if (resolved !== providerValue) {
+            selected = rewriteNativeModel(selected, nativeLineId(providerValue), nativeLineId(resolved));
+            providerValue = resolved;
           }
-          // Codex 的账号目录缓存在 run-config 自己的 catalogs 里，force 拿到的新
-          // 清单要先回填，fillModel 才画得出来（与 watchCodexModels 的回填一致）。
-          if ((cliAtClick === 'codex' || cliAtClick === 'codex-exp') && models.length) {
-            const catalog = catalogs.get(cliAtClick);
-            if (catalog) {
-              catalogs.set(cliAtClick, { ...catalog, providers: catalog.providers.map(item =>
-                item.id === providerAtClick ? { ...item, modelOptions: models.map(model => model.model) } : item) });
-              providers = providersOf(cliAtClick);
-            }
-          }
-          fillModel(modelSelect, modelCustom, providerValue, currentCli, selected);
-          modelValue = currentModelValue();
+          renderLineSelect();
         }
+        // Codex 的账号目录缓存在 run-config 自己的 catalogs 里，force 拿到的新
+        // 清单要先回填，fillModel 才画得出来（与 watchCodexModels 的回填一致）。
+        if ((cliAtClick === 'codex' || cliAtClick === 'codex-exp') && models.length) {
+          const catalog = catalogs.get(cliAtClick);
+          if (catalog) {
+            catalogs.set(cliAtClick, { ...catalog, providers: catalog.providers.map(item =>
+              item.id === providerAtClick ? { ...item, modelOptions: models.map(model => model.model) } : item) });
+            providers = providersOf(cliAtClick);
+          }
+        }
+        fillModel(providerValue, currentCli, selected);
+        modelValue = currentModelValue();
         modelStatus.textContent = models.length
           ? tt('runConfigModelRefreshed', '模型列表已刷新：{count} 个', { count: models.length })
           : tt('runConfigModelRefreshFailed', '刷新失败，请稍后重试');
@@ -3185,6 +3069,7 @@
       }
       setBusy(true);
       try { await loadCatalog(currentCli); } catch (_) { /* 渲染里会把失败说出来 */ }
+      if (closed || !dialog.open) return;
       providers = providersOf(currentCli);
       const items = lineItems();
       let desired = clean(config.provider);
@@ -3225,7 +3110,7 @@
         if (cli === currentCli || catalogs.has(cli)) continue;
         const current = epoch;
         try { await loadCatalog(cli); } catch (_) { /* 计数位会显示加载失败 */ }
-        if (current !== epoch) return;
+        if (closed || !dialog.open || current !== epoch) return;
         renderCliCards();
         // Stored pools may include another product or an older compatible ID.
         // Refresh those rows when their catalog arrives, clearing stale warnings.

@@ -48,6 +48,7 @@ pub mod task_read_model;
 pub mod task_routing;
 pub mod task_run_context;
 pub mod task_store;
+pub mod transcript_prune;
 pub mod turn_request;
 pub mod turn_state;
 pub mod usage;
