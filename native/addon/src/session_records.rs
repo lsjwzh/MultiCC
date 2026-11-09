@@ -14,6 +14,11 @@ use crate::{
     js_live::LiveValue as L,
 };
 use multicc_core::{
+    chat_runtime::{
+        self, Outcome as TurnOutcome, PendingOutcome, Phase, Record as TurnRecord, RouteProofFacts,
+        StartError,
+    },
+    cli_capability::transport_of,
     durable_state,
     js::{self, JsString, JsValue as V},
     session_records::{
@@ -67,6 +72,30 @@ fn error_message(error: L<'_>) -> Result<String> {
     })
 }
 
+/// `Object.isFrozen(value)` — true for primitives as well.
+fn is_frozen(value: L<'_>) -> Result<bool> {
+    let object = value.global()?.get(c"Object")?;
+    object.get(c"isFrozen")?.call_plain(&[value])?.truthy()
+}
+
+/// `String(value || fallback)`.
+fn truthy_string(value: L<'_>, fallback: &str) -> Result<JsString> {
+    if value.truthy()? {
+        value.coerce_string()
+    } else {
+        Ok(JsString::from_rust_str(fallback))
+    }
+}
+
+/// `value == null ? null : String(value)`.
+fn nullable_string(value: L<'_>) -> Result<Option<JsString>> {
+    if value.nullish()? {
+        Ok(None)
+    } else {
+        Ok(Some(value.coerce_string()?))
+    }
+}
+
 #[derive(Clone)]
 struct Table {
     order: Vec<JsString>,
@@ -102,6 +131,38 @@ impl Table {
     fn clear(&mut self) {
         self.order.clear();
         self.map.clear();
+    }
+}
+
+/// One preparation lease. `proof` is the frozen provider-route object the
+/// failed/succeeded transition stored; it stays a host value so snapshots return
+/// the same object identity the caller handed over.
+#[derive(Clone)]
+struct RuntimeEntry {
+    record: TurnRecord,
+    proof: Option<Value>,
+}
+
+/// Ordered native table for the per-session turn runtime state. The runtime
+/// store is independent of `chatSessions` membership: a turn can be claimed
+/// before a chat-session object exists, and deleting a chat session does not
+/// erase the last preparation outcome.
+#[derive(Default)]
+struct RuntimeTable {
+    order: Vec<JsString>,
+    map: HashMap<JsString, RuntimeEntry>,
+}
+impl RuntimeTable {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn get(&self, id: &JsString) -> Option<&RuntimeEntry> {
+        self.map.get(id)
+    }
+    fn set(&mut self, id: JsString, entry: RuntimeEntry) {
+        if self.map.insert(id.clone(), entry).is_none() {
+            self.order.push(id);
+        }
     }
 }
 
@@ -172,6 +233,14 @@ struct StatePaths {
 pub struct RustSessionRecords {
     table: RefCell<Table>,
     dirs: RefCell<Table>,
+    /// Live chat-session objects (`chatSessions`). They stay host references so
+    /// the streaming/CLI/timer owners keep identity and property order.
+    chat: RefCell<Table>,
+    /// Per-session preparation lease (the frozen `runtime-store.js` state).
+    runtime: RefCell<RuntimeTable>,
+    /// Host clock for turn transitions; the facade supplies `Date.now` or a
+    /// deterministic test clock.
+    turn_now: RefCell<Option<Value>>,
     values: Values,
     persistence: RefCell<Persistence>,
     ports: RefCell<Ports>,
@@ -734,6 +803,288 @@ impl RustSessionRecords {
         out.set(c"status", anchor.from_value(&V::string(status))?)?;
         Ok(out)
     }
+
+    // ── Turn runtime store (the frozen `src/chat/runtime-store.js` semantics) ──
+    /// `current(sessionId)`: the stored entry, or the not-stored idle default.
+    fn turn_entry(&self, session: &JsString) -> RuntimeEntry {
+        self.runtime
+            .borrow()
+            .get(session)
+            .cloned()
+            .unwrap_or(RuntimeEntry {
+                record: TurnRecord::default_for(session.clone()),
+                proof: None,
+            })
+    }
+    fn turn_store(&self, session: JsString, record: TurnRecord, proof: Option<Value>) {
+        self.runtime
+            .borrow_mut()
+            .set(session, RuntimeEntry { record, proof });
+    }
+    /// The injected `now()`; the facade always supplies `Date.now` or a test
+    /// clock, so an absent port is a configuration error, never a silent clock.
+    fn turn_clock(&self, env: &Env, anchor: L<'_>) -> Result<f64> {
+        let port = self
+            .turn_now
+            .borrow()
+            .clone()
+            .ok_or_else(|| napi::Error::from_reason("turn runtime clock is not configured"))?;
+        self.read(env, anchor, &port)?
+            .call_plain(&[])?
+            .explicit_number()
+    }
+    fn turn_string<'a>(&self, anchor: L<'a>, value: Option<&JsString>) -> Result<L<'a>> {
+        match value {
+            Some(value) => anchor.from_value(&V::String(value.clone())),
+            None => anchor.from_value(&V::Null),
+        }
+    }
+    fn turn_number<'a>(&self, anchor: L<'a>, value: Option<f64>) -> Result<L<'a>> {
+        match value {
+            Some(value) => anchor.from_value(&V::Number(value)),
+            None => anchor.from_value(&V::Null),
+        }
+    }
+    fn turn_outcome_value<'a>(
+        &self,
+        anchor: L<'a>,
+        outcome: Option<&TurnOutcome>,
+    ) -> Result<L<'a>> {
+        match outcome {
+            None => anchor.from_value(&V::Null),
+            Some(outcome) => {
+                let out = object(anchor)?;
+                out.set(
+                    c"turnId",
+                    anchor.from_value(&V::String(outcome.turn_id.clone()))?,
+                )?;
+                out.set(
+                    c"status",
+                    anchor.from_value(&V::String(outcome.status.clone()))?,
+                )?;
+                out.set(
+                    c"reason",
+                    self.turn_string(anchor, outcome.reason.as_ref())?,
+                )?;
+                out.set(c"at", anchor.from_value(&V::Number(outcome.at))?)?;
+                out.freeze()
+            }
+        }
+    }
+    /// `freezeRecord(current(sessionId))` — the clone's property order is the
+    /// frozen Node oracle's: lastOutcome precedes providerRouteProof, which
+    /// precedes pendingOutcome.
+    fn turn_state_value<'a>(
+        &self,
+        env: &Env,
+        anchor: L<'a>,
+        record: &TurnRecord,
+        proof: Option<&Value>,
+    ) -> Result<L<'a>> {
+        let out = object(anchor)?;
+        out.set(
+            c"sessionId",
+            anchor.from_value(&V::String(record.session_id.clone()))?,
+        )?;
+        if record.phase == Phase::Idle {
+            out.set(c"phase", anchor.from_value(&V::string("idle"))?)?;
+            out.set(c"turnId", anchor.from_value(&V::Null)?)?;
+            out.set(
+                c"generation",
+                anchor.from_value(&V::Number(record.generation))?,
+            )?;
+            out.set(
+                c"lastOutcome",
+                self.turn_outcome_value(anchor, record.last_outcome.as_ref())?,
+            )?;
+        } else {
+            out.set(
+                c"turnId",
+                self.turn_string(anchor, record.turn_id.as_ref())?,
+            )?;
+            out.set(
+                c"phase",
+                anchor.from_value(&V::string(record.phase.as_str()))?,
+            )?;
+            out.set(
+                c"generation",
+                anchor.from_value(&V::Number(record.generation))?,
+            )?;
+            out.set(c"cli", self.turn_string(anchor, record.cli.as_ref())?)?;
+            out.set(
+                c"transport",
+                self.turn_string(anchor, record.transport.as_ref())?,
+            )?;
+            out.set(
+                c"messageDurable",
+                anchor.from_value(&V::Bool(record.message_durable))?,
+            )?;
+            out.set(
+                c"providerRouteResolved",
+                anchor.from_value(&V::Bool(record.provider_route_resolved))?,
+            )?;
+            out.set(c"claimedAt", self.turn_number(anchor, record.claimed_at)?)?;
+            out.set(c"startedAt", self.turn_number(anchor, record.started_at)?)?;
+            out.set(
+                c"finishingAt",
+                self.turn_number(anchor, record.finishing_at)?,
+            )?;
+            out.set(
+                c"lastOutcome",
+                self.turn_outcome_value(anchor, record.last_outcome.as_ref())?,
+            )?;
+        }
+        if let Some(proof) = proof {
+            out.set(c"providerRouteProof", self.read(env, anchor, proof)?)?;
+        }
+        let pending = match &record.pending_outcome {
+            Some(pending) => {
+                let value = object(anchor)?;
+                value.set(
+                    c"status",
+                    anchor.from_value(&V::String(pending.status.clone()))?,
+                )?;
+                value.set(
+                    c"reason",
+                    self.turn_string(anchor, pending.reason.as_ref())?,
+                )?;
+                value.freeze()?
+            }
+            None => anchor.from_value(&V::Undefined)?,
+        };
+        out.set(c"pendingOutcome", pending)?;
+        out.freeze()
+    }
+    /// `Object.freeze({ ok, ...(code ? { code } : {}), state })`.
+    fn turn_result<'a>(
+        &self,
+        env: &Env,
+        anchor: L<'a>,
+        ok: bool,
+        code: Option<&str>,
+        record: &TurnRecord,
+        proof: Option<&Value>,
+    ) -> Result<L<'a>> {
+        let state = self.turn_state_value(env, anchor, record, proof)?;
+        let out = object(anchor)?;
+        out.set(c"ok", anchor.from_value(&V::Bool(ok))?)?;
+        if let Some(code) = code {
+            out.set(c"code", anchor.from_value(&V::string(code))?)?;
+        }
+        out.set(c"state", state)?;
+        out.freeze()
+    }
+    /// `settle(...)` and every failure that routes through it. The clock is read
+    /// only after the transition is known to be legal, exactly as the Node
+    /// implementation did.
+    #[allow(clippy::too_many_arguments)]
+    fn turn_settle_result(
+        &self,
+        env: &Env,
+        anchor: L<'_>,
+        session: JsString,
+        turn: JsString,
+        allowed: &[Phase],
+        status: JsString,
+        reason: Option<JsString>,
+    ) -> Result<sys::napi_value> {
+        let entry = self.turn_entry(&session);
+        if let Err(failure) = chat_runtime::match_phase(&entry.record, &turn, allowed) {
+            return Ok(self
+                .turn_result(
+                    env,
+                    anchor,
+                    false,
+                    Some(failure.code()),
+                    &entry.record,
+                    entry.proof.as_ref(),
+                )?
+                .raw());
+        }
+        let now = self.turn_clock(env, anchor)?;
+        let record = match chat_runtime::settle(&entry.record, &turn, allowed, status, reason, now)
+        {
+            Ok(record) => record,
+            Err(failure) => {
+                return Ok(self
+                    .turn_result(
+                        env,
+                        anchor,
+                        false,
+                        Some(failure.code()),
+                        &entry.record,
+                        entry.proof.as_ref(),
+                    )?
+                    .raw());
+            }
+        };
+        self.turn_store(session, record.clone(), None);
+        Ok(self
+            .turn_result(env, anchor, true, None, &record, None)?
+            .raw())
+    }
+    /// `[true, ...]` phases from the JS `allowedPhases` argument. Unknown names
+    /// are dropped: `phases.includes(record.phase)` could never match them.
+    fn turn_allowed(&self, value: L<'_>) -> Result<Vec<Phase>> {
+        if value.nullish()? {
+            return Ok(vec![Phase::Preparing, Phase::Running]);
+        }
+        if !value.is_array()? {
+            return Err(napi::Error::from_reason("allowedPhases must be an array"));
+        }
+        let length = value.get(c"length")?.number()? as u32;
+        let mut phases = Vec::new();
+        for index in 0..length {
+            let Some(name) = value.element(index)?.string()? else {
+                continue;
+            };
+            match name.to_string_lossy().as_str() {
+                "idle" => phases.push(Phase::Idle),
+                "preparing" => phases.push(Phase::Preparing),
+                "running" => phases.push(Phase::Running),
+                "finishing" => phases.push(Phase::Finishing),
+                _ => {}
+            }
+        }
+        Ok(phases)
+    }
+    /// `ownsConcreteRouteProof(proof, sessionId, turnId)` facts. The identity
+    /// comparisons are strict equals on the live values, not string coercion.
+    fn turn_route_proof(
+        &self,
+        proof: L<'_>,
+        session: L<'_>,
+        turn: L<'_>,
+    ) -> Result<RouteProofFacts> {
+        // `const route = proof && proof.route` — a nullish proof has no fields.
+        let route = if proof.truthy()? {
+            proof.get(c"route")?
+        } else {
+            proof.from_value(&V::Undefined)?
+        };
+        let truthy = |name: &CStr| -> Result<bool> { prop(route, name)?.truthy() };
+        let generation = prop(route, c"routeGeneration")?.number().ok();
+        let attempt = prop(route, c"attemptNo")?.number().ok();
+        Ok(RouteProofFacts {
+            kind_provider_route: prop(proof, c"kind")?
+                .string()?
+                .is_some_and(|kind| kind.to_string_lossy() == "provider-route"),
+            resolved_true: prop(proof, c"resolved")?.is_true()?,
+            proof_frozen: is_frozen(proof)?,
+            route_frozen: is_frozen(route)?,
+            session_matches: prop(proof, c"sessionId")?.equals(session)?,
+            turn_matches: prop(proof, c"turnId")?.equals(turn)?,
+            runtime_epoch: truthy(c"runtimeEpoch")?,
+            decision_id: truthy(c"decisionId")?,
+            route_attempt_id: truthy(c"routeAttemptId")?,
+            provider_id: truthy(c"providerId")?,
+            protocol: truthy(c"protocol")?,
+            model: truthy(c"model")?,
+            provider_revision: truthy(c"providerRevision")?,
+            route_generation: generation,
+            attempt_no: attempt,
+        })
+    }
 }
 
 #[napi]
@@ -743,6 +1094,9 @@ impl RustSessionRecords {
         Ok(Self {
             table: RefCell::new(Table::new()),
             dirs: RefCell::new(Table::new()),
+            chat: RefCell::new(Table::new()),
+            runtime: RefCell::new(RuntimeTable::new()),
+            turn_now: RefCell::new(None),
             values: Values::new(L::new(&env, anchor))?,
             persistence: RefCell::new(Persistence::default()),
             ports: RefCell::new(Ports::default()),
@@ -1524,6 +1878,609 @@ impl RustSessionRecords {
         let record = self.read(&env, anchor, &record_value)?;
         record.assign(c"taskState", anchor.from_value(&V::Object(vec![]))?)?;
         Ok(true)
+    }
+
+    // ── Live chat-session table (`chatSessions`) ──
+    // Membership and order are native; the `cs` objects stay live host
+    // references so streaming/CLI/timer owners keep identity and field order.
+    #[napi]
+    pub fn chat_get(&self, env: Env, session: Unknown<'_>) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let key = self.key(L::new(&env, session))?;
+        let found = self.chat.borrow().get(&key);
+        match found {
+            Some(value) => Ok(self.read(&env, anchor, &value)?.raw()),
+            None => Ok(anchor.from_value(&V::Undefined)?.raw()),
+        }
+    }
+    #[napi]
+    pub fn chat_set(&self, env: Env, session: Unknown<'_>, value: Unknown<'_>) -> Result<()> {
+        self.values.drain(&env)?;
+        let key = self.key(L::new(&env, session))?;
+        let captured = self.values.capture(&env, L::new(&env, value))?;
+        self.chat.borrow_mut().set(key, captured);
+        Ok(())
+    }
+    #[napi]
+    pub fn chat_has(&self, env: Env, session: Unknown<'_>) -> Result<bool> {
+        self.values.drain(&env)?;
+        let key = self.key(L::new(&env, session))?;
+        Ok(self.chat.borrow().map.contains_key(&key))
+    }
+    #[napi]
+    pub fn chat_delete(&self, env: Env, session: Unknown<'_>) -> Result<bool> {
+        self.values.drain(&env)?;
+        let key = self.key(L::new(&env, session))?;
+        Ok(self.chat.borrow_mut().delete(&key))
+    }
+    #[napi]
+    pub fn chat_clear(&self, env: Env) -> Result<()> {
+        self.values.drain(&env)?;
+        self.chat.borrow_mut().clear();
+        Ok(())
+    }
+    #[napi]
+    pub fn chat_size(&self, env: Env) -> Result<f64> {
+        self.values.drain(&env)?;
+        Ok(self.chat.borrow().len() as f64)
+    }
+    /// Ordered `[id, session]` snapshot — the same iteration shape the session
+    /// facade uses (`src/session/records.js`).
+    #[napi]
+    pub fn chat_entries(&self, env: Env) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let pairs = anchor.from_value(&V::Array(vec![]))?;
+        let entries: Vec<(JsString, Value)> = {
+            let table = self.chat.borrow();
+            table
+                .order
+                .iter()
+                .map(|id| {
+                    let value = table.map.get(id).expect("ordered id").clone();
+                    (id.clone(), value)
+                })
+                .collect()
+        };
+        for (index, (key, value)) in entries.iter().enumerate() {
+            let pair = anchor.from_value(&V::Array(vec![]))?;
+            pair.set_element(0, anchor.from_value(&V::String(key.clone()))?)?;
+            pair.set_element(1, self.read(&env, anchor, value)?)?;
+            pairs.set_element(index as u32, pair)?;
+        }
+        Ok(pairs.raw())
+    }
+
+    // ── Turn runtime store ──
+    /// Install the host clock (`Date.now` or a deterministic test clock).
+    #[napi]
+    pub fn turn_configure(&self, env: Env, now: Unknown<'_>) -> Result<()> {
+        self.values.drain(&env)?;
+        let captured = self.values.capture_host(&env, L::new(&env, now))?;
+        *self.turn_now.borrow_mut() = Some(captured);
+        Ok(())
+    }
+    #[napi]
+    pub fn turn_claim(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+        meta: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_value = L::new(&env, session);
+        let turn_value = L::new(&env, turn);
+        let meta = L::new(&env, meta);
+        // `String(sessionId || '').trim()`
+        let session_key = truthy_string(session_value, "")?.trim();
+        let turn_key = truthy_string(turn_value, "")?.trim();
+        let previous = self.turn_entry(&session_key);
+        if session_key.is_empty() || turn_key.is_empty() {
+            return Ok(self
+                .turn_result(
+                    &env,
+                    anchor,
+                    false,
+                    Some("invalid_identity"),
+                    &previous.record,
+                    previous.proof.as_ref(),
+                )?
+                .raw());
+        }
+        if previous.record.phase != Phase::Idle {
+            return Ok(self
+                .turn_result(
+                    &env,
+                    anchor,
+                    false,
+                    Some("turn_in_flight"),
+                    &previous.record,
+                    previous.proof.as_ref(),
+                )?
+                .raw());
+        }
+        let cli_value = prop(meta, c"cli")?;
+        let transport_value = prop(meta, c"transport")?;
+        let cli = truthy_string(cli_value, "claude")?;
+        let transport = if transport_value.truthy()? {
+            transport_value.coerce_string()?
+        } else {
+            JsString::from_rust_str(transport_of(&cli_value.coerce_string()?.to_string_lossy()))
+        };
+        let now = self.turn_clock(&env, anchor)?;
+        let record = match chat_runtime::claim(
+            &previous.record,
+            session_key.clone(),
+            turn_key,
+            cli,
+            transport,
+            now,
+        ) {
+            Ok(record) => record,
+            Err(failure) => {
+                return Ok(self
+                    .turn_result(
+                        &env,
+                        anchor,
+                        false,
+                        Some(failure.code()),
+                        &previous.record,
+                        previous.proof.as_ref(),
+                    )?
+                    .raw());
+            }
+        };
+        // A new preparation lease starts without the previous turn's proof.
+        self.turn_store(session_key, record.clone(), None);
+        Ok(self
+            .turn_result(&env, anchor, true, None, &record, None)?
+            .raw())
+    }
+    #[napi]
+    pub fn turn_mark_message_durable(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_key = self.key(L::new(&env, session))?;
+        let turn_key = self.key(L::new(&env, turn))?;
+        let entry = self.turn_entry(&session_key);
+        let record = match chat_runtime::mark_message_durable(&entry.record, &turn_key) {
+            Ok(record) => record,
+            Err(failure) => {
+                return Ok(self
+                    .turn_result(
+                        &env,
+                        anchor,
+                        false,
+                        Some(failure.code()),
+                        &entry.record,
+                        entry.proof.as_ref(),
+                    )?
+                    .raw());
+            }
+        };
+        self.turn_store(session_key, record.clone(), entry.proof.clone());
+        Ok(self
+            .turn_result(&env, anchor, true, None, &record, entry.proof.as_ref())?
+            .raw())
+    }
+    #[napi]
+    pub fn turn_mark_provider_route_resolved(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+        route: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_value = L::new(&env, session);
+        let turn_value = L::new(&env, turn);
+        let route = L::new(&env, route);
+        let session_key = self.key(session_value)?;
+        let turn_key = self.key(turn_value)?;
+        let entry = self.turn_entry(&session_key);
+        if let Err(failure) =
+            chat_runtime::match_phase(&entry.record, &turn_key, &[Phase::Preparing])
+        {
+            return Ok(self
+                .turn_result(
+                    &env,
+                    anchor,
+                    false,
+                    Some(failure.code()),
+                    &entry.record,
+                    entry.proof.as_ref(),
+                )?
+                .raw());
+        }
+        let resolved = prop(route, c"resolved")?.is_true()?;
+        let proof_value = prop(route, c"proof")?;
+        let owned = resolved
+            && chat_runtime::owns_concrete_route_proof(&self.turn_route_proof(
+                proof_value,
+                session_value,
+                turn_value,
+            )?);
+        if !owned {
+            let reason = if resolved {
+                JsString::from_rust_str("invalid-provider-route-proof")
+            } else {
+                truthy_string(prop(route, c"reason")?, "route-failed")?
+            };
+            return self.turn_settle_result(
+                &env,
+                anchor,
+                session_key,
+                turn_key,
+                &[Phase::Preparing],
+                JsString::from_rust_str("failed"),
+                Some(reason),
+            );
+        }
+        let record = match chat_runtime::mark_provider_route_resolved(&entry.record, &turn_key) {
+            Ok(record) => record,
+            Err(failure) => {
+                return Ok(self
+                    .turn_result(
+                        &env,
+                        anchor,
+                        false,
+                        Some(failure.code()),
+                        &entry.record,
+                        entry.proof.as_ref(),
+                    )?
+                    .raw());
+            }
+        };
+        let proof = self.values.capture_host(&env, proof_value)?;
+        self.turn_store(session_key, record.clone(), Some(proof.clone()));
+        Ok(self
+            .turn_result(&env, anchor, true, None, &record, Some(&proof))?
+            .raw())
+    }
+    #[napi]
+    pub fn turn_provider_route_failed(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+        reason: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_key = self.key(L::new(&env, session))?;
+        let turn_key = self.key(L::new(&env, turn))?;
+        let reason = L::new(&env, reason);
+        let reason = if reason.undefined()? {
+            Some(JsString::from_rust_str("route-failed"))
+        } else {
+            nullable_string(reason)?
+        };
+        self.turn_settle_result(
+            &env,
+            anchor,
+            session_key,
+            turn_key,
+            &[Phase::Preparing],
+            JsString::from_rust_str("failed"),
+            reason,
+        )
+    }
+    #[napi]
+    pub fn turn_abort_preparation(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+        reason: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_key = self.key(L::new(&env, session))?;
+        let turn_key = self.key(L::new(&env, turn))?;
+        let reason = L::new(&env, reason);
+        let reason = if reason.undefined()? {
+            Some(JsString::from_rust_str("preparation-failed"))
+        } else {
+            nullable_string(reason)?
+        };
+        self.turn_settle_result(
+            &env,
+            anchor,
+            session_key,
+            turn_key,
+            &[Phase::Preparing],
+            JsString::from_rust_str("failed"),
+            reason,
+        )
+    }
+    #[napi]
+    pub fn turn_settle(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+        outcome: Unknown<'_>,
+        allowed: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_key = self.key(L::new(&env, session))?;
+        let turn_key = self.key(L::new(&env, turn))?;
+        let outcome = L::new(&env, outcome);
+        let status = if outcome.nullish()? {
+            JsString::from_rust_str("completed")
+        } else {
+            truthy_string(prop(outcome, c"status")?, "completed")?
+        };
+        let reason = if outcome.nullish()? {
+            None
+        } else {
+            nullable_string(prop(outcome, c"reason")?)?
+        };
+        let phases = self.turn_allowed(L::new(&env, allowed))?;
+        self.turn_settle_result(&env, anchor, session_key, turn_key, &phases, status, reason)
+    }
+    #[napi]
+    pub fn turn_start(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_key = self.key(L::new(&env, session))?;
+        let turn_key = self.key(L::new(&env, turn))?;
+        let entry = self.turn_entry(&session_key);
+        if let Err(failure) =
+            chat_runtime::match_phase(&entry.record, &turn_key, &[Phase::Preparing])
+        {
+            return Ok(self
+                .turn_result(
+                    &env,
+                    anchor,
+                    false,
+                    Some(failure.code()),
+                    &entry.record,
+                    entry.proof.as_ref(),
+                )?
+                .raw());
+        }
+        let mut missing: Vec<&'static str> = Vec::new();
+        if !entry.record.message_durable {
+            missing.push("durable-user-message");
+        }
+        if !entry.record.provider_route_resolved {
+            missing.push("provider-route");
+        }
+        if !missing.is_empty() {
+            let state = self.turn_state_value(&env, anchor, &entry.record, entry.proof.as_ref())?;
+            let out = object(anchor)?;
+            out.set(c"ok", anchor.from_value(&V::Bool(false))?)?;
+            out.set(
+                c"code",
+                anchor.from_value(&V::string("spawn_proof_missing"))?,
+            )?;
+            let names = anchor.from_value(&V::Array(vec![]))?;
+            for (index, name) in missing.iter().enumerate() {
+                names.set_element(index as u32, anchor.from_value(&V::string(name))?)?;
+            }
+            out.set(c"missing", names.freeze()?)?;
+            out.set(c"state", state)?;
+            return Ok(out.freeze()?.raw());
+        }
+        // The oracle mutates the record before reading the clock, so a
+        // re-entrant read observes `phase: 'running'` with `startedAt` still
+        // null. Publish that interim state, then stamp the timestamp.
+        let mut record = match chat_runtime::start(&entry.record, &turn_key, 0.0) {
+            Ok(record) => record,
+            Err(StartError::Transition(failure)) => {
+                return Ok(self
+                    .turn_result(
+                        &env,
+                        anchor,
+                        false,
+                        Some(failure.code()),
+                        &entry.record,
+                        entry.proof.as_ref(),
+                    )?
+                    .raw());
+            }
+            Err(StartError::Missing(_)) => {
+                return Err(napi::Error::from_reason("turn start proof mismatch"));
+            }
+        };
+        record.started_at = None;
+        self.turn_store(session_key.clone(), record.clone(), entry.proof.clone());
+        let now = self.turn_clock(&env, anchor)?;
+        record.started_at = Some(now);
+        self.turn_store(session_key, record.clone(), entry.proof.clone());
+        Ok(self
+            .turn_result(&env, anchor, true, None, &record, entry.proof.as_ref())?
+            .raw())
+    }
+    #[napi]
+    pub fn turn_begin_cleanup(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+        outcome: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_key = self.key(L::new(&env, session))?;
+        let turn_key = self.key(L::new(&env, turn))?;
+        let outcome = L::new(&env, outcome);
+        let status = if outcome.nullish()? {
+            JsString::from_rust_str("completed")
+        } else {
+            truthy_string(prop(outcome, c"status")?, "completed")?
+        };
+        let reason = if outcome.nullish()? {
+            None
+        } else {
+            nullable_string(prop(outcome, c"reason")?)?
+        };
+        let entry = self.turn_entry(&session_key);
+        if let Err(failure) = chat_runtime::match_phase(&entry.record, &turn_key, &[Phase::Running])
+        {
+            return Ok(self
+                .turn_result(
+                    &env,
+                    anchor,
+                    false,
+                    Some(failure.code()),
+                    &entry.record,
+                    entry.proof.as_ref(),
+                )?
+                .raw());
+        }
+        // Same interim publication as `start`: the oracle flips the phase before
+        // calling `now()`, so a re-entrant read sees finishing with no
+        // `finishingAt`/`pendingOutcome` yet.
+        let mut record = match chat_runtime::begin_cleanup(
+            &entry.record,
+            &turn_key,
+            status.clone(),
+            reason.clone(),
+            0.0,
+        ) {
+            Ok(record) => record,
+            Err(failure) => {
+                return Ok(self
+                    .turn_result(
+                        &env,
+                        anchor,
+                        false,
+                        Some(failure.code()),
+                        &entry.record,
+                        entry.proof.as_ref(),
+                    )?
+                    .raw());
+            }
+        };
+        record.finishing_at = None;
+        record.pending_outcome = None;
+        self.turn_store(session_key.clone(), record.clone(), entry.proof.clone());
+        let now = self.turn_clock(&env, anchor)?;
+        record.finishing_at = Some(now);
+        record.pending_outcome = Some(PendingOutcome { status, reason });
+        self.turn_store(session_key, record.clone(), entry.proof.clone());
+        Ok(self
+            .turn_result(&env, anchor, true, None, &record, entry.proof.as_ref())?
+            .raw())
+    }
+    #[napi]
+    pub fn turn_cleanup(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_key = self.key(L::new(&env, session))?;
+        let turn_key = self.key(L::new(&env, turn))?;
+        let entry = self.turn_entry(&session_key);
+        if let Err(failure) =
+            chat_runtime::match_phase(&entry.record, &turn_key, &[Phase::Finishing])
+        {
+            return Ok(self
+                .turn_result(
+                    &env,
+                    anchor,
+                    false,
+                    Some(failure.code()),
+                    &entry.record,
+                    entry.proof.as_ref(),
+                )?
+                .raw());
+        }
+        let now = self.turn_clock(&env, anchor)?;
+        let record = match chat_runtime::cleanup(&entry.record, &turn_key, now) {
+            Ok(record) => record,
+            Err(failure) => {
+                return Ok(self
+                    .turn_result(
+                        &env,
+                        anchor,
+                        false,
+                        Some(failure.code()),
+                        &entry.record,
+                        entry.proof.as_ref(),
+                    )?
+                    .raw());
+            }
+        };
+        self.turn_store(session_key, record.clone(), None);
+        Ok(self
+            .turn_result(&env, anchor, true, None, &record, None)?
+            .raw())
+    }
+    #[napi]
+    pub fn turn_claim_proof(
+        &self,
+        env: Env,
+        session: Unknown<'_>,
+        turn: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_value = L::new(&env, session);
+        let turn_value = L::new(&env, turn);
+        let session_key = self.key(session_value)?;
+        let entry = self.turn_entry(&session_key);
+        let claimed = match &entry.record.turn_id {
+            Some(turn_id) if entry.record.phase != Phase::Idle => anchor
+                .from_value(&V::String(turn_id.clone()))?
+                .equals(turn_value)?,
+            _ => false,
+        };
+        let out = object(anchor)?;
+        out.set(c"kind", anchor.from_value(&V::string("runtime-claim"))?)?;
+        out.set(c"sessionId", session_value)?;
+        out.set(c"turnId", turn_value)?;
+        out.set(c"claimed", anchor.from_value(&V::Bool(claimed))?)?;
+        Ok(out.freeze()?.raw())
+    }
+    #[napi]
+    pub fn turn_snapshot(&self, env: Env, session: Unknown<'_>) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let session_key = self.key(L::new(&env, session))?;
+        let entry = self.turn_entry(&session_key);
+        Ok(self
+            .turn_state_value(&env, anchor, &entry.record, entry.proof.as_ref())?
+            .raw())
+    }
+    #[napi]
+    pub fn turn_list(&self, env: Env) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let entries: Vec<RuntimeEntry> = {
+            let table = self.runtime.borrow();
+            table
+                .order
+                .iter()
+                .filter_map(|id| table.map.get(id).cloned())
+                .collect()
+        };
+        let list = anchor.from_value(&V::Array(vec![]))?;
+        for (index, entry) in entries.iter().enumerate() {
+            let state = self.turn_state_value(&env, anchor, &entry.record, entry.proof.as_ref())?;
+            list.set_element(index as u32, state)?;
+        }
+        Ok(list.freeze()?.raw())
     }
 }
 

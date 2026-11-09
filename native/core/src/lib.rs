@@ -1,6 +1,7 @@
 pub mod api_error_policy;
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
+pub mod chat_runtime;
 pub mod chat_turn_lifecycle;
 pub mod classify_vocab;
 pub mod cli_capability;

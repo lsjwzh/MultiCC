@@ -234,7 +234,8 @@ while :; do sleep 1; done
   const args = fs.readFileSync(path.join(root, 'runtime', 'args'), 'utf8');
   assert.match(args, new RegExp(`^serve --cwd ${root} --node \\S+ server\\.js$`));
   if (process.platform !== 'win32') {
-    const listed = processTable().filter(p => isServer(p, config, undefined, processTable()));
+    const table = processTable();
+    const listed = table.filter(p => isServer(p, config, undefined, table));
     // A shell-script stand-in has /bin/sh as argv[0]; only the real Rust binary
     // is recognized (the status test below spawns a real binary to prove it).
     assert.equal(listed.length, 0);
@@ -287,7 +288,13 @@ test('multicc status reports a process behind the front door', {
     fs.rmSync(root, { recursive: true, force: true });
   });
   const config = { rootDir: root, entry: path.join(root, 'server.js'), execPath: process.execPath };
-  await wait(() => processTable().some(p => isServer(p, config, undefined, processTable())), {
+  // One process-table read per poll: passing a fresh table per process made this
+  // scan quadratic (~800 processes x ~40ms) and pushed the fixture past its
+  // 30s test timeout on a busy machine.
+  await wait(() => {
+    const table = processTable();
+    return table.some(p => isServer(p, config, undefined, table));
+  }, {
     diagnostics: () => JSON.stringify(processTable().filter(p => p.pid === child.pid)),
   });
   const result = spawn(path.join(root, 'multicc'), ['status'], {

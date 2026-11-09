@@ -2195,6 +2195,15 @@
       ]
     },
     {
+      "path": "tests/test-chat-runtime-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-chat-scheduled-send.js",
       "tier": "flow",
       "lane": "deterministic"
@@ -2389,6 +2398,15 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-turn-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
       ]
     },
     {

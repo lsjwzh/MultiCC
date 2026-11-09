@@ -178,7 +178,12 @@ function probeAddon(file, node = process.execPath) {
         'getTaskState','setTaskState','appendClassifyHistory','resetTaskState',
         'initDirectories','loadDirectories','directoryGet','directorySet','directoryHas',
         'directoryDelete','directoryClear','directorySize','directoryEntries','saveDirectories',
-        'commitCrossFileWrite','replayJournals'].some(key=>typeof a.RustSessionRecords.prototype[key]!=='function')) process.exit(1);
+        'commitCrossFileWrite','replayJournals',
+        'chatGet','chatSet','chatHas','chatDelete','chatClear','chatSize','chatEntries',
+        'turnConfigure','turnClaim','turnMarkMessageDurable','turnMarkProviderRouteResolved',
+        'turnProviderRouteFailed','turnAbortPreparation','turnSettle','turnStart',
+        'turnBeginCleanup','turnCleanup','turnClaimProof','turnSnapshot','turnList']
+      .some(key=>typeof a.RustSessionRecords.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustWorkspaceQueues!=='function'
       || ['get','has','update','project','view'].some(key=>typeof a.RustWorkspaceQueues.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustWorkspaceSockets!=='function'

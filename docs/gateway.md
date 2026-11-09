@@ -1209,3 +1209,87 @@ Node 条目。源码行预算通过；`git diff --check` 干净。
 `/ws/chat`、终端、voice/tts/aux/remote-screen 仍由 Node 终止，聊天编排与历史
 持久化仍未迁移，故不声明任何后端退出验收项完成，整体账本仍为 5/6。未提交、
 合并、推送、重启生产服务或更改生产配置。
+
+## 30. 聊天会话表与轮次运行时单一所有者（2026-11-09）
+
+活动聊天会话表 `chatSessions` 与每会话轮次运行时存储现在由同一个原生所有者
+持有：`native/addon/src/session_records.rs` 的 `RustSessionRecords`（与持久会话
+表同一个所有者），纯规则在 `native/core/src/chat_runtime.rs`（491 行）。Node
+里不再有 `Map`：`server.js` 用进程所有者建一次门面，所有成员操作都转给 Rust，
+没有第二张表，也没有 Node 回退车道。
+
+迁入所有者的状态：聊天表的成员与插入顺序；每会话运行时记录（`sessionId`、
+`turnId`、`phase` idle/preparing/running/finishing、`generation`、`cli`、
+`transport`、`messageDurable`、`providerRouteResolved`、`claimedAt`、
+`startedAt`、`finishingAt`、`lastOutcome`、`pendingOutcome`）以及 provider 路由
+证明及其校验规则（`kind === 'provider-route'`、`resolved === true`、证明与
+路由均冻结、会话/轮次匹配、runtime epoch、decision id、route attempt id、
+provider id、protocol、model、provider revision、正的 `routeGeneration`、正的
+`attemptNo`）。状态机为 claim → markMessageDurable →
+markProviderRouteResolved / providerRouteFailed / abortPreparation → start →
+settle / beginCleanup → cleanup，读取有 `claimProof`、`snapshot`、`list`。失败
+码不变：`invalid_identity`、`turn_in_flight`、`stale_turn`、
+`invalid_transition`。
+
+继续作为活动宿主引用（不镜像、不进程内序列化）的：每会话 `cs` 对象本身——
+子进程句柄、定时器、客户端集合、流缓冲——以不透明 `js_host_value` 槽持有
+（弱锚点 + 退休槽 GC），因此 `chatSessions.get(name) === cs` 的引用比较、属性
+顺序和后续字段写入全部保持原样；冻结的 provider 路由证明对象（其
+`Object.isFrozen` 状态通过活值读取）；以及时钟回调（`Date.now` 或测试时钟）。
+只有产出 WS/HTTP 帧时才发生序列化，与这两个所有者无关。
+
+删除的 Node 逻辑：`server.js` 里的 `const chatSessions = new Map()`；
+`src/chat/runtime-store.js` 从 205 行缩到 65 行。删掉的是 `sessions` Map、
+`current/match/result`、`clone/freezeRecord`、`ownsConcreteRouteProof`、全部
+十三个迁移函数体以及 `transportOf` 默认解析；模块现在把 `claim`、
+`markMessageDurable`、`markProviderRouteResolved`、`providerRouteFailed`、
+`abortPreparation`、`settle`、`start`、`beginCleanup`、`cleanup`、`claimProof`、
+`snapshot`、`list` 转发给原生所有者。
+
+保留的适配及原因：`src/chat/sessions.js`（63 行）是 Map 形门面，因为宿主调用
+Map API 且有宿主显式检查 `instanceof Map`；它自身不持有表。
+`src/chat/runtime-store.js` 是轮次引擎使用的存储适配器。时钟顺序与冻结实现
+完全一致：claim/settle/cleanup 先读 `now()` 再发布，而 start/beginCleanup 先
+原地改记录再读时钟，因此重入时钟观察到的中间序列相同（`idle`、`running`、
+`finishing`、`finishing`）。每次原生返回都是冻结对象，`lastOutcome`/
+`pendingOutcome` 也冻结；路由证明从提升出的布尔事实校验，冻结性读活对象。
+
+冻结旧实现为差分基准：`tests/helpers/legacy-chat-runtime-store.js`（207 行）与
+`tests/helpers/legacy-chat-sessions.js`（37 行），后者固定
+`src/chat/turn-engine.js` 两个构造点的 `cs` 字段顺序。
+
+验证：`tests/test-chat-runtime-native.js` 用定种子 1,200 步差分覆盖 claim/路由
+证明/持久标记/start/settle/beginCleanup/cleanup/claimProof/snapshot/list 及聊天
+表操作，每一步都比较返回值与存储快照；采样以 65% 概率粘住同一会话/轮次对，
+确保完整生命周期真的被走到。另有 200 轮脚本化生命周期逐转换比对（含
+`pendingOutcome` 提升为 `lastOutcome`）、路由证明矩阵、会重入读取的时钟回调、
+1,500 次宿主值身份/回收/删除/重建操作，以及“删除聊天会话后轮次存储仍可
+claim”。6 项全部通过。`tests/test-chat-turn-core.js` 55 项仍全部通过。隔离
+`tests/test-chat-turn-isolated.js` 用临时数据根启动真实网关和 `server.js`，以
+假 Claude CLI 走回环 WebSocket：连接→发送→流式→结果；流式中断线重连并重放
+在途增量；流式中途取消（task-shell 的 `clientMsgId`+`turnId` 控制，观察到
+SIGTERM）后下一轮起新 CLI；以及运行中的任务绑定会话，其房间/任务删除被拒
+（`TASK_HISTORY_REFERENCED`、`task_busy`），两次拒绝后活帧仍在，随后取消并
+删除成功。注入四个故障均被测试捕获后还原：`pendingOutcome` 不提升为
+`lastOutcome`；接受过期 `turnId`；cleanup 未清掉活动轮次；发布状态对象不冻结。
+
+Rust 工作区 658 项通过、0 失败。新 Rust 文件 `rustfmt --check` 通过；
+`multicc-core`/`multicc-addon` 的 clippy 退出 0，新代码无告警（仓库既有告警和
+`multicc-cpr` 既有 clippy 错误仍在未改动代码中）。测试分层 845 项已分类
+（core 400：deterministic 329 / isolated 40 / flutter 31）；发行计数复核为
+372 命令 / 369 个 Node 条目。源码行预算通过；`git diff --check` 干净。
+最终产物整轮 `npm test` 退出 0（`MULTICC_RUST_PREBUILT_DIR` 指向指纹目录）：
+27 次 Node 测试运行共 6,538 项，6,535 通过、0 失败，跳过 2 项（Electron
+打包工具、pwsh），既有 S6 仍为 TODO。前两轮全量暴露出 `tests/test-server-processes.js`
+里既有的二次方夹具体检：每个进程都要重新读一整张进程表（约 800 进程 ×
+~40ms），status 夹具耗时 29.5 秒、卡在 30 秒超时；两处调用现在每次轮询共用
+一份快照（status 夹具 29.5 秒 → 0.5 秒），未改产品代码。
+
+源码指纹 `a3602df1ed46dc45bf04277e`，日志归档到主仓
+`data/rust-source/a3602df1ed46dc45bf04277e/validation/chat-sessions/`。网关/addon
+控制协议不变（仍为 12），不需要协调部署。未发现有意行为差异；唯一看起来像
+语义变化的是 `claim` 的 id 修剪从 addon 包装层移入纯核心规则，而这正是冻结
+实现的行为（`String(id || '').trim()`）。本批推进 6d 但未完成：CLI 监管、流式、
+取消升级、收尾/后台副作用、provider 选择与历史持久化仍在 Node，故不声明任何
+后端退出验收项完成，整体账本仍为 5/6。未提交、合并、推送、重启生产服务或更改
+生产配置。

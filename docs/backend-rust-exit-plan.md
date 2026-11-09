@@ -22,7 +22,7 @@ No production restart, configuration switch, live-data migration, commit, merge 
 | 6a. Reconcile backend surfaces and owners | [Static route inventory](backend-route-inventory.md), runtime route/WS/SSE inventory, persistence and lifecycle ownership map; dynamic/conditional mounts explicitly covered | In progress. Static candidates plus the default isolated startup [runtime inventory](backend-runtime-inventory.md) captured (570 routes, 34 middleware/router layers); conditional/plugin profiles and WS/SSE reconciliation remain |
 | 6b. Finish entry and dynamic authorization ownership | Login/Token/tickets, peer/locality policy, service/workspace-sharing/provider authorization all execute in Rust; remaining addon state owner can be hosted without Node | In progress. Login HTTP and service HTTP/WS migrated; provider relay shares and workspace-sharing records/passwords/scope policy/persistence migrated to core; remote workspace transport and external-workspace HTTP/state ownership migrated; source password windows and FIFO admission migrated; all source sharing HTTP and landing routes migrated; live directory/member ports, scoped authorization adaptation and WS hosts remain |
 | 6c. Replace remaining HTTP and stream hosts | Each inventory entry has a Rust route and fixture; static files, uploads/downloads, WS/SSE, provider relays, administration, tools and integration hosts covered | Open; batch existing coherent domains with their state owners |
-| 6d. Replace chat orchestration | Complete turn/attempt state machine and CLI lanes; abort/retry/background/reconnect/finalization invariants tested against recorded events | Open; existing Rust kernels are reused, not rewritten |
+| 6d. Replace chat orchestration | Complete turn/attempt state machine and CLI lanes; abort/retry/background/reconnect/finalization invariants tested against recorded events | In progress. The live chat-session table and the per-session turn runtime store now have one native owner beside the session-record owner; CLI supervision, streaming, finalize effects and the remaining turn/attempt transitions stay in Node. Existing Rust kernels are reused, not rewritten |
 | 6e. Finish domain persistence | Versioned schema and old-format readers, transaction boundaries, recovery and restart consistency; isolated data validation manifests | Open; migrate stores alongside their consuming domains, then reconcile all remaining writers |
 | 6f. Disable Node backend and verify delivery | Rust-only production startup/package, full tests, contract inventory has no Node fallback, verified deployment/rollback documentation | Open; cannot mark complete while gateway supervisor still needs server.js |
 
@@ -643,3 +643,110 @@ queue called `Date.now()`. This batch advances 6b/6c but completes neither:
 `/ws/chat`, terminal, voice/tts/aux/remote-screen still terminate in Node, and
 chat orchestration/history persistence remain open, so no backend-exit
 acceptance criterion is claimed and the overall ledger stays 5/6.
+
+## Native chat-session table and turn runtime owner batch (2026-11-09)
+
+The live `chatSessions` table and the per-session turn runtime store now belong
+to the same native owner as the persisted session table (`RustSessionRecords` in
+`native/addon/src/session_records.rs`; pure rules in
+`native/core/src/chat_runtime.rs`, 491 lines). The Node `Map` is gone: `server.js`
+creates the facade once from the process owner, and every membership call
+forwards to Rust. There is no second Map and no Node fallback lane.
+
+Owner state moved into Rust: chat-table membership and insertion order, and the
+per-session runtime record (`sessionId`, `turnId`, `phase`
+idle/preparing/running/finishing, `generation`, `cli`, `transport`,
+`messageDurable`, `providerRouteResolved`, `claimedAt`, `startedAt`,
+`finishingAt`, `lastOutcome`, `pendingOutcome`) plus the provider-route proof
+and its validity rule (`kind === 'provider-route'`, `resolved === true`, frozen
+proof and frozen route, matching session/turn, runtime epoch, decision id, route
+attempt id, provider id, protocol, model, provider revision, positive
+`routeGeneration`, positive `attemptNo`). The transition set is
+claim → markMessageDurable → markProviderRouteResolved /
+providerRouteFailed / abortPreparation → start → settle / beginCleanup →
+cleanup, with `claimProof`, `snapshot` and `list` reads. Failure codes are
+unchanged: `invalid_identity`, `turn_in_flight`, `stale_turn`,
+`invalid_transition`.
+
+What stays as live host references (never mirrored, never serialized inside the
+process): the per-session `cs` objects themselves — child process handles,
+timers, client sets, streaming buffers — held as opaque `js_host_value` slots
+with weak anchors and retired-slot GC, so `chatSessions.get(name) === cs` identity
+checks, property order and later field mutation all keep working; the frozen
+provider-route proof object, whose `Object.isFrozen` state is read through the
+live value; and the clock callback (`Date.now` or a test clock). Serialization
+only happens at WS/HTTP frames outside these two owners.
+
+Deleted Node logic: `const chatSessions = new Map()` in `server.js`;
+`src/chat/runtime-store.js` shrank from 205 to 65 lines. Removed there: the
+`sessions` Map, `current/match/result`, `clone/freezeRecord`,
+`ownsConcreteRouteProof`, all thirteen transition bodies and the
+`transportOf` default resolution; the module now forwards `claim`,
+`markMessageDurable`, `markProviderRouteResolved`, `providerRouteFailed`,
+`abortPreparation`, `settle`, `start`, `beginCleanup`, `cleanup`, `claimProof`,
+`snapshot` and `list` to the native owner.
+
+Adapters that remain, and why: `src/chat/sessions.js` (63 lines) is a Map-shaped
+facade because hosts call the Map API and one checks `instanceof Map`; it keeps
+no table of its own. `src/chat/runtime-store.js` is the store adapter used by the
+turn engine. Clock ordering is reproduced exactly from the frozen store:
+claim/settle/cleanup read `now()` before publishing, while start/beginCleanup
+mutate the record in place before reading it, so a re-entrant clock observes the
+same intermediate sequence (`idle`, `running`, `finishing`, `finishing`). Every
+native result returns a frozen object with frozen `lastOutcome`/`pendingOutcome`,
+and route proofs are validated from lifted facts against the live object's
+frozenness.
+
+Frozen oracles: `tests/helpers/legacy-chat-runtime-store.js` (207 lines) and
+`tests/helpers/legacy-chat-sessions.js` (37 lines), the latter pinning the exact
+`cs` field order used by both construction sites in `src/chat/turn-engine.js`.
+
+Verification: `tests/test-chat-runtime-native.js` runs a seeded 1,200-step
+differential over claim/route-proof/durable/start/settle/beginCleanup/cleanup/
+claimProof/snapshot/list plus chat-table mutations, comparing every return value
+and stored snapshot after every step; the picks stick to one session/turn pair
+65% of the time so complete lifecycles are actually walked. It adds a scripted
+200-round lifecycle that publishes every transition and checks promotion of
+`pendingOutcome` to `lastOutcome`, a route-proof validity matrix, a clock
+callback that re-enters reads, 1,500 host-value identity/drain/delete/re-create
+operations, and a turn store that survives chat-session deletion. 6 tests pass.
+`tests/test-chat-turn-core.js` still passes all 55 tests. The isolated
+`tests/test-chat-turn-isolated.js` starts the real gateway and `server.js` on a
+temporary data root with a fake Claude CLI over loopback WebSockets: connect →
+send → stream → result; disconnect mid-stream and reconnect with replay of the
+in-flight delta; cancel mid-stream with the task-shell `clientMsgId`+`turnId`
+control (SIGTERM observed) followed by a fresh CLI on the next turn; and a
+running task-bound session whose room/task deletion is refused
+(`TASK_HISTORY_REFERENCED`, `task_busy`), whose live frames survive both refusals,
+and which is then cancelled and deleted. Four injected faults each fail a test
+and were reverted: `pendingOutcome` never promoted to `lastOutcome`; a stale
+turn id accepted; cleanup leaving the active turn in place; and turning the
+published state object mutable.
+
+Cargo workspace: 658 passed, 0 failed. New Rust files pass `rustfmt --check`;
+clippy for `multicc-core`/`multicc-addon` exits 0 with no warning in the new code
+(the repository's pre-existing warnings and the pre-existing `multicc-cpr`
+clippy error remain untouched). Test tiers: 845 classified (core 400:
+deterministic 329 / isolated 40 / flutter 31); the release-count audit is
+re-audited to 372 commands / 369 Node entries. Source line budget OK (known
+`public/run-config.js` debt unchanged); `git diff --check` clean.
+The full suite exits 0 on the final artifacts with
+`MULTICC_RUST_PREBUILT_DIR` pointing at the fingerprint directory: 27 Node test
+runs, 6,538 tests, 6,535 passed, 0 failed, 2 skipped (Electron tooling, pwsh) and
+the pre-existing S6 TODO. The first full runs exposed a pre-existing quadratic
+fixture scan in `tests/test-server-processes.js`: every process in a table was
+checked against a freshly re-read table (about 800 processes x ~40ms), putting
+the status fixture at 29.5s against its 30s timeout. Both call sites now share
+one snapshot per poll (status fixture 29.5s -> 0.5s); no product code changed.
+
+Final fingerprint `a3602df1ed46dc45bf04277e`; logs are archived under the
+primary repository's
+`data/rust-source/a3602df1ed46dc45bf04277e/validation/chat-sessions/`. The
+gateway/addon control protocol is unchanged (12), so no coordinated deployment
+is required. No intentional behaviour difference was found; the only
+semantic-looking change is that id trimming for `claim` now lives in the pure
+core rule instead of only in the addon wrapper, which is exactly what the frozen
+store did (`String(id || '').trim()`). This batch advances 6d but completes
+nothing: CLI supervision, streaming, cancellation escalation, finalize/background
+effects, provider selection and history persistence remain in Node, so no
+backend-exit acceptance criterion is claimed and the overall ledger stays 5/6.
