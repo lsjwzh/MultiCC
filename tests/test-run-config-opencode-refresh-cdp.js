@@ -29,7 +29,7 @@ routes['/run-config-host.html'] = {
   body: `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/run-config.css"><body>
 ${['auth-client.js', 'i18n-catalog.js', 'i18n.js', 'shared/dom-helpers.js', 'shared/format.js', 'api-client.js',
-  'provider-catalog.js', 'auto-provider-editor.js', 'shared/models.js', 'chat-ai-config.js', 'run-config.js']
+  'provider-catalog.js', 'auto-provider-editor.js', 'shared/models.js', 'chat-ai-config.js', 'run-config-controls.js', 'run-config.js']
   .map(src => `<script src="/${src}"></script>`).join('')}</body>`,
 };
 routes['/api/sessions'] = () => json({ ok: true, sessions: [], directories: [] });
@@ -316,6 +316,89 @@ for (const wholeDialog of [false, true]) test(`自动切换添加线路：${whol
       await page.evaluate(`document.querySelector('${D}.rc-add').click()`);
       assert.ok(await page.waitFor(`[...document.querySelectorAll('${D}.rc-picker-name')].some(n=>n.textContent==='OpenCode Zen')`));
       assert.equal(page.requests.filter(r => r.path === '/api/opencode/models').length, 1);
+      await page.evaluate('testDialog.close()');
+    } finally { release(); }
+  });
+});
+
+test('后台目录与添加列表合并请求，回填和新增行不替换正在输入的池行', async t => {
+  if (!findChromeBinary()) return t.skip('需要 Chrome');
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  let codexCalls = 0;
+  const fixture = { ...routes, 'GET /api/providers': async ({ url }) => {
+    if (url.searchParams.get('cli') === 'codex-exp') { ++codexCalls; await pending; }
+    return json({ providers: pickerProviders, defaults: {} });
+  } };
+  await withCdpHarness({ routes: fixture, screenshotDir: qaDir() }, async page => {
+    try {
+      await page.navigate('/run-config-host.html');
+      await page.evaluate(`window.testDialog=MultiCCRunConfig.open({configuration:{cli:'claude-exp'}},['claude-exp','codex-exp'],()=>{})`);
+      assert.ok(await page.waitFor(`document.querySelectorAll('${D}.rc-line option').length>2`));
+      await page.evaluate(`document.querySelector('${D}.rc-mode-auto').click();
+        window.keptRow=document.querySelector('${D}.rc-row');
+        window.keptModel=keptRow.querySelector('.rc-row-model');
+        keptModel.value='__custom__';keptModel.dispatchEvent(new Event('change'));
+        window.keptInput=keptRow.querySelector('.rc-row-model-custom');
+        keptInput.value='  typing-model  ';keptInput.dispatchEvent(new Event('input'));
+        document.querySelector('${D}.rc-add').click();keptInput.focus();keptInput.setSelectionRange(3,7);
+        window.mutations=0;window.poolObserver=new MutationObserver(ms=>{mutations+=ms.length;});
+        poolObserver.observe(keptRow,{childList:true,subtree:true});`);
+      await new Promise(resolve => setTimeout(resolve, 80));
+      await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      await page.evaluate('window.keptTop=testDialog.scrollTop');
+      assert.equal(codexCalls, 1, '目录预热和添加列表共享同一个未完成请求');
+      release();
+      assert.ok(await page.waitFor(`document.querySelectorAll('${D}.rc-picker-item').length>=18`));
+      assert.deepEqual(await page.evaluate(`({connected:keptRow.isConnected,
+        input:document.querySelector('${D}.rc-row-model-custom')===keptInput,
+        focus:document.activeElement===keptInput,value:keptInput.value,
+        range:[keptInput.selectionStart,keptInput.selectionEnd],mutations,
+        scroll:Math.abs(testDialog.scrollTop-keptTop)<1})`),
+      { connected: true, input: true, focus: true, value: '  typing-model  ', range: [3,7], mutations: 0, scroll: true });
+      await page.evaluate(`[...document.querySelectorAll('${D}.rc-picker-item')].find(n=>n.querySelector('.rc-picker-name').textContent==='测试线路 9').click()`);
+      assert.deepEqual(await page.evaluate(`({connected:keptRow.isConnected,value:keptInput.value,
+        added:!!document.querySelector('${D}.rc-row[data-provider-id="picker-9"]')})`),
+      { connected: true, value: '  typing-model  ', added: true });
+      // DOM 复用后不能保留旧 index：连续拖动、再移除必须作用于当前行。
+      await page.evaluate(`function moveRow(from,to){const all=[...document.querySelectorAll('${D}.rc-row')];
+        all[from].ondragstart({});all[to].ondrop({preventDefault(){}});}
+        moveRow(0,2);moveRow(2,1);`);
+      assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('${D}.rc-row')].map(n=>n.dataset.providerId)`),
+        ['picker-1','picker-0','picker-9']);
+      assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('${D}.rc-rank')].map(n=>n.textContent)`), ['1','2','3']);
+      await page.evaluate(`keptRow.querySelector('.rc-remove').click()`);
+      assert.equal(await page.evaluate('keptRow.isConnected'), false);
+      await page.evaluate('poolObserver.disconnect();testDialog.close()');
+    } finally { release(); }
+  });
+});
+
+test('其他 CLI 的迟到目录只补齐自己的失效池行，保留另一行的模型输入', async t => {
+  if (!findChromeBinary()) return t.skip('需要 Chrome');
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const codex = { id:'cold-codex', name:'Cold Codex', appType:'codex', protocol:'openai_responses',
+    compatibleClis:['codex-exp'], model:'codex-new', modelOptions:['codex-new'] };
+  const fixture = { ...routes, 'GET /api/providers': async ({ url }) => {
+    if (url.searchParams.get('cli') === 'codex-exp') { await pending; return json({ providers:[codex], defaults:{} }); }
+    return json({ providers:pickerProviders, defaults:{} });
+  } };
+  await withCdpHarness({ routes: fixture, screenshotDir: qaDir() }, async page => {
+    try {
+      await page.navigate('/run-config-host.html');
+      await page.evaluate(`window.testDialog=MultiCCRunConfig.open({configuration:{cli:'claude-exp',providerSelection:{mode:'auto',
+        candidates:[{providerId:'picker-0',cli:'claude-exp'},{providerId:'cold-codex',cli:'codex-exp'}]}}},['claude-exp','codex-exp'],()=>{})`);
+      assert.ok(await page.waitFor(`!!document.querySelector('${D}.rc-row[data-provider-id="cold-codex"] .rc-issue')`));
+      await page.evaluate(`window.stableRow=document.querySelector('${D}.rc-row[data-provider-id="picker-0"]');
+        window.coldRow=document.querySelector('${D}.rc-row[data-provider-id="cold-codex"]');
+        const select=stableRow.querySelector('.rc-row-model');select.value='__custom__';select.dispatchEvent(new Event('change'));
+        window.editing=stableRow.querySelector('input');editing.value='draft-value';editing.dispatchEvent(new Event('input'));editing.focus();`);
+      release();
+      assert.ok(await page.waitFor(`!!document.querySelector('${D}.rc-row[data-provider-id="cold-codex"] option[value="codex-new"]')`));
+      assert.deepEqual(await page.evaluate(`({same:coldRow===document.querySelector('${D}.rc-row[data-provider-id="cold-codex"]'),
+        warning:coldRow.classList.contains('rc-warn'),focus:document.activeElement===editing,value:editing.value})`),
+      {same:true,warning:false,focus:true,value:'draft-value'});
       await page.evaluate('testDialog.close()');
     } finally { release(); }
   });

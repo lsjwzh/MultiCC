@@ -150,9 +150,11 @@ const MIGRATION_DEBT = Object.freeze({
   // both ceilings ratchet up. The model-field extraction target is unchanged.
   // 2026-11-09 添加线路改为显式加载和分组更新：3293 行 / 168109 字节。
   // 复用托管/原生目录组合减少重复分支；保留 3k 拆分目标。
+  // 2026-11-09 Stable model/pool controls and request ownership moved to run-config-controls.js.
+  // Measured 3178 lines / 162291 bytes; remaining model status/refresh orchestration stays here.
   'public/run-config.js': Object.freeze({
-    ceiling: 3293,
-    byteCeiling: 168109,
+    ceiling: 3178,
+    byteCeiling: 162291,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

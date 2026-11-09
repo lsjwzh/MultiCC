@@ -30,7 +30,7 @@ routes['/run-config-host.html'] = {
   body: `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/run-config.css"><body>
 ${['auth-client.js', 'i18n-catalog.js', 'i18n.js', 'shared/dom-helpers.js', 'shared/format.js', 'api-client.js',
-  'provider-catalog.js', 'auto-provider-editor.js', 'shared/models.js', 'chat-ai-config.js', 'run-config.js', 'quota-bar-view.js']
+  'provider-catalog.js', 'auto-provider-editor.js', 'shared/models.js', 'chat-ai-config.js', 'run-config-controls.js', 'run-config.js', 'quota-bar-view.js']
   .map(src => `<script src="/${src}"></script>`).join('')}</body>`,
 };
 routes['/api/sessions'] = () => json({ ok: true, sessions: [], directories: [] });
