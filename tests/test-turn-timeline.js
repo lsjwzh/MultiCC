@@ -77,7 +77,8 @@ test('every persist and result path carries the timeline', () => {
   assert.match(engine, /turnTimeline\.startTurn\(cs\)/);
   // The Claude observer is now wired through the native reducer's port table.
   assert.match(engine, /observeClaude: \(cs, event\) => turnTimeline\.observeClaude\(cs, event\)/);
-  assert.match(engine, /turnTimeline\.observeAdapter\(cs, evt\)/);
+  // The adapter observer is wired through the same native reducer port table.
+  assert.match(engine, /observeAdapter: \(cs, event\) => turnTimeline\.observeAdapter\(cs, event\)/);
   // The result frame's timeline spread is composed natively from this port.
   assert.match(engine, /timelineField: \(cs\) => turnTimeline\.field\(cs\)/);
   assert.match(read('src/chat/host-runtime.js'), /turnTimeline\.field\(state\)/);

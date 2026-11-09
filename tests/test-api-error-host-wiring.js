@@ -11,6 +11,10 @@ const root = path.join(__dirname, '..');
 // the concatenated host + engine source.
 const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8')
   + '\n' + fs.readFileSync(path.join(root, 'src', 'chat', 'turn-engine.js'), 'utf8');
+// Adapter-neutral native-session capture and the resume-mismatch kill live in
+// the native chat-event reducer.
+const nativeChatEvents = fs.readFileSync(
+  path.join(root, 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
 // The classify E-branch (with its classifier_legacy fallback) now lives in the
 // extracted classify state machine.
 const classifyStateMachine = fs.readFileSync(
@@ -79,9 +83,11 @@ test('process and stream retries reuse the owned turn without appending a second
 test('a fresh Codex fallback owns and replaces its newly allocated native thread', () => {
   assert.match(server,
     /runner\.freshNativeSession = prepared\.invocationEnvelope\.historyHandle\.isFirstTurn === true/);
-  assert.match(server,
-    /captureNativeSessionId\(persisted, evt\.sessionId, \{ fresh: runner\.freshNativeSession \}\)/);
-  assert.match(server, /assignKillReason\(runner, 'native_resume_mismatch'\)/,
+  assert.match(nativeChatEvents,
+    /chat_events::capture_session_id\(previous\.as_ref\(\), incoming\.as_ref\(\), may_replace\)/,
+    'native session capture must still gate a changed resume on the fresh-thread flag');
+  assert.match(nativeChatEvents,
+    /assign_kill_reason\(\s*runner,\s*text\(anchor, "native_resume_mismatch"\)/,
     'a resume that starts an unexpected native thread must be killed, not silently ignored');
   assert.match(server,
     /logicalSessionId: sessionName, nativeSessionId: persisted\.cliSessionId/,

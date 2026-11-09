@@ -863,3 +863,106 @@ is required. No intentional behaviour difference was found. This batch advances
 streaming/finalize/background effects, provider selection, history persistence
 and WS handling remain in Node, so no backend-exit acceptance criterion is
 claimed and the overall ledger stays 5/6.
+
+## 6d chat orchestration: adapter-neutral event reducer (2026-11-09)
+
+The adapter-neutral reducer `applyAdapterChatEvent` now lives in Rust beside the
+Claude reducer. `native/addon/src/chat_events.rs` exports
+`chatApplyAdapterEvent(provider, cs, persisted, sessionName, rawEvent, forward,
+turn, runner, ports)`; `src/chat/turn-engine.js` keeps a one-line wrapper, and
+the 259-line decision/mutation body is gone (12 lines added for the wrapper and
+the eight new port entries). Every non-Claude lane reaches this reducer through
+its own `provider.decodeEvent`: codex, codex-exp, opencode/opencode-like, kimi,
+pi, zcode, commandcode and acp.
+
+Order is byte-faithful to the frozen implementation. Entry: turn/runner currency
+(`isCurrent`) -> `ports.touchActivity(session, turnId)` ->
+`ports.decodeEvent(provider, rawEvent)` -> null/undefined becomes `[]`, and a
+non-array is wrapped -> `runner.completion.observe(rawEvent, list)` exactly once
+-> per-event reduction. Per event: falsy skip -> `ports.scrub(providerAttempt,
+evt)` -> `ports.observeAdapter(cs, evt)` -> dispatch in the frozen order:
+`claude_event`, `session_init`, `native_session_missing`, `session_started`,
+`status`, `activity`, `user_input_signal` (records host input, then falls
+through as `assistant_text`), `assistant_text`, `tool_start`, `tool_result`,
+`tool_update`, `thinking`, `complete`, `error`.
+
+The nested `claude_event` branch hands its raw frame straight to the existing
+native Claude reducer `apply_claude_event` in the same process: no JS round
+trip and no re-serialization. Session handling uses the new pure core
+`capture_session_id`/`CaptureSessionId` (unchanged/changed vs mismatch); a
+resume that would move the logical chat onto different native history kills the
+process and calls `finishProviderAttempt` with `cli_resume_mismatch` or
+`native_resume_mismatch` (the addon gained `chat_turn_effects::assign_kill_reason`
+and the `chatAssignKillReason` export). `complete` computes completion with the
+existing CLI rules, forwards the result frame and closes the provider attempt;
+`error` reuses `api_error_policy::detect_error_envelope`, `is_error_only_text`,
+`api_error_text::sanitize` and `redaction::redact_route_capability`, keeps
+transport/response disconnect kinds distinct, and logs through the
+`consoleWarn`/`consoleLog` ports.
+
+Ports: the shared `nativeChatEventPorts` table now has 29 entries; this batch
+adds eight adapter-only ones: `observeAdapter`, `decodeEvent`,
+`rememberActiveCliState`, `savePersistedSessions`, `finishProviderAttempt`,
+`recordUserInput`, `consoleWarn`, `consoleLog`. They stay host ports because
+they own Node-side state or effects: adapter wire parsing (`decodeEvent` is
+per-provider by design), CLI-state persistence, provider-attempt bookkeeping,
+session-work `recordInput` and the logger. `isCurrent`, `scrub`,
+`touchActivity`, phase/status, incremental save, completion and all result
+fields stay on the same table shared with the Claude lane.
+
+Deleted Node logic: 259 lines from `applyAdapterChatEvent` (turn gating, decode
+shape handling, session capture/mismatch, status/activity/phase mutation,
+assistant text accumulation and envelope marking, tool start/result/update
+framing, thinking spans, completion and structured error handling). The addon
+file is now 2,044 lines (+970/-20); `native/core/src/chat_events.rs` is 244
+lines (+82, now 9 unit tests) and `chat_turn_effects.rs` gained the kill-reason
+helper (+9/-4).
+
+Frozen oracle `tests/helpers/legacy-adapter-chat-event.js` (319 lines) is the
+byte-exact prior implementation. `tests/test-chat-adapter-events-differential.js`
+(570 lines, 6 tests) drives both reducers from identical state with identical
+wire events and compares, after every event, the complete ordered host-effect
+log, `cs`/persisted/turn/runner snapshots and forwarded frames, using a custom
+serializer that keeps `undefined`, `NaN`, `-0`, lone surrogates and property
+order, and requires both sides to throw or neither. Volume: 18 fixture
+sequences (9 adapter kinds x 2 handoff states), 1,080 seeded randomized
+sequences (9 x 120), 2,000 perturbed sequences (1,000 codex + 1,000 opencode),
+24 decode-shape/stale/re-entrant/throwing-port cases (null/undefined/single/
+object/throwing decoders and 13 throwing ports), 4 lone-surrogate/large-event
+sequences and 8 session-capture/mismatch cases.
+
+`tests/test-chat-adapter-events-isolated.js` (232 lines) starts the real
+`multicc-gateway` and `server.js` on a temporary data root and drives fake codex
+and opencode CLIs over `/ws/chat`: assistant text, tool result, tool card and a
+return to idle for both lanes; the opencode fake uses the legacy `--format json`
+shape shared by the opencode-like decoders. `npm test:core` and
+`npm test:integration:isolated` include both tests; `tests/test-chat-turn-core.js`,
+`tests/test-turn-timeline.js` and `tests/test-api-error-host-wiring.js` were
+updated to assert the native port wiring instead of the deleted JS body, and
+`tests/test-release-version-consistency.js` re-audits the two new core entries.
+
+Injected mutation faults, each verified to fail and then reverted: (1)
+`runner.completion.observe` skipped; (2) decoded array order reversed; (3) the
+`claude_event` branch bypassed; (4) the result frame double-forwarded. All four
+fail the differential test; the restored tree is pristine and rebuilds to the
+same fingerprint.
+
+Rust workspace: 667 passed, 0 failed. The three changed Rust files pass
+`rustfmt --check`; clippy for `multicc-core`/`multicc-addon` reports no warning
+in them (repository pre-existing warnings remain untouched). Test tiers: 849
+classified (core 404: deterministic 331 / isolated 42 / flutter 31). Source line
+budget OK (known `public/run-config.js` 3,289->3,000 debt unchanged); `git diff
+--check` clean. The release-count audit is re-audited to 376 commands / 373 Node
+entries. Full `npm test` on the final artifacts exits 0: 6,551 tests, 6,548
+passed, 0 failed, 2 skipped (the local Electron desktop toolchain is not
+installed; `pwsh` is unavailable) and 1 pre-existing S6 `# TODO`, with
+`MULTICC_RUST_PREBUILT_DIR` pointing at the fingerprint directory.
+
+Fingerprint `ff074b05f79d46170eb6b680`; logs are archived under the primary
+repository's
+`data/rust-source/ff074b05f79d46170eb6b680/validation/chat-adapter-events/`. The
+gateway/addon control protocol is unchanged (12). No intentional behaviour
+difference was found. This batch advances 6d but completes nothing: CLI
+supervision, streaming/finalize/background effects, provider selection, history
+persistence and WS handling remain in Node, so no backend-exit acceptance
+criterion is claimed and the overall ledger stays 5/6.

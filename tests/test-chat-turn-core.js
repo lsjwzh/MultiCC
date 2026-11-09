@@ -241,18 +241,22 @@ test('attempt semantic DLP runs before Claude and adapter state mutation', () =>
   assert.match(claudeBody, /chatApplyClaudeEvent\(/);
   const nativeSource = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
-  const nativeEntry = nativeSource.slice(nativeSource.indexOf('pub fn chat_apply_claude_event('));
+  const nativeEntry = nativeSource.slice(nativeSource.indexOf('pub(crate) fn apply_claude_event'));
   assert.ok(nativeEntry.indexOf('c"scrub"') < nativeEntry.indexOf('c"currentAssistantText"'),
     'assistant content must be semantically scrubbed before transcript state changes');
   assert.ok(nativeEntry.indexOf('c"scrub"') < nativeEntry.indexOf('c"currentToolCalls"'),
     'tool input must be semantically scrubbed before tool state changes');
 
-  const adapterStart = claudeEnd;
-  const adapterEnd = source.indexOf('function runChatTurn(', adapterStart);
-  const adapterBody = source.slice(adapterStart, adapterEnd);
-  assert.ok(adapterBody.indexOf('attemptRuntime.scrubAttemptStructure(')
-    < adapterBody.indexOf('cs.currentToolCalls.push('),
-  'adapter-normalized tool input must be scrubbed before tool state changes');
+  // The adapter decision body is native too. Its scrub port must run before
+  // any tool state mutates, including in the nested claude_event path.
+  const adapterStart = nativeSource.indexOf('fn apply_adapter_one');
+  const adapterEnd = nativeSource.indexOf('fn apply_adapter_event', adapterStart);
+  const adapterBody = nativeSource.slice(adapterStart, adapterEnd);
+  assert.ok(adapterStart >= 0 && adapterEnd > adapterStart);
+  assert.ok(adapterBody.indexOf('c"scrub"') < adapterBody.indexOf('c"currentToolCalls"'),
+    'adapter-normalized tool input must be scrubbed before tool state changes');
+  assert.match(source, /chatApplyAdapterEvent\(/,
+    'the adapter lane must hand every event to the native reducer');
 });
 
 function request(overrides = {}) {
@@ -1257,13 +1261,23 @@ test('chat turn ports are narrow and pure modules import no runtime I/O dependen
 
 test('hard turn-control paths terminalize the provider attempt before teardown or history mutation', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  const mismatchStart = source.indexOf("assignKillReason(runner, 'cli_resume_mismatch')");
-  const mismatchEnd = source.indexOf("cs.claudeProc.kill('SIGTERM')", mismatchStart);
-  const mismatchBody = source.slice(mismatchStart, mismatchEnd);
-  assert.ok(mismatchStart >= 0 && mismatchEnd > mismatchStart);
-  assert.match(mismatchBody, /finishProviderAttempt\(runner, 'failed',[\s\S]*reasonCode: 'cli_resume_mismatch'/);
-  assert.ok(mismatchBody.indexOf('forward({') < mismatchBody.indexOf("finishProviderAttempt(runner, 'failed'"),
+  // Resume-mismatch teardown is a native decision now; the JS module only wires
+  // the attempt and process effects as ports.
+  const rust = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
+  const adapterStart = rust.indexOf('fn apply_adapter_one');
+  const adapterEnd = rust.indexOf('fn apply_adapter_event', adapterStart);
+  assert.ok(adapterStart >= 0 && adapterEnd > adapterStart);
+  const adapterBody = rust.slice(adapterStart, adapterEnd);
+  assert.match(adapterBody, /assign_kill_reason\(/);
+  for (const code of ['cli_resume_mismatch', 'native_resume_mismatch']) {
+    assert.match(adapterBody, new RegExp(`finish_attempt\\(anchor, ports, runner, "${code}"\\)`),
+      `${code} teardown must close the provider attempt in the native reducer`);
+  }
+  assert.ok(adapterBody.indexOf('forward_error(') < adapterBody.indexOf('finish_attempt('),
     'the owned error remains visible before the attempt becomes terminal');
+  assert.match(source, /finishProviderAttempt: \(runner, outcome, facts\) =>/,
+    'the adapter reducer must close the provider attempt through a host port');
 
   const clearStart = source.indexOf("if (msg.type === 'clear_history')");
   const clearEnd = source.indexOf("if (msg.type === 'user_message'", clearStart);
@@ -1301,14 +1315,16 @@ test('tool timing stamps ride in the persisted tools array (replay upgrade)', ()
 });
 
 test('reasoning spans are measured so think time reaches the wall-clock', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
   // The adapter Thinking card carries a real start stamp. It used to have none
   // at all, so every persisted Thinking tool was "unknown" and the wall-clock
   // trajectory could never show the think segment.
   assert.match(
     source,
-    /tool = \{ name: 'Thinking', input: \{ text: evt\.text \|\| '' \}, id: evt\.id, startedAt: Date\.now\(\) \}/,
+    /tool\.set\(c"name", text\(anchor, "Thinking"\)\?\)\?;[\s\S]{0,400}tool\.set\(c"startedAt", number\(anchor, now\(anchor\)\?\)\?\)\?;/,
   );
+  assert.match(source, /tool\.assign\(c"endedAt", number\(anchor, now\(anchor\)\?\)\?\)\?;/);
 
   const { closeOpenThinkingTool } = require(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'));
 

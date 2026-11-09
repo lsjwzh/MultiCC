@@ -907,28 +907,21 @@ fn apply_result<'a>(
     Ok(false)
 }
 
-#[napi]
+/// The shared Claude reducer body. `anchor` is also the ports object, exactly as
+/// the JavaScript wrapper passed it, so the adapter path can route a nested
+/// `claude_event` into this reducer without a round trip through Node.
 #[allow(clippy::too_many_arguments)]
-pub fn chat_apply_claude_event(
-    env: Env,
-    cs: Unknown<'_>,
-    session_name: Unknown<'_>,
-    evt: Unknown<'_>,
-    forward: Unknown<'_>,
-    turn: Unknown<'_>,
-    runner: Unknown<'_>,
-    provider_name: Unknown<'_>,
-    ports: Unknown<'_>,
+pub(crate) fn apply_claude_event<'a>(
+    _env: &'a Env,
+    cs: LV<'a>,
+    session: LV<'a>,
+    mut evt: LV<'a>,
+    forward: LV<'a>,
+    turn: LV<'a>,
+    runner: LV<'a>,
+    provider_name: LV<'a>,
+    anchor: LV<'a>,
 ) -> Result<()> {
-    let anchor = LiveValue::new(&env, ports);
-    let cs = LiveValue::new(&env, cs);
-    let session = LiveValue::new(&env, session_name);
-    let mut evt = LiveValue::new(&env, evt);
-    let forward = LiveValue::new(&env, forward);
-    let turn = LiveValue::new(&env, turn);
-    let runner = LiveValue::new(&env, runner);
-    let provider_name = LiveValue::new(&env, provider_name);
-
     if !is_current(anchor, cs, turn, runner)? {
         return Ok(());
     }
@@ -1091,4 +1084,961 @@ pub fn chat_apply_claude_event(
     }
     forward.call_plain(&[evt])?;
     Ok(())
+}
+
+#[napi]
+#[allow(clippy::too_many_arguments)]
+pub fn chat_apply_claude_event(
+    env: Env,
+    cs: Unknown<'_>,
+    session_name: Unknown<'_>,
+    evt: Unknown<'_>,
+    forward: Unknown<'_>,
+    turn: Unknown<'_>,
+    runner: Unknown<'_>,
+    provider_name: Unknown<'_>,
+    ports: Unknown<'_>,
+) -> Result<()> {
+    apply_claude_event(
+        &env,
+        LiveValue::new(&env, cs),
+        LiveValue::new(&env, session_name),
+        LiveValue::new(&env, evt),
+        LiveValue::new(&env, forward),
+        LiveValue::new(&env, turn),
+        LiveValue::new(&env, runner),
+        LiveValue::new(&env, provider_name),
+        LiveValue::new(&env, ports),
+    )
+}
+
+// ── adapter-neutral per-event reducer ───────────────────────────────────────
+//
+// `applyAdapterChatEvent` used to live next to `applyClaudeChatEvent`. It owns
+// every adapter event kind (session lifecycle, status/activity, user input,
+// text, tool start/result/update, reasoning, completion, errors) and routes a
+// nested `claude_event` straight into the native Claude reducer above. Host
+// ownership stays in `ports` (wire decoding, completion tracker, timeline,
+// persisted-state side effects, attempt closing, status/heartbeat, background
+// tasks, user-input recording, console and logger).
+
+/// `String(value || '').trim() || null`.
+fn trimmed_nullish(value: LV<'_>) -> Result<Option<JsString>> {
+    let trimmed = string_or_empty(value)?.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed))
+    }
+}
+
+/// `${value}` inside a template literal.
+fn template(value: LV<'_>) -> Result<JsString> {
+    value.coerce_string()
+}
+
+/// `!!(cs?.currentToolCalls || []).some(t => t && t.name !== 'Thinking')`.
+fn has_side_effects(cs: LV<'_>) -> Result<bool> {
+    let tools = cs.optional(c"currentToolCalls")?;
+    if !tools.truthy()? || !tools.is_array()? {
+        return Ok(false);
+    }
+    let mut found = false;
+    tools.for_each(|tool| {
+        if !found && tool.truthy()? && !tool.get(c"name")?.is_string("Thinking")? {
+            found = true;
+        }
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+/// `!!(String(cs?.currentAssistantText || '').trim() && !isErrorOnlyText(text))`.
+fn meaningful_output(cs: LV<'_>) -> Result<bool> {
+    let text = string_or_empty(cs.optional(c"currentAssistantText")?)?;
+    if text.trim().is_empty() {
+        return Ok(false);
+    }
+    Ok(!api_error_policy::is_error_only_text(&JsValue::String(
+        text,
+    )))
+}
+
+/// `text.length > 1000 ? text.slice(0, 1000) + '...' : text`.
+fn preview<'a>(anchor: LV<'a>, value: LV<'a>) -> Result<LV<'a>> {
+    let over = match value.string()? {
+        Some(text) => text.len() > 1000,
+        None => match value.kind()? {
+            sys::ValueType::napi_number
+            | sys::ValueType::napi_boolean
+            | sys::ValueType::napi_bigint
+            | sys::ValueType::napi_symbol
+            | sys::ValueType::napi_undefined
+            | sys::ValueType::napi_null => false,
+            _ => match value.get(c"length")?.number_value()? {
+                Some(length) => length > 1000.0,
+                None => false,
+            },
+        },
+    };
+    if !over {
+        return Ok(value);
+    }
+    match value.string()? {
+        Some(text) => {
+            let mut shortened = text.truncate_units(1000);
+            shortened.push_str("...");
+            string_value(anchor, shortened)
+        }
+        None => {
+            let sliced = value
+                .get(c"slice")?
+                .call(value, &[number(anchor, 0.0)?, number(anchor, 1000.0)?])?;
+            let mut joined = sliced.coerce_string()?;
+            joined.push_str("...");
+            string_value(anchor, joined)
+        }
+    }
+}
+
+/// `(x || 0) + 1` for the disconnect counter (a number in production).
+fn increment_one<'a>(anchor: LV<'a>, value: LV<'a>) -> Result<LV<'a>> {
+    if let Some(mut text) = value.string()? {
+        text.push_str("1");
+        return string_value(anchor, text);
+    }
+    match value.kind()? {
+        sys::ValueType::napi_number => number(anchor, value.number()? + 1.0),
+        sys::ValueType::napi_boolean => number(anchor, if value.is_true()? { 2.0 } else { 1.0 }),
+        _ => number(anchor, 1.0),
+    }
+}
+
+/// `{ source: \`${provider.name}_event\`, provider, code, message }`.
+fn provider_event<'a>(
+    anchor: LV<'a>,
+    provider: LV<'a>,
+    code: &str,
+    message: LV<'a>,
+) -> Result<LV<'a>> {
+    let name = provider.get(c"name")?;
+    let source = JsString::concat(&[&name.coerce_string()?, &JsString::from_rust_str("_event")]);
+    let out = object(anchor)?;
+    out.set(c"source", string_value(anchor, source)?)?;
+    out.set(c"provider", name)?;
+    out.set(c"code", text(anchor, code)?)?;
+    out.set(c"message", message)?;
+    Ok(out)
+}
+
+/// `[multicc/chat] [${sessionName}] ${provider.name} ${log}`.
+fn client_log(session: LV<'_>, provider: LV<'_>, log: LV<'_>) -> Result<JsString> {
+    Ok(JsString::concat(&[
+        &JsString::from_rust_str("[multicc/chat] ["),
+        &template(session)?,
+        &JsString::from_rust_str("] "),
+        &template(provider.get(c"name")?)?,
+        &JsString::from_rust_str(" "),
+        &template(log)?,
+    ]))
+}
+
+/// `[multicc/chat] [${sessionName}] captured ${provider.name} session id=${id}`.
+fn capture_log(session: LV<'_>, provider: LV<'_>, id: &JsString) -> Result<JsString> {
+    Ok(JsString::concat(&[
+        &JsString::from_rust_str("[multicc/chat] ["),
+        &template(session)?,
+        &JsString::from_rust_str("] captured "),
+        &template(provider.get(c"name")?)?,
+        &JsString::from_rust_str(" session id="),
+        id,
+    ]))
+}
+
+fn forward_error(anchor: LV<'_>, forward: LV<'_>, message: JsString) -> Result<()> {
+    let frame = object(anchor)?;
+    frame.set(c"type", text(anchor, "error")?)?;
+    frame.set(c"error", string_value(anchor, message)?)?;
+    forward.call_plain(&[frame])?;
+    Ok(())
+}
+
+/// `if (cs.claudeProc) { try { cs.claudeProc.kill('SIGTERM') } catch (_) {} }`.
+fn terminate_proc(anchor: LV<'_>, cs: LV<'_>) -> Result<()> {
+    let proc = cs.optional(c"claudeProc")?;
+    if !proc.truthy()? {
+        return Ok(());
+    }
+    let _ = proc.catch(|| {
+        proc.get(c"kill")?.call(proc, &[text(anchor, "SIGTERM")?])?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn finish_attempt(anchor: LV<'_>, ports: LV<'_>, runner: LV<'_>, code: &str) -> Result<()> {
+    let facts = object(anchor)?;
+    facts.set(c"errorCategory", text(anchor, "adapter_configuration")?)?;
+    facts.set(c"reasonCode", text(anchor, code)?)?;
+    call(
+        ports.get(c"finishProviderAttempt")?,
+        &[runner, text(anchor, "failed")?, facts],
+    )?;
+    Ok(())
+}
+
+/// `target.cli` interpolated into the two resume-mismatch messages.
+fn cli_error(persisted: LV<'_>, suffix: &str) -> Result<JsString> {
+    Ok(JsString::concat(&[
+        &JsString::from_rust_str("目标 "),
+        &template(persisted.get(c"cli")?)?,
+        &JsString::from_rust_str(suffix),
+    ]))
+}
+
+/// `captureNativeSessionId(persisted, evt.sessionId, { fresh: runner.freshNativeSession })`.
+fn accept_session_id(
+    anchor: LV<'_>,
+    persisted: LV<'_>,
+    evt: LV<'_>,
+    runner: LV<'_>,
+) -> Result<chat_events::CaptureSessionId> {
+    let record = persisted.truthy()?;
+    let previous_source = if record {
+        persisted.optional(c"cliSessionId")?
+    } else {
+        persisted
+    };
+    let previous = trimmed_nullish(or_chain(&[previous_source, text(anchor, "")?])?)?;
+    let incoming = trimmed_nullish(evt.optional(c"sessionId")?)?;
+    let may_replace = runner.optional(c"freshNativeSession")?.is_true()?;
+    let outcome = if record {
+        chat_events::capture_session_id(previous.as_ref(), incoming.as_ref(), may_replace)
+    } else {
+        chat_events::CaptureSessionId::Unchanged
+    };
+    if let chat_events::CaptureSessionId::Changed(current) = &outcome {
+        persisted.assign(c"cliSessionId", string_value(anchor, current.clone())?)?;
+    }
+    Ok(outcome)
+}
+
+/// `markReplaySafeAssistantEnvelope(adapterEnvelope, provider.name)`.
+fn mark_adapter_envelope<'a>(
+    anchor: LV<'a>,
+    event: LV<'a>,
+    provider: LV<'a>,
+    ports: LV<'a>,
+) -> Result<LV<'a>> {
+    mark_replay_safe(anchor, event, provider.get(c"name")?, ports)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_adapter_one<'a>(
+    env: &'a Env,
+    anchor: LV<'a>,
+    mut evt: LV<'a>,
+    cs: LV<'a>,
+    persisted: LV<'a>,
+    session: LV<'a>,
+    forward: LV<'a>,
+    turn: LV<'a>,
+    runner: LV<'a>,
+    provider: LV<'a>,
+    ports: LV<'a>,
+) -> Result<()> {
+    if !evt.truthy()? {
+        return Ok(());
+    }
+    evt = call(
+        ports.get(c"scrub")?,
+        &[runner.optional(c"providerAttempt")?, evt],
+    )?;
+    call(ports.get(c"observeAdapter")?, &[cs, evt])?;
+
+    if evt.get(c"type")?.is_string("claude_event")? {
+        return apply_claude_event(
+            env,
+            cs,
+            session,
+            evt.get(c"raw")?,
+            forward,
+            turn,
+            runner,
+            provider.get(c"name")?,
+            ports,
+        );
+    }
+
+    if evt.get(c"type")?.is_string("session_init")? {
+        let model = evt.optional(c"model")?;
+        if model.truthy()? {
+            call(ports.get(c"noteReportedModel")?, &[session, model])?;
+        }
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("native_session_missing")?
+        && evt
+            .get(c"sessionId")?
+            .equals(persisted.get(c"cliSessionId")?)?
+    {
+        persisted.assign(c"cliSessionId", null(anchor)?)?;
+        persisted.assign(c"_streamSessionId", null(anchor)?)?;
+        runner.assign(c"freshNativeSession", boolean(anchor, true)?)?;
+        call(ports.get(c"rememberActiveCliState")?, &[persisted])?;
+        call(
+            ports.get(c"savePersistedSessions")?,
+            &[text(anchor, "runtime.codex-resume-missing")?],
+        )?;
+        let frame = object(anchor)?;
+        frame.set(c"type", text(anchor, "system")?)?;
+        frame.set(c"subtype", text(anchor, "warning")?)?;
+        frame.set(
+            c"message",
+            text(
+                anchor,
+                "Codex 原生会话已不可复用（历史缺失或线路配置已变更），已自动新建会话并附带上下文摘要，继续本条消息。",
+            )?,
+        )?;
+        forward.call_plain(&[frame])?;
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("session_started")? {
+        let handoff = persisted.optional(c"pendingCliHandoff")?;
+        let session_id = evt.optional(c"sessionId")?;
+        let resume_mismatch = session_id.truthy()?
+            && persisted.optional(c"cliSessionId")?.truthy()?
+            && !session_id.equals(persisted.get(c"cliSessionId")?)?
+            && handoff.truthy()?
+            && handoff.optional(c"status")?.is_string("pending")?
+            && handoff.optional(c"reusedTarget")?.truthy()?
+            && handoff.optional(c"toCli")?.equals(persisted.get(c"cli")?)?;
+        if resume_mismatch {
+            cs.assign(
+                c"_adapterError",
+                text(
+                    anchor,
+                    "cross-cli target returned a different native session id",
+                )?,
+            )?;
+            runner.assign(c"adapterError", cs.get(c"_adapterError")?)?;
+            crate::chat_turn_effects::assign_kill_reason(
+                runner,
+                text(anchor, "cli_resume_mismatch")?,
+            )?;
+            forward_error(
+                anchor,
+                forward,
+                cli_error(
+                    persisted,
+                    " 没有恢复预期的原生会话；未接受 CLI 返回的新会话。请重新切换并选择“重置目标 CLI 会话”。",
+                )?,
+            )?;
+            finish_attempt(anchor, ports, runner, "cli_resume_mismatch")?;
+            terminate_proc(anchor, cs)?;
+            return Ok(());
+        }
+        match accept_session_id(anchor, persisted, evt, runner)? {
+            chat_events::CaptureSessionId::Mismatch => {
+                cs.assign(
+                    c"_adapterError",
+                    text(anchor, "native resume returned a different session id")?,
+                )?;
+                runner.assign(c"adapterError", cs.get(c"_adapterError")?)?;
+                crate::chat_turn_effects::assign_kill_reason(
+                    runner,
+                    text(anchor, "native_resume_mismatch")?,
+                )?;
+                forward_error(
+                    anchor,
+                    forward,
+                    cli_error(
+                        persisted,
+                        " 返回了不同的原生会话；为避免把回复写入错误上下文，本轮已停止。",
+                    )?,
+                )?;
+                finish_attempt(anchor, ports, runner, "native_resume_mismatch")?;
+                terminate_proc(anchor, cs)?;
+            }
+            chat_events::CaptureSessionId::Changed(current) => {
+                call(ports.get(c"rememberActiveCliState")?, &[persisted])?;
+                call(
+                    ports.get(c"savePersistedSessions")?,
+                    &[text(anchor, "runtime.chat-session-id-capture")?],
+                )?;
+                let message = capture_log(session, provider, &current)?;
+                call(ports.get(c"consoleLog")?, &[string_value(anchor, message)?])?;
+            }
+            chat_events::CaptureSessionId::Unchanged => {}
+        }
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("status")? {
+        let phase = or_chain(&[evt.optional(c"phase")?, evt.optional(c"status")?])?;
+        call(
+            ports.get(c"updatePhase")?,
+            &[session, turn.get(c"turnId")?, phase],
+        )?;
+        let status = object(anchor)?;
+        status.set(
+            c"status",
+            or_chain(&[evt.optional(c"status")?, text(anchor, "thinking")?])?,
+        )?;
+        status.set(
+            c"currentFile",
+            or_chain(&[evt.optional(c"currentFile")?, null(anchor)?])?,
+        )?;
+        call(ports.get(c"setSessionStatus")?, &[session, status])?;
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("activity")? {
+        let phase = object(anchor)?;
+        phase.set(
+            c"phase",
+            or_chain(&[evt.optional(c"phase")?, text(anchor, "tool")?])?,
+        )?;
+        phase.set(c"safeToolKind", evt.optional(c"toolKind")?)?;
+        call(
+            ports.get(c"updatePhase")?,
+            &[session, turn.get(c"turnId")?, phase],
+        )?;
+        let status = object(anchor)?;
+        status.set(c"status", text(anchor, "running")?)?;
+        status.set(c"currentFile", null(anchor)?)?;
+        call(ports.get(c"setSessionStatus")?, &[session, status])?;
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("user_input_signal")? {
+        let landed = call(
+            ports.get(c"recordUserInput")?,
+            &[evt, session, turn.get(c"turnId")?],
+        )?;
+        let log = evt.optional(c"log")?;
+        if log.truthy()? {
+            let message = client_log(session, provider, log)?;
+            call(
+                ports.get(c"consoleWarn")?,
+                &[string_value(anchor, message)?],
+            )?;
+        }
+        if landed.truthy()? && landed.optional(c"ok")?.truthy()? {
+            return Ok(());
+        }
+        let fallback = or_chain(&[
+            if landed.truthy()? {
+                landed.optional(c"fallbackText")?
+            } else {
+                landed
+            },
+            evt.optional(c"fallbackText")?,
+            text(anchor, "")?,
+        ])?;
+        evt = object(anchor)?;
+        evt.set(c"type", text(anchor, "assistant_text")?)?;
+        evt.set(c"text", fallback)?;
+    }
+
+    if evt.get(c"type")?.is_string("assistant_text")? {
+        call(
+            ports.get(c"updatePhase")?,
+            &[session, turn.get(c"turnId")?, text(anchor, "thinking")?],
+        )?;
+        let incoming = evt.optional(c"text")?;
+        if !incoming.truthy()? {
+            return Ok(());
+        }
+        let prior = string_or_empty(cs.optional(c"currentAssistantText")?)?;
+        let next = string_or_empty(incoming)?;
+        let delta = evt.optional(c"delta")?.is_true()?;
+        let joined = chat_events::append_adapter_text(&prior, &next, delta);
+        cs.assign(c"currentAssistantText", redact_string(anchor, &joined)?)?;
+        let frame = object(anchor)?;
+        frame.set(c"type", text(anchor, "assistant")?)?;
+        let message = object(anchor)?;
+        message.set(c"textSnapshot", boolean(anchor, true)?)?;
+        let content = array(anchor)?;
+        let block = object(anchor)?;
+        block.set(c"type", text(anchor, "text")?)?;
+        block.set(c"text", cs.get(c"currentAssistantText")?)?;
+        push(content, block)?;
+        message.set(c"content", content)?;
+        frame.set(c"message", message)?;
+        let marked = mark_adapter_envelope(anchor, frame, provider, ports)?;
+        forward.call_plain(&[marked])?;
+        let status = object(anchor)?;
+        status.set(c"status", text(anchor, "thinking")?)?;
+        status.set(c"currentFile", null(anchor)?)?;
+        call(ports.get(c"setSessionStatus")?, &[session, status])?;
+        call(ports.get(c"scheduleIncrementalSave")?, &[session, cs])?;
+        let log = evt.optional(c"log")?;
+        if log.truthy()? {
+            let message = client_log(session, provider, log)?;
+            call(
+                ports.get(c"consoleWarn")?,
+                &[string_value(anchor, message)?],
+            )?;
+        }
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("tool_start")? {
+        call(
+            ports.get(c"updatePhase")?,
+            &[
+                session,
+                turn.get(c"turnId")?,
+                text(anchor, "tool")?,
+                evt.optional(c"name")?,
+            ],
+        )?;
+        let tools = cs.get(c"currentToolCalls")?;
+        let tool = object(anchor)?;
+        tool.set(c"name", evt.optional(c"name")?)?;
+        tool.set(
+            c"input",
+            or_chain(&[evt.optional(c"input")?, object(anchor)?])?,
+        )?;
+        tool.set(c"id", evt.optional(c"id")?)?;
+        tool.set(c"startedAt", number(anchor, now(anchor)?)?)?;
+        push(tools, tool)?;
+        call(
+            ports.get(c"backgroundRecordToolUseId")?,
+            &[session, evt.optional(c"id")?],
+        )?;
+        let frame = object(anchor)?;
+        frame.set(c"type", text(anchor, "assistant")?)?;
+        let message = object(anchor)?;
+        let content = array(anchor)?;
+        let block = object(anchor)?;
+        block.set(c"type", text(anchor, "tool_use")?)?;
+        block.set(c"name", evt.optional(c"name")?)?;
+        block.set(c"id", evt.optional(c"id")?)?;
+        block.set(
+            c"input",
+            or_chain(&[evt.optional(c"input")?, object(anchor)?])?,
+        )?;
+        push(content, block)?;
+        message.set(c"content", content)?;
+        frame.set(c"message", message)?;
+        forward.call_plain(&[frame])?;
+        let status = object(anchor)?;
+        status.set(
+            c"status",
+            or_chain(&[evt.optional(c"status")?, text(anchor, "running")?])?,
+        )?;
+        status.set(
+            c"currentFile",
+            or_chain(&[evt.optional(c"currentFile")?, null(anchor)?])?,
+        )?;
+        call(ports.get(c"setSessionStatus")?, &[session, status])?;
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("tool_result")? {
+        call(
+            ports.get(c"updatePhase")?,
+            &[session, turn.get(c"turnId")?, text(anchor, "thinking")?],
+        )?;
+        let content_value = or_chain(&[evt.optional(c"content")?, text(anchor, "")?])?;
+        let is_error = evt.optional(c"isError")?.truthy()?;
+        let frame = object(anchor)?;
+        frame.set(c"type", text(anchor, "user")?)?;
+        let message = object(anchor)?;
+        let content = array(anchor)?;
+        let block = object(anchor)?;
+        block.set(c"type", text(anchor, "tool_result")?)?;
+        block.set(c"tool_use_id", evt.optional(c"id")?)?;
+        block.set(c"content", content_value)?;
+        block.set(c"is_error", boolean(anchor, is_error)?)?;
+        push(content, block)?;
+        message.set(c"content", content)?;
+        frame.set(c"message", message)?;
+        forward.call_plain(&[frame])?;
+        let tools = cs.get(c"currentToolCalls")?;
+        if let Some(tool) = find_tool_by_id(tools, evt.optional(c"id")?)? {
+            tool.assign(c"result", preview(anchor, content_value)?)?;
+            tool.assign(c"is_error", boolean(anchor, is_error)?)?;
+            tool.assign(c"endedAt", number(anchor, now(anchor)?)?)?;
+        }
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("tool_update")? {
+        let completed = evt.optional(c"completed")?.truthy()?;
+        call(
+            ports.get(c"updatePhase")?,
+            &[
+                session,
+                turn.get(c"turnId")?,
+                text(anchor, if completed { "thinking" } else { "tool" })?,
+                evt.optional(c"name")?,
+            ],
+        )?;
+        let tools = cs.get(c"currentToolCalls")?;
+        let raw_id = evt.optional(c"id")?;
+        let id = if raw_id.truthy()? {
+            raw_id
+        } else {
+            let length = tools.get(c"length")?.number()? as u64;
+            string_value(anchor, JsString::from_rust_str(&format!("call_{length}")))?
+        };
+        let tool = match find_tool_by_id(tools, id)? {
+            Some(tool) => tool,
+            None => {
+                let tool = object(anchor)?;
+                tool.set(c"name", evt.optional(c"name")?)?;
+                tool.set(
+                    c"input",
+                    or_chain(&[evt.optional(c"input")?, object(anchor)?])?,
+                )?;
+                tool.set(c"id", id)?;
+                tool.set(c"startedAt", number(anchor, now(anchor)?)?)?;
+                push(tools, tool)?;
+                call(ports.get(c"backgroundRecordToolUseId")?, &[session, id])?;
+                let frame = object(anchor)?;
+                frame.set(c"type", text(anchor, "assistant")?)?;
+                let message = object(anchor)?;
+                let content = array(anchor)?;
+                let block = object(anchor)?;
+                block.set(c"type", text(anchor, "tool_use")?)?;
+                block.set(c"name", evt.optional(c"name")?)?;
+                block.set(c"id", id)?;
+                block.set(
+                    c"input",
+                    or_chain(&[evt.optional(c"input")?, object(anchor)?])?,
+                )?;
+                push(content, block)?;
+                message.set(c"content", content)?;
+                frame.set(c"message", message)?;
+                forward.call_plain(&[frame])?;
+                tool
+            }
+        };
+        let status = object(anchor)?;
+        status.set(c"status", text(anchor, "running")?)?;
+        status.set(
+            c"currentFile",
+            or_chain(&[evt.optional(c"currentFile")?, null(anchor)?])?,
+        )?;
+        call(ports.get(c"setSessionStatus")?, &[session, status])?;
+        if completed {
+            let content_value = or_chain(&[evt.optional(c"content")?, text(anchor, "")?])?;
+            let is_error = evt.optional(c"isError")?.truthy()?;
+            let frame = object(anchor)?;
+            frame.set(c"type", text(anchor, "user")?)?;
+            let message = object(anchor)?;
+            let content = array(anchor)?;
+            let block = object(anchor)?;
+            block.set(c"type", text(anchor, "tool_result")?)?;
+            block.set(c"tool_use_id", id)?;
+            block.set(c"content", content_value)?;
+            block.set(c"is_error", boolean(anchor, is_error)?)?;
+            push(content, block)?;
+            message.set(c"content", content)?;
+            frame.set(c"message", message)?;
+            forward.call_plain(&[frame])?;
+            tool.assign(c"result", preview(anchor, content_value)?)?;
+            tool.assign(c"is_error", boolean(anchor, is_error)?)?;
+            tool.assign(c"endedAt", number(anchor, now(anchor)?)?)?;
+        }
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("thinking")? {
+        call(
+            ports.get(c"updatePhase")?,
+            &[session, turn.get(c"turnId")?, text(anchor, "thinking")?],
+        )?;
+        let reasoning_text = evt.optional(c"text")?;
+        let is_text = reasoning_text.kind()? == sys::ValueType::napi_string
+            && reasoning_text
+                .string()?
+                .map(|text| !text.is_empty())
+                .unwrap_or(false);
+        if is_text {
+            let reasoning = object(anchor)?;
+            reasoning.set(c"type", text(anchor, "reasoning")?)?;
+            let id = evt.optional(c"id")?;
+            reasoning.set(
+                c"id",
+                if id.kind()? == sys::ValueType::napi_string {
+                    id
+                } else {
+                    null(anchor)?
+                },
+            )?;
+            reasoning.set(c"text", reasoning_text)?;
+            reasoning.set(c"snapshot", boolean(anchor, true)?)?;
+            forward.call_plain(&[reasoning])?;
+        }
+        let tools = cs.get(c"currentToolCalls")?;
+        let id = evt.optional(c"id")?;
+        let found = if id.truthy()? {
+            find_tool_by_id(tools, id)?
+        } else {
+            None
+        };
+        let snapshot = evt.optional(c"snapshot")?.is_true()?;
+        let tool_input = object(anchor)?;
+        tool_input.set(
+            c"text",
+            or_chain(&[evt.optional(c"text")?, text(anchor, "")?])?,
+        )?;
+        let tool = match found {
+            Some(tool) if snapshot => {
+                tool.assign(c"input", tool_input)?;
+                tool
+            }
+            _ => {
+                let tool = object(anchor)?;
+                tool.set(c"name", text(anchor, "Thinking")?)?;
+                tool.set(c"input", tool_input)?;
+                tool.set(c"id", id)?;
+                tool.set(c"startedAt", number(anchor, now(anchor)?)?)?;
+                push(tools, tool)?;
+                call(ports.get(c"backgroundRecordToolUseId")?, &[session, id])?;
+                tool
+            }
+        };
+        let frame = object(anchor)?;
+        frame.set(c"type", text(anchor, "assistant")?)?;
+        let message = object(anchor)?;
+        let content = array(anchor)?;
+        let block = object(anchor)?;
+        block.set(c"type", text(anchor, "tool_use")?)?;
+        block.set(c"name", text(anchor, "Thinking")?)?;
+        block.set(c"id", id)?;
+        block.set(c"input", tool.get(c"input")?)?;
+        push(content, block)?;
+        message.set(c"content", content)?;
+        frame.set(c"message", message)?;
+        forward.call_plain(&[frame])?;
+        if !evt.optional(c"delta")?.is_true()? || evt.optional(c"completed")?.is_true()? {
+            let content_value = or_chain(&[evt.optional(c"text")?, text(anchor, "")?])?;
+            let frame = object(anchor)?;
+            frame.set(c"type", text(anchor, "user")?)?;
+            let message = object(anchor)?;
+            let content = array(anchor)?;
+            let block = object(anchor)?;
+            block.set(c"type", text(anchor, "tool_result")?)?;
+            block.set(c"tool_use_id", id)?;
+            block.set(c"content", content_value)?;
+            block.set(c"is_error", boolean(anchor, false)?)?;
+            push(content, block)?;
+            message.set(c"content", content)?;
+            frame.set(c"message", message)?;
+            forward.call_plain(&[frame])?;
+            tool.assign(c"endedAt", number(anchor, now(anchor)?)?)?;
+        }
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("complete")? {
+        runner.assign(c"pendingCompletionEvent", evt)?;
+        return Ok(());
+    }
+
+    if evt.get(c"type")?.is_string("error")? {
+        let public_message = crate::api_error_text::sanitize(
+            evt.optional(c"message")?,
+            undefined(anchor)?,
+            undefined(anchor)?,
+        )?;
+        let kind = or_chain(&[evt.optional(c"kind")?, text(anchor, "provider_error")?])?;
+        let fields = object(anchor)?;
+        fields.set(c"sessionId", session)?;
+        fields.set(c"turnId", turn.get(c"turnId")?)?;
+        fields.set(c"runnerId", runner.optional(c"runnerId")?)?;
+        fields.set(c"provider", provider.get(c"name")?)?;
+        fields.set(c"kind", kind)?;
+        fields.set(c"message", public_message)?;
+        log(
+            ports.get(c"logger")?,
+            c"warn",
+            "chat_provider_error_observed",
+            fields,
+        )?;
+        call(
+            ports.get(c"updatePhase")?,
+            &[
+                session,
+                turn.get(c"turnId")?,
+                text(
+                    anchor,
+                    if kind.is_string("transport_disconnect")? {
+                        "recovering"
+                    } else {
+                        "finalizing"
+                    },
+                )?,
+            ],
+        )?;
+        if kind.is_string("response_completed_disconnect")? {
+            cs.assign(c"_codexPendingStreamError", public_message)?;
+            let current = or_chain(&[
+                cs.optional(c"_codexPendingStreamErrorCount")?,
+                number(anchor, 0.0)?,
+            ])?;
+            cs.assign(
+                c"_codexPendingStreamErrorCount",
+                increment_one(anchor, current)?,
+            )?;
+            let mut has_output = cs.optional(c"currentAssistantText")?.truthy()?;
+            if !has_output {
+                has_output = cs.get(c"currentToolCalls")?.get(c"length")?.truthy()?;
+            }
+            if !has_output {
+                has_output = cs.optional(c"_resultSaved")?.truthy()?;
+            }
+            if has_output {
+                cs.assign(c"_codexRecoveredDisconnect", boolean(anchor, true)?)?;
+            }
+            let fields = object(anchor)?;
+            fields.set(c"sessionId", session)?;
+            fields.set(c"provider", provider.get(c"name")?)?;
+            fields.set(c"afterOutput", boolean(anchor, has_output)?)?;
+            fields.set(c"occurrence", cs.get(c"_codexPendingStreamErrorCount")?)?;
+            log(
+                ports.get(c"logger")?,
+                c"warn",
+                "chat_provider_response_completed_disconnect",
+                fields,
+            )?;
+        } else if kind.is_string("transport_disconnect")? {
+            cs.assign(c"_codexTransportError", public_message)?;
+            cs.assign(c"_sawApiError", boolean(anchor, true)?)?;
+            runner.assign(c"sawApiError", boolean(anchor, true)?)?;
+            runner.assign(
+                c"apiErrorRaw",
+                or_chain(&[
+                    evt.optional(c"error")?,
+                    provider_event(
+                        anchor,
+                        provider,
+                        "connection_reset",
+                        evt.optional(c"message")?,
+                    )?,
+                ])?,
+            )?;
+            let phase = if meaningful_output(cs)? || has_side_effects(cs)? {
+                "stream"
+            } else {
+                "before_first_token"
+            };
+            let fields = object(anchor)?;
+            fields.set(c"sessionId", session)?;
+            fields.set(c"provider", provider.get(c"name")?)?;
+            fields.set(c"phase", text(anchor, phase)?)?;
+            log(
+                ports.get(c"logger")?,
+                c"warn",
+                "chat_provider_transport_error",
+                fields,
+            )?;
+        } else {
+            cs.assign(c"_adapterError", public_message)?;
+            runner.assign(c"adapterError", public_message)?;
+            runner.assign(c"sawApiError", boolean(anchor, true)?)?;
+            runner.assign(
+                c"apiErrorRaw",
+                or_chain(&[
+                    evt.optional(c"error")?,
+                    provider_event(
+                        anchor,
+                        provider,
+                        "provider_error",
+                        evt.optional(c"message")?,
+                    )?,
+                ])?,
+            )?;
+            let label = or_chain(&[evt.optional(c"label")?, provider.get(c"name")?])?;
+            let mut message = template(label)?;
+            message.push_str(" 出错：");
+            message.push(&template(public_message)?);
+            forward_error(anchor, forward, message)?;
+        }
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_adapter_event<'a>(
+    env: &'a Env,
+    anchor: LV<'a>,
+    cs: LV<'a>,
+    persisted: LV<'a>,
+    session: LV<'a>,
+    raw_event: LV<'a>,
+    forward: LV<'a>,
+    turn: LV<'a>,
+    runner: LV<'a>,
+    provider: LV<'a>,
+    ports: LV<'a>,
+) -> Result<()> {
+    if !is_current(anchor, cs, turn, runner)? {
+        return Ok(());
+    }
+    call(
+        ports.get(c"touchActivity")?,
+        &[session, turn.get(c"turnId")?],
+    )?;
+    let decoded = call(ports.get(c"decodeEvent")?, &[provider, raw_event])?;
+    let decoded = if decoded.truthy()? {
+        decoded
+    } else {
+        array(anchor)?
+    };
+    let list = if decoded.is_array()? {
+        decoded
+    } else {
+        let list = array(anchor)?;
+        push(list, decoded)?;
+        list
+    };
+    let completion = runner.optional(c"completion")?;
+    completion
+        .get(c"observe")?
+        .call(completion, &[raw_event, list])?;
+    list.for_each(|evt| {
+        apply_adapter_one(
+            env, anchor, evt, cs, persisted, session, forward, turn, runner, provider, ports,
+        )
+    })
+}
+
+#[napi]
+#[allow(clippy::too_many_arguments)]
+pub fn chat_apply_adapter_event(
+    env: Env,
+    provider: Unknown<'_>,
+    cs: Unknown<'_>,
+    persisted: Unknown<'_>,
+    session_name: Unknown<'_>,
+    raw_event: Unknown<'_>,
+    forward: Unknown<'_>,
+    turn: Unknown<'_>,
+    runner: Unknown<'_>,
+    ports: Unknown<'_>,
+) -> Result<()> {
+    let anchor = LiveValue::new(&env, ports);
+    apply_adapter_event(
+        &env,
+        anchor,
+        LiveValue::new(&env, cs),
+        LiveValue::new(&env, persisted),
+        LiveValue::new(&env, session_name),
+        LiveValue::new(&env, raw_event),
+        LiveValue::new(&env, forward),
+        LiveValue::new(&env, turn),
+        LiveValue::new(&env, runner),
+        LiveValue::new(&env, provider),
+        anchor,
+    )
 }

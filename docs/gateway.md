@@ -1378,3 +1378,88 @@ S6 `# TODO`；运行均以 `MULTICC_RUST_PREBUILT_DIR` 指向该指纹目录。
 未完成：适配器中立事件应用、CLI 监管、流式/收尾/后台副作用、provider 选择、
 历史持久化与 WS 处理仍在 Node，故不声明任何后端退出验收项完成，整体账本仍为
 5/6。未提交、合并、推送、重启生产服务或更改生产配置。
+
+## 6d 聊天编排：适配器中立事件归约器（2026-11-09）
+
+适配器中立归约器 `applyAdapterChatEvent` 现已与 Claude 归约器一起落在 Rust。
+`native/addon/src/chat_events.rs` 导出
+`chatApplyAdapterEvent(provider, cs, persisted, sessionName, rawEvent, forward,
+turn, runner, ports)`；`src/chat/turn-engine.js` 只留一行包装，259 行的决策/变更
+主体已删除（新增 12 行为包装与八个端口条目）。所有非 Claude 车道经各自的
+`provider.decodeEvent` 进入同一归约器：codex、codex-exp、opencode/opencode-like、
+kimi、pi、zcode、commandcode 与 acp。
+
+调用顺序与冻结实现逐字节一致。入口：turn/runner 时效（`isCurrent`）→
+`ports.touchActivity(session, turnId)` → `ports.decodeEvent(provider, rawEvent)`
+→ null/undefined 变 `[]`、非数组包一层 → 恰好一次
+`runner.completion.observe(rawEvent, list)` → 逐事件归约。单个事件：假值跳过 →
+`ports.scrub(providerAttempt, evt)` → `ports.observeAdapter(cs, evt)` → 按冻结
+顺序分派：`claude_event`、`session_init`、`native_session_missing`、
+`session_started`、`status`、`activity`、`user_input_signal`（先记录宿主的输入
+信号，再落为 `assistant_text`）、`assistant_text`、`tool_start`、`tool_result`、
+`tool_update`、`thinking`、`complete`、`error`。
+
+嵌套的 `claude_event` 分支把原始帧在同一进程内直接交给既有的原生 Claude 归约器
+`apply_claude_event`，没有 JS 往返、没有重新序列化。会话处理使用新增的纯核心
+`capture_session_id`/`CaptureSessionId`（unchanged/changed 与 mismatch）；若
+resume 会把逻辑会话换到另一段原生历史，则杀进程并按
+`cli_resume_mismatch`/`native_resume_mismatch` 调用 `finishProviderAttempt`
+（addon 新增 `chat_turn_effects::assign_kill_reason` 与 `chatAssignKillReason`
+导出）。`complete` 用既有 CLI 规则判定完成、前推 result 帧并关闭 provider
+attempt；`error` 复用 `api_error_policy::detect_error_envelope`、
+`is_error_only_text`、`api_error_text::sanitize` 与
+`redaction::redact_route_capability`，区分 transport/response disconnect，并经
+`consoleWarn`/`consoleLog` 端口记日志。
+
+端口：共享的 `nativeChatEventPorts` 表现有 29 项；本批新增八个适配器专用端口：
+`observeAdapter`、`decodeEvent`、`rememberActiveCliState`、
+`savePersistedSessions`、`finishProviderAttempt`、`recordUserInput`、
+`consoleWarn`、`consoleLog`。它们保留为宿主端口，因为仍拥有 Node 侧状态或
+副作用：适配器线上格式解析（`decodeEvent` 按设计归各 provider）、CLI 状态
+持久化、provider attempt 记账、会话工作 `recordInput` 与日志器。`isCurrent`、
+`scrub`、`touchActivity`、阶段/状态、增量保存、完成判定与所有结果字段仍留在
+与 Claude 车道共用的同一张表上。
+
+删除的 Node 逻辑：`applyAdapterChatEvent` 的 259 行（轮次门控、decode 形状处理、
+会话捕获/不匹配、状态/活动/阶段变更、assistant 文本累加与错误信封标记、
+工具 start/result/update 成帧、thinking 跨度、完成与结构化错误处理）。addon
+文件现 2,044 行（+970/-20）；`native/core/src/chat_events.rs` 244 行（+82，现有
+9 项单测），`chat_turn_effects.rs` 新增 kill-reason 辅助（+9/-4）。
+
+冻结基准 `tests/helpers/legacy-adapter-chat-event.js`（319 行）即旧逐字节实现。
+`tests/test-chat-adapter-events-differential.js`（570 行，6 项）用相同初始状态与
+相同线上事件驱动两套归约器，在每条事件后比较完整有序宿主副作用日志、
+`cs`/持久态/turn/runner 快照与前推帧；自定义序列化保留 `undefined`、`NaN`、
+`-0`、孤立代理项与属性顺序，并要求两边同抛/同不抛。规模：18 条固定序列
+（9 种适配器 × 2 种 handoff 状态）、1,080 条定种子随机序列（9 × 120）、2,000 条
+扰动序列（codex 1,000 + opencode 1,000）、24 个 decode 形状/过期/重入/抛端口
+用例（null/undefined/单对象/对象/抛异常的 decoder 与 13 个抛异常端口）、4 条
+孤立代理项/超大事件序列、8 个会话捕获/不匹配用例。
+
+`tests/test-chat-adapter-events-isolated.js`（232 行）在临时数据根上启动真实
+`multicc-gateway` 与 `server.js`，用假 codex/opencode CLI 走 `/ws/chat`：两条
+车道的 assistant 文本、工具结果、工具卡片与回到空闲均被断言；opencode 假 CLI
+使用 opencode-like 解码器共享的旧版 `--format json` 形状。`npm test:core` 与
+`npm test:integration:isolated` 均已纳入；`tests/test-chat-turn-core.js`、
+`tests/test-turn-timeline.js` 与 `tests/test-api-error-host-wiring.js` 已改为断言
+原生端口接线而非被删的 JS 主体，`tests/test-release-version-consistency.js` 已按
+两个新 core 条目复核发行分层。
+
+注入故障均先被捕获再还原：(1) 跳过 `runner.completion.observe`；(2) 反转 decode
+数组顺序；(3) 绕过 `claude_event` 分支；(4) result 帧重复前推。四项均令差分测试
+失败；还原后源码树干净并重建到同一指纹。
+
+Rust 工作区 667 项通过、0 失败。三个改动的 Rust 文件 `rustfmt --check` 通过；
+`multicc-core`/`multicc-addon` 的 clippy 在这些文件中无告警（仓库既有告警未动）。
+测试分层 849 项已分类（core 404：deterministic 331 / isolated 42 / flutter 31）。
+源码行预算通过（既有 `public/run-config.js` 3,289->3,000 债务未变）；
+`git diff --check` 干净。发行计数复核为 376 命令 / 373 个 Node 条目。最终产物上
+的完整 `npm test` 退出码 0：6,551 项、6,548 通过、0 失败、2 跳过（本机无
+Electron 桌面工具链、无 `pwsh`）、1 项既有 S6 `# TODO`；运行均以
+`MULTICC_RUST_PREBUILT_DIR` 指向该指纹目录。
+
+源码指纹 `ff074b05f79d46170eb6b680`，日志归档到主仓
+`data/rust-source/ff074b05f79d46170eb6b680/validation/chat-adapter-events/`。
+网关/addon 控制协议不变（仍为 12）。未发现有意行为差异。本批推进 6d 但未完成：
+CLI 监管、流式/收尾/后台副作用、provider 选择、历史持久化与 WS 处理仍在 Node，
+故不声明任何后端退出验收项完成，整体账本仍为 5/6。

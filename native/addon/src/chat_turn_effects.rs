@@ -43,13 +43,13 @@ pub fn chat_owns_current_runner(
         && runner.get(c"turnId")?.equals(turn.get(c"turnId")?)?)
 }
 
-#[napi]
-pub fn chat_assign_kill_reason(env: Env, runner: Unknown<'_>, reason: Unknown<'_>) -> Result<bool> {
-    let runner = LiveValue::new(&env, runner);
+/// `assignKillReason(runner, reason)`: the adapter reducer needs the same
+/// transition in-process when a native session id cannot be accepted.
+pub(crate) fn assign_kill_reason(runner: LiveValue<'_>, reason: LiveValue<'_>) -> Result<bool> {
     if !runner.truthy()? {
         return Ok(false);
     }
-    let reason = LiveValue::new(&env, reason).clean_text()?;
+    let reason = reason.clean_text()?;
     runner.assign(
         c"killReason",
         if reason.truthy()? {
@@ -59,6 +59,11 @@ pub fn chat_assign_kill_reason(env: Env, runner: Unknown<'_>, reason: Unknown<'_
         },
     )?;
     runner.get(c"killReason")?.truthy()
+}
+
+#[napi]
+pub fn chat_assign_kill_reason(env: Env, runner: Unknown<'_>, reason: Unknown<'_>) -> Result<bool> {
+    assign_kill_reason(LiveValue::new(&env, runner), LiveValue::new(&env, reason))
 }
 
 #[napi]
