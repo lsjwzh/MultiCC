@@ -468,3 +468,88 @@ This advances 6b/6c but completes neither. Directory membership projections,
 WS/observer delivery, cursor selection, provider and chat orchestration/history
 persistence remain open, so no backend-exit acceptance criterion is claimed
 complete and the overall ledger stays 5/6.
+
+## Native directory registry and cross-file journal batch (2026-11-09)
+
+The live directory registry, its directories.json persistence and the cross-file
+directories+sessions journal now live in the same native owner as the session
+records (`native/addon/src/session_records.rs`, `RustSessionRecords`; pure
+journal rules in `native/core/src/state_tx.rs`; generalized envelope/rotation
+writer in `native/core/src/durable_state.rs`). `src/state/tx.js` is deleted.
+A directory delete that cascades sessions is one native transaction: the
+`tx-<16hex>.json` journal is written first, both files are replaced atomically
+in journal files-array order, and the journal is removed only after both writes
+succeed. A crash at any of those steps is recovered by `replayJournals()` with
+the same envelope, key order, apply order, rollback-by-replay, quarantine
+directory (`broken/<name>.<epoch-ms>`) and log substrings as the deleted Node
+implementation.
+
+The Node table is gone. `src/directory/records.js` (102 lines) is a Map-shaped
+facade (`instanceof Map`, ordered `get/set/has/delete/clear/keys/values/entries`
+and iteration) forwarding to the native registry, and reconstructs the
+`CorruptedStateError` the StateStore used to throw at boot. The owner itself is
+composed in `src/state/owner.js` (55 lines), created before the state bootstrap
+and shared by the session facade, the directory facade, journal replay and the
+bootstrap migration. `src/session/records.js` (101 lines) keeps only the
+session-record facade; it no longer imports the directory context, preserving
+the session bounded-context boundary. `src/directory/repository.js` is a
+58-line port adapter, and `src/directory/service.js` passes one
+`{kind, reason}` spec to `commitCrossFileWrite` instead of building payload
+pairs. Boot order and logs are unchanged: replay journals, load sessions, load
+directories, one-time migration import.
+
+Deleted Node logic: `src/state/tx.js` (145 lines: journal encode/apply/replay,
+backup rotation call, quarantine), the repository's StateStore wiring and raw
+`snapshot()` port, and the service's two-file payload construction/fallback
+order. `src/directory/ports.js` drops `snapshot`/`snapshotRecords` and adds
+`TX_PORT = ['commitCrossFileWrite']`.
+
+Adapters that remain, and why: git base-branch/push work, filesystem probing,
+session destroy cascades, UI-layout enumeration (`listDirIds`/`listSessionIds`
+read the native facade), `stringify`/`now`/logger and the test failure seam are
+effects on other Node owners, supplied as host ports. Live record objects stay
+host references through `js_host_value` so field writers keep identity and
+property order. There is no internal JSON round trip: the only serialization is
+the host `stringify` at the durable data-file boundary.
+
+Verification: 1,200-step seeded differential against the frozen Node repository
+and journal (`tests/helpers/legacy-directory-repository.js`,
+`tests/helpers/legacy-state-tx.js`) covering create/update/delete/reorder,
+cascade delete through the journalled commit, plain saves, session membership
+and restart reload, comparing live tables plus every persisted file and backup
+after each step; byte parity with `JSON.stringify(envelope, null, 2)`;
+`.bak1..3` rotation; corrupt/missing-envelope/unreadable recovery and
+fail-closed `CorruptedStateError`; crash injected before the journal, between
+the journal and each file, and during replay (resume after a partial replay);
+malformed/unreadable journal quarantine; restart counts/order/content hashes;
+reentrancy; facade identity and GC; failed write leaving the previous primary
+intact. Five injected faults were each caught by a durable/differential test and
+reverted: journal not removed after commit; sessions file entry omitted from the
+cross-file commit; rolling-backup rotation disabled; replay order reversed;
+malformed journal not quarantined.
+
+The full suite exits 0 on the final artifacts: 27 Node test runs, 6,519 tests,
+6,516 passed, 0 failed, 2 skipped (Electron tooling, pwsh) and the pre-existing
+S6 TODO. Focused state/architecture/release suites: 46 passed. Cargo workspace:
+640 passed, 0 failed. New Rust files pass `rustfmt --check`; clippy exits 0 with
+no warnings on the new code (the repository's pre-existing warnings remain in
+untouched code). Test tiers: 841 classified, core 396 / deterministic 327 /
+isolated 38; release-count audit 368 commands / 365 Node entries. Source line
+budget OK (known `public/run-config.js` migration debt unchanged);
+`git diff --check` clean.
+
+Known behaviour difference: a damaged state file now raises a reconstructed
+`CorruptedStateError`; the class, `file`, `raw` excerpt and stable message
+prefixes are preserved, but a JSON parse failure omits V8's `: <parser detail>`
+suffix and an unreadable file omits the OS error suffix. No other intentional
+difference; save/recovery bytes are tested equal.
+
+Fingerprint `924e3f9a565f72eeafb183e7`;
+logs are archived under the primary repository's
+`data/rust-source/924e3f9a565f72eeafb183e7/validation/directory-persistence/`.
+Validation is on macOS ARM64; other platform packages are not certified here.
+No commit, merge, push, production restart or configuration change was performed.
+This batch advances 6b/6c but completes neither: WebSocket/observer delivery,
+cursor selection, provider and chat orchestration/history persistence remain
+open, so no backend-exit acceptance criterion is claimed complete and the
+overall ledger stays 5/6.

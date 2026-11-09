@@ -6,17 +6,20 @@
 const path = require('path');
 const { createDirectoryService } = require('../src/directory/service');
 const { createFsDirectoryRepository } = require('../src/directory/repository');
+const { createDirectoryTable } = require('../src/directory/records');
+const { createStateOwner } = require('../src/state/owner');
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log('✅', m); } else { fail++; console.log('❌', m); } };
 
 // ── fakes ──────────────────────────────────────────────────────────────
 function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new Set(), mkdirError = null } = {}) {
-  const repoMap = new Map(dirs.map(d => [d.id, d]));
-  const calls = { saved: 0, seeded: [], destroyed: [], persisted: 0, events: [], gitReady: [], unmarked: [], writes: [] };
+  const calls = { saved: 0, seeded: [], destroyed: [], tx: [], events: [], gitReady: [], unmarked: [], writes: [] };
   const realPathOf = (p) => p;   // identity: no symlinks in fake fs
-  const repo = createFsDirectoryRepository({ file: '/nonexistent/never-written.json', map: repoMap, realPathOf });
-  const _save = repo.save; void _save;
+  const owner = createStateOwner().configure({ stringify: JSON.stringify });
+  const table = createDirectoryTable(owner);
+  for (const d of dirs) table.set(d.id, d);
+  const repo = createFsDirectoryRepository({ file: '/nonexistent/never-written.json', map: table, realPathOf, owner });
   repo.save = () => { calls.saved++; };   // don't touch the real fs in unit tests
 
   const git = {
@@ -34,8 +37,9 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     listByDir: (dirId) => sessions.filter(s => s.dirId === dirId),
     seedCommander: (dir) => { calls.seeded.push(dir.id); },
     destroyCascade: (s) => { calls.destroyed.push(s.id); },
-    persistRecords: () => { calls.persisted++; },
-    snapshotRecords: () => sessions.slice(),
+  };
+  const tx = {
+    commitCrossFileWrite: spec => { calls.tx.push(spec); if (calls.txFails) throw new Error('journal write failed'); },
   };
   const events = { append: (dirId, type, detail) => { calls.events.push({ dirId, type, detail }); } };
   const fsPort = {
@@ -61,8 +65,8 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     friendlyDirReason: (r) => `friendly:${r}`,
     dirReasonFix: (r) => (String(r).includes('xcode-select') ? 'install-developer-tools' : null),
   };
-  const svc = createDirectoryService({ repo, git, sessions: sessionPort, events, fsPort, helpers, newId: () => 'id-1' });
-  return { svc, repo, calls, git, fsDirs };
+  const svc = createDirectoryService({ repo, git, sessions: sessionPort, events, fsPort, helpers, tx, newId: () => 'id-1' });
+  return { svc, repo, calls, git, fsDirs, table };
 }
 
 (async () => {
@@ -178,8 +182,17 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
       && r.extra.sessions.join() === 's1,s2', 'remove: refuses without force, lists sessions');
     r = await svc.remove('d1', { force: true });
     ok(r.ok && r.data.removedSessions === 2, 'remove: force destroys owned sessions');
-    ok(calls.destroyed.join() === 's1,s2' && !repo.get('d1') && calls.saved === 1 && calls.persisted === 1,
-      'remove: cascade order — destroy, delete record, save, persist sessions');
+    ok(calls.destroyed.join() === 's1,s2' && !repo.get('d1') && calls.saved === 0
+      && calls.tx.length === 1 && calls.tx[0].kind === 'delete-directory',
+    'remove: cascade order — destroy, delete record, one native cross-file transaction');
+
+    const failing = makeFakes({ dirs: [d], sessions: sess, fsDirs: new Set(['/p/a']) });
+    failing.calls.txFails = true;
+    r = await failing.svc.remove('d1', { force: true });
+    ok(!r.ok && r.code === 'internal' && /persist failed: journal write failed/.test(r.message),
+      'remove: a failed native transaction surfaces as internal, never a false success');
+    ok(!failing.repo.get('d1') && failing.calls.tx.length === 1,
+      'remove: the in-memory delete stays (the boot journal retries the writes)');
   }
 
   // ── browseFs ──
@@ -296,7 +309,7 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     const { svc, repo, calls } = makeFakes({ dirs });
     let r = svc.reorder(['c', 'ghost', 'a', 'c']);
     ok(r.ok && r.data.ids.join() === 'c,a,b,d', 'reorder: listed ids first, unknown/dup ignored, rest keep order');
-    ok(repo.list().map(d => d.id).join() === 'c,a,b,d' && repo.snapshot()[0].id === 'c', 'reorder: list() and persisted snapshot follow new order');
+    ok(repo.list().map(d => d.id).join() === 'c,a,b,d' && [...repo.map().keys()].join() === 'c,a,b,d', 'reorder: list() and persisted snapshot follow new order');
     ok(calls.saved === 1, 'reorder: saved once');
     r = svc.reorder('nope');
     ok(!r.ok && r.code === 'invalid', 'reorder: non-array rejected');

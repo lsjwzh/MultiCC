@@ -1,5 +1,5 @@
 'use strict';
-// Unit tests for src/state-store.js + src/state-tx.js + src/paths.js.
+// Unit tests for src/state/store.js + src/paths.js.
 // Every test that mutates disk uses fs.mkdtemp under os.tmpdir() and calls
 // paths.assertTestDir() to defence-in-depth against a runaway wiping the repo.
 
@@ -9,7 +9,6 @@ const path = require('path');
 const {
   writeJsonAtomic, readJson, recoverFromBackup, createStore, CorruptedStateError,
 } = require('../src/state/store');
-const { commitCrossFileWrite, replayJournals } = require('../src/state/tx');
 const paths = require('../src/paths');
 
 let pass = 0, fail = 0;
@@ -136,68 +135,6 @@ function tmpDir(label) {
     let threw = false;
     try { readJson(f); } catch (_) { threw = true; }
     ok(threw, 'legacy bare-array is corruption when NOT opted in');
-  }
-
-  // ── cross-file transaction: both files land together ───────────────
-  {
-    const d = tmpDir('tx-happy');
-    const dirs = path.join(d, 'directories.json');
-    const sess = path.join(d, 'sessions.json');
-    const jrn = path.join(d, '.journal');
-    writeJsonAtomic(dirs, [{ id: 'd1' }, { id: 'd2' }]);
-    writeJsonAtomic(sess, [{ id: 's1', dirId: 'd1' }, { id: 's2', dirId: 'd2' }]);
-    commitCrossFileWrite({
-      journalDir: jrn,
-      kind: 'delete-directory',
-      files: [
-        { path: dirs, payload: [{ id: 'd2' }], kind: 'directories' },
-        { path: sess, payload: [{ id: 's2', dirId: 'd2' }], kind: 'sessions' },
-      ],
-    });
-    const rd = readJson(dirs);
-    const rs = readJson(sess);
-    ok(rd.data.length === 1 && rd.data[0].id === 'd2', 'tx: directories.json shows post-delete state');
-    ok(rs.data.length === 1 && rs.data[0].id === 's2', 'tx: sessions.json shows post-delete state');
-    // Journal file is cleaned up after success
-    const remaining = fs.readdirSync(jrn).filter(n => /^tx-/.test(n));
-    ok(remaining.length === 0, 'tx: journal cleared after success');
-  }
-
-  // ── replay: crash between journal write and file writes ────────────
-  {
-    const d = tmpDir('tx-replay');
-    const dirs = path.join(d, 'directories.json');
-    const sess = path.join(d, 'sessions.json');
-    const jrn = path.join(d, '.journal');
-    // Simulate: journal written, but the file writes never landed. We write a
-    // journal by hand and check replayJournals() finishes the job.
-    fs.mkdirSync(jrn, { recursive: true });
-    const entry = {
-      id: 'deadbeefdeadbeef', kind: 'delete-directory', ts: 1,
-      files: [
-        { path: dirs, payload: [{ id: 'd3' }], kind: 'directories' },
-        { path: sess, payload: [{ id: 's3', dirId: 'd3' }], kind: 'sessions' },
-      ],
-    };
-    writeJsonAtomic(path.join(jrn, `tx-${entry.id}.json`), entry, { rotate: 0, kind: 'state-tx-journal' });
-    const stats = replayJournals(jrn);
-    ok(stats.replayed === 1 && stats.skipped === 0, 'replay: one journal replayed');
-    ok(readJson(dirs).data[0].id === 'd3', 'replay: directories.json updated to intended state');
-    ok(readJson(sess).data[0].id === 's3', 'replay: sessions.json updated to intended state');
-    const leftover = fs.readdirSync(jrn).filter(n => /^tx-/.test(n));
-    ok(leftover.length === 0, 'replay: journal cleared');
-  }
-
-  // ── replay: corrupt journal moves aside without blocking boot ──────
-  {
-    const d = tmpDir('tx-corrupt');
-    const jrn = path.join(d, '.journal');
-    fs.mkdirSync(jrn, { recursive: true });
-    fs.writeFileSync(path.join(jrn, 'tx-badjournal.json'), '{not json');
-    const stats = replayJournals(jrn);
-    ok(stats.replayed === 0 && stats.skipped === 1, 'replay: corrupt journal skipped');
-    ok(fs.existsSync(path.join(jrn, 'broken')), 'replay: corrupt journal moved to broken/');
-    ok(!fs.existsSync(path.join(jrn, 'tx-badjournal.json')), 'replay: corrupt journal removed from main dir');
   }
 
   console.log(`\n== state-store unit: ${pass} passed, ${fail} failed ==`);

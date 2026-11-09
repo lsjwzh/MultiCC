@@ -103,10 +103,11 @@ const {
 // MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
-const stateTx = require('./src/state/tx');
 const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session/persistence');
 const { createSessionRecords } = require('./src/session/records');
+const { createStateOwner } = require('./src/state/owner');
+const { createDirectoryTable } = require('./src/directory/records');
 const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
 const { createOrchestrationRuntime } = require('./src/orchestration/runtime');
@@ -706,24 +707,36 @@ async function ensureDirGitReady(dir) {
 const SESSIONS_FILE = MULTICC_PATHS.sessionsFile;
 const DIRECTORIES_FILE = MULTICC_PATHS.directoriesFile;
 
-// State bootstrap owns store construction, crash-journal replay, fail-closed
-// recovery and the one-time legacy paired-session migration. The returned Maps
-// remain the shared host references consumed by the bounded contexts below.
+// One native owner holds the live session table, the live directory table and
+// the cross-file state journal. Boot replay and the legacy migration both use
+// it, so directories.json and sessions.json have exactly one writer.
+const stateOwner = createStateOwner().configure({
+  stringify: JSON.stringify,
+  root: MULTICC_PATHS.root,
+  directoriesFile: DIRECTORIES_FILE,
+  sessionsFile: SESSIONS_FILE,
+  journalDir: MULTICC_PATHS.journalDir,
+  now: Date.now,
+});
+
+// State bootstrap owns the session store, journal replay, fail-closed recovery
+// and the one-time legacy paired-session migration. Directories are loaded
+// straight into the native table; the boot session Map is read once and dropped.
 const stateBootstrap = bootstrapState({
   fs,
   stateStore,
-  stateTx,
+  stateOwner,
   paths: MULTICC_PATHS,
   chatHistoryRepository,
   randomUUID: crypto.randomUUID,
   logger: console,
 });
-const directoriesStore = stateBootstrap.directoriesStore;
 const _state = stateBootstrap.state;
-// Boot import adapter: the Node loader parsed and migrated sessions.json; from
-// here the native owner owns the live table and the writer. The boot Map is
-// read once and dropped (no second table is retained).
-const persistedSessions = createSessionRecords(_state.persistedSessions);
+// Boot import adapters: the Node loader parsed and migrated sessions.json and
+// the native owner already holds the directory table. Neither source Map remains
+// a second live table.
+const persistedSessions = createSessionRecords(_state.persistedSessions, stateOwner);
+const directories = createDirectoryTable(stateOwner);
 mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 
 // 供应商余量共享缓存：写入成功后向使用该线路的会话同步展示快照。
@@ -868,7 +881,7 @@ const notesStore = createNotesStore({
   eventsDir: MULTICC_PATHS.eventsDir,
   notesFile: MULTICC_PATHS.notesFile,
   persistedSessions,
-  directories: _state.directories,
+  directories,
   atomicWriteJson,
   ensurePrivateDir,
   getWorkspaceBroadcast: () => workspaceBroadcast,
@@ -884,7 +897,7 @@ const {
 loadNotes();
 
 const directoryModule = createDirectoryModule({
-  repository: { file: DIRECTORIES_FILE, map: _state.directories, store: directoriesStore, uiLayoutFile: MULTICC_PATHS.uiLayoutFile },
+  repository: { file: DIRECTORIES_FILE, map: directories, owner: stateOwner, uiLayoutFile: MULTICC_PATHS.uiLayoutFile },
   git: {
     baseBranch: gitBaseBranch,
     pushState: (p, b, o) => gitPush.directoryPushState(p, b, o),
@@ -900,10 +913,6 @@ const directoryModule = createDirectoryModule({
     listByDir: (dirId) => persistedSessions.listByDir(dirId),
     seedCommander: dir => { folderMemory.ensureShared(dir.id); return seedCommanderSession(dir); },
     destroyCascade: destroySessionCascade,
-    persistRecords: () => sessionPersistence.mutate('http.directory-delete-fallback', () => {}),
-    // Cross-file transaction needs the sessions payload at the moment of
-    // journal-write, so it's captured alongside the directories payload.
-    snapshotRecords: () => [...persistedSessions.values()],
   },
   events: { append: appendEvent },
   fsPort: {
@@ -916,20 +925,14 @@ const directoryModule = createDirectoryModule({
     writeFileExclusive: (p, content) => { try { fs.writeFileSync(p, content, { flag: 'wx' }); return true; } catch (e) { if (e.code === 'EEXIST') return false; throw e; } },
   },
   helpers: { resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason, dirReasonFix },
-  // Cross-file transaction wiring updates both state files under one journal entry, so a crash between the
-  // two writes is finished by replayJournals() on next boot rather than
-  // leaving the two files inconsistent (dir deleted + its sessions still
-  // pointing at nothing, or vice versa).
+  // The native owner snapshots both live tables and writes the journal + both
+  // files itself; boot replay finishes a torn delete rather than leaving the
+  // two files inconsistent (dir deleted + its sessions still pointing at
+  // nothing, or vice versa).
   tx: {
-    directoriesFile: DIRECTORIES_FILE,
-    sessionsFile: SESSIONS_FILE,
-    commitCrossFileWrite: (spec) => stateTx.commitCrossFileWrite({
-      journalDir: MULTICC_PATHS.journalDir,
-      ...spec,
-    }),
+    commitCrossFileWrite: spec => stateOwner.commitCrossFileWrite(spec),
   },
 });
-const directories = directoryModule.repo.map();
 function saveDirectories() { directoryModule.repo.save(); }
 // Directory event log route (GET /api/directories/:id/events) — mounted where
 // the inline handler lived, now that `directories` exists and app routing is up.

@@ -57,12 +57,15 @@ function migrateOldSchema(oldRecords, { randomUUID = crypto.randomUUID } = {}) {
 
 function bootstrapState(options) {
   if (!options || typeof options !== 'object') throw new TypeError('[state-bootstrap] options are required');
-  const { stateStore, stateTx, paths, chatHistoryRepository } = options;
+  const { stateStore, stateOwner, paths, chatHistoryRepository } = options;
   if (!stateStore || typeof stateStore.createStore !== 'function') {
     throw new TypeError('[state-bootstrap] stateStore.createStore is required');
   }
-  if (!stateTx || typeof stateTx.replayJournals !== 'function') {
-    throw new TypeError('[state-bootstrap] stateTx.replayJournals is required');
+  if (!stateOwner
+    || typeof stateOwner.replayJournals !== 'function'
+    || typeof stateOwner.loadDirectories !== 'function'
+    || typeof stateOwner.initDirectories !== 'function') {
+    throw new TypeError('[state-bootstrap] stateOwner is required');
   }
   if (!paths || !paths.sessionsFile || !paths.directoriesFile || !paths.journalDir) {
     throw new TypeError('[state-bootstrap] paths are required');
@@ -76,35 +79,14 @@ function bootstrapState(options) {
   const sessionsStore = stateStore.createStore({
     file: paths.sessionsFile, kind: 'sessions', schemaVersion: 1, legacyIsArray: true,
   });
-  const directoriesStore = stateStore.createStore({
-    file: paths.directoriesFile, kind: 'directories', schemaVersion: 1, legacyIsArray: true,
-  });
 
-  const { replayed, skipped } = stateTx.replayJournals(paths.journalDir, {
-    log: message => logger.log(message),
-  });
-  if (replayed || skipped) {
-    logger.log(`[multicc] state-tx journal: ${replayed} replayed, ${skipped} skipped`);
+  const replay = stateOwner.replayJournals();
+  for (const message of (replay && replay.messages) || []) logger.log(message);
+  if (replay.replayed || replay.skipped) {
+    logger.log(`[multicc] state-tx journal: ${replay.replayed} replayed, ${replay.skipped} skipped`);
   }
 
-  function loadDirectories() {
-    let result;
-    try {
-      result = directoriesStore.loadOrRecover();
-    } catch (error) {
-      logger.error(`[multicc] directories.json unreadable and no backup usable: ${error.message}`);
-      throw error;
-    }
-    if (!result.present) return { directories: new Map(), present: false };
-    if (result.recovered) {
-      logger.warn(`[multicc] directories.json recovered from backup ${result.recoveredFrom}`);
-    }
-    return {
-      directories: new Map(result.data.map(directory => [directory.id, directory])),
-      present: true,
-    };
-  }
-
+  let directoryResult;
   let sessionResult;
   try {
     sessionResult = sessionsStore.loadOrRecover();
@@ -112,12 +94,19 @@ function bootstrapState(options) {
     logger.error(`[multicc] sessions.json unreadable and no backup usable: ${error.message}`);
     throw error;
   }
+  try {
+    directoryResult = stateOwner.loadDirectories();
+  } catch (error) {
+    logger.error(`[multicc] directories.json unreadable and no backup usable: ${error.message}`);
+    throw error;
+  }
+  if (directoryResult.recovered) {
+    logger.warn(`[multicc] directories.json recovered from backup ${directoryResult.recoveredFrom}`);
+  }
   const rawSessions = sessionResult.present ? sessionResult.data : [];
   if (sessionResult.present && sessionResult.recovered) {
     logger.warn(`[multicc] sessions.json recovered from backup ${sessionResult.recoveredFrom}`);
   }
-  const directoryResult = loadDirectories();
-  const directories = directoryResult.directories;
 
   let state;
   if (rawSessions.length > 0
@@ -135,29 +124,30 @@ function bootstrapState(options) {
     try {
       fs.copyFileSync(paths.sessionsFile, `${paths.sessionsFile}.pre-directory.bak`);
     } catch (_) {}
+    // The migration replaces the stale directory registry in the same native
+    // table the repository and every legacy caller read.
+    stateOwner.initDirectories(migrated.directories.entries());
     state = {
-      directories: migrated.directories,
       persistedSessions: migrated.sessions,
       needsSave: true,
       needsDefaultDirectory: false,
     };
   } else {
     const persistedSessions = new Map(rawSessions.map(session => [session.id, session]));
-    logger.log(`[multicc] Loaded ${directories.size} directories, ${persistedSessions.size} session(s)`);
+    logger.log(`[multicc] Loaded ${directoryResult.size} directories, ${persistedSessions.size} session(s)`);
     // A missing directories.json means this installation has never completed
     // directory setup. An existing empty array means the user deliberately
     // removed the last directory, so it must stay empty across restarts.
     const hasOnlyAuxSessions = rawSessions.every(session =>
       session.id === '__aux__' || session.type === 'aux');
     state = {
-      directories,
       persistedSessions,
       needsSave: false,
       needsDefaultDirectory: !directoryResult.present && hasOnlyAuxSessions,
     };
   }
 
-  return Object.freeze({ sessionsStore, directoriesStore, state });
+  return Object.freeze({ sessionsStore, state });
 }
 
 module.exports = {

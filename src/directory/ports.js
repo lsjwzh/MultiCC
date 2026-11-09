@@ -19,10 +19,9 @@ function assertPort(portName, impl, methods) {
 }
 
 // Registry of directory records, persisted to directories.json.
-// `snapshot()` returns the raw payload array — used by cross-file transactions
-// (see src/state-tx.js) so directories.json and sessions.json land in a
-// single journal entry rather than as two independent atomic writes.
-const REPOSITORY_PORT = ['get', 'list', 'add', 'remove', 'findByPath', 'save', 'map', 'snapshot'];
+// `map()` returns the native-backed directory table shared with the rest of the
+// server; the write and the cross-file journal are native operations.
+const REPOSITORY_PORT = ['get', 'list', 'add', 'remove', 'findByPath', 'save', 'map'];
 
 // Git effects on a directory's main working tree (push state, quick-commit,
 // repo-readiness). Backed by plugins/utils/git-push + src/git-queue + the
@@ -33,9 +32,12 @@ const GIT_PORT = ['baseBranch', 'pushState', 'push', 'invalidatePushCache',
 // Session lifecycle owned by the session domain: enumerate a directory's
 // sessions, seed the default Agent Commander chat, tear a session down
 // (tmux/chat proc/worktree/triggers/notes/records) when its directory dies.
-// `snapshotRecords()` returns the raw persisted-sessions payload — required
-// alongside the directory snapshot for cross-file delete transactions.
-const SESSION_PORT = ['listByDir', 'seedCommander', 'destroyCascade', 'persistRecords', 'snapshotRecords'];
+const SESSION_PORT = ['listByDir', 'seedCommander', 'destroyCascade'];
+
+// Cross-file state transaction. The native owner snapshots both tables and
+// writes the journal + both files itself, so the service only names the
+// operation.
+const TX_PORT = ['commitCrossFileWrite'];
 
 // Append to the per-directory event feed.
 const EVENT_PORT = ['append'];
@@ -47,4 +49,4 @@ const FS_PORT = ['homedir', 'sampleRoot', 'exists', 'isDirectory', 'mkdirp', 're
 const HELPER_PORT = ['resolveCwd', 'isHomeOrAbove', 'realPathOf', 'friendlyDirReason',
   'dirReasonFix'];
 
-module.exports = { assertPort, REPOSITORY_PORT, GIT_PORT, SESSION_PORT, EVENT_PORT, FS_PORT, HELPER_PORT };
+module.exports = { assertPort, REPOSITORY_PORT, GIT_PORT, SESSION_PORT, EVENT_PORT, FS_PORT, HELPER_PORT, TX_PORT };

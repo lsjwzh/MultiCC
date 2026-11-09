@@ -76,6 +76,7 @@ pub mod service_routes;
 pub mod durable_state;
 pub mod relay_shares;
 pub mod session_records;
+pub mod state_tx;
 pub mod workspace_sharing;
 
 pub mod api_contract;

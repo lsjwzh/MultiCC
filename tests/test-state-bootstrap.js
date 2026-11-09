@@ -29,10 +29,6 @@ function createHarness(t, overrides = {}) {
       loadOrRecover: overrides.loadSessions || (() => ({ present: true, data: [] })),
       save() {},
     },
-    directories: {
-      loadOrRecover: overrides.loadDirectories || (() => ({ present: true, data: [] })),
-      save() {},
-    },
   };
   const stateStore = {
     createStore(spec) {
@@ -40,11 +36,21 @@ function createHarness(t, overrides = {}) {
       return stores[spec.kind];
     },
   };
-  const stateTx = {
-    replayJournals(directory, options) {
-      calls.push({ type: 'replay', directory });
-      if (overrides.replayLog) options.log('journal detail');
-      return overrides.replay || { replayed: 0, skipped: 0 };
+  const stateOwner = {
+    replayJournals() {
+      calls.push({ type: 'replay' });
+      return {
+        replayed: 0, skipped: 0, messages: [],
+        ...(overrides.replay || {}),
+      };
+    },
+    loadDirectories() {
+      calls.push({ type: 'loadDirectories', file: paths.directoriesFile });
+      if (overrides.loadDirectories) return overrides.loadDirectories();
+      return { present: true, recovered: false, recoveredFrom: null, size: 0, errorKind: null };
+    },
+    initDirectories(entries) {
+      calls.push({ type: 'initDirectories', entries: [...entries] });
     },
   };
   const chatHistoryRepository = {
@@ -59,13 +65,13 @@ function createHarness(t, overrides = {}) {
     error: message => logs.push(`error:${message}`),
   };
   return {
-    root, paths, calls, logs, stores, stateStore, stateTx, chatHistoryRepository, logger,
+    root, paths, calls, logs, stores, stateStore, stateOwner, chatHistoryRepository, logger,
     run(extra = {}) {
       return bootstrapState({
         fs,
         paths,
         stateStore,
-        stateTx,
+        stateOwner,
         chatHistoryRepository,
         logger,
         randomUUID: () => 'dir-fixed',
@@ -111,24 +117,21 @@ test('legacy migration preserves Aux and splits terminal plus optional chat', ()
 
 test('bootstrap replays journals, constructs stores and loads the current schema', t => {
   const harness = createHarness(t, {
-    replay: { replayed: 1, skipped: 2 },
-    replayLog: true,
+    replay: { replayed: 1, skipped: 2, messages: ['journal detail'] },
     loadSessions: () => ({ present: true, data: [
       { id: 's1', dirId: 'd1', kind: 'chat' },
     ] }),
-    loadDirectories: () => ({ present: true, data: [
-      { id: 'd1', name: 'One' },
-    ] }),
+    loadDirectories: () => ({ present: true, recovered: false, recoveredFrom: null, size: 1 }),
   });
   const result = harness.run();
 
   assert.equal(result.sessionsStore, harness.stores.sessions);
-  assert.equal(result.directoriesStore, harness.stores.directories);
   assert.equal(result.state.persistedSessions.get('s1').kind, 'chat');
-  assert.equal(result.state.directories.get('d1').name, 'One');
   assert.equal(result.state.needsSave, false);
   assert.equal(result.state.needsDefaultDirectory, false);
-  assert.deepEqual(harness.calls.slice(0, 3).map(call => call.type), ['store', 'store', 'replay']);
+  assert.deepEqual(harness.calls.slice(0, 3).map(call => call.type),
+    ['store', 'replay', 'loadDirectories'],
+    'journals replay before either file is read, and the native owner loads directories');
   assert.deepEqual(harness.calls[0].spec, {
     file: harness.paths.sessionsFile, kind: 'sessions', schemaVersion: 1, legacyIsArray: true,
   });
@@ -140,20 +143,20 @@ test('bootstrap replays journals, constructs stores and loads the current schema
 test('only a never-configured installation requests the default directory', t => {
   let harness = createHarness(t, {
     loadSessions: () => ({ present: false, data: [] }),
-    loadDirectories: () => ({ present: false, data: [] }),
+    loadDirectories: () => ({ present: false, recovered: false, recoveredFrom: null, size: 0 }),
   });
   assert.equal(harness.run().state.needsDefaultDirectory, true);
 
   harness = createHarness(t, {
     loadSessions: () => ({ present: true, data: [] }),
-    loadDirectories: () => ({ present: true, data: [] }),
+    loadDirectories: () => ({ present: true, recovered: false, recoveredFrom: null, size: 0 }),
   });
   assert.equal(harness.run().state.needsDefaultDirectory, false,
     'an explicitly empty registry means the user removed every directory');
 
   harness = createHarness(t, {
     loadSessions: () => ({ present: true, data: [{ id: '__aux__', type: 'aux' }] }),
-    loadDirectories: () => ({ present: false, data: [] }),
+    loadDirectories: () => ({ present: false, recovered: false, recoveredFrom: null, size: 0 }),
   });
   assert.equal(harness.run().state.needsDefaultDirectory, true,
     'an interrupted first launch retries even if the aux record was persisted');
@@ -168,13 +171,16 @@ test('bootstrap migrates old state, renames history and writes a rollback copy',
         claudeSessionId: 'native-terminal', chatClaudeSessionId: 'native-chat',
       },
     ] }),
-    loadDirectories: () => ({ present: true, data: [{ id: 'stale' }] }),
+    loadDirectories: () => ({ present: true, recovered: false, recoveredFrom: null, size: 1 }),
   });
   const result = harness.run();
 
   assert.equal(result.state.needsSave, true);
-  assert.equal(result.state.directories.has('stale'), false, 'legacy migration replaces the stale directory map');
-  assert.equal(result.state.directories.get('dir-fixed').path, '/tmp/old');
+  const installed = harness.calls.find(call => call.type === 'initDirectories');
+  assert.ok(installed, 'legacy migration installs directories into the native owner');
+  assert.deepEqual(installed.entries.map(([id, record]) => [id, record.path]),
+    [['dir-fixed', '/tmp/old']],
+    'legacy migration replaces the stale native directory table');
   assert.equal(result.state.persistedSessions.get('old-chat').cliSessionId, 'native-chat');
   assert.deepEqual(harness.calls.find(call => call.type === 'rename'), {
     type: 'rename', from: 'old', to: 'old-chat',
@@ -195,7 +201,7 @@ test('history rename failure remains best-effort while recovery is observable', 
       present: true,
       recovered: true,
       recoveredFrom: 'directories.json.bak2',
-      data: [],
+      size: 0,
     }),
   });
   const result = harness.run();

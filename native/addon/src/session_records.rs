@@ -20,6 +20,7 @@ use multicc_core::{
         iso_timestamp_now, keep_history_entry, should_stamp_classify_updated_at,
         task_state_defaults, RetryState,
     },
+    state_tx,
 };
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
@@ -27,6 +28,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     ffi::CStr,
+    fs,
     path::PathBuf,
 };
 
@@ -159,12 +161,21 @@ impl SaveFailure {
     }
 }
 
+#[derive(Default)]
+struct StatePaths {
+    directories: Option<PathBuf>,
+    sessions: Option<PathBuf>,
+    journal: Option<PathBuf>,
+}
+
 #[napi]
 pub struct RustSessionRecords {
     table: RefCell<Table>,
+    dirs: RefCell<Table>,
     values: Values,
     persistence: RefCell<Persistence>,
     ports: RefCell<Ports>,
+    paths: RefCell<StatePaths>,
     file: RefCell<Option<PathBuf>>,
     root: RefCell<Option<PathBuf>>,
     kind: RefCell<String>,
@@ -214,6 +225,194 @@ impl RustSessionRecords {
             array.set_element(index as u32, record)?;
         }
         Ok(array)
+    }
+    /// Same array shape as `records_array`, for a table that is not the session
+    /// table (the directory registry).
+    fn table_array<'a>(&self, env: &'a Env, anchor: L<'a>, table: &Table) -> Result<L<'a>> {
+        let array = anchor.from_value(&V::Array(vec![]))?;
+        let ids = table.order.clone();
+        for (index, id) in ids.iter().enumerate() {
+            let value = table.get(id).expect("ordered id");
+            let record = self.values.read(env, anchor, &value)?;
+            array.set_element(index as u32, record)?;
+        }
+        Ok(array)
+    }
+    /// Host-engine `JSON.stringify` of one table payload (byte-exact key order,
+    /// number formatting and lone surrogates).
+    fn table_compact(
+        &self,
+        env: &Env,
+        anchor: L<'_>,
+        table: &Table,
+    ) -> std::result::Result<String, String> {
+        let array = self
+            .table_array(env, anchor, table)
+            .map_err(|error| error.reason.clone())?;
+        let port = self
+            .port(|ports| ports.stringify.clone())
+            .ok_or_else(|| "session records stringify port is required".to_string())?;
+        let callback = self
+            .read(env, anchor, &port)
+            .map_err(|error| error.reason.clone())?;
+        let output = callback
+            .call_plain(&[array])
+            .map_err(|error| error.reason.clone())?;
+        match output.string().map_err(|error| error.reason.clone())? {
+            Some(text) => Ok(text.to_string_lossy()),
+            None => Ok("null".to_string()),
+        }
+    }
+    /// Resolve a configured path, relative paths against the process cwd (the
+    /// same base Node's `fs` calls used).
+    fn resolve(path: PathBuf) -> PathBuf {
+        if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&path))
+                .unwrap_or(path)
+        }
+    }
+    fn marker_path(&self, variable: &str) -> Option<PathBuf> {
+        if std::env::var("NODE_ENV").ok().as_deref() != Some("test") {
+            return None;
+        }
+        let marker = std::env::var(variable).ok()?;
+        if marker.is_empty() {
+            return None;
+        }
+        let root = Self::resolve(self.root.borrow().clone()?);
+        let marker = Self::resolve(PathBuf::from(marker));
+        let inside = marker == root || marker.starts_with(&root);
+        (inside && marker.exists()).then_some(marker)
+    }
+    /// Test-only injected "process died here" points in the transaction and
+    /// replay sequences. A marker file must exist inside the isolated root and
+    /// `NODE_ENV` must be `test`; production never reads these variables.
+    fn crash_at(&self, selector: &str, step: &str) -> bool {
+        if self
+            .marker_path("MULTICC_TEST_STATE_TX_CRASH_FILE")
+            .is_none()
+        {
+            return false;
+        }
+        std::env::var(selector).ok().as_deref() == Some(step)
+    }
+    fn crash(&self, step: &str) -> Result<()> {
+        if self.crash_at("MULTICC_TEST_STATE_TX_CRASH_AT", step) {
+            return Err(napi::Error::from_reason(format!(
+                "STATE_TX_CRASH: injected crash at {step}"
+            )));
+        }
+        Ok(())
+    }
+    fn replay_crash_after(&self, files_applied: usize) -> bool {
+        if self
+            .marker_path("MULTICC_TEST_STATE_REPLAY_CRASH_FILE")
+            .is_none()
+        {
+            return false;
+        }
+        std::env::var("MULTICC_TEST_STATE_REPLAY_CRASH_AFTER")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            == Some(files_applied)
+    }
+    fn table_from_pairs(&self, env: &Env, entries: L<'_>) -> Result<Table> {
+        let mut table = Table::new();
+        entries.for_each(|pair| {
+            let key = self.key(pair.element(0)?)?;
+            let record = pair.element(1)?;
+            table.set(key, self.values.capture(env, record)?);
+            Ok(())
+        })?;
+        Ok(table)
+    }
+    /// Load directories.json (primary, then `.bak1..3`) and install it into the
+    /// native table. Corruption is reported as data (`errorKind`) so the JS
+    /// adapter can construct the same `CorruptedStateError` the StateStore threw.
+    fn load_directories_internal<'a>(&self, env: &'a Env, anchor: L<'a>) -> Result<L<'a>> {
+        let file =
+            self.paths.borrow().directories.clone().ok_or_else(|| {
+                napi::Error::from_reason("state owner directoriesFile is required")
+            })?;
+        let out = object(anchor)?;
+        match durable_state::load_or_recover_report(&file) {
+            Ok(loaded) => {
+                let mut table = self.dirs.borrow_mut();
+                table.clear();
+                let mut size = 0u32;
+                if let Some(value) = &loaded.value {
+                    let V::Array(items) = value else {
+                        return Err(napi::Error::from_reason(
+                            "STATE_CORRUPTED: directories payload is not an array",
+                        ));
+                    };
+                    for item in items {
+                        let key_value = item.get("id").unwrap_or(&V::Undefined);
+                        let key = multicc_core::js::js_to_string(key_value);
+                        // Install a live JavaScript record, not a Rust-side
+                        // snapshot: callers mutate fields in place and compare
+                        // object identity, exactly as they did with the Map.
+                        let live = anchor.from_value(item)?;
+                        let captured = self.values.capture(env, live)?;
+                        table.set(key, captured);
+                        size += 1;
+                    }
+                }
+                out.set(
+                    c"present",
+                    anchor.from_value(&V::Bool(loaded.value.is_some()))?,
+                )?;
+                out.set(
+                    c"recovered",
+                    anchor.from_value(&V::Bool(loaded.recovered_from.is_some()))?,
+                )?;
+                out.set(
+                    c"recoveredFrom",
+                    match &loaded.recovered_from {
+                        Some(path) => anchor.from_value(&V::String(JsString::from_rust_str(
+                            &path.to_string_lossy(),
+                        )))?,
+                        None => anchor.from_value(&V::Null)?,
+                    },
+                )?;
+                out.set(c"size", anchor.from_value(&V::Number(size as f64))?)?;
+                out.set(c"errorKind", anchor.from_value(&V::Null)?)?;
+                out.set(c"raw", anchor.from_value(&V::Null)?)?;
+                Ok(out)
+            }
+            Err(failure) => {
+                self.dirs.borrow_mut().clear();
+                out.set(c"present", anchor.from_value(&V::Bool(false))?)?;
+                out.set(c"recovered", anchor.from_value(&V::Bool(false))?)?;
+                out.set(c"recoveredFrom", anchor.from_value(&V::Null)?)?;
+                out.set(c"size", anchor.from_value(&V::Number(0.0))?)?;
+                out.set(c"errorKind", anchor.from_value(&V::string(failure.kind()))?)?;
+                out.set(
+                    c"raw",
+                    match failure.raw_excerpt() {
+                        Some(raw) => anchor.from_value(&V::string(raw))?,
+                        None => anchor.from_value(&V::Null)?,
+                    },
+                )?;
+                Ok(out)
+            }
+        }
+    }
+    fn save_directories_internal(&self, env: &Env, anchor: L<'_>) -> Result<()> {
+        let file =
+            self.paths.borrow().directories.clone().ok_or_else(|| {
+                napi::Error::from_reason("state owner directoriesFile is required")
+            })?;
+        let compact = {
+            let table = self.dirs.borrow();
+            self.table_compact(env, anchor, &table)
+                .map_err(napi::Error::from_reason)?
+        };
+        durable_state::save_compact(&file, "directories", &compact)
+            .map_err(napi::Error::from_reason)
     }
     /// `MULTICC_TEST_SESSION_PERSISTENCE_FAIL_FILE` inside the temp data root.
     /// The marker is only honoured under `NODE_ENV=test`, exactly as before.
@@ -543,9 +742,11 @@ impl RustSessionRecords {
     pub fn new(env: Env, anchor: Unknown<'_>) -> Result<Self> {
         Ok(Self {
             table: RefCell::new(Table::new()),
+            dirs: RefCell::new(Table::new()),
             values: Values::new(L::new(&env, anchor))?,
             persistence: RefCell::new(Persistence::default()),
             ports: RefCell::new(Ports::default()),
+            paths: RefCell::new(StatePaths::default()),
             file: RefCell::new(None),
             root: RefCell::new(None),
             kind: RefCell::new("sessions".to_string()),
@@ -574,6 +775,285 @@ impl RustSessionRecords {
             table.set(key, value);
         }
         Ok(())
+    }
+    /// Replace the directory registry from an iterable of `[id, record]` pairs.
+    /// Used at boot for the legacy-schema migration; the source is not retained.
+    #[napi]
+    pub fn init_directories(&self, env: Env, entries: Unknown<'_>) -> Result<()> {
+        self.values.drain(&env)?;
+        let table = self.table_from_pairs(&env, L::new(&env, entries))?;
+        *self.dirs.borrow_mut() = table;
+        Ok(())
+    }
+    /// Load directories.json (primary, then `.bak1..3`) into the native table.
+    /// The result carries recovery metadata and, on failure, the information the
+    /// JS adapter needs to throw the same `CorruptedStateError` as StateStore.
+    #[napi]
+    pub fn load_directories(&self, env: Env) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        Ok(self.load_directories_internal(&env, anchor)?.raw())
+    }
+    #[napi]
+    pub fn directory_get(&self, env: Env, id: Unknown<'_>) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let key = self.key(L::new(&env, id))?;
+        let value = self.dirs.borrow().get(&key);
+        Ok(match value {
+            Some(value) => self.read(&env, anchor, &value)?.raw(),
+            None => anchor.from_value(&V::Undefined)?.raw(),
+        })
+    }
+    /// `Map#set` for the directory registry. The key is explicit so callers keep
+    /// ordinary `Map` semantics even if a record's own `id` field is absent.
+    #[napi]
+    pub fn directory_set(&self, env: Env, id: Unknown<'_>, record: Unknown<'_>) -> Result<()> {
+        self.values.drain(&env)?;
+        let key = self.key(L::new(&env, id))?;
+        let captured = self.values.capture(&env, L::new(&env, record))?;
+        self.dirs.borrow_mut().set(key, captured);
+        Ok(())
+    }
+    #[napi]
+    pub fn directory_has(&self, env: Env, id: Unknown<'_>) -> Result<bool> {
+        self.values.drain(&env)?;
+        let key = self.key(L::new(&env, id))?;
+        Ok(self.dirs.borrow().map.contains_key(&key))
+    }
+    #[napi]
+    pub fn directory_delete(&self, env: Env, id: Unknown<'_>) -> Result<bool> {
+        self.values.drain(&env)?;
+        let key = self.key(L::new(&env, id))?;
+        let removed = self.dirs.borrow_mut().delete(&key);
+        self.values.drain(&env)?;
+        Ok(removed)
+    }
+    #[napi]
+    pub fn directory_clear(&self, env: Env) -> Result<()> {
+        self.values.drain(&env)?;
+        self.dirs.borrow_mut().clear();
+        Ok(())
+    }
+    #[napi]
+    pub fn directory_size(&self) -> u32 {
+        self.dirs.borrow().len() as u32
+    }
+    /// Entries as `[[id, record], ...]`; the facade turns this into Map
+    /// iterators so no table copy lives in Node.
+    #[napi]
+    pub fn directory_entries(&self, env: Env) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let ids = self.dirs.borrow().order.clone();
+        let outer = anchor.from_value(&V::Array(vec![]))?;
+        for (index, id) in ids.iter().enumerate() {
+            let value = self.dirs.borrow().get(id).expect("ordered id");
+            let pair = anchor.from_value(&V::Array(vec![]))?;
+            pair.set_element(0, anchor.from_value(&V::String(id.clone()))?)?;
+            pair.set_element(1, self.read(&env, anchor, &value)?)?;
+            outer.set_element(index as u32, pair)?;
+        }
+        Ok(outer.raw())
+    }
+    /// Write directories.json through the host stringifier and the native
+    /// StateStore writer (envelope, atomic rename, three rolling backups).
+    #[napi]
+    pub fn save_directories(&self, env: Env) -> Result<()> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        self.save_directories_internal(&env, anchor)
+    }
+    /// One native transaction for a directory delete that also cascades
+    /// sessions: journal write, both StateStore writes, journal clear. A crash
+    /// at any point leaves the journal for `replay_journals` to finish.
+    #[napi]
+    pub fn commit_cross_file_write(&self, env: Env, spec: Unknown<'_>) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let spec = L::new(&env, spec);
+        let kind = prop(spec, c"kind")?
+            .string()?
+            .map(|kind| kind.to_string_lossy())
+            .filter(|kind| !kind.is_empty())
+            .unwrap_or_else(|| "state-tx".to_string());
+        let (directories_file, sessions_file, journal_dir) = {
+            let paths = self.paths.borrow();
+            (
+                paths.directories.clone(),
+                paths.sessions.clone(),
+                paths.journal.clone(),
+            )
+        };
+        let directories_file = directories_file
+            .ok_or_else(|| napi::Error::from_reason("state owner directoriesFile is required"))?;
+        let sessions_file = sessions_file
+            .ok_or_else(|| napi::Error::from_reason("state owner sessionsFile is required"))?;
+        let journal_dir = journal_dir
+            .ok_or_else(|| napi::Error::from_reason("state owner journalDir is required"))?;
+        let directories_payload = {
+            let table = self.dirs.borrow();
+            self.table_compact(&env, anchor, &table)
+                .map_err(napi::Error::from_reason)?
+        };
+        let sessions_payload = {
+            let table = self.table.borrow();
+            self.table_compact(&env, anchor, &table)
+                .map_err(napi::Error::from_reason)?
+        };
+        let id = state_tx::new_tx_id().map_err(napi::Error::from_reason)?;
+        let ts = self
+            .now(&env, anchor)?
+            .number()
+            .unwrap_or_else(|_| state_tx::now_millis());
+        let entry = state_tx::JournalEntry {
+            id: id.clone(),
+            kind,
+            ts: multicc_core::js::number_to_string(ts),
+            files: vec![
+                state_tx::JournalFile {
+                    path: directories_file,
+                    payload: Some(directories_payload),
+                    kind: "directories".to_string(),
+                    version: 1,
+                    rotate: 3,
+                },
+                state_tx::JournalFile {
+                    path: sessions_file,
+                    payload: Some(sessions_payload),
+                    kind: "sessions".to_string(),
+                    version: 1,
+                    rotate: 3,
+                },
+            ],
+        };
+        let journal = state_tx::journal_file(&journal_dir, &id);
+        durable_state::save_compact_with(
+            &journal,
+            "state-tx-journal",
+            1,
+            0,
+            Some(&state_tx::encode(&entry)),
+        )
+        .map_err(napi::Error::from_reason)?;
+        self.crash("journal")?;
+        for (index, file) in entry.files.iter().enumerate() {
+            state_tx::apply_file(file).map_err(|error| {
+                napi::Error::from_reason(format!(
+                    "[state-tx] apply failed for tx {}: {error}",
+                    entry.id
+                ))
+            })?;
+            self.crash(if index == 0 {
+                "directories"
+            } else {
+                "sessions"
+            })?;
+        }
+        let _ = fs::remove_file(&journal);
+        let out = object(anchor)?;
+        out.set(
+            c"txId",
+            anchor.from_value(&V::String(JsString::from_rust_str(&entry.id)))?,
+        )?;
+        Ok(out.raw())
+    }
+    /// Boot replay: scan `tx-*.json`, apply every readable entry in the order
+    /// its `files` array recorded, then delete it. Unreadable or malformed
+    /// journals move aside to `broken/` so boot never blocks on one.
+    #[napi]
+    pub fn replay_journals(&self, env: Env) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let journal_dir = self
+            .paths
+            .borrow()
+            .journal
+            .clone()
+            .ok_or_else(|| napi::Error::from_reason("state owner journalDir is required"))?;
+        let mut replayed = 0u32;
+        let mut skipped = 0u32;
+        let mut crashed = false;
+        let mut messages: Vec<String> = Vec::new();
+        let entries = match fs::read_dir(&journal_dir) {
+            Ok(entries) => entries,
+            Err(_) => {
+                let out = object(anchor)?;
+                out.set(c"replayed", anchor.from_value(&V::Number(0.0))?)?;
+                out.set(c"skipped", anchor.from_value(&V::Number(0.0))?)?;
+                out.set(c"crashed", anchor.from_value(&V::Bool(false))?)?;
+                out.set(c"messages", anchor.from_value(&V::Array(vec![]))?)?;
+                return Ok(out.raw());
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !state_tx::is_journal_name(&name) {
+                continue;
+            }
+            let full = journal_dir.join(&name);
+            let parsed = match durable_state::read(&full) {
+                Ok(Some(value)) => value,
+                Ok(None) => continue,
+                Err(failure) => {
+                    skipped += 1;
+                    messages.push(format!(
+                        "[state-tx] skipping unreadable journal {name}: {}",
+                        failure.code()
+                    ));
+                    state_tx::move_aside(&full);
+                    continue;
+                }
+            };
+            let decoded = match state_tx::decode(&parsed) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    skipped += 1;
+                    messages.push(format!("[state-tx] apply failed for {name}: {error}"));
+                    state_tx::move_aside(&full);
+                    continue;
+                }
+            };
+            let mut failure = None;
+            let mut applied = 0usize;
+            for file in &decoded.files {
+                if let Err(error) = state_tx::apply_file(file) {
+                    failure = Some(error);
+                    break;
+                }
+                applied += 1;
+                if self.replay_crash_after(applied) {
+                    crashed = true;
+                    break;
+                }
+            }
+            if crashed {
+                break;
+            }
+            match failure {
+                Some(error) => {
+                    skipped += 1;
+                    messages.push(format!("[state-tx] apply failed for {name}: {error}"));
+                    state_tx::move_aside(&full);
+                }
+                None => {
+                    let _ = fs::remove_file(&full);
+                    replayed += 1;
+                    messages.push(format!("[state-tx] replayed journal {name}"));
+                }
+            }
+        }
+        let out = object(anchor)?;
+        out.set(c"replayed", anchor.from_value(&V::Number(replayed as f64))?)?;
+        out.set(c"skipped", anchor.from_value(&V::Number(skipped as f64))?)?;
+        out.set(c"crashed", anchor.from_value(&V::Bool(crashed))?)?;
+        let list = anchor.from_value(&V::Array(vec![]))?;
+        for (index, message) in messages.iter().enumerate() {
+            list.set_element(index as u32, anchor.from_value(&V::string(message))?)?;
+        }
+        out.set(c"messages", list)?;
+        Ok(out.raw())
     }
     /// Configure host ports and the durable writer. Absent keys are left
     /// unchanged, so the record owner and the persistence adapter can configure
@@ -622,6 +1102,16 @@ impl RustSessionRecords {
         }
         if let Some(root) = prop(options, c"root")?.string()? {
             *self.root.borrow_mut() = Some(PathBuf::from(root.to_string_lossy()));
+        }
+        if let Some(directories) = prop(options, c"directoriesFile")?.string()? {
+            self.paths.borrow_mut().directories =
+                Some(PathBuf::from(directories.to_string_lossy()));
+        }
+        if let Some(sessions) = prop(options, c"sessionsFile")?.string()? {
+            self.paths.borrow_mut().sessions = Some(PathBuf::from(sessions.to_string_lossy()));
+        }
+        if let Some(journal) = prop(options, c"journalDir")?.string()? {
+            self.paths.borrow_mut().journal = Some(PathBuf::from(journal.to_string_lossy()));
         }
         if let Some(kind) = prop(options, c"kind")?.string()? {
             *self.kind.borrow_mut() = kind.to_string_lossy();
