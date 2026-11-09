@@ -214,7 +214,7 @@ test(`Claude LAN sharing ${scenario.self ? 'self → self' : 'Rust → Rust'}`,
   assert.equal(JSON.parse(upstream.body).model, MODEL);
   assert.ok(source.metrics.includes('multicc_auth_proxy_relay_total'));
   assert.ok(source.metrics.includes('multicc_auth_provider_relay_share_total'));
-  const relayRecord = sourceRelayShares.list()[0];
+  const relayRecord = (await sourceRelayShares.list())[0];
   assert.equal(relayRecord.accessCount, 1);
   assert.ok(relayRecord.lastUsedAt);
   assert.ok((scenario.self ? sourceActivity : targetActivity).some(event => event.role === 'aux'
@@ -239,7 +239,7 @@ test(`Claude LAN sharing ${scenario.self ? 'self → self' : 'Rust → Rust'}`,
   assert.equal(Buffer.concat(chunks).toString('utf8'), streamBody);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(upstreamRequests.length, 2, 'self relay terminates at the source rather than looping');
-  assert.equal(sourceRelayShares.list()[0].accessCount, 2);
+  assert.equal((await sourceRelayShares.list())[0].accessCount, 2);
   for (const [instance, id] of [[source, 'source-provider'], [target, imported.body.id]]) {
     const events = instance.usage.filter(event => event.providerId === id);
     assert.equal(events.length, 2, 'one usage event per hop and request');

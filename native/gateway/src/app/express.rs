@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::time::Instant;
 
 use axum::body::Body;
-use axum::http::{request::Parts, HeaderValue, Method, Response, StatusCode};
+use axum::http::{request::Parts, HeaderValue, Method, Response};
 use base64::Engine;
 use http_body_util::BodyExt;
 use multicc_core::http_gate::{self, NodeHeaders};
@@ -214,10 +214,15 @@ pub fn send(
         builder = header(builder, "Content-Length", &body.len().to_string());
     }
     log_request(ctx, status);
-    let body = if ctx.is_head() { Vec::new() } else { body };
-    builder
-        .body(Body::from(body))
-        .expect("static response parts")
+    // Axum inserts Content-Length for an exact-size body before stripping HEAD.
+    // Express removes that header on 204/304, including conditional HEAD. An
+    // empty stream with no exact size prevents Axum from inventing a zero.
+    let body = if empty {
+        no_content_body()
+    } else {
+        Body::from(if ctx.is_head() { Vec::new() } else { body })
+    };
+    builder.body(body).expect("static response parts")
 }
 
 /// `res.status(status).json(value)`.
@@ -253,26 +258,35 @@ fn escape_html(text: &str) -> String {
 
 /// `res.redirect(location)`: 302, `res.format({ text, html, default })`.
 pub fn redirect(ctx: &RequestCtx, location: &str) -> Response<Body> {
+    redirect_status(ctx, location, 302, "Found")
+}
+
+pub fn redirect_status(
+    ctx: &RequestCtx,
+    location: &str,
+    status: u16,
+    reason: &str,
+) -> Response<Body> {
     let accept = ctx.headers.get("accept");
     let (content_type, body) = match accept::prefer(accept, &["text/plain", "text/html"]) {
         Some(0) => (
             Some("text/plain; charset=utf-8"),
-            format!("Found. Redirecting to {location}"),
+            format!("{reason}. Redirecting to {location}"),
         ),
         Some(_) => (
             Some("text/html; charset=utf-8"),
-            format!("<p>Found. Redirecting to {}</p>", escape_html(location)),
+            format!("<p>{reason}. Redirecting to {}</p>", escape_html(location)),
         ),
         None => (None, String::new()),
     };
-    let mut builder = with_base_headers(Response::builder().status(StatusCode::FOUND), ctx);
+    let mut builder = with_base_headers(Response::builder().status(status), ctx);
     builder = header(builder, "Location", location);
     builder = header(builder, "Vary", "Accept");
     if let Some(content_type) = content_type {
         builder = header(builder, "Content-Type", content_type);
     }
     builder = header(builder, "Content-Length", &body.len().to_string());
-    log_request(ctx, 302);
+    log_request(ctx, status);
     let body = if ctx.is_head() { String::new() } else { body };
     builder
         .body(Body::from(body))
@@ -411,11 +425,80 @@ fn inflate(reader: impl Read, limit: usize) -> Result<Vec<u8>, BodyError> {
     Ok(out)
 }
 
+/// express.urlencoded({ extended: false }): flat qs keys, duplicate values
+/// become arrays. Only the default UTF-8 charset is accepted by body-parser.
+pub async fn form_body(ctx: &RequestCtx, body: Body) -> Result<Value, BodyError> {
+    let empty = Value::Object(Map::new());
+    let has_body = ctx.headers.get("transfer-encoding").is_some()
+        || ctx.headers.get("content-length").is_some();
+    let Some(content_type) = ctx.headers.get("content-type").filter(|_| has_body) else {
+        return Ok(empty);
+    };
+    let (essence, charset) = media_type(content_type);
+    if essence != "application/x-www-form-urlencoded" {
+        return Ok(empty);
+    }
+    if charset.as_deref().is_some_and(|v| v != "utf-8") {
+        return Err(fail(415, "unsupported charset"));
+    }
+    let encoding = ctx
+        .headers
+        .get("content-encoding")
+        .unwrap_or("identity")
+        .to_ascii_lowercase();
+    if !matches!(encoding.as_str(), "identity" | "gzip" | "deflate") {
+        return Err(fail(415, "unsupported content encoding"));
+    }
+    const LIMIT: usize = 100 * 1024;
+    // Bound compressed input too; a login never needs an unbounded wire body.
+    let raw = collect(body, LIMIT).await?;
+    let bytes = match encoding.as_str() {
+        "gzip" => inflate(flate2::read::GzDecoder::new(&raw[..]), LIMIT)?,
+        "deflate" => inflate(flate2::read::ZlibDecoder::new(&raw[..]), LIMIT)?,
+        _ => raw,
+    };
+    let decoded = String::from_utf8_lossy(&bytes);
+    let text = decoded.strip_prefix('\u{feff}').unwrap_or(&decoded);
+    if text.bytes().filter(|b| *b == b'&').count() >= 1000 {
+        return Err(fail(413, "too many parameters"));
+    }
+    let mut form = Map::new();
+    for pair in text.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = http_gate::percent_decode_plus(key);
+        if key == "__proto__" {
+            continue;
+        }
+        let value = Value::String(http_gate::percent_decode_plus(value));
+        match form.get_mut(&key) {
+            Some(Value::Array(values)) => values.push(value),
+            Some(existing) => *existing = Value::Array(vec![existing.clone(), value]),
+            None => {
+                form.insert(key, value);
+            }
+        }
+    }
+    Ok(Value::Object(form))
+}
+
 /// `req.body` after `express.json({ limit })`: `{}` when there is no JSON
 /// body, the parsed value otherwise (JS `JSON.parse` semantics, then the
 /// JSON-safe view every Rust kernel takes).
 pub async fn json_body(ctx: &RequestCtx, body: Body, limit: usize) -> Result<Value, BodyError> {
-    let empty = Value::Object(Map::new());
+    let value = json_body_js(ctx, body, limit).await?;
+    let canonical =
+        multicc_core::js::json_stringify(&value).ok_or_else(|| fail(400, "entity.parse.failed"))?;
+    multicc_core::json_lenient::from_str(&canonical).map_err(|_| fail(400, "entity.parse.failed"))
+}
+
+/// Preserve JS values for endpoint policies that distinguish Infinity from
+/// null and must make truthiness decisions before JSON serialization.
+pub async fn json_body_js(
+    ctx: &RequestCtx,
+    body: Body,
+    limit: usize,
+) -> Result<multicc_core::js::JsValue, BodyError> {
+    let empty = multicc_core::js::JsValue::Object(Vec::new());
     let headers = &ctx.headers;
     let has_body = headers.get("transfer-encoding").is_some()
         || headers
@@ -489,7 +572,7 @@ pub async fn json_body(ctx: &RequestCtx, body: Body, limit: usize) -> Result<Val
     if !matches!(first, Some(b'{') | Some(b'[')) {
         return Err(fail(400, "entity.parse.failed"));
     }
-    js_json_value(text).ok_or_else(|| fail(400, "entity.parse.failed"))
+    multicc_core::js::json_parse(text).map_err(|_| fail(400, "entity.parse.failed"))
 }
 
 /// iconv-lite's `utf-16` detection: a BOM decides; otherwise count code
@@ -540,6 +623,37 @@ pub fn js_json_value(text: &str) -> Option<Value> {
     let parsed = multicc_core::js::json_parse(text).ok()?;
     let canonical = multicc_core::js::json_stringify(&parsed)?;
     multicc_core::json_lenient::from_str(&canonical).ok()
+}
+
+/// No exact size hint: Axum must not invent Content-Length on HEAD 304/204.
+pub(super) fn no_content_body() -> Body {
+    Body::from_stream(futures_util::stream::empty::<
+        Result<axum::body::Bytes, std::io::Error>,
+    >())
+}
+
+/// Express finalhandler response after an unmatched path or a directory send.
+pub(super) fn not_found(ctx: &RequestCtx) -> Response<Body> {
+    let path = ctx
+        .path
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;");
+    let body = format!("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot {} {path}</pre>\n</body>\n</html>\n", ctx.method);
+    let response = with_base_headers(Response::builder().status(404), ctx)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("content-security-policy", "default-src 'none'")
+        .header("x-content-type-options", "nosniff")
+        .header("content-length", body.len());
+    response
+        .body(if ctx.method == Method::HEAD {
+            Body::empty()
+        } else {
+            Body::from(body)
+        })
+        .unwrap()
 }
 
 #[cfg(test)]

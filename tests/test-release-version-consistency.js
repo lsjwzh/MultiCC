@@ -407,14 +407,32 @@ test('core runner covers every selected path and expands declared variants', () 
   // native lane against the same temp-directory fake CLI (one child process
   // each, no port or network), so it is isolated. 387 + 1 = 388 entries,
   // 33 + 1 = 34 isolated, 359 + 1 = 360 commands.
-  assert.equal(core.length, 388, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 388);
+  // Authentication migration adds tests/test-auth-security-native.js. It
+  // compares the frozen Node contract, drives ephemeral loopback HTTP servers
+  // and a bounded GC child, and verifies capability consumption and expiry.
+  // Core/isolated: 389 entries, 35 isolated, 361 commands.
+  // Native auth HTTP differential and shared-ticket/restart isolation: one more isolated entry.
+  // Workspace transport now runs real HTTP/HTTPS and stream cancellation fixtures.
+  // Add the dedicated transport suite as core/isolated; the existing sharing suite
+  // retains its reviewed other tier and now also uses the isolated lane.
+  // Source administration routes now verify real gateway/oracle HTTP, native
+  // owner revocation, failed persistence and restart using isolated fixtures.
+  // Move the existing route suite into core/isolated: 392 entries, 38 isolated.
+  // Re-audited for the native session-record owner: tests/test-session-records-differential.js
+  // compares the frozen Node lifecycle with the native owner over seeded in-memory
+  // sequences with an injected timer queue (no real clock, port, FS or process),
+  // and tests/test-session-records-durable.js uses only temporary directories plus
+  // the local native kernel for disk-format, rotation and recovery fixtures. Both
+  // are deterministic core entries run by npm:test:state.
+  // 392 + 2 = 394 entries, 323 + 2 = 325 deterministic, 364 + 2 = 366 commands.
+  assert.equal(core.length, 394, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 394);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 323);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 34);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 325);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 38);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
@@ -423,8 +441,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 360,
-    '357 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 366,
+    '363 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

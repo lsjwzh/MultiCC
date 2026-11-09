@@ -108,7 +108,7 @@ pub fn resolve(cwd: &str, path: &str) -> String {
 }
 
 /// `decodeURIComponent(text)`, or `None` where it throws.
-fn decode_uri_component(text: &str) -> Option<String> {
+pub(super) fn decode_uri_component(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let nibble = |byte: u8| (byte as char).to_digit(16).map(|digit| digit as u8);
     let mut out = Vec::with_capacity(bytes.len());
@@ -229,7 +229,7 @@ fn error_after_send(
         "request_error"
     };
     let code = code.unwrap_or(message);
-    let dto = http_gate::error_dto(message, code, &[], &ctx.ids);
+    let dto = http_gate::error_dto(code, message, &[], &ctx.ids);
     let body = multicc_core::js::serde::js_json_stringify(&dto).into_bytes();
     express::log_http_error(ctx, status, detail);
 
@@ -263,7 +263,7 @@ fn error_after_send(
     }
     let json =
         content_type.len() >= 16 && content_type[..16].eq_ignore_ascii_case("application/json");
-    if json && !express::is_head(ctx) {
+    if json && !express::is_head(ctx) && ctx.path.starts_with("/api/") {
         // src/http/json-compression.js; the DTO is far below its gzip floor.
         builder = express::header(builder, "Vary", "Accept-Encoding");
     }
@@ -280,7 +280,7 @@ fn error_after_send(
 }
 
 /// `res.sendFile(path)` / `res.download(path)` for a file the route stat'ed.
-async fn send_file(ctx: &RequestCtx, path: &str, attachment: bool) -> Response<Body> {
+pub(super) async fn send_file(ctx: &RequestCtx, path: &str, attachment: bool) -> Response<Body> {
     // send stats the file again itself.
     let meta = match tokio::fs::metadata(path).await {
         Ok(meta) => meta,
@@ -289,6 +289,10 @@ async fn send_file(ctx: &RequestCtx, path: &str, attachment: bool) -> Response<B
             return error_after_send(ctx, status, Some(code), &[], &error.to_string());
         }
     };
+    if meta.is_dir() {
+        // Express sendFile calls next() for EISDIR instead of redirecting.
+        return express::not_found(ctx);
+    }
     let stat = file_stat(&meta);
     let header = |name: &str| ctx.headers.get(name).map(str::to_string);
     let plan = http_send::plan(path, &stat, ctx.method.as_str(), &header, attachment);
@@ -308,7 +312,9 @@ async fn send_file(ctx: &RequestCtx, path: &str, attachment: bool) -> Response<B
                 builder = push(builder, header);
             }
             express::log_request(ctx, status);
-            builder.body(Body::empty()).expect("static response parts")
+            builder
+                .body(express::no_content_body())
+                .expect("static response parts")
         }
         SendPlan::File {
             status,
@@ -345,7 +351,7 @@ async fn send_file(ctx: &RequestCtx, path: &str, attachment: bool) -> Response<B
                 value.value.len() >= 16
                     && value.value[..16].eq_ignore_ascii_case(b"application/json")
             });
-            if !head_only && content_length == 0 && json {
+            if !head_only && content_length == 0 && json && ctx.path.starts_with("/api/") {
                 builder = express::header(builder, "Vary", "Accept-Encoding");
             }
             express::log_request(ctx, status);

@@ -1,69 +1,15 @@
 'use strict';
 
-const RUNNING_STATUSES = new Set(['thinking', 'editing', 'running']);
-const SESSION_STATUSES = new Set([
-  ...RUNNING_STATUSES, 'idle', 'waiting', 'background', 'succeeded', 'completed', 'error',
-]);
-
-function initialSessionState() {
-  return Object.freeze({
-    status: 'idle',
-    lastActivity: 0,
-    runStartedAt: null,
-    runEndedAt: null,
-  });
-}
-
-function isRunningStatus(status) {
-  return RUNNING_STATUSES.has(status);
-}
-
-function normalizePrevious(previous) {
-  if (!previous || typeof previous !== 'object') return initialSessionState();
-  return {
-    status: SESSION_STATUSES.has(previous.status) ? previous.status : 'idle',
-    lastActivity: Math.max(0, Number(previous.lastActivity) || 0),
-    runStartedAt: Number.isFinite(Number(previous.runStartedAt)) ? Number(previous.runStartedAt) : null,
-    runEndedAt: Number.isFinite(Number(previous.runEndedAt)) ? Number(previous.runEndedAt) : null,
-  };
-}
-
+// Compatibility surface; the vocabulary and transition policy have one Rust owner.
+const { getNative } = require('../native/runtime');
+const native = getNative();
+const catalog = native.sessionStateCatalog();
+const RUNNING_STATUSES = new Set(catalog.runningStatuses);
+const SESSION_STATUSES = new Set(catalog.sessionStatuses);
+function initialSessionState() { return native.sessionStateInitial(); }
+function isRunningStatus(status) { return native.sessionStateIsRunning(status); }
 function transitionSessionState(previous, patch = {}, { now = Date.now(), pendingWork = false } = {}) {
-  const prev = normalizePrevious(previous);
-  const requested = patch.status === undefined ? prev.status : patch.status;
-  if (!SESSION_STATUSES.has(requested)) {
-    throw new TypeError(`[session] unsupported status: ${requested}`);
-  }
-  const at = Number(now);
-  if (!Number.isFinite(at) || at < 0) throw new TypeError('[session] transition time must be finite');
-
-  const wasRunning = !!prev.runStartedAt && !prev.runEndedAt;
-  let runStartedAt = prev.runStartedAt;
-  let runEndedAt = prev.runEndedAt;
-  if (isRunningStatus(requested)) {
-    if (!wasRunning) {
-      runStartedAt = at;
-      runEndedAt = null;
-    }
-  } else if (wasRunning) {
-    runEndedAt = at;
-  }
-
-  // Outstanding work (a dispatch to another session, a pending callback) means
-  // the session idles on something outside this conversation: `background`, not
-  // `waiting` — nothing is asked of the user. A request that already IS a wait
-  // or a fault is never overwritten by it.
-  const status = pendingWork && !isRunningStatus(requested)
-      && !['waiting', 'background', 'error'].includes(requested)
-    ? 'background'
-    : requested;
-  const state = Object.freeze({ status, lastActivity: at, runStartedAt, runEndedAt });
-  return Object.freeze({
-    state,
-    changed: state.status !== prev.status,
-    enteredRunning: !wasRunning && isRunningStatus(requested),
-    leftRunning: wasRunning && !isRunningStatus(requested),
-  });
+  return native.sessionStateTransition(previous, patch, now, pendingWork);
 }
 
 function createSessionStateService({ clock = Date.now, hasPendingWork = () => false } = {}) {
@@ -81,11 +27,5 @@ function createSessionStateService({ clock = Date.now, hasPendingWork = () => fa
   });
 }
 
-module.exports = {
-  RUNNING_STATUSES,
-  SESSION_STATUSES,
-  createSessionStateService,
-  initialSessionState,
-  isRunningStatus,
-  transitionSessionState,
-};
+module.exports = { RUNNING_STATUSES, SESSION_STATUSES, createSessionStateService,
+  initialSessionState, isRunningStatus, transitionSessionState };

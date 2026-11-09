@@ -861,7 +861,7 @@ fn the_version_line_carries_the_protocol_version() {
     assert!(output.status.success());
     let line = String::from_utf8_lossy(&output.stdout);
     assert!(
-        line.starts_with("multicc-gateway 3 "),
+        line.starts_with("multicc-gateway 12 "),
         "unexpected --version output: {line:?}"
     );
 }
@@ -1117,7 +1117,7 @@ fn the_native_auth_gate_refuses_like_the_node_one() {
 }
 
 #[test]
-fn a_token_rewritten_in_the_env_file_applies_at_once_and_is_not_inherited() {
+fn live_token_rotation_applies_without_env_file_guessing_or_inheritance() {
     let gateway = Gateway::start_files(
         "presets-token",
         "echo",
@@ -1144,6 +1144,16 @@ fn a_token_rewritten_in_the_env_file_applies_at_once_and_is_not_inherited() {
         "ACCESS_TOKEN=new-token-2\nFIXTURE_DOTENV_ONLY=1\n",
     )
     .unwrap();
+    // A persisted write alone is not a successful live state transition.
+    assert_eq!(request(&mut client, &remote("old-token-1")).status, 200);
+    assert_eq!(
+        request(
+            &mut client,
+            &api("POST", "/fixture/rotate", &[LOCAL], "new-token-2")
+        )
+        .status,
+        200
+    );
     assert_eq!(request(&mut client, &remote("old-token-1")).status, 403);
     assert_eq!(request(&mut client, &remote("new-token-2")).status, 200);
 

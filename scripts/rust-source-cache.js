@@ -132,6 +132,14 @@ function probeAddon(file, node = process.execPath) {
     if(typeof a.modelRequestPolicyValue!=='function') process.exit(1);
     if(typeof a.retryPolicyValue!=='function') process.exit(1);
     if(typeof a.RustRequestTimer!=='function') process.exit(1);
+    if(typeof a.requestLocality!=='function' || !a.requestLocality('local',{socket:{remoteAddress:'127.0.0.1'},headers:{host:'localhost'}})
+      || a.requestLocality('local',{socket:{remoteAddress:'127.0.0.1'},headers:{host:'localhost',Forwarded:''}})) process.exit(1);
+    if(a.RustWorkspaceAccess || a.RustWorkspaceAccessReservation) process.exit(1);
+    if(typeof a.RustExternalWorkspaces!=='function' || ['run','query'].some(key=>typeof a.RustExternalWorkspaces.prototype[key]!=='function') || a.RustWorkspaceRemote) process.exit(1);
+    if(typeof a.RustWorkspaceSharing!=='function' || typeof a.workspaceSharingParse!=='function'
+      || ['run','query','connectGateway','importShare'].some(key=>typeof a.RustWorkspaceSharing.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustRelayShares!=='function' || typeof a.RustRelayShares.prototype.run!=='function'
+      || typeof a.relayShareParse!=='function') process.exit(1);
     if(typeof a.RustRequestWatch!=='function') process.exit(1);
     if(a.cprRequestLifecycleVersion?.()!==3 || typeof a.RustCprExchange!=='function'
       || ['startStreamWatch','stopStreamWatch','finishStreamWatch','noteStreamProgress','streamProgressed','streamTimeoutCode'].some(key=>typeof a.RustCprExchange.prototype[key]!=='function')) process.exit(1);
@@ -161,12 +169,28 @@ function probeAddon(file, node = process.execPath) {
         'recordConfirmedResult','hasConfirmedResult','confirmedResultOwner'].some(key=>typeof a.RustChatTurnLifecycle.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustChatRunnerLifecycle!=='function'
       || ['usageRecorded','setUsageRecorded','claimUsage','beginUsage','endUsage'].some(key=>typeof a.RustChatRunnerLifecycle.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustWorkspaceState!=='function'
+      || ['sessionStateCatalog','sessionStateInitial','sessionStateIsRunning','sessionStateTransition'].some(key=>typeof a[key]!=='function')
+      || ['status','summary','hydrate','setStatus','setSummary','delete'].some(key=>typeof a.RustWorkspaceState.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustSessionRecords!=='function' || a.sessionRecordsProtocolVersion?.()!==1 || typeof a.sessionRecordsTaskStateDefaults!=='function'
+      || ['init','configure','get','set','has','delete','clear','size','entriesSnapshot','listByDir',
+        'mutate','begin','commit','rollback','bestEffort','retryTick','status','stop',
+        'getTaskState','setTaskState','appendClassifyHistory','resetTaskState'].some(key=>typeof a.RustSessionRecords.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustWorkspaceQueues!=='function'
+      || ['get','has','update','project','view'].some(key=>typeof a.RustWorkspaceQueues.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustProviderAttemptGenerations!=='function'
       || typeof a.RustProviderAttemptGenerations.prototype.next!=='function') process.exit(1);
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
       'redactionSecretKey','redactionAnchors','redactionExactFragments',
-      'providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'RustAuthSecurity','authTimingSafeEqualText','authNormalizeRedirect','authNormalizeWsPath','authEscapeHtmlAttribute','httpAuthRoute','httpEntryGate','httpEntryAuthenticated','httpEntryCookie','httpEntryMakeRequestId','httpEntryCleanId','httpEntryRequestIds','providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['createCookie','verifyCookie','verifyAccessToken','issueWsTicket','consumeWsTicket','pruneTickets','ticketCount','accessToken','setAccessToken','shuttingDown','setShuttingDown','connectGateway']
+      .some(key=>typeof a.RustAuthSecurity.prototype[key]!=='function')) process.exit(1);
+    const authAnchor={};
+    const auth=new a.RustAuthSecurity({getSecret:()=> 'probe-auth',now:()=>1700000000000,randomBytes:n=>Buffer.alloc(n,7)},authAnchor);
+    if(!auth.verifyCookie(auth.createCookie()) || !auth.verifyAccessToken('probe-auth')) process.exit(1);
+    const wsTicket=auth.issueWsTicket('/probe',{});
+    if(!auth.consumeWsTicket(wsTicket.ticket,'/probe') || auth.consumeWsTicket(wsTicket.ticket,'/probe')!==null || auth.ticketCount()!==0) process.exit(1);
     if(typeof a.RustExactSecretStreamRedactor!=='function'
       || ['push','setSecrets','flush','discard','pendingLength'].some(key=>typeof a.RustExactSecretStreamRedactor.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustCurrentAttempts!=='function'

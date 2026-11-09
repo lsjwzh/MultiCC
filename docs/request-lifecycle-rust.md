@@ -548,3 +548,465 @@ JS SDK 的生产传输实现，不能声称已经消除整条事件链的逐属�
 本机接口探针包含三组输入：约 300 KB 中文文本、40 个工具调用组成的约 4 KB 结构、40 个含秘密文本块组成的约 2.8 KB 结构。原始行接口在结构化输入上减少了相对 live 对象接口的耗时，但长文本的 JS→Rust 文本往返仍较慢；这不是最终车道的端到端性能验收，也未证明优于同等优化的 Node 实现。后续应在 Rust stdout 原始行拥有者处直接调用核心，避免重新绕经 JS，再做完整的同输入对比。
 
 最终构建上的完整 `npm test` 已通过；Electron 打包工具链和 PowerShell 缺失各跳过 1 项。本批不提交、不合并、不重启服务，也不修改生产配置。
+
+## 2026-11-08：先合并内核，再迁请求入口
+
+上述原始 JSON 内核已按用户指令提交为 `67b074c7`，并由 `694ab85c` 合入 main；
+这更新了上一检查点的未提交状态。用户将后续顺序调整为优先请求入口，再分批迁移。
+因此 Claude 原始流生产接线继续待办，没有将它标为已完成。
+
+请求入口第一批已把通用准入策略、Cookie 响应头构造及请求 ID 策略交给 Rust，
+删除 `src/routes/auth.js` 对应的 Node 决策实现。关闭、对端、服务共享、公开路径、
+代理共享、限定范围授权和普通身份验证仍按原顺序执行；Token 和关闭状态按请求读取。
+原始 Node 实现只留在 `tests/helpers/legacy-http-entry.js`，作为冻结对拍基准。
+正式实现和 Node 例外边界详见 [gateway.md](gateway.md#10-通用请求准入迁移2026-11-08)。
+
+最终原生构建指纹 `c5aaa8d8efa2b56f68904c72`。137 项入口专项、2,096 组准入对拍、
+隔离 HTTP／WS 本地性验证、394 项 Rust core、9 项 CPR 单元与 27 项 CPR 集成、
+24 项 gateway 单元与 32 项 gateway 集成均通过。原始行脱敏、回合编排、供应商尝试记录、
+其他 CLI、历史写盘与交付恢复、会话／工作区编排、HTTP／WS 宿主仍未全部迁移。
+下一批优先处理登录和 Cookie／WS 票据运行时，随后按依赖逐组迁路由；当前入口仍借用
+Node 宿主状态和响应对象，不代表后端已经摆脱 Node。
+
+入口这批的最终构建完整 `npm test` 已通过，退出码 0；Electron 打包工具链和
+PowerShell 缺失各跳过 1 项。格式、语法、源码预算、治理与差异检查通过。
+上述入口修改后来与认证运行时一并提交为 `287cbc74`，未合并；上批已合并记录不代表本批也已合并。
+没有重启服务或修改生产配置。入口迁移与整体 Node 清理仍未完成。
+
+## 2026-11-08：认证运行时与端点处理接续迁移
+
+在上一批未提交改动上继续迁移，`HEAD...main` 核对为 `0/0`。
+Cookie 签发／校验、Token 恒定时间比较、URL 跳转与 WS 路径策略、票据清理／签发／单次消费
+已由 Rust 持有。网关和 addon 共享 `native/core/src/auth_security.rs`，
+`src/auth-security.js` 从 148 行缩为 31 行兼容导出和引用回收适配。
+Node 不再维护 WS 票据 Map；签发与消费仍通过同一实例，未建立第二套状态。
+
+`native/addon/src/auth_routes.rs` 接管登录页面、登录、登出、凭据交换和 WS 票据端点处理。
+`src/routes/auth.js` 只保留依赖检查、宿主端口和 Express 挂载，原 Node 算法只留在测试 oracle。
+元数据的 Symbol、嵌套引用、浅复制及回调异常／重入顺序保留；通过 VM 可追踪锚点和原生弱引用，
+避免反向引用造成 GC 环。认证方法和端点导出进入源码预检，并执行 Cookie／单次票据行为探针。
+
+共享 Cookie 校验同步修复旧网关解析溢出 JSON 数字、UTF-16 低字节 Base64 的兼容差异。
+内部构造选项有意收紧：TTL 仅接受有限数值，容量仅接受正整数且不超过 u32 上限；
+旧零／负容量的无限清理循环改为构造时拒绝。默认时效、默认容量和外部 HTTP 参数不变。
+Cookie 的异常附加字段受共享 JSON 解析器 2000 层上限保护，超深嵌套即拒绝，
+这是相对旧 Node 的明确差异；正常签发的平坦 Cookie 不受影响。
+
+本批仍运行在 Node 进程中的 Rust addon；HTTP 响应对象、请求体解析、动态 Token 和关闭状态、
+限定范围授权、来源地址计算及 WS 升级宿主仍待迁移。因此这不是“前门独立完成认证请求”的验收，
+也没有移除 Express。保留 Node 桥接的原因、范围和删除条件见 [gateway.md 第 11 节](gateway.md#11-登录cookie-与-websocket-票据运行时2026-11-08)。
+后续应先统一动态状态／授权协议与 WS 连接所有权，再把认证端点放到 Rust 前门，继续逐组清理路由。
+Claude 原始流生产接线仍排在请求入口之后。
+
+最终源码指纹 `e18847e1f4392f048a26a306`，来源校验及启动行为探针通过。
+认证专项 12 项、2,096 组入口对拍、96 组端点／故障对拍、30 组完整 HTTP 响应对拍，
+以及隔离 HTTP／WS、本机来源识别和源码启动预检均通过。Rust 串行 core 394、CPR 9+27、
+gateway 24+32 通过；一次并行供应商存储锁竞争的复验情况已记录在 gateway.md。
+`npm test` 各阶段已覆盖：治理计数修正后从治理段续跑，打包环境补齐后从桌面段续跑至
+原生测试结束，退出码 0；Electron 工具链与 PowerShell 缺失各跳过 1 项。
+上述入口和认证运行时共 30 文件已提交为 `287cbc74`，未合并、未重启服务、未修改生产配置。Express 移除和整体 Node 清理仍是后续工作。
+
+
+## 2026-11-08：认证 HTTP 端点进入前门
+
+在 `287cbc74` 之后，Rust 前门直接处理登录页面、登录、登出、凭据交换和普通 WS 票据 HTTP
+请求。生产模式已取消对应 Express 挂载，隔离测试断言这些请求不会进入 Node HTTP 宿主。
+Rust `AuthRuntime` 同时持有动态 Token、关闭状态与唯一 WS 票据表；Node 保留同步调用桥，
+网关通过按子进程代次建立的异步私有控制流读取状态和签发票据，删除 `.env` 推测状态。
+
+控制流有双向 HMAC 握手、帧/并发/时限边界、启动后凭据环境清除，以及取消/重启代次隔离。
+43 组 HTTP 对拍、共享票据消费及机器授权、轮换、关闭、重启测试已通过。
+完整边界和后续验证见 [gateway.md 第 12 节](gateway.md#12-认证端点进入-rust-前门2026-11-08接续工作树)。
+
+剩余依赖仍包括 service/fleet/provider 动态授权、来源地址适配、HTTP/WS 升级与连接宿主、
+其他业务路由，以及 Claude 原始流生产接线、回合编排、历史写盘和交付恢复。这些不是本批
+完成项；不会将“移入 native 模块”当作“Node 已清空”。本批代码保留工作树，未提交或合并，
+未重启服务或修改生产配置。
+
+最终构建为 `193a5212c452993712f2d96d`，来源摘要与启动探针通过；Rust core 396、CPR 9+27、
+gateway 27+32 通过。真实隔离服务的前门票据到 WS 快照链路通过。
+完整 `npm test` 最终退出码 0，Electron 工具链/PowerShell 各跳过 1 项；格式、语法、预算、
+测试分层及 diff 检查通过。本机验证为 macOS ARM64。当前 `HEAD...main=1/0`，未合并。
+
+
+## 2026-11-08：Service HTTP／WebSocket 宿主迁移
+
+第 6 步继续推进：service 配置和 `/services/*` HTTP/WS 请求由 Rust gateway 完整处理，
+对应 Node 模块及 server/voice 接线已删除。配置锁与文件操作在阻塞线程执行，网关持有唯一
+service 配置快照；实时登录状态仍通过上一批私有控制流读取 Node addon 内的 Rust owner。
+认证身份没有复制成另一张表。生产请求不再经过 Express 的 service handler。
+
+流式传输、取消收尾、升级首段、敏感头与 Cookie/Location 改写、失败落盘和并发更新由独立的
+真实网络测试覆盖；冻结 Node oracle 只用于测试对拍。TLS 使用系统证书库及额外 CA 文件，
+并强制校验证书。完整边界与最终验证见 [gateway.md 第 13 节](gateway.md#13-service-路由的配置与连接宿主进入-rust2026-11-08)。
+
+剩余工作仍是 fleet/provider 动态授权及生命周期、其它路由和 HTTP/WS 连接宿主、来源地址 JS
+兼容接口，随后是 Claude 原始流生产接线、回合编排与历史/交付持久化。该批不代表整体清理完成，
+工作树变更未提交、未合并，也没有重启生产服务。
+
+最终构建指纹 `a2b2a7635a7c2ceb1ea549dc`，addon/gateway 来源摘要及启动探针通过。
+52 项相关专项通过（含 80 组 service HTTP、1,980 组入口及 96 组端点/故障对拍），
+真实隔离 `server.js` 的前门认证与 WS 快照链路通过。Rust 串行 core 399、CPR 9+27、
+gateway 27+32 通过；最终 gateway 构建再次通过 27+32 回归。
+完整 `npm test` 使用最新产物重跑退出 0；首轮仍引用重建前产物，新增重复头升级用例超时，
+统一产物后完整重跑通过。Electron 工具链和 pwsh 缺失各跳过 1 项。
+20 个变动 Rust 文件格式检查（保留基线模块顺序）、19 个 JS 语法检查、源码预算、测试分层和
+`git diff --check` 通过。累计 48 个工作树文件含上一批未提交改动，`HEAD...main=1/0`，
+本批未提交、未合并、未推送，未改变生产配置或重启服务。
+
+
+## 2026-11-08：Provider 共享授权及来源规则接续
+
+Provider 共享凭据校验、密封副本、计数/撤销和文件备份恢复已由 Rust core 接管。
+HTTP 入口按 Rust 返回的等待点暂停，原生 worker 完成授权写盘后才继续；写盘失败不以
+成功授权放行。Node 路由已适配异步接口，仍属于待删除的宿主桥接。
+来源地址兼容接口与 Axum 共用 Rust 规则，删除 Node 的重复判定。
+
+数据互读、失败写入、并发撤销与网络接线证据以及兼容边界见
+[gateway.md 第 14 节](gateway.md#14-provider-共享授权与来源地址统一到-rust2026-11-08)。
+总体目标与 6a–6f 验收台账见 [后端退出计划](backend-rust-exit-plan.md)。原计划前 5 步已落地，
+第 6 步仍进行中；Express 接口、聊天编排、持久化和 Node 生产退出四项总验收仍未全部满足。
+工作区分享动态授权（旧 `fleet` 协议名）、其余 HTTP/WS 宿主、聊天原始流接线/编排、历史/交付持久化继续由本任务推进。
+
+## 2026-11-08：工作区分享状态接续
+
+工作区分享的记录、scrypt/授权校验、访问计数、撤销、外部引用和原格式 JSON 写入已由
+Rust 单一 owner 接管，Node 对应实现已删除。实时成员关系仍从宿主端口取得，授权时不缓存。
+密码校验与异步写入之间的一次性内部凭证会在写入前重新检查撤销和额度，最终输出前重新
+读取成员关系。60 项专项（含 1,233 组权限及 360 组数据对拍）与 404 项 Rust core 测试通过。
+完整 `npm test` 退出 0（Electron/pwsh 缺失各跳过 1 项），CPR/gateway 回归及真实网关工作区 HTTP/WS 分享、重放/撤销校验通过。
+边界、部署/回滚要求与最终验证收据见 [网关文档第 15 节](gateway.md#15-工作区分享状态和持久化迁入-rust2026-11-08)。
+
+原计划第 6 步继续：此域的远端传输、Express 路由/限流和实时目录/会话状态源尚在 Node；
+其余 HTTP/WS 宿主、聊天编排和历史持久化也仍待迁移。四项总目标验收均未宣布完成。
+
+## 2026-11-08：工作区分享远端传输接续
+
+远端 DNS、HTTP/HTTPS、请求/响应策略和错误映射进入 Rust；Node fetch/DNS 实现已删除。
+真实上传流经有背压的 N-API 字节管道接入 Rust，响应体有解压后大小限制和全程截止时间。
+Node 暂留 Express 流转接与实时上下文端口，移除条件是相关路由/状态宿主迁入 Axum。
+详细兼容差异和验证收据见 [网关文档第 16 节](gateway.md#16-工作区分享远端传输迁入-rust2026-11-08)。
+
+原计划完成 5/6，第 6 步继续；密码限流、其余 HTTP/WS 宿主、聊天编排与历史持久化仍待迁移。
+本批未提交、合并、推送或重启生产服务。
+
+本批最终源码指纹 `dab9493f8e0f81f548af5b03`，来源与接口预检一致。72 项专项、404 项
+Rust core、CPR 9+27、gateway 27+32、真实网关分享/WS 接线及最终完整 `npm test` 通过；
+Electron/pwsh 缺失各跳过 1 项。中断测试遗留的假浏览器进程已按测试身份清理，失败的两项
+独立复验后从头完成 npm 回归。证据和明确行为差异均记录于第 16 节。
+
+
+## Imported workspace HTTP and upload ownership
+
+The Rust gateway now owns the complete `/api/external-fleets` route family and
+`external-fleets.json`. The source-sharing addon opens only `fleet-shares.json`.
+The store rejects operations outside its ownership domain. Imported state is
+published after atomic save, and survives replacement of the supervised Node
+child without introducing a second writer. External orchestration runs in the
+shared Rust runtime; blocking file operations run on workers.
+
+Non-JSON request bytes stream from Axum to reqwest with transport backpressure.
+The Node upload pump and native upload channel have been removed. This deliberately
+fixes the old non-JSON body selection; JSON still follows the 50 MiB parsed-body
+contract and is reauthorized after buffering. Whole-request deadlines, upstream
+response limits and no-replay rules remain in force. Disconnect during an upload
+closes its upstream request. HTTP response bytes, error presentation, cache
+projections and ETags are covered by the frozen Express oracle.
+
+Source workspace routes, failure limiting, live member lookup and the source WS
+host remain Node dependencies. The native external buffered library adapter is
+used only by tests, not as a production fallback. See gateway.md section 17 for
+compatibility boundaries, deployment/rollback and the final batch receipt.
+
+
+## Source workspace password admission
+
+Source password failure windows and FIFO admission now live in
+`workspace_sharing/access.rs`. Reservations are ordered before async scheduling;
+waiting does not occupy password workers. The same 10-failure, 15-minute rule,
+strict expiry boundary, success reset and wrong-password-only accounting remain.
+Dropping or explicitly releasing a reservation advances the queue exactly once.
+Pending cancellation cannot release an active predecessor, and stale completion
+cannot modify a successor's window.
+
+The Node route no longer stores failure records or an access promise tail. Its
+remaining adapter marshals the request and result around the live source port,
+and releases the native reservation in finally. Source HTTP/WS hosting and live
+directory/session ownership remain open dependencies. Windows remain in memory
+with the same mounted-instance lifetime, not a new disk-backed policy. See
+gateway.md section 18 for compatibility and validation evidence.
+
+## Source share administration HTTP
+
+The gateway directly handles source share listing (GET/HEAD), revocation (DELETE)
+and their OPTIONS responses. Their Node HTTP handlers and mounts are removed.
+A separate authenticated Rust stream addresses the existing source Store Arc in
+the addon; it does not call JS, use Express objects, or reopen the share file.
+Revocation publishes only after persistence and immediately affects remaining
+HTTP/WS consumers of the same grant owner. Blocking writes cannot monopolize the
+independent authentication/ticket connection.
+
+Bulk list replies use bounded frames and an explicit terminator without imposing
+a new list-size cap. Aggregate memory still scales with the list. Cancellation,
+truncation and timeout discard the connection; mutations are never replayed.
+An interrupted request may have committed and must be resolved by reading state.
+Slow JSON requests recheck rotation/shutdown before dispatching a mutation.
+Protocol 7 pairs the gateway, addon and host; the disk schema stays unchanged.
+See gateway.md section 19 for limits, deployment/rollback and validation.
+
+Creation, password import, state projection, shared WS tickets and the WS/socket
+host still depend on fresh directory/session context in Node. The source owner
+has not moved processes, and this batch does not complete source hosting or Node
+exit. The only new JS adapter forwards bootstrap parameters once and retains no
+request-processing policy or duplicate state.
+
+Final administration receipt: `3803e14e0af6f74f69e9e5b5`; provenance and protocol-7
+startup probes pass. The 62 focused tests, 40 source HTTP comparisons, bulk/gzip,
+persistence failure, same-owner revocation, slow-body rotation, child/gateway
+restart and real LAN/source WS integrations pass. Rust core 408, CPR 9 + 27,
+gateway 30 + 32 and the full npm suite pass; Electron packaging and pwsh each
+have one unavailable-tool skip. Overall migration remains 5/6.
+
+## Source share creation HTTP
+
+POST source-share creation and its OPTIONS response now terminate at the Rust
+gateway. The Node handler/mount is deleted. The source control task reads current
+directory existence through one asynchronous host port, then reuses the single
+Rust Store for validation, scrypt and persistence. The port has no duplicate map
+or creation policy and never receives Express objects. Missing directories keep
+their 404 precedence; a failed/released port yields a sanitized internal error.
+A timed-out lookup never initiates a later mutation.
+
+The callback is built in a separate lexical scope and holds only a WeakRef to the
+host reader; native callbacks cannot retain facade/owner cycles or keep the Node
+event loop alive. Protocol 8 frames source requests as well as replies, preserving
+large JSON bodies. Existing lossless wire encoding retains overflow numbers and
+UTF-16 values; credentials/options are never logged. Auth uses a separate stream.
+
+Directory/member lifecycle ownership and remaining source import/state/ticket/WS
+hosts remain open dependencies. This is not a new directory-deletion transaction
+or completed Node exit. See gateway.md section 20 for boundaries and verification.
+
+Final creation receipt: `e9524d0928824811ad2a71e6`; addon/gateway provenance and
+protocol-8 startup probes pass. All 64 focused tests pass, including 48 new HTTP
+comparisons that bypass Express, live-directory changes, sanitized host failures,
+large inputs, concurrent mutations, failed persistence and callback collection.
+Native timeout coverage confirms no delayed creation after a failed host read.
+Real gateway/server sharing HTTP/WS and LAN checks pass. Rust core 409, CPR
+9 + 27, gateway 30 + 32 and full npm test pass, with 256/256 in the final group.
+Electron packaging and pwsh each skip one unavailable-tool test. Static checks
+pass. Overall progress remains 5/6, with no commit, merge or production change.
+
+## Source state HTTP
+
+The gateway now handles GET/HEAD source state and OPTIONS, with the Node handler
+and mount removed. Entry scope checks use the same Rust Store and retain method,
+path and capability precedence. After fresh directory/member context is read,
+the owner rechecks grant validity and expiry before projecting the public DTO.
+A revoke during the asynchronous read cannot release a stale authorized reply.
+
+One synchronous host callback reads existing live maps and marshals their JSON;
+it has no cached authority or HTTP objects. Weak ports preserve owner collection.
+Malformed/failed host context is sanitized, and unavailable or timed-out control
+streams fail closed. Protocol 9 pairs the gateway, addon and host, with schema 1
+unchanged. Member ownership and import/ticket/landing/WS hosting remain open;
+readSharedFleet is still used by the unmigrated import/library path. See gateway.md
+section 21 for the contract boundaries and final validation receipt.
+
+Final state receipt: `ef1796e0d7ee0483a8656b8f`; matching addon/gateway provenance
+and protocol-9 startup probes pass. All 54 focused tests and 55 new state HTTP
+comparisons pass, including bootstrap cookies, scope precedence, field order,
+conditional requests, large member lists, live context changes and sanitized
+failures. Native tests cover revoke during context reads and failed/timed-out
+ports. Real gateway/server and LAN sharing HTTP/WS checks pass. Rust core 410,
+CPR 9 + 27, gateway 30 + 32 and full npm test on the final artifacts pass, with
+256/256 in the last group. Electron packaging and pwsh each skip one unavailable
+tool test. Static checks pass. Overall migration remains 5/6; no commit, merge,
+push, production restart or configuration change.
+
+## Native source password import
+
+The gateway owns POST source import and OPTIONS; the Express import handler and
+mount are deleted. Verification, access consumption and state projection now run
+as one Rust workflow. An owner-bound, non-Clone VerifiedAccess value is consumed
+by value, replacing the nonce table and repeated JS/JSON proof round trips. The
+old access N-API classes, JS admission adapter and readSharedFleet are removed.
+The library adapter calls this workflow once; production HTTP calls it directly.
+
+Directory existence is read before the durable access write; fresh members are
+read afterwards. A pre-write failure consumes nothing; a post-write context
+failure retains the committed access. The native failure window survives control
+reconnects, resets with the owner, and releases reservations on cancellation.
+Lost replies never trigger a replay. Import inherits the source channel's 64
+concurrent admission bound and three-second connection/RPC deadlines; a timeout
+can be ambiguous after a write. Protocol 10 requires matching gateway/addon/host,
+with unchanged disk schema. The two weak live-context readers remain because
+Node still owns directory/member lifecycle. Delete them and their JSON boundary
+when that owner moves. See gateway.md section 22 for validation and rollback.
+
+Final import receipt: `8b71c948abd41a3042575b4a`; addon/gateway provenance and
+protocol-10 startup probes pass. All 53 focused tests, 71 new import HTTP
+comparisons and real gateway/server/LAN sharing HTTP/WS checks pass. Native
+coverage verifies failure ordering, cancellation, revoke during context reads,
+window retention across reconnects and no replay after a lost response. Rust
+core 413, CPR 9 + 27 and gateway 30 + 32 pass. Full npm test exits 0 on the final
+artifacts, ending with 256/256; Electron packaging and pwsh each skip one test
+for unavailable tools. Static checks pass. Overall progress remains 5/6, with
+no commit, merge, push, production restart or configuration change.
+
+
+## Native source WebSocket ticket issuance
+
+The gateway now owns shared ticket POST/OPTIONS. The Express handler, mount,
+error wrapper, requestOrigin and JS authorizeWebSocket method are deleted.
+The native source workflow uses an Arc to the existing AuthRuntime; it builds
+native metadata and inserts into the same single-use ticket table consumed by
+the current WS host. No JS callback or JSON round trip is involved in issuance.
+
+A short source snapshot read lock covers final authorization and synchronous
+ticket insertion. Publication of revocation cannot interleave; the fixed lock
+order is source snapshot then auth runtime, without host calls or awaits inside.
+Authentication revision/shutdown changes refuse issuance. Live membership still
+comes from the Node owner, using the existing weak read port with an ID-only
+projection. This avoids traversing private/cyclic fields and keeps the original
+unbounded membership and directory-existence semantics. This port and the WS
+consume adapter must be removed when their state and connection owners move.
+
+Protocol 11 requires the matching gateway/addon/host; disk schema is unchanged.
+The three-second source RPC deadline can expire after insertion. Lost replies
+are never replayed. Previously issued tickets keep the existing TTL/revocation
+semantics; no new retroactive revocation contract is implied. See gateway.md
+section 23 for scope, compatibility checks and the final verification receipt.
+Final receipt: fingerprint `ecf3d68274e8dd96589b9dfa`, verified addon/gateway
+provenance and protocol-11 startup probes. All 72 focused tests pass; the final
+32 sharing tests pass after the ID-only projection/adapter cleanup, including
+cyclic/private fields and shared auth callback collection. The 73 new ticket
+HTTP comparisons bypass Express. Native tests cover revocation publication,
+rotation/shutdown, failed/timed-out reads, unbounded members and UTF-16 metadata.
+Real gateway/server and LAN sharing checks pass. Rust core 417, CPR 9 + 27 and
+gateway 30 + 32 pass. Full npm test exits 0, ending at 256/256; Electron packaging
+and pwsh each skip one unavailable-tool test. Syntax (43 JS), formatting (41 Rust,
+existing module order preserved), 837 test tiers, budgets and diff checks pass.
+Overall migration remains 5/6; no commit, merge, push or production change.
+
+
+## Native source landing delivery (2026-11-09)
+
+GET/HEAD/OPTIONS for /fleet-share/:token now terminate in the gateway. The entire
+production src/routes/fleet-sharing.js module is deleted; server.js directly
+wires the existing source owner and live read ports. The landing page uses the
+canonical package public directory and the shared asynchronous 64 KiB file
+sender, with no source-state read or added file cache. Public-route admission,
+query-token cookie ordering, parameter/JSON errors, shutdown, conditionals,
+ranges and file replacement preserve the legacy contract.
+
+Shared file responses now preserve error code/message order, omit an injected
+Content-Length on conditional HEAD 304, and restrict API JSON Vary headers to
+API paths. Directory targets use the common 404. Node remains necessary for
+live directory/member ownership, scoped authorization adaptation and WS hosting.
+Move state, projection and subscription owners before the connection host; then
+remove the read ports/serialization and relocate the addon owners. Protocol 12
+requires matching gateway/addon/host deployment and rollback; schema remains 1.
+
+Fingerprint fe62afc2e9d46e3521648717 has verified provenance and startup probes.
+All 122 landing HTTP comparisons, 12 filesystem comparisons, 12 MiB hash/range
+and disconnect checks pass. Real gateway/server and LAN checks pass (2/2).
+Rust core 417, CPR 9 + 27 and gateway 30 + 32 pass. See gateway.md section 24 for
+boundaries and the final full-suite receipt. Overall progress remains 5/6; no
+commit, merge, push, production restart or configuration change.
+
+Final full-suite receipt: npm test exits 0 on the final artifacts, ending with
+256/256 native tests. Electron packaging and pwsh each skip one unavailable-tool
+test. Syntax (42 JS), formatting (41 Rust, existing module order preserved),
+837 test tiers, source budgets, governance and diff checks pass. HEAD remains
+1 ahead and 0 behind main, with 86 uncommitted worktree entries including prior
+batches. This landing batch is verified; overall Node exit remains open at 5/6.
+
+
+## Native workspace queue state (2026-11-09)
+
+The next WS prerequisite is one native owner for workspace queue records and
+view timestamps. The Node queue Map, normalization, stale-update gate and view
+clock are deleted. Physical execution clocks remain distinct from the monotonic
+view clock, so selecting an older or empty execution clears the previous view
+without rejecting subsequent valid execution updates. The classify-state table
+is shared with the existing native vocabulary.
+
+Queue/Store values pass directly inside Rust; projections no longer materialize
+a JS queue merely to normalize it again. The temporary addon reads only relevant
+fields, preserves coercion/getter order, and invokes all host callbacks outside
+the lock. Reentrant updates are checked against the latest committed record.
+Opaque stateSource metadata is attached without traversal or JSON conversion.
+The Node compatibility view is read-only; there is no duplicate mutable table.
+Each runtime owns its own queue and rehydrates from the existing scheduler.
+
+Live records/membership, record eligibility, selected execution reads, status,
+summary persistence, event routing and WS/subscriber effects remain Node-owned.
+These are the remaining dependencies for removing the addon and hosting the
+Store directly in the gateway. Protocol 12 and schema 1 remain unchanged; the
+source/build probe checks the new addon capability without a JS fallback.
+
+Fingerprint eb571715c533c41ad3c154ec has verified provenance/startup probes.
+The 106 focused tests include 1000 lifecycle comparisons, 94 input comparisons
+and real WS frame/reconnect/cleanup comparisons. Real gateway/server and LAN
+checks pass (2/2). See gateway.md section 25 for the final full-suite receipt.
+Overall remains 5/6; no commit, merge, push, production restart or configuration
+change was performed.
+
+Final receipt: Rust core 421, CPR 9 + 27 and gateway 30 + 32 pass. Full npm test
+exits 0 on the final artifacts, ending with 256/256. Electron packaging and pwsh
+each skip one unavailable-tool test; the existing duplicate-bubble S6 case
+remains TODO, not a passing case. Syntax (45 JS), formatting (44 Rust), 837 test
+tiers, source budgets, governance and diff checks pass. HEAD is 1 ahead and 0
+behind main, with 92 uncommitted worktree entries including prior batches.
+Validation is on macOS ARM64; other platform packages are not certified here.
+The queue batch is verified; overall progress remains 5/6.
+
+
+## Native workspace run state and summary ownership (2026-11-09)
+
+The workspace status and summary tables and session run transitions now have a
+single native owner. Node's Maps, hydration, transition implementation and
+summary write orchestration are removed. Rust passes RunState/Status/Summary
+values directly; no mirror state or internal JSON round trip is introduced.
+The classify catalog exposes an in-memory value for native hydration.
+
+The native adapter preserves getter/coercion order, run segments, pending-work
+background status and the established commit boundaries. Summary effects remain
+ordered as memory view, record.summary, setTaskState, saveBestEffort and delivery.
+Later failures do not roll back earlier writes. No owner borrow crosses a host
+callback. Shared opaque host-value storage retains payload identity without
+traversing private fields, cycles or toJSON; JS-traced anchors and weak native
+references allow replacement and runtime/payload cycles to be collected.
+Status/summary wrapper reads are snapshots, not an alternate mutation surface.
+
+The shared iterable adapter preserves record-loop cleanup and entry destructuring,
+including early completion and next/return failures. The original exception wins
+when cleanup also fails. The frozen differential baseline is independent of the
+new transition implementation, and real WS comparisons check raw JSON frames.
+
+Live records, directory/member state, setTaskState/saveBestEffort writers, cursor
+selection, event routing and WS/observer delivery remain Node dependencies.
+Continue with those state and persistence owners before subscriptions and sockets;
+then remove temporary N-API/host-reference ports in favor of colocated native
+owners. This batch does not complete task persistence, WS or the overall Node exit.
+Protocol 12 and schema 1 are unchanged. Overall remains 5/6.
+
+Fingerprint 75e0aa45fc7e721b840389df has verified provenance and startup probes.
+All 116 focused tests pass, including 893 transition cases, 1200 status/summary
+operations, existing queue comparisons and GC/WS tests. See gateway.md section 26
+for the full regression receipt.
+
+Final receipt: real gateway/server and LAN tests pass (2/2). Rust core 424,
+CPR 9 + 27 and gateway 30 + 32 pass; the last fix changed only addon iteration,
+not those tested crate sources. Full npm test exits 0 from the beginning on the
+final artifacts, ending with 256/256. Electron packaging and pwsh each skip one
+unavailable-tool case; the existing duplicate-bubble S6 remains TODO, not a pass.
+All 49 JS syntax and 49 Rust format checks, 837 test tiers, source budgets,
+repository/runtime-write governance and diff checks pass. HEAD remains 1 ahead
+and 0 behind main, with 101 uncommitted worktree entries including earlier batches.
+Logs and the validation summary are archived under the primary repository's
+`data/rust-source/75e0aa45fc7e721b840389df/validation/workspace-state/`.
+Validation is on macOS ARM64; other platform packages are not certified here.
+No commit, merge, push, production restart or configuration change was performed.
+This batch is verified; overall Node exit remains open at 5/6.

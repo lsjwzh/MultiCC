@@ -1,9 +1,10 @@
+// Frozen Node service-route oracle; test-only, never imported by production.
 'use strict';
 const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
-const { createPaths } = require('./paths');
-const { atomicWriteJson } = require('./runtime-security');
+const { createPaths } = require('../../src/paths');
+const { atomicWriteJson } = require('../../src/runtime-security');
 const PREFIX = '/services/';
 const WARNING = '免密码会让任何能访问 MultiCC 入口的人访问此服务的全部页面、接口及 WebSocket，包括写入和删除操作。路由与 MultiCC 同域，只能接入你信任的服务：其页面脚本可使用当前登录身份访问 MultiCC。鉴权仅保护此入口，不保护上游原始端口。';
 

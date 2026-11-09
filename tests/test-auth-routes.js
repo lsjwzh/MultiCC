@@ -22,6 +22,8 @@ function buildHarness(overrides = {}) {
     scopedRequest: false,
     relayAuthorizer: null,
     metrics: [],
+    warnings: [],
+    admitted: 0,
     ...overrides,
   };
   const authSecurity = {
@@ -54,12 +56,14 @@ function buildHarness(overrides = {}) {
     },
     escapeHtmlAttribute: (value) => String(value).replace(/"/g, '&quot;').replace(/</g, '&lt;'),
     metrics: { inc: (name) => state.metrics.push(name) },
-    logger: { warn: () => {} },
+    logger: { warn: (event, value) => state.warnings.push([event, value]) },
     createErrorDto: (dto) => ({ error: dto }),
     getAccessToken: () => state.accessToken,
     getShuttingDown: () => state.shuttingDown,
     authorizeProviderRelayRequest: input => typeof state.relayAuthorizer === 'function'
       ? state.relayAuthorizer(input) : null,
+    authorizeProviderRelayRequestAsync: state.asyncRelay
+      ? input => state.relayAuthorizer(input) : undefined,
     isRequestPeerAllowed: () => state.peerAllowed,
     authorizeScopedRequest: () => state.scopedRequest,
     allowLegacyTokenQuery: !!state.allowLegacyTokenQuery,
@@ -67,7 +71,10 @@ function buildHarness(overrides = {}) {
   runtime.mountRoutes(app);
   if (state.mountProtectedRoutes) state.mountProtectedRoutes(app);
   // Terminal "protected resource": only reached when the gate calls next().
-  app.use((req, res) => res.status(200).json({ ok: true, path: req.path }));
+  app.use((req, res) => {
+    state.admitted++;
+    res.status(200).json({ ok: true, path: req.path, ...(req.providerRelayShareId ? { shareId: req.providerRelayShareId } : {}) });
+  });
 
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', () => {
@@ -506,4 +513,242 @@ test('UDID 真认证链路：设置无 cookie 回传后可读取结果，不会�
     assert.equal((await raw(h.base, '/ios-ota')).status, 302, '安装页依旧受登录保护');
     assert.equal((await raw(h.base, '/ios-ota/udid.mobileconfig')).status, 302, '新请求依旧受登录保护');
   } finally { await h.close(); }
+});
+
+// Frozen Node owner versus the native owner, including host call order and
+// side effects. HTTP framing is covered by the real-server tests above.
+const { createAuthRuntime: legacyEntryRuntime } = require('./helpers/legacy-http-entry');
+function entryTrace(factory, options = {}) {
+  const trace = [];
+  const failure = Object.assign(new Error('injected entry failure'), { code: 'ENTRY_TEST_FAILURE' });
+  let calls = 0;
+  const invoke = (name, value, fn) => {
+    trace.push([name, value]);
+    if (calls++ === options.failAt) throw failure;
+    return fn?.();
+  };
+  const request = {
+    method: options.method || 'GET', path: options.path || '/api/thing',
+    originalUrl: options.originalUrl || `${options.path || '/api/thing'}?q=%E4%B8%AD`,
+    headers: { accept: 'application/json', ...options.headers }, query: options.query || {},
+    id: 'request-1', correlationId: 'correlation-1', secure: options.secure || false, body: options.body,
+  };
+  if (options.readonlyShare) Object.defineProperty(request, 'providerRelayShareId', { value: 'old', writable: false });
+  const response = {
+    type(value) { return invoke('type', value, () => response); },
+    send(value) { return invoke('send', value, () => response); },
+    end() { return invoke('end', null, () => response); },
+    set(name, value) { return invoke('set', [name, value], () => response); },
+    setHeader(name, value) { return invoke('setHeader', [name, value]); },
+    status(value) { return invoke('status', value, () => {
+      if (options.statusMutatesId) request.id = 'changed-after-status';
+      return response;
+    }); },
+    json(value) { return invoke('json', value, () => 'responded'); },
+    redirect(value) { return invoke('redirect', value, () => 'redirected'); },
+  };
+  const callbacks = [];
+  const routes = {};
+  const app = { use(...args) { callbacks.push(args.at(-1)); },
+    get(path, ...args) { routes[`GET ${path}`] = args.at(-1); },
+    post(path, ...args) { routes[`POST ${path}`] = args.at(-1); } };
+  const deps = {
+    express: { urlencoded: () => () => {}, json: () => () => {} },
+    authSecurity: {
+      createCookie: () => invoke('createCookie', null, () => 'fresh-cookie'),
+      verifyCookie: value => invoke('verifyCookie', value, () => value === 'good-cookie'),
+      verifyAccessToken: value => invoke('verifyToken', value, () => value === 'good-token'),
+      issueWsTicket: (path, metadata) => invoke('ticket', [path, metadata], () => ({ ticket: 'fixed', path })),
+    },
+    isLocalRequest: () => invoke('local', null, () => options.local || false),
+    parseCookies: value => invoke('cookies', value, () => ({ multicc_auth: value })),
+    normalizeRedirect: value => invoke('normalize', value, () => value),
+    escapeHtmlAttribute: value => invoke('escape', value, () => value),
+    metrics: { inc: value => invoke('metric', value) },
+    logger: { warn: (name, value) => invoke('warn', [name, value]) },
+    createErrorDto: value => invoke('dto', value, () => ({ error: value })),
+    getAccessToken: () => invoke('accessToken', null, () => options.token ?? 'configured'),
+    getShuttingDown: () => invoke('shuttingDown', null, () => options.shutdown || false),
+    isRequestPeerAllowed: () => invoke('peer', null, () => options.peer !== false),
+    authorizeProviderRelayRequest: value => invoke('relay', value, () => options.relay || null),
+    authorizeScopedRequest: () => invoke('scope', null, () => {
+      if (options.scopeMutatesPath) { request.path = '/after-scope'; request.method = 'GET'; }
+      return options.scoped || false;
+    }),
+    allowLegacyTokenQuery: options.legacy || false,
+  };
+  const runtime = factory(deps);
+  runtime.mountRoutes(app);
+  let result, error;
+  try {
+    if (options.route) result = routes[options.route](request, response);
+    else if (options.action === 'authenticated') result = runtime.isAuthenticated(request);
+    else if (options.action === 'cookie') result = runtime.authCookieHeader(request, options.cookie);
+    else result = callbacks[options.stage ?? 2](request, response, () => invoke('next', null, () => 'passed'));
+  } catch (caught) { error = caught === failure ? 'injected' : caught?.name || String(caught); }
+  return { trace, result, error, shareId: request.providerRelayShareId };
+}
+function compareEntry(options) {
+  assert.deepEqual(entryTrace(createAuthRuntime, options), entryTrace(legacyEntryRuntime, options),
+    JSON.stringify(options));
+}
+
+test('Rust entry matches Node across public paths, credentials, methods and all gate stages', t => {
+  const nonce = 'a'.repeat(64);
+  const paths = ['/api/thing', '/', '/login', '/logout', '/healthz', '/readyz',
+    '/static/app.JS', '/static/app.jſ', '/api/app.js', '/API/app.js', '/x.js\n',
+    '/share/secret', '/share/secret/extra', '/api/share/secret/history', '/api/share/secret/delete',
+    '/fleet-share/fleet_share_abc', '/api/fleet-shares/fleet_share_abc/import',
+    '/api/fleet-shares/fleet_share_abc/ws-ticket', '/artifacts/abc/a.html', '/artifacts/abc%2Fbad',
+    '/api/wait/wait-1/resolve', '/api/wait/wait-1/resolve/extra', '/ios-ota/manifest.plist',
+    `/ios-ota/udid/callback/${nonce}`, `/ios-ota/udid/callback/${nonce.toUpperCase()}`,
+    `/ios-ota/udid/result/${nonce}`, '/claude-proxy/p/s/v1/messages', '/codex-proxy', '/codex-proxy-fake'];
+  let count = 0;
+  const cases = [{}, { local: true }, { token: '', local: false }, { token: '', local: true },
+    { headers: { cookie: 'good-cookie' } }, { headers: { 'x-access-token': 'good-token' } },
+    { headers: { 'x-multicc-machine-grant': 'bad', 'x-access-token': 'good-token' } },
+    { query: { token: 'good-token' } }, { legacy: true, query: { token: 'good-token' } },
+    { legacy: true, query: { token: ['good-token'] } }, { scoped: true },
+    { headers: { accept: 'text/html' } }, { headers: { 'content-type': 'APPLICATION/PKCS7-SIGNATURE; version=1' } },
+    { headers: { authorization: 'Bearer relay-token' }, relay: { ok: true, shareId: 'share-1' } },
+    { headers: { authorization: 'Bearer\uFEFFrelay-token' }, relay: { ok: true } },
+    { headers: { authorization: 'Bearer relay-token\n' }, relay: { ok: true } },
+    { headers: { 'x-api-key': 'key', authorization: 'Bearer ignored' }, relay: { ok: 1 } }];
+  for (const path of paths) for (const method of ['GET', 'POST', 'HEAD', 'OPTIONS']) for (const facts of cases) {
+    compareEntry({ ...facts, path, method }); count += 1;
+  }
+  for (const stage of [0, 1]) for (const peer of [true, false]) for (const shutdown of [true, false]) {
+    compareEntry({ stage, peer, shutdown, statusMutatesId: true }); count += 1;
+  }
+  t.diagnostic(`compared ${count} request-entry combinations`);
+});
+
+test('Rust entry preserves exception boundaries, side effects, reentry inputs and strict writes', () => {
+  const scenarios = [{}, { scoped: true }, { scopeMutatesPath: true, method: 'POST' },
+    { stage: 0, shutdown: true }, { stage: 1, peer: false }, { statusMutatesId: true },
+    { path: '/page', query: { token: 'good-token' } },
+    { legacy: true, query: { token: 'good-token' } },
+    { action: 'authenticated', headers: { cookie: 'good-cookie' } },
+    { action: 'authenticated', token: '', local: 'truthy-host-value' },
+    { action: 'cookie', headers: { 'x-forwarded-proto': '\uFEFFhttps ,http' } },
+    { action: 'cookie', cookie: 'custom', secure: true },
+    { path: '/claude-proxy/p/s', headers: { 'x-api-key': 'share' }, relay: { ok: true, shareId: 'share-id' } },
+    { path: '/claude-proxy/p/s', headers: { 'x-api-key': 'share' }, relay: { ok: true, shareId: 'share-id' }, readonlyShare: true }];
+  for (const scenario of scenarios) {
+    compareEntry(scenario);
+    const count = entryTrace(legacyEntryRuntime, scenario).trace.length;
+    for (let failAt = 0; failAt <= count + 2; failAt++) compareEntry({ ...scenario, failAt });
+  }
+  compareEntry({}); // caught exceptions must not poison the next native call
+});
+
+test('Rust entry preserves distinct implicit and explicit header coercion', () => {
+  const values = [undefined, null, false, 0, 1, Symbol('header'), ['application/pkcs7-signature'],
+    { toString() { return 'application/pkcs7-signature'; } },
+    { toString() { throw new RangeError('coercion failed'); } }];
+  for (const value of values) {
+    compareEntry({ method: 'POST', path: `/ios-ota/udid/callback/${'a'.repeat(64)}`,
+      headers: { 'content-type': value } });
+    compareEntry({ action: 'cookie', cookie: value });
+    compareEntry({ action: 'cookie', headers: { 'x-forwarded-proto': value } });
+    compareEntry({ path: '/claude-proxy', headers: { authorization: value, 'x-api-key': value } });
+  }
+});
+
+test('Rust auth endpoints preserve response bytes, callback order and every exception boundary', t => {
+  const scenarios = [
+    { route: 'GET /login' }, { route: 'GET /login', query: { error: 1, redirect: '/中文?x=1&y=2' } },
+    { route: 'GET /logout' },
+    { route: 'POST /login', body: { password: 'good-token', redirect: '/manage' }, secure: true },
+    { route: 'POST /login', body: { password: 'bad', redirect: '/manage?x=中' } },
+    { route: 'POST /login', body: null },
+    { route: 'POST /api/auth/exchange', headers: { 'x-access-token': 'good-token' } },
+    { route: 'POST /api/auth/exchange', token: '' },
+    { route: 'POST /api/auth/exchange', headers: { 'x-access-token': 'bad' }, statusMutatesId: true },
+    ...[undefined, null, {}, { path: '/chat' }, { path: false }, { path: ['chat'] }]
+      .map(body => ({ route: 'POST /api/auth/ws-ticket', body })),
+  ];
+  let count = 0;
+  for (const scenario of scenarios) {
+    compareEntry(scenario); count++;
+    const steps = entryTrace(legacyEntryRuntime, scenario).trace.length;
+    for (let failAt = 0; failAt <= steps + 1; failAt++) {
+      compareEntry({ ...scenario, failAt }); count++;
+    }
+  }
+  t.diagnostic(`compared ${count} auth endpoint and injected-failure cases`);
+});
+
+test('asynchronous relay authority is awaited once and failed persistence never reaches a protected route', async () => {
+  for (const outcome of ['success', 'denied', 'write-failed']) {
+    let begin, complete;
+    const began = new Promise(resolve => { begin = resolve; });
+    const pending = new Promise((resolve, reject) => { complete = outcome === 'write-failed' ? reject : resolve; });
+    let calls = 0;
+    const h = await buildHarness({ accessToken: 'sekret', local: false, asyncRelay: true,
+      relayAuthorizer: input => { calls++; begin(input); return pending; },
+    });
+    try {
+      const request = raw(h.base, '/claude-proxy/p/remote/v1/messages', {
+        method: 'POST', headers: { 'x-api-key': 'mcr1.abcdefghijklmnop.fixture-secret', accept: 'application/json' },
+      });
+      assert.deepEqual(await began, { credential: 'mcr1.abcdefghijklmnop.fixture-secret', method: 'POST', pathname: '/claude-proxy/p/remote/v1/messages' });
+      assert.equal(h.state.admitted, 0, 'no forwarding before durable authorization');
+      complete(outcome === 'write-failed'
+        ? Object.assign(new Error('secret payload must not be logged'), { code: 'STATE_WRITE_FAILED' })
+        : { ok: outcome === 'success', shareId: 'share-1' });
+      const response = await request;
+      assert.equal(response.status, outcome === 'success' ? 200 : 403, outcome);
+      assert.equal(h.state.admitted, outcome === 'success' ? 1 : 0);
+      assert.equal(calls, 1);
+      if (outcome === 'success') {
+        assert.equal((await response.json()).shareId, 'share-1');
+        assert.equal(h.state.metrics.filter(m => m === 'multicc_auth_provider_relay_share_total').length, 1);
+      }
+      if (outcome === 'write-failed') {
+        assert.deepEqual(h.state.warnings, [['provider_relay_share_auth_failed', { requestId: 'req-1', code: 'STATE_WRITE_FAILED' }]]);
+      }
+    } finally { await h.close(); }
+  }
+});
+
+test('peer denial and public-path bypass do not schedule asynchronous relay work', async () => {
+  let calls = 0;
+  const h = await buildHarness({ local: false, accessToken: 'sekret', asyncRelay: true,
+    relayAuthorizer: () => { calls++; return { ok: true }; },
+  });
+  try {
+    assert.equal((await raw(h.base, '/healthz', { headers: { 'x-api-key': 'unused' } })).status, 200);
+    assert.equal(calls, 0);
+    h.state.peerAllowed = false;
+    assert.equal((await raw(h.base, '/codex-proxy/p/responses', { method: 'POST', headers: { 'x-api-key': 'unused' } })).status, 403);
+    assert.equal(calls, 0);
+  } finally { await h.close(); }
+});
+
+test('a disconnected async relay requester cannot forward after its authorization completes', async () => {
+  const http = require('node:http');
+  let begin, finish;
+  const began = new Promise(resolve => { begin = resolve; });
+  const pending = new Promise(resolve => { finish = resolve; });
+  const h = await buildHarness({ local: false, accessToken: 'sekret', asyncRelay: true,
+    relayAuthorizer: () => { begin(); return pending; },
+  });
+  try {
+    const request = http.request(h.base + '/codex-proxy/p/responses', {
+      method: 'POST', headers: { 'x-api-key': 'fixture-secret' },
+    });
+    request.on('error', () => {});
+    request.end();
+    await began;
+    const closed = new Promise(resolve => request.on('close', resolve));
+    request.destroy();
+    await closed;
+    // Probe another HTTP request to allow the server to observe peer closure.
+    await raw(h.base, '/healthz');
+    const admitted = h.state.admitted;
+    finish({ ok: true, shareId: 'late' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.state.admitted, admitted);
+  } finally { finish({ ok: true }); await h.close(); }
 });

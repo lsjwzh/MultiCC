@@ -88,12 +88,38 @@ pub async fn serve(options: ServeOptions) -> i32 {
     // One router for every client connection; the per-connection upstream
     // handle is attached to each request by `serve_connection`.
     let app = Arc::new(App::from_env(&options, &policy));
-    let router = native_routes(app);
+    let root = app.data_root.clone();
+    match tokio::task::spawn_blocking(move || crate::app::services::Runtime::load(&root)).await {
+        Ok(Ok(runtime)) => {
+            let _ = app.services.set(Arc::new(runtime));
+        }
+        _ => {
+            log("cannot initialize service routes");
+            return 1;
+        }
+    }
+    let root = app.data_root.clone();
+    match tokio::task::spawn_blocking(move || {
+        multicc_core::workspace_sharing::external::Runtime::open(root.join("external-fleets.json"))
+    })
+    .await
+    {
+        Ok(Ok(runtime)) => {
+            let _ = app.external_workspaces.set(Arc::new(runtime));
+        }
+        _ => {
+            log("cannot initialize external workspaces");
+            return 1;
+        }
+    }
+    let router = native_routes(Arc::clone(&app));
     let mut supervisor = Supervisor::new(
         &options,
         port,
         RestartPolicy::new(backoff_scale()),
         dotenv_keys,
+        Arc::clone(&app.auth),
+        Arc::clone(&app.source_workspaces),
     );
     supervisor.start();
     let mut signals = match Signals::new() {
@@ -273,6 +299,8 @@ fn reserve_other_internal_port(previous: u16) -> io::Result<u16> {
 // ── supervision ─────────────────────────────────────────────────────────────
 
 struct Node {
+    _auth: crate::auth_control::Registration,
+    _source: crate::auth_control::Registration,
     child: Child,
     started: Instant,
     /// Node's stdin. Never written: it only has to stay open. Whenever this
@@ -293,6 +321,8 @@ struct Supervisor<'a> {
     restart_at: Option<Instant>,
     policy: RestartPolicy,
     dotenv_keys: Vec<String>,
+    auth: Arc<crate::auth_control::Bridge>,
+    source: Arc<crate::auth_control::Bridge>,
 }
 
 impl<'a> Supervisor<'a> {
@@ -301,6 +331,8 @@ impl<'a> Supervisor<'a> {
         public_port: u16,
         policy: RestartPolicy,
         dotenv_keys: Vec<String>,
+        auth: Arc<crate::auth_control::Bridge>,
+        source: Arc<crate::auth_control::Bridge>,
     ) -> Self {
         // No child exists yet: any value will do until `start` reserves one.
         Self {
@@ -312,6 +344,8 @@ impl<'a> Supervisor<'a> {
             restart_at: None,
             policy,
             dotenv_keys,
+            auth,
+            source,
         }
     }
 
@@ -349,11 +383,29 @@ impl<'a> Supervisor<'a> {
         }
         self.upstream_port
             .store(self.internal_port, Ordering::SeqCst);
+        let auth = match self.auth.open() {
+            Ok(auth) => auth,
+            Err(_) => {
+                log("cannot bind authentication control channel");
+                self.restart_at = Some(Instant::now() + Duration::from_millis(500));
+                return;
+            }
+        };
+        let source = match self.source.open() {
+            Ok(source) => source,
+            Err(_) => {
+                log("cannot bind workspace source control channel");
+                self.restart_at = Some(Instant::now() + Duration::from_millis(500));
+                return;
+            }
+        };
         match spawn_node(
             self.options,
             self.public_port,
             self.internal_port,
             &self.dotenv_keys,
+            &auth,
+            &source,
         ) {
             Ok(mut child) => {
                 log(&format!(
@@ -363,6 +415,8 @@ impl<'a> Supervisor<'a> {
                 ));
                 let lifeline = child.stdin.take();
                 self.node = Some(Node {
+                    _auth: auth,
+                    _source: source,
                     child,
                     started: Instant::now(),
                     lifeline,
@@ -431,6 +485,8 @@ fn spawn_node(
     public_port: u16,
     internal_port: u16,
     dotenv_keys: &[String],
+    auth: &crate::auth_control::Registration,
+    source: &crate::auth_control::Registration,
 ) -> io::Result<Child> {
     let mut command = Command::new(&options.node);
     for key in dotenv_keys {
@@ -441,6 +497,10 @@ fn spawn_node(
         .arg(&options.script)
         .args(&options.script_args)
         .env("MULTICC_GATEWAY_CHILD", "1")
+        .env("MULTICC_GATEWAY_AUTH_PORT", auth.port.to_string())
+        .env("MULTICC_GATEWAY_AUTH_CAPABILITY", &auth.capability)
+        .env("MULTICC_GATEWAY_SOURCE_PORT", source.port.to_string())
+        .env("MULTICC_GATEWAY_SOURCE_CAPABILITY", &source.capability)
         .env("MULTICC_GATEWAY_INTERNAL_PORT", internal_port.to_string())
         .env("MULTICC_GATEWAY_PID", std::process::id().to_string())
         .env("PORT", public_port.to_string())

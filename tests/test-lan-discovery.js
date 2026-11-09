@@ -168,7 +168,7 @@ test('server composition publishes after listen and shuts discovery down with th
 
   assert.match(serverSource, /createLanDiscoveryRuntime\(/);
   assert.ok(listenIndex >= 0 && publishIndex > listenIndex, 'discovery must publish only after HTTP listen starts');
-  assert.match(serverSource, /ACCESS_TOKEN = token;\s+void lanDiscovery\.reconcile\(\);/);
+  assert.match(serverSource, /authSecurity\.setAccessToken\(token\);\s+void lanDiscovery\.reconcile\(\);/);
   assert.match(serverSource, /\n\s+lanDiscovery,\s*\n/);
   assert.match(lifecycleSource, /await lanDiscovery\?\.stop\?\.\(\)/);
 });

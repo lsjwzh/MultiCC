@@ -315,7 +315,8 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(source.includes("} = require('./src/session')"));
   assert.ok(source.includes("createWorkspaceRuntime } = require('./src/workspace/runtime')"));
   assert.ok(source.includes('const workspaceRuntime = createWorkspaceRuntime({'));
-  assert.ok(workspaceRuntime.includes('const sessionState = createSessionStateService({'));
+  assert.ok(workspaceRuntime.includes('getNative().RustWorkspaceState'));
+  assert.ok(!workspaceRuntime.includes('const status = new Map()'));
   assert.ok(source.includes("createSessionAdminRuntime } = require('./src/routes/session-admin')"));
   assert.ok(source.includes('const sessionAdmin = createSessionAdminRuntime({'));
   assert.ok(source.includes('sessionAdmin.mountRoutes(app)'));
@@ -327,11 +328,13 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(sessionAdmin.includes("app.get('/api/v1/directories/:id/workspace'"));
   assert.ok(orchestrationRoutes.includes("app.get('/api/v1/sessions/:id/waits'"));
   // The auth surface (shutdown gate, login/logout, gate middleware, exchange,
-  // ws-ticket) is composed from src/routes/auth.js; the wait-resolve bypass
-  // regex lives in that module now.
+  // ws-ticket) is composed from src/routes/auth.js. The gate delegates to Rust;
+  // real wait-resolve method/path authorization is covered by auth-routes.
   assert.ok(source.includes("createAuthRuntime } = require('./src/routes/auth')"));
   assert.ok(source.includes('authRuntime.mountRoutes(app)'));
-  assert.ok(authRoutes.includes("/^\\/api\\/wait\\/[^/]+\\/resolve$/"));
+  assert.ok(authRoutes.includes('const native = getNative()'));
+  assert.ok(authRoutes.includes('native.httpEntryGate(stage, req, res, next, entryPort)'));
+  assert.ok(authRoutes.includes("app.use(gate('auth'))"));
   assert.doesNotMatch(source, /app\.post\(['"]\/api\/(?:v1\/)?sessions\/:id\/dispatch/);
   assert.equal(fs.existsSync(path.join(ROOT, 'src', 'routes', 'dispatch-contract.js')), false);
   assert.ok(source.includes("createVoiceHost } = require('./src/voice/host')"));
@@ -371,10 +374,15 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.doesNotMatch(source, /TASK_STATE_DEFAULTS|taskStatePayload\(/,
     'no second getTaskState/setTaskState may grow back inside server.js');
   const taskStateStore = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'task-state-store.js'), 'utf8');
-  assert.ok(taskStateStore.includes('taskStatePayload(next)'),
+  assert.ok(taskStateStore.includes('taskStatePayload'),
     'the store must share the payload contract');
-  assert.ok(taskStateStore.includes("bus.emit('task:state-changed', sessionId, cur, next)"),
+  assert.ok(taskStateStore.includes('sessionRecordsOwner'),
+    'merge and write must stay in the one native record owner');
+  assert.ok(taskStateStore.includes('busEmit'),
     'the event hub derives task.* events from every write');
+  const recordOwner = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'session_records.rs'), 'utf8');
+  assert.ok(recordOwner.includes('task:state-changed'),
+    'the native owner emits the bus event before saving');
 });
 
 test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {

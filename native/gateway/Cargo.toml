@@ -17,10 +17,17 @@ axum = "0.8"
 base64 = "0.22"
 flate2 = "1"
 http-body-util = "0.1"
+http-body = "1"
+futures-util = "0.3"
+url = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12"] }
 hyper = { version = "1", features = ["http1", "server", "client"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
 multicc-core = { path = "../core" }
 serde_json = { version = "1", features = ["preserve_order"] }
+serde = "1"
 sha1 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal", "fs"] }
 tokio-util = { version = "0.7", features = ["io"] }

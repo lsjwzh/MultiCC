@@ -16,14 +16,11 @@
 use std::collections::HashMap;
 
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 
 use crate::js::serde::js_json_stringify;
 use crate::js::string::js_trim;
 
 pub const COOKIE_NAME: &str = "multicc_auth";
-pub const COOKIE_VERSION: i64 = 1;
-pub const COOKIE_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 pub const API_VERSION: &str = "v1";
 
 // ── header text as Node exposes it ─────────────────────────────────────────
@@ -98,130 +95,10 @@ impl NodeHeaders {
     }
 }
 
-// ── crypto helpers (auth-security.js) ──────────────────────────────────────
-
-/// `timingSafeEqualText`: UTF-8 bytes, length first, then constant time.
-pub fn timing_safe_equal_text(left: &str, right: &str) -> bool {
-    let (a, b) = (left.as_bytes(), right.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut block = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Sha256::new();
-    inner.update(block.map(|byte| byte ^ 0x36));
-    inner.update(message);
-    let mut outer = Sha256::new();
-    outer.update(block.map(|byte| byte ^ 0x5c));
-    outer.update(inner.finalize());
-    outer.finalize().into()
-}
-
-fn base64url(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-/// `Buffer.from(text, 'base64url')`: both alphabets, padding and anything
-/// outside the alphabet ignored, a dangling sextet dropped.
-fn base64url_decode_lenient(text: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len() * 3 / 4);
-    let mut buffer: u32 = 0;
-    let mut bits = 0u32;
-    for byte in text.bytes() {
-        let sextet = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'-' | b'+' => 62,
-            b'_' | b'/' => 63,
-            b'=' => break,
-            _ => continue,
-        };
-        buffer = (buffer << 6) | u32::from(sextet);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buffer >> bits) as u8);
-            buffer &= (1 << bits) - 1;
-        }
-    }
-    out
-}
-
-/// `sign(payload)`: empty when there is no secret.
-pub fn sign(secret: &str, payload: &str) -> String {
-    if secret.is_empty() {
-        return String::new();
-    }
-    base64url(&hmac_sha256(secret.as_bytes(), payload.as_bytes()))
-}
-
-/// `createCookie()` with the clock and the 8 nonce bytes supplied.
-pub fn create_cookie(secret: &str, now_ms: i64, nonce: [u8; 8]) -> String {
-    let iat = now_ms.div_euclid(1000);
-    let exp = (now_ms + COOKIE_TTL_MS).div_euclid(1000);
-    let claims = format!(
-        "{{\"v\":{COOKIE_VERSION},\"iat\":{iat},\"exp\":{exp},\"n\":\"{}\"}}",
-        base64url(&nonce)
-    );
-    let body = base64url(claims.as_bytes());
-    let signature = sign(secret, &body);
-    format!("{body}.{signature}")
-}
-
-fn js_integer(value: Option<&Value>) -> Option<f64> {
-    let number = value?.as_f64()?;
-    (number.is_finite() && number.fract() == 0.0).then_some(number)
-}
-
-/// `verifyCookie(cookie)`.
-pub fn verify_cookie(secret: &str, cookie: &str, now_ms: i64) -> bool {
-    if secret.is_empty() {
-        return false;
-    }
-    let parts: Vec<&str> = cookie.split('.').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        return false;
-    }
-    if !timing_safe_equal_text(parts[1], &sign(secret, parts[0])) {
-        return false;
-    }
-    let decoded = String::from_utf8_lossy(&base64url_decode_lenient(parts[0])).into_owned();
-    let Ok(claims) = crate::json_lenient::from_str::<Value>(&decoded) else {
-        return false;
-    };
-    let current = now_ms.div_euclid(1000) as f64;
-    let version_ok = claims
-        .get("v")
-        .and_then(Value::as_f64)
-        .is_some_and(|v| v == COOKIE_VERSION as f64);
-    let (Some(iat), Some(exp)) = (js_integer(claims.get("iat")), js_integer(claims.get("exp")))
-    else {
-        return false;
-    };
-    if !version_ok {
-        return false;
-    }
-    if iat > current + 60.0 || exp <= current || exp <= iat {
-        return false;
-    }
-    (exp - iat) * 1000.0 <= (COOKIE_TTL_MS + 1000) as f64
-}
-
-/// `verifyAccessToken(candidate)`; `None` is any non-string value.
-pub fn verify_access_token(secret: &str, candidate: Option<&str>) -> bool {
-    !secret.is_empty() && candidate.is_some_and(|text| timing_safe_equal_text(text, secret))
-}
+pub use crate::auth_security::{
+    create_cookie, sign, timing_safe_equal_text, verify_access_token, verify_cookie, COOKIE_TTL_MS,
+    COOKIE_VERSION,
+};
 
 /// The local `parseCookies` in server.js: split on `;`, first `=` separates,
 /// both sides trimmed, later duplicates win, a pair with an empty name skipped.
@@ -244,9 +121,9 @@ pub fn parse_cookies(header: Option<&str>) -> HashMap<String, String> {
 
 // ── request-locality.js ────────────────────────────────────────────────────
 
-const LOOPBACK_ADDRESSES: &[&str] = &["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+pub const LOOPBACK_ADDRESSES: &[&str] = &["127.0.0.1", "::1", "::ffff:127.0.0.1"];
 
-const FORWARDING_HEADERS: &[&str] = &[
+pub const FORWARDING_HEADERS: &[&str] = &[
     "forwarded",
     "x-real-ip",
     "via",
@@ -263,14 +140,30 @@ const FORWARDING_HEADERS: &[&str] = &[
 ];
 
 pub fn request_host(host: Option<&str>) -> String {
-    let raw = js_trim(host.unwrap_or("")).to_lowercase();
-    if raw.starts_with('[') {
-        return match raw.find(']') {
-            Some(closing) if closing > 0 => raw[1..closing].to_string(),
-            _ => raw,
-        };
-    }
-    raw.split(':').next().unwrap_or("").to_string()
+    request_host_utf16(&crate::js::JsString::from_rust_str(host.unwrap_or(""))).to_string_lossy()
+}
+
+/// Host adapters may contain isolated UTF-16 surrogates; preserve them just as
+/// String.trim().toLowerCase() does, while wire headers use the same rules.
+pub fn request_host_utf16(host: &crate::js::JsString) -> crate::js::JsString {
+    let raw = host.trim().to_lowercase();
+    let units = raw.as_units();
+    let (start, end) = if units.first() == Some(&91) {
+        match units.iter().position(|u| *u == 93) {
+            Some(end) if end > 0 => (1, end),
+            _ => (0, units.len()),
+        }
+    } else {
+        (
+            0,
+            units.iter().position(|u| *u == 58).unwrap_or(units.len()),
+        )
+    };
+    crate::js::JsString::from_units(units[start..end].to_vec())
+}
+
+pub fn local_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 pub fn has_forwarding_metadata<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
@@ -282,7 +175,7 @@ pub fn has_forwarding_metadata<'a>(names: impl IntoIterator<Item = &'a str>) -> 
 
 pub fn is_external_proxy_request(headers: &NodeHeaders) -> bool {
     let host = request_host(headers.get("host"));
-    let local_host = host == "localhost" || host == "127.0.0.1" || host == "::1";
+    let local_host = local_host(&host);
     has_forwarding_metadata(headers.names())
         || !local_host
         || host.ends_with(".ts.net")
@@ -446,7 +339,7 @@ pub fn encode_uri_component(text: &str) -> String {
 /// qs's decoder: `+` is a space, then `decodeURIComponent`, and when that
 /// throws (a `%` without two hex digits, or bytes that are not UTF-8) the
 /// whole string with only the `+` replaced.
-fn percent_decode_plus(text: &str) -> String {
+pub fn percent_decode_plus(text: &str) -> String {
     let replaced = text.replace('+', " ");
     let bytes = replaced.as_bytes();
     let nibble = |byte: u8| (byte as char).to_digit(16).map(|digit| digit as u8);
@@ -509,7 +402,7 @@ pub fn query_param(original_url: &str, name: &str) -> QueryParam {
         if key == name {
             count += 1;
             found = Some(percent_decode_plus(raw_value));
-        } else if key.starts_with(&nested) && key[nested.len()..].contains(']') {
+        } else if key.starts_with(&nested) {
             count += 2;
         }
     }
@@ -693,37 +586,6 @@ mod tests {
     }
 
     #[test]
-    fn hmac_matches_rfc4231_case_2() {
-        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
-        let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(
-            hex,
-            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
-        );
-    }
-
-    #[test]
-    fn cookie_round_trips_and_expires() {
-        let now = 1_700_000_000_123;
-        let cookie = create_cookie("secret-token", now, [1, 2, 3, 4, 5, 6, 7, 8]);
-        assert!(verify_cookie("secret-token", &cookie, now));
-        assert!(!verify_cookie("other-token", &cookie, now));
-        assert!(!verify_cookie("", &cookie, now));
-        assert!(!verify_cookie(
-            "secret-token",
-            &cookie,
-            now + COOKIE_TTL_MS + 1000
-        ));
-        assert!(!verify_cookie("secret-token", &format!("{cookie}.x"), now));
-        let (body, _) = cookie.split_once('.').unwrap();
-        let claims = String::from_utf8(base64url_decode_lenient(body)).unwrap();
-        assert_eq!(
-            claims,
-            "{\"v\":1,\"iat\":1700000000,\"exp\":1702592000,\"n\":\"AQIDBAUGBwg\"}"
-        );
-    }
-
-    #[test]
     fn non_ascii_token_header_never_matches_like_node() {
         // Node reads header bytes as latin1, then Buffer.from() re-encodes UTF-8.
         let raw = "密码".as_bytes();
@@ -842,7 +704,7 @@ mod tests {
         assert_eq!(p("/d?path=a&path=b"), QueryParam::Other);
         assert_eq!(p("/d?path[]=a"), QueryParam::Other);
         assert_eq!(p("/d?path%5Bk%5D=a"), QueryParam::Other);
-        assert_eq!(p("/d?path[=a"), QueryParam::Missing);
+        assert_eq!(p("/d?path[=a"), QueryParam::Other);
         // decodeURIComponent throws on any stray `%`: qs keeps the whole text.
         assert_eq!(p("/d?path=a%zz%41"), QueryParam::Text("a%zz%41".into()));
         assert_eq!(p("/d?path=100%"), QueryParam::Text("100%".into()));

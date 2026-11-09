@@ -16,6 +16,7 @@ const {
   buildHandoffCheckpoint,
 } = require('../src/cli-switch');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('../src/cli/switch-runtime');
+const { recordsOf } = require('./helpers/session-records');
 
 function createResponse() {
   return {
@@ -898,7 +899,7 @@ test('cli/versions reports a per-cli error entry without failing the whole call'
 test('applying a pending switch publishes nothing when persistence fails and remains retryable', async () => {
   const { createSessionPersistence } = require('../src/session/persistence');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', cliSessionId: 'original' };
-  const records = new Map([['s1', session]]); let fail = false;
+  const records = recordsOf([['s1', session]]); let fail = false;
   const persistence = createSessionPersistence({ records, store: { save() { if (fail) throw Error('disk-full'); } } });
   const h = createHarness({ session, records, sessionPersistence: persistence });
   h.chat.isStreaming = true; await h.invoke({ body: { cli: 'codex' } });
@@ -951,7 +952,7 @@ test('待生效配置持久化失败会恢复自动池当前线路', async () =>
     providerSelection: { mode: 'auto', protocol: 'anthropic', candidates: [
       { providerId: 'relay-a' }, { providerId: 'relay-b' },
     ] }, autoProviderLastRoute: { providerId: 'relay-b', model: 'model-b' } };
-  const records = new Map([['s1', session]]);
+  const records = recordsOf([['s1', session]]);
   let fail = true;
   const persistence = createSessionPersistence({ records, store: {
     save() { if (fail) throw Error('disk-full'); },

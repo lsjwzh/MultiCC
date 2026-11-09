@@ -171,17 +171,32 @@ impl JsString {
         }
     }
 
-    /// `String.prototype.toLowerCase` through the lossy view. Both languages
-    /// use Unicode Default Case Conversion (including the contextual final
-    /// sigma); lone surrogates are unaffected by JS and become U+FFFD here,
-    /// which only ever matters for text that is compared against ASCII.
+    /// `String.prototype.toLowerCase` using Unicode Default Case Conversion
+    /// (including contextual final sigma), preserving isolated surrogates.
     pub fn to_lowercase(&self) -> JsString {
-        JsString::from_rust_str(&self.as_str_lossy().to_lowercase())
+        self.map_case(str::to_lowercase)
     }
 
-    /// `String.prototype.toUpperCase`; same lossy caveat as [`Self::to_lowercase`].
+    /// `String.prototype.toUpperCase`, preserving isolated surrogates.
     pub fn to_uppercase(&self) -> JsString {
-        JsString::from_rust_str(&self.as_str_lossy().to_uppercase())
+        self.map_case(str::to_uppercase)
+    }
+
+    fn map_case(&self, convert: fn(&str) -> String) -> JsString {
+        let mut units = Vec::with_capacity(self.units.len());
+        let mut run = String::new();
+        for decoded in char::decode_utf16(self.units.iter().copied()) {
+            match decoded {
+                Ok(ch) => run.push(ch),
+                Err(error) => {
+                    units.extend(convert(&run).encode_utf16());
+                    run.clear();
+                    units.push(error.unpaired_surrogate());
+                }
+            }
+        }
+        units.extend(convert(&run).encode_utf16());
+        JsString::from_units(units)
     }
 }
 
@@ -470,5 +485,21 @@ mod tests {
         let lone = JsString::from_units(vec![0xD83D]);
         assert_eq!(lone.to_string_lossy(), "\u{FFFD}");
         assert_eq!(lone.utf8_lossy_bytes(), "\u{FFFD}".as_bytes());
+    }
+
+    #[test]
+    fn case_mapping_preserves_surrogates_and_contextual_sigma() {
+        // Node: "AΣ\ud800İß𐐀\udc00".toLowerCase()/toUpperCase().
+        let value = JsString::from_units(vec![
+            0x41, 0x3a3, 0xd800, 0x130, 0xdf, 0xd801, 0xdc00, 0xdc00,
+        ]);
+        assert_eq!(
+            value.to_lowercase().as_units(),
+            &[0x61, 0x3c2, 0xd800, 0x69, 0x307, 0xdf, 0xd801, 0xdc28, 0xdc00,]
+        );
+        assert_eq!(
+            value.to_uppercase().as_units(),
+            &[0x41, 0x3a3, 0xd800, 0x130, 0x53, 0x53, 0xd801, 0xdc00, 0xdc00,]
+        );
     }
 }

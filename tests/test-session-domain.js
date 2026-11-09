@@ -712,3 +712,55 @@ test('chat history delivery proof propagates permission errors and bypasses serv
   persisted = [{ deliveryId: 'disk-only' }];
   assert.equal(service.hasPersistedDelivery('s1', 'disk-only'), true);
 });
+
+
+test('native session transitions match the frozen policy over numeric and status boundaries', (t) => {
+  // `now: undefined` falls back to Date.now() in both implementations, and the
+  // two differential calls run in separate milliseconds; pin the clock so the
+  // frozen policy comparison stays deterministic.
+  const realNow = Date.now;
+  Date.now = () => 1794182756492;
+  t.after(() => { Date.now = realNow; });
+  const old = require('./helpers/legacy-session-state-transition');
+  const next = require('../src/session/state-transition');
+  const statuses = [...old.SESSION_STATUSES, undefined, null, false, 4, '', 'unknown', '中文\ud800', 'a\0b', ['running'], Symbol('bad')];
+  const numbers = [undefined, null, false, true, -0, 0, 1, -1, 3.5, NaN, Infinity, -Infinity, '', '2', 'bad', [], [3], 4n, new Date(50)];
+  function outcome(fn) { try { const value = fn(); return { value, frozen: Object.isFrozen(value), stateFrozen: Object.isFrozen(value.state), keys: Object.keys(value.state) }; }
+    catch (e) { return { error: e.constructor.name, message: e.message }; } }
+  let comparisons = 0;
+  for (const status of statuses) for (const now of numbers) for (const pendingWork of [false, true]) {
+    const previous = { status: 'running', lastActivity: 20, runStartedAt: 10, runEndedAt: null };
+    assert.deepEqual(outcome(() => next.transitionSessionState(previous, { status }, { now, pendingWork })),
+      outcome(() => old.transitionSessionState(previous, { status }, { now, pendingWork })), `status/clock ${comparisons}`);
+    comparisons++;
+  }
+  for (const value of numbers) for (const field of ['lastActivity', 'runStartedAt', 'runEndedAt']) {
+    const previous = { status: 'running', lastActivity: 20, runStartedAt: 10, runEndedAt: null, [field]: value };
+    for (const status of ['idle', 'running', 'waiting']) {
+      assert.deepEqual(outcome(() => next.transitionSessionState(previous, { status }, { now: 100 })),
+        outcome(() => old.transitionSessionState(previous, { status }, { now: 100 }))); comparisons++;
+    }
+  }
+  assert.deepEqual(next.initialSessionState(), old.initialSessionState());
+  console.log(`session transition differential: ${comparisons} cases`);
+});
+
+test('native session transition reads only selected fields in the original getter order', () => {
+  const old = require('./helpers/legacy-session-state-transition');
+  const next = require('../src/session/state-transition');
+  function exercise(module, changedStatus) {
+    const reads = []; let statusReads = 0;
+    const previous = { get status() { reads.push('status'); return ++statusReads === 1 ? 'running' : changedStatus; },
+      get lastActivity() { reads.push('activity'); return { valueOf() { reads.push('activity-number'); return 20; } }; },
+      get runStartedAt() { reads.push('started'); return 10; }, get runEndedAt() { reads.push('ended'); return null; },
+      get private() { throw Error('private field read'); } };
+    const patch = { get status() { reads.push('patch'); return undefined; } };
+    let value, error;
+    try { value = module.transitionSessionState(previous, patch, { now: { valueOf() { reads.push('now'); return 100; } } }); }
+    catch (e) { error = [e.constructor.name, e.message]; }
+    return { reads, value, error };
+  }
+  for (const status of ['running', 'idle', undefined, null, 'bad', Symbol('x')]) {
+    assert.deepEqual(exercise(next, status), exercise(old, status), String(status));
+  }
+});

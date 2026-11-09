@@ -211,12 +211,13 @@ const { createSessionHibernationRuntime } = require('../src/session/hibernation'
 const { createSessionPersistence } = require('../src/session/persistence');
 const { createTaskLifecycleHost } = require('../src/task-board/lifecycle-host');
 const { mkRuntime } = require('./helpers/task-board-runtime');
+const { recordsOf, resetTaskState } = require('./helpers/session-records');
 
 function cleanupFixture(t, options = {}) {
   const record = { id: 'bound', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: 'tsk-1',
     worktreePath: '/tmp/dir-1/.multicc-worktrees/bound', branch: 'multicc/bound',
     workspaceState: 'awake', cliSessionId: 'native-original' };
-  const records = new Map([[record.id, record]]);
+  const records = recordsOf([[record.id, record]]);
   let exists = options.exists !== false, busy = false, failSession = false, failBoard = false;
   let removes = 0, merges = 0;
   const persistence = createSessionPersistence({ records, store: { save() {
@@ -233,7 +234,7 @@ function cleanupFixture(t, options = {}) {
   const hooks = createTaskLifecycleHost({ records, getBoard: () => h.runtime.getBoard(),
     getShell: () => ({ stateTarget: () => ({}) }), getState: () => ({}),
     getRunState: () => 'idle', isSessionBusy: () => busy,
-    getHibernation: () => hibernation });
+    getHibernation: () => hibernation, resetTaskState: id => resetTaskState(records, id) });
   h = mkRuntime({ records, ...hooks,
     atomicWriteJson: (file, value) => { if (failBoard) throw new Error('disk full'); fs.writeFileSync(file, JSON.stringify(value)); },
     existsSync: () => exists,

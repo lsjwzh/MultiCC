@@ -8,6 +8,7 @@ const test = require('node:test');
 const { createDispatchTargeting } = require('../src/dispatch/targeting');
 const { composeMessage } = require('../src/message-composer');
 const { createSessionPersistence } = require('../src/session/persistence');
+const { recordsOf } = require('./helpers/session-records');
 const {
   createRoleWorkerService,
   roleWorkerSpec,
@@ -25,7 +26,7 @@ function testEngineerPreset() {
 }
 
 function createHarness(initialRecords = []) {
-  const records = new Map(initialRecords.map(record => [record.id, record]));
+  const records = recordsOf(initialRecords.map(record => [record.id, record]));
   const saved = [];
   const persistence = createSessionPersistence({
     records,

@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::sync::OnceLock;
 
 pub const PROTOCOL_VERSION: u32 = 1;
+pub const CLASSIFY_STATES: [&str; 5] = ["P", "D", "W", "B", "E"];
 
 const THINK_END_MARKER: &str = "<｜end▁of▁thinking｜>";
 
@@ -344,8 +345,8 @@ pub fn request(op: &str, input: &str) -> Result<String, String> {
 
 /// The constant tables as one JSON document; `src/classify/vocab.js` freezes
 /// this snapshot at load and derives its lookups locally.
-pub fn catalog() -> Result<String, String> {
-    Ok(json!({
+pub fn catalog_value() -> Value {
+    json!({
         "classifyDisplay": {
             "D": {
                 "label": "执行成功", "pushType": "succeeded", "pushTitle": "执行成功",
@@ -385,13 +386,15 @@ pub fn catalog() -> Result<String, String> {
         "goalStates": { "achieved": "achieved", "interact": "interact" },
         "turnRunStates": ["queued", "running", "waiting", "background", "succeeded", "error", "idle"],
         "openRunStates": ["queued", "running", "waiting", "background"],
-        "classifyStates": ["P", "D", "W", "B", "E"],
+        "classifyStates": CLASSIFY_STATES,
         "classifyTurnOutcome": {
             "D": "succeeded", "C": "running", "W": "waiting_user",
             "B": "waiting_background", "E": "failed", "P": "running",
         },
     })
-    .to_string())
+}
+pub fn catalog() -> Result<String, String> {
+    Ok(catalog_value().to_string())
 }
 
 #[cfg(test)]

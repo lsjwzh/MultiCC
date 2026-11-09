@@ -21,8 +21,15 @@ test('session bounded-context core has no host or cross-context dependencies', (
       assert.doesNotMatch(dependency, /(?:directory|providers?|git|tmux|orchestration|outbox|wait-service)/);
       // node:-prefixed builtins carry no cross-context coupling, so IO modules
       // (persistence/hibernation) may use them; everything else must stay local.
+      // The migrated transition and record-table modules reach their own Rust
+      // cores through the shared addon loader. This grants no other session
+      // module a host import.
+      const nativeCorePort = (file === path.join('src/session', 'state-transition.js')
+        || file === path.join('src/session', 'records.js'))
+        && dependency === '../native/runtime';
       assert.equal(
-        dependency.startsWith('node:') || dependency.startsWith('./') || dependency === '../session-dto',
+        dependency.startsWith('node:') || dependency.startsWith('./') || dependency === '../session-dto'
+          || nativeCorePort,
         true,
         `${file} has unapproved dependency ${dependency}`,
       );

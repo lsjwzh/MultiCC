@@ -14,7 +14,7 @@
 
 const net = require('node:net');
 
-const GATEWAY_PROTOCOL = 3;
+const GATEWAY_PROTOCOL = 12;
 const INTERNAL_HOST = '127.0.0.1';
 // Max PROXY v1 line length including CRLF (docs/gateway.md §5).
 const MAX_HEADER_BYTES = 107;
@@ -29,6 +29,33 @@ const PROXY_PREFIX = 'PROXY ';
 function isGatewayChild(env = process.env, ppid = process.ppid) {
   return String((env && env.MULTICC_GATEWAY_CHILD) || '').trim() === '1'
     && String((env && env.MULTICC_GATEWAY_PID) || '').trim() === String(ppid);
+}
+
+// Capture before any CLI/provider child starts; never leave the control
+// capability in process.env where descendants could inherit it.
+const authBootstrap = isGatewayChild() ? {
+  port: Number(process.env.MULTICC_GATEWAY_AUTH_PORT),
+  capability: process.env.MULTICC_GATEWAY_AUTH_CAPABILITY || '',
+} : null;
+delete process.env.MULTICC_GATEWAY_AUTH_PORT;
+delete process.env.MULTICC_GATEWAY_AUTH_CAPABILITY;
+function connectAuthControl(authSecurity) {
+  if (!authBootstrap) return;
+  authSecurity.connectGateway(authBootstrap.port, authBootstrap.capability);
+  authBootstrap.capability = '';
+}
+const sourceBootstrap = isGatewayChild() ? {
+  port: Number(process.env.MULTICC_GATEWAY_SOURCE_PORT),
+  capability: process.env.MULTICC_GATEWAY_SOURCE_CAPABILITY || '',
+} : null;
+delete process.env.MULTICC_GATEWAY_SOURCE_PORT;
+delete process.env.MULTICC_GATEWAY_SOURCE_CAPABILITY;
+function connectWorkspaceControl(owner, directoryReader, contextReader, authSecurity) {
+  if (!sourceBootstrap) return;
+  const args = [sourceBootstrap.port, sourceBootstrap.capability, directoryReader, contextReader];
+  if (authSecurity) authSecurity.connectWorkspaceGateway(owner, ...args);
+  else owner.connectGateway(...args);
+  sourceBootstrap.capability = '';
 }
 
 // Returns the loopback port the front door reserved for this process, or null
@@ -227,6 +254,8 @@ function watchGatewayLifeline({ env = process.env, stdin = process.stdin, logger
 
 module.exports = {
   GATEWAY_PROTOCOL,
+  connectAuthControl,
+  connectWorkspaceControl,
   MAX_HEADER_BYTES,
   HEADER_TIMEOUT_MS,
   isGatewayChild,
