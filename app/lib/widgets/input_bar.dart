@@ -429,21 +429,29 @@ class _InputBarState extends State<InputBar> {
         ),
       );
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) rethrow;
       // 调度器已经领走这条消息是最常见的失败，原始 code 对用户没有意义。
-      final claimed =
-          error is QueueActionException &&
-          error.code == 'queued_entry_already_claimed';
+      final queueError = error is QueueActionException ? error : null;
+      final claimed = queueError?.code == 'queued_entry_already_claimed';
+      // 超长也单列：原文是 raw code，用户读不出「删减后重试」这条出路。
+      final tooLong = queueError?.code == 'queued_entry_text_too_long';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             claimed
                 ? t('queueEntryAlreadyClaimed')
+                : tooLong
+                ? t('queueEntryTextTooLong', {
+                    'n': '${queueError?.limit ?? 20000}',
+                  })
                 : t('queueActionFailed', {'error': '$error'}),
           ),
           backgroundColor: const Color(0xFFfff1ef),
         ),
       );
+      // 失败必须传回面板：否则 _editQueued 会在失败之上再弹一条「已修改」，
+      // 列表没更新却被读成保存成功（重开还是旧正文）。
+      rethrow;
     }
   }
 

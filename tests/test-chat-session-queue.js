@@ -366,6 +366,36 @@ test('the edit handler relabels the row from the action response', async () => {
   assert.deepEqual(texts(list), ['原正文', '改过的第二条']);
 });
 
+test('a length rejection is translated with the server-provided limit', async () => {
+  const notices = [];
+  const handler = queueApi.createEditHandler({
+    fetch: async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ ok: false, code: 'queued_entry_text_too_long', limit: 20000 }),
+    }),
+    withToken: url => url,
+    getSessionName: () => 's1',
+    notify: (message, kind) => notices.push([message, kind]),
+  });
+  await assert.rejects(() => handler('entry-1', 'x'.repeat(20001)));
+  // 不是 raw code：用户要能直接读出「上限多少、删了再保存」。
+  assert.deepEqual(notices, [[zhT('queueEntryTextTooLong', { n: 20000 }), 'error']]);
+
+  const required = queueApi.createEditHandler({
+    fetch: async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ ok: false, code: 'queued_entry_text_required' }),
+    }),
+    withToken: url => url,
+    getSessionName: () => 's1',
+    notify: (message, kind) => notices.push([message, kind]),
+  });
+  await assert.rejects(() => required('entry-1', ''));
+  assert.deepEqual(notices.at(-1), [zhT('queueEntryTextRequired'), 'error']);
+});
+
 test('the response patch also lands when children is an HTMLCollection', async () => {
   const { documentRef, list } = dockFixture();
   queueApi.configure({ translate: zhT, onEdit: async () => {} });

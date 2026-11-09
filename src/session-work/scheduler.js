@@ -1358,9 +1358,6 @@ function createSessionWorkScheduler({
     if (!cleanEntryId) throw new TypeError('queued edit requires entryId');
     const cleanText = String(text || '').trim();
     if (!cleanText) return { ok: false, code: 'queued_entry_text_required' };
-    if (cleanText.length > MAX_PUBLIC_MESSAGE_LENGTH) {
-      return { ok: false, code: 'queued_entry_text_too_long' };
-    }
     const result = await store.mutate(draft => {
       const item = draft.outbox[cleanEntryId];
       if (!item || item.sessionId !== sessionId) {
@@ -1376,6 +1373,24 @@ function createSessionWorkScheduler({
       }
       if (item.state !== 'pending') {
         return { ok: false, code: 'queued_entry_not_pending' };
+      }
+      // The cap anchors on the stored body, not the displayed one: queuedText()
+      // truncates at MAX_PUBLIC_MESSAGE_LENGTH for the dock, so an entry stored
+      // longer than the cap can never be edited under an absolute limit — the
+      // dialog only ever shows the truncated copy, and re-saving it compares
+      // against the cap, not the original. Reject only edits that GROW the body
+      // past the cap; shortening an over-long entry back toward it must pass.
+      const previousFull = String(item.payload?.message
+        ?? item.payload?.taskText
+        ?? item.payload?.deliveryText
+        ?? '');
+      if (cleanText.length > MAX_PUBLIC_MESSAGE_LENGTH
+          && cleanText.length > previousFull.length) {
+        return {
+          ok: false,
+          code: 'queued_entry_text_too_long',
+          limit: MAX_PUBLIC_MESSAGE_LENGTH,
+        };
       }
       const at = Number(now());
       const previous = queuedText(item);

@@ -450,6 +450,21 @@ test('edit_queued rewrites a pending staged message and maps its error codes', a
     },
   });
   assert.equal(missingResult.response.statusCode, 404);
+
+  // 超长拒绝要原样带上限值：客户端靠它把 raw code 翻译成可读的「最多 N 字符」。
+  const tooLong = fixture({ scheduler: true, queueEditQueued: { ok: false, code: 'queued_entry_text_too_long', limit: 20000 } });
+  const tooLongResult = await invoke(tooLong.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: {
+      action: 'edit_queued',
+      entryId: 'entry-2',
+      text: 'x'.repeat(20001),
+      confirm: true,
+    },
+  });
+  assert.equal(tooLongResult.response.statusCode, 409);
+  assert.equal(tooLongResult.response.body.code, 'queued_entry_text_too_long');
+  assert.equal(tooLongResult.response.body.limit, 20000);
 });
 
 test('reorder_queued is ordering only and reports the queue error codes verbatim', async () => {

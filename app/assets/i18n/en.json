@@ -4204,6 +4204,8 @@
   "queueActionEdit": "Edit",
   "queueActionDefault": "Operation",
   "queueActionFailedNamed": "{action} failed: {error}",
+  "queueEntryTextTooLong": "Text exceeds the length limit ({n} characters); shorten it and save again",
+  "queueEntryTextRequired": "The text is empty; nothing was saved",
   "queueCancelAccepted": "Queued message removed",
   "queuedMessageUpdated": "Queued message updated",
   "queueEntryIdMissing": "Missing queued message id",
