@@ -148,9 +148,11 @@ const MIGRATION_DEBT = Object.freeze({
   // lane it belongs to) so the highlighted choice is the one the host will
   // spawn; the modelState payload grew by 5 lines. Measured 3294/167790, so
   // both ceilings ratchet up. The model-field extraction target is unchanged.
+  // 2026-11-09 添加线路改为显式加载和分组更新：3293 行 / 168109 字节。
+  // 复用托管/原生目录组合减少重复分支；保留 3k 拆分目标。
   'public/run-config.js': Object.freeze({
-    ceiling: 3294,
-    byteCeiling: 167790,
+    ceiling: 3293,
+    byteCeiling: 168109,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

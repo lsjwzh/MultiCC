@@ -2667,108 +2667,107 @@
     // ── 添加线路：按 CLI 分组 ────────────────────────────────────────────────
     function togglePicker() {
       pickerOpen = !pickerOpen;
-      renderPicker();
+      return refreshPicker();
+    }
+
+    async function refreshPicker() {
+      const host = await renderPicker();
+      if (!host) return;
+      const group = pickerData.find(item => item.cli === 'opencode');
+      if (!group || group.items.length) return;
+      // 只由打开动作加载一次；空结果也是终态，渲染不能反过来触发加载。
+      await aiApi.refreshOpenCodeModels();
+      if (closed || !dialog.open || !pickerOpen || pickerListHost !== host) return;
+      const items = nativePickerItems();
+      if (items.length) { group.items = items; renderPickerList(group); }
     }
 
     async function renderPicker() {
-      // 弹窗本身是滚动容器：先清空 pickerHost 会让内容变短、scrollTop 被夹回去，
-      // 随后 focus() 又会把搜索框滚进视野 —— 用户看到的就是「滑着滑着弹回开头」。
       const keepTop = dialog.scrollTop;
       const keepFilter = pickerListHost ? pickerListHost.scrollTop : 0;
       pickerHost.replaceChildren();
       show(pickerHost, pickerOpen);
       addButton.classList.toggle('on', pickerOpen);
-      if (!pickerOpen) { pickerListHost = null; return; }
+      if (!pickerOpen || closed) { pickerListHost = null; return null; }
       const search = el(doc, 'input', 'rc-search');
       search.type = 'search';
       search.placeholder = tt('runConfigSearchLine', '搜索线路或模型…');
       search.value = pickerFilter;
       search.oninput = () => { pickerFilter = search.value; renderPickerList(); };
-      pickerListHost = el(doc, 'div', 'rc-picker-list');
-      pickerHost.append(search, pickerListHost);
-      if (!pickerData) {
-        pickerListHost.append(el(doc, 'p', 'rc-faint', tt('runConfigLoading', '正在读取线路…')));
-        pickerData = await loadPickerData();
-      }
-      renderPickerList();
-      if (pickerListHost) pickerListHost.scrollTop = keepFilter;
-      dialog.scrollTop = keepTop;
+      const host = pickerListHost = el(doc, 'div', 'rc-picker-list');
+      pickerHost.append(search, host);
+      // 焦点只在用户打开时设置；异步目录回来不能抢走正在输入/选择的焦点。
       try { search.focus({ preventScroll: true }); } catch (_) { search.focus(); }
       dialog.scrollTop = keepTop;
+      if (!pickerData) {
+        host.append(el(doc, 'p', 'rc-faint', tt('runConfigLoading', '正在读取线路…')));
+        const data = await loadPickerData();
+        if (closed || !dialog.open || !pickerOpen || pickerListHost !== host) return null;
+        pickerData = data;
+      }
+      renderPickerList();
+      host.scrollTop = keepFilter;
+      dialog.scrollTop = keepTop;
+      return host;
+    }
+
+    function nativePickerItems() {
+      return aiApi.openCodeNativeProviders().map(item => ({
+        providerId: item.value, cli: 'opencode', model: '', label: item.label.replace(/^OpenCode 原生 · /, ''),
+      }));
     }
 
     function loadPickerData() {
       const wanted = availableClis().filter(item => item.ok).map(item => item.cli);
-      return Promise.all(wanted.map(async cli => {
-        if (cli === 'opencode') {
-          const natives = aiApi.openCodeNativeProviders();
-          if (!natives.length) {
-            aiApi.refreshOpenCodeModels(() => { if (pickerOpen) { pickerData = null; renderPicker(); } });
-          }
-          return { cli, native: true, error: false, items: natives.map(item => ({
-            providerId: item.value, cli, model: '',
-            label: item.label.replace(/^OpenCode 原生 · /, ''),
-          })) };
-        }
-        if (VENDOR_NATIVE_SET.has(cli)) {
-          const natives = (aiApi.vendorNativeProvidersFor ? aiApi.vendorNativeProvidersFor(cli) : [])
-            .map(item => ({ providerId: item.value, cli, model: '', label: item.label }));
-          // dsh/grok also run managed lines; the provider-less lanes only have
-          // the vendor catalog.
-          if (VENDOR_ONLY_CLIS.has(cli)) {
-            return { cli, native: true, error: false, items: natives };
-          }
-          const catalog = await loadCatalog(cli);
-          return {
-            cli, native: true, error: false,
-            items: [
-              ...catalogApi.providersForCli(catalog, cli).map(provider => ({
-                providerId: String(provider.id), cli, model: provider.model || '',
-                label: provider.name || provider.id, provider,
-              })),
-              ...natives,
-            ],
-          };
-        }
+      return Promise.all(wanted.map(cli => {
+        if (cli === 'opencode') return { cli, native: true, error: false, items: nativePickerItems() };
+        const native = VENDOR_NATIVE_SET.has(cli);
+        const natives = native && aiApi.vendorNativeProvidersFor
+          ? aiApi.vendorNativeProvidersFor(cli).map(item => ({ providerId: item.value, cli, model: '', label: item.label })) : [];
+        if (VENDOR_ONLY_CLIS.has(cli)) return { cli, native, error: false, items: natives };
+        // dsh/grok 同时提供托管和原生线路；任一目录失败只影响其自身分组。
         return loadCatalog(cli).then(catalog => ({
-          cli,
-          native: false,
-          error: false,
-          items: catalogApi.providersForCli(catalog, cli).map(provider => ({
-            providerId: String(provider.id), cli, model: provider.model || '', label: provider.name || provider.id,
-            provider,
-          })),
-        }), () => ({ cli, native: false, error: true, items: [] }));
+          cli, native, error: false,
+          items: [...catalogApi.providersForCli(catalog, cli).map(provider => ({
+            providerId: String(provider.id), cli, model: provider.model || '', label: provider.name || provider.id, provider,
+          })), ...natives],
+        }), () => ({ cli, native, error: true, items: natives }));
       }));
     }
 
-    function renderPickerList() {
+    function renderPickerList(changedGroup) {
       const host = pickerListHost;
       if (!host) return;
       const keepScroll = host.scrollTop;
-      host.replaceChildren();
+      if (!changedGroup) host.replaceChildren();
       const pooled = new Set(rows.map(row => `${row.cli}\n${row.providerId}`));
       const needle = pickerFilter.trim().toLowerCase();
-      for (const group of pickerData || []) {
+      for (const group of changedGroup ? [changedGroup] : pickerData || []) {
+        const section = changedGroup ? [...host.children].find(node => node.dataset.cli === group.cli)
+          : el(doc, 'div', 'rc-picker-section');
+        if (!section) continue;
+        section.dataset.cli = group.cli;
+        section.replaceChildren();
+        if (!changedGroup) host.append(section);
         const items = group.items.filter(item => !needle || `${item.label} ${item.model}`.toLowerCase().includes(needle));
         if (group.error) {
           const head = el(doc, 'div', 'rc-picker-group');
           head.append(mark(doc, group.cli, 's'), el(doc, 'span', null, cliChoiceLabel(group.cli)));
-          host.append(head);
+          section.append(head);
           const failure = el(doc, 'div', 'rc-picker-error');
           failure.append(el(doc, 'span', null, tt('runConfigLoadFailed', '线路列表加载失败')));
           const retry = el(doc, 'button', 'rc-retry', tt('runConfigRetry', '重试'));
           retry.type = 'button';
-          retry.onclick = () => { catalogErrors.delete(group.cli); pickerData = null; renderPicker(); };
+          retry.onclick = () => { catalogErrors.delete(group.cli); pickerData = null; refreshPicker(); };
           failure.append(retry);
-          host.append(failure);
+          section.append(failure);
           continue;
         }
         if (!items.length) continue;
         const head = el(doc, 'div', 'rc-picker-group');
         head.append(mark(doc, group.cli, 's'), el(doc, 'span', null, cliChoiceLabel(group.cli)));
         if (group.native) head.append(el(doc, 'em', null, tt('runConfigNativeNote', '上面的线路也都能跑')));
-        host.append(head);
+        section.append(head);
         for (const item of items) {
           const rowNode = el(doc, 'button', 'rc-picker-item');
           rowNode.type = 'button';
@@ -2782,7 +2781,7 @@
           if (itemLimit) rowNode.append(itemLimit);
           if (already) rowNode.append(el(doc, 'span', 'rc-picker-right', `✓ ${tt('runConfigInPool', '已在池里')}`));
           rowNode.onclick = () => addRow(item);
-          host.append(rowNode);
+          section.append(rowNode);
         }
       }
       host.scrollTop = keepScroll;

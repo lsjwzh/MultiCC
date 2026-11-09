@@ -130,7 +130,8 @@ function probeAddon(file, node = process.execPath) {
     if(['quotaGuardRequestValue','RustQuotaGuard'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.quotaRejectionRequestValue!=='function') process.exit(1);
     if(typeof a.modelRequestPolicyValue!=='function') process.exit(1);
-    if(typeof a.sessionModelDefault!=='function') process.exit(1);
+    if(typeof a.RustModelDefaults!=='function') process.exit(1);
+    if(new a.RustModelDefaults(0).resolve({appType:'claude',models:['probe']},()=>[],()=>0)!=='probe') process.exit(1);
     if(typeof a.retryPolicyValue!=='function') process.exit(1);
     if(typeof a.RustRequestTimer!=='function') process.exit(1);
     if(typeof a.requestLocality!=='function' || !a.requestLocality('local',{socket:{remoteAddress:'127.0.0.1'},headers:{host:'localhost'}})

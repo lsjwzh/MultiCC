@@ -191,3 +191,132 @@ test('qoder model picker: 刷新模型 bypasses both caches and repaints live id
     await page.evaluate('window.testDialog.close()');
   });
 });
+
+// 空目录是一个完整结果；添加线路不能因它不断发请求、替换搜索框和点击目标。
+const pickerProviders = Array.from({ length: 18 }, (_, i) => ({
+  id: `picker-${i}`, name: `测试线路 ${i}`, appType: 'claude', apiFormat: 'anthropic',
+  compatibleClis: ['claude-exp'], model: 'model-a', modelOptions: ['model-a'],
+}));
+const pickerFixture = modelRoute => ({ ...routes,
+  'GET /api/providers': () => json({ providers: pickerProviders, defaults: {} }),
+  'GET /api/opencode/models': modelRoute,
+});
+async function openAutoPicker(page) {
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+  await page.navigate('/run-config-host.html');
+  await page.evaluate(`window.testDialog=MultiCCRunConfig.open({configuration:{cli:'claude-exp'}},['claude-exp','opencode'],()=>{})`);
+  assert.ok(await page.waitFor(`document.querySelectorAll('${D}.rc-line option').length > 2`));
+  await page.evaluate(`document.querySelector('${D}.rc-mode-auto').click();document.querySelector('${D}.rc-add').click()`);
+  assert.ok(await page.waitFor(`document.querySelectorAll('${D}.rc-picker-item').length >= 18`));
+}
+async function holdPickerTarget(page) {
+  await page.evaluate(`(() => {
+    window.pickerSearch=document.querySelector('${D}.rc-search');
+    pickerSearch.value='测试线路';pickerSearch.dispatchEvent(new Event('input',{bubbles:true}));
+    window.pickerTarget=[...document.querySelectorAll('${D}.rc-picker-item')]
+      .find(n=>n.querySelector('.rc-picker-name').textContent==='测试线路 9');
+    pickerTarget.scrollIntoView({block:'center'});pickerTarget.focus({preventScroll:true});
+    window.pickerScroll=document.querySelector('${D}.rc-picker-list').scrollTop;
+    window.pickerPoolSize=document.querySelectorAll('${D}.rc-row').length;
+    window.pickerPressed=false;pickerTarget.onmousedown=()=>{pickerPressed=true;};
+  })()`);
+  await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  return page.evaluate(`(() => {const r=pickerTarget.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+}
+async function assertStablePicker(page) {
+  assert.deepEqual(await page.evaluate(`({
+    search:pickerSearch===document.querySelector('${D}.rc-search'),
+    target:pickerTarget.isConnected, focus:document.activeElement===pickerTarget,
+    text:document.querySelector('${D}.rc-search').value,
+    scroll:Math.abs(document.querySelector('${D}.rc-picker-list').scrollTop-pickerScroll)<1
+  })`), { search: true, target: true, focus: true, text: '测试线路', scroll: true });
+}
+
+for (const status of [200, 503]) test(`自动切换添加线路：OpenCode ${status === 200 ? '空目录' : '读取失败'}不循环刷新，鼠标按下后仍能添加`, async t => {
+  if (!findChromeBinary()) return t.skip('需要 Chrome');
+  await withCdpHarness({ routes: pickerFixture(async () => {
+    await new Promise(resolve => setTimeout(resolve, 30));
+    return json({ models: [] }, status);
+  }), screenshotDir: qaDir() }, async page => {
+    await openAutoPicker(page);
+    const point = await holdPickerTarget(page);
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point });
+    assert.ok(await page.waitFor('pickerPressed'), '鼠标按下确实落在目标线路按钮上');
+    await new Promise(resolve => setTimeout(resolve, 350));
+    assert.equal(page.requests.filter(r => r.path === '/api/opencode/models').length, 1,
+      '一次打开只加载一次，空结果与失败都必须结束这次加载');
+    await assertStablePicker(page);
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
+    assert.ok(await page.waitFor(`!!document.querySelector('${D}.rc-row[data-provider-id="picker-9"]')`));
+    assert.equal(await page.evaluate(`document.querySelectorAll('${D}.rc-row').length-pickerPoolSize`), 1);
+    assert.ok(await page.evaluate(`!!document.querySelector('${D}.rc-row[data-provider-id="picker-9"]')`));
+    await page.evaluate('testDialog.close()');
+  });
+});
+
+test('自动切换添加线路：慢目录返回只更新 OpenCode 分组，其他线路可继续选择', async t => {
+  if (!findChromeBinary()) return t.skip('需要 Chrome');
+  let release;
+  const response = new Promise(resolve => { release = resolve; });
+  await withCdpHarness({ routes: pickerFixture(async () => { await response; return json({ models: LIVE }); }),
+    screenshotDir: qaDir() }, async page => {
+    try {
+      await openAutoPicker(page);
+      const point = await holdPickerTarget(page);
+      await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point });
+      assert.ok(await page.waitFor('pickerPressed'), '慢响应之前按住目标线路');
+      release();
+      assert.ok(await page.waitFor('MultiCCChatAiConfig.openCodeNativeProviders().length > 0'));
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await assertStablePicker(page);
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
+      assert.ok(await page.waitFor(`!!document.querySelector('${D}.rc-row[data-provider-id="picker-9"]')`));
+      assert.equal(await page.evaluate(`document.querySelectorAll('${D}.rc-row').length-pickerPoolSize`), 1);
+      await page.evaluate(`pickerSearch.value='';pickerSearch.dispatchEvent(new Event('input',{bubbles:true}));`);
+      assert.ok(await page.waitFor(`[...document.querySelectorAll('${D}.rc-picker-name')].some(n=>n.textContent==='OpenCode Zen')`));
+      await page.evaluate(`[...document.querySelectorAll('${D}.rc-picker-item')].find(n=>n.querySelector('.rc-picker-name').textContent==='OpenCode Zen').click()`);
+      assert.ok(await page.evaluate(`!!document.querySelector('${D}.rc-row[data-provider-id="opencode-native:opencode"]')`));
+      console.log('添加线路稳定性截图：',await page.screenshot('auto-provider-picker-stable'));
+      await page.evaluate('testDialog.close()');
+    } finally { release(); }
+  });
+});
+
+for (const wholeDialog of [false, true]) test(`自动切换添加线路：${wholeDialog ? '关闭弹窗' : '收起列表'}后忽略迟到响应，重新打开可读取新目录`, async t => {
+  if (!findChromeBinary()) return t.skip('需要 Chrome');
+  let release;
+  const response = new Promise(resolve => { release = resolve; });
+  await withCdpHarness({ routes: pickerFixture(async () => { await response; return json({ models: LIVE }); }),
+    screenshotDir: qaDir() }, async page => {
+    try {
+      await openAutoPicker(page);
+      assert.ok(await page.waitFor(`window.MultiCCRunConfig && !!document.querySelector('${D}.rc-search')`));
+      // 保留旧宿主，验证迟到回调也没有修改已经脱离文档的 DOM。
+      await page.evaluate(`window.oldPicker=document.querySelector('${D}.rc-picker-host');`);
+      if (wholeDialog) {
+        // close 事件是异步派发的；主动延迟处理器，覆盖关闭后响应先到的窗口。
+        await page.evaluate(`const finishClose=testDialog.onclose;testDialog.onclose=()=>setTimeout(finishClose,200);
+          testDialog.close();window.outsideInput=document.createElement('input');document.body.append(outsideInput);outsideInput.focus();`);
+      } else {
+        await page.evaluate(`document.querySelector('${D}.rc-add').click();document.querySelector('${D}.rc-add').focus();`);
+      }
+      await page.evaluate(`window.oldPickerContents=oldPicker.innerHTML;window.focusBeforeReply=document.activeElement;`);
+      release();
+      assert.ok(await page.waitFor('MultiCCChatAiConfig.openCodeNativeProviders().length > 0'));
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.deepEqual(await page.evaluate(`({contents:oldPicker.innerHTML===oldPickerContents,
+        focus:document.activeElement===focusBeforeReply, active:document.activeElement.tagName})`),
+      {contents:true, focus:true, active:wholeDialog ? 'INPUT' : 'BUTTON'});
+      if (wholeDialog) {
+        assert.ok(await page.waitFor('!testDialog.isConnected'));
+        await page.evaluate(`window.testDialog=MultiCCRunConfig.open({configuration:{cli:'claude-exp'}},['claude-exp','opencode'],()=>{})`);
+        assert.ok(await page.waitFor(`document.querySelectorAll('${D}.rc-line option').length > 2`));
+        await page.evaluate(`document.querySelector('${D}.rc-mode-auto').click()`);
+      }
+      await page.evaluate(`document.querySelector('${D}.rc-add').click()`);
+      assert.ok(await page.waitFor(`[...document.querySelectorAll('${D}.rc-picker-name')].some(n=>n.textContent==='OpenCode Zen')`));
+      assert.equal(page.requests.filter(r => r.path === '/api/opencode/models').length, 1);
+      await page.evaluate('testDialog.close()');
+    } finally { release(); }
+  });
+});

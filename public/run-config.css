@@ -223,6 +223,7 @@ dialog .air-config-field input { margin-top: 7px; }
 .rc-picker-host[hidden] { display: none; }
 .rc-search { width: 100%; padding: 7px 10px; border: 1px solid #dbe6f1; border-radius: 9px; background: #fbfdff; font-size: 12px; }
 .rc-picker-list { max-height: 260px; overflow: auto; display: grid; gap: 4px; padding: 4px 2px; }
+.rc-picker-section { display: contents; }
 .rc-picker-group { display: flex; align-items: center; gap: 7px; margin: 6px 2px 1px; color: #7f90a2; font-size: 10px; letter-spacing: .04em; }
 .rc-picker-group em { color: #a8b7c6; font-style: normal; }
 .rc-picker-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid #e6eef6; border-radius: 9px; background: #fff; text-align: left; cursor: pointer; }

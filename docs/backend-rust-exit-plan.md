@@ -1144,9 +1144,9 @@ that rewrites those files therefore redirected MultiCC sessions too — on the
 official Claude account this surfaced as
 `There's an issue with the selected model (deepseek-flash)`.
 
-Selection now lives in `native/core/src/model_default.rs` (addon export
-`sessionModelDefault`, probed by `scripts/rust-source-cache.js`); Node keeps a
-thin bridge in `src/cli/model-default.js`. `src/cli/session-policy.js` only
+Selection now lives in `native/core/src/model_default.rs` (addon owner
+`RustModelDefaults`, probed by `scripts/rust-source-cache.js`); Node keeps the
+host-port assembly in `src/cli/model-default.js`. `src/cli/session-policy.js` only
 resolves the lane facts and passes them in: the provider summary, the lane's
 picker list, the last model the CLI reported and the explicit-selection history.
 
@@ -1212,3 +1212,48 @@ containing a ccswitch-rewritten `settings.json`/`config.toml`.
 收据归档：`data/rust-source/49e5cffd731f59f5e73f0d26/validation/merged-chat-batch/`。
 控制协议仍为 12，整体账本仍为 5/6；剩余 CLI 监管、流式/后台副作用、provider
 宿主编排、历史持久化及聊天 WS 仍需逐批迁移。本批集成不包含推送或生产重启。
+
+## 2026-11-09 续批：默认模型缓存归 Rust
+
+上一批已合入 main：提交 `6c1c2967`，合并 `799aa9de`，合并接口返回
+`deliveryEvidence.state=published`，任务分支已同步，未推送或重启生产。
+
+本续批将 `session-policy.js` 的历史 TTL、结果 Map、失效逻辑及分隔符拼接键删除。
+`native/core/src/model_default.rs::Store` 是每个会话策略实例的唯一缓存所有者；
+`Request / ProviderInfo / History` 原生传值，addon 直接返回字符串或 null。
+旧 `sessionModelDefault(String) -> String` 导出及 JS stringify/parse 桥已删除。
+完整结构体参与缓存键，覆盖 aliasOnly、official、wireDefaultModel、globalProviderCli
+和明确的历史线路作用域，避免线路属性变化及分隔符碰撞造成错误复用。
+
+保持原有列表顺序破同票、按线路统计显式选择、官方账号归并、指定模型优先及
+Codex 空目录不复活旧模型的规则。时钟首次为零仍须读历史；到期、倒退或非有限时钟
+触发刷新。宿主回调/字段读取/时钟转换均在锁外，历史发布按代次校验，重入发布的新
+快照不被外层旧结果覆盖；读取或时钟异常不发布半成品。结果缓存至多 1,024 项，
+达到上限清理可重算结果；历史与 TTL 不受影响。TTL 0 禁用缓存，每次重读。
+
+Node 例外仅为当前记录与线路目录读取、官方 provider 身份查询及启动装配。
+这些宿主端口归属尚未整体迁完，所以继续保留最小适配；Rust 不保活读回调。
+只读取约定字段，不再枚举无关属性或执行 toJSON；生产输入是宿主组装的数据对象。
+字符串保留旧 lenient JSON 边界的孤立 UTF-16 替换规则及 Rust trim 行为，
+此批不另改字符语义。源码能力探针要求新类及一次真实选择成功；控制协议仍为 12。
+
+已通过：冻结旧 Rust 规则的 2,500 组差分、实际新旧 addon 的 3,500 组输入对拍、
+11 项新增缓存/重入/异常/GC 验证、完整 Rust workspace 690 项、真实隔离
+网关与服务检查。完整 `npm test` 退出 0（6,574 项：6,571 通过、0 失败、2 项工具缺失跳过、
+1 项原有 S6 TODO）；最终产物专项连同真实网关 27 项通过，另有配置隔离脚本
+51 条断言通过。此续批尚未提交或合并。
+整体仍为 5/6，不将缓存迁移计为 CLI 监管、聊天持久化或 WS 宿主已完成。
+
+
+最终源码指纹：`af0a05f49780a5e04eb04080`。构建来源与能力探针通过。
+完整 npm 运行使用格式整理前的 `8d543c49f67ea8417e4bb810` 产物；
+逐文件 SHA-256 证实 addon、gateway、CDP 网关及远控二进制与最终构建字节完全一致。
+最终指纹目录另已复跑模型专项与真实网关检查，故无需重复跑同一份二进制的全量测试。
+Rust 格式、JS 语法、852 项测试分层、源码预算、仓库产物及运行时写入治理、
+架构门禁与 diff 检查通过。对抗性复核使用已合并版本复现零时钟不读历史、
+aliasOnly/线路默认模型更新后错误命中缓存，再对照续批结果确认修复。
+
+日志与二进制一致性收据归档：
+`data/rust-source/af0a05f49780a5e04eb04080/validation/model-default-owner/`。
+下一依赖继续 CLI 尝试生命周期及收尾副作用，再处理剩余 provider 宿主、
+历史持久化与聊天 WS；本节不代表这些依赖已完成。

@@ -1,21 +1,12 @@
 'use strict';
 
-// Default-model selection is implemented in native/core/src/model_default.rs.
-// This file is a thin bridge: it serializes the lane facts the host already
-// resolved (provider summary, model list, explicit-selection history) and
-// returns the model the core chose. No selection rule lives here.
+// 选择规则、历史快照及查询缓存均由 Rust 持有；这里只装配宿主读端口。
 
 const { getNative } = require('../native/runtime');
 
-function resolveModelDefault(request) {
-  const reply = getNative().sessionModelDefault(JSON.stringify(request || {}));
-  let parsed;
-  try {
-    parsed = JSON.parse(reply);
-  } catch (_) {
-    return null;
-  }
-  return parsed && typeof parsed.model === 'string' && parsed.model ? parsed.model : null;
+function createModelDefaultResolver({ history, now, historyTtlMs }) {
+  const owner = new (getNative().RustModelDefaults)(historyTtlMs);
+  return request => owner.resolve(request, history, now);
 }
 
-module.exports = { resolveModelDefault };
+module.exports = { createModelDefaultResolver };

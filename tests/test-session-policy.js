@@ -466,3 +466,184 @@ test('Pi thinking levels remain native and never inherit Claude defaults', t => 
     assert.equal(policy.effectiveSessionEffort({ cli: 'pi', effort }), null);
   }
 });
+
+// 原生默认模型缓存：这些用例使用真实 TTL，补充上面禁用缓存的选择规则用例。
+function defaultResolver(options = {}) {
+  return require('../src/cli/model-default').createModelDefaultResolver({
+    history: () => [], now: () => 0, historyTtlMs: 30, ...options,
+  });
+}
+const defaultFacts = extra => ({
+  kind: 'effective', cli: 'claude', appType: 'claude', models: ['a', 'b'], ...extra,
+});
+const modelHistory = model => [{ cli: 'claude-exp', model, provider: null }];
+
+test('原生默认模型缓存：零时钟首次读取、严格 TTL 边界与历史更新', () => {
+  let now = 0, reads = 0, selected = 'b';
+  const resolve = defaultResolver({ now: () => now, history: () => { reads++; return modelHistory(selected); } });
+  assert.equal(resolve(defaultFacts()), 'b');
+  assert.equal(reads, 1);
+  selected = 'a'; now = 29;
+  assert.equal(resolve(defaultFacts()), 'b');
+  assert.equal(reads, 1);
+  now = 30;
+  assert.equal(resolve(defaultFacts()), 'a');
+  assert.equal(reads, 2);
+  now = -1; selected = 'b';
+  assert.equal(resolve(defaultFacts()), 'b', '时钟回退触发刷新');
+  assert.equal(reads, 3);
+  now = NaN; resolve(defaultFacts()); resolve(defaultFacts());
+  assert.equal(reads, 5, '非有限时钟不能无限延长缓存');
+});
+
+test('原生默认模型缓存：线路 aliasOnly、official、wireDefault 改变立即生效', () => {
+  const resolve = defaultResolver();
+  const request = defaultFacts({ kind: 'providerDefault', providerId: 'relay',
+    provider: { modelOptions: ['relay-a'], aliasOnly: false }, wireDefaultModel: 'wire-a' });
+  assert.equal(resolve(request), 'relay-a');
+  request.provider.aliasOnly = true;
+  assert.equal(resolve(request), 'wire-a');
+  request.wireDefaultModel = 'wire-b';
+  assert.equal(resolve(request), 'wire-b');
+  request.provider = { modelOptions: [], official: false };
+  assert.equal(resolve(request), null);
+  request.provider.official = true;
+  assert.equal(resolve(request), 'a');
+  request.kind = 'effective'; request.reportedModel = 'reported';
+  assert.equal(resolve(request), 'a');
+  request.provider.official = false;
+  assert.equal(resolve(request), 'reported');
+});
+
+test('原生默认模型缓存：全局线路标志与分隔符不能碰撞', () => {
+  const resolve = defaultResolver();
+  const request = defaultFacts({ reportedModel: 'reported' });
+  assert.equal(resolve(request), 'a');
+  request.globalProviderCli = true;
+  assert.equal(resolve(request), 'reported');
+  assert.equal(resolve(defaultFacts({ models: ['a\u0001b', 'c'] })), 'a\u0001b');
+  assert.equal(resolve(defaultFacts({ models: ['a', 'b\u0001c'] })), 'a');
+  assert.equal(resolve(defaultFacts({ models: ['a\u0002b', 'c'] })), 'a\u0002b');
+  assert.equal(resolve(defaultFacts({ models: ['a', 'b\u0002c'] })), 'a');
+});
+
+test('原生默认模型缓存：缺省历史线路与明确官方线路分别计数', () => {
+  const resolve = defaultResolver({ history: () => [{ cli: 'claude', provider: 'relay', model: 'b' }] });
+  const request = defaultFacts({ providerId: 'relay', provider: { modelOptions: ['a', 'b'] } });
+  assert.equal(resolve(request), 'b');
+  request.historyProviderId = null;
+  assert.equal(resolve(request), 'a');
+  request.historyProviderId = undefined;
+  assert.equal(resolve(request), 'b');
+});
+
+test('原生默认模型缓存：各实例隔离，禁用 TTL 每次重新读取', () => {
+  let reads = 0, selected = 'a';
+  const resolve = defaultResolver({ historyTtlMs: 0, history: () => { reads++; return modelHistory(selected); } });
+  const other = defaultResolver({ history: () => modelHistory('a') });
+  assert.equal(resolve(defaultFacts()), 'a');
+  selected = 'b';
+  assert.equal(resolve(defaultFacts()), 'b');
+  assert.equal(other(defaultFacts()), 'a');
+  assert.equal(reads, 2);
+});
+
+test('原生默认模型缓存：读取异常或完成时钟异常不发布半成品', () => {
+  const failure = new Error('历史读取失败');
+  let now = 0, selected = 'a', failRead = false, failClockAt = 0, clocks = 0;
+  const resolve = defaultResolver({
+    now() { if (++clocks === failClockAt) throw failure; return now; },
+    history() { if (failRead) throw failure; return modelHistory(selected); },
+  });
+  assert.equal(resolve(defaultFacts()), 'a');
+  now = 30; selected = 'b'; failRead = true;
+  assert.throws(() => resolve(defaultFacts()), error => error === failure);
+  now = 0; failRead = false;
+  assert.equal(resolve(defaultFacts()), 'a', '旧快照没有被失败读取替换');
+  now = 30; failClockAt = clocks + 2;
+  assert.throws(() => resolve(defaultFacts()), error => error === failure);
+  now = 0;
+  assert.equal(resolve(defaultFacts()), 'a', '完成时钟失败也不发布');
+  now = 30;
+  assert.equal(resolve(defaultFacts()), 'b');
+});
+
+test('原生默认模型缓存：回调重入不死锁，也不覆盖已发布的新快照', () => {
+  let reads = 0, nested = false, resolve;
+  resolve = defaultResolver({ history() {
+    reads++;
+    if (nested) return modelHistory('b');
+    nested = true;
+    assert.equal(resolve(defaultFacts()), 'b');
+    return modelHistory('a');
+  } });
+  assert.equal(resolve(defaultFacts()), 'b');
+  assert.equal(resolve(defaultFacts()), 'b');
+  assert.equal(reads, 2);
+});
+
+test('原生默认模型缓存：字段 getter 可重入，输入对象不保存在缓存中', () => {
+  const resolve = defaultResolver({ history: () => modelHistory('b') });
+  const request = defaultFacts();
+  Object.defineProperty(request, 'provider', { get() {
+    assert.equal(resolve(defaultFacts()), 'b');
+    return null;
+  } });
+  assert.equal(resolve(request), 'b');
+  request.models[1] = 'c';
+  assert.equal(resolve(request), 'a');
+});
+
+test('原生模型边界保留旧字符串规则，仅访问必要字段且无 JSON 中转', () => {
+  const resolve = defaultResolver();
+  const request = defaultFacts({ models: [null, 123, ' ', ' 模型😀 ', '模型😀'],
+    toJSON() { throw Error('不得调用 JSON 钩子'); } });
+  request.unrelated = request;
+  Object.defineProperty(request, 'secret', { enumerable: true, get() { throw Error('不得读取无关字段'); } });
+  assert.equal(resolve(request), '模型😀');
+  assert.equal(resolve(defaultFacts({ models: ['a\ud800b'] })), 'a\ufffdb', '保留旧 lenient JSON 的替换规则');
+  assert.equal(resolve(defaultFacts({ models: ['\u0085a\u0085'] })), 'a', '保留既有 Rust trim 规则');
+  assert.throws(() => resolve(defaultFacts({ kind: 'unknown' })), /MODEL_DEFAULT_INVALID/);
+  assert.throws(() => resolve(null), /MODEL_DEFAULT_INVALID/);
+});
+
+test('会话模型门面读取官方记录，线路属性变更不沿用错误默认值', () => {
+  let reads = 0;
+  const summary = { modelOptions: ['a', 'b'], aliasOnly: false };
+  const providers = { WIRE_DEFAULT_MODEL: 'wire-a', appTypeForCli: () => 'claude',
+    isOfficialProviderId: (_, id) => id === 'official-account' };
+  const policy = createSessionPolicy({ providers, providerRouter: { getProviderSummary: () => summary },
+    now: () => 0, records() { reads++; return new Map([
+      ['r', { cli: 'claude-exp', provider: 'official-account', model: 'b' }],
+    ]); } });
+  summary.isOfficial = true;
+  assert.equal(policy.effectiveSessionModel({ cli: 'claude', provider: 'relay' }), 'b');
+  assert.equal(policy.providerDefaultModel('claude', 'relay'), 'b');
+  summary.aliasOnly = true;
+  assert.equal(policy.providerDefaultModel('claude', 'relay'), 'wire-a');
+  providers.WIRE_DEFAULT_MODEL = 'wire-b';
+  assert.equal(policy.providerDefaultModel('claude', 'relay'), 'wire-b');
+  assert.equal(reads, 1);
+});
+
+test('原生模型所有者不保活已经结束的宿主读回调', () => {
+  const { spawnSync } = require('node:child_process');
+  const script = `
+    const assert = require('node:assert/strict');
+    const {getNative} = require('./src/native/runtime');
+    const owner = new (getNative().RustModelDefaults)(30000);
+    let callback = () => [];
+    const weak = new WeakRef(callback);
+    assert.equal(owner.resolve({appType:'claude', models:['a']},callback,()=>0),'a');
+    callback = null;
+    (async()=>{
+      for(let i=0;i<30;i++) { await new Promise(setImmediate); global.gc(); }
+      assert.equal(weak.deref(), undefined);
+      assert.equal(owner.resolve({appType:'claude',models:['b']},()=>{throw Error('缓存应仍有效');},()=>0),'b');
+    })().catch(e=>{console.error(e);process.exitCode=1});
+  `;
+  const child = spawnSync(process.execPath, ['--expose-gc', '-e', script], {
+    cwd: path.join(__dirname, '..'), env: process.env, encoding: 'utf8', timeout: 15000,
+  });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+});

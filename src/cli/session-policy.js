@@ -4,7 +4,7 @@ const defaultFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { isResidentSession } = require('./cli-capability');
-const { resolveModelDefault } = require('./model-default');
+const { createModelDefaultResolver } = require('./model-default');
 const { CLAUDE_MODELS_FALLBACK, listClaudeModelsSync } = require('../routes/claude-models');
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
@@ -37,17 +37,11 @@ function createSessionPolicy(options) {
   const env = options.env || process.env;
   const homeDir = options.homeDir || os.homedir;
   if (typeof homeDir !== 'function') throw new TypeError('[session-policy] homeDir must be a function');
-  // Explicit-selection history for the default-model rule. The host owns the
-  // records; this module only reads a snapshot and hands it to the Rust core,
-  // which owns the counting/tie-break rule. A short TTL keeps the hot listing
-  // paths (Air projects every session's effective model) from rebuilding the
-  // snapshot on every call; `historyTtlMs: 0` disables both caches.
+  // 宿主只读取已有记录与线路目录；历史 TTL、查询缓存和选择规则归 Rust。
   const records = typeof options.records === 'function' ? options.records : () => [];
   const now = typeof options.now === 'function' ? options.now : Date.now;
-  const historyTtlMs = Number.isFinite(options.historyTtlMs)
-    ? Math.max(0, options.historyTtlMs) : 30 * 1000;
-  let historyCache = { at: 0, entries: [] };
-  let resolvedCache = new Map();
+  const resolveModelDefault = createModelDefaultResolver({ history: collectHistory, now,
+    historyTtlMs: options.historyTtlMs });
 
   const GLOBAL_PROVIDER_CLIS = new Set(['opencode', 'zcode', 'kimi']);
 
@@ -92,14 +86,6 @@ function createSessionPolicy(options) {
     return entries;
   }
 
-  function historySnapshot() {
-    if (historyTtlMs > 0 && now() - historyCache.at < historyTtlMs) return historyCache.entries;
-    const entries = collectHistory();
-    historyCache = { at: now(), entries };
-    resolvedCache = new Map();
-    return entries;
-  }
-
   function providerPayload(summary) {
     return {
       model: typeof summary.model === 'string' && summary.model ? summary.model : null,
@@ -111,22 +97,10 @@ function createSessionPolicy(options) {
   }
 
   function resolveDefault(request) {
-    const history = historySnapshot();
-    const provider = request.provider || null;
-    const key = [
-      request.kind, request.cli || '', request.appType || '', request.providerId || '',
-      request.historyProviderId || '', request.reportedModel || '',
-      (request.models || []).join('\u0001'),
-      provider ? `${provider.model || ''}\u0001${provider.modelOptions.join('\u0001')}` : '',
-    ].join('\u0002');
-    if (historyTtlMs > 0 && resolvedCache.has(key)) return resolvedCache.get(key);
-    const model = resolveModelDefault({
+    return resolveModelDefault({
       ...request,
-      history,
       wireDefaultModel: typeof providers.WIRE_DEFAULT_MODEL === 'string' ? providers.WIRE_DEFAULT_MODEL : null,
     });
-    if (historyTtlMs > 0) resolvedCache.set(key, model);
-    return model;
   }
 
   function effectiveSessionModel(session) {
