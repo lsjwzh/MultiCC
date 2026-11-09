@@ -3064,7 +3064,11 @@
     {
       "path": "tests/test-codex-rollout-guard.js",
       "tier": "core",
-      "lane": "deterministic"
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
     },
     {
       "path": "tests/test-codex-session-file.js",
@@ -4089,7 +4093,20 @@
     {
       "path": "tests/test-native-session-guard.js",
       "tier": "core",
-      "lane": "deterministic"
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-native-session-guards-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
     },
     {
       "path": "tests/test-newcomer-onboarding.js",

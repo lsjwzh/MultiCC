@@ -1345,3 +1345,84 @@ the primary repository. It was built from source with
 `node scripts/ensure-source-rust.js` and the capability probe, extended in
 `scripts/rust-source-cache.js` with the twelve new exports and three smoke
 assertions, passed.
+
+## Native session guards (2026-11-09)
+
+The two pre-resume size guards now live in one Rust module.
+`src/chat/codex-rollout-guard.js` is a 157-line facade (+123/-239) and
+`src/chat/native-session-guard.js` is a 123-line facade (+93/-253) around two
+addon classes; `native/core/src/native_session_guard.rs` (1,265 lines, plus 449
+lines of unit tests in `native_session_guard/tests.rs`) owns every decision, and
+`native/addon/src/native_session_guard.rs` (159 lines) moves values over the
+lossless bridge.
+
+What moved: codex rollout discovery (`sessions/**/rollout-*-<thread>.jsonl`
+name matching, newest-file selection, and the `not_found` / `blocked` /
+`archived` actions), size measurement, archive moves into
+`multicc-archived-rollouts`, and TTL sweeping; and the vendor-native stores
+(zcode, kimi provider and providerless lanes, codebuddy, qoder, dsh) including
+directory sessions, per-lane home resolution, archive naming with UTF-16 unit
+slicing, and the `multicc-archived-sessions` sweep with its six-hour throttle.
+Node `path.posix` join/normalize/dirname/basename semantics are reimplemented
+byte-for-byte, including lone-surrogate archive names.
+
+Rust API surface (addon exports): `codexRolloutGuardDefaults`,
+`nativeSessionGuardDefaults`, and the classes `RustCodexRolloutGuard` /
+`RustNativeSessionGuard` with `enforce`, `sweep`, `handles`, `storeTruthy` and
+the `maxBytes` / `archiveTtlMs` getters. Typed `CodexOptions` / `NativeOptions`
+/ `RecordView` / `Outcome` structs stay internal; only the JS boundary consumes
+`js::JsValue`. `enforce` returns `{result, logs}` so the facade can replay
+`logger[level]?.(name, fields)` in try/catch; results are still `Object.freeze`d
+by the facade.
+
+What remains in Node: only the facade. It resolves `os.homedir()`, the injected
+`prepareCodexSessionHome` / `codexSessionHomeFor` / `zcodeSessionHomeFor` /
+`kimiSessionHomeFor` callbacks and `KIMI_CODE_HOME`, keeps the legacy argument
+spellings (including `options.force === true` read timing, so a `null` options
+argument still throws only when the guard would run), and re-exports the
+defaults. No walk, stat, archive name or policy decision remains there, and
+there is no fallback path.
+
+Deleted Node logic: 492 lines (239 from the codex guard and 253 from the native
+guard). The frozen oracles are `tests/helpers/legacy-codex-rollout-guard.js`
+(281 lines) and `tests/helpers/legacy-native-session-guard.js` (291 lines).
+
+Preserved legacy quirks: `STORES[cli]` is a plain property read, so the twelve
+`Object.prototype` names are truthy-but-missing stores (`not_found`), while
+`handles()` keeps the `hasOwnProperty` answer; the native sweep adds bytes before
+each removal attempt, so a failed unlink still inflates `freedBytes`; the native
+archive name is `String(record.id || 'session').slice(0, 32)` and can split a
+surrogate pair; the codex sweep deletes files only (directories and symlinks are
+left in place), while the native sweep deletes directories and symlinks;
+filesystem error text is passed through unchanged.
+
+Oracle and differential coverage: `tests/test-native-session-guards-differential.js`
+(672 lines, 111 tests) runs the frozen oracles and the current facades on two
+identical mkdtemp trees: 31 hand-built cases (codex budgets, prepare redirects
+and error codes, provider homes, sweeps and throttles, native lane layouts,
+prototype names, lone-surrogate ids, symlink and permission failures, archive
+collisions) plus 80 seeded randomized cases. Results, logger calls, error
+strings (text normalized) and post-run filesystem snapshots (mode, size, sha256,
+symlink targets) are compared. Paths are normalized and deleted/archived lists
+are sorted because APFS readdir order differs between two directory instances.
+
+Mutation faults (each failed the differential suite and was reverted): the
+32-unit archive-name slice cut to 31 units (1 failing test), symlinks skipped in
+the native sweep (1), and the native archive directory renamed (27).
+
+Rust workspace: 719 passed, 0 failed (18 new guard unit tests).
+`rustfmt --check` is clean on the changed files and clippy reports no warning in
+the new core/addon modules; pre-existing warnings elsewhere are untouched.
+
+Test tiers: 854 classified (core 409: deterministic 335 / isolated 43 /
+flutter 31); the audited release counts in
+`tests/test-release-version-consistency.js` move to 409 entries and 381 commands
+(378 Node entries). Source line budget OK; `git diff --check` clean.
+
+Fingerprint `27750efe5218625537d89c64`; the artifact is
+`data/rust-source/27750efe5218625537d89c64/darwin-arm64/multicc_core.node` in
+the primary repository. It was built from source with
+`node scripts/ensure-source-rust.js` and the capability probe, extended in
+`scripts/rust-source-cache.js` with the four new exports, the class prototype
+methods (`enforce` / `sweep` on both, plus `handles` / `storeTruthy` on the
+native class), both getters and a temporary-directory smoke check, passed.
