@@ -1,3 +1,6 @@
+// FROZEN ORACLE: verbatim copy of the pre-Rust src/state/tx.js (HEAD at the
+// directory-persistence batch). Do not edit; tests compare the native owner
+// against this behaviour.
 'use strict';
 // state-tx — small journal + apply helpers for state mutations that must land
 // atomically across MORE THAN ONE state file (right now that's just directory
@@ -28,7 +31,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { writeJsonAtomic, readJson } = require('./store');
+const { writeJsonAtomic, readJson } = require('../../src/state/store');
 
 // Payload shape stored in the journal. The `files` array captures the FINAL
 // state we intend both files to reach; on replay we blindly write them, because

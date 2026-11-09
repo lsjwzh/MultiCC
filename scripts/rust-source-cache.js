@@ -175,9 +175,17 @@ function probeAddon(file, node = process.execPath) {
     if(typeof a.RustSessionRecords!=='function' || a.sessionRecordsProtocolVersion?.()!==1 || typeof a.sessionRecordsTaskStateDefaults!=='function'
       || ['init','configure','get','set','has','delete','clear','size','entriesSnapshot','listByDir',
         'mutate','begin','commit','rollback','bestEffort','retryTick','status','stop',
-        'getTaskState','setTaskState','appendClassifyHistory','resetTaskState'].some(key=>typeof a.RustSessionRecords.prototype[key]!=='function')) process.exit(1);
+        'getTaskState','setTaskState','appendClassifyHistory','resetTaskState',
+        'initDirectories','loadDirectories','directoryGet','directorySet','directoryHas',
+        'directoryDelete','directoryClear','directorySize','directoryEntries','saveDirectories',
+        'commitCrossFileWrite','replayJournals'].some(key=>typeof a.RustSessionRecords.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustWorkspaceQueues!=='function'
       || ['get','has','update','project','view'].some(key=>typeof a.RustWorkspaceQueues.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustWorkspaceSockets!=='function'
+      || ['attachWorkspace','attachMeta','detach','onPong','tickHeartbeat','publish','subscribe',
+        'unsubscribe','recentEvents','hydrateEvents','appendEvent','hasEvents','clientCount',
+        'hasClient','directoryCount','fleetLen','socketStats','flushClient',
+        'backpressureResult','close'].some(key=>typeof a.RustWorkspaceSockets.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustProviderAttemptGenerations!=='function'
       || typeof a.RustProviderAttemptGenerations.prototype.next!=='function') process.exit(1);
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',

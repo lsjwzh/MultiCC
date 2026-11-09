@@ -50,6 +50,11 @@ function mountWsConnectionRouter(wss, deps) {
 
   wss.on('connection', async (ws, req) => {
     const urlObj = new URL(req.url, 'http://localhost');
+    // `/ws/workspace` and `/ws/meta` (unless it is the Air protocol) are owned
+    // by the native subscription owner: it owns the liveness window and the
+    // send queue for those sockets. Every other path keeps the shared router
+    // heartbeat and backpressure below.
+    const nativeSocket = workspaceRuntime.ownsSocket?.(urlObj) === true;
     const addressedSessionId = urlObj.pathname === '/ws/chat'
       ? urlObj.searchParams.get('session')
       : SESSIONLESS_WS_PATHS.has(urlObj.pathname) ? null : urlObj.searchParams.get('id');
@@ -60,6 +65,7 @@ function mountWsConnectionRouter(wss, deps) {
       missedPongs: 0,
       timedOut: false,
       connectedAt: Date.now(),
+      native: nativeSocket,
       fields: {
         connectionId: randomUUID(),
         path: urlObj.pathname, // Never log query strings containing auth credentials.
@@ -74,6 +80,9 @@ function mountWsConnectionRouter(wss, deps) {
       heartbeat.missedPongs = 0;
     });
     ws.once('close', (code, reason) => {
+      // The router's listener runs before the runtime's detach listener, so the
+      // native heartbeat record is still available for this log line.
+      const nativeStats = heartbeat.native ? workspaceRuntime.socketStats?.(ws) : null;
       logger.info('ws_connection_closed', {
         ...heartbeat.fields,
         correlationId: ws._correlationId,
@@ -82,8 +91,8 @@ function mountWsConnectionRouter(wss, deps) {
         durationMs: Math.max(0, Date.now() - heartbeat.connectedAt),
         // Same handshake flags used by ws 8.x to populate CloseEvent.wasClean.
         wasClean: ws._closeFrameReceived === true && ws._closeFrameSent === true,
-        heartbeatTimedOut: heartbeat.timedOut,
-        missedPongs: heartbeat.missedPongs,
+        heartbeatTimedOut: nativeStats ? nativeStats.timedOut === true : heartbeat.timedOut,
+        missedPongs: nativeStats ? nativeStats.missedPongs : heartbeat.missedPongs,
       });
       connections.delete(ws);
     });
@@ -96,10 +105,14 @@ function mountWsConnectionRouter(wss, deps) {
       ws.close(4003, 'Direct public access disabled');
       return;
     }
-    installWsBackpressure(ws, {
-      onMetric: (name, value, op) => op === 'set' ? metrics.set(name, value) : metrics.inc(name, value),
-      onLog: (event, fields) => logger.warn(event, { ...fields, correlationId: ws._correlationId }),
-    });
+    // The native owner installs its own send queue for the two workspace
+    // hosts; patching `ws.send` here as well would duplicate the queue.
+    if (!nativeSocket) {
+      installWsBackpressure(ws, {
+        onMetric: (name, value, op) => op === 'set' ? metrics.set(name, value) : metrics.inc(name, value),
+        onLog: (event, fields) => logger.warn(event, { ...fields, correlationId: ws._correlationId }),
+      });
+    }
 
     if (require('./machines').bridgeMachineSocket(ws, urlObj, { authSecurity })) return;
 
@@ -177,10 +190,10 @@ function mountWsConnectionRouter(wss, deps) {
       return ttsService.handleTtsWs(ws, req);
     }
     if (urlObj.pathname === '/ws/workspace') {
-      return workspaceRuntime.attachWorkspace(ws, urlObj);
+      return workspaceRuntime.attachWorkspace(ws, urlObj, heartbeat.fields);
     }
     if (urlObj.pathname === '/ws/meta') {
-      return workspaceRuntime.attachMeta(ws, urlObj);
+      return workspaceRuntime.attachMeta(ws, urlObj, heartbeat.fields);
     }
     if (urlObj.pathname === '/ws/remote-screen') {
       if (!remoteScreenRfb) { ws.close(1010, 'remote screen unavailable'); return; }
@@ -353,7 +366,8 @@ function mountWsConnectionRouter(wss, deps) {
   const wsPingInterval = setInterval(() => {
     wss.clients.forEach(client => {
       const heartbeat = connections.get(client);
-      if (client.readyState !== WebSocket.OPEN || !heartbeat || heartbeat.timedOut) return;
+      if (!heartbeat || heartbeat.native) return;
+      if (client.readyState !== WebSocket.OPEN || heartbeat.timedOut) return;
       // Count completed unanswered windows, not the first ping itself. Three
       // missed windows allow ~90s after that ping for a delayed relay pong.
       if (heartbeat.pendingPong) heartbeat.missedPongs += 1;
@@ -370,6 +384,9 @@ function mountWsConnectionRouter(wss, deps) {
       heartbeat.pendingPong = true;
       client.ping();
     });
+    // One shared cadence, but the workspace sockets' windows and timeout are
+    // decided (and acted on) by the native owner.
+    workspaceRuntime.tickHeartbeat?.();
   }, WS_PING_INTERVAL_MS);
   wss.on('close', () => clearInterval(wsPingInterval));
   return { wsPingInterval };

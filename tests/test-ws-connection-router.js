@@ -360,3 +360,65 @@ test('terminal snapshot: capture-pane text is reshaped for replay', () => {
   assert.equal(formatPaneSnapshot('\n   \n\n', { x: 0, y: 0, height: 3 }), '', 'blank pane → no snapshot');
   assert.ok(formatPaneSnapshot('x\n', {}).endsWith('x\x1b[0m'), 'missing cursor info → no cursor move');
 });
+
+test('native workspace sockets own liveness and backpressure while every other path keeps the shared policy', async t => {
+  const attached = [];
+  const ticks = { count: 0 };
+  const h = harness(t, { overrides: {
+    workspaceRuntime: {
+      ownsSocket: url => url.pathname === '/ws/workspace'
+        || (url.pathname === '/ws/meta' && url.searchParams.get('air') !== '1'),
+      attachWorkspace(ws, url, fields) { attached.push({ path: url.pathname, fields }); },
+      attachMeta(ws, url, fields) { attached.push({ path: url.pathname, fields }); },
+      socketStats: () => ({ missedPongs: 2, timedOut: true }),
+      tickHeartbeat() { ticks.count += 1; },
+    },
+  } });
+  const workspace = await h.connect('/ws/workspace?dirId=directory&ticket=secret');
+  const meta = await h.connect('/ws/meta');
+  const chat = await h.connect('/ws/chat?session=chat');
+  assert.equal(workspace._multiccBackpressure, undefined, 'native sockets must not be double-queued');
+  assert.equal(meta._multiccBackpressure, undefined);
+  assert.notEqual(chat._multiccBackpressure, undefined);
+  assert.deepEqual(attached.map(entry => entry.path), ['/ws/workspace', '/ws/meta']);
+  assert.equal(attached[0].fields.directoryId, 'directory');
+  assert.equal(attached[0].fields.path, '/ws/workspace');
+  assert.equal(attached[0].fields.sessionId, null);
+  assert.ok(attached[0].fields.connectionId);
+
+  for (let i = 0; i < 4; i += 1) h.tick();
+  assert.equal(workspace.pings, 0, 'the shared loop skips native clients');
+  assert.equal(meta.pings, 0);
+  assert.equal(workspace.terminations, 0);
+  assert.equal(meta.terminations, 0);
+  assert.equal(chat.pings, 3);
+  assert.equal(chat.terminations, 1);
+  assert.equal(ticks.count, 4, 'the shared cadence still drives the native windows');
+
+  workspace.finishClose(1000, 'leaving');
+  const closed = h.logs.find(row => row.event === 'ws_connection_closed'
+    && row.path === '/ws/workspace');
+  assert.equal(closed.heartbeatTimedOut, true);
+  assert.equal(closed.missedPongs, 2);
+  assert.doesNotMatch(JSON.stringify(h.logs), /secret/);
+});
+
+test('air=1 meta stays on the shared router policy', async t => {
+  const attached = [];
+  const h = harness(t, { overrides: {
+    workspaceRuntime: {
+      ownsSocket: url => url.pathname === '/ws/workspace'
+        || (url.pathname === '/ws/meta' && url.searchParams.get('air') !== '1'),
+      attachWorkspace() {},
+      attachMeta() { attached.push('meta'); },
+      socketStats: () => null,
+      tickHeartbeat() {},
+    },
+  } });
+  const air = await h.connect('/ws/meta?air=1&cursor=epoch:1');
+  assert.notEqual(air._multiccBackpressure, undefined);
+  h.tick(); h.tick(); h.tick(); h.tick();
+  assert.equal(air.pings, 3);
+  assert.equal(air.terminations, 1);
+  assert.deepEqual(attached, ['meta']);
+});

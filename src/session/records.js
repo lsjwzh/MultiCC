@@ -30,9 +30,9 @@ function entriesOf(records) {
 
 class SessionRecordMap extends Map {
   // eslint-disable-next-line no-useless-constructor
-  constructor(owner) {
+  constructor(shared) {
     super();
-    owners.set(this, { native: owner, anchor: null });
+    owners.set(this, shared);
   }
 
   get size() { return ownerOf(this).size(); }
@@ -57,19 +57,14 @@ class SessionRecordMap extends Map {
   }
 }
 
-// One native owner per table. `source` is the boot Map the Node loader already
-// parsed/migrated (or an array of [id, record] pairs); it is read once and not
-// retained.
-function createSessionRecords(source) {
-  const native = getNative();
-  if (typeof native.RustSessionRecords !== 'function') {
-    throw new Error('rust_session_records_unavailable');
-  }
-  const anchor = Object.create(null);
-  const owner = new native.RustSessionRecords(anchor);
-  const records = new SessionRecordMap(owner);
-  owners.set(records, { native: owner, anchor });
-  if (source) owner.init(source instanceof Map ? source.entries() : source);
+// One native owner per process (src/state/owner.js). `source` is the boot Map
+// the Node loader already parsed/migrated (or an array of [id, record] pairs);
+// it is read once and not retained. `shared` is the owner the directory facade
+// and the state bootstrap use too.
+function createSessionRecords(source, shared) {
+  if (!shared || !shared.native) throw new TypeError('session record owner is required');
+  const records = new SessionRecordMap(shared);
+  if (source) shared.native.init(source instanceof Map ? source.entries() : source);
   return records;
 }
 

@@ -11,14 +11,65 @@ fn backup(file: &Path, index: usize) -> PathBuf {
     name.push(format!(".bak{index}"));
     name.into()
 }
-fn read(file: &Path) -> Result<Option<JsValue>, String> {
+
+/// Why a state file could not be read as payload. The caller owns the user
+/// facing message because it knows the target path; this keeps the same
+/// information the Node `CorruptedStateError` carried (`file`, `raw`).
+#[derive(Clone, Debug)]
+pub enum LoadFailure {
+    Unreadable,
+    Corrupt { raw: String },
+    MissingEnvelope,
+}
+
+impl LoadFailure {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            LoadFailure::Unreadable => "unreadable",
+            LoadFailure::Corrupt { .. } => "corrupt",
+            LoadFailure::MissingEnvelope => "envelope",
+        }
+    }
+    /// `raw.slice(0, 200)` for a parse failure.
+    pub fn raw_excerpt(&self) -> Option<&str> {
+        match self {
+            LoadFailure::Corrupt { raw } => Some(raw),
+            _ => None,
+        }
+    }
+    pub fn code(&self) -> &'static str {
+        match self {
+            LoadFailure::Unreadable => "STATE_UNREADABLE: unreadable state file",
+            LoadFailure::Corrupt { .. } => "STATE_CORRUPTED: corrupt state JSON",
+            LoadFailure::MissingEnvelope => "STATE_CORRUPTED: state envelope missing",
+        }
+    }
+}
+
+/// One successful primary/backup read.
+pub struct Loaded {
+    pub value: Option<JsValue>,
+    /// The backup path that supplied the value, when the primary was damaged.
+    pub recovered_from: Option<PathBuf>,
+}
+
+/// The body of one state file: a legacy bare array or the `data` field of the
+/// `{ "__multiccSchema": …, data }` envelope.
+pub fn read(file: &Path) -> Result<Option<JsValue>, LoadFailure> {
     let bytes = match fs::read(file) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("STATE_UNREADABLE: unreadable state file".into()),
+        Err(_) => return Err(LoadFailure::Unreadable),
     };
-    let value = js::json_parse(&String::from_utf8_lossy(&bytes))
-        .map_err(|_| "STATE_CORRUPTED: corrupt state JSON")?;
+    let text = String::from_utf8_lossy(&bytes);
+    let value = match js::json_parse(&text) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(LoadFailure::Corrupt {
+                raw: text.chars().take(200).collect(),
+            })
+        }
+    };
     if matches!(value, JsValue::Array(_)) {
         return Ok(Some(value));
     }
@@ -27,22 +78,36 @@ fn read(file: &Path) -> Result<Option<JsValue>, String> {
             return Ok(Some(data.clone()));
         }
     }
-    Err("STATE_CORRUPTED: state envelope missing".into())
+    Err(LoadFailure::MissingEnvelope)
 }
+
 /// Missing primary is empty, as in StateStore. Backup recovery occurs only
 /// when the primary exists but is unreadable/corrupt, in most-recent order.
-pub fn load_or_recover(file: &Path) -> Result<Option<JsValue>, String> {
+pub fn load_or_recover_report(file: &Path) -> Result<Loaded, LoadFailure> {
     match read(file) {
-        Ok(value) => Ok(value),
-        Err(error) => {
+        Ok(value) => Ok(Loaded {
+            value,
+            recovered_from: None,
+        }),
+        Err(failure) => {
             for index in 1..=3 {
-                if let Ok(Some(value)) = read(&backup(file, index)) {
-                    return Ok(Some(value));
+                let path = backup(file, index);
+                if let Ok(Some(value)) = read(&path) {
+                    return Ok(Loaded {
+                        value: Some(value),
+                        recovered_from: Some(path),
+                    });
                 }
             }
-            Err(error)
+            Err(failure)
         }
     }
+}
+
+pub fn load_or_recover(file: &Path) -> Result<Option<JsValue>, String> {
+    load_or_recover_report(file)
+        .map(|loaded| loaded.value)
+        .map_err(|failure| failure.code().to_string())
 }
 
 // Pretty-print the canonical lossless JSON without decoding strings/numbers
@@ -103,6 +168,27 @@ pub(crate) fn pretty_compact(compact: &str) -> String {
     output
 }
 
+fn envelope(kind: &str, version: u32, data: Option<&str>) -> String {
+    let timestamp = js::json_quote_str(&crate::session_records::iso_timestamp_now());
+    let head = format!(
+        "{{\"__multiccSchema\":{{\"kind\":{},\"version\":{version},\"writtenAt\":{}}}}}",
+        js::json_quote_str(kind),
+        timestamp,
+    );
+    match data {
+        // `JSON.stringify({ …, data: undefined })` drops the key entirely.
+        None => head,
+        Some(data) => {
+            let mut out = head;
+            out.pop(); // trailing `}`
+            out.push_str(",\"data\":");
+            out.push_str(data);
+            out.push('}');
+            out
+        }
+    }
+}
+
 pub fn save(file: &Path, kind: &str, data: &JsValue) -> Result<(), String> {
     save_compact(file, kind, &js::json_stringify(data).expect("JSON payload"))
 }
@@ -112,19 +198,27 @@ pub fn save(file: &Path, kind: &str, data: &JsValue) -> Result<(), String> {
 /// (`-0`, lone surrogates, key order) byte-exact while Rust still owns the
 /// envelope, rollback rotation and fsync.
 pub fn save_compact(file: &Path, kind: &str, data: &str) -> Result<(), String> {
-    let timestamp = js::json_quote_str(&crate::session_records::iso_timestamp_now());
-    let compact = format!(
-        "{{\"__multiccSchema\":{{\"kind\":{},\"version\":1,\"writtenAt\":{}}},\"data\":{data}}}",
-        js::json_quote_str(kind),
-        timestamp,
-    );
+    save_compact_with(file, kind, 1, 3, Some(data))
+}
+
+/// General form used by the cross-file journal: the transaction journal keeps
+/// no rolling backups (each name is single-use) and may describe a payload that
+/// is absent (a journal file entry without `payload`).
+pub fn save_compact_with(
+    file: &Path,
+    kind: &str,
+    version: u32,
+    rotate: usize,
+    data: Option<&str>,
+) -> Result<(), String> {
+    let compact = envelope(kind, version, data);
     crate::state_file::write_text_atomic_before_rename(
         file,
         &pretty_compact(&compact),
         0o600,
         0o700,
         || {
-            for index in (1..=3).rev() {
+            for index in (1..=rotate).rev() {
                 let source = if index == 1 {
                     file.to_path_buf()
                 } else {

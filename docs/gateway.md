@@ -1075,3 +1075,137 @@ CPR 等），新增/改动文件 clippy 无告警。最终产物
 验收项完成，整体账本仍为 5/6。日志归档到主仓
 `data/rust-source/27f35300f545c32737a33223/validation/session-persistence/`。
 验收环境为 macOS ARM64；未提交、合并、推送或重启生产服务。
+
+## 28. 目录注册表与跨文件日志单一所有者（2026-11-09）
+
+实时目录表、`directories.json` 持久化和目录+会话跨文件日志现在与会话记录共用
+同一个原生所有者：`native/addon/src/session_records.rs` 的
+`RustSessionRecords`，日志纯规则在 `native/core/src/state_tx.rs`，通用信封/轮转
+写入在 `native/core/src/durable_state.rs`。`src/state/tx.js` 已删除。级联删除
+目录和它的会话是一个原生事务：先写 `tx-<16hex>.json` 日志，再按日志中的
+files 顺序原子替换两个文件，两个都成功后才删除日志；任一步崩溃都由
+`replayJournals()` 按原信封、键序、应用顺序、重放回滚、隔离目录
+（`broken/<name>.<epoch-ms>`）和相同日志文案恢复。
+
+Node 侧不再有第二张目录表。`src/directory/records.js`（102 行）是保持
+`instanceof Map` 的门面，按顺序转发 `get/set/has/delete/clear/keys/values/
+entries` 和迭代，并在启动加载损坏文件时重建 `CorruptedStateError`。所有者本身
+在 `src/state/owner.js`（55 行）组合，在状态引导之前创建，由会话门面、目录门面、
+日志重放和迁移导入共用。`src/session/records.js`（101 行）只保留会话记录门面，
+不再引入目录上下文，符合会话限界上下文边界。`src/directory/repository.js` 是
+58 行端口适配，`src/directory/service.js` 只传 `{kind, reason}` 给
+`commitCrossFileWrite`，不再自己拼两文件 payload。启动顺序和日志保持不变：重放
+日志、加载会话、加载目录、一次性迁移导入。
+
+删除的 Node 逻辑：`src/state/tx.js`（145 行：日志编码/应用/重放、备份轮转调用、
+隔离）以及仓库里的 StateStore 接线和裸 `snapshot()` 端口、服务里的双文件
+payload 构造与无日志回退顺序。`src/directory/ports.js` 去掉
+`snapshot`/`snapshotRecords`，新增 `TX_PORT = ['commitCrossFileWrite']`。
+
+保留的适配及原因：git 基线/推送、文件系统探测、会话级联销毁、UI 布局枚举
+（`listDirIds`/`listSessionIds` 读原生门面）、`stringify`/`now`/logger 和测试失败
+注入都是其他 Node 所有者的副作用，以宿主端口提供。记录对象继续通过
+`js_host_value` 保持活引用，字段写入仍保留身份与属性顺序。内部没有 JSON 往返：
+唯一的序列化是持久数据文件边界上的宿主 `stringify`。
+
+验证：以冻结的旧仓库和旧日志实现
+（`tests/helpers/legacy-directory-repository.js`、
+`tests/helpers/legacy-state-tx.js`）做 1,200 步定种子差分，覆盖创建/更新/删除/
+重排、经日志事务的级联删除、普通保存、会话成员和重启重载，每步比较活动表、
+全部落盘文件及备份；与 `JSON.stringify(envelope, null, 2)` 逐字节一致；
+`.bak1..3` 轮转；主文件损坏/缺信封/不可读的备份恢复与 fail-closed
+`CorruptedStateError`；在写日志前、日志与两个文件之间、重放中途分别注入崩溃并
+恢复（含部分重放后续跑）；损坏/不可读日志隔离；重启后数量、顺序、内容哈希；
+重入；门面身份与 GC；写入失败保留旧主文件。注入五个故障均被持久化/差分测试
+捕获后还原：提交后不删日志、跨文件提交漏掉 sessions 文件、关闭滚动备份轮转、
+反转重放顺序、未隔离损坏日志。
+
+最终产物整轮 `npm test` 退出 0：27 次 Node 测试运行共 6,519 项，6,516 通过、
+0 失败，跳过 2 项（Electron 打包工具、pwsh），既有 S6 仍为 TODO。聚焦的
+状态/架构/发行一致性套件 46 项通过。Rust 工作区 640 项通过、0 失败。新 Rust
+文件 `rustfmt --check` 通过；clippy 退出 0，新代码无告警（仓库既有告警仍在未改动
+代码中）。测试分层 841 项已分类，core 396 / deterministic 327 / isolated 38；
+发行计数复核为 368 命令 / 365 个 Node 条目。源码行预算通过（既有
+`public/run-config.js` 迁移债务不变）；`git diff --check` 干净。
+
+已知行为差异：损坏状态文件现在抛出重建的 `CorruptedStateError`，类、`file`、
+`raw` 摘要和稳定消息前缀保留，但 JSON 解析失败不再带 V8 的
+`: <parser detail>` 后缀，不可读文件不再带 OS 错误后缀。除此之外没有有意差异；
+保存与恢复字节已测试相等。
+
+源码指纹 `924e3f9a565f72eeafb183e7`，日志归档到主仓
+`data/rust-source/924e3f9a565f72eeafb183e7/validation/directory-persistence/`。
+验收环境为 macOS ARM64；其他平台安装包尚未验收。本批推进 6b/6c 但均未完成：
+WebSocket/观察者投递、游标选择、provider 与聊天编排/历史持久化仍未迁移，故不
+声明任何后端退出验收项完成，整体账本仍为 5/6。未提交、合并、推送、重启生产
+服务或更改生产配置。
+
+## 29. 工作区订阅与两个 WebSocket 宿主单一所有者（2026-11-09）
+
+`/ws/workspace` 和非 air 的 `/ws/meta` 现在由同一个原生订阅所有者终止，不再由
+共享路由在 Node 里维护客户端、快照、重放、扇出、心跳和背压。所有者在
+`native/core/src/workspace_sockets.rs`（658 行，纯订阅/队列状态）和
+`native/addon/src/workspace_sockets.rs`（719 行，napi 宿主）中；它持有按目录的
+客户端注册表、meta fleet、每连接心跳、最近事件环（容量 200，按需从
+`events/<dirId>.jsonl` 装载）、快照组装、重放、广播扇出、观察者和有界发送队列
+（含合并）。`src/workspace/runtime.js`（290 行）只剩门面，把活动表和无状态副作用
+作为宿主端口提供。
+
+网关不终止这两条路径的原因：所有者需要活动的会话/目录/聊天会话投影，而这些表
+是 addon 在 Node 进程内持有的不透明宿主引用（`napi_ref`）；网关是另一个 Rust
+进程，无法访问它们。把监听器搬进网关就必须制造第二个所有者或镜像表，二者都被
+退出标准排除。因此选择最接近的单一所有者设计：所有者留在 addon，只保留一条窄
+端口——每次广播由 `prepare` 编码一次后交给 `publish`；所有者只回调无状态副作用
+（`sendFrame`、`schedule`、`cancelSchedule`、`disconnect`、`metric`、
+`backpressureLog`、`ping`、`terminate`、`close`）、投影
+（`workspaceSnapshot`、`recentEvents`、`queueSnapshot`、`mergeState`、
+`setTaskState`、`saveBestEffort`）和宿主时钟。没有每客户端 JS 对象、镜像 Map 或
+内部 JSON 往返。
+
+线路契约不变：URL 参数相同；鉴权优先级仍由路由在 attach 之前执行（ticket、
+legacy cookie/token、本地/对端与 share 作用域检查）；关闭码/原因相同；快照
+`{type,dirId,sessions,events,queues,apiVersion}` 与
+`{type,fleet,apiVersion}` 的键序相同；重放游标和事件负载字节相同；共享的 30 秒
+路由时钟驱动原生心跳（`missed >= 3` 即终止）；冻结的 `src/ws-backpressure.js`
+阈值原样复现（1 MiB 高水位、2 MiB 队列 + 8 MiB 单帧上限、4096 条消息、15 秒
+拥塞超时、25ms 重试、1013 `slow client; reconnect to resync`）。`air=1` meta 仍走
+air 自己的协议，因此继续使用共享路由的心跳和背压。
+
+删除的 Node 逻辑：运行时里的 `clients`/`metaClients`/`observers`/`status`/
+`summaries`/`queueStatuses` 表及其 attach/广播/心跳/队列实现（冻结旧实现为
+`tests/helpers/legacy-workspace-runtime.js`，297 行）；`notes-store.js` 的
+`eventRing`（200 条数组，JSONL 适配保留）；以及路由里针对这两个宿主的
+心跳/背压安装。`src/ws-backpressure.js` 继续服务其他所有 WS 路径。
+
+保留的适配及原因：WS 准入、ticket、本地性和 `heartbeat.fields` 留在路由，因为
+它们约束所有 WS 宿主；30 秒循环仍留在路由，每个窗口调用一次 `tickHeartbeat()`；
+投影属于 Node 领域表，以宿主端口提供；定时器/传输/日志/指标都是宿主端口。只有
+产出 WebSocket 帧时才发生序列化。
+
+验证：57 项聚焦 Node 测试通过（`test-workspace-runtime.js` 27、
+`test-workspace-ws-native.js` 10、`test-ws-connection-router.js` 20）：连接/快照/
+事件/重连/未知目录/meta 的原始帧逐字节一致；观察者、退订和抛错监听器一致；连接
+中途删除目录一致；1,200 步定种子随机连接+事件差分每步后仍一致；原生心跳窗口与
+冻结路由循环一致；原生队列与冻结模块在合并、字节上限、消息数闸门、拥塞超时和
+发送错误上一致；事件环正确装载最后 200 行、追加、封顶并扇出。隔离测试
+`tests/test-workspace-ws-isolated.js` 用临时数据根启动真实网关和 `server.js`，
+验证回环与 LAN 的快照、meta fleet、重连、未知目录关闭 1005、外部无凭据客户端
+（4003 且收不到任何帧）和带 token 的 LAN 客户端。注入四个故障均被捕获后还原：
+鉴权前发送快照；重放差一（199 vs 200）；未接 pong 阈值改为 2；关闭拥塞超时。
+
+Rust 工作区 651 项通过、0 失败。新 Rust 文件 `rustfmt --check` 通过；
+`multicc-core`/`multicc-addon` 的 clippy 退出 0，新代码无告警（仓库既有告警和
+`multicc-cpr` 既有 clippy 错误仍在未改动代码中）。最终产物整轮 `npm test` 退出
+0：27 次 Node 测试运行共 6,532 项，6,529 通过、0 失败，跳过 2 项（Electron
+打包工具、pwsh），既有 S6 仍为 TODO。测试分层 843 项已分类（core 398：
+deterministic 328 / isolated 39 / flutter 31）；发行计数复核为 370 命令 / 367 个
+Node 条目。源码行预算通过；`git diff --check` 干净。
+
+源码指纹 `38aed0355a7b1cfa773b1340`，日志归档到主仓
+`data/rust-source/38aed0355a7b1cfa773b1340/validation/workspace-ws/`。网关/addon
+控制协议不变（仍为 12），不需要协调部署。线路上没有发现有意行为差异；所有者
+只在达到高水位时读取宿主时钟，与冻结队列只在拥塞分支调用 `Date.now()` 一致。
+验收环境为 macOS ARM64；其他平台安装包尚未验收。本批推进 6b/6c 但均未完成：
+`/ws/chat`、终端、voice/tts/aux/remote-screen 仍由 Node 终止，聊天编排与历史
+持久化仍未迁移，故不声明任何后端退出验收项完成，整体账本仍为 5/6。未提交、
+合并、推送、重启生产服务或更改生产配置。

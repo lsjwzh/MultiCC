@@ -468,3 +468,178 @@ This advances 6b/6c but completes neither. Directory membership projections,
 WS/observer delivery, cursor selection, provider and chat orchestration/history
 persistence remain open, so no backend-exit acceptance criterion is claimed
 complete and the overall ledger stays 5/6.
+
+## Native directory registry and cross-file journal batch (2026-11-09)
+
+The live directory registry, its directories.json persistence and the cross-file
+directories+sessions journal now live in the same native owner as the session
+records (`native/addon/src/session_records.rs`, `RustSessionRecords`; pure
+journal rules in `native/core/src/state_tx.rs`; generalized envelope/rotation
+writer in `native/core/src/durable_state.rs`). `src/state/tx.js` is deleted.
+A directory delete that cascades sessions is one native transaction: the
+`tx-<16hex>.json` journal is written first, both files are replaced atomically
+in journal files-array order, and the journal is removed only after both writes
+succeed. A crash at any of those steps is recovered by `replayJournals()` with
+the same envelope, key order, apply order, rollback-by-replay, quarantine
+directory (`broken/<name>.<epoch-ms>`) and log substrings as the deleted Node
+implementation.
+
+The Node table is gone. `src/directory/records.js` (102 lines) is a Map-shaped
+facade (`instanceof Map`, ordered `get/set/has/delete/clear/keys/values/entries`
+and iteration) forwarding to the native registry, and reconstructs the
+`CorruptedStateError` the StateStore used to throw at boot. The owner itself is
+composed in `src/state/owner.js` (55 lines), created before the state bootstrap
+and shared by the session facade, the directory facade, journal replay and the
+bootstrap migration. `src/session/records.js` (101 lines) keeps only the
+session-record facade; it no longer imports the directory context, preserving
+the session bounded-context boundary. `src/directory/repository.js` is a
+58-line port adapter, and `src/directory/service.js` passes one
+`{kind, reason}` spec to `commitCrossFileWrite` instead of building payload
+pairs. Boot order and logs are unchanged: replay journals, load sessions, load
+directories, one-time migration import.
+
+Deleted Node logic: `src/state/tx.js` (145 lines: journal encode/apply/replay,
+backup rotation call, quarantine), the repository's StateStore wiring and raw
+`snapshot()` port, and the service's two-file payload construction/fallback
+order. `src/directory/ports.js` drops `snapshot`/`snapshotRecords` and adds
+`TX_PORT = ['commitCrossFileWrite']`.
+
+Adapters that remain, and why: git base-branch/push work, filesystem probing,
+session destroy cascades, UI-layout enumeration (`listDirIds`/`listSessionIds`
+read the native facade), `stringify`/`now`/logger and the test failure seam are
+effects on other Node owners, supplied as host ports. Live record objects stay
+host references through `js_host_value` so field writers keep identity and
+property order. There is no internal JSON round trip: the only serialization is
+the host `stringify` at the durable data-file boundary.
+
+Verification: 1,200-step seeded differential against the frozen Node repository
+and journal (`tests/helpers/legacy-directory-repository.js`,
+`tests/helpers/legacy-state-tx.js`) covering create/update/delete/reorder,
+cascade delete through the journalled commit, plain saves, session membership
+and restart reload, comparing live tables plus every persisted file and backup
+after each step; byte parity with `JSON.stringify(envelope, null, 2)`;
+`.bak1..3` rotation; corrupt/missing-envelope/unreadable recovery and
+fail-closed `CorruptedStateError`; crash injected before the journal, between
+the journal and each file, and during replay (resume after a partial replay);
+malformed/unreadable journal quarantine; restart counts/order/content hashes;
+reentrancy; facade identity and GC; failed write leaving the previous primary
+intact. Five injected faults were each caught by a durable/differential test and
+reverted: journal not removed after commit; sessions file entry omitted from the
+cross-file commit; rolling-backup rotation disabled; replay order reversed;
+malformed journal not quarantined.
+
+The full suite exits 0 on the final artifacts: 27 Node test runs, 6,519 tests,
+6,516 passed, 0 failed, 2 skipped (Electron tooling, pwsh) and the pre-existing
+S6 TODO. Focused state/architecture/release suites: 46 passed. Cargo workspace:
+640 passed, 0 failed. New Rust files pass `rustfmt --check`; clippy exits 0 with
+no warnings on the new code (the repository's pre-existing warnings remain in
+untouched code). Test tiers: 841 classified, core 396 / deterministic 327 /
+isolated 38; release-count audit 368 commands / 365 Node entries. Source line
+budget OK (known `public/run-config.js` migration debt unchanged);
+`git diff --check` clean.
+
+Known behaviour difference: a damaged state file now raises a reconstructed
+`CorruptedStateError`; the class, `file`, `raw` excerpt and stable message
+prefixes are preserved, but a JSON parse failure omits V8's `: <parser detail>`
+suffix and an unreadable file omits the OS error suffix. No other intentional
+difference; save/recovery bytes are tested equal.
+
+Fingerprint `924e3f9a565f72eeafb183e7`;
+logs are archived under the primary repository's
+`data/rust-source/924e3f9a565f72eeafb183e7/validation/directory-persistence/`.
+Validation is on macOS ARM64; other platform packages are not certified here.
+No commit, merge, push, production restart or configuration change was performed.
+This batch advances 6b/6c but completes neither: WebSocket/observer delivery,
+cursor selection, provider and chat orchestration/history persistence remain
+open, so no backend-exit acceptance criterion is claimed complete and the
+overall ledger stays 5/6.
+
+## Native workspace subscription and WebSocket host batch (2026-11-09)
+
+`/ws/workspace` and non-air `/ws/meta` now terminate in one native subscription
+owner instead of the Node router. The owner is split between
+`native/core/src/workspace_sockets.rs` (658 lines, pure subscription/queue state)
+and `native/addon/src/workspace_sockets.rs` (719 lines, napi host). It owns the
+per-directory client registry, the meta fleet, per-socket heartbeat
+bookkeeping, the recent-event ring (capacity 200, hydrated lazily from
+`events/<dirId>.jsonl`), snapshot assembly, replay, broadcast fan-out,
+observers, and the bounded per-socket send queue with coalescing.
+`src/workspace/runtime.js` is now a 290-line facade that offers the live tables
+and stateless effects as host ports.
+
+Why the gateway does not terminate these two paths: the owner needs the live
+record/directory/chat-session projections, and those tables are opaque host
+references (`napi_ref`) held by the addon inside the Node process. The gateway
+is a separate Rust process and cannot reach them; moving the listener would
+require a second owner or a mirror table, both excluded by the exit criteria.
+The chosen closest design keeps one owner in the addon and one narrow port:
+each broadcast is encoded once by `prepare` and handed to `publish`; the owner
+calls back only for stateless effects (`sendFrame`, `schedule`,
+`cancelSchedule`, `disconnect`, `metric`, `backpressureLog`, `ping`,
+`terminate`, `close`), for projections (`workspaceSnapshot`, `recentEvents`,
+`queueSnapshot`, `mergeState`, `setTaskState`, `saveBestEffort`) and for the
+host clock. No per-client JS objects, mirror Maps or internal JSON round trips
+remain.
+
+The wire contract is unchanged: same URL parameters; auth precedence still runs
+in the router before attach (ticket, legacy cookie/token, locality and
+share-scoped access); same close codes/reasons; snapshot
+`{type,dirId,sessions,events,queues,apiVersion}` and
+`{type,fleet,apiVersion}` with identical key order; same replay cursor and
+event payload bytes; the shared 30s router clock drives the native heartbeat
+(`missed >= 3` → terminate); and the frozen `src/ws-backpressure.js` thresholds
+are reproduced (1 MiB high water, 2 MiB queue + 8 MiB frame ceiling, 4096
+messages, 15s congestion timeout, 25ms retry, 1013 `slow client; reconnect to
+resync`). `air=1` meta keeps the air protocol and therefore the router's own
+heartbeat and backpressure.
+
+Deleted Node logic: the runtime's `clients`/`metaClients`/`observers`/`status`/
+`summaries`/`queueStatuses` maps and its attach/broadcast/heartbeat/queue
+implementations (the frozen 297-line oracle is
+`tests/helpers/legacy-workspace-runtime.js`); the notes-store `eventRing`
+(last-200 array, JSONL adapter retained); and the router's per-workspace-socket
+heartbeat/backpressure installation. `src/ws-backpressure.js` still serves
+every other WS path unchanged.
+
+Remaining adapters and why: WS admission, tickets, locality and `heartbeat.fields`
+stay in the router because they gate all WS hosts; the 30s loop stays there and
+calls `tickHeartbeat()` once per interval; projections are owned by Node domain
+tables and supplied as host ports; timer/transport/log/metric effects are host
+ports. Serialization occurs only when a WebSocket frame is produced.
+
+Verification: 57 focused Node tests pass (`test-workspace-runtime.js` 27,
+`test-workspace-ws-native.js` 10, `test-ws-connection-router.js` 20): raw
+frames are byte-identical for connect/snapshot/events/reconnect/unknown
+directory/meta; observers, unsubscribe and throwing listeners match; directory
+removal mid-connection matches; a 1,200-step seeded randomized connection+event
+differential passes after every step; native heartbeat windows match the frozen
+router loop; the native queue matches the frozen module for coalescing, byte
+ceiling, message tripwire, congestion timeout and send errors; the event ring
+hydrates the last 200 lines, appends, caps and fans out. The isolated
+`tests/test-workspace-ws-isolated.js` starts the real gateway and `server.js`
+on a temporary data root and checks loopback and LAN snapshots, meta fleet,
+reconnect, unknown-directory close 1005, a denied external client (4003 with no
+frame), and token-bearing LAN clients. Four injected faults were each caught
+and reverted: snapshot sent before external auth; replay off-by-one (199 vs
+200); missed-pong threshold 2 instead of 3; congestion timeout disabled.
+
+Cargo workspace: 651 passed, 0 failed. New files pass `rustfmt --check`; clippy
+for `multicc-core`/`multicc-addon` exits 0 with no warning in the new code (the
+repository's pre-existing warnings and the pre-existing `multicc-cpr` clippy
+error remain untouched). The full suite exits 0 on the final artifacts: 27 Node
+test runs, 6,532 tests, 6,529 passed, 0 failed, 2 skipped (Electron tooling,
+pwsh) and the pre-existing S6 TODO. Test tiers: 843 classified (core 398:
+deterministic 328 / isolated 39 / flutter 31); the release-count audit is
+re-audited to 370 commands / 367 Node entries. Source line budget OK (known
+`public/run-config.js` migration debt unchanged); `git diff --check` clean.
+
+Final fingerprint `38aed0355a7b1cfa773b1340`; logs are archived under the
+primary repository's
+`data/rust-source/38aed0355a7b1cfa773b1340/validation/workspace-ws/`. The
+gateway/addon control protocol is unchanged (12), so no coordinated deployment
+is required. No intentional behaviour difference was found on the wire; the
+owner reads the host clock only at/above high water, exactly where the frozen
+queue called `Date.now()`. This batch advances 6b/6c but completes neither:
+`/ws/chat`, terminal, voice/tts/aux/remote-screen still terminate in Node, and
+chat orchestration/history persistence remain open, so no backend-exit
+acceptance criterion is claimed and the overall ledger stays 5/6.

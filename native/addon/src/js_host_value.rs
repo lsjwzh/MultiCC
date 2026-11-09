@@ -86,21 +86,27 @@ impl Values {
             | sys::ValueType::napi_string => Ok(Value::Native(unsafe {
                 crate::js_bridge::read_value(env.raw(), value.raw(), 0, &mut Vec::new())
             }?)),
-            _ => {
-                let id = self
-                    .next
-                    .get()
-                    .checked_add(1)
-                    .ok_or_else(|| napi::Error::from_reason("host value slots exhausted"))?;
-                self.next.set(id);
-                let table = self.table(env)?;
-                table.define_key(table.from_value(&JsValue::string(&id.to_string()))?, value)?;
-                Ok(Value::Host(Rc::new(Slot {
-                    id,
-                    retired: self.retired.clone(),
-                })))
-            }
+            _ => self.capture_host(env, value),
         }
+    }
+
+    /// Keep a value by reference even when it is a primitive. Serialized
+    /// WebSocket frames are strings that can be megabytes and are queued on
+    /// several connections at once; copying them into Rust would undo the one
+    /// encode per broadcast.
+    pub fn capture_host(&self, env: &Env, value: LiveValue<'_>) -> Result<Value> {
+        let id = self
+            .next
+            .get()
+            .checked_add(1)
+            .ok_or_else(|| napi::Error::from_reason("host value slots exhausted"))?;
+        self.next.set(id);
+        let table = self.table(env)?;
+        table.define_key(table.from_value(&JsValue::string(&id.to_string()))?, value)?;
+        Ok(Value::Host(Rc::new(Slot {
+            id,
+            retired: self.retired.clone(),
+        })))
     }
     pub fn read<'a>(
         &self,

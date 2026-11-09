@@ -4,10 +4,9 @@
 // factory wires repository → service → controller and hands back all three so
 // the caller can mount the router and keep legacy access to the repo Map.
 //
-// `tx` is the cross-file transaction binding (paths + commit function) so
-// directory deletion updates directories.json + sessions.json under one
-// journal entry. Omitting `tx` falls back to the pre-transaction save order —
-// unit tests use that path so they don't need a real filesystem.
+// `tx` is the native cross-file transaction binding (the shared state owner).
+// Directory deletion updates directories.json + sessions.json under one journal
+// entry in Rust; the service never builds the payload pair itself.
 const path = require('path');
 
 const { createFsDirectoryRepository } = require('./repository');

@@ -3196,6 +3196,24 @@
       ]
     },
     {
+      "path": "tests/test-directory-records-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-directory-records-durable.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
       "path": "tests/test-directory-service.js",
       "tier": "core",
       "lane": "deterministic",
@@ -6471,6 +6489,24 @@
     },
     {
       "path": "tests/test-workspace-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-workspace-ws-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-workspace-ws-native.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",

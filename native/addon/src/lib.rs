@@ -176,4 +176,5 @@ mod session_records;
 mod session_state;
 pub mod workspace_queues;
 pub mod workspace_sharing;
+pub mod workspace_sockets;
 mod workspace_state;
