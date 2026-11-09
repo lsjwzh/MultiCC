@@ -205,6 +205,87 @@ void main() {
     expect(out.value?.switchToCli, isNull, reason: '车道没换');
   });
 
+  testWidgets('固定一条：空模型亮出服务端算好的默认，不落到列表第一项', (tester) async {
+    // 默认模型由服务端按该线路的历史高频算出（见 native/core/model_default.rs）。
+    // 面板必须高亮它；旧会话存的不在候选里的模型（终端 ccswitch 留下的
+    // deepseek-flash）一律忽略，退回列表第一项。
+    const providers = <Map<String, dynamic>>[
+      {
+        'id': 'claude-official',
+        'name': '官方',
+        'protocol': 'anthropic',
+        'builtinOfficial': true,
+        'isDefaultOfficial': true,
+        'modelOptions': ['claude-opus-5', 'claude-sonnet-5'],
+      },
+    ];
+
+    final computed = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: providers,
+        provider: 'claude-official',
+        model: '',
+        effort: 'medium',
+        defaultModel: 'claude-sonnet-5',
+      ),
+      computed,
+    );
+    await _save(tester);
+    expect(computed.value?.model, 'claude-sonnet-5',
+        reason: '服务端算出来的默认就是面板上亮着的那个');
+
+    final stale = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: providers,
+        provider: 'claude-official',
+        model: '',
+        effort: 'medium',
+        defaultModel: 'deepseek-flash',
+      ),
+      stale,
+    );
+    await _save(tester);
+    expect(stale.value?.model, 'claude-opus-5',
+        reason: '候选里没有的模型不算默认，退回列表第一项');
+  });
+
+  testWidgets('固定一条：裸官方别名落到按账号那条线时仍沿用算好的默认', (tester) async {
+    // 登录后线路列表只剩按账号拆开的 id，会话里存的裸 <pool>-official 会被
+    // 落到默认那条上；两者仍是同一条线，默认模型不能因此丢掉。
+    const providers = <Map<String, dynamic>>[
+      {
+        'id': 'claude-official-0123456789abcdef',
+        'name': '官方',
+        'protocol': 'anthropic',
+        'builtinOfficial': true,
+        'isDefaultOfficial': true,
+        'modelOptions': ['claude-opus-5', 'claude-sonnet-5'],
+      },
+    ];
+    final out = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: providers,
+        provider: 'claude-official',
+        model: '',
+        effort: 'medium',
+        defaultModel: 'claude-sonnet-5',
+      ),
+      out,
+    );
+    await _save(tester);
+    expect(out.value?.provider, 'claude-official-0123456789abcdef');
+    expect(out.value?.model, 'claude-sonnet-5');
+  });
+
   testWidgets('固定一条：换了 CLI 要带回 switchToCli；没线路的车道说自己的账号', (tester) async {
     final out = _Captured();
     await _open(

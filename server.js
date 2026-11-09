@@ -493,9 +493,10 @@ const sessionPolicy = createSessionPolicy({
   homeDir: os.homedir,
   providers,
   providerRouter: providerRouterRuntime,
+  // Session-record model picks feed the default rule (lazy: the map exists below).
+  records: () => persistedSessions,
 });
 const {
-  claudeDefaultModel,
   effectiveSessionModel,
   serializeSubagent,
   providerDefaultModel,
@@ -556,7 +557,6 @@ const { vendorLoginTerminalCmd, cliForLoginFlow } = require('./src/cli-adapters/
   multiccImgHint: MULTICC_IMG_HINT,
   userInputReminder: USER_INPUT_REMINDER,
   resolveSessionWireModel: providerRouterRuntime.resolveSessionWireModel,
-  claudeDefaultModel,
   cliEffortLevel,
   normalizeEffort,
   codexReasoningConfigArg,

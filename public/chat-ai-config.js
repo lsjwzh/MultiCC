@@ -318,8 +318,13 @@
       // public/shared/models.js) so new Anthropic releases appear without a
       // multicc update. Falls back to the static table on old servers and on
       // the first picker open before refreshClaudeModels() lands.
+      // No "default" row: MultiCC always resolves a concrete model from this
+      // same list (see defaultModelChoice), so a blank option would only claim
+      // the CLI's own config decides — exactly the terminal default we no
+      // longer follow. Old sessions storing '' still resolve to the computed
+      // model server-side.
       const cached = readClaudeModelsSync();
-      if (cached.length) return ['', ...cached.map(m => m.model), '__custom__'];
+      if (cached.length) return [...cached.map(m => m.model), '__custom__'];
       return (state.claudeModelOptions || []).map(option => option.value);
     }
     if (state && state.cli === 'qoder') {
@@ -845,6 +850,23 @@
     return String(model || '').replace(/\[[^\]]*\]$/, '').trim();
   }
 
+  // The highlighted model when the session has no explicit selection. The
+  // server computes it from the lane's model list and this user's explicit
+  // selections on that line (never from terminal config); the session payload
+  // carries it as `effectiveModel`. When the dialog is pointed at a different
+  // provider/CLI than the session, that value no longer describes the list on
+  // screen, so only a matching line may use it.
+  // 官方线路是「每个已登录账号一条」：裸 <pool>-official 与服务端归一化后的
+  // <pool>-official-<16 位账号 id> 是同一条线，算好的默认模型不能因为写法不同丢掉。
+  function sameProviderLine(a, b) {
+    const left = String(a || '');
+    const right = String(b || '');
+    if (left === right) return true;
+    return OFFICIAL_PROVIDER_ID_RE.test(left)
+      && OFFICIAL_PROVIDER_ID_RE.test(right)
+      && left.split('-')[0] === right.split('-')[0];
+  }
+
   function defaultModelChoice(providerId, state) {
     const provider = findProvider(providerId, state);
     const tiers = providerAliasTiers(providerId, state);
@@ -854,7 +876,16 @@
       return (matched || tiers[0])[0];
     }
     const options = providerModelOptions(providerId, state);
-    return (provider && provider.model) || options[0] || '';
+    if (provider && provider.model) return provider.model;
+    // The highlighted value has to be one the dropdown actually renders; a
+    // stale effective model (catalog changed under an old session) falls back
+    // to list order instead of blanking the select.
+    const choices = buildModelChoices(providerId, state)
+      .filter(value => value !== '__custom__');
+    const effective = state && state.effectiveModel;
+    const sameLine = effective && sameProviderLine(state.effectiveProvider || '', providerId || '');
+    if (sameLine && choices.includes(effective)) return effective;
+    return choices[0] || options[0] || '';
   }
 
   function modelChoiceLabel(value, providerId, state) {

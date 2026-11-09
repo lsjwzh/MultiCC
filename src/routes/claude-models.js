@@ -220,9 +220,20 @@ function mountClaudeModelRoutes(app) {
   });
 }
 
+// Synchronous read of the last extracted list for callers that cannot await
+// (default-model selection on the spawn/listing hot path). An unread cache
+// falls back to the static list — never triggers a 300MB bundle scan.
+function listClaudeModelsSync() {
+  if (cache && Array.isArray(cache.models) && cache.models.length) {
+    return cache.models.map(entry => entry && entry.model).filter(Boolean);
+  }
+  return CLAUDE_MODELS_FALLBACK.map(entry => entry.model);
+}
+
 module.exports = {
   mountClaudeModelRoutes,
   listClaudeModels,
+  listClaudeModelsSync,
   resolveClaudeBundle,
   extractModels,
   curateModels,

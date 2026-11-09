@@ -86,10 +86,16 @@ List<String> runModelChoices(
   }
   final opts = resolved?['modelOptions'];
   if (opts is List && opts.isNotEmpty) {
-    return [
-      '',
-      ...opts.map((e) => e.toString()).where((e) => e.trim().isNotEmpty),
-    ];
+    final concrete = opts
+        .map((e) => e.toString())
+        .where((e) => e.trim().isNotEmpty)
+        .toList();
+    // 官方线路不摆「线路默认」：那个空串过去等于「让 CLI 读 ~/.claude/settings.json
+    // / ~/.codex/config.toml」，也就是终端里 ccswitch 改写的那份。默认模型现在由
+    // 服务端按该线路的历史高频算出来（native/core/model_default.rs），面板直接亮
+    // 具体模型；旧会话存的空串照旧交给服务端按同一规则解析。
+    if (resolved?['builtinOfficial'] == true) return concrete;
+    return ['', ...concrete];
   }
   return cli.isClaudeFamily
       ? ClaudeModelsService.options().map((e) => e.key).toList()

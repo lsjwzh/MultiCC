@@ -130,6 +130,7 @@ function probeAddon(file, node = process.execPath) {
     if(['quotaGuardRequestValue','RustQuotaGuard'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.quotaRejectionRequestValue!=='function') process.exit(1);
     if(typeof a.modelRequestPolicyValue!=='function') process.exit(1);
+    if(typeof a.sessionModelDefault!=='function') process.exit(1);
     if(typeof a.retryPolicyValue!=='function') process.exit(1);
     if(typeof a.RustRequestTimer!=='function') process.exit(1);
     if(typeof a.requestLocality!=='function' || !a.requestLocality('local',{socket:{remoteAddress:'127.0.0.1'},headers:{host:'localhost'}})
@@ -154,6 +155,8 @@ function probeAddon(file, node = process.execPath) {
       'providerForceReleaseProducers', 'providerDrainStaleProducers'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['chatApplyClaudeEvent','chatApplyAdapterEvent','chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
       'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
+      'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['cliCompletion','cliIsCompleted','cliIsMainResult','cliResultCompletion','cliProtocolCompletion',
       'cliProxyFailureCompatible','cliCanPersistCompletion'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustCliCompletionTracker!=='function'

@@ -59,6 +59,11 @@ const MODEL_ID_PATTERN: &str = r"^[A-Za-z0-9._:/\[\]-]{1,100}$";
 const ROUTING_MODEL_ID_PATTERN: &str = r"^[A-Za-z0-9._:/\[\]~-]{1,100}$";
 const AUTO_PROVIDER_ID_PATTERN: &str = r"(?i)^auto(?::|$)";
 const MAX_CANDIDATES: usize = 12;
+// Legacy wire ceiling. `maxAttempts` used to cap a turn's physical attempts at
+// four (default three); it is now derived from the enabled candidate count, so
+// the stored/wire value is accepted only for compatibility and never limits a
+// turn. `facts().maxAttempts` still reports this ceiling so older clients keep
+// validating their 2..4 control.
 const MAX_ATTEMPTS: usize = 4;
 // Preset ids are minted by the web client (`p<base36>`), but the field is only
 // a label: any short string is accepted so old/new clients can round-trip it.
@@ -1766,10 +1771,16 @@ fn run_selection(
             "provider_trust_mismatch",
         ));
     }
-    let max_attempts_cap = std::cmp::min(MAX_ATTEMPTS, enabled_count);
+    // The effective budget is the enabled pool size: a turn keeps switching
+    // until every enabled line has tried, whatever legacy `maxAttempts` says
+    // (old sessions, presets and clients stored 2..4). Input is still validated
+    // as a safe integer between 2 and max(legacy ceiling, pool size) so a
+    // malformed caller is told — a stored 3 or 4 with a two-line pool keeps
+    // validating even though the normalized value is that pool's count.
+    let max_attempts_cap = MAX_ATTEMPTS.max(enabled_count);
     let max_attempts = match get(&input, "maxAttempts") {
-        None => std::cmp::min(3, enabled_count) as f64,
-        Some(value) if value.is_null() => std::cmp::min(3, enabled_count) as f64,
+        None => enabled_count as f64,
+        Some(value) if value.is_null() => enabled_count as f64,
         Some(value) => js_number(value),
     };
     if !is_safe_integer(max_attempts)
@@ -1781,6 +1792,7 @@ fn run_selection(
             "invalid_provider_attempt_budget",
         ));
     }
+    let max_attempts = enabled_count as i64;
     let routing = validate_routing(&run.facts, get(&input, "routing"), &candidates);
     let routing_value = match routing {
         RoutingOutcome::Failed(error) => return Ok(error),
@@ -1801,7 +1813,7 @@ fn run_selection(
     value.insert("mode".to_string(), Value::String("auto".to_string()));
     value.insert("protocol".to_string(), Value::String(protocol));
     value.insert("candidates".to_string(), Value::Array(candidates));
-    value.insert("maxAttempts".to_string(), json!(max_attempts as i64));
+    value.insert("maxAttempts".to_string(), json!(max_attempts));
     value.insert(
         "sticky".to_string(),
         Value::Bool(!value_is(get(&input, "sticky"), &Value::Bool(false))),
@@ -2097,6 +2109,82 @@ mod tests {
             assert!(out.get("presetId").is_none(), "unexpected presetId: {out}");
             assert_eq!(out["candidates"].as_array().unwrap().len(), 2);
         }
+    }
+
+    #[test]
+    fn attempt_budget_is_the_enabled_pool_not_a_legacy_max_attempts() {
+        let facts = sample_facts();
+        let pool = |max_attempts: Value| {
+            let mut input = json!({
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                    { "providerId": "codebuddy-native:codebuddy", "cli": "codebuddy", "model": "auto" },
+                    { "providerId": "qoder-native:qoder", "cli": "qoder", "model": "auto" },
+                    { "providerId": "gemini-native:gemini", "cli": "gemini", "model": "auto" },
+                    { "providerId": "pi-native:pi", "cli": "pi", "model": "auto" },
+                    { "providerId": "dsh-native:dsh", "cli": "dsh", "model": "auto" },
+                ],
+            });
+            if !max_attempts.is_null() {
+                input["maxAttempts"] = max_attempts;
+            }
+            let request = json!({ "facts": facts.clone(), "input": input });
+            serde_json::from_str::<Value>(
+                &normalize_stored_provider_selection(&request.to_string()).unwrap(),
+            )
+            .unwrap()
+        };
+        // Every accepted legacy value (2..4) and an absent one normalize to the
+        // enabled candidate count; the stored value never caps the switch loop.
+        for legacy in [json!(2), json!(3), json!(4), Value::Null] {
+            assert_eq!(pool(legacy.clone())["maxAttempts"], json!(5), "{legacy:?}");
+        }
+        // A value equal to the pool is accepted too (today's web clients derive
+        // it themselves), but anything above the pool is still malformed.
+        assert_eq!(pool(json!(5))["maxAttempts"], json!(5));
+        assert_eq!(pool(json!(6)), Value::Null);
+        // A disabled candidate does not buy an attempt.
+        let mut input = json!({
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "maxAttempts": 2,
+            "candidates": [
+                { "providerId": "codebuddy-native:codebuddy", "cli": "codebuddy", "model": "auto" },
+                { "providerId": "qoder-native:qoder", "cli": "qoder", "model": "auto" },
+                { "providerId": "gemini-native:gemini", "cli": "gemini", "model": "auto", "enabled": false },
+            ],
+        });
+        let request = json!({ "facts": facts, "input": input });
+        let out: Value = serde_json::from_str(
+            &normalize_stored_provider_selection(&request.to_string()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(out["maxAttempts"], json!(2));
+        // A stored legacy 3 or 4 keeps validating even with only two enabled
+        // lines (old clients defaulted to 3); the output is still the count.
+        for legacy in [json!(3), json!(4)] {
+            input["maxAttempts"] = legacy.clone();
+            let request = json!({ "facts": facts.clone(), "input": input.clone() });
+            let out: Value = serde_json::from_str(
+                &normalize_stored_provider_selection(&request.to_string()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(out["maxAttempts"], json!(2), "{legacy:?}");
+        }
+        input["maxAttempts"] = json!(5);
+        let request = json!({ "facts": facts, "input": input });
+        let out: Value = serde_json::from_str(
+            &normalize_stored_provider_selection(&request.to_string()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            Value::Null,
+            "nothing above the legacy ceiling is valid"
+        );
     }
 
     #[test]

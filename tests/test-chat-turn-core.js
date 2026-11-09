@@ -1215,10 +1215,13 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   assert.match(accumulateBody,
     /catch \(error\) \{[\s\S]{0,120}logFailure\('token_usage_write_failed', error\);[\s\S]{0,80}return false;/,
     'a failed cumulative write must release the durable usage claim for retry');
-  const finalizeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-plan.js'), 'utf8');
-  assert.match(finalizeSource, /if \(!facts\.killReason\) \{[\s\S]{0,180}freeze-interrupted/,
+  // The planner moved into Rust; the same source-level guarantees are asserted
+  // against its new home (native/core/src/chat_finalize.rs).
+  const finalizeSource = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'core', 'src', 'chat_finalize.rs'), 'utf8');
+  assert.match(finalizeSource, /if !kill_truthy \{[\s\S]{0,400}freeze-interrupted/,
     'unknown interruptions must freeze until an explicit user decision');
-  assert.match(finalizeSource, /if \(durableAfterAppend\) \{[\s\S]{0,220}classify-turn-end/,
+  assert.match(finalizeSource, /if durable_after_append \{[\s\S]{0,260}turn_end\("succeeded"\)/,
     'clean streaming completion must still classify immediately');
 });
 

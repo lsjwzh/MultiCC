@@ -318,7 +318,9 @@ codexModelAware.buildInvocation({
 });
 assert.deepStrictEqual(codexReasoningSession, {
   effort: 'ultra',
-  model: null,
+  // The official lane now hands the lane-default model to Codex explicitly, so
+  // reasoning-level selection sees the model that will actually run.
+  model: 'gpt-5.6-sol',
   effectiveModel: 'gpt-5.6-sol',
 });
 const codexWithRouter = createCodexAdapter({

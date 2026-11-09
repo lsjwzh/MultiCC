@@ -456,12 +456,12 @@
     }
     for (const candidate of candidates) delete candidate._tier;
     const providers = Array.isArray(draft.providers) ? draft.providers : [];
-    const requested = Number(draft.maxAttempts) || MIN_ATTEMPTS;
     const selection = {
       version: 1,
       mode: 'auto',
       candidates,
-      maxAttempts: Math.max(MIN_ATTEMPTS, Math.min(MAX_ATTEMPTS, candidates.length, requested)),
+      // The pool is the attempt budget; `draft.maxAttempts` is ignored.
+      maxAttempts: Math.max(MIN_ATTEMPTS, candidates.length),
       sticky: draft.sticky !== false,
       // 混用官方账号与别人配的线路是允许的，默认就这样跑：跨信任域时一律带上
       // allowCrossTrust（服务端只有在它为 true 时才放行跨信任池）。
@@ -1120,10 +1120,15 @@
 
     function modelState(cli, list) {
       const catalog = catalogs.get(cli);
+      const sameLine = cli === config.cli;
       return {
         cli,
         providers: list || providersOf(cli),
         defaults: (catalog && catalog.defaults) || {},
+        // Only the session's own lane can reuse its computed default; after a
+        // CLI/provider switch the value describes the line we just left.
+        effectiveModel: sameLine ? clean(config.effectiveModel) : '',
+        effectiveProvider: sameLine ? clean(config.provider) : '',
         translate: key => ({ default: tt('runConfigModelDefault', '线路默认'), custom: tt('runConfigModelCustom', '自定义…') })[key] || key,
       };
     }
@@ -2531,11 +2536,12 @@
     }
 
     function renderMore() {
-      const ceiling = Math.max(MIN_ATTEMPTS, Math.min(MAX_ATTEMPTS, rows.length));
-      maxSelect.replaceChildren(...[2, 3, 4].map(value => option(doc, String(value), `${value} 条`, { disabled: value > ceiling })));
-      if (maxAttempts > ceiling) maxAttempts = ceiling;
-      maxSelect.value = String(Math.max(MIN_ATTEMPTS, maxAttempts));
-      maxAttempts = Number(maxSelect.value);
+      // Not a user knob any more: the pool size is the attempt budget, so show
+      // it and keep the control disabled instead of offering 2/3/4.
+      maxAttempts = Math.max(MIN_ATTEMPTS, rows.length);
+      maxSelect.replaceChildren(option(doc, String(maxAttempts), `${maxAttempts} 条`));
+      maxSelect.value = String(maxAttempts);
+      maxSelect.disabled = true;
       stickyBox.checked = sticky;
       renderPresets();
     }
@@ -3039,7 +3045,6 @@
       renderFooter();
     };
     addButton.onclick = () => togglePicker();
-    maxSelect.onchange = () => { maxAttempts = Number(maxSelect.value); renderFooter(); };
     stickyBox.onchange = () => { sticky = stickyBox.checked; };
     presetSelect.onchange = () => {
       const id = presetSelect.value;

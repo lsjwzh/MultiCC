@@ -1538,6 +1538,10 @@ function chatAiConfigState() {
     cli: _sessionCli,
     providers: _providerList,
     defaults: _providerDefaults,
+    // Server-computed default for this session (lane list + explicit-selection
+    // history). Pickers highlight it instead of following terminal config.
+    effectiveModel: _sessionEffectiveModel,
+    effectiveProvider: _sessionProvider,
     providerDisplayName: _sessionProviderDisplayName,
     providerSelection: _sessionProviderSelection,
     claudeModelOptions: CLAUDE_MODEL_OPTIONS,

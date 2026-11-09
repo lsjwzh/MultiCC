@@ -67,6 +67,7 @@ class RunConfigSheet extends StatefulWidget {
     required this.provider,
     required this.model,
     required this.effort,
+    this.defaultModel = '',
     this.providerSelection,
     this.subProviderId,
     this.subModel,
@@ -85,6 +86,12 @@ class RunConfigSheet extends StatefulWidget {
   final String provider;
   final String model;
   final String effort;
+
+  /// Server-computed default for the session's own lane (model-list frequency
+  /// with the first entry as fallback). Never comes from terminal config. The
+  /// picker highlights it when the session has no explicit model; empty for
+  /// drafts that have no session yet.
+  final String defaultModel;
   final SessionProviderSelection? providerSelection;
   final String? subProviderId;
   final String? subModel;
@@ -734,6 +741,14 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           _provider;
     }
     _model = _seedModel(_provider, widget.model);
+    // 会话没存模型时，先亮出服务端算好的那条默认（历史高频 → 列表第一条）。
+    // 它必须排在「列表第一项」前面，否则面板高亮 opus、真正 spawn 的却是别的。
+    if (_model.isEmpty &&
+        widget.defaultModel.isNotEmpty &&
+        _isSameLineProvider(widget.provider, _provider)) {
+      final seeded = _seedModel(_provider, widget.defaultModel);
+      if (_choicesFor(_provider).contains(seeded)) _model = seeded;
+    }
     if (_model.isEmpty) _model = _defaultModelFor(_provider);
     final rungs = effortRungsFor(widget.cli);
     final values = rungs.map((rung) => rung.$1).toList();
@@ -1076,6 +1091,19 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       _customCtrl.text = '';
       _model = _defaultModelFor(_provider);
     });
+  }
+
+  /// 播种时可以沿用会话算出来的默认模型的前提：面板还停在会话原来的那条线上。
+  /// 官方线路是「每条账号一条」，裸别名、空串与按账号拆开的 id 都算同一条线。
+  bool _isSameLineProvider(String a, String b) {
+    if (a == b) return true;
+    final pool = widget.cli.poolKey;
+    if (isOfficialProviderId(a, pool) && isOfficialProviderId(b, pool)) {
+      return true;
+    }
+    if (a.isEmpty && isOfficialProviderId(b, pool)) return true;
+    if (b.isEmpty && isOfficialProviderId(a, pool)) return true;
+    return false;
   }
 
   /// 换线路之后模型该落在哪儿。这条线路的候选里有空串（「线路默认」）就回它；
@@ -2653,6 +2681,7 @@ class _RunConfigSheetLoader extends StatelessWidget {
           provider: runtime.provider ?? '',
           providerSelection: runtime.providerSelection,
           model: runtime.model ?? '',
+          defaultModel: runtime.effectiveModel ?? '',
           effort:
               runtime.effectiveEffort ??
               runtime.effort ??

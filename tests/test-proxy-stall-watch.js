@@ -922,7 +922,11 @@ for (const protocol of ['claude', 'codex']) {
     assert.equal(final.retryBudgetExhausted, true);
     assert.equal(stopped.length, 2);
     assert.equal(decide(final).action, 'fail_fast');
-    assert.equal(failoverSafety(decide(final), runtime.snapshot('s1')).ok, false);
+    // Spending the same-provider budget is not an Auto stop condition: the
+    // fail-fast answer ends retries on this line and the pool moves on.
+    const safety = failoverSafety(decide(final), runtime.snapshot('s1'));
+    assert.equal(safety.ok, true, safety.reason);
+    assert.equal(safety.reason, 'failover_timeout');
     runtime.finishAttempt(second.attempt, { outcome: 'failed' });
     const fresh = beginAttempt(runtime, { turnId: 't2', requestTimeoutMs: 250 });
     assert.equal(fresh.requestDeadlineAt, null);

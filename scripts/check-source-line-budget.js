@@ -140,9 +140,17 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-06 胶囊预设名根修：保存时记录预设出处（presetId），并给旧预设
   // （无 cli）与「池子是预设删过一条」的老数据补比对，实测 3289/167590，
   // 按棘轮上调；模型字段那一族的拆分条件不变。
+  // 2026-11-09 Auto Provider attempt budget is the pool size: the panel no
+  // longer offers 2/3/4 and the wire value is always the enabled line count.
+  // Compressing that comment left 3289 lines / 167457 bytes, so the byte
+  // ceiling ratchets down (the line count is unchanged at the high-water).
+  // 2026-11-09 The picker needs the session's computed default model (and the
+  // lane it belongs to) so the highlighted choice is the one the host will
+  // spawn; the modelState payload grew by 5 lines. Measured 3294/167790, so
+  // both ceilings ratchet up. The model-field extraction target is unchanged.
   'public/run-config.js': Object.freeze({
-    ceiling: 3289,
-    byteCeiling: 167590,
+    ceiling: 3294,
+    byteCeiling: 167790,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
@@ -567,9 +575,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   10266/666788，按真实高水位抬一格。
     // 语义改版不增键只改写 autoEditorPreferQuota* 三键文案（额度不足=剩余<20% 才换线），
     // 行数不变、字节加长，countLines 口径实测 10266/666980，按真实高水位抬字节一格。
-    maxLines: 10266,
+    // 同步 main 的队列编辑校验文案：queueEntryTextTooLong/queueEntryTextRequired
+    // 中英各两条，共增加 4 行；按既有 countLines 口径复核为 10270/667329。
+    maxLines: 10270,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 666980,
+    maxBytes: 667329,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

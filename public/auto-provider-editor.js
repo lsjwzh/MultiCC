@@ -602,8 +602,11 @@
     // 混用官方账号与他人自管 Provider 是允许的，默认就这样跑：跨信任域时一律带上
     // allowCrossTrust（服务端只有在它为 true 时才放行跨信任池），不再要求勾选确认。
     const crossesTrust = selectionCrossesTrust(cleanCandidates, providers);
-    const requestedAttempts = Number(draft.maxAttempts) || 2;
-    const maxAttempts = Math.max(2, Math.min(MAX_ATTEMPTS, cleanCandidates.length, requestedAttempts));
+    // The server derives the turn's attempt budget from the enabled pool: it
+    // keeps switching until every line has failed. The wire field stays for
+    // compatibility with readers that still expect 2..4, but it is always the
+    // candidate count and `draft.maxAttempts` is deliberately ignored.
+    const maxAttempts = Math.max(2, cleanCandidates.length);
     return Object.freeze({
       ok: true,
       value: {
@@ -1488,9 +1491,12 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     }
 
     function syncAttemptLimit() {
-      const ceiling = Math.max(2, Math.min(MAX_ATTEMPTS, order.length));
-      for (const option of maxAttempts.options) option.disabled = Number(option.value) > ceiling;
-      if (Number(maxAttempts.value) > ceiling) maxAttempts.value = String(ceiling);
+      // The budget is the pool size, not a user knob: show the derived value
+      // and leave it disabled. (A 2..4 select is no longer what bounds a turn.)
+      const count = Math.max(2, order.length);
+      maxAttempts.replaceChildren(make('option', '', String(count)));
+      maxAttempts.value = String(count);
+      maxAttempts.disabled = true;
     }
 
     function syncCandidateLimit() {
@@ -2084,8 +2090,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       arrange();
       // A pool with fewer than two lines can't run; open the add list for it.
       addBox.open = order.length < 2;
-      maxAttempts.value = String(configuredSelection?.maxAttempts
-        || Math.max(2, Math.min(3, order.length)));
+      // `notify()` below derives the attempt budget from `order`; a stored
+      // maxAttempts is not carried into the editor any more.
       sticky.checked = configuredSelection ? configuredSelection.sticky !== false : true;
       preferQuota.checked = configuredSelection ? configuredSelection.preferMaxQuota !== false : true;
       // The gateway belongs to the routing config, not to the session: seed it

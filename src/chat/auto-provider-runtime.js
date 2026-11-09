@@ -521,8 +521,15 @@ function createAutoProviderRuntime(options = {}) {
 
     function select(reasonCode) {
       selectionFailureReason = null;
+      // The budget is the enabled pool size, so reaching it means every line
+      // the turn could pick has already failed. Report the pool exhaustion
+      // (the common terminal) and keep `attempt_budget_exhausted` only for a
+      // defensive bound that some other path (an expanded auto-model pool that
+      // shares one providerId) hits first.
       if (physicalAttempt >= selection.maxAttempts) {
-        selectionFailureReason = 'attempt_budget_exhausted';
+        selectionFailureReason = candidates.every(
+          candidate => candidate.enabled === false || attempted.has(candidate.providerId),
+        ) ? 'candidate_pool_exhausted' : 'attempt_budget_exhausted';
         publish('exhausted', current, { reasonCode: selectionFailureReason });
         return null;
       }
@@ -626,7 +633,7 @@ function createAutoProviderRuntime(options = {}) {
           toProviderId: result.providerId,
           fromTrustDomain: fromCandidate && fromCandidate.trustDomain || null,
           toTrustDomain: current.trustDomain,
-          category: decision.error.category,
+          category: decision?.error?.category || 'unknown',
         }),
       });
       return Object.freeze({

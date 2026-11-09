@@ -72,6 +72,32 @@ const chatStream = require('./chat-stream');
 const secretsVault = require('../secrets-vault');
 const waitInjector = require('../wait/injector');
 const providers = require('../providers/core');
+// Official Claude lanes must carry their chosen model in the per-session
+// settings override (higher precedence than ~/.claude/settings.json), so a
+// terminal switched by ccswitch cannot select a different model. Provider
+// lanes already mirror their full routing env into the same file and keep the
+// `--model` flag authoritative.
+function claudeSettingsExtra(invocation, spawnOpts, binding, cli) {
+  const source = invocation && invocation.settings && typeof invocation.settings === 'object'
+    ? invocation.settings : {};
+  const extra = { ...source };
+  if (cli !== 'claude' && cli !== 'claude-exp') return extra;
+  const providerId = binding && binding.providerId;
+  // A provider-less Claude session is the official lane as well (the synthetic
+  // id only exists once unified official providers are enabled), so it must get
+  // the same model/blanking override as `claude-official`.
+  let official = !providerId || providerId === '_default_';
+  try {
+    if (!official && typeof providers.isOfficialProviderId === 'function') {
+      official = providers.isOfficialProviderId('claude', providerId);
+    }
+  } catch (_) { official = false; }
+  if (!official) return extra;
+  const model = spawnOpts && (spawnOpts.rawModel || spawnOpts.effectiveModel);
+  if (model) extra.model = model;
+  return extra;
+}
+
 const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
 const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
@@ -1266,7 +1292,10 @@ function createChatTurnEngine(deps) {
       // (see src/providers/claude-settings-override.js).
       let finalSpawnArgs = spawnArgs;
       if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') {
-        const settingsFile = providers.settingsOverrideFor(sessionName, childEnv, physicalInvocation.settings);
+        const settingsFile = providers.settingsOverrideFor(
+          sessionName, childEnv,
+          claudeSettingsExtra(physicalInvocation, prepared.invocationEnvelope && prepared.invocationEnvelope.spawnOpts, binding, persisted.cli),
+        );
         if (settingsFile) {
           finalSpawnArgs = processSpawnArgs(physicalInvocation, settingsFile);
         }
@@ -1862,7 +1891,10 @@ function createChatTurnEngine(deps) {
       officialOAuth: getClaudeOfficialViaProxy(),
     });
     secretsVault.applyEnvOverlay(childEnv, { source: 'resident_turn', sessionId: sessionName, turnId: turn.turnId, taskId: persisted.taskBoundTaskId }); // 常驻流不走 spawnProcess；每轮重建，中途改动由各流据 envDigest 在回合边界回收
-    const streamSettingsFile = providers.settingsOverrideFor(sessionName, childEnv, invocation.settings);
+    const streamSettingsFile = providers.settingsOverrideFor(
+      sessionName, childEnv,
+      claudeSettingsExtra(invocation, prepared.invocationEnvelope && prepared.invocationEnvelope.spawnOpts, binding, persisted.cli),
+    );
     // Adapter-declared argv for a protocol whose prompt moves from argv to stdin.
     const streamArgs = invocation.streamArgs || invocation.args;
     const streamBaseArgs = streamSettingsFile
@@ -2621,6 +2653,7 @@ function createChatTurnEngine(deps) {
 module.exports = {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
+  claudeSettingsExtra,
   closeOpenThinkingTool,
   createChatTurnEngine,
   createDeliveryProbeRegistry,

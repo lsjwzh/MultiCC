@@ -1463,3 +1463,55 @@ Electron 桌面工具链、无 `pwsh`）、1 项既有 S6 `# TODO`；运行均�
 网关/addon 控制协议不变（仍为 12）。未发现有意行为差异。本批推进 6d 但未完成：
 CLI 监管、流式/收尾/后台副作用、provider 选择、历史持久化与 WS 处理仍在 Node，
 故不声明任何后端退出验收项完成，整体账本仍为 5/6。
+
+## 6d chat orchestration: turn finalization planner (2026-11-09)
+
+The gateway process boundary is unchanged; what moved is the in-process planner
+that `server.js` loads through the addon. `native/addon/src/chat_finalize.rs`
+adds six exports consumed only in that process:
+`chatPlanTurnFinalization(input, deps, clock)`,
+`chatPlanRetryBlockedFinalization(plan, overrides)`,
+`chatResolveTurnFinalization(plan, outcome)`,
+`chatClassifyProcessExit(input)`, `chatNormalizeHandoff(input)` and
+`chatIsGuardedHandoffFailure(facts, handoff)`. The control protocol stays 12;
+no new gateway frame, route or IPC message was introduced.
+
+Crossing rules: only the turn evidence object and the resolved effect list
+cross the bridge, once per turn close. Plans are returned as frozen JavaScript
+objects and the host executes the effect list in the native order. Two objects
+stay by reference because host consumers compare identity: the accepted
+API-error retry decision (`plan.retry === apiErrorDecision`, also reachable as
+`facts.apiErrorDecision`) and a resolved plan's `facts`/`append`. The host clock
+is passed as a callback and is invoked from Rust only when a retry schedule is
+actually produced; a clock that throws propagates only for scheduled retries.
+
+Host ports still executed by Node, in the order the native plan returns them:
+process kill/await and stream close, timers, WS frame send, history append (the
+two-stage append boundary), provider-attempt finish, background-task runtime and
+the logger. The gateway keeps serving frames before and after finalization; this
+change adds no frame serialization beyond what the host ports already emit.
+
+Mirrors and fallbacks were deleted together: `src/chat/finalize-plan.js` is a
+58-line wrapper and `src/chat/finalize-host.js` a pure effect executor. The
+frozen oracle, the differential suite (1,200 seeded plan/resolve cases plus
+table and randomized classification cases) and the isolated gateway test
+(clean completion, crash, no-result, queued follow-up, cancel) are described in
+`docs/backend-rust-exit-plan.md`.
+
+Fingerprint `b503d884fb354b58996e049a`; validation logs under
+`data/rust-source/b503d884fb354b58996e049a/validation/chat-finalize/`. The
+known difference is eager input reading in the bridge (getters on unused keys
+run earlier than in the lazy JavaScript planner); production inputs are plain
+object literals. No acceptance criterion is claimed and the overall ledger stays
+5/6.
+
+
+### 2026-11-09 同批集成复核
+
+回合收尾规划与自动线路切换、默认模型修复一起集成，最终源码指纹为
+`49e5cffd731f59f5e73f0d26`。同步 main 后 Rust workspace 686 项、专项 230 项、
+Flutter 48 项以及完整 npm 回归通过；真实隔离 gateway + server 检查退出 0。
+隔离测试曾在目录清理时失败，现以自有进程组并等待 close 完成收尾，未操作生产服务。
+完整收据与剩余边界见 `backend-rust-exit-plan.md` 的“本批集成验收”一节；
+日志在主仓 `data/rust-source/49e5cffd731f59f5e73f0d26/validation/merged-chat-batch/`。
+网关控制协议仍为 12，整体迁移账本仍为 5/6。

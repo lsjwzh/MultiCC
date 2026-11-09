@@ -200,7 +200,7 @@ test('buildAutoSelection：按顺序 = failover，无 routing，无 autoModel', 
   assert.equal(noAuto.value.candidates[0].autoModel, undefined);
 });
 
-test('buildAutoSelection：maxAttempts 夹在 2..min(4, 行数)', () => {
+test('buildAutoSelection：maxAttempts 永远是可用线路数，输入值不再限制', () => {
   const five = [
     { providerId: 'a', cli: 'codex' }, { providerId: 'b', cli: 'claude' }, { providerId: 'c', cli: 'opencode' },
     { providerId: 'd', cli: 'kimi' }, { providerId: 'e', cli: 'zcode' },
@@ -208,8 +208,8 @@ test('buildAutoSelection：maxAttempts 夹在 2..min(4, 行数)', () => {
   assert.equal(run.buildAutoSelection({ pick: run.PICK_ORDER, rows: rows(), maxAttempts: 99 }).value.maxAttempts, 2);
   assert.equal(run.buildAutoSelection({ pick: run.PICK_ORDER, rows: rows(), maxAttempts: 1 }).value.maxAttempts, 2);
   assert.equal(run.buildAutoSelection({ pick: run.PICK_ORDER, rows: rows(), maxAttempts: undefined }).value.maxAttempts, 2);
-  assert.equal(run.buildAutoSelection({ pick: run.PICK_ORDER, rows: five.slice(0, 3), maxAttempts: 3 }).value.maxAttempts, 3);
-  assert.equal(run.buildAutoSelection({ pick: run.PICK_ORDER, rows: five, maxAttempts: 99 }).value.maxAttempts, 4, '上限是 4');
+  assert.equal(run.buildAutoSelection({ pick: run.PICK_ORDER, rows: five.slice(0, 3), maxAttempts: 2 }).value.maxAttempts, 3);
+  assert.equal(run.buildAutoSelection({ pick: run.PICK_ORDER, rows: five, maxAttempts: 4 }).value.maxAttempts, 5, '不再封顶 4');
 });
 
 test('buildAutoSelection：禁用的行不参与，空 providerId 也跳过', () => {

@@ -966,3 +966,249 @@ difference was found. This batch advances 6d but completes nothing: CLI
 supervision, streaming/finalize/background effects, provider selection, history
 persistence and WS handling remain in Node, so no backend-exit acceptance
 criterion is claimed and the overall ledger stays 5/6.
+
+## 6d chat orchestration: turn finalization planner (2026-11-09)
+
+The pure finalize planner now lives in Rust. `src/chat/finalize-plan.js` is a
+58-line host wrapper (+18/-402, down from 442 lines) around six new addon
+exports; `native/core/src/chat_finalize.rs` (1,401 lines, 7 unit tests) holds
+every decision and `native/addon/src/chat_finalize.rs` (190 lines) moves values
+across the lossless bridge and preserves the two host identities consumers rely
+on.
+
+Shape: one frozen plan per turn, `{action, code, facts, retry, append, effects}`,
+with actions `noop`, `continue-codex`, `retry-api`, `retry-fresh` and
+`finalize`. `facts` is the ordered evidence record. `effects` is the ordered
+host-effect list; `resolveTurnFinalization` appends the close sequence
+(set-streaming false, cancel-classify for streams, clear-stream-replay, optional
+failure reports, append-assistant-result plus increment-chat-turn-count,
+conditional commit-usage, capture-final-text, reset-turn-output, the
+status/classify/turn-end effects, stream-end, run-post-turn and
+clear-active-runner). The host applies them in exactly that order and never
+re-decides.
+
+Reuse: fresh-start and codex-disconnect retries go through the existing
+`retry_policy::decide`; finality reuses the evidence contract of
+`decideChatRunnerFinality` inside `chat_turn_lifecycle`; completion uses the
+`cli_completion` rules; the API-error decision object is produced by the
+existing API-error policy and passed through by identity; object helpers come
+from `quota_guard`. No second copy of these rules was added.
+
+Host ports kept in Node: process kill/await and stream close, timers, WS frame
+send, history append (the two-stage append boundary that needs the persisted
+result), provider-attempt finish, background-task runtime and the logger.
+`finalize-host.js` is now a pure executor: its switch only maps native effect
+types to those ports. `commitAdapterResult` and `finalizeStreamingTurn` keep
+their host orchestration but consume `planTurnFinalization` /
+`resolveTurnFinalization`; the retry-availability replan calls
+`planRetryBlockedFinalization`.
+
+Deleted Node logic: the whole 402-line decision body of `finalize-plan.js`
+(fact assembly, process-exit classification, handoff normalization and guard,
+retry scheduling and effects, finality classification, append boundary
+selection, the status/turn-end effect table and resolution ordering). No mirror
+state and no fallback remain.
+
+Oracle and differential coverage: `tests/helpers/legacy-chat-finalize-plan.js`
+(412 lines) is the frozen prior implementation.
+`tests/test-chat-finalize-differential.js` (319 lines, 5 tests) compares plans,
+facts, effects, append flags and resolved outputs byte-for-byte through a
+serializer that preserves `undefined`, `NaN`, `-0`, lone surrogates and property
+order: 1,200 seeded randomized plan+resolve cases (plus a blocked-retry replan
+for every scheduled action), a 22-case branch table that reaches all five
+dispositions with four outcomes each, 400 randomized
+classification/handoff/guard triples, freezing and identity checks
+(`plan.retry === apiErrorDecision`, resolved `facts`/`append` reuse), and host
+clock sampling (0 calls on finalize, exactly 1 on a scheduled retry, a throwing
+clock surfaces only when sampled).
+
+End-to-end: `tests/test-chat-finalize-isolated.js` (336 lines) starts the real
+`multicc-gateway` and `server.js` on a temporary data root with a fake Claude
+CLI and drives `/ws/chat`: clean completion with `stream_end`, non-zero exit
+without a result, zero exit without a result, a queued follow-up turn while a
+turn is running (the follow-up is claimed after the running turn and the
+running CLI is not killed), and a mid-stream cancel (SIGTERM reaches the CLI,
+the task freezes as `user_cancelled`, and a fresh turn claims the session
+afterwards). A new user message on this path queues rather than supersedes;
+stale and superseded runner dispositions are covered by the differential
+noop/supersede cases instead.
+
+Existing `test-chat-finalize-plan.js`, `test-chat-finalize-host.js`,
+`test-chat-host-coordinator.js` and `test-chat-turn-core.js` keep passing;
+`test-chat-turn-core.js` only had two source-pattern assertions retargeted from
+the deleted JS file to the Rust source, without weakening assertions.
+
+Injected mutation faults (each failed the differential test and was reverted):
+(1) allowing a fresh retry after a user stop (1 failing test); (2) inverted
+stream finality when the result event is missing (2); (3) `stream-end` emitted
+before the status effects (2); (4) dropping the partial flag on the append
+boundary (2).
+
+Rust workspace: 674 passed, 0 failed. The new files pass `rustfmt --check`
+(with `skip_children` so unrelated modules stay untouched) and clippy reports
+no warning in them; repository pre-existing warnings remain untouched. Test
+tiers: 851 classified (core 406: deterministic 332 / isolated 43 / flutter 31).
+Source line budget OK (known `public/run-config.js` 3,289->3,000 debt
+unchanged); `git diff --check` clean.
+
+Full `npm test` against the final artifacts (the built addon at the fingerprint
+below, loaded through `MULTICC_RUST_ADDON` and `MULTICC_RUST_PREBUILT_DIR`)
+exits 0: 6,556 tests across 27 node:test summary blocks, 6,553 passed, 0
+failed, 2 skipped, 1 todo. Both skips and the todo are pre-existing
+environment gates (no desktop/electron-builder toolchain, no `pwsh`, and the
+existing S6 duplicate-bubble nudge case) and are unrelated to this batch. An
+earlier full run failed exactly once in
+`tests/test-release-version-consistency.js` because adding two tests changed
+the audited release core set (404 -> 406 reviewed entries, 378 planned
+commands); the audit was re-reviewed and updated, and the rerun is green.
+
+Fingerprint `b503d884fb354b58996e049a`; logs are archived under the primary
+repository's
+`data/rust-source/b503d884fb354b58996e049a/validation/chat-finalize/`. The
+gateway/addon control protocol is unchanged (12). Known behaviour difference:
+the napi bridge reads the whole planner input eagerly, so getters on keys the
+planner never uses run earlier than in the lazy JavaScript planner; production
+call sites pass plain object literals. A resolved plan's `result` object is now
+also frozen (it is a contained value only). This batch advances 6d but completes
+nothing: CLI supervision, the remaining streaming/background effects, provider
+selection, history persistence and WS handling stay in Node, so no backend-exit
+acceptance criterion is claimed and the overall ledger stays 5/6.
+
+## Auto Provider attempt budget and failover stop list (2026-11-09)
+
+Auto Provider used to stop after a fixed number of physical attempts: the Rust
+contract capped `maxAttempts` at 4, defaulted it to 3, and the JS runtime
+compared that value in `select()`, `planTurn()` and the handoff hop guard. Two
+lines therefore meant one switch, and a third failure ended the turn. The
+budget is now derived, not configured.
+
+### Budget
+
+- `auto_provider_config.rs` normalizes `maxAttempts` to the number of enabled
+  candidates in the pool (all lanes). A legacy stored or wire value of 2..4 is
+  still accepted and validated (the accepted range is 2..=max(4, enabled
+  count), so a stored 3 or 4 with a two-line pool keeps validating) but the
+  normalized value is always the count, so it never caps a turn. The `facts().maxAttempts = 4` field stays as the legacy wire ceiling for
+  clients that still render a 2..4 control.
+- `run_config_presets.rs` derives `maxAttempts` from the preset's candidate
+  list instead of clamping to 4.
+- The runtime loop is bounded by the enabled pool and by the `attempted` set:
+  a candidate that failed once in the turn is never selected again. Reaching
+  the bound after all enabled lines were tried reports
+  `auto_candidate_pool_exhausted`; `auto_attempt_budget_exhausted` remains only
+  as a defensive guard for pools whose expanded variants share a provider id.
+- Web (`public/run-config.js`, `public/auto-provider-editor.js`) and Flutter
+  (`run_config_wire.dart`, `run_config_sheet_auto.dart`) no longer offer a
+  2/3/4 choice; they display the derived pool size and send it on the wire.
+
+### Stop list
+
+A failure switches to the next candidate unless one of these conditions holds.
+
+| Condition | Reason code | Why it terminates instead |
+| --- | --- | --- |
+| Category `cancel_shutdown` | `category_not_failoverable` | User stop, restart or shutdown; a replay would be wrong. |
+| Category `context_token_limit` | `category_not_failoverable` | The request is too large; every line would refuse it. Compact first. |
+| Category `tool_protocol` | `category_not_failoverable` | Our tool call is malformed; replaying it reproduces the error. |
+| Unsafe replay phase (partial output, side effects, streaming) | `unsafe_replay_boundary` / `unsafe_failure_phase` | Replay safety. `prepareHandoff` turns it into one fresh continuation turn on another reserved route. |
+| Replay fence closed (visible output, tool intent, side effect observed) | `provider_replay_fence_closed` | Same: the handoff reservation carries the task forward instead of replaying. |
+| Live background tasks for the session | `auto_background_tasks_active` | The background work belongs to the current lane; switching would orphan it. |
+| No eligible candidate left | `auto_candidate_pool_exhausted` | All enabled lines were tried or are known exhausted. |
+| Fewer than two enabled candidates | config validation | A pool cannot fail over with one line. |
+
+Everything else switches. Exhausting the same-provider API retry budget
+(`retry_budget_exhausted`) or the request budget
+(`request_budget_exhausted`, including `retryBudgetExhausted` and
+`model_request_deadline`) is explicitly a switch trigger: the fail-fast answer
+ends same-provider retries, and the Auto policy then moves to the next line.
+A failure that arrives with no classified api-error decision (opaque CLI crash,
+non-zero exit, watchdog kill) is treated as `failover_unknown`, still behind
+the replay fence. `adapter_configuration` is no longer a non-failover category:
+a spawn failure or provider-specific configuration error is exactly what
+another line can recover from.
+
+Rust unit tests cover the derived budget (`auto_provider_config`), preset
+clamping (`run_config_presets`) and the stop list plus missing-decision and
+spent-budget failover (`auto_provider_policy`). JS tests cover a five-candidate
+turn whose first four failures are rate limit, billing quota, network and HTTP
+4xx before the fifth succeeds, an all-fail turn that only terminates after all
+five, a legacy `maxAttempts: 2` no longer capping a three-line pool, and a
+cross-lane handoff reservation.
+
+## Session default model is Rust-owned (2026-11-09)
+
+The default model of a session used to come from the terminal's own config:
+`claudeDefaultModel()` parsed `~/.claude/settings.json` (`model`, then `env`),
+and `codexDefaultModel()` parsed `~/.codex/config.toml`. A ccswitch-style tool
+that rewrites those files therefore redirected MultiCC sessions too — on the
+official Claude account this surfaced as
+`There's an issue with the selected model (deepseek-flash)`.
+
+Selection now lives in `native/core/src/model_default.rs` (addon export
+`sessionModelDefault`, probed by `scripts/rust-source-cache.js`); Node keeps a
+thin bridge in `src/cli/model-default.js`. `src/cli/session-policy.js` only
+resolves the lane facts and passes them in: the provider summary, the lane's
+picker list, the last model the CLI reported and the explicit-selection history.
+
+Rule (one implementation, no dual path):
+
+1. An explicit `session.model` and a provider-pinned `provider.model` behave
+   exactly as before (provider aliases still resolve through `aliasMap`).
+2. Otherwise the model the user selected most often on that lane wins. History
+   is the explicit `session.model` values in the persisted session records;
+   `claude` and `claude-exp` share one lane, and official provider ids
+   (`claude-official`, `claude-official-<account>`) share the provider-less
+   official line. Ties resolve to the earlier entry of the model list.
+3. No usable history → the first entry of the lane's model list. Entries that
+   are no longer in the list (stale ids after a catalog change) never win.
+4. Only an empty list falls back to the last model the CLI reported for the
+   session; managed Codex routes with an empty catalog resolve to no default
+   instead of resurrecting a reported model from a previous route.
+5. Terminal configuration files are never read for the model. Effort/reasoning
+   (`claudeDefaultEffort`, `codexDefaultReasoningLevel`) is a separate local
+   preference and stays as it was.
+
+Lane lists: official Claude uses `listClaudeModelsSync()` (the same list the
+picker shows, with `CLAUDE_MODELS_FALLBACK` when the CLI has not been scanned);
+official Codex uses `readCodexOfficialModels()`; provider lanes use the
+provider summary's `modelOptions`.
+
+Adapters always pass an explicit model: `claude`/`claude-exp` via
+`--model`, `codex` via `-c model=...`, `codex-exp` via `--model` and the
+per-turn `turnOptions.model`. The official Claude lane additionally writes the
+per-session `--settings` override (`src/providers/claude-settings-override.js`)
+with the chosen model at the top level and every absent routing key blanked, so
+a rewritten `~/.claude/settings.json` cannot redirect the account. Blank env
+values read as unset to the CLI, so OAuth/keychain login is unaffected.
+
+Deleted Node logic: `claudeDefaultModel`, `codexDefaultModel` and the default
+branches of `effectiveSessionModel`/`providerDefaultModel` in
+`src/cli/session-policy.js`. The Web/App pickers no longer show or derive a
+"terminal default"; the highlighted default is the value computed above.
+
+Tests: Rust unit tests in `model_default.rs` (frequency, tie to list order,
+empty history, stale ids, provider-scoped history, pinned model, alias-only
+wire default, official Codex empty catalog); JS tests in
+`tests/test-session-policy.js`, `tests/test-claude-settings-override.js` and
+`tests/test-session-model-terminal-config.js` run against an isolated temp HOME
+containing a ccswitch-rewritten `settings.json`/`config.toml`.
+
+## 2026-11-09 本批集成验收：回合收尾、线路切换与默认模型
+
+本批已同步 main `89c54056`，源码指纹 `49e5cffd731f59f5e73f0d26`。
+回合收尾规划由 Rust 执行；自动线路切换覆盖全部启用候选，不再被旧的
+2–4 次上限截断；默认模型从当前线路模型列表和明确选择历史产生，不读取终端模型配置。
+仍保留 Node 的进程/流/WS 副作用端口以及默认模型事实读取、短期缓存和 JSON 桥，
+后两项是下一批清理范围，不能据此声明 Node 后端已退出。
+
+同步后验证：230 项专项、Rust workspace 686 项、Flutter 配置界面 48 项通过；
+完整 `npm test` 退出 0（统计输出共 6,563 项：6,560 通过、0 失败、2 项工具缺失跳过、
+1 项原有重复气泡 S6 TODO）。隔离真实 gateway + server 覆盖正常结束、异常退出、
+零退出无结果、排队后续消息及取消后新轮，最终退出 0。初次隔离检查业务断言通过但
+清理目录失败，已修复为自有进程组、等待 close、超时停止子进程后再清理；失败记录保留。
+测试分层、产物/运行时写入治理、源码预算、JS 语法与 diff 检查通过；main 新增队列
+双语文案遗漏的预算登记已补齐。两处未改动的 Rust 格式差异已核对来自原 main。
+
+收据归档：`data/rust-source/49e5cffd731f59f5e73f0d26/validation/merged-chat-batch/`。
+控制协议仍为 12，整体账本仍为 5/6；剩余 CLI 监管、流式/后台副作用、provider
+宿主编排、历史持久化及聊天 WS 仍需逐批迁移。本批集成不包含推送或生产重启。

@@ -24,15 +24,14 @@ use std::borrow::Cow;
 /// * `context_token_limit` — the request itself is too large; the remedy is
 ///   compaction, and every line would refuse it again.
 /// * `tool_protocol` — our tool call is malformed; a replay reproduces it.
-/// * `adapter_configuration` — local CLI / native-session state (unknown
-///   session id, CLI missing); it has its own fresh-start recovery that a
-///   provider switch would pre-empt.
-pub const NON_FAILOVER_CATEGORIES: [&str; 4] = [
-    "cancel_shutdown",
-    "context_token_limit",
-    "tool_protocol",
-    "adapter_configuration",
-];
+///
+/// Everything else switches, including a missing classification (an opaque
+/// crash, non-zero exit, watchdog kill) and `adapter_configuration` (a spawn
+/// failure or a provider-specific configuration error): the pool exists to try
+/// another line, and the replay gates below still decide whether the switch is
+/// safe or must become a continuation handoff.
+pub const NON_FAILOVER_CATEGORIES: [&str; 3] =
+    ["cancel_shutdown", "context_token_limit", "tool_protocol"];
 /// Categories whose failover reason keeps its historical name. Anything else
 /// that switches on an upstream 4xx keeps reporting `failover_http_4xx`.
 const PROVIDER_FAULT_CATEGORIES: [&str; 6] = [
@@ -894,9 +893,28 @@ fn choose_candidate_of(request: &Value) -> Value {
 /// httpStatus, category, phase, partialOutput, sideEffects } }, attempt: null |
 /// { replayFence, visibleOutputObserved, toolIntentObserved,
 /// sideEffectObserved } }`. Answer: `{ ok, reason }`.
+///
+/// A failure without a classified error decision is an opaque crash, non-zero
+/// exit or watchdog kill — the case the pool exists for — so it switches as
+/// `unknown`, still behind the replay fence. A spent same-provider retry or
+/// request budget is likewise not a stop condition: the next line is the
+/// remedy, and the caller's candidate pool bounds the loop.
 pub fn failover_safety(input: &str) -> Result<String, String> {
     let request = parse(input)?;
     Ok(failover_safety_of(&request).to_string())
+}
+
+fn replay_fence_closed(request: &Value) -> bool {
+    let attempt = request.get("attempt").and_then(Value::as_object);
+    attempt.is_none()
+        || !field(attempt, "replayFence").is("none")
+        || [
+            "visibleOutputObserved",
+            "toolIntentObserved",
+            "sideEffectObserved",
+        ]
+        .iter()
+        .any(|key| field(attempt, key).truthy())
 }
 
 fn failover_safety_of(request: &Value) -> Value {
@@ -906,14 +924,13 @@ fn failover_safety_of(request: &Value) -> Value {
         .and_then(|d| d.get("error"))
         .and_then(Value::as_object)
     else {
-        return refuse("missing_error_decision");
+        return if replay_fence_closed(request) {
+            refuse("provider_replay_fence_closed")
+        } else {
+            json!({ "ok": true, "reason": "failover_unknown" })
+        };
     };
     let error = Some(error);
-    if field(error, "retryBudgetExhausted").truthy()
-        || field(decision, "reason").is("request_budget_exhausted")
-    {
-        return refuse("request_budget_exhausted");
-    }
     let status = field(error, "httpStatus").number();
     let upstream_4xx =
         status.is_finite() && status.trunc() == status && (400.0..=499.0).contains(&status);
@@ -932,17 +949,7 @@ fn failover_safety_of(request: &Value) -> Value {
     if field(error, "partialOutput").truthy() || field(error, "sideEffects").truthy() {
         return refuse("unsafe_replay_boundary");
     }
-    let attempt = request.get("attempt").and_then(Value::as_object);
-    let fence_closed = attempt.is_none()
-        || !field(attempt, "replayFence").is("none")
-        || [
-            "visibleOutputObserved",
-            "toolIntentObserved",
-            "sideEffectObserved",
-        ]
-        .iter()
-        .any(|key| field(attempt, key).truthy());
-    if fence_closed {
+    if replay_fence_closed(request) {
         return refuse("provider_replay_fence_closed");
     }
     let provider_fault = PROVIDER_FAULT_CATEGORIES
@@ -1202,7 +1209,10 @@ mod tests {
             "category_not_failoverable"
         );
         assert_eq!(
-            safety(json!({ "category": "network", "phase": "streaming" }), open)["reason"],
+            safety(
+                json!({ "category": "network", "phase": "streaming" }),
+                open.clone()
+            )["reason"],
             "unsafe_failure_phase"
         );
         assert_eq!(
@@ -1212,12 +1222,52 @@ mod tests {
             )["reason"],
             "provider_replay_fence_closed"
         );
+        // A failure with no classified decision is an opaque crash or watchdog
+        // kill: it switches unless the replay fence is closed.
+        assert_eq!(
+            call(
+                failover_safety,
+                json!({ "decision": null, "attempt": open.clone() })
+            )["reason"],
+            "failover_unknown"
+        );
         assert_eq!(
             call(
                 failover_safety,
                 json!({ "decision": null, "attempt": null })
             )["reason"],
-            "missing_error_decision"
+            "provider_replay_fence_closed"
+        );
+        // A spent same-provider retry/request budget is not a stop condition.
+        assert_eq!(
+            safety(
+                json!({
+                    "category": "network", "phase": "request",
+                    "retryBudgetExhausted": true
+                }),
+                open.clone()
+            )["reason"],
+            "failover_network"
+        );
+        assert_eq!(
+            call(
+                failover_safety,
+                json!({
+                    "decision": { "reason": "request_budget_exhausted", "error": {
+                        "category": "timeout", "phase": "request"
+                    } },
+                    "attempt": open.clone()
+                })
+            )["reason"],
+            "failover_timeout"
+        );
+        // A spawn failure / provider-specific configuration error moves on.
+        assert_eq!(
+            safety(
+                json!({ "category": "adapter_configuration", "phase": "connect" }),
+                open.clone()
+            )["reason"],
+            "failover_adapter_configuration"
         );
     }
 }
