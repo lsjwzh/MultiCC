@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/gestures.dart' show kLongPressTimeout;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -516,6 +517,43 @@ void main() {
     expect(moves, [
       ['queued-1', 2],
     ]);
+  });
+
+  testWidgets('holding the drag handle (tooltip timeout) still drags', (
+    tester,
+  ) async {
+    // 真机上用户是先按住小图标再挪：按住超过长按阈值后手势不能被提示气泡
+    // 之类的长按识别器抢走。
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      final moves = <List<Object>>[];
+      await tester.pumpWidget(
+        _host(
+          SessionQueuePanel(
+            queue: _pendingQueue(3),
+            enabled: true,
+            onAction: (_) async {},
+            onCancelQueued: (_) async {},
+            onReorderQueued: (entryId, toIndex) async =>
+                moves.add([entryId, toIndex]),
+          ),
+        ),
+      );
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+
+      await _dragRowDown(
+        tester,
+        'queued-1',
+        rows: 2,
+        hold: kLongPressTimeout + const Duration(milliseconds: 300),
+      );
+      expect(moves, [
+        ['queued-1', 2],
+      ]);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   testWidgets('a quick drag on the row body does not reorder', (tester) async {

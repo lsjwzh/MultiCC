@@ -637,14 +637,27 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
               key: Key('reorder-queued-${item.entryId}'),
               index: dragIndex!,
               enabled: !_busy && widget.enabled,
-              child: Tooltip(
-                message: t('reorderQueuedMessage'),
+              // 不能用 Tooltip：手机上它靠长按弹出，弹出那一刻长按识别器赢下
+              // 手势竞技场，拖拽识别器被判出局——表现就是「按住有提示，拖了没
+              // 反应」。提示文字改走无障碍标签。透明底色把热区撑到 24×24，
+              // 免得只有 16px 的图标笔画本身能按中。
+              child: Semantics(
+                label: t('reorderQueuedMessage'),
                 child: const Padding(
-                  padding: EdgeInsets.only(right: 5),
-                  child: Icon(
-                    Icons.drag_indicator_rounded,
-                    size: 16,
-                    color: Color(0xFF93a7bb),
+                  padding: EdgeInsets.only(right: 3),
+                  child: ColoredBox(
+                    color: Color(0x00000000),
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: Center(
+                        child: Icon(
+                          Icons.drag_indicator_rounded,
+                          size: 16,
+                          color: Color(0xFF93a7bb),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
