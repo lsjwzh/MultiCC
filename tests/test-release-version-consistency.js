@@ -530,13 +530,15 @@ test('core runner covers every selected path and expands declared variants', () 
   // 历史服务迁移复核：test-chat-history-differential.js 使用内存仓库、固定时钟
   // 与冻结旧实现比较失败、重入及随机操作；不访问端口、真实账号或用户数据。
   // 因此登记核心确定性层：414 entries、340 deterministic、386 commands。
-  assert.equal(core.length, 414, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 414);
+  // 文件仓库差分只使用内存文件系统与固定种子，不访问真实服务或用户数据。
+  // 新增核心确定性入口：415 entries、341 deterministic、387 commands。
+  assert.equal(core.length, 415, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 415);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 340);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 341);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -546,8 +548,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 386,
-    '383 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 387,
+    '384 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
