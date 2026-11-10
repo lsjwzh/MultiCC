@@ -3,6 +3,7 @@ pub mod auto_provider_config;
 pub mod auto_provider_policy;
 pub mod background;
 pub mod background_hold;
+pub mod chat_context_rotation;
 pub mod chat_events;
 pub mod chat_finalize;
 pub mod chat_finalize_execution;

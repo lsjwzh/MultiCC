@@ -52,6 +52,27 @@ function createChatHistoryFileRepository({
         try { owner.run(anchor, 'invalidateWrite', [id]); } catch (_) {}
       }
     },
+    // Visibility writes take the same durable path as transcript writes: the
+    // queue head decides the snapshot, the worker performs the atomic replace,
+    // and only a resolved write lets the runtime publish the cache.
+    writeVisibilityAsync: async (sessionId, stateJson) => {
+      const id = String(sessionId);
+      try {
+        const result = await owner.writeVisibilityAsync(id, String(stateJson));
+        if (result.error) {
+          const failure = asyncFailure(result.error);
+          if (result.error.operation) {
+            reportFailure(failure, {
+              operation: result.error.operation,
+              target: result.error.target || result.error.path || root,
+            });
+          }
+          throw failure;
+        }
+      } finally {
+        try { owner.run(anchor, 'invalidateWrite', [id]); } catch (_) {}
+      }
+    },
     hasPersistedDeliveryAsync: async (sessionId, deliveryId) => {
       const identity = String(deliveryId || '');
       if (!identity) return false;

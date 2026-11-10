@@ -162,8 +162,10 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.chatHistoryCleanThinkingBlocks!=='function') process.exit(1);
     if(typeof a.RustChatHistoryRepository!=='function' || typeof a.RustChatHistoryRepository.prototype.run!=='function'
       || typeof a.RustChatHistoryRepository.prototype.hasPersistedDeliveryAsync!=='function'
+      || typeof a.RustChatHistoryRepository.prototype.writeVisibilityAsync!=='function'
       || typeof a.chatHistorySafeSessionName!=='function' || a.chatHistorySafeSessionName('../a')!=='___a') process.exit(1);
     if(typeof a.RustChatHistoryRuntime!=='function' || typeof a.RustChatHistoryRuntime.prototype.run!=='function'
+      || typeof a.chatContextRotationRequest!=='function'
       || typeof a.chatHistoryPublicCommittedMessage!=='function' || typeof a.chatHistoryBuildReplayMessages!=='function'
       || a.chatHistoryPublicCommittedMessage({role:'assistant',id:'x'})!==null
       || a.chatHistoryPublicCommittedMessage({role:'user',id:'u',content:'c'}).role!=='user') process.exit(1);

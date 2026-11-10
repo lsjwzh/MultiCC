@@ -196,10 +196,20 @@ const MIGRATION_DEBT = Object.freeze({
   // 实测 3057/163703。
   // 2026-11-11 删除同步历史追加入口后，server.js
   // 少 3 行，实测 3054/163495，按棘轮下调。
+  // 2026-11-11 历史变更串行化：转写入口的 annotateChatTurn 改成 async/await
+  // （排队后的决定必须 await 才拿得到），行数不变、字节 +33，实测 3054/163528。
+  // 同批次上下文轮换与删除：会话销毁改走 chatHistoryRuntime.removeSession，
+  // 任务板裁剪/删除、包导入与 fork 全改成 await 队列写，profile 不再需要
+  // getChatHistoryService，实测 3057/164007，按棘轮登记实测高水位。
+  // 删除拒绝不丢写入（延迟取消）：createSessionRecord 成功与 __aux__ 初始化都要
+  // 通知 Rust 清墓碑（registerSession），server.js 多一个包装函数和一行启动
+  // 注册，实测 3068/164926，按棘轮登记实测高水位。
+  // 结构化删除结论接进任务删除：canDeleteHistory 改为 Rust deletionVerdict，
+  // 实测 3068/164925（名字短一字节），棘轮双向跟到实测值。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3054,
-    byteCeiling: 163495,
+    ceiling: 3068,
+    byteCeiling: 164925,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

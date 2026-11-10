@@ -115,6 +115,10 @@ function bootstrapState(options) {
     logger.log('[multicc] Migrating sessions.json to directory-based schema...');
     const migrated = migrateOldSchema(rawSessions, { randomUUID });
     for (const { from, to } of migrated.chatHistoryRenames) {
+      // Startup-only, and strictly before `createChatHistoryRuntime` is called
+      // (server.js composes state first). No history mutation can be queued or
+      // in flight yet, so this rename cannot race a write; it stays synchronous
+      // so a missing session record fails the migration visibly.
       try {
         chatHistoryRepository.renameSession(from, to);
       } catch (error) {

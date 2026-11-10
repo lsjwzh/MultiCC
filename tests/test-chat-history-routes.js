@@ -57,7 +57,7 @@ test('display clearing and hiding survive restart without changing task evidence
   await fx.runtime.clearHistory('s1', { keep: 1 }, fx.chatState);
   const app = createFakeApp(); fx.runtime.mountRoutes(app);
   const res = createResponse();
-  app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({ params: { id: 's1', msgId: 'u2' } }, res);
+  await app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({ params: { id: 's1', msgId: 'u2' } }, res);
   assert.equal(res.statusCode, 200);
   assert.equal(fs.readFileSync(history.fileFor('s1'), 'utf8'), bytes);
   fx.runtime.stop();
@@ -194,7 +194,31 @@ function createMemoryHistory(events, initial = {}, { asyncWrite = false } = {}) 
       }
     };
   }
+  // Visibility now travels through the queue as a durable write port too.
+  history.writeVisibilityAsync = (sessionId, stateJson) => {
+    history.writeVisibility(sessionId, JSON.parse(stateJson));
+    return Promise.resolve();
+  };
   return history;
+}
+
+// Settles every asyncWrite the queue issues until `target` lands, so a test can
+// assert that a written-behind-delete append really reached the fake repository
+// instead of relying on the cancel path that used to reject it early.
+async function drainPendingWrites(fx, target) {
+  let done = false;
+  const tracked = target.then(value => { done = true; return value; }, error => { done = true; throw error; });
+  tracked.catch(() => {});
+  const settled = new Set();
+  for (let round = 0; round < 200 && !done; round += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+    for (const entry of fx.history.pendingWrites) {
+      if (settled.has(entry)) continue;
+      settled.add(entry);
+      entry.settle();
+    }
+  }
+  return tracked;
 }
 
 function createFakeApp() {
@@ -340,7 +364,7 @@ test('the registry-owned four-character task code reaches append, replay and att
   const meta = fx.events.find(event => event?.payload?.type === 'chat_msg_meta')?.payload;
   assert.equal(meta.message.taskShortCode, 'N3W1');
 
-  const changed = fx.runtime.annotateTurn('s1', null, {
+  const changed = await fx.runtime.annotateTurn('s1', null, {
     taskId: 'tsk-new', taskName: '新任务', auxRunId: 'run-1',
   }, { anchorMessageId: message.id });
   assert.equal(changed[0].taskShortCode, 'N3W1');
@@ -369,13 +393,13 @@ test('append surfaces answeredQuestionId so multi-window clients can settle the 
   assert.equal(plainMeta.payload.message.answeredQuestionId, undefined);
 });
 
-test('Aux attribution atomically stamps every message in one turn', () => {
+test('Aux attribution atomically stamps every message in one turn', async () => {
   const fx = fixture({ initial: { s1: [
     { id: 'u1', role: 'user', content: '继续改颜色', turnId: 'turn-1', taskId: 'old' },
     { id: 'a1', role: 'assistant', content: '已经改好', turnId: 'turn-1', taskId: 'old' },
     { id: 'u2', role: 'user', content: '另一轮', turnId: 'turn-2', taskId: 'other' },
   ] } });
-  const changed = fx.runtime.annotateTurn('s1', 'turn-1', {
+  const changed = await fx.runtime.annotateTurn('s1', 'turn-1', {
     taskId: 'new', taskName: '配色调整', auxRunId: 'run-9',
     taskStart: true, taskSource: 'aux', taskText: '继续改颜色',
   });
@@ -476,6 +500,7 @@ test('async appends serialize one session while different sessions write in para
     },
     readVisibility() { return null; },
     writeVisibility() {},
+    writeVisibilityAsync() { return Promise.resolve(); },
     deleteSession(sessionId) { return records.delete(String(sessionId)); },
     hasPersistedDelivery() { return false; },
   };
@@ -532,7 +557,7 @@ test('appendMessage resolves true and publishes the frame after the write', asyn
   fx.runtime.stop();
 });
 
-test('HTTP pagination and delete preserve legacy DTOs, status codes and commit ordering', () => {
+test('HTTP pagination and delete preserve legacy DTOs, status codes and commit ordering', async () => {
   const fx = fixture({ initial: { s1: [
     { id: 'm1', role: 'user', content: 'one' },
     { id: 'm2', role: 'assistant', content: 'two' },
@@ -565,7 +590,7 @@ test('HTTP pagination and delete preserve legacy DTOs, status codes and commit o
 
   fx.events.length = 0;
   res = createResponse();
-  app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({
+  await app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({
     params: { id: 's1', msgId: 'm2' }, query: {},
   }, res);
   assert.equal(res.statusCode, 200);
@@ -576,7 +601,7 @@ test('HTTP pagination and delete preserve legacy DTOs, status codes and commit o
   ]);
 
   res = createResponse();
-  app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({
+  await app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({
     params: { id: 's1', msgId: 'missing' }, query: {},
   }, res);
   assert.equal(res.statusCode, 404);
@@ -672,14 +697,14 @@ test('HTTP around pagination locates an exact id in projected history without ch
   });
 });
 
-test('HTTP delete persistence failure reaches the terminal safe boundary without a false broadcast', () => {
+test('HTTP delete persistence failure reaches the terminal safe boundary without a false broadcast', async () => {
   const fx = fixture({ initial: { s1: [{ id: 'm1', role: 'user', content: 'one' }] } });
   const app = createFakeApp();
   fx.runtime.mountRoutes(app);
   fx.history.failNextWrite(new Error('password=hunter2 /private/history.json'));
   const res = createResponse();
   let forwarded = null;
-  app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({
+  await app.routes.get('DELETE /api/sessions/:id/messages/:msgId')({
     params: { id: 's1', msgId: 'm1' }, query: {},
   }, res, error => { forwarded = error; });
   assert.equal(res.statusCode, 200);
@@ -868,7 +893,7 @@ test('manual native context rotation fails closed when durable session commit fa
   assert.doesNotMatch(JSON.stringify(fx.logs), /secret|\/private\/sessions/);
 });
 
-test('incremental saves are single-flight, cancellable and drained on stop', () => {
+test('incremental saves are single-flight, cancellable and drained on stop', async () => {
   const fx = fixture();
   const state = {
     currentAssistantText: 'this assistant output is long enough',
@@ -880,6 +905,7 @@ test('incremental saves are single-flight, cancellable and drained on stop', () 
   assert.equal(fx.timerRecords[0].delay, 25);
   assert.equal(fx.timerRecords[0].unrefCalled, true);
   fx.timerRecords[0].fn();
+  await fx.runtime.settle();
   assert.equal(fx.runtime.hasIncrementalSave('s1'), false);
   assert.equal(fx.history.records.get('s1').at(-1)._interim, true);
 
@@ -1121,15 +1147,509 @@ test('legacy empty history remains deletable without weakening durable delivery 
   assert.equal(policy.canDeleteSession('empty'), false);
 });
 
-test('quiet bulk hide writes visibility once, broadcasts nothing and counts only newly hidden IDs', () => {
+test('quiet bulk hide writes visibility once, broadcasts nothing and counts only newly hidden IDs', async () => {
   const fx = fixture({ initial: { s1: [
     { id: 'm1', role: 'user', content: 'one' },
     { id: 'm2', role: 'assistant', content: 'two' },
     { id: 'm3', role: 'user', content: 'three' },
   ] } });
   fx.events.length = 0;
-  assert.equal(fx.runtime.hideMessages('s1', ['m1', 'm2', 'm1', 'missing', ''], { quiet: true }), 2);
+  assert.equal(await fx.runtime.hideMessages('s1', ['m1', 'm2', 'm1', 'missing', ''], { quiet: true }), 2);
   assert.deepEqual(eventNames(fx.events), ['visibility:s1']);
-  assert.equal(fx.runtime.hideMessages('s1', ['m1', 'm2'], { quiet: true }), 0, 'already hidden is not hidden again');
+  assert.equal(await fx.runtime.hideMessages('s1', ['m1', 'm2'], { quiet: true }), 0, 'already hidden is not hidden again');
   assert.deepEqual(fx.runtime.projectedMessages('s1').map(m => m.id), ['m3']);
+});
+
+// ── 变更串行化竞态 ────────────────────────────────────────────────────────
+// 这些用例用会挂起的 transcript 写端口把「写进行中」变成可控窗口：旧同步实现
+// 会在这个窗口里用过期快照清空/隐藏/标注，串行化之后它们必须排在追加之后，
+// 并在落地后的状态上计算。
+async function settlePendingWrites(fx, rounds = 12) {
+  for (let round = 0; round < rounds; round += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+    const pending = fx.history.pendingWrites.splice(0);
+    for (const entry of pending) entry.settle();
+  }
+}
+
+test('a clear queued behind an in-flight append plans on the landed transcript', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [
+    { id: 'm1', role: 'user', content: 'one' },
+  ] } });
+  const append = fx.runtime.appendMessage('s1', { id: 'm2', role: 'assistant', content: 'two' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fx.history.pendingWrites.length, 1, 'the append holds the durable port');
+  fx.events.length = 0;
+
+  const cleared = fx.runtime.clearHistory('s1', { keep: 0 }, fx.chatState);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fx.history.pendingWrites.length, 1, 'the clear must not write before the append lands');
+  assert.deepEqual(eventNames(fx.events).filter(name => name.startsWith('visibility:')), [],
+    'no display write may race ahead of the queued append');
+  assert.deepEqual(fx.runtime.paginate('s1').messages.map(m => m.id), ['m1'],
+    'the in-flight append is not projected before it is durable');
+
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await append, true);
+  const result = await cleared;
+  assert.deepEqual(result, { keep: 0, removedCount: 2, retainedCount: 0, clearedNativeSessions: 0 },
+    'the clear snapshot must include the message that landed before it');
+  assert.deepEqual(fx.runtime.paginate('s1').messages, []);
+  assert.deepEqual(
+    eventNames(fx.events).filter(name => /^(visibility|broadcast):/.test(name)),
+    ['broadcast:chat_msg_meta:s1', 'visibility:s1', 'broadcast:chat_history_reset:s1'],
+  );
+  const reset = fx.events.find(event => event?.payload?.type === 'chat_history_reset').payload;
+  assert.deepEqual(reset.messages.map(m => m.id), [], 'the reset page is the post-clear page, not a stale one');
+  fx.runtime.stop();
+});
+
+test('hide and annotate queued behind an in-flight append act on the landed message', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [] } });
+  const append = fx.runtime.appendMessage('s1', {
+    id: 'u1', role: 'user', content: 'question', turnId: 't1',
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fx.history.pendingWrites.length, 1);
+  fx.events.length = 0;
+
+  const hide = fx.runtime.hideMessages('s1', ['u1']);
+  const annotate = fx.runtime.annotateTurn('s1', 't1', { taskId: 'task-alpha' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fx.history.pendingWrites.length, 1, 'later mutations must not write ahead of the append');
+  assert.deepEqual(eventNames(fx.events), [], 'nothing may broadcast before the append is durable');
+
+  const settled = Promise.all([append, hide, annotate]);
+  await settlePendingWrites(fx);
+  const [appended, hidden, changed] = await settled;
+  assert.equal(appended, true);
+  assert.equal(hidden, 1, 'hide counts the message it newly hid');
+  assert.deepEqual(changed.map(message => message.id), ['u1'],
+    'the annotation must address the message that landed before it');
+  assert.deepEqual(
+    eventNames(fx.events).filter(name => /^(visibility|broadcast):/.test(name)),
+    [
+      'broadcast:chat_msg_meta:s1',
+      'visibility:s1',
+      'broadcast:chat_msg_deleted:s1',
+      'broadcast:chat_history_annotation:s1',
+    ],
+  );
+  assert.deepEqual(fx.runtime.paginate('s1').messages, []);
+  assert.equal(fx.runtime.load('s1')[0].taskId, 'task-alpha');
+  fx.runtime.stop();
+});
+
+test('an incremental save straddling a clear never resurrects the pre-clear display state', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [
+    { id: 'm1', role: 'user', content: 'one' },
+  ] } });
+  assert.equal(fx.runtime.scheduleIncrementalSave('s1', {
+    currentAssistantText: 'streaming interim text long enough',
+    currentToolCalls: [{ name: 'Read' }],
+  }), true);
+  fx.timerRecords[0].fn();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fx.history.pendingWrites.length, 1, 'the interim write owns the queue');
+  fx.events.length = 0;
+
+  const cleared = fx.runtime.clearHistory('s1', { keep: 0 }, fx.chatState);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fx.history.pendingWrites.length, 1, 'the clear waits for the interim write');
+
+  await settlePendingWrites(fx);
+  const result = await cleared;
+  assert.deepEqual(result, { keep: 0, removedCount: 1, retainedCount: 1, clearedNativeSessions: 0 });
+  const visible = fx.runtime.paginate('s1').messages;
+  assert.equal(visible.length, 1, 'only the in-flight answer survives a clear');
+  assert.equal(visible[0]._interim, true);
+  assert.deepEqual(visible.map(m => m.id).includes('m1'), false, 'the pre-clear message stays hidden');
+  assert.equal(fx.history.records.get('s1').filter(message => message.id === 'm1').length, 1,
+    'the stale interim snapshot never re-appended the cleared message');
+  assert.equal(eventNames(fx.events).filter(name => /^(visibility|broadcast):/.test(name))[0], 'visibility:s1');
+  assert.equal(fx.runtime.hasIncrementalSave('s1'), false);
+  assert.equal(await fx.runtime.settle(), true);
+  fx.runtime.stop();
+});
+
+// ── 轮换的两段式重判 ──────────────────────────────────────────────────────
+test('rotation re-validates after the git snapshot and refuses a session that started a turn', async () => {
+  const overrides = { runState: 'idle' };
+  let started;
+  const snapshotStarted = new Promise(resolve => { started = resolve; });
+  let release;
+  const snapshotGate = new Promise(resolve => { release = resolve; });
+  const fx = fixture(Object.assign(overrides, {
+    persistedSessions: new Map([['s1', { id: 's1', kind: 'chat', cli: 'claude', branch: 'main' }]]),
+    deps: {
+      async cliSwitchGitSnapshot(session) {
+        fx.events.push(`git:${session.id}`);
+        started();
+        await snapshotGate;
+        return { branch: session.branch, head: 'abc', changes: [] };
+      },
+    },
+  }));
+  const rotating = fx.runtime.rotateNativeContext('s1', fx.chatState);
+  await snapshotStarted;
+  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff, undefined);
+  // The snapshot await is where a new turn can begin; the second decision must
+  // see it and refuse instead of committing a handoff over live work.
+  overrides.runState = 'running';
+  release();
+  assert.deepEqual(await rotating, { ok: false, code: 'session_busy' });
+  assert.equal(fx.persistedSessions.get('s1').pendingCliHandoff, undefined);
+  assert.equal(fx.chatState.chatTurnCount, 7);
+  assert.equal(eventNames(fx.events).some(name => name.startsWith('persist:')), false,
+    'a refused rotation must never write the session record');
+  assert.deepEqual(eventNames(fx.events), ['git:s1', 'broadcast:native_context_rotation_rejected:s1'],
+    'a refused rotation reports the rejection and never a rotation result');
+  fx.runtime.stop();
+});
+
+test('rotation re-validates after the git snapshot and reports a session deleted meanwhile', async () => {
+  let started, release;
+  const snapshotStarted = new Promise(resolve => { started = resolve; });
+  const snapshotGate = new Promise(resolve => { release = resolve; });
+  const persistedSessions = new Map([['s1', { id: 's1', kind: 'chat', cli: 'claude', branch: 'main' }]]);
+  const fx = fixture({
+    persistedSessions,
+    deps: {
+      async cliSwitchGitSnapshot() {
+        started();
+        await snapshotGate;
+        return { branch: 'main', head: 'abc', changes: [] };
+      },
+    },
+  });
+  const rotating = fx.runtime.rotateNativeContext('s1', fx.chatState);
+  await snapshotStarted;
+  persistedSessions.delete('s1');
+  release();
+  assert.deepEqual(await rotating, { ok: false, code: 'session_not_found' });
+  assert.equal(persistedSessions.has('s1'), false);
+  assert.equal(fx.chatState.chatTurnCount, 7);
+  assert.equal(eventNames(fx.events).some(name => name.startsWith('persist:')), false);
+  fx.runtime.stop();
+});
+
+// ── 关停排空真实的 driver Promise ──────────────────────────────────────────
+test('settle waits for the real driver promise instead of spinning over wrappers', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [{ id: 'u1', role: 'user', content: 'hi' }] } });
+  const appended = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'answer' });
+  assert.equal(fx.history.pendingWrites.length, 1, 'the append write must be in flight');
+  let finished = false;
+  const draining = fx.runtime.settle({ timeoutMs: 2000 }).then(value => {
+    finished = true;
+    return value;
+  });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(finished, false, 'settle must not resolve while the in-flight write is pending');
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await draining, true);
+  assert.equal(await appended, true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['u1', 'a1']);
+  fx.runtime.stop();
+});
+
+test('settle returns false at the caller deadline when a write never lands', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [{ id: 'u1', role: 'user', content: 'hi' }] } });
+  const appended = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'answer' });
+  const started = Date.now();
+  const drained = await fx.runtime.settle({ deadline: Date.now() + 60 });
+  const elapsed = Date.now() - started;
+  assert.equal(drained, false);
+  assert.ok(elapsed >= 40, `settle must respect the deadline (waited ${elapsed}ms)`);
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await appended, true);
+  fx.runtime.stop();
+});
+
+test('settle keeps draining other sessions while one session is wedged', async () => {
+  const persistedSessions = new Map([
+    ['s1', { id: 's1', kind: 'chat', cli: 'claude' }],
+    ['s2', { id: 's2', kind: 'chat', cli: 'claude' }],
+  ]);
+  const fx = fixture({ asyncWrite: true, persistedSessions });
+  const blocked = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'blocked' });
+  const quick = fx.runtime.appendMessage('s2', { id: 'a2', role: 'assistant', content: 'quick' });
+  assert.equal(fx.history.pendingWrites.length, 2);
+  const quickWrite = fx.history.pendingWrites.find(entry => entry.sessionId === 's2');
+  const blockedWrite = fx.history.pendingWrites.find(entry => entry.sessionId === 's1');
+  let drained = false;
+  const settling = fx.runtime.settle({ timeoutMs: 2000 }).then(value => {
+    drained = true;
+    return value;
+  });
+  quickWrite.settle();
+  assert.equal(await quick, true);
+  assert.equal(fx.history.records.has('s2'), true, 'the other session must land while s1 is wedged');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(drained, false, 'one wedged session still holds the drain open');
+  blockedWrite.settle();
+  assert.equal(await settling, true);
+  assert.equal(await blocked, true);
+  fx.runtime.stop();
+});
+
+// ── 删除栅栏与整份替换 ────────────────────────────────────────────────────
+test('delete waits for an in-flight append, discards queued work and fences later appends', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [{ id: 'u1', role: 'user', content: 'hi' }] } });
+  const first = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'first' });
+  const queued = fx.runtime.appendMessage('s1', { id: 'a2', role: 'assistant', content: 'queued' });
+  let queuedSettled = false;
+  queued.then(() => { queuedSettled = true; }, () => { queuedSettled = true; });
+  const removing = fx.runtime.removeSession('s1');
+  // A delete only cancels queued work once it is actually committed; before the
+  // in-flight write lands the queued append must still be pending.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queuedSettled, false, 'queued work is not canceled by an unconfirmed delete');
+  assert.equal(fx.history.pendingWrites.length, 1, 'only the in-flight append may write');
+  assert.equal(fx.history.records.has('s1'), true, 'the delete must wait behind the in-flight write');
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await first, true);
+  await assert.rejects(queued, { code: 'CHAT_HISTORY_SESSION_DELETED' });
+  assert.equal(await removing, true);
+  assert.equal(fx.history.records.has('s1'), false, 'the final disk state is the delete');
+  await assert.rejects(fx.runtime.appendMessage('s1', { id: 'a3', role: 'assistant', content: 'late' }),
+    { code: 'CHAT_HISTORY_SESSION_DELETED' });
+  assert.equal(await fx.runtime.removeSession('s1'), true, 'a repeated delete is idempotent');
+  fx.runtime.stop();
+});
+
+test('a refused delete leaves every accepted write intact and lifts the fence', async () => {
+  const fx = fixture({
+    asyncWrite: true,
+    initial: { s1: [{ id: 'u1', role: 'user', content: 'protected', taskId: 't1' }] },
+    deps: { canDeleteSession: () => false },
+  });
+  const first = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'first' });
+  const queued = fx.runtime.appendMessage('s1', { id: 'a2', role: 'assistant', content: 'queued' });
+  const removing = fx.runtime.removeSession('s1');
+  removing.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await first, true);
+  // The queued append was accepted before the delete attempt: it must land and
+  // its caller must not be told the session disappeared.
+  assert.equal(await drainPendingWrites(fx, queued), true);
+  await assert.rejects(removing, { code: 'TASK_HISTORY_REFERENCED' });
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['u1', 'a1', 'a2']);
+  // The failed delete must not leave a tombstone behind.
+  const after = fx.runtime.appendMessage('s1', { id: 'a3', role: 'assistant', content: 'after' });
+  assert.equal(await drainPendingWrites(fx, after), true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['u1', 'a1', 'a2', 'a3']);
+  fx.runtime.stop();
+});
+
+test('mutations queued while a delete is pending follow the delete outcome', async () => {
+  const failed = fixture({
+    asyncWrite: true,
+    initial: { s1: [{ id: 'u1', role: 'user', content: 'protected', taskId: 't1' }] },
+    deps: { canDeleteSession: () => false },
+  });
+  const inflight = failed.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'first' });
+  const removing = failed.runtime.removeSession('s1');
+  const duringFailure = failed.runtime.appendMessage('s1', { id: 'a2', role: 'assistant', content: 'during' });
+  removing.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  failed.history.pendingWrites[0].settle();
+  assert.equal(await inflight, true);
+  await assert.rejects(removing, { code: 'TASK_HISTORY_REFERENCED' });
+  assert.equal(await drainPendingWrites(failed, duringFailure), true,
+    'a refused delete must run the writes it accepted');
+  assert.deepEqual(failed.history.records.get('s1').map(message => message.id), ['u1', 'a1', 'a2']);
+  failed.runtime.stop();
+
+  const success = fixture({ asyncWrite: true, initial: { s1: [{ id: 'u1', role: 'user', content: 'hi' }] } });
+  const blocked = success.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'first' });
+  const removed = success.runtime.removeSession('s1');
+  const duringSuccess = success.runtime.appendMessage('s1', { id: 'a2', role: 'assistant', content: 'during' });
+  duringSuccess.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  success.history.pendingWrites[0].settle();
+  assert.equal(await blocked, true);
+  assert.equal(await removed, true);
+  await assert.rejects(duringSuccess, { code: 'CHAT_HISTORY_SESSION_DELETED' },
+    'a committed delete cancels the work it accepted while pending');
+  assert.equal(success.history.records.has('s1'), false);
+  success.runtime.stop();
+});
+
+test('registering while a delete is pending keeps the new epoch and only settles the old history', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [{ id: 'old', role: 'user', content: 'old history' }] } });
+  const inflight = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'accepted before register' });
+  const removing = fx.runtime.removeSession('s1');
+  const stale = fx.runtime.appendMessage('s1', { id: 'stale', role: 'assistant', content: 'old epoch' });
+  stale.catch(() => {});
+  // The session is re-registered while the delete still sits behind the
+  // in-flight append. Its epoch moves on; the queued Delete belongs to the old
+  // one and must not drag the new epoch's work down with it.
+  fx.runtime.registerSession('s1');
+  const fresh = fx.runtime.appendMessage('s1', { id: 'n1', role: 'user', content: 'new epoch' });
+  const outcome = await drainPendingWrites(fx, Promise.allSettled([inflight, removing, stale, fresh]));
+  assert.deepEqual(outcome.map(result => result.status), ['fulfilled', 'fulfilled', 'rejected', 'fulfilled']);
+  assert.equal(outcome[0].value, true, 'the in-flight append lands before the delete');
+  assert.equal(outcome[1].value, true, 'the delete still commits');
+  assert.equal(outcome[2].reason.code, 'CHAT_HISTORY_SESSION_DELETED',
+    'old-epoch work queued behind the delete belongs to the deleted history');
+  assert.equal(outcome[3].value, true, 'a write accepted in the new epoch survives the delete');
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['n1'],
+    'the final disk state is the new epoch only — no old content comes back');
+  const later = fx.runtime.appendMessage('s1', { id: 'n2', role: 'assistant', content: 'later' });
+  assert.equal(await drainPendingWrites(fx, later), true, 'the session keeps accepting new-epoch writes');
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['n1', 'n2']);
+  fx.runtime.stop();
+});
+
+test('a removeSession in the new epoch is an independent delete, not a coalesced one', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [{ id: 'u1', role: 'user', content: 'hi' }] } });
+  const inflight = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'first' });
+  const firstDelete = fx.runtime.removeSession('s1');
+  fx.runtime.registerSession('s1');
+  const recreated = fx.runtime.appendMessage('s1', { id: 'n1', role: 'user', content: 'recreated' });
+  const secondDelete = fx.runtime.removeSession('s1');
+  const outcome = await drainPendingWrites(fx, Promise.allSettled([inflight, firstDelete, recreated, secondDelete]));
+  assert.deepEqual(outcome.map(result => result.status), ['fulfilled', 'fulfilled', 'rejected', 'fulfilled']);
+  assert.equal(outcome[1].value, true, 'the old-epoch delete is not coalesced into the new one');
+  assert.equal(outcome[2].reason.code, 'CHAT_HISTORY_SESSION_DELETED',
+    'the second delete discards the work queued before it, like any delete');
+  assert.equal(outcome[3].value, true, 'the new-epoch delete is an independent job');
+  // Coalescing the second delete onto the first would leave the recreated
+  // history on disk; an independent delete removes it again.
+  assert.equal(fx.history.records.has('s1'), false, 'the new-epoch delete removes the recreated history');
+  await assert.rejects(fx.runtime.appendMessage('s1', { id: 'late', role: 'user', content: 'late' }),
+    { code: 'CHAT_HISTORY_SESSION_DELETED' });
+  fx.runtime.stop();
+});
+
+test('registering after a refused delete starts a clean epoch that keeps writing', async () => {
+  const fx = fixture({
+    initial: { s1: [{ id: 'u1', role: 'user', content: 'protected', taskId: 't1' }] },
+    deps: { canDeleteSession: () => false },
+  });
+  const removing = fx.runtime.removeSession('s1');
+  removing.catch(() => {});
+  await assert.rejects(removing, { code: 'TASK_HISTORY_REFERENCED' });
+  fx.runtime.registerSession('s1');
+  assert.equal(await fx.runtime.appendMessage('s1', { id: 'n1', role: 'user', content: 'after re-register' }), true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['u1', 'n1']);
+  fx.runtime.stop();
+});
+
+test('dropMessages runs on the queue-head transcript and keeps a concurrent append', async () => {
+  const fx = fixture({
+    asyncWrite: true,
+    initial: { s1: [
+      { id: 'u1', role: 'user', content: 'keep' },
+      { id: 'u2', role: 'user', content: 'drop' },
+    ] },
+  });
+  const appended = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'new answer' });
+  const dropped = fx.runtime.dropMessages('s1', ['u2'], { reason: 'task-delete' });
+  assert.equal(fx.history.pendingWrites.length, 1, 'the drop must not write before the append lands');
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await appended, true);
+  assert.equal(await dropped, true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['u1', 'a1']);
+  fx.runtime.stop();
+});
+
+test('mergeHistory appends on the queue-head transcript instead of overwriting it', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [{ id: 'u1', role: 'user', content: 'keep' }] } });
+  const appended = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'new answer' });
+  const merged = fx.runtime.mergeHistory('s1', [{ id: 'm1', role: 'user', content: 'imported intro' }],
+    { reason: 'bundle-import-merge' });
+  assert.equal(fx.history.pendingWrites.length, 1, 'the merge must not write before the append lands');
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await appended, true);
+  assert.equal(await merged, true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['u1', 'a1', 'm1']);
+  fx.runtime.stop();
+});
+
+test('canDeleteSession asks the Rust retention rule and registerSession clears the tombstone', async () => {
+  const fx = fixture({
+    initial: { s1: [{ id: 'u1', role: 'user', content: 'protected', taskId: 't1' }] },
+    deps: { canDeleteSession: id => id !== 's1' },
+  });
+  assert.equal(fx.runtime.canDeleteSession('s1'), false);
+  assert.equal(fx.runtime.canDeleteSession('other'), true);
+  await fx.runtime.removeSession('other');
+  await assert.rejects(fx.runtime.appendMessage('other', { id: 'x', role: 'user', content: 'x' }),
+    { code: 'CHAT_HISTORY_SESSION_DELETED' });
+  fx.runtime.registerSession('other');
+  assert.equal(await fx.runtime.appendMessage('other', { id: 'x2', role: 'user', content: 'x2' }), true);
+  fx.runtime.stop();
+});
+
+test('deletionVerdict separates shared from referenced links and keeps the boolean rule', () => {
+  const references = [{ id: 't2', title: 'Worker', via: 'session' },
+    { id: 't3', title: 'Sibling', via: 'messages' }];
+  const facts = {
+    clean: { executionSlot: false, sessionLinks: [], routingLinks: [], messageLinks: [], references: [] },
+    shared: { executionSlot: false, sessionLinks: ['t1'], routingLinks: ['t2'], messageLinks: [],
+      references: [{ id: 't1', title: 'Owner', via: 'session' }] },
+    referenced: { executionSlot: false, sessionLinks: [], routingLinks: ['t2'], messageLinks: ['t3'],
+      references },
+    slot: { executionSlot: true, sessionLinks: ['t1'], routingLinks: [], messageLinks: [], references: [] },
+  };
+  const fx = fixture({ deps: { sessionDeletionFacts: id => facts[id] } });
+  assert.deepEqual(fx.runtime.deletionVerdict('clean'), { ok: true });
+  // A task that formally owns the session wins even when routing also points here.
+  assert.deepEqual(fx.runtime.deletionVerdict('shared'), { ok: false, reason: 'shared' });
+  assert.deepEqual(fx.runtime.deletionVerdict('referenced'),
+    { ok: false, reason: 'referenced', tasks: references, taskIds: ['t2', 't3'] });
+  assert.deepEqual(fx.runtime.deletionVerdict('slot'), { ok: true });
+  // The boolean API stays a projection of the same Rust verdict.
+  assert.equal(fx.runtime.canDeleteSession('clean'), true);
+  assert.equal(fx.runtime.canDeleteSession('shared'), false);
+  assert.equal(fx.runtime.canDeleteSession('referenced'), false);
+  assert.equal(fx.runtime.canDeleteSession('slot'), true);
+  fx.runtime.stop();
+});
+
+test('full history replacement serializes behind an in-flight append', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [{ id: 'u1', role: 'user', content: 'hi' }] } });
+  const appended = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'answer' });
+  const replaced = fx.runtime.replaceHistory('s1', [{ id: 'kept', role: 'user', content: 'trimmed' }],
+    { reason: 'task-delete' });
+  assert.equal(fx.history.pendingWrites.length, 1, 'the replacement must not write before the append lands');
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await appended, true);
+  assert.equal(await replaced, true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['kept']);
+  fx.runtime.stop();
+});
+
+test('a queued interim is replaced by the newest one instead of writing twice', async () => {
+  const fx = fixture({ asyncWrite: true, initial: { s1: [{ id: 'u1', role: 'user', content: 'hi' }] } });
+  const blocked = fx.runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'answer' });
+  const state = { currentAssistantText: 'streaming text that is long enough', currentToolCalls: [] };
+  assert.equal(fx.runtime.scheduleIncrementalSave('s1', state), true);
+  const timer = fx.timerRecords.find(record => record.delay === 25);
+  assert.ok(timer, 'the interim timer must be scheduled');
+  timer.fn();
+  state.currentAssistantText = 'streaming text that is long enough and newer';
+  timer.fn();
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await blocked, true);
+  let drained;
+  const settling = fx.runtime.settle({ timeoutMs: 2000 }).then(value => { drained = value; });
+  const written = new Set();
+  for (let round = 0; round < 100 && drained === undefined; round += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+    for (const entry of fx.history.pendingWrites) {
+      if (written.has(entry)) continue;
+      written.add(entry);
+      entry.settle();
+    }
+  }
+  await settling;
+  assert.equal(drained, true);
+  const transcriptWrites = eventNames(fx.events).filter(name => name === 'async-start:s1');
+  assert.equal(transcriptWrites.length, 2, 'one append plus one coalesced interim write');
+  const stored = fx.history.records.get('s1');
+  assert.ok(stored.some(message => message._interim === true), 'the merged interim still lands');
+  fx.runtime.stop();
 });

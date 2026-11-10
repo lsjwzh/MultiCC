@@ -442,11 +442,11 @@ test('task-shell attribution advances independently of success, waiting or parti
   }
 });
 
-test('delayed attribution with a superseded anchor cannot overwrite the newer task', () => {
+test('delayed attribution with a superseded anchor cannot overwrite the newer task', async () => {
   const h = fixture({ goal: '更新后的任务', history: admissionHistory() });
   h.chatState._currentTaskId = 'task-newer';
   h.record.taskState.taskId = 'task-newer';
-  const result = h.machine.applyTaskAttributionResult(h.chatState, 's1', {
+  const result = await h.machine.applyTaskAttributionResult(h.chatState, 's1', {
     taskName: '过期任务', phase: 'planning', relation: 'new', taskId: null,
   }, {
     taskId: 'task-candidate', resolvedTaskId: 'task-candidate',
@@ -596,9 +596,9 @@ function dRefineFixture({ classifyState, historyGoalState, taskGoalState }) {
   return h;
 }
 
-test('a still-D verdict is refined by the model goalState when attribution lands', () => {
+test('a still-D verdict is refined by the model goalState when attribution lands', async () => {
   const h = dRefineFixture({ classifyState: 'D', historyGoalState: 'achieved', taskGoalState: 'achieved' });
-  const result = h.machine.applyTaskAttributionResult(h.chatState, 's1', {
+  const result = await h.machine.applyTaskAttributionResult(h.chatState, 's1', {
     taskName: '把登录页改成暗色', phase: 'verifying', goalState: 'interact',
     relation: 'same', taskId: 'task-1',
   }, {
@@ -616,11 +616,11 @@ test('a still-D verdict is refined by the model goalState when attribution lands
   assert.equal(row.state, 'D');
 });
 
-test('model goalState missing falls back to the fresh phase mapping, un-polluting the forced done', () => {
+test('model goalState missing falls back to the fresh phase mapping, un-polluting the forced done', async () => {
   // 盘上仍是「旧规则提交留下的 achieved + phase=done」这种被污染的状态；归因答案
   // 没有 goalState，但带来了自己的 phase=verifying → 按映射重算成 interact，污染被纠正。
   const h = dRefineFixture({ classifyState: 'D', historyGoalState: 'achieved', taskGoalState: 'achieved' });
-  h.machine.applyTaskAttributionResult(h.chatState, 's1', {
+  await h.machine.applyTaskAttributionResult(h.chatState, 's1', {
     taskName: '把登录页改成暗色', phase: 'verifying', goalState: null,
     relation: 'same', taskId: 'task-1',
   }, {
@@ -632,9 +632,9 @@ test('model goalState missing falls back to the fresh phase mapping, un-pollutin
   assert.equal(h.record.taskState.classifyHistory.at(-1).goalState, 'interact');
 });
 
-test('a non-D verdict never adopts the model goalState', () => {
+test('a non-D verdict never adopts the model goalState', async () => {
   const h = dRefineFixture({ classifyState: 'W', historyGoalState: 'achieved', taskGoalState: null });
-  h.machine.applyTaskAttributionResult(h.chatState, 's1', {
+  await h.machine.applyTaskAttributionResult(h.chatState, 's1', {
     taskName: '把登录页改成暗色', phase: 'verifying', goalState: 'achieved',
     relation: 'same', taskId: 'task-1',
   }, {

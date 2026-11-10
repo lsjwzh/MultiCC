@@ -208,6 +208,9 @@ async function committedEvent(message) {
       records.set(sessionId, JSON.parse(messagesJson));
       return Promise.resolve();
     },
+    readVisibility() { return null; },
+    writeVisibility() {},
+    writeVisibilityAsync() { return Promise.resolve(); },
     deleteSession(sessionId) { return records.delete(sessionId); },
     hasPersistedDelivery(sessionId, deliveryId) {
       return (records.get(sessionId) || []).some(candidate =>

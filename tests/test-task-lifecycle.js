@@ -344,7 +344,7 @@ test('a legacy planned task deletes its own clean worktree without a chat sessio
   const task = { id: 'old', dirId: 'd', refs: [], worktreePath, branch: 'task-branch', deleting: true };
   const host = createTaskLifecycleHost({ records: new Map(), getBoard: () => ({ tasks: { old: task }, modules: {} }),
     getShell: () => ({ purgeTasks() {} }), getHistory: () => [], getState: () => null, getRunState: () => 'idle',
-    getHistoryService: () => null, destroySession: () => assert.fail('no dedicated chat'),
+    dropHistoryMessages: () => assert.fail('no history to trim'), canDeleteHistory: () => false, deleteHistory: () => assert.fail('no history to delete'), destroySession: () => assert.fail('no dedicated chat'),
     directories: new Map([['d', { id: 'd', path: root, baseBranch: 'main' }]]), persist() {} });
   await host.purgeTaskData(task, ['old']);
   assert.equal(fs.existsSync(worktreePath), false);
@@ -405,7 +405,7 @@ test('confirmed task deletion backs up and removes a dirty, ahead worktree', asy
   const task = { id: 'old', dirId: 'd', refs: [], worktreePath, branch: 'task-branch', deleting: true };
   const host = createTaskLifecycleHost({ records: new Map(), getBoard: () => ({ tasks: { old: task }, modules: {} }),
     getShell: () => ({ purgeTasks() {} }), getHistory: () => [], getState: () => null, getRunState: () => 'idle',
-    getHistoryService: () => null, destroySession: () => assert.fail('no dedicated chat'),
+    dropHistoryMessages: () => assert.fail('no history to trim'), canDeleteHistory: () => false, deleteHistory: () => assert.fail('no history to delete'), destroySession: () => assert.fail('no dedicated chat'),
     directories: new Map([['d', { id: 'd', path: root, baseBranch: 'main' }]]), persist() {} });
 
   await assert.rejects(host.prepareTaskDelete(task, ['old']), error => {
@@ -507,11 +507,66 @@ test('purging task history retains messages jointly owned by another task and le
   const service = createChatHistoryService({ ...retention, idFactory: () => 'generated',
     history: { read: id => data.get(id), write: (id, ms) => data.set(id, ms), deleteSession: id => data.delete(id), hasPersistedDelivery: () => false } });
   const host = createTaskLifecycleHost({ records, getBoard: () => board, getShell: () => ({ stateTarget: () => ({}), purgeTasks() {} }),
-    getHistory: id => service.read(id), getState: () => null, getRunState: () => 'idle', getHistoryService: () => service,
+    getHistory: id => service.read(id), getState: () => null, getRunState: () => 'idle',
+    dropHistoryMessages: (id, ids) => service.replace(id,
+      service.read(id).filter(message => !ids.includes(message.id)), { reason: 'task-delete' }),
+    canDeleteHistory: id => retention.canDeleteSession(id), deleteHistory: id => service.deleteSession(id),
     destroySession: () => assert.fail('source session must remain'), directories: new Map(), persist() {},
     resetTaskState: id => resetTaskState(records, id) });
   await host.purgeTaskData(board.tasks.old, ['old']);
   assert.deepEqual(service.read('s').map(m => m.id), ['shared', 'other']);
   assert.equal(records.has('s'), true);
   assert.deepEqual(records.get('s').taskState, {}, 'the deleted task\'s state is reset');
+});
+
+// The structured verdict is computed by Rust's deletionVerdict (see the
+// chat-history route tests); this host must only act on `ok` / `reason`.
+function historyDeletionHost(verdict) {
+  const board = { tasks: { old: { id: 'old', deleting: true } } };
+  const data = new Map([['s', [{ id: 'u1', role: 'user', content: 'evidence' }]]]);
+  const records = recordsOf([['s', { id: 's', kind: 'chat', dirId: 'd', taskBoundTaskId: 'old',
+    taskState: { taskId: 'old' } }]]);
+  const service = createChatHistoryService({ idFactory: () => 'generated',
+    history: { read: id => data.get(id) || [], write: (id, ms) => data.set(id, ms),
+      deleteSession: id => data.delete(id), hasPersistedDelivery: () => false } });
+  const calls = { deleted: 0, destroyed: 0 };
+  const host = createTaskLifecycleHost({ records, getBoard: () => board,
+    getShell: () => ({ stateTarget: () => ({}), purgeTasks() {} }),
+    getHistory: id => service.read(id), getState: () => null, getRunState: () => 'idle',
+    dropHistoryMessages: () => {},
+    canDeleteHistory: () => verdict,
+    deleteHistory: id => { calls.deleted += 1; return service.deleteSession(id); },
+    destroySession: () => { calls.destroyed += 1; return { ok: true }; },
+    directories: new Map(), persist() {}, resetTaskState: id => resetTaskState(records, id) });
+  return { host, board, records, data, calls };
+}
+
+test('a shared history verdict keeps the session and never deletes shared evidence', async () => {
+  const f = historyDeletionHost({ ok: false, reason: 'shared' });
+  await f.host.purgeTaskData(f.board.tasks.old, ['old']);
+  assert.deepEqual(f.calls, { deleted: 0, destroyed: 0 });
+  assert.equal(f.records.has('s'), true, 'the shared session stays with its other owner');
+  assert.deepEqual(f.data.get('s').map(m => m.id), ['u1']);
+});
+
+test('a referenced history verdict aborts the task deletion and stays retryable', async () => {
+  const tasks = [{ id: 'keep', title: '同壳任务', via: 'messages' }];
+  const f = historyDeletionHost({ ok: false, reason: 'referenced', tasks, taskIds: ['keep'] });
+  await assert.rejects(f.host.purgeTaskData(f.board.tasks.old, ['old']), error => {
+    assert.equal(error.code, 'TASK_HISTORY_REFERENCED');
+    assert.deepEqual(error.tasks, tasks);
+    assert.deepEqual(error.taskIds, ['keep']);
+    return true;
+  });
+  assert.deepEqual(f.calls, { deleted: 0, destroyed: 0 });
+  assert.equal(f.records.has('s'), true);
+  assert.deepEqual(f.data.get('s').map(m => m.id), ['u1'], 'no accepted history is dropped on refusal');
+});
+
+test('a deletable history verdict removes the session and its history', async () => {
+  const f = historyDeletionHost({ ok: true });
+  await f.host.purgeTaskData(f.board.tasks.old, ['old']);
+  assert.deepEqual(f.calls, { deleted: 1, destroyed: 1 });
+  assert.equal(f.data.has('s'), false);
+  assert.equal(f.records.has('s'), true, 'session teardown owns record disposal, not this host');
 });

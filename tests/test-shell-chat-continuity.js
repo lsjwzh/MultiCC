@@ -156,7 +156,7 @@ test('passive shell subscription delivers background progress and releases liste
   assert.equal(events.length, 1); assert.equal(removed, true);
 });
 
-test('shell clear keeps the latest N of the merged timeline and hides the rest per source', () => {
+test('shell clear keeps the latest N of the merged timeline and hides the rest per source', async () => {
   const histories = new Map([
     ['a', [{ id: 'a1', ts: 1 }, { id: 'a2', ts: 3 }, { id: 'a3', ts: 5 }, { id: 'live', ts: 6, _interim: true }]],
     ['b', [{ id: 'b1', ts: 2 }, { id: 'b2', ts: 4 }, { id: 'b3', ts: 7 }]],
@@ -170,11 +170,11 @@ test('shell clear keeps the latest N of the merged timeline and hides the rest p
     return ids.length;
   };
   const scope = { sessionIds: ['a', 'b'] };
-  const result = clearShellHistory(scope, read, hide, 2);
+  const result = await clearShellHistory(scope, read, hide, 2);
   assert.deepEqual(result, { keep: 2, removedCount: 4, retainedCount: 2 });
   assert.deepEqual([...hidden.get('a')], ['a1', 'a2']);
   assert.deepEqual([...hidden.get('b')], ['b1', 'b2']);
   assert.deepEqual(shellHistoryPage(scope, read, null, { limit: 5 }).messages.map(m => m.id),
     ['a:a3', 'a:live', 'b:b3'], 'the in-flight interim survives a clear');
-  assert.deepEqual(clearShellHistory(scope, read, hide, 0), { keep: 0, removedCount: 2, retainedCount: 0 });
+  assert.deepEqual(await clearShellHistory(scope, read, hide, 0), { keep: 0, removedCount: 2, retainedCount: 0 });
 });

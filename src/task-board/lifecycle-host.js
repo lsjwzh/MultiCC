@@ -5,7 +5,8 @@ const { isOpenRunState } = require('../classify/vocab');
 const { taskDirId } = require('./core');
 
 function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getState,
-  getRunState, isSessionBusy = () => false, getHistoryService, destroySession, directories, persist, mutate,
+  getRunState, isSessionBusy = () => false, dropHistoryMessages, canDeleteHistory, deleteHistory,
+  destroySession, directories, persist, mutate,
   resetTaskState,
   workspaceBroadcast, chatBroadcast, getHibernation }) {
   function worktrees(ids) {
@@ -134,18 +135,56 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
         .flatMap(r => [r.userMsgId, r.assistantMsgId]).filter(Boolean));
       const history = getHistory(record.id);
       const sharedHistory = otherTasks.some(t => (t.refs || []).some(r => r.sessionId === record.id && !r.userMsgId && !r.assistantMsgId));
-      const kept = history.filter(m => sharedHistory || sharedIds.has(m.id) || (!ids.includes(m.taskId) && !ownedIds.has(m.id)));
-      if (kept.length !== history.length) getHistoryService().replace(record.id, kept, { reason: 'task-delete' });
+      // 只把要删的消息 id 交给队列；当前 transcript 由 Rust 在队首读取，任务
+      // 刚判空闲时仍在飞的那条追加不会被 Node 的旧底稿覆盖或误删。
+      //
+      // 边界（问题 4）：ids 来自这里的 Node 快照。快照之后才落地、却带着本任务
+      // taskId 的消息不会被裁剪；assertTaskIdle 让这条路径实际上不可达（任务
+      // 空闲时没有在飞的追加）。队列仍按 id 过滤而不是按 taskId 扫整份历史，
+      // 否则另一任务共享的消息 id 会被一并删掉。
+      const dropIds = sharedHistory ? [] : history
+        .filter(m => !sharedIds.has(m.id) && (ids.includes(m.taskId) || ownedIds.has(m.id)))
+        .map(m => m.id)
+        .filter(Boolean);
+      if (dropIds.length) {
+        await dropHistoryMessages(record.id, dropIds, { reason: 'task-delete' });
+      }
       // Direct record write, routed through the native record owner.
       if (ids.includes(record.taskState?.taskId)) resetTaskState(record.id);
       if (ids.includes(getState(record.id)?._currentTaskId)) delete getState(record.id)._currentTaskId;
-      const shared = otherTasks.some(t => t.chatSessionId === record.id || (t.refs || []).some(r => r.sessionId === record.id));
-      if (ids.includes(record.taskBoundTaskId) && !shared) {
-        // The generic session teardown treats history IO as best-effort. A
-        // permanent task deletion must instead fail visibly and remain retryable.
-        getHistoryService().deleteSession(record.id);
-        const result = await destroySession(record, directories.get(record.dirId), { force: !!options.force });
-        if (!result.ok) throw removalFailure(result, 'session_delete_failed');
+      // 删除资格只问 Rust（chat_history 的 deletionVerdict），Node 只按结构化
+      // 结论行事，不维护第二份判据：
+      // - ok：删历史并销毁会话；
+      // - shared：另一个任务通过 chatSessionId/refs 正式拥有该会话（旧 purge
+      //   的 shared 分支）→ 保持会话原样，绝不删共享历史；
+      // - referenced：routing.workerSessionId 或受保护消息（旧 deleteSession
+      //   会抛 TASK_HISTORY_REFERENCED）→ 同样中止任务删除，卡片可见可重试。
+      //
+      // 这些 await 没有调用方超时/看门狗（问题 2，见 docs/backend-rust-exit-plan.md）：
+      // 放弃在途写会重新引入“旧写覆盖新写”的竞态。同会话的所有历史写共享
+      // 这个限制，旧同步实现更是整段阻塞事件循环。
+      if (ids.includes(record.taskBoundTaskId)) {
+        const verdict = canDeleteHistory(record.id);
+        const deletable = verdict === true || verdict?.ok === true;
+        const shared = verdict !== false && verdict?.reason === 'shared';
+        if (deletable) {
+          // The generic session teardown treats history IO as best-effort. A
+          // permanent task deletion must instead fail visibly and remain retryable.
+          // The queued delete only cancels unstarted work after it commits, so a
+          // refusal leaves every accepted write on disk.
+          await deleteHistory(record.id);
+          const result = await destroySession(record, directories.get(record.dirId), { force: !!options.force });
+          if (!result.ok) throw removalFailure(result, 'session_delete_failed');
+        } else if (!shared && verdict !== false) {
+          // Unknown/failed verdicts fail closed and stay retryable instead of
+          // silently orphaning the session behind a deleted task.
+          throw Object.assign(new Error('TASK_HISTORY_REFERENCED'), {
+            code: 'TASK_HISTORY_REFERENCED',
+            ...(Array.isArray(verdict?.tasks) ? { tasks: verdict.tasks } : {}),
+            ...(Array.isArray(verdict?.taskIds) ? { taskIds: verdict.taskIds } : {}),
+          });
+        }
+        // verdict === false（旧布尔接线）也与 shared 一样保持会话原样。
       }
     }
     persist();

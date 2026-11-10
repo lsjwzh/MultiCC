@@ -94,6 +94,52 @@ test('referencingTasks falls back to the id when a task has no title', () => {
   assert.deepEqual(retention.referencingTasks('s1'), [{ id: 't', title: 't', via: 'session' }]);
 });
 
+test('deletion facts keep the old shared and referenced buckets separate for the Rust verdict', () => {
+  const board = { tasks: {
+    bound: { id: 'bound', title: 'Bound', chatSessionId: 's1' },
+    refs: { id: 'refs', title: 'Refs', refs: [{ sessionId: 's1', userMsgId: 'u1' }] },
+    worker: { id: 'worker', title: 'Worker', routing: { workerSessionId: 's1' } },
+    byMsg: { id: 'byMsg', title: 'ByMsg' },
+    deleting: { id: 'deleting', title: 'Deleting', chatSessionId: 's1', deleting: true },
+    unrelated: { id: 'unrelated', title: 'Other', chatSessionId: 'other' },
+  } };
+  const data = new Map([['s1', [
+    { id: 'u1', role: 'user', taskId: 'byMsg' },
+    { id: 'u2', role: 'user', taskId: 'byMsg' },
+  ]]]);
+  const records = new Map([['s1', { id: 's1', kind: 'chat' }]]);
+  const retention = createTaskHistoryRetention({
+    getBoard: () => board, getRecord: id => records.get(id), loadHistory: id => data.get(id) || [],
+  });
+  const facts = retention.sessionDeletionFacts('s1');
+  assert.deepEqual(facts, {
+    executionSlot: false,
+    sessionLinks: ['bound', 'refs'],
+    routingLinks: ['worker'],
+    messageLinks: ['byMsg'],
+    references: [
+      { id: 'bound', title: 'Bound', via: 'session' },
+      { id: 'refs', title: 'Refs', via: 'session' },
+      { id: 'worker', title: 'Worker', via: 'session' },
+      { id: 'byMsg', title: 'ByMsg', via: 'messages' },
+    ],
+  });
+  // Facts and the boolean rule must agree for every bucket combination.
+  assert.equal(retention.canDeleteSession('s1'), false);
+  // A session nothing references has no facts and stays deletable.
+  assert.deepEqual(retention.sessionDeletionFacts('ghost'), {
+    executionSlot: false, sessionLinks: [], routingLinks: [], messageLinks: [], references: [],
+  });
+  assert.equal(retention.canDeleteSession('ghost'), true);
+  // Execution slots are disposable; their facts short-circuit even when linked.
+  records.set('slot', { id: 'slot', kind: 'chat', taskExecutionSlot: true });
+  board.tasks.worker.routing.workerSessionId = 'slot';
+  assert.deepEqual(retention.sessionDeletionFacts('slot'), {
+    executionSlot: true, sessionLinks: [], routingLinks: [], messageLinks: [], references: [],
+  });
+  assert.equal(retention.canDeleteSession('slot'), true);
+});
+
 test('stamps of already-deleted tasks are orphans and must not block disposal', () => {
   // A message stamped with a taskId that is gone from the board AND listed in
   // deletedTaskIds belongs to a deleted task; protecting it forever would

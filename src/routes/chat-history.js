@@ -31,7 +31,7 @@ function assertChatHistoryDeps(deps) {
   if (!deps.history || typeof deps.history !== 'object') {
     throw new TypeError('chat history dependency missing: history');
   }
-  for (const method of ['read', 'writeAsync', 'deleteSession', 'hasPersistedDelivery']) {
+  for (const method of ['read', 'writeAsync', 'writeVisibilityAsync', 'deleteSession', 'hasPersistedDelivery']) {
     if (typeof deps.history[method] !== 'function') {
       throw new TypeError(`chat history dependency missing: history.${method}`);
     }
@@ -143,8 +143,9 @@ function createChatHistoryRuntime(rawDeps) {
 
   // 零参回调由 Rust 用 `fn.bind(null, ...)` 生成；这些函数只做一次转发，
   // 让定时器与 Promise 拒绝处理重新进入同一个所有者。
-  function runIncrementalSave(sessionId, state) {
-    run('incrementalSaveTick', sessionId, state);
+  function runIncrementalSave(sessionId, state, generation, epoch) {
+    const enqueued = run('incrementalSaveTick', sessionId, state, generation, epoch);
+    if (enqueued) driveSession(String(sessionId)).catch(() => {});
   }
   function runPeriodicReview(sessionId) {
     run('runPeriodicReview', sessionId);
@@ -164,6 +165,8 @@ function createChatHistoryRuntime(rawDeps) {
       history: deps.history,
       service: serviceOwner,
       serviceAnchor,
+      // 真相由服务判定，这里只提供事实（谁以何种方式引用该会话）。
+      sessionDeletionFacts: deps.sessionDeletionFacts,
       chatSessions: deps.chatSessions,
       idFactory: deps.idFactory,
       clock: now,
@@ -207,8 +210,10 @@ function createChatHistoryRuntime(rawDeps) {
     return run('paginate', sessionId, options);
   }
 
+  // 标注/隐藏/删除/清空与追加走同一条按会话 FIFO：先排进 Rust 队列，再由单飞
+  // 驱动器逐步落盘。返回的 Promise 在 Rust 发布缓存、产出广播之后才解决。
   function hideMessages(sessionId, ids, options = {}) {
-    return run('hideMessages', sessionId, ids, options);
+    return mutate(sessionId, options && options.quiet ? 'removeMany' : 'hide', [ids]);
   }
 
   function latestAssistantAt(sessionId) {
@@ -219,33 +224,209 @@ function createChatHistoryRuntime(rawDeps) {
     return run('lastActivity', sessionId, activeChat);
   }
 
-  const appendQueues = new Map();
-  async function appendOne(sessionId, message) {
-    const prepared = run('prepareAppendMessage', sessionId, message);
-    if (!prepared) return false;
+  // ── 变更驱动 ──────────────────────────────────────────────────────────────
+  // Rust 拥有每个会话的变更 FIFO、快照时刻、缓存发布与广播内容。这里只是单飞
+  // 驱动：取下一步 → 等待落盘 → 回报成败 → 执行 Rust 给出的广播。没有第二个
+  // 排序层，也不复制历史状态。
+  const drivers = new Map();
+  const waiters = new Map();
+
+  function settleWaiter(sessionId, operationId, settle) {
+    const pending = waiters.get(sessionId);
+    if (!pending) return;
+    const waiting = pending.get(operationId);
+    if (!waiting) return;
+    pending.delete(operationId);
+    if (!pending.size) waiters.delete(sessionId);
+    // Interim coalescing reuses the same operationId for several callers, so a
+    // slot is a list: every caller waiting on that job settles together.
+    for (const waiter of waiting) settle(waiter);
+  }
+  function failSession(sessionId, error) {
+    const pending = waiters.get(sessionId);
+    waiters.delete(sessionId);
+    if (!pending) return;
+    for (const waiting of pending.values()) for (const waiter of waiting) waiter.reject(error);
+  }
+  // Effects are already-committed broadcasts produced by Rust; running them is
+  // the only part that must stay here. A throwing broadcast never unwinds a
+  // mutation (the durable write already happened), it is logged with the event
+  // name Rust attached, and the *first* failure is reported back so callers can
+  // reproduce the legacy result shape (an annotation whose broadcast failed
+  // resolves to an empty list).
+  function applyEffects(sessionId, effects) {
+    if (!Array.isArray(effects)) return null;
+    let firstFailure = null;
+    for (const effect of effects) {
+      try {
+        deps.chatBroadcast(sessionId, effect.payload);
+      } catch (error) {
+        if (!firstFailure) firstFailure = { logEvent: effect.logEvent, error };
+        try { logFailure(effect.logEvent || 'chat_history_broadcast_failed', error, sessionId); } catch (_) {}
+      }
+    }
+    return firstFailure;
+  }
+  function performStep(step) {
+    if (step.method === 'transcript') {
+      return deps.history.writeAsync(step.sessionId, step.payload);
+    }
+    if (step.method === 'visibility') {
+      return deps.history.writeVisibilityAsync(step.sessionId, step.payload);
+    }
+    return Promise.reject(new Error(`unknown chat history write step: ${step.method}`));
+  }
+  function driveSession(sessionId) {
+    const existing = drivers.get(sessionId);
+    if (existing) return existing.loop;
+    const entry = { loop: null };
+    // Detach at the idle boundary in the same synchronous turn: the caller that
+    // was just woken by this driver always gets a fresh driver for its own
+    // mutation instead of piggybacking on one that is already leaving.
+    drivers.set(sessionId, entry);
+    entry.loop = (async () => {
+      try {
+        for (;;) {
+          const step = run('nextMutationStep', sessionId);
+          if (!step || step.type === 'idle') return;
+          if (step.type === 'done') {
+            // A committed delete cancels the unstarted jobs behind it; their
+            // callers only learn the session is gone now, not at enqueue time.
+            if (Array.isArray(step.cancelled)) {
+              for (const operationId of step.cancelled) {
+                settleWaiter(sessionId, operationId, waiter => waiter.reject(sessionDeletedError()));
+              }
+            }
+            settleWaiter(sessionId, step.operationId, waiter => (
+              step.failed === true ? waiter.reject(step.error) : waiter.resolve(step.result)
+            ));
+            continue;
+          }
+          let ok = true;
+          let failure = null;
+          try {
+            await performStep(step);
+          } catch (error) {
+            ok = false;
+            failure = error;
+          }
+          const after = run('completeMutationStep', sessionId, step.operationId, ok, failure);
+          const effectFailure = applyEffects(sessionId, after.effects);
+          if (after.finished === true) {
+            settleWaiter(sessionId, step.operationId, waiter => {
+              if (after.failed === true) return waiter.reject(failure || after.result);
+              // 旧实现里标注与广播同处一个 try：广播抛错时整体返回空列表，
+              // 写入与缓存发布仍然生效。
+              if (effectFailure && effectFailure.logEvent === 'chat_history_annotation_failed') {
+                return waiter.resolve([]);
+              }
+              return waiter.resolve(after.result);
+            });
+          }
+        }
+      } finally {
+        if (drivers.get(sessionId) === entry) drivers.delete(sessionId);
+      }
+    })();
+    entry.loop.catch(error => failSession(sessionId, error));
+    return entry.loop;
+  }
+  function sessionDeletedError() {
+    return Object.assign(new Error('chat_history_session_deleted'), {
+      code: 'CHAT_HISTORY_SESSION_DELETED',
+    });
+  }
+  function mutate(sessionId, kind, payload) {
+    const id = String(sessionId);
+    let enqueued;
     try {
-      // Durable writes are asynchronous only. There is no synchronous
-      // compatibility branch: a caller that needs the verdict must await
-      // `appendMessage`, and the only way to corrupt ordering (a synchronous
-      // replacement racing this one) can no longer exist.
-      await deps.history.writeAsync(sessionId, prepared.messagesJson);
-      return run('commitAppendMessage', prepared.operationId);
+      enqueued = run('enqueueMutation', id, kind, payload);
     } catch (error) {
-      try { run('discardAppendMessage', sessionId, prepared.operationId, error); } catch (_) {}
-      return false;
+      // A tombstoned session must surface the same code whether the caller
+      // awaits this promise or the rejection came from a cancelled job.
+      if (String(error && error.message) === 'chat_history_session_deleted') {
+        return Promise.reject(sessionDeletedError());
+      }
+      throw error;
+    }
+    // 删除会丢弃尚未开始的 job：它们的 waiter 必须在这里结清，否则调用方会
+    // 一直等到关停截止时间才知道这项工作已被删除取代。
+    const cancelled = Array.isArray(enqueued && enqueued.cancelled) ? enqueued.cancelled : [];
+    for (const operationId of cancelled) {
+      settleWaiter(id, operationId, waiter => waiter.reject(sessionDeletedError()));
+    }
+    // 幂等的重复删除没有新 job，直接返回。
+    if (enqueued.operationId === null || enqueued.operationId === undefined) {
+      return Promise.resolve(true);
+    }
+    const { operationId } = enqueued;
+    const settled = new Promise((resolve, reject) => {
+      let pending = waiters.get(id);
+      if (!pending) {
+        pending = new Map();
+        waiters.set(id, pending);
+      }
+      const waiting = pending.get(operationId);
+      if (waiting) waiting.push({ resolve, reject });
+      else pending.set(operationId, [{ resolve, reject }]);
+    });
+    // The driver settles this waiter; it is not the caller's scheduling layer.
+    driveSession(id).catch(() => {});
+    return settled;
+  }
+  // Shutdown: drain every driver and any queue that is still non-empty under the
+  // caller's own deadline. Returns false when the deadline passes first.
+  //
+  // The thing to wait on is each driver's own loop Promise (re-read every round:
+  // a driver deletes itself in `finally`), not the `{loop}` wrapper. A round
+  // number cannot bound an fsync that never returns, so the only limit is the
+  // absolute deadline the shutdown coordinator already owns.
+  const DEFAULT_SETTLE_TIMEOUT_MS = 60000;
+  const SETTLE_TIMEOUT = Symbol('chat-history-settle-timeout');
+  async function settle(options = {}) {
+    const deadline = Number.isFinite(options.deadline)
+      ? options.deadline
+      : Date.now() + (Number.isFinite(options.timeoutMs) && options.timeoutMs >= 0
+        ? options.timeoutMs
+        : DEFAULT_SETTLE_TIMEOUT_MS);
+    for (;;) {
+      // A timer-driven enqueue may have raced ahead of its driver. Ask Rust for
+      // the sessions that still have queued work and make sure each has one.
+      for (const sessionId of run('pendingMutationSessions') || []) {
+        driveSession(String(sessionId)).catch(() => {});
+      }
+      const pending = [];
+      for (const entry of drivers.values()) {
+        if (entry && entry.loop) pending.push(entry.loop);
+      }
+      if (pending.length) {
+        const remaining = deadline - Date.now();
+        if (!(remaining > 0)) return false;
+        let timer = null;
+        const timeout = new Promise(resolve => {
+          timer = setTimeout(() => resolve(SETTLE_TIMEOUT), remaining);
+        });
+        let outcome;
+        try {
+          outcome = await Promise.race([Promise.allSettled(pending), timeout]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        if (outcome === SETTLE_TIMEOUT) return false;
+        continue;
+      }
+      if (!run('hasPendingMutations')) return true;
+      const remaining = deadline - Date.now();
+      if (!(remaining > 0)) return false;
+      // Queued work without a driver should be impossible (the loop above kicks
+      // one); yield once so a driver that is detaching in its `finally` can be
+      // observed instead of spinning.
+      await new Promise(resolve => setTimeout(resolve, Math.min(10, remaining)));
     }
   }
+
   function appendMessage(sessionId, message) {
-    const id = String(sessionId);
-    const previous = appendQueues.get(id) || Promise.resolve();
-    // History mutations for one session are ordered in the adapter. Rust owns
-    // the message rules, durable write, cache publication, callbacks and ACK;
-    // this queue only prevents two async filesystem replacements from racing.
-    const current = previous.catch(() => {}).then(() => appendOne(sessionId, message));
-    appendQueues.set(id, current);
-    const clear = () => { if (appendQueues.get(id) === current) appendQueues.delete(id); };
-    current.then(clear, clear);
-    return current;
+    return mutate(sessionId, 'append', [message]);
   }
 
   function clearIncrementalSave(sessionId) {
@@ -253,7 +434,47 @@ function createChatHistoryRuntime(rawDeps) {
   }
 
   function annotateTurn(sessionId, turnId, patch = {}, options = {}) {
-    return run('annotateTurn', sessionId, turnId, patch, options);
+    return mutate(sessionId, 'replace', [turnId, patch, options]);
+  }
+
+  // 整份历史替换（fork 新会话）。调用方 await 它；磁盘写入仍由仓库完成。
+  function replaceHistory(sessionId, messages, options = {}) {
+    return mutate(sessionId, 'replaceAll', [messages, options || {}]);
+  }
+
+  // 按 id 删除若干条消息（任务删除裁剪）：Node 只给 id 集合，当前 transcript
+  // 由 Rust 在队首读取后在最新状态上过滤，不会漏掉在飞追加。
+  function dropMessages(sessionId, ids, options = {}) {
+    return mutate(sessionId, 'dropMessages', [ids, options || {}]);
+  }
+
+  // 上下文包合并导入：底稿 + 导入消息由 Rust 在队首基于最新状态合并。
+  function mergeHistory(sessionId, messages, options = {}) {
+    return mutate(sessionId, 'mergeAll', [messages, options || {}]);
+  }
+
+  // 删除会话：入队只标记“正在删除”并把删除插在在飞写入之后、未开始写入之
+  // 前；删除成功才落墓碑并取消后面排队的 job，删除被拒则撤销标记、排队写入
+  // 照常执行，一条都不丢。
+  function removeSession(sessionId) {
+    return mutate(sessionId, 'removeSession', []);
+  }
+
+  // 删除资格由 Rust 判定；这里只转发结果（false=任务历史引用）。
+  function canDeleteSession(sessionId) {
+    return run('canDeleteSession', String(sessionId)) === true;
+  }
+
+  // 结构化删除结论：Rust 依据 Node 提供的引用事实判定 ok / shared /
+  // referenced。任务删除按 reason 行事：shared 保持会话原样，referenced
+  // 中止并保持可重试。
+  function deletionVerdict(sessionId) {
+    return run('deletionVerdict', String(sessionId));
+  }
+
+  // 会话（重新）注册时清墓碑，固定 id 的辅助会话删除后重建才能继续写入。
+  function registerSession(sessionId) {
+    return run('registerSession', String(sessionId));
   }
 
   function clearAllIncrementalSaves() {
@@ -267,8 +488,9 @@ function createChatHistoryRuntime(rawDeps) {
   async function clearHistoryUnsafe(sessionId, message, chatState) {
     const key = String(sessionId);
     const keep = Math.max(0, parseInt(message?.keep || '0', 10) || 0);
-    // 可见性写入、持久化 id 与缓存更新都在运行时所有者内部完成。
-    const result = run('clearVisibility', key, keep);
+    // 清空排在同一个会话 FIFO 里：await 到可见性落盘、缓存已发布之后才分页并
+    // 广播。这样既不会用旧快照覆盖更新的追加，也不会用旧缓存生成广播。
+    const result = await mutate(key, 'clear', [keep]);
     const page = paginate(key, { limit: historyPageSize });
     deps.chatBroadcast(key, {
       type: 'chat_history_reset',
@@ -294,68 +516,144 @@ function createChatHistoryRuntime(rawDeps) {
     }
   }
 
-  async function rotateNativeContextUnsafe(sessionId, chatState) {
-    const key = String(sessionId);
+  // ── 原生上下文轮换 ────────────────────────────────────────────────────────
+  // 两段式：Node 只把事实（会话是否存在、类型、待生效的手递、运行态、后台任务
+  // 数、端口是否可用）交给 Rust；拒绝 / 复用 / 继续由 Rust 判定，Rust 给出要执行
+  // 的副作用清单。git 快照 await 之后用同一份事实再判一次，Rust 在判定通过后
+  // 才装配 handoff 与 checkpoint，避免用过期事实覆盖新一轮。
+  function rotationRequest(op, input) {
+    return JSON.parse(getNative().chatContextRotationRequest(op, JSON.stringify(input)));
+  }
+
+  // 只读事实快照。存在性与待生效手递先行；只有真正要继续时才读运行态端口，
+  // 与旧实现的短路顺序一致。
+  function rotationFacts(key) {
     const persisted = deps.persistedSessions.get(key);
     if (!persisted) {
-      return Object.freeze({ ok: false, code: 'session_not_found' });
+      return {
+        exists: false,
+        kind: '',
+        pending: null,
+        rotationReady: false,
+        runState: 'running',
+        backgroundCount: 0,
+      };
     }
-    if (persisted.kind && persisted.kind !== 'chat') {
-      return Object.freeze({ ok: false, code: 'not_chat_session' });
-    }
-
     const existing = persisted.pendingCliHandoff;
-    if (existing && existing.status === 'pending') {
-      if (existing.reason !== 'manual_native_context_rotate') {
-        deps.chatBroadcast(key, {
-          type: 'native_context_rotation_rejected',
-          code: 'handoff_pending',
-        });
-        return Object.freeze({ ok: false, code: 'handoff_pending' });
-      }
-      const reused = Object.freeze({
-        ok: true,
-        reused: true,
-        checkpointId: existing.id,
-        clearedNativeSessions: 0,
-      });
-      deps.chatBroadcast(key, {
-        type: 'native_context_rotated',
-        checkpointId: existing.id,
-        clearedNativeSessions: 0,
-        historyPreserved: true,
-        reused: true,
-      });
-      return reused;
+    // The kind check comes before any run-state port, exactly as before.
+    if (persisted.kind && persisted.kind !== 'chat') {
+      return {
+        exists: true,
+        kind: String(persisted.kind),
+        pending: null,
+        rotationReady: false,
+        runState: 'running',
+        backgroundCount: 0,
+      };
     }
-
+    const pending = existing && existing.status === 'pending'
+      ? {
+        id: existing.id,
+        status: 'pending',
+        reason: existing.reason === undefined ? null : String(existing.reason),
+      }
+      : null;
     const rotationReady = typeof deps.getSessionRunState === 'function'
       && typeof deps.getActiveBackgroundTasks === 'function'
       && typeof deps.sessionPersistence?.mutate === 'function';
-    const runState = rotationReady ? deps.getSessionRunState(key) : 'running';
-    const activeBackground = rotationReady ? deps.getActiveBackgroundTasks(key) : [];
-    // Classify alone gates rotation. 'assessing' stays blocked here (unlike the
-    // dispatch predicate): rotation rewrites native context, so waiting for the
-    // verdict is the safe side, and a user can always retry.
-    const blockCode = !rotationReady
-      || ['queued', 'running', 'assessing'].includes(runState)
-      ? 'session_busy'
-      : Array.isArray(activeBackground) && activeBackground.length
-        ? 'background_tasks_running'
-        : null;
-    if (blockCode) {
-      deps.chatBroadcast(key, {
-        type: 'native_context_rotation_rejected',
-        code: blockCode,
-      });
+    let runState = 'running';
+    let backgroundCount = 0;
+    if (!pending && rotationReady) {
+      runState = String(deps.getSessionRunState(key));
+      const active = deps.getActiveBackgroundTasks(key);
+      backgroundCount = Array.isArray(active) ? active.length : 0;
+    }
+    return {
+      exists: true,
+      kind: persisted.kind ? String(persisted.kind) : '',
+      pending,
+      rotationReady,
+      runState,
+      backgroundCount,
+    };
+  }
+
+  // 副作用必须在 await 之后重新取记录：mutate 本身要写回同一个持久化对象。
+  // `clearedNativeSessions` 只有 Node 端口知道（清理原生 CLI 状态的返回值），
+  // Rust 在广播载荷里留 null 占位，这里用同一份事务结果补上。
+  function applyRotationEffects(key, effects, plan) {
+    if (!Array.isArray(effects)) return undefined;
+    let clearedNativeSessions;
+    for (const effect of effects) {
+      switch (effect.type) {
+        case 'broadcast': {
+          const event = effect.event;
+          if (event && event.type === 'native_context_rotated' && event.reused !== true) {
+            event.clearedNativeSessions = clearedNativeSessions === undefined ? null : clearedNativeSessions;
+          }
+          deps.chatBroadcast(key, event);
+          break;
+        }
+        case 'mutate': {
+          const { persisted, handoff } = plan;
+          clearedNativeSessions = deps.sessionPersistence.mutate(effect.operation, () => {
+            const cleared = deps.clearAllNativeCliStates(persisted);
+            persisted.pendingCliHandoff = handoff;
+            deps.rememberActiveCliState(persisted);
+            return cleared;
+          });
+          break;
+        }
+        case 'closeStream':
+          deps.chatStream.close(key);
+          break;
+        case 'zeroChatTurnCount':
+          if (plan.chatState) plan.chatState.chatTurnCount = 0;
+          break;
+        default:
+          break;
+      }
+    }
+    return clearedNativeSessions;
+  }
+
+  async function rotateNativeContextUnsafe(sessionId, chatState) {
+    const key = String(sessionId);
+    const before = rotationFacts(key);
+    const verdict = rotationRequest('decision', before);
+    applyRotationEffects(key, verdict.effects);
+    if (verdict.ok !== true) {
+      return Object.freeze({ ok: false, code: verdict.code });
+    }
+    if (verdict.reused === true) {
       return Object.freeze({
-        ok: false,
-        code: blockCode,
+        ok: true,
+        reused: true,
+        checkpointId: verdict.checkpointId,
+        clearedNativeSessions: 0,
       });
     }
 
+    const persisted = deps.persistedSessions.get(key);
     const history = load(key);
     const gitSnapshot = await deps.cliSwitchGitSnapshot(persisted);
+    // 快照期间可能开始新一轮、冒出别的手递或删掉会话：按同一套事实重判。
+    // 快照本身只在首判通过后才发起；若重判被拒，不会装配 checkpoint、不会
+    // 提交 handoff，也不会产生任何写盘或广播——这次快照是唯一的既有开销。
+    const after = rotationFacts(key);
+    const second = rotationRequest('decision', after);
+    applyRotationEffects(key, second.effects);
+    if (second.ok !== true) {
+      return Object.freeze({ ok: false, code: second.code });
+    }
+    if (second.reused === true) {
+      return Object.freeze({
+        ok: true,
+        reused: true,
+        checkpointId: second.checkpointId,
+        clearedNativeSessions: 0,
+      });
+    }
     const cli = (chatState && chatState.cli) || persisted.cli;
     const checkpoint = deps.buildHandoffCheckpoint({
       session: persisted,
@@ -364,40 +662,34 @@ function createChatHistoryRuntime(rawDeps) {
       history,
       git: gitSnapshot,
     });
-    checkpoint.reason = 'manual_native_context_rotate';
-    const handoff = {
-      id: `checkpoint_${randomBytes(8).toString('hex')}`,
-      fromCli: cli,
-      toCli: cli,
-      createdAt: checkpoint.createdAt,
-      status: 'pending',
-      reason: 'manual_native_context_rotate',
-      reusedTarget: false,
+    const committed = rotationRequest('commit', {
+      ...after,
+      cli: cli == null ? '' : String(cli),
       checkpoint,
-    };
-
-    const clearedNativeSessions = deps.sessionPersistence.mutate(
-      'websocket.rotate-native-context',
-      () => {
-        const cleared = deps.clearAllNativeCliStates(persisted);
-        persisted.pendingCliHandoff = handoff;
-        deps.rememberActiveCliState(persisted);
-        return cleared;
-      },
-    );
-    deps.chatStream.close(key);
-    if (chatState) chatState.chatTurnCount = 0;
-    deps.chatBroadcast(key, {
-      type: 'native_context_rotated',
-      checkpointId: handoff.id,
-      clearedNativeSessions,
-      historyPreserved: true,
-      reused: false,
+      randomHex: randomBytes(8).toString('hex'),
+    });
+    if (committed.ok !== true) {
+      applyRotationEffects(key, committed.effects);
+      return Object.freeze({ ok: false, code: committed.code });
+    }
+    if (committed.reused === true) {
+      applyRotationEffects(key, committed.effects);
+      return Object.freeze({
+        ok: true,
+        reused: true,
+        checkpointId: committed.checkpointId,
+        clearedNativeSessions: 0,
+      });
+    }
+    const clearedNativeSessions = applyRotationEffects(key, committed.effects, {
+      persisted,
+      handoff: committed.handoff,
+      chatState,
     });
     return Object.freeze({
       ok: true,
       reused: false,
-      checkpointId: handoff.id,
+      checkpointId: committed.checkpointId,
       clearedNativeSessions,
     });
   }
@@ -415,13 +707,15 @@ function createChatHistoryRuntime(rawDeps) {
 
   function mountRoutes(app) {
     assertApp(app);
-    app.delete('/api/sessions/:id/messages/:msgId', (req, res, next) => {
+    // 删除与追加/清空共用同一条会话 FIFO；只有落盘并发布缓存之后才广播，
+    // 因此客户端看到的顺序与磁盘一致。
+    app.delete('/api/sessions/:id/messages/:msgId', async (req, res, next) => {
       const sessionId = req.params.id;
       if (!deps.persistedSessions.get(sessionId)) {
         return res.status(404).json({ error: 'session not found' });
       }
       try {
-        const removed = run('removeVisibility', sessionId, req.params.msgId);
+        const removed = await mutate(sessionId, 'remove', [req.params.msgId]);
         if (!removed) return res.status(404).json({ error: 'message not found' });
         deps.chatBroadcast(sessionId, { type: 'chat_msg_deleted', id: req.params.msgId, displayOnly: true });
         return res.json({ ok: true });
@@ -546,9 +840,17 @@ function createChatHistoryRuntime(rawDeps) {
     projectedMessages,
     mountRoutes,
     paginate,
+    canDeleteSession,
+    deletionVerdict,
+    dropMessages,
+    mergeHistory,
+    registerSession,
+    removeSession,
+    replaceHistory,
     rotateNativeContext,
     scheduleIncrementalSave,
     service,
+    settle,
     stop,
   };
   return Object.freeze(api);

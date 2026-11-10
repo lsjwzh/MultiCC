@@ -266,7 +266,7 @@ pub struct HistoryWriteResult {
     pub error: Option<HistoryWriteError>,
 }
 
-fn history_path(root: &Path, session_id: &str) -> PathBuf {
+fn safe_stem(session_id: &str) -> String {
     let safe: String = session_id
         .encode_utf16()
         .map(|unit| {
@@ -280,12 +280,134 @@ fn history_path(root: &Path, session_id: &str) -> PathBuf {
             }
         })
         .collect();
-    let safe = if session_id.is_empty() {
-        "_default"
+    if session_id.is_empty() {
+        "_default".to_string()
     } else {
-        &safe
+        safe
+    }
+}
+
+fn history_path(root: &Path, session_id: &str) -> PathBuf {
+    root.join(format!("{}.json", safe_stem(session_id)))
+}
+
+/// `root/.views/<session>.json`, the same file `path_for(session, true)` names.
+fn visibility_path(root: &Path, session_id: &str) -> PathBuf {
+    root.join(".views")
+        .join(format!("{}.json", safe_stem(session_id)))
+}
+
+/// `mkdirSync(dir, { recursive: true, mode: 0o700 })` semantics from the sync
+/// path, without a JS anchor: newly created ancestors get the private mode too.
+fn ensure_private_dir_io(dir: &Path) -> std::result::Result<(), HistoryWriteError> {
+    let mut missing = Vec::new();
+    let mut probe = Some(dir);
+    while let Some(path) = probe {
+        if path.exists() {
+            break;
+        }
+        missing.push(path.to_path_buf());
+        probe = path.parent();
+    }
+    fs::create_dir_all(dir)
+        .map_err(|error| io_write_error(error, "mkdir", Some(dir), None).reported("mkdir", dir))?;
+    for path in missing.iter().rev() {
+        set_mode(path, state_file::DIR_MODE).map_err(|error| {
+            io_write_error(error, "chmod", Some(path), None).reported("atomic_write", dir)
+        })?;
+    }
+    set_mode(dir, state_file::DIR_MODE).map_err(|error| {
+        io_write_error(error, "chmod", Some(dir), None).reported("atomic_write", dir)
+    })
+}
+
+/// Map a failed `write_bytes_atomic_traced` to the wire error, including the
+/// `[state-store] mkdir ...` wrapper exactly like `HistoryWriteJob`.
+fn atomic_failure_error(failure: state_file::WriteFailure, target: &Path) -> HistoryWriteError {
+    use state_file::WriteStage;
+    let (syscall, path, dest) = match failure.stage {
+        WriteStage::Mkdir => ("mkdir", Some(failure.path.as_path()), None),
+        WriteStage::ChmodDir | WriteStage::ChmodTarget => {
+            ("chmod", Some(failure.path.as_path()), None)
+        }
+        WriteStage::OpenTemporary | WriteStage::OpenDirectory => {
+            ("open", Some(failure.path.as_path()), None)
+        }
+        WriteStage::Write => ("write", None, None),
+        WriteStage::Fsync | WriteStage::FsyncDirectory => ("fsync", None, None),
+        WriteStage::BeforeRename | WriteStage::Rename => (
+            "rename",
+            Some(failure.path.as_path()),
+            failure.dest.as_deref(),
+        ),
     };
-    root.join(format!("{}.json", safe))
+    let mut error = io_write_error(failure.error, syscall, path, dest);
+    error = error.reported(
+        if failure.stage == WriteStage::Mkdir {
+            "mkdir"
+        } else {
+            "atomic_write"
+        },
+        target,
+    );
+    if failure.stage == WriteStage::Mkdir {
+        error.message = format!(
+            "[state-store] mkdir {}: {}",
+            failure.path.to_string_lossy(),
+            error.message
+        );
+    }
+    error
+}
+
+/// Visibility state write, used by the mutation queue so a hide/clear/annotate
+/// never lands between an async append's snapshot and its commit.
+pub struct VisibilityWriteJob {
+    root: PathBuf,
+    session_id: String,
+    state_json: String,
+}
+
+impl Task for VisibilityWriteJob {
+    type Output = HistoryWriteResult;
+    type JsValue = HistoryWriteResult;
+
+    fn compute(&mut self) -> Result<HistoryWriteResult> {
+        let target = visibility_path(&self.root, &self.session_id);
+        let Some(parent) = target.parent() else {
+            return Ok(HistoryWriteResult {
+                error: Some(
+                    write_error(
+                        "Error",
+                        "history visibility file has no parent".to_string(),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .reported("atomic_write", &target),
+                ),
+            });
+        };
+        if let Err(error) = ensure_private_dir_io(parent) {
+            return Ok(HistoryWriteResult { error: Some(error) });
+        }
+        match state_file::write_bytes_atomic_traced(
+            &target,
+            self.state_json.as_bytes(),
+            state_file::FILE_MODE,
+            state_file::DIR_MODE,
+        ) {
+            Ok(()) => Ok(HistoryWriteResult { error: None }),
+            Err(failure) => Ok(HistoryWriteResult {
+                error: Some(atomic_failure_error(failure, &target)),
+            }),
+        }
+    }
+
+    fn resolve(&mut self, _: Env, output: HistoryWriteResult) -> Result<HistoryWriteResult> {
+        Ok(output)
+    }
 }
 
 fn write_error(
@@ -449,42 +571,9 @@ impl Task for HistoryWriteJob {
             state_file::DIR_MODE,
         ) {
             Ok(()) => Ok(HistoryWriteResult { error: None }),
-            Err(failure) => {
-                use state_file::WriteStage;
-                let (syscall, path, dest) = match failure.stage {
-                    WriteStage::Mkdir => ("mkdir", Some(failure.path.as_path()), None),
-                    WriteStage::ChmodDir | WriteStage::ChmodTarget => {
-                        ("chmod", Some(failure.path.as_path()), None)
-                    }
-                    WriteStage::OpenTemporary | WriteStage::OpenDirectory => {
-                        ("open", Some(failure.path.as_path()), None)
-                    }
-                    WriteStage::Write => ("write", None, None),
-                    WriteStage::Fsync | WriteStage::FsyncDirectory => ("fsync", None, None),
-                    WriteStage::BeforeRename | WriteStage::Rename => (
-                        "rename",
-                        Some(failure.path.as_path()),
-                        failure.dest.as_deref(),
-                    ),
-                };
-                let mut error = io_write_error(failure.error, syscall, path, dest);
-                error = error.reported(
-                    if failure.stage == WriteStage::Mkdir {
-                        "mkdir"
-                    } else {
-                        "atomic_write"
-                    },
-                    &target,
-                );
-                if failure.stage == WriteStage::Mkdir {
-                    error.message = format!(
-                        "[state-store] mkdir {}: {}",
-                        failure.path.to_string_lossy(),
-                        error.message
-                    );
-                }
-                Ok(HistoryWriteResult { error: Some(error) })
-            }
+            Err(failure) => Ok(HistoryWriteResult {
+                error: Some(atomic_failure_error(failure, &target)),
+            }),
         }
     }
 
@@ -1210,6 +1299,22 @@ impl RustChatHistoryRepository {
             session_id,
             messages_json,
             can_append: self.can_append,
+        })
+    }
+
+    /// Async counterpart of `writeVisibility`, for the mutation queue. The
+    /// caller serializes the state itself (`String(JSON.stringify(state))`);
+    /// this only owns the private-dir setup and the atomic file write.
+    #[napi]
+    pub fn write_visibility_async(
+        &self,
+        session_id: String,
+        state_json: String,
+    ) -> AsyncTask<VisibilityWriteJob> {
+        AsyncTask::new(VisibilityWriteJob {
+            root: self.root.clone(),
+            session_id,
+            state_json,
         })
     }
     #[napi]

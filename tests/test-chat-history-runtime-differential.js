@@ -153,6 +153,10 @@ function createHarness(kind, options = {}) {
     note('timer-clear', handle && handle.id);
     if (handle && handle.id) timers.delete(handle.id);
   }
+  // 原生运行时把增量保存排进会话 FIFO，落盘确认后才发布缓存；旧 oracle 仍然
+  // 同步写完。`fireTimers` 触发定时器后返回排空 Promise，旧实现返回 undefined，
+  // 调用方统一 `await`。
+  let drainQueue = () => undefined;
   function fireTimers() {
     const pending = [...timers.values()];
     timers.clear();
@@ -160,6 +164,7 @@ function createHarness(kind, options = {}) {
       note('timer-fire', entry.handle.id);
       entry.callback();
     }
+    return drainQueue();
   }
   const immediates = [];
   function fakeSetImmediate(callback) {
@@ -249,6 +254,16 @@ function createHarness(kind, options = {}) {
   // oracle still calls the synchronous `write`, so route the async port through
   // the same recorded write instead of inventing a second trace shape.
   history.writeAsync = (sessionId, messagesJson) => history.write(sessionId, JSON.parse(messagesJson));
+  // Same trick for visibility: the queue hands the serialized state to the
+  // repository, so route it through the recorded synchronous `writeVisibility`
+  // and both runtimes leave one trace shape. A host without the port must fail
+  // with the legacy TypeError text, exactly as the frozen oracle does.
+  history.writeVisibilityAsync = (sessionId, stateJson) => {
+    if (typeof history.writeVisibility !== 'function') {
+      throw new TypeError('history.writeVisibility is required');
+    }
+    return history.writeVisibility(sessionId, JSON.parse(stateJson));
+  };
   history.root = raw.root;
 
   // — 其余端口 —
@@ -314,6 +329,7 @@ function createHarness(kind, options = {}) {
     cliSwitchGitSnapshot: persisted => {
       note('git-snapshot', canon(persisted));
       if (controls.snapshotThrow) throw new Error('snapshot boom');
+      if (controls.onSnapshot) controls.onSnapshot(persisted);
       return { dirty: false };
     },
     clearAllNativeCliStates: persisted => {
@@ -367,6 +383,10 @@ function createHarness(kind, options = {}) {
     };
   }
 
+  const api = implementation.createChatHistoryRuntime(deps);
+  if (typeof api.settle === 'function') {
+    drainQueue = () => api.settle().then(() => undefined);
+  }
   const h = {
     kind,
     dataDir,
@@ -386,7 +406,7 @@ function createHarness(kind, options = {}) {
     flushImmediates,
     snapshotSessions,
     snapshotFiles: () => snapshotDir(dataDir),
-    api: implementation.createChatHistoryRuntime(deps),
+    api,
   };
   return h;
 }
@@ -401,7 +421,7 @@ async function settle() {
   await new Promise(resolve => setImmediate(resolve));
 }
 
-async function step(pair, name, action) {
+async function step(pair, name, action, { filterTrace = null } = {}) {
   const captured = [];
   for (const h of pair) {
     h.trace.length = 0;
@@ -414,9 +434,10 @@ async function step(pair, name, action) {
     await settle();
     h.flushImmediates();
     await settle();
+    const trace = filterTrace ? h.trace.filter(entry => !filterTrace(entry)) : h.trace.slice();
     captured.push({
       outcome,
-      trace: h.trace.slice(),
+      trace,
       files: h.snapshotFiles(),
       sessions: h.snapshotSessions(),
       persisted: h.persistedSnapshot(),
@@ -437,9 +458,22 @@ function messageOf(role, content, extra = {}) {
 test('模块导出与运行时表面与旧实现一致', () => {
   assert.deepEqual(Object.keys(native).sort(), Object.keys(legacy).sort());
   const [legacyHarness, nativeHarness] = makePair();
-  assert.equal(Object.isFrozen(legacyHarness.api), true);
-  assert.equal(Object.isFrozen(nativeHarness.api), true);
-  assert.deepEqual(Object.keys(nativeHarness.api).sort(), Object.keys(legacyHarness.api).sort());
+  assert.deepEqual(Object.isFrozen(legacyHarness.api), true);
+  assert.deepEqual(Object.isFrozen(nativeHarness.api), true);
+  // `settle`/`removeSession`/`replaceHistory` are the async mutation-queue
+  // surface; the frozen oracle is synchronous, so its surface is compared
+  // without those hooks.
+  const queueSurface = new Set(['settle', 'removeSession', 'replaceHistory', 'dropMessages',
+    'mergeHistory', 'canDeleteSession', 'deletionVerdict', 'registerSession']);
+  const surface = api => Object.keys(api).filter(key => !queueSurface.has(key)).sort();
+  assert.deepEqual(surface(nativeHarness.api), surface(legacyHarness.api));
+  assert.equal(typeof nativeHarness.api.settle, 'function');
+  assert.equal(typeof nativeHarness.api.removeSession, 'function');
+  assert.equal(typeof nativeHarness.api.replaceHistory, 'function');
+  assert.equal(typeof nativeHarness.api.dropMessages, 'function');
+  assert.equal(typeof nativeHarness.api.mergeHistory, 'function');
+  assert.equal(typeof nativeHarness.api.canDeleteSession, 'function');
+  assert.equal(typeof nativeHarness.api.registerSession, 'function');
   assert.equal(typeof nativeHarness.api.service.read, 'function');
 });
 
@@ -639,7 +673,7 @@ test('服务事件：remove / delete 广播与可见性失效', async () => {
   });
   await step(pair, 'hide then external visibility delete + session delete', async h => {
     await h.api.appendMessage('clean', { role: 'user', id: 'a2', content: 'hide me' });
-    h.api.hideMessages('clean', ['a2']);
+    await h.api.hideMessages('clean', ['a2']);
     const visibilityFile = h.raw.visibilityFileFor('clean');
     if (fs.existsSync(visibilityFile)) fs.rmSync(visibilityFile);
     const deleted = h.api.service.deleteSession('clean');
@@ -690,26 +724,26 @@ test('隐藏消息：quiet、非 quiet、失败与未知 id', async () => {
   await step(pair, 'hide quiet on aux (bounded policy)', h => h.api.hideMessages('aux', ['aux-0', 'aux-4'], { quiet: true }));
   await step(pair, 'projected after hides', h => h.api.projectedMessages('main'));
   await step(pair, 'projected includeHidden', h => h.api.projectedMessages('main', true));
-  await step(pair, 'visibility write failure (quiet throws)', h => {
+  await step(pair, 'visibility write failure (quiet throws)', async h => {
     h.controls.failVisibilityWrite = new Error('visibility write failed');
     try {
-      return h.api.hideMessages('main', ['seed-4'], { quiet: true });
+      return await h.api.hideMessages('main', ['seed-4'], { quiet: true });
     } finally {
       h.controls.failVisibilityWrite = null;
     }
   });
-  await step(pair, 'visibility write failure (non-quiet logs)', h => {
+  await step(pair, 'visibility write failure (non-quiet logs)', async h => {
     h.controls.failVisibilityWrite = new Error('visibility write failed');
     try {
-      return h.api.hideMessages('main', ['seed-4', 'seed-5']);
+      return await h.api.hideMessages('main', ['seed-4', 'seed-5']);
     } finally {
       h.controls.failVisibilityWrite = null;
     }
   });
-  await step(pair, 'broadcast failure while hiding', h => {
+  await step(pair, 'broadcast failure while hiding', async h => {
     h.controls.onBroadcast = () => { throw new Error('broadcast boom'); };
     try {
-      return h.api.hideMessages('main', ['seed-3']);
+      return await h.api.hideMessages('main', ['seed-3']);
     } finally {
       h.controls.onBroadcast = null;
     }
@@ -753,8 +787,8 @@ test('分页边界：before / around / limit / not-found / 克隆隔离', async 
   await step(pair, 'paginate around last', h => h.api.paginate('main', { around: 'p-6', limit: 3 }));
   await step(pair, 'paginate around missing', h => h.api.paginate('main', { around: 'nope', limit: 3 }));
   await step(pair, 'paginate around with includeHidden', h => h.api.paginate('main', { around: 'p-2', includeHidden: true }));
-  await step(pair, 'paginate hidden filtered', h => {
-    h.api.hideMessages('main', ['p-6']);
+  await step(pair, 'paginate hidden filtered', async h => {
+    await h.api.hideMessages('main', ['p-6']);
     return h.api.paginate('main', { limit: 100 });
   });
   await step(pair, 'paginate clone isolation', h => {
@@ -815,18 +849,18 @@ test('annotateTurn：按 turnId、锚点回退、补丁与失败', async () => {
   }, { anchorMessageId: 'a2' }));
   await step(pair, 'annotate no selection', h => h.api.annotateTurn('main', 'missing-turn', {}));
   await step(pair, 'annotate unknown anchor', h => h.api.annotateTurn('main', null, { taskId: 'task-alpha' }, { anchorMessageId: 'nope' }));
-  await step(pair, 'annotate replace failure', h => {
+  await step(pair, 'annotate replace failure', async h => {
     h.controls.failWrite = new Error('history write failed');
     try {
-      return h.api.annotateTurn('main', 't1', { taskId: 'task-alpha' });
+      return await h.api.annotateTurn('main', 't1', { taskId: 'task-alpha' });
     } finally {
       h.controls.failWrite = null;
     }
   });
-  await step(pair, 'annotate broadcast failure', h => {
+  await step(pair, 'annotate broadcast failure', async h => {
     h.controls.onBroadcast = () => { throw new Error('broadcast boom'); };
     try {
-      return h.api.annotateTurn('main', 't3', { taskId: 'task-delta' });
+      return await h.api.annotateTurn('main', 't3', { taskId: 'task-delta' });
     } finally {
       h.controls.onBroadcast = null;
     }
@@ -855,8 +889,8 @@ test('增量保存：调度 / 触发 / 清除 / clearAll / stop', async () => {
     currentAssistantText: 'this is a long enough assistant text',
     currentToolCalls: [{ name: 'tool-1' }],
   }));
-  await step(pair, 'fire writes interim', h => {
-    h.fireTimers();
+  await step(pair, 'fire writes interim', async h => {
+    await h.fireTimers();
     return h.api.viewHistory('main');
   });
   await step(pair, 'schedule + clear', h => {
@@ -868,30 +902,30 @@ test('增量保存：调度 / 触发 / 清除 / clearAll / stop', async () => {
     const second = h.api.scheduleIncrementalSave('other', { currentAssistantText: 'other long enough text' });
     return [first, second, h.api.clearAllIncrementalSaves(), h.api.hasIncrementalSave('main'), h.api.hasIncrementalSave('other')];
   });
-  await step(pair, 'tick with falsy state', h => {
+  await step(pair, 'tick with falsy state', async h => {
     h.api.scheduleIncrementalSave('main', null);
-    h.fireTimers();
+    await h.fireTimers();
     return h.api.viewHistory('main');
   });
-  await step(pair, 'tick with long text but no tools', h => {
+  await step(pair, 'tick with long text but no tools', async h => {
     h.api.scheduleIncrementalSave('main', { currentAssistantText: 'no tools but long enough text' });
-    h.fireTimers();
+    await h.fireTimers();
     return h.api.viewHistory('main');
   });
-  await step(pair, 'tick write failure logs', h => {
+  await step(pair, 'tick write failure logs', async h => {
     h.api.scheduleIncrementalSave('main', { currentAssistantText: 'will fail to persist long text' });
     h.controls.failWrite = new Error('history write failed');
-    try { h.fireTimers(); } finally { h.controls.failWrite = null; }
+    try { await h.fireTimers(); } finally { h.controls.failWrite = null; }
     return h.api.viewHistory('main');
   });
-  await step(pair, 'tick stamping failure logs (task code port throws)', h => {
+  await step(pair, 'tick stamping failure logs (task code port throws)', async h => {
     h.api.scheduleIncrementalSave('main', {
       currentAssistantText: 'stamping fails with long text',
       _currentTaskId: 'task-alpha',
     });
     const saved = h.controls.taskCode;
     h.controls.taskCode = 'throw';
-    try { h.fireTimers(); } finally { h.controls.taskCode = saved; }
+    try { await h.fireTimers(); } finally { h.controls.taskCode = saved; }
     return h.api.viewHistory('main');
   });
   await step(pair, 'schedule after stop', h => {
@@ -1099,6 +1133,15 @@ test('clearHistory：keep 边界、interim 尾部、已隐藏、失败与返回�
 
 // ── rotateNativeContext：闸门 / 复用 / 成功 / 失败 ───────────────────────
 test('rotateNativeContext：闸门、复用、成功与失败路径', async () => {
+  // Intentionally changed: after the git snapshot the runtime re-reads the two
+  // live fact ports for its second decision. The HEAD oracle reads them once.
+  // Those reads are not behaviour (no write/broadcast can depend on the count),
+  // so this differential compares outcomes, broadcasts, files and persisted
+  // state with fact-read entries filtered; every other trace entry still has to
+  // match byte-for-byte.
+  const rotationStep = (pair, name, action) => step(pair, name, action, {
+    filterTrace: entry => entry[0] === 'run-state' || entry[0] === 'background',
+  });
   const pair = makePair();
   for (const h of pair) {
     h.seedSession('rot-ok', { chatTurnCount: 5 });
@@ -1115,42 +1158,43 @@ test('rotateNativeContext：闸门、复用、成功与失败路径', async () =
     h.seedPersisted('rot-fail', {});
   }
 
-  await step(pair, 'rotate unknown session', h => h.api.rotateNativeContext('ghost'));
-  await step(pair, 'rotate non-chat kind', h => h.api.rotateNativeContext('task-kind'));
-  await step(pair, 'rotate pending handoff of another reason', h => h.api.rotateNativeContext('pending-other'));
-  await step(pair, 'rotate pending manual handoff reused', h => h.api.rotateNativeContext('pending-manual'));
+  await rotationStep(pair, 'rotate unknown session', h => h.api.rotateNativeContext('ghost'));
+  await rotationStep(pair, 'rotate non-chat kind', h => h.api.rotateNativeContext('task-kind'));
+  await rotationStep(pair, 'rotate pending handoff of another reason', h => h.api.rotateNativeContext('pending-other'));
+  await rotationStep(pair, 'rotate pending manual handoff reused', h => h.api.rotateNativeContext('pending-manual'));
   for (const state of ['queued', 'running', 'assessing']) {
-    await step(pair, `rotate blocked by runState ${state}`, h => {
+    await rotationStep(pair, `rotate blocked by runState ${state}`, h => {
       h.controls.runState = state;
       try { return h.api.rotateNativeContext('busy', { chatTurnCount: 2 }); } finally { h.controls.runState = 'idle'; }
     });
   }
-  await step(pair, 'rotate blocked by background tasks', h => {
+  await rotationStep(pair, 'rotate blocked by background tasks', h => {
     h.controls.backgroundTasks = [{ id: 'bg-1' }];
     try { return h.api.rotateNativeContext('background', { chatTurnCount: 2 }); } finally { h.controls.backgroundTasks = []; }
   });
-  await step(pair, 'rotate success clears native states and resets the turn counter', h => {
+  await rotationStep(pair, 'rotate success clears native states and resets the turn counter', async h => {
     h.controls.clearedNativeSessions = 3;
     const state = { chatTurnCount: 9 };
     try {
-      return { result: h.api.rotateNativeContext('rot-ok', state), state };
+      const result = await h.api.rotateNativeContext('rot-ok', state);
+      return { result, state };
     } finally {
       h.controls.clearedNativeSessions = 0;
     }
   });
-  await step(pair, 'rotate snapshot failure is wrapped and logged', h => {
+  await rotationStep(pair, 'rotate snapshot failure is wrapped and logged', h => {
     h.controls.snapshotThrow = true;
     try { return h.api.rotateNativeContext('rot-fail', { chatTurnCount: 1 }); } finally { h.controls.snapshotThrow = false; }
   });
-  await step(pair, 'rotate persistence failure is wrapped and never broadcasts', h => {
+  await rotationStep(pair, 'rotate persistence failure is wrapped and never broadcasts', h => {
     h.controls.mutateThrow = true;
     try { return h.api.rotateNativeContext('rot-fail', { chatTurnCount: 1 }); } finally { h.controls.mutateThrow = false; }
   });
-  await step(pair, 'clearHistory preserveHistory delegates to rotation', h => {
+  await rotationStep(pair, 'clearHistory preserveHistory delegates to rotation', h => {
     h.seedPersisted('preserve', {});
     return h.api.clearHistory('preserve', { preserveHistory: true }, { chatTurnCount: 4 });
   });
-  await step(pair, 'clearHistory preserveHistory surfaces the rotation failure', h => {
+  await rotationStep(pair, 'clearHistory preserveHistory surfaces the rotation failure', h => {
     h.seedPersisted('preserve-fail', {});
     h.controls.snapshotThrow = true;
     try {
@@ -1163,7 +1207,55 @@ test('rotateNativeContext：闸门、复用、成功与失败路径', async () =
   // 缺少 rotation 三端口：rotationReady=false，直接 session_busy（不读 runState）。
   const blockedPair = makePair({ rotationDeps: false });
   for (const h of blockedPair) h.seedPersisted('no-ports', {});
-  await step(blockedPair, 'rotate without rotation ports is session_busy', h => h.api.rotateNativeContext('no-ports'));
+  await rotationStep(blockedPair, 'rotate without rotation ports is session_busy', h => h.api.rotateNativeContext('no-ports'));
+});
+
+// ── rotateNativeContext：快照期间的事实变化（行为有意改变） ───────────────
+// 旧实现只在快照前判定一次：快照 await 期间开始的新一轮、冒出的新 handoff
+// 或删除的会话，都会被旧结果覆盖。新实现快照后按同一套事实重判。这里用冻结
+// 的 HEAD oracle 明确证明差异：旧实现照样提交，新实现拒绝。其余判定/复用/
+// 成功路径必须与旧实现逐字节一致（上面的差分用例）。
+test('rotation re-decides after the snapshot: the HEAD oracle commits, the runtime rejects', async () => {
+  const [oldHarness, newHarness] = makePair();
+  const outcomes = [];
+  for (const h of [oldHarness, newHarness]) {
+    h.seedSession('race', { chatTurnCount: 3 });
+    const record = h.seedPersisted('race', {});
+    h.controls.onSnapshot = () => {
+      record.pendingCliHandoff = { id: 'cp-late', status: 'pending', reason: 'other' };
+    };
+    h.trace.length = 0;
+    let outcome;
+    try {
+      outcome = { returned: canon(await h.api.rotateNativeContext('race', { chatTurnCount: 3 })) };
+    } catch (error) {
+      outcome = { threw: errorCanon(error) };
+    }
+    await settle();
+    outcomes.push({
+      outcome,
+      pending: canon(record.pendingCliHandoff),
+      broadcasts: h.trace.filter(entry => entry[0] === 'broadcast').map(entry => entry[2]),
+      committed: h.trace.some(entry => entry[0] === 'persist-mutate'),
+    });
+  }
+  const [oldOutcome, newOutcome] = outcomes;
+  assert.equal(oldOutcome.outcome.returned.keys.find(([key]) => key === 'ok')[1].v, true,
+    'the HEAD oracle never re-checks and commits over the new handoff');
+  assert.equal(oldOutcome.committed, true);
+  assert.equal(oldOutcome.pending.keys.find(([key]) => key === 'reason')[1].v,
+    'manual_native_context_rotate');
+  assert.equal(newOutcome.outcome.returned.keys.find(([key]) => key === 'ok')[1].v, false,
+    'the runtime must reject instead of rotating over a handoff that appeared meanwhile');
+  assert.equal(newOutcome.outcome.returned.keys.find(([key]) => key === 'code')[1].v,
+    'handoff_pending');
+  assert.equal(newOutcome.pending.keys.find(([key]) => key === 'id')[1].v, 'cp-late',
+    'the competing handoff survives untouched');
+  assert.equal(newOutcome.committed, false);
+  assert.deepEqual(newOutcome.broadcasts, [{ t: 'object', frozen: false, keys: [
+    ['type', { t: 'string', v: 'native_context_rotation_rejected' }],
+    ['code', { t: 'string', v: 'handoff_pending' }],
+  ] }]);
 });
 
 // ── 固定种子随机多会话序列 ────────────────────────────────────────────────
@@ -1226,9 +1318,8 @@ function buildRandomOps(count) {
   return ops;
 }
 
-function applyRandomOp(h, op) {
-  switch (op.kind) {
-    case 'append-user':
+async function applyRandomOp(h, op) {
+  switch (op.kind) {    case 'append-user':
       return h.api.appendMessage(op.session, messageOf('user', op.content, {
         id: `rand-${op.index}`,
         ...(op.taskId ? { taskId: op.taskId } : {}),
@@ -1264,7 +1355,7 @@ function applyRandomOp(h, op) {
     case 'clear-timer':
       return h.api.clearIncrementalSave(op.session);
     case 'fire-timers':
-      h.fireTimers();
+      await h.fireTimers();
       return h.api.clearAllIncrementalSaves();
     case 'read':
       if (op.which === 'projected') return h.api.projectedMessages(op.session);

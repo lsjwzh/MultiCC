@@ -563,6 +563,9 @@ function createChatHistoryRuntime(rawDeps) {
     }
   }
 
+  // Frozen oracle: this is the HEAD (pre-migration) single-decision rotation.
+  // The new host re-decides after the git snapshot; that change is asserted
+  // explicitly in the differential suite, not smuggled into the oracle.
   async function rotateNativeContextUnsafe(sessionId, chatState) {
     const key = String(sessionId);
     const persisted = deps.persistedSessions.get(key);

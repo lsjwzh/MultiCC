@@ -402,7 +402,7 @@ function profileFixture(session, store, { createSessionRecord = async () => ({ o
     createSessionRecord,
     loadChatHistory: () => [{ id: 'm0', role: 'assistant', content: 'hi' }],
     newChatMsgId: () => 'm1',
-    getChatHistoryService: () => ({ replace() {} }),
+    mergeHistory: async () => {},
     getFolderMemory: () => ({ sessionDir: () => path.join(tmpRoot, 'mem') }),
     getCliSwitchGitSnapshot: () => async () => ({}),
   }).mountRoutes(app);

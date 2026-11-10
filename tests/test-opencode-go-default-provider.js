@@ -116,7 +116,7 @@ function fixture(session, activity = {}, catalog = []) {
     createSessionRecord: async () => ({ ok: false, error: 'unused' }),
     loadChatHistory: () => [],
     newChatMsgId: () => 'm1',
-    getChatHistoryService: () => ({ replace() {} }),
+    mergeHistory: async () => {},
     getFolderMemory: () => ({ sessionDir: () => path.join(tmpRoot, 'mem') }),
     getCliSwitchGitSnapshot: () => async () => ({}),
   }).mountRoutes(app);
