@@ -7,8 +7,14 @@ use crate::{
     js_live::LiveValue as L,
     node_fs_error,
 };
-use multicc_core::{js::JsValue as J, state_file};
-use napi::{bindgen_prelude::Unknown, sys, Env, Error, Result};
+use multicc_core::{
+    js::{is_js_whitespace_char, json_parse, JsValue as J, JsValue as SemanticValue},
+    state_file,
+};
+use napi::{
+    bindgen_prelude::{AsyncTask, Unknown},
+    sys, Env, Error, Result, Task,
+};
 use napi_derive::napi;
 use std::{
     cell::RefCell,
@@ -161,6 +167,222 @@ fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
+}
+
+#[napi(object)]
+pub struct HistoryProbeError {
+    pub error_type: String,
+    pub message: String,
+    pub code: String,
+    pub errno: Option<i32>,
+    pub syscall: Option<String>,
+    pub path: Option<String>,
+    pub json_source: Option<String>,
+}
+
+#[napi(object)]
+pub struct HistoryProbeResult {
+    pub found: bool,
+    pub error: Option<HistoryProbeError>,
+}
+
+pub struct DeliveryProbeJob {
+    root: PathBuf,
+    session_id: String,
+    delivery_id: String,
+}
+
+fn probe_path(root: &Path, session_id: &str) -> PathBuf {
+    let safe: String = session_id
+        .encode_utf16()
+        .map(|unit| {
+            if matches!(unit, 0x30..=0x39 | 0x41..=0x5a | 0x61..=0x7a)
+                || unit == u16::from(b'_')
+                || unit == u16::from(b'-')
+            {
+                char::from_u32(u32::from(unit)).unwrap_or('_')
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = if session_id.is_empty() {
+        "_default"
+    } else {
+        &safe
+    };
+    root.join(format!("{}.json", safe))
+}
+
+fn probe_error(
+    error_type: &str,
+    message: String,
+    code: &str,
+    error: Option<&std::io::Error>,
+    syscall: Option<&str>,
+    path: Option<&Path>,
+) -> HistoryProbeError {
+    let info = error.map(multicc_core::node_fs_error::classify);
+    HistoryProbeError {
+        error_type: error_type.to_string(),
+        message,
+        code: code.to_string(),
+        errno: info.map(|value| value.errno),
+        syscall: syscall.map(str::to_string),
+        path: path.map(|value| value.to_string_lossy().into_owned()),
+        json_source: None,
+    }
+}
+
+fn corrupt_probe(message: &str) -> HistoryProbeError {
+    probe_error(
+        "TypeError",
+        format!("[session] {message}"),
+        "CHAT_HISTORY_CORRUPT",
+        None,
+        None,
+        None,
+    )
+}
+
+fn io_probe(error: std::io::Error, syscall: &str, path: Option<&Path>) -> HistoryProbeError {
+    let info = multicc_core::node_fs_error::classify(&error);
+    let message = match path {
+        Some(path) => format!(
+            "{}: {}, {} '{}'",
+            info.code,
+            info.description,
+            syscall,
+            path.display()
+        ),
+        None => format!("{}: {}, {}", info.code, info.description, syscall),
+    };
+    probe_error(
+        "Error",
+        message,
+        info.code,
+        Some(&error),
+        Some(syscall),
+        path,
+    )
+}
+
+fn probe_value(value: &SemanticValue, delivery_id: &str) -> Option<bool> {
+    let SemanticValue::Object(entries) = value else {
+        return None;
+    };
+    let matches = |key: &str| {
+        entries
+            .iter()
+            .find(|(name, _)| name.as_str_lossy() == key)
+            .is_some_and(|(_, value)| {
+                matches!(
+                    value,
+                    SemanticValue::String(text) if text.as_str_lossy() == delivery_id
+                )
+            })
+    };
+    Some(matches("deliveryId") || matches("clientMsgId"))
+}
+
+fn probe_transcript(body: &str, delivery_id: &str) -> std::result::Result<bool, HistoryProbeError> {
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+    let Some(first) = body.chars().find(|ch| !is_js_whitespace_char(*ch)) else {
+        return Err(corrupt_probe("chat history file is empty"));
+    };
+    if first == '[' {
+        let SemanticValue::Array(values) = json_parse(body).map_err(|_| {
+            let mut error = probe_error("SyntaxError", String::new(), "", None, None, None);
+            error.json_source = Some(body.to_string());
+            error
+        })?
+        else {
+            return Err(corrupt_probe("chat history file must contain an array"));
+        };
+        return Ok(values
+            .iter()
+            .any(|value| probe_value(value, delivery_id) == Some(true)));
+    }
+    let complete = body.ends_with('\n');
+    let mut lines: Vec<&str> = body.split('\n').collect();
+    if complete {
+        lines.pop();
+    }
+    let line_count = lines.len();
+    let mut parsed_count = 0usize;
+    for (index, line) in lines.into_iter().enumerate() {
+        if line.chars().all(is_js_whitespace_char) {
+            continue;
+        }
+        let torn = !complete && index + 1 == line_count && parsed_count > 0;
+        let value = match json_parse(line) {
+            Ok(value) => value,
+            Err(_) if torn => break,
+            Err(_) => {
+                return Err(corrupt_probe(&format!(
+                    "chat history line {} is not valid JSON",
+                    index + 1
+                )))
+            }
+        };
+        if !matches!(value, SemanticValue::Object(_)) {
+            if torn {
+                break;
+            }
+            return Err(corrupt_probe(&format!(
+                "chat history line {} is not a message object",
+                index + 1
+            )));
+        }
+        parsed_count += 1;
+        if probe_value(&value, delivery_id) == Some(true) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+impl Task for DeliveryProbeJob {
+    type Output = HistoryProbeResult;
+    type JsValue = HistoryProbeResult;
+
+    fn compute(&mut self) -> Result<HistoryProbeResult> {
+        let path = probe_path(&self.root, &self.session_id);
+        let mut file = match File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(HistoryProbeResult {
+                    found: false,
+                    error: None,
+                })
+            }
+            Err(error) => {
+                return Ok(HistoryProbeResult {
+                    found: false,
+                    error: Some(io_probe(error, "open", Some(&path))),
+                })
+            }
+        };
+        let mut bytes = Vec::new();
+        if let Err(error) = file.read_to_end(&mut bytes) {
+            return Ok(HistoryProbeResult {
+                found: false,
+                error: Some(io_probe(error, "read", None)),
+            });
+        }
+        let body = String::from_utf8_lossy(&bytes);
+        match probe_transcript(&body, &self.delivery_id) {
+            Ok(found) => Ok(HistoryProbeResult { found, error: None }),
+            Err(error) => Ok(HistoryProbeResult {
+                found: false,
+                error: Some(error),
+            }),
+        }
+    }
+
+    fn resolve(&mut self, _: Env, output: HistoryProbeResult) -> Result<HistoryProbeResult> {
+        Ok(output)
+    }
 }
 
 #[derive(Clone)]
@@ -710,6 +932,18 @@ impl RustChatHistoryRepository {
             written: RefCell::default(),
             can_append,
             root: PathBuf::from(root),
+        })
+    }
+    #[napi]
+    pub fn has_persisted_delivery_async(
+        &self,
+        session_id: String,
+        delivery_id: String,
+    ) -> AsyncTask<DeliveryProbeJob> {
+        AsyncTask::new(DeliveryProbeJob {
+            root: self.root.clone(),
+            session_id,
+            delivery_id,
         })
     }
     #[napi]

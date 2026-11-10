@@ -210,6 +210,58 @@ test('旧数组、JSONL、BOM、空文件、尾行损坏与非法 UTF-8 读取�
   }
 });
 
+test('异步投递证明与严格同步读盘逐案一致，且错误在 Promise 拒绝中保留 Node 形状', async () => {
+  const bodies = ['', ' \n\t', '﻿', '[]', '﻿ [null,3,{"clientMsgId":"d"}]', '[bad',
+    '{}', '{}\n', '﻿{}\n', ' \r\n{}\r\n', '{"deliveryId":"d"}\n{"x":',
+    '{"clientMsgId":"d"}\nnull', '{}\n[]', '{}\n3', '{}\nnull\n', '{}\nbad\n{}',
+    '{}\n{bad\n', 'null', 'null\n', 'true', '{}\n \n', '\n{bad',
+    '{"__proto__":{"x":1}}\n', '{"id":"a","content":"中文😀"}\n',
+    '{"id":"a","content":"🦀"}\n{"id":"b","content":"中文"}\n',
+    Buffer.from([0xff, 0xfe, 0x41]), Buffer.from([0xef, 0xbb, 0xbf, 0x5b, 0x5d]),
+    Buffer.from([0xed, 0xa0, 0x80, 0x0a]), Buffer.from([0xc3, 0x28]),
+    Buffer.from([0xe2, 0x82]), Buffer.from([0xf0, 0x9f, 0xa6, 0x80]),
+    '{"deliveryId":"d"}\n', '{"deliveryId":"other"}\nbad', '{"clientMsgId":3}\n',
+    '{"clientMsgId":"d","content":"中文😀"}\n',
+    '[{"deliveryId":"d","n":1e400}]', '[1e400,{"clientMsgId":"d"}]',
+    '{"deliveryId":"d","n":1e400}\n', '{"deliveryId":"d","n":123456789012345678901234567890}\n',
+    '{"deliveryId":"d","s":"\\ud800"}\n',
+    '{"deliveryId":"d","deliveryId":"other"}\n',
+    '{"deliveryId":"other","deliveryId":"d"}\n',
+    '{"clientMsgId":"d","clientMsgId":"other"}\n',
+    '{"clientMsgId":"other","clientMsgId":"d"}\n',
+    '\u0085', '\u0085{}\n', '{}\n\u0085\n', '\n\ufeff\n'];
+  for (const body of bodies) {
+    const harness = build(native);
+    putFile(harness, 's.json', body);
+    for (const deliveryId of ['', 'd', 'missing']) {
+      let expected;
+      try { expected = { value: harness.repository.hasPersistedDelivery('s', deliveryId) }; }
+      catch (error) { expected = { error: normalizeError(error, harness.root) }; }
+      let actual;
+      try {
+        const pending = harness.repository.hasPersistedDeliveryAsync('s', deliveryId);
+        assert.equal(typeof pending?.then, 'function', '异步证明必须返回 Promise');
+        actual = { value: await pending };
+      } catch (error) { actual = { error: normalizeError(error, harness.root) }; }
+      assert.deepEqual(actual, expected, `${body.toString('hex')} ${deliveryId}`);
+    }
+  }
+  const absent = build(native);
+  assert.equal(await absent.repository.hasPersistedDeliveryAsync('missing', 'd'), false);
+  const utf16Name = build(native);
+  putFile(utf16Name, '___.json', '{"deliveryId":"d"}\n');
+  assert.equal(await utf16Name.repository.hasPersistedDeliveryAsync('字😀', 'd'), true,
+    '非 BMP 会话名按两个 UTF-16 code unit 各净化一次');
+  ensureRoot(absent);
+  fs.mkdirSync(abs(absent, 's.json'));
+  await assert.rejects(absent.repository.hasPersistedDeliveryAsync('s', 'd'), error => {
+    assert.equal(error.code, 'EISDIR');
+    assert.equal(error.syscall, 'read');
+    assert.equal(error.path, undefined);
+    return true;
+  });
+});
+
 test('增量追加、尾部替换、清空、外部写入与关闭追加差分', () => {
   for (const options of [{}, { appendEnabled: false }]) {
     const implementations = pair(options);

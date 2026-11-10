@@ -2312,3 +2312,19 @@ Rust 现在唯一拥有：可见性缓存与全部操作（filter/hide/clear/rem
 - `npm run test:core`：本轮按协调者指示未重跑。上一轮（修复前产物 `da45f177…`）观察到退出码 1，唯一失败为 main 既有红项 `tests/test-air-paint-budget.js`（`chat-unattended.css` 的 `@keyframes unat-pulse` 用 `box-shadow`）；node:test 三段合计 2914 项，2913 通过、1 失败。该数字不代表当前产物，当前产物由协调者全量复跑。
 
 下一批边界：`clearHistory`/rotate 的异步流程、context-level 路由，然后才是 `turn-engine.js` 等历史调用者与异步 ACK（把 `appendMessage` 的同步布尔变成可等待的持久确认）。本批不提交、不合并、不推送、不重启生产。
+
+## 异步持久投递证明迁移（2026-11-10）
+
+本批把回合准入所依赖的 `hasPersistedDelivery` 读盘证明迁到 Rust 工作线程。历史文件仍沿用既有 JSON 数组与 JSONL 协议；Rust 读取字节、跳过 BOM、识别空文件与损坏行、检查 `deliveryId`/`clientMsgId`，并把 Node 兼容错误形状作为异步结果返回。`hasPersistedDeliveryAsync` 已登记进原生接口探针，文件仓库与历史服务仅保留 Promise 适配。
+
+解析使用仓库已有的 `multicc_core::js::json_parse`，保持 JavaScript 的 `JSON.parse` 语义：溢出指数成为数字、任意合法大整数不因 `serde_json::Number` 范围被拒、孤立 UTF-16 代理项可进入字符串、重复键采用最后值且保留首位置。异步文件名净化也按 UTF-16 code unit 替换，因此非 BMP 会话名与旧 JavaScript 正则产生相同文件名。空行判定使用统一的 ECMAScript whitespace，而不是范围更宽的 Rust `char::is_whitespace`。
+
+`turn-engine` 在应用待定配置前等待持久证明，并把同一次结论传给重放判断和 `reexecutePersistedDelivery`，避免准入阶段重复同步读盘。重放配置仍跳过；已确认持久且此前 runner 未接管的投递仍可重新执行而不重复追加用户消息。`appendMessage` 的写入本身仍走既有同步确认，本批只迁移只读投递证明，不宣称历史写入已异步化。
+
+Node 保留范围及原因：`chat-history-file-repository.js` 负责把原生异步结果恢复为 Node `SyntaxError`、带 `code/syscall/errno` 的错误，以及 Promise 边界；`chat-history-service.js` 为现有同步测试端口保留同步兼容分支；`turn-engine.js` 只增加等待和单次结论传递。这些是现存 Node 宿主和历史调用链的迁移期适配，不承载 JSON、文件名或投递匹配业务规则；等写入确认与宿主历史端口也迁入 Rust 后可以移除。
+
+最终源码指纹：`5fe511783598eec347e3d77a`。原生模块 SHA256：`ba3d8994f660b6139dc39edc0232403711cd9cf6fbf23ba6be98d117866d432e`，17951184 字节；源码来源记录与当前指纹一致。验证覆盖 8 个历史/回合相关测试文件 193/193，架构 124/124，安全 1138/1138（另 1 项既有 TODO），契约 131/131，原生接口 256/256。Rust 工作区串行测试 27 个目标中 832 项通过、0 失败（core 620）；源码预算、测试分层、写入治理、产物治理、addon 格式与 `cargo check` 均通过。
+
+完整 `npm test` 的真实退出码为 1；唯一下降门禁是 main 既有的 `tests/test-air-paint-budget.js`，`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`。该文件不在本批修改范围；契约和原生接口已另行用同一产物补跑通过。当前仍未覆盖：`appendMessage` 的异步持久确认、`clearHistory`/context rotate 的异步文件与 git 顺序、进程取消或跨崩溃投递的恰好一次语义。
+
+本批以英文提交合入本地 main，不推送、不重启生产服务；整条聊天历史与宿主端口迁出 Node 后才能声明 Node 后端退出完成。
