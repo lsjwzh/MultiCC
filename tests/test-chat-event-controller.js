@@ -903,6 +903,26 @@ test('the bottom status row shows the latest tool call, and background tasks tak
     'a finished bubble refuses status writes so the background strip falls back');
 });
 
+test('a finished bubble hosts the background status row while a task is still running', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.content.classList.add('streaming-dot');
+  fixture.controller.handleEvent({ type: 'stream_event', event: { type: 'message_start' } }, generation);
+  fixture.controller.handleEvent({ type: 'result', durationMs: 900 }, generation);
+  assert.equal(fixture.bubble.querySelectorAll('.msg-stream-tail').length, 0, 'turn over: row removed');
+  // A task outlives its turn: the row comes back on the finished bubble, dot included.
+  assert.equal(fixture.liveUi.setStreamStatus(fixture.bubble, 'bg', '后台任务执行中 · 构建', '构建', { allowFinished: true }), true);
+  const tail = fixture.bubble.querySelectorAll('.msg-stream-tail')[0];
+  assert.ok(tail, 'finished bubble keeps the row while the task runs');
+  assert.equal(tail.querySelectorAll('.msg-stream-tail-dot').length, 1, 'the row still owns a live dot');
+  assert.equal(tail.querySelectorAll('.msg-stream-tail-status')[0].textContent, '后台任务执行中 · 构建');
+  assert.equal(fixture.content.classList.contains('has-bg-task'), true);
+  // Task finished: the borrowed row goes away instead of lingering empty.
+  fixture.liveUi.setStreamStatus(fixture.bubble, 'bg', '', '', { allowFinished: true });
+  assert.equal(fixture.bubble.querySelectorAll('.msg-stream-tail').length, 0);
+  assert.equal(fixture.content.classList.contains('has-bg-task'), false);
+});
+
 test('fixed-provider sessions do not stamp an early route attribution', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();

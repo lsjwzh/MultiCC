@@ -156,9 +156,10 @@
         const payload = { type: 'user_message', text: original.text, clientMsgId };
         const retryLang = original.lang || currentLang();
         if (retryLang === 'zh' || retryLang === 'en') payload.lang = retryLang;
-        stageUserMessage(original.text, clientMsgId);
         debug('state', `manualRetry() — WS ▶ user_message (${original.text.length} chars)`);
         if (!transportSend(payload)) return { ok: false, reason: 'send_failed' };
+        // 只有真的发出去才画气泡：失败时不留下一条服务端永远收不到的假消息。
+        stageUserMessage(original.text, clientMsgId);
         lastSent = { ...original };
         setPendingCancel(false);
         updateUi();
@@ -223,7 +224,6 @@
 
       const clientMsgId = newClientMsgId();
       const userInputRequestId = getUserInputRequestId();
-      stageUserMessage(text, clientMsgId);
       clearInput();
       debug('state', `send() — WS ▶ user_message (${text.length} chars)`);
       try {
@@ -236,6 +236,8 @@
           payload.voiceRaw = String(sendOptions.voice.raw || '');
         }
         if (!transportSend(payload)) throw new Error('WebSocket is not open');
+        // 发送成功后立刻画进对话（服务端回执与历史回放按 clientMsgId 去重）。
+        stageUserMessage(text, clientMsgId);
         lastSent = { text, lang: lang === 'zh' || lang === 'en' ? lang : null };
         if (userInputRequestId) consumeUserInputRequestId(userInputRequestId);
         setPendingCancel(false);

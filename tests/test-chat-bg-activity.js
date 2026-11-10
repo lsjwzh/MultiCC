@@ -1,9 +1,9 @@
 'use strict';
 
-// 聊天页后台任务活动行（public/chat-bg-activity.js）的行为测试：轮次等待期间
-// 在呼吸灯下方展示运行中的后台任务（描述 + 走字时长 + 最近输出），任务收尾或
-// 轮次结束后收行。DOM 用手写 fake（同 tests/test-chat-dispatch-activity.js 的
-// 手法），timer 注入以便驱动走字与轮询。
+// 聊天页后台任务活动行（public/chat-bg-activity.js）的行为测试：只要有后台任务
+// 在跑就展示（描述 + 走字时长 + 最近输出），轮次结束不收起，任务收尾才收行。
+// DOM 用手写 fake（同 tests/test-chat-dispatch-activity.js 的手法），timer 注入
+// 以便驱动走字与轮询。
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -169,23 +169,22 @@ test('monitor_done removes the strip when no task is left', () => {
   harness.controller.dispose();
 });
 
-test('hidden while the turn is not streaming even with tasks running', () => {
+test('tasks running keeps the strip visible even when the turn is not streaming', () => {
   const harness = makeHarness({ getIsStreaming: () => false });
   harness.controller.onEvent({ type: 'monitor_started', task_id: 't1', description: '任务甲', background: true });
-  assert.equal(stripOf(harness.messagesEl), null);
+  assert.ok(stripOf(harness.messagesEl), '任务在跑就显示，不叠加流式条件');
   harness.controller.dispose();
 });
 
-test('strip disappears when streaming ends and returns when a new turn starts', () => {
+test('the strip survives the turn ending and only leaves when the last task finishes', () => {
   const harness = makeHarness();
   harness.controller.onEvent({ type: 'monitor_started', task_id: 't1', description: '任务甲', background: true });
   assert.ok(stripOf(harness.messagesEl));
   harness.state.streaming = false;
   harness.controller.onEvent({ type: 'stream_end' });
-  assert.equal(stripOf(harness.messagesEl), null, '轮次结束应收行');
-  harness.state.streaming = true;
-  harness.controller.onEvent({ type: 'stream_start' });
-  assert.ok(stripOf(harness.messagesEl), '新轮次且任务仍在跑应重新出现');
+  assert.ok(stripOf(harness.messagesEl), '轮次结束但任务还在跑：行留着');
+  harness.controller.onEvent({ type: 'monitor_done', task_id: 't1', status: 'done' });
+  assert.equal(stripOf(harness.messagesEl), null, '任务收尾才收行');
   harness.controller.dispose();
 });
 

@@ -649,7 +649,9 @@
       background: var(--chat-blue); border-radius: 50%;
       animation: blink 1s infinite;
     }
-    .msg-content:not(.streaming-dot) .msg-stream-tail-dot { display: none; }
+    /* 生成中（streaming-dot）或后台任务还在跑（has-bg-task）时点都在闪：
+       任务在 → 点在闪 → 那一行任务状态，是同一个动作，不叠加更多条件。 */
+    .msg-content:not(.streaming-dot):not(.has-bg-task) .msg-stream-tail-dot { display: none; }
     .msg-stream-tail-status {
       flex: 1 1 0;
       min-width: 0;

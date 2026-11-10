@@ -132,8 +132,9 @@
     const setStatus = typeof options.setStatus === 'function' ? options.setStatus : null;
 
     function render() {
-      const streaming = options.getIsStreaming();
-      if (running.size === 0 || !streaming) {
+      // 只由「有没有后台任务在跑」决定，不看这一轮是否还在流式：轮次结束、对话
+      // 收尾，任务还在跑就继续在最后一条助手气泡底部亮着；任务结束才收行。
+      if (running.size === 0) {
         if (setStatus) setStatus('', '');
         if (el) { el.remove(); lastSignature = ''; }
         stopTimersIfIdle();
@@ -186,7 +187,7 @@
 
     async function pollTasks() {
       if (!fetchJson || pollInFlight) return;
-      if (running.size === 0 || !options.getIsStreaming()) return;
+      if (running.size === 0) return;
       const sessionId = getSessionId();
       if (!sessionId) return;
       pollInFlight = true;
