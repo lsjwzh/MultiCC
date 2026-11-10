@@ -57,7 +57,10 @@ function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
   if (value && typeof value === 'object') {
     const out = {};
-    for (const key of Object.keys(value).sort()) out[key] = stable(value[key]);
+    for (const key of Object.keys(value).sort()) {
+      // Query totals are a new accounting field, tested explicitly below.
+      if (key !== 'held_usage') out[key] = stable(value[key]);
+    }
     return out;
   }
   return value;
@@ -75,7 +78,8 @@ const wakeResult = (overrides = {}) => ({
 });
 const failedWake = (overrides = {}) => ({
   type: 'result', subtype: 'error_during_execution', is_error: true, result: 'boom',
-  terminal_reason: 'api_error', api_error_status: 429, usage: { input_tokens: 3 }, ...overrides,
+  terminal_reason: 'api_error', api_error_status: 429, usage: { input_tokens: 3 },
+  modelUsage: { 'claude-y': 3 }, total_cost_usd: 0.04, ...overrides,
 });
 // Observed with the bundled engine (SDK 0.3.317): a result answering host input
 // lists the uuids it answered; the singular field is the LAST one.
@@ -365,6 +369,8 @@ test('an injected message is settled by its own answer, never by a self-wake', a
   const registered = world.hold.beginInjection('typed-1', 'uuid-1');
   assert.strictEqual(registered.action, 'write');
   assert.strictEqual(registered.uuid, 'uuid-1');
+  world.hold.confirmInjection('typed-1', 'uuid-1');
+  world.hold.acknowledgeHistory('typed-1', 'uuid-1');
   advanceClock(t, 60000);
   assert.strictEqual(world.releases.length, 0, 'the outstanding injected answer holds the turn');
   // The injected query streams and ends like any other query of the turn.
@@ -392,8 +398,9 @@ test('an injected message is settled by its own answer, never by a self-wake', a
   assert.strictEqual(released.injected_exchanges[0].identity, 'typed-1');
   assert.strictEqual(released.injected_exchanges[0].uuid, 'uuid-1');
   assert.deepStrictEqual(released.injected_usage, { input_tokens: 3 });
-  assert.strictEqual(released.injected_cost_usd, 0.03);
-  assert.strictEqual(released.total_cost_usd, 0.02, 'the turn cost stays the self-wake\'s, not the injected one');
+  assert.strictEqual(released.injected_cost_usd, undefined);
+  assert.strictEqual(released.total_cost_usd, 0.03, 'latest cumulative SDK cost regardless of answer ownership');
+  assert.deepStrictEqual(released.held_usage, { input_tokens: 6 });
   // Injecting into a turn that is no longer held is refused.
   const refused = world.hold.beginInjection('typed-2', 'uuid-2');
   assert.strictEqual(refused.action, 'refuse');
@@ -407,6 +414,9 @@ test('two queued messages are settled by one coalesced answer, in order', async 
   world.setBackground(false);
   assert.strictEqual(world.hold.beginInjection('typed-1', 'uuid-1').action, 'write');
   assert.strictEqual(world.hold.beginInjection('typed-2', 'uuid-2').action, 'write');
+  for (const [id, uuid] of [['typed-1', 'uuid-1'], ['typed-2', 'uuid-2']]) {
+    world.hold.confirmInjection(id, uuid); world.hold.acknowledgeHistory(id, uuid);
+  }
   assert.strictEqual(world.hold.injectionsInFlight, 2);
   // Observed: two back-to-back injections are coalesced into ONE result that
   // lists BOTH uuids (the singular field is the last one).
@@ -417,7 +427,7 @@ test('two queued messages are settled by one coalesced answer, in order', async 
   assert.strictEqual(world.releases[0].result, 'main answer', 'no self-wake: the main answer decides');
   assert.deepStrictEqual(world.releases[0].injected_exchanges.map(item => item.identity),
     ['typed-1', 'typed-2']);
-  assert.deepStrictEqual(world.releases[0].injected_usage, { input_tokens: 6 });
+  assert.deepStrictEqual(world.releases[0].injected_usage, { input_tokens: 3 });
 });
 
 test('exactly-once: a retry appends the row only, an abort releases the identity', async t => {
@@ -430,14 +440,16 @@ test('exactly-once: a retry appends the row only, an abort releases the identity
   assert.strictEqual(first.uuid, 'uuid-1');
   // The host wrote the line but failed to persist the history row: the retry
   // may not write the message into the process a second time (H2).
+  assert.strictEqual(world.hold.beginInjection('typed-1', 'uuid-9').reason, 'injection_in_flight');
+  world.hold.confirmInjection('typed-1', 'uuid-1');
   const retried = world.hold.beginInjection('typed-1', 'uuid-9');
   assert.strictEqual(retried.action, 'append_only', 'the written uuid is authoritative');
   assert.strictEqual(retried.uuid, 'uuid-1');
-  // A failed write aborts the identity, and only then may a retry write.
+  // A late abort cannot undo a confirmed write.
   world.hold.abortInjection('typed-1');
-  assert.strictEqual(world.hold.injectionsInFlight, 0);
-  assert.strictEqual(world.hold.beginInjection('typed-1', 'uuid-2').action, 'write');
-  assert.strictEqual(world.hold.observe(answerResult(['uuid-2'])), true);
+  assert.strictEqual(world.hold.injectionsInFlight, 1);
+  world.hold.acknowledgeHistory('typed-1', 'uuid-1');
+  assert.strictEqual(world.hold.observe(answerResult(['uuid-1'])), true);
   // An aborted/failed delivery leaves no outstanding answer behind.
   const second = makeWorld(facade.createBackgroundHold, { maxMs: DAY_MS, background: true });
   assert.strictEqual(second.hold.start(mainResult()), true);
@@ -615,4 +627,30 @@ test('holdMaxMs parses the environment exactly like the frozen oracle', () => {
     assert.strictEqual(facade.holdMaxMs(env), expected, JSON.stringify(env));
     assert.strictEqual(legacy.holdMaxMs(env), expected, JSON.stringify(env));
   }
+});
+
+// Cumulative snapshots are independent of which query decides the outcome.
+test('a result without cumulative metrics retains the latest known snapshot', t => {
+  enable(t);
+  const world = makeWorld(facade.createBackgroundHold, { background: true });
+  world.hold.start(mainResult());
+  world.hold.observe(wakeResult());
+  world.hold.observe(failedWake({ modelUsage: undefined, total_cost_usd: undefined }));
+  world.setBackground(false);
+  advanceClock(t, 30000);
+  assert.strictEqual(world.releases[0].is_error, true);
+  assert.strictEqual(world.releases[0].total_cost_usd, 0.02);
+  assert.deepStrictEqual(world.releases[0].modelUsage, { 'claude-y': 2 });
+});
+
+test('an unanswered injection still receives the cap notice after background work ends', t => {
+  enable(t);
+  const world = makeWorld(facade.createBackgroundHold, { background: true, maxMs: 5000 });
+  world.hold.start(mainResult());
+  world.hold.beginInjection('pending', 'pending-uuid');
+  world.setBackground(false);
+  advanceClock(t, 10000);
+  assert.deepStrictEqual(world.capNotes, [5000]);
+  assert.equal(world.releases.length, 0);
+  world.hold.dispose();
 });

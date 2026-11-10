@@ -42,7 +42,7 @@
 //! twice. A failed write calls [`Hold::abort_injection`], which releases the
 //! identity so the retry may write.
 use serde_json::{Map, Value};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 pub const QUIET_MS: f64 = 5000.0;
 pub const TICK_MS: f64 = 1000.0;
@@ -229,6 +229,14 @@ pub struct PendingInjection {
     pub uuid: String,
 }
 
+#[derive(Debug, Clone)]
+struct Delivery {
+    identity: String,
+    uuid: String,
+    written: bool,
+    history_saved: bool,
+}
+
 /// What the host must do for a delivery identity that wants the held turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InjectionRegistration {
@@ -262,6 +270,7 @@ impl InjectedExchange {
             "total_cost_usd",
             "is_error",
             "subtype",
+            "terminal_reason",
         ] {
             if let Some(value) = self.event.get(key) {
                 map.insert(key.to_string(), value.clone());
@@ -271,19 +280,29 @@ impl InjectedExchange {
     }
 }
 
-fn sum_usage(exchanges: &[InjectedExchange]) -> Option<Value> {
-    let mut totals: Map<String, Value> = Map::new();
-    for exchange in exchanges {
-        let Some(usage) = exchange.event.get("usage").and_then(Value::as_object) else {
-            continue;
-        };
-        for (key, value) in usage {
-            let Some(number) = value.as_f64() else {
-                continue;
-            };
+fn add_usage(totals: &mut Map<String, Value>, usage: &Map<String, Value>) {
+    for (key, value) in usage {
+        if let Some(number) = value.as_f64() {
             let base = totals.get(key).and_then(Value::as_f64).unwrap_or(0.0);
             totals.insert(key.clone(), Value::from(base + number));
+        } else if let Some(nested) = value.as_object() {
+            let slot = totals
+                .entry(key.clone())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Some(target) = slot.as_object_mut() {
+                add_usage(target, nested);
+            }
         }
+    }
+}
+
+fn sum_usage(events: &[Value]) -> Option<Value> {
+    let mut totals: Map<String, Value> = Map::new();
+    for event in events {
+        let Some(usage) = event.get("usage").and_then(Value::as_object) else {
+            continue;
+        };
+        add_usage(&mut totals, usage);
     }
     if totals.is_empty() {
         None
@@ -292,22 +311,10 @@ fn sum_usage(exchanges: &[InjectedExchange]) -> Option<Value> {
     }
 }
 
-fn sum_cost(exchanges: &[InjectedExchange]) -> Option<Value> {
-    let mut total = 0.0;
-    let mut seen = false;
-    for exchange in exchanges {
-        if let Some(cost) = exchange.event.get("total_cost_usd").and_then(Value::as_f64) {
-            total += cost;
-            seen = true;
-        }
-    }
-    seen.then(|| Value::from(total))
-}
-
 // The turn's own outcome is the held main result (or its self-wakes). Injected
 // exchanges ride along as separate fields so the host can account their usage
 // without letting their answer become the turn's answer.
-fn attach_injected(release: &mut Release, exchanges: &[InjectedExchange]) {
+fn attach_injected(release: &mut Release, exchanges: &[InjectedExchange], results: &[Value]) {
     if exchanges.is_empty() {
         return;
     }
@@ -318,11 +325,8 @@ fn attach_injected(release: &mut Release, exchanges: &[InjectedExchange]) {
         "injected_exchanges".to_string(),
         Value::Array(exchanges.iter().map(InjectedExchange::value).collect()),
     );
-    if let Some(usage) = sum_usage(exchanges) {
+    if let Some(usage) = sum_usage(results) {
         map.insert("injected_usage".to_string(), usage);
-    }
-    if let Some(cost) = sum_cost(exchanges) {
-        map.insert("injected_cost_usd".to_string(), cost);
     }
 }
 
@@ -341,7 +345,12 @@ pub struct Hold {
     pending: Vec<PendingInjection>,
     /// Identities whose line was handed to the live process. Bounded; a retry
     /// of one of these appends the history row only.
-    written: VecDeque<(String, String)>,
+    written: VecDeque<Delivery>,
+    results: Vec<Value>,
+    injected_results: Vec<Value>,
+    seen_results: HashSet<String>,
+    boundaries: VecDeque<Value>,
+    require_answer_history: bool,
     /// Answers of injected exchanges, in the order they landed.
     exchanges: Vec<InjectedExchange>,
     cap_noted: bool,
@@ -364,6 +373,11 @@ impl Hold {
             done: false,
             pending: Vec::new(),
             written: VecDeque::new(),
+            results: Vec::new(),
+            injected_results: Vec::new(),
+            seen_results: HashSet::new(),
+            boundaries: VecDeque::new(),
+            require_answer_history: false,
             exchanges: Vec::new(),
             cap_noted: false,
         }
@@ -393,6 +407,7 @@ impl Hold {
             return false;
         }
         self.held = Some(event.clone());
+        self.record_result(event, &[]);
         self.pending.clear();
         self.exchanges.clear();
         self.quiet_since = None;
@@ -406,12 +421,21 @@ impl Hold {
             return false;
         }
         if text_field(event, "type") == Some("result") {
-            self.busy = false;
-            self.quiet_since = None;
             // Which injected exchanges this result answers is reported by the
             // CLI (uuid membership), never inferred from counting. A result
             // that answers any of them is their answer, not the turn's.
-            let answered = answered_uuids(event);
+            let self_wake =
+                event.pointer("/origin/kind").and_then(Value::as_str) == Some("task-notification");
+            let answered = if self_wake {
+                Vec::new()
+            } else {
+                answered_uuids(event)
+            };
+            if let Some(id) = text_field(event, "uuid") {
+                if self.seen_results.contains(id) {
+                    return true;
+                }
+            }
             if !answered.is_empty() {
                 let mut settled: Vec<PendingInjection> = Vec::new();
                 self.pending.retain(|entry| {
@@ -422,20 +446,33 @@ impl Hold {
                         true
                     }
                 });
+                if !settled.is_empty() {
+                    self.busy = false;
+                    self.quiet_since = None;
+                    self.record_result(event, &settled);
+                    self.injected_results.push(event.clone());
+                }
                 for entry in settled {
+                    // A response proves receipt even when the write callback
+                    // has not completed yet. A late write failure cannot undo it.
+                    if let Some(delivery) = self.written.iter_mut().find(|d| d.uuid == entry.uuid) {
+                        delivery.written = true;
+                    }
                     self.exchanges.push(InjectedExchange {
                         identity: entry.identity,
                         uuid: entry.uuid,
                         event: event.clone(),
                     });
                 }
-                // Any result that says which user message it answers is that
-                // message's answer, never the turn's own: a duplicate of an
-                // already-settled uuid is swallowed without touching `latest`.
                 return true;
             }
+            self.busy = false;
+            self.quiet_since = None;
             if cancelled(event) {
                 return true;
+            }
+            if succeeded(event) || failed(event) {
+                self.record_result(event, &[]);
             }
             if succeeded(event) {
                 self.latest = Some(event.clone());
@@ -458,7 +495,11 @@ impl Hold {
             self.quiet_since = None;
             return None;
         }
-        if !self.pending.is_empty() || self.busy {
+        if !self.pending.is_empty()
+            || self.busy
+            || self.written.iter().any(|d| !d.written || !d.history_saved)
+            || (self.require_answer_history && !self.boundaries.is_empty())
+        {
             self.quiet_since = None;
             return None;
         }
@@ -491,7 +532,23 @@ impl Hold {
             Some(wake) if failed(wake) => failed_release(&held, wake),
             _ => merge(&held, self.latest.as_ref()),
         };
-        attach_injected(&mut released, &self.exchanges);
+        attach_injected(&mut released, &self.exchanges, &self.injected_results);
+        if let Some(map) = released.event.as_object_mut() {
+            if self.require_answer_history && self.boundaries.is_empty() {
+                map.insert("held_answers_saved".into(), Value::Bool(true));
+            }
+            if let Some(usage) = sum_usage(&self.results) {
+                map.insert("held_usage".into(), usage);
+            }
+            // SDK usage is per query; cost/modelUsage are cumulative snapshots.
+            for event in &self.results {
+                for key in ["total_cost_usd", "modelUsage"] {
+                    if let Some(value) = event.get(key) {
+                        map.insert(key.into(), value.clone());
+                    }
+                }
+            }
+        }
         self.latest = None;
         self.last_wake = None;
         self.pending.clear();
@@ -518,21 +575,36 @@ impl Hold {
                 reason: "uuid_required",
             };
         }
-        if let Some((_, written_uuid)) = self.written.iter().find(|(id, _)| id == identity) {
-            return InjectionRegistration::AppendOnly {
-                uuid: written_uuid.clone(),
-            };
-        }
-        if self.pending.iter().any(|entry| entry.identity == identity) {
-            return InjectionRegistration::Refuse {
-                reason: "injection_in_flight",
+        if let Some(delivery) = self.written.iter().find(|d| d.identity == identity) {
+            return if delivery.written {
+                InjectionRegistration::AppendOnly {
+                    uuid: delivery.uuid.clone(),
+                }
+            } else {
+                InjectionRegistration::Refuse {
+                    reason: "injection_in_flight",
+                }
             };
         }
         if self.written.len() >= REMEMBERED_LIMIT {
-            self.written.pop_front();
+            let removable = self
+                .written
+                .iter()
+                .position(|d| d.history_saved && !self.pending.iter().any(|p| p.uuid == d.uuid));
+            if let Some(index) = removable {
+                self.written.remove(index);
+            } else {
+                return InjectionRegistration::Refuse {
+                    reason: "injection_capacity",
+                };
+            }
         }
-        self.written
-            .push_back((identity.to_string(), uuid.to_string()));
+        self.written.push_back(Delivery {
+            identity: identity.into(),
+            uuid: uuid.into(),
+            written: false,
+            history_saved: false,
+        });
         self.pending.push(PendingInjection {
             identity: identity.to_string(),
             uuid: uuid.to_string(),
@@ -543,10 +615,137 @@ impl Hold {
         }
     }
 
-    /// The write failed: release the identity so a retry may write it.
+    pub fn confirm_injection(&mut self, identity: &str, uuid: &str) -> bool {
+        let Some(delivery) = self
+            .written
+            .iter_mut()
+            .find(|d| d.identity == identity && d.uuid == uuid)
+        else {
+            return false;
+        };
+        delivery.written = true;
+        true
+    }
+
+    pub fn acknowledge_history(&mut self, identity: &str, uuid: &str) -> bool {
+        let Some(delivery) = self
+            .written
+            .iter_mut()
+            .find(|d| d.identity == identity && d.uuid == uuid && d.written)
+        else {
+            return false;
+        };
+        delivery.history_saved = true;
+        true
+    }
+
+    pub fn history_written(&self, identity: &str) -> bool {
+        self.written
+            .iter()
+            .any(|d| d.identity == identity && d.written)
+    }
+
+    /// Explicit cancellation closes every outstanding exchange with a visible
+    /// outcome. It does not turn the already-complete parent answer into an error.
+    pub fn interrupt_injections(&mut self) {
+        if !self.is_held() || self.pending.is_empty() {
+            return;
+        }
+        let uuids: Vec<_> = self.pending.iter().map(|p| p.uuid.clone()).collect();
+        let event = serde_json::json!({
+            "type": "result", "subtype": "error_during_execution", "is_error": true,
+            "terminal_reason": "cancelled", "user_message_uuids": uuids,
+            "result": "这条消息的回答已取消。"
+        });
+        let pending = std::mem::take(&mut self.pending);
+        self.record_result(&event, &pending);
+        self.exchanges
+            .extend(pending.into_iter().map(|entry| InjectedExchange {
+                identity: entry.identity,
+                uuid: entry.uuid,
+                event: event.clone(),
+            }));
+        self.busy = false;
+        self.quiet_since = None;
+    }
+
+    pub fn history_pending(&self, identity: &str) -> bool {
+        self.written
+            .iter()
+            .any(|d| d.identity == identity && d.written && !d.history_saved)
+    }
+
+    /// Abort only the reservation, never a write proven by an answer/ack.
     pub fn abort_injection(&mut self, identity: &str) {
+        if self
+            .written
+            .iter()
+            .any(|d| d.identity == identity && d.written)
+        {
+            return;
+        }
         self.pending.retain(|entry| entry.identity != identity);
-        self.written.retain(|(id, _)| id != identity);
+        self.written.retain(|d| d.identity != identity);
+    }
+
+    fn record_result(&mut self, event: &Value, identities: &[PendingInjection]) {
+        if let Some(id) = text_field(event, "uuid") {
+            self.seen_results.insert(id.into());
+        }
+        self.results.push(event.clone());
+        let mut boundary = event.clone();
+        if let Some(map) = boundary.as_object_mut() {
+            map.insert("type".into(), Value::String("held_query_result".into()));
+            map.insert(
+                "held_result_id".into(),
+                Value::String(self.results.len().to_string()),
+            );
+            map.insert(
+                "held_identities".into(),
+                Value::Array(
+                    identities
+                        .iter()
+                        .map(|p| serde_json::json!({"identity": p.identity, "uuid": p.uuid}))
+                        .collect(),
+                ),
+            );
+        }
+        if self.require_answer_history {
+            self.boundaries.push_back(boundary);
+        }
+    }
+
+    pub fn require_answer_history(&mut self) {
+        self.require_answer_history = true;
+    }
+    pub fn pending_boundaries(&self) -> Vec<Value> {
+        self.boundaries
+            .iter()
+            .map(|boundary| {
+                let mut boundary = boundary.clone();
+                let ready = boundary
+                    .get("held_identities")
+                    .and_then(Value::as_array)
+                    .is_none_or(|ids| {
+                        ids.iter().all(|id| {
+                            self.written
+                                .iter()
+                                .find(|d| {
+                                    Some(d.uuid.as_str()) == id.get("uuid").and_then(Value::as_str)
+                                })
+                                .is_none_or(|d| d.history_saved)
+                        })
+                    });
+                if let Some(map) = boundary.as_object_mut() {
+                    map.insert("held_history_ready".into(), Value::Bool(ready));
+                }
+                boundary
+            })
+            .collect()
+    }
+    pub fn acknowledge_answer(&mut self, id: &str) {
+        self.boundaries
+            .retain(|b| text_field(b, "held_result_id") != Some(id));
     }
 
     /// True exactly once, when the host's cap timer first fires on a held turn.
@@ -555,7 +754,11 @@ impl Hold {
         if !self.is_held() || self.cap_noted {
             return false;
         }
-        if !background_active {
+        if !background_active
+            && self.pending.is_empty()
+            && self.boundaries.is_empty()
+            && !self.written.iter().any(|d| !d.history_saved)
+        {
             return false;
         }
         self.cap_noted = true;
@@ -569,6 +772,10 @@ impl Hold {
         self.last_wake = None;
         self.pending.clear();
         self.written.clear();
+        self.boundaries.clear();
+        self.results.clear();
+        self.injected_results.clear();
+        self.seen_results.clear();
         self.exchanges.clear();
         self.quiet_since = None;
     }
@@ -604,11 +811,14 @@ pub struct InjectFacts {
     pub wanted_contract: Option<String>,
     /// This delivery identity already has a durable row (settled / replayed).
     pub delivery_settled: bool,
+    pub history_pending: bool,
+    pub history_written: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InjectDecision {
     pub inject: bool,
+    pub delivered: bool,
     pub reason: &'static str,
 }
 
@@ -616,12 +826,14 @@ impl InjectDecision {
     const fn allow() -> Self {
         Self {
             inject: true,
+            delivered: false,
             reason: "held",
         }
     }
     const fn wait(reason: &'static str) -> Self {
         Self {
             inject: false,
+            delivered: false,
             reason,
         }
     }
@@ -637,6 +849,16 @@ pub fn may_inject(facts: &InjectFacts) -> InjectDecision {
     }
     if !facts.user_typed {
         return InjectDecision::wait("not_user_typed");
+    }
+    if facts.history_pending {
+        return InjectDecision::allow();
+    }
+    if facts.delivery_settled && facts.history_written {
+        return InjectDecision {
+            inject: false,
+            delivered: true,
+            reason: "already_delivered",
+        };
     }
     if !facts.attributable {
         return InjectDecision::wait("unattributable_lane");
@@ -864,6 +1086,8 @@ mod tests {
                 uuid: "uuid-a".into()
             }
         );
+        assert!(hold.confirm_injection("m1", "uuid-a"));
+        assert!(hold.acknowledge_history("m1", "uuid-a"));
         assert_eq!(hold.injections(), 1);
         // Background finished, quiet elapsed — no release while unanswered.
         assert!(hold.tick(0.0, false).is_none());
@@ -929,6 +1153,13 @@ mod tests {
             hold.begin_injection("m1", "uuid-a"),
             InjectionRegistration::Write { .. }
         ));
+        assert_eq!(
+            hold.begin_injection("m1", "other"),
+            InjectionRegistration::Refuse {
+                reason: "injection_in_flight"
+            }
+        );
+        assert!(hold.confirm_injection("m1", "uuid-a"));
         // The host wrote the line; the history row failed. The retry must not
         // be told to write again.
         assert_eq!(
@@ -1005,6 +1236,97 @@ mod tests {
         assert_eq!(
             released.event["injected_usage"],
             json!({"input_tokens":3.0,"output_tokens":2.0})
+        );
+    }
+
+    #[test]
+    fn answer_does_not_release_until_both_history_writes_are_acknowledged() {
+        let mut hold = Hold::new(10.0, DEFAULT_MAX_MS);
+        hold.require_answer_history();
+        assert!(hold.start(&main_result(), true, true));
+        hold.acknowledge_answer("1");
+        hold.begin_injection("m", "u");
+        assert_eq!(
+            hold.begin_injection("m", "other"),
+            InjectionRegistration::Refuse {
+                reason: "injection_in_flight"
+            }
+        );
+        // A genuine answer may race ahead of the write callback.
+        hold.observe(&answer(&["u"], "typed", 3.0));
+        hold.abort_injection("m");
+        assert!(hold.history_pending("m"));
+        assert!(matches!(
+            hold.begin_injection("m", "other"),
+            InjectionRegistration::AppendOnly { .. }
+        ));
+        assert!(hold.tick(0.0, false).is_none());
+        assert!(hold.tick(1000.0, false).is_none());
+        assert!(!hold.acknowledge_history("m", "other"));
+        assert!(hold.acknowledge_history("m", "u"));
+        assert!(
+            hold.tick(2000.0, false).is_none(),
+            "answer row is still pending"
+        );
+        hold.acknowledge_answer("2");
+        assert!(hold.tick(3000.0, false).is_none());
+        let released = hold.tick(4000.0, false).unwrap();
+        assert_eq!(released.event["held_answers_saved"], true);
+    }
+
+    #[test]
+    fn query_usage_is_counted_once_and_cumulative_cost_uses_latest_snapshot() {
+        let mut hold = Hold::new(10.0, DEFAULT_MAX_MS);
+        hold.start(&main_result(), true, true);
+        hold.begin_injection("a", "a");
+        hold.begin_injection("b", "b");
+        let mut merged = answer(&["a", "b"], "both", 3.0);
+        merged["uuid"] = json!("result-1");
+        merged["total_cost_usd"] = json!(0.3);
+        merged["modelUsage"] = json!({"claude":{"costUSD":0.3}});
+        merged["usage"]["cache_creation"] = json!({"ephemeral_5m_input_tokens":7});
+        hold.observe(&merged);
+        hold.observe(&merged);
+        let released = hold.finish().unwrap().event;
+        assert_eq!(released["injected_usage"]["input_tokens"], 3.0);
+        assert_eq!(released["held_usage"]["input_tokens"], 4.0);
+        assert_eq!(
+            released["held_usage"]["cache_creation"]["ephemeral_5m_input_tokens"],
+            7.0
+        );
+        assert_eq!(released["total_cost_usd"], 0.3);
+        assert_eq!(released["modelUsage"], merged["modelUsage"]);
+        assert!(released.get("injected_cost_usd").is_none());
+        assert_eq!(released["result"], "first");
+    }
+
+    #[test]
+    fn explicit_wake_origin_cannot_settle_a_user_even_with_its_uuid() {
+        let mut hold = Hold::new(10.0, DEFAULT_MAX_MS);
+        hold.start(&main_result(), true, true);
+        hold.begin_injection("m", "u");
+        let mut event = wake("wake");
+        event["user_message_uuid"] = json!("u");
+        hold.observe(&event);
+        assert_eq!(hold.injections(), 1);
+    }
+
+    #[test]
+    fn explicit_cancel_records_unanswered_exchanges_without_inventing_a_write_ack() {
+        let mut hold = Hold::new(10.0, DEFAULT_MAX_MS);
+        hold.require_answer_history();
+        hold.start(&main_result(), true, true);
+        hold.begin_injection("m", "u");
+        hold.interrupt_injections();
+        assert_eq!(hold.injections(), 0);
+        assert!(!hold.history_written("m"));
+        assert_eq!(hold.pending_boundaries()[1]["held_history_ready"], false);
+        let released = hold.finish().unwrap().event;
+        assert_eq!(released["result"], "first");
+        assert_eq!(released["is_error"], false);
+        assert_eq!(
+            released["injected_exchanges"][0]["terminal_reason"],
+            "cancelled"
         );
     }
 

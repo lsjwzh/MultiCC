@@ -68,7 +68,7 @@ function createHeldTurnInjection({
     const record = getRecord?.(sessionId) || null;
     if (!record) return null;
     let live = null;
-    try { live = chatStream?.heldTurn?.(sessionId) || null; } catch (_) { live = null; }
+    try { live = chatStream?.heldTurn?.(sessionId, identityOf(item, opts)) || null; } catch (_) { live = null; }
     if (!live) return null;
     return {
       identity: identityOf(item, opts),
@@ -82,13 +82,15 @@ function createHeldTurnInjection({
         processContract: live.contract ?? null,
         wantedContract: spawnContractOf(record),
         deliverySettled,
+        historyPending: live.historyPending === true,
+        historyWritten: live.historyWritten === true,
       }),
     };
   }
 
   async function settled(sessionId, identity) {
     if (!identity) return false;
-    try { return await hasPersistedDelivery(sessionId, identity) === true; } catch (_) { return true; }
+    try { return await hasPersistedDelivery(sessionId, identity) === true; } catch (_) { return null; }
   }
 
   // Sync gate for the delivery worker: may the outbox even claim this item while
@@ -105,8 +107,8 @@ function createHeldTurnInjection({
     return typeof appendMessage === 'function' && appendMessage(sessionId, {
       role: 'user', content: text, ts: Date.now(),
       ...(turnId ? { turnId } : {}),
-      ...(opts?.clientMsgId ? { clientMsgId: opts.clientMsgId } : {}),
-      ...(opts?.deliveryId ? { deliveryId: opts.deliveryId } : {}),
+      ...((opts?.clientMsgId || item.payload?.clientMsgId) ? { clientMsgId: opts?.clientMsgId || item.payload.clientMsgId } : {}),
+      deliveryId: opts?.deliveryId || item.id,
       ...(opts?.originDispatchId ? { originDispatchId: opts.originDispatchId } : {}),
       heldTurnInjected: true,
     });
@@ -115,17 +117,18 @@ function createHeldTurnInjection({
   async function tryInject({ item, sessionId, text, opts } = {}) {
     if (!item || !sessionId || typeof text !== 'string' || !text) return null;
     const identity = identityOf(item, opts);
-    const facts = decide({
-      item, sessionId, opts, deliverySettled: await settled(sessionId, identity),
-    });
+    const alreadySaved = await settled(sessionId, identity);
+    if (alreadySaved === null) return { delivered: false, reason: 'history_unavailable' };
+    const facts = decide({ item, sessionId, opts, deliverySettled: alreadySaved });
     if (!facts) return null;
-    if (!facts.decision.inject) return { delivered: false, reason: facts.decision.reason };
+    if (!facts.decision.inject) return { delivered: facts.decision.delivered === true, reason: facts.decision.reason };
     let written = null;
     try { written = await chatStream.injectHeldTurn(sessionId, text, identity); } catch (_) { written = null; }
     if (!written || (written.delivered !== true && written.appendOnly !== true)) {
       return { delivered: false, reason: written?.reason || 'write_failed' };
     }
-    const saved = appendUserRow({ item, sessionId, text, opts });
+    let saved = alreadySaved;
+    if (!saved) { try { saved = await appendUserRow({ item, sessionId, text, opts }); } catch (_) {} }
     if (!saved) {
       // The line is already in the live process; without its row the answer
       // would stream next to nothing. The hold still counts the outstanding
@@ -135,6 +138,7 @@ function createHeldTurnInjection({
       log(`[held-turn] user row was not persisted for ${sessionId}`);
       return { delivered: false, reason: 'row_not_persisted' };
     }
+    written.acknowledgeHistory?.();
     log(`[held-turn] delivered ${identity} into the held turn of ${sessionId}`);
     return { delivered: true, identity };
   }

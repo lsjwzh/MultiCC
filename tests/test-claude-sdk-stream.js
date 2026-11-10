@@ -63,7 +63,9 @@ async function laneFixture(t, { scenario = 'basic', streamDeps = {} } = {}) {
     runtime.ensure('sdk', cfg);
     return cfg;
   }
-  const send = (text, onEvent = () => {}) => runtime.send('sdk', text, onEvent);
+  const send = (text, onEvent = () => {}) => runtime.send('sdk', text, event => {
+    event.acknowledge?.(); onEvent(event);
+  });
   return { root, log, sessionId, sdk, runtime, files, configure, send,
     setBackground: value => { background = value; } };
 }
@@ -331,4 +333,105 @@ test('宿主发送在原生协议故障后拒绝并回收进程', { timeout: 100
   await assert.rejects(f.send('故障回合', event => events.push(event)), /invalid JSON/);
   await until(() => f.runtime.status('sdk').alive === false);
   assert.equal(events.some(event => event.type === 'result'), false);
+});
+
+test('held injection reserves before async write and cannot acknowledge a failed concurrent write', { timeout: 15000 }, async t => {
+  let rejectWrite, writeStarted;
+  const started = new Promise(resolve => { writeStarted = resolve; });
+  let failNext = true;
+  const f = await laneFixture(t, { scenario: 'held-attributed', streamDeps: {
+    createLane: callback => {
+      const lane = new (require('../src/native/runtime').getNative().RustClaudeLane)(callback);
+      return new Proxy(lane, { get(target, key) {
+        if (key === 'sendUser') return line => {
+          if (JSON.parse(line).message.content[0].text === 'TYPED' && failNext) {
+            failNext = false; writeStarted();
+            return new Promise((resolve, reject) => { rejectWrite = reject; });
+          }
+          return target.sendUser(line);
+        };
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    },
+  } });
+  f.setBackground(true);
+  f.configure({ backgroundHold: { maxMs: 0, quietMs: 20, tickMs: 10 } });
+  let done = false;
+  const turn = f.send('FIRST').then(value => { done = true; return value; });
+  await until(() => f.runtime.heldTurn('sdk').held);
+  const first = f.runtime.injectHeldTurn('sdk', 'TYPED', 'delivery-race');
+  await started;
+  const concurrent = await f.runtime.injectHeldTurn('sdk', 'TYPED', 'delivery-race');
+  assert.equal(concurrent.delivered, false);
+  assert.equal(concurrent.reason, 'injection_in_flight');
+  rejectWrite(new Error('isolated write failure'));
+  assert.equal((await first).reason, 'write_failed');
+  const retry = await f.runtime.injectHeldTurn('sdk', 'TYPED', 'delivery-race');
+  assert.equal(retry.delivered, true);
+  await until(() => f.files.stdin().filter(row => row.type === 'user').length === 2);
+  f.setBackground(false);
+  await sleep(120);
+  assert.equal(done, false, 'answer + no background cannot release before the user row is durable');
+  const appendOnly = await f.runtime.injectHeldTurn('sdk', 'TYPED', 'delivery-race');
+  assert.equal(appendOnly.appendOnly, true);
+  appendOnly.acknowledgeHistory();
+  await turn;
+  assert.equal(f.files.stdin().filter(row => row.type === 'user').length, 2, 'one opening prompt and one injection');
+});
+
+test('held answer persistence retries the same boundary and gates release without re-executing', { timeout: 15000 }, async t => {
+  const f = await laneFixture(t, { scenario: 'held-attributed' });
+  f.setBackground(true);
+  f.configure({ backgroundHold: { maxMs: 0, quietMs: 20, tickMs: 10 } });
+  let boundary, deliveries = 0, done = false;
+  const turn = f.runtime.send('sdk', 'FIRST', event => {
+    if (event.type === 'held_query_result') { boundary = event; deliveries += 1; }
+  }).then(value => { done = true; return value; });
+  await until(() => !!boundary);
+  f.setBackground(false);
+  const id = boundary.held_result_id;
+  await until(() => deliveries >= 3);
+  assert.equal(done, false);
+  assert.equal(boundary.held_result_id, id);
+  boundary.acknowledge();
+  const result = await turn;
+  assert.equal(result.held_answers_saved, true);
+  assert.equal(f.files.stdin().filter(row => row.type === 'user').length, 1);
+});
+
+test('cancelling a held turn gives every unanswered injection an explicit outcome', { timeout: 15000 }, async t => {
+  const f = await laneFixture(t, { scenario: 'held-attributed' });
+  f.setBackground(true); f.configure();
+  const events = [];
+  const turn = f.send('FIRST', event => events.push(event));
+  await until(() => f.runtime.heldTurn('sdk').held);
+  const injected = await f.runtime.injectHeldTurn('sdk', 'UNANSWERED', 'cancelled-delivery');
+  injected.acknowledgeHistory();
+  await until(() => events.some(event => event.type === 'assistant'
+    && event.message.content[0].text === 'partial answer'));
+  f.runtime.cancel('sdk');
+  const result = await turn;
+  assert.equal(result.result, 'echo:FIRST');
+  assert.equal(result.is_error, false, 'parent answer remains complete');
+  assert.equal(result.injected_exchanges.length, 1);
+  assert.equal(result.injected_exchanges[0].terminal_reason, 'cancelled');
+  const boundary = events.find(event => event.type === 'held_query_result' && event.terminal_reason === 'cancelled');
+  assert.equal(boundary.held_identities[0].identity, 'cancelled-delivery');
+  assert.match(boundary.result, /已取消/);
+  await until(() => !f.runtime.isAlive('sdk'));
+});
+
+test('unreadable live settings cannot be treated as an unchanged resident process', { timeout: 15000 }, async t => {
+  const f = await laneFixture(t, { scenario: 'held-attributed' });
+  const settingsFile = path.join(f.root, 'settings-input.json');
+  fs.writeFileSync(settingsFile, '{}');
+  f.setBackground(true); f.configure({ settingsFile, backgroundHold: { maxMs: 0, quietMs: 20, tickMs: 10 } });
+  const turn = f.send('FIRST');
+  await until(() => f.runtime.heldTurn('sdk').held);
+  fs.unlinkSync(settingsFile);
+  assert.throws(() => f.runtime.heldTurn('sdk'), /ENOENT/);
+  f.setBackground(false); await turn;
+  await assert.rejects(f.send('SECOND'), /ENOENT/);
+  assert.equal(f.files.stdin().filter(row => row.type === 'user').length, 1);
 });

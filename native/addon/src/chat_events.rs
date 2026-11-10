@@ -150,30 +150,221 @@ fn object_keys_len(anchor: LV<'_>, value: LV<'_>) -> Result<f64> {
         .number()
 }
 
-/// Tokens an injected exchange spent belong to the same turn's usage record.
-/// The release event keeps them in `injected_usage` (so they never become the
-/// turn's answer or its measured `usage`), and the usage recorder adds them
-/// here — numeric top-level fields only, like any usage object.
-fn usage_with_injected<'a>(anchor: LV<'a>, usage: LV<'a>, injected: LV<'a>) -> Result<LV<'a>> {
-    let base = read(usage)?;
-    let extra = read(injected)?;
-    let mut entries = match base {
-        JsValue::Object(entries) => entries,
-        _ => Vec::new(),
-    };
-    if let JsValue::Object(extra_entries) = extra {
-        for (key, value) in extra_entries {
-            let JsValue::Number(number) = value else {
-                continue;
+/// Held-query identity is a history boundary, even when adjacent answers have
+/// identical text. Ordinary (unsegmented) messages keep the legacy dedup rule.
+#[napi]
+pub fn chat_assistant_same_query(env: Env, left: Unknown<'_>, right: Unknown<'_>) -> Result<bool> {
+    let left = LiveValue::new(&env, left).optional(c"heldResultId")?;
+    let right = LiveValue::new(&env, right).optional(c"heldResultId")?;
+    Ok((left.nullish()? && right.nullish()?) || left.equals(right)?)
+}
+
+/// A failed injected query needs a readable outcome even when the SDK sends
+/// only an errors array or suppresses its synthetic API-error assistant text.
+fn held_query_content<'a>(
+    anchor: LV<'a>,
+    cs: LV<'a>,
+    evt: LV<'a>,
+    runner: LV<'a>,
+) -> Result<LV<'a>> {
+    let mut body = string_or_empty(cs.optional(c"currentAssistantText")?)?;
+    let failed = evt.optional(c"is_error")?.is_true()?;
+    let result = string_or_empty(evt.optional(c"result")?)?;
+    if !failed {
+        return redact_value(
+            anchor,
+            string_value(anchor, if body.is_empty() { result } else { body })?,
+        );
+    }
+    let mut detail = result;
+    let pending = runner.optional(c"claudeApiError")?.optional(c"pending")?;
+    if detail.is_empty() && pending.truthy()? {
+        detail = string_or_empty(pending.optional(c"text")?)?;
+    }
+    let errors = evt.optional(c"errors")?;
+    if detail.is_empty() && errors.is_array()? {
+        errors.for_each(|error| {
+            let value = if error.kind()? == sys::ValueType::napi_string {
+                error
+            } else {
+                error.optional(c"message")?
             };
-            match entries.iter_mut().find(|(name, _)| name == &key) {
-                Some((_, JsValue::Number(current))) => *current += number,
-                Some((_, existing)) => *existing = JsValue::Number(number),
-                None => entries.push((key, JsValue::Number(number))),
+            let line = string_or_empty(value)?;
+            if !line.is_empty() {
+                if !detail.is_empty() {
+                    detail.push_str("\n");
+                }
+                detail.push(&line);
             }
+            Ok(())
+        })?;
+    }
+    if detail.is_empty() {
+        detail = JsString::from_rust_str("这条消息的回答失败，请重试。");
+    }
+    // Preserve partial output but never hide the error after it.
+    if body.is_empty() {
+        body = detail;
+    } else if !body.to_string_lossy().contains(&detail.to_string_lossy()) {
+        body.push_str("\n\n");
+        body.push(&detail);
+    }
+    redact_value(anchor, string_value(anchor, body)?)
+}
+
+/// Capture each query at its actual result boundary, without completing the
+/// enclosing host turn. The row remains reachable on the native-managed runner
+/// until its history append succeeds. Replaying a boundary retries that row,
+/// never captures/clears the next query's live buffer.
+fn held_query_result<'a>(
+    anchor: LV<'a>,
+    cs: LV<'a>,
+    session: LV<'a>,
+    evt: LV<'a>,
+    forward: LV<'a>,
+    turn: LV<'a>,
+    runner: LV<'a>,
+) -> Result<()> {
+    let key = evt.optional(c"held_result_id")?;
+    if !is_nonempty_string(key)? {
+        return Ok(());
+    }
+    let mut rows = runner.optional(c"heldAnswerRows")?;
+    if !rows.is_array()? {
+        rows = array(anchor)?;
+        runner.assign(c"heldAnswerRows", rows)?;
+    }
+    let mut found = None;
+    rows.for_each(|row| {
+        if row.get(c"key")?.equals(key)? {
+            found = Some(row);
+        }
+        Ok(())
+    })?;
+    let row = if let Some(row) = found {
+        row
+    } else {
+        close_open_thinking(anchor, cs)?;
+        let message = object(anchor)?;
+        let mut id = turn.get(c"turnId")?.coerce_string()?;
+        id.push_str(":");
+        id.push(&runner.get(c"runnerId")?.coerce_string()?);
+        id.push_str(":held:");
+        id.push(&key.coerce_string()?);
+        message.set(c"id", string_value(anchor, id.clone())?)?;
+        message.set(c"heldResultId", string_value(anchor, id)?)?;
+        message.set(c"turnId", turn.get(c"turnId")?)?;
+        message.set(c"role", text(anchor, "assistant")?)?;
+        message.set(c"content", held_query_content(anchor, cs, evt, runner)?)?;
+        message.set(c"terminalReason", evt.optional(c"terminal_reason")?)?;
+        let tools = cs.optional(c"currentToolCalls")?;
+        if tools.is_array()? && tools.get(c"length")?.number()? > 0.0 {
+            message.set(c"tools", tools)?;
+        }
+        message.set(c"heldIdentities", evt.optional(c"held_identities")?)?;
+        message.set(c"usage", evt.optional(c"usage")?)?;
+        // SDK cost is a session-wide snapshot, not a per-query charge.
+        message.set(c"cost", evt.optional(c"total_cost_usd")?)?;
+        message.set(c"ts", number(anchor, now(anchor)?)?)?;
+        message.set(c"isError", evt.optional(c"is_error")?)?;
+        message.spread_from(call(anchor.get(c"modelAttribution")?, &[cs, turn, runner])?)?;
+        let row = object(anchor)?;
+        row.set(c"key", key)?;
+        row.set(c"message", message)?;
+        row.set(c"saved", boolean(anchor, false)?)?;
+        push(rows, row)?;
+        // Synthetic API errors belong to this query too. An injected failure
+        // must not become the enclosing turn's final error envelope.
+        let error_state = runner.optional(c"claudeApiError")?;
+        if error_state.truthy()? {
+            let identities = evt.optional(c"held_identities")?;
+            if !identities.is_array()? || identities.get(c"length")?.number()? == 0.0 {
+                runner.assign(c"heldOutcomeApiError", error_state.optional(c"pending")?)?;
+            }
+            error_state.assign(c"pending", null(anchor)?)?;
+        }
+        // Capturing owns the segment even if disk is temporarily unavailable.
+        // A later query gets a fresh buffer; the failed row above remains intact.
+        call(anchor.get(c"clearIncrementalSave")?, &[session])?;
+        cs.assign(c"currentAssistantText", text(anchor, "")?)?;
+        cs.assign(c"currentToolCalls", array(anchor)?)?;
+        row
+    };
+    if !row.optional(c"notified")?.is_true()? {
+        let frame = object(anchor)?;
+        frame.set(c"type", text(anchor, "held_query_boundary")?)?;
+        frame.set(c"message", row.get(c"message")?)?;
+        forward.call_plain(&[frame])?;
+        row.set(c"notified", boolean(anchor, true)?)?;
+        if !is_current(anchor, cs, turn, runner)? {
+            return Ok(());
         }
     }
-    anchor.from_value(&JsValue::Object(entries))
+    // Keep transcript order when an earlier append failed or is waiting for
+    // its user row. Later query boundaries still capture/notify immediately.
+    let mut preceding = true;
+    let mut blocked = false;
+    rows.for_each(|candidate| {
+        if candidate.get(c"key")?.equals(key)? {
+            preceding = false;
+        }
+        if preceding && !candidate.get(c"saved")?.is_true()? {
+            blocked = true;
+        }
+        Ok(())
+    })?;
+    if blocked {
+        return Ok(());
+    }
+    // The answer cannot be committed before the user history rows it answers.
+    // A later retry carries the same captured segment once those rows exist.
+    if evt
+        .optional(c"held_history_ready")?
+        .equals(boolean(anchor, false)?)?
+    {
+        return Ok(());
+    }
+    if !row.get(c"saved")?.is_true()? {
+        if row.optional(c"saving")?.is_true()? {
+            return Ok(());
+        }
+        row.set(c"saving", boolean(anchor, true)?)?;
+        let saved = anchor
+            .catch(|| {
+                call(
+                    anchor.get(c"appendHeldAnswer")?,
+                    &[session, row.get(c"message")?],
+                )?
+                .is_true()
+            })?
+            .unwrap_or(false);
+        row.set(c"saving", boolean(anchor, false)?)?;
+        row.set(c"saved", boolean(anchor, saved)?)?;
+        if !is_current(anchor, cs, turn, runner)? || !saved {
+            return Ok(());
+        }
+    }
+    let ack = evt.optional(c"acknowledge")?;
+    if ack.kind()? == sys::ValueType::napi_function && is_current(anchor, cs, turn, runner)? {
+        ack.call_plain(&[])?;
+    }
+    Ok(())
+}
+
+fn held_answers_durable(evt: LV<'_>, runner: LV<'_>) -> Result<bool> {
+    if !evt.optional(c"held_answers_saved")?.is_true()? {
+        return Ok(false);
+    }
+    let rows = runner.optional(c"heldAnswerRows")?;
+    if !rows.is_array()? || rows.get(c"length")?.number()? == 0.0 {
+        return Ok(false);
+    }
+    let mut all = true;
+    rows.for_each(|row| {
+        all &= row.get(c"saved")?.is_true()?;
+        Ok(())
+    })?;
+    Ok(all)
 }
 
 struct ApiErrorMessage<'a> {
@@ -796,6 +987,15 @@ fn apply_result<'a>(
         record_result_event(turn, runner)?;
         return Ok(true);
     }
+    if evt.optional(c"held_answers_saved")?.is_true()? {
+        let error_state = runner.optional(c"claudeApiError")?;
+        if error_state.truthy()? {
+            error_state.assign(
+                c"pending",
+                nullish_or(runner.optional(c"heldOutcomeApiError")?, null(anchor)?)?,
+            )?;
+        }
+    }
     call(
         ports.get(c"updatePhase")?,
         &[session, turn.get(c"turnId")?, text(anchor, "finalizing")?],
@@ -847,12 +1047,11 @@ fn apply_result<'a>(
         } else {
             object(anchor)?
         };
-        // A held turn's release carries the injected exchanges' usage
-        // separately (they are not the turn's answer but they did spend
-        // tokens). Account them on the same durable usage record.
-        let injected = evt.optional(c"injected_usage")?;
-        if injected.truthy()? && injected.kind()? == sys::ValueType::napi_object {
-            usage_with_injected(anchor, value, injected)?
+        // The hold owner sums each unique query once. SDK usage is per query;
+        // modelUsage and total_cost_usd remain the latest cumulative snapshot.
+        let held = evt.optional(c"held_usage")?;
+        if held.truthy()? && held.kind()? == sys::ValueType::napi_object {
+            held
         } else {
             value
         }
@@ -863,7 +1062,27 @@ fn apply_result<'a>(
     let tools_now = cs.get(c"currentToolCalls")?;
     let tool_length = tools_now.get(c"length")?.number()?;
     let has_output = chat_events::has_result_output(text_now.truthy()?, number_truthy(tool_length));
-    if result_succeeded && !envelope_error.truthy()? && has_output {
+    if held_answers_durable(evt, runner)? && !has_output {
+        record_result_event(turn, runner)?;
+        crate::chat_turn_effects::mark_result_durable(turn, runner)?;
+        call(ports.get(c"recordDurableUsage")?, &[session, runner, usage])?;
+        if !is_current(anchor, cs, turn, runner)? {
+            return Ok(true);
+        }
+        let count = cs.get(c"chatTurnCount")?.number()?;
+        cs.assign(c"chatTurnCount", number(anchor, count + 1.0)?)?;
+        cs.assign(c"_resultSaved", boolean(anchor, true)?)?;
+        // Finalization/classification reads this text after the result reducer.
+        // Restore the host turn's own outcome, never the last injected row.
+        cs.assign(
+            c"currentAssistantText",
+            redact_value(
+                anchor,
+                or_chain(&[evt.optional(c"result")?, text(anchor, "")?])?,
+            )?,
+        )?;
+        call(ports.get(c"clearIncrementalSave")?, &[session])?;
+    } else if result_succeeded && !envelope_error.truthy()? && has_output {
         let was_mapped = call(ports.get(c"isMapped")?, &[session, cs])?.truthy()?;
         let message = object(anchor)?;
         message.set(c"role", text(anchor, "assistant")?)?;
@@ -975,6 +1194,9 @@ pub(crate) fn apply_claude_event<'a>(
         return Ok(());
     }
     let event_type = evt.get(c"type")?;
+    if event_type.is_string("held_query_result")? {
+        return held_query_result(anchor, cs, session, evt, forward, turn, runner);
+    }
     let message = evt.optional(c"message")?;
     if event_type.is_string("assistant")? && message.optional(c"model")?.truthy()? {
         call(

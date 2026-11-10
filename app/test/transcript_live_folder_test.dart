@@ -245,4 +245,36 @@ void main() {
     expect(f.activeTools, isEmpty);
     expect(f.messages, hasLength(1), reason: 'the bubble itself stays');
   });
+  test(
+    'held query boundary separates answers without consuming a newer tail',
+    () {
+      final f = folder();
+      f.assistantSnapshot({
+        'content': [
+          {'type': 'text', 'text': '第一回答'},
+        ],
+      });
+      final row = <String, dynamic>{
+        'id': 'turn:held:1',
+        'heldResultId': 'turn:held:1',
+        'role': 'assistant',
+        'content': '第一回答',
+        'usage': {'input_tokens': 3},
+      };
+      f.heldQueryBoundary(row);
+      expect(f.currentMsg, isNull);
+      expect(f.messages.single.id, 'turn:held:1');
+      expect(f.messages.single.isStreaming, isFalse);
+      f.assistantSnapshot({
+        'content': [
+          {'type': 'text', 'text': '下一回答'},
+        ],
+      });
+      final next = f.currentMsg;
+      f.heldQueryBoundary(row);
+      expect(f.currentMsg, same(next));
+      expect(f.messages, hasLength(2));
+      expect(f.currentMsg!.content, '下一回答');
+    },
+  );
 }

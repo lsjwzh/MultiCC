@@ -185,6 +185,42 @@ impl RustBackgroundHold {
         write(env, &value)
     }
 
+    #[napi]
+    pub fn confirm_injection(&self, identity: String, uuid: String) -> bool {
+        self.state.borrow_mut().confirm_injection(&identity, &uuid)
+    }
+    #[napi]
+    pub fn acknowledge_history(&self, identity: String, uuid: String) -> bool {
+        self.state
+            .borrow_mut()
+            .acknowledge_history(&identity, &uuid)
+    }
+    #[napi]
+    pub fn history_written(&self, identity: String) -> bool {
+        self.state.borrow().history_written(&identity)
+    }
+    #[napi]
+    pub fn interrupt_injections(&self) {
+        self.state.borrow_mut().interrupt_injections();
+    }
+    #[napi]
+    pub fn history_pending(&self, identity: String) -> bool {
+        self.state.borrow().history_pending(&identity)
+    }
+    #[napi]
+    pub fn require_answer_history(&self) {
+        self.state.borrow_mut().require_answer_history();
+    }
+    #[napi]
+    pub fn pending_boundaries(&self, env: Env) -> Result<sys::napi_value> {
+        let value = serde_json::Value::Array(self.state.borrow().pending_boundaries());
+        write(env, &from_serde(&value))
+    }
+    #[napi]
+    pub fn acknowledge_answer(&self, id: String) {
+        self.state.borrow_mut().acknowledge_answer(&id);
+    }
+
     /// The stdin write failed: release the identity so a retry may write it.
     #[napi]
     pub fn abort_injection(&self, identity: String) {
@@ -229,11 +265,17 @@ pub fn background_hold_may_inject(env: Env, facts: Unknown<'_>) -> Result<sys::n
         process_contract: string_field(&facts, "processContract"),
         wanted_contract: string_field(&facts, "wantedContract"),
         delivery_settled: bool_field(&facts, "deliverySettled"),
+        history_pending: bool_field(&facts, "historyPending"),
+        history_written: bool_field(&facts, "historyWritten"),
     });
-    let value = V::Object(vec![
+    let mut entries = vec![
         entry("inject", V::Bool(decision.inject)),
         entry("reason", V::string(decision.reason)),
-    ]);
+    ];
+    if decision.delivered {
+        entries.push(entry("delivered", V::Bool(true)));
+    }
+    let value = V::Object(entries);
     write(env, &value)
 }
 

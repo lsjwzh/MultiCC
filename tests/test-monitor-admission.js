@@ -207,6 +207,7 @@ test(`real sdk Monitor holds its turn open: events and end stream into that turn
     stream.ensure('monitor', cfg);
     try {
       const response = await stream.send('monitor', text, event => {
+        event.acknowledge?.();
         if (event.type !== 'assistant' || event.parent_tool_use_id) return;
         for (const block of event.message?.content || []) if (block.type === 'tool_use') {
           state.currentToolCalls.push(block); background.recordMainToolUseId('monitor', block.id);
@@ -292,6 +293,7 @@ test(`real sdk Monitor progress during a live turn reaches that turn natively`, 
     try { await stream.closeAndWait('inturn'); } finally { background.stopAll(); }
   });
   await stream.send('inturn', 'Start the in-turn Monitor', event => {
+    event.acknowledge?.();
     if (event.type !== 'assistant' || event.parent_tool_use_id) return;
     for (const block of event.message?.content || []) if (block.type === 'tool_use') {
       state.currentToolCalls.push(block); background.recordMainToolUseId('inturn', block.id);
@@ -309,7 +311,7 @@ test(`real sdk Monitor progress during a live turn reaches that turn natively`, 
 // production background runtime deciding every native notification.
 async function residentSession(t, reply, backgroundHold = { quietMs: 300 }, managedRoute = false) {
   const injections = [], decisions = [], main = [], broadcasts = [];
-  const recentEvents = [];
+  const recentEvents = [], assistantEvents = [];
   let turnError;
   const f = await sdkFixture(t, args => {
     const first = JSON.stringify(args.input.messages[0]?.content || '');
@@ -355,6 +357,8 @@ async function residentSession(t, reply, backgroundHold = { quietMs: 300 }, mana
     const pending = (async () => {
       try {
         return await stream.send(name, text, event => {
+          event.acknowledge?.();
+          if (event.type === 'assistant') assistantEvents.push(event.message);
           recentEvents.push({ type: event.type, subtype: event.subtype,
             content: event.message?.content, error: event.error });
           if (recentEvents.length > 5) recentEvents.shift();
@@ -370,7 +374,7 @@ async function residentSession(t, reply, backgroundHold = { quietMs: 300 }, mana
     pending.catch(error => { turnError = error; });
     return pending;
   }
-  return { f, stream, name, background, turn, injections, decisions, main, broadcasts, recentEvents,
+  return { f, stream, name, background, turn, injections, decisions, main, broadcasts, recentEvents, assistantEvents,
     get turnError() { return turnError; }, go: file => fs.writeFileSync(path.join(f.cwd, file), 'go') };
 }
 
@@ -442,9 +446,10 @@ test(`real sdk a typed message is answered inside the turn a background Agent ho
   assert.ok(agent, 'a local_agent task is started and still alive');
   const injected = await s.stream.injectHeldTurn(s.name, 'TYPED_WHILE_AGENT', 'typed-while-agent');
   assert.equal(injected.delivered, true, 'the agent-held turn accepts the message');
+  injected.acknowledgeHistory();
   await untilRequests(s, 3);
   assert.match(s.main[2], /TYPED_WHILE_AGENT/, 'the message reached the same resident process');
-  await until(() => s.recentEvents.some(event => Array.isArray(event.content)
+  await until(() => s.assistantEvents.some(event => Array.isArray(event.content)
     && event.content.some(block => block?.type === 'text' && block.text === 'ANSWER_TO_TYPED_AGENT')),
   'the injected answer did not stream into the agent-held turn');
   assert.equal(await settled(turn), false, 'the injected answer does not end the turn');
@@ -468,13 +473,14 @@ test(`real sdk a message typed during the held phase runs inside that same turn`
   // a retry can never run the same message twice.
   const injected = await s.stream.injectHeldTurn(s.name, 'TYPED_WHILE_HELD', 'typed-while-held');
   assert.equal(injected.delivered, true, 'the held turn accepts the message');
+  injected.acknowledgeHistory();
   assert.equal(injected.identity, 'typed-while-held');
   await untilRequests(s, 3);
   assert.match(s.main[2], /TYPED_WHILE_HELD/, 'the message reached the same resident process');
   // Its answer streams into the turn (a normal assistant event), and neither
   // the answer nor the injected query ends the turn: the background job still
   // owns it.
-  await until(() => s.recentEvents.some(event => Array.isArray(event.content)
+  await until(() => s.assistantEvents.some(event => Array.isArray(event.content)
     && event.content.some(block => block?.type === 'text' && block.text === 'sdk-answer-3')),
   'the injected answer did not stream into the turn');
   assert.equal(await settled(turn), false, 'the injected answer does not end the turn');

@@ -37,9 +37,16 @@ function backgroundActive(hasBackground) {
 }
 
 function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tickMs = TICK_MS,
-  maxMs = holdMaxMs(), onCapReached = null } = {}) {
+  maxMs = holdMaxMs(), onCapReached = null, onBoundary = null } = {}) {
   const owner = new (getNative().RustBackgroundHold)({ quietMs, tickMs, maxMs });
   let ticker = null, capTimer = null, done = false;
+  if (onBoundary) owner.requireAnswerHistory();
+  function flushBoundaries() {
+    if (!onBoundary) return;
+    for (const event of owner.pendingBoundaries()) {
+      try { onBoundary({ ...event, acknowledge: () => owner.acknowledgeAnswer(event.held_result_id) }); } catch (_) {}
+    }
+  }
 
   function clear() {
     clearInterval(ticker); clearTimeout(capTimer);
@@ -55,6 +62,7 @@ function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tick
     return result;
   }
   function tick() {
+    flushBoundaries();
     const result = owner.tick({ now: Date.now(), backgroundActive: backgroundActive(hasBackground) });
     if (!result) return;
     done = true;
@@ -77,6 +85,7 @@ function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tick
         backgroundActive: backgroundActive(hasBackground),
       });
       if (!started) return false;
+      flushBoundaries();
       ticker = setInterval(tick, tickMs);
       ticker.unref?.();
       // Visibility, not release: the cap timer only unlocks one notice.
@@ -87,12 +96,17 @@ function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tick
       return true;
     },
     // Returns true when a held turn swallows `event` (self-wake / injected query).
-    observe(event) { return owner.observe(event); },
+    observe(event) { const swallowed = owner.observe(event); flushBoundaries(); return swallowed; },
     // Register a delivery identity BEFORE the line is written. The answer is
     // `{ action: 'write' | 'append_only' | 'refuse', uuid?, reason? }`: only
     // 'write' may touch stdin, 'append_only' just re-appends the history row of
     // a line that was already written, 'refuse' waits for a normal turn.
     beginInjection(identity, uuid) { return owner.beginInjection(String(identity ?? ''), String(uuid ?? '')); },
+    confirmInjection(identity, uuid) { return owner.confirmInjection(identity, uuid); },
+    acknowledgeHistory(identity, uuid) { return owner.acknowledgeHistory(identity, uuid); },
+    historyWritten(identity) { return owner.historyWritten(identity); },
+    interruptInjections() { owner.interruptInjections(); flushBoundaries(); },
+    historyPending(identity) { return owner.historyPending(identity); },
     abortInjection(identity) { owner.abortInjection(String(identity ?? '')); },
     // Release now (cancel / insert-now): the held answer is complete.
     flush: finish,

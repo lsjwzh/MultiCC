@@ -1350,17 +1350,17 @@ class ChatProvider extends ChangeNotifier {
 
       case 'content_block_stop':
         break;
-
       case 'message_delta':
         break;
-
+      case 'held_query_boundary':
+        _folder.heldQueryBoundary((evt.payload as Map<String, dynamic>)['message']);
+        break;
       case 'result':
         _onResult(evt.payload as Map<String, dynamic>);
         // A finished turn may have admitted the next dispatch out of the
         // target FIFO — re-poll the authoritative projection.
         unawaited(refreshDispatchQueue());
         break;
-
       case 'stream_end':
         _finishStreaming();
         notifyListeners();

@@ -37,6 +37,16 @@ function markerOf(text) {
 
 function handleUser(message) {
   const text = (message.message?.content || []).map(block => block.text || '').join('');
+  if (scenario === 'held-attributed') {
+    if (text === 'UNANSWERED') {
+      emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'partial answer' }] } });
+      return;
+    }
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `echo:${text}` }] } });
+    result(`echo:${text}`, { uuid: require('node:crypto').randomUUID(), user_message_uuid: message.uuid,
+      user_message_uuids: [message.uuid], usage: { input_tokens: 3 }, total_cost_usd: 0.03 });
+    return;
+  }
   if (scenario === 'delayed-exit-output' || scenario === 'held-exit-output') {
     // 父进程先退出；继承输出管道的短命子进程稍后写入终局帧。
     const { spawn } = require('node:child_process');

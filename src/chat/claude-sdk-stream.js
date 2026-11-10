@@ -77,14 +77,12 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
   function stalenessOf(run, cfg) {
     const none = { routeChanged: false, configChanged: false, vaultStale: false, stale: false };
     if (!run) return none;
-    try {
-      const stale = processStale(runningProcessFacts(run), wantedProcessFacts(cfg));
-      // A process without a relay has no route identity (the old pump compared
-      // routes only under `s.run.relay`), so route drift cannot apply to it.
-      if (!run.relay) stale.routeChanged = false;
-      stale.stale = stale.routeChanged === true || stale.configChanged === true || stale.vaultStale === true;
-      return stale;
-    } catch (_) { return none; }
+    const stale = processStale(runningProcessFacts(run), wantedProcessFacts(cfg));
+    // A lane without a relay has no route identity. Configuration IO errors
+    // propagate: callers must never interpret unreadable settings as freshness.
+    if (!run.relay) stale.routeChanged = false;
+    stale.stale = stale.routeChanged === true || stale.configChanged === true || stale.vaultStale === true;
+    return stale;
   }
   function clearIdle(s) { clearTimeout(s.idleTimer); s.idleTimer = null; }
   function armIdle(s) {
@@ -182,6 +180,7 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
             // Visibility, not release (L2): the cap fires at most once per held
             // turn and the host writes one session notice.
             onCapReached: ms => safe(s.cfg.onHoldCap, ms),
+            onBoundary: event => safe(item.onEvent, event),
             release: result => { if (s.run === run && s.current === item && !item.finishing) {
               safe(item.onEvent, result); finish(s, run, item, result);
             } } });
@@ -394,7 +393,8 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     const item = s.current;
     if (!item || item.cancelled) return;
     if (item.hold?.held) {
-      // The answer is complete; only its background work is cut short.
+      // Preserve explicit outcomes for injected answers cut short by cancel.
+      item.hold.interruptInjections();
       const result = item.hold.flush();
       void stop(s).then(() => settle(s, item, null, result));
       return;
@@ -504,13 +504,15 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     const registration = hold.beginInjection(id, randomUUID());
     const action = registration?.action;
     if (action === 'refuse') return { delivered: false, reason: registration.reason || 'refused' };
-    if (action === 'append_only') return { delivered: true, appendOnly: true, identity: id, uuid: registration.uuid };
+    const acknowledgeHistory = () => hold.acknowledgeHistory(id, registration.uuid);
+    if (action === 'append_only') return { delivered: true, appendOnly: true, identity: id, uuid: registration.uuid, acknowledgeHistory };
     if (action !== 'write') return { delivered: false, reason: 'refused' };
     try {
       await run.lane.sendUser(JSON.stringify({ type: 'user', session_id: s.cfg.sessionId,
         uuid: registration.uuid, parent_tool_use_id: null,
         message: { role: 'user', content: [{ type: 'text', text: String(text) }] } }));
-      return { delivered: true, identity: id, uuid: registration.uuid };
+      hold.confirmInjection(id, registration.uuid);
+      return { delivered: true, identity: id, uuid: registration.uuid, acknowledgeHistory };
     } catch (_) {
       hold.abortInjection(id);
       return { delivered: false, reason: 'write_failed' };
@@ -522,11 +524,13 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
   // turn would want). `attributable` says the lane reports which user message
   // each result answers — this one stamps a uuid on the injected line and the
   // SDK echoes it in `user_message_uuids`.
-  function heldTurn(name) {
+  function heldTurn(name, identity) {
     const s = sessions.get(name);
     const hold = s && s.current?.hold;
     return {
       held: !!hold?.held,
+      historyPending: !!hold?.historyPending(String(identity ?? '')),
+      historyWritten: !!hold?.historyWritten(String(identity ?? '')),
       alive: alive(s?.run),
       attributable: true,
       // Compare against the LATEST desired configuration: a queued turn whose

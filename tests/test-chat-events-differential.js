@@ -559,3 +559,175 @@ test('differential: real captured Claude traces', () => {
     compareSequence(scenario, trace.events, `real-${trace.name}`);
   }
 });
+
+// Intentional new protocol: a query may finish while the host turn stays open.
+function heldRun() {
+  const scenario = makeScenario(mulberry32(109));
+  Object.assign(scenario, { mapped: true, stale: false, durable: true, replaceAfterPersist: false, proxyFailure: null });
+  Object.assign(scenario.cs, { currentAssistantText: '', currentToolCalls: [], chatTurnCount: 0 });
+  Object.assign(scenario.runner, { turnId: scenario.turn.turnId, completionOutcome: null });
+  const run = createRun(scenario);
+  const ports = makePorts(run);
+  const saved = [];
+  ports.appendHeldAnswer = (_session, row) => { saved.push(clone(row)); return true; };
+  const apply = event => applyNative(ports, run.cs, run.sessionName, event,
+    frame => run.forwards.push(clone(frame)), run.turn, run.runner, run.providerName);
+  const answer = text => apply({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+  const boundary = (id, identities = [], ack = () => {}) => ({
+    type: 'held_query_result', held_result_id: id, held_identities: identities,
+    subtype: 'success', is_error: false, usage: { input_tokens: 3 }, total_cost_usd: .03,
+    acknowledge: ack,
+  });
+  return { run, ports, saved, apply, answer, boundary };
+}
+
+test('held query boundaries save separate answers without completing the host turn', () => {
+  const h = heldRun();
+  let acknowledged = 0;
+  h.answer('主回答');
+  h.apply(h.boundary('1', [], () => acknowledged++));
+  h.answer('两个注入消息的同一个回答');
+  const identities = [{ identity: 'm1', uuid: 'u1' }, { identity: 'm2', uuid: 'u2' }];
+  h.apply(h.boundary('2', identities, () => acknowledged++));
+  h.answer('后台完成后的回答');
+  h.apply(h.boundary('3', [], () => acknowledged++));
+  assert.equal(acknowledged, 3);
+  assert.deepEqual(h.saved.map(row => row.content), ['主回答', '两个注入消息的同一个回答', '后台完成后的回答']);
+  assert.deepEqual(h.saved[1].heldIdentities, identities);
+  assert.equal(h.saved[0].heldResultId, 'turn-1:runner-1:held:1');
+  assert.equal(h.run.turn.resultDurable, undefined, 'a query is not the host completion');
+  assert.equal(h.run.cs.currentAssistantText, '');
+  assert.equal(h.run.cs.chatTurnCount, 0);
+  assert.equal(h.run.effects.some(([name]) => name === 'onTurnComplete'), false);
+  h.run.runner.completionOutcome = clone(COMPLETIONS[1]);
+  h.apply({ type: 'result', subtype: 'success', is_error: false, result: '后台完成后的回答',
+    usage: { input_tokens: 3 }, held_usage: { input_tokens: 9 },
+    held_answers_saved: true, total_cost_usd: .09 });
+  assert.equal(h.run.turn.resultDurable, true);
+  assert.equal(h.run.cs.chatTurnCount, 1);
+  assert.equal(h.run.cs.currentAssistantText, '后台完成后的回答', 'finalizer gets the host outcome');
+  assert.deepEqual(h.run.runner.pendingUsage, { input_tokens: 9 });
+  assert.equal(h.run.effects.filter(([name]) => name === 'persistFinal').length, 0, 'no duplicate final tail');
+  assert.equal(h.run.effects.filter(([name]) => name === 'recordDurableUsage').length, 1);
+});
+
+test('failed held history append retries its captured row without clearing newer output', () => {
+  const h = heldRun();
+  let available = false, attempts = 0, acks = 0;
+  h.ports.appendHeldAnswer = (_session, row) => {
+    attempts++;
+    if (!available) throw new Error('disk unavailable');
+    h.saved.push(clone(row));
+    return true;
+  };
+  h.answer('未写盘的第一回答');
+  const first = h.boundary('1', [{ identity: 'm1', uuid: 'u1' }], () => acks++);
+  h.apply(first);
+  assert.equal(acks, 0);
+  assert.equal(h.run.cs.currentAssistantText, '');
+  h.answer('正在写第二回答');
+  available = true;
+  h.apply(first);
+  assert.equal(acks, 1);
+  assert.equal(h.saved[0].content, '未写盘的第一回答');
+  assert.equal(h.run.cs.currentAssistantText, '正在写第二回答');
+  h.apply(first);
+  assert.equal(attempts, 2, 'saved replay does not append twice');
+  assert.equal(h.run.forwards.filter(frame => frame.type === 'held_query_boundary').length, 1);
+});
+
+test('held append reentry cannot append twice or acknowledge a superseded runner', () => {
+  const h = heldRun();
+  let acks = 0, calls = 0;
+  const event = h.boundary('1', [], () => acks++);
+  h.ports.appendHeldAnswer = () => {
+    calls++;
+    h.apply(event);
+    h.run.cs.currentRunner = {};
+    return true;
+  };
+  h.answer('保留原回答');
+  h.apply(event);
+  assert.equal(calls, 1);
+  assert.equal(acks, 0);
+});
+
+test('held answer waits for user history and same-turn retries have distinct row ids', () => {
+  const h = heldRun();
+  let acks = 0;
+  h.answer('注入回答');
+  const event = { ...h.boundary('1', [{ identity: 'm1', uuid: 'u1' }], () => acks++), held_history_ready: false };
+  h.apply(event);
+  assert.equal(h.saved.length, 0);
+  assert.equal(acks, 0);
+  event.held_history_ready = true;
+  h.apply(event);
+  assert.equal(h.saved.length, 1);
+  assert.equal(acks, 1);
+  const next = heldRun();
+  next.run.runner.runnerId = 'runner-2';
+  next.answer('重试回答');
+  next.apply(next.boundary('1'));
+  assert.notEqual(h.saved[0].id, next.saved[0].id);
+});
+
+test('an injected API error stays with its row and does not poison the host outcome', () => {
+  const h = heldRun();
+  h.answer('主回答');
+  h.apply(h.boundary('1'));
+  h.apply({ type: 'assistant', uuid: 'error-message', is_api_error_message: true,
+    api_error_status: 429, error: 'rate_limit', message: { model: '<synthetic>',
+      content: [{ type: 'text', text: 'API Error: 429 rate limit' }] } });
+  h.apply({ ...h.boundary('2', [{ identity: 'm1', uuid: 'u1' }]), is_error: true, subtype: 'error_during_execution' });
+  assert.equal(h.saved[1].isError, true);
+  assert.equal(h.run.runner.claudeApiError.pending, null);
+  h.run.runner.completionOutcome = clone(COMPLETIONS[1]);
+  h.apply({ type: 'result', subtype: 'success', is_error: false, result: '主回答',
+    held_answers_saved: true, held_usage: { input_tokens: 6 } });
+  assert.equal(h.run.cs.currentAssistantText, '主回答');
+  assert.equal(h.run.runner.sawApiError, false);
+  assert.equal(h.run.turn.resultDurable, true);
+});
+
+test('real semantic scrub preserves the held boundary acknowledgement callback', () => {
+  const h = heldRun();
+  let acks = 0;
+  h.ports.scrub = (_attempt, event) => native.providerScrubSemanticStructure(event, ['fake-route-capability']);
+  h.answer('可保存回答');
+  h.apply({ ...h.boundary('1', [], () => acks++), result: ROUTE });
+  assert.equal(acks, 1);
+  assert.equal(h.saved.length, 1);
+});
+
+test('later held rows cannot overtake an earlier failed append', () => {
+  const h = heldRun();
+  let available = false;
+  h.ports.appendHeldAnswer = (_session, row) => {
+    if (!available) return false;
+    h.saved.push(clone(row));
+    return true;
+  };
+  h.answer('第一回答');
+  const first = h.boundary('1');
+  h.apply(first);
+  h.answer('第二回答');
+  const second = h.boundary('2');
+  available = true;
+  h.apply(second);
+  assert.deepEqual(h.saved, []);
+  h.apply(first);
+  h.apply(second);
+  assert.deepEqual(h.saved.map(row => row.content), ['第一回答', '第二回答']);
+});
+
+test('held failure rows display error details and cancellation alongside partial output', () => {
+  const h = heldRun();
+  h.apply({ ...h.boundary('1', [{ identity: 'm1', uuid: 'u1' }]),
+    subtype: 'error_during_execution', is_error: true, errors: ['429 rate limit'] });
+  assert.match(h.saved[0].content, /429 rate limit/);
+  h.answer('已生成的部分');
+  h.apply({ ...h.boundary('2', [{ identity: 'm2', uuid: 'u2' }]),
+    subtype: 'error_during_execution', is_error: true, terminal_reason: 'cancelled', result: '这条消息的回答已取消。' });
+  assert.match(h.saved[1].content, /已生成的部分[\s\S]*已取消/);
+  assert.equal(h.saved[1].terminalReason, 'cancelled');
+});

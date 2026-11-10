@@ -449,3 +449,28 @@ test('clientMsgId binds the acknowledgement to its optimistic bubble, never the 
   assert.equal(optimistic[0].dataset.msgId, 'persisted-first');
   assert.equal(optimistic[1].dataset.msgId, undefined);
 });
+
+test('held query boundary closes one bubble while the host turn keeps running', () => {
+  const { view } = viewFixture();
+  const bubble = view.createAssistantBubble(true);
+  const state = { isStreaming: true, currentMsgEl: bubble, currentTextContent: '独立回答',
+    currentToolCards: new Map(), roleTokens: {}, turnStartMs: 123 };
+  const controller = eventController(view, state);
+  const generation = controller.beginGeneration();
+  const event = { type: 'held_query_boundary', message: {
+    id: 'turn:held:1', heldResultId: 'turn:held:1', role: 'assistant', content: '独立回答',
+  } };
+  controller.handleEvent(event, generation);
+  assert.equal(state.isStreaming, true);
+  assert.equal(state.turnStartMs, 123);
+  assert.equal(state.currentMsgEl, null);
+  assert.equal(state.currentTextContent, '');
+  assert.equal(state.lastFinishedText, '');
+  assert.deepEqual(view.visibleIds(), ['turn:held:1']);
+  const next = view.createAssistantBubble(true);
+  state.currentMsgEl = next;
+  state.currentTextContent = '下一条回答';
+  controller.handleEvent(event, generation);
+  assert.equal(state.currentMsgEl, next, 'replayed boundary cannot close a newer bubble');
+  assert.equal(state.currentTextContent, '下一条回答');
+});

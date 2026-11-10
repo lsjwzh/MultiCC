@@ -143,9 +143,9 @@ function createStreamRouter(legacy, sdk, appServer) {
     const impl = backend(name).injectHeldTurn;
     return typeof impl === 'function' ? impl(name, text, identity) : Promise.resolve(false);
   };
-  api.heldTurn = (name) => {
+  api.heldTurn = (name, identity) => {
     const impl = backend(name).heldTurn;
-    return typeof impl === 'function' ? impl(name) : null;
+    return typeof impl === 'function' ? impl(name, identity) : null;
   };
   api.inject = api.send;
   return api;

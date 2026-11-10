@@ -473,6 +473,10 @@ class ChatService {
         _emit('user', msg);
         break;
 
+      case 'held_query_boundary':
+        _emit('held_query_boundary', msg);
+        break;
+
       case 'result':
         isStreaming = false;
         _cancelRequested = false;

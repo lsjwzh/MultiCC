@@ -234,8 +234,8 @@ function probeAddon(file, node = process.execPath) {
       const done=bg.handleEvent(bgPorts,'smoke',null,{subtype:'codex_task_done',task_id:'codex_probe',description:'child',status:'completed'});
       if(!done||!done.handled||!seen.some(frame=>frame&&frame.type==='monitor_done')) process.exit(1);
     }
-    if(typeof a.RustBackgroundHold!=='function'
-      || ['start','observe','tick','flush','beginInjection','abortInjection','capReached','dispose']
+    if(typeof a.chatAssistantSameQuery!=='function'||typeof a.RustBackgroundHold!=='function'
+      || ['start','observe','tick','flush','beginInjection','confirmInjection','acknowledgeHistory','historyPending','historyWritten','interruptInjections','requireAnswerHistory','pendingBoundaries','acknowledgeAnswer','abortInjection','capReached','dispose']
         .some(key=>typeof a.RustBackgroundHold.prototype[key]!=='function')
       || ['held','injections','maxMs'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustBackgroundHold.prototype,key)?.get!=='function')
       || ['backgroundHoldMaxMs','backgroundHoldMayInject','backgroundHoldUserTyped',
@@ -267,6 +267,8 @@ function probeAddon(file, node = process.execPath) {
       const uuid='11111111-1111-1111-1111-111111111111';
       const registration=hold.beginInjection('probe-identity',uuid);
       if(!registration||registration.action!=='write'||registration.uuid!==uuid||hold.injections!==1) process.exit(1);
+      if(hold.beginInjection('probe-identity','other').reason!=='injection_in_flight') process.exit(1);
+      if(!hold.confirmInjection('probe-identity',uuid)||!hold.acknowledgeHistory('probe-identity',uuid)) process.exit(1);
       if(hold.beginInjection('probe-identity','22222222-2222-2222-2222-222222222222').action!=='append_only') process.exit(1);
       const answered={type:'result',subtype:'success',is_error:false,result:'typed',
         user_message_uuid:uuid,user_message_uuids:[uuid],usage:{input_tokens:3}};

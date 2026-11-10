@@ -140,7 +140,7 @@ test('a typed message is written into the live process and recorded once', async
   assert.equal(h.appended[0].id, ITEM.sessionId);
   assert.deepEqual(h.appended[0].message, {
     role: 'user', content: 'what is the status?', ts: h.appended[0].message.ts,
-    turnId: 'turn-9', clientMsgId: 'cm-1', heldTurnInjected: true,
+    turnId: 'turn-9', clientMsgId: 'cm-1', deliveryId: ITEM.id, heldTurnInjected: true,
   });
   assert.equal(typeof h.appended[0].message.ts, 'number');
   // Once the durable row exists the same delivery identity is settled: the
@@ -389,4 +389,46 @@ test('the hold cap is one visible notice, never a release', () => {
   assert.match(said[0].message.content, /60 分钟/);
   assert.deepEqual(broadcasts, [{ id: 'held-session',
     event: { type: 'system', subtype: 'notice', message: said[0].message.content } }]);
+});
+
+test('answered injection retries history after configuration drift and cannot release early', async () => {
+  const owner = new (require('../src/native/runtime').getNative().RustBackgroundHold)({ quietMs: 1 });
+  owner.start({ type: 'result', subtype: 'success', is_error: false, result: 'main' },
+    { mainResult: true, backgroundActive: true });
+  let saves = 0, writes = 0, save = false, stale = false, readFails = false;
+  const injection = createHeldTurnInjection({
+    getRecord: () => RECORD,
+    chatStream: {
+      heldTurn: (session, identity) => live({ held: owner.held, stale,
+        historyPending: owner.historyPending(identity), historyWritten: owner.historyWritten(identity) }),
+      injectHeldTurn: (session, text, identity) => {
+        const registration = owner.beginInjection(identity, 'answer-uuid');
+        if (registration.action === 'refuse') return { delivered: false, reason: registration.reason };
+        if (registration.action === 'write') { writes += 1; owner.confirmInjection(identity, registration.uuid); }
+        return { delivered: true, acknowledgeHistory: () => owner.acknowledgeHistory(identity, registration.uuid) };
+      },
+    },
+    isRunActive: () => true,
+    appendMessage: () => { if (!save) return false; saves += 1; return true; },
+    hasPersistedDelivery: () => { if (readFails) throw Error('disk unavailable'); return saves > 0; },
+  });
+  const input = { item: ITEM, sessionId: ITEM.sessionId, text: 'typed', opts: {} };
+  assert.equal((await injection.tryInject(input)).reason, 'row_not_persisted');
+  owner.observe({ type: 'result', subtype: 'success', is_error: false,
+    user_message_uuid: 'answer-uuid', result: 'typed answer' });
+  assert.equal(owner.injections, 0);
+  assert.equal(owner.tick({ now: 0, backgroundActive: false }), null);
+  assert.equal(owner.tick({ now: 10000, backgroundActive: false }), null);
+  stale = true;
+  assert.equal(injection.canInject(input), true, 'an existing receipt can repair history on a stale lane');
+  readFails = true;
+  assert.equal((await injection.tryInject(input)).reason, 'history_unavailable');
+  assert.equal(owner.historyPending(ITEM.id), true, 'read failure cannot acknowledge persistence');
+  readFails = false; save = true;
+  assert.equal((await injection.tryInject(input)).delivered, true);
+  assert.equal(writes, 1); assert.equal(saves, 1);
+  assert.deepEqual(await injection.tryInject(input), { delivered: true, reason: 'already_delivered' });
+  assert.equal(writes, 1); assert.equal(saves, 1);
+  assert.equal(owner.tick({ now: 11000, backgroundActive: false }), null);
+  assert.equal(owner.tick({ now: 12000, backgroundActive: false }).result, 'main');
 });

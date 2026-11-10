@@ -570,6 +570,7 @@ function createChatTurnEngine(deps) {
     clearIncrementalSave: (sessionName) => getChatHistoryRuntime().clearIncrementalSave(sessionName),
     contextTrace: (sessionName, cs) => contextTraceFor(sessionName, cs),
     isMapped: (sessionName, cs) => chatSessions?.get(sessionName) === cs,
+    appendHeldAnswer: (sessionName, message) => appendChatMessage(sessionName, message),
     persistFinal: (sessionName, cs, turn, runner, message, options) => persistFinalAssistantResult(sessionName, cs, turn, runner, message, options),
     recordDurableUsage: (sessionName, runner, usage) => recordDurableTurnUsage(sessionName, runner, usage),
     proxyFailure: (attempt) => attemptRuntime.proxyFailure?.(attempt),
