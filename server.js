@@ -2088,7 +2088,8 @@ const taskBoardRuntime = createTaskBoardRuntime({
 taskBoardRuntime.mountRoutes(app); createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), messages: messageSearchRuntime, logger }).mountRoutes(app); messageSearchRuntime().start();
 const taskContextHost = createTaskContextHost({
   getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
-  append:appendChatMessage,appendSync:appendChatMessageSync,
+  append: (id, m) => chatHistoryRuntime.appendMessage(id, m),
+  appendSync: (id, m) => chatHistoryRuntime.appendMessageSync(id, m),
   getTaskBoard: () => taskBoardRuntime, getTaskShells: () => taskShellHost, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
