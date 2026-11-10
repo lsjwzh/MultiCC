@@ -74,10 +74,18 @@ test('real Agent SDK resumes after first-run max_turns with zero successful host
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'SDK_TOOL_HISTORY_MARKER\n');
   const record = { id: 'sdk-interrupted', kind: 'chat', cli: 'claude-exp', cliSessionId: null,
     model: 'claude-sonnet-4-6' };
-  const first = prepareTurn({ record, cwd, connected: true, text: 'read SDK_INTERRUPTED_MARKER', goalLimits: { maxRounds: 1 } });
+  const first = prepareTurn({ record, cwd, connected: true, text: 'read SDK_INTERRUPTED_MARKER' });
   assert.equal(first.invocation.args[1], '--session-id');
+  // The retired Goal budget no longer reaches the envelope (maxTurns is 0), so
+  // cap the run at the CLI layer to reproduce an interrupted first run. The
+  // adapter ends its args with `--`; flags must go before it. This test pins
+  // SDK resume, not the retired goal-limit plumbing.
+  const args = [...first.invocation.args];
+  const separator = args.lastIndexOf('--');
+  args.splice(separator >= 0 ? separator : args.length, 0, '--max-turns', '1');
+  const capped = { ...first.invocation, args };
   const id = record.cliSessionId;
-  const interrupted = await sdkProcess(first.invocation, cwd, env);
+  const interrupted = await sdkProcess(capped, cwd, env);
   assert.equal(interrupted.code, 1, interrupted.stderr);
   assert.ok(interrupted.events.some(e => e.type === 'result' && e.subtype === 'error_max_turns'), JSON.stringify(interrupted.events));
   assert.ok(interrupted.events.some(e => e.type === 'user'
@@ -86,7 +94,7 @@ test('real Agent SDK resumes after first-run max_turns with zero successful host
   assert.equal(requests.length, 1);
 
   // Replay the old host choice to reproduce the exact reported startup failure.
-  const collision = await sdkProcess(first.invocation, cwd, env);
+  const collision = await sdkProcess(capped, cwd, env);
   assert.equal(collision.code, 1);
   assert.match(JSON.stringify(collision.events), /Session ID .* is already in use/);
   assert.equal(requests.length, 1, 'native collision never reaches the model API');

@@ -422,6 +422,21 @@ function mountAirRoutes(app, deps) {
     const overlayFacts = { now: projectNow, facts, merges, capacityReasons };
     const tasks = cardCache.overlayAsync ? await cardCache.overlayAsync(resolved, overlayFacts)
       : await taskDomainAsync({ op: 'cardOverlayBatch', entries, ...overlayFacts });
+    // 无人值守模式（docs/unattended-mode.md）：任务行只带状态条需要的三个数
+    // 字，完整状态仍走 GET /api/sessions/:id/unattended。这里必须复制而不是
+    // 原地改：`held.cards` 是卡片缓存的原对象，写回去会让状态粘在缓存里。
+    const compactUnattended = task => {
+      const sessionId = task.chatSessionId || task.sessionId;
+      const state = sessionId ? deps.records.get(sessionId)?.unattended : null;
+      if (!state || typeof state !== 'object') return task;
+      return { ...task, unattended: {
+        status: state.status ?? null,
+        rounds: Math.max(0, Math.floor(Number(state.rounds) || 0)),
+        maxRounds: Math.max(1, Math.floor(Number(state.maxRounds) || 1)),
+        evaluating: state.evaluating === true,
+      } };
+    };
+    const tasksWithUnattended = tasks.map(compactUnattended);
     // 最近消息、updatedAt、原顺序的稳定排序由 Rust 完成。
     lap('cardLoopMs');
     const payload = { ok: true, directories: [...deps.directories.values()].map(d => ({
@@ -430,7 +445,7 @@ function mountAirRoutes(app, deps) {
       // 生命周期拆解（见 lifecycleByDirectory）：本地/休眠/计划各几个、此刻几个在用。
       worktreeLifecycle: prepared.lifecycle[d.id] || { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0, onDisk: 0, total: 0 },
     })),
-      tasks, ...snapshotLists(prepared.tasks), budgets: admission.budgets, clis: deps.clis, migration, lastRuntime,
+      tasks: tasksWithUnattended, ...snapshotLists(prepared.tasks), budgets: admission.budgets, clis: deps.clis, migration, lastRuntime,
       // 自动回收的策略（闲置阈值/间隔）由运行时给出，面板据此把「多久没用会被收走」
       // 说准，而不是在客户端再猜一个默认值。
       worktreePolicy: hibernationPolicy,

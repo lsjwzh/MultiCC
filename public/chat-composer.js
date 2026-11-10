@@ -59,7 +59,6 @@
     const stageUserMessage = typeof opts.stageUserMessage === 'function'
       ? opts.stageUserMessage
       : addUserMessage;
-    const goalWrap = opts.goalWrap || (task => task);
     // Commander-only routing switch (chat-dispatch-hint.js). Identity elsewhere.
     const decorateText = opts.decorateText || (text => {
       const hint = win.MultiCCChatDispatchHint;
@@ -120,7 +119,7 @@
       attachArea.classList.toggle('has-items', attachArea.children.length > 0);
     }
 
-    // 最近一次真正发出去的 user_message（已装饰的文本 + goal 选项）。异常对话里的
+    // 最近一次真正发出去的 user_message（已装饰的文本 + 语言）。异常对话里的
     // 「重试」按钮重发的就是它：原样的那份数据，不是输入框里现在写着的东西。
     let lastSent = null;
     let manualRetrying = false;
@@ -155,10 +154,6 @@
         }
         const clientMsgId = newClientMsgId();
         const payload = { type: 'user_message', text: original.text, clientMsgId };
-        if (original.goal) {
-          payload.goal = true;
-          payload.goalLimits = original.goalLimits || {};
-        }
         const retryLang = original.lang || currentLang();
         if (retryLang === 'zh' || retryLang === 'en') payload.lang = retryLang;
         stageUserMessage(original.text, clientMsgId);
@@ -175,7 +170,6 @@
 
     function send(sendOptions = {}) {
       if (!inputEl) return false;
-      const goalOptions = sendOptions && sendOptions.goal === true ? sendOptions : null;
       let text = inputEl.value.trim();
       if (!text) return false;
 
@@ -189,21 +183,9 @@
           return true;
         }
         if (command === '/help') {
-          addSystemMessage('Commands: /clear — clear chat history | /compact — ask Claude to compact context | /cost — show cost summary | /goal &lt;任务&gt; — 以 Goal 模式执行（受设置里的轮次/预算限制约束）');
+          addSystemMessage('Commands: /clear — clear chat history | /compact — ask Claude to compact context | /cost — show cost summary');
           clearInput();
           return true;
-        }
-        if (command === '/goal') {
-          const split = text.indexOf(' ');
-          const task = split === -1 ? '' : text.slice(split + 1).trim();
-          if (!task) {
-            addSystemMessage('用法：/goal &lt;任务描述&gt; — 以 Goal 模式（目标驱动、自主执行到完成）发送，受设置里的轮次/预算限制约束。也可点输入框右侧 🎯 先做目标预检。');
-            clearInput();
-            return true;
-          }
-          inputEl.value = goalWrap(task);
-          inputEl.style.height = 'auto';
-          return send({ goal: true });
         }
       }
 
@@ -243,14 +225,10 @@
       const userInputRequestId = getUserInputRequestId();
       stageUserMessage(text, clientMsgId);
       clearInput();
-      debug('state', `send() — WS ▶ user_message (${text.length} chars)${goalOptions ? ' [goal]' : ''}`);
+      debug('state', `send() — WS ▶ user_message (${text.length} chars)`);
       try {
         const payload = { type: 'user_message', text, clientMsgId };
         if (userInputRequestId) payload.userInputRequestId = userInputRequestId;
-        if (goalOptions) {
-          payload.goal = true;
-          payload.goalLimits = goalOptions.goalLimits || {};
-        }
         const lang = currentLang();
         if (lang === 'zh' || lang === 'en') payload.lang = lang;
         if (sendOptions.voice) {
@@ -258,7 +236,7 @@
           payload.voiceRaw = String(sendOptions.voice.raw || '');
         }
         if (!transportSend(payload)) throw new Error('WebSocket is not open');
-        lastSent = { text, goal: !!goalOptions, goalLimits: goalOptions ? goalOptions.goalLimits || {} : null, lang: lang === 'zh' || lang === 'en' ? lang : null };
+        lastSent = { text, lang: lang === 'zh' || lang === 'en' ? lang : null };
         if (userInputRequestId) consumeUserInputRequestId(userInputRequestId);
         setPendingCancel(false);
         return true;

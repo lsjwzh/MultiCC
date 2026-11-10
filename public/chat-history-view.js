@@ -51,6 +51,27 @@
     return Object.freeze({ label: rest.slice(0, lineBreak).trim(), body: rest.slice(lineBreak + 1).trim() });
   }
 
+  // 无人值守（docs/unattended-mode.md）插进对话的每条消息都带同一个中英双语
+  // 标记：🔇[无人值守 Unattended] <instruction>。标记由内核统一加（客户端只读），
+  // 所以历史回放和实时广播用同一个字面量识别。返回 null 表示不是无人值守消息；
+  // 否则给出剥掉 🔇 与标记之后的正文，供“🤖 无人值守”小卡片/轨迹行渲染。
+  const UNATTENDED_MARKER = '[无人值守 Unattended]';
+  function parseUnattendedMarker(value) {
+    let rest = asText(value).trimStart();
+    if (rest.startsWith(SYSTEM_INJECT_PREFIX)) rest = rest.slice(SYSTEM_INJECT_PREFIX.length).trimStart();
+    if (!rest.startsWith(UNATTENDED_MARKER)) return null;
+    return Object.freeze({ text: rest.slice(UNATTENDED_MARKER.length).trim() });
+  }
+  function stripUnattendedMarker(value) {
+    const parsed = parseUnattendedMarker(value);
+    return parsed ? parsed.text : asText(value).trim();
+  }
+  // 持久化的 UI-only 轨迹行（kind 'unattended_trace'）不是任何一方的发言，
+  // 渲染成居中的静音行。两种命名都认，等后端定稿后只会剩下一种。
+  function isUnattendedTrace(message) {
+    return !!message && (message.kind === 'unattended_trace' || message.traceKind === 'unattended_trace');
+  }
+
   // Render a wall-clock span as the short suffix shown after "done"/"failed".
   // Mirrors DSH's measured-state tag — the real elapsed time of a tool call,
   // never a fabricated 0ms. The rules live in shared/format.js (the one span
@@ -608,7 +629,30 @@
     // so an injected 🔇 message renders as the same card whether it arrives
     // over the socket or with the next page load. Text goes in as textContent —
     // the body is engine-authored and is never markup.
+    // 「🤖 无人值守」小卡片：标记消息（历史/实时用户节点）和持久化轨迹行共用
+    // 同一张脸，区别只在 classes —— 标记消息仍是 user/system-inject（不是一次
+    // 真实用户发言，last-user 锚点不收），轨迹行是居中的静音行。
+    function renderUnattendedNode(text, options) {
+      const opts = options || {};
+      const node = document.createElement('div');
+      node.className = opts.trace ? 'msg unattended-trace' : 'msg user system-inject unattended-mark';
+      node.dataset.unattendedMark = '1';
+      const badge = document.createElement('span');
+      badge.className = 'unat-badge';
+      badge.textContent = translate ? translate('unattendedBadge') : '🤖 无人值守';
+      const body = document.createElement('span');
+      body.className = 'unat-mark-text';
+      body.textContent = asText(text);
+      node.appendChild(badge);
+      node.appendChild(body);
+      if (opts.id) node.dataset.msgId = opts.id;
+      if (opts.clientMsgId) node.dataset.clientMsgId = opts.clientMsgId;
+      return node;
+    }
+
     function createUserNode(text, clientMsgId) {
+      const unattended = parseUnattendedMarker(text);
+      if (unattended) return renderUnattendedNode(unattended.text, { clientMsgId });
       const injected = parseSystemInject(text);
       const node = injected ? renderSystemInject(injected) : document.createElement('div');
       if (!injected) {
@@ -668,7 +712,20 @@
 
     function renderMessage(message) {
       const source = message && typeof message === 'object' ? message : {};
+      // UI-only 判定轨迹（kind 'unattended_trace'）：居中静音行，先于角色分支，
+      // 因为这类记录没有发言方。正文里的标记由渲染层剥掉，只留一句话。
+      if (isUnattendedTrace(source)) {
+        return renderUnattendedNode(stripUnattendedMarker(source.content != null ? source.content : source.text), {
+          trace: true, id: source.id, clientMsgId: source.clientMsgId,
+        });
+      }
       if (source.role === 'user') return renderUser(source);
+      // 非 user 角色的标记消息（后端若把轨迹存成 system 行）同样画成轨迹行；
+      // user 角色的标记消息在 createUserNode 里变成「🤖 无人值守」小卡片。
+      const unattended = parseUnattendedMarker(source.content != null ? source.content : source.text);
+      if (unattended) {
+        return renderUnattendedNode(unattended.text, { trace: true, id: source.id, clientMsgId: source.clientMsgId });
+      }
       if (source.role === 'assistant') return renderAssistant(source);
       const node = document.createElement('div');
       node.className = 'msg system-msg';
@@ -776,7 +833,9 @@
     }
 
     function commitMessage(message, hostState = {}) {
-      const source = message && typeof message === 'object' ? message : {};
+      const raw = message && typeof message === 'object' ? message : {};
+      // 轨迹行没有发言方：补齐一个 system 角色，让下面的 upsert/去重逻辑照常走。
+      const source = isUnattendedTrace(raw) && !raw.role ? { ...raw, role: 'system' } : raw;
       if (!source.id || !source.role) {
         return Object.freeze({
           node: null,
@@ -1101,10 +1160,31 @@
       return applied;
     }
 
+    // 实时轨迹广播（chat_msg_meta kind=unattended_trace，或后端单独开的
+    // unattended_trace 帧）直接落到列表尾。两条路径 + 重连重放都走这里：
+    // 有 id 按 id 复用节点；只有文本时按最后一条轨迹行比对，
+    // 保证同一条判定不会被画两遍。
+    function appendUnattendedTrace(trace) {
+      const source = trace && typeof trace === 'object' ? trace : { content: asText(trace) };
+      const id = source.id ? String(source.id) : '';
+      if (id) {
+        const existing = findById(id);
+        if (existing) return existing;
+      }
+      const text = stripUnattendedMarker(source.content != null ? source.content : source.text);
+      const last = Array.from(messagesEl.querySelectorAll('.unattended-trace')).pop() || null;
+      if (!id && last && (last.dataset.unattendedText || '') === text) return last;
+      const node = renderUnattendedNode(text, { trace: true, id: id || null });
+      node.dataset.unattendedText = text;
+      messagesEl.appendChild(node);
+      return node;
+    }
+
     return Object.freeze({
       addToolResult,
       annotateAttribution,
       appendToolCard,
+      appendUnattendedTrace,
       applyPlan,
       clearMessages,
       commitMessage,
@@ -1129,5 +1209,8 @@
     });
   }
 
-  return Object.freeze({ createHistoryView, parseSystemInject });
+  return Object.freeze({
+    createHistoryView, parseSystemInject,
+    parseUnattendedMarker, stripUnattendedMarker, isUnattendedTrace, UNATTENDED_MARKER,
+  });
 });

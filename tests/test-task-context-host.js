@@ -239,6 +239,51 @@ test('canonical session ingress runs both ordinary and Commander sessions throug
   assert.equal(runTurns[1].text, '派给工程师改 README');
 });
 
+test('unattended arming rides the first message and only real human text pauses it', async () => {
+  const armed = [];
+  const noted = [];
+  const { host, runTurns } = fixture({
+    armUnattended: (id, spec, text) => armed.push({ id, spec, text }),
+    noteUnattendedUserMessage: id => noted.push(id),
+  });
+  const first = await host.deliverSessionMessage('worker', 'ship it', {
+    clientMsgId: 'unattended-1',
+    unattended: { maxRounds: 5 },
+  });
+  assert.equal(first.ok, true);
+  assert.deepEqual(armed, [{ id: 'worker', spec: { maxRounds: 5 }, text: 'ship it' }]);
+  assert.deepEqual(noted, [], 'the first message arms the supervisor; it must not pause its own start');
+
+  // Every host-authored class must NOT pause the supervisor:
+  // supervisor answer (unattendedSystem), system delivery (🔇), marker-carrying
+  // text, continuation/trigger admissions and an explicit system flag.
+  await host.deliverSessionMessage('worker', 'B', {
+    clientMsgId: 'unattended-2',
+    userInputRequestId: 'usrq-1',
+    unattendedSystem: true,
+  });
+  await host.deliverSessionMessage('worker', '🔇[background] done', { clientMsgId: 'unattended-3' });
+  await host.deliverSessionMessage('worker', '[无人值守 Unattended] do X', { clientMsgId: 'unattended-4' });
+  await host.deliverSessionMessage('worker', 'continue the task', { clientMsgId: 'unattended-5', originContinue: true });
+  await host.deliverSessionMessage('worker', 'cron fired', { clientMsgId: 'unattended-6', originTrigger: true });
+  assert.deepEqual(noted, [], 'no system-injected message pauses the supervisor');
+
+  // A system-flagged supervisor delivery leaves with the 🔇 prefix.
+  await host.deliverSessionMessage('worker', '[无人值守 Unattended] B', {
+    clientMsgId: 'unattended-7',
+    userInputRequestId: 'usrq-2',
+    unattendedSystem: true,
+    system: true,
+  });
+  assert.equal(runTurns.at(-1).text, '🔇[无人值守 Unattended] B');
+  assert.deepEqual(noted, []);
+
+  // A real human message is delivered unchanged and pauses.
+  await host.deliverSessionMessage('worker', '取个新方向', { clientMsgId: 'unattended-8' });
+  assert.equal(runTurns.at(-1).text, '取个新方向');
+  assert.deepEqual(noted, ['worker']);
+});
+
 test('production wires task board and WebSocket chat to the same session ingress', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const turnEngine = fs.readFileSync(

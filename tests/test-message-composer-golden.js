@@ -79,7 +79,6 @@ function codexModelConfigArg(session) {
 // preserves the byte identity buildGatewayPrompt('') + X === buildGatewayPrompt(X).
 const GATEWAY_PREFIX = '<<GATEWAY-BLOCK>>\n\n';
 const DISPATCH_BLOCK = '<<DISPATCH-CONTEXT>>\n';
-const GOAL_BLOCK = '<<GOAL-LIMIT maxRounds=...>>\n\n';
 // The real builder (src/chat/host-prompts.js buildPlanProgressPrompt) is a
 // constant block; a sentinel keeps this gate about PLACEMENT and GATING rather
 // than about its wording, which tests/test-host-prompts.js pins.
@@ -91,7 +90,6 @@ const STAY_ALIVE = '<<stay-alive: 不要退出>>';
 
 function buildGatewayPrompt(userText) { return GATEWAY_PREFIX + userText; }
 function buildDispatchContextPrompt(_sessionId) { return DISPATCH_BLOCK; }
-function buildGoalLimitNote(_limits) { return GOAL_BLOCK; }
 function buildPlanPrompt(_persisted, _sessionName) { return PLAN_BLOCK; }
 
 // The same gate the composer applies (kind 'turn-plan'): every chat turn gets
@@ -115,7 +113,6 @@ function makeDeps(overrides) {
     multiccImgHint: IMG_HINT,
     buildGatewayPrompt,
     buildDispatchContextPrompt,
-    buildGoalLimitNote,
     buildPlanPrompt,
     pendingNotesFor,
     saveNotes,
@@ -134,7 +131,7 @@ function makeDeps(overrides) {
 // ASCII hyphen there, so the notes scenario flags that byte drift (the gate
 // doing exactly its job).
 // ─────────────────────────────────────────────────────────────────────────
-function todayPrompt({ text, persisted, sessionName, goalLimits, bare }, deps) {
+function todayPrompt({ text, persisted, sessionName, bare }, deps) {
   if (bare) return text; // bare (continue/retry) skips layers + suffix
   let promptText = text;
   const pendingNotes = deps.pendingNotesFor(sessionName).slice(0, 10);
@@ -162,10 +159,6 @@ function todayPrompt({ text, persisted, sessionName, goalLimits, bare }, deps) {
   // the goal note.
   const plan = planLayerFor(persisted) ? deps.buildPlanPrompt(persisted, sessionName) : '';
   if (plan) promptText = plan + promptText;
-  if (goalLimits) {
-    const note = deps.buildGoalLimitNote(goalLimits);
-    if (note) promptText = note + promptText;
-  }
   if (persisted.type !== 'aux' && deps.normalizeEffort(persisted.effort) === 'ultracode') {
     promptText = promptText + '\n\n[Use ultracode mode: orchestrate this task with the Workflow tool.]';
   }
@@ -199,7 +192,7 @@ function promptEquivScenario(label, { persisted, opts, notes }) {
   const env = composeMessage({ text, persisted, sessionName, opts, deps });
   const got = renderPrompt(env);
   const want = todayPrompt({ text, persisted, sessionName,
-    goalLimits: opts && opts.goalLimits, bare: opts && opts.bare }, deps);
+    bare: opts && opts.bare }, deps);
   const ok = assert(got === want, `${label}: renderPrompt must equal today's promptText byte-for-byte`);
   if (!ok) {
     console.error('    --- got ---'); console.error(JSON.stringify(got));
@@ -226,8 +219,9 @@ promptEquivScenario('1c +pendingNotes', {
   notes: [{ fromLabel: 'worker-A', body: '已合并 PR #42，请同步' }],
 });
 
-// 1d: with goalLimits {maxRounds, maxBudget}
-promptEquivScenario('1d +goalLimits', {
+// 1d: a retired goalLimits option is inert: it must not add a goal-limit layer
+// (unattended mode lives beside the prompt, not inside it).
+promptEquivScenario('1d retired goalLimits ignored', {
   persisted: basePersisted({ type: null, effort: 'high' }),
   opts: { isFirstTurn: true, mode: 'per-turn', goalLimits: { maxRounds: 5, maxBudget: '500k' } },
 });
@@ -267,10 +261,13 @@ console.log('── Suite 2: envelope structure ──');
   assert(env.systemPrompt === `${IMG_HINT}\n\n${ROLE_PROMPT}`, 'systemPrompt = imgHint+\\n\\n+rolePrompt');
   assert(env.imgHint === IMG_HINT, 'imgHint carried as independent field');
   assert(env.rolePrompt === ROLE_PROMPT, 'rolePrompt carried as independent field');
-  // layers sorted ascending by order: goal(10) < turn-plan(18) < autocommit-status(19) < dispatch(20)
+  // layers sorted ascending by order: turn-plan(18) < autocommit-status(19) <
+  // dispatch(20). The retired goalLimits option must create no layer at all.
   const orders = env.contextLayers.map(l => l.order);
-  assert(eq(orders, [10, 18, 19, 20]),
-    'contextLayers sorted by order asc (goal<plan<autocommit-status<dispatch)');
+  assert(eq(orders, [18, 19, 20]),
+    'contextLayers sorted by order asc (plan<autocommit-status<dispatch)');
+  assert(!env.contextLayers.some(l => l.kind === 'goal-limit'), 'retired goal-limit layer is gone');
+  assert(env.spawnOpts.maxTurns === 0, 'maxTurns stays 0 (retired goal budget)');
   assert(env.spawnOpts.rawModel === 'fable', 'spawnOpts.rawModel = persisted.model (raw, not pre-parsed)');
   assert(env.spawnOpts.rawEffort === 'ultracode', 'spawnOpts.rawEffort = persisted.effort (raw)');
   assert(env.spawnOpts.rawAgent === null, 'spawnOpts.rawAgent = persisted.agent (raw)');
@@ -342,15 +339,13 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
   return result;
 }
 
-function shapeEquiv(label, { adapter, persisted, isFirstTurn, disallowedTools, maxTurns }) {
+function shapeEquiv(label, { adapter, persisted, isFirstTurn, disallowedTools }) {
   const sessionName = 's1';
   delete notesStore[sessionName];
   const deps = makeDeps();
   const opts = {
     isFirstTurn, mode: 'per-turn',
     providerModel: 'fable-wire', providerModels: ['fable-wire'], skipDefaultModel: false,
-    // maxTurns flows through the real channel: goalLimits.maxRounds (server.js:9064).
-    goalLimits: maxTurns ? { maxRounds: maxTurns } : undefined,
     disallowedTools: disallowedTools || [],
   };
   const envelope = composeMessage({ text: '翻译这句话', persisted, sessionName, opts, deps });
@@ -543,15 +538,15 @@ console.log('── Suite 7: turn-plan layer ──');
   assert(!!layer && layer.text.endsWith('\n\n'), '7a layer carries its own trailing separator');
   assert(renderPrompt(plain).split(layer.text).length - 1 === 1, '7a the block reaches the model exactly once');
 
-  // 7b: it sits between the goal note (10) and the dispatch block (20), and the
-  // user message is still the tail.
+  // 7b: it sits before the dispatch block (20), and the user message is still
+  // the tail. A retired goalLimits option changes nothing.
   const layered = composeMessage({
     text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName,
     opts: { isFirstTurn: true, goalLimits: { maxRounds: 5 } }, deps,
   });
   const rendered = renderPrompt(layered);
   const realBlock = buildPlanProgressPrompt();   // suite 7 injects the real builder
-  assert(rendered.indexOf(GOAL_BLOCK) < rendered.indexOf(realBlock), '7b goal note comes first');
+  assert(!rendered.includes('<<GOAL-LIMIT'), '7b no goal note is rendered');
   assert(rendered.indexOf(realBlock) < rendered.indexOf(DISPATCH_BLOCK), '7b plan comes before dispatch context');
   assert(rendered.endsWith(text), '7b the user message is still the tail');
 

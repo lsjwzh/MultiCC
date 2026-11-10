@@ -48,6 +48,7 @@ import '../widgets/message_bubble.dart';
 import '../widgets/merge_hint_dock.dart';
 import '../widgets/thinking_indicator.dart';
 import '../widgets/tour_overlay.dart';
+import '../widgets/unattended_sheet.dart';
 import '../widgets/worktree_status.dart';
 import '../widgets/chat_session_gone_banner.dart';
 import 'chat_width_dialog.dart';
@@ -994,6 +995,8 @@ class _ChatViewState extends State<ChatView> {
                                 enabled:
                                     provider.connectionState ==
                                     ChatConnectionState.connected,
+                                // 无人值守 active：辅助 AI 代答，人手的选项/提交锁定。
+                                unattendedLocked: provider.unattendedLocksInput,
                                 onAnswer: provider.sendMessage,
                                 onSecretSubmit: (value) =>
                                     provider.submitPendingSecret(value),
@@ -1169,6 +1172,19 @@ class _ChatViewState extends State<ChatView> {
                     bottom: 100,
                     child: _PendingInputFab(
                       onTap: provider.expandPendingUserInput,
+                    ),
+                  ),
+                // 无人值守入口：常驻在输入区左上方，和右侧那几个可拖拽的悬浮球
+                // 分居两侧，不压输入框和发送键。状态配色/轮次徽标见
+                // [UnattendedFab]；点开是完整面板。
+                if (provider.sessionName.isNotEmpty)
+                  Positioned(
+                    left: 14,
+                    bottom: 150,
+                    child: UnattendedFab(
+                      state: provider.unattended,
+                      onTap: () =>
+                          showUnattendedSheet(context, provider: provider),
                     ),
                   ),
                 // Background tasks (mobile): draggable floating dock — same

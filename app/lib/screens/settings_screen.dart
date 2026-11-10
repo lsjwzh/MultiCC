@@ -34,7 +34,7 @@ enum SettingsPanel {
   connection('连接与服务地址', ['serverConnection']),
   models('默认模型', ['newSessionSettings']),
   notifications('通知与后台运行', ['notifications']),
-  goal('任务预检', ['goalPrecheck']),
+  goal('无人值守 · 目标预检', ['goalPrecheck']),
   appearance('语言与外观', ['appearance']),
   security('访问安全', ['serverSettings']),
   advanced('开发者模式', ['experienceMode']),

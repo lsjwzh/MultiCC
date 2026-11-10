@@ -790,6 +790,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/session_service_unattended_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/settings_experience_mode_migration_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -902,6 +907,26 @@
     {
       "path": "app/test/transcript_live_folder_test.dart",
       "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/unattended_composer_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/unattended_fab_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/unattended_message_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/unattended_state_test.dart",
+      "tier": "other",
       "lane": "flutter"
     },
     {
@@ -1472,6 +1497,15 @@
     },
     {
       "path": "tests/test-air-tunnel-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-unattended-cdp.js",
       "tier": "flow",
       "lane": "cdp",
       "owner": "npm:test:cdp",
@@ -2488,6 +2522,15 @@
       "owner": "npm:test:integration:isolated",
       "entrypoints": [
         "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-chat-unattended-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
       ]
     },
     {
@@ -6358,6 +6401,33 @@
       "path": "tests/test-ui-layout-routes.js",
       "tier": "other",
       "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-unattended-fifo-order.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-unattended-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-unattended-supervisor.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
     },
     {
       "path": "tests/test-unified-official-providers.js",

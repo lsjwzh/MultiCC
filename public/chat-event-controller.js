@@ -519,7 +519,8 @@
       if (committed && committed.answeredQuestionId) {
         host.consumeUserInputRequestId?.(committed.answeredQuestionId);
       }
-      if (committed && committed.id && committed.role && typeof historyView.commitMessage === 'function') {
+      if (committed && committed.id && (committed.role || committed.kind === 'unattended_trace')
+          && typeof historyView.commitMessage === 'function') {
         const result = historyView.commitMessage(committed, {
           currentElement: state.currentMsgEl,
           lastUserElement: state.lastUserBubble,
@@ -958,6 +959,19 @@
           host.speakNotify?.(completionVoice || display.voice, display.ding);
           break;
         }
+        case 'unattended_state':
+          // 无人值守监督器的状态帧：服务端每次变更都广播，连接时也会重放一次。
+          // null 表示这个会话从未启用过（或被清空），面板据此回到「未启用」。
+          // v2 起每次判定还会追加一条 UI-only 轨迹；后端可以塞在状态帧里，
+          // 也可以单独发 unattended_trace —— 两条路都收。
+          if (message.trace) host.applyUnattendedTrace?.(message.trace);
+          host.applyUnattendedState?.(message.unattended == null ? null : message.unattended);
+          break;
+        case 'unattended_trace':
+          // 判定轨迹的实时广播（Backend notes v2）：entry 带持久 id，渲染一次、
+          // 重连后的历史回放按同一 id 复用节点。缺 entry 时退到 message 文本。
+          host.applyUnattendedTrace?.(message.entry || message.trace || message.message || message);
+          break;
         case 'error':
           if (isRecoverableCodexReconnectErrorText(message.error || '')) {
             host.warn?.('[multicc/chat] suppressed recoverable codex reconnect');

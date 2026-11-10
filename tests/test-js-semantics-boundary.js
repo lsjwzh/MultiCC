@@ -37,11 +37,14 @@ test('turn-request: non-finite turn counts are rejected, not folded to 0', () =>
   }
 });
 
-test('turn-request: -0 survives as a number, and undefined keeps old semantics', () => {
-  const negativeZero = normalizeTurnRequest({
-    sessionId: 's', text: 'x', goalLimits: { maxRounds: -0 },
+test('turn-request: retired goalLimits is ignored, and undefined keeps old semantics', () => {
+  // `-0` is a non-negative integer, so it still names the first turn; the
+  // retired goal budget is no longer projected into the normalized request.
+  const legacy = normalizeTurnRequest({
+    sessionId: 's', text: 'x', turnCount: -0, goalLimits: { maxRounds: -0 },
   });
-  assert.ok(Object.is(negativeZero.goalLimits.maxRounds, -0));
+  assert.equal(legacy.execution.isFirstTurn, true);
+  assert.equal('goalLimits' in legacy, false);
 
   // The bridge passes every projected field; missing ones are `undefined`.
   const implicit = normalizeTurnRequest({

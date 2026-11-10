@@ -72,6 +72,43 @@ test('render shows the card and hides the floating bubble', () => {
   assert.equal(fx.elements.fab.hidden, true);
 });
 
+test('unattended lock disables options, input and submit and shows the AI-answers hint', async () => {
+  const fx = fixture();
+  fx.controller.render({ requestId: 'usrq-9', question: '部署？', options: ['是', '否'] });
+  const optionButtons = () => fx.elements.options.children.filter(child => child.tagName === 'BUTTON');
+  assert.deepEqual(optionButtons().map(button => button.disabled), [false, false], '未锁定时选项可点');
+
+  fx.controller.setUnattendedLock(true);
+  assert.equal(fx.controller.isUnattendedLocked(), true);
+  assert.equal(fx.elements.root.dataset.unattendedLock, '1');
+  assert.deepEqual(optionButtons().map(button => button.disabled), [true, true]);
+  assert.equal(fx.elements.textInput.disabled, true);
+  assert.equal(fx.elements.submitButton.disabled, true);
+  assert.equal(fx.elements.dismissButton.disabled, true);
+  // 收起仍是本地视图动作：锁定期间可以收起来看对话。
+  assert.equal(fx.elements.collapseBtn.disabled, false);
+
+  const hint = fx.elements.root.children.find(child => child.className === 'pending-input-unattended-hint');
+  assert.ok(hint, '锁定时必须出现「AI 会自己回答」提示');
+  assert.equal(hint.hidden, false);
+  assert.equal(hint.textContent, 'pendingInputUnattendedHint');
+  // 锁定期间点击/程序化提交与忽略都无效，也不会打到宿主。
+  assert.equal(fx.controller.submit('是'), false);
+  assert.equal(await fx.controller.dismiss(), false);
+  assert.deepEqual(fx.submitted, []);
+
+  // 解锁恢复原状；提示折起但节点保留（再锁时复用，不叠第二份）。
+  fx.controller.setUnattendedLock(false);
+  assert.equal(fx.controller.isUnattendedLocked(), false);
+  assert.equal(fx.elements.root.dataset.unattendedLock, '');
+  assert.deepEqual(optionButtons().map(button => button.disabled), [false, false]);
+  assert.equal(fx.elements.textInput.disabled, false);
+  assert.equal(fx.elements.submitButton.disabled, false);
+  assert.equal(hint.hidden, true);
+  fx.controller.setUnattendedLock(true);
+  assert.equal(fx.elements.root.children.filter(child => child.className === 'pending-input-unattended-hint').length, 1);
+});
+
 test('collapse hides the card and shows the bubble; expand restores the card', () => {
   const fx = fixture();
   fx.controller.render({ requestId: 'usrq-1', question: '部署？', options: ['是'] });

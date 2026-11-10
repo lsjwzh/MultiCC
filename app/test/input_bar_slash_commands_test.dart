@@ -13,10 +13,9 @@ import 'package:multicc_app/widgets/input_bar.dart';
 /// 输入框的斜杠命令（对齐 web chat-composer.js 的 send()）。
 ///
 /// 真 provider 的 sendMessage 要一条活着的 socket，所以这里只记「它收到了
-/// 什么」：命令有没有被消化、透传的正文是不是原文、goal 标志有没有带上。
+/// 什么」：命令有没有被消化、透传的正文是不是原文。
 class _RecordingProvider extends ChatProvider {
   final List<String> sent = [];
-  final List<bool> sentGoal = [];
   final List<int> clearedKeep = [];
   final List<String> localSystemLines = [];
   ChatConnectionState _connectionState = ChatConnectionState.connected;
@@ -39,12 +38,9 @@ class _RecordingProvider extends ChatProvider {
   String? sendMessage(
     String text, {
     String? clientMsgId,
-    bool goal = false,
-    Map<String, dynamic>? goalLimits,
     String? voiceRaw,
   }) {
     sent.add(text);
-    sentGoal.add(goal);
     return 'test-msg';
   }
 
@@ -158,41 +154,6 @@ void main() {
     manager.dispose();
   });
 
-  testWidgets('/goal <任务> 跳过预检直接以 Goal 模式发送', (tester) async {
-    final settings = await _settings();
-    final manager = SessionManager(settings: settings);
-    final provider = await pumpComposer(tester, manager: manager);
-
-    await _sendText(tester, '/goal 修好登录流程');
-
-    expect(provider.sent, [
-      t('goalExecutionPrompt', {'task': '修好登录流程'}),
-    ]);
-    expect(provider.sentGoal, [true], reason: '必须带上 goal 标志，服务端才按目标模式跑');
-    expect(provider.localSystemLines, isEmpty);
-    expect(_inputText(tester), isEmpty);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    provider.dispose();
-    manager.dispose();
-  });
-
-  testWidgets('/goal 不带任务时只回用法，不发空消息', (tester) async {
-    final settings = await _settings();
-    final manager = SessionManager(settings: settings);
-    final provider = await pumpComposer(tester, manager: manager);
-
-    await _sendText(tester, '/goal');
-
-    expect(provider.sent, isEmpty);
-    expect(provider.localSystemLines, [t('slashGoalUsage')]);
-    expect(_inputText(tester), isEmpty);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    provider.dispose();
-    manager.dispose();
-  });
-
   testWidgets('认不出的斜杠命令照旧透传给 CLI（/compact、/cost 靠 CLI 自己接）', (
     tester,
   ) async {
@@ -203,7 +164,6 @@ void main() {
     await _sendText(tester, '/compact');
 
     expect(provider.sent, ['/compact']);
-    expect(provider.sentGoal, [false]);
     expect(provider.localSystemLines, isEmpty);
 
     await tester.pumpWidget(const SizedBox.shrink());

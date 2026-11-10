@@ -7,6 +7,8 @@ import 'package:http/http.dart' as http;
 import '../../services/air_service.dart';
 import '../../services/attachment_picker.dart';
 import '../../i18n.dart';
+import '../../models/unattended_state.dart';
+import '../../services/goal_precheck.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../../utils/cli_display.dart';
@@ -729,9 +731,7 @@ typedef AirComposerSubmit =
       required String cli,
       required AirTaskRuntime runtime,
       required List<AirRoleBinding> roles,
-      required bool goal,
-      int? goalRounds,
-      int? goalBudget,
+      Map<String, dynamic>? unattended,
     });
 
 /// 目录空态里的「描述任务 → 创建并执行」。跟 Web `#quick-task-form` 一样：这段
@@ -780,8 +780,8 @@ class AirQuickComposer extends StatefulWidget {
   /// 重试就是原样再点一次（同 Web Air 只在成功后清）。
   ///
   /// [text] 是**最终正文**：附件路径已经按 Web 的写法拼在末尾（`\n\n附件：…`）。
-  /// [goalRounds] / [goalBudget] 只在 [goal] 为真时才有值（Web 的
-  /// `goalLimitsFromForm`：0 和空都算「不限」）。
+  /// [unattended] 是无人值守配置（`{goal?, criteria?, maxRounds?}`），只有勾上
+  /// 「无人值守」才有值；它随第一条消息发给服务端（docs/unattended-mode.md）。
   final AirComposerSubmit onSubmit;
 
   @override
@@ -790,16 +790,22 @@ class AirQuickComposer extends StatefulWidget {
 
 class _AirQuickComposerState extends State<AirQuickComposer> {
   final _controller = TextEditingController();
-  // Goal 的两个上限。Web 的输入框默认值就是 200 / 空（`air.html:183-184`），
-  // 「0 或空」都算不限 —— 判定见 [_readLimit]。
-  final _roundsCtrl = TextEditingController(text: '200');
-  final _budgetCtrl = TextEditingController();
+
+  // 无人值守（docs/unattended-mode.md 的创建入口）：勾上之后才展开目标、判断
+  // 标准和轮次上限。都是可选的 —— goal 空着由服务端默认成第一条消息正文。
+  final _unattendedGoalCtrl = TextEditingController();
+  final _unattendedCriteriaCtrl = TextEditingController();
+  final _unattendedRoundsCtrl = TextEditingController(text: '30');
+  bool _unattended = false;
+  bool _prechecking = false;
+  String _precheckError = '';
+  List<String> _precheckNotes = const [];
+  GoalPrecheckConfig _precheckConfig = const GoalPrecheckConfig();
   // 这里存的是「还没有任务的那一份角色」和「还没有任务的那一条线路」，创建时
   // 随任务一起写下去；建完就清空 —— 一个任务的上下文不该悄悄漏进下一个任务
   // （同 Web Air 的 quickRoles / quickRuntime）。
   List<AirRoleBinding> _roles = const [];
   AirTaskRuntime _runtime = const AirTaskRuntime();
-  bool _goal = false;
 
   /// 已经传上去的附件（服务端路径 + 展示名）。创建时按 Web 的写法拼进正文，
   /// 不是单独发一份附件列表。
@@ -839,6 +845,16 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     _voice = VoiceComposerController(
       settings: widget.settings,
       target: _controller,
+    );
+    // 无人值守的「AI 补全判断标准」沿用全局目标预检配置（维度 + 等待预算）。
+    // 拿不到就用默认四项；预检本身失败也只显示原因，不挡创建。
+    unawaited(
+      GoalPrecheckConfig.load(
+        settings: widget.settings,
+        httpClient: widget.httpClient,
+      ).then((config) {
+        if (mounted) setState(() => _precheckConfig = config);
+      }),
     );
     // 🎙 的实时浮层是条件挂载的，所以整块面板要跟着语音状态重建。
     _voice.addListener(_onVoiceChanged);
@@ -907,20 +923,79 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     _focus.dispose();
     _controller.removeListener(_onDraftChanged);
     _controller.dispose();
-    _roundsCtrl.dispose();
-    _budgetCtrl.dispose();
+    _unattendedGoalCtrl.dispose();
+    _unattendedCriteriaCtrl.dispose();
+    _unattendedRoundsCtrl.dispose();
     super.dispose();
   }
 
-  /// 上限输入：空 / 非数字 / 0 都是「不限」（Web 的 `Number(rounds) > 0`）。
-  /// 轮次还有个 200 的硬上限，超了按 200 算（Web 的 `max="200"`）。
-  static int? _readLimit(TextEditingController controller, {int? max}) {
-    final raw = controller.text.trim();
-    if (raw.isEmpty) return null;
-    final value = int.tryParse(raw);
-    if (value == null || value <= 0) return null;
-    if (max != null && value > max) return max;
-    return value;
+  /// 一行一条 → 清洗后的判断标准（最多 12 条，每条截到 300 字，服务端契约）。
+  List<String> _readCriteria() => [
+    for (final line in _unattendedCriteriaCtrl.text.split('\n'))
+      if (line.trim().isNotEmpty)
+        line.trim().length > UnattendedState.maxCriterionLength
+            ? line.trim().substring(0, UnattendedState.maxCriterionLength)
+            : line.trim(),
+  ].take(UnattendedState.maxCriteria).toList();
+
+  /// 轮次上限：默认 30，范围 1..200（服务端 limits 的硬边界）。
+  int _readMaxRounds() {
+    final value = int.tryParse(_unattendedRoundsCtrl.text.trim()) ?? 30;
+    return value.clamp(1, 200);
+  }
+
+  /// 组装随第一条消息发出去的无人值守配置。空 goal 不发（服务端默认用正文）。
+  Map<String, dynamic>? _readUnattended() {
+    if (!_unattended) return null;
+    final goal = _unattendedGoalCtrl.text.trim();
+    final criteria = _readCriteria();
+    return {
+      if (goal.isNotEmpty) 'goal': goal,
+      if (criteria.isNotEmpty) 'criteria': criteria,
+      'maxRounds': _readMaxRounds(),
+    };
+  }
+
+  /// 「AI 补全判断标准」：用目标预检草拟验收标准。目标空着就先用正文。
+  Future<void> _draftCriteria() async {
+    final typedGoal = _unattendedGoalCtrl.text.trim();
+    final task = typedGoal.isNotEmpty ? typedGoal : _controller.text.trim();
+    if (task.isEmpty) {
+      setState(() => _precheckError = '先写一句任务描述，或先填目标');
+      return;
+    }
+    setState(() {
+      _prechecking = true;
+      _precheckError = '';
+      _precheckNotes = const [];
+    });
+    final data = await requestGoalPrecheck(
+      settings: widget.settings,
+      task: task,
+      dimensions: _precheckConfig.dimensions,
+      httpClient: widget.httpClient,
+      precheckWaitMs: _precheckConfig.precheckWaitMs,
+    );
+    if (!mounted) return;
+    setState(() {
+      _prechecking = false;
+      if (data['ok'] == true) {
+        final criteria = goalPrecheckStringList(data['criteria']);
+        if (criteria.isNotEmpty) {
+          _unattendedCriteriaCtrl.text = criteria.join('\n');
+        }
+        final revised = (data['revised'] as String?)?.trim() ?? '';
+        if (typedGoal.isEmpty && revised.isNotEmpty) {
+          _unattendedGoalCtrl.text = revised;
+        }
+        _precheckNotes = [
+          ...goalPrecheckStringList(data['issues']),
+          ...goalPrecheckStringList(data['questions']),
+        ];
+      } else {
+        _precheckError = '预检失败：${data['error'] ?? '未知错误'}';
+      }
+    });
   }
 
   /// 最终正文 = 输入框里的字 + 附件路径（Web `air.js:545` 的写法：`\n\n附件：a b`）。
@@ -990,16 +1065,12 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   Future<void> _submit() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
-    final rounds = _readLimit(_roundsCtrl, max: 200);
-    final budget = _readLimit(_budgetCtrl);
     final sent = await widget.onSubmit(
       text: _composedText(text),
       cli: _runtime.cli,
       runtime: _runtime,
       roles: _roles,
-      goal: _goal,
-      goalRounds: _goal ? rounds : null,
-      goalBudget: _goal ? budget : null,
+      unattended: _readUnattended(),
     );
     if (!sent || !mounted) return;
     // 任务建出去了才清草稿；角色和线路也一起清 —— 一个任务
@@ -1011,18 +1082,21 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
       _runtimeDirty = false;
       _runtime = AirTaskRuntime(cli: _runtime.cli);
       _followLastRuntime();
-      _goal = false;
+      _unattended = false;
       _attachments.clear();
       _attachError = '';
-      _roundsCtrl.text = '200';
-      _budgetCtrl.clear();
+      _unattendedGoalCtrl.clear();
+      _unattendedCriteriaCtrl.clear();
+      _unattendedRoundsCtrl.text = '30';
+      _precheckError = '';
+      _precheckNotes = const [];
     });
     // 贴底模式交完就收键盘：焦点监听会把空草稿的展开态一起收回去。
     if (widget.docked) _focus.unfocus();
   }
 
   /// 贴底收起态：一行输入条（形态同聊天页 InputBar）。聚焦即展开成整块面板，
-  /// 所以这里只留「写一句话 + 发送」和最少的状态提示（🎯 / 附件角标）。
+  /// 所以这里只留「写一句话 + 发送」和最少的状态提示（无人值守 / 附件角标）。
   Widget _buildCollapsedBar() {
     return Container(
       decoration: BoxDecoration(
@@ -1075,10 +1149,14 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               ),
             ),
           ),
-          if (_goal)
+          if (_unattended)
             const Padding(
               padding: EdgeInsets.only(left: 6),
-              child: Text('🎯', style: TextStyle(fontSize: 15)),
+              child: Icon(
+                Icons.smart_toy_rounded,
+                size: 15,
+                color: AppColors.accent,
+              ),
             ),
           if (_attachments.isNotEmpty)
             Padding(
@@ -1205,9 +1283,9 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               ),
             ),
           ),
-          // Goal 的两个上限只在勾上 Goal 之后才出现（Web `renderQuickGoalLimits`
-          // 就是切这个 `hidden`）。不勾时不问 —— 不问就不该显示。
-          if (_goal) ...[
+          // 无人值守的展开面板（勾上才问）：目标（可空 = 用正文）、判断标准
+          // 一行一条、轮次上限，外加一个用目标预检草拟判断标准的按钮。
+          if (_unattended) ...[
             Container(
               margin: const EdgeInsets.only(top: 8),
               padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
@@ -1217,38 +1295,164 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                 border: Border.all(color: AppColors.line),
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text(
-                    '🎯 Goal 模式',
-                    style: TextStyle(
-                      color: AppColors.muted,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  // 320px 上这两个输入框挤不进一行，Wrap 让它按需换行。
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 6,
-                    crossAxisAlignment: WrapCrossAlignment.center,
+                  Row(
                     children: [
-                      _LimitField(
-                        key: const ValueKey('air-quick-goal-rounds'),
-                        label: '轮次上限',
-                        controller: _roundsCtrl,
-                        enabled: !widget.busy,
+                      const Icon(
+                        Icons.smart_toy_rounded,
+                        size: 16,
+                        color: AppColors.accent,
                       ),
-                      _LimitField(
-                        key: const ValueKey('air-quick-goal-budget'),
-                        label: 'token 预算',
-                        controller: _budgetCtrl,
-                        hint: '不限',
-                        enabled: !widget.busy,
+                      const SizedBox(width: 6),
+                      const Text(
+                        '无人值守',
+                        style: TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton.icon(
+                        key: const ValueKey('air-quick-unattended-precheck'),
+                        onPressed: widget.busy || _prechecking
+                            ? null
+                            : _draftCriteria,
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          minimumSize: const Size(0, 30),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        icon: _prechecking
+                            ? const SizedBox(
+                                width: 13,
+                                height: 13,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.auto_awesome, size: 15),
+                        label: const Text(
+                          'AI 补全判断标准',
+                          style: TextStyle(fontSize: 11.5),
+                        ),
                       ),
                     ],
                   ),
+                  const SizedBox(height: 4),
+                  TextField(
+                    key: const ValueKey('air-quick-unattended-goal'),
+                    controller: _unattendedGoalCtrl,
+                    enabled: !widget.busy,
+                    maxLines: 2,
+                    minLines: 1,
+                    maxLength: UnattendedState.maxGoalLength,
+                    style: const TextStyle(
+                      color: AppColors.text,
+                      fontSize: 13,
+                    ),
+                    decoration: const InputDecoration(
+                      hintText: '目标（留空 = 用上面这段任务正文）',
+                      hintStyle: TextStyle(
+                        color: AppColors.faint,
+                        fontSize: 12.5,
+                      ),
+                      isDense: true,
+                      counterText: '',
+                      filled: true,
+                      fillColor: AppColors.panel,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  TextField(
+                    key: const ValueKey('air-quick-unattended-criteria'),
+                    controller: _unattendedCriteriaCtrl,
+                    enabled: !widget.busy,
+                    maxLines: 4,
+                    minLines: 2,
+                    style: const TextStyle(
+                      color: AppColors.text,
+                      fontSize: 13,
+                    ),
+                    decoration: const InputDecoration(
+                      hintText: '判断标准，一行一条（可选，最多 12 条）',
+                      hintStyle: TextStyle(
+                        color: AppColors.faint,
+                        fontSize: 12.5,
+                      ),
+                      isDense: true,
+                      filled: true,
+                      fillColor: AppColors.panel,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      const Text(
+                        '轮次上限',
+                        style: TextStyle(color: AppColors.muted, fontSize: 12),
+                      ),
+                      const SizedBox(width: 6),
+                      SizedBox(
+                        width: 72,
+                        child: TextField(
+                          key: const ValueKey('air-quick-unattended-rounds'),
+                          controller: _unattendedRoundsCtrl,
+                          enabled: !widget.busy,
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                          ],
+                          style: const TextStyle(
+                            color: AppColors.text,
+                            fontSize: 12.5,
+                          ),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 7,
+                            ),
+                            filled: true,
+                            fillColor: AppColors.panel,
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        '1–200，默认 30',
+                        style: TextStyle(color: AppColors.faint, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                  if (_precheckNotes.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        _precheckNotes.map((line) => '• $line').join('\n'),
+                        style: const TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 11.5,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  if (_precheckError.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        _precheckError,
+                        style: const TextStyle(
+                          color: AppColors.danger,
+                          fontSize: 11.5,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -1260,9 +1464,9 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               // 都带 24px 的横向内边距，两份默认值加起来就把这一行撑出去了。
               // 尺寸跟着 Web `air.css:354` 那一行走 —— `.quick-task-actions
               // button { min-height: 32px; padding: 5px 9px; font-size: 11px; }`
-              // —— 四件（🎙 / 附件 / Goal / 提交）都按这套缩。
+              // —— 四件（🎙 / 附件 / 无人值守 / 提交）都按这套缩。
               //
-              // 顺序也照 Web `air.html:186-191`：🎙、📎、🎯，然后是提交。左边这
+              // 顺序也照 Web `air.html:186-191`：🎙、📎、无人值守，然后是提交。左边这
               // 三位装进一个 Wrap：Web 在窄屏上给这一行开了 `flex-wrap: wrap`
               // （`air.css:816`），装不下就换行，而不是硬挤。
               Expanded(
@@ -1314,15 +1518,16 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                       ),
                     ),
                     Tooltip(
-                      message: '以 Goal 模式发送：先预检目标与完成标准',
+                      message: '无人值守：每轮结束后由辅助 AI 判断目标是否达成，未达成自动继续',
                       child: FilterChip(
-                        key: const ValueKey('air-quick-goal'),
-                        label: const Text('🎯 Goal'),
+                        key: const ValueKey('air-quick-unattended'),
+                        label: const Text('无人值守'),
                         labelStyle: const TextStyle(fontSize: 11),
-                        selected: _goal,
+                        avatar: const Icon(Icons.smart_toy_rounded, size: 14),
+                        selected: _unattended,
                         onSelected: widget.busy
                             ? null
-                            : (v) => setState(() => _goal = v),
+                            : (v) => setState(() => _unattended = v),
                         showCheckmark: false,
                         visualDensity: VisualDensity.compact,
                         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -1417,60 +1622,6 @@ class _Pill extends StatelessWidget {
         ),
       ),
     ),
-  );
-}
-
-/// Goal 上限的一个数字输入（Web `#quick-task-goal-rounds` / `-budget`）。
-class _LimitField extends StatelessWidget {
-  const _LimitField({
-    super.key,
-    required this.label,
-    required this.controller,
-    required this.enabled,
-    this.hint,
-  });
-
-  final String label;
-  final TextEditingController controller;
-  final bool enabled;
-  final String? hint;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 12)),
-      const SizedBox(width: 6),
-      SizedBox(
-        width: 72,
-        child: TextField(
-          controller: controller,
-          enabled: enabled,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          style: const TextStyle(color: AppColors.text, fontSize: 12.5),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: const TextStyle(color: AppColors.faint, fontSize: 12),
-            isDense: true,
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 8,
-              vertical: 7,
-            ),
-            filled: true,
-            fillColor: AppColors.panel,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppColors.line),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppColors.line),
-            ),
-          ),
-        ),
-      ),
-    ],
   );
 }
 

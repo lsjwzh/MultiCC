@@ -27,7 +27,6 @@ use std::collections::HashSet;
 
 pub const REQUEST_KIND: &str = "chat-turn-request.v1";
 const MAX_ID_LENGTH: usize = 128;
-const MAX_BUDGET_LENGTH: usize = 64;
 const ROUTE_TEXT_MAX: usize = 256;
 
 const FORBIDDEN_FIELDS: [&str; 8] = [
@@ -170,47 +169,6 @@ fn normalize_string_list(value: Option<&Value>, field_name: &str) -> Result<Valu
         }
     }
     Ok(Value::Array(out))
-}
-
-fn normalize_goal_limits(value: Option<&Value>) -> Result<Value, Failure> {
-    let Some(value) = value.filter(|value| !tags::is_nullish(value)) else {
-        return Ok(Value::Null);
-    };
-    if !value.is_object() || tags::is_tagged_scalar(value) {
-        return Err(Failure::new(
-            "invalid_request",
-            "goalLimits must be an object",
-        ));
-    }
-    let max_rounds = if is_nullish(field(value, "maxRounds")) {
-        Value::Null
-    } else {
-        let number = to_number(field(value, "maxRounds"));
-        if !is_integer(number) || number < 0.0 {
-            return Err(Failure::new(
-                "invalid_request",
-                "goalLimits.maxRounds must be a non-negative integer",
-            ));
-        }
-        js_number_value(number)
-    };
-    let max_budget = if is_nullish(field(value, "maxBudget")) {
-        Value::Null
-    } else {
-        let text = utf16_prefix(
-            js_trim(&js_string(field(value, "maxBudget").expect("maxBudget"))),
-            MAX_BUDGET_LENGTH,
-        );
-        if text.is_empty() {
-            Value::Null
-        } else {
-            Value::String(text)
-        }
-    };
-    let mut out = Map::new();
-    out.insert("maxRounds".to_string(), max_rounds);
-    out.insert("maxBudget".to_string(), max_budget);
-    Ok(Value::Object(out))
 }
 
 fn option_value(value: &Option<String>) -> Value {
@@ -391,10 +349,9 @@ pub fn normalize(input: &Value, resident: &[Value]) -> Result<Value, Failure> {
     identity.insert("clientMsgId".to_string(), option_value(&client_msg_id));
     identity.insert("deliveryId".to_string(), option_value(&delivery_id));
 
-    // Validation order follows the old object literal: task, goalLimits,
-    // background (so callers see the same first error).
+    // Validation order follows the old object literal: task, background (so
+    // callers see the same first error).
     let task = normalize_task_context(input)?;
-    let goal_limits = normalize_goal_limits(field(input, "goalLimits"))?;
     let mut background = Map::new();
     background.insert(
         "taskIds".to_string(),
@@ -416,7 +373,6 @@ pub fn normalize(input: &Value, resident: &[Value]) -> Result<Value, Failure> {
     out.insert("launch".to_string(), Value::Object(launch));
     out.insert("identity".to_string(), Value::Object(identity));
     out.insert("task".to_string(), task);
-    out.insert("goalLimits".to_string(), goal_limits);
     out.insert("background".to_string(), Value::Object(background));
     Ok(Value::Object(out))
 }
@@ -954,22 +910,23 @@ mod tests {
     }
 
     #[test]
-    fn goal_limits_and_background_lists() {
+    fn background_lists_and_retired_goal_limits() {
         let turn = request_json(json!({
             "sessionId": "s1", "text": "x",
-            "goalLimits": { "maxRounds": 3, "maxBudget": " 12 " },
             "bgTaskIds": ["a", "a", 2, null, ""],
         }));
-        assert_eq!(
-            turn["goalLimits"],
-            json!({ "maxRounds": 3, "maxBudget": "12" })
-        );
+        // Goal mode is gone: the field is neither carried nor validated, so a
+        // legacy client sending it still gets a normalized request back.
+        assert!(turn.get("goalLimits").is_none());
         assert_eq!(turn["background"]["taskIds"], json!(["a", "2"]));
         assert_eq!(turn["background"]["toolUseIds"], json!([]));
-        assert_eq!(
-            failure(json!({ "sessionId": "s1", "text": "x", "goalLimits": [] })).1,
-            "goalLimits must be an object"
-        );
+        let legacy = request_json(json!({
+            "sessionId": "s1", "text": "x",
+            "goalLimits": { "maxRounds": 3, "maxBudget": " 12 " },
+        }));
+        assert!(legacy.get("goalLimits").is_none());
+        let bad = request_json(json!({ "sessionId": "s1", "text": "x", "goalLimits": [] }));
+        assert!(bad.get("goalLimits").is_none());
     }
 
     #[test]

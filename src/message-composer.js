@@ -17,7 +17,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'turn-plan'|'autocommit-status'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'|'voice-input'} ContextLayerKind
+ * @typedef {'task-context'|'cli-handoff'|'turn-plan'|'autocommit-status'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'|'voice-input'} ContextLayerKind
  */
 
 /**
@@ -25,7 +25,7 @@
  *
  * @typedef {Object} ContextLayer
  * @property {ContextLayerKind} kind  - discriminator (unique within an envelope)
- * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 18=turn-plan, 19=autocommit-status, 20=gateway/dispatch-context, 25=background-stopped, 30=cross-agent-notes, 35=voice-input
+ * @property {number} order           - explicit sort key: 12=task-context, 15=cli-handoff, 18=turn-plan, 19=autocommit-status, 20=gateway/dispatch-context, 25=background-stopped, 30=cross-agent-notes, 35=voice-input
  * @property {string} text            - complete block INCLUDING its own trailing separator; concatenated with no extra separator
  */
 
@@ -48,7 +48,7 @@
  * @property {string|null} rawModel          - persisted.model (raw; shape resolves via helpers)
  * @property {string|null} rawEffort         - persisted.effort (raw; shape resolves via helpers)
  * @property {string|null|undefined} effectiveModel - host-resolved model used by model-aware effort policy
- * @property {number} maxTurns               - goalLimits.maxRounds || 0
+ * @property {number} maxTurns               - 0 (retained for adapter shape compatibility)
  * @property {boolean} ultracode             - !bare && type!=='aux' && normalizeEffort(effort)==='ultracode'
  * @property {string[]} disallowedTools      - claude-only
  * @property {string|undefined} providerModel
@@ -176,7 +176,6 @@ function validateEnvelope(env) {
  * @param {string} input.sessionName
  * @param {Object} input.opts
  * @param {boolean} input.opts.isFirstTurn          - drives --session-id vs --resume (per-turn)
- * @param {Object|undefined} input.opts.goalLimits  - { maxRounds, maxBudget }
  * @param {string|undefined} input.opts.taskContextSeed - compiled task ledger prefix for a task-bound session's first turn (prompt only; never persisted as the user message)
  * @param {'zh'|'en'|undefined} input.opts.lang - chat page's UI language toggle at send time; appends an output-language instruction to the suffix (never persisted as part of userText)
  * @param {{raw: string}|null|undefined} input.opts.voice - set when the message was dictated (see normalizeVoiceInput); adds the voice-input layer with the raw ASR transcript
@@ -188,7 +187,7 @@ function validateEnvelope(env) {
  * @param {string[]} [input.opts.disallowedTools=[]]
  * @param {Object} input.deps - injected dependencies (avoids a circular require of server.js):
  *   { resolveRolePrompt, multiccImgHint, buildSubagentProviderHint, buildCliHandoffPrompt, buildGatewayPrompt, buildDispatchContextPrompt,
- *     buildGoalLimitNote, buildPlanPrompt?, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
+ *     buildPlanPrompt?, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
  *     chatBroadcast, normalizeEffort, cliEffortLevel, takeBackgroundStopNote? }
  * @returns {MessageEnvelope}
  */
@@ -239,7 +238,6 @@ function buildVoiceInputPrompt(voice, text) {
 function composeMessage({ text, persisted, sessionName, opts, deps }) {
   const {
     isFirstTurn,
-    goalLimits,
     taskContextSeed,
     mode = 'per-turn',
     bare = false,
@@ -269,13 +267,6 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
   // this exact ordering regardless of push sequence.
   const contextLayers = [];
   if (!bare) {
-    // order 10: goal-limit (today server.js:9065-9068). buildGoalLimitNote already
-    // returns text ending in '\n\n'.
-    if (goalLimits) {
-      const note = deps.buildGoalLimitNote(goalLimits);
-      if (note) contextLayers.push({ kind: 'goal-limit', order: 10, text: note });
-    }
-
     // order 12: task-bound cold start. A task's own chat session compiles the
     // task ledger into its FIRST turn only (the caller decides: it sends the
     // seed while the session's native CLI session is still cold). It belongs
@@ -417,7 +408,8 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
       rawModel: persisted.model != null ? persisted.model : null,
       rawEffort: persisted.effort != null ? persisted.effort : null,
       rawAgent: persisted.agent != null ? persisted.agent : null,
-      maxTurns: goalLimits ? (goalLimits.maxRounds || 0) : 0,
+      // Goal mode is gone; adapters still read this field, so it is a constant.
+      maxTurns: 0,
       ultracode,
       disallowedTools,
       providerModel,

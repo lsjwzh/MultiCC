@@ -12,9 +12,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///
 /// 这一组测试就是钉住那几个键名：
 /// * `createTask` 的空字段不发（Web `air.js:1584-1585`）；
-/// * `sendFirstMessage` 的 Goal 上限叫 `maxRounds` / `maxBudget`
-///   （`src/chat/turn-request.js:51-58` 的 `normalizeGoalLimits`），不是
-///   `rounds` / `tokenBudget`。
+/// * `sendFirstMessage` 的无人值守配置只走 `unattended` 一个键
+///   （docs/unattended-mode.md），旧的 `goal` / `goalLimits` 不再出现。
 Future<SettingsService> _settings() async {
   SharedPreferences.setMockInitialValues({
     'multicc_host': 'http://localhost:3000',
@@ -419,36 +418,43 @@ void main() {
       });
     });
 
-    test('Goal 的两个上限用服务端认的键名：maxRounds / maxBudget', () async {
+    test('无人值守配置落在 unattended 键上，不发旧的 goal/goalLimits', () async {
       final settings = await _settings();
       final posts = _sink();
       await _service(settings, posts).sendFirstMessage(
         taskId: 't1',
         text: '开始吧',
         clientMsgId: 'c1',
-        goal: true,
-        goalRounds: 200,
-        goalBudget: 5000,
+        unattended: const {
+          'goal': '完成登录页错误提示',
+          'criteria': ['文案说清原因', 'analyze 通过'],
+          'maxRounds': 200,
+        },
       );
       final body = posts.single['body']!;
-      expect(body['goal'], isTrue);
-      expect(body['goalLimits'], {'maxRounds': 200, 'maxBudget': 5000});
-      // 老键名不能再出现 —— 服务端根本不认，只会在界面上假装生效。
-      expect((body['goalLimits'] as Map).containsKey('rounds'), isFalse);
-      expect((body['goalLimits'] as Map).containsKey('tokenBudget'), isFalse);
+      expect(body['unattended'], {
+        'goal': '完成登录页错误提示',
+        'criteria': ['文案说清原因', 'analyze 通过'],
+        'maxRounds': 200,
+      });
+      // 旧键名不能再出现 —— 服务端只认 unattended（docs/unattended-mode.md）。
+      expect(body.containsKey('goal'), isFalse);
+      expect(body.containsKey('goalLimits'), isFalse);
     });
 
-    test('只给一个上限时，另一个键不出现（服务端按缺省解成不限）', () async {
+    test('unattended 为空时不发这个键（不勾无人值守的普通任务）', () async {
       final settings = await _settings();
       final posts = _sink();
       await _service(settings, posts).sendFirstMessage(
         taskId: 't1',
         text: '开始吧',
         clientMsgId: 'c1',
-        goal: true,
-        goalRounds: 50,
+        unattended: const {},
       );
-      expect(posts.single['body']!['goalLimits'], {'maxRounds': 50});
+      expect(
+        posts.single['body']!.containsKey('unattended'),
+        isFalse,
+      );
     });
 
     test('任务 id 里带斜杠也不会把路径拼坏', () async {

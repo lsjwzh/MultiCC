@@ -216,6 +216,7 @@ const { TurnProgressHeartbeat, createTurnProgress } = require('./src/chat/turn-p
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost } = require('./src/task-context-host');
+const { createUnattendedRuntime } = require('./src/unattended/runtime');
 const { createSessionWorkHost } = require('./src/session-work/host');
 const {
   normalizeTurnRequest,
@@ -1423,7 +1424,7 @@ const classifyStateMachine = createClassifyStateMachine({
   getTaskBoardRuntime: () => taskBoardRuntime, getMessageSearch: () => messageSearchRuntime(),
   getUserInputSignalHost: () => userInputSignalHost,
   getApiErrorHost: () => apiErrorHost,
-  getWaitInjector: () => waitInjector,
+  getWaitInjector: () => waitInjector, getUnattendedHost: () => unattendedHost,
   setTaskState,
   getTaskState,
   // Direct classify-history writer routes through the record owner (late-bound:
@@ -1495,7 +1496,7 @@ const sessionAdmin = createSessionAdminRuntime({
   resolveStateTarget: id => taskShellHost.stateTarget(id),
   getWorkspaceStatus: id => workspaceStatus.get(id),
   getSessionSummary: id => sessionSummaries.get(id),
-  getTaskState, setTaskState,
+  getTaskState, setTaskState, getUnattended: () => unattendedHost,
   pendingNotesFor,
   getAuxRuntime: () => ({ id: AUX_SESSION_ID, queue: auxQueue }),
   loadChatHistory,
@@ -1976,8 +1977,6 @@ const {
   AUX_HISTORY_MAX,
   auxQueue,
   getAuxConfig, clearAuxProvider,
-  resolveGoalLimits,
-  buildGoalLimitNote,
 } = mountAuxGoalRoutes(app, {
   fs,
   crypto,
@@ -2073,7 +2072,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   resolveSessionQueue: (...args) => sessionWorkHost.resolveTask(...args),
   getCommanderMigrationStatus: dirId => commanderMigrationState.statusFor(dirId),
   getSessionRunState: sid => sessionWorkHost?.getRunState(sid) || 'idle', isTaskShellSession: id => taskShellHost.owns(id), taskShellTaskAccess: task => taskShellHost.taskAccess(task), taskShellTaskEntry: id => taskShellHost.taskEntry(id),
-  resolveGoalLimits, buildGoalLimitNote, taskShortCode,
+  taskShortCode,
   // M3 per-task worktree service ports (taskWorktree on the runtime).
   directories, gitWorktreeAdd, gitWorktreeRemove, gitRelocateWorktree, gitMergeBack: (dir, session, opts) => gitMergeBack(dir, session, { ...opts, evidence: workspaceAdmission?.mergeHooks(session.id) }), existsSync: fs.existsSync,
   // Air 任务「移动」：会话工作区搬迁走 session-lifecycle 的同一实现（含 carry）；
@@ -2090,6 +2089,8 @@ const taskContextHost = createTaskContextHost({
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
   runTurn: (sessionId, text, options) => chatTurnEngine.admitChatWork(sessionId, text, options),
+  // Late-bound: the unattended supervisor is composed after this host.
+  armUnattended: (id, spec, text) => unattendedHost?.armFromRequest(id, spec, { defaultGoal: text }), noteUnattendedUserMessage: id => unattendedHost?.noteUserMessage(id),
 });
 // P3 图谱上下文构建：宿主把 board / shell store / 任务级记忆接成 ports，
 // runtime 在任务首轮投递与 refill 时按图谱邻接注入（失败降级为空串）。
@@ -2435,6 +2436,11 @@ const userInputSignalHost = createUserInputSignalHost(
   { getSession: id => chatSessions.get(id), getState: id => getTaskState(persistedSessions.get(id)),
     setState: setTaskState, log: message => console.log(message),
     onResolved: (id, requestId, taskId, extra) => chatBroadcast(id, { type: 'user_input_resolved', requestId, taskId: taskId ?? null, ...(extra || {}) }) });
+
+// ── Unattended mode supervisor (docs/unattended-mode.md; decisions in Rust) ──
+const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions: savePersistedSessionsBestEffort,
+  loadHistory: loadChatHistory, setTaskState, userInputSignalHost, getAuxQueue: () => auxQueue, taskContextHost,
+  waitInjector, triggerPush, chatBroadcast, logger, appendMessage: appendChatMessage, isRunActive: id => sessionWorkHost?.isRunActive(id) === true, hasQueuedDeliveries: id => (sessionWorkHost ? sessionWorkHost.hasQueuedDeliveries(id) : false) });
 sessionWorkHost = createSessionWorkHost({
   runtime: () => orchestrationRuntime,
   getRecord: id => persistedSessions.get(id),
@@ -2623,10 +2629,9 @@ const chatTurnEngine = createChatTurnEngine({
   emitTurnOutcome,
   ensureCurrentTask,
   getTaskState,
-  setTaskState,
+  setTaskState, getUnattendedState: id => unattendedHost.get(id),
   buildGatewayPrompt,
   buildDispatchContextPrompt,
-  buildGoalLimitNote,
   // Per-turn plan/progress layer (kind 'turn-plan'; aux/gateway excluded in the composer).
   // markPlanContextReset re-arms the full block after a transcript prune — see host-prompts.js.
   buildPlanPrompt: buildPlanProgressPrompt,
@@ -2662,8 +2667,6 @@ const chatTurnEngine = createChatTurnEngine({
   effectiveSessionEffort,
   codexStreamDisconnectContinuePrompt,
   CODEX_STREAM_DISCONNECT_CONTINUE_MAX,
-  resolveGoalLimits,
-  auxQueue,
   GATEWAY_ID,
   MULTICC_IMG_HINT,
   CHAT_HISTORY_PAGE,

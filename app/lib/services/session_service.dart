@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/git_commit.dart';
 import '../models/message.dart';
+import '../models/unattended_state.dart';
 import 'settings_service.dart';
 
 Map<String, dynamic> sessionAIConfigPatchBody({
@@ -1055,6 +1056,54 @@ class SessionService {
         .whereType<Map>()
         .map((m) => Map<String, dynamic>.from(m))
         .toList();
+  }
+
+  // ── Unattended mode ──────────────────────────────────────────────────────
+
+  /// GET `/api/sessions/:id/unattended` → `{ok, unattended, limits}`.
+  /// [httpClient] is honoured so widget/service tests can stub the transport.
+  Future<UnattendedSnapshot> fetchUnattended(String id) async {
+    final uri = Uri.parse(
+      _url('/api/sessions/${Uri.encodeComponent(id)}/unattended'),
+    );
+    final client = httpClient;
+    final res = await (client != null
+            ? client.get(uri, headers: _headers)
+            : http.get(uri, headers: _headers))
+        .timeout(const Duration(seconds: 10));
+    final decoded = _tryParseJson(utf8.decode(res.bodyBytes));
+    if (res.statusCode >= 400) {
+      throw Exception(
+        decoded?['error']?.toString() ?? '${res.statusCode}',
+      );
+    }
+    return UnattendedSnapshot.fromJson(decoded ?? const {});
+  }
+
+  /// POST `/api/sessions/:id/unattended` with `{action, ...}` → same shape as
+  /// [fetchUnattended]. Throws on transport/HTTP failure so the caller can show
+  /// the server's reason (`goal_required`, 409 states, …).
+  Future<UnattendedSnapshot> postUnattended(
+    String id,
+    Map<String, dynamic> body,
+  ) async {
+    final uri = Uri.parse(
+      _url('/api/sessions/${Uri.encodeComponent(id)}/unattended'),
+    );
+    final client = httpClient;
+    final res = await (client != null
+            ? client.post(uri, headers: _headers, body: jsonEncode(body))
+            : http.post(uri, headers: _headers, body: jsonEncode(body)))
+        .timeout(const Duration(seconds: 30));
+    final decoded = _tryParseJson(utf8.decode(res.bodyBytes));
+    if (res.statusCode >= 400) {
+      throw Exception(
+        decoded?['error']?.toString() ??
+            decoded?['code']?.toString() ??
+            '${res.statusCode}',
+      );
+    }
+    return UnattendedSnapshot.fromJson(decoded ?? const {});
   }
 
   // ── Directories ──────────────────────────────────────────────────────────

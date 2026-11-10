@@ -306,9 +306,10 @@ function createChatTurnEngine(deps) {
     ensureCurrentTask,
     getTaskState,
     setTaskState,
+    // Unattended mode: read-only state for the connect replay.
+    getUnattendedState = () => null,
     buildGatewayPrompt,
     buildDispatchContextPrompt,
-    buildGoalLimitNote,
     buildPlanPrompt,
     markPlanContextReset,
     appendChatMessage,
@@ -346,8 +347,6 @@ function createChatTurnEngine(deps) {
     effectiveSessionEffort,
     codexStreamDisconnectContinuePrompt,
     CODEX_STREAM_DISCONNECT_CONTINUE_MAX,
-    resolveGoalLimits,
-    auxQueue,
     GATEWAY_ID,
     MULTICC_IMG_HINT,
     CHAT_HISTORY_PAGE,
@@ -781,7 +780,6 @@ function createChatTurnEngine(deps) {
             originTrigger: opts.originTrigger === true
               || !!(!opts.originDispatchId && inheritedLineage && inheritedLineage.kind === 'trigger'),
             originContinue: opts.originContinue,
-            goalLimits: opts.goalLimits,
             bgTaskIds: opts.bgTaskIds,
             bgToolUseIds: opts.bgToolUseIds,
             ...taskContextHost.turnOptions(opts),
@@ -830,7 +828,6 @@ function createChatTurnEngine(deps) {
     const originDispatchId = turnRequest.origin.operationId;
     const originContinue = turnRequest.launch.reason === 'continue';
     const directUserInput = opts.directUserInput === true;
-    const goalLimits = turnRequest.goalLimits;
     const bgTaskIds = turnRequest.background.taskIds;
     const bgToolUseIds = turnRequest.background.toolUseIds;
     let requestedTask = turnRequest.task;
@@ -1156,14 +1153,14 @@ function createChatTurnEngine(deps) {
       envelope = composeMessage({
         text, persisted, sessionName,
         opts: {
-          isFirstTurn, goalLimits, taskContextSeed: managed?.seed ?? taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
+          isFirstTurn, taskContextSeed: managed?.seed ?? taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
           mode: isResidentSession(cs.cli, persisted) ? 'streaming' : 'per-turn',
           lang: opts.lang, voice: opts.voice,
         },
         deps: {
           resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT, buildSubagentProviderHint,
           buildCliHandoffPrompt: (session) => managed ? '' : renderHandoffPrompt(session && session.pendingCliHandoff),
-          buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
+          buildGatewayPrompt, buildDispatchContextPrompt,
           buildPlanPrompt,
           pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
           normalizeEffort, cliEffortLevel,
@@ -2556,6 +2553,11 @@ function createChatTurnEngine(deps) {
     try {
       getSessionWorkHost().replayState(sessionName, event => sendWs(ws, event));
     } catch (_) {}
+    // Unattended state is replayed on every connect so the floating panel is
+    // correct after a refresh even when the last change predates this socket.
+    try {
+      sendWs(ws, { type: 'unattended_state', unattended: getUnattendedState(sessionName) || null });
+    } catch (_) {}
 
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
@@ -2638,7 +2640,13 @@ function createChatTurnEngine(deps) {
             });
             return;
           }
-          const turnOpts = msg.goal ? { goalLimits: resolveGoalLimits(msg.goalLimits) } : {};
+          // Unattended mode replaces Goal mode. The old Flutter builds still
+          // send `goal:true` + `goalLimits`: that maps to `{ maxRounds }` and
+          // nothing else (the message text becomes the goal).
+          const unattended = msg.unattended && typeof msg.unattended === 'object'
+            ? msg.unattended
+            : (msg.goal ? { maxRounds: msg.goalLimits && msg.goalLimits.maxRounds } : null);
+          const turnOpts = unattended ? { unattended } : {};
           if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) turnOpts.clientMsgId = msg.clientMsgId;
           if (typeof msg.userInputRequestId === 'string' && msg.userInputRequestId.trim()) {
             turnOpts.userInputRequestId = msg.userInputRequestId.trim();

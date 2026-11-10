@@ -6,7 +6,6 @@ const {
   estimateTokens, snapshotHistory, renderSnapshots, verifySnapshot, hash,
 } = require('./context');
 const { shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
-const { resolveGoalLimits } = require('../routes/aux-goal');
 const { displayMessages, displayTask } = require('../task-display-attribution');
 
 function failure(code, message = code, status = 409) {
@@ -460,7 +459,10 @@ function createTaskShellRuntime(ports) {
       contextTaskIds: list('contextTaskIds'), dependsOn: list('dependsOn'),
       turnId: raw.turnId == null ? null : identifier(raw.turnId, 'turnId'),
       requestId: raw.requestId == null ? null : identifier(raw.requestId, 'requestId') };
-    if (raw.goal === true || raw.goalLimits != null) result.goalLimits = resolveGoalLimits(raw.goalLimits);
+    // Unattended mode replaces Goal mode. First-message arming only; the
+    // legacy `goal:true` + `goalLimits` shape keeps nothing but maxRounds.
+    if (raw.unattended && typeof raw.unattended === 'object') result.unattended = raw.unattended;
+    else if (raw.goal === true) result.unattended = { maxRounds: raw.goalLimits && raw.goalLimits.maxRounds };
     // Per-message presentation hints carried to composeMessage: the send-time
     // UI language and the voice-dictation marker with its raw ASR transcript.
     if (raw.lang === 'zh' || raw.lang === 'en') result.lang = raw.lang;
@@ -617,7 +619,7 @@ function createTaskShellRuntime(ports) {
           taskSource: 'task-shell',
           clientMsgId: receipt.id, idempotencyKey: receipt.id, taskShellReceiptId: receipt.id,
           receivedAt: receipt.createdAt,
-          ...(p.goalLimits ? { goalLimits: p.goalLimits } : {}),
+          ...(p.unattended ? { unattended: p.unattended } : {}),
           ...(p.lang ? { lang: p.lang } : {}), ...(p.voice ? { voice: p.voice } : {}),
           ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
           taskContextSeed: '',

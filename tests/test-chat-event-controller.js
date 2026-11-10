@@ -134,6 +134,14 @@ function controllerFixture(hostOverrides) {
     updateToolInput(tool) { calls.push(['tool-input', tool.inputJson]); },
     addToolResult(tool, text, error) { calls.push(['tool-result', tool.id, text, !!error]); },
     tagLatestMessage(role, id) { calls.push(['tag', role, id]); },
+    commitMessage(message, hostState = {}) {
+      calls.push(['commit', message]);
+      return {
+        node: null,
+        currentElement: hostState.currentElement || null,
+        lastUserElement: hostState.lastUserElement || null,
+      };
+    },
     findByClientMsgId(clientMsgId) { return clientMessages.get(clientMsgId) || null; },
     visibleIds() { return []; },
     clearMessages() { calls.push('clear'); },
@@ -235,6 +243,75 @@ test('event module exports a frozen narrow API and codex reconnect classifier', 
     'Codex 出错：Reconnecting... 1/5 (stream disconnected before completion)',
   ), true);
   assert.equal(eventApi.isRecoverableCodexReconnectErrorText('permission denied'), false);
+});
+
+test('unattended_state is forwarded to the host, including the null reset', () => {
+  const seen = [];
+  const fixture = controllerFixture({
+    applyUnattendedState(value) { seen.push(value); },
+  });
+  const state = { status: 'active', goal: 'ship it', criteria: [], maxRounds: 30, rounds: 0 };
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({ type: 'unattended_state', unattended: state }, generation);
+  fixture.controller.handleEvent({ type: 'unattended_state', unattended: null }, generation);
+  // 缺字段也按 null 归一：旧服务端可能只发 type，面板要回到「未启用」而不是沿用旧状态。
+  fixture.controller.handleEvent({ type: 'unattended_state' }, generation);
+  assert.deepEqual(seen, [state, null, null]);
+});
+
+test('unattended_trace broadcasts forward the persisted entry for dedupe', () => {
+  const seen = [];
+  const fixture = controllerFixture({
+    applyUnattendedTrace(trace) { seen.push(trace); },
+  });
+  const generation = fixture.controller.beginGeneration();
+  const entry = {
+    id: 'trace-1', role: 'system', kind: 'unattended_trace',
+    content: '[无人值守 Unattended] 判定：继续 · 需要构建', ts: 1234, taskId: 't1',
+  };
+  fixture.controller.handleEvent({
+    type: 'unattended_trace', kind: 'unattended_trace', message: entry.content, entry,
+  }, generation);
+  // 缺 entry 的旧服务端只发文本：按整帧退化成一条轨迹，行仍要出现。
+  fixture.controller.handleEvent({ type: 'unattended_trace', message: '判定：完成' }, generation);
+  assert.deepEqual(seen, [entry, '判定：完成']);
+});
+
+test('unattended_state carries an optional trace before the state itself', () => {
+  const order = [];
+  const fixture = controllerFixture({
+    applyUnattendedState(value) { order.push(['state', value.status]); },
+    applyUnattendedTrace(trace) { order.push(['trace', trace.id]); },
+  });
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'unattended_state',
+    unattended: { status: 'achieved' },
+    trace: { id: 'trace-2', content: '[无人值守 Unattended] 目标达成' },
+  }, generation);
+  assert.deepEqual(order, [['trace', 'trace-2'], ['state', 'achieved']]);
+});
+
+test('chat_msg_meta of an unattended_trace commits without a speaking role', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  const entry = {
+    id: 'trace-3', kind: 'unattended_trace',
+    content: '[无人值守 Unattended] 判定：完成', ts: 2345,
+  };
+  fixture.controller.handleEvent({ type: 'chat_msg_meta', message: entry }, generation);
+  assert.deepEqual(
+    fixture.calls.filter(call => Array.isArray(call) && call[0] === 'commit').at(-1),
+    ['commit', entry],
+  );
+  // 没有 message 的旧 meta 帧仍然走 tagLatestMessage 路径（不发明一条提交）。
+  fixture.controller.handleEvent({
+    type: 'chat_msg_meta', id: 'msg-9', role: 'assistant',
+  }, generation);
+  assert.deepEqual(
+    fixture.calls.filter(call => Array.isArray(call) && call[0] === 'tag').at(-1),
+    ['tag', 'assistant', 'msg-9'],
+  );
 });
 
 test('progress heartbeat formatter exposes only safe bounded status fields', () => {

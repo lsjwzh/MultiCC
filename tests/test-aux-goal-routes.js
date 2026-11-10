@@ -12,8 +12,6 @@ const {
   AUX_CONCURRENCY_MAX,
   resolveAuxConcurrency,
   normalizeGoalConfig,
-  resolveGoalLimits,
-  buildGoalLimitNote,
   parseGoalVerdict,
   safeAuxErrorMessage,
   mountAuxGoalRoutes,
@@ -597,10 +595,11 @@ test('an unhealthy observation never suppresses the next Aux request', async () 
   assert.equal(harness.runtime.auxQueue.isUnhealthy(), false);
 });
 
-test('Goal helpers keep clamping, framing and defensive verdict parsing', () => {
-  assert.deepEqual(resolveGoalLimits({ maxRounds: 999, maxBudget: -2 }), { maxRounds: 200, maxBudget: 0 });
-  assert.match(buildGoalLimitNote({ maxRounds: 3, maxBudget: 50 }), /cap of 3 agent turns/);
-  assert.match(buildGoalLimitNote({ maxRounds: 3, maxBudget: 50 }), /50/);
+test('Goal precheck helpers keep clamping and defensive verdict parsing', () => {
+  assert.equal(require('../src/routes/aux-goal').resolveGoalLimits, undefined,
+    'the retired goal-limit helper is gone (unattended mode owns the budget)');
+  assert.equal(require('../src/routes/aux-goal').buildGoalLimitNote, undefined,
+    'the retired goal-limit prompt note is gone');
   assert.deepEqual(normalizeGoalConfig({ dimensions: { scope: false }, minScore: 101 }), {
     dimensions: { objective: true, criteria: true, scope: false, executable: true },
     minScore: 100,
@@ -702,13 +701,14 @@ test('an interactive goal precheck jumps ahead of already-queued background Aux 
 
 // The web client must consume the published budget rather than repeat the number.
 // Two hard-coded copies is exactly how this broke: 15s of generic client budget
-// against a ~18s Aux call.
+// against a ~18s Aux call. The precheck moved from chat.js into the unattended
+// panel module (Goal mode's 🎯 modal is gone) and must keep reading the same budget.
 test('the web precheck consumes the published wait budget instead of hard-coding one', () => {
-  const host = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.js'), 'utf8');
+  const host = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat-unattended.js'), 'utf8');
   const settingsRead = host.slice(host.indexOf("'/api/settings/goal'"));
-  assert.ok(settingsRead.includes('precheckWaitMs'), 'loadGoalDims reads precheckWaitMs');
+  assert.ok(settingsRead.includes('precheckWaitMs'), 'loadPrecheckBudget reads precheckWaitMs');
   assert.ok(host.includes('timeoutMs: goalPrecheckTimeoutMs()'), 'precheck uses the derived budget');
-  const call = host.slice(host.indexOf("'/api/goal/precheck'"), host.indexOf('renderGoalVerdict'));
+  const call = host.slice(host.indexOf("'/api/goal/precheck'"), host.indexOf('renderPrecheck'));
   assert.ok(!/timeoutMs:\s*\d+/.test(call), 'no numeric literal on the precheck call');
 });
 

@@ -1,8 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:http/http.dart' as http;
 
 import '../i18n.dart';
 import '../providers/chat_provider.dart';
@@ -11,23 +9,15 @@ import '../models/message.dart';
 import '../services/annotation_inbox.dart';
 import '../services/attachment_picker.dart';
 import '../services/chat_service.dart';
-import '../services/goal_precheck.dart';
 import '../services/voice_launch_service.dart';
 import '../utils/dispatch_hint.dart';
 import 'chat_runtime_panels.dart';
 import 'dispatch_mode_selector.dart';
 import 'scheduled_send_dock.dart';
 import 'scheduled_send_store.dart';
+import 'unattended_sheet.dart';
 import 'voice_composer.dart';
 import 'run_config/run_chip.dart';
-
-// Goal precheck dimension keys → short chip labels (web/app kept in sync).
-Map<String, String> get _goalDimShort => {
-  'objective': t('goalObjective'),
-  'criteria': t('goalCriteria'),
-  'scope': t('goalScope'),
-  'executable': t('goalExecutable'),
-};
 
 class InputBar extends StatefulWidget {
   /// 草稿和光标可以由外面拿着：手机上空闲时输入区会折成一条胶囊，胶囊要
@@ -268,24 +258,21 @@ class _InputBarState extends State<InputBar> {
       case '/help':
         provider.addLocalSystemMessage(t('slashHelp'));
         return null;
-      case '/goal':
-        final split = input.indexOf(' ');
-        final task = split == -1 ? '' : input.substring(split + 1).trim();
-        if (task.isEmpty) {
-          provider.addLocalSystemMessage(t('slashGoalUsage'));
-          return null;
-        }
-        // 跳过 🎯 预检直接执行 —— web 的 `/goal <任务>` 也是这样。正文换成
-        // goal 包装后仍走下面那条完整流程，附件与派发装饰的拼装方式不变。
-        return _goalWrap(task);
       default:
         return input;
     }
   }
 
   void _send(ChatProvider provider, {required bool commander}) {
+    // v2：无人值守 active 时输入区锁死（真人先「暂停并接管」）。这里再兜一道：
+    // 桌面键盘/自动化仍可能把 Enter 送进来，不能绕开锁。
+    if (provider.unattendedLocksInput) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('unattendedInputLocked'))),
+      );
+      return;
+    }
     var text = _ctrl.text.trim();
-    var goal = false;
     if (text.startsWith('/')) {
       // 命令判定只看输入框里的原文：附件路径是发出时才拼上去的（web 同理）。
       final command = text.split(RegExp(r'\s+')).first.toLowerCase();
@@ -297,7 +284,6 @@ class _InputBarState extends State<InputBar> {
         return;
       }
       text = resolved;
-      goal = command == '/goal';
     }
     if (!_guardConnectedSend(provider)) return;
     // 听写来源：提交听写时记下的原始转写。发出去后连同反馈一起清掉。
@@ -313,7 +299,7 @@ class _InputBarState extends State<InputBar> {
     final userFinal = text;
     // 装饰必须在交给 provider 之前：气泡与真正发出去的 payload 用同一个字符串。
     text = decorateDispatchHint(text, enabled: commander, mode: _dispatchMode);
-    provider.sendMessage(text, goal: goal, voiceRaw: voiceRaw);
+    provider.sendMessage(text, voiceRaw: voiceRaw);
     if (voiceRaw != null) _voice.reportVoiceFeedback(userFinal);
     _voice.clearPendingVoice();
     _ctrl.clear();
@@ -455,528 +441,6 @@ class _InputBarState extends State<InputBar> {
     }
   }
 
-  // ── Goal mode: AI precheck before sending ──
-  // Mirrors the web chat's 🎯 flow: the aux-AI judges whether the task is
-  // goal-ready (clear objective, clear done-criteria, bounded, executable),
-  // proposes a rewrite, then we wrap the accepted task in a short goal-mode
-  // instruction and send it through the normal sendMessage() path.
-
-  /// 服务端公布的预检等待上限（/api/settings/goal 的 precheckWaitMs）。null = 旧
-  /// 服务端没给，或还没拉到设置，用 goal_precheck.dart 里的兜底值。
-  int? _goalPrecheckWaitMs;
-
-  String _goalWrap(String task) {
-    return t('goalExecutionPrompt', {'task': task});
-  }
-
-  List<String> _strList(dynamic v) => (v is List)
-      ? v.map((e) => e.toString()).where((s) => s.trim().isNotEmpty).toList()
-      : <String>[];
-
-  Future<Map<String, dynamic>> _fetchGoalPrecheck(
-    String task,
-    Map<String, bool> dims,
-  ) async {
-    try {
-      final settings = context.read<ChatProvider>().settings;
-      final uri = Uri.parse(settings.buildHttpUrl('/api/goal/precheck'));
-      final headers = <String, String>{'Content-Type': 'application/json'};
-      if (settings.token.isNotEmpty) headers['X-Access-Token'] = settings.token;
-      final res = await http
-          .post(
-            uri,
-            headers: headers,
-            body: jsonEncode({'task': task, 'dimensions': dims}),
-          )
-          // The server queues this behind other Aux work and then gives the
-          // model its own budget; this waits for that budget plus slack, so the
-          // server's explicit AUX_TIMEOUT message wins the race instead of a
-          // bare client abort (see services/goal_precheck.dart).
-          .timeout(
-            Duration(milliseconds: goalPrecheckTimeoutMs(_goalPrecheckWaitMs)),
-          );
-      if (res.statusCode != 200) {
-        // The goal routes answer with JSON on every branch, so prefer the
-        // server's own words over a bare status code.
-        String detail = '';
-        try {
-          final body = jsonDecode(utf8.decode(res.bodyBytes));
-          if (body is Map && body['error'] != null) detail = "${body['error']}";
-        } catch (_) {}
-        return {
-          'ok': false,
-          'error': detail.isNotEmpty ? detail : 'HTTP ${res.statusCode}',
-        };
-      }
-      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-    } catch (e) {
-      return {'ok': false, 'error': '$e'};
-    }
-  }
-
-  // Load the global goal-config dimension defaults into [dims].
-  Future<void> _loadGoalDimsInto(Map<String, bool> dims) async {
-    try {
-      final settings = context.read<ChatProvider>().settings;
-      final headers = <String, String>{};
-      if (settings.token.isNotEmpty) headers['X-Access-Token'] = settings.token;
-      final res = await http
-          .get(
-            Uri.parse(settings.buildHttpUrl('/api/settings/goal')),
-            headers: headers,
-          )
-          .timeout(const Duration(seconds: 15));
-      if (res.statusCode != 200) return;
-      final d = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-      // 预检预算跟着服务端走（它拥有 Aux 队列）；旧服务端没这个字段就留 null。
-      final wait = d['precheckWaitMs'];
-      _goalPrecheckWaitMs = wait is num ? wait.toInt() : null;
-      final g = (d['dimensions'] as Map?) ?? {};
-      for (final k in const ['objective', 'criteria', 'scope', 'executable']) {
-        dims[k] = g[k] != false;
-      }
-    } catch (_) {}
-  }
-
-  Widget _goalField(TextEditingController ctrl, int maxLines, String hint) {
-    return TextField(
-      controller: ctrl,
-      maxLines: maxLines,
-      style: const TextStyle(
-        color: Color(0xFF233249),
-        fontSize: 14,
-        height: 1.4,
-      ),
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
-        filled: true,
-        fillColor: const Color(0xFFf4f8fd),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: Color(0xFFdce6f1)),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: Color(0xFFdce6f1)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: Color(0xFF1267b5)),
-        ),
-      ),
-    );
-  }
-
-  // Compact labeled number field for the per-send execution limits.
-  Widget _goalNumField(TextEditingController ctrl, String label, String hint) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-        ),
-        const SizedBox(height: 4),
-        TextField(
-          controller: ctrl,
-          keyboardType: TextInputType.number,
-          style: const TextStyle(color: Color(0xFF233249), fontSize: 14),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: const TextStyle(color: Color(0xFF8b9cae)),
-            isDense: true,
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 10,
-              vertical: 10,
-            ),
-            filled: true,
-            fillColor: const Color(0xFFf4f8fd),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFdce6f1)),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFdce6f1)),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFF1267b5)),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _goalSection(String title, List<String> items) {
-    if (items.isEmpty) return const SizedBox.shrink();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 8, bottom: 2),
-          child: Text(
-            title,
-            style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-          ),
-        ),
-        ...items.map(
-          (x) => Padding(
-            padding: const EdgeInsets.only(left: 4, top: 2),
-            child: Text(
-              '• $x',
-              style: const TextStyle(
-                color: Color(0xFF31465b),
-                fontSize: 12,
-                height: 1.4,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _showGoalSheet(ChatProvider provider) async {
-    final taskCtrl = TextEditingController(text: _ctrl.text.trim());
-    final revisedCtrl = TextEditingController();
-    // Per-send execution limits (no global config): default 200 rounds, no budget.
-    final roundsCtrl = TextEditingController(text: '200');
-    final budgetCtrl = TextEditingController();
-    final Map<String, bool> dims = {
-      'objective': true,
-      'criteria': true,
-      'scope': true,
-      'executable': true,
-    };
-    await _loadGoalDimsInto(dims); // default checkboxes to the global config
-    if (!mounted) return;
-    bool checking = false;
-    Map<String, dynamic>? verdict; // null until prechecked
-    String? error;
-
-    // Collect the per-send limits; blank → omitted so the server uses its hard
-    // default (rounds=200), 0 → explicitly unlimited for that dimension.
-    Map<String, dynamic> collectLimits() {
-      final limits = <String, dynamic>{};
-      final r = int.tryParse(roundsCtrl.text.trim());
-      if (r != null) limits['maxRounds'] = r;
-      final b = int.tryParse(budgetCtrl.text.trim());
-      if (b != null) limits['maxBudget'] = b;
-      return limits;
-    }
-
-    void sendGoal(String task) {
-      final t = task.trim();
-      if (t.isEmpty || !_guardConnectedSend(provider)) return;
-      final limits = collectLimits();
-      Navigator.pop(context);
-      provider.sendMessage(_goalWrap(t), goal: true, goalLimits: limits);
-      _ctrl.clear();
-      setState(() {
-        _hasText = false;
-        _attachments.clear();
-      });
-    }
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFFffffff),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setSheetState) {
-            final ok = verdict != null && verdict!['verdict'] == 'ok';
-            return Padding(
-              padding: EdgeInsets.fromLTRB(
-                16,
-                16,
-                16,
-                MediaQuery.of(ctx).viewInsets.bottom + 16,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      '🎯 ${t('goalSendTitle')}',
-                      style: const TextStyle(
-                        color: Color(0xFF20364d),
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      t('goalSendHint'),
-                      style: const TextStyle(
-                        color: Color(0xFF6f8096),
-                        fontSize: 12,
-                        height: 1.4,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      t('task'),
-                      style: const TextStyle(
-                        color: Color(0xFF6f8096),
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    _goalField(taskCtrl, 4, t('goalTaskHint')),
-                    const SizedBox(height: 10),
-                    Text(
-                      t('goalDimensionsOnce'),
-                      style: const TextStyle(
-                        color: Color(0xFF6f8096),
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: _goalDimShort.entries.map((e) {
-                        final on = dims[e.key] ?? true;
-                        return FilterChip(
-                          label: Text(
-                            e.value,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          selected: on,
-                          onSelected: (v) =>
-                              setSheetState(() => dims[e.key] = v),
-                          backgroundColor: const Color(0xFFf8fbff),
-                          selectedColor: const Color(0xFF0965cf),
-                          checkmarkColor: Colors.white,
-                          labelStyle: TextStyle(
-                            color: on ? Colors.white : const Color(0xFF6f8096),
-                            fontSize: 12,
-                          ),
-                          side: const BorderSide(color: Color(0xFFdce6f1)),
-                          materialTapTargetSize:
-                              MaterialTapTargetSize.shrinkWrap,
-                          visualDensity: VisualDensity.compact,
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      t('goalLimits'),
-                      style: const TextStyle(
-                        color: Color(0xFF6f8096),
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _goalNumField(
-                            roundsCtrl,
-                            t('roundLimit'),
-                            '40',
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _goalNumField(
-                            budgetCtrl,
-                            t('tokenBudget'),
-                            t('unlimited'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (verdict != null) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: ok
-                              ? const Color(0xFFedf8f1)
-                              : const Color(0xFFfff8eb),
-                          border: Border.all(
-                            color: ok
-                                ? const Color(0xFF2ba67a)
-                                : const Color(0xFFa85a25),
-                          ),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          '${ok ? '✅ ${t('goalQualified')}' : '⚠️ ${t('goalNeedsWork')}'} (${t('goalScore', {'score': '${verdict!['score'] ?? '-'}'})})',
-                          style: TextStyle(
-                            color: ok
-                                ? const Color(0xFF2ba67a)
-                                : const Color(0xFFa85a25),
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      _goalSection(
-                        t('goalIssues'),
-                        _strList(verdict!['issues']),
-                      ),
-                      _goalSection(
-                        t('goalQuestions'),
-                        _strList(verdict!['questions']),
-                      ),
-                      _goalSection(
-                        t('goalSuggestedCriteria'),
-                        _strList(verdict!['criteria']),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        t('goalRevised'),
-                        style: const TextStyle(
-                          color: Color(0xFF6f8096),
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      _goalField(revisedCtrl, 5, t('goalRevisedHint')),
-                    ],
-                    if (error != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        error!,
-                        style: const TextStyle(
-                          color: Color(0xFFb64e43),
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () => Navigator.pop(ctx),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: const Color(0xFF6f8096),
-                              side: const BorderSide(color: Color(0xFFdce6f1)),
-                            ),
-                            child: Text(t('cancel')),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: checking
-                                ? null
-                                : () async {
-                                    final task = taskCtrl.text.trim();
-                                    if (task.isEmpty) {
-                                      setSheetState(
-                                        () => error = t('taskRequired'),
-                                      );
-                                      return;
-                                    }
-                                    setSheetState(() {
-                                      checking = true;
-                                      error = null;
-                                    });
-                                    final data = await _fetchGoalPrecheck(
-                                      task,
-                                      dims,
-                                    );
-                                    setSheetState(() {
-                                      checking = false;
-                                      if (data['ok'] == true) {
-                                        verdict = data;
-                                        final r = (data['revised'] as String?)
-                                            ?.trim();
-                                        revisedCtrl.text =
-                                            (r != null && r.isNotEmpty)
-                                            ? r
-                                            : task;
-                                      } else {
-                                        error = t('goalPrecheckFailed', {
-                                          'error':
-                                              '${data['error'] ?? t('unknownError')}',
-                                        });
-                                      }
-                                    });
-                                  },
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: const Color(0xFF6f8096),
-                              side: const BorderSide(color: Color(0xFFdce6f1)),
-                            ),
-                            child: checking
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Color(0xFF6f8096),
-                                    ),
-                                  )
-                                : Text(
-                                    verdict == null
-                                        ? t('precheck')
-                                        : t('recheck'),
-                                  ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (verdict != null || error != null) ...[
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextButton(
-                              onPressed: () => sendGoal(taskCtrl.text),
-                              style: TextButton.styleFrom(
-                                foregroundColor: const Color(0xFF6f8096),
-                              ),
-                              child: Text(t('sendOriginal')),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            flex: 2,
-                            child: ElevatedButton(
-                              onPressed: () => sendGoal(
-                                verdict != null
-                                    ? (revisedCtrl.text.isNotEmpty
-                                          ? revisedCtrl.text
-                                          : taskCtrl.text)
-                                    : taskCtrl.text,
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF0965cf),
-                                foregroundColor: Colors.white,
-                              ),
-                              child: Text(
-                                ok ? t('sendGoal') : t('confirmAndSend'),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
@@ -994,7 +458,13 @@ class _InputBarState extends State<InputBar> {
     final isStreaming = provider.isStreaming;
     final isConnected =
         provider.connectionState == ChatConnectionState.connected;
-    final canSend = (_hasText || _attachments.isNotEmpty) && isConnected;
+    // 无人值守 active：输入区整体锁住（文本/发送/附件/语音/斜杠）。这只是
+    // 叠加在「有内容 + 已连接」之上的又一个禁用原因 —— 流式中的取消键不受影响。
+    final unattendedLocked = provider.unattendedLocksInput;
+    final canSend =
+        !unattendedLocked &&
+        (_hasText || _attachments.isNotEmpty) &&
+        isConnected;
     // 语音输入要跟着当前会话的设置走（切会话后 token/host/lang 都会换）。
     _voice.syncSettings(provider.settings);
 
@@ -1114,6 +584,9 @@ class _InputBarState extends State<InputBar> {
                 child: VoiceDictationHud(controller: _voice),
               ),
 
+            // 无人值守 banner 紧贴输入框上方：active 时说明「为什么锁」并给
+            // 「暂停并接管」；暂停/终态时给小号的「继续无人值守」。
+            UnattendedComposerBanner(provider: provider),
             _ComposerBand(provider: provider),
             _composerCard(
               provider,
@@ -1129,7 +602,7 @@ class _InputBarState extends State<InputBar> {
   }
 
   /// 卡片本体，按 web ≤420px 的 `#input-bar` 排：第一行是输入框 + 发送/停止，
-  /// 第二行是附件 / 语音 / Goal / 通话，定时发送靠右。
+  /// 第二行是附件 / 语音 / 通话，定时发送靠右。
   Widget _composerCard(
     ChatProvider provider,
     bool isCommander,
@@ -1142,6 +615,7 @@ class _InputBarState extends State<InputBar> {
         : _focusNode.hasFocus
         ? const Color(0xFFc1d8ed)
         : const Color(0xFFdbe5ef);
+    final unattendedLocked = provider.unattendedLocksInput;
     return Container(
       key: const Key('chat-composer-card'),
       padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
@@ -1180,6 +654,9 @@ class _InputBarState extends State<InputBar> {
                     key: const Key('chat-message-input'),
                     controller: _ctrl,
                     focusNode: _focusNode,
+                    // 无人值守 active 时锁住整块输入区（草稿仍在 controller 里，
+                    // 解锁后原样可编辑）。
+                    enabled: !unattendedLocked,
                     maxLines: null,
                     textInputAction: TextInputAction.newline,
                     // Keep the draft editable through disconnects/reconnects.
@@ -1191,7 +668,9 @@ class _InputBarState extends State<InputBar> {
                       height: 1.4,
                     ),
                     decoration: InputDecoration(
-                      hintText: _voice.isRecording
+                      hintText: unattendedLocked
+                          ? t('unattendedInputLocked')
+                          : _voice.isRecording
                           ? t('recording')
                           : _voice.isTranscribing
                           ? t('transcribing')
@@ -1246,7 +725,9 @@ class _InputBarState extends State<InputBar> {
             children: [
               // Attachment button
               _SmallButton(
-                onTap: (!_uploading && isConnected) ? _pickAndUpload : null,
+                onTap: (!_uploading && isConnected && !unattendedLocked)
+                    ? _pickAndUpload
+                    : null,
                 icon: _uploading
                     ? Icons.hourglass_top_rounded
                     : Icons.attach_file_rounded,
@@ -1258,23 +739,14 @@ class _InputBarState extends State<InputBar> {
               VoiceMicButton(
                 key: const Key('chat-mic-button'),
                 controller: _voice,
-                enabled: isConnected,
+                enabled: isConnected && !unattendedLocked,
                 iconSize: 20,
-              ),
-              const SizedBox(width: 4),
-              // Goal-mode button — precheck the task with the aux-AI, then send
-              _SmallButton(
-                onTap: (isConnected && !isStreaming)
-                    ? () => _showGoalSheet(provider)
-                    : null,
-                icon: Icons.track_changes_rounded,
-                color: const Color(0xFF55718c),
               ),
               const SizedBox(width: 4),
               // Realtime voice — opens the one global voice gateway, scoped to
               // this session. Plain dictation stays on the mic button.
               _SmallButton(
-                onTap: isConnected
+                onTap: isConnected && !unattendedLocked
                     ? () {
                         _openVoiceCall();
                       }

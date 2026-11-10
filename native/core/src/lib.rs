@@ -56,6 +56,7 @@ pub mod transcript_prune;
 pub mod turn_progress;
 pub mod turn_request;
 pub mod turn_state;
+pub mod unattended;
 pub mod usage;
 pub mod virtual_provider;
 pub mod windows_tools;

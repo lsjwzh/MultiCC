@@ -35,7 +35,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     { id: 'codex-lab', appType: 'codex', name: 'Lab Responses', apiFormat: 'openai_responses', compatibleClis: ['codex', 'codex-exp'], model: 'gpt-5.5', modelOptions: ['gpt-5.5', 'gpt-5.6-sol'], hasToken: true },
     { id: 'codex-backup', appType: 'codex', name: 'Backup Responses', apiFormat: 'openai_responses', compatibleClis: ['codex', 'codex-exp'], model: 'gpt-5.6-sol', modelOptions: ['gpt-5.6-sol', 'gpt-5.5'], hasToken: true },
   ] };
-  const configPatches = [], quickDispatches = [], quickCreates = [], syncRequests = [];
+  const configPatches = [], quickDispatches = [], quickCreates = [], syncRequests = [], quickPrechecks = [];
   let syncFailure = true;
   // worktreeCount 是总数，worktreeLifecycle 是拆解（口径来自服务端 registry 的
   // residency）：只报「几个」看不出这个数是怎么长的 —— 本地真占着磁盘的、睡下只剩
@@ -123,6 +123,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     return json({ ok: true, taskId: 'tsk_new', sessionId: 'task-new', shellId: 'shell-new' });
   };
   routes['POST /api/task-shell-tasks/tsk_new/messages'] = ({ body }) => { quickDispatches.push(JSON.parse(body)); return json({ ok: true, taskId: 'tsk_new', sessionId: 'task-new' }); };
+  // 新建任务里的「AI 补全判断标准」走既有预检接口；返回的 criteria 会被填进文本框。
+  routes['POST /api/goal/precheck'] = ({ body }) => {
+    quickPrechecks.push(JSON.parse(body));
+    return json({ ok: true, verdict: 'warn', score: 62, issues: ['缺少可验证的验收标准'], questions: [],
+      criteria: ['构建通过', '测试通过'], revised: '把目标改成可验收的版本' });
+  };
   routes['POST /api/task-board/tasks/tsk_a/chat-session'] = () => json({ ok: true, sessionId: 'task-a' });
   routes['POST /api/task-board/tasks/tsk_new/chat-session'] = () => json({ ok: true, sessionId: 'task-new' });
   routes['POST /api/task-shells'] = ({ body }) => json({ id: JSON.parse(body).sessionId === 'task-new' ? 'shell-new' : 'shell-a' });
@@ -358,7 +364,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`${frame}.getElementById('header-more-menu').contains(${frame}.getElementById('lang-btn'))`), false,
       '语言切换已经在 Air 侧栏版本行旁边，对话更多菜单不再重复');
     assert.equal(await page.evaluate(`${frame}.getElementById('session-queue-dock')!==null && ${frame}.getElementById('aux-classify-bar')!==null`), true);
-    assert.equal(await page.evaluate(`${frame}.getElementById('goal-btn')!==null && ${frame}.getElementById('merge-btn')!==null && ${frame}.getElementById('diff-modal')!==null`), true);
+    assert.equal(await page.evaluate(`${frame}.getElementById('unattended-fab')!==null && ${frame}.getElementById('merge-btn')!==null && ${frame}.getElementById('diff-modal')!==null`), true);
     assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn')`), JSON.stringify({ requests: page.requests.filter(r=>/merge-status/.test(r.path)), state: await page.evaluate(`({url:${frame}.URL,errors:${frame}.defaultView.__errors,bar:${frame}.getElementById('worktree-bar').outerHTML})`) }));
     assert.equal(await page.evaluate(`${frame}.getElementById('worktree-sync-btn')!==null && ${frame}.getElementById('worktree-bar').offsetHeight>0`), true);
     assert.equal(await page.evaluate(`['header','worktree-bar','aux-classify-bar'].every(id=>${frame}.getElementById(id).parentElement.id==='chat-context-bar')`), true);
@@ -1011,12 +1017,20 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`document.getElementById('create').click()`);
     assert.ok(await page.waitFor(`document.getElementById('quick-task-dialog').open===true`));
-    await page.evaluate(`(()=>{const s=document.getElementById('quick-task-dialog-directory');s.value='d2';s.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quick-task-input').value='从目录首页创建任务';document.getElementById('quick-task-goal').checked=true;document.getElementById('quick-task-form').requestSubmit()})()`);
+    await page.evaluate(`(()=>{const s=document.getElementById('quick-task-dialog-directory');s.value='d2';s.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quick-task-input').value='从目录首页创建任务';const t=document.getElementById('quick-task-unattended');t.checked=true;t.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quick-unattended-goal').value='完成上线';document.getElementById('quick-unattended-rounds').value='12'})()`);
+    assert.equal(await page.evaluate(`document.getElementById('quick-unattended').hidden`), false, '开关打开后露出目标/标准/轮次');
+    await page.evaluate(`document.getElementById('quick-unattended-draft').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('quick-unattended-criteria').value.includes('构建通过')`), 'AI 补全把 criteria 填进文本框');
+    assert.deepEqual(quickPrechecks, [{ task: '完成上线' }]);
+    await page.evaluate(`document.getElementById('quick-task-form').requestSubmit()`);
     assert.ok(await page.waitFor(`location.search.includes('task=tsk_new')`));
     assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('dir')`), 'd2');
     assert.equal(quickDispatches.length, 1);
     assert.equal(quickDispatches[0].text, '从目录首页创建任务');
-    assert.equal(quickDispatches[0].goal, true);
+    assert.deepEqual(quickDispatches[0].unattended,
+      { goal: '完成上线', criteria: ['构建通过', '测试通过'], maxRounds: 12 },
+      '第一条消息体带上无人值守配置');
+    assert.equal('goal' in quickDispatches[0], false, '旧的 Goal mode 字段已经退场');
     // What the pills collected is what the task is created with — the runtime is
     // pinned at creation and the roles are bound before the first message runs.
     const createBody = page.requests.filter(r => r.method === 'POST' && r.path === '/api/air/tasks').map(r => JSON.parse(r.body)).pop();

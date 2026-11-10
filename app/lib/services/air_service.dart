@@ -1326,27 +1326,19 @@ class AirService {
     return '${result['taskId']}';
   }
 
-  /// 发第一条消息。Goal 的两个上限挂在**这一条消息**上（不是任务上），键名跟
-  /// 服务端 `normalizeGoalLimits` 认的一样：`maxRounds` / `maxBudget`
-  /// （`src/chat/turn-request.js:51-58`）。写成 `rounds` / `tokenBudget` 不会报错，
-  /// 只会被静默丢掉 —— 界面上看着设了，实际一次都没生效过。
+  /// 发第一条消息。无人值守配置挂在**这一条消息**上（不是任务上）：
+  /// `unattended: { goal?, criteria?, maxRounds? }`，契约见 docs/unattended-mode.md。
+  /// goal 省略时服务端默认用第一条消息正文；criteria 可选；maxRounds 1..200。
   Future<void> sendFirstMessage({
     required String taskId,
     required String text,
     required String clientMsgId,
-    bool goal = false,
-    int? goalRounds,
-    int? goalBudget,
+    Map<String, dynamic>? unattended,
   }) => _post('/api/task-shell-tasks/${Uri.encodeComponent(taskId)}/messages', {
     'text': text,
     'clientMsgId': clientMsgId,
     'intent': 'work',
-    if (goal) 'goal': true,
-    if (goal)
-      'goalLimits': {
-        if (goalRounds != null) 'maxRounds': goalRounds,
-        if (goalBudget != null) 'maxBudget': goalBudget,
-      },
+    if (unattended != null && unattended.isNotEmpty) 'unattended': unattended,
   });
 
   /// 写入任务的角色绑定。`expectedVersion` 是打开编辑器时读到的版本，

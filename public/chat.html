@@ -1651,7 +1651,6 @@
       #merge-hint-fab { bottom: calc(112px + env(safe-area-inset-bottom)); }
       #input-bar textarea,
       #cwd-modal-inner input,
-      #goal-modal-inner textarea,
       #memo-text,
       #voice-panel textarea { font-size: 16px; }
       #debug-panel { width: 100vw; max-width: 100vw; }
@@ -1661,7 +1660,7 @@
       #input-bar { flex-wrap: wrap; align-items: stretch; padding: 7px 8px; }
       #input-bar textarea { order: 1; flex: 1 1 calc(100% - 52px); min-height: 44px; }
       #send-btn, #cancel-btn { order: 1; width: 44px; height: 44px; flex: 0 0 44px; }
-      #mic-btn, #attach-btn, #goal-btn { order: 2; width: 44px; height: 44px; }
+      #mic-btn, #attach-btn { order: 2; width: 44px; height: 44px; }
       /* 这里是 padding 简写，会盖掉上面 ≤760px 那条的 padding-top；所以顶上那点
          间距在这儿再写一遍，别让窄屏又变回 5px。 */
       #pre-input-bar { flex-wrap: wrap; gap: 6px; padding: 2px 10px 5px; }
@@ -1730,42 +1729,6 @@
       background: #238636; border-color: #2ea043; color: #fff; font-weight: 600;
     }
     .modal-actions button:disabled { opacity: 0.5; cursor: default; }
-
-    /* ── Goal mode modal ── */
-    #goal-modal {
-      display: none; position: fixed; inset: 0; background:var(--chat-overlay);
-      z-index: 15000; align-items: center; justify-content: center;
-    }
-    #goal-modal.open { display: flex; }
-    #goal-modal-inner {
-      background: var(--chat-surface); border: 1px solid var(--chat-line); border-radius: 12px;
-      padding: 20px; width: 560px; max-width: 94vw; max-height: 88vh; overflow: auto;
-      box-shadow:var(--chat-shadow);
-    }
-    #goal-modal-inner h3 { font-size: 15px; color: var(--chat-heading); margin-bottom: 8px; }
-    .goal-hint { font-size: 12px; color: var(--chat-muted); margin-bottom: 12px; line-height: 1.5; }
-    .goal-label { display: block; font-size: 12px; color: var(--chat-muted); margin: 10px 0 6px; }
-    #goal-modal-inner textarea {
-      width: 100%; background: var(--chat-canvas); border: 1px solid var(--chat-line);
-      border-radius: 6px; color: var(--chat-text); font-size: 13px; line-height: 1.6;
-      padding: 10px 12px; outline: none; resize: vertical; min-height: 80px;
-      font-family: inherit;
-    }
-    #goal-modal-inner textarea:focus { border-color: #388bfd; }
-    #goal-verdict { font-size: 13px; font-weight: 600; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; }
-    #goal-verdict.ok { background: var(--chat-success-soft); color: var(--chat-success); border: 1px solid #2ea04355; }
-    #goal-verdict.warn { background: var(--chat-warning-soft); color: var(--chat-warning); border: 1px solid #bb800955; }
-    .goal-sec-title { font-size: 11px; color: var(--chat-muted); margin: 10px 0 2px; text-transform: uppercase; letter-spacing: .04em; }
-    .goal-list { font-size: 12px; color: var(--chat-text); margin: 0; padding-left: 18px; }
-    .goal-list li { margin: 3px 0; line-height: 1.5; }
-    .goal-err { font-size: 12px; color: var(--chat-danger); margin-top: 8px; }
-    .goal-dims { display: flex; flex-wrap: wrap; gap: 8px 16px; }
-    .goal-dims label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--chat-text); cursor: pointer; }
-    .goal-dims input { margin: 0; }
-    .goal-limits { display: flex; flex-wrap: wrap; gap: 8px 16px; }
-    .goal-limits label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--chat-text); }
-    .goal-limits input { width: 90px; background: var(--chat-canvas); border: 1px solid var(--chat-line); border-radius: 6px; color: var(--chat-text); padding: 4px 6px; font-size: 12px; }
-    .goal-limits input:focus { border-color: #388bfd; outline: none; }
 
     /* ── Diff dock ──
      * A side panel, not a modal: no backdrop, so the conversation stays visible
@@ -2649,7 +2612,6 @@
   <div id="input-bar" class="mc-composer mc-composer--chat">
     <button id="mic-btn" class="input-action-btn" title="Voice input">&#127908;</button>
     <button id="attach-btn" class="input-action-btn" title="Attach file">&#128206;</button>
-    <button id="goal-btn" class="input-action-btn" title="以 Goal 模式发送任务（先用 AI 预检目标与完成标准）" data-i18n-title="goalSendBtnTitle">&#127919;</button>
     <input id="file-input" type="file" style="display:none" multiple />
     <textarea id="input" rows="1" placeholder="Type a message… or paste files here" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
     <button id="send-btn" title="Send">&#10148;</button>
@@ -2766,41 +2728,6 @@
     </div>
   </div>
 
-  <!-- Goal mode modal -->
-  <div id="goal-modal">
-    <div id="goal-modal-inner">
-      <h3 data-i18n="goalModalTitle">&#127919; Goal 模式发送</h3>
-      <div class="goal-hint" data-i18n="goalModalHint">发送前先用辅助 AI 预检：目标是否明确、完成标准是否清晰、能否独立执行。不符合会给出改写建议，你确认或修改后再真正执行。</div>
-      <label class="goal-label" data-i18n="goalTaskLabel">任务</label>
-      <textarea id="goal-task" placeholder="描述你要达成的目标…" data-i18n-placeholder="goalTaskPlaceholder"></textarea>
-      <label class="goal-label" data-i18n="goalDimsLabel">检查维度（本次预检，默认取设置里的全局配置）</label>
-      <div id="goal-dims" class="goal-dims">
-        <label><input type="checkbox" data-dim="objective" /> <span data-i18n="goalDimObjective">目标明确</span></label>
-        <label><input type="checkbox" data-dim="criteria" /> <span data-i18n="goalDimCriteria">完成标准</span></label>
-        <label><input type="checkbox" data-dim="scope" /> <span data-i18n="goalDimScope">范围清晰</span></label>
-        <label><input type="checkbox" data-dim="executable" /> <span data-i18n="goalDimExecutable">可独立执行</span></label>
-      </div>
-      <label class="goal-label" data-i18n="goalLimitsLabel">执行限制（本次任务，默认取设置里的全局配置；0 = 不限制）</label>
-      <div class="goal-limits">
-        <label><span data-i18n="goalMaxRounds">轮次上限</span><input id="goal-max-rounds" type="number" min="0" max="200" placeholder="轮" data-i18n-placeholder="goalMaxRoundsUnit" /></label>
-        <label><span data-i18n="goalMaxBudget">预算上限</span><input id="goal-max-budget" type="number" min="0" step="1000" placeholder="token" /></label>
-      </div>
-      <div id="goal-result" style="display:none">
-        <div id="goal-verdict"></div>
-        <div id="goal-detail"></div>
-        <label class="goal-label" data-i18n="goalRevisedLabel">改写版（可编辑，将作为实际执行的任务）</label>
-        <textarea id="goal-revised" placeholder="预检后这里给出可直接执行的版本" data-i18n-placeholder="goalRevisedPlaceholder"></textarea>
-      </div>
-      <div id="goal-error" class="goal-err" style="display:none"></div>
-      <div class="modal-actions">
-        <button id="goal-cancel" data-i18n="cancel">取消</button>
-        <button id="goal-precheck" class="primary" data-i18n="goalPrecheckBtn">预检</button>
-        <button id="goal-send" style="display:none" class="primary" data-i18n="goalSend">以 Goal 模式发送</button>
-        <button id="goal-send-raw" style="display:none" title="跳过改写，用原任务直接以 Goal 模式执行" data-i18n-title="goalSendRawTitle" data-i18n="goalSendRaw">用原文发送</button>
-      </div>
-    </div>
-  </div>
-
   <!-- Debug panel -->
   <div id="debug-panel">
     <div class="dbg-head">
@@ -2907,6 +2834,7 @@
   <!-- 必须排在 chat.js 前面：chat.js 在顶层就按它判断这一页是不是分享页。 -->
   <script src="chat-share-mode.js"></script>
   <script src="chat-handoff.js"></script>
+  <link rel="stylesheet" href="chat-unattended.css"><script src="chat-unattended.js"></script>
   <script src="chat.js"></script><link rel="stylesheet" href="chat-annotate.css"><script src="chat-annotate.js"></script><link rel="stylesheet" href="chat-remote-screen.css"><script src="chat-remote-screen-h264.js"></script><script src="chat-remote-input.js"></script><script src="chat-remote-screen.js"></script><script src="chat-air-toolbar.js"></script><script src="chat-composer-collapse.js"></script>
   <script src="tour.js"></script>
 </body>

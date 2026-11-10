@@ -32,8 +32,6 @@ class _ConnectedChatProvider extends ChatProvider {
   String? sendMessage(
     String text, {
     String? clientMsgId,
-    bool goal = false,
-    Map<String, dynamic>? goalLimits,
     String? voiceRaw,
   }) {
     sent.add(text);

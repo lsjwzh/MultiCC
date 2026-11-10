@@ -28,6 +28,13 @@ extension ChatHistoryLayer on ChatProvider {
     // An Auto route note already drawn live comes back as a record in this
     // page; keeping both would show the line twice.
     _autoRouteLine.adoptReplay(parsed, _messages);
+    // 无人值守轨迹同理：实时广播已经画过的那条，重放页里还带着同一个 entry.id。
+    final knownIds = _messages.map((m) => m.id).whereType<String>().toSet();
+    if (knownIds.isNotEmpty) {
+      parsed.removeWhere(
+        (m) => m.unattendedTrace && m.id != null && knownIds.contains(m.id),
+      );
+    }
     final liveTail = streamingAssistantTail(parsed);
     // system_init may have created an empty local streaming bubble before the
     // ordered chat_history frame arrives. Replace that placeholder with the
@@ -122,6 +129,24 @@ extension ChatHistoryLayer on ChatProvider {
       if (m.durationMs != null) _turnDurationText = formatDuration(m.durationMs!);
       break;
     }
+  }
+
+  /// Live `unattended_trace` WS frame (docs/unattended-mode.md Backend notes):
+  /// `{ kind, message, entry }`. The entry is the persisted record and its id is
+  /// the same dedupe key the history replay carries, so a reconnect never draws
+  /// the same line twice.
+  void applyUnattendedTraceEvent(Map event) {
+    final entry = event['entry'];
+    final message = unattendedTraceMessage(
+      entry is Map
+          ? Map<String, dynamic>.from(entry)
+          : Map<String, dynamic>.from(event),
+    );
+    final id = message?.id;
+    if (message == null) return;
+    if (id != null && _messages.any((m) => m.id == id)) return;
+    _messages.add(message);
+    _notifyHistoryChanged();
   }
 
   /// id of the oldest message currently held in [_messages] (pagination cursor).

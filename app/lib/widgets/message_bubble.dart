@@ -587,6 +587,16 @@ class MessageBubble extends StatelessWidget {
       case MessageRole.user:
         // 🔇 系统注入（引擎写的 role=user）不是人打的：画成系统卡，不画用户气泡。
         final injected = parseSystemInject(message.content);
+        // 无人值守插话（🔇 + 固定标记）也不是人说的一句话：压成「🤖 无人值守」
+        // 小卡片，正文去掉标记（Web 的 system-inject.unattended-mark 同一张脸）。
+        final unattended = parseUnattendedText(message.content);
+        if (unattended != null && unattended.isNotEmpty) {
+          return _UnattendedLine(
+            message: message,
+            text: unattended,
+            enableServerActions: enableServerActions,
+          );
+        }
         if (injected != null) {
           return _SystemInjectBubble(
             message: message,
@@ -604,6 +614,10 @@ class MessageBubble extends StatelessWidget {
           enableServerActions: enableServerActions,
         );
       case MessageRole.system:
+        // 持久化/实时广播的 UI-only 判定轨迹：居中静音行，同样带徽标。
+        if (message.unattendedTrace) {
+          return _UnattendedLine(message: message, text: message.content, trace: true);
+        }
         return _SystemBubble(message: message);
     }
   }
@@ -1701,6 +1715,89 @@ class _SystemInjectBubbleState extends State<_SystemInjectBubble> {
                 ),
               _TaskAttributionTail(message: widget.message),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 「🤖 无人值守」小卡片 / 轨迹行（Web 的 `.unattended-mark` 与
+/// `.unattended-trace`）：监督器插话与 UI-only 判定轨迹共用同一枚徽标。
+///
+/// [trace] 为 true 时是居中静音行（role=system 的持久化轨迹）；否则是左对齐的
+/// 紧凑卡片，保留复制/引用/删除，和注入卡一致。
+class _UnattendedLine extends StatelessWidget {
+  const _UnattendedLine({
+    required this.message,
+    required this.text,
+    this.trace = false,
+    this.enableServerActions = true,
+  });
+
+  final ChatMessage message;
+  final String text;
+  final bool trace;
+  final bool enableServerActions;
+
+  @override
+  Widget build(BuildContext context) {
+    final badge = Text(
+      t('unattendedBadge'),
+      style: const TextStyle(
+        color: AppColors.accent,
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+      ),
+    );
+    final body = Flexible(
+      child: Text(
+        text,
+        maxLines: trace ? 2 : null,
+        overflow: trace ? TextOverflow.ellipsis : TextOverflow.visible,
+        style: TextStyle(
+          color: trace ? AppColors.muted : AppColors.text,
+          fontSize: trace ? 11.5 : 12.5,
+          height: 1.4,
+        ),
+      ),
+    );
+    if (trace) {
+      return Center(
+        child: _MessageSelection(
+          message: message,
+          serverActions: false,
+          allowQuote: false,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Row(
+              key: const ValueKey('unattended-trace-line'),
+              mainAxisSize: MainAxisSize.min,
+              children: [badge, const SizedBox(width: 6), body],
+            ),
+          ),
+        ),
+      );
+    }
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: _MessageSelection(
+        message: message,
+        serverActions: enableServerActions,
+        child: Container(
+          key: const ValueKey('unattended-mark'),
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          constraints: const BoxConstraints(maxWidth: 620),
+          decoration: BoxDecoration(
+            color: AppColors.blueSoft,
+            border: Border.all(color: AppColors.line),
+            borderRadius: BorderRadius.circular(AppColors.radiusChip),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [badge, const SizedBox(width: 6), body],
           ),
         ),
       ),

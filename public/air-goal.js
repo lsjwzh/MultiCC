@@ -1,11 +1,12 @@
 'use strict';
 
-// Air 原生「Goal 预检」面板 —— 从旧 manage 页的 Goal 预检那一格搬过来（原生 DOM，
-// 不再嵌旧 manage 页）。后端契约见 src/routes/aux-goal.js：
+// Air 原生「无人值守 · 目标预检」面板 —— 从旧 manage 页的 Goal 预检那一格搬过来
+// （原生 DOM，不再嵌旧 manage 页）。后端契约见 src/routes/aux-goal.js：
 //   GET  /api/settings/goal → { dimensions: { objective, criteria, scope, executable }, minScore }
 //   POST /api/settings/goal   body { dimensions, minScore }
-// 这份配置管的是「以 Goal 模式发任务前，辅助 AI 按哪几个维度检查目标是否合格」；
-// 聊天的 🎯 弹窗能在单条消息上临时覆盖它，所以这里改的是缺省值，不是唯一入口。
+// 这份配置管的是「无人值守开始前，辅助 AI 按哪几个维度检查目标是否合格」；
+// 新任务里的「AI 补全判断标准」和会话中的接管面板都按这份缺省值预检，所以这里改的是
+// 缺省值，不是唯一入口。接口本身没改名（还是 /api/settings/goal），别顺手改路由。
 //
 // 两条口径跟旧页（manage.js 的 loadGoalSettings / saveGoalSettings）严格一致，
 // 别按直觉「修正」：

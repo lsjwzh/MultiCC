@@ -10,7 +10,7 @@ import 'package:multicc_app/widgets/air/air_task_config.dart';
 /// 目录首页贴底那条创建输入条（[AirQuickComposer] 的 `docked` 形态）。
 ///
 /// 它默认只是**一行**：一颗回形针、一句灰字占位、一颗发送键。整块面板（一颗
-/// CLI/Provider/模型配置药丸 + 角色药丸 + 多行输入 + Goal）只在「用户要写东西」的时候才铺开 ——
+/// CLI/Provider/模型配置药丸 + 角色药丸 + 多行输入 + 无人值守）只在「用户要写东西」的时候才铺开 ——
 /// 一进目录页就铺着一大块空输入框，等于把清单挤掉三分之一，而九成的时间里用户
 /// 是来看任务的。
 ///
@@ -48,9 +48,7 @@ Future<void> _pump(
                     required String cli,
                     required AirTaskRuntime runtime,
                     required List<AirRoleBinding> roles,
-                    required bool goal,
-                    int? goalRounds,
-                    int? goalBudget,
+                    Map<String, dynamic>? unattended,
                   }) => onSubmit(),
             ),
           ),

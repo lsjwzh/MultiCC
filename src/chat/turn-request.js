@@ -83,7 +83,6 @@ function normalizeTurnRequest(input) {
       taskStart: input.taskStart,
       taskSource: input.taskSource,
       taskText: input.taskText,
-      goalLimits: input.goalLimits,
       bgTaskIds: input.bgTaskIds,
       bgToolUseIds: input.bgToolUseIds,
     },
