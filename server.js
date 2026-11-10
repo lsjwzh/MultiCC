@@ -1005,7 +1005,7 @@ const gatewayHost = createGatewayHost({
   getOrchestrationRuntime: () => orchestrationRuntime,
   getTaskContextHost: () => taskContextHost,
   getCreateSessionRecord: () => createSessionRecord,
-  appendChatMessage: (...args) => appendChatMessageSync(...args),
+  appendChatMessage: (...args) => appendChatMessage(...args),
   chatBroadcast: (...args) => chatBroadcast(...args),
   loadChatHistory: (...args) => loadChatHistory(...args),
 });
@@ -1624,7 +1624,7 @@ const cliSwitchRuntime = createCliSwitchRuntime({
   getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
   cancelClassify, planAutoCliSwitch: args => chatTurnEngine.autoProviderRuntime.planTurn(args),
   assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
-  appendMessage: appendChatMessageSync,
+  appendMessage: appendChatMessage,
   appendEvent,
   chatBroadcast,
   workspaceBroadcast,
@@ -2089,7 +2089,6 @@ taskBoardRuntime.mountRoutes(app); createTaskSearchRoutes({ getBoard: () => task
 const taskContextHost = createTaskContextHost({
   getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
   append: (id, m) => chatHistoryRuntime.appendMessage(id, m),
-  appendSync: (id, m) => chatHistoryRuntime.appendMessageSync(id, m),
   getTaskBoard: () => taskBoardRuntime, getTaskShells: () => taskShellHost, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
@@ -2296,7 +2295,6 @@ function scheduleIncrementalSave(sessionId, state) {
   return chatHistoryRuntime.scheduleIncrementalSave(sessionId, state);
 }
 function appendChatMessage(id,m){return taskContextHost.appendMessage(id,m)}
-function appendChatMessageSync(id,m){return taskContextHost.appendMessageSync(id,m)}
 
 // The host coordinator owns result/usage/post-turn ordering.
 const {
@@ -2307,7 +2305,7 @@ const {
   recordDurableTurnUsage,
   runDurablePostTurn,
 } = createChatHostRuntime({
-  appendMessage: appendChatMessageSync,
+  appendMessage: appendChatMessage,
   timelineField: turnProgress.timeline.field,
   persistUsage: accumulateTokenUsage,
   afterUsageCommit: (sessionId, attribution) => {
@@ -2335,7 +2333,7 @@ const codexUsageHost = createCodexUsageHost({
   logger,
 });
 
-const chatErrors = require('./src/chat/error-persistence').createErrorPersister({ appendChatMessage: appendChatMessageSync }); // errors reach history, not only the live line
+const chatErrors = require('./src/chat/error-persistence').createErrorPersister({ appendChatMessage: appendChatMessage }); // errors reach history, not only the live line
 function chatBroadcast(sessionName, payload) {
   payload = chatErrors.annotate(sessionName, scopeHostProviderEvent(payload));
   // #110: journal every client-visible event (never blocks or throws), then fan out.
@@ -2444,7 +2442,7 @@ const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions
   withdrawQueued: (id, entryId) => (orchestrationRuntime
     ? orchestrationRuntime.sessionScheduler.cancelQueued(id, entryId, { actor: 'unattended', reason: 'paused' })
     : { ok: false, code: 'scheduler_unavailable' }),
-  triggerPush, chatBroadcast, logger, appendMessage: appendChatMessageSync, isRunActive: id => sessionWorkHost?.isRunActive(id) === true, hasQueuedDeliveries: id => (sessionWorkHost ? sessionWorkHost.hasQueuedDeliveries(id) : false),
+  triggerPush, chatBroadcast, logger, appendMessage: appendChatMessage, isRunActive: id => sessionWorkHost?.isRunActive(id) === true, hasQueuedDeliveries: id => (sessionWorkHost ? sessionWorkHost.hasQueuedDeliveries(id) : false),
   getTaskState: id => getTaskState(persistedSessions.get(id)), getSchedulerStatus: id => (orchestrationRuntime ? orchestrationRuntime.sessionScheduler.status(id) : null), listSessionIds: () => [...persistedSessions.keys()] });
 sessionWorkHost = createSessionWorkHost({
   runtime: () => orchestrationRuntime,
@@ -2642,7 +2640,6 @@ const chatTurnEngine = createChatTurnEngine({
   buildPlanPrompt: buildPlanProgressPrompt,
   markPlanContextReset,
   appendChatMessage,
-  appendChatMessageSync,
   loadChatHistory,
   viewChatHistory,
   scheduleIncrementalSave,
@@ -2711,7 +2708,7 @@ orchestrationRuntime = createOrchestrationRuntime({
   heldForBackground: id => { try { return chatStream.heldTurn(id)?.held === true; } catch (_) { return false; } },
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   // A typed message that dead-letters — or that cannot even start — must not vanish silently (src/chat/session-notices.js).
-  deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox, ...require('./src/chat/session-notices').createSessionNotices({ appendChatMessage: appendChatMessageSync, chatBroadcast }),
+  deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox, ...require('./src/chat/session-notices').createSessionNotices({ appendChatMessage: appendChatMessage, chatBroadcast }),
   probe: chatTurnEngine.probeExplicitWait,
   detachedAdapter: detached,
   recoverDispatchResult: chatTurnEngine.recoverDispatchOperation,
@@ -2921,7 +2918,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   chatSessions,
   sessions,
   auxQueue,
-  appendChatMessage: appendChatMessageSync,
+  appendChatMessage: appendChatMessage,
   isCurrentTurnRunner,
   recordPartialCheckpoint,
   assistantCheckpointKey,

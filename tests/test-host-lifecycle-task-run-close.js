@@ -19,14 +19,17 @@ function loadHostLifecycle() {
     let started = false;
     const checkpoints = [];
     const drains = [];
+    const finalFlushes = [];
     const closers = [];
     coordinator = {
       checkpoints,
       drains,
+      finalFlushes,
       closers,
       finished: false,
       onCheckpoint(fn) { checkpoints.push(fn); },
       onDrain(fn) { drains.push(fn); },
+      onFinalFlush(fn) { finalFlushes.push(fn); },
       onClose(fn) { closers.push(fn); },
       isShuttingDown() { return started; },
       async shutdown({ graceMs = 0 } = {}) {
@@ -38,6 +41,10 @@ function loadHostLifecycle() {
         for (const fn of drains) {
           try { await fn({ graceMs, deadline: Date.now() + graceMs }); }
           catch (error) { logger.error(`drain: ${error.message}`); }
+        }
+        for (const fn of finalFlushes) {
+          try { await fn({ deadline: Date.now() + 10_000, timeoutMs: 10_000 }); }
+          catch (error) { logger.error(`final flush: ${error.message}`); }
         }
         for (const fn of closers) {
           try { await fn(); } catch (error) { logger.error(`closer: ${error.message}`); }
@@ -194,4 +201,68 @@ test('shutdown marks every running aux slot cancelled, not only the first', asyn
     { id: 'wait-2', code: 'SERVER_SHUTTING_DOWN' },
   ]);
   assert.deepEqual(slots.map(slot => slot.cancelled), [true, true, true]);
+});
+
+// Partial checkpoint writes are durable fsyncs now, so shutdown awaits them —
+// but a wedged filesystem must not hang the process forever. The cap is bounded
+// and shutdown still runs every later closer.
+test('shutdown partial flush is bounded when a durable write never settles', async () => {
+  const timeline = [];
+  const loaded = loadHostLifecycle();
+  const deps = createDeps({ timeline });
+  deps.chatFlushTimeoutMs = 25;
+  deps.chatSessions.set('chat-a', {
+    cli: 'codex',
+    currentAssistantText: 'half streamed answer',
+    currentToolCalls: [],
+    currentCost: 0,
+    _resultSaved: false,
+    _activeTurn: null,
+    _activeRunner: null,
+    clients: new Set(),
+  });
+  deps.appendChatMessage = () => new Promise(() => {});
+  loaded.createHostLifecycle(deps);
+
+  const started = Date.now();
+  await loaded.getCoordinator().shutdown({ graceMs: 0 });
+  assert.ok(Date.now() - started >= 20, 'the flush must actually be awaited');
+  assert.equal(
+    timeline.some(entry => entry.startsWith('warn:[multicc] shutdown partial flush exceeded 25ms')),
+    true,
+  );
+  assert.equal(timeline.includes('persisted:teardown.checkpoint'), true,
+    'the checkpoint continues after the bounded flush');
+});
+
+// The checkpoint must actually wait for a write that lands tens of ms later;
+// otherwise the durable partial is recorded only after the session runtime has
+// already been closed (or never at all on a SIGKILL right after exit).
+test('a partial write that lands after the shutdown starts is recorded before later closers', async () => {
+  const timeline = [];
+  const loaded = loadHostLifecycle();
+  const deps = createDeps({ timeline });
+  const turn = { turnId: 'turn-late' };
+  const runner = { runnerId: 'runner-late' };
+  deps.chatSessions.set('chat-a', {
+    cli: 'codex',
+    currentAssistantText: 'late partial answer',
+    currentToolCalls: [],
+    currentCost: 0,
+    _resultSaved: false,
+    _activeTurn: turn,
+    _activeRunner: runner,
+    clients: new Set(),
+  });
+  deps.isCurrentTurnRunner = () => true;
+  deps.recordPartialCheckpoint = () => timeline.push('partial-checkpoint');
+  deps.appendChatMessage = () => new Promise(resolve => setTimeout(() => resolve(true), 30));
+  loaded.createHostLifecycle(deps);
+
+  await loaded.getCoordinator().shutdown({ graceMs: 0 });
+
+  const recorded = timeline.indexOf('partial-checkpoint');
+  assert.ok(recorded >= 0, 'the durable write was confirmed');
+  assert.ok(recorded < timeline.indexOf('session-persistence-stopped'),
+    'the confirmed record lands before the session runtime closer runs');
 });

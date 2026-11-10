@@ -2339,7 +2339,7 @@ Node 保留范围及原因：
 
 - `src/routes/chat-history.js` 只保留 Promise 队列、HTTP/WS 宿主调用与同步兼容门；消息规则、快照、事务、缓存和通知顺序归 Rust。
 - `src/session/adapters/chat-history-file-repository.js` 只把原生异步结果恢复为 Node 兼容错误和 Promise 边界；文件名、文件协议与实际 IO 归 Rust。
-- `persistFinal`、错误正文、CLI switch、自动路由备注、无人值守 trace、通知兼容分支和关停 partial checkpoint 仍需要同步 verdict，暂时使用非枚举的 `appendMessageSync`。异步队列占用时该入口失败关闭，禁止旧写入覆盖新快照。
+- `persistFinal`、错误正文、CLI switch、自动路由备注、无人值守 trace、通知兼容分支和关停 partial checkpoint 当时仍需要同步 verdict，暂时使用非枚举的 `appendMessageSync`。异步队列占用时该入口失败关闭，禁止旧写入覆盖新快照。**该兼容入口已在 2026-11-11 的「删除同步历史追加入口」批次整体删除，所有调用方改为等待异步持久确认，见文档末尾。**
 - WS 广播、记忆蒸馏、`projectMessages`、HTTP 路由和 clear/rotate 中的 git 快照仍由 Node 宿主承担；这些是后续迁移边界。
 - 当前保证覆盖进程内存中的存活会话。取消、进程死亡或跨崩溃的“恰好一次”投递仍未承诺；`clearHistory`/context rotate 的异步文件与 git 顺序也未并入本批事务。
 
@@ -2515,3 +2515,131 @@ SHA256 `da07572125e1052abcc22a5a3ad78b3e66f229b53540f624a2dd0e842d0f2baa`，
   （`server.js` 3057 行、`public/run-config.js` 3171 行属既有迁移债登记）。
 - 按协调者要求未跑 `npm test`、`npm run test:core`，也未跑会打活服务的
   `tests/test-classify-api-errors*`；未提交、未 stash、未重启服务、未向活服务写。
+
+## 删除同步历史追加入口（2026-11-11）
+
+根因：2026-11-10 的异步持久确认批次留下了同步兼容门 `appendMessageSync`。它无法加入同一会话的 Promise 写入队列，队列被占用时只能失败关闭返回 `false`。最终答复、错误行、CLI switch 通知、自动路由备注、无人值守 trace 和关停 partial checkpoint 都还在用它，而大多数调用方拿 `false` 只当“没写成”，不会重试也不会报错：一次在飞写入就能让这些行静默消失。Rust chat-event reducer 也只能拿到布尔值，无法表达“写入尚未确认”。
+
+本批把全部调用方改成等待异步持久确认，然后整体删除同步入口，不留回退、不留开关。
+
+### 两阶段最终答复持久化
+
+- Claude reducer 在成功的 `result` 事件里不再同步调用 `persistFinal`。Rust 在 `native/addon/src/chat_events.rs` 里先取 `isMapped` 事实、构造带 usage/timings/contextTrace 的 assistant 消息，然后把 `runner.pendingFinalPersist = true`，调用 Node 端口 `requestFinalPersist(session, cs, turn, runner, message, options, forward, wasMapped, evt)` 后立即返回。端口只负责“开始写”，Rust 不把任何 Promise 或乐观值当持久 verdict。
+- 重复的 `result` 事件在 `pendingFinalPersist` 仍为真时直接忽略，第一笔提交独占计数和 result 帧。
+- Node 端口启动 `persistFinalAssistantResult`（`appendFinal` → `appendMessage`），等待 fsync 结果后调用新的 NAPI `chatCommitFinalPersist(cs, session, evt, message, forward, turn, runner, durable, wasMapped, ports)`。
+- `chatCommitFinalPersist` 先清 `pendingFinalPersist`，再统一重查 `is_current` 和 `isMapped`；只有仍然当前才执行 `recordDurableUsage`、`chatTurnCount + 1`、`_resultSaved = true`、`clearIncrementalSave`，然后构造并转发 result 帧、调用 `onTurnComplete`、原样转发 `evt`。写入判定为 `false` 时与旧的同步 `false` 完全一致：不记用量、不增计数、不置 `_resultSaved`，但仍走后续 result 帧和完成回调。
+- 写入期间回合被取消、runner 被替换、映射被移除：提交入口重查失败后只释放 pending 标记，不记用量、不转发帧；调用方的收尾逻辑看到的是“本轮没有持久结果”，不会被下游当成已持久。
+- 宿主端口抛错或 Promise 拒绝：`requestFinalPersist` 记 `chat_final_persist_failed` 日志并以 `durable=false` 提交，异常不会逃逸成未处理拒绝。`agent`/`codex`/`finalize-host` 的宿主端口抛错仍交给 Rust 的失败收尾路径冻结本轮，并报告调用方原始 plan facts，与拆分前的同步抛错可见行为一致。
+
+### 持有回合答复与回合收尾
+
+- `appendHeldAnswer` 变成两阶段：Rust 先记录 `historyReady`、`pendingAck` 和 `saving`，启动 Node 写入后返回；新的 `chatCommitHeldAnswer(cs, turn, runner, rowKey, saved, ports)` 设置行 `saved`，只有前面的行都已保存、`historyReady` 为真且 runner 仍然当前时才消费 ACK。用户历史/答复顺序闸门与答复边界 ACK 语义保持不变。
+- `finalize-host` 的回合收尾同样拆成两段：Rust `chatExecuteTurnFinalization` 返回 `{ pending, plan, append, sourcePlan }`，Node 等待 `persistAssistant` 后把 verdict 和原始异常交给 `chatCommitTurnFinalization(plan, context, ports, runtime, persisted, fault, sourcePlan)`。失败路径用调用方原始 plan 报告事实，冻结语义与同步端口抛错一致。
+- `src/chat/turn-engine.js` 维护 `runner -> Promise<boolean>` 的 `pendingFinalPersists` 映射。`commitAdapterResult` 在任何读取 `resultDurable` / `_resultSaved`、执行 finalize、classify 或关闭流之前先 `await` 该映射；`close` 收尾允许拒绝并记录 `chat_close_handler_failed`，不会让未确认的写入被当成已持久，也不会产生未处理拒绝。
+- 宿主关停的 partial checkpoint 仍等待在飞写入，但增加固定上限 `PARTIAL_FLUSH_TIMEOUT_MS`（默认 10 秒，测试可注入 `deps.chatFlushTimeoutMs`）；超时只记录告警，后续 checkpoint 和 closer 继续执行。
+
+### 其余调用方逐项处理
+
+- 必须确认后才继续的：最终答复（两阶段提交）、持有回合答复（两阶段 ACK）、`task-context-host.appendMessage`（只有 verdict 为真才投影到任务板）、Codex usage 的最终消息、`chat-host-coordinator.appendResult` / `finalize` / `host-runtime.persistFinalAssistantResult`（全部 async，等待 verdict）。
+- 保持“直播不等待 fsync”但必须观察拒绝的：错误持久化行、自动路由备注、CLI switch 通知、gateway push、无人值守 trace、session notices。它们同步入队以维持同会话顺序，对 Promise 的 `false` 或拒绝只记日志，不会出现未处理拒绝。
+- 关停 partial checkpoint：等待写入但受上限保护。
+- `appendMessage` 之后立即读历史的调用方均改为先 await 再读（`turn-engine` 的 `commitAdapterResult` 是唯一集中等待点）。
+
+### 删除清单
+
+- `src/routes/chat-history.js`：删除 `appendMessageSync` 及非枚举属性；删除 `appendOne` 里 `deps.history.write` 的同步兼容分支，依赖校验改为要求 `history.writeAsync`。
+- `src/task-context-host.js`：删除 `appendSync` 端口和 `appendMessageSync` 导出；只保留唯一的异步 `appendMessage`。
+- `server.js`：删除 `appendChatMessageSync` 和 `appendSync` 接线，gateway host、CLI switch、task-context host、host runtime、错误持久化、无人值守、session notices、关停都直接使用 `appendChatMessage`；turn engine 不再接收 `appendChatMessageSync`。
+- `native/addon/src/chat_history_runtime.rs`：删除同步 `append_message` 实现和 `"appendMessage"` dispatch；只保留 `prepareAppendMessage` / `commitAppendMessage` / `discardAppendMessage`。
+- `scripts/rust-source-cache.js`：接口探针新增 `chatCommitFinalPersist`、`chatCommitHeldAnswer`、`chatCommitTurnFinalization`。
+- 测试替身：所有 `createChatHistoryRuntime` 的假仓库都提供 `writeAsync`；服务端口仍需要同步 `write`，因此两个假仓库同时保留 `write`（生产文件仓库本来就两者都有）。旧的同步门测试替换为“并发 append 排队、绝不丢弃”和“未保存的 append 不投影到任务板”。
+- `src`、`server.js`、`native`、`scripts`、`tests`、`public` 中已无 `appendMessageSync` / `appendChatMessageSync` / `appendSync` 引用。
+
+### Node 保留范围及原因
+
+- `src/routes/chat-history.js` 仍负责同会话 Promise FIFO、HTTP/WS 宿主调用和依赖校验；消息规则、快照、事务、缓存与通知顺序归 Rust。
+- `src/session/adapters/chat-history-file-repository.js` 只把原生异步结果恢复为 Node 兼容错误和 Promise 边界；文件名、文件协议与实际 IO 归 Rust。
+- `src/chat/turn-engine.js`、`src/chat/finalize-host.js`、`src/chat/host-runtime.js`、`src/chat/host-coordinator.js`、`src/codex/usage.js` 只保留 Promise 编排与端口接线，判定仍在 Rust。
+- WS 广播、记忆蒸馏、`projectMessages`、HTTP 路由和 clear/rotate 的 git 快照仍由 Node 宿主承担，是后续迁移边界。
+- `src/session/chat-history-service.js` 的同步 `service.append` 仍供其他所有者使用，不在最终答复路径上；本批没有改动它。
+
+### 未覆盖范围
+
+- 进程死亡、崩溃或跨进程的“恰好一次”投递仍未承诺；两阶段提交只保证进程内一轮不会把未确认写入当已持久。
+- `clearHistory` / context rotate 的异步文件与 git 顺序没有并入本批。
+- `test:cdp` 与 `tests/test-classify-api-errors*` 按既有约定未运行。
+
+### 验证与红证
+
+最终 Rust 产物指纹 `480bb98fa08cc31bf04472e2`，`darwin-arm64/multicc_core.node` 为 18,017,408 字节，SHA-256 `89cbda96450b6fbda765193c43c87745a710937c1664bff356dbdd5e3b919815`；`probeAddon` 与 `builtFromSource` 均为 true。
+
+红证（旧文件拷到 `/tmp` 对比，未污染工作树）：
+
+- 新增的 3 条最终答复两阶段测试对旧 addon `090eac7d114248e74a14e028` 失败：`AssertionError: the result event starts exactly one write / 0 !== 1`、`TypeError: requested is not iterable`、计数 `0 !== 1`；旧 reducer 从不调用 `requestFinalPersist`。同一文件 18 条中 10 条失败（持有回合的 commit 入口也不存在）。
+- 改写后的错误持久化测试对 HEAD 的 `src/chat/error-persistence.js` 失败：`AssertionError: The "string" argument must be of type string. Received type undefined`（旧实现异步失败时返回原始 payload，没有错误回放 id）。
+- 新增的关停上限测试对 HEAD 的 `src/host-lifecycle.js` 失败：`AssertionError: the flush must actually be awaited`（旧实现不等待持久写入）。
+- 旧同步门在队列被占用时返回 `false`；HEAD 里被删除的测试 `the synchronous compatibility door fails closed while the same session is writing` 正是用断言锁住了“返回 false 且该行不落盘”的丢弃语义。用旧二进制单独复现：`4234debe85c8885e817a7292` 上 `appendMessageSync` 抛 `unknown chat history runtime operation`；`090eac7d...` 上队列忙时返回 `false`。
+
+验证命令与结果（均设置 `MULTICC_RUST_PREBUILT_DIR` 为该指纹根目录、`MULTICC_RUST_ADDON` 为其 `darwin-arm64/multicc_core.node`）：
+
+- 改动/新增的 13 个测试文件：220/220 通过（`test-chat-error-persistence`、`test-chat-events-differential`、`test-chat-finalize-differential`、`test-chat-finalize-host`、`test-chat-history-routes`、`test-chat-host-coordinator`、`test-chat-turn-core`、`test-codex-usage`、`test-host-lifecycle-task-run-close`、`test-task-context-host`、`test-chat-history-runtime-differential`、`test-chat-dto-golden`、`test-chat-history-ordering`）。
+- 回归批次：144/144 通过（`test-held-turn*`、`test-unattended-*`、`test-cancel-state-flow`、`test-chat-runtime-native`、`test-claude-sdk-host`、`test-background-hold-differential`、`test-auto-route-notes`、`test-server-graceful-shutdown`、`test-shutdown-http-errors`、`test-claude-sdk-stream`）。首次构建后的一次运行里 `test-chat-runtime-native` 的 snapshot 出现过一次 `GenericFailure`，随后同一命令和单独重复 3 次均通过，记为偶发。
+- `tests/test-classify-vocab.js` 单独运行：23/23。
+- `npm run test:security`：1139 项，1138 通过、0 失败（1 项既有 TODO）。
+- `npm run test:architecture`：126/126。
+- `npm run test:contracts`：134/134。
+- `npm run test:native`：退出 0（node 4/4、Rust 256/256、sqlite/运行时/发布检查均通过）。
+- `npm run test:governance`：退出 0（20/20、产物治理与运行态写入 45 项均通过）。
+- `cargo test -p multicc-core`：635 通过、0 失败；`cargo test -p multicc-addon` 编译通过（无测试）。
+- `rustfmt --check`：本批改动的两个 Rust 文件无 diff。整仓 `cargo fmt --all --check` 仍会在未改动的 `native/core/src/unattended.rs` 报告 diff；用工作树外的 HEAD 副本复验确认这是本机 Homebrew rustfmt 1.9.0 / rustc 1.98.0 与仓库既有格式的版本差异，不是本批引入。
+- `node scripts/check-source-line-budget.js`：通过；`server.js` 因删除同步入口从 3057/163703 棘轮到 3054/163495。
+
+第一轮按协调者要求未跑 `npm test`、`npm run test:core`，未跑会打活服务的 `tests/test-classify-api-errors*`；未提交、未 stash、未重启服务、未向活服务写。第二轮已按要求运行真实 `npm run test:core`，结果见下节。
+
+### 第一轮回归修复与结构性收口（第二轮）
+
+第一轮验证在指纹 `480bb98fa08cc31bf04472e2` 上报了 7 条 `test:core` 回归和 4 组结构性问题。本轮的判定原则不变：判定在 Rust，Node 只做接线、等待和传递事实；不保留回退或开关。
+
+#### 7 条回归逐条判定
+
+- `tests/test-claude-api-error-message.js` 6 条 + `tests/test-api-error-host.js` 1 条，逐条判定为“测试需要 await”，不是生产回归。原因是收尾链现在真的异步：`finalizeStreamingTurn` 要等最终答复的持久确认和两阶段提交，测试却在 Promise 落定前就断言。受影响的六条是 stale `_resultSaved`、429 自唤醒判决、重复合成投递、error-only 主查询、未识别合成消息、watchdog；`test-api-error-host.js` 是复用 handoff 的 finalize 用例。
+- 修复只在测试侧：`release()` 改为 async 并在所有调用点 await；`applyClaudeChatEvent` 的 stale 回调用例等待一个 `setImmediate` 让异步提交落地；`test-api-error-host.js` 三处 `finalizeStreamingTurn` 改为 await。生产代码没有为这 7 条改回同步语义。
+- 红证：把 HEAD 的两个测试文件拷到 `/tmp/sync-append-batch/red` 跑最终代码，36 条中 29 通过、7 失败，失败名与第一轮完全一致（例如 `the finalizer still reports the reset-target action`、`a successful result does not clear the structured error`）；换成 await 后两个文件全绿。
+
+#### 关停总预算（一次 deadline）
+
+- `src/shutdown.js` 不再让 “checkpoint 10s + drain 60s + flush 10s + closers” 各自计时相加。一次 `shutdown()` 只生成一个 deadline（`DEFAULT_TOTAL_BUDGET_MS = 70_000`），checkpoint、drain、post-drain flush、closers 都从同一条 deadline 扣：drain 预算 = 剩余 - 最终 flush 预留 10s - closers 预留 5s 且不超过调用方 grace；最终 flush 预算 = 剩余 - 5s；closers 用剩余。最坏总耗时 70s，小于 `ecosystem.config.js:29` 的 `kill_timeout: 75000`，留 5s 退出余量。超时只放弃该阶段（durable fsync 无法取消），后续 closer 和 exit 必跑。
+- post-drain flush 从 `onDrain` 移到新的 `shutdownCoordinator.onFinalFlush`，接收同一个 deadline；`src/host-lifecycle.js` 的 `flushInFlightChats({ deadline, timeoutMs })` 取三个上限的最小值（自身 10s、协调器剩余、deadline 差），没有预算时直接跳过并告警。checkpoint 阶段的 partial 写入仍由自身 10s 上限约束，整段再受总 deadline 约束。
+- 测试：`tests/test-shutdown-http-errors.js` 新增缩放预算用例（total 400ms、最终 flush/closer 预留各 100ms），让 checkpoint、drain、final flush、closer 全部永久挂起，断言顺序 `checkpoint→drain→final-flush→closer→exit`、退出仍发生、总耗时不超过 3 倍预算，并断言 drain grace 被压到 200ms；另有静态用例解析 `ecosystem.config.js`，断言 `DEFAULT_TOTAL_BUDGET_MS < kill_timeout - 3000`。旧 `src/shutdown.js` 没有 `totalBudgetMs`/预留/`onFinalFlush`，用 HEAD 文件直接跑挂起 checkpoint 的独立复现 1500ms 后仍未返回。
+- 中途 SIGKILL 的追加半行：Rust 追加路径 `write_all(suffix)` 后 `sync_all()`；`parse_transcript` 只在“文件不以换行结尾、且已解析出至少一条消息”时把最后一行当 torn 丢弃，前面已落盘的行照常读出；新建/空文件走原子整写，所以被 kill 的半个后缀不会变成整个文件。下一轮启动读盘自愈，不把 torn 末行报成损坏；代价是这条被打断的末行本身不保留。
+
+#### 未处理拒绝
+
+- 根因在 `src/chat/session-notices.js` 的 `say()`：它总是返回 Promise，而 `orchestration/runtime.js` 用同步 try/catch 包住调用，捕获不到异步拒绝；`server.js` 也没有 `unhandledRejection` 兜底。现在在源头吸收：同步 throw、Promise reject、`false` 都只记 `chat_notice_persist_failed` 并返回已落定的 `false`；广播失败只记 `chat_notice_broadcast_failed`。turn-engine 的 hold 上限通知改走同一个 notices 实例。
+- 其余非等待写入逐项审计并观察拒绝：error-persistence、auto-route-notes、CLI switch（`switch-runtime.js`）、gateway push（`gateway-host.js`）、无人值守 trace、held-answer append、task-context 投影、codex usage。剩余 `.catch(() => {})` 只在不属于本批的收尾/文件日志路径。
+- 测试：`tests/test-chat-admit-error-feedback.js` 新增“rejected append 不产生 unhandledRejection”，用 `process.on('unhandledRejection')` 计数覆盖 reject、同步 throw、resolved false 三种。旧 `session-notices.js` 跑同一测试会触发异步 `Error: disk full` 的 unhandledRejection 并判失败。
+
+#### 低优先项
+
+1. dedupe 回滚：`error-persistence` 的 `recent` 先登记后写。异步 `false`/reject 和同步 throw 现在都按 entry 身份回滚，只有同一个 claim 才删除；`auto-route-notes` 同步失败不再广播 `noteClientMsgId`。测试覆盖异步失败重试、同步 throw 重试、并发仍去重。旧 `error-persistence.js` 在异步失败用例上既不回滚也把拒绝漏成 unhandledRejection。
+2. `switch-runtime.js` / `gateway-host.js`：吞掉的 Promise 改为记录 warn，并对 `saved === false` 单独告警；同步 throw 也记录原因。
+3. close facts 顺序：`hasTurnOutput`、`recoveredCodexDisconnect`、`kind` 原本在 `await commitAdapterResult` 之前计算；现在抽成纯函数 `deriveCloseTurnFacts`，在该 await 之后调用。测试包含纯函数 oracle 和源码顺序断言（call-site 下标必须先于 helper 调用），覆盖“Codex transport disconnect、无 text/tools、写入成功”。旧 `turn-engine.js` 没有该导出，测试红为 `TypeError: deriveCloseTurnFacts is not a function`。
+4. 关停晚到写入：新增“30ms 后才落盘的 partial 写入”用例，断言 `recordPartialCheckpoint` 早于 `session-persistence-stopped`。旧 HEAD 的“永久挂起写入”用例红在 `the flush must actually be awaited`，证明旧实现根本不等待。
+5. 写入窗口内取消/替换的用量：Rust 已经判定行是否落地，并产生 `(turnId, runnerId)` 身份；Node 的 `recordDurableTurnUsage(..., turn)` 走 `identityOnly`：不要求当前回合、不读也不写替换后的 `cs`，用 `usage:<turnId>:<runnerId>` 和 `runner.usageRecorded` 幂等提交。此前 `turn.resultDurable` 只在“仍当前”的 `recordResultEvent` 里设置，替换后永远缺失，这条路径会被 `result_not_durable` 拒绝而静默丢用量；本轮在 `commitUsage` 的 identity-only 分支用 `runner.turnId === turn.turnId` 做身份证明。测试覆盖“append 期间被替换 → verdict `{durable:false,persisted:true}` → 仍然只记一次用量、替换状态不变”；红证为旧 `host-coordinator.js`/`host-runtime.js` 上 `the row landed but the replacement owns the boundary` 与用量断言失败。归属信息优先取 producing runner/turn，`state` 只作既有只读兜底，不写替换状态。
+
+#### 最终产物与验证
+
+最终 Rust 源码指纹 `cb5a561b351bbcf6fc8cf9de`；`darwin-arm64/multicc_core.node` 为 18,017,424 字节，SHA-256 `c85703809e09a0d67c6f6e92a846f9aaae98c97cf74a8461a74661240c2c5fb8`；`probeAddon` 与 `builtFromSource` 均为 true。所有测试均设置 `MULTICC_RUST_ADDON` 为该文件的完整路径；`MULTICC_RUST_PREBUILT_DIR` 为指纹根目录 `data/rust-source/cb5a561b351bbcf6fc8cf9de`。
+
+- 改动/新增的 16 个 node:test 测试文件：279/279（含 `test-host-lifecycle-task-run-close` 5/5、`test-chat-host-coordinator` 35/35、`test-chat-error-persistence` 6/6）；另 `tests/test-shutdown-http-errors.js` 是普通脚本，单独运行 24/24。
+- 回归批次：144/144（held-turn、unattended、cancel-state-flow、chat-runtime-native、claude-sdk-host/stream、background-hold-differential、auto-route-notes、server-graceful-shutdown）。
+- `npm run test:security`：1139 项，1138 通过、0 失败、1 项既有 TODO。
+- `npm run test:architecture`：126/126；`npm run test:contracts`：134/134。
+- `npm run test:native`：256/256，退出 0（node 4/4、Rust 256/256、sqlite/运行时/发布检查均通过）。第一次把 `MULTICC_RUST_PREBUILT_DIR` 指到 `darwin-arm64` 子目录时，`test-subagent-defaults` 在删除 `MULTICC_RUST_ADDON` 后按 `<dir>/darwin-arm64` 解析而失败；改回指纹根目录后 256/256，不是代码问题。
+- `npm run test:governance`：退出 0（tier 清单 874/874、20/20、产物治理 4 项既有基线、运行态写入 45 项）。
+- `node scripts/check-source-line-budget.js`：退出 0；`server.js` 按棘轮登记为 3054 行 / 163495 字节。
+- `cargo test -p multicc-core`：635/635；`cargo test -p multicc-addon` 编译并通过（无测试）；`cargo clippy -p multicc-core -p multicc-addon --all-targets` 退出 0，只有既有的 too-many-arguments 类告警（`chat_commit_final_persist` 在本轮新增参数前就已超过阈值）。`cargo fmt --all --check` 对本批改动的 Rust 文件无差异，唯一差异仍是未改动的 `native/core/src/unattended.rs`（本机 rustfmt 版本差异，沿用既有说明）。
+- 真实 `npm run test:core`（最终代码）：退出码 1；大 node:test 批次 2212/2212、`test:task-shells` 299/299、`test:task-first` 437/438。唯一失败是 main 既有红项 `tests/test-air-paint-budget.js`：`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`，与本批无关。由于命令链是 `&&`，能走到最后的 `test:task-first` 说明前面所有阶段均已退出 0。
+- 按协调者要求未跑 `npm test`，未跑会打活服务的 `tests/test-classify-api-errors*` 和 `test:cdp`；未提交、未 stash、未重置、未重启服务、未向活服务写。
+
+本轮没有新增未覆盖边界；既有边界保持不变：进程死亡/跨崩溃的“恰好一次”投递仍未承诺，`clearHistory`/rotate 的异步顺序仍未并入，identity 用量提交的归属字段在 runner 缺失时仍按旧规则回退读取会话字段（只读、不写替换状态）。

@@ -155,7 +155,8 @@ function probeAddon(file, node = process.execPath) {
       'providerRevision','providerEncodeProxySession','providerDecodeProxySession','providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
       'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
       'providerForceReleaseProducers', 'providerDrainStaleProducers'].some(key=>typeof a[key]!=='function')) process.exit(1);
-    if(['chatApplyClaudeEvent','chatApplyAdapterEvent','chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
+    if(['chatApplyClaudeEvent','chatApplyAdapterEvent','chatCommitFinalPersist','chatCommitHeldAnswer',
+      'chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
       'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustChatHistory!=='function' || typeof a.RustChatHistory.prototype.run!=='function'
       || typeof a.chatHistoryCleanThinkingBlocks!=='function') process.exit(1);
@@ -167,7 +168,8 @@ function probeAddon(file, node = process.execPath) {
       || a.chatHistoryPublicCommittedMessage({role:'assistant',id:'x'})!==null
       || a.chatHistoryPublicCommittedMessage({role:'user',id:'u',content:'c'}).role!=='user') process.exit(1);
     if(['chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
-      'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure','chatExecuteTurnFinalization'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure','chatExecuteTurnFinalization',
+      'chatCommitTurnFinalization'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['transcriptPruneDefaults','transcriptProjectDir','transcriptFind','transcriptPruneFile',
       'transcriptPruneMaybe','transcriptMeasureFile','transcriptMeasure','transcriptRealUserTurn',
       'transcriptSubstantiveTurn','transcriptUserVisibleText','transcriptTriggersFor',

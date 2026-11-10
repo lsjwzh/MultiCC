@@ -15,7 +15,7 @@ const {
   shouldReexecutePersistedDelivery,
 } = require('./turn-progress');
 const claudeApiError = require('./claude-api-error-message');
-const { heldCapText } = require('./session-notices');
+const { createSessionNotices } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
@@ -253,6 +253,37 @@ function recoverDispatchFromHistory(history, operation) {
 // interruptions don't pop up on every visit.
 const RECONNECT_REPLAY_WINDOW_MS = 15 * 60 * 1000;
 
+// Everything the close handler derives from turn state. It must run AFTER the
+// buffered result's durable append settles: the write can flip `_resultSaved`
+// (sync `result` handling used to guarantee that), and judging "has output"
+// before the await classified a recovered Codex transport disconnect as an
+// empty exit. Kept pure so the ordering bug has a direct unit-test oracle.
+function deriveCloseTurnFacts(cs, turn, {
+  sessionName, pid, code, signal, durMs, killReason, completionOutcome, isRetry,
+  pendingStreamError = '', pendingTransportError = '', pendingStreamErrorCount = 0, stderrTail = '',
+}) {
+  const hasTurnOutput = !!(cs._resultSaved || cs.currentAssistantText || cs.currentToolCalls.length);
+  const recoveredCodexDisconnect = (!!cs._codexRecoveredDisconnect || !!pendingStreamError) && hasTurnOutput;
+  const diag = {
+    session: sessionName, cli: cs.cli, pid, code, signal, durMs, killReason,
+    resultSaved: !!turn.resultDurable,
+    completion: completionOutcome,
+    gotText: (cs.currentAssistantText || '').length,
+    toolCalls: cs.currentToolCalls.length,
+    liveClients: cs.clients.size,
+    isRetry: !!isRetry,
+    recoveredCodexDisconnect,
+    pendingTransportError: pendingTransportError.slice(0, 200),
+    pendingStreamErrorCount,
+    stderrTail,
+  };
+  let kind = 'normal';
+  if (signal) kind = killReason ? `killed(${killReason})` : `signaled(${signal})`;
+  else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
+  else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
+  return { hasTurnOutput, recoveredCodexDisconnect, diag, kind };
+}
+
 function createChatTurnEngine(deps) {
   const {
     // ── Getters for reassigned / late-composed host bindings ──
@@ -313,7 +344,6 @@ function createChatTurnEngine(deps) {
     buildPlanPrompt,
     markPlanContextReset,
     appendChatMessage,
-    appendChatMessageSync = appendChatMessage,
     loadChatHistory,
     // Read-only transcript view; see the WS replay below for why the cloning
     // load() is the wrong tool for a caller that only measures.
@@ -358,6 +388,10 @@ function createChatTurnEngine(deps) {
     deliveryProbeRegistry: injectedDeliveryProbeRegistry = null,
   } = deps;
 
+  // Fire-and-forget transcript notices. `say()` catches its own append
+  // rejection and always resolves, so callers that cannot await are safe.
+  const sessionNotices = createSessionNotices({ appendChatMessage, chatBroadcast, logger });
+
   // Shared [turn-timing] recorder: one instance for every adapter path (claude
   // stream + per-turn spawn). See src/chat/turn-progress.js for the t0-t3
   // contract; the record lives in the Rust owner.
@@ -383,7 +417,7 @@ function createChatTurnEngine(deps) {
   const runnerDeliveryHandoff = deliveryProbeRegistry.lookup;
   const autoProviderRuntime = deps.autoProviderRuntime || createAutoProviderRuntime({
     providers, providerLimitCache, quotaGuard: deps.quotaGuard, logger, isCliAvailable: deps.isCliAvailable, emit: createAutoRouteNotes({ broadcast: chatBroadcast,
-      append: appendChatMessageSync, records: persistedSessions, save: savePersistedSessionsBestEffort }),
+      append: appendChatMessage, records: persistedSessions, save: savePersistedSessionsBestEffort }),
     hasLiveBackgroundTasks: sessionId => {
       try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
       catch (_) { return true; }
@@ -541,6 +575,106 @@ function createChatTurnEngine(deps) {
     return report;
   }
 
+  // A final answer's history write is a durable fsync, not a synchronous
+  // return value. The Rust reducer starts the write and records the pending
+  // state; the verdict returns through `chatCommitFinalPersist`. Everything that
+  // ends the turn (process close, stream finalization, cancel) must await this
+  // map first so a not-yet-persisted answer can never be counted as durable.
+  const pendingFinalPersists = new Map(); // runner -> Promise<boolean>
+
+  function commitFinalPersist(sessionName, cs, evt, message, forward, turn, runner, durable, persisted, wasMapped) {
+    try {
+      getNative().chatCommitFinalPersist(
+        cs, sessionName, evt, message, forward, turn, runner,
+        durable === true, persisted === true, wasMapped === true, nativeChatEventPorts,
+      );
+    } catch (error) {
+      logger.error('chat_final_persist_commit_failed', {
+        sessionId: sessionName,
+        turnId: turn && turn.turnId,
+        runnerId: runner && runner.runnerId,
+        message: error && error.message ? error.message : String(error),
+      });
+    }
+  }
+
+  function requestFinalPersist(sessionName, cs, turn, runner, message, options, forward, wasMapped, evt) {
+    // The append verdict has two independent facts: did the row land
+    // (`persisted`), and may this turn still own the result (`durable`)? The
+    // host reports both to Rust; a row that landed after a replacement still
+    // owes its usage to the turn that produced it.
+    const verdict = { durable: false, persisted: false };
+    const started = (() => {
+      try {
+        return persistFinalAssistantResult(sessionName, cs, turn, runner, message, options, value => {
+          verdict.durable = value.durable === true;
+          verdict.persisted = value.persisted === true;
+        });
+      } catch (error) {
+        logger.error('chat_final_persist_start_failed', {
+          sessionId: sessionName,
+          turnId: turn && turn.turnId,
+          runnerId: runner && runner.runnerId,
+          message: error && error.message ? error.message : String(error),
+        });
+        commitFinalPersist(sessionName, cs, evt, message, forward, turn, runner, false, false, wasMapped);
+        return null;
+      }
+    })();
+    if (started == null) return;
+    const settled = Promise.resolve(started).then(durable => {
+      commitFinalPersist(sessionName, cs, evt, message, forward, turn, runner,
+        durable === true, verdict.persisted, wasMapped);
+      return durable === true;
+    }, error => {
+      logger.error('chat_final_persist_failed', {
+        sessionId: sessionName,
+        turnId: turn && turn.turnId,
+        runnerId: runner && runner.runnerId,
+        message: error && error.message ? error.message : String(error),
+      });
+      commitFinalPersist(sessionName, cs, evt, message, forward, turn, runner, false, verdict.persisted, wasMapped);
+      return false;
+    });
+    pendingFinalPersists.set(runner, settled);
+    settled.then(() => {
+      if (pendingFinalPersists.get(runner) === settled) pendingFinalPersists.delete(runner);
+    }, () => {});
+  }
+
+  async function awaitPendingFinalPersist(turn, runner) {
+    const pending = pendingFinalPersists.get(runner);
+    if (!pending) return true;
+    try { return await pending; } catch (_) { return false; }
+  }
+
+  function requestHeldAnswerAppend(sessionName, message, rowKey, cs, turn, runner) {
+    const started = appendChatMessage(sessionName, message);
+    Promise.resolve(started).then(saved => {
+      try {
+        getNative().chatCommitHeldAnswer(cs, turn, runner, rowKey, saved === true, nativeChatEventPorts);
+      } catch (error) {
+        logger.error('chat_held_answer_commit_failed', {
+          sessionId: sessionName,
+          turnId: turn && turn.turnId,
+          runnerId: runner && runner.runnerId,
+          message: error && error.message ? error.message : String(error),
+        });
+      }
+    }, error => {
+      logger.error('chat_held_answer_failed', {
+        sessionId: sessionName,
+        turnId: turn && turn.turnId,
+        runnerId: runner && runner.runnerId,
+        message: error && error.message ? error.message : String(error),
+      });
+      try {
+        getNative().chatCommitHeldAnswer(cs, turn, runner, rowKey, false, nativeChatEventPorts);
+      } catch (_) {}
+    });
+    return true;
+  }
+
   // One native reducer owns every Claude stream-json decision (branch order,
   // redaction, API-error state, tool/result framing). These ports are only the
   // effects that still belong to Node owners; the object is built once per
@@ -570,9 +704,16 @@ function createChatTurnEngine(deps) {
     clearIncrementalSave: (sessionName) => getChatHistoryRuntime().clearIncrementalSave(sessionName),
     contextTrace: (sessionName, cs) => contextTraceFor(sessionName, cs),
     isMapped: (sessionName, cs) => chatSessions?.get(sessionName) === cs,
-    appendHeldAnswer: (sessionName, message) => appendChatMessageSync(sessionName, message),
-    persistFinal: (sessionName, cs, turn, runner, message, options) => persistFinalAssistantResult(sessionName, cs, turn, runner, message, options),
-    recordDurableUsage: (sessionName, runner, usage) => recordDurableTurnUsage(sessionName, runner, usage),
+    // Both of these start a durable write and return a synchronous "accepted"
+    // flag; the reducer records its pending state and waits for the commit
+    // entry (`chatCommitHeldAnswer` / `chatCommitFinalPersist`) before deciding
+    // that the row or turn is durable.
+    appendHeldAnswer: (sessionName, message, rowKey, cs, turn, runner) => requestHeldAnswerAppend(sessionName, message, rowKey, cs, turn, runner),
+    requestFinalPersist: (sessionName, cs, turn, runner, message, options, forward, wasMapped, evt) => requestFinalPersist(sessionName, cs, turn, runner, message, options, forward, wasMapped, evt),
+    // Rust passes the producing turn explicitly: a persisted answer can lose
+    // its session to a replacement before this commit runs, and its usage must
+    // still be recorded by (turnId, runnerId).
+    recordDurableUsage: (sessionName, runner, usage, turn) => recordDurableTurnUsage(sessionName, runner, usage, {}, turn),
     proxyFailure: (attempt) => attemptRuntime.proxyFailure?.(attempt),
     onTurnComplete: (sessionName) => usageLimitPoller.onTurnComplete(sessionName),
     modelAttribution: (cs, turn, runner) => modelAttributionField(cs, turn, runner),
@@ -1484,6 +1625,18 @@ function createChatTurnEngine(deps) {
       });
 
       proc.on('close', (code, signal) => {
+        // The close path now awaits the final answer's durable append and the
+        // Rust finalization hand-off. It must never surface as an unhandled
+        // rejection or let a rejected write stall the process.
+        closeTurn(code, signal).catch(error => {
+          logger.error('chat_close_handler_failed', {
+            sessionId: sessionName,
+            message: error && error.message ? error.message : String(error),
+          });
+        });
+      });
+
+      async function closeTurn(code, signal) {
         providers.releaseCodexProxyConfig(childEnv);
         if (!isActiveProc()) {
           console.log(`[multicc/chat] [${sessionName}] stale proc pid=${proc.pid} closed after replacement (code=${code}, signal=${signal || ''})`);
@@ -1500,39 +1653,31 @@ function createChatTurnEngine(deps) {
         const durMs = Date.now() - spawnTs;
         const killReason = runner.killReason || null;
         const completionOutcome = settleAdapterCompletion(runner, { kind: 'process', code, signal, killReason }, logger);
-        const pendingStreamError = cs._codexPendingStreamError || '';
-        const pendingTransportError = cs._codexTransportError || '';
-        const pendingStreamErrorCount = cs._codexPendingStreamErrorCount || 0;
-        const hasTurnOutput = !!(cs._resultSaved || cs.currentAssistantText || cs.currentToolCalls.length);
-        if (pendingStreamError && !hasTurnOutput && !cs._adapterError) {
-          cs._adapterError = pendingStreamError;
-          forward({ type: 'error', error: `Codex 出错：${pendingStreamError}` });
-        }
-        const recoveredCodexDisconnect = (!!cs._codexRecoveredDisconnect || !!pendingStreamError) && hasTurnOutput;
-        const sanitizedStderrTail = sanitizeApiErrorMessage(stderrBuf.slice(-300).trim(), '');
-        const diag = {
-          session: sessionName, cli: cs.cli, pid: proc.pid, code, signal, durMs, killReason,
-          resultSaved: !!turn.resultDurable,
-          completion: completionOutcome,
-          gotText: (cs.currentAssistantText || '').length,
-          toolCalls: cs.currentToolCalls.length,
-          liveClients: cs.clients.size,
-          isRetry: !!isRetry,
-          recoveredCodexDisconnect,
-          pendingTransportError: pendingTransportError.slice(0, 200),
-          pendingStreamErrorCount,
-          stderrTail: sanitizedStderrTail,
-        };
-        let kind = 'normal';
-        if (signal) kind = killReason ? `killed(${killReason})` : `signaled(${signal})`;
-        else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
-        else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
         const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
           attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs,
           claudeApiError.boundaryEnvelope(runner, provider?.name || cs.cli, cs),
         );
-        commitAdapterResult(provider, sessionName, cs, persisted, turn, runner, forward, boundaryErrorEnvelope);
-        diag.resultSaved = !!turn.resultDurable;
+        // Wait for the buffered result (and any reducer-started append) to
+        // finish before the diagnostics snapshot and the plan read
+        // `resultDurable`.
+        await commitAdapterResult(provider, sessionName, cs, persisted, turn, runner, forward, boundaryErrorEnvelope);
+        // Everything below is derived from state the awaited append can still
+        // change. A Codex transport error that arrived before the result has no
+        // text yet when the close handler starts, but the durable write flips
+        // `_resultSaved`; judging `hasTurnOutput` before the await used to
+        // classify that recovered disconnect as an empty exit.
+        const pendingStreamError = cs._codexPendingStreamError || '';
+        const pendingTransportError = cs._codexTransportError || '';
+        const pendingStreamErrorCount = cs._codexPendingStreamErrorCount || 0;
+        const sanitizedStderrTail = sanitizeApiErrorMessage(stderrBuf.slice(-300).trim(), '');
+        const { hasTurnOutput, recoveredCodexDisconnect, diag, kind } = deriveCloseTurnFacts(cs, turn, {
+          sessionName, pid: proc.pid, code, signal, durMs, killReason, completionOutcome, isRetry,
+          pendingStreamError, pendingTransportError, pendingStreamErrorCount, stderrTail: sanitizedStderrTail,
+        });
+        if (pendingStreamError && !hasTurnOutput && !cs._adapterError) {
+          cs._adapterError = pendingStreamError;
+          forward({ type: 'error', error: `Codex 出错：${pendingStreamError}` });
+        }
         console.log(`[multicc/chat] [${sessionName}] close kind=${kind} ${JSON.stringify(diag)}`);
         const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt, {
           resultDurable: turn.resultDurable === true && turn.resultRunnerId === runner.runnerId,
@@ -1665,10 +1810,13 @@ function createChatTurnEngine(deps) {
             retryUnavailableReason: error && error.code || 'attempt_prepare_failed', handoff: persisted.pendingCliHandoff,
           });
           turnProgressHeartbeat.stop(sessionName, turn.turnId);
-          turnFinalizationExecutor.execute(blockedPlan, {
+          Promise.resolve(turnFinalizationExecutor.execute(blockedPlan, {
             runnerKind: 'process', sessionName, cs, persisted, turn, runner,
             code, signal, stderrTail: sanitizedStderrTail, pendingTransportError,
-          });
+          })).catch(error => logger.error('chat_stream_finalize_failed', {
+            sessionId: sessionName, turnId: turn.turnId,
+            message: error && error.message ? error.message : 'finalization failed',
+          }));
         };
 
         const prepareRetryAttempt = (options) => {
@@ -1773,17 +1921,17 @@ function createChatTurnEngine(deps) {
           reasonCode: finalizePlan.action,
         });
         turnProgressHeartbeat.stop(sessionName, turn.turnId);
-        const finalization = turnFinalizationExecutor.execute(finalizePlan, {
+        const finalization = await turnFinalizationExecutor.execute(finalizePlan, {
           runnerKind: 'process', sessionName, cs, persisted, turn, runner,
           code,
           signal,
           stderrTail: sanitizedStderrTail,
           pendingTransportError,
         });
-        if (!finalization.terminalBlocked) {
+        if (finalization && !finalization.terminalBlocked) {
           scheduleAutoProviderHandoff(sessionName, turn, autoHandoffPreparation);
         }
-      });
+      }
 
       return proc;
     };
@@ -1978,14 +2126,7 @@ function createChatTurnEngine(deps) {
       // L2: the hold cap is visibility, not release. Rust fires this at most
       // once per held turn; say it where the turn is being watched.
       onHoldCap: ms => {
-        try {
-          const text = heldCapText({ minutes: (Number(ms) || 0) / 60_000 });
-          Promise.resolve(appendChatMessage(sessionName, { role: 'system', content: text, ts: Date.now() }))
-            .then(saved => {
-              if (saved) chatBroadcast?.(sessionName, { type: 'system', subtype: 'notice', message: text });
-            })
-            .catch(() => {});
-        } catch (_) {}
+        sessionNotices.notifyHoldCap({ sessionId: sessionName, minutes: (Number(ms) || 0) / 60_000 });
       },
       cwd: cs.cwd,
       sessionId: persisted[nativeKey],
@@ -2141,17 +2282,21 @@ function createChatTurnEngine(deps) {
     return true;
   }
 
-  function commitAdapterResult(provider, sessionName, cs, persisted, turn, runner, forward, envelope) {
+  async function commitAdapterResult(provider, sessionName, cs, persisted, turn, runner, forward, envelope) {
     const nativeResult = runner.pendingClaudeResult;
     if (nativeResult) {
       applyClaudeChatEvent(cs, sessionName, nativeResult, forward, turn, runner, provider.name);
       runner.pendingClaudeResult = null;
     }
+    // The reducer only starts the durable write; the append's fsync completes
+    // here. Wait for it before any caller inspects `turn.resultDurable` or
+    // `_resultSaved`, otherwise an in-flight answer reads as "not persisted".
+    await awaitPendingFinalPersist(turn, runner);
     if (!canPersistAdapterCompletion(runner.completionOutcome,
       attemptRuntime.proxyFailure?.(runner.providerAttempt), envelope)) return;
     recordApiSuccess(provider.name, { retryAttempt: runner.apiRetryAttempt || 0, runner });
     clearSessionApiErrorState(sessionName, cs);
-    if (!nativeResult && !turn.resultDurable) codexUsageHost.complete({
+    if (!nativeResult && !turn.resultDurable) await codexUsageHost.complete({
       evt: runner.pendingCompletionEvent || { usage: runner.pendingUsage || {} },
       cs, persisted, sessionName, turn, runner, forward, contextTrace: contextTraceFor(sessionName, cs),
     });
@@ -2237,7 +2382,7 @@ function createChatTurnEngine(deps) {
   // Process-independent end-of-turn cleanup for the streaming path. Guarded by
   // the turn sequence so a superseded (interrupted) turn's late completion can't
   // clobber the turn that replaced it.
-  function finalizeStreamingTurn(
+  async function finalizeStreamingTurn(
     sessionName, cs, persisted, seq, turn, runner, prepared, provider, prepareInvocation, autoTurn,
   ) {
     if (seq !== undefined && cs._streamTurnSeq !== seq) return; // superseded by a newer turn
@@ -2247,7 +2392,10 @@ function createChatTurnEngine(deps) {
       provider?.name || persisted.cli || 'claude', cs,
       claudeApiError.boundaryEnvelope(runner, provider?.name || persisted.cli || 'claude', cs),
     );
-    commitAdapterResult(provider, sessionName, cs, persisted, turn, runner,
+    // Apply the buffered native result and wait for its durable append before
+    // reading `resultDurable`. The turn must not be planned or classified from a
+    // state where the final answer's write is still in flight.
+    await commitAdapterResult(provider, sessionName, cs, persisted, turn, runner,
       evt => forwardProviderEvent(sessionName, cs, turn, runner, evt), boundaryErrorEnvelope);
     const proxyFailure = attemptRuntime.proxyFailure?.(runner.providerAttempt, {
       resultDurable: turn.resultDurable === true && turn.resultRunnerId === runner.runnerId,
@@ -2379,9 +2527,12 @@ function createChatTurnEngine(deps) {
             // The retry never started: this is a terminal finalize, so the
             // heartbeat dies with the turn here (the scheduled path keeps it).
             turnProgressHeartbeat.stop(sessionName, turn.turnId);
-            turnFinalizationExecutor.execute(blockedPlan, {
+            Promise.resolve(turnFinalizationExecutor.execute(blockedPlan, {
               runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
-            });
+            })).catch(error => logger.error('chat_stream_finalize_failed', {
+              sessionId: sessionName, turnId: turn.turnId,
+              message: error && error.message ? error.message : 'finalization failed',
+            }));
             return null;
           }
         },
@@ -2396,10 +2547,10 @@ function createChatTurnEngine(deps) {
       errorCategory: apiErrorDecision?.error?.category || null,
       reasonCode: plan.action,
     });
-    const finalization = turnFinalizationExecutor.execute(plan, {
+    const finalization = await turnFinalizationExecutor.execute(plan, {
       runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
     });
-    if (!finalization.terminalBlocked) {
+    if (finalization && !finalization.terminalBlocked) {
       scheduleAutoProviderHandoff(sessionName, turn, autoHandoffPreparation);
     }
   }
@@ -2752,6 +2903,7 @@ module.exports = {
   createChatTurnEngine,
   createDeliveryProbeRegistry,
   deliverAfterPendingMemory,
+  deriveCloseTurnFacts,
   markReplaySafeAssistantEnvelope,
   reconcileBoundaryErrorEnvelope,
   normalizeClaudeAssistantSnapshot,

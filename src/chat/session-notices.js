@@ -67,20 +67,57 @@ function heldCapText({ minutes = 0 } = {}) {
     + '想马上结束本轮，可以在聊天队列里点「立刻插入」或停止本轮（会同时停掉这些后台任务）。';
 }
 
-function createSessionNotices({ appendChatMessage, chatBroadcast, now = Date.now }) {
+function createSessionNotices({ appendChatMessage, chatBroadcast, now = Date.now, logger = console }) {
+  function warn(event, fields) {
+    try { logger?.warn?.(event, fields); } catch (_) {}
+  }
+
+  // A notice is a live broadcast on top of a durable append. Neither side may
+  // reject through the caller: most call sites fire this without awaiting it
+  // (a stuck-delivery notice sits inside a synchronous try/catch), so an
+  // unhandled rejection here would take the whole server down.
+  function broadcastNotice(sessionId, text) {
+    try {
+      chatBroadcast?.(sessionId, { type: 'system', subtype: 'notice', message: text });
+    } catch (error) {
+      warn('chat_notice_broadcast_failed', {
+        sessionId,
+        message: error && error.message ? error.message : String(error),
+      });
+    }
+  }
+
   // Persist first: a live broadcast that no client happened to receive is the
   // same silence this exists to end, and the append is what a reload shows.
+  // The returned promise always resolves (true = durable and broadcast;
+  // false = the line did not land) so a fire-and-forget caller is safe.
   function say(sessionId, text) {
     if (!sessionId || typeof appendChatMessage !== 'function') return undefined;
-    const saved = appendChatMessage(sessionId, { role: 'system', content: text, ts: now() });
+    let saved;
+    try {
+      saved = appendChatMessage(sessionId, { role: 'system', content: text, ts: now() });
+    } catch (error) {
+      warn('chat_notice_persist_failed', {
+        sessionId,
+        message: error && error.message ? error.message : String(error),
+      });
+      return false;
+    }
     if (saved && typeof saved.then === 'function') {
-      return saved.then(ok => {
-        if (ok) chatBroadcast?.(sessionId, { type: 'system', subtype: 'notice', message: text });
-        return ok;
+      return Promise.resolve(saved).then(ok => {
+        if (!ok) return false;
+        broadcastNotice(sessionId, text);
+        return true;
+      }, error => {
+        warn('chat_notice_persist_failed', {
+          sessionId,
+          message: error && error.message ? error.message : String(error),
+        });
+        return false;
       });
     }
     if (!saved) return false;
-    chatBroadcast?.(sessionId, { type: 'system', subtype: 'notice', message: text });
+    broadcastNotice(sessionId, text);
     return true;
   }
   return {

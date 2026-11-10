@@ -122,7 +122,7 @@ function createChatHostCoordinator(rawPorts, options = {}) {
     }, input.turn, input.runner);
   }
 
-  function appendResult(input = {}) {
+  async function appendResult(input = {}) {
     const { turn, runner } = input;
     if (!isCurrent(input)) return makeAppendResult({ code: 'stale_runner' });
     if (!turn || !runner) return makeAppendResult({ code: 'runner_required' });
@@ -173,7 +173,7 @@ function createChatHostCoordinator(rawPorts, options = {}) {
           checkpointKey: checkpointKey || null,
           message: input.message,
         });
-        persisted = succeeded(ports.history.appendFinal(appendInput));
+        persisted = succeeded(await ports.history.appendFinal(appendInput));
       } catch (error) {
         appendError = error && error.message ? String(error.message) : 'append failed';
       }
@@ -209,12 +209,30 @@ function createChatHostCoordinator(rawPorts, options = {}) {
 
   function commitUsage(input = {}) {
     const { turn, runner } = input;
-    if (!isCurrent(input)) return makeUsageResult({ code: 'stale_runner' });
-    if (!turn || !runner || turn.resultDurable !== true) {
-      return makeUsageResult({ code: 'result_not_durable' });
-    }
-    if (turn.resultRunnerId !== runner.runnerId) {
-      return makeUsageResult({ code: 'result_owned_by_other_runner' });
+    // `identityOnly` is only used by the two-phase final-answer commit: Rust
+    // already decided the answer landed and passes the producing turn/runner.
+    // That identity may no longer own the session, but its tokens were spent;
+    // commit idempotently by (turnId, runnerId) and never touch the replacement.
+    const identityOnly = input.identityOnly === true;
+    const current = () => identityOnly || isCurrent(input);
+    if (!current()) return makeUsageResult({ code: 'stale_runner' });
+    if (!turn || !runner) return makeUsageResult({ code: 'result_not_durable' });
+    if (identityOnly) {
+      // Rust only calls this after the append reported the row landed
+      // (`durable || persisted`) and it passes the producing pair. A write that
+      // completed after the turn was replaced never ran the current-only
+      // `recordResultEvent`, so `turn.resultDurable` is still unset; requiring
+      // it here would silently drop the spent tokens. Pairing the runner with
+      // the reason's own turn is the identity proof, and the idempotency key
+      // plus `runner.usageRecorded` keep a retry from paying twice.
+      if (!runner.turnId || runner.turnId !== turn.turnId) {
+        return makeUsageResult({ code: 'result_owned_by_other_runner' });
+      }
+    } else {
+      if (turn.resultDurable !== true) return makeUsageResult({ code: 'result_not_durable' });
+      if (turn.resultRunnerId !== runner.runnerId) {
+        return makeUsageResult({ code: 'result_owned_by_other_runner' });
+      }
     }
     if (runner.usageRecorded === true) return makeUsageResult({ committed: true, code: 'usage_already_recorded' });
 
@@ -230,7 +248,7 @@ function createChatHostCoordinator(rawPorts, options = {}) {
       });
       const context = runner.usageCommitContext || initialContext;
 
-      if (!isCurrent(input)) return makeUsageResult({ code: 'stale_runner' });
+      if (!current()) return makeUsageResult({ code: 'stale_runner' });
 
       if (runner.legacyUsageRecorded !== true) {
         let committed = false;
@@ -257,12 +275,12 @@ function createChatHostCoordinator(rawPorts, options = {}) {
         runner.usageCommitContext = context;
       }
 
-      if (!isCurrent(input)) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner' });
+      if (!current()) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner' });
 
       const claim = claimDurableUsage(runner, { resultDurable: true });
       if (!claim.ok) return makeUsageResult({ attempted: true, committed: true, code: claim.code });
 
-      if (!isCurrent(input)) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner' });
+      if (!current()) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner' });
 
       let observerError = null;
       if (ports.usage.afterCommit) {
@@ -277,21 +295,21 @@ function createChatHostCoordinator(rawPorts, options = {}) {
           observerError = error && error.message ? String(error.message) : 'usage observer failed';
         }
       }
-      if (!isCurrent(input)) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner', observerError });
+      if (!current()) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner', observerError });
       return makeUsageResult({ attempted: true, committed: true, observerError });
     } finally {
       releaseUsageWrite(runner);
     }
   }
 
-  function finalize(input = {}) {
+  async function finalize(input = {}) {
     if (!isCurrent(input)) {
       return Object.freeze({ ok: false, code: 'stale_runner', append: makeAppendResult({ code: 'stale_runner' }), usage: makeUsageResult({ code: 'stale_runner' }) });
     }
     const { runner } = input;
     if (input.facts && input.facts.killReason) assignKillReason(runner, input.facts.killReason);
     if (input.facts && input.facts.retryPlanned === true) runner.retryPlanned = true;
-    const append = appendResult(input);
+    const append = await appendResult(input);
     const usage = commitUsage({
       ...input,
       get currentTurn() { return input.currentTurn; },

@@ -139,7 +139,7 @@ test('legacy vector regression starts a new display epoch without affecting sour
   assert.deepEqual(history[1].usage, cumulative(10, 4, 2));
 });
 
-test('Codex host sends one delta to history, ledger, role tracker and live result', () => {
+test('Codex host sends one delta to history, ledger, role tracker and live result', async () => {
   const cliSessionId = 'native-thread';
   const epoch = usageEpochForSessionId(cliSessionId);
   const calls = [];
@@ -172,7 +172,7 @@ test('Codex host sends one delta to history, ledger, role tracker and live resul
   });
   const forwarded = [];
   const runner = {};
-  host.complete({
+  await host.complete({
     evt: { type: 'complete', usage: cumulative(145, 100, 29, 8) },
     cs,
     persisted: { cliSessionId },
@@ -200,7 +200,7 @@ test('Codex host sends one delta to history, ledger, role tracker and live resul
     'usage/result persistence cannot announce success before runner settlement');
 });
 
-test('Codex App Server host forwards the measured turn without a cumulative baseline', () => {
+test('Codex App Server host forwards the measured turn without a cumulative baseline', async () => {
   const usage = cumulative(20, 10, 3);
   let persistedMessage;
   let forwarded;
@@ -215,7 +215,7 @@ test('Codex App Server host forwards the measured turn without a cumulative base
     recordDurableTurnUsage() {},
     recordResultEvent() {},
   });
-  host.complete({
+  await host.complete({
     evt: { type: 'complete', usage },
     cs: { currentAssistantText: 'done', currentToolCalls: [], chatTurnCount: 1 },
     persisted: { cli: 'codex-exp', cliSessionId: 'same-thread' },
@@ -227,7 +227,7 @@ test('Codex App Server host forwards the measured turn without a cumulative base
   assert.deepEqual(forwarded.usage, usage);
 });
 
-test('the fallback result frame carries the model attribution the message was stamped with', () => {
+test('the fallback result frame carries the model attribution the message was stamped with', async () => {
   const cliSessionId = 'native-thread-secret';
   const cs = {
     currentAssistantText: 'done',
@@ -252,7 +252,7 @@ test('the fallback result frame carries the model attribution the message was st
     } }),
   });
   const forwarded = [];
-  host.complete({
+  await host.complete({
     evt: { type: 'complete', usage: cumulative(145, 100, 29, 8) },
     cs, persisted: { cliSessionId }, sessionName: 'session-a',
     turn: { id: 'turn-a' }, runner: {}, forward: event => forwarded.push(event),
@@ -262,7 +262,7 @@ test('the fallback result frame carries the model attribution the message was st
   });
 });
 
-test('no attribution dep means the fallback frame keeps its exact old shape', () => {
+test('no attribution dep means the fallback frame keeps its exact old shape', async () => {
   const cs = { currentAssistantText: 'done', currentToolCalls: [], chatTurnCount: 1, turnStartedAt: 900 };
   const host = createCodexUsageHost({
     loadHistory: () => [], reconcileRole() {}, clearIncrementalSave() {},
@@ -270,7 +270,7 @@ test('no attribution dep means the fallback frame keeps its exact old shape', ()
     recordResultEvent() {}, setSessionStatus() {}, now: () => 1000,
   });
   const forwarded = [];
-  host.complete({
+  await host.complete({
     evt: { type: 'complete', usage: cumulative(20, 10, 5, 1) },
     cs, persisted: { cliSessionId: 'native-thread-secret' }, sessionName: 'session-a',
     turn: { id: 'turn-a' }, runner: {}, forward: event => forwarded.push(event),

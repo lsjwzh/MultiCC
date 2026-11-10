@@ -12,6 +12,10 @@
 const { createShutdownCoordinator } = require('./shutdown');
 
 const SHUTDOWN_GRACE_MS = 60000;   // max time to let in-flight turns finish
+// A shutdown partial checkpoint writes every unsaved turn to disk. Those writes
+// are now durable fsyncs, so they are awaited — but only within this cap, so a
+// wedged filesystem can never hang shutdown forever.
+const PARTIAL_FLUSH_TIMEOUT_MS = 10000;
 
 function createHostLifecycle(deps) {
   // The CLI lane table is a dependency-free leaf, but this module's require set is
@@ -69,21 +73,30 @@ function createHostLifecycle(deps) {
   if (typeof finishProviderAttempt !== 'function') {
     throw new TypeError('[host-lifecycle] finishProviderAttempt is required');
   }
+  // Tests inject a small cap; production keeps the fixed shutdown budget.
+  const partialFlushTimeoutMs = Number.isFinite(deps.chatFlushTimeoutMs)
+    ? deps.chatFlushTimeoutMs
+    : PARTIAL_FLUSH_TIMEOUT_MS;
 
   // Graceful shutdown checkpoints partial turns, drains, then closes dependencies.
-  function flushInFlightChats() {
+  // `deadline`/`timeoutMs` come from the shutdown coordinator's shared total
+  // budget: the write wait is the smaller of its own 10s cap and what is left.
+  async function flushInFlightChats({ deadline = null, timeoutMs = partialFlushTimeoutMs } = {}) {
     // Prevent a delayed interim write from landing after the shutdown partial
     // checkpoint and recreating a trailing duplicate message.
     const chatHistoryRuntime = getChatHistoryRuntime();
     if (chatHistoryRuntime) chatHistoryRuntime.clearAllIncrementalSaves();
-    let n = 0;
+    const writes = [];
     for (const [name, cs] of chatSessions) {
       if (!cs || cs._resultSaved) continue;
       const hasText = !!(cs.currentAssistantText && cs.currentAssistantText.length);
       const hasTools = !!(cs.currentToolCalls && cs.currentToolCalls.length);
       if (!hasText && !hasTools) continue;
+      const turn = cs._activeTurn;
+      const runner = cs._activeRunner;
+      let pending;
       try {
-        const saved = appendChatMessage(name, {
+        pending = appendChatMessage(name, {
           role: 'assistant',
           content: cs.currentAssistantText || '',
           tools: hasTools ? cs.currentToolCalls : undefined,
@@ -91,19 +104,43 @@ function createHostLifecycle(deps) {
           ts: Date.now(),
           partial: true,   // saved mid-turn on shutdown; may be incomplete
         });
-        if (saved) {
-          const turn = cs._activeTurn;
-          const runner = cs._activeRunner;
-          if (turn && runner && isCurrentTurnRunner(cs, turn, runner)) {
-            recordPartialCheckpoint(turn, runner, {
-              current: true, persisted: true, checkpointKey: assistantCheckpointKey(cs),
-            });
-          }
-          cs._resultSaved = true;
-          n++;
+      } catch (_) {
+        continue;
+      }
+      writes.push(Promise.resolve(pending).then(saved => {
+        if (!saved) return false;
+        if (turn && runner && isCurrentTurnRunner(cs, turn, runner)) {
+          recordPartialCheckpoint(turn, runner, {
+            current: true, persisted: true, checkpointKey: assistantCheckpointKey(cs),
+          });
         }
-      } catch (_) {}
+        cs._resultSaved = true;
+        return true;
+      }, () => false));
     }
+    if (writes.length === 0) return 0;
+    // Bound the wait. The overall drain gets its own grace window, but an fsync
+    // that never returns must not wedge shutdown — and it must never push the
+    // total past the coordinator's deadline.
+    const budget = Math.min(
+      partialFlushTimeoutMs,
+      Number.isFinite(timeoutMs) ? timeoutMs : partialFlushTimeoutMs,
+      deadline == null ? Number.POSITIVE_INFINITY : deadline - Date.now(),
+    );
+    if (!(budget > 0)) {
+      log.warn?.('[multicc] shutdown partial flush skipped: no time left in the total budget');
+      return 0;
+    }
+    let timer = null;
+    const timeout = new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), budget); });
+    const settled = await Promise.race([Promise.allSettled(writes), timeout]);
+    if (timer) clearTimeout(timer);
+    if (settled === 'timeout') {
+      log.warn?.(`[multicc] shutdown partial flush exceeded ${Math.round(budget)}ms — some writes may not have landed`);
+      return 0;
+    }
+    let n = 0;
+    for (const result of settled) if (result.status === 'fulfilled' && result.value === true) n += 1;
     return n;
   }
 
@@ -216,9 +253,10 @@ function createHostLifecycle(deps) {
     get: () => shutdownCoordinator.isShuttingDown(),
   });
 
-  // Checkpoint FIRST: partial-in-memory-only state → disk, synchronously.
-  shutdownCoordinator.onCheckpoint(() => {
-    try { flushInFlightChats(); }
+  // Checkpoint FIRST: partial-in-memory-only state → disk. The flush now awaits
+  // its durable writes (bounded by PARTIAL_FLUSH_TIMEOUT_MS).
+  shutdownCoordinator.onCheckpoint(async () => {
+    try { await flushInFlightChats(); }
     catch (e) { log.error(`[multicc] shutdown flush error: ${e.message}`); }
     // Teardown is explicitly best-effort: make one final attempt to flush any
     // dirty runtime session snapshot, but never turn a transient EIO into an
@@ -256,10 +294,14 @@ function createHostLifecycle(deps) {
         else if (Date.now() - t0 > graceMs) { clearInterval(timer); resolve(); }
       }, 300);
     });
-    // Second checkpoint pass: any turns that hadn't reached `result` by grace get
-    // their partial saved so restart still shows what the agent had streamed.
+  });
+
+  // Second checkpoint pass: any turns that hadn't reached `result` by the end of
+  // the drain get their partial saved so restart still shows what the agent had
+  // streamed. It runs inside the same total deadline as the drain and closers.
+  shutdownCoordinator.onFinalFlush(async ({ deadline, timeoutMs }) => {
     try {
-      const n = flushInFlightChats();
+      const n = await flushInFlightChats({ deadline, timeoutMs });
       if (n) log.log(`[multicc] shutdown flushed ${n} partial message(s) after drain`);
     } catch (e) { log.error(`[multicc] post-drain flush error: ${e.message}`); }
   });

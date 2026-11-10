@@ -305,3 +305,42 @@ test('a stuck delivery behind an unsettled previous delivery is not called a bus
   assert.doesNotMatch(appended[0].content, /工作区被占用/);
   assert.match(appended[0].content, /立刻插入/, 'the escape hatch is the same button either way');
 });
+
+// The turn transport fires notices without awaiting them (the stuck-delivery
+// notice sits inside a synchronous try/catch). Once the append became async,
+// a rejection there escaped as an unhandled rejection — which exits the whole
+// server. `say()` must absorb it at the source and resolve `false`.
+test('a notice whose durable append rejects is not an unhandled rejection', async () => {
+  const unhandled = [];
+  const onUnhandled = reason => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const warnings = [];
+    const rejected = createSessionNotices({
+      appendChatMessage: () => Promise.reject(new Error('disk full')),
+      chatBroadcast: () => {},
+      logger: { warn: (...args) => warnings.push(args) },
+    });
+    // Fire-and-forget exactly like `notifyStuckDelivery` in the orchestration
+    // runtime, which only wraps the call in a synchronous try/catch.
+    rejected.notifyStuckDelivery({ sessionId: 's1', reasons: ['workspace_occupied'], waitedMs: 1000 });
+    // A synchronous throw from the port is absorbed too.
+    const thrown = createSessionNotices({
+      appendChatMessage: () => { throw new Error('disk gone'); },
+      logger: { warn: (...args) => warnings.push(args) },
+    });
+    assert.equal(thrown.notifyLostMessage({ sessionId: 's1', error: new Error('boom') }), false);
+    // The promised result is a real verdict, never a rejection.
+    const held = createSessionNotices({
+      appendChatMessage: () => Promise.resolve(false),
+      logger: { warn: () => {} },
+    });
+    assert.equal(await held.notifyHoldCap({ sessionId: 's1', minutes: 61 }), false);
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(unhandled, [], 'no append rejection reaches the process handler');
+    assert.equal(warnings.filter(args => args[0] === 'chat_notice_persist_failed').length, 2);
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled);
+  }
+});

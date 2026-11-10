@@ -178,3 +178,20 @@ test('a line that finishes a turn is stamped, and the pool lookup returns the la
   emit('s1', selected({ sessionId: 's1', routing: null, routePhase: 'succeeded', providerId: 'or' }));
   assert.equal(records.get('s1').autoProviderLastRoute.succeededAt, 1_000);
 });
+
+test('a synchronously refused note is broadcast without a history id', () => {
+  const broadcasts = [];
+  const warnings = [];
+  const emit = createAutoRouteNotes({
+    broadcast: (sessionId, event) => broadcasts.push({ sessionId, event }),
+    append: () => false,
+    records: new Map(),
+    save: () => {},
+    logger: { warn: (...args) => warnings.push(args) },
+  });
+  emit('s1', selected());
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0].event.noteClientMsgId, undefined,
+    'no id is advertised when no row exists behind it');
+  assert.equal(warnings.filter(args => args[0] === 'chat_auto_route_note_failed').length, 1);
+});

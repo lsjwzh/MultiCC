@@ -22,7 +22,6 @@ function createTaskContextHost(options = {}) {
   const {
     getState,
     append,
-    appendSync = append,
     emitClients,
     getTaskBoard,
     containsDelivery,
@@ -37,7 +36,7 @@ function createTaskContextHost(options = {}) {
     noteUnattendedUserMessage = null,
   } = options;
   for (const [name, value] of Object.entries({
-    getState, append, appendSync, emitClients, getTaskBoard,
+    getState, append, emitClients, getTaskBoard,
     containsDelivery, classifyDisplay, randomUUID, getRecord, runTurn,
   })) {
     if (typeof value !== 'function') throw new TypeError(`[task-context-host] ${name} port required`);
@@ -121,12 +120,6 @@ function createTaskContextHost(options = {}) {
   async function appendMessage(sessionId, message) {
     stampTask(sessionId, message);
     const saved = await append(sessionId, message);
-    projectSaved(sessionId, message, saved);
-    return saved;
-  }
-  function appendMessageSync(sessionId, message) {
-    stampTask(sessionId, message);
-    const saved = appendSync(sessionId, message);
     projectSaved(sessionId, message, saved);
     return saved;
   }
@@ -326,7 +319,6 @@ function createTaskContextHost(options = {}) {
     proposeTaskShellAttribution: (id, receiptId, result) => getTaskShells()?.proposeAttribution(id, receiptId, result) || null,
     settleTaskShellAttribution: (id, receiptId, result) => getTaskShells()?.settleAttribution(id, receiptId, result) || null,
     appendMessage,
-    appendMessageSync,
     beginTurn,
     broadcast,
     continues,

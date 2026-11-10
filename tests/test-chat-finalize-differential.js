@@ -323,7 +323,7 @@ test('the host clock is sampled only when a retry is scheduled and its errors su
 const legacyExecutor = require('./helpers/legacy-chat-finalize-host');
 const nativeExecutor = require('../src/chat/finalize-host');
 
-function executionHarness(owner, input, options = {}) {
+async function executionHarness(owner, input, options = {}) {
   const calls = [];
   const runner = { id: 'runner' };
   runner.self = runner;
@@ -399,7 +399,7 @@ function executionHarness(owner, input, options = {}) {
     },
   };
   const plan = native.planTurnFinalization(clone(input), stableDeps());
-  const result = owner.createTurnFinalizationExecutor(ports).execute(plan, context);
+  const result = await owner.createTurnFinalizationExecutor(ports).execute(plan, context);
   const state = { ...context.cs, _activeRunner: context.cs._activeRunner === runner ? 'original'
     : context.cs._activeRunner === null ? null : 'replacement',
   claudeProc: context.cs.claudeProc === runner ? 'original' : context.cs.claudeProc };
@@ -412,9 +412,9 @@ const EXECUTION_BASE = {
   hasOutput: true, resultEvent: true, resultDurable: false,
 };
 
-function compareExecution(input, options, label) {
-  const before = executionHarness(legacyExecutor, input, options);
-  const after = executionHarness(nativeExecutor, input, options);
+async function compareExecution(input, options, label) {
+  const before = await executionHarness(legacyExecutor, input, options);
+  const after = await executionHarness(nativeExecutor, input, options);
   for (const key of ['calls', 'state', 'turn', 'result']) {
     assert.deepEqual(view(after[key]), view(before[key]), `${label}: ${key}`);
   }
@@ -434,7 +434,7 @@ function compareExecution(input, options, label) {
   return { before, after };
 }
 
-test('收尾执行：正常、重试、取消、历史失败及用量失败与旧宿主轨迹一致', () => {
+test('收尾执行：正常、重试、取消、历史失败及用量失败与旧宿主轨迹一致', async () => {
   const variants = [
     {}, { current: false }, { resultDurable: true }, { resultEvent: false },
     { hasOutput: false, resultEvent: false }, { killReason: 'user_cancel' },
@@ -451,7 +451,7 @@ test('收尾执行：正常、重试、取消、历史失败及用量失败与�
     for (const variant of variants) {
       for (const outcome of outcomes) {
         const input = { ...EXECUTION_BASE, runnerKind, ...variant };
-        compareExecution(input, outcome, JSON.stringify([runnerKind, variant, outcome]));
+        await compareExecution(input, outcome, JSON.stringify([runnerKind, variant, outcome]));
       }
     }
   }
@@ -460,22 +460,22 @@ test('收尾执行：正常、重试、取消、历史失败及用量失败与�
 test('收尾执行：宿主异常、Promise 拒绝和后续再次执行保留行为', async () => {
   for (const fail of ['cancel', 'clear', 'broadcast', 'status', 'complete', 'classify',
     'reset', 'outcome', 'post', 'record', 'usage', 'persist']) {
-    compareExecution(EXECUTION_BASE, { fail }, fail);
+    await compareExecution(EXECUTION_BASE, { fail }, fail);
   }
   for (const thrown of ['text error', { message: 'object error' }, 0, false]) {
-    compareExecution(EXECUTION_BASE, { fail: 'usage', thrown }, String(thrown));
+    await compareExecution(EXECUTION_BASE, { fail: 'usage', thrown }, String(thrown));
   }
-  const before = executionHarness(legacyExecutor, EXECUTION_BASE, { rejectComplete: true });
-  const after = executionHarness(nativeExecutor, EXECUTION_BASE, { rejectComplete: true });
+  const before = await executionHarness(legacyExecutor, EXECUTION_BASE, { rejectComplete: true });
+  const after = await executionHarness(nativeExecutor, EXECUTION_BASE, { rejectComplete: true });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(view(after.calls), view(before.calls));
-  compareExecution(EXECUTION_BASE, {}, 'after failures');
+  await compareExecution(EXECUTION_BASE, {}, 'after failures');
 });
 
-test('收尾执行：随机计划及结果与冻结宿主一致', () => {
+test('收尾执行：随机计划及结果与冻结宿主一致', async () => {
   const random = mulberry32(0x71f1);
   for (let i = 0; i < 350; i++) {
-    compareExecution(randomInput(random), {
+    await compareExecution(randomInput(random), {
       persisted: pick(random, [true, false, 1]), usage: pick(random, [true, false, 1]),
       liveDurable: pick(random, [undefined, true, false]),
       replaced: random() < 0.5, transport: pick(random, [undefined, '连接中断']),
@@ -483,10 +483,10 @@ test('收尾执行：随机计划及结果与冻结宿主一致', () => {
   }
 });
 
-test('收尾执行：错误正文保留 UTF-16 代码单元及显式字符串转换', () => {
+test('收尾执行：错误正文保留 UTF-16 代码单元及显式字符串转换', async () => {
   const emptyRetry = { ...EXECUTION_BASE, isRetry: true, hasOutput: false, resultEvent: false };
   for (const stderrTail of [' \ud800 ', Symbol('stderr'), { toString: () => 'stderr object' }]) {
-    compareExecution(emptyRetry, { stderrTail }, 'stderr coercion');
+    await compareExecution(emptyRetry, { stderrTail }, 'stderr coercion');
   }
-  compareExecution(emptyRetry, { transport: '\udc00 transport' }, 'transport UTF-16');
+  await compareExecution(emptyRetry, { transport: '\udc00 transport' }, 'transport UTF-16');
 });

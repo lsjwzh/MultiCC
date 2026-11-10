@@ -22,6 +22,10 @@ function createMemoryHistory(initial) {
   return {
     read: sessionId => JSON.parse(JSON.stringify(records.get(String(sessionId)) || [])),
     write(sessionId, messages) { records.set(String(sessionId), JSON.parse(JSON.stringify(messages))); },
+    writeAsync(sessionId, messagesJson) {
+      records.set(String(sessionId), JSON.parse(messagesJson));
+      return Promise.resolve();
+    },
     deleteSession: sessionId => records.delete(String(sessionId)),
     hasPersistedDelivery: () => false,
   };

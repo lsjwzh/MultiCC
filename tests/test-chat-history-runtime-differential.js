@@ -244,6 +244,11 @@ function createHarness(kind, options = {}) {
     };
   }
   if (options.dropVisibilityWrite) delete history.writeVisibility;
+  // The durable append port. Both runtimes must leave the same trace: the
+  // native path writes `messagesJson` asynchronously while the frozen legacy
+  // oracle still calls the synchronous `write`, so route the async port through
+  // the same recorded write instead of inventing a second trace shape.
+  history.writeAsync = (sessionId, messagesJson) => history.write(sessionId, JSON.parse(messagesJson));
   history.root = raw.root;
 
   // — 其余端口 —

@@ -235,7 +235,7 @@ function createCodexUsageHost(deps = {}) {
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   const timelineField = typeof deps.timelineField === 'function' ? deps.timelineField : turnProgress.field;
 
-  function complete({ evt, cs, persisted, sessionName, turn, runner, forward, contextTrace = null }) {
+  async function complete({ evt, cs, persisted, sessionName, turn, runner, forward, contextTrace = null }) {
     if (typeof forward !== 'function') throw new TypeError('Codex usage host missing: forward');
     // Claude's result path already cancels this crash-safety timer. Codex must
     // do the same before persisting its final message, otherwise the stale
@@ -255,7 +255,7 @@ function createCodexUsageHost(deps = {}) {
     runner.pendingUsage = usage;
     deps.reconcileRole(sessionName, usage, runner.usageAttribution || {});
     if (cs.currentAssistantText || cs.currentToolCalls.length) {
-      const durable = deps.persistFinalAssistantResult(sessionName, cs, turn, runner, {
+      const durable = await deps.persistFinalAssistantResult(sessionName, cs, turn, runner, {
         role: 'assistant',
         content: cs.currentAssistantText,
         tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
