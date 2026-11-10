@@ -1551,13 +1551,13 @@ test('Rust turn mutations keep strict setters, reads, partial writes and reentry
 
 test('a redelivered persisted message is never refused by the configuration step', () => {
   const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
-  const start = source.indexOf('    const configuration = ');
-  const end = source.indexOf('    return finishConfiguration();', start);
-  assert.ok(start > 0 && end > start, 'the configuration step is still where this test reads it');
-  // Run the real step with stubbed collaborators: refusal comes back as
-  // { blocked: true }, admission as the finishConfiguration() marker.
+  const start = source.indexOf('    function afterDeliveryProbe(replay) {');
+  const end = source.indexOf('    function finishConfiguration(replay)', start);
+  assert.ok(start > 0 && end > start, 'the durable-delivery gate still precedes configuration');
+  // Run the real post-probe step with stubbed collaborators: refusal comes back
+  // as { blocked: true }, admission as the finishConfiguration() marker.
   const step = new Function('replay', 'deps', 'sessionName', 'opts', 'text', 'finishConfiguration',
-    source.slice(start, end) + '    return finishConfiguration();');
+    source.slice(start, end) + '    return afterDeliveryProbe(replay);');
   const admitted = () => 'admitted';
   for (const verdict of [true, false, undefined]) {
     let called = 0;

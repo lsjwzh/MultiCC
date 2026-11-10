@@ -702,14 +702,25 @@ function createChatTurnEngine(deps) {
       }
     }
     const delivery = opts.clientMsgId || opts.deliveryId;
-    const replay = delivery && getChatHistoryService().hasPersistedDelivery(sessionName, delivery);
-    const configuration = replay ? undefined : deps.applyPendingConfiguration?.(sessionName, opts, text); // a redelivery skips, never refuses
-    if (configuration && typeof configuration.then === 'function') {
-      return configuration.then(allowed => allowed === false ? { blocked: true } : finishConfiguration());
+    if (delivery) {
+      let persisted;
+      try {
+        persisted = getChatHistoryService().hasPersistedDelivery(sessionName, delivery);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return Promise.resolve(persisted).then(afterDeliveryProbe);
     }
-    if (configuration === false) return { blocked: true };
-    return finishConfiguration();
-    function finishConfiguration() {
+    return afterDeliveryProbe(false);
+    function afterDeliveryProbe(replay) {
+      const configuration = replay ? undefined : deps.applyPendingConfiguration?.(sessionName, opts, text); // a redelivery skips, never refuses
+      if (configuration && typeof configuration.then === 'function') {
+        return configuration.then(allowed => allowed === false ? { blocked: true } : finishConfiguration(replay === true));
+      }
+      if (configuration === false) return { blocked: true };
+      return finishConfiguration(replay === true);
+    }
+    function finishConfiguration(replay) {
       getWorkspaceAdmission?.()?.assertPermit(sessionName, opts);
       const experimentalRuntime = getExperimentalTuiChatRuntime?.();
       if (experimentalRuntime?.owns(persisted)) {
@@ -793,7 +804,7 @@ function createChatTurnEngine(deps) {
           });
           return { blocked: true };
         }
-        return { persisted, existingCs, initialHistory, turnRequest };
+        return { persisted, existingCs, initialHistory, turnRequest, deliveryPersisted: replay };
       }
     }
   }
@@ -821,7 +832,7 @@ function createChatTurnEngine(deps) {
       return false;
     }
     if ('delegated' in admissionGate) return admissionGate.delegated;
-    const { persisted, existingCs, initialHistory, turnRequest } = admissionGate;
+    const { persisted, existingCs, initialHistory, turnRequest, deliveryPersisted = false } = admissionGate;
     text = turnRequest.text;
     const clientMsgId = turnRequest.identity.clientMsgId || '';
     const deliveryId = turnRequest.identity.deliveryId || '';
@@ -867,10 +878,10 @@ function createChatTurnEngine(deps) {
     if (clientMsgId || deliveryId) {
       if (clientMsgId && getChatHistoryService().containsDelivery(sessionName, clientMsgId)) {
         duplicateSeen = true;
-        duplicatePersisted = getChatHistoryService().hasPersistedDelivery(sessionName, clientMsgId);
+        duplicatePersisted = deliveryPersisted === true;
       } else if (deliveryId && getChatHistoryService().containsDelivery(sessionName, deliveryId)) {
         duplicateSeen = true;
-        duplicatePersisted = getChatHistoryService().hasPersistedDelivery(sessionName, deliveryId);
+        duplicatePersisted = deliveryPersisted === true;
       }
     }
     // Persisted ≠ delivered: if THIS live process watched the runner reject
@@ -1025,13 +1036,7 @@ function createChatTurnEngine(deps) {
     // failed attempt; appending again would duplicate the bubble, so only the
     // durable-presence check runs (falling back to a normal append if the
     // history was cleared in between).
-    let userMessageSaved = false;
-    if (reexecutePersistedDelivery) {
-      try {
-        userMessageSaved = getChatHistoryService()
-          .hasPersistedDelivery(sessionName, clientMsgId || deliveryId);
-      } catch (_) { userMessageSaved = false; }
-    }
+    let userMessageSaved = reexecutePersistedDelivery && deliveryPersisted === true;
     if (!userMessageSaved) userMessageSaved = appendChatMessage(sessionName, {
       role: 'user', content: text, ts: Date.now(),
       turnId,
@@ -1810,11 +1815,12 @@ function createChatTurnEngine(deps) {
   }
 
   function persistedOrchestrationDelivery(session, deliveryId) {
-    if (!deliveryId) return false;
+    if (!deliveryId) return Promise.resolve(false);
     try {
-      return getChatHistoryService().hasPersistedDelivery(session, deliveryId);
+      return Promise.resolve(getChatHistoryService().hasPersistedDelivery(session, deliveryId))
+        .catch(() => false);
     } catch (_) {
-      return false;
+      return Promise.resolve(false);
     }
   }
 

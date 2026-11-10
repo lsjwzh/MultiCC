@@ -16,9 +16,28 @@ function createChatHistoryFileRepository({
   const owner = new (getNative().RustChatHistoryRepository)(anchor);
   const methods = ['deleteSession', 'fileFor', 'hasPersistedDelivery', 'listSessionIds',
     'read', 'readVisibility', 'renameSession', 'write', 'writeVisibility', 'visibilityFileFor'];
+  function asyncFailure(error) {
+    if (error.errorType === 'SyntaxError' && typeof error.jsonSource === 'string') {
+      JSON.parse(error.jsonSource);
+    }
+    const Constructor = error.errorType === 'TypeError' ? TypeError : Error;
+    const failure = new Constructor(error.message);
+    if (error.code) failure.code = error.code;
+    if (error.errno != null) failure.errno = error.errno;
+    if (error.syscall) failure.syscall = error.syscall;
+    if (error.path) failure.path = error.path;
+    return failure;
+  }
   return Object.freeze({ root, ...Object.fromEntries(methods.map(method =>
     [method, (...args) => owner.run(anchor, method, args)])),
     readStrict: (sessionId, { allowEmpty = false } = {}) => owner.run(anchor, 'readStrict', [sessionId, allowEmpty]),
+    hasPersistedDeliveryAsync: async (sessionId, deliveryId) => {
+      const identity = String(deliveryId || '');
+      if (!identity) return false;
+      const result = await owner.hasPersistedDeliveryAsync(String(sessionId), identity);
+      if (result.error) throw asyncFailure(result.error);
+      return result.found === true;
+    },
   });
 }
 

@@ -66,7 +66,7 @@ test('display clearing and hiding survive restart without changing task evidence
   assert.deepEqual(restarted.runtime.paginate('s1').messages, []);
   assert.equal(restarted.runtime.paginate('s1', { around: 'a1' }).found, false);
   assert.deepEqual(restarted.runtime.load('s1'), original);
-  assert.equal(restarted.runtime.service.hasPersistedDelivery('s1', 'delivery-1'), true);
+  assert.equal(await restarted.runtime.service.hasPersistedDelivery('s1', 'delivery-1'), true);
   assert.deepEqual(restarted.runtime.paginate('s1', { includeHidden: true, limit: 100 }).messages, original);
   restarted.runtime.appendMessage('s1', { id: 'u3', role: 'user', content: 'new message' });
   assert.deepEqual(restarted.runtime.paginate('s1').messages.map(m => m.id), ['u3']);

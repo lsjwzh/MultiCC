@@ -74,8 +74,13 @@ function buildChatHistoryService(options = {}) {
   const methods = ['append', 'assertCanDeleteSession', 'containsDelivery', 'deleteSession',
     'hasPersistedDelivery', 'ensurePersistedIds', 'invalidate', 'latestAssistantAt',
     'paginate', 'read', 'remove', 'replace', 'upsertInterim', 'view'];
-  const service = Object.freeze(Object.fromEntries(methods.map(method =>
-    [method, (...args) => owner.run(anchor, method, args)])));
+  const entries = methods.map(method => [method, (...args) => owner.run(anchor, method, args)]);
+  if (typeof history.hasPersistedDeliveryAsync === 'function') {
+    const index = entries.findIndex(([method]) => method === 'hasPersistedDelivery');
+    entries[index] = ['hasPersistedDelivery', (sessionId, deliveryId) =>
+      history.hasPersistedDeliveryAsync(sessionId, deliveryId)];
+  }
+  const service = Object.freeze(Object.fromEntries(entries));
   return { service, owner, anchor };
 }
 
