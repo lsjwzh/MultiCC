@@ -1,6 +1,22 @@
 'use strict';
 
 const { scopeHostProviderEvent } = require('./chat/provider-attempt-runtime');
+const { SYSTEM_PREFIX } = require('./session/delivery');
+const unattendedKernel = require('./unattended/kernel');
+
+// "Real user" = a message a human typed. Host-authored deliveries all carry one
+// of the markers below (or the 🔇 system prefix the delivery boundary stamps),
+// so they must never pause the unattended supervisor.
+function isRealUserMessage(text, options = {}) {
+  if (options.unattendedSystem === true || options.system === true) return false;
+  if (options.originTrigger === true || options.originContinue === true) return false;
+  const value = typeof text === 'string' ? text : '';
+  if (value.trimStart().startsWith(SYSTEM_PREFIX)) return false;
+  let marker = '';
+  try { marker = unattendedKernel.tag(); } catch (_) { marker = ''; }
+  if (marker && value.includes(marker)) return false;
+  return true;
+}
 
 function createTaskContextHost(options = {}) {
   const {
@@ -233,19 +249,32 @@ function createTaskContextHost(options = {}) {
       // judged, and shell receipt retries are idempotent (same config → no-op).
       try { armUnattended(sessionName, options.unattended, text); } catch (_) {}
     }
-    if (typeof noteUnattendedUserMessage === 'function' && options.unattendedSystem !== true) {
+    // The message that carries `options.unattended` IS the start instruction
+    // (the goal itself), so it must not pause the supervisor it just armed. This
+    // also covers shell receipt retries, which replay the same options.
+    if (!options.unattended && typeof noteUnattendedUserMessage === 'function'
+        && isRealUserMessage(text, options)) {
+      // Human takeover: pause the supervisor BEFORE the message is delivered, so
+      // a verdict already in flight cannot answer over the human's head.
       try { noteUnattendedUserMessage(sessionName); } catch (_) {}
     }
+    // `system: true` marks a supervisor-authored delivery: stamp the same 🔇
+    // prefix the session-delivery boundary uses so classify/history agree that
+    // this is not a user message. Never double-prefix.
+    const rawText = typeof text === 'string' ? text : String(text == null ? '' : text);
+    const outbound = options.system === true && !rawText.trimStart().startsWith(SYSTEM_PREFIX)
+      ? `${SYSTEM_PREFIX}${rawText}`
+      : rawText;
     const shells = getTaskShells();
     if (shells?.accepts?.(sessionName) && !options.taskShellReceiptId && !options.originContinue) {
-      return shells.sendFromSession(sessionName, text, options);
+      return shells.sendFromSession(sessionName, outbound, options);
     }
     // Turn-timing t0: every chat-send route (WS user_message, task-board HTTP
     // sends) funnels through here. The stamp survives the durable outbox
     // (payload.options) so runChatTurn can measure from true receipt, FIFO
     // wait included. Callers may pre-stamp an earlier instant.
     if (!Number.isFinite(options.receivedAt)) options.receivedAt = Date.now();
-    const started = await runTurn(sessionName, text, options);
+    const started = await runTurn(sessionName, outbound, options);
     if (started && typeof started === 'object') {
       return {
         handled: false,

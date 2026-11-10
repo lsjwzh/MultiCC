@@ -165,7 +165,18 @@ class _UnattendedFabState extends State<UnattendedFab>
             child: Stack(
               alignment: Alignment.center,
               children: [
-                Icon(style.icon, color: Colors.white, size: 22),
+                // 判定中（v2）：verdict 开始到落地之间转圈，图标暂时让位。
+                if (state?.evaluating == true)
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                else
+                  Icon(style.icon, color: Colors.white, size: 22),
                 if (state != null && maxRounds > 0)
                   Positioned(
                     right: 2,
@@ -202,6 +213,145 @@ class _UnattendedFabState extends State<UnattendedFab>
 /// 情况下钉住契约：只有 active 能 stop/update，needs_human/exhausted/stopped/
 /// error 能 resume，从未启用或已达成重新 start。
 enum UnattendedSheetActionMode { start, active, resume }
+
+/// `pausedBy`（v2）→ 用户可读的暂停原因；没有（含老服务端）时返回 null。
+String? unattendedPausedByLabel(String? pausedBy) => switch (pausedBy) {
+  UnattendedState.pausedByUser => t('unattendedPausedByUser'),
+  UnattendedState.pausedByInput => t('unattendedPausedByInput'),
+  UnattendedState.pausedByCancel => t('unattendedPausedByCancel'),
+  _ => null,
+};
+
+/// 输入框上方 banner 的「为什么停在这里」：需要人工时优先给 humanReason，
+/// 其余看 pausedBy（Web 的 bannerReasonText 同一规则）。
+String unattendedBannerReason(UnattendedState state) {
+  if (state.needsHuman) {
+    final reason = state.lastVerdict?.humanReason.trim() ?? '';
+    final fallback = state.lastVerdict?.reason.trim() ?? '';
+    final text = reason.isNotEmpty ? reason : fallback;
+    return text.isEmpty
+        ? t('unattendedStatusNeedsHuman')
+        : t('unattendedHumanReason', {'reason': text});
+  }
+  return unattendedPausedByLabel(state.pausedBy) ?? '';
+}
+
+/// 聊天输入框正上方的无人值守条（v2 产品决定）：`active` 时说明输入为什么被锁，
+/// 主按钮是「暂停并接管」；stopped / needs_human / exhausted / error 时给小号的
+/// 「继续无人值守」+ 暂停原因。achieved 与从未启用不占位置。
+class UnattendedComposerBanner extends StatelessWidget {
+  const UnattendedComposerBanner({super.key, required this.provider});
+
+  final ChatProvider provider;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = provider.unattended;
+    if (state == null) return const SizedBox.shrink();
+    final active = state.isActive;
+    final resumable =
+        state.needsHuman || state.isExhausted || state.isStopped || state.isError;
+    if (!active && !resumable) return const SizedBox.shrink();
+    final style = _statusStyle(state.status);
+    final busy = provider.unattendedBusy;
+    final evaluating = state.evaluating;
+    final main = active
+        ? t('unattendedBannerActive', {
+            'round': '${state.rounds}',
+            'max': '${state.maxRounds}',
+          }) +
+              (evaluating ? ' · ${t('unattendedJudging')}' : '')
+        : t(style.labelKey);
+    final reason = active ? '' : unattendedBannerReason(state);
+    final leading = active && evaluating
+        ? SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(style.color),
+            ),
+          )
+        : Icon(
+            active ? Icons.smart_toy_rounded : style.icon,
+            size: active ? 15 : 14,
+            color: style.color,
+          );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Container(
+        key: const ValueKey('unattended-banner'),
+        width: double.infinity,
+        padding: EdgeInsets.fromLTRB(10, active ? 6 : 3, 6, active ? 6 : 3),
+        decoration: BoxDecoration(
+          color: style.background,
+          border: Border.all(color: style.color.withValues(alpha: 0.35)),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            leading,
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                main,
+                key: const ValueKey('unattended-banner-text'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: style.color,
+                  fontSize: active ? 12.5 : 11.5,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                ),
+              ),
+            ),
+            if (reason.isNotEmpty)
+              Flexible(
+                child: Text(
+                  reason,
+                  key: const ValueKey('unattended-banner-reason'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.muted,
+                    fontSize: 11.5,
+                  ),
+                ),
+              ),
+            TextButton(
+              key: ValueKey(
+                active ? 'unattended-pause' : 'unattended-resume-banner',
+              ),
+              onPressed: busy
+                  ? null
+                  : active
+                  ? provider.stopUnattended
+                  : provider.resumeUnattended,
+              style: TextButton.styleFrom(
+                foregroundColor: active
+                    ? AppColors.danger
+                    : AppColors.accentDark,
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 30),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(
+                active
+                    ? t('unattendedPauseTakeover')
+                    : t('unattendedBannerResume'),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 UnattendedSheetActionMode unattendedSheetActionMode(UnattendedState? state) {
   if (state?.isActive == true) return UnattendedSheetActionMode.active;
@@ -734,6 +884,46 @@ class _UnattendedSheetState extends State<_UnattendedSheet> {
                 ),
             ],
           ),
+          // v2：判定中（verdict 开始到落地）转圈；暂停原因（pausedBy）单列一行。
+          if (state != null && state.evaluating)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Row(
+                key: const ValueKey('unattended-evaluating'),
+                children: [
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(style.color),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    t('unattendedJudging'),
+                    style: TextStyle(
+                      color: style.color,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (state != null && state.pausedBy != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                unattendedPausedByLabel(state.pausedBy) ?? '',
+                key: const ValueKey('unattended-paused-by'),
+                style: const TextStyle(
+                  color: AppColors.muted,
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+            ),
           if (verdict != null && verdict.reason.trim().isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),

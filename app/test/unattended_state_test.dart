@@ -87,6 +87,58 @@ void main() {
     expect(at('achieved').canResume, isFalse);
   });
 
+  test('v2 evaluating：bool / 数字 / 字符串都宽容解析，缺省 false', () {
+    bool evaluatingOf(dynamic raw) =>
+        UnattendedState.fromJson({'evaluating': raw})!.evaluating;
+
+    expect(evaluatingOf(true), isTrue);
+    expect(evaluatingOf(1), isTrue);
+    expect(evaluatingOf('true'), isTrue);
+    expect(evaluatingOf('1'), isTrue);
+
+    for (final raw in const [false, 0, 'false', '0', null, 'yes', '']) {
+      expect(evaluatingOf(raw), isFalse, reason: '$raw');
+    }
+    // 完全没有这个键时是「不在判定中」。
+    expect(
+      UnattendedState.fromJson(const {'status': 'active'})!.evaluating,
+      isFalse,
+    );
+  });
+
+  test('v2 pausedBy：只认非空文本，空串 / "null" / null 都落成 null', () {
+    String? pausedByOf(dynamic raw) =>
+        UnattendedState.fromJson({'pausedBy': raw})!.pausedBy;
+
+    expect(pausedByOf('user'), 'user');
+    expect(pausedByOf('input'), 'input');
+    expect(pausedByOf(' cancel '), 'cancel');
+
+    for (final raw in const [null, '', '  ', 'null']) {
+      expect(pausedByOf(raw), isNull, reason: '$raw');
+    }
+  });
+
+  test('v2 evaluating / pausedBy 往返后不丢', () {
+    final state = UnattendedState.fromJson(const {
+      'status': 'stopped',
+      'rounds': 2,
+      'evaluating': true,
+      'pausedBy': 'input',
+    })!;
+    expect(state.evaluating, isTrue);
+    expect(state.pausedBy, 'input');
+
+    final json = state.toJson();
+    expect(json['evaluating'], isTrue);
+    expect(json['pausedBy'], 'input');
+
+    final again = UnattendedState.fromJson(json)!;
+    expect(again.evaluating, isTrue);
+    expect(again.pausedBy, 'input');
+    expect(again.toJson(), json);
+  });
+
   test('limits：缺省 30/200，非法值回退', () {
     expect(UnattendedLimits.fromJson(null).maxRoundsDefault, 30);
     expect(UnattendedLimits.fromJson(null).maxRoundsMax, 200);

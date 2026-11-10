@@ -78,6 +78,46 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('active 判定中：图标让位给 spinner，轮次徽标还在', (tester) async {
+    await tester.pumpWidget(
+      _host(
+        UnattendedFab(
+          state: UnattendedState(
+            status: 'active',
+            rounds: 1,
+            maxRounds: 30,
+            evaluating: true,
+          ),
+          onTap: () {},
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byIcon(Icons.autorenew_rounded), findsNothing);
+    expect(find.text('1/30'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('active 但不在判定中：照旧显示循环图标，没有 spinner', (tester) async {
+    await tester.pumpWidget(
+      _host(
+        UnattendedFab(
+          state: _state('active', rounds: 1, maxRounds: 30),
+          onTap: () {},
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byIcon(Icons.autorenew_rounded), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('needs_human / achieved / exhausted 各自的图标', (tester) async {
     for (final (status, icon) in const [
       ('needs_human', Icons.front_hand_rounded),

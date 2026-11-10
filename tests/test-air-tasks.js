@@ -175,7 +175,7 @@ test('Air projects compact unattended progress onto task cards without mutating 
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: false }) } });
   const res = airResponse(); await handlers.get('/api/air')({}, res);
   const [task] = JSON.parse(res.body).tasks;
-  assert.deepEqual(task.unattended, { status: 'active', rounds: 2, maxRounds: 30 });
+  assert.deepEqual(task.unattended, { status: 'active', rounds: 2, maxRounds: 30, evaluating: false });
   assert.equal('unattended' in cached, false, 'the cached task card is never mutated');
   assert.equal(JSON.stringify(JSON.parse(res.body)).includes('ship it'), false,
     'task rows only expose compact progress, not the goal text');

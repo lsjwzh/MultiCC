@@ -433,6 +433,7 @@ function mountAirRoutes(app, deps) {
         status: state.status ?? null,
         rounds: Math.max(0, Math.floor(Number(state.rounds) || 0)),
         maxRounds: Math.max(1, Math.floor(Number(state.maxRounds) || 1)),
+        evaluating: state.evaluating === true,
       } };
     };
     const tasksWithUnattended = tasks.map(compactUnattended);

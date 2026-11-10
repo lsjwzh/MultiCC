@@ -101,3 +101,192 @@ Air quick-task "Goal" checkbox + limits (becomes the unattended toggle); Flutter
 button/dialog, `goalLimits` plumbing. Server: `resolveGoalLimits`, `buildGoalLimitNote`,
 `goal-limit` context layer, `goalLimits` in task-shell runtime / turn request (JS + Rust
 `turn_request.rs`). i18n keys for the removed UI are deleted; new keys added in both languages.
+
+## v2: human takeover, scheduler-ordered queue, immediate fault/question handling, marked messages
+
+Product decisions (user, 2026-11-10):
+
+1. **Input is locked while unattended is `active`.** A human who needs to type first pauses
+   (`stop`, shown as "暂停并接管 / Pause & take over"), types, then presses "继续无人值守 /
+   Resume unattended" (`resume`). `needs_human`, `stopped`, `exhausted`, `error`, `achieved`
+   leave the input enabled. The lock covers: the composer (Enter, send button, slash commands,
+   attach, voice dictation) and the option buttons of a pending `wait_for_user_answer` card
+   (the aux answers it itself while active). A banner above the composer says why and carries the
+   Pause button.
+   Server-side backstop: a *real* user message (not system-injected, not unattended's own) that
+   arrives while `active` pauses the supervisor first (`status: 'stopped'`, `pausedBy: 'input'`)
+   and is then delivered normally, so a stale client can never make human and supervisor fight.
+   `stop` from the UI sets `pausedBy: 'user'`, a Cancel sets `pausedBy: 'cancel'`.
+   `resume` while a turn is streaming/queued must NOT run `evaluateNow`; the turn-end settle does it.
+2. **No special FIFO handling: the scheduler already gates the FIFO behind a pending
+   question (answer runs first) and behind an E fault (continuation runs first, FIFO stays
+   staged until D); the supervisor only has to deliver its answer / fault-continue and the
+   FIFO continues by itself.** The supervisor therefore does not read the queued deliveries
+   into the verdict prompt, and it does not append its message to the FIFO tail: a
+   supervisor message is an "insert now" control (the delivery layer admits it as a
+   `continuation`, which the scheduler treats as `directRun`). On a D settle with staged
+   work the supervisor DEFERS (no verdict, no round burned) and releases the held classic
+   push; the last backlog turn's own D settle makes the verdict.
+3. **Waiting-on-user and faults are answered immediately.**
+   - Turn ended on a pending user-input question: the aux picks the answer (`answer`) and it is
+     delivered right away (resolves the request).
+   - Turn ended in fault E (not a user Cancel): after the existing API-error policy has finished
+     with it (it either scheduled its own retry — then do nothing — or gave up), inject an
+     immediate `continue` instruction WITHOUT an aux call. Counts as a round; consecutive faults
+     are capped at 3 then `needs_human` (reason: repeated faults), so an unhealthy upstream never
+     loops. Never replay side effects: the instruction only says to resume from where it stopped
+     and check state before redoing anything.
+4. **Every message the supervisor inserts carries one fixed marker**, defined once in the Rust
+   kernel (`UNATTENDED_TAG = "[无人值守 Unattended]"`, exported through the addon and read by JS;
+   Web/Flutter hard-code the same literal for rendering). Final text seen by the model:
+   `🔇[无人值守 Unattended] <instruction>` (🔇 is the existing system-injected/voice-silent prefix
+   added by the delivery layer; the tag is bilingual and language-agnostic so history, classify and
+   UIs can recognise it). Applies to: continue instruction, auto-answer to a pending question,
+   fault-continue. Code adds the tag, never the aux; any tag the aux emits is stripped first.
+   Marked messages: are system-injected for classify/attribution (no new task attribution, do not
+   reset autoContinue guards, do not count as a real user message so they never pause the
+   supervisor), are not read aloud, and render in both UIs as a distinct "无人值守" bubble/badge.
+5. **No misleading notifications (a).** While `active`, classify's own "succeeded"/"waiting" push for a
+   D/W settle is held back; the supervisor guarantees exactly one outcome per settle: inject (no push),
+   achieved push, needs_human/exhausted/stalled/error push — and on every no-op path (no_output,
+   superseded, aux unavailable, evaluation dropped) it releases the classic push as fallback so a settle
+   is never silent.
+6. **Visible evaluation (b).** State gains `evaluating: boolean` (true from the moment the verdict starts
+   until it is applied; broadcast on both edges; cleared on any terminal path and at boot) and
+   `pausedBy: 'user'|'input'|'cancel'|null`. Each decision also appends a persisted UI-only trace line to
+   the chat history (NOT sent to the model, not part of any model context): e.g.
+   `[无人值守 Unattended] 判定：继续 · <reason> · 下一步：<instruction>` / `达成` / `需要人工：<humanReason>` /
+   `已暂停（用户接管）` / `故障后自动继续`. Panels show a "判定中…/Judging…" spinner while `evaluating`.
+
+Updated state additions: `"evaluating": false`, `"pausedBy": null`. Removal of the old
+"a real user message only resets stall counters" rule (superseded by 1).
+
+## Backend notes (v2)
+
+The server half of the v2 contract. The Web/Flutter agents render against this;
+nothing here is a suggestion — these are the exact wire shapes (`src/`, `server.js`).
+
+### Marker
+
+One fixed literal, defined once in `native/core/src/unattended.rs`
+(`UNATTENDED_TAG`), exposed as `unattendedTag()` on the addon and as
+`TAG` from `src/unattended/kernel.js`:
+
+```
+[无人值守 Unattended]
+```
+
+Every supervisor-inserted message is `<marker> <text>`; the delivery layer still adds the
+`🔇` system prefix in front, so the model/history sees
+`🔇[无人值守 Unattended] <instruction>`. UIs may hard-code the literal for recognising a
+marked bubble. The auxiliary model never writes the marker (any it emits is stripped).
+
+### New state fields
+
+`record.unattended` (and therefore GET/POST `/api/sessions/:id/unattended`, the session
+DTO and every `unattended_state` event) gains:
+
+```json
+{ "evaluating": false, "pausedBy": null }
+```
+
+- `evaluating: boolean` — true from the moment a verdict request starts until it is
+  applied/failed/cancelled; both edges are broadcast as `unattended_state`. Always false
+  after a restart (stale `true` is cleared at boot/load).
+- `pausedBy: "user" | "input" | "cancel" | null` — why the supervisor is paused; cleared by
+  `resume`/`start`. `user` = panel "Pause & take over" (`stop`), `input` = a real user
+  message arrived while active (server backstop), `cancel` = the turn was cancelled.
+
+The Air task-row compact projection (`/api/air` task rows) is
+`{ status, rounds, maxRounds, evaluating }` (a copy, never the cached card object).
+
+### Trace history entry (persisted, UI-only)
+
+Each decision appends one chat-history message. It is **not** model context: `role` is
+`system`, every model-facing replay/evidence path filters `role === 'user' | 'assistant'`,
+and the supervisor's own verdict evidence (`historyMessages` in `src/unattended/host.js`)
+does the same.
+
+```json
+{
+  "id": "…",
+  "role": "system",
+  "kind": "unattended_trace",
+  "content": "[无人值守 Unattended] 判定：继续 · <reason> · 下一步：<instruction>",
+  "ts": 1731234567890,
+  "taskId": "tsk_…"
+}
+```
+
+`content` always starts with the marker. Recognised prefixes (server wording, not i18n):
+
+| decision | `content` |
+| --- | --- |
+| continue | `[无人值守 Unattended] 判定：继续 · <reason> · 下一步：<instruction>` |
+| achieved | `[无人值守 Unattended] 判定：达成 · <reason>` |
+| needs_human | `[无人值守 Unattended] 判定：需要人工 · <humanReason>` |
+| stalled | `[无人值守 Unattended] 判定：停滞 · <reason>` |
+| exhausted | `[无人值守 Unattended] 判定：轮次用尽 · <reason>` |
+| error | `[无人值守 Unattended] 判定：出错 · <reason>` |
+| paused | `[无人值守 Unattended] 已暂停（<用户接管 / 用户输入 / 已取消>）` |
+| fault-continue | `[无人值守 Unattended] 故障后自动继续（第 <n> 次）` |
+
+The trace is appended before the action is applied (so an inject's trace precedes the
+instruction bubble) and written even when the case ends in a push-only outcome.
+
+### Live broadcast
+
+Same chat socket that already carries `unattended_state`:
+
+```json
+{
+  "type": "unattended_trace",
+  "kind": "unattended_trace",
+  "message": "[无人值守 Unattended] 判定：继续 · … · 下一步：…",
+  "entry": { "id": "…", "role": "system", "kind": "unattended_trace",
+             "content": "…", "ts": 1731234567890, "taskId": "tsk_…" }
+}
+```
+
+`message === entry.content`. Clients may render `entry` once and ignore duplicates by
+`entry.id` (the durable history reload shows the same message with the same id).
+
+### HTTP behaviour
+
+No new routes. `GET /api/sessions/:id/unattended` and the POST result include the new state
+fields. `POST` action semantics added by v2:
+
+- `stop` → `status: "stopped"`, `pausedBy: "user"`.
+- `resume` → clears `pausedBy`; runs `evaluateNow` **only** when no turn is streaming and no
+  delivery is queued — otherwise the turn-end settle evaluates.
+- `start` same rule for its default `evaluateNow`.
+- A real user message that arrives while `active` is paused first (`status: "stopped"`,
+  `pausedBy: "input"`) and then delivered normally. System-injected messages
+  (`🔇`-prefixed: autoContinue/bgCheck/bg-completion/dispatch results/cron) and any message
+  carrying the marker never pause it.
+
+### Queue ordering
+
+There is no backlog-evidence input to `buildVerdictPrompt`. Ordering is entirely the
+session-work scheduler's job (`src/session-work/scheduler.js`):
+
+- a pending `wait_for_user_answer` gates the FIFO (`blockedByUserInput`); the matching
+  answer is selectable first and the FIFO resumes after it;
+- an E fault leaves ordinary FIFO work staged; a direct continuation / control item is
+  immediately selectable, and the FIFO stays put until a D verdict or an explicit
+  `insert_queued`;
+- a D verdict drains the FIFO automatically.
+
+Consequently the supervisor's auto-answer (W) and fault-continue (E) reach the scheduler
+as `continuation` work (`directRun`) and are selected before the staged backlog. When a D
+settle still has queued deliveries, the supervisor defers its verdict
+(`{ ok:false, code:'backlog_pending' }`, held push released) — `hasQueuedDeliveries` is the
+one read-only scheduler question it asks.
+
+### Fault (E) continuation
+
+After the API-error policy has finished with an E (its own scheduled retry → do nothing),
+the supervisor injects `<marker> …故障后继续…` **without** an aux call. It counts as a round;
+3 consecutive faults → `needs_human` (reason: repeated faults). The text only asks the agent
+to resume from where it stopped and verify state before redoing side effects. A user Cancel
+is not a fault. A clean D/W settle resets the fault counter.

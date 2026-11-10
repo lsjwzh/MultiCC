@@ -12,6 +12,59 @@ enum MessageRole { user, assistant, system }
 /// 记录，但没人打过这些字：渲染成系统卡而不是用户气泡（见 widgets/message_bubble.dart）。
 const String kSystemInjectPrefix = '🔇';
 
+/// 无人值守（unattended mode）插入消息的固定标记 —— 契约 docs/unattended-mode.md
+/// 的 Backend notes：Rust 内核 `UNATTENDED_TAG` 是同一串字面量，客户端只读硬编码。
+/// 监督器插的消息是 `🔇[无人值守 Unattended] <instruction>`；UI-only 轨迹行
+/// （role=system, kind=unattended_trace）的正文也以它开头。
+const String kUnattendedTag = '[无人值守 Unattended]';
+
+/// 无人值守标记拆出来的正文（🔇 与标记都已去掉）；不是无人值守行时返回 null。
+///
+/// 宽容解析：带不带 🔇 前缀都认 —— 监督器插的消息由投递层加 🔇，轨迹行通常
+/// 不带。空正文返回空串（调用方据此决定画不画）。
+String? parseUnattendedText(String? content) {
+  var rest = (content ?? '').trimLeft();
+  if (rest.startsWith(kSystemInjectPrefix)) {
+    rest = rest.substring(kSystemInjectPrefix.length).trimLeft();
+  }
+  if (!rest.startsWith(kUnattendedTag)) return null;
+  return rest.substring(kUnattendedTag.length).trim();
+}
+
+/// 持久化的 UI-only 判定轨迹（`kind: 'unattended_trace'`，role=system）→
+/// 一条居中的静音系统行。宽容解析：认 `kind` / `traceKind`，也认「非 user 角色
+/// 的正文以标记开头」（后端把轨迹存成 system 行）；role=user 的标记消息是监督器
+/// 插话（「🤖 无人值守」卡片），不在这里转换。不是轨迹时返回 null。
+ChatMessage? unattendedTraceMessage(Map<String, dynamic> json) {
+  final kind = (json['kind'] ?? json['traceKind'] ?? '').toString();
+  final explicit = kind == 'unattended_trace';
+  final role = (json['role'] ?? '').toString();
+  final text = parseUnattendedText(
+    (json['content'] ?? json['text'] ?? json['message'] ?? '').toString(),
+  );
+  if (text == null || text.isEmpty) return null;
+  if (!explicit && role == 'user') return null;
+  final message = ChatMessage.fromHistory(
+    json,
+    role: MessageRole.system,
+    content: text,
+  );
+  message.unattendedTrace = true;
+  return message;
+}
+
+/// 一条只在本机出现的系统行（斜杠回显、WS 系统提示…）；正文带无人值守标记时
+/// 落成轨迹行，历史/实时两条路径因此读同一张脸。
+ChatMessage systemLineMessage(String text) {
+  final trace = parseUnattendedText(text);
+  final message = ChatMessage(
+    role: MessageRole.system,
+    content: trace ?? text,
+  );
+  message.unattendedTrace = trace != null;
+  return message;
+}
+
 /// 一条注入消息拆出来的两半：标题（引擎写的【…】标签）和正文。
 class SystemInjectParts {
   const SystemInjectParts(this.label, this.body);
@@ -349,6 +402,10 @@ class ChatMessage {
   String? sourceSessionId;
   String? sourceMessageId;
 
+  /// UI-only 无人值守判定轨迹（role=system, kind=unattended_trace）：持久化并
+  /// 实时广播，但从不进模型上下文。渲染成居中的静音行（含「🤖 无人值守」徽标）。
+  bool unattendedTrace;
+
   ChatMessage({
     required this.role,
     this.content = '',
@@ -371,6 +428,7 @@ class ChatMessage {
     this.auxRunId,
     this.sourceSessionId,
     this.sourceMessageId,
+    this.unattendedTrace = false,
   }) : toolCalls = toolCalls ?? [],
        timestamp = timestamp ?? DateTime.now();
 
@@ -411,7 +469,8 @@ class ChatMessage {
       turnId = _nonEmpty(json['turnId']),
       auxRunId = _nonEmpty(json['auxRunId']),
       sourceSessionId = _nonEmpty(json['sourceSessionId']),
-      sourceMessageId = _nonEmpty(json['sourceMessageId']);
+      sourceMessageId = _nonEmpty(json['sourceMessageId']),
+      unattendedTrace = false;
 
   /// Absent and empty mean the same thing to every reader of these fields:
   /// unknown. Normalising here keeps "no task" a single representation.

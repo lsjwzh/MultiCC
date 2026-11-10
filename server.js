@@ -2440,7 +2440,7 @@ const userInputSignalHost = createUserInputSignalHost(
 // ── Unattended mode supervisor (docs/unattended-mode.md; decisions in Rust) ──
 const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions: savePersistedSessionsBestEffort,
   loadHistory: loadChatHistory, setTaskState, userInputSignalHost, getAuxQueue: () => auxQueue, taskContextHost,
-  waitInjector, triggerPush, chatBroadcast, logger });
+  waitInjector, triggerPush, chatBroadcast, logger, appendMessage: appendChatMessage, isRunActive: id => sessionWorkHost?.isRunActive(id) === true, hasQueuedDeliveries: id => (sessionWorkHost ? sessionWorkHost.hasQueuedDeliveries(id) : false) });
 sessionWorkHost = createSessionWorkHost({
   runtime: () => orchestrationRuntime,
   getRecord: id => persistedSessions.get(id),

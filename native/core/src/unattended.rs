@@ -20,6 +20,11 @@
 use crate::js::{js_trim, utf16_truncate};
 use serde_json::{json, Map, Value};
 
+/// The one marker every supervisor-inserted message carries. Bilingual and
+/// language-agnostic so history, classify and both UIs can recognise it; the
+/// addon exports it (`unattendedTag`) and Web/Flutter hard-code the same literal.
+pub const UNATTENDED_TAG: &str = "[无人值守 Unattended]";
+
 pub const MAX_GOAL_CHARS: usize = 2000;
 pub const MAX_CRITERIA: usize = 12;
 pub const MAX_CRITERION_CHARS: usize = 300;
@@ -29,6 +34,8 @@ pub const MIN_ROUNDS: i64 = 1;
 pub const HISTORY_MAX: usize = 10;
 pub const STALL_LIMIT: u32 = 3;
 pub const AUX_FAILURE_LIMIT: u32 = 2;
+/// Consecutive fault-E continuations before the supervisor asks a human.
+pub const FAULT_LIMIT: u32 = 3;
 
 const MAX_REASON_CHARS: usize = 1000;
 const MAX_INSTRUCTION_CHARS: usize = 4000;
@@ -40,6 +47,13 @@ const MAX_RECENT_MESSAGE_CHARS: usize = 1500;
 const MAX_PENDING_OPTIONS: usize = 12;
 const MAX_PENDING_OPTION_CHARS: usize = 300;
 const MAX_PROMPT_HISTORY: usize = HISTORY_MAX;
+
+/// The fault-E instruction. It deliberately only asks to resume and verify;
+/// redoing side effects is exactly what a retry must not do blindly.
+const FAULT_INSTRUCTION: &str = "The previous turn was interrupted by an upstream fault. Resume from \
+where it stopped: first verify the current state (files, running commands, partial results) and which \
+side effects already happened, then continue. Never redo writes, commits or external calls that may \
+already have completed.";
 
 pub const STATUSES: [&str; 6] = [
     "active",
@@ -115,6 +129,16 @@ fn normalized_instruction(text: &str) -> String {
         .to_lowercase()
 }
 
+/// Remove any marker the Aux model produced itself. The tag is added by code,
+/// never by the model, so an emitted one must not be duplicated.
+pub fn strip_tag(text: &str) -> String {
+    js_trim(&text.replace(UNATTENDED_TAG, " ")).to_string()
+}
+
+fn clean_text(value: Option<&Value>, max: usize) -> String {
+    clamp_text(&strip_tag(&value_text(value)), max)
+}
+
 fn parse_verdict_from_value(value: &Value) -> Option<Value> {
     let object = value.as_object()?;
     let verdict = object
@@ -124,16 +148,10 @@ fn parse_verdict_from_value(value: &Value) -> Option<Value> {
     if !VERDICTS.contains(&verdict.as_str()) {
         return None;
     }
-    let reason = clamp_text(&value_text(object.get("reason")), MAX_REASON_CHARS);
-    let next_instruction = clamp_text(
-        &value_text(object.get("nextInstruction")),
-        MAX_INSTRUCTION_CHARS,
-    );
-    let human_reason = clamp_text(
-        &value_text(object.get("humanReason")),
-        MAX_HUMAN_REASON_CHARS,
-    );
-    let answer = clamp_text(&value_text(object.get("answer")), MAX_ANSWER_CHARS);
+    let reason = clean_text(object.get("reason"), MAX_REASON_CHARS);
+    let next_instruction = clean_text(object.get("nextInstruction"), MAX_INSTRUCTION_CHARS);
+    let human_reason = clean_text(object.get("humanReason"), MAX_HUMAN_REASON_CHARS);
+    let answer = clean_text(object.get("answer"), MAX_ANSWER_CHARS);
     if verdict == "continue" && next_instruction.is_empty() {
         // A "continue" with no instruction cannot drive the session; treating
         // it as a valid verdict would burn a round and inject nothing.
@@ -414,6 +432,7 @@ fn build_state(
     history: Vec<Value>,
     same_instruction: u32,
     aux_failures: u32,
+    consecutive_faults: u32,
 ) -> Value {
     let goal = clamp_text(&state_text(state, "goal"), MAX_GOAL_CHARS);
     let criteria: Vec<Value> = field(state, "criteria")
@@ -456,6 +475,7 @@ fn build_state(
     let mut stall = Map::new();
     stall.insert("sameInstruction".to_string(), json!(same_instruction));
     stall.insert("auxFailures".to_string(), json!(aux_failures));
+    stall.insert("consecutiveFaults".to_string(), json!(consecutive_faults));
     let mut out = Map::new();
     out.insert("status".to_string(), json!(status));
     out.insert("goal".to_string(), json!(goal));
@@ -467,6 +487,10 @@ fn build_state(
     out.insert("lastVerdict".to_string(), last_verdict);
     out.insert("history".to_string(), Value::Array(history));
     out.insert("stall".to_string(), Value::Object(stall));
+    // A decide() result is always applied — the evaluation spinner is over and
+    // the state is either active (no pause) or terminal (pausedBy has no point).
+    out.insert("evaluating".to_string(), json!(false));
+    out.insert("pausedBy".to_string(), Value::Null);
     Value::Object(out)
 }
 
@@ -548,6 +572,7 @@ pub fn decide(input: &str) -> Result<String, String> {
                 next_history,
                 same_instruction,
                 failures,
+                0,
             );
             return Ok(json!({
                 "nextState": next_state,
@@ -567,6 +592,7 @@ pub fn decide(input: &str) -> Result<String, String> {
             next_history,
             same_instruction,
             failures,
+            0,
         );
         return Ok(json!({
             "nextState": next_state,
@@ -577,10 +603,10 @@ pub fn decide(input: &str) -> Result<String, String> {
     };
 
     let kind = state_text(&verdict, "verdict");
-    let reason = state_text(&verdict, "reason");
-    let next_instruction = state_text(&verdict, "nextInstruction");
-    let human_reason = state_text(&verdict, "humanReason");
-    let answer = clamp_text(&state_text(&verdict, "answer"), MAX_ANSWER_CHARS);
+    let reason = strip_tag(&state_text(&verdict, "reason"));
+    let next_instruction = strip_tag(&state_text(&verdict, "nextInstruction"));
+    let human_reason = strip_tag(&state_text(&verdict, "humanReason"));
+    let answer = clamp_text(&strip_tag(&state_text(&verdict, "answer")), MAX_ANSWER_CHARS);
 
     let history_entry = json!({ "at": now, "verdict": kind, "reason": reason });
 
@@ -641,7 +667,7 @@ pub fn decide(input: &str) -> Result<String, String> {
                     same_next,
                 )
             } else {
-                let prefixed = format!("【无人值守】{next_instruction}");
+                let prefixed = format!("{UNATTENDED_TAG} {next_instruction}");
                 (
                     "inject",
                     prefixed,
@@ -662,6 +688,8 @@ pub fn decide(input: &str) -> Result<String, String> {
         capped_history(history, history_entry),
         same_next,
         0,
+        // Any D/W settle that reaches decide() is not a fault anymore.
+        0,
     );
     let mut out = Map::new();
     out.insert("nextState".to_string(), next_state);
@@ -674,6 +702,97 @@ pub fn decide(input: &str) -> Result<String, String> {
         }
     }
     Ok(Value::Object(out).to_string())
+}
+
+/// Immediate fault (E) continuation, without an Aux call.
+///
+/// After the API-error policy has finished with an E — it either scheduled its
+/// own retry (the caller must then do nothing) or gave up — the supervisor keeps
+/// the goal moving with a fixed instruction. It counts as a round
+/// (`maxRounds` applies) and never replays side effects. Consecutive faults are
+/// capped at [`FAULT_LIMIT`]; after that a human is required so an unhealthy
+/// upstream can never loop forever. Non-active states are a no-op.
+///
+/// Input: `{state, now}`. Returns `{nextState, action, message}` with action
+/// `fault_continue | needs_human | exhausted | none`.
+pub fn decide_fault(input: &str) -> Result<String, String> {
+    let value: Value =
+        crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let state = field(&value, "state").cloned().unwrap_or_else(|| json!({}));
+    let now = int_value(field(&value, "now")).unwrap_or(0);
+    let status = state_text(&state, "status");
+    if status != "active" {
+        return Ok(json!({
+            "nextState": state,
+            "action": "none",
+            "message": "",
+        })
+        .to_string());
+    }
+    let rounds = int_value(field(&state, "rounds")).unwrap_or(0).max(0);
+    let max_rounds = int_value(field(&state, "maxRounds"))
+        .unwrap_or(MAX_ROUNDS_DEFAULT)
+        .clamp(MIN_ROUNDS, MAX_ROUNDS_LIMIT);
+    let stall = field(&state, "stall").cloned().unwrap_or_else(|| json!({}));
+    let same_instruction = u32_value(field(&stall, "sameInstruction"));
+    let aux_failures = u32_value(field(&stall, "auxFailures"));
+    let faults = u32_value(field(&stall, "consecutiveFaults")).saturating_add(1);
+    let history = copy_history(&state);
+    let previous = priority_verdict(&state);
+
+    let (action, message, next_status, next_rounds) = if faults >= FAULT_LIMIT {
+        (
+            "needs_human",
+            format!(
+                "无人值守需要你介入：连续 {FAULT_LIMIT} 轮因上游故障中断，已停止自动续接。请检查提供方/网络后再继续。"
+            ),
+            "needs_human",
+            rounds,
+        )
+    } else if rounds >= max_rounds {
+        (
+            "exhausted",
+            format!("无人值守已用完 {max_rounds} 轮自动续接，目标仍未达成。"),
+            "exhausted",
+            rounds,
+        )
+    } else {
+        (
+            "fault_continue",
+            format!("{UNATTENDED_TAG} {FAULT_INSTRUCTION}"),
+            "active",
+            rounds + 1,
+        )
+    };
+    let entry = json!({
+        "at": now,
+        "verdict": if action == "needs_human" { "needs_human" } else { "continue" },
+        "reason": if action == "fault_continue" {
+            "fault_continue"
+        } else if action == "needs_human" {
+            "repeated_faults"
+        } else {
+            "fault_rounds_exhausted"
+        },
+    });
+    let next_state = build_state(
+        &state,
+        next_status,
+        next_rounds,
+        now,
+        previous.as_ref(),
+        capped_history(history, entry),
+        same_instruction,
+        aux_failures,
+        faults,
+    );
+    Ok(json!({
+        "nextState": next_state,
+        "action": action,
+        "message": message,
+        "faults": faults,
+    })
+    .to_string())
 }
 
 #[cfg(test)]
@@ -892,7 +1011,11 @@ mod tests {
         assert_eq!(out["nextState"]["rounds"], json!(3));
         assert_eq!(out["nextState"]["stall"]["sameInstruction"], json!(1));
         assert_eq!(out["nextState"]["stall"]["auxFailures"], json!(0));
-        assert_eq!(out["message"], json!("【无人值守】run the tests"));
+        assert_eq!(out["nextState"]["stall"]["consecutiveFaults"], json!(0));
+        assert_eq!(
+            out["message"],
+            json!(format!("{UNATTENDED_TAG} run the tests"))
+        );
     }
 
     #[test]
@@ -905,7 +1028,7 @@ mod tests {
         assert_eq!(out["action"], json!("exhausted"));
         assert_eq!(out["nextState"]["status"], json!("exhausted"));
         assert_eq!(out["nextState"]["rounds"], json!(3));
-        assert!(!out.to_string().contains("【无人值守】"));
+        assert!(!out.to_string().contains(UNATTENDED_TAG));
     }
 
     #[test]
@@ -1068,8 +1191,12 @@ mod tests {
                 "lastVerdict",
                 "history",
                 "stall",
+                "evaluating",
+                "pausedBy",
             ]
         );
+        assert_eq!(out["nextState"]["evaluating"], json!(false));
+        assert_eq!(out["nextState"]["pausedBy"], Value::Null);
     }
 
     #[test]
@@ -1082,5 +1209,84 @@ mod tests {
         assert_eq!(out["action"], json!("inject"));
         assert_eq!(out["nextState"]["maxRounds"], json!(30));
         assert_eq!(out["nextState"]["startedAt"], json!(1));
+    }
+
+    // ── v2: optimistic tag stripping ───────────────────────────────────────
+
+    #[test]
+    fn an_aux_emitted_tag_is_stripped_before_injection() {
+        let out = decide_json(json!({
+            "state": active_state(0, 30),
+            "verdict": {"ok": true, "verdict": {
+                "verdict": "continue",
+                "nextInstruction": format!("{UNATTENDED_TAG} {UNATTENDED_TAG} run the tests"),
+            }},
+            "now": 200,
+        }));
+        assert_eq!(out["action"], json!("inject"));
+        assert_eq!(
+            out["message"],
+            json!(format!("{UNATTENDED_TAG} run the tests"))
+        );
+    }
+
+    #[test]
+    fn a_valid_verdict_resets_consecutive_faults() {
+        let mut state = active_state(1, 30);
+        state["stall"] = json!({ "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 2 });
+        let out = decide_json(json!({
+            "state": state,
+            "verdict": {"ok": true, "verdict": {"verdict": "continue", "nextInstruction": "go on"}},
+            "now": 200,
+        }));
+        assert_eq!(out["nextState"]["stall"]["consecutiveFaults"], json!(0));
+    }
+
+    // ── v2: immediate fault continuation ───────────────────────────────────
+
+    fn fault_json(input: Value) -> Value {
+        serde_json::from_str(&decide_fault(&input.to_string()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn fault_continue_counts_a_round_and_only_asks_to_verify() {
+        let out = fault_json(json!({ "state": active_state(2, 30), "now": 200 }));
+        assert_eq!(out["action"], json!("fault_continue"));
+        assert_eq!(out["nextState"]["status"], json!("active"));
+        assert_eq!(out["nextState"]["rounds"], json!(3));
+        assert_eq!(out["nextState"]["stall"]["consecutiveFaults"], json!(1));
+        assert_eq!(out["nextState"]["evaluating"], json!(false));
+        let message = out["message"].as_str().unwrap();
+        assert!(message.starts_with(UNATTENDED_TAG));
+        assert!(message.contains("verify the current state"));
+        assert!(message.contains("Never redo writes"));
+    }
+
+    #[test]
+    fn three_consecutive_faults_need_a_human() {
+        let mut state = active_state(1, 30);
+        state["stall"] = json!({ "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 2 });
+        let out = fault_json(json!({ "state": state, "now": 200 }));
+        assert_eq!(out["action"], json!("needs_human"));
+        assert_eq!(out["nextState"]["status"], json!("needs_human"));
+        assert_eq!(out["nextState"]["stall"]["consecutiveFaults"], json!(3));
+        assert!(!out["message"].as_str().unwrap().starts_with(UNATTENDED_TAG));
+    }
+
+    #[test]
+    fn a_fault_cannot_outrun_the_round_budget() {
+        let out = fault_json(json!({ "state": active_state(3, 3), "now": 200 }));
+        assert_eq!(out["action"], json!("exhausted"));
+        assert_eq!(out["nextState"]["status"], json!("exhausted"));
+        assert_eq!(out["nextState"]["rounds"], json!(3));
+    }
+
+    #[test]
+    fn fault_on_a_non_active_state_is_a_no_op() {
+        let mut state = active_state(1, 30);
+        state["status"] = json!("stopped");
+        let out = fault_json(json!({ "state": state, "now": 200 }));
+        assert_eq!(out["action"], json!("none"));
+        assert_eq!(out["nextState"]["status"], json!("stopped"));
     }
 }

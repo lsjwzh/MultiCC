@@ -25,6 +25,10 @@ class PendingUserInputPanel extends StatefulWidget {
   /// 可选；不传则不显示该按钮。
   final VoidCallback? onDismiss;
 
+  /// 无人值守 `active` 时整张卡的作答口（选项 / 文本框 / 提交 / 忽略）锁住：
+  /// 这段时间由辅助 AI 代为回答（v2 契约）。收起按钮不受影响 —— 它只是本地 UI。
+  final bool unattendedLocked;
+
   const PendingUserInputPanel({
     super.key,
     required this.input,
@@ -33,6 +37,7 @@ class PendingUserInputPanel extends StatefulWidget {
     this.onSecretSubmit,
     this.onCollapse,
     this.onDismiss,
+    this.unattendedLocked = false,
   });
 
   @override
@@ -83,6 +88,8 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
   @override
   Widget build(BuildContext context) {
     final input = widget.input;
+    // 作答口统一走这一个判据：连接态 × 无人值守锁。
+    final enabled = widget.enabled && !widget.unattendedLocked;
     final question = input.question.isEmpty
         ? t('pendingInputFallback')
         : input.question;
@@ -158,6 +165,20 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
               ),
             ),
           ],
+          // 无人值守进行中：这张卡由辅助 AI 代答，人手的作答口全部禁用。
+          if (widget.unattendedLocked) ...[
+            const SizedBox(height: 4),
+            Text(
+              t('unattendedPendingInputHint'),
+              key: const Key('pending-unattended-hint'),
+              style: const TextStyle(
+                color: Color(0xFFa85a25),
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                height: 1.35,
+              ),
+            ),
+          ],
           // secret 模式只收一个值，不渲染选项按钮。
           if (input.options.isNotEmpty && !input.isSecret) ...[
             const SizedBox(height: 8),
@@ -169,9 +190,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                     if (!input.allowMultiple) {
                       return OutlinedButton(
                         key: Key('pending-option-$option'),
-                        onPressed: widget.enabled
-                            ? () => widget.onAnswer(option)
-                            : null,
+                        onPressed: enabled ? () => widget.onAnswer(option) : null,
                         style: OutlinedButton.styleFrom(
                           foregroundColor: const Color(0xFFa85a25),
                           side: const BorderSide(color: Color(0xFFa85a25)),
@@ -183,7 +202,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                     return FilterChip(
                       key: Key('pending-option-$option'),
                       selected: _selected.contains(option),
-                      onSelected: widget.enabled
+                      onSelected: enabled
                           ? (selected) {
                               setState(() {
                                 if (selected) {
@@ -203,7 +222,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
               const SizedBox(height: 8),
               FilledButton.tonal(
                 key: const Key('pending-submit-multiple'),
-                onPressed: widget.enabled && _selected.isNotEmpty
+                onPressed: enabled && _selected.isNotEmpty
                     ? () => widget.onAnswer(
                         input.options.where(_selected.contains).join(', '),
                       )
@@ -222,7 +241,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                     input.isSecret ? 'pending-secret-text' : 'pending-free-text',
                   ),
                   controller: _customAnswer,
-                  enabled: widget.enabled,
+                  enabled: enabled,
                   minLines: 1,
                   maxLines: input.isSecret ? 1 : 3,
                   obscureText: input.isSecret,
@@ -264,7 +283,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
               FilledButton(
                 key: const Key('pending-submit-text'),
                 onPressed:
-                    widget.enabled && _customAnswer.text.trim().isNotEmpty
+                    enabled && _customAnswer.text.trim().isNotEmpty
                     ? _submitCustomAnswer
                     : null,
                 child: Text(t('submitAnswer')),
@@ -276,7 +295,7 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                   message: t('pendingInputDismissHint'),
                   child: TextButton(
                     key: const Key('pending-dismiss'),
-                    onPressed: widget.enabled ? widget.onDismiss : null,
+                    onPressed: enabled ? widget.onDismiss : null,
                     style: TextButton.styleFrom(
                       foregroundColor: const Color(0xFF6f8096),
                       visualDensity: VisualDensity.compact,

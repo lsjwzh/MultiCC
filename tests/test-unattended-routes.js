@@ -40,10 +40,12 @@ function fixture({ host = true, records } = {}) {
   const calls = [];
   const fakeHost = {
     get: id => (id === 's1' ? { status: 'active', goal: 'ship it', rounds: 1, maxRounds: 5 } : null),
-    start: (id, body) => { calls.push(['start', id, body]); return { ok: true, unattended: { status: 'active' } }; },
+    // v2 start/resume are async (they check streaming/queued before evaluating);
+    // the route must await them.
+    start: async (id, body) => { calls.push(['start', id, body]); return { ok: true, unattended: { status: 'active' } }; },
     update: (id, body) => { calls.push(['update', id, body]); return { ok: false, code: 'no_unattended', status: 409 }; },
     stop: id => { calls.push(['stop', id]); return { ok: true, unattended: { status: 'stopped' } }; },
-    resume: id => { calls.push(['resume', id]); return { ok: false, code: 'invalid_state', status: 409 }; },
+    resume: async id => { calls.push(['resume', id]); return { ok: false, code: 'invalid_state', status: 409 }; },
   };
   mountUnattendedRoutes(app, { records: store, getUnattended: () => (host ? fakeHost : null) });
   return { app, calls, store };

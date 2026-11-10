@@ -229,6 +229,9 @@ function fixupLocalImages(root) {
 const messagesEl  = document.getElementById('messages');
 let chatScrollController = null;
 const inputEl     = document.getElementById('input');
+// Restored verbatim when the unattended lock lifts; the page-level default is
+// the only source of truth for the unlocked placeholder.
+const defaultInputPlaceholder = inputEl ? inputEl.placeholder : '';
 const sendBtn     = document.getElementById('send-btn');
 const statusEl    = document.getElementById('status');
 // Filled again on every status change; set here so the narrow Air pill never
@@ -1016,6 +1019,13 @@ function addSystemMsg(text) {
   maybeScrollToBottom();
   return div;
 }
+// 无人值守判定轨迹：实时广播（或重放里的 chat_msg_meta kind=unattended_trace）
+// 由 view 统一画成居中静音行，同 id/同文本复用节点，重连不会画两遍。
+function addUnattendedTrace(trace) {
+  const node = chatHistoryView.appendUnattendedTrace?.(trace) || null;
+  if (node) maybeScrollToBottom();
+  return node;
+}
 const chatAuthAction = window.MultiCCChatAuthAction.create({ document, chatApi, withToken, getSessionName: () => _sessionName, addSystemMsg, getMessagesEl: () => messagesEl, maybeScrollToBottom });
 /* ── Background-task danmaku panel ──
  * Live "bullet-comment" feed for Monitor / run_in_background task start & done
@@ -1122,6 +1132,7 @@ function hideThinking() { return chatLiveUi.hideThinking(); }
 let chatComposer = null;
 const pendingUserInputController = window.MultiCCChatUserInputCard.createController({
   document, isConnected: () => !!ws && ws.readyState === WebSocket.OPEN,
+  translate: tt,
   submitAnswer: answer => { inputEl.value = answer; return chatComposer?.send() === true; },
   // 安全输入框提交端口（chat-secret-submit.js）：值直存本地保险箱，确认文案才进对话。
   submitSecret: window.MultiCCChatSecretSubmit?.create({ chatApi, withToken, addSystemMsg, setInput: v => { inputEl.value = v; }, send: () => chatComposer?.send(), sessionId: () => _sessionName }),
@@ -1156,15 +1167,35 @@ function closeVoicePanel() { return chatComposer?.closeVoicePanel(); }
 function useVoiceText(text) { return chatComposer?.useVoiceText(text); }
 function fetchRefined(raw) { return chatComposer?.fetchRefined(raw); }
 /* ── UI helpers ── */
+// 无人值守 active 时输入整体锁死（v2 产品决定）：一个布尔值并进 updateUI 的
+// disabled 计算，断开/重连、流式与锁互不覆盖；暂停/继续只改这一个入口。
+let _unattendedLocked = false;
 function updateUI() {
   const connected = ws && ws.readyState === WebSocket.OPEN;
   // Always allow typing and sending — even during streaming (user may need to reply to a yes/no prompt)
-  sendBtn.disabled = !connected;
+  sendBtn.disabled = !connected || _unattendedLocked;
   sendBtn.style.display = 'flex';
   cancelBtn.classList.toggle('show', isStreaming);
-  inputEl.disabled = !connected;
+  inputEl.disabled = !connected || _unattendedLocked;
   pendingUserInputController.setConnected();
   syncTokenRate();
+}
+// 宿主侧的锁视图：textarea/发送键由 updateUI 统一改，附件与语音入口在这里
+// 单独关掉（它们不在 updateUI 的管辖里），待答问题卡交给它的控制器。
+function applyUnattendedInputLock(locked) {
+  _unattendedLocked = !!locked;
+  const bar = document.getElementById('input-bar');
+  if (bar) bar.classList.toggle('unattended-locked', _unattendedLocked);
+  for (const button of [attachBtn, micBtn]) {
+    if (button) button.disabled = _unattendedLocked;
+  }
+  if (inputEl) {
+    inputEl.placeholder = _unattendedLocked
+      ? tt('unattendedInputLockedPlaceholder')
+      : defaultInputPlaceholder;
+  }
+  pendingUserInputController.setUnattendedLock?.(_unattendedLocked);
+  updateUI();
 }
 function paintTokenRate() {
   const tools = {
@@ -2406,6 +2437,7 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     getUserInputRequestId: () => chatEventState.pendingUserInputRequestId,
     consumeUserInputRequestId,
     applyUnattendedState: value => chatUnattended?.applyState?.(value),
+    applyUnattendedTrace: trace => addUnattendedTrace(trace),
     rearmUnread,
   },
 });
@@ -2419,6 +2451,7 @@ if (!SHARE_MODE) {
     getSessionId: () => _sessionName || sessionId || '',
     request: (path, options) => chatApi.json(withToken(path), options),
     errorText: error => chatApi.errorText(error),
+    applyInputLock: locked => applyUnattendedInputLock(locked),
   });
 }
 /* ── Background task activity strip ──

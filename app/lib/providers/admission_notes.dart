@@ -144,6 +144,10 @@ String autoRouteNote(Map<dynamic, dynamic> event) {
 /// verdict the formatter cannot read draws nothing at all, so the record is
 /// dropped instead of falling back to that plain content.
 ChatMessage? historyRecordMessage(Map<String, dynamic> json) {
+  // UI-only 无人值守轨迹（role=system, kind=unattended_trace）：不是任何一方的
+  // 发言，先于角色分支变成一条居中静音行（正文剥掉固定标记）。
+  final unattendedTrace = unattendedTraceMessage(json);
+  if (unattendedTrace != null) return unattendedTrace;
   final autoRoute = json['autoRoute'];
   if (autoRoute is! Map) return ChatMessage.fromHistory(json);
   final note = autoRouteNote(autoRoute);

@@ -15,6 +15,7 @@
     const dismissRequest = opts.dismissRequest;
     const showError = opts.showError || (() => {});
     const submitAnswer = opts.submitAnswer || (() => false);
+    const translate = typeof opts.translate === 'function' ? opts.translate : (key => key);
     // Secret mode: the typed value goes straight to POST /api/secrets via this
     // port and never becomes chat text. Only a name-only confirmation message
     // is sent afterwards, so the value never passes through any LLM API.
@@ -37,6 +38,24 @@
     let collapsed = false;      // true while the card is hidden and the fab is shown
     let fabDragged = false;     // true between a drag gesture and its trailing click
     let fabPos = null;          // persisted fixed position {left, top} for the fab
+    // 无人值守 active 时这张卡也归监督器：选项/输入/提交全部禁用，并提示
+    // 「AI 会自己回答」。锁定期间用户唯一的动作是先去 banner 上「暂停并接管」。
+    let unattendedLocked = false;
+    let lockHint = null;
+
+    function unattendedHint() {
+      if (lockHint) return lockHint;
+      lockHint = doc.createElement('div');
+      lockHint.className = 'pending-input-unattended-hint';
+      lockHint.hidden = true;
+      lockHint.textContent = translate('pendingInputUnattendedHint');
+      if (reason.parentNode && typeof reason.parentNode.insertBefore === 'function') {
+        reason.parentNode.insertBefore(lockHint, reason.nextSibling || null);
+      } else {
+        root.appendChild(lockHint);
+      }
+      return lockHint;
+    }
 
     // chat.html 里 #pending-user-input-text 是 <textarea>：它的 .type 是只读
     // getter，严格模式下赋值直接抛 TypeError。掩码因此在 textarea 上走 CSS
@@ -138,11 +157,17 @@
     }
 
     function setAvailability() {
-      const disabled = submitting || !isConnected();
+      const base = submitting || !isConnected();
+      const disabled = base || unattendedLocked;
       for (const control of controls) control.disabled = disabled;
-      if (collapseBtn) collapseBtn.disabled = disabled;
+      // 收起只是本地视图动作，锁定期间仍允许（用户还要能看对话）。
+      if (collapseBtn) collapseBtn.disabled = base;
       if (dismissButton) dismissButton.disabled = disabled || !dismissRequest;
       root.dataset.submitting = submitting ? '1' : '';
+      root.dataset.unattendedLock = unattendedLocked ? '1' : '';
+      const hint = unattendedLocked && !!requestId ? unattendedHint() : null;
+      if (hint) hint.hidden = false;
+      else if (lockHint) lockHint.hidden = true;
     }
 
     function clear(expectedRequestId) {
@@ -170,7 +195,7 @@
 
     function submit(answer) {
       const value = String(answer == null ? '' : answer).trim();
-      if (!requestId || !value || submitting || !isConnected()) return false;
+      if (!requestId || !value || submitting || !isConnected() || unattendedLocked) return false;
       if (secretName) return submitSecretValue(value);
       submitting = true;
       setAvailability();
@@ -201,7 +226,7 @@
     }
 
     async function dismiss() {
-      if (!requestId || submitting || !isConnected() || !dismissRequest) return false;
+      if (!requestId || submitting || !isConnected() || unattendedLocked || !dismissRequest) return false;
       const id = requestId;
       submitting = true;
       setAvailability();
@@ -322,6 +347,15 @@
       expand,
       render,
       setConnected: setAvailability,
+      // 无人值守锁（v2）：宿主在状态帧翻转时调用；锁定时展开卡片让提示可见。
+      setUnattendedLock(value) {
+        const next = !!value;
+        if (next === unattendedLocked) { setAvailability(); return; }
+        unattendedLocked = next;
+        if (unattendedLocked && collapsed) expand();
+        setAvailability();
+      },
+      isUnattendedLocked: () => unattendedLocked,
       submit,
       dismiss,
     });

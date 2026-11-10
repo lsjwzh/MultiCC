@@ -239,10 +239,10 @@ test('canonical session ingress runs both ordinary and Commander sessions throug
   assert.equal(runTurns[1].text, '派给工程师改 README');
 });
 
-test('unattended arming rides the first message and system answers do not look human', async () => {
+test('unattended arming rides the first message and only real human text pauses it', async () => {
   const armed = [];
   const noted = [];
-  const { host } = fixture({
+  const { host, runTurns } = fixture({
     armUnattended: (id, spec, text) => armed.push({ id, spec, text }),
     noteUnattendedUserMessage: id => noted.push(id),
   });
@@ -252,15 +252,35 @@ test('unattended arming rides the first message and system answers do not look h
   });
   assert.equal(first.ok, true);
   assert.deepEqual(armed, [{ id: 'worker', spec: { maxRounds: 5 }, text: 'ship it' }]);
-  assert.deepEqual(noted, ['worker'], 'the human first message resets the stall counters');
+  assert.deepEqual(noted, [], 'the first message arms the supervisor; it must not pause its own start');
 
-  // The supervisor's own answer to a pending question is a system injection,
-  // not a human message: it must not reset the counters.
+  // Every host-authored class must NOT pause the supervisor:
+  // supervisor answer (unattendedSystem), system delivery (🔇), marker-carrying
+  // text, continuation/trigger admissions and an explicit system flag.
   await host.deliverSessionMessage('worker', 'B', {
     clientMsgId: 'unattended-2',
     userInputRequestId: 'usrq-1',
     unattendedSystem: true,
   });
+  await host.deliverSessionMessage('worker', '🔇[background] done', { clientMsgId: 'unattended-3' });
+  await host.deliverSessionMessage('worker', '[无人值守 Unattended] do X', { clientMsgId: 'unattended-4' });
+  await host.deliverSessionMessage('worker', 'continue the task', { clientMsgId: 'unattended-5', originContinue: true });
+  await host.deliverSessionMessage('worker', 'cron fired', { clientMsgId: 'unattended-6', originTrigger: true });
+  assert.deepEqual(noted, [], 'no system-injected message pauses the supervisor');
+
+  // A system-flagged supervisor delivery leaves with the 🔇 prefix.
+  await host.deliverSessionMessage('worker', '[无人值守 Unattended] B', {
+    clientMsgId: 'unattended-7',
+    userInputRequestId: 'usrq-2',
+    unattendedSystem: true,
+    system: true,
+  });
+  assert.equal(runTurns.at(-1).text, '🔇[无人值守 Unattended] B');
+  assert.deepEqual(noted, []);
+
+  // A real human message is delivered unchanged and pauses.
+  await host.deliverSessionMessage('worker', '取个新方向', { clientMsgId: 'unattended-8' });
+  assert.equal(runTurns.at(-1).text, '取个新方向');
   assert.deepEqual(noted, ['worker']);
 });
 

@@ -35,6 +35,11 @@
     continue: 'unattendedVerdictContinue',
     needs_human: 'unattendedVerdictNeedsHuman',
   });
+  const PAUSED_KEY = Object.freeze({
+    user: 'unattendedPausedByUser',
+    input: 'unattendedPausedByInput',
+    cancel: 'unattendedPausedByCancel',
+  });
   const ICON = Object.freeze({
     idle: '◎', active: '◉', achieved: '✓', needs_human: '!',
     exhausted: '⊘', stopped: '■', error: '✕',
@@ -58,6 +63,9 @@
     const errorText = typeof opts.errorText === 'function'
       ? opts.errorText
       : (error => String((error && error.message) || error || ''));
+    // 宿主（chat.js）用这一个回调把锁合成进它自己的 updateUI 逻辑：连接态、
+    // 流式态和无人值守锁只有一个入口，绝不会出现「锁解除后输入框还灰着」。
+    const applyInputLock = typeof opts.applyInputLock === 'function' ? opts.applyInputLock : null;
     if (!doc || !doc.body || typeof request !== 'function') return null;
 
     let state = null;
@@ -125,13 +133,24 @@
     const statusCard = el('div', 'unat-status-card');
     const statusLine = el('div', 'unat-status-line');
     const statusLabel = el('span', 'unat-status-label', tr('unattendedNotStarted'));
+    // 判定中：服务端每次 start/apply 都广播 evaluating 的两条边，面板与图标
+    // 同时转起来，用户才知道「暂停」之前 AI 正在想什么。
+    const evaluating = el('span', 'unat-evaluating');
+    const evaluatingDot = el('span', 'unat-spinner');
+    evaluatingDot.setAttribute('aria-hidden', 'true');
+    const evaluatingLabel = el('span', '', tr('unattendedJudging'));
+    evaluating.append(evaluatingDot, evaluatingLabel);
+    evaluating.hidden = true;
     const roundLabel = el('span', 'unat-round');
-    statusLine.append(statusLabel, roundLabel);
+    statusLine.append(statusLabel, evaluating, roundLabel);
     const humanReason = el('p', 'unat-human');
     humanReason.hidden = true;
+    // pausedBy（v2）：用户接管 / 输入触发 / 取消，三种暂停原因都落在状态块里。
+    const pausedLine = el('p', 'unat-paused');
+    pausedLine.hidden = true;
     const verdictLine = el('p', 'unat-verdict');
     verdictLine.hidden = true;
-    statusCard.append(statusLine, humanReason, verdictLine);
+    statusCard.append(statusLine, humanReason, pausedLine, verdictLine);
 
     const goalField = el('label', 'unat-field');
     goalField.append(el('span', 'unat-label', tr('unattendedGoal')));
@@ -191,19 +210,62 @@
 
     panel.append(head, body, footer);
 
+    // ── composer banner ─────────────────────────────────────────────────────
+    // active 时输入框被锁住（v2 产品决定），banner 就在输入栏正上方说明原因
+    // 并给出「暂停并接管」；终态则缩成一行「继续无人值守」。它是 chat.html
+    // 里 #input-bar 的前一个兄弟节点，Air iframe 里同样如此。
+    const banner = el('div', 'unat-banner');
+    banner.id = 'unattended-banner';
+    banner.hidden = true;
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+    const bannerMain = el('div', 'unat-banner-main');
+    const bannerSpinner = el('span', 'unat-spinner');
+    bannerSpinner.setAttribute('aria-hidden', 'true');
+    bannerSpinner.hidden = true;
+    const bannerText = el('span', 'unat-banner-text');
+    bannerMain.append(bannerSpinner, bannerText);
+    const bannerReason = el('span', 'unat-banner-reason');
+    bannerReason.hidden = true;
+    const bannerBtn = el('button', 'unat-banner-btn', tr('unattendedPauseTakeover'));
+    bannerBtn.type = 'button';
+    banner.append(bannerMain, bannerReason, bannerBtn);
+
     // ── rendering ───────────────────────────────────────────────────────────
     function fmtVerdict(verdict) {
       return tr(VERDICT_KEY[verdict] || 'unattendedVerdictContinue');
+    }
+
+    // v2：服务端用 pausedBy 说明是谁让监督器停下的。stop 按钮 = user，
+    // 真人输入触发 = input，轮次取消 = cancel。
+    function pausedByText() {
+      const key = state && PAUSED_KEY[state.pausedBy];
+      return key ? tr(key) : '';
+    }
+
+    // banner 的「为什么暂停」：需要人工时优先给 humanReason，其余看 pausedBy。
+    function bannerReasonText() {
+      const status = state && state.status;
+      if (status === 'needs_human') {
+        const reason = String(state.lastVerdict?.humanReason || state.lastVerdict?.reason || '');
+        return reason ? tr('unattendedHumanReason', { reason }) : statusWord();
+      }
+      return pausedByText();
     }
 
     function position() {
       const bar = byId('input-bar');
       if (!bar || typeof bar.getBoundingClientRect !== 'function') return;
       const rect = bar.getBoundingClientRect();
+      // banner 可见时它才是「输入区」的最上沿：浮动图标跟着一起上移，
+      // 免得压住暂停/继续按钮。
+      const bannerRect = !banner.hidden && typeof banner.getBoundingClientRect === 'function'
+        ? banner.getBoundingClientRect() : null;
+      const top = bannerRect && bannerRect.height > 0 ? Math.min(rect.top, bannerRect.top) : rect.top;
       const right = Math.max(10, Math.round((win.innerWidth || 0) - rect.right + 12));
       // Above the composer, not inside it: the send button keeps its thumb target
       // even when the textarea grows to many lines.
-      const bottom = Math.max(10, Math.round((win.innerHeight || 0) - rect.top + 8));
+      const bottom = Math.max(10, Math.round((win.innerHeight || 0) - top + 8));
       doc.documentElement.style.setProperty('--unat-right', right + 'px');
       doc.documentElement.style.setProperty('--unat-bottom', bottom + 'px');
     }
@@ -215,8 +277,10 @@
     function renderFab() {
       const current = state && state.status ? state.status : 'idle';
       fab.className = 'unat-fab unat-state-' + current;
+      fab.classList.toggle('unat-evaluating', !!state?.evaluating);
       fabIcon.textContent = ICON[current] || ICON.idle;
-      const label = tr('unattendedFabTooltip') + ' · ' + statusWord();
+      const label = tr('unattendedFabTooltip') + ' · ' + statusWord()
+        + (state?.evaluating ? ' · ' + tr('unattendedJudging') : '');
       fab.title = label;
       fab.setAttribute('aria-label', label);
     }
@@ -224,6 +288,7 @@
     function renderStatus() {
       statusLabel.textContent = statusWord();
       statusLabel.className = 'unat-status-label unat-status-' + (state && state.status ? state.status : 'idle');
+      evaluating.hidden = !(state && state.evaluating);
       if (state) {
         roundLabel.textContent = tr('unattendedRoundProgress', {
           round: Number(state.rounds) || 0,
@@ -238,6 +303,9 @@
       const reason = needsHuman ? String(state.lastVerdict?.humanReason || state.lastVerdict?.reason || '') : '';
       humanReason.hidden = !reason;
       humanReason.textContent = reason ? tr('unattendedHumanReason', { reason }) : '';
+      const paused = pausedByText();
+      pausedLine.hidden = !paused;
+      pausedLine.textContent = paused;
       const last = state && state.lastVerdict;
       verdictLine.hidden = !last;
       if (last) {
@@ -280,10 +348,64 @@
       addCriterion.disabled = busy;
     }
 
+    // ── 输入锁 + 输入栏上方 banner ────────────────────────────────────────────
+    // 锁只在 active 时生效，而且只在布尔值真的翻转时通知宿主一次 —— 宿主那边
+    // 只有一片 updateUI，断开/重连、流式、无人值守共用同一条 disabled 计算。
+    // 终态（含 achieved）与 null 都会立刻解锁：所谓「卡在 disabled」没有路径。
+    let inputLocked = false;
+    function syncInputLock(locked) {
+      const next = !!locked;
+      if (next === inputLocked) return;
+      inputLocked = next;
+      if (applyInputLock) {
+        try { applyInputLock(next); } catch (_) { /* 宿主异常不能把面板拖死 */ }
+      }
+    }
+
+    function renderBanner() {
+      const status = state && state.status;
+      const active = status === 'active';
+      const resumable = !!(state && RESUMABLE.has(status));
+      syncInputLock(active);
+      banner.classList.toggle('unat-banner-active', active);
+      banner.classList.toggle('unat-banner-paused', !active && resumable);
+      bannerBtn.disabled = busy;
+      if (active) {
+        bannerText.textContent = tr('unattendedBannerActive', {
+          round: Number(state.rounds) || 0,
+          max: Number(state.maxRounds) || limits.maxRoundsDefault,
+        });
+        bannerSpinner.hidden = !state.evaluating;
+        bannerReason.hidden = true;
+        bannerReason.textContent = '';
+        bannerBtn.textContent = tr('unattendedPauseTakeover');
+        bannerBtn.dataset.action = 'stop';
+        banner.hidden = false;
+        return;
+      }
+      bannerSpinner.hidden = true;
+      if (resumable) {
+        // 小号 banner：一句状态词 + 暂停原因，主按钮是「继续无人值守」。
+        bannerText.textContent = statusWord();
+        const reason = bannerReasonText();
+        bannerReason.hidden = !reason;
+        bannerReason.textContent = reason;
+        bannerBtn.textContent = tr('unattendedBannerResume');
+        bannerBtn.dataset.action = 'resume';
+        banner.hidden = false;
+        return;
+      }
+      bannerReason.hidden = true;
+      bannerReason.textContent = '';
+      banner.hidden = true;
+    }
+
     function render(syncForm) {
       renderFab();
       renderStatus();
       renderActions();
+      renderBanner();
+      position();
       if (syncForm) {
         goalInput.value = state && state.goal ? String(state.goal) : '';
         const criteria = state && Array.isArray(state.criteria) ? state.criteria : [];
@@ -545,16 +667,24 @@
     stopBtn.addEventListener('click', () => void act('stop'));
     resumeBtn.addEventListener('click', () => void act('resume'));
     draftBtn.addEventListener('click', () => void draft());
+    bannerBtn.addEventListener('click', () => {
+      const action = bannerBtn.dataset.action;
+      if (action === 'stop' || action === 'resume') void act(action);
+    });
 
     function mount() {
       if (mounted) return;
       mounted = true;
       root.append(scrim, panel);
       doc.body.append(root, fab);
+      // banner 贴在输入栏正上方；chat.html/Air iframe 里 #input-bar 都有父节点。
+      const bar = byId('input-bar');
+      if (bar && bar.parentNode) bar.parentNode.insertBefore(banner, bar);
+      else doc.body.append(banner);
       position();
       if (typeof win.ResizeObserver === 'function') {
-        const bar = byId('input-bar');
         if (bar) new win.ResizeObserver(() => position()).observe(bar);
+        new win.ResizeObserver(() => position()).observe(banner);
       }
       win.addEventListener('resize', position);
       if (win.visualViewport) win.visualViewport.addEventListener('resize', position);

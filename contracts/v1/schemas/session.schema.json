@@ -316,7 +316,9 @@
         "updatedAt",
         "lastVerdict",
         "history",
-        "stall"
+        "stall",
+        "evaluating",
+        "pausedBy"
       ],
       "properties": {
         "status": {
@@ -432,7 +434,8 @@
           "additionalProperties": false,
           "required": [
             "sameInstruction",
-            "auxFailures"
+            "auxFailures",
+            "consecutiveFaults"
           ],
           "properties": {
             "sameInstruction": {
@@ -442,8 +445,27 @@
             "auxFailures": {
               "type": "integer",
               "minimum": 0
+            },
+            "consecutiveFaults": {
+              "type": "integer",
+              "minimum": 0
             }
           }
+        },
+        "evaluating": {
+          "type": "boolean"
+        },
+        "pausedBy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "user",
+            "input",
+            "cancel",
+            null
+          ]
         }
       }
     },

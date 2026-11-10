@@ -397,7 +397,9 @@ test('服务端推送的词只在一处；拿到字母时 B 才说自己的话�
   assert.match(runtime, /function notify\(|classifyState/, 'notify() 拿不到精确字母');
   const machine = read('src/classify/state-machine.js');
   const waitingPushes = machine.match(/triggerPush\(sessionId, pushType,[^\n]*\)/g) || [];
-  assert.equal(waitingPushes.length, 2, 'state-machine.js 的等待类 triggerPush 调用点数变了，请重新核对');
+  // 终端面与聊天面只差一个 [Chat] 前缀（已折进 pushMessage），而无人值守接管时要把这条推送
+  // 先扣住、判定落空再补发 —— 所以只剩一个调用点（sendWaitingPush），字母经 pushOptions 传入。
+  assert.equal(waitingPushes.length, 1, 'state-machine.js 的等待类 triggerPush 调用点数变了，请重新核对');
   for (const call of waitingPushes) {
     // 字母可以写成字面量，也可以经一个选项变量传进去（错误类推送还要附带错误分类），
     // 但那个变量必须在同一文件里以 { classifyState: cls } 起手定义。

@@ -329,14 +329,26 @@ function createClassifyStateMachine(rawDeps) {
         taskGoal: finalGoal || '',
         voiceMessage: dismissedQuestion ? msg : completionVoiceMessage(completionTaskShortCode, finalGoal),
       };
+      // The supervisor may judge this turn itself; hold the classic push so the
+      // user never gets two notices (and gets the held one if the verdict is a
+      // no-op — src/unattended/host.js guarantees that fallback).
+      const settledAssistantText = cs?.currentAssistantText || '';
+      const holdPush = !dismissedQuestion && unattendedShouldHoldPush(sessionName, settledAssistantText);
+      let fallbackPush = null;
       if (isTerminal) {
         // The succeeded push carries the letter + the D sub-state so the lock
         // screen can say 达成目标/需要交互 (see ./push/notification-copy). Only
         // this branch fires it — the W/B/E pushes below never carry a goalState.
-        if (!dismissedQuestion) triggerPush(sessionId, 'succeeded', msg, { classifyState: 'D', goalState });
+        if (!dismissedQuestion) {
+          if (holdPush) fallbackPush = () => triggerPush(sessionId, 'succeeded', msg, { classifyState: 'D', goalState });
+          else triggerPush(sessionId, 'succeeded', msg, { classifyState: 'D', goalState });
+        }
         terminalBroadcast(sessionId, completionNotice);
       } else {
-        if (!dismissedQuestion) triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`, { classifyState: 'D', goalState });
+        if (!dismissedQuestion) {
+          if (holdPush) fallbackPush = () => triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`, { classifyState: 'D', goalState });
+          else triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`, { classifyState: 'D', goalState });
+        }
         chatBroadcast(sessionName, completionNotice);
       }
       const dirId = persistedSessions.get(sessionName)?.dirId;
@@ -352,8 +364,9 @@ function createClassifyStateMachine(rawDeps) {
       // window is tiny and separate.)
       getWaitInjector().resetInterrupted(sessionName);
       // Unattended mode: a finished turn is the only verdict trigger besides an
-      // explicit start/resume. Fire and forget — the supervisor guards itself.
-      try { getUnattendedHost()?.onTurnSettled(sessionName, { assistantText: cs?.currentAssistantText || '' }); } catch (_) {}
+      // explicit start/resume. Fire and forget — the supervisor guards itself;
+      // `fallbackPush` fires if it ends in a no-op.
+      try { getUnattendedHost()?.onTurnSettled(sessionName, { assistantText: settledAssistantText, fallbackPush, settle: 'D' }); } catch (_) {}
       return;
     }
 
@@ -412,6 +425,18 @@ function createClassifyStateMachine(rawDeps) {
         provider: persisted?.cli || 'unknown',
         policyAction: cs?._lastApiErrorDecision?.action || 'fail_fast',
       });
+      // Unattended fault continuation: only when the centralized policy is done
+      // (it may have scheduled its own bounded retry — then there is nothing to
+      // do). No Aux call, counts as a round, 3 consecutive faults need a human.
+      if (cs?._lastApiErrorDecision?.action !== 'retry') {
+        try {
+          getUnattendedHost()?.onFault?.(sessionName, {
+            reason: cs?._lastApiErrorDecision?.error?.category
+              || cs?._lastApiErrorDecision?.category
+              || ctx.killReason || 'api_error',
+          });
+        } catch (_) {}
+      }
     }
 
     // Common waiting-state broadcast — driven by classifyState letter.
@@ -445,11 +470,22 @@ function createClassifyStateMachine(rawDeps) {
     const pushOptions = { classifyState: cls };
     const errorCategory = error && cs?._lastApiErrorDecision?.category;
     if (errorCategory) pushOptions.errorCategory = errorCategory;
+    // A W settle is exactly what the unattended supervisor judges; hold this
+    // push while it does (B/E are owned by their own policies and never hold).
+    // src/unattended/host.js fires the held push on every no-op path.
+    const settledAssistantText = cs?.currentAssistantText || '';
+    const holdPush = !cancel && isWaitForUserLetter(state)
+      && unattendedShouldHoldPush(sessionName, settledAssistantText);
+    const pushMessage = isTerminal ? waitMsg : `[Chat] ${waitMsg}`;
+    const sendWaitingPush = () => triggerPush(sessionId, pushType, pushMessage, pushOptions);
+    let fallbackPush = null;
+    if (!cancel) {
+      if (holdPush) fallbackPush = sendWaitingPush;
+      else sendWaitingPush();
+    }
     if (isTerminal) {
-      if (!cancel) triggerPush(sessionId, pushType, waitMsg, pushOptions);
       terminalBroadcast(sessionId, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     } else {
-      if (!cancel) triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`, pushOptions);
       chatBroadcast(sessionName, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     }
     const dirId2 = persistedSessions.get(sessionName)?.dirId;
@@ -487,7 +523,7 @@ function createClassifyStateMachine(rawDeps) {
       if (cancel) {
         if (cancel.source === 'manual_cancel') unattended?.onManualCancel(sessionName);
       } else if (isWaitForUserLetter(state)) {
-        unattended?.onTurnSettled(sessionName, { assistantText: cs?.currentAssistantText || '' });
+        unattended?.onTurnSettled(sessionName, { assistantText: settledAssistantText, fallbackPush, settle: 'W' });
       }
     } catch (_) {}
   }
@@ -536,6 +572,19 @@ function createClassifyStateMachine(rawDeps) {
   // Whether a user message is system-injected (autoContinue / apiRetry / bgCheck).
   function isSystemInjectedMsg(msg) {
     return String(msg || '').trim().startsWith(SYSTEM_PREFIX);
+  }
+
+  // While the unattended supervisor is active it produces its own notice for
+  // this settle, so classify must not race a second (classic) push. Returns
+  // false when there is nothing to judge yet — then the push fires immediately.
+  function unattendedShouldHoldPush(sessionName, assistantText) {
+    try {
+      const unattended = getUnattendedHost();
+      return !!(unattended && typeof unattended.shouldHoldPush === 'function'
+        && unattended.shouldHoldPush(sessionName, { assistantText }));
+    } catch (_) {
+      return false;
+    }
   }
 
   // Whether classify has produced a real goal for this session. False for the

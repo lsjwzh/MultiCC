@@ -1488,6 +1488,10 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
         applyUnattendedEvent(evt.payload);
         break;
 
+      case 'unattended_trace':
+        applyUnattendedTraceEvent(evt.payload as Map);
+        break;
+
       case 'aux_verdict_staleness':
         {
           // The classifier changed health. A frozen classifier sends no further
@@ -2693,7 +2697,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
   bool get userPinnedAway => _userPinnedAway;
 
   void _addSystemMsg(String text) {
-    _messages.add(ChatMessage(role: MessageRole.system, content: text));
+    _messages.add(systemLineMessage(text));
     notifyListeners();
   }
 

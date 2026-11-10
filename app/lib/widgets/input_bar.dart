@@ -15,6 +15,7 @@ import 'chat_runtime_panels.dart';
 import 'dispatch_mode_selector.dart';
 import 'scheduled_send_dock.dart';
 import 'scheduled_send_store.dart';
+import 'unattended_sheet.dart';
 import 'voice_composer.dart';
 import 'run_config/run_chip.dart';
 
@@ -263,6 +264,14 @@ class _InputBarState extends State<InputBar> {
   }
 
   void _send(ChatProvider provider, {required bool commander}) {
+    // v2：无人值守 active 时输入区锁死（真人先「暂停并接管」）。这里再兜一道：
+    // 桌面键盘/自动化仍可能把 Enter 送进来，不能绕开锁。
+    if (provider.unattendedLocksInput) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('unattendedInputLocked'))),
+      );
+      return;
+    }
     var text = _ctrl.text.trim();
     if (text.startsWith('/')) {
       // 命令判定只看输入框里的原文：附件路径是发出时才拼上去的（web 同理）。
@@ -449,7 +458,13 @@ class _InputBarState extends State<InputBar> {
     final isStreaming = provider.isStreaming;
     final isConnected =
         provider.connectionState == ChatConnectionState.connected;
-    final canSend = (_hasText || _attachments.isNotEmpty) && isConnected;
+    // 无人值守 active：输入区整体锁住（文本/发送/附件/语音/斜杠）。这只是
+    // 叠加在「有内容 + 已连接」之上的又一个禁用原因 —— 流式中的取消键不受影响。
+    final unattendedLocked = provider.unattendedLocksInput;
+    final canSend =
+        !unattendedLocked &&
+        (_hasText || _attachments.isNotEmpty) &&
+        isConnected;
     // 语音输入要跟着当前会话的设置走（切会话后 token/host/lang 都会换）。
     _voice.syncSettings(provider.settings);
 
@@ -569,6 +584,9 @@ class _InputBarState extends State<InputBar> {
                 child: VoiceDictationHud(controller: _voice),
               ),
 
+            // 无人值守 banner 紧贴输入框上方：active 时说明「为什么锁」并给
+            // 「暂停并接管」；暂停/终态时给小号的「继续无人值守」。
+            UnattendedComposerBanner(provider: provider),
             _ComposerBand(provider: provider),
             _composerCard(
               provider,
@@ -597,6 +615,7 @@ class _InputBarState extends State<InputBar> {
         : _focusNode.hasFocus
         ? const Color(0xFFc1d8ed)
         : const Color(0xFFdbe5ef);
+    final unattendedLocked = provider.unattendedLocksInput;
     return Container(
       key: const Key('chat-composer-card'),
       padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
@@ -635,6 +654,9 @@ class _InputBarState extends State<InputBar> {
                     key: const Key('chat-message-input'),
                     controller: _ctrl,
                     focusNode: _focusNode,
+                    // 无人值守 active 时锁住整块输入区（草稿仍在 controller 里，
+                    // 解锁后原样可编辑）。
+                    enabled: !unattendedLocked,
                     maxLines: null,
                     textInputAction: TextInputAction.newline,
                     // Keep the draft editable through disconnects/reconnects.
@@ -646,7 +668,9 @@ class _InputBarState extends State<InputBar> {
                       height: 1.4,
                     ),
                     decoration: InputDecoration(
-                      hintText: _voice.isRecording
+                      hintText: unattendedLocked
+                          ? t('unattendedInputLocked')
+                          : _voice.isRecording
                           ? t('recording')
                           : _voice.isTranscribing
                           ? t('transcribing')
@@ -701,7 +725,9 @@ class _InputBarState extends State<InputBar> {
             children: [
               // Attachment button
               _SmallButton(
-                onTap: (!_uploading && isConnected) ? _pickAndUpload : null,
+                onTap: (!_uploading && isConnected && !unattendedLocked)
+                    ? _pickAndUpload
+                    : null,
                 icon: _uploading
                     ? Icons.hourglass_top_rounded
                     : Icons.attach_file_rounded,
@@ -713,14 +739,14 @@ class _InputBarState extends State<InputBar> {
               VoiceMicButton(
                 key: const Key('chat-mic-button'),
                 controller: _voice,
-                enabled: isConnected,
+                enabled: isConnected && !unattendedLocked,
                 iconSize: 20,
               ),
               const SizedBox(width: 4),
               // Realtime voice — opens the one global voice gateway, scoped to
               // this session. Plain dictation stays on the mic button.
               _SmallButton(
-                onTap: isConnected
+                onTap: isConnected && !unattendedLocked
                     ? () {
                         _openVoiceCall();
                       }

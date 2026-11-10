@@ -995,6 +995,8 @@ class _ChatViewState extends State<ChatView> {
                                 enabled:
                                     provider.connectionState ==
                                     ChatConnectionState.connected,
+                                // 无人值守 active：辅助 AI 代答，人手的选项/提交锁定。
+                                unattendedLocked: provider.unattendedLocksInput,
                                 onAnswer: provider.sendMessage,
                                 onSecretSubmit: (value) =>
                                     provider.submitPendingSecret(value),

@@ -41,7 +41,7 @@ function mountUnattendedRoutes(app, deps = {}) {
     return res.json({ ok: true, unattended: host.get(id) || null, limits: LIMITS });
   });
 
-  app.post('/api/sessions/:id/unattended', (req, res) => {
+  app.post('/api/sessions/:id/unattended', async (req, res) => {
     const host = getHost();
     if (!host) return res.status(501).json({ ok: false, error: 'unattended_unavailable' });
     const id = req.params.id;
@@ -52,10 +52,10 @@ function mountUnattendedRoutes(app, deps = {}) {
     }
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     switch (body.action) {
-      case 'start': return respond(res, host.start(id, body));
+      case 'start': return respond(res, await host.start(id, body));
       case 'update': return respond(res, host.update(id, body));
       case 'stop': return respond(res, host.stop(id));
-      case 'resume': return respond(res, host.resume(id));
+      case 'resume': return respond(res, await host.resume(id));
       default:
         return res.status(400).json({ ok: false, error: 'bad_action', unattended: host.get(id) || null });
     }

@@ -1,6 +1,13 @@
 use napi::Result;
 use napi_derive::napi;
 
+/// The one marker every supervisor-inserted message carries. Single source:
+/// `native/core/src/unattended.rs`; JS and both UIs read/reuse this literal.
+#[napi]
+pub fn unattended_tag() -> String {
+    multicc_core::unattended::UNATTENDED_TAG.to_string()
+}
+
 /// Clamp `{goal, criteria, maxRounds}` → `{ok, config}` / `{ok:false, error}`.
 #[napi]
 pub fn unattended_normalize_config(input: String) -> Result<String> {
@@ -24,4 +31,10 @@ pub fn unattended_parse_verdict(text: String) -> Result<String> {
 #[napi]
 pub fn unattended_decide(input: String) -> Result<String> {
     multicc_core::unattended::decide(&input).map_err(napi::Error::from_reason)
+}
+
+/// Immediate fault-E continuation → `{nextState, action, message, faults}`.
+#[napi]
+pub fn unattended_decide_fault(input: String) -> Result<String> {
+    multicc_core::unattended::decide_fault(&input).map_err(napi::Error::from_reason)
 }

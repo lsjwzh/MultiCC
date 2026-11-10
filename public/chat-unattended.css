@@ -361,3 +361,205 @@
   .unat-criterion-input,
   .unat-rounds { background: #f6f8fb; }
 }
+
+/* ── 判定中 spinner（面板 + 浮动图标 + banner 共用） ── */
+.unat-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  vertical-align: -1px;
+  margin-right: 5px;
+  animation: unat-spin .8s linear infinite;
+}
+.unat-spinner[hidden] { display: none; }
+.unat-evaluating {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #f0a429;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.unat-evaluating[hidden] { display: none; }
+.unat-fab.unat-evaluating::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  border: 2px solid rgba(240, 164, 41, 0.9);
+  border-top-color: transparent;
+  animation: unat-spin .8s linear infinite;
+  pointer-events: none;
+}
+@keyframes unat-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .unat-spinner,
+  .unat-fab.unat-evaluating::after { animation-duration: 2.4s; }
+}
+
+.unat-paused {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #f0b45a;
+  overflow-wrap: anywhere;
+}
+.unat-paused[hidden] { display: none; }
+
+/* ── 输入栏上方 banner ────────────────────────────────────────────────────
+   active：整行状态 + 主按钮；终态：小号一行 + 「继续无人值守」。它是 body
+   纵向 flex 里的一个 flex-shrink:0 行，位置就在 #input-bar 之前。 */
+.unat-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0 10px 4px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(47, 191, 113, 0.42);
+  background: rgba(47, 191, 113, 0.1);
+  color: #6fe0a2;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.unat-banner[hidden] { display: none; }
+.unat-banner-main {
+  flex: 1 1 180px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.unat-banner-text { font-weight: 600; }
+.unat-banner-reason {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted, #9aa7b8);
+  overflow-wrap: anywhere;
+}
+.unat-banner-reason[hidden] { display: none; }
+.unat-banner-btn {
+  flex: 0 0 auto;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(47, 191, 113, 0.55);
+  background: rgba(47, 191, 113, 0.2);
+  color: #6fe0a2;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.unat-banner-btn:hover:not(:disabled) { background: rgba(47, 191, 113, 0.32); }
+.unat-banner-btn:disabled { opacity: .55; cursor: default; }
+.unat-banner-paused {
+  border-color: var(--border, rgba(140, 160, 190, 0.28));
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted, #9aa7b8);
+  font-size: 11px;
+  padding: 5px 10px;
+}
+.unat-banner-paused .unat-banner-text { font-weight: 600; color: var(--fg, #e6ecf5); }
+.unat-banner-paused .unat-banner-btn {
+  border-color: rgba(240, 164, 41, 0.55);
+  background: rgba(240, 164, 41, 0.14);
+  color: #f0b45a;
+}
+
+/* 锁定态：灰掉输入区，placeholder 说明原因。取消键不受影响（Esc/Stop 仍可用）。 */
+#input-bar.unattended-locked textarea,
+#input-bar.unattended-locked #send-btn,
+#input-bar.unattended-locked .input-action-btn {
+  opacity: .55;
+}
+#input-bar.unattended-locked textarea { cursor: not-allowed; }
+
+/* ── 对话里的「🤖 无人值守」标记 ─────────────────────────────────────────
+   标记消息（role=user + 锁定标记）画成窄卡片；判定轨迹（kind
+   unattended_trace）画成居中静音行。两者共用 .unat-badge 小徽标。 */
+.msg.user.system-inject.unattended-mark {
+  align-self: flex-start;
+  max-width: 92%;
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 7px;
+  padding: 5px 9px;
+  border-radius: 9px;
+  border: 1px dashed rgba(47, 191, 113, 0.4);
+  background: rgba(47, 191, 113, 0.08);
+  color: var(--fg, #e6ecf5);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.msg.user.system-inject.unattended-mark .unat-mark-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.msg.unattended-trace {
+  align-self: center;
+  max-width: min(92%, 720px);
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px 7px;
+  padding: 2px 8px;
+  color: var(--muted, #9aa7b8);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+.msg.unattended-trace .unat-mark-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.unat-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2fbf71;
+  white-space: nowrap;
+}
+.msg.unattended-trace .unat-badge { color: #5f9c7c; }
+
+/* 待答问题卡在无人值守期间的提示。 */
+.pending-input-unattended-hint {
+  margin: 6px 0 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(47, 191, 113, 0.1);
+  border: 1px dashed rgba(47, 191, 113, 0.38);
+  color: #6fe0a2;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.pending-input-unattended-hint[hidden] { display: none; }
+
+@media (prefers-color-scheme: light) {
+  .unat-banner { color: #1c6b42; background: rgba(47, 191, 113, 0.1); }
+  .unat-banner-btn { color: #1c6b42; }
+  .unat-banner-reason { color: #5b6878; }
+  .unat-banner-paused { color: #5b6878; }
+  .unat-banner-paused .unat-banner-text { color: #1d2733; }
+  .unat-paused,
+  .unat-banner-paused .unat-banner-btn { color: #8a5a12; }
+  .msg.user.system-inject.unattended-mark { color: #1d2733; }
+  .msg.unattended-trace { color: #5b6878; }
+  .unat-badge { color: #1c6b42; }
+  .pending-input-unattended-hint { color: #1c6b42; }
+}
+
+@media (max-width: 560px) {
+  .unat-banner { margin: 0 8px 3px; padding: 6px 8px; }
+  .unat-banner-main { flex-basis: 100%; }
+  .unat-banner-btn { margin-left: auto; }
+  .unat-fab.unat-evaluating::after { inset: 3px; }
+}

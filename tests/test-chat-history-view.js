@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHistoryView, parseSystemInject } = require('../public/chat-history-view');
+const {
+  createHistoryView, parseSystemInject, parseUnattendedMarker, isUnattendedTrace,
+} = require('../public/chat-history-view');
 const liveUiApi = require('../public/chat-live-ui');
 
 const ROOT = path.join(__dirname, '..');
@@ -202,6 +204,76 @@ test('view upserts persisted ids and keeps user content text-only', () => {
   ] });
   assert.equal(messagesEl.children.length, 1, 'an id update must replace, never append');
   assert.equal(messagesEl.children[0].textContent, 'authoritative');
+});
+
+test('the unattended marker parser tolerates the 🔇 prefix and ignores lookalikes', () => {
+  assert.deepEqual(
+    parseUnattendedMarker('🔇[无人值守 Unattended] 继续推进构建'),
+    { text: '继续推进构建' },
+  );
+  // 没有 🔇 的历史行（或后端已经剥掉）同样认。
+  assert.deepEqual(parseUnattendedMarker('[无人值守 Unattended] 判定：继续'), { text: '判定：继续' });
+  // 普通用户消息、旧版 🔇 提示、以及标记在中间的行都不是无人值守消息。
+  assert.equal(parseUnattendedMarker('帮我看看这个'), null);
+  assert.equal(parseUnattendedMarker('🔇继续：外部结果到了'), null);
+  assert.equal(parseUnattendedMarker('前言 [无人值守 Unattended] 后记'), null);
+  assert.equal(isUnattendedTrace({ kind: 'unattended_trace' }), true);
+  assert.equal(isUnattendedTrace({ kind: 'user_message' }), false);
+});
+
+test('a marked unattended message renders as a badge card, not a real user bubble', () => {
+  const { messagesEl, view } = fixture();
+  const committed = view.commitMessage({
+    id: 'u-unat', role: 'user', content: '🔇[无人值守 Unattended] 继续推进构建',
+  }, {});
+
+  const node = committed.node;
+  assert.equal(node.classList.contains('user'), true, '标记消息仍占用 user 节点');
+  assert.equal(node.classList.contains('system-inject'), true, '它不是一次真实用户发言');
+  assert.equal(node.classList.contains('unattended-mark'), true);
+  assert.equal(node.querySelector('.unat-badge').textContent, '🤖 无人值守');
+  assert.equal(node.querySelector('.unat-mark-text').textContent, '继续推进构建');
+  assert.equal(node.textContent.includes('🔇'), false, '标记只给模型看，渲染层剥掉');
+  assert.equal(node.textContent.includes('[无人值守 Unattended]'), false);
+  // system-inject 语义：不能用它当 last-user 回溯锚点。
+  assert.notEqual(committed.lastUserElement, node);
+  assert.equal(messagesEl.querySelectorAll('.msg.user:not(.system-inject)').length, 0);
+
+  // 同一 id 的历史回放不能画第二张卡片。
+  view.commitMessage({ id: 'u-unat', role: 'user', content: '🔇[无人值守 Unattended] 继续推进构建' }, {});
+  assert.equal(messagesEl.querySelectorAll('.unattended-mark').length, 1);
+});
+
+test('unattended trace entries render as muted lines and dedupe by id or text', () => {
+  const { messagesEl, view } = fixture();
+  // 持久化轨迹行（后端 shape：role=system + kind）走 commitMessage 的 upsert。
+  const committed = view.commitMessage({
+    id: 't1', role: 'system', kind: 'unattended_trace',
+    content: '[无人值守 Unattended] 判定：继续 · 需要构建',
+  }, {});
+  assert.equal(committed.node.classList.contains('unattended-trace'), true);
+  assert.equal(committed.node.classList.contains('user'), false);
+  assert.equal(committed.node.dataset.msgId, 't1');
+  assert.equal(committed.node.querySelector('.unat-badge').textContent, '🤖 无人值守');
+  assert.equal(committed.node.querySelector('.unat-mark-text').textContent, '判定：继续 · 需要构建');
+
+  // 轨迹没有发言方：若后端省略 role，commitMessage 自己补 system，不能丢行。
+  const roleless = view.commitMessage({
+    id: 't2', kind: 'unattended_trace', content: '🔇[无人值守 Unattended] 已暂停（用户接管）',
+  }, {});
+  assert.ok(roleless.node);
+  assert.equal(roleless.node.querySelector('.unat-mark-text').textContent, '已暂停（用户接管）');
+  assert.equal(messagesEl.querySelectorAll('.unattended-trace').length, 2);
+
+  // 实时广播：同 id 的 entry 复用历史节点，不会叠第二条。
+  view.appendUnattendedTrace({ id: 't1', content: '[无人值守 Unattended] 判定：继续 · 需要构建' });
+  assert.equal(messagesEl.querySelectorAll('.unattended-trace').length, 2);
+  // 无 id 的重复文本按上一条轨迹去重。
+  view.appendUnattendedTrace({ content: '[无人值守 Unattended] 判定：完成' });
+  view.appendUnattendedTrace({ content: '[无人值守 Unattended] 判定：完成' });
+  assert.equal(messagesEl.querySelectorAll('.unattended-trace').length, 3);
+  assert.equal(Array.from(messagesEl.querySelectorAll('.unattended-trace'))
+    .pop().querySelector('.unat-mark-text').textContent, '判定：完成');
 });
 
 test('committed user message replaces its optimistic bubble', () => {

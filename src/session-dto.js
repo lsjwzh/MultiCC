@@ -84,7 +84,11 @@ function unattendedDto(value) {
   const stall = value.stall && typeof value.stall === 'object' ? {
     sameInstruction: Math.max(0, Math.floor(Number(value.stall.sameInstruction) || 0)),
     auxFailures: Math.max(0, Math.floor(Number(value.stall.auxFailures) || 0)),
-  } : { sameInstruction: 0, auxFailures: 0 };
+    consecutiveFaults: Math.max(0, Math.floor(Number(value.stall.consecutiveFaults) || 0)),
+  } : { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 0 };
+  const pausedBy = value.pausedBy === 'user' || value.pausedBy === 'input' || value.pausedBy === 'cancel'
+    ? value.pausedBy
+    : null;
   return {
     status,
     goal: nullableString(value.goal, 2000) || '',
@@ -96,6 +100,8 @@ function unattendedDto(value) {
     lastVerdict,
     history,
     stall,
+    evaluating: value.evaluating === true,
+    pausedBy,
   };
 }
 

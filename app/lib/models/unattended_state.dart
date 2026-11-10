@@ -100,6 +100,11 @@ class UnattendedState {
   static const statusStopped = 'stopped';
   static const statusError = 'error';
 
+  /// `pausedBy`：谁让监督器停下的（v2，契约 Backend notes）。
+  static const pausedByUser = 'user';
+  static const pausedByInput = 'input';
+  static const pausedByCancel = 'cancel';
+
   static const maxCriteria = 12;
   static const maxGoalLength = 2000;
   static const maxCriterionLength = 300;
@@ -115,6 +120,12 @@ class UnattendedState {
   final List<UnattendedHistoryEntry> history;
   final UnattendedStall? stall;
 
+  /// 判定进行中：服务端在 verdict 开始/落地两条边都广播。面板据此转 spinner。
+  final bool evaluating;
+
+  /// 暂停原因（user / input / cancel / null）。resume/start 后服务端清掉。
+  final String? pausedBy;
+
   const UnattendedState({
     this.status = statusStopped,
     this.goal = '',
@@ -126,6 +137,8 @@ class UnattendedState {
     this.lastVerdict,
     this.history = const [],
     this.stall,
+    this.evaluating = false,
+    this.pausedBy,
   });
 
   bool get isActive => status == statusActive;
@@ -164,7 +177,20 @@ class UnattendedState {
       lastVerdict: UnattendedVerdict.fromJson(map['lastVerdict']),
       history: history,
       stall: UnattendedStall.fromJson(map['stall']),
+      evaluating: _truthy(map['evaluating']),
+      pausedBy: _optionalText(map['pausedBy']),
     );
+  }
+
+  /// 宽容解析：新老服务端/演示服务可能给 bool、数字或字符串。
+  static bool _truthy(dynamic raw) =>
+      raw == true || raw == 1 || raw == 'true' || raw == '1';
+
+  /// 空串、字面量 "null" 和 null 一个意思：没有暂停原因。
+  static String? _optionalText(dynamic raw) {
+    final text = raw?.toString().trim();
+    if (text == null || text.isEmpty || text == 'null') return null;
+    return text;
   }
 
   Map<String, dynamic> toJson() => {
@@ -178,6 +204,8 @@ class UnattendedState {
     if (lastVerdict != null) 'lastVerdict': lastVerdict!.toJson(),
     'history': history.map((entry) => entry.toJson()).toList(),
     if (stall != null) 'stall': stall!.toJson(),
+    'evaluating': evaluating,
+    'pausedBy': pausedBy,
   };
 }
 

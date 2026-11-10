@@ -31,6 +31,8 @@ function fixture({
   auxUnhealthy = false,
   backgroundPending = false,
   hasBackgroundPending = () => backgroundPending,
+  unattendedHost = null,
+  pendingUserInput = false,
 } = {}) {
   const record = {
     id: 's1', kind: 'chat', cli: 'qoder',
@@ -105,7 +107,7 @@ function fixture({
       onTurnEnd() { observed.boardTurnEnds += 1; },
       onTaskAttributionSettled(...args) { observed.taskAttributionSettled.push(args); },
     }),
-    getUserInputSignalHost: () => ({ apply: (_sessionId, result) => result, pending: () => null }),
+    getUserInputSignalHost: () => ({ apply: (_sessionId, result) => result, pending: () => pendingUserInput }),
     getApiErrorHost: () => ({ recordApiError() {} }),
     getWaitInjector: () => ({ SYS_PREFIX: '[system]', resetAuto() {}, resetInterrupted() {} }),
     setTaskState: (_sessionId, patch) => {
@@ -129,6 +131,7 @@ function fixture({
       record: (_sessionId, run) => { observed.auxRuns.push(run); return run; },
     }),
     hasBackgroundPending,
+    getUnattendedHost: () => unattendedHost,
   });
   return { machine, record, chatState, history, observed, releaseAux: () => releaseAux() };
 }
@@ -426,6 +429,60 @@ test('a host reason never overrides a decision the boundary already made', () =>
   });
   assert.equal(h.observed.evaluated, 0, 'an existing structured decision is reused as-is');
   assert.equal(h.record.taskState.classifyState, 'E');
+});
+
+test('an E with no bounded retry asks the unattended supervisor to continue; a planned retry does not', () => {
+  const faults = [];
+  const unattendedHost = { onFault: (id, detail) => faults.push({ id, detail }) };
+  const h = fixture({ unattendedHost });
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'api-error' });
+  assert.equal(faults.length, 1, 'fault continuation is offered exactly once');
+  assert.equal(faults[0].id, 's1');
+  assert.equal(faults[0].detail.reason, 'unknown', 'the policy category travels with the fault');
+
+  faults.length = 0;
+  const retried = fixture({ unattendedHost, lastDecision: { ...FAIL_FAST, action: 'retry' } });
+  retried.machine.classifyTurnEnd(retried.chatState, 's1', { classification: 'api-error' });
+  assert.equal(faults.length, 0, 'the API policy already owns the retry — the supervisor must do nothing');
+});
+
+test('a D settle holds its classic push for the supervisor and hands it back as the fallback', () => {
+  const settled = [];
+  const unattendedHost = {
+    shouldHoldPush: () => true,
+    onTurnSettled: (id, detail) => settled.push({ id, detail }),
+  };
+  const h = fixture({ unattendedHost });
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(h.record.taskState.classifyState, 'D');
+  assert.deepEqual(h.observed.pushes, [], 'the classic succeeded push is held while the verdict runs');
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].id, 's1');
+  assert.equal(typeof settled[0].detail.fallbackPush, 'function');
+  settled[0].detail.fallbackPush();
+  assert.equal(h.observed.pushes.length, 1, 'a no-op verdict still releases the held push');
+  assert.equal(h.observed.pushes[0][0], 'succeeded');
+});
+
+test('a W settle also holds its waiting push; a B settle never does', () => {
+  const settled = [];
+  const unattendedHost = {
+    shouldHoldPush: () => true,
+    onTurnSettled: (id, detail) => settled.push({ id, detail }),
+  };
+  const waiting = fixture({ unattendedHost, pendingUserInput: true });
+  waiting.machine.classifyTurnEnd(waiting.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(waiting.record.taskState.classifyState, 'W');
+  assert.deepEqual(waiting.observed.pushes, [], 'W holds its waiting push');
+  assert.equal(settled.length, 1);
+  assert.equal(typeof settled[0].detail.fallbackPush, 'function');
+
+  settled.length = 0;
+  const background = fixture({ unattendedHost, backgroundPending: true });
+  background.machine.classifyTurnEnd(background.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(background.record.taskState.classifyState, 'B');
+  assert.equal(background.observed.pushes.length, 1, 'B is owned by its own policy and still pushes');
+  assert.equal(settled.length, 0);
 });
 
 test('the naming scan cannot rewrite a fail_fast E', () => {

@@ -584,6 +584,12 @@ class ChatService {
         _emit('unattended_state', msg['unattended']);
         break;
 
+      case 'unattended_trace':
+        // v2 的 UI-only 判定轨迹实时广播：`entry` 是持久化记录（role=system,
+        // kind=unattended_trace），`entry.id` 是重连后历史重放的去重键。
+        _emit('unattended_trace', msg);
+        break;
+
       case 'aux_verdict_staleness':
         // The classifier behind the bar just changed health. A frozen
         // classifier produces no further `task_state`, so this frame is the only

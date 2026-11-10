@@ -910,7 +910,17 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/unattended_composer_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/unattended_fab_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/unattended_message_test.dart",
       "tier": "other",
       "lane": "flutter"
     },
@@ -6391,6 +6401,15 @@
       "path": "tests/test-ui-layout-routes.js",
       "tier": "other",
       "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-unattended-fifo-order.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
     },
     {
       "path": "tests/test-unattended-routes.js",

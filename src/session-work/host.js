@@ -372,8 +372,16 @@ function createSessionWorkHost(deps = {}) {
     return runState === 'running';
   }
 
-  function closeTurnForClassify(sessionId, failureReason = null) {
-    const operation = (async () => {
+  // Read-only question used by the unattended supervisor: does this session's
+  // FIFO still hold staged work the scheduler will drain by itself? Never
+  // mutates the schedule and never exposes the delivery text (the scheduler is
+  // the only authority on order).
+  async function hasQueuedDeliveries(sessionId) {
+    const schedule = await scheduler()?.status(sessionId);
+    return !!(schedule && Array.isArray(schedule.queued) && schedule.queued.length > 0);
+  }
+
+  function closeTurnForClassify(sessionId, failureReason = null) {    const operation = (async () => {
       const runtime = schedulerRuntime();
       const target = runtime?.sessionScheduler;
       if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
@@ -1051,6 +1059,7 @@ function createSessionWorkHost(deps = {}) {
     classifyTransition,
     classifyUnavailable,
     getRunState,
+    hasQueuedDeliveries,
     isRunActive,
     moveInput,
     onSchedulerEvent,

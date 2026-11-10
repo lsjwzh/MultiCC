@@ -35,4 +35,25 @@ function decide(input) {
   return JSON.parse(native().unattendedDecide(JSON.stringify(input || {})));
 }
 
-module.exports = { LIMITS, normalizeConfig, buildVerdictPrompt, parseVerdict, decide };
+// The one marker every supervisor message carries. The literal lives in Rust so
+// host glue, classify and both UIs can never drift from each other.
+function tag() {
+  return native().unattendedTag();
+}
+
+// Immediate fault-E continuation (`{nextState, action, message, faults}`).
+function decideFault(input) {
+  return JSON.parse(native().unattendedDecideFault(JSON.stringify(input || {})));
+}
+
+module.exports = {
+  LIMITS,
+  buildVerdictPrompt,
+  decide,
+  decideFault,
+  normalizeConfig,
+  parseVerdict,
+  tag,
+  // Convenience for callers that only need the literal.
+  get TAG() { return tag(); },
+};
