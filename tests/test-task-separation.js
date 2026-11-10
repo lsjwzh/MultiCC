@@ -399,8 +399,10 @@ test('HTTP confirmation binds session and suggestion, validates decisions and ke
 });
 test('confirmed separation seeds the full judged turn into the new transcript and moves its open question', async t => {
   const f = await setup(t);
-  const appended = [], hidden = [], moves = [];
-  f.ports.appendHistory = (id, message) => {
+  const appended = [], hidden = [], moves = [], order = [];
+  f.ports.appendHistory = async (id, message) => {
+    await Promise.resolve();
+    order.push(`append:${message.sourceMessageId}`);
     appended.push({ id, message });
     f.histories.set(id, [...(f.histories.get(id) || []), message]);
     return true;
@@ -409,7 +411,11 @@ test('confirmed separation seeds the full judged turn into the new transcript an
     moves.push({ sourceId, targetId, opts });
     return { ok: true, requestId: 'usrq-1' };
   };
-  f.ports.hideHistory = (sourceId, ids) => { hidden.push({ sourceId, ids }); return ids.length; };
+  f.ports.hideHistory = (sourceId, ids) => {
+    order.push('hide');
+    hidden.push({ sourceId, ids });
+    return ids.length;
+  };
   const before = JSON.stringify(f.histories.get('a'));
   const p = await f.propose();
   const result = await f.runtime.separation.decide('a', p.id, 'separate');
@@ -427,6 +433,8 @@ test('confirmed separation seeds the full judged turn into the new transcript an
   assert.deepEqual(appended.map(a => a.message.contextMessageId), ['a:u1', 'a:a1']);
   assert.equal(JSON.stringify(f.histories.get('a')), before, 'canonical source transcript is retained for audit');
   assert.deepEqual(hidden, [{ sourceId: 'a', ids: ['u1', 'a1'] }], 'moved messages leave the source display');
+  assert.deepEqual(order, ['append:u1', 'append:a1', 'hide'],
+    'source messages are hidden only after every asynchronous target append resolves');
   // The judged turn's open wait_user question moves to the new task.
   assert.deepEqual(moves, [{ sourceId: 'a', targetId: task.sessionId, opts: { turnId: 'turn-1', taskId: task.id } }]);
   assert.equal(result.movedUserInput, 'usrq-1');
@@ -436,6 +444,23 @@ test('confirmed separation seeds the full judged turn into the new transcript an
   assert.equal(appended.length, 2);
   assert.equal(moves.length, 1);
 });
+test('a failed asynchronous target append never hides the source transcript', async t => {
+  const f = await setup(t), appended = [], hidden = [];
+  f.ports.appendHistory = async (id, message) => {
+    await Promise.resolve();
+    appended.push({ id, message });
+    return false;
+  };
+  f.ports.hideHistory = (sourceId, ids) => { hidden.push({ sourceId, ids }); return ids.length; };
+  const before = JSON.stringify(f.histories.get('a'));
+  const p = await f.propose();
+  const result = await f.runtime.separation.decide('a', p.id, 'separate');
+  assert.equal(result.seededMessages, 0);
+  assert.equal(appended.length, 2, 'each unpersisted target row was attempted once');
+  assert.deepEqual(hidden, [], 'a source row is never hidden without target persistence');
+  assert.equal(JSON.stringify(f.histories.get('a')), before);
+});
+
 test('restart healing hides an already-seeded transcript and retries the pending question move', async t => {
   const f = await setup(t), appended = [], hidden = [], moves = [];
   f.ports.appendHistory = (id, message) => {

@@ -186,11 +186,11 @@ const MIGRATION_DEBT = Object.freeze({
   // trackPendingMemoryDistill，server.js 的注入表少两行，实测高水位降到
   // 3038 行 / 162261 字节，按棘轮下调。
   // Provider 出口选择：Claude/Codex 两条协议代理共用一个出口解析器（+4 行），
-  // 实测 3042/162591，按真实高水位抬一格。
+  // 实测 3042/162591；本批改接异步历史确认并压缩兼容门面后降到 3040/162535。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3042,
-    byteCeiling: 162591,
+    ceiling: 3040,
+    byteCeiling: 162535,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

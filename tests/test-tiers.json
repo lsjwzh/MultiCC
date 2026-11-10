@@ -3502,6 +3502,11 @@
       ]
     },
     {
+      "path": "tests/test-egress-fetch.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-egress-ip.js",
       "tier": "other",
       "lane": "deterministic",

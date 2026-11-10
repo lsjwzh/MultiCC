@@ -745,7 +745,7 @@ function createSessionWorkHost(deps = {}) {
 
   // Ask the runner to stop. Side effects here are process/transport only — no
   // business state is touched.
-  function stopRunner(sessionId, reason, killReason) {
+  async function stopRunner(sessionId, reason, killReason) {
     const state = deps.getChatSession(sessionId);
     deps.cancelPreparation(sessionId, reason);
     if (!state) return;
@@ -801,7 +801,7 @@ function createSessionWorkHost(deps = {}) {
     // same partial twice.
     const tools = Array.isArray(state.currentToolCalls) ? state.currentToolCalls : [];
     if (state.currentAssistantText || tools.length) {
-      deps.appendMessage(sessionId, redactProviderRouteCapability({
+      await deps.appendMessage(sessionId, redactProviderRouteCapability({
         role: 'assistant',
         content: state.currentAssistantText || '',
         tools: tools.length ? tools : undefined,
@@ -849,7 +849,7 @@ function createSessionWorkHost(deps = {}) {
       try { deps.stopBackgroundForInsert(sessionId); }
       catch (error) { log.warn?.('session_insert_background_stop_failed', { sessionId, error: error.message }); }
     }
-    stopRunner(
+    await stopRunner(
       sessionId,
       effectiveReason,
       supersededByEntryId ? 'new_user_message' : killReason,

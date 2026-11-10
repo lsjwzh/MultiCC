@@ -492,7 +492,7 @@ function mountAuxGoalRoutes(app, dependencies) {
         const durationMs = Date.now() - startTime;
         this.totalProcessed++;
         this.lastTaskTime = Date.now();
-        appendChatMessage(AUX_SESSION_ID, {
+        await appendChatMessage(AUX_SESSION_ID, {
           role: 'user',
           content: task.prompt,
           ts: task.ts,
@@ -503,7 +503,7 @@ function mountAuxGoalRoutes(app, dependencies) {
           wireApi: task._wireApi || null,
           transport: 'directHttp',
         });
-        appendChatMessage(AUX_SESSION_ID, {
+        await appendChatMessage(AUX_SESSION_ID, {
           role: 'assistant',
           content: resultText,
           ts: Date.now(),
@@ -532,7 +532,7 @@ function mountAuxGoalRoutes(app, dependencies) {
         // the transport itself is intentionally not aborted. That is not an
         // upstream health failure and must retain cancellation semantics.
         const failure = !task.cancelled ? this.recordFail(error, task) : null;
-        appendChatMessage(AUX_SESSION_ID, {
+        await appendChatMessage(AUX_SESSION_ID, {
           role: 'user',
           content: task.prompt,
           ts: task.ts,
@@ -543,7 +543,7 @@ function mountAuxGoalRoutes(app, dependencies) {
           wireApi: task._wireApi || null,
           transport: 'directHttp',
         });
-        appendChatMessage(AUX_SESSION_ID, {
+        await appendChatMessage(AUX_SESSION_ID, {
           role: 'assistant',
           content: `[ERROR] ${message}`,
           ts: Date.now(),

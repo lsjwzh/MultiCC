@@ -539,13 +539,17 @@ test('core runner covers every selected path and expands declared variants', () 
   // 临时数据根与固定种子随机序列比较旧运行时与 RustChatHistoryRuntime，不访问
   // 端口、真实账号或用户数据，登记核心确定性层：419 entries、345 deterministic、
   // 391 commands（388 Node entries）。
-  assert.equal(core.length, 419, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 419);
+  // The egress-fetch suite binds only loopback proxy/listener sockets and uses
+  // fake provider bindings; it never dials the public network or reads account
+  // state. Re-audited as deterministic core: 420 entries, 346 deterministic,
+  // 392 commands (389 Node entries).
+  assert.equal(core.length, 420, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 420);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 345);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 346);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -555,8 +559,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 391,
-    '388 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 392,
+    '389 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

@@ -12,7 +12,7 @@ use napi::{
 };
 use napi_derive::napi;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     ffi::CStr,
 };
@@ -232,11 +232,20 @@ fn drop_thinking_copies(value: L<'_>) -> Result<L<'_>> {
     Ok(value)
 }
 
+#[derive(Clone)]
+struct PendingAppend {
+    session: Value,
+    messages: Value,
+    event: Value,
+    after: Value,
+}
 #[napi]
 pub struct RustChatHistory {
     values: Values,
     cache: RefCell<HashMap<JsString, Value>>,
     missing_ids: RefCell<HashSet<JsString>>,
+    pending_appends: RefCell<HashMap<u64, PendingAppend>>,
+    next_append_id: Cell<u64>,
 }
 struct History<'a> {
     owner: &'a RustChatHistory,
@@ -437,7 +446,7 @@ impl<'a> History<'a> {
         }
         Ok(())
     }
-    fn append(&self, session: L<'a>, value: L<'a>, after: L<'a>) -> Result<L<'a>> {
+    fn append_values(&self, session: L<'a>, value: L<'a>) -> Result<(L<'a>, L<'a>, L<'a>)> {
         if !value.truthy()? || value.kind()? != sys::ValueType::napi_object {
             return Err(value.type_error("[session] chat message must be an object"));
         }
@@ -477,21 +486,105 @@ impl<'a> History<'a> {
             ],
             messages,
         )?;
-        self.persist(
-            session,
-            messages,
-            object(
-                message,
-                &[
-                    (c"type", text(message, "append")?),
-                    (c"deduplicated", boolean(message, dedup)?),
-                    (c"dropped", result.get(c"dropped")?),
-                    (c"message", result.get(c"message")?),
-                ],
-            )?,
-            after,
+        let event = object(
+            message,
+            &[
+                (c"type", text(message, "append")?),
+                (c"deduplicated", boolean(message, dedup)?),
+                (c"dropped", result.get(c"dropped")?),
+                (c"message", result.get(c"message")?),
+            ],
         )?;
+        Ok((messages, result, event))
+    }
+    fn append(&self, session: L<'a>, value: L<'a>, after: L<'a>) -> Result<L<'a>> {
+        let (messages, result, event) = self.append_values(session, value)?;
+        self.persist(session, messages, event, after)?;
         Ok(result)
+    }
+    fn prepare_append(&self, session: L<'a>, value: L<'a>, after: L<'a>) -> Result<L<'a>> {
+        let (messages, _result, event) = self.append_values(session, value)?;
+        let messages_json = stringify(messages)?
+            .string()?
+            .ok_or_else(|| Error::from_reason("history snapshot serialization is not a string"))?
+            .to_string_lossy();
+        let session = string(session)?;
+        let payload = object(self.anchor, &[(c"sessionId", session)])?;
+        payload.spread_from(event)?;
+        let event = payload;
+        let next = self
+            .owner
+            .next_append_id
+            .get()
+            .checked_add(1)
+            .ok_or_else(|| Error::from_reason("prepared history append identifiers exhausted"))?;
+        self.owner.next_append_id.set(next);
+        self.owner.pending_appends.borrow_mut().insert(
+            next,
+            PendingAppend {
+                session: self.owner.values.capture(self.env, session)?,
+                messages: self.owner.values.capture(self.env, messages)?,
+                event: self.owner.values.capture(self.env, event)?,
+                after: self.owner.values.capture(self.env, after)?,
+            },
+        );
+        object(
+            self.anchor,
+            &[
+                (c"operationId", number(self.anchor, next as f64)?),
+                (c"messagesJson", text(self.anchor, &messages_json)?),
+                (c"messages", clone_json(messages)?),
+            ],
+        )
+    }
+    fn commit_append(&self, operation_id: L<'a>) -> Result<L<'a>> {
+        let id = operation_id.number()? as u64;
+        let pending = self.owner.pending_appends.borrow_mut().remove(&id);
+        let Some(pending) = pending else {
+            return boolean(self.anchor, false);
+        };
+        let prepared = (|| -> Result<(L<'a>, L<'a>, L<'a>, JsString)> {
+            let session = self
+                .owner
+                .values
+                .read(self.env, self.anchor, &pending.session)?;
+            let messages = self
+                .owner
+                .values
+                .read(self.env, self.anchor, &pending.messages)?;
+            let event = self
+                .owner
+                .values
+                .read(self.env, self.anchor, &pending.event)?;
+            let after = self
+                .owner
+                .values
+                .read(self.env, self.anchor, &pending.after)?;
+            let session_key = key(session)?;
+            Ok((messages, event, after, session_key))
+        })();
+        let (messages, event, after, session_key) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.owner.pending_appends.borrow_mut().insert(id, pending);
+                return Err(error);
+            }
+        };
+        self.owner.missing_ids.borrow_mut().remove(&session_key);
+        if let Err(error) = self.set_cache(session_key, messages) {
+            self.owner.pending_appends.borrow_mut().insert(id, pending);
+            return Err(error);
+        }
+        // The durable write and cache publication are already complete. A
+        // notification adapter failure must not turn a committed append into a
+        // false verdict that makes the caller write the same row again.
+        let _ = self.emit(event, after);
+        boolean(self.anchor, true)
+    }
+    fn discard_append(&self, operation_id: L<'a>) -> Result<()> {
+        let id = operation_id.number()? as u64;
+        self.owner.pending_appends.borrow_mut().remove(&id);
+        Ok(())
     }
     fn timestamp(&self, message: L<'a>) -> Result<()> {
         if !message.get(c"ts")?.truthy()? {
@@ -869,6 +962,20 @@ impl<'a> History<'a> {
                     },
                 )
             }
+            "prepareAppend" => {
+                let opts = args.element(2)?;
+                let after = if opts.undefined()? {
+                    self.anchor.from_value(&J::Undefined)?
+                } else {
+                    opts.get(c"afterCommit")?
+                };
+                self.prepare_append(session, value, after)
+            }
+            "commitAppend" => self.commit_append(session),
+            "discardAppend" => {
+                self.discard_append(session)?;
+                self.anchor.from_value(&J::Undefined)
+            }
             "append" | "upsertInterim" | "replace" | "remove" => {
                 let opts = args.element(2)?;
                 let opts = if opts.undefined()? {
@@ -896,6 +1003,8 @@ impl RustChatHistory {
             values: Values::new(L::new(&env, anchor))?,
             cache: RefCell::default(),
             missing_ids: RefCell::default(),
+            pending_appends: RefCell::default(),
+            next_append_id: Cell::new(0),
         })
     }
     #[napi]

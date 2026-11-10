@@ -48,14 +48,14 @@ function fixture(overrides = {}) {
   return { host, states, messages, events, projected, runTurns, records };
 }
 
-test('task boundary and inherited events stay on the current task until a new id arrives', () => {
+test('task boundary and inherited events stay on the current task until a new id arrives', async () => {
   const { host, states, messages, events } = fixture();
   const state = states.get('worker');
   const first = host.beginTurn(state, {
     id: 'tsk-one', start: true, source: 'task-board', text: 'one',
   });
   assert.deepEqual(first, { taskId: 'tsk-one', boundaryChanged: true, detached: false });
-  host.appendMessage('worker', { role: 'assistant', content: 'reply' });
+  await host.appendMessage('worker', { role: 'assistant', content: 'reply' });
   host.broadcast('worker', { type: 'tool_use', name: 'Read' });
   assert.equal(messages[0].taskId, 'tsk-one');
   assert.equal(events[0].event.taskId, 'tsk-one');
@@ -68,7 +68,7 @@ test('task boundary and inherited events stay on the current task until a new id
   assert.deepEqual(second, { taskId: 'tsk-two', boundaryChanged: true, detached: false });
 });
 
-test('a post-append projection exception cannot erase a confirmed history write', () => {
+test('a post-append projection exception cannot erase a confirmed history write', async () => {
   for (const failingBoard of [
     () => { throw new Error('sensitive board error'); },
     () => ({ onMessagePersisted() { throw new Error('sensitive projection error'); } }),
@@ -82,23 +82,35 @@ test('a post-append projection exception cannot erase a confirmed history write'
     const warnings = [];
     try {
       console.warn = message => warnings.push(message);
-      assert.equal(host.appendMessage('worker', { role: 'assistant', content: 'done' }), true);
+      assert.equal(await host.appendMessage('worker', { role: 'assistant', content: 'done' }), true);
     } finally { console.warn = originalWarn; }
     assert.equal(writes, 1);
     assert.equal(warnings.length, 1);
     assert.doesNotMatch(warnings[0], /sensitive/);
   }
   const { host } = fixture({ append: () => { throw new Error('not persisted'); } });
-  assert.throws(() => host.appendMessage('worker', { role: 'assistant' }), /not persisted/);
+  await assert.rejects(host.appendMessage('worker', { role: 'assistant' }), /not persisted/);
 });
 
-test('an untracked dispatch detaches from the prior task and survives history restore', () => {
+test('the synchronous door uses the dedicated durable port', () => {
+  const asyncCalls = [];
+  const syncCalls = [];
+  const { host } = fixture({
+    append: (_sessionId, message) => { asyncCalls.push(message); return Promise.resolve(true); },
+    appendSync: (_sessionId, message) => { syncCalls.push(message); return true; },
+  });
+  assert.equal(host.appendMessageSync('worker', { role: 'assistant', content: 'final' }), true);
+  assert.equal(asyncCalls.length, 0);
+  assert.equal(syncCalls.length, 1);
+});
+
+test('an untracked dispatch detaches from the prior task and survives history restore', async () => {
   const { host, states, messages } = fixture();
   const state = states.get('worker');
   host.beginTurn(state, {
     id: 'tsk-board', start: true, source: 'task-board', text: 'board task',
   });
-  host.appendMessage('worker', {
+  await host.appendMessage('worker', {
     role: 'user',
     content: 'board task',
     ...host.messageMetadata({
@@ -108,12 +120,12 @@ test('an untracked dispatch detaches from the prior task and survives history re
 
   const detached = host.beginTurn(state, {}, { detach: true });
   assert.deepEqual(detached, { taskId: null, boundaryChanged: true, detached: true });
-  host.appendMessage('worker', {
+  await host.appendMessage('worker', {
     role: 'user',
     content: 'A marker dispatch',
     ...host.messageMetadata({}, null, { detached: true }),
   });
-  host.appendMessage('worker', { role: 'assistant', content: 'A result' });
+  await host.appendMessage('worker', { role: 'assistant', content: 'A result' });
 
   assert.equal(state._currentTaskId, null);
   assert.equal(messages.at(-2).taskDetached, true);
@@ -184,7 +196,7 @@ test('Commander input routes once, persists a standard source message, and emits
   assert.equal(messages.length, 1, 'replayed client message is not persisted twice');
 });
 
-test('task-board Commander ingress persists and broadcasts the original source exactly once', () => {
+test('task-board Commander ingress persists and broadcasts the original source exactly once', async () => {
   const { host, states, messages, events } = fixture();
   states.set('commander', { clients: new Set(['commander-client']), _currentTaskId: null });
   const input = {
@@ -199,7 +211,7 @@ test('task-board Commander ingress persists and broadcasts the original source e
     operationId: 'op-board',
   };
 
-  assert.deepEqual(host.recordCommanderRoute(input), { ok: true, deduplicated: false });
+  assert.deepEqual(await host.recordCommanderRoute(input), { ok: true, deduplicated: false });
   assert.equal(messages.length, 1);
   assert.equal(messages[0].sessionId, 'commander');
   assert.equal(messages[0].role, 'user');
@@ -211,7 +223,7 @@ test('task-board Commander ingress persists and broadcasts the original source e
   assert.equal(events.at(-1).event.targetSessionId, 'worker');
   assert.equal(events.some(entry => entry.event.type === 'assistant'), false);
 
-  assert.deepEqual(host.recordCommanderRoute(input), { ok: true, deduplicated: true });
+  assert.deepEqual(await host.recordCommanderRoute(input), { ok: true, deduplicated: true });
   assert.equal(messages.length, 1, 'same board client id must not append twice');
 });
 

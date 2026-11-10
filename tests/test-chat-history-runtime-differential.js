@@ -536,18 +536,18 @@ test('追加、任务码、时长、去重与蒸馏批次', async () => {
   await step(pair, 'append assistant without ts', h => h.api.appendMessage('main', messageOf('assistant', 'no stamp')));
   await step(pair, 'append non-object', h => h.api.appendMessage('main', 'not a message'));
   await step(pair, 'append null', h => h.api.appendMessage('main', null));
-  await step(pair, 'idFactory throws', h => {
+  await step(pair, 'idFactory throws', async h => {
     h.controls.idFactory = 'throw';
     try {
-      return h.api.appendMessage('main', messageOf('user', 'boom'));
+      return await h.api.appendMessage('main', messageOf('user', 'boom'));
     } finally {
       h.controls.idFactory = 'ok';
     }
   });
-  await step(pair, 'write failure', h => {
+  await step(pair, 'write failure', async h => {
     h.controls.failWrite = new Error('history write failed');
     try {
-      return h.api.appendMessage('main', messageOf('user', 'will fail'));
+      return await h.api.appendMessage('main', messageOf('user', 'will fail'));
     } finally {
       h.controls.failWrite = null;
     }
@@ -565,53 +565,53 @@ test('追加、任务码、时长、去重与蒸馏批次', async () => {
   await step(pair, 'aux dedup third', h => h.api.appendMessage('aux', messageOf('assistant', 'aux duplicate content long enough')));
 
   // 蒸馏同步抛错 / 异步拒绝都会记日志，并且缓冲仍然被清空。
-  await step(pair, 'distill sync throw', h => {
+  await step(pair, 'distill sync throw', async h => {
     h.controls.distill = 'syncThrow';
     try {
-      return [h.api.appendMessage('dedup', messageOf('assistant', 'sync throw content 123456')), h.api.appendMessage('dedup', messageOf('assistant', 'sync throw content 123456'))];
+      return [await h.api.appendMessage('dedup', messageOf('assistant', 'sync throw content 123456')), await h.api.appendMessage('dedup', messageOf('assistant', 'sync throw content 123456'))];
     } finally {
       h.controls.distill = 'ok';
     }
   });
-  await step(pair, 'distill async reject', h => {
+  await step(pair, 'distill async reject', async h => {
     h.controls.distill = 'reject';
     try {
-      return [h.api.appendMessage('dedup', messageOf('assistant', 'async reject content 1234')), h.api.appendMessage('dedup', messageOf('assistant', 'async reject content 1234'))];
+      return [await h.api.appendMessage('dedup', messageOf('assistant', 'async reject content 1234')), await h.api.appendMessage('dedup', messageOf('assistant', 'async reject content 1234'))];
     } finally {
       h.controls.distill = 'ok';
     }
   });
 
   // 复盘调度：最终、非去重、非 interim 的助手消息触发 setImmediate。
-  await step(pair, 'review scheduled and run', h => {
-    const result = h.api.appendMessage('main', messageOf('assistant', 'final review trigger'));
+  await step(pair, 'review scheduled and run', async h => {
+    const result = await h.api.appendMessage('main', messageOf('assistant', 'final review trigger'));
     h.flushImmediates();
     return result;
   });
-  await step(pair, 'review failure logged', h => {
+  await step(pair, 'review failure logged', async h => {
     h.controls.review = 'throw';
     try {
-      const result = h.api.appendMessage('main', messageOf('assistant', 'final review fails'));
+      const result = await h.api.appendMessage('main', messageOf('assistant', 'final review fails'));
       h.flushImmediates();
       return result;
     } finally {
       h.controls.review = 'ok';
     }
   });
-  await step(pair, 'interim append does not review', h => {
-    const result = h.api.appendMessage('main', messageOf('assistant', 'interim', { _interim: true }));
+  await step(pair, 'interim append does not review', async h => {
+    const result = await h.api.appendMessage('main', messageOf('assistant', 'interim', { _interim: true }));
     h.flushImmediates();
     return result;
   });
   for (const flag of ['cancelled', 'partial', 'error', '_interim']) {
-    await step(pair, `flag ${flag} does not review`, h => {
-      const result = h.api.appendMessage('main', messageOf('assistant', `flagged ${flag}`, { [flag]: true }));
+    await step(pair, `flag ${flag} does not review`, async h => {
+      const result = await h.api.appendMessage('main', messageOf('assistant', `flagged ${flag}`, { [flag]: true }));
       h.flushImmediates();
       return result;
     });
   }
-  await step(pair, 'review after stop is suppressed', h => {
-    const result = h.api.appendMessage('main', messageOf('assistant', 'queued review'));
+  await step(pair, 'review after stop is suppressed', async h => {
+    const result = await h.api.appendMessage('main', messageOf('assistant', 'queued review'));
     h.api.stop();
     h.flushImmediates();
     return [result, h.api.stop()];
@@ -628,17 +628,17 @@ test('服务事件：remove / delete 广播与可见性失效', async () => {
   const [legacyHarness, nativeHarness] = pair;
   for (const h of pair) h.seedSession('clean', {});
 
-  await step(pair, 'append then service remove', h => {
-    h.api.appendMessage('clean', { role: 'user', id: 'a1', content: 'to remove' });
+  await step(pair, 'append then service remove', async h => {
+    await h.api.appendMessage('clean', { role: 'user', id: 'a1', content: 'to remove' });
     return h.api.service.remove('clean', 'a1');
   });
-  await step(pair, 'hide then external visibility delete + session delete', h => {
-    h.api.appendMessage('clean', { role: 'user', id: 'a2', content: 'hide me' });
+  await step(pair, 'hide then external visibility delete + session delete', async h => {
+    await h.api.appendMessage('clean', { role: 'user', id: 'a2', content: 'hide me' });
     h.api.hideMessages('clean', ['a2']);
     const visibilityFile = h.raw.visibilityFileFor('clean');
     if (fs.existsSync(visibilityFile)) fs.rmSync(visibilityFile);
     const deleted = h.api.service.deleteSession('clean');
-    h.api.appendMessage('clean', { role: 'user', id: 'a2', content: 'visible again' });
+    await h.api.appendMessage('clean', { role: 'user', id: 'a2', content: 'visible again' });
     return { deleted, projected: h.api.projectedMessages('clean') };
   });
   const visibilityFile = legacyHarness.raw.visibilityFileFor('clean');
@@ -713,8 +713,8 @@ test('隐藏消息：quiet、非 quiet、失败与未知 id', async () => {
   // 缺少 writeVisibility：旧实现抛 TypeError，原生同样抛出。
   const missingPair = makePair({ dropVisibilityWrite: true });
   for (const h of missingPair) h.seedSession('main', {});
-  await step(missingPair, 'missing writeVisibility', h => {
-    h.api.appendMessage('main', { role: 'user', id: 'x1', content: 'hi' });
+  await step(missingPair, 'missing writeVisibility', async h => {
+    await h.api.appendMessage('main', { role: 'user', id: 'x1', content: 'hi' });
     return h.api.hideMessages('main', ['x1'], { quiet: true });
   });
 });
@@ -935,35 +935,38 @@ test('端口同步重入：广播与蒸馏回调重入运行时', async () => {
     h.seedSession('main', {});
     h.seedSession('dedup', {});
   }
-  await step(pair, 'broadcast reenters runtime scheduling', h => {
+  await step(pair, 'broadcast reenters runtime scheduling', async h => {
     h.controls.onBroadcast = () => {
       h.api.scheduleIncrementalSave('main', { currentAssistantText: 'reentrant long enough text' });
     };
     try {
-      return [h.api.appendMessage('main', messageOf('user', 'reentrant')),
+      return [await h.api.appendMessage('main', messageOf('user', 'reentrant')),
         h.api.hasIncrementalSave('main')];
     } finally {
       h.controls.onBroadcast = null;
     }
   });
-  await step(pair, 'broadcast reenters hideMessages', h => {
-    h.api.appendMessage('main', messageOf('user', 'to hide later'));
+  await step(pair, 'broadcast reenters hideMessages', async h => {
+    await h.api.appendMessage('main', messageOf('user', 'to hide later'));
     h.controls.onBroadcast = () => {
       h.api.hideMessages('main', ['id-1'], { quiet: true });
     };
     try {
-      return h.api.appendMessage('main', messageOf('user', 'reentrant hide'));
+      return await h.api.appendMessage('main', messageOf('user', 'reentrant hide'));
     } finally {
       h.controls.onBroadcast = null;
     }
   });
-  await step(pair, 'distill port reenters appendMessage', h => {
+  await step(pair, 'distill port reenters appendMessage', async h => {
+    let reentrant = null;
     h.controls.onDistill = () => {
-      h.api.appendMessage('main', messageOf('user', 'from distill reentry'));
+      reentrant = h.api.appendMessage('main', messageOf('user', 'from distill reentry'));
     };
     try {
-      h.api.appendMessage('dedup', messageOf('assistant', 'reentrant dup content 1'));
-      return h.api.appendMessage('dedup', messageOf('assistant', 'reentrant dup content 1'));
+      await h.api.appendMessage('dedup', messageOf('assistant', 'reentrant dup content 1'));
+      const result = await h.api.appendMessage('dedup', messageOf('assistant', 'reentrant dup content 1'));
+      if (reentrant) await reentrant;
+      return result;
     } finally {
       h.controls.onDistill = null;
     }
@@ -974,14 +977,14 @@ test('端口同步重入：广播与蒸馏回调重入运行时', async () => {
 // ── 追加：原地写入与克隆隔离 ─────────────────────────────────────────────
 test('appendMessage 原地写入调用者对象，load 返回克隆', async () => {
   const pair = makePair();
-  const captured = await step(pair, 'append mutates the caller message in place', h => {
+  const captured = await step(pair, 'append mutates the caller message in place', async h => {
     h.seedSession('inplace', {
       _currentTaskId: 'task-alpha',
       _activeTurn: { turnId: 'turn-inplace' },
       turnStartedAt: h.controls.clock - 4000,
     });
     const message = messageOf('assistant', 'in place mutation');
-    const appended = h.api.appendMessage('inplace', message);
+    const appended = await h.api.appendMessage('inplace', message);
     const loaded = h.api.load('inplace');
     return {
       appended,
@@ -1058,8 +1061,8 @@ test('clearHistory：keep 边界、interim 尾部、已隐藏、失败与返回�
   await step(pair, 'clear keep larger than view', h => h.api.clearHistory('keepn', { keep: '99' }));
   await step(pair, 'clear keep negative clamps to 0', h => h.api.clearHistory('keepn', { keep: -4 }));
   await step(pair, 'clear keep non-numeric falls back to 0', h => h.api.clearHistory('keepn', { keep: 'abc' }));
-  const interimCleared = await step(pair, 'clear with interim tail keeps the interim', h => {
-    h.api.appendMessage('interim', messageOf('assistant', 'streaming tail', { id: 'interim-live', _interim: true }));
+  const interimCleared = await step(pair, 'clear with interim tail keeps the interim', async h => {
+    await h.api.appendMessage('interim', messageOf('assistant', 'streaming tail', { id: 'interim-live', _interim: true }));
     return h.api.clearHistory('interim', { keep: 0 });
   });
   // 旧实现用整个可见视图（含 _interim 流式尾）计算 retainedCount。
@@ -1067,12 +1070,12 @@ test('clearHistory：keep 边界、interim 尾部、已隐藏、失败与返回�
     assert.equal(outcomeNumber(interimCleared[index], 'removedCount'), 3, `${label}: three completed messages removed`);
     assert.equal(outcomeNumber(interimCleared[index], 'retainedCount'), 1, `${label}: the interim tail is retained`);
   }
-  await step(pair, 'clear after hiding one message', h => {
-    h.api.hideMessages('hidden', ['hidden-1'], { quiet: true });
+  await step(pair, 'clear after hiding one message', async h => {
+    await h.api.hideMessages('hidden', ['hidden-1'], { quiet: true });
     return h.api.clearHistory('hidden', { keep: 0 });
   });
-  await step(pair, 'clear broadcast with displayOnly payload', h => {
-    h.api.appendMessage('keep0', messageOf('user', 'after clear'));
+  await step(pair, 'clear broadcast with displayOnly payload', async h => {
+    await h.api.appendMessage('keep0', messageOf('user', 'after clear'));
     return h.api.clearHistory('keep0', { keep: 0 });
   });
   await step(pair, 'clear durable failure throws and never broadcasts', h => {

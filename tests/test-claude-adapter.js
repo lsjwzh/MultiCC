@@ -149,7 +149,7 @@ test('native bridge maps MultiCC options without making a live request', async (
 
 // Exercise real turn admission/preparation up to the next preparation port;
 // stop there so these identity regressions never start a CLI or contact an API.
-function prepareIdentity({ cli = 'claude', connected = true, nativeId = null, reject = false } = {}) {
+async function prepareIdentity({ cli = 'claude', connected = true, nativeId = null, reject = false } = {}) {
   const noop = () => {};
   const record = { id: 'sdk-identity-test', kind: 'chat', cli, cliSessionId: nativeId };
   const chat = { cli, chatTurnCount: nativeId ? 1 : 0, clients: new Set() };
@@ -167,19 +167,20 @@ function prepareIdentity({ cli = 'claude', connected = true, nativeId = null, re
     turnProgressHeartbeat: { stop: noop },
     logger: { warn: noop, info: noop, error: noop },
     chatBroadcast: noop, emitTurnOutcome: noop, classifyTurnEnd: noop,
+    appendChatMessage: () => true,
     cancelClassify() {
       preparedId = record.cliSessionId;
       throw new Error('identity preparation probe complete');
     },
   });
-  engine.runChatTurn(record.id, 'hello', { taskId: 'task-identity-test' });
-  return { record, preparedId, saved };
+  return engine.runChatTurn(record.id, 'hello', { taskId: 'task-identity-test' })
+    .then(() => ({ record, preparedId, saved }));
 }
 
-test('accepted turns allocate Claude UUIDs after CLI switches and without a WebSocket', t => {
+test('accepted turns allocate Claude UUIDs after CLI switches and without a WebSocket', async t => {
   t.mock.method(console, 'error', () => {});
   for (const connected of [true, false]) {
-    const result = prepareIdentity({ connected });
+    const result = await prepareIdentity({ connected });
     assert.match(result.preparedId || '', UUID_RE, `connected=${connected}`);
     assert.deepEqual(result.saved, [result.preparedId]);
     const invocation = adapter().buildInvocation(envelope({ sessionId: result.preparedId }));
@@ -188,20 +189,20 @@ test('accepted turns allocate Claude UUIDs after CLI switches and without a WebS
   }
 });
 
-test('existing native sessions survive preparation and rejected turns allocate nothing', t => {
+test('existing native sessions survive preparation and rejected turns allocate nothing', async t => {
   t.mock.method(console, 'error', () => {});
   for (const connected of [true, false]) {
-    const resumed = prepareIdentity({ connected, nativeId: SESSION_UUID });
+    const resumed = await prepareIdentity({ connected, nativeId: SESSION_UUID });
     assert.equal(resumed.preparedId, SESSION_UUID);
     assert.deepEqual(resumed.saved, []);
-    const rejected = prepareIdentity({ connected, reject: true });
+    const rejected = await prepareIdentity({ connected, reject: true });
     assert.equal(rejected.record.cliSessionId, null);
     assert.equal(rejected.preparedId, undefined);
     assert.deepEqual(rejected.saved, []);
   }
 });
 
-test('a legacy claude -p session carries its streaming identity into the SDK lane', t => {
+test('a legacy claude -p session carries its streaming identity into the SDK lane', async t => {
   t.mock.method(console, 'error', () => {});
   const record = { id: 'legacy-claude-p', kind: 'chat', cli: 'claude', cliSessionId: null,
     _streamSessionId: SESSION_UUID };
@@ -210,14 +211,14 @@ test('a legacy claude -p session carries its streaming identity into the SDK lan
   // the turn engine: load the record the way boot does before preparing.
   const records = recordsOf([[record.id, record]]);
   assert.equal(records.loadMigrated, true, 'the load normalisation owes one save');
-  const { invocation } = prepareTurn({ record, cwd: '/tmp', history });
+  const { invocation } = await prepareTurn({ record, cwd: '/tmp', history });
   assert.equal(record.cliSessionId, SESSION_UUID, 'the streaming id becomes the SDK identity');
   assert.equal(record._streamSessionId, undefined, 'the retired key is gone');
   assert.deepEqual(invocation.args.slice(1, 3), ['--resume', SESSION_UUID],
     'history-bearing sessions resume the same transcript instead of starting over');
 });
 
-test('source CLI display replies cannot make a new Claude Exp target resume', t => {
+test('source CLI display replies cannot make a new Claude Exp target resume', async t => {
   t.mock.method(console, 'error', () => {});
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-exp-history-unit-'));
   const previousConfig = process.env.CLAUDE_CONFIG_DIR;
@@ -232,7 +233,7 @@ test('source CLI display replies cannot make a new Claude Exp target resume', t 
     for (const nativeId of [null, SESSION_UUID]) {
       const record = { id: 'new-exp-target', kind: 'chat', cli: 'claude-exp', cliSessionId: nativeId,
         pendingCliHandoff: { status: 'pending', toCli: 'claude-exp', reusedTarget: false } };
-      const { invocation, envelope: prepared } = prepareTurn({ record, cwd: '/tmp/exp-history-unit', history, connected });
+      const { invocation, envelope: prepared } = await prepareTurn({ record, cwd: '/tmp/exp-history-unit', history, connected });
       assert.equal(prepared.historyHandle.isFirstTurn, true, `connected=${connected}, reserved=${!!nativeId}`);
       assert.equal(invocation.args[1], '--session-id');
       assert.match(invocation.args[2], UUID_RE);
@@ -242,7 +243,7 @@ test('source CLI display replies cannot make a new Claude Exp target resume', t 
   }
   const reused = { id: 'old-exp-target', kind: 'chat', cli: 'claude-exp', cliSessionId: SESSION_UUID,
     pendingCliHandoff: { status: 'pending', toCli: 'claude-exp', reusedTarget: true } };
-  const { invocation } = prepareTurn({ record: reused, cwd: configDir, history });
+  const { invocation } = await prepareTurn({ record: reused, cwd: configDir, history });
   assert.equal(invocation.args[1], '--resume', 'missing established history must not silently restart');
 });
 

@@ -219,7 +219,42 @@ function createChatHistoryRuntime(rawDeps) {
     return run('lastActivity', sessionId, activeChat);
   }
 
+  const appendQueues = new Map();
+  async function appendOne(sessionId, message) {
+    const prepared = run('prepareAppendMessage', sessionId, message);
+    if (!prepared) return false;
+    try {
+      if (typeof deps.history.writeAsync === 'function') {
+        await deps.history.writeAsync(sessionId, prepared.messagesJson);
+      } else {
+        // Injected legacy ports still expose only the synchronous write. The
+        // production file repository always takes the Promise branch above.
+        deps.history.write(sessionId, prepared.messages);
+      }
+      return run('commitAppendMessage', prepared.operationId);
+    } catch (error) {
+      try { run('discardAppendMessage', sessionId, prepared.operationId, error); } catch (_) {}
+      return false;
+    }
+  }
   function appendMessage(sessionId, message) {
+    const id = String(sessionId);
+    const previous = appendQueues.get(id) || Promise.resolve();
+    // History mutations for one session are ordered in the adapter. Rust owns
+    // the message rules, durable write, cache publication, callbacks and ACK;
+    // this queue only prevents two async filesystem replacements from racing.
+    const current = previous.catch(() => {}).then(() => appendOne(sessionId, message));
+    appendQueues.set(id, current);
+    const clear = () => { if (appendQueues.get(id) === current) appendQueues.delete(id); };
+    current.then(clear, clear);
+    return current;
+  }
+  function appendMessageSync(sessionId, message) {
+    // A synchronous caller cannot join the Promise queue. Letting it write
+    // through the same file while an asynchronous replacement is in flight can
+    // make the older worker overwrite the newer snapshot. Fail closed instead;
+    // once the queue drains this compatibility door remains fully synchronous.
+    if (appendQueues.has(String(sessionId))) return false;
     return run('appendMessage', sessionId, message);
   }
 
@@ -506,7 +541,7 @@ function createChatHistoryRuntime(rawDeps) {
     return run('stop');
   }
 
-  return Object.freeze({
+  const api = {
     appendMessage,
     annotateTurn,
     clearAllIncrementalSaves,
@@ -525,7 +560,17 @@ function createChatHistoryRuntime(rawDeps) {
     scheduleIncrementalSave,
     service,
     stop,
+  };
+  // The Rust chat-event reducer still requires a synchronous final-answer
+  // persistence verdict. Keep that compatibility door explicit until the event
+  // reducer migrates to a Promise-aware ACK.
+  Object.defineProperty(api, 'appendMessageSync', {
+    value: appendMessageSync,
+    enumerable: false,
+    configurable: false,
+    writable: false,
   });
+  return Object.freeze(api);
 }
 
 module.exports = {

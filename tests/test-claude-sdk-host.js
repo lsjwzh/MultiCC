@@ -10,7 +10,7 @@ const providers = require('../src/providers/core');
 const prepareTurn = require('./helpers/claude-turn');
 const { createStreamRouter } = require('../src/chat/stream-router');
 
-test('the real host selects the persistent SDK runner and preserves native session identity', t => {
+test('the real host selects the persistent SDK runner and preserves native session identity', async t => {
   const seen = [];
   t.mock.method(providers, 'applyClaudeProxyEnv', () => {});
   t.mock.method(providers, 'settingsOverrideFor', () => '/isolated/settings.json');
@@ -22,7 +22,7 @@ test('the real host selects the persistent SDK runner and preserves native sessi
     const errors = [];
     const record = { id: 'sdk-host', cli: 'claude-exp', kind: 'chat', cliSessionId: nativeId,
       model: 'claude-sonnet-4-6' };
-    const prepared = prepareTurn({ record, cwd: '/isolated/project', connected: true, stopAtInvocation: false,
+    const prepared = await prepareTurn({ record, cwd: '/isolated/project', connected: true, stopAtInvocation: false,
       hostDeps: {
         chatTurnPreparationRuntime: createTurnRuntimeStore(),
         getPort: () => 3000, getClaudeOfficialViaProxy: () => false,

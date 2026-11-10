@@ -281,6 +281,59 @@ test('增量追加、尾部替换、清空、外部写入与关闭追加差分',
   }
 });
 
+test('async writes commit the full transcript and preserve native write failures', async () => {
+  const harness = build(native);
+  await harness.repository.writeAsync('s', JSON.stringify([rows[0]]));
+  assert.deepEqual(harness.repository.readStrict('s'), [rows[0]]);
+  await harness.repository.writeAsync('s', JSON.stringify(rows));
+  assert.deepEqual(harness.repository.readStrict('s'), rows);
+  assert.equal(fs.readFileSync(abs(harness, 's.json'), 'utf8'),
+    `${JSON.stringify(rows[0])}\n${JSON.stringify(rows[1])}\n`);
+
+  ensureRoot(harness);
+  fs.mkdirSync(abs(harness, 'failing.json'));
+  const reports = [];
+  stateStore.setFailureReporter((error, meta) => reports.push({ error, meta }));
+  try {
+    await assert.rejects(harness.repository.writeAsync('failing', JSON.stringify(rows)), error => {
+      assert.equal(error.name, 'Error');
+      assert.equal(error.code, 'EISDIR');
+      assert.equal(error.errno, -21);
+      assert.equal(error.syscall, 'read');
+      assert.equal(error.path, undefined);
+      assert.equal(error.dest, undefined);
+      return true;
+    });
+  } finally {
+    stateStore.setFailureReporter(null);
+  }
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].meta.operation, 'atomic_write');
+  assert.equal(reports[0].meta.target, abs(harness, 'failing.json'));
+  assert.equal(reports[0].error.code, 'EISDIR');
+  assert.equal(reports[0].error.syscall, 'read');
+});
+
+test('async write failures leave committed history readable and retry from a fresh snapshot', { skip: isRoot() }, async () => {
+  const harness = build(native);
+  await harness.repository.writeAsync('s', JSON.stringify([rows[0]]));
+  chmod(harness, 's.json', 0o400);
+  try {
+    await assert.rejects(harness.repository.writeAsync('s', JSON.stringify(rows)), error => {
+      assert.equal(error.code, 'EACCES');
+      assert.equal(error.syscall, 'open');
+      assert.equal(error.path, abs(harness, 's.json'));
+      return true;
+    });
+  } finally {
+    chmod(harness, 's.json', 0o600);
+  }
+  assert.deepEqual(harness.repository.readStrict('s'), [rows[0]]);
+  assert.equal(await harness.repository.hasPersistedDeliveryAsync('s', 'd'), true);
+  const retried = [rows[0], { ...rows[1], content: 'retry' }];
+  await harness.repository.writeAsync('s', JSON.stringify(retried));
+  assert.deepEqual(harness.repository.readStrict('s'), retried);
+});
 test('文件路径与可见性路径按会话净化规则生成', () => {
   const implementations = pair();
   for (const session of ['../unsafe', '字😀\ud800', '', { toString() { return 'obj:name'; } }]) {

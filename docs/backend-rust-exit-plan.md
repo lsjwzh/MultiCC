@@ -2328,3 +2328,32 @@ Node 保留范围及原因：`chat-history-file-repository.js` 负责把原生�
 完整 `npm test` 的真实退出码为 1；唯一下降门禁是 main 既有的 `tests/test-air-paint-budget.js`，`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`。该文件不在本批修改范围；契约和原生接口已另行用同一产物补跑通过。当前仍未覆盖：`appendMessage` 的异步持久确认、`clearHistory`/context rotate 的异步文件与 git 顺序、进程取消或跨崩溃投递的恰好一次语义。
 
 本批以英文提交合入本地 main，不推送、不重启生产服务；整条聊天历史与宿主端口迁出 Node 后才能声明 Node 后端退出完成。
+
+## 聊天历史异步持久确认迁移（2026-11-10）
+
+本批把 `appendMessage` 从同步布尔确认改成可等待的持久确认。Rust 在 `prepareAppend` 中完成消息打标、规范化、去重、interim 清理和完整快照构造；原生工作线程随后执行原子全量写或共享前缀增量追加，并在成功后由 `commitAppend` 一次性发布缓存、执行 `postPersist`/`afterCommit` 和广播。写盘失败不会发布缓存或回调，调用方得到 `false`，并可用同一逻辑消息重试。增量追加的 `fsync` 失败与本批新增的损坏/失败路径也保持失败关闭。
+
+同一会话的普通 append 在 Node 门面中按 Promise 链 FIFO 串行，不同会话仍可并行；Rust 仍保有待提交快照和操作身份，缓存及通知只在对应写盘完成后前进。用户消息、Aux 历史、通知、取消 partial 保存和持有回合注入均已等待该确认。`task-context-host` 同时提供异步端口和显式同步端口，服务组合分别接线，避免同步 reducer 把 Promise 误当作持久 ACK。
+
+Node 保留范围及原因：
+
+- `src/routes/chat-history.js` 只保留 Promise 队列、HTTP/WS 宿主调用与同步兼容门；消息规则、快照、事务、缓存和通知顺序归 Rust。
+- `src/session/adapters/chat-history-file-repository.js` 只把原生异步结果恢复为 Node 兼容错误和 Promise 边界；文件名、文件协议与实际 IO 归 Rust。
+- `persistFinal`、错误正文、CLI switch、自动路由备注、无人值守 trace、通知兼容分支和关停 partial checkpoint 仍需要同步 verdict，暂时使用非枚举的 `appendMessageSync`。异步队列占用时该入口失败关闭，禁止旧写入覆盖新快照。
+- WS 广播、记忆蒸馏、`projectMessages`、HTTP 路由和 clear/rotate 中的 git 快照仍由 Node 宿主承担；这些是后续迁移边界。
+- 当前保证覆盖进程内存中的存活会话。取消、进程死亡或跨崩溃的“恰好一次”投递仍未承诺；`clearHistory`/context rotate 的异步文件与 git 顺序也未并入本批事务。
+
+提交前复核另外修正了任务分离的异步接线：`visibleHandoff` 现在等待每个目标历史 append 完成，只有返回非 `false` 的行才计入 `landedIds`；目标写入失败时不会提前隐藏源消息。新增行为测试验证所有目标消息落盘后才隐藏源消息，并验证目标写入返回 `false` 时源 transcript 保持不变。
+
+验证使用最终 Rust 产物 `bb56db286986e3ebd7a9016a`，模块为 18,000,752 字节，SHA-256 为
+`dd7a65297c19d389ccc2116fb7be6bbb403fa1662d24bd73b25157359e49ae7a`；源码指纹、来源记录和接口探针一致。
+任务分离专项 28/28，历史、任务上下文和 Claude 接线专项 119/119；安全 1138 通过、0 失败、1 项既有 TODO；
+架构 126/126；契约 131/131；原生接口 256/256。Rust workspace 串行测试 27 个测试目标共 832 项通过、0 失败（core 620/620）。
+源码预算、874 项测试分层、格式、diff、来源/接口预检、治理 20/20 与产物治理均通过。
+
+完整 `npm test` 的真实退出码为 1。其中 `test:core` 的 node:test 统计为 438 项，437 通过、1 失败；
+唯一失败仍是 main 既有的 `tests/test-air-paint-budget.js`：`chat-unattended.css` 的永续 `unat-pulse` 动画修改
+`box-shadow`。该 CSS 与相关功能由最近的 `7b83f852` 引入，不在本批改动范围。完整日志、最终 core/security 日志、
+Rust 串行日志和机器可读收据保存在
+`data/rust-source/bb56db286986e3ebd7a9016a/validation/async-history-append-final/`。本批合入本地 main 后不推送、
+不重启生产服务；整体 Node 后端退出仍未完成。

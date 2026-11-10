@@ -313,6 +313,7 @@ function createChatTurnEngine(deps) {
     buildPlanPrompt,
     markPlanContextReset,
     appendChatMessage,
+    appendChatMessageSync = appendChatMessage,
     loadChatHistory,
     // Read-only transcript view; see the WS replay below for why the cloning
     // load() is the wrong tool for a caller that only measures.
@@ -382,7 +383,7 @@ function createChatTurnEngine(deps) {
   const runnerDeliveryHandoff = deliveryProbeRegistry.lookup;
   const autoProviderRuntime = deps.autoProviderRuntime || createAutoProviderRuntime({
     providers, providerLimitCache, quotaGuard: deps.quotaGuard, logger, isCliAvailable: deps.isCliAvailable, emit: createAutoRouteNotes({ broadcast: chatBroadcast,
-      append: appendChatMessage, records: persistedSessions, save: savePersistedSessionsBestEffort }),
+      append: appendChatMessageSync, records: persistedSessions, save: savePersistedSessionsBestEffort }),
     hasLiveBackgroundTasks: sessionId => {
       try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
       catch (_) { return true; }
@@ -569,7 +570,7 @@ function createChatTurnEngine(deps) {
     clearIncrementalSave: (sessionName) => getChatHistoryRuntime().clearIncrementalSave(sessionName),
     contextTrace: (sessionName, cs) => contextTraceFor(sessionName, cs),
     isMapped: (sessionName, cs) => chatSessions?.get(sessionName) === cs,
-    appendHeldAnswer: (sessionName, message) => appendChatMessage(sessionName, message),
+    appendHeldAnswer: (sessionName, message) => appendChatMessageSync(sessionName, message),
     persistFinal: (sessionName, cs, turn, runner, message, options) => persistFinalAssistantResult(sessionName, cs, turn, runner, message, options),
     recordDurableUsage: (sessionName, runner, usage) => recordDurableTurnUsage(sessionName, runner, usage),
     proxyFailure: (attempt) => attemptRuntime.proxyFailure?.(attempt),
@@ -809,15 +810,13 @@ function createChatTurnEngine(deps) {
     }
   }
 
-  function runChatTurn(sessionName, text, opts = {}) {
+  async function runChatTurn(sessionName, text, opts = {}) {
     getWorkspaceAdmission?.()?.assertPermit(sessionName, opts);
-    const gate = admitRunChatTurn(sessionName, text, opts);
-    return gate && typeof gate.then === 'function'
-      ? gate.then(admission => runAdmittedChatTurn(sessionName, text, opts, admission))
-      : runAdmittedChatTurn(sessionName, text, opts, gate);
+    const gate = await admitRunChatTurn(sessionName, text, opts);
+    return runAdmittedChatTurn(sessionName, text, opts, gate);
   }
 
-  function runAdmittedChatTurn(sessionName, text, opts, admissionGate) {
+  async function runAdmittedChatTurn(sessionName, text, opts, admissionGate) {
     getWorkspaceAdmission?.()?.assertPermit(sessionName, opts);
     if (admissionGate.blocked) {
       logger.warn('chat_turn_rejected_guard', {
@@ -1037,7 +1036,7 @@ function createChatTurnEngine(deps) {
     // durable-presence check runs (falling back to a normal append if the
     // history was cleared in between).
     let userMessageSaved = reexecutePersistedDelivery && deliveryPersisted === true;
-    if (!userMessageSaved) userMessageSaved = appendChatMessage(sessionName, {
+    if (!userMessageSaved) userMessageSaved = await appendChatMessage(sessionName, {
       role: 'user', content: text, ts: Date.now(),
       turnId,
       clientMsgId: clientMsgId || undefined,
@@ -1841,7 +1840,7 @@ function createChatTurnEngine(deps) {
     return recoverDispatchFromHistory(loadChatHistory(operation.spec.chatId), operation);
   }
 
-  function deliverOrchestrationOutbox({ item, sessionId, text, opts }) {
+  async function deliverOrchestrationOutbox({ item, sessionId, text, opts }) {
     // Route by delivery class (provenance decided at the outbox boundary),
     // not by re-inferring the message's nature from individual fields.
     const deliveryClass = opts?.deliveryClass || deliveryClassForItem(item);
@@ -1852,7 +1851,7 @@ function createChatTurnEngine(deps) {
       // rejected as an impostor task message (task_identity_mismatch,
       // silently) because its orchestration taskId does not match the owning
       // shell task.
-      const saved = appendChatMessage(sessionId, {
+      const saved = await appendChatMessage(sessionId, {
         role: 'system',
         content: text,
         ts: Date.now(),
@@ -1872,7 +1871,7 @@ function createChatTurnEngine(deps) {
       // The result sink is the gateway that owns the dispatch (item.sessionId is
       // the operation's resultSessionId), not a hardcoded WeChat thread.
       const gatewaySessionId = sessionId || GATEWAY_ID;
-      const saved = appendChatMessage(gatewaySessionId, {
+      const saved = await appendChatMessage(gatewaySessionId, {
         role: 'assistant',
         content: text,
         ts: Date.now(),
@@ -1936,9 +1935,11 @@ function createChatTurnEngine(deps) {
       onHoldCap: ms => {
         try {
           const text = heldCapText({ minutes: (Number(ms) || 0) / 60_000 });
-          if (appendChatMessage(sessionName, { role: 'system', content: text, ts: Date.now() })) {
-            chatBroadcast?.(sessionName, { type: 'system', subtype: 'notice', message: text });
-          }
+          Promise.resolve(appendChatMessage(sessionName, { role: 'system', content: text, ts: Date.now() }))
+            .then(saved => {
+              if (saved) chatBroadcast?.(sessionName, { type: 'system', subtype: 'notice', message: text });
+            })
+            .catch(() => {});
         } catch (_) {}
       },
       cwd: cs.cwd,

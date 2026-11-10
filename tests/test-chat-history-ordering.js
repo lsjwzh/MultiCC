@@ -198,7 +198,7 @@ function loadComposer(window) {
   return window.MultiCCChatComposer;
 }
 
-function committedEvent(message) {
+async function committedEvent(message) {
   const broadcasts = [];
   const records = new Map([['s1', []]]);
   const history = {
@@ -232,7 +232,7 @@ function committedEvent(message) {
     clearTimeout() {},
     logger: { warn() {} },
   });
-  assert.equal(runtime.appendMessage('s1', { ...message }), true);
+  assert.equal(await runtime.appendMessage('s1', { ...message }), true);
   assert.equal(broadcasts.length, 1);
   return broadcasts[0];
 }
@@ -365,11 +365,11 @@ test('authoritative reconciliation removes stale duplicate DOM ids', () => {
   assert.equal(messagesEl.children[0].textContent, 'canonical');
 });
 
-test('a full chat_msg_meta creates the committed user bubble in another window', () => {
+test('a full chat_msg_meta creates the committed user bubble in another window', async () => {
   const { messagesEl, view } = viewFixture();
   const controller = eventController(view, { currentMsgEl: null, lastUserBubble: null });
   const generation = controller.beginGeneration();
-  const event = committedEvent({
+  const event = await committedEvent({
     role: 'user',
     content: 'sent from the other window',
     clientMsgId: 'client-tab-a',
@@ -390,7 +390,7 @@ test('a full chat_msg_meta creates the committed user bubble in another window',
   assert.deepEqual(view.visibleIds(), [event.message.id]);
   assert.equal(messagesEl.children[0].textContent, 'sent from the other window');
 
-  const assistantEvent = committedEvent({
+  const assistantEvent = await committedEvent({
     role: 'assistant', content: 'not duplicated through metadata', ts: 124,
     token: 'private-assistant-token',
   });

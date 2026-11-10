@@ -38,7 +38,7 @@ test('real Agent SDK creates a fresh target after 34 source replies, then resume
   const record = { id: 'sdk-handoff', kind: 'chat', cli: 'claude-exp', cliSessionId: id,
     model: 'claude-sonnet-4-6', pendingCliHandoff: { status: 'pending', toCli: 'claude-exp', reusedTarget: false } };
   const history = Array.from({ length: 34 }, () => ({ role: 'assistant', content: 'source Claude reply' }));
-  const first = prepareTurn({ record, cwd, history, connected: true, text: 'remember SDK_FIRST_MARKER' });
+  const first = await prepareTurn({ record, cwd, history, connected: true, text: 'remember SDK_FIRST_MARKER' });
   assert.equal(first.envelope.historyHandle.isFirstTurn, true);
   assert.equal(first.invocation.args[1], '--session-id');
 
@@ -56,7 +56,7 @@ test('real Agent SDK creates a fresh target after 34 source replies, then resume
   assert.ok(fs.readdirSync(path.join(configDir, 'projects'), { recursive: true }).some(file => file.endsWith(`${id}.jsonl`)));
 
   // Even a still-pending handoff must resume when an earlier attempt wrote history.
-  const second = prepareTurn({ record: JSON.parse(JSON.stringify(record)), cwd, history, connected: false, text: 'second turn' });
+  const second = await prepareTurn({ record: JSON.parse(JSON.stringify(record)), cwd, history, connected: false, text: 'second turn' });
   assert.equal(second.envelope.historyHandle.isFirstTurn, false);
   assert.equal(second.invocation.args[1], '--resume');
   const resumed = await sdkProcess(second.invocation, cwd, env);
@@ -74,7 +74,7 @@ test('real Agent SDK resumes after first-run max_turns with zero successful host
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'SDK_TOOL_HISTORY_MARKER\n');
   const record = { id: 'sdk-interrupted', kind: 'chat', cli: 'claude-exp', cliSessionId: null,
     model: 'claude-sonnet-4-6' };
-  const first = prepareTurn({ record, cwd, connected: true, text: 'read SDK_INTERRUPTED_MARKER' });
+  const first = await prepareTurn({ record, cwd, connected: true, text: 'read SDK_INTERRUPTED_MARKER' });
   assert.equal(first.invocation.args[1], '--session-id');
   // The retired Goal budget no longer reaches the envelope (maxTurns is 0), so
   // cap the run at the CLI layer to reproduce an interrupted first run. The
@@ -103,11 +103,11 @@ test('real Agent SDK resumes after first-run max_turns with zero successful host
   // host must still resume the native history produced by the failed turn.
   const history = [{ role: 'user', content: 'read SDK_INTERRUPTED_MARKER' }];
   for (const connected of [true, false]) {
-    const recovered = prepareTurn({ record: { ...record }, cwd, history, connected, text: 'finish recovery' });
+    const recovered = await prepareTurn({ record: { ...record }, cwd, history, connected, text: 'finish recovery' });
     assert.equal(recovered.envelope.historyHandle.isFirstTurn, false, `connected=${connected}`);
     assert.deepEqual(recovered.invocation.args.slice(1, 3), ['--resume', id]);
   }
-  const recovery = prepareTurn({ record, cwd, history, text: 'finish recovery' });
+  const recovery = await prepareTurn({ record, cwd, history, text: 'finish recovery' });
   const resumed = await sdkProcess(recovery.invocation, cwd, env);
   assert.equal(resumed.code, 0, resumed.stderr);
   assert.ok(resumed.events.some(e => e.type === 'result' && e.subtype === 'success' && e.session_id === id));

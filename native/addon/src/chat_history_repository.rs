@@ -8,7 +8,10 @@ use crate::{
     node_fs_error,
 };
 use multicc_core::{
-    js::{is_js_whitespace_char, json_parse, JsValue as J, JsValue as SemanticValue},
+    js::{
+        is_js_whitespace_char, json_parse, json_stringify_or_undefined, JsValue as J,
+        JsValue as SemanticValue,
+    },
     state_file,
 };
 use napi::{
@@ -243,6 +246,251 @@ fn corrupt_probe(message: &str) -> HistoryProbeError {
         None,
         None,
     )
+}
+
+#[napi(object)]
+pub struct HistoryWriteError {
+    pub error_type: String,
+    pub message: String,
+    pub code: String,
+    pub errno: Option<i32>,
+    pub syscall: Option<String>,
+    pub path: Option<String>,
+    pub dest: Option<String>,
+    pub operation: Option<String>,
+    pub target: Option<String>,
+}
+
+#[napi(object)]
+pub struct HistoryWriteResult {
+    pub error: Option<HistoryWriteError>,
+}
+
+fn history_path(root: &Path, session_id: &str) -> PathBuf {
+    let safe: String = session_id
+        .encode_utf16()
+        .map(|unit| {
+            if matches!(unit, 0x30..=0x39 | 0x41..=0x5a | 0x61..=0x7a)
+                || unit == u16::from(b'_')
+                || unit == u16::from(b'-')
+            {
+                char::from_u32(u32::from(unit)).unwrap_or('_')
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = if session_id.is_empty() {
+        "_default"
+    } else {
+        &safe
+    };
+    root.join(format!("{}.json", safe))
+}
+
+fn write_error(
+    error_type: &str,
+    message: String,
+    error: Option<&std::io::Error>,
+    syscall: Option<&str>,
+    path: Option<&Path>,
+    dest: Option<&Path>,
+) -> HistoryWriteError {
+    let info = error.map(multicc_core::node_fs_error::classify);
+    HistoryWriteError {
+        error_type: error_type.to_string(),
+        message,
+        code: info
+            .map(|value| value.code.to_string())
+            .unwrap_or_else(|| "CHAT_HISTORY_WRITE".to_string()),
+        errno: info.map(|value| value.errno),
+        syscall: syscall.map(str::to_string),
+        path: path.map(|value| value.to_string_lossy().into_owned()),
+        dest: dest.map(|value| value.to_string_lossy().into_owned()),
+        operation: None,
+        target: None,
+    }
+}
+
+impl HistoryWriteError {
+    fn reported(mut self, operation: &str, target: &Path) -> Self {
+        self.operation = Some(operation.to_string());
+        self.target = Some(target.to_string_lossy().into_owned());
+        self
+    }
+}
+
+fn io_write_error(
+    error: std::io::Error,
+    syscall: &str,
+    path: Option<&Path>,
+    dest: Option<&Path>,
+) -> HistoryWriteError {
+    let message = node_fs_error::failure_message(&error, syscall, path, dest);
+    write_error("Error", message, Some(&error), Some(syscall), path, dest)
+}
+
+fn transcript_bytes(messages_json: &str) -> std::result::Result<Vec<u8>, HistoryWriteError> {
+    let parsed = json_parse(messages_json).map_err(|error| {
+        write_error(
+            "SyntaxError",
+            format!("Invalid history snapshot: {error}"),
+            None,
+            None,
+            None,
+            None,
+        )
+    })?;
+    let SemanticValue::Array(messages) = parsed else {
+        return Err(write_error(
+            "TypeError",
+            "[session] chat history write requires an array".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+    };
+    let mut out = Vec::new();
+    for message in &messages {
+        out.extend_from_slice(json_stringify_or_undefined(message).as_bytes());
+        out.push(b'\n');
+    }
+    Ok(out)
+}
+
+pub struct HistoryWriteJob {
+    root: PathBuf,
+    session_id: String,
+    messages_json: String,
+    can_append: bool,
+}
+
+impl Task for HistoryWriteJob {
+    type Output = HistoryWriteResult;
+    type JsValue = HistoryWriteResult;
+
+    fn compute(&mut self) -> Result<HistoryWriteResult> {
+        let target = history_path(&self.root, &self.session_id);
+        let bytes = match transcript_bytes(&self.messages_json) {
+            Ok(bytes) => bytes,
+            Err(error) => return Ok(HistoryWriteResult { error: Some(error) }),
+        };
+        let (existing, target_exists) = match File::open(&target) {
+            Ok(mut file) => {
+                let mut value = Vec::new();
+                if let Err(error) = file.read_to_end(&mut value) {
+                    return Ok(HistoryWriteResult {
+                        error: Some(
+                            io_write_error(error, "read", None, None)
+                                .reported("atomic_write", &target),
+                        ),
+                    });
+                }
+                (value, true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), false),
+            Err(error) => {
+                return Ok(HistoryWriteResult {
+                    error: Some(
+                        io_write_error(error, "open", Some(&target), None)
+                            .reported("atomic_write", &target),
+                    ),
+                })
+            }
+        };
+        // A new or empty target has no shared durable prefix. Appending there
+        // could expose a partially-created transcript, so use the atomic rewrite.
+        if self.can_append && target_exists && !existing.is_empty() && bytes.starts_with(&existing)
+        {
+            let suffix = &bytes[existing.len()..];
+            let mut options = OpenOptions::new();
+            options.append(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(state_file::FILE_MODE);
+            }
+            let mut file = match options.open(&target) {
+                Ok(file) => file,
+                Err(error) => {
+                    return Ok(HistoryWriteResult {
+                        error: Some(
+                            io_write_error(error, "open", Some(&target), None)
+                                .reported("atomic_write", &target),
+                        ),
+                    })
+                }
+            };
+            if !suffix.is_empty() {
+                if let Err(error) = file.write_all(suffix) {
+                    return Ok(HistoryWriteResult {
+                        error: Some(
+                            io_write_error(error, "write", None, None)
+                                .reported("atomic_write", &target),
+                        ),
+                    });
+                }
+            }
+            if let Err(error) = file.sync_all() {
+                return Ok(HistoryWriteResult {
+                    error: Some(
+                        io_write_error(error, "fsync", None, None)
+                            .reported("atomic_write", &target),
+                    ),
+                });
+            }
+            return Ok(HistoryWriteResult { error: None });
+        }
+        match state_file::write_bytes_atomic_traced(
+            &target,
+            &bytes,
+            state_file::FILE_MODE,
+            state_file::DIR_MODE,
+        ) {
+            Ok(()) => Ok(HistoryWriteResult { error: None }),
+            Err(failure) => {
+                use state_file::WriteStage;
+                let (syscall, path, dest) = match failure.stage {
+                    WriteStage::Mkdir => ("mkdir", Some(failure.path.as_path()), None),
+                    WriteStage::ChmodDir | WriteStage::ChmodTarget => {
+                        ("chmod", Some(failure.path.as_path()), None)
+                    }
+                    WriteStage::OpenTemporary | WriteStage::OpenDirectory => {
+                        ("open", Some(failure.path.as_path()), None)
+                    }
+                    WriteStage::Write => ("write", None, None),
+                    WriteStage::Fsync | WriteStage::FsyncDirectory => ("fsync", None, None),
+                    WriteStage::BeforeRename | WriteStage::Rename => (
+                        "rename",
+                        Some(failure.path.as_path()),
+                        failure.dest.as_deref(),
+                    ),
+                };
+                let mut error = io_write_error(failure.error, syscall, path, dest);
+                error = error.reported(
+                    if failure.stage == WriteStage::Mkdir {
+                        "mkdir"
+                    } else {
+                        "atomic_write"
+                    },
+                    &target,
+                );
+                if failure.stage == WriteStage::Mkdir {
+                    error.message = format!(
+                        "[state-store] mkdir {}: {}",
+                        failure.path.to_string_lossy(),
+                        error.message
+                    );
+                }
+                Ok(HistoryWriteResult { error: Some(error) })
+            }
+        }
+    }
+
+    fn resolve(&mut self, _: Env, output: HistoryWriteResult) -> Result<HistoryWriteResult> {
+        Ok(output)
+    }
 }
 
 fn io_probe(error: std::io::Error, syscall: &str, path: Option<&Path>) -> HistoryProbeError {
@@ -902,6 +1150,11 @@ impl<'a> Repository<'a> {
                 self.write(session, value)?;
                 session.from_value(&J::Undefined)?
             }
+            "invalidateWrite" => {
+                let file = self.path_for(session, false)?;
+                self.forget(&file)?;
+                session.from_value(&J::Undefined)?
+            }
             "deleteSession" => session.from_value(&J::Bool(self.delete(session)?))?,
             "renameSession" => {
                 session.from_value(&J::Bool(self.rename_session(session, value)?))?
@@ -944,6 +1197,19 @@ impl RustChatHistoryRepository {
             root: self.root.clone(),
             session_id,
             delivery_id,
+        })
+    }
+    #[napi]
+    pub fn write_async(
+        &self,
+        session_id: String,
+        messages_json: String,
+    ) -> AsyncTask<HistoryWriteJob> {
+        AsyncTask::new(HistoryWriteJob {
+            root: self.root.clone(),
+            session_id,
+            messages_json,
+            can_append: self.can_append,
         })
     }
     #[napi]

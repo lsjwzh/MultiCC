@@ -68,7 +68,7 @@ test('display clearing and hiding survive restart without changing task evidence
   assert.deepEqual(restarted.runtime.load('s1'), original);
   assert.equal(await restarted.runtime.service.hasPersistedDelivery('s1', 'delivery-1'), true);
   assert.deepEqual(restarted.runtime.paginate('s1', { includeHidden: true, limit: 100 }).messages, original);
-  restarted.runtime.appendMessage('s1', { id: 'u3', role: 'user', content: 'new message' });
+  await restarted.runtime.appendMessage('s1', { id: 'u3', role: 'user', content: 'new message' });
   assert.deepEqual(restarted.runtime.paginate('s1').messages.map(m => m.id), ['u3']);
 });
 
@@ -124,23 +124,26 @@ test('clearing completed messages keeps the ongoing answer and its work state', 
   fx.runtime.stop();
 });
 
-function createMemoryHistory(events, initial = {}) {
+function createMemoryHistory(events, initial = {}, { asyncWrite = false } = {}) {
   const records = new Map(Object.entries(initial).map(([key, value]) => [key, clone(value)]));
   let writeFailure = null;
   const visibility = new Map();
-  return {
+  const pendingWrites = [];
+  function persist(sessionId, messages) {
+    events.push(`write:${sessionId}`);
+    if (writeFailure) {
+      const error = writeFailure;
+      writeFailure = null;
+      throw error;
+    }
+    records.set(String(sessionId), clone(messages));
+  }
+  const history = {
     records,
+    pendingWrites,
     failNextWrite(error) { writeFailure = error; },
     read(sessionId) { return clone(records.get(String(sessionId)) || []); },
-    write(sessionId, messages) {
-      events.push(`write:${sessionId}`);
-      if (writeFailure) {
-        const error = writeFailure;
-        writeFailure = null;
-        throw error;
-      }
-      records.set(String(sessionId), clone(messages));
-    },
+    write(sessionId, messages) { persist(sessionId, messages); },
     readVisibility(sessionId) { return visibility.get(sessionId) || null; },
     writeVisibility(sessionId, value) {
       events.push(`visibility:${sessionId}`);
@@ -149,10 +152,38 @@ function createMemoryHistory(events, initial = {}) {
     },
     deleteSession(sessionId) { return records.delete(String(sessionId)); },
     hasPersistedDelivery(sessionId, deliveryId) {
-      return (records.get(String(sessionId)) || []).some(message =>
+      return (records.get(sessionId) || []).some(message =>
         message.deliveryId === deliveryId || message.clientMsgId === deliveryId);
     },
   };
+  if (asyncWrite) {
+    history.writeAsync = (sessionId, messagesJson) => {
+      events.push(`async-start:${sessionId}`);
+      const entry = {
+        sessionId: String(sessionId),
+        messages: JSON.parse(messagesJson),
+        settle(error = null) {
+          events.push(`async-end:${String(sessionId)}`);
+          if (error) entry.reject(error);
+          else {
+            try {
+              persist(sessionId, entry.messages);
+              entry.resolve();
+            } catch (caught) {
+              entry.reject(caught);
+            }
+          }
+        },
+      };
+      const promise = new Promise((resolve, reject) => {
+        entry.resolve = resolve;
+        entry.reject = reject;
+      });
+      pendingWrites.push(entry);
+      return promise;
+    };
+  }
+  return history;
 }
 
 function createFakeApp() {
@@ -182,7 +213,9 @@ function fixture(overrides = {}) {
   ]);
   const chatState = { cli: 'claude', turnStartedAt: 4500, chatTurnCount: 7 };
   const chatSessions = overrides.chatSessions || new Map([['s1', chatState]]);
-  const history = overrides.history || createMemoryHistory(events, overrides.initial || {});
+  const history = overrides.history || createMemoryHistory(events, overrides.initial || {}, {
+    asyncWrite: overrides.asyncWrite || false,
+  });
   let id = 0;
   const logs = [];
   const deps = {
@@ -266,10 +299,10 @@ test('dependency boundary fails closed before registering routes or timers', () 
   assert.throws(() => fx.runtime.mountRoutes({ get() {} }), /app\.delete/);
 });
 
-test('append broadcasts metadata only after durable write and stamps assistant latency', () => {
+test('append broadcasts metadata only after durable write and stamps assistant latency', async () => {
   const fx = fixture();
   const message = { role: 'assistant', content: 'done', ts: 5000 };
-  assert.equal(fx.runtime.appendMessage('s1', message), true);
+  assert.equal(await fx.runtime.appendMessage('s1', message), true);
   assert.equal(message.id, 'id-1');
   assert.equal(message.durationMs, 500);
   assert.deepEqual(eventNames(fx.events).slice(0, 2), [
@@ -282,7 +315,7 @@ test('append broadcasts metadata only after durable write and stamps assistant l
   assert.equal(eventNames(fx.events).at(-1), 'review:s1');
 });
 
-test('the registry-owned four-character task code reaches append, replay and attribution events', () => {
+test('the registry-owned four-character task code reaches append, replay and attribution events', async () => {
   const fx = fixture({
     initial: { s1: [{ id: 'old', role: 'assistant', content: '旧消息', taskId: 'tsk-old', taskName: '旧任务' }] },
     deps: { taskShortCode: taskId => taskId === 'tsk-new' ? 'N3W1' : '0LD1' },
@@ -291,7 +324,7 @@ test('the registry-owned four-character task code reaches append, replay and att
     'old stored history is enriched without a migration write');
 
   const message = { role: 'user', content: '继续', taskId: 'tsk-new', taskName: '新任务' };
-  assert.equal(fx.runtime.appendMessage('s1', message), true);
+  assert.equal(await fx.runtime.appendMessage('s1', message), true);
   assert.equal(message.taskShortCode, 'N3W1');
   const meta = fx.events.find(event => event?.payload?.type === 'chat_msg_meta')?.payload;
   assert.equal(meta.message.taskShortCode, 'N3W1');
@@ -304,13 +337,13 @@ test('the registry-owned four-character task code reaches append, replay and att
   assert.equal(annotation.messages[0].taskShortCode, 'N3W1');
 });
 
-test('append surfaces answeredQuestionId so multi-window clients can settle the prompt from the message', () => {
+test('append surfaces answeredQuestionId so multi-window clients can settle the prompt from the message', async () => {
   const fx = fixture();
   const message = {
     role: 'user', content: '是', ts: 5000,
     clientMsgId: 'c1', answeredQuestionId: 'usrq-7',
   };
-  assert.equal(fx.runtime.appendMessage('s1', message), true);
+  assert.equal(await fx.runtime.appendMessage('s1', message), true);
   const meta = fx.events
     .find(event => event && event.payload && event.payload.type === 'chat_msg_meta');
   assert.ok(meta, 'expected a chat_msg_meta broadcast');
@@ -318,7 +351,7 @@ test('append surfaces answeredQuestionId so multi-window clients can settle the 
   assert.equal(meta.payload.message.content, '是');
   // The marker is metadata-only and never reaches the model: a plain user
   // message without it projects cleanly too.
-  fx.runtime.appendMessage('s1', { role: 'user', content: 'plain', ts: 5000 });
+  await fx.runtime.appendMessage('s1', { role: 'user', content: 'plain', ts: 5000 });
   const plainMeta = fx.events
     .filter(event => event && event.payload && event.payload.type === 'chat_msg_meta')
     .at(-1);
@@ -345,15 +378,140 @@ test('Aux attribution atomically stamps every message in one turn', () => {
   assert.ok(fx.events.some(event => event?.payload?.type === 'chat_history_annotation'));
 });
 
-test('write failure has no broadcast proof and diagnostics redact paths and credentials', () => {
+test('write failure has no broadcast proof and diagnostics redact paths and credentials', async () => {
   const fx = fixture();
   fx.history.failNextWrite(new Error('token=secret /Users/private/chat.json'));
-  assert.equal(fx.runtime.appendMessage('s1', { role: 'assistant', content: 'lost', ts: 5000 }), false);
+  assert.equal(await fx.runtime.appendMessage('s1', { role: 'assistant', content: 'lost', ts: 5000 }), false);
   assert.deepEqual(eventNames(fx.events), ['write:s1']);
   assert.equal(fx.chatState.lastActivity, undefined);
   assert.equal(fx.logs[0].event, 'chat_history_append_failed');
   assert.equal(fx.logs[0].payload.error, 'chat history operation failed');
   assert.doesNotMatch(JSON.stringify(fx.logs), /secret|\/Users\/private/);
+});
+
+test('async append keeps cache, callbacks and broadcast behind the durable write', async () => {
+  const fx = fixture({
+    asyncWrite: true,
+    initial: { s1: [{ id: 'old', role: 'user', content: 'before' }] },
+  });
+  const promise = fx.runtime.appendMessage('s1', {
+    id: 'new', role: 'assistant', content: 'after durable write', ts: 5000,
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(fx.history.pendingWrites.length, 1);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['old']);
+  assert.deepEqual(fx.runtime.load('s1').map(message => message.id), ['old']);
+  assert.deepEqual(eventNames(fx.events), ['async-start:s1']);
+
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await promise, true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['old', 'new']);
+  assert.deepEqual(fx.runtime.load('s1').map(message => message.id), ['old', 'new']);
+  assert.deepEqual(eventNames(fx.events), [
+    'async-start:s1',
+    'async-end:s1',
+    'write:s1',
+    'broadcast:chat_msg_meta:s1',
+  ]);
+  fx.runtime.stop();
+});
+
+test('async append failure leaves the committed view intact and retries without duplication', async () => {
+  const fx = fixture({
+    asyncWrite: true,
+    initial: { s1: [{ id: 'old', role: 'user', content: 'before' }] },
+  });
+  const message = { id: 'new', role: 'assistant', content: 'retry me', ts: 5000 };
+  const failed = fx.runtime.appendMessage('s1', message);
+  await new Promise(resolve => setImmediate(resolve));
+  const error = Object.assign(new Error('disk full'), {
+    code: 'ENOSPC', errno: -28, syscall: 'write', path: '/private/history.json',
+  });
+  fx.history.pendingWrites[0].settle(error);
+  assert.equal(await failed, false);
+  assert.deepEqual(fx.runtime.load('s1').map(entry => entry.id), ['old']);
+  assert.deepEqual(fx.history.records.get('s1').map(entry => entry.id), ['old']);
+  assert.equal(fx.events.some(entry => typeof entry === 'string' && entry.startsWith('broadcast:')), false);
+  assert.equal(fx.logs.at(-1).event, 'chat_history_append_failed');
+
+  const retried = fx.runtime.appendMessage('s1', message);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fx.history.pendingWrites.length, 2);
+  fx.history.pendingWrites[1].settle();
+  assert.equal(await retried, true);
+  assert.deepEqual(fx.runtime.load('s1').map(entry => entry.id), ['old', 'new']);
+  assert.equal(fx.events.filter(entry => entry === 'broadcast:chat_msg_meta:s1').length, 1);
+  fx.runtime.stop();
+});
+
+test('async appends serialize one session while different sessions write in parallel', async () => {
+  const records = new Map();
+  const starts = [];
+  const active = { now: 0, max: 0 };
+  let releaseBarrier;
+  const barrier = new Promise(resolve => { releaseBarrier = resolve; });
+  const history = {
+    read(sessionId) { return clone(records.get(String(sessionId)) || []); },
+    write(sessionId, messages) { records.set(String(sessionId), clone(messages)); },
+    async writeAsync(sessionId, messagesJson) {
+      starts.push(String(sessionId));
+      active.now += 1;
+      active.max = Math.max(active.max, active.now);
+      if (starts.length === 2) releaseBarrier();
+      await barrier;
+      records.set(String(sessionId), JSON.parse(messagesJson));
+      active.now -= 1;
+    },
+    readVisibility() { return null; },
+    writeVisibility() {},
+    deleteSession(sessionId) { return records.delete(String(sessionId)); },
+    hasPersistedDelivery() { return false; },
+  };
+  const fx = fixture({ history });
+  const first = fx.runtime.appendMessage('s1', { id: 's1-a', role: 'user', content: 'first' });
+  const second = fx.runtime.appendMessage('s1', { id: 's1-b', role: 'assistant', content: 'second' });
+  const other = fx.runtime.appendMessage('s2', { id: 's2-a', role: 'user', content: 'parallel' });
+
+  await barrier;
+  assert.deepEqual(starts, ['s1', 's2']);
+  assert.equal(active.max, 2, 'different sessions must be writing at the same time');
+
+  assert.deepEqual(await Promise.all([first, second, other]), [true, true, true]);
+  assert.deepEqual(records.get('s1').map(entry => entry.id), ['s1-a', 's1-b']);
+  assert.deepEqual(records.get('s2').map(entry => entry.id), ['s2-a']);
+  fx.runtime.stop();
+});
+
+test('the synchronous compatibility door fails closed while the same session is writing', async () => {
+  const fx = fixture({ asyncWrite: true });
+  const first = fx.runtime.appendMessage('s1', {
+    id: 'async-first', role: 'user', content: 'already writing',
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fx.runtime.appendMessageSync('s1', {
+    id: 'sync-raced', role: 'assistant', content: 'must not overwrite', ts: 5000,
+  }), false);
+  assert.deepEqual(eventNames(fx.events), ['async-start:s1']);
+
+  fx.history.pendingWrites[0].settle();
+  assert.equal(await first, true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['async-first']);
+  assert.equal(fx.runtime.appendMessageSync('s1', {
+    id: 'sync-after', role: 'assistant', content: 'safe after drain', ts: 5001,
+  }), true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['async-first', 'sync-after']);
+  fx.runtime.stop();
+});
+
+test('the synchronous compatibility door remains available for final-result acknowledgements', () => {
+  const fx = fixture();
+  assert.equal(fx.runtime.appendMessageSync('s1', {
+    id: 'sync-final', role: 'assistant', content: 'durable now', ts: 5000,
+  }), true);
+  assert.deepEqual(fx.runtime.load('s1').map(message => message.id), ['sync-final']);
+  assert.deepEqual(eventNames(fx.events), ['write:s1', 'broadcast:chat_msg_meta:s1']);
+  fx.runtime.stop();
 });
 
 test('HTTP pagination and delete preserve legacy DTOs, status codes and commit ordering', () => {
@@ -717,7 +875,7 @@ test('incremental saves are single-flight, cancellable and drained on stop', () 
   assert.equal(fx.runtime.scheduleIncrementalSave('s1', state), false);
 });
 
-test('opaque hostile session ids remain inside the repository data root', () => {
+test('opaque hostile session ids remain inside the repository data root', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-chat-history-route-'));
   try {
     const events = [];
@@ -729,7 +887,7 @@ test('opaque hostile session ids remain inside the repository data root', () => 
       chatSessions: new Map([[hostileId, {}]]),
       deps: { chatBroadcast: (sessionId, payload) => events.push([sessionId, payload.type]) },
     });
-    assert.equal(fx.runtime.appendMessage(hostileId, { role: 'user', content: 'safe' }), true);
+    assert.equal(await fx.runtime.appendMessage(hostileId, { role: 'user', content: 'safe' }), true);
     const resolvedRoot = path.resolve(history.root);
     const resolvedFile = path.resolve(history.fileFor(hostileId));
     assert.equal(resolvedFile.startsWith(`${resolvedRoot}${path.sep}`), true);

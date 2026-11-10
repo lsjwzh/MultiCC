@@ -1044,6 +1044,84 @@ impl<'a> Runtime<'a> {
             self.anchor.from_value(&J::Null)?
         })
     }
+    fn prepare_append_message(&self, session: L<'a>, message: L<'a>) -> Result<L<'a>> {
+        if !message.truthy()? || message.kind()? != sys::ValueType::napi_object {
+            return boolean(self.anchor, false);
+        }
+        if !message.get(c"id")?.truthy()? {
+            message.assign(c"id", self.port(c"idFactory", &[])?)?;
+        }
+        if message.get(c"taskId")?.nullish()? {
+            let owner = self.chat_session(session)?;
+            let task = if owner.truthy()? {
+                owner.get(c"_currentTaskId")?
+            } else {
+                self.undefined()?
+            };
+            if task.truthy()? {
+                message.assign(c"taskId", task)?;
+            }
+        }
+        self.stamp_task_code(message)?;
+        if message.get(c"turnId")?.nullish()? {
+            let owner = self.chat_session(session)?;
+            let turn = owner.optional(c"_activeTurn")?.optional(c"turnId")?;
+            if turn.truthy()? {
+                message.assign(c"turnId", turn)?;
+            }
+        }
+        let mut after = self.undefined()?;
+        if message.get(c"role")?.is_string("assistant")? {
+            let stamp = message.get(c"ts")?.explicit_number()?;
+            let at = if stamp.is_finite() && stamp > 0.0 {
+                self.anchor
+                    .global()?
+                    .get(c"Date")?
+                    .construct(&[number(message, stamp)?])?
+            } else {
+                let now = self.port(c"clock", &[])?;
+                self.anchor.global()?.get(c"Date")?.construct(&[now])?
+            };
+            let state = self.chat_session(session)?;
+            if message.get(c"durationMs")?.nullish()? && state.truthy()? {
+                let started = state.get(c"turnStartedAt")?;
+                if started.truthy()? {
+                    let at_ms = at.get(c"getTime")?.call(at, &[])?.number()?;
+                    let elapsed = at_ms - started.number()?;
+                    let value = self
+                        .anchor
+                        .global()?
+                        .get(c"Math")?
+                        .get(c"max")?
+                        .call_plain(&[number(self.anchor, 0.0)?, number(self.anchor, elapsed)?])?;
+                    message.assign(c"durationMs", value)?;
+                }
+            }
+            after = self.bind(self.ports.get(c"afterCommitTick")?, &[state, at])?;
+        }
+        let options = object(self.anchor, &[(c"afterCommit", after)])?;
+        match self.service("prepareAppend", &[session, message, options]) {
+            Ok(prepared) => Ok(prepared),
+            Err(error) => {
+                let value = caught(self.anchor, error)?;
+                self.log_failure("chat_history_append_failed", value, Some(session))?;
+                boolean(self.anchor, false)
+            }
+        }
+    }
+    fn commit_append_message(&self, operation_id: L<'a>) -> Result<L<'a>> {
+        self.service("commitAppend", &[operation_id])
+    }
+    fn discard_append_message(
+        &self,
+        session: L<'a>,
+        operation_id: L<'a>,
+        error: L<'a>,
+    ) -> Result<L<'a>> {
+        let _ = self.service("discardAppend", &[operation_id]);
+        self.log_failure("chat_history_append_failed", error, Some(session))?;
+        boolean(self.anchor, false)
+    }
     fn append_message(&self, session: L<'a>, message: L<'a>) -> Result<L<'a>> {
         if !message.truthy()? || message.kind()? != sys::ValueType::napi_object {
             return boolean(self.anchor, false);
@@ -1371,6 +1449,9 @@ impl<'a> Runtime<'a> {
         let second = args.element(1)?;
         match action {
             "appendMessage" => self.append_message(first, second),
+            "prepareAppendMessage" => self.prepare_append_message(first, second),
+            "commitAppendMessage" => self.commit_append_message(first),
+            "discardAppendMessage" => self.discard_append_message(first, second, args.element(2)?),
             "annotateTurn" => {
                 let patch = args.element(2)?;
                 let patch = if patch.undefined()? {

@@ -26,11 +26,32 @@ function createChatHistoryFileRepository({
     if (error.errno != null) failure.errno = error.errno;
     if (error.syscall) failure.syscall = error.syscall;
     if (error.path) failure.path = error.path;
+    if (error.dest) failure.dest = error.dest;
     return failure;
   }
   return Object.freeze({ root, ...Object.fromEntries(methods.map(method =>
     [method, (...args) => owner.run(anchor, method, args)])),
     readStrict: (sessionId, { allowEmpty = false } = {}) => owner.run(anchor, 'readStrict', [sessionId, allowEmpty]),
+    writeAsync: async (sessionId, messagesJson) => {
+      const id = String(sessionId);
+      try {
+        const result = await owner.writeAsync(id, String(messagesJson));
+        if (result.error) {
+          const failure = asyncFailure(result.error);
+          if (result.error.operation) {
+            reportFailure(failure, {
+              operation: result.error.operation,
+              target: result.error.target || result.error.path || root,
+            });
+          }
+          throw failure;
+        }
+      } finally {
+        // The worker may have changed the file even when result resolution
+        // failed. A stale append ledger is unsafe either way.
+        try { owner.run(anchor, 'invalidateWrite', [id]); } catch (_) {}
+      }
+    },
     hasPersistedDeliveryAsync: async (sessionId, deliveryId) => {
       const identity = String(deliveryId || '');
       if (!identity) return false;

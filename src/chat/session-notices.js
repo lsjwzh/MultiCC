@@ -71,18 +71,26 @@ function createSessionNotices({ appendChatMessage, chatBroadcast, now = Date.now
   // Persist first: a live broadcast that no client happened to receive is the
   // same silence this exists to end, and the append is what a reload shows.
   function say(sessionId, text) {
-    if (!sessionId || typeof appendChatMessage !== 'function') return;
-    if (!appendChatMessage(sessionId, { role: 'system', content: text, ts: now() })) return;
+    if (!sessionId || typeof appendChatMessage !== 'function') return undefined;
+    const saved = appendChatMessage(sessionId, { role: 'system', content: text, ts: now() });
+    if (saved && typeof saved.then === 'function') {
+      return saved.then(ok => {
+        if (ok) chatBroadcast?.(sessionId, { type: 'system', subtype: 'notice', message: text });
+        return ok;
+      });
+    }
+    if (!saved) return false;
     chatBroadcast?.(sessionId, { type: 'system', subtype: 'notice', message: text });
+    return true;
   }
   return {
-    notifyLostMessage({ sessionId, error }) { say(sessionId, lostMessageText(error)); },
+    notifyLostMessage({ sessionId, error }) { return say(sessionId, lostMessageText(error)); },
     notifyStuckDelivery({ sessionId, reason, reasons, waitedMs, heldForBackground = false }) {
-      say(sessionId, heldForBackground
+      return say(sessionId, heldForBackground
         ? heldBackgroundText({ waitedMs })
         : stuckDeliveryText({ reason, reasons, waitedMs }));
     },
-    notifyHoldCap({ sessionId, minutes }) { say(sessionId, heldCapText({ minutes })); },
+    notifyHoldCap({ sessionId, minutes }) { return say(sessionId, heldCapText({ minutes })); },
   };
 }
 

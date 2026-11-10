@@ -185,10 +185,11 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
             && value.sourceSessionId === sessionId && value.sourceMessageId === m.id)
             || targetHistory.some(value => value.sourceSessionId === sessionId && value.sourceMessageId === m.id);
           if (landed) { landedIds.push(m.id); continue; }
-          if (ports.appendHistory(task.sessionId, { ...m, taskId: task.id,
+          const saved = await ports.appendHistory(task.sessionId, { ...m, taskId: task.id,
             sourceSessionId: sessionId, sourceMessageId: m.id,
             contextMessageId: m.contextMessageId || `${sessionId}:${m.id}`,
-            importedBy: suggestion.id, importedAt: Date.now() }) !== false) {
+            importedBy: suggestion.id, importedAt: Date.now() });
+          if (saved !== false) {
             seededMessages += 1;
             landedIds.push(m.id);
           }

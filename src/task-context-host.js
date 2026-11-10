@@ -22,6 +22,7 @@ function createTaskContextHost(options = {}) {
   const {
     getState,
     append,
+    appendSync = append,
     emitClients,
     getTaskBoard,
     containsDelivery,
@@ -36,7 +37,7 @@ function createTaskContextHost(options = {}) {
     noteUnattendedUserMessage = null,
   } = options;
   for (const [name, value] of Object.entries({
-    getState, append, emitClients, getTaskBoard,
+    getState, append, appendSync, emitClients, getTaskBoard,
     containsDelivery, classifyDisplay, randomUUID, getRecord, runTurn,
   })) {
     if (typeof value !== 'function') throw new TypeError(`[task-context-host] ${name} port required`);
@@ -102,10 +103,12 @@ function createTaskContextHost(options = {}) {
     };
   }
 
-  function appendMessage(sessionId, message) {
+  function stampTask(sessionId, message) {
     const state = getState(sessionId);
     if (!message.taskId && state?._currentTaskId) message.taskId = state._currentTaskId;
-    const saved = append(sessionId, message);
+    return state;
+  }
+  function projectSaved(sessionId, message, saved) {
     try {
       const board = getTaskBoard();
       if (saved && board?.onMessagePersisted) board.onMessagePersisted(sessionId, message);
@@ -114,6 +117,17 @@ function createTaskContextHost(options = {}) {
       // into a failed append and cause the caller to write the message again.
       try { console.warn('[multicc/task-context] message projection failed after append'); } catch (_) {}
     }
+  }
+  async function appendMessage(sessionId, message) {
+    stampTask(sessionId, message);
+    const saved = await append(sessionId, message);
+    projectSaved(sessionId, message, saved);
+    return saved;
+  }
+  function appendMessageSync(sessionId, message) {
+    stampTask(sessionId, message);
+    const saved = appendSync(sessionId, message);
+    projectSaved(sessionId, message, saved);
     return saved;
   }
 
@@ -141,7 +155,7 @@ function createTaskContextHost(options = {}) {
     });
   }
 
-  function recordCommanderRoute({
+  async function recordCommanderRoute({
     sessionName,
     text,
     clientMsgId,
@@ -159,7 +173,7 @@ function createTaskContextHost(options = {}) {
     const deliveryKey = typeof clientMsgId === 'string' ? clientMsgId.trim().slice(0, 128) : '';
     const deduplicated = !!deliveryKey && containsDelivery(sessionName, deliveryKey);
     if (!deduplicated) {
-      const saved = appendMessage(sessionName, {
+      const saved = await appendMessage(sessionName, {
         role: 'user',
         content: String(text || ''),
         ts: Date.now(),
@@ -215,7 +229,7 @@ function createTaskContextHost(options = {}) {
       });
       return { handled: true, ...routed };
     }
-    const recorded = recordCommanderRoute({
+    const recorded = await recordCommanderRoute({
       sessionName,
       text: message.text,
       clientMsgId,
@@ -312,6 +326,7 @@ function createTaskContextHost(options = {}) {
     proposeTaskShellAttribution: (id, receiptId, result) => getTaskShells()?.proposeAttribution(id, receiptId, result) || null,
     settleTaskShellAttribution: (id, receiptId, result) => getTaskShells()?.settleAttribution(id, receiptId, result) || null,
     appendMessage,
+    appendMessageSync,
     beginTurn,
     broadcast,
     continues,
