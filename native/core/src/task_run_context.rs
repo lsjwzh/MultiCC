@@ -120,7 +120,9 @@ fn write_value(value: &JsValue, out: &mut String) {
         JsValue::String(units) => out.push_str(&json_quote(units)),
         JsValue::Bytes(bytes) => {
             out.push_str("{\"type\":\"Buffer\",\"data\":");
-            out.push_str(&json_quote(&JsString::from_rust_str(&STANDARD.encode(bytes))));
+            out.push_str(&json_quote(&JsString::from_rust_str(
+                &STANDARD.encode(bytes),
+            )));
             out.push('}');
         }
         JsValue::Date(milliseconds) => match crate::js::date_to_iso_string(*milliseconds) {
