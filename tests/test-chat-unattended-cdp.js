@@ -365,6 +365,62 @@ routes['/unattended-marks-fixture.html'] = {
   </body></html>`,
 };
 
+// 回归：未启用（null）以及任何非 active 状态，已连接的会话输入框必须可用。夹具里没有
+// WS，别的用例里输入框因「未连接」本来就是灰的，看不出「默认被锁」这种回归；这里给
+// 页面一个 OPEN 的假套接字，让 updateUI() 走「已连接」分支再断言。
+test('connected session is NOT locked unless the supervisor is active', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  unattended = null;
+  unattendedPosts.length = 0;
+  await withCdpHarness({ routes, screenshotDir: qaDir() }, async page => {
+    await page.navigate('/chat.html?session=s1');
+    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-idle')`));
+    await page.evaluate(`ws = { readyState: WebSocket.OPEN, send() {}, close() {} }; updateUI();`);
+    const open = () => page.evaluate(`({
+      input: document.getElementById('input').disabled,
+      send: document.getElementById('send-btn').disabled,
+      attach: document.getElementById('attach-btn').disabled,
+      mic: document.getElementById('mic-btn').disabled,
+      barLocked: document.getElementById('input-bar').classList.contains('unattended-locked'),
+      placeholder: document.getElementById('input').placeholder,
+    })`);
+    const none = await open();
+    assert.deepEqual([none.input, none.send, none.attach, none.mic, none.barLocked], [false, false, false, false, false],
+      '未启用：已连接的输入区必须全部可用');
+    assert.equal(none.placeholder, 'Type a message… or paste files here');
+
+    // 只有 active 才锁；其余五个状态（含 achieved）一律不锁。状态走 WS 帧同一个入口。
+    for (const status of ['stopped', 'achieved', 'needs_human', 'exhausted', 'error']) {
+      const state = {
+        status, goal: 'g', criteria: [], maxRounds: 5, rounds: 1, history: [],
+        evaluating: false, pausedBy: status === 'stopped' ? 'user' : null, lastVerdict: null,
+      };
+      await page.evaluate(`chatUnattended.applyState(${JSON.stringify(state)})`);
+      const snap = await open();
+      assert.deepEqual([snap.input, snap.send, snap.attach, snap.mic, snap.barLocked], [false, false, false, false, false],
+        status + '：非 active 不能锁输入');
+    }
+    // 真正的 active 帧才锁；随后回到 null（会话被清空）立刻解开。
+    await page.evaluate(`chatUnattended.applyState(${JSON.stringify({
+      status: 'active', goal: 'g', criteria: [], maxRounds: 5, rounds: 1, history: [],
+      evaluating: false, pausedBy: null, lastVerdict: null,
+    })})`);
+    const active = await open();
+    assert.deepEqual([active.input, active.send, active.attach, active.mic, active.barLocked], [true, true, true, true, true]);
+    await page.evaluate(`chatUnattended.applyState(null)`);
+    const cleared = await open();
+    assert.deepEqual([cleared.input, cleared.send, cleared.attach, cleared.mic, cleared.barLocked], [false, false, false, false, false]);
+
+    // active 才锁，并且回到 stopped 立刻解开。
+    await page.evaluate(`applyUnattendedInputLock(true)`);
+    const locked = await open();
+    assert.deepEqual([locked.input, locked.send, locked.attach, locked.mic, locked.barLocked], [true, true, true, true, true]);
+    await page.evaluate(`applyUnattendedInputLock(false)`);
+    const freed = await open();
+    assert.deepEqual([freed.input, freed.send, freed.attach, freed.mic, freed.barLocked], [false, false, false, false, false]);
+  });
+});
+
 test('marked unattended messages and trace lines render with a badge', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes }, async page => {
