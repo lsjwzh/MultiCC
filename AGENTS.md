@@ -13,6 +13,12 @@
 - 自动提交、合并、初始提交、快照和备份使用同一身份；不得再使用 `multicc@local`、`green@localhost` 或其他临时身份，不得被继承的 Git 作者环境变量覆盖。
 - Agent 手动提交也必须遵守该身份；合并与 CI 对新增提交同时校验作者和提交者，身份不符时停止操作。历史提交不重写，GitHub 推送认证与 Git 提交身份分别管理。
 
+## 内置技能随包发布
+
+- 仓库 `skills/<name>/` 是内置技能的唯一来源：它会随 npm 包、desktop/standalone 打包一起发布，服务启动时由 `installBundledSkills` 覆盖安装到 `~/.agents/skills/`。
+- 改动任一 `skills/<name>/` 的内容，必须在同一次提交里把该目录的 `.skill-version`（整数）递增。版本号不变时已安装机器不会更新，改动只留在仓库里；仅改本机 `~/.agents/skills/` 不算交付。
+- 新技能目录必须同时带数字型 `.skill-version`，否则永远不会被分发（`tests/test-skill-sync.js` 会红）。
+
 ## 后端默认使用 Rust
 
 自 2026-10-22 起，后续新增后端功能以及现有后端代码改进，默认必须使用 Rust；除非有明确的特殊场景，否则不允许继续用 Node.js 实现后端逻辑。最终方向是由 Rust 接管后端，Node.js 仅作为迁移期的兼容层。
