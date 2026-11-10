@@ -61,10 +61,17 @@ class SessionRecordMap extends Map {
 // the Node loader already parsed/migrated (or an array of [id, record] pairs);
 // it is read once and not retained. `shared` is the owner the directory facade
 // and the state bootstrap use too.
+//
+// `loadMigrated` reports that the native load-time normalizer rewrote a live
+// record (`_streamSessionId` -> `cliSessionId` for the claude lane, M4), so the
+// host knows one boot save is owed. That normalization is Rust's: no Node code
+// decides it any more.
 function createSessionRecords(source, shared) {
   if (!shared || !shared.native) throw new TypeError('session record owner is required');
   const records = new SessionRecordMap(shared);
-  if (source) shared.native.init(source instanceof Map ? source.entries() : source);
+  records.loadMigrated = source
+    ? shared.native.init(source instanceof Map ? source.entries() : source) === true
+    : false;
   return records;
 }
 

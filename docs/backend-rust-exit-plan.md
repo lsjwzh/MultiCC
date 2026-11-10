@@ -1866,3 +1866,219 @@ run but the task-shell scheduler never emits `session_queue completed` for the
 second turn because classification has no aux provider in that isolated root).
 That is a pre-existing red unrelated to this batch, so the file was left
 untouched.
+
+## Held-turn redesign: settlement is a uuid fact, not a counter (2026-11-10)
+
+Spec `data/plans/held-turn-fixes-20261110.md`, review repros under
+`data/plans/repros/` (`repro_hold.js` H1, `repro_dup.js` H2, `repro_c5.js` M2).
+Base `abb72cf4`. The user's rule, from a live screenshot: while background work
+a turn started is still alive, that turn is still the current turn; a message
+typed into the chat box must be answered inside it, not queue behind it with
+"workspace occupied and no turn is running". The previous batch kept the hold
+but settled injections by decrementing a counter on *any* result, which lost
+the answer, re-wrote messages on retry and let the injected answer become the
+turn's outcome. This batch replaces counting with the attribution facts the CLI
+actually reports, and moves the whole state machine into one Rust owner.
+
+### Observed SDK facts (real bundled Claude Code binary, SDK 0.3.317; recorded before any code change)
+
+Harness: a temp HOME/configDir fixture with a fake upstream, the real
+`RustClaudeLane` (bundled binary), a background `run_in_background` Bash.
+Output `/tmp/held-observe.out`; notes `/tmp/held-fix-notes.md`.
+
+- The main turn result carries the opening prompt's uuid:
+  `{"type":"result","subtype":"success","result":"sdk-answer-2","uuid":"4711d5ca-...","user_message_uuid":"bc31f8ad-...","user_message_uuids":["bc31f8ad-..."],"is_error":false}`
+- A result answering ONE injected user message carries the uuid the injector
+  stamped on the stdin line (`user_message_uuid` and `user_message_uuids`), and
+  no `origin`:
+  `{"type":"result",...,"result":"sdk-answer-3","user_message_uuid":"98973382-...","user_message_uuids":["98973382-..."],"is_error":false}`
+- TWO messages written back-to-back while held are coalesced into ONE result:
+  `{"type":"result",...,"result":"sdk-answer-5","user_message_uuid":"da77c62a-...","user_message_uuids":["663fac7d-...","da77c62a-..."],"is_error":false}`
+  `user_message_uuid` is the LAST uuid; `user_message_uuids` lists BOTH, in
+  order. Queued messages are therefore NOT answered one result each.
+- A self-wake result (background job finished) carries no uuid fields and a
+  task-notification origin:
+  `{"type":"result",...,"result":"sdk-answer-6","origin":{"kind":"task-notification","producer":"session-task","runId":"..."},"origin_kind":"task-notification","is_error":false}`
+- The only user-role events observed are tool_result echoes (uuid present); the
+  injected prompt is not echoed back as a `user` message.
+
+So the attribution fields ARE emitted and settlement is a membership test:
+a result settles exactly those pending injections whose uuid appears in
+`user_message_uuids` (falling back to `user_message_uuid`); a
+`task-notification` self-wake never settles anything. The spec's "one result per
+queued message" was an assumption; the binary coalesces, and the implementation
+settles every covered injection from that one result, in order.
+
+### State machine (owner: `native/core/src/background_hold.rs`, wrapper `native/addon/src/background_hold.rs`)
+
+`Hold { quiet_ms, max_ms, held, latest, last_wake, busy, quiet_since, done,
+pending, written, exchanges, cap_noted }`.
+
+- `start(main_result, backgroundActive)` holds only when the event is the main
+  result (`isMainResult` port) AND background work is alive. The cap timer is
+  armed for visibility, never for release (`cap_reached` answers true once;
+  `cap_noted` latches it).
+- `observe(event)`: a self-wake (origin task-notification / the existing
+  monitor-handoff classifier) becomes the turn's own latest outcome and never
+  touches `pending`; an answer whose uuid list contains a pending uuid settles
+  exactly those pending injections into `exchanges` (identity, uuid, result,
+  usage, cost, is_error) and removes them from `pending`. Any result that
+  carries an injected uuid is that message's answer and never the turn's own
+  outcome; a duplicate of an already-settled uuid is swallowed without adding a
+  second exchange.
+- `tick(now, backgroundActive)`: releases only after `quiet_ms` with no
+  background, no pending injection and no held event. The cap releases nothing.
+- `begin_injection(identity, uuid)` registers BEFORE the stdin write and answers
+  `write | append_only | refuse`; `abort_injection(identity)` releases a failed
+  write. Written identities are remembered with their bound uuid
+  (`REMEMBERED_LIMIT = 1024`, drop-oldest).
+- Release event = the turn's own outcome (`latest`, else `last_wake`) plus
+  `injected_exchanges[]`, `injected_usage` and `injected_cost_usd`. The usage
+  recorder adds `injected_usage` to the durable usage
+  (`usage_with_injected` in `native/addon/src/chat_events.rs`).
+- `may_inject(InjectFacts)` is the single predicate over
+  `{held, user_typed, attributable, turn_active, process_alive, process_stale,
+  process_contract, wanted_contract, delivery_settled}`; refusal reasons in
+  order: `not_held`, `no_active_turn`, `not_user_typed`, `unattributable_lane`,
+  `process_not_alive`, `process_changed`, `spawn_contract_changed`,
+  `already_delivered`.
+- `process_stale(running, wanted)` is the ONE staleness comparison over
+  `{routeUrl, routeToken, fingerprint, vaultDigest}`, returning
+  `{routeChanged, configChanged, vaultStale, stale}`; the stream pump and the
+  injectable predicate both call it (`M3`).
+
+Node is wiring only: `src/chat/background-hold.js` (129 lines) constructs the
+owner and forwards ports; `src/chat/held-turn-injection.js` (145 lines) projects
+host objects into facts, registers the delivery, writes the stdin line and
+appends the history row. The `remembered` Set, `MAX_REMEMBERED`,
+`isDirectUserTyped`, `injectionInFlight` and the retry rule are deleted from
+Node (47 added / 69 removed). The plain stream-json lanes (`src/chat/chat-stream.js`)
+lose their injection attempt and `injectionInFlight` too: they write a user line
+without a uuid and their results carry no `user_message_uuid(s)`, so an injected
+message there could never be settled. Their `heldTurn()` reports
+`attributable: false`, the Rust predicate refuses with `unattributable_lane`,
+and the typed message stays on the normal waiting path until the turn ends
+while the hold itself still keeps the turn open for its background work.
+
+### Findings closed (each fix landed as a failing test first)
+
+- H1 (any result decremented the counter): settlement is now uuid membership;
+  a self-wake while an injection is pending does not release the turn.
+  Tests: "an injected message is settled by its own answer, never by a
+  self-wake" (`tests/test-background-hold-differential.js`), repro_hold now
+  prints "not released (the typed answer is still pending) - FIXED".
+- H2 (retry re-wrote the message): `beginInjection` registers the identity and
+  uuid before the write; a retry gets `append_only` and only re-appends the
+  row; a failed write calls `abortInjection`. Tests: "exactly-once: a retry
+  appends the row only, an abort releases the identity",
+  "a retry after write/row failure never writes stdin twice (H2)"
+  (`tests/test-held-turn-injection.js`); repro_dup prints
+  `attempt2 {"delivered":true,...} writes=1 appended=1`.
+- M1 (availability read PATH `claude`): `server.js` now reports `claude`
+  availability through `bundledClaudeCodeBinary() != null`, the same function
+  spawn uses (`claudeLaneAvailable`); a machine without a global `claude` still
+  reports available, a missing bundled binary reports unavailable.
+- M2 (injected answer became the turn result/usage): the turn outcome is the
+  main result / its self-wakes only; the injected answer is a separate
+  `InjectedExchange`, its usage carried on the release event and folded into
+  durable usage. Tests: "two queued messages are settled by one coalesced
+  answer, in order" (differential), repro_c5 prints "turn result kept: true
+  injected kept separate: true".
+- M3 (spawn digest ignored route/credential changes): one Rust
+  `process_stale` feeds both the pump and the predicate; `heldTurn()` reports
+  `stale` from the latest desired config; a stale process waits for the next
+  turn (`process_changed`). Tests: the predicate table and
+  `live({stale:true}) -> 'process_changed'` in
+  `tests/test-held-turn-injection.js`; the pump uses the same call.
+- M4 (`_streamSessionId -> cliSessionId` was Node logic): the native session
+  record owner normalizes at load (`normalize_claude_native_id` in
+  `native/addon/src/session_records.rs`), `init` returns whether it changed
+  anything, `records.loadMigrated` exposes it and `server.js` sets
+  `_state.needsSave` so exactly one boot save follows. The Node block in
+  `turn-engine.js` is deleted. Tests: "load-time normalisation migrates the
+  retired claude -p identity once (M4)"
+  (`tests/test-session-records-durable.js`); the adapter test that used to pin
+  the Node rewrite now loads the record through the owner first
+  (`tests/test-claude-adapter.js`, "a legacy claude -p session carries its
+  streaming identity into the SDK lane").
+- L2 (cap notice was console-only): `onCapReached` now writes one persisted
+  system row and broadcasts one notice per held turn (`heldCapText` /
+  `notifyHoldCap` in `src/chat/session-notices.js`, wired as `onHoldCap` in
+  `turn-engine.js`). The cap never releases. Tests: "the cap warns instead of
+  releasing" (differential), "the hold cap is one visible notice, never a
+  release" (held-turn-injection).
+- Screenshot case: a background Agent (`local_agent`) keeps the turn open and a
+  typed message is answered inside it, with no queue notice. Test: "real sdk a
+  typed message is answered inside the turn a background Agent holds open"
+  (`tests/test-monitor-admission.js`, real bundled binary).
+
+### Intentional divergences from the frozen oracle (named scenarios)
+
+`tests/test-background-hold-differential.js` keeps the frozen interactive
+oracle and pins the deliberate differences in its header plus four named
+scenarios: (1) the cap warns instead of releasing; (2) an injected message is
+settled by its own answer, never by a self-wake (the oracle's counter); (3) the
+turn outcome is the main result / its self-wakes, and injected answers are
+separate exchanges; (4) two queued messages are settled by one coalesced answer
+in order (observed CLI behaviour; the spec assumed one result per message). The
+oracle is unchanged; `mutations of the frozen oracle are all caught by the
+differential` still runs.
+
+### Files and size
+
+Rust: `native/core/src/background_hold.rs` +560/-67 (1,133 lines, 16 unit
+tests), `native/addon/src/background_hold.rs` +112/-20 (302 lines),
+`native/addon/src/chat_events.rs` +36/-1,
+`native/addon/src/session_records.rs` +31/-2.
+Node: `src/chat/held-turn-injection.js` +47/-69 (the counter, `MAX_REMEMBERED`,
+`isDirectUserTyped` and the retry rule removed; 145 lines),
+`src/chat/claude-sdk-stream.js` +72/-19 (registration before write, one
+staleness call for pump and predicate, `attributable: true`),
+`src/chat/background-hold.js` +27/-9 (pass-through of the new owner calls),
+`src/chat/chat-stream.js` +8/-23 (legacy injection attempt and
+`injectionInFlight` deleted; `attributable: false`),
+`src/chat/turn-engine.js` +16/-11 (M4 block deleted, `onHoldCap` added),
+`src/chat/session-notices.js` +14/-1, `src/chat/stream-router.js` +2/-2,
+`src/session/records.js` +8/-1, `server.js` +15/-1 (M1, M4 boot save).
+Scripts: `scripts/rust-source-cache.js` +28/-6 (capability probe rewritten for
+the new exports and the `attributable` refusal in the same edit),
+`scripts/check-source-line-budget.js` +5/-2 (`server.js` registered at 3,037
+lines / 161,434 bytes, ratcheted).
+Tests: differential +114/-19, held-turn-injection +76/-17, monitor-admission
++35/-2, session-records-durable +28, claude-adapter +5/-0 (the deleted Node
+rewrite's assertion now loads through the owner).
+
+Artifact: fingerprint `047153b8db78edb677eac2ac`, file
+`data/rust-source/047153b8db78edb677eac2ac/darwin-arm64/multicc_core.node`
+(sha256 `b35ade6c74f2fd7f04880c2830cfdee8650c56fedbda47c6fc59dbf40e5b5484`),
+built with `node scripts/ensure-source-rust.js` after the `attributable` fact,
+the duplicate-answer rule and `cargo fmt` reflow.
+
+### Verification
+
+`cargo test --workspace` all green (577 core lib tests plus every other suite),
+`cargo fmt --check` clean after formatting, clippy has no new diagnostics in the
+three touched Rust files (the pre-existing warning classes elsewhere are
+unchanged). Focused JS against the artifact: differential 9/9,
+held-turn-injection 11/11, session-records-durable 12/12, claude-sdk-stream
+15/15, claude-adapter 9/9, monitor-admission 12/12. Repro outputs after the fix:
+`repro_hold.js` - `beginInjection(m1,uuid)` answers
+`{"action":"write","uuid":"1111..."}`, a self-wake leaves `injections: 1` and
+prints "not released (the typed answer is still pending) - FIXED", the answer
+releases with `result:"WAKE"`, `injected_exchanges:[{identity:"m1",result:"USER
+ANSWER",usage:{input_tokens:3},total_cost_usd:0.03}]` and
+`injected_usage:{input_tokens:3}`; `repro_c5.js` - release keeps
+`result:"TASK ANSWER"` with the injected exchange separate ("turn result kept:
+true injected kept separate: true"); `repro_dup.js` - attempt 1
+`{"delivered":false,"reason":"row_not_persisted"} writes=1 appended=0`,
+attempt 2 `{"delivered":true,"identity":"cm-1"} writes=1 appended=1`,
+"DUPLICATE WRITES (must be false): false".
+
+Not verified: no service restart and no real-account end-to-end turn (the
+coordinator restarts), so held-turn behaviour on the live service is proven by
+the real-binary harness (`test-monitor-admission.js`) and the differential, not
+against the user's account. The `_streamSessionId` normalisation was exercised
+only on temp files, not on a copy of the production session store. Queued
+messages were observed coalescing only in the fixture's fake upstream; whether
+a real provider always coalesces back-to-back injections is not proven (the
+settlement rule tolerates both shapes).

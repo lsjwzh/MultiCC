@@ -585,11 +585,22 @@ function cliCommandAvailable(command) {
 
 // Re-resolve when the environment moved: a just-installed CLI must show up.
 const commandsForAvailability = require('./src/cli-adapters/commands').createCommandResolver({ isWindows, seed: cliCommands });
+const { bundledClaudeCodeBinary } = require('./src/cli/claude-bundled-binary');
+
+// The `claude` chat lane runs the BUNDLED engine binary (the Agent SDK's
+// per-platform package), not whatever `claude` on PATH resolves to. Reporting
+// PATH here was wrong in both directions (M1): "missing" for an install that
+// runs fine, "available" for one that would spawn a different engine.
+function claudeLaneAvailable() {
+  try { return bundledClaudeCodeBinary() != null; } catch (_) { return false; }
+}
 
 function cliAvailabilitySummary() {
   const commands = commandsForAvailability();
   const out = {};
-  for (const cli of CLIENT_CHAT_CLIS) out[cli] = { available: cliCommandAvailable(commands[cli]) };
+  for (const cli of CLIENT_CHAT_CLIS) {
+    out[cli] = { available: cli === 'claude' ? claudeLaneAvailable() : cliCommandAvailable(commands[cli]) };
+  }
   return out;
 }
 
@@ -746,6 +757,9 @@ const _state = stateBootstrap.state;
 // the native owner already holds the directory table. Neither source Map remains
 // a second live table.
 const persistedSessions = createSessionRecords(_state.persistedSessions, stateOwner);
+// The native load-time normalizer may have renamed `_streamSessionId` to
+// `cliSessionId` on a live record (M4); the boot save below persists it.
+if (persistedSessions.loadMigrated) _state.needsSave = true;
 const directories = createDirectoryTable(stateOwner);
 mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 

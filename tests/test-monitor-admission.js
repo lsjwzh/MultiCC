@@ -428,14 +428,47 @@ test(`real sdk background Agent finishing after its answer continues that same t
   assert.deepEqual(s.injections, [], 'no 🔇 for a report the turn received');
 });
 
+test(`real sdk a typed message is answered inside the turn a background Agent holds open`, { timeout: 40000 }, async t => {
+  // The screenshot case: a background Agent (local_agent) owns the turn after
+  // its answer, the human types, and the message must be answered INSIDE that
+  // turn — never queued behind it with a "workspace occupied and no turn is
+  // running" notice.
+  const s = await residentSession(t, { main: n => (n === 1 ? backgroundAgent
+    : n === 3 ? { type: 'text', text: 'ANSWER_TO_TYPED_AGENT' } : null), sub: subagentReply });
+  const turn = s.turn('Research in the background');
+  await untilRequests(s, 2);
+  assert.equal(await settled(turn), false, 'the answer is held while the agent runs');
+  const agent = s.broadcasts.find(event => event.type === 'monitor_started' && event.subagent_type === 'general-purpose');
+  assert.ok(agent, 'a local_agent task is started and still alive');
+  const injected = await s.stream.injectHeldTurn(s.name, 'TYPED_WHILE_AGENT', 'typed-while-agent');
+  assert.equal(injected.delivered, true, 'the agent-held turn accepts the message');
+  await untilRequests(s, 3);
+  assert.match(s.main[2], /TYPED_WHILE_AGENT/, 'the message reached the same resident process');
+  await until(() => s.recentEvents.some(event => Array.isArray(event.content)
+    && event.content.some(block => block?.type === 'text' && block.text === 'ANSWER_TO_TYPED_AGENT')),
+  'the injected answer did not stream into the agent-held turn');
+  assert.equal(await settled(turn), false, 'the injected answer does not end the turn');
+  s.go('agent-go');
+  const response = await turn;
+  const result = response.type === 'result' ? response : response.result;
+  assert.equal(s.main.length, 4, 'the agent completion woke the same turn');
+  assert.match(s.main[3], /AGENT_FINAL_REPORT/, 'the last request carries the agent report');
+  assert.match(result.result, /^sdk-answer-\d+$/, 'the turn ends with the answer it received');
+  assert.notEqual(result.result, 'ANSWER_TO_TYPED_AGENT', 'the injected answer is not the turn result');
+  assert.deepEqual(s.injections, [], 'no queued 🔇 for anything this turn received');
+});
+
 test(`real sdk a message typed during the held phase runs inside that same turn`, { timeout: 40000 }, async t => {
   const s = await residentSession(t, { main: n => n === 1 ? slowBash : null });
   const turn = s.turn('Start the background job');
   await untilRequests(s, 2);
   assert.equal(await settled(turn), false, 'the answer is held while the job runs');
   // The human types while the turn is held: the same live process takes it.
-  const injected = s.stream.injectHeldTurn(s.name, 'TYPED_WHILE_HELD');
-  assert.equal(await injected, true, 'the held turn accepts the message');
+  // The delivery identity is registered in Rust before the line is written, so
+  // a retry can never run the same message twice.
+  const injected = await s.stream.injectHeldTurn(s.name, 'TYPED_WHILE_HELD', 'typed-while-held');
+  assert.equal(injected.delivered, true, 'the held turn accepts the message');
+  assert.equal(injected.identity, 'typed-while-held');
   await untilRequests(s, 3);
   assert.match(s.main[2], /TYPED_WHILE_HELD/, 'the message reached the same resident process');
   // Its answer streams into the turn (a normal assistant event), and neither

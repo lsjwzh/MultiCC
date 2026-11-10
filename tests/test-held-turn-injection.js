@@ -7,7 +7,9 @@
 //     (heldTurnInjectable), so a message typed during the held phase reaches
 //     deliver() instead of waiting forever behind the busy gate;
 //   - the write goes into the same live process, the user row is appended with
-//     `heldTurnInjected`, and the outbox item settles exactly once;
+//     `heldTurnInjected`, and the outbox item settles exactly once — the
+//     delivery identity is registered in Rust BEFORE the write, so a retry
+//     after a failed row append re-appends the row and never writes stdin again;
 //   - every refusal reason leaves the old waiting behaviour untouched, and a
 //     message waiting because its spawn contract changed is announced as
 //     waiting for background work — not as a wedged workspace.
@@ -25,7 +27,7 @@ const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
 const {
   createHeldTurnInjection, spawnContractFacts, spawnContractOf, isDirectUserTyped,
 } = require('../src/chat/held-turn-injection');
-const { heldBackgroundText, createSessionNotices } = require('../src/chat/session-notices');
+const { heldBackgroundText, heldCapText, createSessionNotices } = require('../src/chat/session-notices');
 
 const RECORD = {
   cli: 'claude', provider: 'official', providerSelection: { mode: 'auto' },
@@ -46,8 +48,10 @@ const ITEM = {
 function live(overrides = {}) {
   return {
     held: true,
-    injectionInFlight: false,
     alive: true,
+    stale: false,
+    // The SDK lane reports which user message each result answers.
+    attributable: true,
     contract: spawnContractOf(RECORD),
     ...overrides,
   };
@@ -57,24 +61,33 @@ function harness({ liveFacts = live(), record = RECORD, active = true, persisted
   written = true, saved = true, text = 'what is the status?' } = {}) {
   const writes = [];
   const appended = [];
+  const registered = new Set();
   const held = { ...liveFacts };
+  const state = { persisted, saved };
   const injection = createHeldTurnInjection({
     getRecord: id => (id === ITEM.sessionId ? record : null),
     chatStream: {
       heldTurn: id => (id === ITEM.sessionId ? held : null),
-      injectHeldTurn: (id, value) => {
-        writes.push({ id, value, text });
-        if (written === true) held.injectionInFlight = true;
-        return written;
+      // Same contract as the lane: register first, write once per identity, and
+      // answer a retry with 'append_only' without touching stdin.
+      injectHeldTurn: (id, value, identity) => {
+        if (written === false) return { delivered: false, reason: 'write_failed' };
+        if (registered.has(identity)) return { delivered: true, appendOnly: true, identity };
+        registered.add(identity);
+        writes.push({ id, value, identity, text });
+        return { delivered: true, identity };
       },
     },
     isRunActive: id => (id === ITEM.sessionId ? active : false),
-    appendMessage: (id, message) => { appended.push({ id, message }); return saved; },
+    appendMessage: (id, message) => { if (state.saved) appended.push({ id, message }); return state.saved; },
     activeTurnId: () => 'turn-9',
-    hasPersistedDelivery: async () => persisted,
+    hasPersistedDelivery: async () => state.persisted,
     log: () => {},
   });
-  return { injection, writes, appended, held, setHeld: next => Object.assign(held, next) };
+  return { injection, writes, appended, held, registered,
+    setHeld: next => Object.assign(held, next),
+    setPersisted: value => { state.persisted = value; },
+    setSaved: value => { state.saved = value; } };
 }
 
 // ── the persisted facts that decide WHICH process serves a turn ─────────────
@@ -122,6 +135,7 @@ test('a typed message is written into the live process and recorded once', async
   assert.deepEqual(result, { delivered: true, identity: 'cm-1' });
   assert.equal(h.writes.length, 1);
   assert.equal(h.writes[0].value, 'what is the status?');
+  assert.equal(h.writes[0].identity, 'cm-1');
   assert.equal(h.appended.length, 1);
   assert.equal(h.appended[0].id, ITEM.sessionId);
   assert.deepEqual(h.appended[0].message, {
@@ -129,8 +143,9 @@ test('a typed message is written into the live process and recorded once', async
     turnId: 'turn-9', clientMsgId: 'cm-1', heldTurnInjected: true,
   });
   assert.equal(typeof h.appended[0].message.ts, 'number');
-  // The second delivery of the same identity is settled, not written again.
-  h.setHeld({ injectionInFlight: false }); // the answer to the first one landed
+  // Once the durable row exists the same delivery identity is settled: the
+  // predicate refuses it before any write ('already_delivered').
+  h.setPersisted(true);
   const replay = await h.injection.tryInject({
     item: ITEM, sessionId: ITEM.sessionId, text: 'what is the status?', opts: { clientMsgId: 'cm-1' },
   });
@@ -143,7 +158,12 @@ test('every refusal keeps the message waiting and writes nothing', async () => {
   // row lives behind an async port); it is still refused at write time.
   const cases = [
     [live({ held: false }), {}, {}, 'not_held'],
-    [live({ injectionInFlight: true }), {}, {}, 'injection_in_flight'],
+    // A plain stream-json lane reports no answer attribution, so an injected
+    // line there could never be settled: the message keeps waiting.
+    [live({ attributable: false }), {}, {}, 'unattributable_lane'],
+    // M3: route/credential/vault drift since the process spawned is the one
+    // legitimate wait — the message must not enter a stale process.
+    [live({ stale: true }), {}, {}, 'process_changed'],
     [live(), { active: false }, {}, 'no_active_turn'],
     [live(), {}, { payload: { source: 'operation' } }, 'not_user_typed'],
     [live({ alive: false }), {}, {}, 'process_not_alive'],
@@ -164,21 +184,35 @@ test('every refusal keeps the message waiting and writes nothing', async () => {
   }
 });
 
-test('a failed write or an unsaved row reports failure so the outbox retries', async () => {
+test('a retry after write/row failure never writes stdin twice (H2)', async () => {
+  // The stdin write itself failed: the identity was aborted in Rust, so the
+  // retry may write. No row is appended for a line the process never saw.
   const failedWrite = harness({ written: false });
   assert.equal(failedWrite.injection.canInject({ item: ITEM, sessionId: ITEM.sessionId, opts: {} }), true);
   assert.deepEqual(await failedWrite.injection.tryInject({
     item: ITEM, sessionId: ITEM.sessionId, text: 'hi', opts: {},
   }), { delivered: false, reason: 'write_failed' });
   assert.deepEqual(failedWrite.appended, [], 'no row for a line that never reached the process');
+  assert.deepEqual(failedWrite.writes, []);
 
+  // The line reached the process but the history row did not persist. The
+  // retry must append the row only — the identical message must not run twice.
   const unsaved = harness({ saved: false });
-  // Not remembered, so the retry may append the missing row: the gate still
-  // says yes.
   assert.equal(unsaved.injection.canInject({ item: ITEM, sessionId: ITEM.sessionId, opts: {} }), true);
   assert.deepEqual(await unsaved.injection.tryInject({
-    item: ITEM, sessionId: ITEM.sessionId, text: 'hi', opts: {},
+    item: ITEM, sessionId: ITEM.sessionId, text: 'hi', opts: { clientMsgId: 'cm-retry' },
   }), { delivered: false, reason: 'row_not_persisted' });
+  assert.equal(unsaved.writes.length, 1, 'the message was written once');
+  assert.deepEqual(unsaved.appended, [], 'the row did not persist');
+
+  unsaved.setSaved(true);
+  assert.deepEqual(await unsaved.injection.tryInject({
+    item: ITEM, sessionId: ITEM.sessionId, text: 'hi', opts: { clientMsgId: 'cm-retry' },
+  }), { delivered: true, identity: 'cm-retry' });
+  assert.equal(unsaved.writes.length, 1, 'a retry must not write stdin again');
+  assert.equal(unsaved.appended.length, 1, 'the retry re-appended the missing row');
+  assert.equal(unsaved.appended[0].message.clientMsgId, 'cm-retry');
+  assert.equal(unsaved.appended[0].message.heldTurnInjected, true);
 });
 
 // ── the delivery worker: claim only what the predicate would take ───────────
@@ -330,4 +364,29 @@ test('the waiting notice names the background work instead of a wedged workspace
   assert.match(said[0].message.content, /后台任务/);
   notices.notifyStuckDelivery({ sessionId: 's', reason: 'session_busy', reasons: ['workspace_occupied'], waitedMs: 61_000 });
   assert.match(said[1].message.content, /工作区被占用/);
+});
+
+// L2: the hold cap is visibility, not release. Rust fires it at most once per
+// held turn (see test-background-hold-differential.js); the host says it where
+// the turn is watched instead of only on the console.
+test('the hold cap is one visible notice, never a release', () => {
+  const text = heldCapText({ minutes: 61 });
+  assert.match(text, /61 分钟/);
+  assert.match(text, /回合会继续保持开启/);
+  assert.match(text, /立刻插入/);
+  assert.doesNotMatch(text, /当前没有轮次在跑/);
+  const said = [];
+  const broadcasts = [];
+  const notices = createSessionNotices({
+    appendChatMessage: (id, message) => { said.push({ id, message }); return true; },
+    chatBroadcast: (id, event) => broadcasts.push({ id, event }),
+    now: () => 7,
+  });
+  notices.notifyHoldCap({ sessionId: 'held-session', minutes: 60 });
+  assert.equal(said.length, 1);
+  assert.equal(said[0].id, 'held-session');
+  assert.equal(said[0].message.role, 'system');
+  assert.match(said[0].message.content, /60 分钟/);
+  assert.deepEqual(broadcasts, [{ id: 'held-session',
+    event: { type: 'system', subtype: 'notice', message: said[0].message.content } }]);
 });

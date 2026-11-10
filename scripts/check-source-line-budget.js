@@ -168,10 +168,13 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-10 Batch 2: the RustTurnProgress owner keeps the four turn-progress
   // readers (heartbeat, timing, timeline, probes) behind one construction; the
   // engine deps are wired here, measured 3023 lines / 160674 bytes.
+  // 2026-11-10 held-turn redesign: claude availability reads the bundled engine
+  // binary (M1) and the native load-time identity normalisation owns one boot
+  // save (M4), measured 3037 lines / 161434 bytes.
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3023,
-    byteCeiling: 160674,
+    ceiling: 3037,
+    byteCeiling: 161434,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

@@ -96,6 +96,26 @@ fn nullable_string(value: L<'_>) -> Result<Option<JsString>> {
     }
 }
 
+/// Load-time identity normalisation for the retired `claude -p` chat lane. That
+/// lane wrote the live transcript id to `_streamSessionId` and left a
+/// placeholder in `cliSessionId`; the Agent SDK lane resumes by `cliSessionId`,
+/// and both name the same `~/.claude/projects/<cwd>/<id>.jsonl`, so the
+/// streamed id wins whenever it is present. Records of other CLIs are left
+/// untouched.
+fn normalize_claude_native_id(record: L<'_>) -> Result<bool> {
+    let streamed = record.get(c"_streamSessionId")?;
+    if !streamed.truthy()? {
+        return Ok(false);
+    }
+    let cli = record.get(c"cli")?.string()?;
+    if cli.as_ref().map(|value| value.to_string_lossy()).as_deref() != Some("claude") {
+        return Ok(false);
+    }
+    record.set(c"cliSessionId", streamed)?;
+    record.delete(c"_streamSessionId")?;
+    Ok(true)
+}
+
 #[derive(Clone)]
 struct Table {
     order: Vec<JsString>,
@@ -1112,14 +1132,23 @@ impl RustSessionRecords {
     /// Replace the table from an iterable of `[id, record]` pairs (a Map's
     /// entries, or an array of pairs). Used once at boot after the Node loader
     /// has parsed and migrated the on-disk state; the source is not retained.
+    ///
+    /// Returns true when a load-time normalisation changed a record (the caller
+    /// then persists the table once). The only normalisation is the retired
+    /// `claude -p` lane's identity: that lane stored the live transcript id in
+    /// `_streamSessionId` and left a placeholder in `cliSessionId`; the Agent
+    /// SDK lane resumes by `cliSessionId`, and both name the same
+    /// `~/.claude/projects/<cwd>/<id>.jsonl`, so the transcript id wins.
     #[napi]
-    pub fn init(&self, env: Env, entries: Unknown<'_>) -> Result<()> {
+    pub fn init(&self, env: Env, entries: Unknown<'_>) -> Result<bool> {
         self.values.drain(&env)?;
         let entries = L::new(&env, entries);
         let mut inserted: Vec<(JsString, Value)> = Vec::new();
+        let mut normalized = false;
         entries.for_each(|pair| {
             let key = self.key(pair.element(0)?)?;
             let record = pair.element(1)?;
+            normalized |= normalize_claude_native_id(record)?;
             inserted.push((key, self.values.capture(&env, record)?));
             Ok(())
         })?;
@@ -1128,7 +1157,7 @@ impl RustSessionRecords {
         for (key, value) in inserted {
             table.set(key, value);
         }
-        Ok(())
+        Ok(normalized)
     }
     /// Replace the directory registry from an iterable of `[id, record]` pairs.
     /// Used at boot for the legacy-schema migration; the source is not retained.

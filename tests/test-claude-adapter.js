@@ -12,6 +12,7 @@ const { processSpawnArgs } = require('../src/chat/process-spawn-args');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { hasNativeHistory } = require('../src/cli-adapters/claude-exp-history');
 const prepareTurn = require('./helpers/claude-turn');
+const { recordsOf } = require('./helpers/session-records');
 
 const SESSION_UUID = '05de20f7-563a-4d09-af34-b748c7b189ca';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -205,6 +206,10 @@ test('a legacy claude -p session carries its streaming identity into the SDK lan
   const record = { id: 'legacy-claude-p', kind: 'chat', cli: 'claude', cliSessionId: null,
     _streamSessionId: SESSION_UUID };
   const history = [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'old reply' }];
+  // The retired key is renamed by the native owner at load time (M4), not by
+  // the turn engine: load the record the way boot does before preparing.
+  const records = recordsOf([[record.id, record]]);
+  assert.equal(records.loadMigrated, true, 'the load normalisation owes one save');
   const { invocation } = prepareTurn({ record, cwd: '/tmp', history });
   assert.equal(record.cliSessionId, SESSION_UUID, 'the streaming id becomes the SDK identity');
   assert.equal(record._streamSessionId, undefined, 'the retired key is gone');

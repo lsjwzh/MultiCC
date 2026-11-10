@@ -8,10 +8,14 @@
 // every step the observable surface is compared: the getter `held`, the return
 // value of `start`/`observe`, and every released event.
 //
-// The ONE intentional divergence — the cap is no longer a release trigger — is
-// asserted by name below instead of being averaged away by the random
-// generator: the generator passes a one-day cap so it can never reach it, and
-// the divergence block asserts both behaviours explicitly.
+// Named intentional divergences from the frozen oracle, asserted explicitly
+// instead of being averaged away by the generator (which never injects):
+//   * the cap is no longer a release trigger — it only unlocks one visible
+//     notice (the generator passes a one-day cap so it can never reach it);
+//   * injected messages are settled by the uuids their answer reports (H1: the
+//     oracle counted results, so a self-wake could settle a typed message whose
+//     answer had not arrived) and their answer is not the turn's result or
+//     usage (M2: it rides along as `injected_exchanges` / `injected_usage`).
 //
 // Clock granularity: the legacy starts its quiet window inside the event
 // handler, the Rust owner on its next tick, so the two can differ by one tick.
@@ -72,6 +76,13 @@ const wakeResult = (overrides = {}) => ({
 const failedWake = (overrides = {}) => ({
   type: 'result', subtype: 'error_during_execution', is_error: true, result: 'boom',
   terminal_reason: 'api_error', api_error_status: 429, usage: { input_tokens: 3 }, ...overrides,
+});
+// Observed with the bundled engine (SDK 0.3.317): a result answering host input
+// lists the uuids it answered; the singular field is the LAST one.
+const answerResult = (uuids, overrides = {}) => ({
+  type: 'result', subtype: 'success', is_error: false, result: 'answer',
+  user_message_uuid: uuids[uuids.length - 1], user_message_uuids: uuids,
+  usage: { input_tokens: 3 }, total_cost_usd: 0.03, ...overrides,
 });
 const EVENTS = {
   assistant: { type: 'assistant', message: { role: 'assistant', content: [] } },
@@ -341,40 +352,108 @@ test('intentional divergence: the cap warns instead of releasing', async t => {
   assert.deepStrictEqual(stable(rustWorld.releases[0]), stable(mainResult()));
 });
 
-// ── a message the user types INTO the held turn (new behaviour) ──────────────
-test('an injected message keeps the hold open until its answer lands', async t => {
+// ── a message the user types INTO the held turn (H1 / H2 / M2) ───────────────
+// Intentional divergence from the frozen oracle, asserted by name: the oracle
+// counted results and let ANY of them settle an injection, so a self-wake could
+// settle a typed message whose answer had not arrived (H1) and the injected
+// answer itself could become the turn's result and usage (M2).
+test('an injected message is settled by its own answer, never by a self-wake', async t => {
   enable(t);
   const world = makeWorld(facade.createBackgroundHold, { maxMs: DAY_MS, background: true });
   assert.strictEqual(world.hold.start(mainResult()), true);
   world.setBackground(false);
-  assert.strictEqual(world.hold.beginInjection(), true);
+  const registered = world.hold.beginInjection('typed-1', 'uuid-1');
+  assert.strictEqual(registered.action, 'write');
+  assert.strictEqual(registered.uuid, 'uuid-1');
   advanceClock(t, 60000);
   assert.strictEqual(world.releases.length, 0, 'the outstanding injected answer holds the turn');
   // The injected query streams and ends like any other query of the turn.
   assert.strictEqual(world.hold.observe(EVENTS.assistant), false);
-  assert.strictEqual(world.hold.observe(wakeResult({ result: 'answer to the typed message' })), true);
+  // A self-wake (task notification) answers no injected uuid: it must not
+  // settle the typed message nor let the turn end.
+  assert.strictEqual(world.hold.observe(wakeResult({ result: 'wake while pending' })), true);
+  assert.strictEqual(world.hold.injectionsInFlight, 1, 'the self-wake settled nothing');
+  advanceClock(t, 60000);
+  assert.strictEqual(world.releases.length, 0, 'still held');
+  // Now the real answer lands.
+  assert.strictEqual(world.hold.observe(answerResult(['uuid-1'])), true);
+  assert.strictEqual(world.hold.injectionsInFlight, 0);
+  // A duplicate of that answer is swallowed too and never becomes the turn's
+  // own outcome (nor adds a second exchange).
+  assert.strictEqual(world.hold.observe(answerResult(['uuid-1'], { result: 'duplicate' })), true);
+  advanceClock(t, 30000);
+  assert.strictEqual(world.releases.length, 1);
+  const released = world.releases[0];
+  // M2: the turn's outcome is its own last answer (the self-wake), NOT the
+  // answer to the typed message; that one rides along as its own exchange with
+  // its own usage.
+  assert.strictEqual(released.result, 'wake while pending');
+  assert.strictEqual(released.injected_exchanges.length, 1);
+  assert.strictEqual(released.injected_exchanges[0].identity, 'typed-1');
+  assert.strictEqual(released.injected_exchanges[0].uuid, 'uuid-1');
+  assert.deepStrictEqual(released.injected_usage, { input_tokens: 3 });
+  assert.strictEqual(released.injected_cost_usd, 0.03);
+  assert.strictEqual(released.total_cost_usd, 0.02, 'the turn cost stays the self-wake\'s, not the injected one');
+  // Injecting into a turn that is no longer held is refused.
+  const refused = world.hold.beginInjection('typed-2', 'uuid-2');
+  assert.strictEqual(refused.action, 'refuse');
+  assert.strictEqual(refused.reason, 'not_held');
+});
+
+test('two queued messages are settled by one coalesced answer, in order', async t => {
+  enable(t);
+  const world = makeWorld(facade.createBackgroundHold, { maxMs: DAY_MS, background: true });
+  assert.strictEqual(world.hold.start(mainResult()), true);
+  world.setBackground(false);
+  assert.strictEqual(world.hold.beginInjection('typed-1', 'uuid-1').action, 'write');
+  assert.strictEqual(world.hold.beginInjection('typed-2', 'uuid-2').action, 'write');
+  assert.strictEqual(world.hold.injectionsInFlight, 2);
+  // Observed: two back-to-back injections are coalesced into ONE result that
+  // lists BOTH uuids (the singular field is the last one).
+  assert.strictEqual(world.hold.observe(answerResult(['uuid-1', 'uuid-2'])), true);
   assert.strictEqual(world.hold.injectionsInFlight, 0);
   advanceClock(t, 30000);
   assert.strictEqual(world.releases.length, 1);
-  assert.strictEqual(world.releases[0].result, 'answer to the typed message');
-  assert.strictEqual(world.releases[0].subtype, 'success');
-  // Injecting into a turn that is not held is refused, and an aborted write
-  // does not leak the counter.
-  assert.strictEqual(world.hold.beginInjection(), false);
+  assert.strictEqual(world.releases[0].result, 'main answer', 'no self-wake: the main answer decides');
+  assert.deepStrictEqual(world.releases[0].injected_exchanges.map(item => item.identity),
+    ['typed-1', 'typed-2']);
+  assert.deepStrictEqual(world.releases[0].injected_usage, { input_tokens: 6 });
+});
+
+test('exactly-once: a retry appends the row only, an abort releases the identity', async t => {
+  enable(t);
+  const world = makeWorld(facade.createBackgroundHold, { maxMs: DAY_MS, background: true });
+  assert.strictEqual(world.hold.start(mainResult()), true);
+  world.setBackground(false);
+  const first = world.hold.beginInjection('typed-1', 'uuid-1');
+  assert.strictEqual(first.action, 'write');
+  assert.strictEqual(first.uuid, 'uuid-1');
+  // The host wrote the line but failed to persist the history row: the retry
+  // may not write the message into the process a second time (H2).
+  const retried = world.hold.beginInjection('typed-1', 'uuid-9');
+  assert.strictEqual(retried.action, 'append_only', 'the written uuid is authoritative');
+  assert.strictEqual(retried.uuid, 'uuid-1');
+  // A failed write aborts the identity, and only then may a retry write.
+  world.hold.abortInjection('typed-1');
+  assert.strictEqual(world.hold.injectionsInFlight, 0);
+  assert.strictEqual(world.hold.beginInjection('typed-1', 'uuid-2').action, 'write');
+  assert.strictEqual(world.hold.observe(answerResult(['uuid-2'])), true);
+  // An aborted/failed delivery leaves no outstanding answer behind.
   const second = makeWorld(facade.createBackgroundHold, { maxMs: DAY_MS, background: true });
   assert.strictEqual(second.hold.start(mainResult()), true);
-  assert.strictEqual(second.hold.beginInjection(), true);
-  second.hold.abortInjection();
+  assert.strictEqual(second.hold.beginInjection('typed-1', 'uuid-1').action, 'write');
+  second.hold.abortInjection('typed-1');
   second.setBackground(false);
   advanceClock(t, 30000);
   assert.strictEqual(second.releases.length, 1, 'an aborted injection does not pin the turn');
+  assert.strictEqual(second.releases[0].injected_exchanges, undefined);
 });
 
 // ── the pure delivery predicate (Rust) ───────────────────────────────────────
-test('delivery predicate: one rule for both resident backends', () => {
+test('delivery predicate: one rule for every resident backend', () => {
   const facts = (overrides = {}) => ({
-    held: true, injectionInFlight: false, userTyped: true, turnActive: true,
-    processAlive: true, processContract: 'digest-a', wantedContract: 'digest-a',
+    held: true, userTyped: true, attributable: true, turnActive: true,
+    processAlive: true, processStale: false, processContract: 'digest-a', wantedContract: 'digest-a',
     deliverySettled: false, ...overrides,
   });
   const reason = overrides => facade.mayInjectIntoHeldTurn(facts(overrides)).reason;
@@ -382,10 +461,15 @@ test('delivery predicate: one rule for both resident backends', () => {
   assert.deepStrictEqual(facade.mayInjectIntoHeldTurn(facts()), { inject: true, reason: 'held' });
   const cases = [
     [{ held: false }, 'not_held'],
-    [{ injectionInFlight: true }, 'injection_in_flight'],
     [{ turnActive: false }, 'no_active_turn'],
     [{ userTyped: false }, 'not_user_typed'],
+    // A plain stream-json lane reports no answer attribution, so an injected
+    // line there could never be settled (the message keeps waiting).
+    [{ attributable: false }, 'unattributable_lane'],
     [{ processAlive: false }, 'process_not_alive'],
+    // M3: route/credential/vault drift is decided by the same staleness
+    // comparison the pump uses; a stale process is the one legitimate wait.
+    [{ processStale: true }, 'process_changed'],
     [{ processContract: 'digest-b' }, 'spawn_contract_changed'],
     [{ processContract: null }, 'spawn_contract_changed'],
     [{ wantedContract: null }, 'spawn_contract_changed'],
@@ -395,6 +479,17 @@ test('delivery predicate: one rule for both resident backends', () => {
     assert.strictEqual(inject(overrides), false, `${JSON.stringify(overrides)} must wait`);
     assert.strictEqual(reason(overrides), expected);
   }
+  // The one staleness comparison (M3): same facts never look stale, route
+  // credential or vault drift does.
+  const running = { routeUrl: 'https://a', routeToken: 't', fingerprint: 'f', vaultDigest: 'v' };
+  assert.strictEqual(facade.processStale(running, running).stale, false);
+  const movedRoute = facade.processStale(running, { ...running, routeToken: 'other' });
+  assert.strictEqual(movedRoute.routeChanged, true);
+  assert.strictEqual(movedRoute.configChanged, false);
+  assert.strictEqual(movedRoute.vaultStale, false);
+  assert.strictEqual(movedRoute.stale, true);
+  assert.strictEqual(facade.processStale(running, { ...running, fingerprint: 'g' }).configChanged, true);
+  assert.strictEqual(facade.processStale(running, { ...running, vaultDigest: 'w' }).vaultStale, true);
   // The digest is stable for equal facts and sensitive to every deciding field.
   const digest = facade.spawnContract({ cli: 'claude', model: 'm', effort: 'high' });
   assert.match(digest, /^[0-9a-f]{64}$/);

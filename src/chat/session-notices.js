@@ -57,6 +57,16 @@ function heldBackgroundText({ waitedMs = 0 } = {}) {
     + '（会先结束本轮并停掉这些后台任务）。';
 }
 
+// The hold cap is visibility, not release (L2): a turn whose background work
+// runs abnormally long must say so out loud instead of staying open silently.
+// Rust fires this exactly once per held turn; the turn itself stays open.
+function heldCapText({ minutes = 0 } = {}) {
+  const span = Number(minutes) >= 1 ? `${Math.round(Number(minutes))} 分钟` : '一段时间';
+  return `⏱ 本轮的后台任务（Agent / 后台命令 / Monitor）已经跑了 ${span}，`
+    + '回合会继续保持开启，直到它们结束（后台工作属于本轮，回复已给出不等于本轮结束）。'
+    + '想马上结束本轮，可以在聊天队列里点「立刻插入」或停止本轮（会同时停掉这些后台任务）。';
+}
+
 function createSessionNotices({ appendChatMessage, chatBroadcast, now = Date.now }) {
   // Persist first: a live broadcast that no client happened to receive is the
   // same silence this exists to end, and the append is what a reload shows.
@@ -72,7 +82,10 @@ function createSessionNotices({ appendChatMessage, chatBroadcast, now = Date.now
         ? heldBackgroundText({ waitedMs })
         : stuckDeliveryText({ reason, reasons, waitedMs }));
     },
+    notifyHoldCap({ sessionId, minutes }) { say(sessionId, heldCapText({ minutes })); },
   };
 }
 
-module.exports = { createSessionNotices, lostMessageText, stuckDeliveryText, heldBackgroundText };
+module.exports = {
+  createSessionNotices, lostMessageText, stuckDeliveryText, heldBackgroundText, heldCapText,
+};

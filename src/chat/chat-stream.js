@@ -713,42 +713,27 @@ function status(name) {
   };
 }
 
-// Deliver a message the user typed INTO the held turn: the CLI is idle after
-// its main result, so a user line goes to the same live stdin a normal
-// next-turn message would use. The hold counts the outstanding reply so the
-// turn cannot end before that answer lands. Returns false when there is no held
-// turn or no live process — the caller keeps waiting instead.
-function injectHeldTurn(name, text) {
-  const s = sessions.get(name);
-  const hold = s && s.current && s.current.hold;
-  if (!hold || !hold.held || !isAlive(name) || s.recycling) return false;
-  if (!hold.beginInjection()) return false;
-  try {
-    s.proc.stdin.write(userMessageLine(String(text)));
-    return true;
-  } catch (_) {
-    hold.abortInjection();
-    return false;
-  }
-}
-
-// Facts for the delivery predicate: the held phase, whether an injected answer
-// is still outstanding, process liveness and the spawn contract it serves.
+// Facts for the delivery predicate: the held phase, process liveness, whether
+// this lane can say which user message a result answers, and the spawn contract
+// it serves. The plain stream-json lanes write a user line without a uuid and
+// their results carry no `user_message_uuid(s)`, so an injected message there
+// could never be settled: `attributable: false` keeps it on the waiting path
+// (the Rust predicate refuses with `unattributable_lane`).
 function heldTurn(name) {
   const s = sessions.get(name);
   if (!s) return null;
   const hold = s.current?.hold;
   return {
     held: !!hold?.held,
-    injectionInFlight: (hold?.injectionsInFlight || 0) > 0,
     alive: isAlive(name),
+    attributable: false,
     contract: s.spawnedContract ?? null,
   };
 }
 
 module.exports = require('./stream-router').createStreamRouter(
   { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle, isClosing: closer.isClosing,
-    injectHeldTurn, heldTurn,
+    heldTurn,
     waitForClose: (name, opts) => closer.wait(name, () => {}, opts) },
   require('./claude-sdk-stream').createSdkStream(),
   require('./codex-app-stream').createCodexAppStream(),

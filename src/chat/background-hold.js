@@ -3,11 +3,11 @@
 // Background hold — JavaScript facade.
 //
 // The state machine lives in native/addon/src/background_hold.rs over
-// multicc_core::background_hold. This file only supplies the two host facts the
+// multicc_core::background_hold. This file only supplies the host facts the
 // kernel cannot know (`isMainResult` from the CLI adapter, `hasBackground` from
-// the background-task runtime), arms one unref'd interval and the cap warning
-// timer, and forwards the released event to the caller's `release` port. No
-// bookkeeping state may return here — Node is frozen.
+// the background-task runtime), arms one unref'd interval and the cap timer, and
+// forwards the released event to the caller's `release` port. No bookkeeping
+// state may return here — Node is frozen.
 //
 // A resident Claude turn ends at the CLI's main `result`, but background work it
 // started (Agent, run_in_background Bash, Monitor) completes later and the CLI
@@ -79,7 +79,7 @@ function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tick
       if (!started) return false;
       ticker = setInterval(tick, tickMs);
       ticker.unref?.();
-      // Visibility, not release: the cap timer only unlocks one warning.
+      // Visibility, not release: the cap timer only unlocks one notice.
       if (Number.isFinite(maxMs) && maxMs > 0) {
         capTimer = setTimeout(noteCap, maxMs);
         capTimer.unref?.();
@@ -88,9 +88,12 @@ function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tick
     },
     // Returns true when a held turn swallows `event` (self-wake / injected query).
     observe(event) { return owner.observe(event); },
-    // An injected query is about to be written to the live process.
-    beginInjection() { return owner.beginInjection(); },
-    abortInjection() { owner.abortInjection(); },
+    // Register a delivery identity BEFORE the line is written. The answer is
+    // `{ action: 'write' | 'append_only' | 'refuse', uuid?, reason? }`: only
+    // 'write' may touch stdin, 'append_only' just re-appends the history row of
+    // a line that was already written, 'refuse' waits for a normal turn.
+    beginInjection(identity, uuid) { return owner.beginInjection(String(identity ?? ''), String(uuid ?? '')); },
+    abortInjection(identity) { owner.abortInjection(String(identity ?? '')); },
     // Release now (cancel / insert-now): the held answer is complete.
     flush: finish,
     dispose() { done = true; owner.dispose(); clear(); },
@@ -103,9 +106,24 @@ function mayInjectIntoHeldTurn(facts) {
   return getNative().backgroundHoldMayInject(facts);
 }
 
+// "A human typed this in the chat box" (excludes dispatch, triggers, machine
+// continuations and task-page messages). The rule lives in Rust.
+function isDirectUserTyped(item, opts) {
+  return getNative().backgroundHoldUserTyped(item ?? null, opts ?? null) === true;
+}
+
+// One staleness comparison for both the stream pump and the injectable
+// predicate. `{ routeChanged, configChanged, vaultStale, stale }`.
+function processStale(running, wanted) {
+  return getNative().backgroundHoldProcessStale(running || {}, wanted || {});
+}
+
 // Stable digest of the facts that decide which process serves a turn.
 function spawnContract(facts) {
   return getNative().backgroundHoldSpawnContract(facts);
 }
 
-module.exports = { createBackgroundHold, holdMaxMs, mayInjectIntoHeldTurn, spawnContract };
+module.exports = {
+  createBackgroundHold, holdMaxMs, mayInjectIntoHeldTurn, isDirectUserTyped, processStale,
+  spawnContract,
+};

@@ -150,6 +150,32 @@ fn object_keys_len(anchor: LV<'_>, value: LV<'_>) -> Result<f64> {
         .number()
 }
 
+/// Tokens an injected exchange spent belong to the same turn's usage record.
+/// The release event keeps them in `injected_usage` (so they never become the
+/// turn's answer or its measured `usage`), and the usage recorder adds them
+/// here — numeric top-level fields only, like any usage object.
+fn usage_with_injected<'a>(anchor: LV<'a>, usage: LV<'a>, injected: LV<'a>) -> Result<LV<'a>> {
+    let base = read(usage)?;
+    let extra = read(injected)?;
+    let mut entries = match base {
+        JsValue::Object(entries) => entries,
+        _ => Vec::new(),
+    };
+    if let JsValue::Object(extra_entries) = extra {
+        for (key, value) in extra_entries {
+            let JsValue::Number(number) = value else {
+                continue;
+            };
+            match entries.iter_mut().find(|(name, _)| name == &key) {
+                Some((_, JsValue::Number(current))) => *current += number,
+                Some((_, existing)) => *existing = JsValue::Number(number),
+                None => entries.push((key, JsValue::Number(number))),
+            }
+        }
+    }
+    anchor.from_value(&JsValue::Object(entries))
+}
+
 struct ApiErrorMessage<'a> {
     text: LV<'a>,
     http_status: LV<'a>,
@@ -816,10 +842,19 @@ fn apply_result<'a>(
     }
     let usage = {
         let value = evt.optional(c"usage")?;
-        if value.truthy()? {
+        let value = if value.truthy()? {
             value
         } else {
             object(anchor)?
+        };
+        // A held turn's release carries the injected exchanges' usage
+        // separately (they are not the turn's answer but they did spend
+        // tokens). Account them on the same durable usage record.
+        let injected = evt.optional(c"injected_usage")?;
+        if injected.truthy()? && injected.kind()? == sys::ValueType::napi_object {
+            usage_with_injected(anchor, value, injected)?
+        } else {
+            value
         }
     };
     let context_trace = call(ports.get(c"contextTrace")?, &[session, cs])?;

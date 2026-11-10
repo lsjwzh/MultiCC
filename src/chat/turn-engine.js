@@ -15,6 +15,7 @@ const {
   shouldReexecutePersistedDelivery,
 } = require('./turn-progress');
 const claudeApiError = require('./claude-api-error-message');
+const { heldCapText } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
@@ -959,17 +960,11 @@ function createChatTurnEngine(deps) {
     // A real (non-auto-continue) message means the user/trigger is driving again →
     // reset the D auto-continue guard so a future background-wait gets fresh budget.
     if (!originContinue || directUserInput) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
-    // CLI switches retain WS state, so allocate native identity independently.
-    // A session from the deleted `claude -p` lane first carries its live
-    // transcript id over: that lane stored it in `_streamSessionId`, while the
-    // Agent SDK lane resumes by `cliSessionId`. Both name the same
-    // `~/.claude/projects/<cwd>/<id>.jsonl`, so no conversation loses history.
-    if (persisted.cli === 'claude' && persisted._streamSessionId) {
-      persisted.cliSessionId = persisted._streamSessionId;
-      delete persisted._streamSessionId;
-      rememberActiveCliState(persisted);
-      savePersistedSessionsBestEffort('runtime.claude-native-id-migrate');
-    }
+    // A session from the deleted `claude -p` lane carried its live transcript id
+    // in `_streamSessionId`; the load-time normalizer in Rust
+    // (native/addon/src/session_records.rs) has already renamed it to
+    // `cliSessionId` and flagged the store for one save, so nothing is migrated
+    // here.
     if ((turnRequest.cli === 'claude' || turnRequest.cli === 'claude-exp') && !persisted.cliSessionId) {
       persisted.cliSessionId = crypto.randomUUID();
       savePersistedSessionsBestEffort('runtime.chat-session-id-allocate');
@@ -1932,6 +1927,16 @@ function createChatTurnEngine(deps) {
     chatStream.ensure(sessionName, {
       cmd: invocation.cmd,
       spawnContract: spawnContractDigest,
+      // L2: the hold cap is visibility, not release. Rust fires this at most
+      // once per held turn; say it where the turn is being watched.
+      onHoldCap: ms => {
+        try {
+          const text = heldCapText({ minutes: (Number(ms) || 0) / 60_000 });
+          if (appendChatMessage(sessionName, { role: 'system', content: text, ts: Date.now() })) {
+            chatBroadcast?.(sessionName, { type: 'system', subtype: 'notice', message: text });
+          }
+        } catch (_) {}
+      },
       cwd: cs.cwd,
       sessionId: persisted[nativeKey],
       sdkOptions: invocation.sdkOptions,

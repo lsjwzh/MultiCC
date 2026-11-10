@@ -1,11 +1,12 @@
 //! napi owner of the background hold.
 //!
-//! `src/chat/background-hold.js` only forwards arguments, supplies the two host
+//! `src/chat/background-hold.js` only forwards arguments, supplies the host
 //! facts (`isMainResult`, `hasBackground`), arms one unref'd timer and logs.
 //! Every decision — what is held, when the turn may be released, which
-//! self-wake decides the outcome, and whether a typed message may be delivered
-//! INTO the held turn — lives in `multicc_core::background_hold`.
-use multicc_core::background_hold::{self as kernel, Hold, InjectFacts};
+//! self-wake decides the outcome, which injected messages are still unanswered,
+//! which delivery identity was already written, and whether a typed message may
+//! be delivered INTO the held turn — lives in `multicc_core::background_hold`.
+use multicc_core::background_hold::{self as kernel, Hold, InjectFacts, InjectionRegistration};
 use multicc_core::js::coerce::{js_to_number, truthy};
 use multicc_core::js::serde::{from_serde, to_serde};
 use multicc_core::js::JsValue as V;
@@ -39,6 +40,15 @@ fn string_field(value: &V, name: &str) -> Option<String> {
     }
 }
 
+/// A JS `String(value)`-free read: only a real string counts, mirroring the
+/// legacy `typeof === 'string'` checks.
+fn text_of(value: Option<&V>) -> Option<String> {
+    match value {
+        Some(V::String(text)) => Some(text.to_string_lossy()),
+        _ => None,
+    }
+}
+
 /// A core release plan as the JavaScript object the old code returned:
 /// `{ ...held, <overrides> }`, with `undefined_keys` materialized as real
 /// `undefined` properties so the shape is byte-identical to the legacy merge.
@@ -64,6 +74,13 @@ fn release_or_null(release: Option<kernel::Release>) -> V {
         Some(release) => release_value(&release),
         None => V::Null,
     }
+}
+
+fn entry(name: &str, value: V) -> (multicc_core::js::string::JsString, V) {
+    (
+        multicc_core::js::string::JsString::from_rust_str(name),
+        value,
+    )
 }
 
 #[napi]
@@ -93,6 +110,7 @@ impl RustBackgroundHold {
         self.state.borrow().is_held()
     }
 
+    /// Outstanding injected messages (uuid-keyed, not a result counter).
     #[napi(getter)]
     pub fn injections(&self) -> u32 {
         self.state.borrow().injections()
@@ -141,18 +159,40 @@ impl RustBackgroundHold {
         write(env, &value)
     }
 
+    /// Register a delivery identity BEFORE its line is written.
+    /// `{ action: 'write' | 'append_only' | 'refuse', uuid, reason }`.
     #[napi]
-    pub fn begin_injection(&self) -> bool {
-        self.state.borrow_mut().begin_injection()
+    pub fn begin_injection(
+        &self,
+        env: Env,
+        identity: String,
+        uuid: String,
+    ) -> Result<sys::napi_value> {
+        let value = match self.state.borrow_mut().begin_injection(&identity, &uuid) {
+            InjectionRegistration::Write { uuid } => V::Object(vec![
+                entry("action", V::string("write")),
+                entry("uuid", V::string(&uuid)),
+            ]),
+            InjectionRegistration::AppendOnly { uuid } => V::Object(vec![
+                entry("action", V::string("append_only")),
+                entry("uuid", V::string(&uuid)),
+            ]),
+            InjectionRegistration::Refuse { reason } => V::Object(vec![
+                entry("action", V::string("refuse")),
+                entry("reason", V::string(reason)),
+            ]),
+        };
+        write(env, &value)
     }
 
+    /// The stdin write failed: release the identity so a retry may write it.
     #[napi]
-    pub fn abort_injection(&self) {
-        self.state.borrow_mut().abort_injection();
+    pub fn abort_injection(&self, identity: String) {
+        self.state.borrow_mut().abort_injection(&identity);
     }
 
     /// True exactly once when the cap timer first fires on a held turn. Release
-    /// does not follow from it; it only unlocks the host's warning.
+    /// does not follow from it; it only unlocks the host's visible notice.
     #[napi]
     pub fn cap_reached(&self, background_active: bool) -> bool {
         self.state.borrow_mut().cap_reached(background_active)
@@ -174,30 +214,82 @@ pub fn background_hold_max_ms(env: Env, value: Unknown<'_>) -> Result<f64> {
     })
 }
 
-/// The pure delivery predicate. `held` / `injectionInFlight` are facts too so
-/// the host never has to re-tell the state machine what it already knows.
+/// The pure delivery predicate. `held` / `turnActive` are facts too so the host
+/// never has to re-tell the state machine what it already knows.
 #[napi]
 pub fn background_hold_may_inject(env: Env, facts: Unknown<'_>) -> Result<sys::napi_value> {
     let facts = read(env, facts)?;
     let decision = kernel::may_inject(&InjectFacts {
         held: bool_field(&facts, "held"),
-        injection_in_flight: bool_field(&facts, "injectionInFlight"),
         user_typed: bool_field(&facts, "userTyped"),
+        attributable: bool_field(&facts, "attributable"),
         turn_active: bool_field(&facts, "turnActive"),
         process_alive: bool_field(&facts, "processAlive"),
+        process_stale: bool_field(&facts, "processStale"),
         process_contract: string_field(&facts, "processContract"),
         wanted_contract: string_field(&facts, "wantedContract"),
         delivery_settled: bool_field(&facts, "deliverySettled"),
     });
     let value = V::Object(vec![
-        (
-            multicc_core::js::string::JsString::from_rust_str("inject"),
-            V::Bool(decision.inject),
-        ),
-        (
-            multicc_core::js::string::JsString::from_rust_str("reason"),
-            V::string(decision.reason),
-        ),
+        entry("inject", V::Bool(decision.inject)),
+        entry("reason", V::string(decision.reason)),
+    ]);
+    write(env, &value)
+}
+
+/// "A human typed this in the chat box" — the rule lives in Rust; the host
+/// objects are read here and never copied back.
+#[napi]
+pub fn background_hold_user_typed(env: Env, item: Unknown<'_>, opts: Unknown<'_>) -> Result<bool> {
+    let item = read(env, item)?;
+    let opts = read(env, opts)?;
+    let empty = V::Object(Vec::new());
+    let payload = match field(&item, "payload") {
+        Some(payload @ V::Object(_)) => payload,
+        _ => &empty,
+    };
+    let facts = kernel::TypedFacts {
+        payload_type: text_of(field(payload, "type")),
+        source: text_of(field(payload, "source")),
+        origin_continue: bool_field(&opts, "originContinue"),
+        origin_dispatch_id: field(&opts, "originDispatchId").is_some_and(truthy),
+        payload_origin_dispatch_id: field(payload, "originDispatchId").is_some_and(truthy),
+        request_id: field(payload, "requestId").is_some_and(truthy),
+        user_input_request_id: field(&opts, "userInputRequestId").is_some_and(truthy),
+    };
+    Ok(kernel::is_direct_user_typed(&facts))
+}
+
+/// The one staleness comparison shared by the stream pump and the injectable
+/// predicate: `{ routeChanged, configChanged, vaultStale, stale }`.
+#[napi]
+pub fn background_hold_process_stale(
+    env: Env,
+    running: Unknown<'_>,
+    wanted: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let running = read(env, running)?;
+    let wanted = read(env, wanted)?;
+    let on = |value: &V, name: &str| text_of(field(value, name));
+    let staleness = kernel::process_stale(
+        &kernel::ProcessFacts {
+            route_url: on(&running, "routeUrl"),
+            route_token: on(&running, "routeToken"),
+            fingerprint: on(&running, "fingerprint"),
+            vault_digest: on(&running, "vaultDigest"),
+        },
+        &kernel::ProcessFacts {
+            route_url: on(&wanted, "routeUrl"),
+            route_token: on(&wanted, "routeToken"),
+            fingerprint: on(&wanted, "fingerprint"),
+            vault_digest: on(&wanted, "vaultDigest"),
+        },
+    );
+    let value = V::Object(vec![
+        entry("routeChanged", V::Bool(staleness.route_changed)),
+        entry("configChanged", V::Bool(staleness.config_changed)),
+        entry("vaultStale", V::Bool(staleness.vault_stale)),
+        entry("stale", V::Bool(staleness.stale())),
     ]);
     write(env, &value)
 }
