@@ -1,6 +1,6 @@
 'use strict';
 
-const { planRetryBlockedFinalization, resolveTurnFinalization } = require('./finalize-plan');
+const { getNative } = require('../native/runtime');
 const turnProgress = require('./turn-progress');
 
 const REQUIRED_PORTS = Object.freeze([
@@ -33,260 +33,23 @@ function createTurnFinalizationExecutor(rawPorts) {
   const log = typeof ports.log === 'function' ? ports.log : () => {};
   const logError = typeof ports.logError === 'function' ? ports.logError : () => {};
 
-  function isBlockedTerminalEffect(entry, context) {
-    if (context.terminalBlocked !== true) return false;
-    if (entry.type === 'complete-session-turn') return true;
-    if (entry.type === 'freeze-interrupted' || entry.type === 'classify-turn-end') return true;
-    return entry.type === 'emit-turn-outcome' && entry.status === 'succeeded';
-  }
-
-  function applyEffect(entry, context) {
-    const { sessionName, cs } = context;
-    if (isBlockedTerminalEffect(entry, context)) return;
-    switch (entry.type) {
-      case 'set-streaming':
-        cs.isStreaming = entry.value;
-        break;
-      case 'cancel-classify':
-        ports.cancelClassify(cs);
-        break;
-      case 'clear-stream-replay':
-        cs.streamReplay = [];
-        break;
-      case 'report-empty-retry-failure': {
-        const stderrTail = String(context.stderrTail || '').trim();
-        ports.broadcast(sessionName, {
-          type: 'error',
-          error: context.pendingTransportError
-            ? `Codex 出错：${context.pendingTransportError}`
-            : stderrTail ? `${cs.cli} 无响应：${stderrTail}`
-              : `${cs.cli} 无响应（exit ${context.code}${context.signal ? `/${context.signal}` : ''}）`,
-        });
-        break;
-      }
-      case 'report-handoff-resume-failure':
-        ports.broadcast(sessionName, {
-          type: 'error',
-          error: context.runnerKind === 'stream'
-            ? '目标 Claude 原生会话恢复异常；未自动新建或重试。请重新切换并选择“重置目标 CLI 会话”。'
-            : `目标 ${cs.cli} 原生会话恢复失败；未自动创建新会话。请重新切换并选择“重置目标 CLI 会话”。`,
-        });
-        break;
-      case 'clear-active-process':
-        cs.claudeProc = null;
-        break;
-      case 'clear-active-runner':
-        if (cs._activeRunner === context.runner) cs._activeRunner = null;
-        break;
-      case 'clear-incremental-save':
-        ports.clearIncrementalSave(sessionName);
-        break;
-      case 'append-assistant-result':
-        // The two-stage executor performs this write at the effect boundary.
-        break;
-      case 'commit-usage':
-        if (context.turn && context.turn.resultDurable === true) {
-          context.usageAttempted = true;
-          try {
-            context.usageDurable = ports.commitUsage(context) === true;
-          } catch (error) {
-            context.usageDurable = false;
-            context.usageError = error && error.message ? String(error.message) : 'usage commit failed';
-            logError('usage-commit-failed', { sessionName, error });
-          }
-          if (context.usageDurable !== true) context.terminalBlocked = true;
-        }
-        break;
-      case 'increment-chat-turn-count':
-        if (context.appendPersisted) cs.chatTurnCount++;
-        break;
-      case 'report-result-persistence-failure':
-        ports.broadcast(sessionName, {
-          type: 'error',
-          error: '回复已生成但未能持久化，已停止回流和后续动作。',
-        });
-        break;
-      case 'emit-synthetic-result':
-        ports.broadcast(sessionName, {
-          type: 'result',
-          total_cost_usd: null,
-          usage: {},
-          durationMs: cs.turnStartedAt ? now() - cs.turnStartedAt : undefined,
-          num_turns: cs.chatTurnCount,
-          ...timelineField(sessionName, cs, now()),
-        });
-        break;
-      case 'capture-final-text':
-        context.finalText = cs.currentAssistantText;
-        break;
-      case 'reset-turn-output':
-        cs.currentAssistantText = '';
-        cs.currentToolCalls = [];
-        cs._resultSaved = false;
-        cs._sawApiError = false;
-        if (entry.clearAdapterError) cs._adapterError = null;
-        if (entry.clearTransportState) {
-          cs._codexRecoveredDisconnect = false;
-          cs._codexPendingStreamError = '';
-          cs._codexPendingStreamErrorCount = 0;
-          cs._codexTransportError = '';
-          cs._codexStreamContinuationCount = 0;
-        }
-        break;
-      case 'set-status':
-        ports.setStatus(sessionName, entry.status);
-        break;
-      case 'classify-turn-end':
-        // The plan's classification is the turn boundary's own verdict. It is
-        // forwarded rather than dropped so the classify centre can skip the Aux
-        // guess for outcomes the boundary already proved.
-        ports.classifyTurnEnd(cs, sessionName, {
-          classification: entry.classification || null,
-          // Why the turn really ended when the host stopped it (restart, CLI
-          // switch, relocation, user cancel). The classify centre reports this
-          // as the cause instead of inventing a provider API error for a turn
-          // that never saw one.
-          killReason: entry.killReason || null,
-          turnId: context.turn?.turnId || null,
-          // Correlate the verdict with the task identity captured when this
-          // turn was admitted.  The live session pointer is intentionally not
-          // authoritative here: a delayed Aux attribution from an older turn
-          // may have changed it while this runner was active.
-          taskId: context.turn?.task?.id || null,
-          identityLocked: !!context.turn?.task?.id && (context.turn.task.start !== true
-            || ['task-board', 'commander', 'code-reference'].includes(context.turn.task.source)),
-        });
-        break;
-      case 'complete-session-turn':
-        Promise.resolve(ports.completeSessionTurn(sessionName)).catch(error => {
-          logError('complete-session-turn-failed', { sessionName, error });
-        });
-        break;
-      case 'reset-interrupted-resume':
-        ports.resetInterrupted(sessionName);
-        break;
-      case 'emit-turn-outcome':
-        ports.emitTurnOutcome(sessionName, {
-          // `status` is what the state machine branches on; `message` is display
-          // copy only (the label the summary is built from) — rewording it must
-          // not change behavior.
-          status: entry.status,
-          notifyState: entry.notifyState,
-          message: '执行成功',
-          alert: false,
-        });
-        break;
-      case 'try-resume-interrupted':
-        if (ports.resumeInterrupted(sessionName)) {
-          log('interrupted-resume', { sessionName });
-        } else {
-          ports.setStatus(sessionName, entry.fallbackStatus);
-        }
-        break;
-      case 'freeze-interrupted':
-        if (typeof ports.freezeInterrupted === 'function') {
-          ports.freezeInterrupted(sessionName, entry.reason || 'unknown_interruption');
-        }
-        break;
-      case 'stream-end':
-        ports.broadcast(sessionName, { type: 'stream_end' });
-        break;
-      case 'run-post-turn':
-        try {
-          ports.runPostTurn(context, entry);
-        } catch (error) {
-          logError('post-turn-failed', { sessionName, error });
-        }
-        break;
-      default:
-        throw new Error(`unknown chat finalization effect: ${entry.type}`);
-    }
-  }
-
-  function executeUnsafe(plan, rawContext) {
-    if (plan && !['finalize', 'noop'].includes(plan.action)) {
-      logError('nonterminal-finalization-plan', { action: plan.action });
-      plan = planRetryBlockedFinalization(plan, {
-        retryUnavailableReason: 'executor_received_nonterminal_plan',
+  // 执行顺序、历史写入确认、用量屏障及失败清理由 Rust 负责。
+  // Node 只保留现有宿主端口和 Promise 拒绝处理；端口迁出后即可移除。
+  const runtime = {
+    now, timelineField, log, logError,
+    completeSessionTurn(sessionName) {
+      Promise.resolve(ports.completeSessionTurn(sessionName)).catch(error => {
+        logError('complete-session-turn-failed', { sessionName, error });
       });
-    }
-    const context = {
-      appendPersisted: false,
-      finalText: '',
-      usageAttempted: false,
-      usageDurable: null,
-      terminalBlocked: false,
-      ...rawContext,
-    };
-    const applyAll = effects => effects.forEach(entry => applyEffect(entry, context));
-
-    if (!plan.append || !plan.append.required) {
-      const resolved = resolveTurnFinalization(plan, { resultDurable: context.turn.resultDurable });
-      applyAll(resolved.effects);
-      ports.recordRunResult?.(context, resolved);
-      return Object.freeze({
-        resolved,
-        appendPersisted: false,
-        finalText: context.finalText,
-        usageDurable: context.usageDurable,
-        terminalBlocked: context.terminalBlocked,
-      });
-    }
-
-    const preliminary = resolveTurnFinalization(plan, { resultDurable: context.turn.resultDurable });
-    const boundary = preliminary.effects.findIndex(entry => entry.type === 'append-assistant-result');
-    if (boundary < 0) throw new Error('finalization append boundary missing');
-    applyAll(preliminary.effects.slice(0, boundary));
-
-    context.appendPersisted = ports.persistAssistant(context, plan.append) === true;
-    const resolved = resolveTurnFinalization(plan, {
-      appendPersisted: context.appendPersisted,
-      resultDurable: context.turn.resultDurable,
-    });
-    const resolvedBoundary = resolved.effects.findIndex(entry => entry.type === 'append-assistant-result');
-    if (resolvedBoundary < 0) throw new Error('resolved finalization append boundary missing');
-    applyAll(resolved.effects.slice(resolvedBoundary + 1));
-    ports.recordRunResult?.(context, resolved);
-    return Object.freeze({
-      resolved,
-      appendPersisted: context.appendPersisted,
-      finalText: context.finalText,
-      usageDurable: context.usageDurable,
-      terminalBlocked: context.terminalBlocked,
-    });
+    },
+  };
+  const native = getNative();
+  if (typeof native.chatExecuteTurnFinalization !== 'function') {
+    throw new Error('rust_chat_finalization_execution_unavailable');
   }
-
-  // Runner close callbacks are process-level event handlers. A finalization
-  // contract or port failure must freeze that turn, never escape and terminate
-  // the server process.
   function execute(plan, rawContext = {}) {
-    const safeContext = rawContext && typeof rawContext === 'object' ? rawContext : {};
-    try {
-      return executeUnsafe(plan, safeContext);
-    } catch (error) {
-      const { sessionName, cs, runner } = safeContext;
-      try { logError('turn-finalization-execution-failed', { sessionName, error }); } catch (_) {}
-      if (cs) {
-        cs.isStreaming = false;
-        if (safeContext.runnerKind === 'process') cs.claudeProc = null;
-        if (cs._activeRunner === runner) cs._activeRunner = null;
-      }
-      try { ports.clearIncrementalSave(sessionName); } catch (_) {}
-      try { ports.setStatus(sessionName, 'waiting'); } catch (_) {}
-      try { ports.freezeInterrupted?.(sessionName, 'finalization_failed'); } catch (_) {}
-      try { ports.broadcast(sessionName, { type: 'error', error: '本轮收尾失败，已安全停止；请检查日志。' }); } catch (_) {}
-      try { ports.broadcast(sessionName, { type: 'stream_end' }); } catch (_) {}
-      return Object.freeze({
-        resolved: Object.freeze({ action: 'finalize', code: 'finalization_execution_failed',
-          facts: plan?.facts || {}, effects: Object.freeze([]) }),
-        appendPersisted: false,
-        finalText: '',
-        usageDurable: null,
-        terminalBlocked: true,
-      });
-    }
+    return native.chatExecuteTurnFinalization(plan, rawContext, ports, runtime);
   }
-
   return Object.freeze({ execute });
 }
 

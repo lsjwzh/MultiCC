@@ -1168,8 +1168,12 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   assert.match(source, /createChatHostRuntime\(\{/,
     'server must consume the extracted host runtime through narrow ports');
   const finalizeHostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-host.js'), 'utf8');
-  assert.match(finalizeHostSource, /context\.appendPersisted = ports\.persistAssistant\(context, plan\.append\) === true/,
-    'the shared finalize executor must use the real append return value');
+  assert.match(finalizeHostSource, /chatExecuteTurnFinalization\(plan, rawContext, ports, runtime\)/);
+  assert.doesNotMatch(finalizeHostSource, /function (?:applyEffect|executeUnsafe|isBlockedTerminalEffect)\(/);
+  const finalizeNativeSource = fs.readFileSync(path.join(__dirname, '..', 'native', 'addon', 'src',
+    'chat_finalize_execution.rs'), 'utf8');
+  assert.match(finalizeNativeSource, /\.port\(\s*c"persistAssistant",[\s\S]{0,130}\.is_true\(\)\?/,
+    '原生收尾执行器必须以真实历史写入返回值确认持久化');
   assert.match(source, /persistAssistant\(context, append\) \{[\s\S]{0,120}persistFinalAssistantResult\(/,
     'server composition must inject the authoritative assistant writer');
   assert.match(source, /context\.runner\.pendingUsage[\s\S]{0,180}\{ usage: context\.runner\.pendingUsage \}/,
@@ -1188,7 +1192,7 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   const falsePreparationErrorAt = source.indexOf('turn preparation failed before runner handoff', catchAt);
   assert.ok(catchAt >= 0 && falsePreparationErrorAt > catchAt,
     'a handed-off runner must bypass the pre-runner failure response');
-  assert.equal((finalizeHostSource.match(/回复已生成但未能持久化，已停止回流和后续动作。/g) || []).length, 1,
+  assert.equal((finalizeNativeSource.match(/回复已生成但未能持久化，已停止回流和后续动作。/g) || []).length, 1,
     'stream and process finalizers must share one durable-result failure effect');
   assert.equal(source.includes('turn.resultEvent'), false, 'result events must be runner-owned');
   assert.equal((source.match(/sameDurablePartial: hasMatchingPartialCheckpoint\(runner,/g) || []).length, 2,
