@@ -34,6 +34,7 @@ function sessionDtoPresenter({ record, runtime }) {
     lastWorkAt: record.lastWorkAt,
     hibernatedAt: record.hibernatedAt,
     mergeState: runtime.mergeState,
+    unattended: record.unattended,
   });
 }
 

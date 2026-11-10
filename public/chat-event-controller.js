@@ -958,6 +958,11 @@
           host.speakNotify?.(completionVoice || display.voice, display.ding);
           break;
         }
+        case 'unattended_state':
+          // 无人值守监督器的状态帧：服务端每次变更都广播，连接时也会重放一次。
+          // null 表示这个会话从未启用过（或被清空），面板据此回到「未启用」。
+          host.applyUnattendedState?.(message.unattended == null ? null : message.unattended);
+          break;
         case 'error':
           if (isRecoverableCodexReconnectErrorText(message.error || '')) {
             host.warn?.('[multicc/chat] suppressed recoverable codex reconnect');

@@ -552,7 +552,7 @@ test('the classifier journal is reachable before any shell resolves and fails sa
   assert.deepEqual(host.attributionDecisions().list('missing'), []);
 });
 
-test('goal limits survive normalized receipt retry without changing the message key', async t => {
+test('unattended config survives normalized receipt retry without changing the message key', async t => {
   let fail = true;
   const seen = [];
   const f = fixture(t, { send: async (_id, _text, options) => {
@@ -560,13 +560,19 @@ test('goal limits survive normalized receipt retry without changing the message 
     if (fail) throw new Error('response lost');
     return { ok: true };
   } });
-  await assert.rejects(f.runtime.send(f.a.id, input('goal', null, { goal: true, goalLimits: { maxRounds: 4, maxBudget: 1000 } })));
+  const unattended = { goal: 'ship it', criteria: ['tests pass'], maxRounds: 4 };
+  await assert.rejects(f.runtime.send(f.a.id, input('goal', null, { unattended })));
   const receipt = f.store.list('receipt')[0];
   fail = false;
   await f.runtime.retry(f.a.id, receipt.id);
-  assert.deepEqual(seen[0].goalLimits, { maxRounds: 4, maxBudget: 1000 });
-  assert.deepEqual(seen[1].goalLimits, seen[0].goalLimits);
+  assert.deepEqual(seen[0].unattended, unattended);
+  assert.deepEqual(seen[1].unattended, seen[0].unattended);
   assert.equal(seen[1].idempotencyKey, seen[0].idempotencyKey);
+
+  // Old clients keep sending `goal:true` + `goalLimits`; only maxRounds
+  // survives, mapped onto the new `unattended` key.
+  await f.runtime.send(f.a.id, input('legacy-goal', null, { goal: true, goalLimits: { maxRounds: 4, maxBudget: 1000 } }));
+  assert.deepEqual(seen[2].unattended, { maxRounds: 4 });
 });
 
 test('voice marker and send-time language reach delivery options; junk values are dropped', async t => {

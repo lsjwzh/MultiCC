@@ -237,6 +237,20 @@ test('event module exports a frozen narrow API and codex reconnect classifier', 
   assert.equal(eventApi.isRecoverableCodexReconnectErrorText('permission denied'), false);
 });
 
+test('unattended_state is forwarded to the host, including the null reset', () => {
+  const seen = [];
+  const fixture = controllerFixture({
+    applyUnattendedState(value) { seen.push(value); },
+  });
+  const state = { status: 'active', goal: 'ship it', criteria: [], maxRounds: 30, rounds: 0 };
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({ type: 'unattended_state', unattended: state }, generation);
+  fixture.controller.handleEvent({ type: 'unattended_state', unattended: null }, generation);
+  // 缺字段也按 null 归一：旧服务端可能只发 type，面板要回到「未启用」而不是沿用旧状态。
+  fixture.controller.handleEvent({ type: 'unattended_state' }, generation);
+  assert.deepEqual(seen, [state, null, null]);
+});
+
 test('progress heartbeat formatter exposes only safe bounded status fields', () => {
   // 时长由 shared/format.js 的 formatDuration 出：150.9 秒进到「分」那一档时秒数按
   // 四舍五入（2m 31s），而不是先把总秒数截断再取模（2m 30s）。

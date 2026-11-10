@@ -16,6 +16,7 @@ class DemoServer {
   final HttpServer _server;
   final String Function() _lang;
   final Map<String, List<Map<String, dynamic>>> _history = {};
+  final Map<String, Map<String, dynamic>> _unattended = {};
   final Set<WebSocket> _sockets = {};
   int _seq = 0;
 
@@ -42,6 +43,46 @@ class DemoServer {
   // ── 数据 ─────────────────────────────────────────────────────────────────
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
+
+  static const Map<String, int> _unattendedLimits = {
+    'maxRoundsDefault': 30,
+    'maxRoundsMax': 200,
+  };
+
+  /// 演示里的无人值守只保留面板能看到的那几个字段：不跑真正的督导轮次，
+  /// 只让启动 / 停止 / 继续三个动作和状态配色有东西可显示。
+  Map<String, dynamic> _unattendedJson({
+    required String status,
+    required String goal,
+    required Object? criteria,
+    required Object? maxRounds,
+    required Map<String, dynamic>? previous,
+    required bool resetRounds,
+  }) {
+    final cleaned = <String>[];
+    for (final item in (criteria is List ? criteria : const [])) {
+      final text = '$item'.trim();
+      if (text.isEmpty) continue;
+      cleaned.add(text.length > 300 ? text.substring(0, 300) : text);
+      if (cleaned.length >= 12) break;
+    }
+    final rounds = resetRounds ? 0 : ((previous?['rounds'] as num?)?.toInt() ?? 0);
+    final startedAt = resetRounds
+        ? _now
+        : ((previous?['startedAt'] as num?)?.toInt() ?? _now);
+    return {
+      'status': status,
+      'goal': goal.length > 2000 ? goal.substring(0, 2000) : goal,
+      'criteria': cleaned,
+      'maxRounds': ((maxRounds is num ? maxRounds.toInt() : 30)).clamp(1, 200),
+      'rounds': rounds,
+      'startedAt': startedAt,
+      'updatedAt': _now,
+      'lastVerdict': previous?['lastVerdict'],
+      'history': previous?['history'] ?? const [],
+      'stall': {'sameInstruction': 0, 'auxFailures': 0},
+    };
+  }
 
   String _nextId() => 'demo-${_now.toRadixString(36)}-${_seq++}';
 
@@ -263,6 +304,103 @@ class DemoServer {
         }
         if (task != null && segments.length == 4 && segments[3] == 'history') {
           return _json(req, {'messages': _messagesFor(task), 'hasMore': false});
+        }
+        if (task != null &&
+            segments.length == 4 &&
+            segments[3] == 'unattended') {
+          if (method == 'GET') {
+            return _json(req, {
+              'ok': true,
+              'unattended': _unattended[task.sessionId],
+              'limits': _unattendedLimits,
+            });
+          }
+          if (method == 'POST') {
+            final body = await _body(req);
+            final action = '${body['action'] ?? ''}';
+            final previous = _unattended[task.sessionId];
+            Map<String, dynamic>? next;
+            switch (action) {
+              case 'start':
+                final goal = '${body['goal'] ?? ''}'.trim();
+                if (goal.isEmpty) {
+                  return _json(req, {
+                    'ok': false,
+                    'error': 'goal_required',
+                  }, status: HttpStatus.badRequest);
+                }
+                next = _unattendedJson(
+                  status: 'active',
+                  goal: goal,
+                  criteria: body['criteria'],
+                  maxRounds: body['maxRounds'],
+                  previous: previous,
+                  resetRounds: true,
+                );
+              case 'update':
+                if (previous == null) {
+                  return _json(req, {
+                    'ok': false,
+                    'error': 'not_started',
+                  }, status: HttpStatus.conflict);
+                }
+                next = _unattendedJson(
+                  status: 'active',
+                  goal: '${body['goal'] ?? previous['goal'] ?? ''}',
+                  criteria: body['criteria'] ?? previous['criteria'],
+                  maxRounds: body['maxRounds'] ?? previous['maxRounds'],
+                  previous: previous,
+                  resetRounds: false,
+                );
+              case 'stop':
+                if (previous == null) {
+                  return _json(req, {
+                    'ok': false,
+                    'error': 'not_started',
+                  }, status: HttpStatus.conflict);
+                }
+                next = _unattendedJson(
+                  status: 'stopped',
+                  goal: '${previous['goal'] ?? ''}',
+                  criteria: previous['criteria'],
+                  maxRounds: previous['maxRounds'],
+                  previous: previous,
+                  resetRounds: false,
+                );
+              case 'resume':
+                final resumable = const {
+                  'needs_human',
+                  'exhausted',
+                  'stopped',
+                  'error',
+                }.contains(previous?['status']);
+                if (!resumable) {
+                  return _json(req, {
+                    'ok': false,
+                    'error': 'not_resumable',
+                  }, status: HttpStatus.conflict);
+                }
+                next = _unattendedJson(
+                  status: 'active',
+                  goal: '${previous!['goal'] ?? ''}',
+                  criteria: previous['criteria'],
+                  maxRounds: previous['maxRounds'],
+                  previous: previous,
+                  resetRounds: previous['status'] == 'exhausted',
+                );
+              default:
+                return _json(req, {
+                  'ok': false,
+                  'error': 'bad_action',
+                }, status: HttpStatus.badRequest);
+            }
+            _unattended[task.sessionId] = next;
+            return _json(req, {
+              'ok': true,
+              'unattended': next,
+              'limits': _unattendedLimits,
+            });
+          }
         }
       }
       // 首页和控制台顺手会读的几项：给空但合法的结果，界面就显示「暂无」，

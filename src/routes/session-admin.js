@@ -6,6 +6,7 @@ const { taskShortCode } = require('../classify/task-short-code');
 const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
 const { mountTaskGoalRoutes } = require('./task-goal');
+const { mountUnattendedRoutes } = require('../unattended/routes');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[session-admin] ${name} must be a function`);
@@ -601,6 +602,9 @@ function createSessionAdminRuntime(rawDeps) {
     // taskId。挂在这里是因为 deps 里已经有真正的状态 writer（server.js 的
     // setTaskState）；air-routes 的依赖没有它，另写一份写盘 + 广播就是第二套实现。
     mountTaskGoalRoutes(app, deps);
+    // Unattended mode's per-session GET/POST; the supervisor host is composed
+    // later, so it is resolved lazily through deps.getUnattended.
+    mountUnattendedRoutes(app, deps);
   }
 
   return Object.freeze({

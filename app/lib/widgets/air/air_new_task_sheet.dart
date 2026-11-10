@@ -25,9 +25,7 @@ typedef AirNewTaskSubmit =
       required String cli,
       required AirTaskRuntime runtime,
       required List<AirRoleBinding> roles,
-      required bool goal,
-      int? goalRounds,
-      int? goalBudget,
+      Map<String, dynamic>? unattended,
     });
 
 /// Same preview/confirm/delete flow as Web Air. The server rechecks every task
@@ -208,9 +206,7 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
     required String cli,
     required AirTaskRuntime runtime,
     required List<AirRoleBinding> roles,
-    required bool goal,
-    int? goalRounds,
-    int? goalBudget,
+    Map<String, dynamic>? unattended,
   }) async {
     setState(() => _submitting = true);
     final landed = await widget.onSubmit(
@@ -219,9 +215,7 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
       cli: cli,
       runtime: runtime,
       roles: roles,
-      goal: goal,
-      goalRounds: goalRounds,
-      goalBudget: goalBudget,
+      unattended: unattended,
     );
     if (!mounted) return landed;
     setState(() => _submitting = false);

@@ -593,17 +593,20 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
 });
 let chatEventController = null;
 let _eventGeneration = 0;
+// 无人值守面板（public/chat-unattended.js）。会话 id 要等 shell 视图解析出来，
+// 所以 onSession 回调里各刷一次；分享页没有接管入口，enabled 门直接关掉。
+let chatUnattended = null;
 // 分享页没有 shell：它的历史分页走 /api/share/<token>/history，WS 靠 token 授权。
 // 两边对外是同一个接口（prepare / event / historyUrl），所以下面用到 shellChatView
 // 的地方一句都不用改。
 const shellChatView = SHARE_MODE
   ? window.MultiCCShareMode.createView({
-    onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } },
+    onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } chatUnattended?.refresh?.(); },
   })
   : window.MultiCCChatShellEntry.createShellView({
     sourceSessionId: _shellSourceSession, taskId: _taskId, disabled: _params.get('readOnly') === '1',
     request: (url, options) => chatApi.json(url, options),
-    onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } },
+    onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } chatUnattended?.refresh?.(); },
   });
 const chatTransport = window.MultiCCChatTransport.createTransport({
   window,
@@ -1115,7 +1118,7 @@ function hideThinking() { return chatLiveUi.hideThinking(); }
 /* ── Composer compatibility surface ──
  * Message sending, attachments, keyboard/touch bindings and voice input are
  * owned by chat-composer.js. These wrappers preserve the classic globals used
- * by Goal mode, the native WebView bridge and older diagnostic snippets. */
+ * by the native WebView bridge and older diagnostic snippets. */
 let chatComposer = null;
 const pendingUserInputController = window.MultiCCChatUserInputCard.createController({
   document, isConnected: () => !!ws && ws.readyState === WebSocket.OPEN,
@@ -2402,9 +2405,22 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     renderPendingUserInput: message => pendingUserInputController.render(message),
     getUserInputRequestId: () => chatEventState.pendingUserInputRequestId,
     consumeUserInputRequestId,
+    applyUnattendedState: value => chatUnattended?.applyState?.(value),
     rearmUnread,
   },
 });
+/* ── 无人值守接管面板 ──
+   聊天页右侧的浮动图标；WS 的 unattended_state 由事件控制器转给 applyState，
+   打开面板/切会话时用 GET /api/sessions/:id/unattended 校准。分享页没有这个入口：
+   接管动作都是 owner-only，合作者只该看消息。 */
+if (!SHARE_MODE) {
+  chatUnattended = window.MultiCCChatUnattended?.create({
+    document, window, translate: tt,
+    getSessionId: () => _sessionName || sessionId || '',
+    request: (path, options) => chatApi.json(withToken(path), options),
+    errorText: error => chatApi.errorText(error),
+  });
+}
 /* ── Background task activity strip ──
    轮次等待期间贴在呼吸灯下方，展示后台任务描述 + 走字时长 + 最近输出，
    免得「后台在忙」被误读成「AI 卡住」。事件从 onMessage 旁路喂进来。 */
@@ -2507,7 +2523,6 @@ chatComposer = window.MultiCCChatComposer.createComposer({
     resetHistoryPagination();
     chatHistoryView.clearMessages();
   },
-  goalWrap,
   debug: dbg,
   updateUi: updateUI,
   getIsStreaming: () => isStreaming,
@@ -2571,164 +2586,6 @@ cwdConfirm.onclick = () => {
   // Reconnect with new cwd
   sessionId = null; // fresh session for new dir
   forceReconnect('cwd changed');
-};
-
-/* ── Goal mode: AI precheck before sending ──
-   The 🎯 button opens a modal; "预检" asks the aux-AI whether the task is
-   goal-ready (clear objective, clear done-criteria, bounded, executable). The
-   user accepts/edits the rewritten version, then it's wrapped in a short
-   goal-mode instruction and sent through the normal send() path. */
-// The precheck is a real Aux inference, and Aux is one-at-a-time: measured on
-// this host a single precheck costs ~18s even with an idle queue, and the same
-// queue also carries classify/memory work. The generic API client budget (15s)
-// aborted every precheck before the model could answer — that is the whole
-// "[API_TIMEOUT]" story.
-// The wait budget has exactly one source of truth: the server publishes its own
-// limit as `precheckWaitMs` (/api/settings/goal), the client only adds slack so
-// the server's explicit AUX_TIMEOUT message wins the race instead of a bare
-// client abort. The number is not guessed here on purpose.
-const GOAL_PRECHECK_FALLBACK_WAIT_MS = 180000;
-const GOAL_PRECHECK_SLACK_MS = 30000;
-let goalPrecheckWaitMs = 0;
-function goalPrecheckTimeoutMs() {
-  return (goalPrecheckWaitMs || GOAL_PRECHECK_FALLBACK_WAIT_MS) + GOAL_PRECHECK_SLACK_MS;
-}
-const goalModal       = document.getElementById('goal-modal');
-const goalBtn         = document.getElementById('goal-btn');
-const goalTaskEl      = document.getElementById('goal-task');
-const goalResultEl    = document.getElementById('goal-result');
-const goalVerdictEl   = document.getElementById('goal-verdict');
-const goalDetailEl    = document.getElementById('goal-detail');
-const goalRevisedEl   = document.getElementById('goal-revised');
-const goalErrorEl     = document.getElementById('goal-error');
-const goalPrecheckBtn = document.getElementById('goal-precheck');
-const goalSendBtn     = document.getElementById('goal-send');
-const goalSendRawBtn  = document.getElementById('goal-send-raw');
-const goalCancelBtn   = document.getElementById('goal-cancel');
-const goalMaxRoundsEl = document.getElementById('goal-max-rounds');
-const goalMaxBudgetEl = document.getElementById('goal-max-budget');
-
-function openGoalModal() {
-  goalTaskEl.value = inputEl.value.trim();
-  goalResultEl.style.display = 'none';
-  goalErrorEl.style.display = 'none';
-  goalVerdictEl.className = '';
-  goalDetailEl.innerHTML = '';
-  goalRevisedEl.value = '';
-  goalSendBtn.style.display = 'none';
-  goalSendRawBtn.style.display = 'none';
-  goalPrecheckBtn.style.display = '';
-  goalPrecheckBtn.disabled = false;
-  goalPrecheckBtn.textContent = '预检';
-  loadGoalDims();   // default the checkboxes to the global config
-  goalModal.classList.add('open');
-  goalTaskEl.focus();
-}
-function closeGoalModal() { goalModal.classList.remove('open'); }
-
-// Default the per-send dimension checkboxes to the saved global config.
-async function loadGoalDims() {
-  const boxes = document.querySelectorAll('#goal-dims input[data-dim]');
-  // Execution limits are per-send only (no global config): seed with the hard
-  // client default each time (200 rounds / no budget cap). Blank or 0 = unlimited.
-  if (goalMaxRoundsEl) goalMaxRoundsEl.value = '200';
-  if (goalMaxBudgetEl) goalMaxBudgetEl.value = '';
-  try {
-    const res = await fetch(withToken('/api/settings/goal'));
-    const d = await res.json();
-    // The server owns the queue, so it owns the budget too (see the comment on
-    // goalPrecheckTimeoutMs). Absent on old servers → keep the fallback.
-    const wait = Number(d && d.precheckWaitMs);
-    goalPrecheckWaitMs = Number.isFinite(wait) && wait > 0 ? wait : 0;
-    const dims = d.dimensions || {};
-    boxes.forEach(cb => { cb.checked = dims[cb.dataset.dim] !== false; });
-  } catch (_) {
-    boxes.forEach(cb => { cb.checked = true; });
-  }
-}
-function collectGoalDims() {
-  const dims = {};
-  document.querySelectorAll('#goal-dims input[data-dim]').forEach(cb => { dims[cb.dataset.dim] = cb.checked; });
-  return dims;
-}
-// Per-send limit overrides; blank → server falls back to the global config.
-function collectGoalLimits() {
-  const limits = {};
-  if (goalMaxRoundsEl && goalMaxRoundsEl.value.trim() !== '') limits.maxRounds = parseInt(goalMaxRoundsEl.value, 10);
-  if (goalMaxBudgetEl && goalMaxBudgetEl.value.trim() !== '') limits.maxBudget = parseInt(goalMaxBudgetEl.value, 10);
-  return limits;
-}
-
-function goalList(title, items) {
-  if (!items || !items.length) return '';
-  return '<div class="goal-sec-title">' + title + '</div><ul class="goal-list">' +
-    items.map(x => '<li>' + escHtml(x) + '</li>').join('') + '</ul>';
-}
-
-function renderGoalVerdict(d) {
-  const ok = d.verdict === 'ok';
-  goalVerdictEl.className = ok ? 'ok' : 'warn';
-  goalVerdictEl.textContent = (ok ? '✅ 符合 Goal 模式' : '⚠️ 建议先完善') +
-    '（符合度 ' + (d.score != null ? d.score : '-') + '/100）';
-  let html = '';
-  html += goalList('待完善', d.issues);
-  html += goalList('需澄清', d.questions);
-  html += goalList('建议完成标准', d.criteria);
-  if (d.raw) html += '<div class="goal-sec-title">辅助 AI 原始输出</div>' +
-    '<div style="font-size:11px;color:var(--chat-muted);white-space:pre-wrap">' + escHtml(String(d.raw).slice(0, 800)) + '</div>';
-  goalDetailEl.innerHTML = html;
-  goalRevisedEl.value = d.revised || goalTaskEl.value.trim();
-  goalResultEl.style.display = 'block';
-  goalSendBtn.textContent = ok ? '以 Goal 模式发送' : '确认并以 Goal 模式发送';
-  goalSendBtn.style.display = '';
-  goalSendRawBtn.style.display = '';
-}
-
-// Wrap the final task in a short goal-mode framing, then reuse send().
-function goalWrap(task) {
-  return '请以 Goal 模式执行以下任务：目标驱动、自主规划并一步步执行到完成；' +
-    '遇到不明确处用合理默认推进并说明假设；完成后自检并验证结果是否达到完成标准。\n\n' + task;
-}
-function sendGoal(task) {
-  const t = (task || '').trim();
-  if (!t) return;
-  const limits = collectGoalLimits();
-  closeGoalModal();
-  inputEl.value = goalWrap(t);
-  inputEl.style.height = 'auto';
-  send({ goal: true, goalLimits: limits });
-}
-
-goalBtn?.addEventListener('click', openGoalModal);
-if (goalCancelBtn) goalCancelBtn.onclick = closeGoalModal;
-if (goalModal) goalModal.onclick = (e) => { if (e.target === goalModal) closeGoalModal(); };
-if (goalSendBtn) goalSendBtn.onclick = () => sendGoal(goalRevisedEl.value || goalTaskEl.value);
-if (goalSendRawBtn) goalSendRawBtn.onclick = () => sendGoal(goalTaskEl.value);
-if (goalTaskEl) goalTaskEl.onkeydown = (e) => {
-  if (e.key === 'Escape') closeGoalModal();
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); goalPrecheckBtn.click(); }
-};
-if (goalPrecheckBtn) goalPrecheckBtn.onclick = async () => {
-  const task = goalTaskEl.value.trim();
-  if (!task) { goalErrorEl.textContent = '请先填写任务'; goalErrorEl.style.display = 'block'; return; }
-  goalErrorEl.style.display = 'none';
-  goalPrecheckBtn.disabled = true;
-  goalPrecheckBtn.textContent = '预检中…';
-  try {
-    const data = await chatApi.json(withToken('/api/goal/precheck'), {
-      method: 'POST', json: { task, dimensions: collectGoalDims() },
-      timeoutMs: goalPrecheckTimeoutMs(),
-    });
-    if (!data.ok) throw chatApi.errorFromPayload({ ...data, error: data.error || '预检失败' });
-    renderGoalVerdict(data);
-  } catch (e) {
-    goalErrorEl.textContent = '预检失败：' + chatApi.errorText(e) + '（可直接「用原文发送」）';
-    goalErrorEl.style.display = 'block';
-    goalSendRawBtn.style.display = '';   // let the user skip precheck and send anyway
-  } finally {
-    goalPrecheckBtn.disabled = false;
-    goalPrecheckBtn.textContent = '重新预检';
-  }
 };
 
 /* ── visualViewport fix ── */

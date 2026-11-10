@@ -300,6 +300,153 @@
       ],
       "format": "date-time"
     },
+    "unattended": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "goal",
+        "criteria",
+        "maxRounds",
+        "rounds",
+        "startedAt",
+        "updatedAt",
+        "lastVerdict",
+        "history",
+        "stall"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "active",
+            "achieved",
+            "needs_human",
+            "exhausted",
+            "stopped",
+            "error"
+          ]
+        },
+        "goal": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "criteria": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "maxRounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "startedAt": {
+          "type": "number",
+          "minimum": 0
+        },
+        "updatedAt": {
+          "type": "number",
+          "minimum": 0
+        },
+        "lastVerdict": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "verdict",
+            "reason",
+            "nextInstruction",
+            "humanReason",
+            "at"
+          ],
+          "properties": {
+            "verdict": {
+              "enum": [
+                "achieved",
+                "continue",
+                "needs_human"
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "nextInstruction": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "humanReason": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "at": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "history": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "at",
+              "verdict",
+              "reason"
+            ],
+            "properties": {
+              "at": {
+                "type": "number",
+                "minimum": 0
+              },
+              "verdict": {
+                "enum": [
+                  "achieved",
+                  "continue",
+                  "needs_human"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 1000
+              }
+            }
+          }
+        },
+        "stall": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sameInstruction",
+            "auxFailures"
+          ],
+          "properties": {
+            "sameInstruction": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "auxFailures": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
     "mergeState": {
       "type": [
         "object",

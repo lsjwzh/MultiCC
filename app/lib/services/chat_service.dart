@@ -578,6 +578,12 @@ class ChatService {
         _emit('task_state', msg);
         break;
 
+      case 'unattended_state':
+        // 无人值守监督器状态：广播在每次变化后到达，连接时服务端会重放一次。
+        // payload 就是 `unattended` 本身（null = 从未启用）。
+        _emit('unattended_state', msg['unattended']);
+        break;
+
       case 'aux_verdict_staleness':
         // The classifier behind the bar just changed health. A frozen
         // classifier produces no further `task_state`, so this frame is the only
@@ -702,11 +708,6 @@ class ChatService {
   /// The caller must not show a message as sent on null. The id is persisted
   /// through the server FIFO and echoed by chat_msg_meta for exact reconciliation.
   ///
-  /// When [goal] is true the message is flagged as a Goal-mode send and the
-  /// server applies the per-send execution limits in [goalLimits] (maxRounds →
-  /// claude --max-turns; maxBudget → advisory token budget). There is no global
-  /// limit config — blank/0 means unlimited for that dimension.
-  ///
   /// [clientMsgId] pins the correlation id instead of generating one. The server
   /// dedupes on it, so a caller that re-sends the same logical message after a
   /// lost response (the chat page's 强制同步 button) passes the same value twice
@@ -718,8 +719,6 @@ class ChatService {
   /// typed messages — the two extra frame fields are only added when it is set.
   String? send(
     String text, {
-    bool goal = false,
-    Map<String, dynamic>? goalLimits,
     String? clientMsgId,
     String? voiceRaw,
   }) {
@@ -747,10 +746,6 @@ class ChatService {
       if (pendingRequestId != null && pendingRequestId.isNotEmpty) {
         payload['userInputRequestId'] = pendingRequestId;
         payload['turnId'] = _controlTurnId;
-      }
-      if (goal) {
-        payload['goal'] = true;
-        payload['goalLimits'] = goalLimits ?? <String, dynamic>{};
       }
       if (_pendingShellInput != null) {
         final waiting = DateTime.now().difference(

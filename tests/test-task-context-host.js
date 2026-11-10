@@ -239,6 +239,31 @@ test('canonical session ingress runs both ordinary and Commander sessions throug
   assert.equal(runTurns[1].text, '派给工程师改 README');
 });
 
+test('unattended arming rides the first message and system answers do not look human', async () => {
+  const armed = [];
+  const noted = [];
+  const { host } = fixture({
+    armUnattended: (id, spec, text) => armed.push({ id, spec, text }),
+    noteUnattendedUserMessage: id => noted.push(id),
+  });
+  const first = await host.deliverSessionMessage('worker', 'ship it', {
+    clientMsgId: 'unattended-1',
+    unattended: { maxRounds: 5 },
+  });
+  assert.equal(first.ok, true);
+  assert.deepEqual(armed, [{ id: 'worker', spec: { maxRounds: 5 }, text: 'ship it' }]);
+  assert.deepEqual(noted, ['worker'], 'the human first message resets the stall counters');
+
+  // The supervisor's own answer to a pending question is a system injection,
+  // not a human message: it must not reset the counters.
+  await host.deliverSessionMessage('worker', 'B', {
+    clientMsgId: 'unattended-2',
+    userInputRequestId: 'usrq-1',
+    unattendedSystem: true,
+  });
+  assert.deepEqual(noted, ['worker']);
+});
+
 test('production wires task board and WebSocket chat to the same session ingress', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const turnEngine = fs.readFileSync(

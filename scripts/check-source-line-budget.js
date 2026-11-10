@@ -174,10 +174,13 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-10 held-turn redesign: claude availability reads the bundled engine
   // binary (M1) and the native load-time identity normalisation owns one boot
   // save (M4), measured 3037 lines / 161434 bytes.
+  // 2026-11-10 unattended mode replaces Goal mode: the supervisor is composed in
+  // src/unattended/runtime.js, so server.js only adds one require plus the
+  // late-bound ports; measured 3040 lines / 162115 bytes.
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3037,
-    byteCeiling: 161434,
+    ceiling: 3040,
+    byteCeiling: 162115,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),
@@ -604,9 +607,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 行数不变、字节加长，countLines 口径实测 10266/666980，按真实高水位抬字节一格。
     // 同步 main 的队列编辑校验文案：queueEntryTextTooLong/queueEntryTextRequired
     // 中英各两条，共增加 4 行；按既有 countLines 口径复核为 10270/667329。
-    maxLines: 10270,
+    // 无人值守接替 Goal 模式：新增 46 个双语键（聊天接管面板、新建任务的无人值守
+    // 字段、目标预检面板），同时把只在旧生成物里、源词典已经没有的 40 个 airGoal*
+    // 旧键清掉；重跑 generate-i18n.js 实测 10288/667560，按真实高水位抬一格。
+    maxLines: 10288,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 667329,
+    maxBytes: 667560,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

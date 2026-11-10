@@ -1,0 +1,363 @@
+/* 无人值守浮动图标与面板 —— 位置由 chat-unattended.js 按 #input-bar 的实时矩形
+   写进 --unat-right / --unat-bottom。这样输入框长高、软键盘弹起、Air iframe 尺寸变化
+   时都能跟着走，图标永远压在发送键上方而不是压住它。 */
+.unat-root {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  pointer-events: none;
+}
+
+.unat-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 12, 20, 0.36);
+  z-index: 9000;
+  pointer-events: auto;
+}
+.unat-scrim[hidden] { display: none; }
+
+.unat-fab {
+  position: fixed;
+  right: var(--unat-right, 16px);
+  bottom: var(--unat-bottom, 96px);
+  z-index: 9002;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.32));
+  background: var(--panel, #1b2230);
+  color: var(--muted, #9aa7b8);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  transition: color .18s ease, border-color .18s ease, background .18s ease, transform .12s ease;
+}
+.unat-fab:hover { transform: translateY(-1px); }
+.unat-fab:focus-visible { outline: 2px solid var(--accent, #4c8dff); outline-offset: 2px; }
+.unat-fab-icon { pointer-events: none; }
+
+.unat-fab.unat-state-idle { color: var(--muted, #9aa7b8); }
+.unat-fab.unat-state-active {
+  color: #2fbf71;
+  border-color: rgba(47, 191, 113, 0.72);
+  animation: unat-pulse 1.8s ease-in-out infinite;
+}
+.unat-fab.unat-state-needs_human {
+  color: #f0a429;
+  border-color: rgba(240, 164, 41, 0.8);
+}
+.unat-fab.unat-state-achieved {
+  color: #2fbf71;
+  border-color: rgba(47, 191, 113, 0.6);
+}
+.unat-fab.unat-state-exhausted { color: #b0846a; }
+.unat-fab.unat-state-stopped { color: var(--muted, #9aa7b8); }
+.unat-fab.unat-state-error {
+  color: #ef5b5b;
+  border-color: rgba(239, 91, 91, 0.7);
+}
+
+@keyframes unat-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(47, 191, 113, 0.42), 0 2px 8px rgba(0, 0, 0, 0.28); }
+  50% { box-shadow: 0 0 0 6px rgba(47, 191, 113, 0), 0 2px 8px rgba(0, 0, 0, 0.28); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .unat-fab.unat-state-active { animation: none; }
+}
+
+.unat-panel {
+  position: fixed;
+  right: var(--unat-right, 16px);
+  /* 让开浮动图标那一圈（38px + 缝），否则图标的 z-index 更高，正好压住面板右下角
+     的按钮。面板整体贴着输入框上沿往上长。 */
+  bottom: calc(var(--unat-bottom, 96px) + 46px);
+  z-index: 9001;
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.3));
+  background: var(--panel, #161d29);
+  color: var(--fg, #e6ecf5);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.42);
+  pointer-events: auto;
+}
+.unat-panel[hidden] { display: none; }
+
+.unat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 8px;
+}
+.unat-title { margin: 0; font-size: 14px; font-weight: 600; }
+.unat-close {
+  border: 0;
+  background: none;
+  color: var(--muted, #9aa7b8);
+  font-size: 19px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.unat-close:hover { color: var(--fg, #e6ecf5); }
+
+.unat-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.unat-intro { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted, #9aa7b8); }
+
+.unat-status-card {
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.24));
+  border-radius: 9px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.unat-status-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.unat-status-label { font-size: 12px; font-weight: 600; }
+.unat-status-active { color: #2fbf71; }
+.unat-status-achieved { color: #2fbf71; }
+.unat-status-needs_human { color: #f0a429; }
+.unat-status-exhausted { color: #b0846a; }
+.unat-status-error { color: #ef5b5b; }
+.unat-status-stopped,
+.unat-status-idle { color: var(--muted, #9aa7b8); }
+.unat-round { font-size: 11px; color: var(--muted, #9aa7b8); white-space: nowrap; }
+.unat-human {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(240, 164, 41, 0.12);
+  color: #f0b45a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.unat-verdict {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted, #9aa7b8);
+  overflow-wrap: anywhere;
+}
+
+.unat-field { display: flex; flex-direction: column; gap: 4px; }
+.unat-label { font-size: 12px; font-weight: 600; }
+.unat-hint { font-size: 11px; color: var(--muted, #9aa7b8); line-height: 1.4; }
+.unat-goal {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 62px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.3));
+  background: var(--input-bg, rgba(0, 0, 0, 0.2));
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.unat-goal:focus-visible,
+.unat-criterion-input:focus-visible,
+.unat-rounds:focus-visible { outline: 1px solid var(--accent, #4c8dff); outline-offset: 1px; }
+
+.unat-criteria { display: flex; flex-direction: column; gap: 5px; }
+.unat-criterion { display: flex; align-items: center; gap: 6px; }
+.unat-criterion-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.3));
+  background: var(--input-bg, rgba(0, 0, 0, 0.2));
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+.unat-criterion-remove {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted, #9aa7b8);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.unat-criterion-remove:hover { color: #ef5b5b; border-color: rgba(239, 91, 91, 0.4); }
+.unat-add-criterion {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  border: 1px dashed var(--border, rgba(140, 160, 190, 0.4));
+  background: none;
+  color: var(--muted, #9aa7b8);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.unat-add-criterion:hover:not(:disabled) { color: var(--fg, #e6ecf5); }
+.unat-add-criterion:disabled { opacity: .45; cursor: default; }
+
+.unat-rounds-row { display: flex; align-items: center; gap: 8px; }
+.unat-rounds {
+  width: 76px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.3));
+  background: var(--input-bg, rgba(0, 0, 0, 0.2));
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+.unat-rounds-field .unat-hint { flex: 1 1 auto; }
+
+.unat-draft {
+  align-self: flex-start;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.36));
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg, #e6ecf5);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.unat-draft:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.unat-draft:disabled { opacity: .55; cursor: default; }
+
+.unat-precheck {
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.24));
+  border-radius: 9px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.unat-precheck[hidden] { display: none; }
+.unat-precheck-verdict { font-weight: 600; }
+.unat-precheck-verdict.ok { color: #2fbf71; }
+.unat-precheck-verdict.warn { color: #f0a429; }
+.unat-precheck-issues { margin: 0; color: var(--muted, #9aa7b8); overflow-wrap: anywhere; }
+.unat-revised { display: flex; flex-direction: column; gap: 5px; }
+.unat-revised-text { color: var(--muted, #9aa7b8); white-space: pre-wrap; overflow-wrap: anywhere; }
+.unat-use-revised {
+  align-self: flex-start;
+  padding: 4px 9px;
+  border-radius: 7px;
+  border: 1px solid rgba(76, 141, 255, 0.5);
+  background: rgba(76, 141, 255, 0.12);
+  color: #8fb7ff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.unat-history { display: flex; flex-direction: column; gap: 4px; }
+.unat-history-title { font-size: 12px; font-weight: 600; }
+.unat-history-empty { font-size: 11px; color: var(--muted, #9aa7b8); }
+.unat-history-row {
+  display: flex;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.unat-history-verdict { flex: 0 0 auto; color: var(--muted, #9aa7b8); font-weight: 600; }
+.unat-history-reason { color: var(--muted, #9aa7b8); overflow-wrap: anywhere; }
+
+.unat-error {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: rgba(239, 91, 91, 0.12);
+  color: #f38b8b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.unat-error[hidden] { display: none; }
+
+.unat-actions {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border, rgba(140, 160, 190, 0.2));
+}
+.unat-actions button {
+  padding: 6px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.36));
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg, #e6ecf5);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.unat-actions button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.unat-actions button:disabled { opacity: .55; cursor: default; }
+.unat-actions .unat-primary {
+  border-color: rgba(47, 191, 113, 0.55);
+  background: rgba(47, 191, 113, 0.16);
+  color: #6fe0a2;
+  font-weight: 600;
+}
+.unat-actions .unat-stop {
+  border-color: rgba(239, 91, 91, 0.45);
+  color: #f38b8b;
+}
+
+@media (max-width: 560px) {
+  /* 手机上改成底部抽屉：宽度贴边，仍留出图标那一列，避免把面板压到发送键上。 */
+  .unat-panel {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    max-height: 72vh;
+    border-radius: 14px 14px 0 0;
+    bottom: calc(var(--unat-bottom, 96px) + 44px);
+  }
+  .unat-fab { width: 36px; height: 36px; font-size: 16px; }
+}
+
+@media (prefers-color-scheme: light) {
+  .unat-fab,
+  .unat-panel { background: #fff; color: #1d2733; }
+  .unat-intro,
+  .unat-hint,
+  .unat-round,
+  .unat-verdict,
+  .unat-history-empty,
+  .unat-history-verdict,
+  .unat-history-reason { color: #5b6878; }
+  .unat-status-card { background: rgba(20, 30, 45, 0.03); }
+  .unat-goal,
+  .unat-criterion-input,
+  .unat-rounds { background: #f6f8fb; }
+}

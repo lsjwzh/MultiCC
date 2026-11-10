@@ -120,6 +120,9 @@ function createClassifyStateMachine(rawDeps) {
     // 「这个任务是否更适合另一个目录」的目录清单。可选：没有它时提示词不带
     // 目录段，解析层也会丢掉任何 directoryHint——判定本身不受影响。
     getDirectories = null,
+    // Unattended supervisor (docs/unattended-mode.md). Optional: classify keeps
+    // working without it, it just never triggers a verdict.
+    getUnattendedHost = () => null,
   } = deps;
 
   if (!persistedSessions || typeof persistedSessions.get !== 'function') {
@@ -348,6 +351,9 @@ function createClassifyStateMachine(rawDeps) {
       // counter only — it can't cancel an already-scheduled inject setTimeout; that
       // window is tiny and separate.)
       getWaitInjector().resetInterrupted(sessionName);
+      // Unattended mode: a finished turn is the only verdict trigger besides an
+      // explicit start/resume. Fire and forget — the supervisor guards itself.
+      try { getUnattendedHost()?.onTurnSettled(sessionName, { assistantText: cs?.currentAssistantText || '' }); } catch (_) {}
       return;
     }
 
@@ -473,6 +479,17 @@ function createClassifyStateMachine(rawDeps) {
     if (isWaitForUserLetter(state)) {
       getWaitInjector().resetAuto(sessionName);
     }
+    // Unattended mode: a human Cancel disarms it; a W (waiting on the user) is a
+    // finished turn and gets a verdict like D. B (background) and E (fault) do
+    // not — their own policies own them.
+    try {
+      const unattended = getUnattendedHost();
+      if (cancel) {
+        if (cancel.source === 'manual_cancel') unattended?.onManualCancel(sessionName);
+      } else if (isWaitForUserLetter(state)) {
+        unattended?.onTurnSettled(sessionName, { assistantText: cs?.currentAssistantText || '' });
+      }
+    } catch (_) {}
   }
 
   // ── Periodic task-attribution backstop ────────────────────────────────────

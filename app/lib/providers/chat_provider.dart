@@ -21,6 +21,7 @@ import '../services/settings_service.dart';
 import '../services/transcript_live_folder.dart';
 import '../utils/session_status_helpers.dart';
 import 'admission_notes.dart';
+import 'chat_provider_unattended.dart';
 import 'pending_configuration.dart';
 
 // Re-exported so existing tests keep importing the sidecar helpers from the
@@ -310,8 +311,9 @@ class StagedSendTracker {
   }
 }
 
-class ChatProvider extends ChangeNotifier {
+class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
   final String? taskBoundTaskId;
+  @override
   final SettingsService settings;
   final String sessionName;
   String displayName;
@@ -378,6 +380,7 @@ class ChatProvider extends ChangeNotifier {
   String get sessionId => _sessionId ?? '';
 
   /// Stable server record for operations; sessionId above is the native CLI resume ID.
+  @override
   String get executionSessionName => _service.executionSessionName;
 
   /// 本会话所属的任务壳 id（连接握手后才拿得到）。产物边栏的 scope。
@@ -693,18 +696,13 @@ class ChatProvider extends ChangeNotifier {
   Map<String, dynamic>? _rateLimitBar;
   Map<String, dynamic>? _balanceBar;
 
-  // Idle (no-data-yet) bars for every vendor, rendered once on the server
-  // (GET /api/quota/bars/idle → {status:'ok', bars:{ark,zhipu,kimi,...}}).
-  // Cached on connect so an unfetched bar shows the server's idle placeholder
-  // verbatim — the app holds no hardcoded idle text of its own.
+  // Idle (no-data-yet) bars from GET /api/quota/bars/idle; see [_vendorOrIdle].
   Map<String, dynamic>? _idleBars;
 
   // ── What the usage bar under the transcript shows ─────────────────────────
-  // The bar itself shows context and nothing else; everything below it reaches
-  // the user through the tap/long-press detail sheet. Money is deliberately
-  // absent: `total_cost_usd` comes from the CLI, which prices every turn with
-  // Anthropic's table even when the request was routed to another provider, so
-  // it is not this session's cost and no label here could make it one.
+  // The bar shows context only; everything below reaches the user through the
+  // detail sheet. Money is absent: `total_cost_usd` is priced by the CLI's
+  // Anthropic table even for other providers, so it is not this session's cost.
 
   /// Usage of the newest single API request (stream_event `message_start`).
   /// One request cannot double-count its own cached prefix, so its prompt side
@@ -735,13 +733,9 @@ class ChatProvider extends ChangeNotifier {
 
   // ── 引用消息的落地通道 ─────────────────────────────────────────────────────
   //
-  // 引用块要插进输入框，而输入框（TextEditingController）归聊天页持有 ——
-  // provider 连它的影子都没有。所以聊天页在自己的 initState 里把「把这段文字
-  // 放进输入框」登记到这儿，气泡那边长按后调它。
-  //
-  // 可空是刻意的，也是这个通道唯一的语义：没有输入框的宿主（任务详情那种只读
-  // 转录）保持为 null，气泡据此**不提供**「引用」—— 摆一个点不动的入口，比
-  // 不摆更糟。
+  // 输入框控制器归聊天页持有，所以由它在 initState 登记「把这段文字放进输入框」，
+  // 气泡长按后调它。宿主没有输入框（只读转录）时保持 null，气泡据此不提供
+  // 「引用」—— 摆一个点不动的入口，比不摆更糟。
 
   /// 由持有输入框的那一层登记：把 [block] 插进输入框并聚焦。null = 本宿主没有
   /// 输入框，不提供引用。
@@ -792,17 +786,13 @@ class ChatProvider extends ChangeNotifier {
   /// Whether the entire app is in the background.
   bool isInBackground = false;
 
-  /// Latest `role_token_stats` payload from the server (keyed by `role`).
-  /// Cached so `_onResult` can compute savedMainTokens even if this event
-  /// arrived before the result. See the WS timing note in `_onResult`.
+  /// Latest `role_token_stats` payload (keyed by `role`), cached for `_onResult`.
   Map<String, dynamic>? _lastRoleTokens;
 
-  /// Parsed view of the same event — feeds the usage detail sheet (main /
-  /// sub / per-provider split) instead of re-reading the raw map in widgets.
+  /// Parsed view of the same event — feeds the usage detail sheet.
   RoleTokenBreakdown? _lastRoleBreakdown;
 
   /// Background-task danmaku state machine (web chat-live-ui.js parity).
-  /// Fed by monitor_* / progress_heartbeat / background_tasks events.
   final BackgroundTaskBoard _backgroundTasks = BackgroundTaskBoard();
   Timer? _bgSweepTimer;
 
@@ -1039,6 +1029,7 @@ class ChatProvider extends ChangeNotifier {
     _service.connect();
     // Fresh socket = reconnect reconcile for the polled dispatch snapshot.
     unawaited(refreshDispatchQueue());
+    unawaited(refreshUnattended());
   }
 
   // ── Event handling ─────────────────────────────────────────────────────────
@@ -1492,6 +1483,10 @@ class ChatProvider extends ChangeNotifier {
           notifyListeners();
           break;
         }
+
+      case 'unattended_state':
+        applyUnattendedEvent(evt.payload);
+        break;
 
       case 'aux_verdict_staleness':
         {
@@ -2713,8 +2708,6 @@ class ChatProvider extends ChangeNotifier {
   /// 字段。
   String? sendMessage(
     String text, {
-    bool goal = false,
-    Map<String, dynamic>? goalLimits,
     String? clientMsgId,
     String? voiceRaw,
   }) {
@@ -2722,8 +2715,6 @@ class ChatProvider extends ChangeNotifier {
     if (message.isEmpty) return null;
     final sentMsgId = _service.send(
       message,
-      goal: goal,
-      goalLimits: goalLimits,
       clientMsgId: clientMsgId,
       voiceRaw: voiceRaw,
     );

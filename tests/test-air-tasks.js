@@ -160,6 +160,27 @@ test('Air exposes message time separately from task metadata update time', async
   assert.equal(task.lastMessageAt, 500);
 });
 
+test('Air projects compact unattended progress onto task cards without mutating cached tasks', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  const cached = { id: 't', chatSessionId: 's', title: 'Task', createdAt: 100, updatedAt: 900,
+    refs: [{ sessionId: 's', dirId: 'd1', ts: 300 }] };
+  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', unattended: {
+      status: 'active', goal: 'ship it', criteria: ['tests pass'], rounds: 2, maxRounds: 30,
+      history: [{ round: 1, verdict: 'continue' }], stall: { sameInstruction: 0, auxFailures: 0 },
+    } }]]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ modules: {}, tasks: { t: cached } }),
+    clis: ['codex'], shell: { taskAccess: () => ({ readOnly: false }) } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res);
+  const [task] = JSON.parse(res.body).tasks;
+  assert.deepEqual(task.unattended, { status: 'active', rounds: 2, maxRounds: 30 });
+  assert.equal('unattended' in cached, false, 'the cached task card is never mutated');
+  assert.equal(JSON.stringify(JSON.parse(res.body)).includes('ship it'), false,
+    'task rows only expose compact progress, not the goal text');
+});
+
 test('Air projects cached worktree delivery state onto task cards without treating behind as pending work', async () => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };

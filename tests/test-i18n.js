@@ -75,7 +75,7 @@ const webRefs = new Set();
 // 名单上，key 拼错了 CI 一声不吭（页面上直接印出 termCwdUnknown 这种东西），所以
 // 一起扫。
 for (const name of [...pageFiles, 'chat.js', 'chat-ai-config.js', 'auto-provider-editor.js',
-  'chat-handoff.js', 'client.js', ...airFiles]) {
+  'chat-handoff.js', 'chat-unattended.js', 'client.js', ...airFiles]) {
   const source = fs.readFileSync(path.join(root, 'public', name), 'utf8');
   // tr(...) 也是取词：它是各模块自带的「词典取不到就用中文兜底」那层壳（client.js /
   // memo-controller.js 都有），只认 t(/tt( 会让这批 key 全漏掉。

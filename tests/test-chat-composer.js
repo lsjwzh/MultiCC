@@ -248,7 +248,6 @@ function composerFixture(overrides = {}) {
     getUserInputRequestId: () => overrides.userInputRequestId || null,
     consumeUserInputRequestId: value => starts.push(['consumed-input', value]),
     resetHistory: () => starts.push('reset'),
-    goalWrap: task => `[goal] ${task}`,
     debug() {},
   });
   return { api, composer, inputEl, area, sent, system, users, starts, pending, retries };
@@ -299,13 +298,13 @@ test('a pending structured question is correlated with the next successful send 
   assert.deepEqual(failed.starts, []);
 });
 
-test('goal slash command uses the same send path and preserves goal metadata', () => {
+test('the retired /goal command is sent as plain text with no Goal metadata', () => {
   const fixture = composerFixture({ text: '/goal ship it' });
   fixture.composer.send();
   assert.equal(fixture.sent.length, 1);
-  assert.equal(fixture.sent[0].text, '[goal] ship it');
-  assert.equal(fixture.sent[0].goal, true);
-  assert.deepEqual(fixture.sent[0].goalLimits, {});
+  assert.equal(fixture.sent[0].text, '/goal ship it');
+  assert.equal('goal' in fixture.sent[0], false, 'Goal mode send option is gone');
+  assert.equal('goalLimits' in fixture.sent[0], false);
 });
 
 test('disconnected send is fail-closed and schedules reconnect', () => {
@@ -450,7 +449,7 @@ test('manual retry cancels the open turn, waits, then resubmits the original pay
   assert.deepEqual(fixture.sent.map(p => p.type), ['user_message', 'cancel', 'user_message']);
   const again = fixture.sent[2];
   assert.equal(again.text, first.text, '原数据原样重发（装饰后的文本，不是输入框当前内容）');
-  assert.equal(again.goal, true);
+  assert.equal('goal' in again, false, 'Goal metadata is not resurrected on retry');
   assert.notEqual(again.clientMsgId, first.clientMsgId, '重发是一条新消息');
   assert.deepEqual(ticks, [1]);
 });

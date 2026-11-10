@@ -324,6 +324,9 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(sessionAdmin.includes('const sessionWorkspace = createWorkspaceService({'));
   assert.ok(sessionAdmin.includes("app.get('/api/v1/sessions'"));
   assert.ok(sessionAdmin.includes("app.get('/api/sessions'"));
+  // Unattended mode owns the per-session goal loop; its routes are mounted with
+  // the other session-admin routes (docs/unattended-mode.md).
+  assert.ok(sessionAdmin.includes("mountUnattendedRoutes(app, deps)"));
   assert.ok(source.includes("app.get('/api/v1/providers'"));
   assert.ok(sessionAdmin.includes("app.get('/api/v1/directories/:id/workspace'"));
   assert.ok(orchestrationRoutes.includes("app.get('/api/v1/sessions/:id/waits'"));

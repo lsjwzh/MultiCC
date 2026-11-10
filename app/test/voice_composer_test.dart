@@ -149,8 +149,6 @@ class _ConnectedChatProvider extends ChatProvider {
   String? sendMessage(
     String text, {
     String? clientMsgId,
-    bool goal = false,
-    Map<String, dynamic>? goalLimits,
     String? voiceRaw,
   }) => 'test-msg';
 }
@@ -196,9 +194,7 @@ Future<void> _pumpDirectory(WidgetTester tester, SettingsService settings) async
                   required String cli,
                   required AirTaskRuntime runtime,
                   required List<AirRoleBinding> roles,
-                  required bool goal,
-                  int? goalRounds,
-                  int? goalBudget,
+                  Map<String, dynamic>? unattended,
                 }) async => true,
           ),
         ),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -686,9 +687,7 @@ class _AirTasksViewState extends State<AirTasksView>
     required String cli,
     required AirTaskRuntime runtime,
     required List<AirRoleBinding> roles,
-    required bool goal,
-    int? goalRounds,
-    int? goalBudget,
+    Map<String, dynamic>? unattended,
   }) async {
     final dirId = targetDirectoryId ?? _directoryId;
     if (dirId == null || _submitting) return false;
@@ -700,8 +699,8 @@ class _AirTasksViewState extends State<AirTasksView>
     // 线路或角色再点就是另一次创建（同 Web Air 的 fingerprint）。
     _attempt = AirCreateAttempt.forFingerprint(
       '$dirId|$text|$cli|${runtime.summary}|'
-      '${roles.map((r) => '${r.name}:${r.prompt}').join(',')}|$goal|'
-      '$goalRounds|$goalBudget',
+      '${roles.map((r) => '${r.name}:${r.prompt}').join(',')}|'
+      '${jsonEncode(unattended ?? const <String, dynamic>{})}',
       _attempt,
     );
     final attempt = _attempt!;
@@ -753,9 +752,7 @@ class _AirTasksViewState extends State<AirTasksView>
         taskId: created,
         text: text,
         clientMsgId: attempt.sendId,
-        goal: goal,
-        goalRounds: goalRounds,
-        goalBudget: goalBudget,
+        unattended: unattended,
       );
       _attempt = null;
       await _refresh();
@@ -835,9 +832,7 @@ class _AirTasksViewState extends State<AirTasksView>
             required String cli,
             required AirTaskRuntime runtime,
             required List<AirRoleBinding> roles,
-            required bool goal,
-            int? goalRounds,
-            int? goalBudget,
+            Map<String, dynamic>? unattended,
           }) async {
             await _createFromComposer(
               targetDirectoryId: directoryId,
@@ -845,9 +840,7 @@ class _AirTasksViewState extends State<AirTasksView>
               cli: cli,
               runtime: runtime,
               roles: roles,
-              goal: goal,
-              goalRounds: goalRounds,
-              goalBudget: goalBudget,
+              unattended: unattended,
             );
             // 这一层收不收，看的是**草稿有没有归属**，不是「人有没有跳进那个任务」：
             // 整条链路成了、或任务建出来了只是第一条消息没送到，两种都该收掉（同 Web

@@ -56,6 +56,49 @@ function mergeStateDto(value) {
   };
 }
 
+// Unattended mode state (docs/unattended-mode.md). Only the bounded public
+// fields; counts are clamped the same way the Rust kernel clamps them.
+const UNATTENDED_STATUSES = new Set(['active', 'achieved', 'needs_human', 'exhausted', 'stopped', 'error']);
+const UNATTENDED_VERDICTS = new Set(['achieved', 'continue', 'needs_human']);
+
+function unattendedDto(value) {
+  if (!value || typeof value !== 'object') return null;
+  const status = UNATTENDED_STATUSES.has(value.status) ? value.status : 'stopped';
+  const criteria = Array.isArray(value.criteria)
+    ? value.criteria.slice(0, 12).map(item => nullableString(item, 300)).filter(Boolean)
+    : [];
+  const history = Array.isArray(value.history)
+    ? value.history.slice(-10).map(row => ({
+      at: Math.max(0, Number(row && row.at) || 0),
+      verdict: UNATTENDED_VERDICTS.has(row && row.verdict) ? row.verdict : 'continue',
+      reason: nullableString(row && row.reason, 1000) || '',
+    })) : [];
+  const lastVerdict = value.lastVerdict && typeof value.lastVerdict === 'object'
+    ? {
+      verdict: UNATTENDED_VERDICTS.has(value.lastVerdict.verdict) ? value.lastVerdict.verdict : 'continue',
+      reason: nullableString(value.lastVerdict.reason, 1000) || '',
+      nextInstruction: nullableString(value.lastVerdict.nextInstruction, 4000) || '',
+      humanReason: nullableString(value.lastVerdict.humanReason, 1000) || '',
+      at: Math.max(0, Number(value.lastVerdict.at) || 0),
+    } : null;
+  const stall = value.stall && typeof value.stall === 'object' ? {
+    sameInstruction: Math.max(0, Math.floor(Number(value.stall.sameInstruction) || 0)),
+    auxFailures: Math.max(0, Math.floor(Number(value.stall.auxFailures) || 0)),
+  } : { sameInstruction: 0, auxFailures: 0 };
+  return {
+    status,
+    goal: nullableString(value.goal, 2000) || '',
+    criteria,
+    maxRounds: Math.min(200, Math.max(1, Math.floor(Number(value.maxRounds) || 30))),
+    rounds: Math.max(0, Math.floor(Number(value.rounds) || 0)),
+    startedAt: Math.max(0, Number(value.startedAt) || 0),
+    updatedAt: Math.max(0, Number(value.updatedAt) || 0),
+    lastVerdict,
+    history,
+    stall,
+  };
+}
+
 function assertDtoSafe(value, location = '$') {
   if (Array.isArray(value)) {
     value.forEach((item, index) => assertDtoSafe(item, `${location}[${index}]`));
@@ -98,6 +141,7 @@ function toSessionDto(source = {}) {
     lastWorkAt: timestamp(source.lastWorkAt || source.createdAt),
     hibernatedAt: timestamp(source.hibernatedAt),
     mergeState: mergeStateDto(source.mergeState),
+    unattended: unattendedDto(source.unattended),
   };
   if (!dto.id) throw new TypeError('session DTO requires id');
   return assertDtoSafe(dto);
@@ -109,4 +153,5 @@ module.exports = {
   assertDtoSafe,
   sanitizePublicText,
   toSessionDto,
+  unattendedDto,
 };

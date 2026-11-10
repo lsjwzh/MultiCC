@@ -56,11 +56,6 @@ const GOAL_CONFIG_DEFAULT = {
   minScore: 60,
 };
 
-const GOAL_ROUNDS_DEFAULT = 0;
-const GOAL_BUDGET_DEFAULT = 0;
-const GOAL_ROUNDS_MAX = 200;
-const GOAL_BUDGET_MAX = 5000000;
-
 function clampInt(value, min, max, fallback) {
   let parsed = parseInt(value, 10);
   if (!Number.isFinite(parsed)) parsed = fallback;
@@ -81,34 +76,12 @@ function normalizeGoalConfig(config) {
   };
 }
 
-function resolveGoalLimits(override) {
-  const source = override && typeof override === 'object' ? override : {};
-  const maxRounds = source.maxRounds != null && source.maxRounds !== ''
-    ? clampInt(source.maxRounds, 0, GOAL_ROUNDS_MAX, GOAL_ROUNDS_DEFAULT)
-    : GOAL_ROUNDS_DEFAULT;
-  const maxBudget = source.maxBudget != null && source.maxBudget !== ''
-    ? clampInt(source.maxBudget, 0, GOAL_BUDGET_MAX, GOAL_BUDGET_DEFAULT)
-    : GOAL_BUDGET_DEFAULT;
-  return { maxRounds, maxBudget };
-}
-
-function buildGoalLimitNote(limits) {
-  const parts = [];
-  if (limits.maxRounds > 0) {
-    parts.push(`This is an autonomous Goal-mode task with a cap of ${limits.maxRounds} agent turns; finish within that limit. As you approach it, converge first and report your current conclusions and open items instead of expanding indefinitely.`);
-  }
-  if (limits.maxBudget > 0) {
-    parts.push(`The output token budget for this task is about ${limits.maxBudget}; finish within it. As you approach the budget, stop and summarize what is done and what remains.`);
-  }
-  return parts.length ? `[Goal-mode limits]\n${parts.join('\n')}\n[End of limits]\n\n` : '';
-}
-
 function buildGoalPrecheckPrompt(task, dimensions) {
   const enabled = Object.keys(GOAL_DIMENSIONS).filter(key => dimensions[key]);
   const list = (enabled.length ? enabled : Object.keys(GOAL_DIMENSIONS))
     .map((key, index) => `${index + 1}. ${GOAL_DIMENSIONS[key]}`)
     .join('\n');
-  return `你是「任务质量审查助手」。下面是用户想交给一个自主 AI 编程代理、以「Goal 模式」（目标驱动、自主规划并执行到完成、最后自检验证）执行的任务。
+  return `你是「任务质量审查助手」。下面是用户想交给一个自主 AI 编程代理、以「无人值守」模式（目标驱动、自主规划并执行到完成、最后由辅助模型自检验证）执行的任务。
 
 请只依据以下启用的标准判断它是否满足要求：
 ${list}
@@ -120,7 +93,7 @@ ${list}
   "issues": ["不满足之处，没有则空数组"],
   "questions": ["仍需向用户澄清的问题，没有则空数组"],
   "criteria": ["建议的完成/验收标准"],
-  "revised": "改写后可直接执行的 Goal-ready 任务描述，含目标与完成标准；若原任务已经很好可与原文基本一致"
+  "revised": "改写后可直接执行的任务描述，含目标与完成标准；若原任务已经很好可与原文基本一致"
 }
 
 score 为 0-100 的整数符合度评分，只针对上面启用的标准评分。所有文本字段用与用户任务相同的语言填写。
@@ -918,8 +891,6 @@ function mountAuxGoalRoutes(app, dependencies) {
       saveAuxConfig();
       return true;
     },
-    resolveGoalLimits,
-    buildGoalLimitNote,
   };
 }
 
@@ -935,8 +906,6 @@ module.exports = {
   GOAL_DIMENSIONS,
   normalizeAuxProtocol,
   normalizeGoalConfig,
-  resolveGoalLimits,
-  buildGoalLimitNote,
   buildGoalPrecheckPrompt,
   parseGoalVerdict,
   safeAuxErrorMessage,

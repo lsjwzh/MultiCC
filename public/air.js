@@ -916,8 +916,9 @@
   // ── New-task composer, at chat parity ─────────────────────────────────────
   // The box is the same composer module the task chat uses (composer.css), so it
   // offers the same capabilities through the same endpoints the chat composer
-  // uses: attach by button, paste or drop; dictation through the local ASR; Goal
-  // mode with its limits; and — through the two pills the chat also renders on
+  // uses: attach by button, paste or drop; dictation through the local ASR; the
+  // unattended toggle (goal / criteria / rounds, with aux precheck); and — through
+  // the two pills the chat also renders on
   // its composer — the same AI 配置 (CLI · provider · model · effort) and 角色
   // dialogs. Nothing about configuring a task is written twice: a pill opens the
   // one dialog and holds the answer until the task is created.
@@ -968,7 +969,7 @@
   };
 
   // 侧栏那颗「＋ 新任务」：把上面这**一个**输入框模块搬进弹窗，而不是再长出一张
-  // 自己的表单。搬的是节点，所以两处的胶囊、草稿、附件、Goal 上限和绑定的处理器
+  // 自己的表单。搬的是节点，所以两处的胶囊、草稿、附件、无人值守字段和绑定的处理器
   // 都是同一份 —— 关掉再搬回目录首页原位（#empty 的最后一个孩子就是它）。
   //
   // 目录首页开着的时候，弹窗后面那一页会暂时缺了输入框（被搬走了）。那一片被
@@ -1148,21 +1149,8 @@
     });
   }
 
-  function renderQuickGoalLimits() {
-    $('quick-task-goal-limits').hidden = !$('quick-task-goal').checked;
-  }
-
   // Enter creates, unless the text is meant to be multiline; the draft is only
   // cleared once the message is acknowledged, so a failure keeps the work.
-  function goalLimitsFromForm() {
-    const limits = {};
-    const rounds = $('quick-task-goal-rounds').value.trim();
-    const budget = $('quick-task-goal-budget').value.trim();
-    if (rounds && Number(rounds) > 0) limits.maxRounds = Number(rounds);
-    if (budget && Number(budget) > 0) limits.maxBudget = Number(budget);
-    return limits;
-  }
-
   async function submitQuickTask(event) {
     event.preventDefault();
     const targetDirectoryId = quickTargetDirectoryId();
@@ -1179,9 +1167,10 @@
     }
     // 子 agent 只跟着全局默认走（线路带 inherited / 对话框说没动过）就不传，由服务端按当前默认建并记成跟随全局；亲手改过的才写（null = 随主）。
     if (!quickRuntime.subagentInherited && !quickRuntime.subagent?.inherited && (quickRuntime.subagent || quickRuntimeDirty)) runtime.subagent = quickRuntime.subagent || null;
-    const goal = $('quick-task-goal').checked;
-    const goalLimits = goal ? goalLimitsFromForm() : null;
-    const fingerprint = JSON.stringify([targetDirectoryId, text, runtime, quickRoles, goalLimits]);
+    const unattended = $('quick-task-unattended').checked
+      ? window.MultiCCAirUnattended?.collect?.(text) || null
+      : null;
+    const fingerprint = JSON.stringify([targetDirectoryId, text, runtime, quickRoles, unattended]);
     if (!quickCreateAttempt || quickCreateAttempt.fingerprint !== fingerprint) {
       quickCreateAttempt = { fingerprint, createId: quickTaskId(), sendId: quickTaskId() };
     }
@@ -1209,11 +1198,11 @@
         await targetApi(`/api/sessions/${encodeURIComponent(created.sessionId)}`, { cliAccounts: quickRuntime.cliAccounts }, 'PATCH');
       }
       await targetApi(`/api/task-shell-tasks/${encodeURIComponent(created.taskId)}/messages`, {
-        text, clientMsgId: attempt.sendId, intent: 'work', ...(goal ? { goal: true, goalLimits: goalLimits || {} } : {}),
+        text, clientMsgId: attempt.sendId, intent: 'work', ...(unattended ? { unattended } : {}),
       });
       quickCreateAttempt = null;
       $('quick-task-input').value = '';
-      $('quick-task-goal').checked = false;
+      window.MultiCCAirUnattended?.reset?.();
       // The route stays (it is how this person runs things); the roles do not —
       // one task's role context must never leak into the next one unseen.
       quickRoles = [];
@@ -1221,7 +1210,6 @@
       // lastRuntime 同步接管 —— 它带回来的正是刚刚钉进任务的这套。
       quickRuntimeDirty = false;
       renderQuickPills();
-      renderQuickGoalLimits();
       $('quick-task-files').replaceChildren();
       // 折叠模块（air-quick-fold.js）盯着这个：盒子已经清空了，就没有什么还
       // 需要替它撑着的了，回到那条细杠。
@@ -2792,7 +2780,12 @@
   $('quick-task-attach').onclick = () => $('quick-task-file-input').click();
   $('quick-task-file-input').onchange = event => void uploadQuickTaskFiles(event.target.files);
   bindQuickVoice();
-  $('quick-task-goal').onchange = renderQuickGoalLimits;
+  window.MultiCCAirUnattended?.bind?.({
+    document, t,
+    // 预检要问「这个任务将来跑在哪台电脑上」：选了远程电脑就代理到那台，
+    // 和创建链路用的是同一条 request。
+    request: (path, body) => (window.MultiCCAirQuickMachine?.request || api)(path, body),
+  });
   $('quick-ai-pill').onclick = openQuickConfiguration;
   window.MultiCCAirQuickMachine?.init?.({ api, notice, pill: $('quick-machine-pill'), select: $('quick-task-dialog-directory'),
     localEntries: () => data?.directories || [], localDirectoryId: () => directoryId, dialogOpen: () => $('quick-task-dialog').open });

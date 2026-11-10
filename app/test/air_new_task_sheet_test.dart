@@ -83,9 +83,7 @@ AirNewTaskSubmit _recorder(
       required String cli,
       required AirTaskRuntime runtime,
       required List<AirRoleBinding> roles,
-      required bool goal,
-      int? goalRounds,
-      int? goalBudget,
+      Map<String, dynamic>? unattended,
     }) async {
       directoryIds?.add(directoryId);
       texts.add(text);
@@ -164,7 +162,7 @@ void main() {
     expect(find.byKey(const ValueKey('air-quick-cli')), findsNothing);
     expect(find.byKey(const ValueKey('air-quick-ai')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-quick-role')), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-quick-goal')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-quick-unattended')), findsOneWidget);
     // 提交还是那一颗「创建并执行」——不是「创建任务」。这一段话会被执行。
     expect(find.text('创建并执行 ↑'), findsOneWidget);
     // 旧表单那几样都不该再出现。
@@ -229,9 +227,7 @@ void main() {
                   required String cli,
                   required AirTaskRuntime runtime,
                   required List<AirRoleBinding> roles,
-                  required bool goal,
-                  int? goalRounds,
-                  int? goalBudget,
+                  Map<String, dynamic>? unattended,
                 }) async => true,
           ),
         ),
@@ -262,9 +258,7 @@ void main() {
                   required String cli,
                   required AirTaskRuntime runtime,
                   required List<AirRoleBinding> roles,
-                  required bool goal,
-                  int? goalRounds,
-                  int? goalBudget,
+                  Map<String, dynamic>? unattended,
                 }) async => true,
           ),
         ),

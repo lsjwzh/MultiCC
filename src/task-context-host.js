@@ -14,6 +14,10 @@ function createTaskContextHost(options = {}) {
     getRecord,
     runTurn,
     getTaskShells = () => null,
+    // Unattended mode: `options.unattended` on the first message arms the
+    // supervisor; every real user message only resets its stall counters.
+    armUnattended = null,
+    noteUnattendedUserMessage = null,
   } = options;
   for (const [name, value] of Object.entries({
     getState, append, emitClients, getTaskBoard,
@@ -224,6 +228,14 @@ function createTaskContextHost(options = {}) {
   async function deliverSessionMessage(sessionName, text, options = {}) {
     const persisted = getRecord(sessionName);
     if (!persisted) return { ok: false, code: 'session_not_found' };
+    if (options.unattended && typeof armUnattended === 'function') {
+      // Arm before routing: the very first turn is the one whose end must be
+      // judged, and shell receipt retries are idempotent (same config → no-op).
+      try { armUnattended(sessionName, options.unattended, text); } catch (_) {}
+    }
+    if (typeof noteUnattendedUserMessage === 'function' && options.unattendedSystem !== true) {
+      try { noteUnattendedUserMessage(sessionName); } catch (_) {}
+    }
     const shells = getTaskShells();
     if (shells?.accepts?.(sessionName) && !options.taskShellReceiptId && !options.originContinue) {
       return shells.sendFromSession(sessionName, text, options);
