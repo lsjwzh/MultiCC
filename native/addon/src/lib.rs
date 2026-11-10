@@ -35,6 +35,7 @@ pub mod model_request_policy;
 pub mod model_stream_progress;
 pub mod native_session_guard;
 pub mod network_policy;
+pub mod node_fs_error;
 pub mod opencode_context;
 pub mod opencode_error;
 pub mod provider_attempt_identity;

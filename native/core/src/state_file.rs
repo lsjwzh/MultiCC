@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
@@ -56,16 +56,16 @@ fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }
 
-fn fsync_dir(dir: &Path) -> io::Result<()> {
+fn fsync_dir(dir: &Path) -> Result<(), (WriteStage, io::Error)> {
     #[cfg(unix)]
     {
         match fs::File::open(dir) {
             Ok(handle) => match handle.sync_all() {
-                Err(error) if !tolerated_fsync(&error) => Err(error),
+                Err(error) if !tolerated_fsync(&error) => Err((WriteStage::FsyncDirectory, error)),
                 _ => Ok(()),
             },
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(()),
-            Err(error) => Err(error),
+            Err(error) => Err((WriteStage::OpenDirectory, error)),
         }
     }
     #[cfg(not(unix))]
@@ -75,9 +75,56 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
+/// The step that failed inside an atomic write. The history file repository
+/// needs it to report the same `syscall` Node does for the equivalent call
+/// (`open` for a temp-file failure, `rename` for the replacement, `fsync` for a
+/// durability failure, ...).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteStage {
+    Mkdir,
+    ChmodDir,
+    OpenTemporary,
+    Write,
+    Fsync,
+    BeforeRename,
+    Rename,
+    ChmodTarget,
+    OpenDirectory,
+    FsyncDirectory,
+}
+
+/// `String.prototype.replace`-free source of the Node fs error message for a
+/// failed atomic write step. `path` is the operand Node would report; `dest` is
+/// set only for the rename step.
+#[derive(Debug)]
+pub struct WriteFailure {
+    pub stage: WriteStage,
+    pub error: io::Error,
+    pub path: PathBuf,
+    pub dest: Option<PathBuf>,
+}
+
+impl WriteFailure {
+    fn new(stage: WriteStage, error: io::Error, path: impl Into<PathBuf>) -> Self {
+        Self {
+            stage,
+            error,
+            path: path.into(),
+            dest: None,
+        }
+    }
+}
+
 /// `writeTextAtomic(target, text, { mode, dirMode })`.
 pub fn write_text_atomic(target: &Path, text: &str, mode: u32, dir_mode: u32) -> io::Result<()> {
-    write_text_atomic_before_rename(target, text, mode, dir_mode, || Ok(()))
+    write_bytes_atomic(target, text.as_bytes(), mode, dir_mode)
+}
+
+/// Byte-preserving variant. The JS writer passed a string, but the history
+/// repository accumulates already-encoded UTF-8 lines and must not decode them
+/// again just to re-encode.
+pub fn write_bytes_atomic(target: &Path, bytes: &[u8], mode: u32, dir_mode: u32) -> io::Result<()> {
+    write_bytes_atomic_traced(target, bytes, mode, dir_mode).map_err(|failure| failure.error)
 }
 
 /// Run the store's backup rotation after the new file is durable and before
@@ -89,11 +136,39 @@ pub fn write_text_atomic_before_rename(
     dir_mode: u32,
     before_rename: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
+    write_bytes_atomic_traced_before_rename(target, text.as_bytes(), mode, dir_mode, before_rename)
+        .map_err(|failure| failure.error)
+}
+
+pub fn write_bytes_atomic_traced(
+    target: &Path,
+    bytes: &[u8],
+    mode: u32,
+    dir_mode: u32,
+) -> Result<(), WriteFailure> {
+    write_bytes_atomic_traced_before_rename(target, bytes, mode, dir_mode, || Ok(()))
+}
+
+pub fn write_bytes_atomic_traced_before_rename(
+    target: &Path,
+    bytes: &[u8],
+    mode: u32,
+    dir_mode: u32,
+    before_rename: impl FnOnce() -> io::Result<()>,
+) -> Result<(), WriteFailure> {
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
     let existed = dir.exists();
-    fs::create_dir_all(dir)?;
+    // `writeTextAtomic` swallows EEXIST from the recursive mkdir and lets the
+    // temp-file open surface the real failure (a file where a directory
+    // belongs fails ENOTDIR there, exactly like Node).
+    if let Err(error) = fs::create_dir_all(dir) {
+        if error.kind() != io::ErrorKind::AlreadyExists {
+            return Err(WriteFailure::new(WriteStage::Mkdir, error, dir));
+        }
+    }
     if !existed {
-        set_mode(dir, dir_mode)?;
+        set_mode(dir, dir_mode)
+            .map_err(|error| WriteFailure::new(WriteStage::ChmodDir, error, dir))?;
     }
     let mut name = target.as_os_str().to_os_string();
     name.push(format!(
@@ -101,7 +176,7 @@ pub fn write_text_atomic_before_rename(
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    let temp = std::path::PathBuf::from(name);
+    let temp = PathBuf::from(name);
     let result = (|| {
         let mut options = fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -110,18 +185,29 @@ pub fn write_text_atomic_before_rename(
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(mode);
         }
-        let mut handle = options.open(&temp)?;
-        handle.write_all(text.as_bytes())?;
+        let mut handle = options
+            .open(&temp)
+            .map_err(|error| WriteFailure::new(WriteStage::OpenTemporary, error, &temp))?;
+        handle
+            .write_all(bytes)
+            .map_err(|error| WriteFailure::new(WriteStage::Write, error, &temp))?;
         if let Err(error) = handle.sync_all() {
             if !tolerated_fsync(&error) {
-                return Err(error);
+                return Err(WriteFailure::new(WriteStage::Fsync, error, &temp));
             }
         }
         drop(handle);
-        before_rename()?;
-        fs::rename(&temp, target)?;
-        set_mode(target, mode)?;
-        fsync_dir(dir)
+        before_rename()
+            .map_err(|error| WriteFailure::new(WriteStage::BeforeRename, error, target))?;
+        fs::rename(&temp, target).map_err(|error| WriteFailure {
+            stage: WriteStage::Rename,
+            error,
+            path: temp.clone(),
+            dest: Some(target.to_path_buf()),
+        })?;
+        set_mode(target, mode)
+            .map_err(|error| WriteFailure::new(WriteStage::ChmodTarget, error, target))?;
+        fsync_dir(dir).map_err(|(stage, error)| WriteFailure::new(stage, error, dir))
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
