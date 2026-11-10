@@ -108,7 +108,7 @@ test('turn policy decision persists stable state and duplicate delivery does not
   assert.match(h.broadcasts[1].payload.message, /根因：service unavailable/);
 });
 
-test('stream host rejects a reused Claude handoff failure before policy and Auto failover', () => {
+test('stream host rejects a reused Claude handoff failure before policy and Auto failover', async () => {
   const h = harness();
   let evaluateCalls = 0;
   let failovers = 0;
@@ -174,7 +174,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
     recordSuccess: noop,
   };
 
-  engine.finalizeStreamingTurn(
+  await engine.finalizeStreamingTurn(
     'session-1', state, persisted, 1, turn, runner,
     null, null, noop, autoTurn,
   );
@@ -204,7 +204,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
     streamReplay: [],
     isStreaming: true,
   };
-  engine.finalizeStreamingTurn(
+  await engine.finalizeStreamingTurn(
     'session-1', mismatchState,
     { cli: 'claude', pendingCliHandoff: {
       status: 'pending', reusedTarget: true, toCli: 'codex',
@@ -273,7 +273,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
     },
     recordSuccess: noop,
   };
-  engine.finalizeStreamingTurn(
+  await engine.finalizeStreamingTurn(
     'session-1', errorState,
     { cli: 'claude', pendingCliHandoff: {
       status: 'pending', reusedTarget: true, toCli: 'claude',

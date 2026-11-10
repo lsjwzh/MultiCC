@@ -328,31 +328,129 @@ fn held_query_result<'a>(
     {
         return Ok(());
     }
+    // The durable verdict cannot be produced synchronously. Record the facts
+    // the commit needs, start the append, and let `chatCommitHeldAnswer` decide
+    // whether this row is now saved and may acknowledge its boundary.
+    row.set(
+        c"historyReady",
+        boolean(anchor, !evt.optional(c"held_history_ready")?.is_false()?)?,
+    )?;
+    let ack = evt.optional(c"acknowledge")?;
+    if ack.kind()? == sys::ValueType::napi_function {
+        row.set(c"pendingAck", ack)?;
+    } else {
+        row.delete(c"pendingAck")?;
+    }
     if !row.get(c"saved")?.is_true()? {
         if row.optional(c"saving")?.is_true()? {
             return Ok(());
         }
         row.set(c"saving", boolean(anchor, true)?)?;
-        let saved = anchor
+        let started = anchor
             .catch(|| {
                 call(
                     anchor.get(c"appendHeldAnswer")?,
-                    &[session, row.get(c"message")?],
+                    &[
+                        session,
+                        row.get(c"message")?,
+                        row.get(c"key")?,
+                        cs,
+                        turn,
+                        runner,
+                        forward,
+                    ],
                 )?
-                .is_true()
+                .truthy()
             })?
             .unwrap_or(false);
-        row.set(c"saving", boolean(anchor, false)?)?;
-        row.set(c"saved", boolean(anchor, saved)?)?;
-        if !is_current(anchor, cs, turn, runner)? || !saved {
-            return Ok(());
+        if !started {
+            row.set(c"saving", boolean(anchor, false)?)?;
         }
+        return Ok(());
     }
-    let ack = evt.optional(c"acknowledge")?;
+    if ack.kind()? == sys::ValueType::napi_function && is_current(anchor, cs, turn, runner)? {
+        ack.call_plain(&[])?;
+    }
+    // The row is already durable: the pending facts from this replay are no
+    // longer needed and must not pin the ACK closure.
+    row.delete(c"pendingAck")?;
+    row.delete(c"historyReady")?;
+    Ok(())
+}
+
+/// Finish a two-phase held-answer append. `saved` is the durable verdict from
+/// Node; until it arrives the row stays `saving` and no boundary is acked, so a
+/// failed write can be retried by the next boundary replay without double
+/// appending a row that already landed.
+fn commit_held_answer<'a>(
+    anchor: LV<'a>,
+    cs: LV<'a>,
+    turn: LV<'a>,
+    runner: LV<'a>,
+    row_key: LV<'a>,
+    saved: bool,
+) -> Result<()> {
+    let rows = runner.optional(c"heldAnswerRows")?;
+    if !rows.is_array()? {
+        return Ok(());
+    }
+    let mut found = None;
+    rows.for_each(|row| {
+        if row.get(c"key")?.equals(row_key)? {
+            found = Some(row);
+        }
+        Ok(())
+    })?;
+    let row = match found {
+        Some(row) => row,
+        None => return Ok(()),
+    };
+    row.set(c"saving", boolean(anchor, false)?)?;
+    row.set(c"saved", boolean(anchor, saved)?)?;
+    if !saved {
+        return Ok(());
+    }
+    let mut preceding = true;
+    let mut blocked = false;
+    rows.for_each(|candidate| {
+        if candidate.get(c"key")?.equals(row_key)? {
+            preceding = false;
+        }
+        if preceding && !candidate.get(c"saved")?.is_true()? {
+            blocked = true;
+        }
+        Ok(())
+    })?;
+    if blocked || row.optional(c"historyReady")?.is_false()? {
+        return Ok(());
+    }
+    let ack = row.optional(c"pendingAck")?;
+    row.delete(c"pendingAck")?;
+    row.delete(c"historyReady")?;
     if ack.kind()? == sys::ValueType::napi_function && is_current(anchor, cs, turn, runner)? {
         ack.call_plain(&[])?;
     }
     Ok(())
+}
+
+#[napi]
+pub fn chat_commit_held_answer(
+    env: Env,
+    cs: Unknown<'_>,
+    turn: Unknown<'_>,
+    runner: Unknown<'_>,
+    row_key: Unknown<'_>,
+    saved: bool,
+    ports: Unknown<'_>,
+) -> Result<()> {
+    commit_held_answer(
+        LV::new(&env, ports),
+        LV::new(&env, cs),
+        LV::new(&env, turn),
+        LV::new(&env, runner),
+        LV::new(&env, row_key),
+        saved,
+    )
 }
 
 fn held_answers_durable(evt: LV<'_>, runner: LV<'_>) -> Result<bool> {
@@ -1069,7 +1167,10 @@ fn apply_result<'a>(
     if held_answers_durable(evt, runner)? && !has_output {
         record_result_event(turn, runner)?;
         crate::chat_turn_effects::mark_result_durable(turn, runner)?;
-        call(ports.get(c"recordDurableUsage")?, &[session, runner, usage])?;
+        call(
+            ports.get(c"recordDurableUsage")?,
+            &[session, runner, usage, turn],
+        )?;
         if !is_current(anchor, cs, turn, runner)? {
             return Ok(true);
         }
@@ -1087,6 +1188,14 @@ fn apply_result<'a>(
         )?;
         call(ports.get(c"clearIncrementalSave")?, &[session])?;
     } else if result_succeeded && !envelope_error.truthy()? && has_output {
+        // Two-phase append. The host starts the durable write here and hands
+        // the verdict back through `chatCommitFinalPersist`; this function must
+        // never treat a Promise (or any other optimistic value) as a durable
+        // confirmation. A duplicate result event while the first append is in
+        // flight is ignored: the first commit owns the frame and the count.
+        if runner.optional(c"pendingFinalPersist")?.is_true()? {
+            return Ok(true);
+        }
         let was_mapped = call(ports.get(c"isMapped")?, &[session, cs])?.truthy()?;
         let message = object(anchor)?;
         message.set(c"role", text(anchor, "assistant")?)?;
@@ -1116,28 +1225,25 @@ fn apply_result<'a>(
         message.set(c"turnTimings", timings)?;
         let options = object(anchor)?;
         options.set(c"resultEvent", boolean(anchor, true)?)?;
-        let durable = call(
-            ports.get(c"persistFinal")?,
-            &[session, cs, turn, runner, message, options],
-        )?
-        .truthy()?;
-        if !is_current(anchor, cs, turn, runner)?
-            || (was_mapped && !call(ports.get(c"isMapped")?, &[session, cs])?.truthy()?)
-        {
-            return Ok(true);
+        runner.assign(c"pendingFinalPersist", boolean(anchor, true)?)?;
+        if let Err(error) = call(
+            ports.get(c"requestFinalPersist")?,
+            &[
+                session,
+                cs,
+                turn,
+                runner,
+                message,
+                options,
+                forward,
+                boolean(anchor, was_mapped)?,
+                evt,
+            ],
+        ) {
+            runner.delete(c"pendingFinalPersist")?;
+            return Err(error);
         }
-        if durable {
-            call(ports.get(c"recordDurableUsage")?, &[session, runner, usage])?;
-            if !is_current(anchor, cs, turn, runner)?
-                || (was_mapped && !call(ports.get(c"isMapped")?, &[session, cs])?.truthy()?)
-            {
-                return Ok(true);
-            }
-            let count = cs.get(c"chatTurnCount")?.number()?;
-            cs.assign(c"chatTurnCount", number(anchor, count + 1.0)?)?;
-            cs.assign(c"_resultSaved", boolean(anchor, true)?)?;
-        }
-        call(ports.get(c"clearIncrementalSave")?, &[session])?;
+        return Ok(true);
     } else {
         record_result_event(turn, runner)?;
     }
@@ -1163,6 +1269,122 @@ fn apply_result<'a>(
     // The original falls through to the final `forward(evt)` after a completed
     // result; only the no-completion and stale-runner paths return early.
     Ok(false)
+}
+
+/// Complete the two-phase final-answer append started in [`apply_result`].
+/// Node calls this after the durable write settles, so `durable` is a real
+/// verdict, not an optimistic value. Everything after the append boundary lives
+/// here: usage commit, turn count, `_resultSaved`, the synthetic result frame,
+/// the usage-limit poller and only then the original result event.
+#[allow(clippy::too_many_arguments)]
+fn commit_final_persist<'a>(
+    anchor: LV<'a>,
+    cs: LV<'a>,
+    session: LV<'a>,
+    evt: LV<'a>,
+    message: LV<'a>,
+    forward: LV<'a>,
+    turn: LV<'a>,
+    runner: LV<'a>,
+    durable: bool,
+    persisted: bool,
+    was_mapped: bool,
+    ports: LV<'a>,
+) -> Result<bool> {
+    runner.delete(c"pendingFinalPersist")?;
+    let message_usage = message.optional(c"usage")?;
+    let usage = if message_usage.truthy()? {
+        message_usage
+    } else {
+        object(anchor)?
+    };
+    // Keep the original probe order (current, then mapping) so a live session
+    // produces the same calls as the synchronous oracle.
+    if !is_current(anchor, cs, turn, runner)? {
+        // The answer landed on disk but another turn/runner owns the session
+        // now. The tokens were still spent by THIS turn, so record them under
+        // the producing (turnId, runnerId) identity. The port commits
+        // idempotently and only touches the old runner's bookkeeping; the
+        // replacement's `cs` is never read or mutated.
+        if durable || persisted {
+            call(
+                ports.get(c"recordDurableUsage")?,
+                &[session, runner, usage, turn],
+            )?;
+        }
+        return Ok(true);
+    }
+    if was_mapped && !call(ports.get(c"isMapped")?, &[session, cs])?.truthy()? {
+        return Ok(true);
+    }
+    if durable {
+        call(
+            ports.get(c"recordDurableUsage")?,
+            &[session, runner, usage, turn],
+        )?;
+        if !is_current(anchor, cs, turn, runner)?
+            || (was_mapped && !call(ports.get(c"isMapped")?, &[session, cs])?.truthy()?)
+        {
+            return Ok(true);
+        }
+        let count = cs.get(c"chatTurnCount")?.number()?;
+        cs.assign(c"chatTurnCount", number(anchor, count + 1.0)?)?;
+        cs.assign(c"_resultSaved", boolean(anchor, true)?)?;
+    }
+    call(ports.get(c"clearIncrementalSave")?, &[session])?;
+    let started = cs.optional(c"turnStartedAt")?;
+    let duration = if started.truthy()? {
+        number(anchor, now(anchor)? - started.number()?)?
+    } else {
+        undefined(anchor)?
+    };
+    let frame = object(anchor)?;
+    frame.set(c"type", text(anchor, "result")?)?;
+    frame.set(c"total_cost_usd", evt.optional(c"total_cost_usd")?)?;
+    frame.set(c"usage", usage)?;
+    frame.set(c"durationMs", duration)?;
+    frame.set(c"num_turns", cs.get(c"chatTurnCount")?)?;
+    let context_trace = message.optional(c"contextTrace")?;
+    if context_trace.truthy()? {
+        frame.set(c"contextTrace", context_trace)?;
+    }
+    frame.spread_from(call(ports.get(c"modelAttribution")?, &[cs, turn, runner])?)?;
+    frame.spread_from(call(ports.get(c"timelineField")?, &[cs, session])?)?;
+    forward.call_plain(&[frame])?;
+    call(ports.get(c"onTurnComplete")?, &[session])?;
+    forward.call_plain(&[evt])?;
+    Ok(true)
+}
+
+#[napi]
+pub fn chat_commit_final_persist(
+    env: Env,
+    cs: Unknown<'_>,
+    session: Unknown<'_>,
+    evt: Unknown<'_>,
+    message: Unknown<'_>,
+    forward: Unknown<'_>,
+    turn: Unknown<'_>,
+    runner: Unknown<'_>,
+    durable: bool,
+    persisted: bool,
+    was_mapped: bool,
+    ports: Unknown<'_>,
+) -> Result<bool> {
+    commit_final_persist(
+        LV::new(&env, ports),
+        LV::new(&env, cs),
+        LV::new(&env, session),
+        LV::new(&env, evt),
+        LV::new(&env, message),
+        LV::new(&env, forward),
+        LV::new(&env, turn),
+        LV::new(&env, runner),
+        durable,
+        persisted,
+        was_mapped,
+        LV::new(&env, ports),
+    )
 }
 
 /// The shared Claude reducer body. `anchor` is also the ports object, exactly as

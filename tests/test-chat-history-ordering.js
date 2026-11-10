@@ -204,6 +204,10 @@ async function committedEvent(message) {
   const history = {
     read(sessionId) { return JSON.parse(JSON.stringify(records.get(sessionId) || [])); },
     write(sessionId, messages) { records.set(sessionId, JSON.parse(JSON.stringify(messages))); },
+    writeAsync(sessionId, messagesJson) {
+      records.set(sessionId, JSON.parse(messagesJson));
+      return Promise.resolve();
+    },
     deleteSession(sessionId) { return records.delete(sessionId); },
     hasPersistedDelivery(sessionId, deliveryId) {
       return (records.get(sessionId) || []).some(candidate =>

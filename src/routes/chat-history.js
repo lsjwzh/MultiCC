@@ -31,7 +31,7 @@ function assertChatHistoryDeps(deps) {
   if (!deps.history || typeof deps.history !== 'object') {
     throw new TypeError('chat history dependency missing: history');
   }
-  for (const method of ['read', 'write', 'deleteSession', 'hasPersistedDelivery']) {
+  for (const method of ['read', 'writeAsync', 'deleteSession', 'hasPersistedDelivery']) {
     if (typeof deps.history[method] !== 'function') {
       throw new TypeError(`chat history dependency missing: history.${method}`);
     }
@@ -224,13 +224,11 @@ function createChatHistoryRuntime(rawDeps) {
     const prepared = run('prepareAppendMessage', sessionId, message);
     if (!prepared) return false;
     try {
-      if (typeof deps.history.writeAsync === 'function') {
-        await deps.history.writeAsync(sessionId, prepared.messagesJson);
-      } else {
-        // Injected legacy ports still expose only the synchronous write. The
-        // production file repository always takes the Promise branch above.
-        deps.history.write(sessionId, prepared.messages);
-      }
+      // Durable writes are asynchronous only. There is no synchronous
+      // compatibility branch: a caller that needs the verdict must await
+      // `appendMessage`, and the only way to corrupt ordering (a synchronous
+      // replacement racing this one) can no longer exist.
+      await deps.history.writeAsync(sessionId, prepared.messagesJson);
       return run('commitAppendMessage', prepared.operationId);
     } catch (error) {
       try { run('discardAppendMessage', sessionId, prepared.operationId, error); } catch (_) {}
@@ -248,14 +246,6 @@ function createChatHistoryRuntime(rawDeps) {
     const clear = () => { if (appendQueues.get(id) === current) appendQueues.delete(id); };
     current.then(clear, clear);
     return current;
-  }
-  function appendMessageSync(sessionId, message) {
-    // A synchronous caller cannot join the Promise queue. Letting it write
-    // through the same file while an asynchronous replacement is in flight can
-    // make the older worker overwrite the newer snapshot. Fail closed instead;
-    // once the queue drains this compatibility door remains fully synchronous.
-    if (appendQueues.has(String(sessionId))) return false;
-    return run('appendMessage', sessionId, message);
   }
 
   function clearIncrementalSave(sessionId) {
@@ -561,15 +551,6 @@ function createChatHistoryRuntime(rawDeps) {
     service,
     stop,
   };
-  // The Rust chat-event reducer still requires a synchronous final-answer
-  // persistence verdict. Keep that compatibility door explicit until the event
-  // reducer migrates to a Promise-aware ACK.
-  Object.defineProperty(api, 'appendMessageSync', {
-    value: appendMessageSync,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
   return Object.freeze(api);
 }
 

@@ -81,10 +81,10 @@ function processPlan(overrides = {}) {
   });
 }
 
-test('host executor crosses the real append boundary before usage, classify, stream_end and post-turn', () => {
+test('host executor crosses the real append boundary before usage, classify, stream_end and post-turn', async () => {
   const harness = createHarness();
   const ctx = context();
-  const result = harness.executor.execute(processPlan(), ctx);
+  const result = await harness.executor.execute(processPlan(), ctx);
   const labels = harness.calls.map(call => call[0] === 'broadcast' ? `broadcast:${call[1]}` : call[0]);
   const at = label => labels.indexOf(label);
   assert.equal(result.appendPersisted, true);
@@ -101,7 +101,7 @@ test('host executor crosses the real append boundary before usage, classify, str
   assert.equal(ctx.cs._activeRunner, null);
 });
 
-test('finalization clears only the runner it still owns', () => {
+test('finalization clears only the runner it still owns', async () => {
   const harness = createHarness();
   const ctx = context();
   const replacement = { runnerId: 'replacement' };
@@ -110,21 +110,21 @@ test('finalization clears only the runner it still owns', () => {
   const portsHarness = createHarness();
   const original = ctx.runner;
   ctx.cs._activeRunner = original;
-  portsHarness.executor.execute(processPlan(), {
+  await portsHarness.executor.execute(processPlan(), {
     ...ctx,
     cs: ctx.cs,
     runner: original,
   });
   assert.equal(ctx.cs._activeRunner, null);
   ctx.cs._activeRunner = replacement;
-  originalRunPostTurn.execute(processPlan(), ctx);
+  await originalRunPostTurn.execute(processPlan(), ctx);
   assert.equal(ctx.cs._activeRunner, replacement);
 });
 
-test('failed append never fabricates durability and exposes the guarded post-turn attempt', () => {
+test('failed append never fabricates durability and exposes the guarded post-turn attempt', async () => {
   const harness = createHarness({ persisted: false });
   const ctx = context();
-  const result = harness.executor.execute(processPlan(), ctx);
+  const result = await harness.executor.execute(processPlan(), ctx);
   assert.equal(result.appendPersisted, false);
   assert.equal(ctx.turn.resultDurable, false);
   assert.equal(harness.calls.some(call => call[0] === 'usage'), false);
@@ -132,10 +132,10 @@ test('failed append never fabricates durability and exposes the guarded post-tur
   assert.deepEqual(harness.calls.at(-1), ['post-turn', 'current-runner-and-durable-final-result', false]);
 });
 
-test('failed durable usage is a hard barrier before scheduler completion and success classification', () => {
+test('failed durable usage is a hard barrier before scheduler completion and success classification', async () => {
   const harness = createHarness({ usagePersisted: false });
   const ctx = context();
-  const result = harness.executor.execute(processPlan(), ctx);
+  const result = await harness.executor.execute(processPlan(), ctx);
   assert.equal(result.appendPersisted, true);
   assert.equal(result.usageDurable, false);
   assert.equal(result.terminalBlocked, true);
@@ -146,11 +146,11 @@ test('failed durable usage is a hard barrier before scheduler completion and suc
     'post-turn still gets a chance to log its own durable-usage suppression');
 });
 
-test('an already durable result retries usage before any terminal effect', () => {
+test('an already durable result retries usage before any terminal effect', async () => {
   const harness = createHarness({ usagePersisted: false });
   const ctx = context({ turn: { ...context().turn, resultDurable: true } });
   const plan = processPlan({ resultDurable: true });
-  const result = harness.executor.execute(plan, ctx);
+  const result = await harness.executor.execute(plan, ctx);
   const labels = harness.calls.map(call => call[0]);
   assert.equal(labels.includes('persist'), false);
   assert.equal(labels.includes('usage'), true);
@@ -158,11 +158,11 @@ test('an already durable result retries usage before any terminal effect', () =>
   assert.equal(result.terminalBlocked, true);
 });
 
-test('usage failure also blocks error and cancellation classifications from producing scheduler E', () => {
+test('usage failure also blocks error and cancellation classifications from producing scheduler E', async () => {
   for (const override of [{ apiError: true }, { killReason: 'user_cancel' }]) {
     const harness = createHarness({ usagePersisted: false });
     const ctx = context({ turn: { ...context().turn, resultDurable: true } });
-    const result = harness.executor.execute(processPlan({
+    const result = await harness.executor.execute(processPlan({
       resultDurable: true,
       ...override,
     }), ctx);
@@ -174,7 +174,7 @@ test('usage failure also blocks error and cancellation classifications from prod
   }
 });
 
-test('executor terminalizes a retry plan instead of applying retry-only effects', () => {
+test('executor terminalizes a retry plan instead of applying retry-only effects', async () => {
   const harness = createHarness();
   const ctx = context({ runner: { resultEvent: false }, turn: { ...context().turn, resultDurable: false } });
   ctx.cs._activeRunner = ctx.runner;
@@ -185,7 +185,7 @@ test('executor terminalizes a retry plan instead of applying retry-only effects'
     nativeSession: true, codexDisconnectAttempt: 1,
   });
   assert.equal(retry.action, 'continue-codex');
-  const result = harness.executor.execute(retry, ctx);
+  const result = await harness.executor.execute(retry, ctx);
   assert.equal(result.resolved.action, 'finalize');
   assert.equal(result.resolved.facts.retryUnavailable, true);
   assert.equal(ctx.cs.isStreaming, false);
@@ -195,10 +195,10 @@ test('executor terminalizes a retry plan instead of applying retry-only effects'
     && call[1] === 'nonterminal-finalization-plan'), true);
 });
 
-test('executor contains host-port failures and freezes the turn', () => {
+test('executor contains host-port failures and freezes the turn', async () => {
   const harness = createHarness({ persistThrows: true });
   const ctx = context();
-  const result = harness.executor.execute(processPlan(), ctx);
+  const result = await harness.executor.execute(processPlan(), ctx);
   assert.equal(result.terminalBlocked, true);
   assert.equal(result.resolved.code, 'finalization_execution_failed');
   assert.equal(ctx.cs.isStreaming, false);
@@ -208,16 +208,14 @@ test('executor contains host-port failures and freezes the turn', () => {
   assert.equal(harness.calls.some(call => call[0] === 'broadcast' && call[1] === 'stream_end'), true);
 });
 
-test('executor containment also survives a malformed callback context', () => {
+test('executor containment also survives a malformed callback context', async () => {
   const harness = createHarness();
-  assert.doesNotThrow(() => {
-    const result = harness.executor.execute(null, null);
-    assert.equal(result.terminalBlocked, true);
-    assert.equal(result.resolved.code, 'finalization_execution_failed');
-  });
+  const result = await harness.executor.execute(null, null);
+  assert.equal(result.terminalBlocked, true);
+  assert.equal(result.resolved.code, 'finalization_execution_failed');
 });
 
-test('unknown stream interruption freezes and never invokes automatic resume', () => {
+test('unknown stream interruption freezes and never invokes automatic resume', async () => {
   const harness = createHarness({ resumed: true });
   const ctx = context({
     runnerKind: 'stream',
@@ -234,14 +232,14 @@ test('unknown stream interruption freezes and never invokes automatic resume', (
     resultEvent: false,
     resultDurable: false,
   });
-  harness.executor.execute(plan, ctx);
+  await harness.executor.execute(plan, ctx);
   assert.equal(harness.calls.some(call => call[0] === 'resume-interrupted'), false);
   assert.equal(harness.calls.some(call => call[0] === 'freeze-interrupted'), true);
   assert.deepEqual(harness.calls.find(call => call[0] === 'status'), ['status', 'waiting']);
   assert.equal(harness.calls.some(call => call[0] === 'broadcast' && call[1] === 'stream_end'), true);
 });
 
-test('the boundary verdict reaches the classify port instead of being dropped', () => {
+test('the boundary verdict reaches the classify port instead of being dropped', async () => {
   const harness = createHarness();
   const ctx = context({
     runnerKind: 'stream',
@@ -249,7 +247,7 @@ test('the boundary verdict reaches the classify port instead of being dropped', 
     persisted: { cli: 'claude' },
     runner: { resultEvent: false },
   });
-  harness.executor.execute(planTurnFinalization({
+  await harness.executor.execute(planTurnFinalization({
     completion: { version: 1, state: 'completed', settled: true },
     current: true, runnerKind: 'stream', cli: 'claude',
     hasOutput: false, resultEvent: false, resultDurable: false, apiError: true,
@@ -261,7 +259,7 @@ test('the boundary verdict reaches the classify port instead of being dropped', 
   // Every branch labels its turn boundary; the host forwards the label verbatim
   // and leaves it to the classify centre to decide which labels are conclusive.
   const plain = createHarness();
-  plain.executor.execute(planTurnFinalization({
+  await plain.executor.execute(planTurnFinalization({
     completion: { version: 1, state: 'completed', settled: true },
     current: true, runnerKind: 'stream', cli: 'claude',
     hasOutput: true, resultEvent: true, resultDurable: true,
@@ -273,6 +271,6 @@ test('the boundary verdict reaches the classify port instead of being dropped', 
   assert.deepEqual(plain.calls.find(call => call[0] === 'classify'), ['classify', 'succeeded']);
 });
 
-test('finalize host fails closed when a required runtime port is absent', () => {
+test('finalize host fails closed when a required runtime port is absent', async () => {
   assert.throws(() => createTurnFinalizationExecutor({}), /finalize host port missing/);
 });

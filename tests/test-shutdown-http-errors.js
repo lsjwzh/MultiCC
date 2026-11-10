@@ -77,6 +77,53 @@ function fakeLogger() {
     ok(n === 1 && exits === 1, 'coordinator: second shutdown call is a no-op');
   }
 
+  // ── coordinator: one shared total deadline for every phase ────────
+  {
+    const order = [];
+    let exits = 0;
+    const rec = fakeLogger();
+    const c = createShutdownCoordinator({
+      logger: rec,
+      // Small scale of the production reserves (10s final flush + 5s closers).
+      totalBudgetMs: 400,
+      finalFlushReserveMs: 100,
+      closerReserveMs: 100,
+      exit: () => { exits++; order.push('exit'); },
+    });
+    c.onCheckpoint(() => { order.push('checkpoint'); });
+    // Grace is deliberately far larger than the budget: it must be capped by
+    // the remaining total, not spent in full.
+    c.onDrain(() => { order.push('drain'); return new Promise(() => {}); });
+    c.onFinalFlush(() => { order.push('final-flush'); return new Promise(() => {}); });
+    c.onClose(() => { order.push('closer'); return new Promise(() => {}); });
+    const started = Date.now();
+    await c.shutdown({ reason: 'budget', graceMs: 60_000 });
+    const elapsed = Date.now() - started;
+    ok(order.join('→') === 'checkpoint→drain→final-flush→closer→exit',
+      'coordinator: checkpoint → drain → final flush → closers → exit');
+    ok(exits === 1, 'coordinator: exit runs even though every later phase hung');
+    ok(elapsed <= 1_200,
+      `coordinator: hung phases cannot add past one total budget (${elapsed}ms; 3x the 400ms budget)`);
+    ok(rec.rec.warn.some(m => /drain grace 200ms exceeded/.test(m)),
+      'coordinator: drain grace is capped to budget minus final-flush/closer reserves');
+  }
+
+  // ── coordinated budget < PM2 kill_timeout ────────────────────────
+  {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const ecosystem = fs.readFileSync(path.join(__dirname, '..', 'ecosystem.config.js'), 'utf8');
+    const killTimeout = Number((/kill_timeout:\s*(\d+)/.exec(ecosystem) || [])[1]);
+    const {
+      DEFAULT_TOTAL_BUDGET_MS, FINAL_FLUSH_RESERVE_MS, CLOSER_RESERVE_MS,
+    } = require('../src/shutdown');
+    ok(Number.isFinite(killTimeout) && killTimeout > 0, 'ecosystem.config.js declares kill_timeout');
+    ok(DEFAULT_TOTAL_BUDGET_MS < killTimeout - 3_000,
+      `total shutdown budget ${DEFAULT_TOTAL_BUDGET_MS}ms keeps margin under kill_timeout ${killTimeout}ms`);
+    ok(DEFAULT_TOTAL_BUDGET_MS >= FINAL_FLUSH_RESERVE_MS + CLOSER_RESERVE_MS,
+      'final-flush and closer reserves fit inside the total budget');
+  }
+
   // ── http-errors: makeRequestId shape ──────────────────────────────
   {
     const id = makeRequestId();

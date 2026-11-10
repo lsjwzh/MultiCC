@@ -182,6 +182,17 @@ function createMemoryHistory(events, initial = {}, { asyncWrite = false } = {}) 
       pendingWrites.push(entry);
       return promise;
     };
+  } else {
+    // Durable writes are the only append path now; the default fake uses the
+    // same serialization `persist` the real file repository exercises.
+    history.writeAsync = (sessionId, messagesJson) => {
+      try {
+        persist(sessionId, JSON.parse(messagesJson));
+        return Promise.resolve();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    };
   }
   return history;
 }
@@ -483,30 +494,37 @@ test('async appends serialize one session while different sessions write in para
   fx.runtime.stop();
 });
 
-test('the synchronous compatibility door fails closed while the same session is writing', async () => {
+test('concurrent appends in one session are queued, never dropped', async () => {
+  // This is the regression the deleted synchronous door used to cause: a caller
+  // that could not join the in-flight write failed closed and silently lost the
+  // message. Every append now returns a Promise and waits its turn.
   const fx = fixture({ asyncWrite: true });
   const first = fx.runtime.appendMessage('s1', {
     id: 'async-first', role: 'user', content: 'already writing',
   });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(fx.runtime.appendMessageSync('s1', {
-    id: 'sync-raced', role: 'assistant', content: 'must not overwrite', ts: 5000,
-  }), false);
+  const second = fx.runtime.appendMessage('s1', {
+    id: 'async-second', role: 'assistant', content: 'queued behind the write', ts: 5000,
+  });
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(eventNames(fx.events), ['async-start:s1']);
 
   fx.history.pendingWrites[0].settle();
   assert.equal(await first, true);
-  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['async-first']);
-  assert.equal(fx.runtime.appendMessageSync('s1', {
-    id: 'sync-after', role: 'assistant', content: 'safe after drain', ts: 5001,
-  }), true);
-  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['async-first', 'sync-after']);
+  await new Promise(resolve => setImmediate(resolve));
+  // The queued append starts only after the first one settles and commits.
+  assert.deepEqual(eventNames(fx.events), [
+    'async-start:s1', 'async-end:s1', 'write:s1', 'broadcast:chat_msg_meta:s1', 'async-start:s1',
+  ]);
+  fx.history.pendingWrites[1].settle();
+  assert.equal(await second, true);
+  assert.deepEqual(fx.history.records.get('s1').map(message => message.id), ['async-first', 'async-second']);
   fx.runtime.stop();
 });
 
-test('the synchronous compatibility door remains available for final-result acknowledgements', () => {
+test('appendMessage resolves true and publishes the frame after the write', async () => {
   const fx = fixture();
-  assert.equal(fx.runtime.appendMessageSync('s1', {
+  assert.equal(await fx.runtime.appendMessage('s1', {
     id: 'sync-final', role: 'assistant', content: 'durable now', ts: 5000,
   }), true);
   assert.deepEqual(fx.runtime.load('s1').map(message => message.id), ['sync-final']);

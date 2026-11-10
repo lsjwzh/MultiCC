@@ -54,8 +54,17 @@ function noteClientMsgId(event) {
   return `auto-route-${turn}-${Number(event.attemptNo) || 1}`;
 }
 
-function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now } = {}) {
+function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now, logger = console } = {}) {
   if (typeof broadcast !== 'function') throw new TypeError('[auto-route-notes] broadcast is required');
+
+  function warnNoteFailed(sessionId, error) {
+    try {
+      logger?.warn?.('chat_auto_route_note_failed', {
+        sessionId,
+        message: error && error.message ? error.message : String(error),
+      });
+    } catch (_) {}
+  }
 
   function rememberLine(sessionId, event) {
     const record = records?.get?.(sessionId);
@@ -87,6 +96,9 @@ function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now
     if (typeof append !== 'function' || !wantsNote(event)) return null;
     const route = noteRoute(event);
     const clientMsgId = noteClientMsgId(event);
+    // The append is a durable write; the live note carries the deterministic
+    // id and must not wait for the fsync, but the write's rejection must be
+    // observed. A rejected write only means the note will not replay.
     try {
       const saved = append(sessionId, {
         role: 'system',
@@ -97,8 +109,24 @@ function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now
         clientMsgId,
         autoRoute: route,
       });
-      return saved ? clientMsgId : null;
-    } catch (_) {
+      if (saved && typeof saved.then === 'function') {
+        // The live note already went out; an async failure only means the note
+        // will not replay, which is the same outcome as no note at all. The
+        // rejection is observed here, never left for the process handler.
+        saved.then(ok => {
+          if (ok === false) warnNoteFailed(sessionId, 'append rejected');
+        }, error => warnNoteFailed(sessionId, error));
+        return clientMsgId;
+      }
+      // A synchronous refusal is known before the broadcast: do not advertise
+      // an id that has no history row behind it.
+      if (saved === false) {
+        warnNoteFailed(sessionId, 'append rejected');
+        return null;
+      }
+      return clientMsgId;
+    } catch (error) {
+      warnNoteFailed(sessionId, error);
       return null;
     }
   }

@@ -156,7 +156,7 @@ function createChatHostRuntime(rawPorts) {
     usage: usagePort,
   });
 
-  function persistFinalAssistantResult(sessionId, state, turn, runner, message, options = {}) {
+  async function persistFinalAssistantResult(sessionId, state, turn, runner, message, options = {}, onVerdict = null) {
     const roleUsage = persistedRoleUsage(ports.roleUsageSnapshot, sessionId);
     if (roleUsage && message && message.role === 'assistant') message = { ...message, roleUsage };
     // Same computation the live `result` frame spreads (see turn-engine), so a
@@ -168,7 +168,7 @@ function createChatHostRuntime(rawPorts) {
       // every lane persists through here, so this is the one stamping point.
       if (!message.timeline) message = { ...message, ...timelineField(sessionId, state) };
     }
-    const result = coordinator.appendFinal({
+    const result = await coordinator.appendFinal({
       turn,
       runner,
       get currentTurn() { return liveState(sessionId, state)?._activeTurn; },
@@ -185,22 +185,36 @@ function createChatHostRuntime(rawPorts) {
       message,
     });
     if (current(sessionId, state, turn, runner)) state._resultSaved = result.durable === true;
+    if (typeof onVerdict === 'function') {
+      // Two independent facts for the Rust commit: the row landed, and this
+      // turn may still own it. A replaced turn keeps `persisted` but loses
+      // `durable`; its usage still has to be recorded by identity.
+      try {
+        onVerdict({ durable: result.durable === true, persisted: result.persisted === true });
+      } catch (_) { /* a verdict observer must never turn a durable append into a failure */ }
+    }
     return result.durable === true;
   }
 
-  function recordDurableTurnUsage(sessionId, runner, usage, attribution = {}) {
+  function recordDurableTurnUsage(sessionId, runner, usage, attribution = {}, turnOverride = null) {
     const state = ports.getSessionState(sessionId);
-    const turn = state && state._activeTurn;
+    const turn = turnOverride || (state && state._activeTurn);
+    // Rust passes the producing turn for the two-phase final-answer commit.
+    // That turn may already have been replaced: the usage still belongs to it,
+    // and the commit must not require (or touch) the replacement's cs state.
+    const identityOnly = turnOverride != null;
     const result = coordinator.commitUsage({
       turn,
       runner,
+      identityOnly,
       get currentTurn() { return liveState(sessionId, state)?._activeTurn; },
       get currentRunner() { return liveState(sessionId, state)?._activeRunner; },
       usage,
       attribution: attributionSnapshot(state, turn, runner, attribution),
     });
-    return result.committed === true && result.code !== 'stale_runner'
-      && current(sessionId, state, turn, runner);
+    if (result.committed !== true) return false;
+    if (identityOnly) return true;
+    return result.code !== 'stale_runner' && current(sessionId, state, turn, runner);
   }
 
   function executeEffect(effect, state, isCurrentRunner) {

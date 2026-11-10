@@ -94,7 +94,7 @@ function createRun(scenario) {
 function makePorts(run) {
   const scenario = run.scenario;
   const effect = (name, ...args) => run.effects.push([name, args.map(value => encodeValue(value, run))]);
-  return {
+  const ports = {
     isCurrent: (cs, turn, runner) => {
       const value = cs === run.cs && turn === run.turn && runner === run.runner
         && cs.currentTurn === turn && cs.currentRunner === runner
@@ -130,6 +130,16 @@ function makePorts(run) {
       }
       return !!scenario.durable;
     },
+    // Two-phase production path: the reducer starts the write and the host
+    // hands the durable verdict back through `chatCommitFinalPersist`. The
+    // differential oracle writes synchronously, so the commit runs inline and
+    // both traces stay byte-identical.
+    requestFinalPersist: (session, cs, turn, runner, message, options, forward, wasMapped, evt) => {
+      const durable = ports.persistFinal(session, cs, turn, runner, message, options);
+      native.chatCommitFinalPersist(
+        cs, session, evt, message, forward, turn, runner, durable, durable, wasMapped, ports,
+      );
+    },
     recordDurableUsage: (session, runner, usage) => effect('recordDurableUsage', session, usage),
     proxyFailure: (attempt) => {
       effect('proxyFailure', attempt);
@@ -158,6 +168,7 @@ function makePorts(run) {
       error: (name, fields) => effect('logger.error', name, fields),
     },
   };
+  return ports;
 }
 
 function applyNative(ports, cs, sessionName, evt, forward, turn, runner, providerName) {
@@ -569,7 +580,11 @@ function heldRun() {
   const run = createRun(scenario);
   const ports = makePorts(run);
   const saved = [];
-  ports.appendHeldAnswer = (_session, row) => { saved.push(clone(row)); return true; };
+  ports.appendHeldAnswer = (_session, message, key, cs, turn, runner) => {
+    saved.push(clone(message));
+    native.chatCommitHeldAnswer(cs, turn, runner, key, true, ports);
+    return true;
+  };
   const apply = event => applyNative(ports, run.cs, run.sessionName, event,
     frame => run.forwards.push(clone(frame)), run.turn, run.runner, run.providerName);
   const answer = text => apply({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
@@ -614,10 +629,11 @@ test('held query boundaries save separate answers without completing the host tu
 test('failed held history append retries its captured row without clearing newer output', () => {
   const h = heldRun();
   let available = false, attempts = 0, acks = 0;
-  h.ports.appendHeldAnswer = (_session, row) => {
+  h.ports.appendHeldAnswer = (_session, message, key, cs, turn, runner) => {
     attempts++;
-    if (!available) throw new Error('disk unavailable');
-    h.saved.push(clone(row));
+    const ok = available;
+    if (ok) h.saved.push(clone(message));
+    native.chatCommitHeldAnswer(cs, turn, runner, key, ok, h.ports);
     return true;
   };
   h.answer('未写盘的第一回答');
@@ -640,10 +656,11 @@ test('held append reentry cannot append twice or acknowledge a superseded runner
   const h = heldRun();
   let acks = 0, calls = 0;
   const event = h.boundary('1', [], () => acks++);
-  h.ports.appendHeldAnswer = () => {
+  h.ports.appendHeldAnswer = (_session, message, key, cs, turn, runner) => {
     calls++;
     h.apply(event);
     h.run.cs.currentRunner = {};
+    native.chatCommitHeldAnswer(cs, turn, runner, key, true, h.ports);
     return true;
   };
   h.answer('保留原回答');
@@ -702,9 +719,10 @@ test('real semantic scrub preserves the held boundary acknowledgement callback',
 test('later held rows cannot overtake an earlier failed append', () => {
   const h = heldRun();
   let available = false;
-  h.ports.appendHeldAnswer = (_session, row) => {
-    if (!available) return false;
-    h.saved.push(clone(row));
+  h.ports.appendHeldAnswer = (_session, message, key, cs, turn, runner) => {
+    const ok = available;
+    if (ok) h.saved.push(clone(message));
+    native.chatCommitHeldAnswer(cs, turn, runner, key, ok, h.ports);
     return true;
   };
   h.answer('第一回答');
@@ -730,4 +748,110 @@ test('held failure rows display error details and cancellation alongside partial
     subtype: 'error_during_execution', is_error: true, terminal_reason: 'cancelled', result: '这条消息的回答已取消。' });
   assert.match(h.saved[1].content, /已生成的部分[\s\S]*已取消/);
   assert.equal(h.saved[1].terminalReason, 'cancelled');
+});
+
+// ── two-phase final-answer persistence (native reducer) ─────────────────────
+// The result event only starts the durable write. Nothing after the append
+// boundary — usage ledger, turn count, _resultSaved, the live frame — may appear
+// until the host commits a real verdict.
+function finalRun() {
+  const scenario = makeScenario(mulberry32(211));
+  Object.assign(scenario, {
+    mapped: true, stale: false, durable: true, replaceAfterPersist: false, proxyFailure: null,
+  });
+  Object.assign(scenario.cs, {
+    currentAssistantText: 'answer', currentToolCalls: [], currentCost: 0,
+    chatTurnCount: 0, turnStartedAt: 900,
+  });
+  Object.assign(scenario.runner, {
+    turnId: scenario.turn.turnId, completionOutcome: clone(COMPLETIONS[1]),
+  });
+  const run = createRun(scenario);
+  const ports = makePorts(run);
+  const requests = [];
+  ports.requestFinalPersist = (...args) => { requests.push(args); };
+  const forward = frame => run.forwards.push(clone(frame));
+  const apply = event => applyNative(ports, run.cs, run.sessionName, event, forward,
+    run.turn, run.runner, run.providerName);
+  const result = overrides => ({
+    type: 'result', subtype: 'success', is_error: false, result: 'answer',
+    usage: { input_tokens: 5 }, total_cost_usd: 0.05, ...overrides,
+  });
+  const commit = (durable, wasMapped, requested = requests[0], persisted = durable) => {
+    const [session, cs, turn, runner, message, options, sink, mapped, evt] = requested;
+    native.chatCommitFinalPersist(cs, session, evt, message, sink, turn, runner,
+      durable, persisted, wasMapped, ports);
+  };
+  return { run, ports, requests, apply, forward, result, commit };
+}
+
+test('final answer persistence waits for the durable verdict before any post-boundary effect', () => {
+  const h = finalRun();
+  h.apply(h.result());
+  assert.equal(h.requests.length, 1, 'the result event starts exactly one write');
+  assert.equal(h.run.runner.pendingFinalPersist, true);
+  assert.equal(h.run.cs.chatTurnCount, 0);
+  assert.equal(h.run.cs._resultSaved, undefined);
+  assert.deepEqual(h.run.forwards, []);
+  assert.equal(h.run.effects.some(([name]) => name === 'recordDurableUsage'), false);
+  assert.equal(h.run.effects.some(([name]) => name === 'onTurnComplete'), false);
+  // A duplicate result while the first write is in flight must not start another.
+  h.apply(h.result());
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.run.runner.pendingFinalPersist, true);
+
+  h.commit(true, true);
+  assert.equal(h.run.runner.pendingFinalPersist, undefined);
+  assert.equal(h.run.cs.chatTurnCount, 1);
+  assert.equal(h.run.cs._resultSaved, true);
+  assert.equal(h.run.effects.filter(([name]) => name === 'recordDurableUsage').length, 1);
+  assert.equal(h.run.effects.filter(([name]) => name === 'onTurnComplete').length, 1);
+  assert.equal(h.run.forwards.length, 2, 'the live frame then the original event');
+  assert.equal(h.run.forwards[0].type, 'result');
+  assert.equal(h.run.forwards[0].num_turns, 1);
+});
+
+test('a failed final-answer write is treated exactly like a synchronous false verdict', () => {
+  const h = finalRun();
+  h.apply(h.result());
+  h.commit(false, true);
+  assert.equal(h.run.runner.pendingFinalPersist, undefined);
+  assert.equal(h.run.cs.chatTurnCount, 0);
+  assert.equal(h.run.cs._resultSaved, undefined);
+  assert.equal(h.run.effects.some(([name]) => name === 'recordDurableUsage'), false);
+  assert.equal(h.run.forwards.length, 2, 'a failed write still forwards the live frame and event');
+  assert.equal(h.run.forwards[0].type, 'result');
+});
+
+test('a replaced turn records usage by identity but writes no frame; a mapping loss stays inert', () => {
+  for (const [lose, usageCommits] of [['runner', 1], ['mapping', 0]]) {
+    const h = finalRun();
+    h.apply(h.result());
+    assert.equal(h.requests.length, 1);
+    if (lose === 'runner') h.run.cs.currentRunner = {};
+    else h.run.mapped = false;
+    h.commit(true, true);
+    assert.equal(h.run.runner.pendingFinalPersist, undefined, 'the marker is always released');
+    assert.equal(h.run.cs.chatTurnCount, 0, 'the replacement keeps its own turn count');
+    assert.equal(h.run.cs._resultSaved, undefined, 'the replacement keeps its own saved state');
+    // A replacement loses the turn but not the tokens: usage is committed under
+    // (turnId, runnerId). A mapping loss keeps the turn; its old synchronous
+    // probe order returned before usage, and that parity is preserved. Nothing
+    // is forwarded into either session.
+    assert.equal(h.run.effects.filter(([name]) => name === 'recordDurableUsage').length, usageCommits);
+    assert.deepEqual(h.run.forwards, []);
+  }
+});
+
+test('a write that persisted but lost its turn still owes usage, while a failed write owes none', () => {
+  for (const [durable, persisted, expected] of [[false, true, 1], [false, false, 0]]) {
+    const h = finalRun();
+    h.apply(h.result());
+    assert.equal(h.requests.length, 1);
+    h.run.cs.currentRunner = {};
+    h.commit(durable, true, h.requests[0], persisted);
+    assert.equal(h.run.effects.filter(([name]) => name === 'recordDurableUsage').length, expected);
+    assert.equal(h.run.cs.chatTurnCount, 0);
+    assert.deepEqual(h.run.forwards, []);
+  }
 });

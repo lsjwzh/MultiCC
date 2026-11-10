@@ -44,11 +44,29 @@ function createTurnFinalizationExecutor(rawPorts) {
     },
   };
   const native = getNative();
-  if (typeof native.chatExecuteTurnFinalization !== 'function') {
+  if (typeof native.chatExecuteTurnFinalization !== 'function'
+      || typeof native.chatCommitTurnFinalization !== 'function') {
     throw new Error('rust_chat_finalization_execution_unavailable');
   }
-  function execute(plan, rawContext = {}) {
-    return native.chatExecuteTurnFinalization(plan, rawContext, ports, runtime);
+  // Rust runs every effect before the append boundary, then hands the durable
+  // write back to Node. Awaiting it here (rather than inside the sync NAPI
+  // call) is the only way the final-answer fsync can be confirmed before usage,
+  // classification and scheduler completion run.
+  async function execute(plan, rawContext = {}) {
+    const prepared = native.chatExecuteTurnFinalization(plan, rawContext, ports, runtime);
+    if (!prepared || prepared.pending !== true) return prepared;
+    let persisted = false;
+    let fault;
+    try {
+      persisted = (await ports.persistAssistant(rawContext, prepared.append)) === true;
+    } catch (error) {
+      // Rust 的失败收尾路径负责记录日志并冻结本轮；这里只转交原始异常，
+      // 保持与同步端口抛错完全一致的可见行为。
+      fault = error;
+    }
+    return native.chatCommitTurnFinalization(
+      prepared.plan, rawContext, ports, runtime, persisted === true, fault, prepared.sourcePlan,
+    );
   }
   return Object.freeze({ execute });
 }

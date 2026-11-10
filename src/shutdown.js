@@ -26,12 +26,23 @@
 // might otherwise keep the event loop alive.
 
 const DEFAULT_GRACE_MS = 60_000;
+// PM2 sends SIGKILL at `kill_timeout` (ecosystem.config.js: 75s). Checkpoint
+// flush, drain, post-drain flush and closers all draw from ONE total deadline
+// so their individual caps cannot add up past it. 70s leaves 5s for the process
+// to exit; the drain cannot spend the last 15s reserved for the final flush and
+// the closers.
+const DEFAULT_TOTAL_BUDGET_MS = 70_000;
+const FINAL_FLUSH_RESERVE_MS = 10_000;
+const CLOSER_RESERVE_MS = 5_000;
 
 function createShutdownCoordinator({
   logger = console,
   now = () => Date.now(),
   exit = null,          // (code) => void; omit to skip process.exit — for tests
   process: proc = process,
+  totalBudgetMs = DEFAULT_TOTAL_BUDGET_MS,
+  finalFlushReserveMs = FINAL_FLUSH_RESERVE_MS,
+  closerReserveMs = CLOSER_RESERVE_MS,
 } = {}) {
   const state = {
     ready: true,
@@ -39,7 +50,11 @@ function createShutdownCoordinator({
     finished: false,
     checkpoints: [],
     drains: [],
+    finalFlushes: [],
     closers: [],
+    totalBudgetMs,
+    finalFlushReserveMs,
+    closerReserveMs,
   };
 
   // Public: HTTP readiness probe hook. Return `!coordinator.ready()` to steer
@@ -67,6 +82,16 @@ function createShutdownCoordinator({
     state.drains.push(fn);
   }
 
+  // Register a post-drain flush. Runs after the drain window and before the
+  // closers, inside the same total shutdown deadline. This is where a last
+  // partial assistant write gets one bounded chance to land.
+  //
+  //   coordinator.onFinalFlush(({ deadline, timeoutMs }) => flushInFlightChats())
+  function onFinalFlush(fn) {
+    if (typeof fn !== 'function') throw new TypeError('onFinalFlush requires a function');
+    state.finalFlushes.push(fn);
+  }
+
   // Register a closer. Called during the "shut things down" phase, in the order
   // they were registered. Each may return a Promise; failures are logged but
   // don't stop the sequence.
@@ -84,16 +109,46 @@ function createShutdownCoordinator({
     }
   }
 
-  async function runDrains(graceMs) {
+  function remaining(deadline) { return Math.max(0, deadline - now()); }
+
+  // Race a phase against the remaining total budget. Timed-out work is NOT
+  // cancelled (a durable fsync cannot be aborted); the phase is simply
+  // abandoned so the closers and process exit still fit under kill_timeout.
+  async function withinBudget(work, ms, label) {
+    if (!(ms > 0)) {
+      logger.warn(`[shutdown] ${label} skipped: no time left in the total budget`);
+      return 'expired';
+    }
+    let timer = null;
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => resolve('timeout'), ms);
+      // Deliberately not unref'd: a hung phase must still wake us so the
+      // closers run and the process exits instead of sitting forever.
+    });
+    const result = await Promise.race([work.then(() => 'done'), timeout]);
+    if (timer) clearTimeout(timer);
+    if (result === 'timeout') logger.warn(`[shutdown] ${label} exceeded ${Math.round(ms)}ms — moving on`);
+    return result;
+  }
+
+  async function runDrains(graceMs, deadline) {
     if (state.drains.length === 0) return;
-    const deadline = now() + graceMs;
+    // Leave the final flush and the closers their reserves; the drain gets at
+    // most its configured grace window and never more than what is left.
+    const budget = remaining(deadline) - state.finalFlushReserveMs - state.closerReserveMs;
+    const waitMs = Math.max(0, Math.min(graceMs, budget));
+    if (waitMs <= 0) {
+      logger.warn('[shutdown] drain skipped: no time left in the total budget');
+      return;
+    }
+    const drainDeadline = now() + waitMs;
     let timeoutHandle = null;
     const drainPromise = Promise.allSettled(state.drains.map(fn => {
-      try { return Promise.resolve(fn({ deadline, graceMs })); }
+      try { return Promise.resolve(fn({ deadline: drainDeadline, graceMs: waitMs, totalDeadline: deadline })); }
       catch (e) { return Promise.reject(e); }
     }));
     const timeoutPromise = new Promise(resolve => {
-      timeoutHandle = setTimeout(() => resolve('timeout'), graceMs);
+      timeoutHandle = setTimeout(() => resolve('timeout'), waitMs);
       // DO NOT unref this timer. If we do, and a drain hooks a promise that
       // never resolves (deliberately, e.g. a chat stream that got stuck), the
       // event loop exits before the timeout fires and the coordinator sits
@@ -101,7 +156,18 @@ function createShutdownCoordinator({
     });
     const which = await Promise.race([drainPromise.then(() => 'drained'), timeoutPromise]);
     if (timeoutHandle) clearTimeout(timeoutHandle);
-    if (which === 'timeout') logger.warn(`[shutdown] drain grace ${graceMs}ms exceeded — moving on`);
+    if (which === 'timeout') logger.warn(`[shutdown] drain grace ${waitMs}ms exceeded — moving on`);
+  }
+
+  async function runFinalFlushes(deadline) {
+    if (state.finalFlushes.length === 0) return;
+    const budget = remaining(deadline) - state.closerReserveMs;
+    await withinBudget((async () => {
+      for (const fn of state.finalFlushes) {
+        try { await fn({ deadline: now() + Math.max(0, budget), timeoutMs: Math.max(0, budget), totalDeadline: deadline }); }
+        catch (e) { logger.error(`[shutdown] final flush error: ${e && e.message}`); }
+      }
+    })(), budget, 'final flush');
   }
 
   async function runClosers() {
@@ -113,15 +179,24 @@ function createShutdownCoordinator({
 
   // The main shutdown driver. Idempotent — a second SIGINT during shutdown is
   // ignored (users often mash Ctrl+C; PM2 also occasionally double-signals).
-  async function shutdown({ reason = 'unknown', graceMs = DEFAULT_GRACE_MS, exitCode = 0 } = {}) {
+  async function shutdown({
+    reason = 'unknown', graceMs = DEFAULT_GRACE_MS, exitCode = 0, budgetMs = state.totalBudgetMs,
+  } = {}) {
     if (state.started) return;
     state.started = true;
     state.ready = false;
-    logger.log(`[shutdown] starting (${reason}); grace ${graceMs}ms`);
+    // Every phase below is measured against this one deadline.
+    const deadline = now() + (Number.isFinite(budgetMs) ? Math.max(0, budgetMs) : state.totalBudgetMs);
+    logger.log(`[shutdown] starting (${reason}); grace ${graceMs}ms, total budget ${Math.round(remaining(deadline))}ms`);
 
-    await runCheckpoints();
-    await runDrains(graceMs);
-    await runClosers();
+    await withinBudget(
+      runCheckpoints(),
+      remaining(deadline) - state.finalFlushReserveMs - state.closerReserveMs,
+      'checkpoints',
+    );
+    await runDrains(graceMs, deadline);
+    await runFinalFlushes(deadline);
+    await withinBudget(runClosers(), remaining(deadline), 'closers');
 
     state.finished = true;
     logger.log(`[shutdown] done (${reason})`);
@@ -148,10 +223,14 @@ function createShutdownCoordinator({
     isShuttingDown,
     onCheckpoint,
     onDrain,
+    onFinalFlush,
     onClose,
     shutdown,
     installSignalHandlers,
   };
 }
 
-module.exports = { createShutdownCoordinator, DEFAULT_GRACE_MS };
+module.exports = {
+  createShutdownCoordinator, DEFAULT_GRACE_MS, DEFAULT_TOTAL_BUDGET_MS,
+  FINAL_FLUSH_RESERVE_MS, CLOSER_RESERVE_MS,
+};

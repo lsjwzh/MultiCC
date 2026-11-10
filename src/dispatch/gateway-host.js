@@ -216,7 +216,28 @@ function createGatewayHost(rawDeps) {
   // render it; the WeChat bridge (a gateway WS client) forwards it on `result`.
   function pushToGateway(text, { persist = true, sessionId = GATEWAY_ID } = {}) {
     if (!text) return;
-    if (persist) appendChatMessage(sessionId, { role: 'assistant', content: text, ts: Date.now() });
+    // The durable write is asynchronous; the live broadcast must not wait for
+    // it, but its rejection still has to be observed.
+    if (persist) {
+      try {
+        const pending = appendChatMessage(sessionId, { role: 'assistant', content: text, ts: Date.now() });
+        if (pending && typeof pending.then === 'function') {
+          pending.then(saved => {
+            if (saved === false) logger.warn('gateway_chat_message_not_persisted', { sessionId });
+          }, error => logger.warn('gateway_chat_message_persist_failed', {
+            sessionId,
+            message: error && error.message ? error.message : String(error),
+          }));
+        }
+      } catch (error) {
+        // Best-effort: the gateway broadcast below still runs, but the reason
+        // the durable write could not start must not vanish.
+        logger.warn('gateway_chat_message_persist_failed', {
+          sessionId,
+          message: error && error.message ? error.message : String(error),
+        });
+      }
+    }
     chatBroadcast(sessionId, { type: 'assistant', message: { content: [{ type: 'text', text }] } });
     chatBroadcast(sessionId, { type: 'result', total_cost_usd: null });
   }

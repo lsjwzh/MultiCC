@@ -42,6 +42,7 @@ const {
   normalizeClaudeAssistantSnapshot,
   normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,
+  deriveCloseTurnFacts,
 } = require('../src/chat/turn-engine');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 
@@ -1178,9 +1179,10 @@ test('production lifecycle uses append return, runner ownership and one guarded 
     'server composition must inject the authoritative assistant writer');
   assert.match(source, /context\.runner\.pendingUsage[\s\S]{0,180}\{ usage: context\.runner\.pendingUsage \}/,
     'interrupted/error assistant checkpoints must persist measured token usage');
-  // The durable-result branch is native; the engine only wires the port and the
-  // native reducer gates usage recording and _resultSaved on its return value.
-  assert.match(source, /persistFinal: \(sessionName, cs, turn, runner, message, options\) => persistFinalAssistantResult\(/);
+  // The durable-result branch is native and two-phase: the engine starts the
+  // write, awaits the durable verdict and hands it back to the Rust commit entry.
+  assert.match(source, /requestFinalPersist: \(sessionName, cs, turn, runner, message, options, forward, wasMapped, evt\) => requestFinalPersist\(/);
+  assert.match(finalizeHostSource, /chatCommitTurnFinalization\(/);
   const nativeEvents = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
   assert.match(nativeEvents, /if durable \{[\s\S]{0,600}cs\.assign\(c"_resultSaved"/);
@@ -1594,4 +1596,36 @@ test('a preparation failure after turn start settles through the one host entry'
   const firstCall = body.indexOf('await settlePreparationFailure();');
   assert.ok(activated >= 0 && firstCall > activated,
     'nothing is settled before the turn identity exists');
+});
+
+
+// The close handler used to derive hasTurnOutput before awaiting the buffered
+// result's durable append. A Codex transport disconnect followed by a result
+// with no text/tools therefore looked like an empty exit; the old synchronous
+// result handler had already flipped _resultSaved by then.
+test('close facts judge a recovered Codex disconnect only after the durable append', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const facts = (cs, pendingStreamError = '') => deriveCloseTurnFacts(cs, { resultDurable: true }, {
+    sessionName: 's', pid: 1, code: 0, signal: null, durMs: 1, killReason: null,
+    completionOutcome: { state: 'completed' }, isRetry: false, pendingStreamError,
+  });
+  const pendingWrite = { cli: 'codex', _resultSaved: false, currentAssistantText: '',
+    currentToolCalls: [], clients: new Set(), _codexRecoveredDisconnect: true };
+  // Before the await the row is not durable yet: this is the wrong answer that
+  // the source order below forbids.
+  assert.equal(facts({ ...pendingWrite }, 'stream disconnected before completion').recoveredCodexDisconnect, false);
+  // After the write confirms, the same turn is a recovered disconnect, not an
+  // empty exit.
+  const confirmed = { ...pendingWrite, _resultSaved: true };
+  const after = facts(confirmed, 'stream disconnected before completion');
+  assert.equal(after.hasTurnOutput, true);
+  assert.equal(after.recoveredCodexDisconnect, true);
+  assert.equal(after.kind, 'normal');
+  assert.equal(after.diag.resultSaved, true);
+  // Structural guard: the derivation must sit after the awaited durable commit.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const commit = source.indexOf('await commitAdapterResult(');
+  const derive = source.indexOf('const { hasTurnOutput, recoveredCodexDisconnect, diag, kind } = deriveCloseTurnFacts');
+  assert.ok(commit >= 0 && derive > commit, 'close facts are derived after the pending append settles');
 });

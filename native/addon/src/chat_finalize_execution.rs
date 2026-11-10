@@ -443,7 +443,7 @@ impl FinalizationHost for Host<'_> {
     }
 }
 
-fn run<'a>(plan: V<'a>, raw_context: V<'a>, ports: V<'a>, runtime: V<'a>) -> Result<V<'a>> {
+fn new_host<'a>(plan: V<'a>, raw_context: V<'a>, ports: V<'a>, runtime: V<'a>) -> Result<Host<'a>> {
     let context = object(
         raw_context,
         &[
@@ -455,31 +455,86 @@ fn run<'a>(plan: V<'a>, raw_context: V<'a>, ports: V<'a>, runtime: V<'a>) -> Res
         ],
     )?;
     context.spread_from(raw_context)?;
-    let mut host = Host {
+    Ok(Host {
         context,
         ports,
         runtime,
         plan,
         resolved: None,
-    };
-    let result = execution::execute(&read(plan)?, &mut host)?;
-    object(
-        context,
-        &[
-            (
-                c"resolved",
-                host.resolved.expect("executor records the resolved plan"),
-            ),
-            (
-                c"appendPersisted",
-                boolean(context, result.append_persisted)?,
-            ),
-            (c"finalText", context.get(c"finalText")?),
-            (c"usageDurable", context.get(c"usageDurable")?),
-            (c"terminalBlocked", context.get(c"terminalBlocked")?),
-        ],
-    )?
-    .freeze()
+    })
+}
+
+fn outcome<'a>(
+    host: &Host<'a>,
+    pending: bool,
+    append_persisted: bool,
+    source: Option<V<'a>>,
+) -> Result<V<'a>> {
+    let context = host.context;
+    let mut fields = vec![
+        (
+            c"resolved",
+            host.resolved.expect("executor records the resolved plan"),
+        ),
+        (c"appendPersisted", boolean(context, append_persisted)?),
+        (c"finalText", context.get(c"finalText")?),
+        (c"usageDurable", context.get(c"usageDurable")?),
+        (c"terminalBlocked", context.get(c"terminalBlocked")?),
+    ];
+    if pending {
+        fields.push((c"pending", boolean(context, true)?));
+        fields.push((c"plan", host.plan));
+        fields.push((c"append", host.plan.get(c"append")?));
+        if let Some(source) = source {
+            fields.push((c"sourcePlan", source));
+        }
+    }
+    object(context, &fields)?.freeze()
+}
+
+/// First phase: run up to the append boundary. When the plan needs a durable
+/// append the result carries `pending: true`, the effective `plan` and its
+/// `append` facts, and no effect after the boundary has run yet.
+fn run<'a>(plan: V<'a>, raw_context: V<'a>, ports: V<'a>, runtime: V<'a>) -> Result<V<'a>> {
+    let mut host = new_host(plan, raw_context, ports, runtime)?;
+    match execution::prepare(&read(plan)?, &mut host)? {
+        execution::Prepared::Completed(result) => {
+            outcome(&host, false, result.append_persisted, None)
+        }
+        execution::Prepared::Pending { source, .. } => {
+            outcome(&host, true, false, Some(raw_context.from_value(&source)?))
+        }
+    }
+}
+
+/// Second phase: the host awaited the append and reports its verdict. Re-resolve
+/// with `appendPersisted`, run every effect after the boundary and record.
+fn run_commit<'a>(
+    plan: V<'a>,
+    raw_context: V<'a>,
+    ports: V<'a>,
+    runtime: V<'a>,
+    persisted: bool,
+    fault: V<'a>,
+    source_plan: V<'a>,
+) -> Result<V<'a>> {
+    if fault.truthy()? {
+        // The host port failed to finish, which is a host fault rather than a
+        // store verdict. Keep the pre-existing containment contract: freeze the
+        // turn through the same best-effort failure path as a synchronous throw,
+        // reporting the caller's original plan facts.
+        let facts_plan = if source_plan.truthy()? {
+            source_plan
+        } else {
+            plan
+        };
+        return failed(facts_plan, raw_context, ports, runtime, fault);
+    }
+    let mut host = new_host(plan, raw_context, ports, runtime)?;
+    host.context
+        .assign(c"appendPersisted", boolean(host.context, persisted)?)?;
+    let result = execution::complete(&read(plan)?, &mut host, persisted)?;
+    outcome(&host, false, result.append_persisted, None)
 }
 
 /// Best-effort cleanup must not let a failed port terminate the server. Each
@@ -583,6 +638,41 @@ pub fn chat_execute_turn_finalization(
     let ports = V::new(&env, ports);
     let runtime = V::new(&env, runtime);
     let value = match run(plan, context, ports, runtime) {
+        Ok(value) => value,
+        Err(error) => failed(plan, context, ports, runtime, caught(context, error)?)?,
+    };
+    Ok(value.raw())
+}
+
+#[napi]
+pub fn chat_commit_turn_finalization(
+    env: Env,
+    plan: Unknown<'_>,
+    context: Unknown<'_>,
+    ports: Unknown<'_>,
+    runtime: Unknown<'_>,
+    persisted: bool,
+    fault: Option<Unknown<'_>>,
+    source_plan: Option<Unknown<'_>>,
+) -> Result<sys::napi_value> {
+    let plan = V::new(&env, plan);
+    let raw_context = V::new(&env, context);
+    let context = if raw_context.truthy()? && raw_context.kind()? == sys::ValueType::napi_object {
+        raw_context
+    } else {
+        object(raw_context, &[])?
+    };
+    let ports = V::new(&env, ports);
+    let runtime = V::new(&env, runtime);
+    let fault = match fault {
+        Some(fault) => V::new(&env, fault),
+        None => context.from_value(&JsValue::Undefined)?,
+    };
+    let source_plan = match source_plan {
+        Some(source) => V::new(&env, source),
+        None => context.from_value(&JsValue::Undefined)?,
+    };
+    let value = match run_commit(plan, context, ports, runtime, persisted, fault, source_plan) {
         Ok(value) => value,
         Err(error) => failed(plan, context, ports, runtime, caught(context, error)?)?,
     };

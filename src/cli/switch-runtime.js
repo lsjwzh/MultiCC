@@ -957,17 +957,47 @@ function createCliSwitchRuntime(options) {
       if (switchOptions.forced === true) {
         options.chatBroadcast(session.id, { type: 'stream_end', reason: 'cli_switch' });
       }
-      options.appendMessage(session.id, {
-        role: 'system',
-        content: `CLI switched from ${fromCli} to ${targetCli}. A structured handoff checkpoint will be delivered with the next message.`,
-        ts: now,
-        cliSwitch: {
-          handoffId: handoff.id,
+      // The append is durable now. This notification is best-effort: broadcast
+      // and the CLI-change event must not wait for the fsync, but the write's
+      // rejection must still be observed.
+      try {
+        const pending = options.appendMessage(session.id, {
+          role: 'system',
+          content: `CLI switched from ${fromCli} to ${targetCli}. A structured handoff checkpoint will be delivered with the next message.`,
+          ts: now,
+          cliSwitch: {
+            handoffId: handoff.id,
+            fromCli,
+            toCli: targetCli,
+            reusedTarget: result.reused,
+          },
+        });
+        if (pending && typeof pending.then === 'function') {
+          pending.then(saved => {
+            if (saved === false) {
+              (options.logger || console).warn?.('chat_cli_switch_notice_not_persisted', {
+                sessionId: session.id, fromCli, toCli: targetCli,
+              });
+            }
+          }, error => {
+            (options.logger || console).warn?.('chat_cli_switch_notice_persist_failed', {
+              sessionId: session.id,
+              fromCli,
+              toCli: targetCli,
+              message: error && error.message ? error.message : String(error),
+            });
+          });
+        }
+      } catch (error) {
+        // The CLI switch itself must not fail on a notice append, but the
+        // reason it could not even start is still worth a log line.
+        (options.logger || console).warn?.('chat_cli_switch_notice_persist_failed', {
+          sessionId: session.id,
           fromCli,
           toCli: targetCli,
-          reusedTarget: result.reused,
-        },
-      });
+          message: error && error.message ? error.message : String(error),
+        });
+      }
       options.appendEvent(
         session.dirId,
         'session_cli_changed',

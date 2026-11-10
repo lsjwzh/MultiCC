@@ -92,16 +92,12 @@ test('a post-append projection exception cannot erase a confirmed history write'
   await assert.rejects(host.appendMessage('worker', { role: 'assistant' }), /not persisted/);
 });
 
-test('the synchronous door uses the dedicated durable port', () => {
-  const asyncCalls = [];
-  const syncCalls = [];
-  const { host } = fixture({
-    append: (_sessionId, message) => { asyncCalls.push(message); return Promise.resolve(true); },
-    appendSync: (_sessionId, message) => { syncCalls.push(message); return true; },
-  });
-  assert.equal(host.appendMessageSync('worker', { role: 'assistant', content: 'final' }), true);
-  assert.equal(asyncCalls.length, 0);
-  assert.equal(syncCalls.length, 1);
+test('an unsaved append is not projected onto the task board', async () => {
+  // The single append path is the durable one: a `false` verdict must not be
+  // treated as a confirmed write and re-announced to the board.
+  const { host, projected } = fixture({ append: () => Promise.resolve(false) });
+  assert.equal(await host.appendMessage('worker', { role: 'assistant', content: 'lost' }), false);
+  assert.equal(projected.length, 0);
 });
 
 test('an untracked dispatch detaches from the prior task and survives history restore', async () => {

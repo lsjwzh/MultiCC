@@ -120,11 +120,11 @@ function runStream(env, events, { hold = true } = {}) {
   return item;
 }
 
-function release(env, item) {
+async function release(env, item) {
   const released = item.hold ? item.hold.flush() : null;
   if (released) item.onEvent(released);
   env.runner.completionOutcome = env.runner.completion.finish({ kind: 'stream', resolved: true });
-  env.engine.finalizeStreamingTurn('sess', env.cs, env.persisted, 1, env.turn, env.runner, {},
+  await env.engine.finalizeStreamingTurn('sess', env.cs, env.persisted, 1, env.turn, env.runner, {},
     env.adapter, () => ({}), AUTO_TURN);
   return released;
 }
@@ -132,7 +132,7 @@ function release(env, item) {
 const errorFrameCount = (env, text = ENVELOPE) => env.forwarded.filter(frame => JSON.stringify(frame).includes(text)).length;
 const bodyWrites = writes => writes.filter(write => write.content.trim());
 
-test('a stale result callback cannot mutate or broadcast into the replacement runner', () => {
+test('a stale result callback cannot mutate or broadcast into the replacement runner', async () => {
   for (const boundary of ['append', 'usage', 'session-replaced', 'session-deleted']) {
     let env;
     const replace = () => {
@@ -152,6 +152,9 @@ test('a stale result callback cannot mutate or broadcast into the replacement ru
     env.cs.currentAssistantText = BODY;
     env.runner.completionOutcome = { version: 1, state: 'completed', settled: true };
     env.engine.applyClaudeChatEvent(env.cs, 'sess', mainResult(BODY), env.forward, env.turn, env.runner);
+    // The append verdict returns through the async commit entry; wait for the
+    // same durable-confirmation point the production caller awaits.
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(env.writes.length, 1, 'the original history append completed');
     assert.equal(env.cs._resultSaved, 'replacement');
     assert.equal(env.cs.chatTurnCount, 37);
@@ -159,11 +162,11 @@ test('a stale result callback cannot mutate or broadcast into the replacement ru
   }
 });
 
-test('held turn: a 429 self-wake finalizes as an API error and keeps the envelope out of the answer', () => {
+test('held turn: a 429 self-wake finalizes as an API error and keeps the envelope out of the answer', async () => {
   const env = build();
   const item = runStream(env, [userEvent('do the thing'), realAnswer(BODY), toolUse(), mainResult(BODY),
     userEvent('<task-notification>wake'), synthetic429(), wakeFailure()]);
-  const released = release(env, item);
+  const released = await release(env, item);
   assert.equal(released.background_wake_failed, true);
   assert.equal(released.is_error, true);
   assert.equal(released.terminal_reason, 'api_error');
@@ -185,23 +188,23 @@ test('held turn: a 429 self-wake finalizes as an API error and keeps the envelop
   }
 });
 
-test('held turn: a duplicated synthetic message delivery has no duplicate effect', () => {
+test('held turn: a duplicated synthetic message delivery has no duplicate effect', async () => {
   const env = build();
   const item = runStream(env, [userEvent('do the thing'), realAnswer(BODY), mainResult(BODY),
     userEvent('<task-notification>wake'), synthetic429(), synthetic429(), wakeFailure()]);
-  release(env, item);
+  await release(env, item);
   assert.equal(errorFrameCount(env), 0);
   assert.equal(env.decisions.length, 1);
   const written = bodyWrites(env.writes);
   assert.ok(written.every(write => write.content === BODY));
 });
 
-test('held turn: a later successful wake supersedes the 429 and the turn succeeds with its text', () => {
+test('held turn: a later successful wake supersedes the 429 and the turn succeeds with its text', async () => {
   const env = build();
   const item = runStream(env, [userEvent('do the thing'), realAnswer(BODY), mainResult(BODY),
     userEvent('<task-notification>wake-1'), synthetic429(), wakeFailure(),
     userEvent('<task-notification>wake-2'), realAnswer('wake two finished'), wakeSuccess('wake two finished')]);
-  const released = release(env, item);
+  const released = await release(env, item);
   assert.notEqual(released.is_error, true);
   assert.equal(released.background_wake_failed, undefined);
   assert.equal(env.runner.completionOutcome.state, 'completed');
@@ -212,12 +215,12 @@ test('held turn: a later successful wake supersedes the 429 and the turn succeed
   assert.ok(written.every(write => write.content.includes('API Error') === false));
 });
 
-test('error-only main query keeps the previous behaviour: envelope shown, whole-message boundary', () => {
+test('error-only main query keeps the previous behaviour: envelope shown, whole-message boundary', async () => {
   const env = build({ replayFence: 'none' });
   runStream(env, [userEvent('hi'), synthetic429(), mainFailure()], { hold: false });
   assert.equal((env.cs.currentAssistantText.match(/API Error/g) || []).length, 1);
   assert.ok(errorFrameCount(env) >= 1, 'the error bubble still reaches the client');
-  release(env, { hold: null });
+  await release(env, { hold: null });
   assert.equal(env.runner.apiErrorRaw?.body, null, 'whole-message boundary keeps safe-retry eligibility');
   assert.equal(env.runner.apiErrorRaw?.httpStatus, 429);
   const decision = env.decisions.at(-1);
@@ -232,14 +235,14 @@ test('duplicate synthetic delivery is dropped in the error-only path too', () =>
   assert.equal(errorFrameCount(env), 1, 'the duplicate assistant snapshot is not forwarded');
 });
 
-test('a synthetic message the text regex does not recognize is still an API error', () => {
+test('a synthetic message the text regex does not recognize is still an API error', async () => {
   const text = 'Upstream said no (429)';
   assert.equal(detectErrorEnvelope('claude', text), null, 'the wording is invisible to the text regex');
   const env = build({ replayFence: 'none' });
   runStream(env, [userEvent('hi'),
     textEvent(text, { is_api_error_message: true, api_error_status: 429, error: 'rate_limit', uuid: 'u-2' }),
     mainFailure(text)], { hold: false });
-  release(env, { hold: null });
+  await release(env, { hold: null });
   assert.equal(env.runner.apiErrorRaw?.message, text);
   assert.equal(env.runner.apiErrorRaw?.httpStatus, 429);
   assert.equal(env.runner.apiErrorRaw?.body, null);
@@ -248,11 +251,11 @@ test('a synthetic message the text regex does not recognize is still an API erro
   assert.equal(decision.raw.structured, true);
 });
 
-test('watchdog: a synthetic API-error message followed by a success result is still an error', () => {
+test('watchdog: a synthetic API-error message followed by a success result is still an error', async () => {
   const env = build({ replayFence: 'none' });
   runStream(env, [userEvent('hi'), synthetic429(), wakeSuccess('recovered?')], { hold: false });
   assert.equal(env.runner.completionOutcome, null, 'the native result is held until settlement');
-  release(env, { hold: null });
+  await release(env, { hold: null });
   assert.equal(env.decisions.length, 1, 'a successful result does not clear the structured error');
   assert.equal(env.decisions[0].raw.httpStatus, 429);
   assert.equal(env.decisions[0].raw.body, null);

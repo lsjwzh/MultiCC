@@ -194,10 +194,12 @@ const MIGRATION_DEBT = Object.freeze({
   // （+8 行日志与端口读取），实测 3053/163405；第二轮把监督器的注入接到
   // session delivery（deliverInjection）并接上排队撤回端口（+4 行），
   // 实测 3057/163703。
+  // 2026-11-11 删除同步历史追加入口后，server.js
+  // 少 3 行，实测 3054/163495，按棘轮下调。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3057,
-    byteCeiling: 163703,
+    ceiling: 3054,
+    byteCeiling: 163495,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

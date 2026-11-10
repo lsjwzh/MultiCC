@@ -71,10 +71,27 @@ pub struct FinalizationResult {
     pub append_persisted: bool,
 }
 
-pub fn execute<H: FinalizationHost>(
+/// First half of a finalization. A plan that needs no history append runs to
+/// completion here. A plan that does stops immediately before the append
+/// boundary and returns the effective plan so the host can perform the durable
+/// write asynchronously; the caller then hands the verdict back to [`complete`].
+/// Splitting at the boundary is what lets the host await an fsync without
+/// re-ordering the effects before it (clear-incremental-save and friends).
+pub enum Prepared {
+    Completed(FinalizationResult),
+    Pending {
+        plan: JsValue,
+        /// The plan as the caller supplied it. Failure containment reports the
+        /// original facts, matching the pre-split single call.
+        source: JsValue,
+        resolved: JsValue,
+    },
+}
+
+fn effective_plan<H: FinalizationHost>(
     source: &JsValue,
     host: &mut H,
-) -> Result<FinalizationResult, H::Error> {
+) -> Result<(JsValue, bool), H::Error> {
     if !matches!(source, JsValue::Object(_)) {
         return Err(host.error("finalization plan must be an object"));
     }
@@ -93,6 +110,13 @@ pub fn execute<H: FinalizationHost>(
         source.clone()
     };
     host.use_plan(&plan, replaced)?;
+    Ok((plan, replaced))
+}
+
+/// Run every effect up to (not including) the append boundary. Returns the
+/// effective plan and the preliminary resolution the host already published.
+pub fn prepare<H: FinalizationHost>(source: &JsValue, host: &mut H) -> Result<Prepared, H::Error> {
+    let (plan, _) = effective_plan(source, host)?;
     let required = truthy(prop(prop(&plan, "append"), "required"));
     let preliminary = resolve_turn_finalization(
         &plan,
@@ -100,33 +124,63 @@ pub fn execute<H: FinalizationHost>(
     );
     host.resolved_plan(&preliminary)?;
     let entries = effects(&preliminary, host)?;
-    let (resolved, append_persisted) = if required {
-        let at = boundary(&entries, host)?;
-        apply_all(&entries[..at], 0, host)?;
-        let persisted = host.persist_assistant()?;
-        // Sample the live turn only after history.write and its callbacks have
-        // returned. Neither the plan nor a cached pre-write value proves this.
-        let resolved = resolve_turn_finalization(
-            &plan,
-            &JsValue::object(vec![
-                ("appendPersisted", JsValue::Bool(persisted)),
-                ("resultDurable", host.result_durable()?),
-            ]),
-        );
-        host.resolved_plan(&resolved)?;
-        let entries = effects(&resolved, host)?;
-        let at = boundary(&entries, host)?;
-        apply_all(&entries[at + 1..], at + 1, host)?;
-        (resolved, persisted)
-    } else {
+    if !required {
         apply_all(&entries, 0, host)?;
-        (preliminary, false)
-    };
+        host.record_result(&preliminary)?;
+        return Ok(Prepared::Completed(FinalizationResult {
+            resolved: preliminary,
+            append_persisted: false,
+        }));
+    }
+    let at = boundary(&entries, host)?;
+    apply_all(&entries[..at], 0, host)?;
+    Ok(Prepared::Pending {
+        plan,
+        source: source.clone(),
+        resolved: preliminary,
+    })
+}
+
+/// Second half: the host has awaited the durable append and reports whether the
+/// exact message became durable. Sample the live turn only now — neither the
+/// plan nor a cached pre-write value proves it.
+pub fn complete<H: FinalizationHost>(
+    plan: &JsValue,
+    host: &mut H,
+    persisted: bool,
+) -> Result<FinalizationResult, H::Error> {
+    let resolved = resolve_turn_finalization(
+        plan,
+        &JsValue::object(vec![
+            ("appendPersisted", JsValue::Bool(persisted)),
+            ("resultDurable", host.result_durable()?),
+        ]),
+    );
+    host.resolved_plan(&resolved)?;
+    let entries = effects(&resolved, host)?;
+    let at = boundary(&entries, host)?;
+    apply_all(&entries[at + 1..], at + 1, host)?;
     host.record_result(&resolved)?;
     Ok(FinalizationResult {
         resolved,
-        append_persisted,
+        append_persisted: persisted,
     })
+}
+
+/// Synchronous convenience used by the core tests and by the legacy single-call
+/// path where the host can answer the append verdict immediately. Production
+/// uses [`prepare`] / [`complete`] across two NAPI calls.
+pub fn execute<H: FinalizationHost>(
+    source: &JsValue,
+    host: &mut H,
+) -> Result<FinalizationResult, H::Error> {
+    match prepare(source, host)? {
+        Prepared::Completed(result) => Ok(result),
+        Prepared::Pending { plan, .. } => {
+            let persisted = host.persist_assistant()?;
+            complete(&plan, host, persisted)
+        }
+    }
 }
 
 #[cfg(test)]

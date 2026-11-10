@@ -250,21 +250,32 @@ function createUnattendedHost(options = {}) {
     const text = String(content || '').trim();
     if (!text || typeof appendMessage !== 'function') return null;
     const entry = { role: 'system', kind: 'unattended_trace', content: text, ts: now() };
-    try {
-      const saved = appendMessage(sessionId, entry);
-      if (saved === false) return null;
-    } catch (error) {
+    // The append is a durable write now; its verdict arrives as a Promise.
+    // Broadcast only once it reports success, and never let a rejected trace
+    // write escape as an unhandled rejection (the trace is best-effort UI).
+    const broadcastSaved = (saved) => {
+      if (saved === false) return;
+      try {
+        broadcast(sessionId, {
+          type: 'unattended_trace',
+          kind: 'unattended_trace',
+          message: entry.content,
+          entry,
+        });
+      } catch (_) { /* live broadcast is best-effort; the durable line already exists */ }
+    };
+    const onAppendError = (error) => {
       log(`[unattended] trace append failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+    };
+    let pending;
+    try {
+      pending = appendMessage(sessionId, entry);
+    } catch (error) {
+      onAppendError(error);
       return null;
     }
-    try {
-      broadcast(sessionId, {
-        type: 'unattended_trace',
-        kind: 'unattended_trace',
-        message: entry.content,
-        entry,
-      });
-    } catch (_) { /* live broadcast is best-effort; the durable line already exists */ }
+    if (pending && typeof pending.then === 'function') pending.then(broadcastSaved, onAppendError);
+    else broadcastSaved(pending);
     return entry;
   }
 
