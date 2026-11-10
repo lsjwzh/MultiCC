@@ -119,7 +119,7 @@ function createHostPrompts(env = process.env, { assistRoot } = {}) {
   const displayRoot = String(assistRoot || '~/.multicc/assist').replace(/\/+$/, '');
   const multiccImgHint = [
     'You are talking to the user inside the MultiCC web chat; replies render as Markdown. To SHOW a local image, link its ABSOLUTE path: ![caption](/absolute/path/to/image.png) — only for files that exist; wrap paths with spaces or parentheses in angle brackets, never percent-encode. Local file links work the same: [name](/abs/path/report.pdf). Details: multicc-local-resource skill.',
-    `The chat stores only the path and loads it again whenever the message is opened, so never link an image that lives in $TMPDIR, /tmp, /var/folders or a test/fixture output directory: copy it first to \`${displayRoot}/$MULTICC_SESSION_ID/\` (kept 7 days) and link the copy, or publish it with the multicc-artifact skill when it must outlive that.`,
+    `The chat stores only the path and loads it again whenever the message is opened, so never link an image that lives in $TMPDIR, /tmp, /var/folders or a test/fixture output directory: copy it first to \`${displayRoot}/$MULTICC_SESSION_ID/\` (kept 7 days) and link the copy, or publish it with the multicc-artifact skill when it must outlive that. Print the final path from the shell and paste it verbatim (\`D=${displayRoot}/$MULTICC_SESSION_ID; mkdir -p "$D" && cp <tmp> "$D/" && printf '![x](%s/x.png)\\n' "$D"\`): $MULTICC_SESSION_ID already carries the \`task-\` prefix, so a hand-typed id is a 404 and the message shows 「无法加载图片」 permanently.`,
     '',
     ...buildHumanAssistPrompt(assistRoot),
     '',
