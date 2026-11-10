@@ -75,7 +75,9 @@ pub mod usage_observed;
 
 pub mod provider_attempt_lifecycle;
 pub mod provider_authorization;
+pub mod provider_catalog;
 pub mod provider_credentials;
+pub mod provider_limit_history;
 pub mod provider_request;
 pub mod provider_store;
 

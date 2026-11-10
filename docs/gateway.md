@@ -128,6 +128,9 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/OPTIONS /api/download`、`POST/OPTIONS /api/auth/download-ticket`、`GET/HEAD/OPTIONS /api/uploads/stats`、`DELETE/OPTIONS /api/uploads/cleanup` | `src/routes/file-transfer.js` 的 `createDownloadHandler` 与上传临时文件统计/清理、`src/routes/auth.js` 的 download-ticket 签发和闸门 ticket 分支、`src/auth-security.js` 的 download ticket（均已删） | `native/gateway/src/app/download.rs` + `uploads.rs`，`multicc_core::download_ticket`（ticket 存储搬进前门进程）、`multicc_core::http_send`（`res.sendFile`/`res.download` 的发送语义）；闸门的 ticket 豁免由 `multicc_core::http_gate::authorize` 自己实现 | 71/71 请求逐字节一致（含百分号解码回退、中文文件名、ticket 目标归一化与复用、临时目录清理计数） |
 | `/api/service-routes` 管理及 `/services/*` HTTP/WS | `src/service-routes.js` 与 server/auth/voice 接线（已删） | `native/core/src/service_routes.rs` + gateway `services.rs` / `service_transport.rs` | 80 组 HTTP 对拍及真实流式、WS、TLS 测试，见 §13 |
 | `GET/HEAD/PUT/OPTIONS /api/settings/quota-guard` | `src/routes/quota-guard.js`（已删）、`src/quota/quota-guard.js` 的配置读取/归一化、额度判定与刷新节流（已移除） | `native/gateway/src/app/quota_guard.rs` + `multicc_core::quota_guard` / `settings`，运行时通过 `RustQuotaGuard` 与无损 napi 接口调用同一内核 | 10,096 组策略对拍一致；136 组 HTTP 请求的状态、正文、相关响应头与落盘字节一致 |
+| `GET/HEAD/OPTIONS /api/providers/limit-history` | `src/routes/provider-limit-history.js`（已删）、`src/quota/provider-quota-history.js` 的读取侧（已移除；采样写入仍由 Node 经 napi 进内核） | `native/gateway/src/app/provider_limit_history.rs` + `multicc_core::provider_limit_history` / `provider_catalog`，读 `multicc_core::quota_history` 持有的 `<data>/provider-quota-history.db` | 120/120 默认请求逐字节一致（含 964 行数据库摘要）；空库 3/3、新库 2/2、损坏库 5/5、只读库 5/5、相对数据根 5/5 一致 |
+
+原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
 额度保护默认对官方账号启用，5 小时、周、月窗口均以 98% 为阈值。只有达到阈值且 reset 仍在未来的读数才能阻断；多窗口按使用率、再按 reset 降序选择。阻断读数超过默认 30 分钟后放行并通知宿主刷新，失败刷新写入的 `lastAttemptAt` 同样重置读数年龄，避免每次请求都重试不可达上游。刷新通知按账号至少间隔 60 秒。
 
@@ -147,6 +150,10 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - 额度配置写入失败仍返回 500，临时文件名称由 Rust 生成；错误中的临时路径因此不同，失败后不再留下临时文件。
 - `http_error` 日志行的 `detail` 是原因短语，没有 JS 调用栈。
 - Token 分歧已消除：子进程重启后前门只接受新代次 Rust 运行时的当前凭据；不再保留前门自己的 `.env` 推测值。
+- `/API/providers/limit-history`（大写前缀）此前被 Express 大小写不敏感地匹配并返回 200；前门只 claim 区分大小写的 `/api/` 前缀，Node 路由删除后该变体落回 Express 404。百分号编码变体（如 `limit%2Dhistory`）在 Node 实测本就 404，没有差异。
+- `limit-history` 的 `points[toString]=5`、`points[valueOf]=5` 这类直接命名下标：旧 Node 路由里 `Number(object)` 抛 `TypeError`，路由是异步处理器，抛出的异常不会被捕获，进程没有全局 `unhandledRejection` 处理器，Node 默认会终止进程（独立复核实测子进程退出码 3）；前门把它当作对象得到 NaN，回落到默认 48，返回 200。这是缺陷的消除，不是要保留的行为。
+- `limit-history` 的 URI 长度上限由前门（hyper）决定：超过 65534 字节返回 414；Node 的请求头上限约 16KB。两者都拒绝超长请求，但阈值不同，16KB 到 64KB 之间的请求以前被 Node 拒绝、现在能进入解析器（解析器本身对 1000 个参数、深度 5、10KB 值的实测耗时不超过几十毫秒）。
+- 官方账号目录用 `HOME` 拼接；`HOME` 缺失时前门得到空路径，而 Node 的 `os.homedir()` 会回退到系统账户数据库。正常服务环境总是设置 `HOME`，这一点是推断，没有实测。
 
 ### 10. 通用请求准入迁移（2026-11-08）
 

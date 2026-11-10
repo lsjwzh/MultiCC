@@ -11,6 +11,7 @@ pub mod auth;
 pub mod download;
 pub mod express;
 pub mod external_workspaces;
+pub mod provider_limit_history;
 pub mod quota_guard;
 pub mod run_config_presets;
 mod service_transport;
@@ -43,6 +44,8 @@ pub enum Route {
     QuotaGuardGet,
     QuotaGuardPut,
     QuotaGuardOptions,
+    ProviderLimitHistoryGet,
+    ProviderLimitHistoryOptions,
     PresetsGet,
     PresetsPut,
     PresetsOptions,
@@ -83,6 +86,8 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         ("settings/quota-guard", "GET" | "HEAD") => Some(Route::QuotaGuardGet),
         ("settings/quota-guard", "PUT") => Some(Route::QuotaGuardPut),
         ("settings/quota-guard", "OPTIONS") => Some(Route::QuotaGuardOptions),
+        ("providers/limit-history", "GET" | "HEAD") => Some(Route::ProviderLimitHistoryGet),
+        ("providers/limit-history", "OPTIONS") => Some(Route::ProviderLimitHistoryOptions),
         ("run-config/presets", "GET" | "HEAD") => Some(Route::PresetsGet),
         ("run-config/presets", "PUT") => Some(Route::PresetsPut),
         ("run-config/presets", "OPTIONS") => Some(Route::PresetsOptions),
@@ -116,6 +121,11 @@ pub struct App {
     /// read-modify-write of a store must not interleave here either.
     store_lock: Mutex<()>,
     pub tickets: Mutex<DownloadTickets>,
+    /// One quota-history handle per process, like the Node adapter: the first
+    /// failed open is permanent (src/quota/provider-quota-history.js).
+    pub provider_limit_history: provider_limit_history::Shared,
+    /// `os.homedir()`: the official-account store lives under it.
+    pub home_dir: PathBuf,
     /// The Node child's `process.cwd()` (physical path): what `path.resolve`
     /// resolves a relative download path against.
     pub node_cwd: String,
@@ -167,6 +177,10 @@ impl App {
             allow_legacy_token_query: env_enabled(&env_text("MULTICC_ALLOW_LEGACY_TOKEN_QUERY")),
             store_lock: Mutex::new(()),
             tickets: Mutex::new(DownloadTickets::new()),
+            provider_limit_history: Mutex::new(provider_limit_history::State::default()),
+            home_dir: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
             node_cwd: physical_dir(&options.cwd),
         }
     }
@@ -309,7 +323,9 @@ pub async fn handle(
     match route {
         Route::PresetsOptions | Route::QuotaGuardOptions => return options(&ctx, "GET,HEAD,PUT"),
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
-        Route::DownloadOptions | Route::UploadStatsOptions => return options(&ctx, "GET,HEAD"),
+        Route::DownloadOptions | Route::UploadStatsOptions | Route::ProviderLimitHistoryOptions => {
+            return options(&ctx, "GET,HEAD")
+        }
         Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
         Route::DownloadTicket => {
             let (status, value) = download::issue(&app, &body, now_ms());
@@ -324,9 +340,24 @@ pub async fn handle(
         _ => {}
     }
     let worker = Arc::clone(&app);
+    let original_url = ctx.original_url.clone();
     let answered = tokio::task::spawn_blocking(move || {
         let _held = worker.store_lock.lock().unwrap_or_else(|e| e.into_inner());
         let root = &worker.data_root;
+        if route == Route::ProviderLimitHistoryGet {
+            let mut state = worker
+                .provider_limit_history
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let value = provider_limit_history::get(
+                root,
+                &worker.home_dir,
+                &original_url,
+                now_ms(),
+                &mut state,
+            );
+            return (200, multicc_core::js::serde::js_json_stringify(&value));
+        }
         // Keep this route's saved JSON lossless: unknown fields can contain
         // UTF-16 surrogates which serde_json::Value cannot represent.
         if matches!(route, Route::QuotaGuardGet | Route::QuotaGuardPut) {
@@ -348,13 +379,22 @@ pub async fn handle(
     })
     .await;
     match answered {
-        Ok((status, text)) => express::send(
-            &ctx,
-            status,
-            "application/json; charset=utf-8",
-            text.into_bytes(),
-            &[],
-        ),
+        Ok((status, text)) => {
+            // The Node route set this before its availability check, so 304s
+            // carry it too.
+            let extra: &[(&str, &str)] = if route == Route::ProviderLimitHistoryGet {
+                &[("Cache-Control", "no-store")]
+            } else {
+                &[]
+            };
+            express::send(
+                &ctx,
+                status,
+                "application/json; charset=utf-8",
+                text.into_bytes(),
+                extra,
+            )
+        }
         Err(_) => express::error(&ctx, 500, "native route panicked"),
     }
 }
@@ -380,6 +420,21 @@ mod tests {
         assert_eq!(claim(&Method::GET, "/API/settings/quota-guard"), None);
         assert_eq!(claim(&Method::GET, "/api/settings/quota-guard//"), None);
         assert_eq!(claim(&Method::POST, "/api/settings/quota-guard"), None);
+        assert_eq!(
+            claim(&Method::GET, "/api/providers/limit-history"),
+            Some(Route::ProviderLimitHistoryGet)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/Providers/Limit-History/"),
+            Some(Route::ProviderLimitHistoryGet)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/providers/limit-history"),
+            Some(Route::ProviderLimitHistoryOptions)
+        );
+        assert_eq!(claim(&Method::POST, "/api/providers/limit-history"), None);
+        assert_eq!(claim(&Method::GET, "/api/providers/limit-history//"), None);
+        assert_eq!(claim(&Method::GET, "/API/providers/limit-history"), None);
         assert_eq!(
             claim(&Method::GET, "/api/run-config/presets"),
             Some(Route::PresetsGet)

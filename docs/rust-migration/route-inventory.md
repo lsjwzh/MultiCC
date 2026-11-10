@@ -270,7 +270,7 @@
 | `src/routes/plugins.js` | 11 | 453 | GET '/api/plugins' @381<br>GET '/api/plugins/catalog' @387<br>POST '/api/plugins/catalog/refresh' @392<br>POST '/api/plugins/:id/install' @400<br>POST '/api/plugins/:id/uninstall' @401<br>POST '/api/plugins/:id/rollback' @405<br>POST '/api/plugins/:id/run' @409<br>GET '/api/channels' @416<br>POST '/api/channels/recheck' @428<br>GET '/api/channels/targets' @440<br>GET '/plugins/:id/*' @446 | a,b,c | T2 |
 | `src/routes/pricing.js` | 4 | 111 | GET '/api/pricing/status' @61<br>GET '/api/pricing/lookup' @65<br>POST '/api/pricing/refresh' @83<br>GET '/api/pricing/search' @90 | b,c | T1 |
 | `src/routes/provider-balance.js` | 2 | 403 | GET '/api/providers/balances' @314<br>GET '/api/providers/:appType/:id/balance' @321 | b,c | T1 |
-| `src/routes/provider-limit-history.js` | 1 | 91 | GET '/api/providers/limit-history' @47 | b,d | T0 |
+| ~~`src/routes/provider-limit-history.js`~~（已迁至前门，见 docs/gateway.md §9） | 1 | 91 | GET '/api/providers/limit-history' @47 | b,d | T0 |
 | `src/routes/provider-models.js` | 1 | 240 | GET '/api/providers/:id/models' @203 | b,d | T1 |
 | `src/routes/providers.js` | 17 | 880 | GET '/api/providers' @281<br>GET '/api/providers/stats' @362<br>POST '/api/providers/import' @385<br>POST '/api/providers' @393<br>PATCH '/api/providers/:appType/:id' @417<br>DELETE '/api/providers/:appType/:id' @440<br>POST '/api/providers/:appType/:id/probe' @489<br>POST '/api/providers/:appType/:id/speedtest' @515<br>POST '/api/providers/:appType/:id/reassign-sessions' @641<br>POST '/api/providers/:appType/:id/relay-share' @697<br>POST '/api/providers/:appType/:id/relay-models/sync' @747<br>GET '/api/provider-relay-shares' @761<br>DELETE '/api/provider-relay-shares/:id' @770<br>GET '/api/provider-relay-shares/:id/code' @784<br>GET '/api/providers/:appType/:id/relay-import-code' @814<br>GET '/api/provider-defaults' @836<br>PUT '/api/provider-defaults' @837 | a,b,c,d | T2 |
 | `src/routes/qoder-models.js` | 1 | 109 | GET '/api/qoder/models' @82 | b | T1 |
@@ -326,7 +326,7 @@
 
 ## 6. 分层合计与迁移顺序
 
-> 进度：已迁出 1 组（`run-config-presets`，前门原生应答，Node 代码已删）。迁移顺序里第 1、4、5 组实际依赖 Node 内存态（provider 列表合并、扫描环形缓冲、账户凭据），不是 T0，要等它们的状态先搬进 Rust。
+> 进度：已迁出 2 组（`run-config-presets` 与 `provider-limit-history`，前门原生应答，Node 代码已删）。迁移顺序里第 4、5 组实际依赖 Node 内存态（扫描环形缓冲、账户凭据），不是 T0，要等它们的状态先搬进 Rust。
 
 ### 6.1 合计
 
@@ -352,7 +352,7 @@
 
 | # | 组 | 依据 / 为什么先做 | 覆盖测试 |
 |---|---|---|---|
-| 1 | `provider-limit-history`（1 条 / 91 行，T0） | 数据已由 Rust `quota_history` 持有（`src/paths.js:158-161`），Node 只做 DTO 组装 | `tests/test-provider-limit-history.js`（`test:provider-router`） |
+| 1 | ✅ `provider-limit-history`（1 条 / 91 行，T0；已迁至前门） | 数据已由 Rust `quota_history` 持有（`src/paths.js:158-161`），Node 只做 DTO 组装 | 网关集成测试 `native/gateway/tests/provider_limit_history.rs`（冻结 Node oracle 的 golden fixture） |
 | 2 | ✅ `run-config-presets`（3 条 / 125 行，T1，`d`；已迁至前门） | Rust `run_config_presets` 已是权威；Node 侧只是校验 + 文件读写 | `tests/test-run-config-presets.js`（`test:security`、`test:core`） |
 | 3 | `subagent-defaults`（2 条 / 257 行，T1，`d`） | Rust `subagent_defaults` 持有继承/清除逻辑；无 session 内存态 | `tests/test-subagent-defaults.js` |
 | 4 | `account-subscription`（1 条 / 51 行，T0，`d`） | Rust `account_subscription`；单端点、DTO 窄 | `tests/test-account-subscription.js`（`test:provider-router`） |

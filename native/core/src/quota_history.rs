@@ -28,7 +28,7 @@ const MAX_LABEL: usize = 24;
 const MAX_UNIT: usize = 12;
 const MAX_PROVIDERS: usize = 64;
 const MAX_POINTS: usize = 240;
-const DEFAULT_RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
+pub const DEFAULT_RETENTION_MS: i64 = 14 * 24 * 60 * 60 * 1000;
 const MIN_INTERVAL_MS: i64 = 5 * 60 * 1000;
 const PRUNE_INTERVAL_MS: i64 = 60 * 60 * 1000;
 

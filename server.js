@@ -765,7 +765,6 @@ const directories = createDirectoryTable(stateOwner);
 mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 
 // 供应商余量共享缓存：写入成功后向使用该线路的会话同步展示快照。
-const { mountProviderLimitHistoryRoutes } = require('./src/routes/provider-limit-history');
 const { providerQuotaHistory, providerLimitCache, limitRecorder, quotaBarCache, quotaGuard } = require('./src/quota/provider-runtime').createProviderQuotaRuntime({ paths: MULTICC_PATHS, persistedSessions, providers, broadcast: (id, data) => chatBroadcast(id, data), logger });
 // The native owner writes sessions.json itself (same envelope, `.bak1..3`
 // rotation, file+directory fsync). It honours the same isolated-test failure
@@ -2239,7 +2238,6 @@ providerRoutes.mountManagementRoutes(app);
 // (onResult); lookupCached reads it back so a transient failure answers last-known-
 // good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
 require('./src/quota/quota-self-heal').wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
-mountProviderLimitHistoryRoutes(app, { history: providerQuotaHistory, providers }); // GET /api/providers/limit-history — 卡片余量走势（采样由 Rust 内核持有）
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.
