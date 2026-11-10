@@ -89,7 +89,7 @@ function probeAddon(file, node = process.execPath) {
       || ['autoProviderLimitState','autoProviderChooseCandidate','autoProviderFailoverSafety','autoProviderPolicyFacts','providerErrorFacts','autoProviderFacts'].some(key=>typeof a[key]!=='function')
     || ['networkPolicyResolve','networkPolicyEnvEnabled','networkPolicyIsLoopbackHost','networkPolicyFindAvailablePort'].some(key=>typeof a[key]!=='function')
     || ['classifyVocabCatalog','parseClassifyResult','classifyVocabRequest'].some(key=>typeof a[key]!=='function')
-    || ['unattendedTag','unattendedNormalizeConfig','unattendedVerdictPrompt','unattendedParseVerdict','unattendedDecide','unattendedDecideFault'].some(key=>typeof a[key]!=='function')
+    || ['unattendedTag','unattendedNormalizeConfig','unattendedVerdictPrompt','unattendedParseVerdict','unattendedDecide','unattendedDecideFault','unattendedDecideTurnEnd'].some(key=>typeof a[key]!=='function')
     || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',

@@ -57,3 +57,10 @@ pub fn unattended_decide(input: String) -> Result<String> {
 pub fn unattended_decide_fault(input: String) -> Result<String> {
     multicc_core::unattended::decide_fault(&input).map_err(napi::Error::from_reason)
 }
+
+/// The one decision for every turn end →
+/// `{nextState?, action, message, reason?, pausedBy?, faults?, resetFaults?}`.
+#[napi]
+pub fn unattended_decide_turn_end(input: String) -> Result<String> {
+    multicc_core::unattended::decide_turn_end(&input).map_err(napi::Error::from_reason)
+}

@@ -555,6 +555,14 @@ fn build_state(
     // the state is either active (no pause) or terminal (pausedBy has no point).
     out.insert("evaluating".to_string(), json!(false));
     out.insert("pausedBy".to_string(), Value::Null);
+    // Verdicts rebuild the state from scratch. Host bookkeeping must survive:
+    // `lastSettleAt` keeps boot reconciliation from replaying a handled settle,
+    // and `lastTurnEndId` keeps the second turn-end observer a no-op.
+    for key in ["lastSettleAt", "lastTurnEndId"] {
+        if let Some(value) = field(state, key) {
+            out.insert(key.to_string(), value.clone());
+        }
+    }
     Value::Object(out)
 }
 
@@ -759,6 +767,265 @@ pub fn decide(input: &str) -> Result<String, String> {
     Ok(Value::Object(out).to_string())
 }
 
+/// Cancel sources a human deliberately initiated. A user Cancel is not a fault:
+/// the supervisor pauses and never resurrects work against the user's intent.
+const USER_CANCEL_SOURCES: [&str; 8] = [
+    "manual_cancel",
+    "task-shell",
+    "user_cancel",
+    "insert_queued",
+    "force_insert",
+    "new_user_message",
+    "cancel_repeat",
+    "dispatch_cancel",
+];
+/// User cancels that also carry a new message: the pause reason is "user input".
+const USER_INPUT_SOURCES: [&str; 3] = ["insert_queued", "force_insert", "new_user_message"];
+/// Host-side interruptions. They are faults (the goal survives an unhealthy
+/// host/upstream), not a human decision to stop, so the supervisor continues.
+const HOST_CANCEL_SOURCES: [&str; 9] = [
+    "process_watchdog",
+    "stalled_recovery",
+    "provider_log_error",
+    "restart_spawn",
+    "restart_recovery",
+    "shutdown",
+    "cli_switch",
+    "relocate",
+    // The turn died between its P write and the provider spawn: no runner, no
+    // finalizer, and nothing the user asked to stop. The host settles it through
+    // the same entry so an armed supervisor continues under its fault cap.
+    "preparation_failed",
+];
+
+fn is_user_cancel(source: &str, kill_reason: &str) -> bool {
+    USER_CANCEL_SOURCES.contains(&source) || USER_CANCEL_SOURCES.contains(&kill_reason)
+}
+
+fn is_host_cancel(source: &str, kill_reason: &str) -> bool {
+    let known =
+        |value: &str| HOST_CANCEL_SOURCES.contains(&value) || value.ends_with("_log_watchdog");
+    known(source) || known(kill_reason)
+}
+
+/// Pause while preserving the persisted state verbatim (field order included).
+fn pause_state(state: &Value, by: &str, now: i64) -> Value {
+    let mut out = state.as_object().cloned().unwrap_or_default();
+    out.insert("status".to_string(), json!("stopped"));
+    out.insert("pausedBy".to_string(), json!(by));
+    out.insert("evaluating".to_string(), json!(false));
+    out.insert("updatedAt".to_string(), json!(now));
+    Value::Object(out)
+}
+
+/// A clean D/W settle proves upstream recovered: clear `consecutiveFaults`.
+/// Returns the (possibly unchanged) state and whether a write is required.
+fn settle_state(state: &Value) -> (Value, bool) {
+    let mut out = state.as_object().cloned().unwrap_or_default();
+    let streak = field(state, "stall")
+        .and_then(|stall| field(stall, "consecutiveFaults"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if streak != 0 {
+        let mut stall = field(state, "stall")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        stall.insert("consecutiveFaults".to_string(), json!(0));
+        out.insert("stall".to_string(), Value::Object(stall));
+    }
+    (Value::Object(out), streak != 0)
+}
+
+fn none_envelope(reason: &str) -> String {
+    json!({ "action": "none", "message": "", "reason": reason }).to_string()
+}
+
+/// Stamp the handled turn's identity on the next state. The identity is the
+/// per-turn dedupe key: two observers (turn finalize and the cancel writer) may
+/// report the same turn, but only the first report may act. It is persisted so
+/// boot reconciliation uses exactly the same key.
+fn with_turn_end_id(mut state: Value, turn_id: &str) -> Value {
+    if !turn_id.is_empty() {
+        if let Some(object) = state.as_object_mut() {
+            object.insert(
+                "lastTurnEndId".to_string(),
+                Value::String(turn_id.to_string()),
+            );
+        }
+    }
+    state
+}
+
+/// Same stamp for a decision envelope that already carries `nextState`.
+fn with_turn_end_decision(mut decision: Value, turn_id: &str) -> Value {
+    if turn_id.is_empty() {
+        return decision;
+    }
+    if let Some(next_state) = decision.get_mut("nextState") {
+        let stamped = with_turn_end_id(next_state.take(), turn_id);
+        *next_state = stamped;
+    }
+    decision
+}
+
+fn pause_decision(state: &Value, by: &str, reason: &str, now: i64, turn_id: &str) -> String {
+    json!({
+        "action": "pause",
+        "message": "",
+        "pausedBy": by,
+        "reason": reason,
+        "nextState": with_turn_end_id(pause_state(state, by, now), turn_id),
+    })
+    .to_string()
+}
+
+fn user_pause_by(source: &str, kill_reason: &str) -> &'static str {
+    if USER_INPUT_SOURCES.contains(&source) || USER_INPUT_SOURCES.contains(&kill_reason) {
+        "input"
+    } else {
+        "cancel"
+    }
+}
+
+/// The one decision for *every* way a turn can end.
+///
+/// The host passes facts only (`kind`, classify letter, cancel attribution, the
+/// API policy's retry verdict, whether the scheduler has staged backlog); this
+/// function owns the policy and returns one action:
+/// `evaluate | fault_continue | needs_human | pause | none`.
+///
+/// Source attribution is independent of `kind`: an E turn whose `killReason` is
+/// a user cancel is still a user cancel (`pause`, never inject). This is the
+/// race the turn-finalize observer hits when it reports before the cancel
+/// observer: assigning the kill reason happens before the runner is stopped, so
+/// a user-caused E always carries its attribution.
+///
+/// `turnId` makes each turn produce exactly one result: a second report for an
+/// already-handled turn is `none`, except that a later user-cancel attribution
+/// still pauses (the user wins; nothing new is injected).
+///
+/// End types:
+///   * `settle` D/W → `evaluate` (D defers while the scheduler has backlog);
+///   * `fault` (E from the rules path) with a user source → `pause`;
+///   * `fault` → `none` when the API policy scheduled its own retry, else the
+///     fault continuation policy;
+///   * `cancel` with a user source → `pause` (`cancel`, or `input` for inserts);
+///   * `cancel` with a host source (watchdog / stalled recovery / restart /
+///     shutdown / provider log watchdog) → the same fault continuation policy;
+///   * `cancel` with unknown attribution → `pause` (fail safe: unlock input and
+///     stop rather than inject work the user may just have stopped);
+///   * `user_input` → `pause` as a takeover.
+///
+/// Input: `{state, now, kind, turnId?, settle?, cancelSource?, killReason?,
+/// retryScheduled?, backlogPending?}`. Non-active states are a no-op;
+/// `retryScheduled` must be a boolean when present.
+pub fn decide_turn_end(input: &str) -> Result<String, String> {
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let state = field(&value, "state").cloned().unwrap_or_else(|| json!({}));
+    let now = int_value(field(&value, "now")).unwrap_or(0);
+    // The fact contract is strict: a string "true" must not be silently treated
+    // as false and inject a continuation the API policy already owns.
+    let retry_scheduled = match field(&value, "retryScheduled") {
+        None => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => {
+            return Err("unattended_invalid_input: retryScheduled must be a boolean".to_string())
+        }
+    };
+    if state_text(&state, "status") != "active" {
+        return Ok(none_envelope("not_active"));
+    }
+    let kind = state_text(&value, "kind");
+    let turn_id = state_text(&value, "turnId");
+    let source = state_text(&value, "cancelSource");
+    let kill_reason = state_text(&value, "killReason");
+    if !turn_id.is_empty() && state_text(&state, "lastTurnEndId") == turn_id {
+        // The user wins over an earlier host interruption, but only as a pause:
+        // the first report already produced its (at most one) action.
+        if is_user_cancel(&source, &kill_reason) {
+            let by = user_pause_by(&source, &kill_reason);
+            return Ok(pause_decision(
+                &state,
+                by,
+                "duplicate_user_takeover",
+                now,
+                &turn_id,
+            ));
+        }
+        return Ok(none_envelope("duplicate_turn"));
+    }
+    match kind.as_str() {
+        "user_input" => Ok(pause_decision(&state, "input", "user_input", now, &turn_id)),
+        "settle" => {
+            let settle = state_text(&value, "settle").to_uppercase();
+            if settle != "D" && settle != "W" {
+                return Ok(none_envelope("not_a_settle_letter"));
+            }
+            let backlog = field(&value, "backlogPending")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (next_state, reset_faults) = settle_state(&state);
+            let next_state = with_turn_end_id(next_state, &turn_id);
+            // D with staged FIFO work is not judged yet: the scheduler will
+            // drain that queue and its own last D settle evaluates. W is judged
+            // even with backlog (its pending question is what Aux must answer).
+            if settle == "D" && backlog {
+                return Ok(json!({
+                    "action": "none",
+                    "message": "",
+                    "reason": "backlog_pending",
+                    "nextState": next_state,
+                    "resetFaults": reset_faults,
+                })
+                .to_string());
+            }
+            Ok(json!({
+                "action": "evaluate",
+                "message": "",
+                "nextState": next_state,
+                "resetFaults": reset_faults,
+            })
+            .to_string())
+        }
+        // `fault` and `cancel` differ only in whether the API policy may already
+        // own the retry; attribution comes first for both.
+        "fault" | "cancel" => {
+            if is_user_cancel(&source, &kill_reason) {
+                let by = user_pause_by(&source, &kill_reason);
+                return Ok(pause_decision(&state, by, "user_cancel", now, &turn_id));
+            }
+            if kind == "fault" {
+                if retry_scheduled {
+                    // The API policy owns the retry and reuses the SAME turn:
+                    // the turn has not ended, so it must not be claimed as
+                    // handled. Stamping lastTurnEndId here would make the
+                    // retry's real D/W/E settle look like a duplicate and strand
+                    // the session with its input locked.
+                    return Ok(none_envelope("policy_retry"));
+                }
+                return Ok(
+                    with_turn_end_decision(fault_decision(&state, now), &turn_id).to_string(),
+                );
+            }
+            if is_host_cancel(&source, &kill_reason) {
+                return Ok(
+                    with_turn_end_decision(fault_decision(&state, now), &turn_id).to_string(),
+                );
+            }
+            Ok(pause_decision(
+                &state,
+                "cancel",
+                "unrecognized_cancel_source",
+                now,
+                &turn_id,
+            ))
+        }
+        _ => Ok(none_envelope("unknown_kind")),
+    }
+}
+
 /// Immediate fault (E) continuation, without an Aux call.
 ///
 /// After the API-error policy has finished with an E — it either scheduled its
@@ -776,8 +1043,7 @@ pub fn decide_fault(input: &str) -> Result<String, String> {
         crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let state = field(&value, "state").cloned().unwrap_or_else(|| json!({}));
     let now = int_value(field(&value, "now")).unwrap_or(0);
-    let status = state_text(&state, "status");
-    if status != "active" {
+    if state_text(&state, "status") != "active" {
         return Ok(json!({
             "nextState": state,
             "action": "none",
@@ -785,13 +1051,18 @@ pub fn decide_fault(input: &str) -> Result<String, String> {
         })
         .to_string());
     }
-    let rounds = int_value(field(&state, "rounds")).unwrap_or(0).max(0);
-    let stall = field(&state, "stall").cloned().unwrap_or_else(|| json!({}));
+    Ok(fault_decision(&state, now).to_string())
+}
+
+/// The shared fault policy (callers have already checked `status == "active"`).
+fn fault_decision(state: &Value, now: i64) -> Value {
+    let rounds = int_value(field(state, "rounds")).unwrap_or(0).max(0);
+    let stall = field(state, "stall").cloned().unwrap_or_else(|| json!({}));
     let same_instruction = u32_value(field(&stall, "sameInstruction"));
     let aux_failures = u32_value(field(&stall, "auxFailures"));
     let faults = u32_value(field(&stall, "consecutiveFaults")).saturating_add(1);
-    let history = copy_history(&state);
-    let previous = priority_verdict(&state);
+    let history = copy_history(state);
+    let previous = priority_verdict(state);
 
     let (action, message, next_status, next_rounds) = if faults >= FAULT_LIMIT {
         (
@@ -820,7 +1091,7 @@ pub fn decide_fault(input: &str) -> Result<String, String> {
         },
     });
     let next_state = build_state(
-        &state,
+        state,
         next_status,
         next_rounds,
         now,
@@ -830,13 +1101,12 @@ pub fn decide_fault(input: &str) -> Result<String, String> {
         aux_failures,
         faults,
     );
-    Ok(json!({
+    json!({
         "nextState": next_state,
         "action": action,
         "message": message,
         "faults": faults,
     })
-    .to_string())
 }
 
 #[cfg(test)]
@@ -1391,5 +1661,277 @@ mod tests {
         let out = fault_json(json!({ "state": state, "now": 200 }));
         assert_eq!(out["action"], json!("none"));
         assert_eq!(out["nextState"]["status"], json!("stopped"));
+    }
+
+    // ── one decision for every turn end ────────────────────────────────────
+
+    fn turn_end_json(input: Value) -> Value {
+        serde_json::from_str(&decide_turn_end(&input.to_string()).unwrap()).unwrap()
+    }
+
+    fn cancel_input(source: &str, kill_reason: &str) -> Value {
+        json!({
+            "state": active_state(1),
+            "now": 200,
+            "kind": "cancel",
+            "cancelSource": source,
+            "killReason": kill_reason,
+        })
+    }
+
+    #[test]
+    fn a_clean_settle_evaluates_and_clears_the_fault_streak() {
+        let mut state = active_state(2);
+        state["stall"] = json!({ "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 2 });
+        let out =
+            turn_end_json(json!({ "state": state, "now": 200, "kind": "settle", "settle": "D" }));
+        assert_eq!(out["action"], json!("evaluate"));
+        assert_eq!(out["resetFaults"], json!(true));
+        assert_eq!(out["nextState"]["stall"]["consecutiveFaults"], json!(0));
+
+        let w = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "settle", "settle": "W", "backlogPending": true,
+        }));
+        assert_eq!(
+            w["action"],
+            json!("evaluate"),
+            "W is judged even with staged backlog"
+        );
+    }
+
+    #[test]
+    fn a_d_settle_defers_while_the_scheduler_has_backlog() {
+        let out = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "settle", "settle": "D", "backlogPending": true,
+        }));
+        assert_eq!(out["action"], json!("none"));
+        assert_eq!(out["reason"], json!("backlog_pending"));
+    }
+
+    #[test]
+    fn a_policy_scheduled_retry_is_a_no_op_for_the_supervisor() {
+        let out = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "fault", "retryScheduled": true,
+            "turnId": "turn-retry",
+        }));
+        assert_eq!(out["action"], json!("none"));
+        assert_eq!(out["reason"], json!("policy_retry"));
+        // The retry reuses the same turn object: claiming it as handled here
+        // would make the retry's real settle a duplicate and lock the session.
+        assert!(out.get("nextState").is_none(), "policy retry must not claim the turn");
+
+        let settled = turn_end_json(json!({
+            "state": active_state(1), "now": 300, "kind": "settle", "settle": "D",
+            "turnId": "turn-retry",
+        }));
+        assert_eq!(settled["action"], json!("evaluate"),
+            "the same turn id must still be evaluable after a policy retry");
+
+        let fail_fast = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "fault", "retryScheduled": false,
+        }));
+        assert_eq!(fail_fast["action"], json!("fault_continue"));
+    }
+
+    #[test]
+    fn a_user_cancel_pauses_instead_of_continuing() {
+        for source in [
+            "manual_cancel",
+            "task-shell",
+            "user_cancel",
+            "cancel_repeat",
+            "dispatch_cancel",
+            "force_insert",
+            "insert_queued",
+            "new_user_message",
+        ] {
+            let out = turn_end_json(cancel_input(source, source));
+            assert_eq!(out["action"], json!("pause"), "{source}");
+            assert_eq!(out["nextState"]["status"], json!("stopped"), "{source}");
+            assert_eq!(out["nextState"]["evaluating"], json!(false));
+            let expected =
+                if ["force_insert", "insert_queued", "new_user_message"].contains(&source) {
+                    "input"
+                } else {
+                    "cancel"
+                };
+            assert_eq!(out["pausedBy"], json!(expected), "{source}");
+        }
+        // The kill reason alone is enough: an insert supersedes the turn.
+        let out = turn_end_json(cancel_input("manual_cancel", "new_user_message"));
+        assert_eq!(out["action"], json!("pause"));
+        assert_eq!(out["pausedBy"], json!("input"));
+    }
+
+    #[test]
+    fn a_host_side_cancel_is_a_fault_continuation() {
+        for (source, kill_reason) in [
+            ("process_watchdog", "process_watchdog"),
+            ("stalled_recovery", "stalled_recovery"),
+            ("shutdown", "shutdown"),
+            ("cli_switch", "cli_switch"),
+            ("relocate", "relocate"),
+            ("restart_spawn", "restart_spawn"),
+            ("preparation_failed", "preparation_failed"),
+            ("codex_log_watchdog", "provider_log_error"),
+        ] {
+            let out = turn_end_json(cancel_input(source, kill_reason));
+            assert_eq!(out["action"], json!("fault_continue"), "{source}");
+            assert_eq!(out["nextState"]["status"], json!("active"), "{source}");
+            assert_eq!(
+                out["nextState"]["stall"]["consecutiveFaults"],
+                json!(1),
+                "{source}"
+            );
+            let message = out["message"].as_str().unwrap();
+            assert!(message.starts_with(UNATTENDED_TAG));
+            assert!(message.contains("verify the current state"));
+        }
+    }
+
+    #[test]
+    fn three_consecutive_host_cancels_need_a_human() {
+        let mut state = active_state(1);
+        state["stall"] = json!({ "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 2 });
+        let out = turn_end_json(json!({
+            "state": state, "now": 200, "kind": "cancel", "cancelSource": "process_watchdog",
+        }));
+        assert_eq!(out["action"], json!("needs_human"));
+        assert_eq!(out["nextState"]["status"], json!("needs_human"));
+        assert_eq!(out["nextState"]["stall"]["consecutiveFaults"], json!(3));
+    }
+
+    #[test]
+    fn an_unrecognized_cancel_pauses_instead_of_injecting() {
+        let out = turn_end_json(cancel_input("mystery_stop", "mystery_stop"));
+        assert_eq!(out["action"], json!("pause"));
+        assert_eq!(out["reason"], json!("unrecognized_cancel_source"));
+        assert_eq!(out["pausedBy"], json!("cancel"));
+    }
+
+    #[test]
+    fn a_real_user_message_pauses_as_takeover() {
+        let out =
+            turn_end_json(json!({ "state": active_state(1), "now": 200, "kind": "user_input" }));
+        assert_eq!(out["action"], json!("pause"));
+        assert_eq!(out["pausedBy"], json!("input"));
+        assert_eq!(out["nextState"]["pausedBy"], json!("input"));
+    }
+
+    #[test]
+    fn a_turn_end_on_a_non_active_session_is_a_no_op() {
+        let mut state = active_state(1);
+        state["status"] = json!("needs_human");
+        for kind in ["settle", "fault", "cancel", "user_input"] {
+            let out = turn_end_json(json!({
+                "state": state, "now": 200, "kind": kind, "settle": "D",
+                "cancelSource": "process_watchdog",
+            }));
+            assert_eq!(out["action"], json!("none"), "{kind}");
+        }
+        let unknown =
+            turn_end_json(json!({ "state": active_state(1), "now": 200, "kind": "nope" }));
+        assert_eq!(unknown["action"], json!("none"));
+        assert_eq!(unknown["reason"], json!("unknown_kind"));
+    }
+
+    #[test]
+    fn a_user_caused_fault_pauses_instead_of_continuing() {
+        // The turn-finalize observer reports E before the cancel writer runs.
+        // The kill reason is already assigned at that point, so attribution —
+        // not `kind` — decides: a user source pauses and never injects.
+        for source in USER_CANCEL_SOURCES {
+            for retry_scheduled in [false, true] {
+                let out = turn_end_json(json!({
+                    "state": active_state(1), "now": 200, "kind": "fault",
+                    "killReason": source, "retryScheduled": retry_scheduled,
+                }));
+                assert_eq!(out["action"], json!("pause"), "{source}");
+                assert_eq!(out["nextState"]["status"], json!("stopped"), "{source}");
+                assert_eq!(out["nextState"]["evaluating"], json!(false), "{source}");
+                let expected = if USER_INPUT_SOURCES.contains(&source) {
+                    "input"
+                } else {
+                    "cancel"
+                };
+                assert_eq!(out["pausedBy"], json!(expected), "{source}");
+            }
+        }
+        // The cancel-source field is equally authoritative.
+        let out = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "fault",
+            "cancelSource": "manual_cancel", "retryScheduled": false,
+        }));
+        assert_eq!(out["action"], json!("pause"));
+    }
+
+    #[test]
+    fn a_second_report_for_the_same_turn_is_a_no_op() {
+        let mut state = active_state(1);
+        state["lastTurnEndId"] = json!("turn-1");
+        let out = turn_end_json(json!({
+            "state": state, "now": 200, "kind": "cancel", "turnId": "turn-1",
+            "cancelSource": "process_watchdog", "killReason": "process_watchdog",
+        }));
+        assert_eq!(out["action"], json!("none"));
+        assert_eq!(out["reason"], json!("duplicate_turn"));
+        assert!(out.get("nextState").is_none() || out["nextState"].is_null());
+    }
+
+    #[test]
+    fn a_later_user_cancel_for_a_handled_turn_pauses_without_another_injection() {
+        let mut state = active_state(1);
+        state["lastTurnEndId"] = json!("turn-1");
+        let out = turn_end_json(json!({
+            "state": state, "now": 200, "kind": "cancel", "turnId": "turn-1",
+            "cancelSource": "manual_cancel",
+        }));
+        assert_eq!(out["action"], json!("pause"));
+        assert_eq!(out["reason"], json!("duplicate_user_takeover"));
+        assert_eq!(out["pausedBy"], json!("cancel"));
+        assert_eq!(out["nextState"]["lastTurnEndId"], json!("turn-1"));
+    }
+
+    #[test]
+    fn every_acting_turn_end_records_the_turn_identity() {
+        let out = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "cancel", "turnId": "turn-7",
+            "cancelSource": "process_watchdog", "killReason": "process_watchdog",
+        }));
+        assert_eq!(out["action"], json!("fault_continue"));
+        assert_eq!(out["nextState"]["lastTurnEndId"], json!("turn-7"));
+
+        let pause = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "cancel", "turnId": "turn-8",
+            "cancelSource": "manual_cancel",
+        }));
+        assert_eq!(pause["nextState"]["lastTurnEndId"], json!("turn-8"));
+    }
+
+    #[test]
+    fn a_verdict_rebuild_preserves_host_bookkeeping() {
+        let mut state = active_state(1);
+        state["lastSettleAt"] = json!(6000);
+        state["lastTurnEndId"] = json!("turn-9");
+        let out = decide_json(json!({
+            "state": state,
+            "verdict": { "verdict": "continue", "reason": "more", "nextInstruction": "go" },
+            "now": 7000,
+        }));
+        assert_eq!(out["nextState"]["lastSettleAt"], json!(6000));
+        assert_eq!(out["nextState"]["lastTurnEndId"], json!("turn-9"));
+    }
+
+    #[test]
+    fn retry_scheduled_must_be_a_boolean_fact() {
+        let error = decide_turn_end(
+            &json!({
+                "state": active_state(1), "now": 200, "kind": "fault",
+                "retryScheduled": "true",
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+        assert!(error.contains("retryScheduled"), "{error}");
     }
 }

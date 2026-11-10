@@ -19,12 +19,23 @@ function createUnattendedRuntime({
   getAuxQueue,
   taskContextHost,
   waitInjector,
+  // Continuation admission for supervisor messages. When the server provides
+  // `deliverInjection`, the host sees the scheduler admission result and can
+  // withdraw a still-queued continuation on pause; the wait injector remains
+  // the fallback for runtimes without the session delivery boundary.
+  deliverInjection = null,
+  withdrawQueued = null,
   triggerPush,
   chatBroadcast,
   logger,
   appendMessage = null,
   isRunActive = () => false,
   hasQueuedDeliveries = () => false,
+  // Boot reconciliation (see host.reconcileStartup): the scheduler says whether
+  // an interrupted turn still owns a slot, the task state names the cause.
+  getTaskState = () => ({}),
+  getSchedulerStatus = () => null,
+  listSessionIds = () => [...persistedSessions.keys()],
 }) {
   const getRecord = id => persistedSessions.get(id);
   function persistState(sessionId, next) {
@@ -117,12 +128,18 @@ function createUnattendedRuntime({
     getPendingQuestion: id => userInputSignalHost.pending(id),
     getAuxQueue,
     deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
-    inject: (id, text) => waitInjector.injectSystemMsg(id, text, 0),
+    inject: (id, text) => (typeof deliverInjection === 'function'
+      ? deliverInjection(id, text)
+      : waitInjector.injectSystemMsg(id, text, 0)),
+    withdrawQueued: typeof withdrawQueued === 'function' ? withdrawQueued : null,
     notify: (...args) => triggerPush(...args),
     broadcast: (...args) => chatBroadcast(...args),
     appendMessage: appendMessage ? (id, message) => appendMessage(id, message) : null,
     hasQueuedDeliveries: id => hasQueuedDeliveries(id),
     isRunActive: id => isRunActive(id) === true,
+    getTaskState: id => getTaskState(id),
+    getSchedulerStatus: id => getSchedulerStatus(id),
+    listSessionIds: () => listSessionIds(),
     log: message => logger.log?.(message) || console.log(message),
   });
   // Re-arm one expiry timer per persisted active session. A restart must still

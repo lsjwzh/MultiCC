@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { runStateForFreezeReason } = require('./scheduler');
 const {
   isProcessingLetter, isBackgroundLetter, isAbnormalLetter, isTerminalLetter,
@@ -747,6 +748,11 @@ function createSessionWorkHost(deps = {}) {
   // business state is touched.
   async function stopRunner(sessionId, reason, killReason) {
     const state = deps.getChatSession(sessionId);
+    // Attribution first: the turn-finalize observer reads runner.killReason when
+    // the kill below ends the turn. Assigning it before any abort/kill side
+    // effect is what structurally guarantees a user cancel can never be reported
+    // as a host fault and inject a continuation.
+    deps.assignKillReason(state?._activeRunner, killReason);
     deps.cancelPreparation(sessionId, reason);
     if (!state) return;
     deps.cancelClassify(state);
@@ -760,7 +766,6 @@ function createSessionWorkHost(deps = {}) {
       catch (error) { log.warn?.('session_cancel_classify_jobs_failed', { sessionId, error: error.message }); }
     }
     const activeRunner = state._activeRunner;
-    deps.assignKillReason(activeRunner, killReason);
     if (activeRunner?.providerAttempt) {
       deps.finishProviderAttempt(activeRunner.providerAttempt, {
         outcome: 'failed', errorCategory: 'cancelled', reasonCode: killReason,
@@ -828,7 +833,31 @@ function createSessionWorkHost(deps = {}) {
       : null;
     const chatStateBeforeCancel = deps.getChatSession(sessionId);
     const runnerBeforeCancel = chatStateBeforeCancel?._activeRunner;
-    const turnLineage = chatStateBeforeCancel?._activeTurn?.lineage || null;
+    // The turn identity the finalize observer reports with. Captured before the
+    // stop so both observers of the same turn share the supervisor's dedupe key.
+    // `_activeTurn` lives in memory only, so a restart-recovered cancel has to
+    // read the identity persisted when the turn STARTED (`activeTurnId`).
+    // `taskState.turnId` is written at turn END and therefore names the PREVIOUS
+    // turn; using it here makes the cancel look like a duplicate of a turn the
+    // supervisor already handled and silently swallows the continuation.
+    const taskStateBeforeCancel = deps.getTaskState(deps.getRecord(sessionId)) || {};
+    const activeTurnBeforeCancel = chatStateBeforeCancel?._activeTurn || null;
+    const recoveringTurn = !!activeTurnBeforeCancel || !!activeBeforeCancel
+      || isProcessingLetter(taskStateBeforeCancel.classifyState);
+    let turnId = activeTurnBeforeCancel?.turnId || null;
+    if (!turnId && isProcessingLetter(taskStateBeforeCancel.classifyState)) {
+      turnId = taskStateBeforeCancel.activeTurnId || null;
+    }
+    if (!turnId && recoveringTurn) {
+      // Older records (or a turn that died before the start write landed) have
+      // no in-flight identity. A recovery cancel is a NEW attempt to resume, so
+      // it gets a fresh unique id — never the stale completed-turn id.
+      turnId = `turn_recovery_${crypto.randomUUID()}`;
+      log.warn?.('session_cancel_turn_identity_generated', {
+        sessionId, source, classifyState: taskStateBeforeCancel.classifyState || null,
+      });
+    }
+    const turnLineage = activeTurnBeforeCancel?.lineage || null;
     const originDispatchId = activeBeforeCancel?.originDispatchId
       || (turnLineage?.kind === 'dispatch' ? turnLineage.operationId : null)
       || null;
@@ -912,6 +941,7 @@ function createSessionWorkHost(deps = {}) {
       sessionName: sessionId,
       sessionId: deps.getRecord(sessionId)?.id || sessionId,
       cs: state || null,
+      turnId,
       isTerminal: deps.getRecord(sessionId)?.kind !== 'chat',
     });
     // dispatchStateAction returns before the scheduler transition it started has

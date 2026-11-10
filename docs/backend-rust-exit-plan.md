@@ -2357,3 +2357,161 @@ Node 保留范围及原因：
 Rust 串行日志和机器可读收据保存在
 `data/rust-source/bb56db286986e3ebd7a9016a/validation/async-history-append-final/`。本批合入本地 main 后不推送、
 不重启生产服务；整体 Node 后端退出仍未完成。
+
+## 无人值守轮次结束统一入口迁移（2026-11-10）
+
+本批修复无人值守会话在宿主侧取消（process watchdog、stalled recovery、provider log watchdog、重启/关停、CLI switch）后仍保持 `active`、输入被锁住却没有任何进程在跑的死锁。根因不是取消本身，而是取消通知只走 `dispatchStateAction` 的 cancel 分支：该分支只对 `source === 'manual_cancel'` 调用旧的 `onManualCancel`，而 E 分支的 `onFault` 又被 `error && !cancel` 挡掉。宿主侧取消据此既没有故障续接、也没有暂停，调度器在 `frozen` 里一直等到 12 小时截止或新的用户消息。
+
+迁移到 Rust 的决策：
+
+- `native/core/src/unattended.rs` 新增 `decide_turn_end`。它接收 `{state, now, kind, settle, cancelSource, killReason, retryScheduled, backlogPending}` 这些事实，返回唯一动作 `evaluate | fault_continue | needs_human | pause | none`。D/W 结算评估；E 故障在 API 策略已排重试时不动；用户取消一律暂停（带新消息的取消标成 `pausedBy:'input'` 接管）；宿主侧取消按故障续接；无法识别的取消源保守暂停；非活跃会话不做任何事。故障上限、连续故障计数清零、暂停状态字段与消息文案都在 Rust。
+- 原有 `decide_fault` 的主体抽成共享的 `fault_decision`，`decide_turn_end` 的 cancel/fault 两条路径复用同一策略，避免两份上限/文案。
+- `native/addon/src/unattended.rs` 新增 `unattendedDecideTurnEnd` 导出，并登记进 `scripts/rust-source-cache.js` 的接口探针。
+- 新增 Rust 单元测试 9 条：清结算清除故障计数、D 有积压时推迟、策略重试不重复注入、用户取消暂停、宿主取消故障续接、连续三次宿主取消转 `needs_human`、未知取消源暂停、真实用户消息接管、非活跃会话空操作。协调审查后再补 6 条：用户归因故障暂停、同轮重复报告空操作、后到用户取消只暂停、每轮记录轮次标识、判决重建保留宿主账本、`retryScheduled` 必须布尔。
+
+Node 保留范围及原因：
+
+- `src/unattended/kernel.js` 只做 JSON 编解码，没有 JS 决策回退；`decideFault` 的 JS 包装被删除。
+- `src/unattended/host.js` 的 `onTurnEnd` 是唯一宿主入口：它取任务状态/调度器状态、读取 D 结算时是否有暂存 FIFO、调用内核、执行动作（写状态、注入 `UNATTENDED_TAG` 续接指令、应用 `needs_human`、释放被扣住的经典 push）。它只传递事实，不判断该继续还是暂停。每轮以持久化 `turnId`（内核 `lastTurnEndId`）去重：同轮重复报告为空操作，后到的用户归因只暂停不再注入。
+- `reconcileStartup` 在 `orchestrationRuntime.start()` 之后回放“启动前已结算”的取消轮次；判定依赖持久化 `cancelSource`、`lastSettleAt` 水位、当前轮次 `startedAt` 和调度器是否已有活跃槽位，保证一次结算最多注入一次。逐个会话 try/catch 隔离，汇总并记录失败会话数；`server.js` 只增加三个事实端口和一次启动收尾调用。
+- `src/classify/state-machine.js` 的 D/W/E/cancel 四个出口统一改成调用 `onTurnEnd`，取消归因（source/reason）原样传给内核。
+
+验证（第一轮当时的产物 `data/rust-source/c8652b8b11667edddb6268c0/darwin-arm64/multicc_core.node`，SHA256 `d255bf72d87952677c56157a1471a76d02b9801782bb84adc4e5d0daa043e538`，17,984,304 字节；测试均设置 `MULTICC_RUST_PREBUILT_DIR` 与该 `MULTICC_RUST_ADDON`；`scripts/rust-source-cache.js` 对当时产物返回 `c8652b8b11667edddb6268c0 true`，`probeAddon` 为 true）：
+
+- 三个改动测试文件：67/67 通过（`test-unattended-supervisor.js` 39、`test-classify-api-error-state.js` 24、`test-unattended-fifo-order.js` 4）。测试使用真实 native 内核与真实 classify 状态机，只有外部端口是替身。
+- 红证（旧产物 `5bdc813368a7238d76de6170`，同一批测试 63 项中 7 项失败）：宿主 5 条——`a non-boolean retryScheduled is rejected instead of being coerced`、`a user-caused fault pauses for every user source, regardless of kind or retry`、`a second report for the same turn is a no-op`、`a D settle then a duplicate cancel report injects exactly once`、`a handled turn end is not replayed from task state after a restart`；classify 2 条——两个 observer 到达顺序测试。新测试先红后绿。
+- 相关回归组合 17 个文件（api-error 策略与宿主、cancel-state-flow、processing-watchdog、provider-log-watchdog、session-delivery、session-work host/scheduler、stalled-turn-recovery、unattended-routes、wait-injector、orchestration-runtime、turn-state-rules、held-turn-injection、turn-error-veto）：343/343 通过。
+- `npm run test:security`：node:test 1139 项，1138 通过、0 失败、1 项既有 TODO；`test-ws-backpressure` 14/14。`npm run test:architecture`：126/126。`npm run test:contracts`：134/134。
+- `cargo test -p multicc-core`：635/635 通过（本批新增 6 条：用户故障暂停、同轮重复报告空操作、后到用户取消只暂停、每个动作轮次记录轮次标识、判决重建保留宿主账本、`retryScheduled` 必须布尔）。`rustfmt --check` 对本批新增代码干净；`native/core/src/unattended.rs` 仍有多处既有格式差异（未整文件重排）。`cargo clippy -p multicc-core -p multicc-addon --all-targets` 对本批代码无新诊断，仅剩既有告警（如 `build_state` 参数过多）。
+- `node scripts/check-source-line-budget.js`、`check-runtime-write-inventory.js`（45 项）、`check-repository-artifacts.js`（4 项既有基线）均退出 0；`scripts/check-test-tiers.js` 退出 0（874/874）；`node --test tests/test-release-version-consistency.js` 5/5。本批未新增测试文件，因此没有改测试分层清单；`server.js` 因启动回放失败汇总新增 8 行，按棘轮登记为实测 3053 行 / 163405 字节（上一登记 3045/163172）。
+- 按协调者要求未跑 `npm test`/`test:core`，也未跑会打活服务的 `tests/test-classify-api-errors*`。
+
+### 第二轮审查修正（2026-11-10）
+
+本批在第一轮统一入口上修四处审查项，最终产物为
+`data/rust-source/37d770f9166a634029c0c543/darwin-arm64/multicc_core.node`，
+SHA256 `80a7647110ab4569912ede3416e6882e19cd5b1dd513bc6af25829b313b6c023`，
+17,984,304 字节；来源记录与接口探针均返回 `37d770f9166a634029c0c543 true true`。
+本小节取代上面的第一轮回执，作为本功能的最终验收依据。
+
+- 高：取消轮的轮次标识。`src/chat/turn-engine.js` 在回合开始、拉起提供方之前把
+  `turnId` 持久化为 `activeTurnId`，`src/classify/state-machine.js` 的四个结算出口
+  统一把它清空。`src/session-work/host.js` 的 `runCancel` 依次取内存
+  `_activeTurn.turnId`、处理中状态的持久 `activeTurnId`，两者都没有时生成新的
+  `turn_recovery_<uuid>`，**不再回退 `taskState.turnId`**（那是上一轮的结算标识）。
+  旧写法会让看门狗取消命中 `lastTurnEndId` 变成 `duplicate_turn`：注入 0 次、会话保持
+  `active`、输入锁死；取消迁移还会把旧 id 写回任务状态，令下次启动回放永久吞掉。
+  `reconcileStartup` 新增 P 态回放：无取消记录但持久了 `activeTurnId` 的轮次按
+  `restart_recovery` 回放一次，且只在调度器既无活跃也无排队项时执行。
+- 中：核实 `shutdown`/`cli_switch`/`relocate`。CLI 切换在忙态（`configurationBusy`）
+  只做暂存、下一轮边界应用，不会杀活回合；`forced` 分支无生产调用方。会话迁移默认
+  拒绝活跃会话，任务板移动带 `force` 时才杀进程，杀进程后的进程退出收尾会以
+  `killReason:relocate` 的 E 故障经同一入口上报；关停直接杀进程、不保证回合结束报告，
+  由下次启动的 P 态回放兜底。三种主机中断事实（`shutdown`/`cli_switch`/`relocate`）
+  都新增了经唯一入口续跑的用例。文档已按上述真实行为改写。
+- 中：`policy_retry` 不再认领回合。`native/core/src/unattended.rs` 在
+  `retryScheduled:true` 时只返回 `none/policy_retry`，不写 `nextState`，因此
+  `lastTurnEndId`/`lastSettleAt` 都不变；API 重试复用同一个 turn 对象，其随后的
+  D/W/E 结算仍正常评估。Rust 与宿主两层各有同 turnId 的后续 D 结算用例。
+- 低：用户接管后的排队续跑撤回。监督器的 `inject` 改走 session delivery
+  （`deliverSystem`），拿回调度器准入结果里的 `entry.id` 与 `queued`；任何离开
+  `active` 的状态写入（暂停/达成/需人工/超时/错误）都会对仍处于排队的条目调用
+  `sessionScheduler.cancelQueued(entryId)`。已被调度器领取的投递交给正常取消路径。
+  撤回表在内存中，重启后不撤回（届时由持久回合结算负责）。调度器已有该能力，
+  因此不新增 Node 调度逻辑，也没有遗留已知限制。
+
+验证（全部使用上述最终产物，同时设置 `MULTICC_RUST_PREBUILT_DIR` 与
+`MULTICC_RUST_ADDON`）：
+
+- 改动测试文件 74/74 通过（`test-unattended-supervisor.js` 44、
+  `test-classify-api-error-state.js` 24、`test-unattended-fifo-order.js` 6）。
+- 红证：临时把 `runCancel` 恢复成旧的 `taskState.turnId` 回退、并关掉启动 P 态回放后，
+  `test-unattended-fifo-order.js` 成功 4、失败 2——(d) 取到 `turn-prev` 而非
+  `turn-current`，(e) 启动回放结算 0 次；恢复修复后同一用例全绿。
+- 17 个相关回归文件 343/343 通过。
+- `cargo test -p multicc-core`：635/635。`rustfmt --check` 对本批新增代码无差异
+  （`native/core/src/unattended.rs` 仍有多处既有格式差异，未整文件重排）；
+  `cargo clippy -p multicc-core -p multicc-addon --all-targets` 对本批代码无新诊断，
+  只剩既有告警（`build_state` 参数过多等）。
+- `npm run test:security`：1139 项，1138 通过、0 失败、1 项既有 TODO；
+  `test-ws-backpressure` 14/14。`test:architecture` 126/126（`server.js` 按棘轮
+  更新为 3057 行 / 163703 字节）。`test:contracts` 134/134。
+- 治理：运行态写入清单 45 项、仓库产物 4 项既有基线、测试分层 874/874、
+  `test-release-version-consistency` 5/5，源码预算检查退出 0。
+- 按协调者要求未跑 `npm test`/`test:core`，也未跑会打活服务的
+  `tests/test-classify-api-errors*`。完整套件已由主会话在 `c8652b8b` 上跑过
+  （6916 项，6912 通过，唯一失败为既有 paint-budget）。
+
+未覆盖/不确定：跨进程崩溃的“恰好一次”注入仍不承诺；本功能保证单进程内
+`lastTurnEndId` 轮次去重、`lastSettleAt` 水位与启动回放不重复，且回放只接受当前轮次
+`startedAt` 之后的事件（关停/强制拆除留下的 P 态轮次按 `activeTurnId` 回放）。排队撤回
+只覆盖尚未被调度器领取的条目，已被领取的由正常取消路径处理；撤回表在内存中，重启后
+不再撤回。宿主侧取消与真实用户取消的归因依赖 `cancelSource`/`killReason` 字符串集合，
+新来源必须同时更新 Rust 与文档规则表。本批不提交、不合并、不推送、不重启生产。
+
+
+
+### 第三轮审查修正（2026-11-11）
+
+本批最终产物为
+`data/rust-source/090eac7d114248e74a14e028/darwin-arm64/multicc_core.node`，
+SHA256 `da07572125e1052abcc22a5a3ad78b3e66f229b53540f624a2dd0e842d0f2baa`，
+17,984,304 字节；`scripts/rust-source-cache.js` 对本工作区源码算出的指纹与接口探针返回
+`090eac7d114248e74a14e028 true true`。本节取代前两轮回执，作为本功能的最终验收依据。
+
+- 门禁红：`src/unattended/host.js` 的启动扫描删除了 P 态回放分支，原先那处
+  `=== 'P'` 字母比较随之消失；`tests/test-classify-vocab.js` 单独运行 23/23。
+  门禁脚本对每个测试文件递归展开后组合运行，不再出现
+  `inline classify-letter comparisons must go through the vocab predicates`。
+- 孤儿回合恢复改为单一负责方。核实处理看门狗在两种持久 P 形态下都会处理：
+  调度器 `recover` 留下的冻结 `legacy-active:<id>`（`frozen/classify_running`），
+  以及完全没有调度项的空闲状态；两者都由同一检测路径以
+  `cancelSource:process_watchdog` 走唯一结算入口。因此删除 `reconcileStartup`
+  的 P 回放及其桩测试，启动只回放有取消记录（`cancelSource` + `cancelledAt`
+  晚于 `lastSettleAt`）的轮次。新增真实调度器端到端用例：持久 P +
+  `activeTurnId` + 运行中的调度项 → `outbox.recoverExpired` + `scheduler.recover`
+  → 看门狗 → `fault_continue`；续跑可被领取，暂存的“内置任务已中断”类通知
+  只在续跑那一轮 D 结算后被排空，全程恰好一次 `UNATTENDED_TAG` 注入（两种形态各一条，
+  均不用桩）。不再依赖 `duplicate_turn` 兜底第二次结算。
+- 回合准备失败会即时结算：`src/chat/turn-engine.js` 在 compose 失败、流式被拒、
+  进程缺失和兜底异常四个出口调用同一个幂等 `settlePreparationFailure()`，
+  经 `host.cancelActiveTurn`（唯一结算入口）清空 `activeTurnId` 与内存轮次标识；
+  `native/core/src/unattended.rs` 的宿主取消来源表新增 `preparation_failed`
+  （共 9 个），判定仍在 Rust（宿主故障 → `fault_continue`），Node 不新增业务规则。
+  旧产物上该用例没有续跑、会话停在 P；新产物上用例 (h) 通过且只结算一次。
+- `activeTurnId` 不再单独全量落盘：`src/classify/state-machine.js` 的
+  `ensureCurrentTask` 在续跑分支和新建任务分支的同一份 P 补丁里写入
+  `activeTurnId`，`turn-engine.js` 删除了随后那次单独的 `setTaskState(..., {save:true})`。
+  `tests/test-cancel-state-flow.js` 记录 `save` 标志并断言每个分支恰好一次保存、
+  补丁同时含 `classifyState:P` 与 `activeTurnId`，另有静态断言禁止旧的单独写入；
+  每轮保存次数没有增加。
+- 已知限制：监督器撤回表只在内存中，重启后已进入 FIFO 的监督器续跑无法撤回；
+  已按“记录、不修”写入 `docs/unattended-mode.md`。
+- 文档：`docs/unattended-mode.md` 的 “A shutdown or forced teardown…” 段落已按
+  最终行为改写——孤儿恢复唯一归处理看门狗，启动只回放已记录的取消，并写明冻结项
+  与无调度项两种形态的生效时间点、续跑 D 结算后清空暂存通知、以及撤回表的重启限制。
+
+验证（全部使用上述最终产物，同时设置 `MULTICC_RUST_PREBUILT_DIR` 与
+`MULTICC_RUST_ADDON`；`test:rust` 的 `MULTICC_RUST_PREBUILT_DIR` 指向指纹根目录，
+因为 `tests/test-subagent-defaults.js` 会删除 `MULTICC_RUST_ADDON` 后自行拼接
+`<目录>/<platform>-<arch>/multicc_core.node`）：
+
+- `tests/test-classify-vocab.js` 单独运行 23/23。
+- 本批改动的 5 个测试文件 `test-unattended-supervisor.js`、
+  `test-unattended-fifo-order.js`、`test-cancel-state-flow.js`、
+  `test-chat-turn-core.js`、`test-classify-api-error-state.js` 合计 159/159。
+- 按 `package.json` 的 `test:core` 递归抽出的全部测试文件组合运行：266 个文件、
+  3551 项全部通过，退出 0（按协调者允许跳过既有的
+  `tests/test-air-paint-budget.js`）。
+- `npm run test:security`：1139 项，1138 通过、0 失败、1 项既有 TODO；
+  `test-ws-backpressure` 14/14。`test:architecture`：126/126。
+  `test:contracts`：134/134。`test:governance`：分层 874/874、Node 用例 20/20、
+  运行态写入清单 45 项、仓库产物 4 项既有基线。
+  `npm run test:rust`：256/256。
+- `cargo test -p multicc-core`：635/635。`rustfmt --check` 对本批新增代码无差异
+  （`native/core/src/unattended.rs` 仍有 339 行既有格式差异，未整文件重排）；
+  `cargo clippy -p multicc-core -p multicc-addon --all-targets` 仍只有 8 条既有告警，
+  本批新增代码无新诊断。`node scripts/check-source-line-budget.js` 退出 0
+  （`server.js` 3057 行、`public/run-config.js` 3171 行属既有迁移债登记）。
+- 按协调者要求未跑 `npm test`、`npm run test:core`，也未跑会打活服务的
+  `tests/test-classify-api-errors*`；未提交、未 stash、未重启服务、未向活服务写。

@@ -58,9 +58,11 @@ function tag() {
   return native().unattendedTag();
 }
 
-// Immediate fault-E continuation (`{nextState, action, message, faults}`).
-function decideFault(input) {
-  return JSON.parse(native().unattendedDecideFault(JSON.stringify(input || {})));
+// The one decision for every turn end (`evaluate | fault_continue |
+// needs_human | pause | none`). The fault policy is shared inside Rust
+// (`decide_fault`), so there is deliberately no second JS entry for it.
+function decideTurnEnd(input) {
+  return JSON.parse(native().unattendedDecideTurnEnd(JSON.stringify(input || {})));
 }
 
 module.exports = {
@@ -70,7 +72,7 @@ module.exports = {
   clampDuration,
   deadlineExpired,
   decide,
-  decideFault,
+  decideTurnEnd,
   normalizeConfig,
   parseVerdict,
   tag,

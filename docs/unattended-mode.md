@@ -350,3 +350,113 @@ informational `rounds` counter; 3 consecutive faults → `needs_human` (reason: 
 faults). The text only asks the agent to resume from where it stopped and verify state
 before redoing side effects. A user Cancel is not a fault. A clean D/W settle resets the
 fault counter.
+
+### Every turn end has exactly one supervisor result
+
+One entry (`onTurnEnd(sessionId, facts)` in `src/unattended/host.js`) receives **every** way
+a turn can end. The host passes facts only; `decide_turn_end` in
+`native/core/src/unattended.rs` owns the policy and returns exactly one action. When a turn
+ends with no supervisor notice of its own, the held classic classify push is released, so a
+settle is never silent.
+
+Source attribution is evaluated before the end `kind` and does not depend on it. A turn end
+whose `killReason`/`cancelSource` names a user source always pauses and never injects: the
+three message-carrying sources (`insert_queued`, `force_insert`, `new_user_message`) pause as
+`pausedBy:'input'`, every other user source pauses as `pausedBy:'cancel'`, and this holds even
+when the same event is reported as an `E` fault. The host assigns the kill reason *before* it
+stops a runner, so a user cancel can never reach the kernel as `fault_continue`.
+
+Exactly one supervisor result is produced per turn, idempotently by persisted turn identity.
+Every acting decision stamps the kernel's `lastTurnEndId` with the reported `turnId`; a repeat
+report for the same turn returns `none` / `duplicate_turn`, and a later report that carries
+user attribution for an already handled turn returns `pause` /
+`duplicate_user_takeover` (the stronger factual take-over only pauses, it never injects a
+second time).
+
+| End type (fact) | Kernel action |
+| --- | --- |
+| D settle, no staged backlog (`settle:'D'`) | `evaluate` (Aux verdict) |
+| D settle, staged backlog (`backlogPending`) | `none` / `backlog_pending` — defer; release held push |
+| W settle (`settle:'W'`, pending question) | `evaluate` — the Aux answers the question |
+| E fault, API policy scheduled its retry (`retryScheduled`) | `none` / `policy_retry` |
+| E fault (rules path) or host-interrupted turn | `fault_continue`; 3rd consecutive → `needs_human` |
+| Any end whose attribution is a user source (checked before `kind`) | `pause` / `pausedBy:'cancel'` or `'input'` — user sources never inject |
+| Repeat report for an already handled turn (`lastTurnEndId === turnId`) | `none` / `duplicate_turn` |
+| Later report carrying user attribution for a handled turn | `pause` / `duplicate_user_takeover` |
+| User cancel: `manual_cancel`, `task-shell`, `user_cancel`, `cancel_repeat`, `dispatch_cancel` | `pause` / `pausedBy:'cancel'` |
+| User cancel that carries a message: `insert_queued`, `force_insert`, `new_user_message` | `pause` / `pausedBy:'input'` (takeover) |
+| Host-side cancel: `process_watchdog`, `stalled_recovery`, `*_log_watchdog` / `provider_log_error`, `restart_spawn`, `restart_recovery`, `shutdown`, `cli_switch`, `relocate`, `preparation_failed` | fault continuation (same 3-fault cap) |
+| Cancel with unrecognized attribution | `pause` / `pausedBy:'cancel'` — fail safe: unlock input, never inject against a possible user stop |
+| Real user message (`noteUserMessage`) | `pause` / `pausedBy:'input'`, then delivery |
+| Wall-clock deadline (timer) | `exhausted` |
+| Any of the above on a non-active session | `none` |
+
+Why a host-side interruption is a fault: a watchdog/restart/stalled-recovery cancel is a
+statement about the **host or upstream**, not about the user's goal. Treating it as "turn
+finished" left the session `active` (input locked) with nothing running after the incident
+of 2026-11-10. Treating it as a user Cancel would silently abandon a goal the user never
+stopped. It therefore follows the same continuation policy as an API fault, and three
+consecutive host interruptions still ask for a human so a crash loop cannot spin forever.
+
+Turn identity: `turnId` is the dedupe key, so it must name the turn that really ended.
+`taskState.turnId` is written at turn **end** and therefore names the previous, already
+settled turn. A cancel gets its identity from (in this order) the in-memory
+`_activeTurn.turnId`, the persisted `activeTurnId` while classify is processing, and — for a
+record from before that field or a turn that died before the start write — a fresh
+`turn_recovery_<uuid>` id. It never falls back to `taskState.turnId`: a stale id matches
+`lastTurnEndId`, makes the recovery cancel a `duplicate_turn`, injects nothing and leaves the
+input locked. `ensureCurrentTask` (src/classify/state-machine.js) persists `activeTurnId`
+inside the same P write that starts the turn — one disk save, not a separate identity save —
+and every classify settle clears it. A turn that fails between that write and the runner
+handoff (message composition, spawn guard, runtime start, rejected runner) has no finalizer
+of its own: the turn engine cancels it through the same entry with
+`cancelSource:preparation_failed` (a host-side source, so an armed supervisor continues
+under the fault cap) instead of leaving a phantom P turn for the watchdog.
+
+A policy-scheduled retry does not claim the turn: an E fault with `retryScheduled:true`
+returns `none` / `policy_retry` and writes no next state, so neither `lastTurnEndId` nor
+`lastSettleAt` moves. The API retry reuses the same turn object, and its real D/W/E settle
+must still evaluate.
+
+What the three kill-capable host paths actually do: a **CLI switch** never kills a live
+turn — while the session is busy (`configurationBusy`) the switch is staged and applied at
+the next turn boundary, so it produces no turn-end report of its own. A **relocate** refuses
+an active session unless forced; the task-board move forces it, kills the runner with
+`killReason:relocate`, and the runner's process-exit finalizer reports that killed turn as an
+`E` fault carrying the same kill reason through this one entry. **Shutdown** tears the
+processes down without a guaranteed turn-end report (the server is exiting); that turn is
+recovered at the next boot instead, see below.
+
+A pause also withdraws the supervisor's own not-yet-started work. The supervisor's `inject`
+goes through the session-delivery boundary, whose admission result names the scheduler entry
+and whether it is still `queued`. Every write that leaves `active` (pause, achieved,
+needs_human, expiry, error) asks `sessionScheduler.cancelQueued(entryId)` for exactly those
+entries, so a takeover cannot leave one more unattended round waiting in the FIFO. A
+delivery the scheduler already claimed is left to the normal turn-end/cancel path. The
+tracking map is in memory (known limitation): after a restart the supervisor has no record
+of continuations it admitted before the restart, so those already-queued entries cannot be
+withdrawn even if the user takes over; the persisted turn end owns the outcome instead.
+
+Restart re-settle: a restart can settle a turn before this host is ready (the processing
+watchdog writes `E` + `cancelledAt` straight to the task state). After
+`orchestrationRuntime.start()`, `reconcileStartup()` replays those cancelled settles exactly
+once: it requires an active unattended record, a persisted `cancelSource`, a settle newer
+than `lastSettleAt`, and no live scheduler slot. Every handled state write persists
+`lastSettleAt`, so a settle the live host already handled is never replayed and one settle
+can never inject twice. Replay is bounded to the current run: only turn ends settled after
+the current run's `startedAt` (and newer than `lastSettleAt`) are replayed; anything older is
+history from an earlier run, not new work.
+
+A shutdown or forced teardown can leave no cancel record at all: the task state is still
+`P` with the persisted `activeTurnId`. Orphan recovery has exactly **one** owner — the
+processing watchdog — and boot reconciliation deliberately does nothing for this shape
+(`reconcileStartup()` only replays recorded cancels). At `orchestrationRuntime.start()` the
+expired leases are recovered and `scheduler.recover()` runs first: when the old schedule
+survived it re-parks the P slot as `frozen/classify_running`; when it did not, session
+status is simply idle. Either way the watchdog's next sweeps see a processing letter with
+no live child (or stream), mark it suspect, and after the dead-runner confirmation window
+cancel it through the one entry with `cancelSource:process_watchdog` and the persisted
+in-flight turn id. That cancel is a host interruption, so the continuation follows the
+normal fault policy; its `lastTurnEndId` makes any later report (including a second boot)
+a `duplicate_turn`, and a still-staged interrupt notice drains only after that
+continuation's own D.
