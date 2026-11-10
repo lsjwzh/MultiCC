@@ -26,6 +26,9 @@ function createMemoryHistory(initial) {
       records.set(String(sessionId), JSON.parse(messagesJson));
       return Promise.resolve();
     },
+    readVisibility: () => null,
+    writeVisibility() {},
+    writeVisibilityAsync() { return Promise.resolve(); },
     deleteSession: sessionId => records.delete(String(sessionId)),
     hasPersistedDelivery: () => false,
   };

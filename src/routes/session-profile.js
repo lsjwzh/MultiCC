@@ -58,7 +58,7 @@ function createSessionProfileRoutes(rawDeps) {
     createSessionRecord,
     loadChatHistory,
     newChatMsgId,
-    getChatHistoryService,
+    mergeHistory,
     getFolderMemory,
     getCliSwitchGitSnapshot,
   } = deps;
@@ -110,7 +110,8 @@ function createSessionProfileRoutes(rawDeps) {
     [cliHandoffSummary, 'cliHandoffSummary'],
     [createSessionRecord, 'createSessionRecord'], [loadChatHistory, 'loadChatHistory'],
     [newChatMsgId, 'newChatMsgId'],
-    [getChatHistoryService, 'getChatHistoryService'], [getFolderMemory, 'getFolderMemory'],
+    [mergeHistory, 'mergeHistory'],
+    [getFolderMemory, 'getFolderMemory'],
     [getCliSwitchGitSnapshot, 'getCliSwitchGitSnapshot'],
   ]) assertFunction(fn, name);
 
@@ -539,7 +540,10 @@ function createSessionProfileRoutes(rawDeps) {
       const inherited = sliced.map(({ taskId, taskName, ...message }) => ({ ...message, inherited: true,
         inheritedFrom: { sessionId: src.id, messageId: message.id, taskId: taskId || null, taskName: taskName || null } }));
       const newHistory = [forkMeta, ...inherited];
-      getChatHistoryService().replace(newSid, newHistory, { reason: 'fork' });
+      // 新会话的初始历史也走同一 FIFO，并由 Rust 在队首读取底稿后追加：即使
+      // fork 的 id 在写入前就被打开并产生追加，也只会排在这份初始历史之前，
+      // 不会被 Node 的旧底稿整份覆盖。
+      await mergeHistory(newSid, newHistory, { reason: 'fork' });
 
       // A fork has a fresh vendor-native session, so copying display history alone
       // is not context continuation. Seed the same one-shot checkpoint mechanism

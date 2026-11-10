@@ -29,6 +29,10 @@ function createTaskHistoryRetention({ getBoard, getRecord, loadHistory }) {
     catch (error) { if (error.code === 'ENOENT') return true; throw error; }
     return !messages.some(message => ids.has(message.taskId));
   }
+  function readMessages(sessionId) {
+    try { return loadHistory(sessionId); }
+    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  }
   // Names the tasks that pin a session's history, mirroring canDeleteSession's
   // two linkage conditions, so a refusal can tell the user which task to delete
   // instead of only reporting an opaque TASK_HISTORY_REFERENCED code. Each task
@@ -36,7 +40,7 @@ function createTaskHistoryRetention({ getBoard, getRecord, loadHistory }) {
   // (an external or bound task), 'messages' means it only has stamped messages
   // inside this conversation (a sibling task sharing the same shell) — the UI
   // uses that to separate "delete those first" from "they live right here".
-  function referencingTasks(sessionId) {
+  function collectReferences(sessionId, messages) {
     const all = tasks();
     const byId = new Map(all.map(task => [task.id, task]));
     const found = [];
@@ -51,15 +55,42 @@ function createTaskHistoryRetention({ getBoard, getRecord, loadHistory }) {
         || task.routing?.workerSessionId === sessionId
         || (task.refs || []).some(ref => ref.sessionId === sessionId)) add(task, 'session');
     }
-    let messages;
-    try { messages = loadHistory(sessionId); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; messages = []; }
     for (const message of messages) {
       if (message && message.taskId && byId.has(message.taskId)) add(byId.get(message.taskId), 'messages');
     }
     return found;
   }
-  return Object.freeze({ canDeleteSession, isMessageProtected, referencingTasks });
+  function referencingTasks(sessionId) {
+    return collectReferences(sessionId, readMessages(sessionId));
+  }
+  // Raw facts for the Rust deletion verdict; policy stays in Rust. The buckets
+  // mirror the old lifecycle split: chatSessionId/refs mean another task
+  // formally owns the session (old purge kept it), while routing.workerSessionId
+  // and protected message stamps made the old deleteSession throw
+  // TASK_HISTORY_REFERENCED and abort the task deletion.
+  function sessionDeletionFacts(sessionId) {
+    const executionSlot = getRecord(sessionId)?.taskExecutionSlot === true;
+    if (executionSlot) {
+      return { executionSlot, sessionLinks: [], routingLinks: [], messageLinks: [], references: [] };
+    }
+    const all = tasks();
+    const sessionLinks = [];
+    const routingLinks = [];
+    for (const task of all) {
+      if (!task || !task.id) continue;
+      if (task.chatSessionId === sessionId || (task.refs || []).some(ref => ref.sessionId === sessionId)) {
+        sessionLinks.push(task.id);
+      } else if (task.routing?.workerSessionId === sessionId) {
+        routingLinks.push(task.id);
+      }
+    }
+    const messages = readMessages(sessionId);
+    const ids = new Set(all.map(task => task.id));
+    const messageLinks = [...new Set(messages.map(message => message?.taskId).filter(id => id && ids.has(id)))];
+    return { executionSlot: false, sessionLinks, routingLinks, messageLinks,
+      references: collectReferences(sessionId, messages) };
+  }
+  return Object.freeze({ canDeleteSession, isMessageProtected, referencingTasks, sessionDeletionFacts });
 }
 
 // Shapes a retention refusal into the cascade/HTTP result body, naming the tasks

@@ -51,7 +51,7 @@ function fixture(session, {
   createSessionRecord = async () => ({ ok: false, error: 'unused' }),
   extraSessions = [],
   loadChatHistory = () => [],
-  replaceHistory = () => {},
+  mergeHistory = () => {},
 } = {}) {
   const workspace = [];
   const chat = [];
@@ -101,7 +101,7 @@ function fixture(session, {
     createSessionRecord,
     loadChatHistory,
     newChatMsgId: () => 'm1',
-    getChatHistoryService: () => ({ replace: replaceHistory }),
+    mergeHistory: (id, messages, options) => mergeHistory(id, messages, options),
     getFolderMemory: () => ({ sessionDir: () => path.join(tmpRoot, 'mem') }),
     getCliSwitchGitSnapshot: () => async () => ({}),
   }).mountRoutes(app);
@@ -117,7 +117,7 @@ async function forkFixture(source, { current = null, body = {}, validProviderId,
   const { forkHandler } = fixture(source, {
     extraSessions: current ? [current] : [],
     loadChatHistory: () => history,
-    replaceHistory: (id, messages) => histories.push({ id, messages }),
+    mergeHistory: (id, messages) => histories.push({ id, messages }),
     validProviderId: validProviderId || ((_cli, id) => id === 'removed-provider' ? { ok: false } : { ok: true, value: id || null }),
     createSessionRecord: async input => {
       attempts.push(input);

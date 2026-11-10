@@ -2566,7 +2566,7 @@ SHA256 `da07572125e1052abcc22a5a3ad78b3e66f229b53540f624a2dd0e842d0f2baa`，
 ### 未覆盖范围
 
 - 进程死亡、崩溃或跨进程的“恰好一次”投递仍未承诺；两阶段提交只保证进程内一轮不会把未确认写入当已持久。
-- `clearHistory` / context rotate 的异步文件与 git 顺序没有并入本批。
+- `clearHistory` / context rotate 的异步文件与 git 顺序没有并入本批。**已在 2026-11-11 的「历史变更串行化与上下文轮换迁移」批次并入：clear/hide/annotate/remove/interim 全部进入 Rust 的每会话 FIFO，轮换改为两阶段判定并在 git 快照后重判，见文档末尾。**
 - `test:cdp` 与 `tests/test-classify-api-errors*` 按既有约定未运行。
 
 ### 验证与红证
@@ -2642,4 +2642,252 @@ SHA256 `da07572125e1052abcc22a5a3ad78b3e66f229b53540f624a2dd0e842d0f2baa`，
 - 真实 `npm run test:core`（最终代码）：退出码 1；大 node:test 批次 2212/2212、`test:task-shells` 299/299、`test:task-first` 437/438。唯一失败是 main 既有红项 `tests/test-air-paint-budget.js`：`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`，与本批无关。由于命令链是 `&&`，能走到最后的 `test:task-first` 说明前面所有阶段均已退出 0。
 - 按协调者要求未跑 `npm test`，未跑会打活服务的 `tests/test-classify-api-errors*` 和 `test:cdp`；未提交、未 stash、未重置、未重启服务、未向活服务写。
 
-本轮没有新增未覆盖边界；既有边界保持不变：进程死亡/跨崩溃的“恰好一次”投递仍未承诺，`clearHistory`/rotate 的异步顺序仍未并入，identity 用量提交的归属字段在 runner 缺失时仍按旧规则回退读取会话字段（只读、不写替换状态）。
+本轮没有新增未覆盖边界；既有边界保持不变：进程死亡/跨崩溃的“恰好一次”投递仍未承诺，`clearHistory`/rotate 的异步顺序仍未并入（已在下一节并入，见「历史变更串行化与上下文轮换迁移」），identity 用量提交的归属字段在 runner 缺失时仍按旧规则回退读取会话字段（只读、不写替换状态）。
+
+## 历史变更串行化与上下文轮换迁移（2026-11-11）
+
+根因：`RustChatHistoryRuntime` 的落盘/快照写入此前有七条路径，除 append 外都没有进入同一会话的顺序：
+
+1. 追加（append）：队列内 prepare/append，服务内同步 `repository.write`；
+2. 标注/精确替换（replace）：同一轮多条消息一次性重写；
+3. 增量保存定时器（`incrementalSaveTick` → interim）：从会话实时状态写一条临时行；
+4. 清空（clear）：按当前消息表算保留集，写 `.views/<session>.json`；
+5. 隐藏/删除（hide/remove/removeMany）：写同一份 `.views` 快照；
+6. `postPersist` 回调：写后投影、广播与缓存发布；
+7. 原生上下文轮换：`await` git 快照之后用旧事实提交 pendingCliHandoff、清空原生 CLI 状态并广播。
+
+逐条竞态结论（每条都有对 HEAD 的红证）：
+
+- clear vs 在飞 append：旧 clear 在 append 落盘前算保留集，reset 页不含后落盘的消息，而 visibility 快照按旧集合写入，重启后该消息被错误隐藏/错误保留。现在 clear 排队，队列头在落盘后的 transcript 上算快照。红证 `the clear snapshot must include the message that landed before it`。
+- hide/annotate vs 在飞 append：旧 hide 立即返回 `{operationId:1}`，调用方把未提交的计数/标注当结果。现在要等队列落盘并发布缓存后才返回计数与标注结果。红证 `hide counts the message it newly hid`。
+- interim vs clear：旧 interim 定时器独立写 visibility，清空后仍可能把清空前的显示态写回去（复活旧行/旧计数）。现在 interim 也是队列 job，clear 排在其后并以其后的 generation 组装快照。红证 `the interim write owns the queue / 0 !== 1`。
+- append vs append / remove vs append：同一会话严格 FIFO；不同会话互不阻塞（单飞 driver 按会话）。
+- rotation vs 新一轮/新 handoff/会话删除：旧实现在 git 快照 `await` 之后直接提交，期间启动的新轮次被旧事实覆盖，会清掉原生状态并把 chatTurnCount 归零。现在 `await` 后重新取同一套事实再判一次，Rust `commit` 再判一次。红证：旧实现返回 `ok:true, checkpointId:'checkpoint_0011223344556677'`（新轮次与已删会话两种）。
+- 关停 vs 队列：旧 `flushInFlightChats` 只等在飞 append，不管已排队但尚未执行的 interim/visibility；进程退出会丢掉这些排队变更。现在先清定时器，再在同一个 deadline 内 `settle()` 整个队列（partial append 全部落定之后）。红证 `the queue is drained once the durable append is confirmed / false !== true` 与 `the queue drain is actually awaited, up to the cap`。
+
+### 串行化设计
+
+- 唯一 FIFO 在 Rust：`RustChatHistoryRuntime.enqueueMutation(sessionId, kind, args)` 入队并返回 `operationId`；kind 为 append/interim/replace/clear/remove/removeMany/hide。入队时捕获 generation（interim 用父代的 generation），旧代结果不能发布。
+- Node 只有单飞 driver：取一步 → 落盘 → 回报 → 执行副作用，没有第二层调度。`nextMutationStep(sessionId)` 在队头计算计划，返回 `{type:'write', operationId, method:'transcript'|'visibility', sessionId, payload}`；Node 调 `history.writeAsync` / `history.writeVisibilityAsync` 完成原子写；`completeMutationStep(sessionId, operationId, ok, error)` 发布缓存并返回 `{effects, finished, failed, result}`；driver 执行 `effects`（广播）后结算调用方的 waiter。不同操作返回的结构不同，driver 按 `write`/`done`/`idle` 分派。
+- 阶段：Start 组装计划 → Transcript（转写整写）→ Visibility（`.views` 快照）；`replace` 失败按旧语义记 `chat_history_annotation_failed` 并返回 `[]`；`hide` 失败会重置 job（清 plan/payload/emit/op）后重新入队。
+- 只有落盘成功且缓存已发布才广播；广播异常不回滚已落盘的写入，只按 Rust 附带的 logEvent 记日志；标注广播失败时返回 `[]`，与旧同步实现一致。
+- 错误形状不变：清空失败 `CHAT_HISTORY_CLEAR_FAILED`，轮换失败 `NATIVE_CONTEXT_ROTATION_FAILED`，DELETE 404/500 与旧一致；失败不广播。
+- 关停：`hasPendingMutations` 与 `pendingMutationSessions` 供 `settle({deadline})` 使用：每一轮先给仍有排队变更的会话补驱动器，再 `await` 各驱动器真实的 loop Promise；host-lifecycle 在清掉增量定时器后，用同一个 flush 预算换算出绝对 deadline 排空；预算耗尽返回 `false` 只告警并继续后续 closer。见下方对抗复核的 H1 修复。
+
+### 上下文轮换两阶段
+
+- Node 只收集事实：`exists`、`kind`、`pendingCliHandoff`（status/reason）、`rotationReady`（三个端口是否可用）、`runState`、`backgroundCount`。存在性、非 chat、待生效手递在这些端口之前短路，保持旧顺序。
+- Rust `chatContextRotationRequest('decision', facts)` 按固定顺序判定：`session_not_found` → `not_chat_session` → 待生效手递（非 manual 为 `handoff_pending`，manual 为 reuse）→ busy 门（`rotationReady=false` 或 queued/running/assessing 为 `session_busy`；`background_tasks_running`）→ proceed。被拒时 Rust 同时给出 `native_context_rotation_rejected` 广播（旧行为）。
+- 只有 proceed 才 `await cliSwitchGitSnapshot`；`await` 后用同一套端口重新取事实并再次 decision。第二次通过后才由 Node 组装 handoff checkpoint，再把 `facts + cli + checkpoint + randomHex` 交给 Rust `commit`；`commit` 内部再跑一次 decision，通过后装配 handoff 与副作用清单 `mutate → closeStream → zeroChatTurnCount → broadcast`。
+- 中间态：`await` 期间开始新轮次 → 第二次 decision 返回 `session_busy`；期间出现新 handoff → `handoff_pending`/reuse；会话被删 → `session_not_found`。这些路径都不持久化、不清原生状态、不归零 chatTurnCount、不广播 `native_context_rotated`（只发 rejected）。
+- `clearedNativeSessions` 是 Node 端口才知道的事实（`clearAllNativeCliStates` 的返回值）。Rust 在广播载荷里留 `null` 占位，Node 在 mutate 事务拿到真实计数后、广播之前填入；reuse 路径保持 0。
+- git 快照本身仍在 Node：它是宿主进程/工作区副作用，不是会话状态判定；Rust 只判定“是否可以提交、提交什么”。
+
+### 各调用方逐项处理
+
+- `clearHistoryUnsafe`：`await mutate(key,'clear',[keep])` 之后才分页与广播 `chat_history_reset`；`preserveHistory` 仍走轮换。
+- `hideMessages`（hide/quiet→removeMany）、`annotateTurn`（replace）、`appendMessage`（append）、DELETE 路由（remove）全部返回 mutation 的 promise；DELETE 路由改为 async 并 await。
+- 增量保存定时器（Rust runtime）只入队 interim，不再直接写 visibility。
+- `src/task-shell/chat-history.js` 的 `clearShellHistory` 与 `src/task-shell/host.js` 的 `clearChatHistory`：await 每个 hide 批次后再投影页面，广播的是已提交快照。
+- `src/task-shell/separation.js`：源会话 hide 改为 await，失败只记日志（与旧 warn 一致）。
+- `src/chat/turn-engine.js` 的 shell `clear_history`（非 preserveHistory）：await `clearTaskShellHistory` 后再广播。
+- `src/classify/state-machine.js`：`applyTaskAttributionResult` 改为 async（内部标注必须等落盘），scan/aux 两个调用点 await；其余 4 处 `annotateChatTurn` 调用点（cancel、suggest、split、catch）全部 await；`server.js` 的 `annotateChatTurn` 接线改为 async/await。
+- 轮换：`rotateNativeContext` 全程 await（facts、两次 decision、git 快照、commit），失败只抛 `NATIVE_CONTEXT_ROTATION_FAILED`。
+
+### 删除清单
+
+- `src/routes/chat-history.js`：原来围绕 `history.writeAsync` 的每会话 Promise 链、立即返回的 hide/remove 结果、以及 clear 里“先读缓存再写”的顺序全部删除，只保留单飞 driver/waiter；visibility 写入改走 `writeVisibilityAsync`。
+- `src/host-lifecycle.js`：删除“没有 partial 写入就直接返回”的旁路，清定时器后必须把队列排空（同一预算）。
+- `src/task-shell/*`、`src/classify/state-machine.js`、`src/chat/turn-engine.js`、`server.js` 的同步调用点全部改为 await（无回退分支、无开关）。
+- `scripts/rust-source-cache.js` 探针新增 `writeVisibilityAsync` 与 `chatContextRotationRequest`。
+
+### Node 保留范围及原因
+
+- 文件名/路径、分页与 replay、WS 广播、git 快照、`clearAllNativeCliStates`/`rememberActiveCliState`、`buildHandoffCheckpoint`、persistedSessions 与 sessionPersistence 事务仍是宿主职责；Rust 只给判定和副作用清单。
+- `src/session/adapters/chat-history-file-repository.js` 只是 Rust 原子写的错误边界（`writeVisibilityAsync` 把原生错误恢复成 Node 兼容错误并 invalidate 缓存）。
+
+### 未覆盖范围
+
+- 进程崩溃/跨进程的“恰好一次”仍不承诺；两个 decision 之间崩溃不会留下部分提交（快照本身无副作用），但 git 快照完成与 commit 之间崩溃会丢掉这次轮换，下次重试即可。
+- `test:cdp`、`tests/test-classify-api-errors*` 未运行（既有约定）。
+- 轮换的 git 快照仍是 Node 副作用，未迁入 Rust。
+
+### 红证
+
+用 HEAD（`9bd8e5bd`）的源码导出到 `/tmp/clear-rotate-batch/head-tree`（git archive + node_modules 软链 + 本批测试文件），对旧代码跑同一批测试：
+
+- `a clear queued behind an in-flight append plans on the landed transcript`：`the clear snapshot must include the message that landed before it`（旧 clear 在迁移前算集）。
+- `hide and annotate queued behind an in-flight append act on the landed message`：`hide counts the message it newly hid`，实际返回 `{operationId:1}`（未落盘）。
+- `an incremental save straddling a clear never resurrects the pre-clear display state`：`the interim write owns the queue`，`0 !== 1`。
+- 两条轮换重判：旧实现直接返回 `{ok:true, checkpointId:'checkpoint_0011223344556677', ...}`，没有重判。
+- 两条关停：`the queue is drained once the durable append is confirmed`（`false !== true`）与 `the queue drain is actually awaited, up to the cap`。
+
+### 验证与产物
+
+最终 Rust 源码指纹 `99eb6688da8b03f7ff9b27e4`；`darwin-arm64/multicc_core.node` 为 18,067,072 字节，SHA-256 `9056c286ae1f36940ef1da2e12662055de169bc797201e8c0c8fe31f012d075c`；`probeAddon` 与 `builtFromSource` 均为 true。
+
+- 改动/新增的 7 个 node:test 文件（`test-chat-history-routes` 39、`test-chat-history-store`、`test-chat-history-ordering`、`test-chat-dto-golden`、`test-chat-history-runtime-differential` 15、`test-shell-chat-continuity`、`test-host-lifecycle-task-run-close` 7）：100/100；在最终指纹上连同 `test-classify-live-runner` 复跑：134/134。
+- 关联批次：`test-task-separation`、`test-chat-task-separation`、`test-chat-turn-core`、`test-task-context-host`、`test-held-turn-injection`、`test-unattended-*`、`test-cancel-state-flow`：207/207；`test-classify-vocab` 23/23；`test-classify-live-runner` 34/34（两处归因调用改为 async/await）。
+- 说明：首次真实 `npm run test:core` 在 `test-classify-live-runner` 有 2 条红，原因是测试仍同步读取 `applyTaskAttributionResult` 的返回值（该函数现在 async）；只改测试为 await，生产语义未回退。红名为 `delayed attribution with a superseded anchor cannot overwrite the newer task` 与 `a still-D verdict is refined by the model goalState when attribution lands`。
+- 真实 `npm run test:core`（最终代码）：退出码 1；大 node:test 批次 2217/2217、`test:task-shells` 299/299、`test:task-first` 437/438。唯一失败是 main 既有红项 `tests/test-air-paint-budget.js`：`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`，与本批无关。命令链是 `&&`，能走到 `test:task-first` 说明前面所有阶段均已退出 0。
+- `npm run test:security`：1139 项，1138 通过、0 失败（1 项既有 TODO）；`npm run test:architecture`：126/126；`npm run test:contracts`：134/134；`npm run test:native`：256/256，退出 0；`npm run test:governance`：退出 0（20/20、运行态写入 45 项、产物治理均通过）。
+- `cargo test -p multicc-core`：638/638；`cargo test -p multicc-addon` 编译并通过（无测试）；`rustfmt --check` 对本批改动的 5 个 Rust 文件（含两个新增 `chat_context_rotation.rs`）无 diff。
+- `node scripts/check-source-line-budget.js`：通过；`server.js` 按棘轮登记为 3054 行 / 163528 字节（annotateChatTurn 接线 async 出口 +33 字节）。
+- 按协调者要求未跑 `npm test` 整套、`test:cdp` 与会打活服务的 `tests/test-classify-api-errors*`；未提交、未 stash、未重置、未重启服务、未向活服务写。
+
+### 对抗复核修复：关停等待与删除栅栏（2026-11-11）
+
+#### H1（高）：`settle()` 等错了对象，关停可能在队列落盘前返回
+
+- 根因：`drivers` Map 存的是 `{loop}` 包装对象（因为有同步的自删边界），旧 `settle()` 把 `entry` 本身放进 `Promise.allSettled`。非 Promise 值立即 fulfilled，随后用一个“最多 10000 轮”的同步轮数闸门兜底，既不等待真实写入，也无法约束永不返回的 fsync。旧代码在本批红证脚本上表现为 4ms 返回 `false`，而写入尚未落盘。
+- 修复：`settle({deadline | timeoutMs})` 每轮重新读取 `drivers` 里真实的 `entry.loop`（driver 在 `finally` 里自删，所以不能缓存），用 `Promise.race([allSettled(loops), timer(remaining)])` 等待；删除轮数闸门，唯一上限是调用方给的绝对 deadline。每轮先向 Rust 要 `pendingMutationSessions()`，给只有定时器入队、没有活 driver 的会话补一个驱动器；没有 driver 但队列仍非空时让出一拍再查，避免自旋。默认 deadline 60s 只用于非关停调用。
+- 预算来源：`src/host-lifecycle.js` 的 `flushInFlightChats` 已经按 `min(partialFlushTimeoutMs, timeoutMs, deadline-now)` 得到本次 flush 预算，现在把 `Date.now() + budget` 作为 `settleDeadline` 传给 `settle`；外层原有 `Promise.race` 仍兜底整个 flush，两者共用同一份预算。`src/shutdown.js` 的 70s 总预算 / 10s 最终 flush 预留未变。
+- 红证（旧源码副本在 `/tmp/clear-rotate-batch/src/routes/chat-history.old.js`，未改动工作区）：gated `writeAsync` 下启动 append 后调用 `settle({deadline:+5000})`，输出
+  `{"drained":false,"elapsedMs":4,"landedBeforeSettleReturned":false,"writes":1}`。
+- 真实用例（不用 mock）在 `tests/test-chat-history-routes.js`：真 `createChatHistoryRuntime` + 延迟 `writeAsync`，断言 settle 在写落地后才 resolve；永不落定时在 60ms deadline 内返回 false；一个会话挂死时另一个会话仍被排空。`tests/test-host-lifecycle-task-run-close.js` 新增真运行时用例，断言协调者在真实 driver Promise 结束前不完成、释放后 partial 已落盘。审计同类代码：全仓只有 `settle()` 曾把 `{loop}` 当 Promise；其余 `Promise.allSettled` 等待的都是真 Promise。
+
+#### M1（中）：删除/重命名与会话队列之间没有栅栏
+
+- 根因：旧 `server.js` 的 `destroySessionCascade` 直接 `chatHistoryService.deleteSession(id)`，绕过会话 FIFO。若此时有 append 在飞，删除先落地、追加后落地，文件被重新写回。红证（旧代码副本）：
+  `{"afterDelete":false,"recreatedAfterWrite":true,"messages":1}`。
+- Rust 结构处理（`native/addon/src/chat_history_runtime.rs`）：
+  - 新增 `removed: HashSet<JsString>` 墓碑。删除在入队时立即落墓碑；已排队但仍在 `Phase::Start` 的 job 全部丢弃（operationId 收集进 `cancelled`），正在执行的队首 job 保留；`Delete` 变更排在它后面，因此最终磁盘状态一定是“已删除”。
+  - 删除后到达的入队一律抛 `chat_history_session_deleted`；`incremental_save_tick` 对墓碑会话直接返回，定时器不能再把文件写回来。
+  - 重复删除幂等：墓碑已存在时返回 `{operationId: null, cancelled: []}`，Node 直接 resolve `true`。
+  - 删除失败（例如任务历史仍被引用 `TASK_HISTORY_REFERENCED`）会撤销墓碑，允许后续写入与重试。
+  - `ReplaceAll` 是新的整份替换变更，在队首通过 service `replace` 执行；`Delete` 在队首通过 service `deleteSession` 执行，并清增量定时器、失效可见性缓存、移除队列项。
+  - 会话 id 由服务端分配且不复用，墓碑保持到进程重启是安全的。
+- Node 接线：`chatHistoryRuntime.removeSession(id)` / `replaceHistory(id, messages, options)` 返回队列 Promise；被取消的排队 waiter 统一以 `CHAT_HISTORY_SESSION_DELETED` 拒绝；同一次删除触发的多个等待者各自结清。
+- 绕过审计（逐项结论）：
+  - `server.js` `destroySessionCascade`：改为 `await chatHistoryRuntime.removeSession(s.id)`，失败记 `chat_history_delete_failed`，无回退到同步 service。
+  - `src/task-board/lifecycle-host.js` 的裁剪与整会话删除：分别 `await replaceHistory(record.id, kept, {reason:'task-delete'})` 与 `await deleteHistory(record.id)`；宿主注入从 `getHistoryService` 改为这两个函数。
+  - `src/routes/session-bundle.js` 导入：`await replaceHistory(session.id, merged, {reason:'bundle-import-…'})`，与在线追加同一 FIFO；`getChatHistoryService` 仅保留只读的 `history.read`。
+  - `src/routes/session-profile.js` fork：`await replaceHistory(newSid, newHistory, {reason:'fork'})`；该文件已不再需要 `getChatHistoryService`，接线一并删除。
+  - `src/bootstrap/state.js` 的 `renameSession`：仅存在于旧 schema 启动迁移，严格早于 `createChatHistoryRuntime` 创建，此时不可能有排队或在飞写入，因此保持同步并加注释说明；生产代码没有其他 `renameSession` 调用点。
+  - `src/session/chat-history-service.js` 仍导出 `append/replace/remove/deleteSession/upsertInterim/ensurePersistedIds`：它们是 Rust 队列在队首执行时调用的仓储分发面（`start_replace_all`/`start_delete` 等），不再是 Node 侧的旁路；Node 调用方没有直接使用它们。
+- 竞态用例（`tests/test-chat-history-routes.js`）：删除等待在飞 append；排队中的追加被 `CHAT_HISTORY_SESSION_DELETED` 拒绝；释放后 `records.has('s1') === false`；删除后的追加继续被拒；重复删除幂等。`replaceHistory` 排在在飞 append 之后，最终记录为 `['kept']`。红证先于修复从旧源码副本跑出上文的 `recreatedAfterWrite:true`。
+
+#### M2（中）：关停测试 mock 掉了被测对象
+
+- `tests/test-host-lifecycle-task-run-close.js` 保留原有用例验证调用顺序，同时新增真实 `createChatHistoryRuntime` 用例（真实 driver、真实 waiter、gated `writeAsync`），断言协调者真的等到了写入落地。H1 的红证与真实用例共同覆盖此前被 mock 掉的结算路径。
+
+#### M3（中/低）：差分测试的轮换 oracle 被改写成新行为
+
+- 根因：`tests/helpers/legacy-chat-history-runtime.js` 曾加入 `rotationScreen()` 并复刻两阶段重判，导致差分测试实际是“Rust vs 被改写成新行为的 JS”，不再是“新 vs 旧”。
+- 修复：oracle 恢复 HEAD 的单次判定语义（git 快照前判一次，快照后直接提交），并在文件里写明“Frozen oracle: HEAD 单次判定；新宿主会在快照后重判，该变化由差分套件的显式用例断言，不塞进 oracle”。轮换差分用 `rotationStep` 只过滤“快照后重新读取 run-state/background”的轨迹项，其余轨迹（rotate code、广播载荷、持久化、checkpoint）仍逐字节比较。
+- 新增显式变更用例 `rotation re-decides after the snapshot: the HEAD oracle commits, the runtime rejects`：在快照回调里注入新的 pending handoff，断言 HEAD 提交并把 reason 改成 manual（旧行为）、新运行时返回 `{ok:false, code:'handoff_pending'}`、保留 `cp-late`、不持久化、只广播 rejected。哪些行为有意改变、哪些必须保持一致，都在用例与注释里写明。
+
+#### L1/L2/L3
+
+- L1：`src/routes/chat-history.js` 的轮换重判被拒路径原本仍会先发起一次 git 快照，注释却声称不会留下无用快照调用。现在快照只在首判通过后才发起，注释改为“若重判被拒，快照是唯一的既有开销；不会装配 checkpoint、不会提交 handoff、不会写盘或广播”。
+- L2：`src/classify/state-machine.js` 归因失败处理链末尾的 `.catch(async e => { await annotateChatTurn(...) })` 返回的 Promise 无人处理。已在该链尾部追加 `.catch` 记录 `task_attribution_failure_handler_failed`；审计其余新增 async catch/then 尾部，没有其他悬空 Promise。
+- L3：实现了 interim 合批——入队时若同会话已有 `Phase::Start` 的 Interim job，直接更新它的 `args/generation` 并复用同一 operationId，只有最新临时态会落盘。决策在 Rust；用例 `queued interim replaced by newest` 断言 append + 一次合批 interim 共两次写。
+
+#### 本批验证与产物
+
+- 最终 Rust 源码指纹 `d531210b08d2767298515562`；`darwin-arm64/multicc_core.node` 为 18,067,040 字节，SHA-256 `7aa2ef7f57695f3adee793969c68369a90f3a6be84e08c9323ba216c788f5e95`；`probeAddon=true`、`builtFromSource=true`。
+- 定向套件：`test-chat-history-runtime-differential` 16/16；`test-chat-history-routes` 45/45；`test-host-lifecycle-task-run-close` 8/8；`test-chat-history-ordering` 9/9；`test-chat-dto-golden` 5/5；`test-chat-history-store` 16/16；`test-task-lifecycle` 26/26；`test-shell-chat-continuity` 9/9；`test-classify-live-runner` 34/34；`test-task-worktree` 14/14；`test-session-bundle-api` 集成通过；`test-session-rename-broadcast` 17/17（fixture 改为注入 `replaceHistory`）；`test-provider-reassign`、`test-cli-key-accounts`、`test-opencode-go-default-provider`、`test-gateway-dispatch-wakeup`、`test-voice-global-gateway`、`test-voice-global-lifecycle`、`test-session-hibernation-git` 全绿。
+- `cargo test -p multicc-core` 638/638；`cargo test -p multicc-addon` 通过（0 测试）；`rustfmt --check` 对本批 3 个 Rust 文件无 diff（core 中既有的测试格式漂移不由本批重排）。
+- `node scripts/check-source-line-budget.js`：通过；`server.js` 按棘轮登记为 3057 行 / 164007 字节。
+- 完整 `npm run test:core`（退出码 1）：大头 node:test 批次 2223/2223、`test:task-shells` 299/299、`test:task-first` 437/438；唯一失败是 main 既有红项 `tests/test-air-paint-budget.js`（`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`），与本批无关。命令链是 `&&` 且一路走到 `test:task-first`，说明此前所有阶段均已退出 0。
+- 其他门禁：`test:architecture` 通过；`test:state` 通过；`test:security` 1139 项、1138 通过、0 失败（1 项既有 TODO）；`test:contracts` 134/134；`test:native` 退出 0；`test:governance` 退出 0（含运行态写入 45 项与产物治理）。
+- 诚实边界：`replaceAll` 的写入字节由 Node 在入队前组装，队列只保证执行顺序、不与在飞追加交错。因此上下文包“合并导入”若在读取底稿与入队之间恰有新追加落地，新消息不会进入这次整份替换（导入通常面向空闲会话；删除/裁剪不受影响，它们是队首服务调用）。未把合并语义搬进 Rust 是本批的已知取舍。
+- 按协调者要求未跑 `npm test` 整套、`test:cdp` 与会打活服务的 `tests/test-classify-api-errors*`；未提交、未 stash、未重置、未重启服务、未向活服务写。
+
+### 第二轮对抗复核：删除拒绝不丢写入、队首裁剪/合并与单一判据（2026-11-11）
+
+上一节的 H1/M1 主路径已通过复核；本轮修掉复核新发现的一条删除拒绝数据丢失路径，并把任务裁剪/包导入的 read-then-write 窗口搬进队列。以下数字取代上一节同名条目。
+
+#### 问题 1（中，已实测）：删除被拒时丢掉已接受的排队写入
+
+- 根因：旧 `enqueue_mutation` 在 `Delete` 入队时就丢弃所有 `Phase::Start` 的 job 并立即落墓碑；删除是否被拒只有到队首执行 `deleteSession` 才知道。Node 随即把被取消 job 的 waiter 以 `CHAT_HISTORY_SESSION_DELETED` 结清。复现：`u1`（taskId）在内存中受保护 → append `a1` 在飞 → append `a2` 排队 → `removeSession`：`a2` 收到 `SESSION_DELETED`、删除返回 `TASK_HISTORY_REFERENCED`、会话存活、磁盘只剩 `[u1,a1]`，`a2` 永久丢失。旧的同步删除从不在入队时取消排队写入，因此这是本批引入的新行为。
+- 修复（方案 b，延迟取消）：`Delete` 入队只做三件事——写 `deleting: session→operationId`、分配 operationId、把 `Delete` 插到“最后一个非 `Phase::Start` job 之后、未开始 job 之前”；不取消任何 job、不落墓碑。删除期间新入队的变更照常接受，排在 `Delete` 之后。队首执行成功时才收集队列里剩余 job 的 operationId（`cancelled`）、移除队列、撤销 `deleting`、落墓碑；被拒时只撤销 `deleting`，排队写入保持原位继续执行。同一会话的重复删除复用在途 operationId，所有 waiter 看到同一结果。`incremental_save_tick` 在 `deleting`/`removed` 期间直接返回，定时器不会把临时态写回。
+- 三个时点：
+  1. 入队瞬间已被拒绝：`destroySessionCascade` 的 `chatHistoryService.assertCanDeleteSession` 与任务板的 `canDeleteHistory`（Rust `canDeleteSession`）都在入队前判定；拒绝时根本没有 job、没有墓碑，也没有任何已接受写入被取消。
+  2. 入队后在队头执行时被拒绝：所有已接受写入（在飞的 + 排队中的 + 删除待定期间新接受的）都留在队列里并成功落盘；删除 waiter 收到原错误（如 `TASK_HISTORY_REFERENCED`），其余调用方得到成功而不是 `SESSION_DELETED`；墓碑不存在，之后的 append 正常。
+  3. 删除成功：队列里尚未开始的 job 全部取消，其 waiter 以 `CHAT_HISTORY_SESSION_DELETED` 结清；墓碑落下，之后的 append 被拒；重复删除幂等返回 `true`。
+- 红证（修复前）：复核给的复现场景写成 `a refused delete leaves every accepted write intact and lifts the fence`，在旧产物（`d531210b`）上失败于 `Error: chat_history_session_deleted ... at sessionDeletedError (src/routes/chat-history.js)`；同一 fixture 在修复后断言 `a2` 落盘、`removeSession` 拒绝、再次 append 成功。
+- 回归用例（`tests/test-chat-history-routes.js`）：
+  - `a refused delete leaves every accepted write intact and lifts the fence`：拒绝后最终记录 `['u1','a1','a2']`，随后 `a3` 也能写入。
+  - `mutations queued while a delete is pending follow the delete outcome`：拒绝分支断言删除期间接受的 `a2` 成功落盘；成功分支断言删除期间接受的 `a2` 收到 `SESSION_DELETED` 且磁盘为删除态。
+  - 原有 `delete waits for an in-flight append, discards queued work and fences later appends` 改为断言“删除提交前排队项不结算、提交后才以 `SESSION_DELETED` 结清”，覆盖幂等重复删除。
+
+#### 问题 2（中）：任务历史裁剪/包合并的 read-then-replace 覆盖窗口
+
+- 根因：`src/task-board/lifecycle-host.js` 的裁剪先 `getHistory()` 读快照、再 `replaceHistory(kept)` 整份写；`src/routes/session-bundle.js` 的 merge 与 `src/routes/session-profile.js` 的 fork 也在 Node 组装 `[...read(), ...imported]`。只要在读取与队首执行之间有一条在飞 append 落盘，它就被旧底稿整份覆盖。
+- 修复：新增两种队首变更。`DropMessages`（`dropMessages(sessionId, ids, options)`）在队首 `service("read")` 取最新 transcript，过滤掉给定 id 后 `service("replace")`；`MergeAll`（`mergeHistory(sessionId, messages, options)`）在队首读取底稿并追加导入消息后整份替换。判定“删哪些 id / 导入哪些消息”仍由 Node 提供，`DropMessages` 只保证底稿读取发生在队首。任务裁剪改用 `dropHistoryMessages`，包导入 merge 与 fork 改用 `mergeHistory`；整份覆盖语义的包导入仍用 `replaceHistory`（本来就是显式替换）。
+- 红证（旧 Node 模式，临时用例已删除）：初始 `['u1']` → append `a1` 在飞 → Node 读快照（只有 `u1`）→ 队首 `replaceAll(snapshot)` → 释放 `a1`。结果 `records = ['u1']`，`a1` 被覆盖。新用例 `dropMessages runs on the queue-head transcript and keeps a concurrent append` 与 `mergeHistory appends on the queue-head transcript instead of overwriting it` 在同一时序下分别得到 `['u1','a1']` 与 `['u1','a1','m1']`。
+- 残留边界：`dropMessages` 的 id 集合仍取自 Node 的裁剪快照；若在快照与队首之间恰好新落盘一条属于被删任务的消息，它不会被删。任务删除前置了 `assertTaskIdle`，正常路径不存在这种在飞消息；这条边界写入文档而不是假装关闭。`replaceAll`（非 merge 的包导入）仍是显式整份替换，覆盖是调用方要求的语义。
+
+#### 问题 4（低）：Node 第二份“共享会话”判据不一致
+
+- 根因：`lifecycle-host` 自己算 `shared`（不看 `routing.workerSessionId`），可能放行到删除，最后只有 Rust 拒绝——正好触发问题 1 的旧取消路径。
+- 修复：删除 Node 的共享判据，`canDeleteHistory(record.id) === true` 直接问 Rust `canDeleteSession`；后者走 `assertCanDeleteSession`，与 `createTaskHistoryRetention.canDeleteSession` 同一口径（含 `routing.workerSessionId`、受保护消息与 `taskExecutionSlot`）。Node 不再维护第二份规则。
+
+#### 问题 3（低）：墓碑对复用会话 id 的残留
+
+- 生命周期：墓碑只在删除真正成功后落下；`registerSession(sessionId)` 同时清 `removed` 与 `deleting`。接线点：`server.js` 包装 `createSessionRecord` 的成功返回（含任务壳 `createExecution` 用显式 `task.sessionId` 重建、OAuth 登录会话的固定 id、包导入/fork 的新 id），以及启动时的 `__aux__` 定向会话初始化。
+- 审计：固定/可复用 id 只有 `AUX_SESSION_ID`、`CLAUDE_AUTH_SESSION_ID`、`CODEX_LOGIN_SESSION_ID`、commandcode 登录会话 id，全部经 `createSessionRecord`；任务板恢复走 `createExecution` 的显式 `task.sessionId`，同样经过包装。普通会话 id 由 `randomUUID` 分配，删除后不会被复用；进程重启会清空内存墓碑。约束：将来若有代码绕过 `createSessionRecord` 直接 `persistedSessions.set` 复用已删除 id，必须调用 `registerSession`。
+- 用例：`canDeleteSession asks the Rust retention rule and registerSession clears the tombstone`（删除 → 同 id 注册 → append 成功）。
+
+#### 本轮验证与产物
+
+- 最终 Rust 源码指纹 `a32ddb351f2a79dc47c61acb`；`darwin-arm64/multicc_core.node` 为 18,083,568 字节，SHA-256 `4617fe691e680da4ec921168b81bf519ece5c84543e6ca3822bd833b0c56efc4`；`probeAddon=true`、`builtFromSource=true`。
+- 定向套件（最终产物）：`test-chat-history-routes` 50/50；`test-task-lifecycle` 26/26；`test-chat-history-runtime-differential`、`test-chat-history-differential`、`test-chat-history-ordering`、`test-chat-history-store` 与上述两组共 123/123；`test-host-lifecycle-task-run-close`、`test-shell-chat-continuity`、`test-session-create-routes`、`test-session-lifecycle-routes` 46/46；`test-session-rename-broadcast`、`test-cli-key-accounts`、`test-provider-reassign`、`test-opencode-go-default-provider`、`test-chat-dto-golden`、`test-session-bundle-api` 同批 138/139（唯一红为本节已修的裁剪 stub 缓存问题，修后 `test-task-lifecycle` 单独复跑 26/26）。
+- `cargo test -p multicc-core -p multicc-addon`：638/638（addon 编译通过、0 测试）；`cargo fmt -p multicc-addon -- --check` 无 diff（core 既有测试格式漂移不由本批重排）。
+- `node scripts/check-source-line-budget.js`：通过；`server.js` 按棘轮登记为 3068 行 / 164926 字节。
+- `npm run test:architecture`：127/127；`npm run test:native`：256/256，退出 0。
+- 完整 `npm run test:core`（最终产物，退出码 1）：大 node:test 批次 2228/2228、`test:task-shells` 299/299、`test:task-first` 437/438；唯一失败仍是 main 既有红项 `tests/test-air-paint-budget.js`（`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`），与本批无关。命令链是 `&&` 且一路走到 `test:task-first`，说明此前所有阶段均已退出 0。
+- 诚实边界：延迟取消保证“删除被拒时已接受写入不丢”，但删除成功后队列尾部写入会被取消并告知 `SESSION_DELETED`（这是删除语义要求的）；任务裁剪的 id 集合仍由 Node 快照给出（见问题 2 残留边界）。
+- 按协调者要求未跑 `npm test` 整套、`test:cdp` 与会打活服务的 `tests/test-classify-api-errors*`；未提交、未 stash、未重置、未重启服务、未向活服务写。
+
+### 第三轮对抗复核：会话代次、结构化删除裁决与任务删除边界（2026-11-11）
+
+上一轮已接受延迟取消、`DropMessages`/`MergeAll` 队首裁剪与单一判据；本轮处理复核新发现的两条必须修问题和两条记录项。以下数字取代前文同名条目。
+
+#### 问题 1（中高，已实测）：删除待定期间重新注册会话，新代次写入被旧删除取消
+
+- 根因：`registerSession` 当时只清 `removed/deleting`，队列里的 `Delete` 没有代次概念；删除成功按“取消删除之后所有未开始 job”结清 waiter。复现：`append a1` 在飞 → `removeSession` 排队 → `registerSession`（同 id 会话重建）→ `append n1`（新历史）→ 删除提交：`n1` 被当作旧历史的排队项取消，收到 `SESSION_DELETED`，磁盘没有 `n1`；墓碑还一直压到第二次 `registerSession`，后续写入继续被拒。
+- 修复：每会话代次（epoch）。Rust 所有者新增 `epochs: session→u64`；`registerSession` 推进代次并清墓碑，不再清删除标记（标记由删除 job 自己结算）。每个入队 job 记录入队时的 `epoch`；`Delete` 记录自己的入队代次，成功时只取消 `epoch <= delete_epoch` 的剩余 job（waiter 以 `SESSION_DELETED` 结清），保留 `epoch > delete_epoch` 的新代次 job 在原位、删除后继续执行；只有当前代次仍等于删除代次时才落墓碑。`deleting` 标记带 `(epoch, operationId)`：同一代次内的重复删除才复用在途 operationId，新代次删除是独立 job。临时态合并、队首代次校验、`incrementalSaveTick` 的定时器都带代次：旧代次的定时保存不会在新代次复活，也不会改写新历史。删除插入规则仍是“最后一个非 `Phase::Start` job 之后、未开始 job 之前”，并额外越过已排队的 `Delete`，保证删除按入队顺序执行，后入队的删除不会插到先入队的删除之前。
+- 边界：
+  1. 删除排队/在飞时 `registerSession`：新代次写入保留并落盘；旧代次排队项取消；旧内容不会在删除后复活。
+  2. 新代次的第二次 `removeSession` 是独立删除，不与旧代次合并；它按删除语义丢弃排在它之前的未开始 work（包括新代次的 append），最终磁盘为删除态。
+  3. 删除被拒后 `registerSession`：标记已撤销，新代次直接在原有历史上继续写。
+- 红证（旧产物 `a32ddb351f2a79dc47c61acb`）：`registering while a delete is pending keeps the new epoch and only settles the old history` 期望 `['fulfilled','fulfilled','rejected','fulfilled']`，旧产物实际 `['fulfilled','fulfilled','rejected','rejected']`——新代次 `n1` 被 `SESSION_DELETED`。第二条用例旧产物实际 `['fulfilled','rejected','rejected','fulfilled']`，删除结算顺序也与合并行为不符。最终产物同命令全绿。
+- 回归用例（`tests/test-chat-history-routes.js`）：
+  - `registering while a delete is pending keeps the new epoch and only settles the old history`：断言 `n1` 落盘（最终 `['n1']`）、随后 `n2` 仍可写、旧代次排队项收到 `SESSION_DELETED`。
+  - `a removeSession in the new epoch is an independent delete, not a coalesced one`：断言两次删除都成功、重建后的历史被第二条删除移除、随后写入被墓碑拒绝。
+  - `registering after a refused delete starts a clean epoch that keeps writing`。
+
+#### 问题 3（中低，已修）：任务删除在会话被引用时静默跳过，留下孤儿会话
+
+- 根因：上一轮把共享判据交给 Rust 布尔 `canDeleteSession`；`lifecycle-host` 只在 `canDeleteHistory(id) === true` 时删会话，其余一律跳过。布尔值无法区分旧行为的两条路径：`shared`（chatSessionId/refs，旧 purge 保持会话原样）与 `referenced`（`routing.workerSessionId` 或受保护消息，旧 `deleteSession` 抛 `TASK_HISTORY_REFERENCED` 并中止任务删除）。结果 referenced 会话被静默留下，任务卡却已删除。
+- 修复：Rust 返回结构化裁决 `deletionVerdict(sessionId) -> {ok, reason?, tasks?, taskIds?}`。Node 只提供事实（`task-history-retention.sessionDeletionFacts`）：`executionSlot`（执行槽，旧 `canDeleteSession` 的短路）、`sessionLinks`（存活任务的 chatSessionId/refs）、`routingLinks`（`routing.workerSessionId`）、`messageLinks`（历史里带存活任务 taskId 的消息戳）和用于错误正文的 `references`。判定在 Rust：执行槽 → `ok`；有 sessionLinks → `{ok:false, reason:'shared'}`；有 routingLinks 或 messageLinks → `{ok:false, reason:'referenced', tasks, taskIds}`（id 由 Rust 从事实汇总去重）；否则 `ok`。没有事实端口的旧接线回退到布尔 `assertCanDeleteSession`，被引用一律按 referenced 处理。
+- Node 行动：`ok` → 删历史并销毁会话；`shared`（以及旧布尔接线的 `false`）→ 保持会话原样，绝不删共享历史；`referenced` 或其他未知/失败裁决 → 抛 `TASK_HISTORY_REFERENCED`（带 `tasks/taskIds`）中止任务删除，卡片可见可重试。
+- 与旧行为对账：
+  - `prepareTaskDelete` 的 `task_session_shared` 判据（other task 的 chatSessionId/refs）保持原样；命中时在进入 `purgeTaskData` 之前就中止任务删除，和旧行为一致。结构化 `shared` 分支覆盖的是旧 purge 的“保持会话原样”路径（非 taskBound 记录或直接调用 `purgeTaskData` 的场景）。
+  - `referenced` 与旧 `deleteSession` 的 `TASK_HISTORY_REFERENCED` 同一口径（routing 或受保护消息），仍然中止且不删历史；既有用例 `purging task history retains messages jointly owned by another task and leaves the source session` 继续通过。
+  - `ok` 与旧“非 shared 且 `deleteSession` 成功”一致；执行槽短路与旧 `canDeleteSession` 相同。
+  - 因此没有把 referenced 历史变得更易删，共享会话也仍然保留；布尔 `false` 回退保留旧接线语义（不删、不抛），不会把“不支持结构化裁决的宿主”误判成 referenced。
+- 用例：
+  - `tests/test-chat-history-routes.js` `deletionVerdict separates shared from referenced links and keeps the boolean rule`：四种事实组合 + 布尔投影（shared 优先于 routing；referenced 汇总去重 `taskIds`；执行槽短路）。
+  - `tests/test-task-lifecycle.js` 三条：`a shared history verdict keeps the session and never deletes shared evidence`、`a referenced history verdict aborts the task deletion and stays retryable`（断言不删历史、会话仍在、错误码与 `tasks/taskIds` 透传）、`a deletable history verdict removes the session and its history`。
+  - `tests/test-task-history-retention.js` 的 facts 断言：桶划分、引用清单与 `canDeleteSession` 布尔投影一致、执行槽短路。
+
+#### 问题 2（记录，中）：删除/任务删除等待没有超时，挂死写入会楔住后续变更
+
+- 结论：不加调用方超时，也不加看门狗。放弃在途写会重新引入“旧写覆盖新写”的竞态（正是本轮反复修掉的类别），也无法安全回滚已提交的文件事务。等待语义：同会话历史写按 FIFO 依次执行，一个永不落定的 `writeAsync` 会阻塞该会话之后的变更（包括删除与任务删除）；跨会话不受影响；HTTP 删除/任务删除请求会一直挂起。旧同步实现虽然没有 Promise 挂起，但整段阻塞事件循环，影响面更大；新实现至少不阻塞事件循环，且关停路径有既定 settle 预算。边界写入 `src/task-board/lifecycle-host.js` 注释与本文件。
+
+#### 问题 4（记录，低）：任务裁剪的 id 集合仍来自 Node 快照
+
+- 边界：`dropHistoryMessages` 的 id 由 Node 的裁剪快照给出；若在快照与队首执行之间新落盘一条带被删任务 taskId 的消息，它不会被裁剪。`assertTaskIdle` 使正常路径不可达（任务空闲时没有在飞追加）。没有改成“按 taskId 扫整份历史”，因为另一任务共享的消息可能带同一个 taskId（joint evidence），按 taskId 过滤会误删共享证据。边界写在 `src/task-board/lifecycle-host.js` 的 dropIds 注释。
+
+#### 本轮验证与产物
+
+- 最终 Rust 源码指纹 `083495f119383b532340fe20`；`darwin-arm64/multicc_core.node` 18,100,080 字节，SHA-256 `c53f50dfea9f57603727dc52fd6ce7914f31388308d3be52adf3d9f6bdcb2a54`；`probeAddon=true`、`builtFromSource=true`。
+- 定向 9 文件套件（最终产物）：157/157（`test-chat-history-routes`、`test-task-lifecycle`、`test-task-history-retention`、`test-chat-history-runtime-differential`、`test-chat-history-differential`、`test-chat-history-ordering`、`test-chat-history-store`、`test-host-lifecycle-task-run-close`、`test-shell-chat-continuity`）。
+- `cargo test -p multicc-core -p multicc-addon`：638/638；`cargo test -p multicc-gateway --test gateway`：32/32（首次全 workspace 并行跑时 `a_download_ticket_opens_one_file_for_a_remote_client` 偶发 `Connection reset by peer`，单独复跑 3/3、整套复跑 32/32，记为偶发）。`cargo fmt -p multicc-addon -- --check` 无 diff。
+- `npm run test:architecture`：128/128（含 detached ALL PASS）；`npm run test:rust`：256/256。
+- 真实 `npm run test:core`（最终产物）：退出码 1；大 node:test 批次 2232/2232、`test:task-shells` 299/299、`test:task-first` 440/441。唯一失败是 main 既有红项 `tests/test-air-paint-budget.js`（`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`），与本批无关；新加的 3 条 task-lifecycle 用例使 `test:task-first` 由上一轮的 437/438 变为 440/441。命令链是 `&&` 且一路走到 `test:task-first`，说明此前所有阶段均已退出 0。
+- 诚实边界：代次只在进程内有效（队列本身也在内存，重启后自然清空），宿主必须对复用 id 调用 `registerSession`（审计范围同上一轮）；问题 2、问题 4 的限制如上；gateway 集成测试有一次与本批无关的偶发连接重置。
+- 按协调者要求未跑 `npm test` 整套、`test:cdp` 与会打活服务的 `tests/test-classify-api-errors*`；未提交、未 stash、未重置、未重启服务、未向活服务写。

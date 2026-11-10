@@ -877,7 +877,11 @@ async function destroySessionCascade(s, d, opts = {}) {
   waitInjector.cancelForSession(s.id);
   if (orchestrationRuntime) await orchestrationRuntime.cancelForSession(s.id);
   share.removeForSession(s.id);
-  try { chatHistoryService.deleteSession(s.id); }
+  // 删除走历史 FIFO：入队只标记“正在删除”，不取消任何已接受的写入；删除
+  // 排在在飞步骤之后、未开始写入之前。队首执行成功才落墓碑并取消后面的
+  // job；被拒则撤销标记，排队的写入照常执行。上面的预判已在入队前把多数
+  // 拒绝挡掉，这里的重复判定只处理入队后状态变化。
+  try { await chatHistoryRuntime.removeSession(s.id); }
   catch (error) {
     chatHistoryService.invalidate(s.id);
     logger.warn('chat_history_delete_failed', { sessionId: s.id, error: error.message });
@@ -1446,7 +1450,7 @@ const classifyStateMachine = createClassifyStateMachine({
   loadChatHistory: (...args) => loadChatHistory(...args),
   viewChatHistory: (...args) => viewChatHistory(...args),
   appendChatMessage: (...args) => appendChatMessage(...args),
-  annotateChatTurn: (...args) => chatHistoryRuntime?.annotateTurn(...args) || [],
+  annotateChatTurn: async (...args) => (chatHistoryRuntime ? await chatHistoryRuntime.annotateTurn(...args) : []),
   getAuxRunLog: () => auxRunLog,
   // 目录建议（「更适合另一个目录」）的清单来源；只读快照，token 截断在 task-attribution。
   getDirectories: () => [...directories.values()],
@@ -1585,10 +1589,17 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
 function createSessionRecord(input) {
-  return require('./src/session/create-record').createSessionRecordFactory({
+  const created = require('./src/session/create-record').createSessionRecordFactory({
     sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
     SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath: MULTICC_PATHS.loginWorkspacePath
   })(input && typeof input === 'object' && input.cli != null ? { ...input, cli: canonicalCli(input.cli) } : input);
+  // 会话创建/复用是清墓碑的唯一时机（判定仍由 Rust 持有）。固定 id 的辅助
+  // 会话删除后重建时，这里让历史队列重新接受写入。
+  const registered = value => {
+    if (value && value.ok && value.id && chatHistoryRuntime) chatHistoryRuntime.registerSession(value.id);
+    return value;
+  };
+  return created && typeof created.then === 'function' ? created.then(registered) : registered(created);
 }
 
 // Login terminals are one-shot (src/session/login-terminal.js): each login
@@ -1669,7 +1680,7 @@ const { applySessionPatch, previewSessionPatch } = createSessionProfileRoutes({
   createSessionRecord,
   loadChatHistory,
   newChatMsgId,
-  getChatHistoryService: () => chatHistoryService,
+  mergeHistory: (id, messages, options) => chatHistoryRuntime.mergeHistory(id, messages, options),
   getFolderMemory: () => folderMemory,
   getCliSwitchGitSnapshot: () => cliSwitchGitSnapshot,
 }).mountRoutes(app);
@@ -1730,7 +1741,8 @@ createSessionBundleRoutes({
   appendEvent,
   createSessionRecord,
   loadChatHistory,
-  getChatHistoryService: () => chatHistoryService,
+  replaceHistory: (id, messages, options) => chatHistoryRuntime.replaceHistory(id, messages, options),
+  mergeHistory: (id, messages, options) => chatHistoryRuntime.mergeHistory(id, messages, options),
   getFolderMemory: () => folderMemory,
   listInstalledSkills,
   getSkillSyncRuntime: () => skillSyncRuntime,
@@ -2059,7 +2071,7 @@ function dispatchTargetBusy(sid, item = null) {
   return dispatchTargetBusyReasons(sid, item).length > 0;
 }
 const taskBoardRuntime = createTaskBoardRuntime({
-  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), isSessionBusy: sid => dispatchTargetBusy(sid), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn),
+  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), isSessionBusy: sid => dispatchTargetBusy(sid), dropHistoryMessages: (id, ids, options) => chatHistoryRuntime.dropMessages(id, ids, options), canDeleteHistory: id => chatHistoryRuntime.deletionVerdict(id), deleteHistory: id => chatHistoryRuntime.removeSession(id), destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn),
     // Late-bound: taskStates is composed below; deletion only runs at runtime.
     resetTaskState: id => taskStates.resetTaskState(id), workspaceBroadcast, chatBroadcast, getHibernation: () => sessionHibernationRuntime }),
   file: MULTICC_PATHS.taskBoardFile,
@@ -2831,6 +2843,8 @@ mountWsConnectionRouter(wss, { machines,
 
 // Initialize AuxQueue (loads history, registers __aux__ session)
 auxQueue.init();
+// __aux__ 是固定 id；若同一进程内它曾被删除并重建，清掉历史队列的墓碑。
+if (chatHistoryRuntime) chatHistoryRuntime.registerSession('__aux__');
 
 // Session trigger bounded context: owns CRUD, watcher/cron lifecycle and
 // post-turn dispatch. It is created before async repository recovery so every

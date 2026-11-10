@@ -316,7 +316,7 @@ function harness({ sessions = [], chatState = null, backgroundActive = false } =
     createSessionRecord: async () => ({ ok: false, error: 'unused' }),
     loadChatHistory: () => [],
     newChatMsgId: () => 'm1',
-    getChatHistoryService: () => ({ replace() {} }),
+    mergeHistory: async () => {},
     getFolderMemory: () => ({ sessionDir: () => path.join(tmpRoot, 'mem') }),
     getCliSwitchGitSnapshot: () => async () => ({}),
   }).mountRoutes(app);

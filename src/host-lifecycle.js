@@ -118,7 +118,6 @@ function createHostLifecycle(deps) {
         return true;
       }, () => false));
     }
-    if (writes.length === 0) return 0;
     // Bound the wait. The overall drain gets its own grace window, but an fsync
     // that never returns must not wedge shutdown — and it must never push the
     // total past the coordinator's deadline.
@@ -128,12 +127,26 @@ function createHostLifecycle(deps) {
       deadline == null ? Number.POSITIVE_INFINITY : deadline - Date.now(),
     );
     if (!(budget > 0)) {
-      log.warn?.('[multicc] shutdown partial flush skipped: no time left in the total budget');
+      if (writes.length) log.warn?.('[multicc] shutdown partial flush skipped: no time left in the total budget');
       return 0;
     }
     let timer = null;
+    const settleDeadline = Date.now() + budget;
     const timeout = new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), budget); });
-    const settled = await Promise.race([Promise.allSettled(writes), timeout]);
+    // The history mutation queue may also hold interim/annotation/visibility
+    // steps that were enqueued before its timers were cleared above. Drain it
+    // under the same absolute deadline, after the partial appends have landed.
+    // `settle` must not use a round count: an fsync that never returns would
+    // spin through any fixed number of rounds and report success immediately.
+    const flush = (async () => {
+      const results = await Promise.allSettled(writes);
+      if (chatHistoryRuntime && typeof chatHistoryRuntime.settle === 'function') {
+        const drained = await chatHistoryRuntime.settle({ deadline: settleDeadline });
+        if (drained === false) log.warn?.('[multicc] shutdown history queue did not drain');
+      }
+      return results;
+    })();
+    const settled = await Promise.race([flush, timeout]);
     if (timer) clearTimeout(timer);
     if (settled === 'timeout') {
       log.warn?.(`[multicc] shutdown partial flush exceeded ${Math.round(budget)}ms — some writes may not have landed`);

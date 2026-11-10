@@ -502,8 +502,13 @@ impl<'a> History<'a> {
         self.persist(session, messages, event, after)?;
         Ok(result)
     }
-    fn prepare_append(&self, session: L<'a>, value: L<'a>, after: L<'a>) -> Result<L<'a>> {
-        let (messages, _result, event) = self.append_values(session, value)?;
+    fn store_pending(
+        &self,
+        session: L<'a>,
+        messages: L<'a>,
+        event: L<'a>,
+        after: L<'a>,
+    ) -> Result<L<'a>> {
         let messages_json = stringify(messages)?
             .string()?
             .ok_or_else(|| Error::from_reason("history snapshot serialization is not a string"))?
@@ -533,9 +538,55 @@ impl<'a> History<'a> {
             &[
                 (c"operationId", number(self.anchor, next as f64)?),
                 (c"messagesJson", text(self.anchor, &messages_json)?),
-                (c"messages", clone_json(messages)?),
             ],
         )
+    }
+    fn prepare_append(&self, session: L<'a>, value: L<'a>, after: L<'a>) -> Result<L<'a>> {
+        let (messages, _result, event) = self.append_values(session, value)?;
+        let prepared = self.store_pending(session, messages, event, after)?;
+        prepared.set(c"messages", clone_json(messages)?)?;
+        Ok(prepared)
+    }
+    /// `ensurePersistedIds` split: the caller writes `messagesJson` durably and
+    /// then commits, so the write keeps the queue's order.
+    fn prepare_persist(&self, session: L<'a>) -> Result<L<'a>> {
+        let id = key(session)?;
+        if !self.owner.missing_ids.borrow().contains(&id) {
+            return object(self.anchor, &[(c"write", boolean(self.anchor, false)?)]);
+        }
+        let messages = self.current(session)?;
+        let undefined = self.anchor.from_value(&J::Undefined)?;
+        let prepared = self.store_pending(session, messages, undefined, undefined)?;
+        prepared.set(c"write", boolean(self.anchor, true)?)?;
+        Ok(prepared)
+    }
+    fn prepare_interim(&self, session: L<'a>, value: L<'a>, after: L<'a>) -> Result<L<'a>> {
+        let (messages, result, event) = self.interim_values(session, value)?;
+        let Some(event) = event else {
+            return object(
+                self.anchor,
+                &[
+                    (c"write", boolean(self.anchor, false)?),
+                    (c"result", result),
+                ],
+            );
+        };
+        let prepared = self.store_pending(session, messages, event, after)?;
+        prepared.set(c"write", boolean(self.anchor, true)?)?;
+        prepared.set(c"result", result)?;
+        Ok(prepared)
+    }
+    fn prepare_replace(
+        &self,
+        session: L<'a>,
+        values: L<'a>,
+        after: L<'a>,
+        reason: L<'a>,
+    ) -> Result<L<'a>> {
+        let (messages, result, event) = self.replace_values(session, values, reason)?;
+        let prepared = self.store_pending(session, messages, event, after)?;
+        prepared.set(c"result", result)?;
+        Ok(prepared)
     }
     fn commit_append(&self, operation_id: L<'a>) -> Result<L<'a>> {
         let id = operation_id.number()? as u64;
@@ -596,6 +647,20 @@ impl<'a> History<'a> {
         Ok(())
     }
     fn interim(&self, session: L<'a>, value: L<'a>, after: L<'a>) -> Result<L<'a>> {
+        let (messages, result, event) = self.interim_values(session, value)?;
+        let Some(event) = event else {
+            return Ok(result);
+        };
+        self.persist(session, messages, event, after)?;
+        Ok(result)
+    }
+    /// Interim computation without the durable write. `event` is `None` when the
+    /// payload equals the last committed assistant message (nothing to save).
+    fn interim_values(
+        &self,
+        session: L<'a>,
+        value: L<'a>,
+    ) -> Result<(L<'a>, L<'a>, Option<L<'a>>)> {
         if !value.truthy()? || value.kind()? != sys::ValueType::napi_object {
             return Err(value.type_error("[session] interim message must be an object"));
         }
@@ -611,7 +676,7 @@ impl<'a> History<'a> {
             && !latest.get(c"_interim")?.truthy()?
             && same_payload(latest, message)?
         {
-            return self.lazy(
+            let result = self.lazy(
                 &[
                     (c"ignored", boolean(message, true)?),
                     (c"replaced", boolean(message, false)?),
@@ -619,7 +684,8 @@ impl<'a> History<'a> {
                     (c"message", clone_json(latest)?),
                 ],
                 messages,
-            );
+            )?;
+            return Ok((messages, result, None));
         }
         let end = length(messages)?;
         let mut first = end;
@@ -668,23 +734,28 @@ impl<'a> History<'a> {
             ],
             messages,
         )?;
-        self.persist(
-            session,
-            messages,
-            object(
-                message,
-                &[
-                    (c"type", text(message, "interim")?),
-                    (c"replaced", boolean(message, replaced)?),
-                    (c"dropped", result.get(c"dropped")?),
-                    (c"message", result.get(c"message")?),
-                ],
-            )?,
-            after,
+        let event = object(
+            message,
+            &[
+                (c"type", text(message, "interim")?),
+                (c"replaced", boolean(message, replaced)?),
+                (c"dropped", result.get(c"dropped")?),
+                (c"message", result.get(c"message")?),
+            ],
         )?;
-        Ok(result)
+        Ok((messages, result, Some(event)))
     }
     fn replace(&self, session: L<'a>, values: L<'a>, after: L<'a>, reason: L<'a>) -> Result<L<'a>> {
+        let (messages, result, event) = self.replace_values(session, values, reason)?;
+        self.persist(session, messages, event, after)?;
+        Ok(result)
+    }
+    fn replace_values(
+        &self,
+        session: L<'a>,
+        values: L<'a>,
+        reason: L<'a>,
+    ) -> Result<(L<'a>, L<'a>, L<'a>)> {
         let messages = self.normalize(values, session)?;
         let ids = self.anchor.global()?.get(c"Set")?.construct(&[])?;
         for i in 0..length(messages)? {
@@ -710,20 +781,15 @@ impl<'a> History<'a> {
                 &[number(self.anchor, 0.0)?, number(self.anchor, 80.0)?],
             )?
         };
-        self.persist(
-            session,
-            messages,
-            object(
-                self.anchor,
-                &[
-                    (c"type", text(self.anchor, "replace")?),
-                    (c"reason", reason),
-                    (c"dropped", result.get(c"dropped")?),
-                ],
-            )?,
-            after,
+        let event = object(
+            self.anchor,
+            &[
+                (c"type", text(self.anchor, "replace")?),
+                (c"reason", reason),
+                (c"dropped", result.get(c"dropped")?),
+            ],
         )?;
-        Ok(result)
+        Ok((messages, result, event))
     }
     fn remove(&self, session: L<'a>, id: L<'a>, after: L<'a>) -> Result<L<'a>> {
         let messages = slice(self.current(session)?)?;
@@ -972,6 +1038,26 @@ impl<'a> History<'a> {
                 self.prepare_append(session, value, after)
             }
             "commitAppend" => self.commit_append(session),
+            "preparePersist" => self.prepare_persist(session),
+            "prepareInterim" => {
+                let opts = args.element(2)?;
+                let after = if opts.undefined()? {
+                    self.anchor.from_value(&J::Undefined)?
+                } else {
+                    opts.get(c"afterCommit")?
+                };
+                self.prepare_interim(session, value, after)
+            }
+            "prepareReplace" => {
+                let opts = args.element(2)?;
+                let opts = if opts.undefined()? {
+                    object(self.anchor, &[])?
+                } else {
+                    opts
+                };
+                let after = opts.get(c"afterCommit")?;
+                self.prepare_replace(session, value, after, opts.get(c"reason")?)
+            }
             "discardAppend" => {
                 self.discard_append(session)?;
                 self.anchor.from_value(&J::Undefined)

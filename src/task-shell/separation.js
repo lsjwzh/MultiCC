@@ -199,7 +199,7 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
         // the source view; restart healing must still finish that half of the
         // move. Only IDs proven present in the target are hidden.
         if (landedIds.length && typeof ports.hideHistory === 'function') {
-          try { ports.hideHistory(sessionId, landedIds); }
+          try { await ports.hideHistory(sessionId, landedIds); }
           catch (error) { console.warn('[task-separation] source hide failed', error.message); }
         }
       }

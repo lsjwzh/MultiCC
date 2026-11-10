@@ -445,10 +445,12 @@ function createTaskShellHost(deps) {
     chatScope: (id, sessionId) => getRuntime().chatScope(id, sessionId),
     chatHistory: (id, options) => shellHistoryPage(getRuntime().chatScope(id, options.activeSessionId),
       deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }),
-    clearChatHistory: (id, activeSessionId, keep, options = {}) => {
+    // The hide batches are durable mutations now: await them before projecting
+    // the page, so the snapshot the caller broadcasts is the committed one.
+    clearChatHistory: async (id, activeSessionId, keep, options = {}) => {
       const scope = getRuntime().chatScope(id, activeSessionId);
       const readMessages = deps.displayHistory || deps.loadHistory;
-      const result = clearShellHistory(scope, readMessages, (sessionId, ids) => deps.hideHistory(sessionId, ids, { quiet: true }), keep);
+      const result = await clearShellHistory(scope, readMessages, (sessionId, ids) => deps.hideHistory(sessionId, ids, { quiet: true }), keep);
       const page = shellHistoryPage(scope, readMessages, deps.getChatState,
         { ...options, activeSessionId, overlay: taskOperations().overlay.apply });
       return { ...result, messages: page.messages, hasMore: page.hasMore };

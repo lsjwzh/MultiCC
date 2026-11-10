@@ -112,7 +112,8 @@ function createSessionBundleRoutes(rawDeps) {
     appendEvent,
     createSessionRecord,
     loadChatHistory,
-    getChatHistoryService,
+    replaceHistory,
+    mergeHistory,
     getFolderMemory,
     listInstalledSkills,
     getSkillSyncRuntime,
@@ -127,7 +128,8 @@ function createSessionBundleRoutes(rawDeps) {
   for (const [fn, name] of [
     [asyncHandler, 'asyncHandler'], [appendEvent, 'appendEvent'],
     [createSessionRecord, 'createSessionRecord'], [loadChatHistory, 'loadChatHistory'],
-    [getChatHistoryService, 'getChatHistoryService'], [getFolderMemory, 'getFolderMemory'],
+    [replaceHistory, 'replaceHistory'], [mergeHistory, 'mergeHistory'],
+    [getFolderMemory, 'getFolderMemory'],
   ]) assertFunction(fn, name);
 
   // Handoff v2 helpers. listInstalledSkills / getSkillSyncRuntime are optional
@@ -472,7 +474,6 @@ function createSessionBundleRoutes(rawDeps) {
           catch (e) { /* dead paths are cosmetic; import must not fail on them */ }
         }
         if (Array.isArray(payload.messages) && payload.messages.length) {
-          const history = getChatHistoryService();
           const imported = payload.messages.map(m => {
             if (!m || typeof m !== 'object') return m;
             const clean = stripSourceTaskStamps(m);
@@ -487,12 +488,16 @@ function createSessionBundleRoutes(rawDeps) {
             if (mode === 'merge') delete clean.id;
             return clean;
           });
-          // One replace() rather than N append()s: append persists the whole
+          // One queued write rather than N append()s: append persists the whole
           // transcript per message, so a 500-message import would rewrite it
-          // 500 times. Keeping the local messages first also means no protected
-          // (task-referenced) message is dropped, which replace() refuses.
-          const merged = mode === 'merge' ? [...history.read(session.id), ...imported] : imported;
-          history.replace(session.id, merged, { reason: `bundle-import-${mode}` });
+          // 500 times. Merge mode asks Rust to read the queue-head transcript
+          // and append the imported messages there, so an append that lands
+          // while the import is queued is never overwritten by a stale read.
+          if (mode === 'merge') {
+            await mergeHistory(session.id, imported, { reason: 'bundle-import-merge' });
+          } else {
+            await replaceHistory(session.id, imported, { reason: 'bundle-import-replace' });
+          }
           messagesRestored = imported.length;
         }
       }

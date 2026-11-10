@@ -2784,8 +2784,11 @@ function createChatTurnEngine(deps) {
           // controls (clear display / rotate native context) must get through.
           if (!ws._sharePerm && shellId && msg.type === 'clear_history') {
             if (msg.preserveHistory === true) await getChatHistoryRuntime().clearHistory(sessionName, msg, cs);
-            else chatBroadcast(sessionName, { type: 'chat_history_reset', shellId, displayOnly: true, ...taskContextHost
-              .clearTaskShellHistory(shellId, sessionName, Math.max(0, parseInt(msg.keep, 10) || 0), { limit: CHAT_HISTORY_PAGE }) });
+            else {
+              const cleared = await taskContextHost.clearTaskShellHistory(shellId, sessionName,
+                Math.max(0, parseInt(msg.keep, 10) || 0), { limit: CHAT_HISTORY_PAGE });
+              chatBroadcast(sessionName, { type: 'chat_history_reset', shellId, displayOnly: true, ...cleared });
+            }
             return;
           }
           // Share guests with operate permission send plain user_message/cancel

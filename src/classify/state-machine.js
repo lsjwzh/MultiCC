@@ -681,7 +681,10 @@ function createClassifyStateMachine(rawDeps) {
     };
   }
 
-  function applyTaskAttributionResult(cs, sessionName, result, context = {}) {
+  // The annotation is a durable history mutation now: it queues behind any
+  // in-flight append for the same session and only resolves after the cache is
+  // published, so every caller awaits it.
+  async function applyTaskAttributionResult(cs, sessionName, result, context = {}) {
     if (!cs) return null;
     const previousTaskId = Object.prototype.hasOwnProperty.call(context, 'taskId')
       ? context.taskId || null
@@ -693,7 +696,7 @@ function createClassifyStateMachine(rawDeps) {
     if (supersededReason) {
       let annotated = [];
       try {
-        annotated = annotateChatTurn(sessionName, context.turnId, {
+        annotated = await annotateChatTurn(sessionName, context.turnId, {
           taskId: previousTaskId || undefined,
           auxRunId: context.runId || null,
         }, { anchorMessageId: context.anchorMessageId || null });
@@ -774,7 +777,7 @@ function createClassifyStateMachine(rawDeps) {
 
     let annotated = [];
     try {
-      annotated = annotateChatTurn(sessionName, context.turnId, {
+      annotated = await annotateChatTurn(sessionName, context.turnId, {
         taskId,
         taskName,
         auxRunId: context.runId || null,
@@ -1000,7 +1003,7 @@ function createClassifyStateMachine(rawDeps) {
         // queue record itself, not only in this promise closure. Aux events and
         // history can therefore prove which message the delayed result judged.
         meta: { sid, startup: true, runId, anchorMessageId, taskId },
-      }).then(result => {
+      }).then(async result => {
         if (result.cancelled) {
           recordAuxRun(sid, { runId, anchorMessageId, cancelled: true, source: 'scan' });
           return;
@@ -1029,7 +1032,7 @@ function createClassifyStateMachine(rawDeps) {
           supersededReason,
           latencyMs: Date.now() - startedAt,
         });
-        applyTaskAttributionResult(cs, sid, res, {
+        await applyTaskAttributionResult(cs, sid, res, {
           source: 'multicc/scan', runId, taskId,
           admittedTaskId: provisionalTaskId, resolvedTaskId, anchorMessageId,
           anchorStatus, supersededReason,
@@ -1270,7 +1273,7 @@ function createClassifyStateMachine(rawDeps) {
           runId, turnId, anchorMessageId, cancelled: true, source: runSource,
           taskId: currentTaskId,
         });
-        annotateChatTurn(sessionName, turnId, {
+        await annotateChatTurn(sessionName, turnId, {
           taskId: currentTaskId || undefined,
           auxRunId: runId,
         }, { anchorMessageId });
@@ -1361,7 +1364,7 @@ function createClassifyStateMachine(rawDeps) {
           logger.warn?.('task_attribution_decision_failed', { sessionId: sessionName, turnId, error: error.message });
         }
         if (decisionAction === 'suggest') {
-          annotateChatTurn(sessionName, turnId, { taskId: currentTaskId || undefined, auxRunId: runId }, { anchorMessageId });
+          await annotateChatTurn(sessionName, turnId, { taskId: currentTaskId || undefined, auxRunId: runId }, { anchorMessageId });
           setTaskState(sessionName, { auxRunId: runId });
           return;
         }
@@ -1392,7 +1395,7 @@ function createClassifyStateMachine(rawDeps) {
           // The task identity split already happened inside propose(): the
           // judged turn is attributed to the new task right away, and the
           // dialog only decides whether that task also gets its own shell.
-          annotateChatTurn(sessionName, turnId, {
+          await annotateChatTurn(sessionName, turnId, {
             taskId: suggestion.taskId || currentTaskId,
             taskName: suggestion.taskId ? suggestion.title : undefined,
             auxRunId: runId,
@@ -1408,7 +1411,7 @@ function createClassifyStateMachine(rawDeps) {
         });
         return; // No task, transcript or cursor mutation before R2 proof exists.
       }
-      applyTaskAttributionResult(cs, sessionName, res, {
+      await applyTaskAttributionResult(cs, sessionName, res, {
         source: 'multicc/aux', runId, turnId,
         taskId: currentTaskId, admittedTaskId: admissionTaskId,
         resolvedTaskId, anchorMessageId,
@@ -1432,7 +1435,7 @@ function createClassifyStateMachine(rawDeps) {
           });
         }
       }
-    }).catch((e) => {
+    }).catch(async (e) => {
       if (cs._classifyTaskId === requestId) cs._classifyTaskId = null;
       // A cancelled task (new turn started / user typing) rejects with {cancelled:true}
       // and no .message — that's normal churn, not a failure. Don't log it as FAILED.
@@ -1441,7 +1444,7 @@ function createClassifyStateMachine(rawDeps) {
           runId, turnId, anchorMessageId, systemPrompt, prompt,
           taskId: currentTaskId, cancelled: true, source: runSource,
         });
-        annotateChatTurn(sessionName, turnId, {
+        await annotateChatTurn(sessionName, turnId, {
           taskId: currentTaskId || undefined,
           auxRunId: runId,
         }, { anchorMessageId });
@@ -1451,7 +1454,7 @@ function createClassifyStateMachine(rawDeps) {
         runId, turnId, anchorMessageId, systemPrompt, prompt,
         error: e.message, source: runSource, taskId: currentTaskId,
       });
-      annotateChatTurn(sessionName, turnId, {
+      await annotateChatTurn(sessionName, turnId, {
         taskId: currentTaskId || undefined,
         auxRunId: runId,
       }, { anchorMessageId });
@@ -1470,6 +1473,13 @@ function createClassifyStateMachine(rawDeps) {
         );
       } catch (_) {}
       logger.warn?.('task_attribution_failed', { sessionId: sessionName, turnId, error: e.message });
+    }).catch(error => {
+      // The failure handler itself awaits a history annotation. If that rejects
+      // there is no caller left to observe it, and a dangling promise rejection
+      // can end the process — log it against the same turn instead.
+      logger.warn?.('task_attribution_failure_handler_failed', {
+        sessionId: sessionName, turnId, error: error && error.message,
+      });
     });
   }
 
