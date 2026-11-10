@@ -2158,6 +2158,15 @@
       ]
     },
     {
+      "path": "tests/test-chat-history-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
       "path": "tests/test-chat-history-ordering.js",
       "tier": "other",
       "lane": "deterministic",

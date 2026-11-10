@@ -154,8 +154,12 @@ fn object_keys_len(anchor: LV<'_>, value: LV<'_>) -> Result<f64> {
 /// identical text. Ordinary (unsegmented) messages keep the legacy dedup rule.
 #[napi]
 pub fn chat_assistant_same_query(env: Env, left: Unknown<'_>, right: Unknown<'_>) -> Result<bool> {
-    let left = LiveValue::new(&env, left).optional(c"heldResultId")?;
-    let right = LiveValue::new(&env, right).optional(c"heldResultId")?;
+    assistant_same_query(LiveValue::new(&env, left), LiveValue::new(&env, right))
+}
+
+pub(crate) fn assistant_same_query(left: LiveValue<'_>, right: LiveValue<'_>) -> Result<bool> {
+    let left = left.optional(c"heldResultId")?;
+    let right = right.optional(c"heldResultId")?;
     Ok((left.nullish()? && right.nullish()?) || left.equals(right)?)
 }
 
