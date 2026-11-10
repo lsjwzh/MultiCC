@@ -96,6 +96,8 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
   routes['/api/token-usage/by-role'] = () => json({});
   routes['/api/codex/accounts'] = () => json({ accounts: [], cliLogin: null });
   routes['/api/claude/accounts'] = () => json({ accounts: [], cliLogin: null });
+  // 隔离出口插件「未安装」：加账号面板应当直接提示并给出插件入口。
+  routes['/api/plugins'] = () => json({ plugins: [] });
 
   await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-air-provider-simple-qa') }, async page => {
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `
@@ -251,6 +253,11 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     assert.deepEqual([state.preset, state.apiFormat, state.baseUrl], ['', 'openai_responses', '']);
     await page.evaluate(`document.querySelector('[data-provider-account="claude"]').click()`);
     assert.ok(await page.waitFor(`document.querySelector('[data-k="label"]') !== null`), '账号入口直接进入创建并登录流程');
+    // 出口选择就在生成登录链接之前；插件没装时提示并露出入口。
+    assert.ok(await page.waitFor(`document.querySelector('[data-k="egress"]') !== null`), 'the add-account sheet offers an egress picker');
+    assert.ok(await page.waitFor(`document.querySelector('[data-k="egress-hint"]').textContent.includes('未安装')`));
+    assert.equal(await page.evaluate(`document.querySelector('[data-act="open-plugin"]').style.display !== 'none'`), true);
+    t.diagnostic(await page.screenshot('official-account-egress-sheet'));
     await page.navigate('/air?view=provider&providerOverlay=1');
     assert.ok(await page.waitFor(`document.documentElement.classList.contains('provider-overlay') && document.querySelectorAll('.air-provider-card').length===4`));
     assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('sidebar')).display`), 'none');

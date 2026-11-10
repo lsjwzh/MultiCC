@@ -24,6 +24,7 @@
 const { outboundFetch } = require('../network/outbound');
 const { officialAccountIdFromProvider } = require('../official-accounts');
 const { accountProviderId } = require('../providers/official-catalog');
+const { createAccountEgressFetch, parseEgressBinding } = require('../network/egress-fetch');
 const {
   generatePkce,
   generateState,
@@ -51,6 +52,15 @@ function mountCodexAccountRoutes(app, deps) {
   const listenerFactory = typeof deps.waitForCallback === 'function' ? deps.waitForCallback : openCallback;
   const refresherStatus = typeof deps.refresherStatus === 'function'
     ? deps.refresherStatus : () => null;
+  // 登录换码同样按账号绑定的出口发出；没有绑定就沿用宿主统一网络策略。
+  const egressFetchForAccount = typeof deps.egressFetchForAccount === 'function'
+    ? deps.egressFetchForAccount
+    : createAccountEgressFetch({
+      providers,
+      appType: 'codex',
+      providerIdForAccount: (type, accountId) => accountProviderId(type, accountId),
+      logger,
+    });
 
   function providerForAccount(accountId) {
     for (const summary of providers.listProviders('codex')) {
@@ -112,7 +122,9 @@ function mountCodexAccountRoutes(app, deps) {
         if (returnedState && returnedState !== state) {
           throw new Error('state mismatch (possible CSRF) — login discarded');
         }
-        const credential = await exchangeCode(fetchImpl, {
+        // 账号在创建时就可能已经选了出口：换码请求按它绑定出口发出。
+        const exchangeFetch = await egressFetchForAccount(account.id) || fetchImpl;
+        const credential = await exchangeCode(exchangeFetch, {
           code,
           codeVerifier: pkce.codeVerifier,
           redirectUri: listener.redirectUri,
@@ -174,6 +186,12 @@ function mountCodexAccountRoutes(app, deps) {
 
   app.post('/api/codex/accounts', async (req, res) => {
     const label = sanitizeLabel(req.body && req.body.label);
+    let egressBinding = null;
+    try {
+      egressBinding = parseEgressBinding(req.body);
+    } catch (error) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
     const account = accounts.createCodexAccount({ label });
     let providerId = null;
     try {
@@ -187,8 +205,11 @@ function mountCodexAccountRoutes(app, deps) {
         },
       });
       providerId = created.id;
+      // 绑定在登录前落盘，换码与之后的所有请求都从这条出口出去。
+      if (egressBinding) providers.updateProvider('codex', providerId, { egressBinding });
     } catch (error) {
       accounts.deleteCodexAccount(account.id);
+      if (!unified && providerId) { try { providers.deleteProvider('codex', providerId); } catch (_) { /* best-effort rollback */ } }
       return res.status(500).json({ ok: false, error: `provider create failed: ${error.message}` });
     }
     const login = await beginLogin(account);

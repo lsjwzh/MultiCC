@@ -185,10 +185,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-10 历史宿主运行时归 Rust：运行时不再使用 saveBestEffort /
   // trackPendingMemoryDistill，server.js 的注入表少两行，实测高水位降到
   // 3038 行 / 162261 字节，按棘轮下调。
+  // Provider 出口选择：Claude/Codex 两条协议代理共用一个出口解析器（+4 行），
+  // 实测 3042/162591，按真实高水位抬一格。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3038,
-    byteCeiling: 162261,
+    ceiling: 3042,
+    byteCeiling: 162591,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),
@@ -624,9 +626,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 无人值守时长预算（最长值守时间取代轮次上限）：中英各 +20 行（时长控件、
     // 剩余时间格式、预检建议卡、暂停/到点原因、Air 时长单位），并删掉 4 条轮次键；
     // countLines 口径实测 10358/671712，抬一格。
-    maxLines: 10358,
+    // 线路出口选择：+3 双语键（airProviderEgressSelectLabel/SelectBody/OpenPlugin），
+    // 实测 10364/672445，抬一格。
+    maxLines: 10364,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 671712,
+    maxBytes: 672445,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

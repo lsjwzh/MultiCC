@@ -146,3 +146,16 @@ test('deleting the account drops its override record along with it', () => {
     'no orphaned restriction record outlives the account');
   assert.deepEqual(providers.getProvider('claude', TERMINAL_ID).egressIpAllowlist, ['5.6.7.8']);
 });
+
+// 登录换码发生在新账号还没登录的时候：此刻 provider 行是 needsLogin 的合成行，
+// 绑定必须已经能从这里读出来，否则换码就拿不到出口、只能走本机网络。
+test('an account that has not signed in yet still exposes the egress picked at creation', () => {
+  const PENDING = 'bbbbbbbbbbbbbbbb';
+  fs.writeFileSync(path.join(accountsDir, `${PENDING}.json`), JSON.stringify({ label: 'pending', createdAt: 2 }));
+  const providerId = `claude-official-${PENDING}`;
+  providers.updateProvider('claude', providerId, { egressBinding: BINDING });
+  const row = providers.getProvider('claude', providerId);
+  assert.ok(row, 'the pending account has a provider view');
+  assert.equal(row.needsLogin, true);
+  assert.deepEqual(row.egressBinding, BINDING);
+});

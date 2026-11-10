@@ -712,6 +712,8 @@ test('server is a thin runtime consumer and keeps CC-Switch import read-only', (
   assert.match(server, /onTransportRotate:\s*event\s*=>/);
   assert.match(server, /multicc_provider_dispatcher_rotations_total/);
   assert.match(server, /codexProxyMounts\.codex\?\.close\?\.\(\)/);
+  // 出口是线路级选项：Claude 与 Codex 两条协议代理必须共用同一个解析器。
+  assert.match(server, /codexProxy:\s*\{\s*resolveUpstreamAgent:\s*claudeEgressResolver\.resolveUpstreamAgent\s*\}/);
   assert.equal(server.includes('installProviderFetchPolicy'), false);
   assert.match(server, /logger\.info\('provider_router_runtime'/);
   assert.match(server, /createProviderRoutes\(/);

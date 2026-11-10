@@ -31,6 +31,7 @@ const {
 } = require('../claude-auth/official-oauth');
 const { officialAccountIdFromProvider } = require('../official-accounts');
 const { accountProviderId } = require('../providers/official-catalog');
+const { createAccountEgressFetch, parseEgressBinding } = require('../network/egress-fetch');
 
 function sanitizeLabel(value) {
   return String(value == null ? '' : value).replace(/[ -]/g, '').trim().slice(0, 64);
@@ -50,6 +51,16 @@ function mountClaudeAccountRoutes(app, deps) {
   const fetchImpl = deps.fetch || outboundFetch;
   const logger = deps.logger || { info() {}, warn() {}, error() {} };
   const listenerFactory = typeof deps.waitForCallback === 'function' ? deps.waitForCallback : waitForCallback;
+  // 登录换码也要走账号自己的出口：否则账号是在本机默认 IP 上“注册”的，绑定
+  // 出口只能从第一次请求开始生效。没有绑定时返回 null，退回宿主统一网络策略。
+  const egressFetchForAccount = typeof deps.egressFetchForAccount === 'function'
+    ? deps.egressFetchForAccount
+    : createAccountEgressFetch({
+      providers,
+      appType: 'claude',
+      providerIdForAccount: (type, accountId) => accountProviderId(type, accountId),
+      logger,
+    });
 
   function providerForAccount(accountId) {
     for (const summary of providers.listProviders('claude')) {
@@ -130,7 +141,9 @@ function mountClaudeAccountRoutes(app, deps) {
         if (returnedState && returnedState !== state) {
           throw new Error('state mismatch (possible CSRF) — login discarded');
         }
-        const tokenData = await exchangeCode(fetchImpl, { code, state, codeVerifier: pkce.codeVerifier });
+        // 账号在创建时就可能已经选了出口：换码请求按它绑定出口发出。
+        const exchangeFetch = await egressFetchForAccount(account.id) || fetchImpl;
+        const tokenData = await exchangeCode(exchangeFetch, { code, state, codeVerifier: pkce.codeVerifier });
         // Its own token family now: no longer a copy of the CLI's login.
         accounts.writeClaudeCredential(account.id, { ...tokenData, source: 'login', importedRefreshHash: undefined });
         loginStates.set(account.id, { state: 'complete', email: tokenData.email || '' });
@@ -153,6 +166,12 @@ function mountClaudeAccountRoutes(app, deps) {
 
   app.post('/api/claude/accounts', async (req, res) => {
     const label = sanitizeLabel(req.body && req.body.label);
+    let egressBinding = null;
+    try {
+      egressBinding = parseEgressBinding(req.body);
+    } catch (error) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
     const account = accounts.createClaudeAccount({ label });
     let providerId = null;
     try {
@@ -164,8 +183,11 @@ function mountClaudeAccountRoutes(app, deps) {
         settingsConfig: { env: {}, officialAccount: { id: account.id } },
       });
       providerId = created.id;
+      // 绑定在登录前落盘，换码与之后的所有请求都从这条出口出去。
+      if (egressBinding) providers.updateProvider('claude', providerId, { egressBinding });
     } catch (error) {
       accounts.deleteClaudeAccount(account.id);
+      if (!unified && providerId) { try { providers.deleteProvider('claude', providerId); } catch (_) { /* best-effort rollback */ } }
       return res.status(500).json({ ok: false, error: `provider create failed: ${error.message}` });
     }
     const login = beginLogin(account);

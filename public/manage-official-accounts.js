@@ -262,6 +262,62 @@
 
   // ── add / relogin / delete ─────────────────────────────────────────────────
 
+  const EGRESS_PLUGIN_ID = 'chrome-proxy-launcher';
+
+  // 出口要在生成登录链接之前选好：账号是在这一步“注册”的，换码请求也在这台
+  // 机器上发出，登录后才补绑定就晚了。插件里的身份清单是活的，打开面板时读
+  // 一次；从插件页切回来再读一次，刚建的身份立刻可选。
+  function loadEgressOptions(state, preselect) {
+    const { select, hint, open } = state;
+    select.innerHTML = '<option value="">' + esc(tr('airProviderEgressBindingOff')) + '</option>';
+    select.disabled = true;
+    hint.style.display = '';
+    hint.textContent = tr('airProviderEgressBindingLoading');
+    open.style.display = 'none';
+    const guide = (message) => {
+      if (!state.alive) return;
+      hint.textContent = message;
+      hint.style.display = '';
+      open.style.display = '';
+    };
+    (async () => {
+      let entry = null;
+      try {
+        const payload = await api().json('/api/plugins');
+        entry = ((payload && payload.plugins) || []).find(item => item && item.id === EGRESS_PLUGIN_ID) || null;
+      } catch (err) {
+        guide(tr('airProviderEgressBindingLoadFailed', { message: err.message }));
+        return;
+      }
+      if (!state.alive) return;
+      if (!entry) return guide(tr('airProviderEgressBindingNoPlugin'));
+      if (!entry.engine || !entry.engine.available) return guide((entry.engine && entry.engine.reason) || tr('airProviderEgressBindingNoPlugin'));
+      let profiles = [];
+      try {
+        const listed = await api().json(`/api/plugins/${EGRESS_PLUGIN_ID}/run`, { method: 'POST', json: { command: 'list', input: {} } });
+        profiles = Array.isArray(listed && listed.profiles) ? listed.profiles : [];
+      } catch (err) {
+        guide(tr('airProviderEgressBindingLoadFailed', { message: err.message }));
+        return;
+      }
+      if (!state.alive) return;
+      const usable = profiles.filter(profile => profile && typeof profile.id === 'string' && profile.id);
+      select.innerHTML = '<option value="">' + esc(tr('airProviderEgressBindingOff')) + '</option>'
+        + usable.map(profile => '<option value="' + esc(profile.id) + '">'
+          + esc(`${profile.name || profile.id}${profile.egressText ? ` · ${profile.egressText}` : ''}`)
+          + '</option>').join('');
+      // 新账号默认落在第一个身份上：漏选就等于用本机网络登录，正是要避免的污染风险。
+      select.value = usable.some(profile => profile.id === preselect) ? preselect : (usable[0] ? usable[0].id : '');
+      select.disabled = !usable.length;
+      if (usable.length) {
+        hint.style.display = 'none';
+        hint.textContent = '';
+      } else {
+        guide(tr('airProviderEgressBindingNoProfiles'));
+      }
+    })();
+  }
+
   function labelOverlay(vendor, onConfirm) {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -274,23 +330,51 @@
         : esc(tr('airOfficialAcctAddClaudeBody')))
       + '</div>'
       + '<input data-k="label" type="text" placeholder="' + esc(tr('airOfficialAcctLabelPlaceholder')) + '" maxlength="64" style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none">'
+      + '<div style="margin-top:10px">'
+      + '<div style="font-size:11px;color:var(--faint);margin-bottom:6px">' + esc(tr('airProviderEgressSelectLabel')) + '</div>'
+      + '<select data-k="egress" style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:7px 10px;outline:none"></select>'
+      + '<div style="font-size:11px;color:var(--faint);margin-top:6px;line-height:1.6">' + esc(tr('airProviderEgressSelectBody')) + '</div>'
+      + '<div data-k="egress-hint" style="font-size:11px;line-height:1.6;color:#d29922;margin-top:6px"></div>'
+      + '<button class="btn" data-act="open-plugin" style="font-size:12px;margin-top:6px;display:none">' + esc(tr('airProviderEgressOpenPlugin')) + '</button>'
+      + '</div>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
       + '<button class="btn" data-act="close" style="font-size:13px">' + esc(tr('airOfficialAcctCancel')) + '</button>'
       + '<button class="btn btn-green" data-act="ok" style="font-size:13px">' + esc(tr('airOfficialAcctCreateAndLogin')) + '</button>'
       + '</div>'
       + '<div data-k="status" class="status-text" style="margin-top:8px"></div></div>';
     document.body.appendChild(overlay);
-    const close = () => overlay.remove();
+    const egressState = {
+      overlay,
+      select: overlay.querySelector('[data-k="egress"]'),
+      hint: overlay.querySelector('[data-k="egress-hint"]'),
+      open: overlay.querySelector('[data-act="open-plugin"]'),
+      alive: true,
+    };
+    const reloadEgress = () => loadEgressOptions(egressState, egressState.select.value);
+    const close = () => {
+      egressState.alive = false;
+      window.removeEventListener('focus', reloadEgress);
+      overlay.remove();
+    };
     overlay.onclick = (e) => { if (e.target === overlay) close(); };
     overlay.querySelector('[data-act="close"]').onclick = close;
-    overlay.querySelector('[data-act="ok"]').onclick = () => onConfirm(overlay.querySelector('[data-k="label"]').value.trim(), overlay.querySelector('[data-k="status"]'), close);
+    egressState.open.onclick = () => { window.open('/air?view=plugins', '_blank', 'noopener'); };
+    window.addEventListener('focus', reloadEgress);
+    loadEgressOptions(egressState, '');
+    overlay.querySelector('[data-act="ok"]').onclick = () => onConfirm(
+      overlay.querySelector('[data-k="label"]').value.trim(),
+      egressState.select.value,
+      overlay.querySelector('[data-k="status"]'),
+      close,
+    );
   }
 
   async function addOfficialAccount(vendor) {
-    labelOverlay(vendor, async (label, st, close) => {
+    labelOverlay(vendor, async (label, profileId, st, close) => {
       st.textContent = tr('airOfficialAcctCreating'); st.className = 'status-text';
       try {
-        const data = await api().json('/api/' + vendor + '/accounts', { method: 'POST', json: { label } });
+        const egressBinding = profileId ? { pluginId: EGRESS_PLUGIN_ID, profileId } : null;
+        const data = await api().json('/api/' + vendor + '/accounts', { method: 'POST', json: { label, egressBinding } });
         close();
         if (data.oauthUrl) {
           openSignin(vendor, data.accountId, data.oauthUrl, label);

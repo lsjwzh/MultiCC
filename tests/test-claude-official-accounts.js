@@ -602,3 +602,35 @@ test('per-account quota maps a 401 from the usage endpoint to no_auth (relogin h
   assert.equal(res.body.status, 'no_auth');
   assert.match(res.body.error, /重新登录/);
 });
+
+test('登录换码走账号绑定的出口，而不是宿主默认网络', async () => {
+  const store = createOfficialAccountStore({ root: tmpRoot() });
+  const listener = listenerStub();
+  const credentials = createClaudeAccountCredentialService({ accounts: store, fetch: mockFetch({}).fetch });
+  const hostFetch = mockFetch({ 'platform.claude.com/v1/oauth/token': { status: 200, body: TOKEN_OK } });
+  const egressCalls = [];
+  const h = routeHarness({
+    accounts: store, providers: providersStub(), credentials,
+    fetch: hostFetch.fetch,
+    waitForCallback: listener.factory,
+    egressFetchForAccount: async () => async (url, init) => {
+      egressCalls.push({ url, method: init.method });
+      return {
+        ok: true, status: 200, headers: {},
+        async text() { return JSON.stringify(TOKEN_OK); },
+        async json() { return TOKEN_OK; },
+      };
+    },
+  });
+  const created = await h.invoke('POST', '/api/claude/accounts', { label: '出口号' });
+  const state = new URL(created.body.oauthUrl).searchParams.get('state');
+  listener.instances[0].resolve({ code: 'the-code', state });
+  for (let i = 0; i < 4; i += 1) await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(egressCalls.length, 1, 'the token exchange must use the account egress');
+  assert.match(egressCalls[0].url, /oauth\/token/);
+  assert.equal(egressCalls[0].method, 'POST');
+  assert.equal(hostFetch.calls.length, 0, 'no silent direct dial for a bound account');
+  const status = await h.invoke('GET', `/api/claude/accounts/${created.body.accountId}/login-status`);
+  assert.equal(status.body.state, 'complete');
+});
