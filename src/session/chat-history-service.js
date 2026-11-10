@@ -35,18 +35,19 @@ function withLazyMessages(result, messages) {
   return Object.freeze(result);
 }
 
-function createChatHistoryService({
-  history,
-  idFactory,
-  clock = Date.now,
-  maxMessages = 10000,
-  retentionPolicy = null,
-  postPersist = null,
-  onPostPersistError = () => {},
-  canDeleteSession = null,
-  isMessageProtected = (_sessionId, message) => !!message.taskId,
-  referencingTasks = () => [],
-} = {}) {
+function buildChatHistoryService(options = {}) {
+  const {
+    history,
+    idFactory,
+    clock = Date.now,
+    maxMessages = 10000,
+    retentionPolicy = null,
+    postPersist = null,
+    onPostPersistError = () => {},
+    canDeleteSession = null,
+    isMessageProtected = (_sessionId, message) => !!message.taskId,
+    referencingTasks = () => [],
+  } = options;
   assertChatHistoryPort(history);
   if (typeof idFactory !== 'function') throw new TypeError('[session] idFactory must be a function');
   if (typeof clock !== 'function') throw new TypeError('[session] clock must be a function');
@@ -73,12 +74,30 @@ function createChatHistoryService({
   const methods = ['append', 'assertCanDeleteSession', 'containsDelivery', 'deleteSession',
     'hasPersistedDelivery', 'ensurePersistedIds', 'invalidate', 'latestAssistantAt',
     'paginate', 'read', 'remove', 'replace', 'upsertInterim', 'view'];
-  return Object.freeze(Object.fromEntries(methods.map(method =>
+  const service = Object.freeze(Object.fromEntries(methods.map(method =>
     [method, (...args) => owner.run(anchor, method, args)])));
+  return { service, owner, anchor };
+}
+
+function createChatHistoryService(options = {}) {
+  return buildChatHistoryService(options).service;
+}
+
+// The host-side chat-history runtime owns no second copy of the transcript:
+// it dispatches through this same native owner. Only that runtime needs the
+// raw owner and its anchor, so they are exposed here instead of re-creating
+// `RustChatHistory` (one cache, one commit order).
+function createChatHistoryServiceWithOwner(options = {}) {
+  const { service, owner, anchor } = buildChatHistoryService(options);
+  return { service, owner, anchor };
 }
 
 function cleanThinkingBlocks(message) {
   return getNative().chatHistoryCleanThinkingBlocks(message);
 }
 
-module.exports = { cleanThinkingBlocks, createChatHistoryService };
+module.exports = {
+  cleanThinkingBlocks,
+  createChatHistoryService,
+  createChatHistoryServiceWithOwner,
+};

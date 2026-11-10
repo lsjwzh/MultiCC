@@ -2224,6 +2224,15 @@
       ]
     },
     {
+      "path": "tests/test-chat-history-runtime-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
       "path": "tests/test-chat-history-store.js",
       "tier": "core",
       "lane": "deterministic",
