@@ -899,7 +899,7 @@ fn apply_result<'a>(
         frame.set(c"contextTrace", context_trace)?;
     }
     frame.spread_from(call(ports.get(c"modelAttribution")?, &[cs, turn, runner])?)?;
-    frame.spread_from(call(ports.get(c"timelineField")?, &[cs])?)?;
+    frame.spread_from(call(ports.get(c"timelineField")?, &[cs, session])?)?;
     forward.call_plain(&[frame])?;
     call(ports.get(c"onTurnComplete")?, &[session])?;
     // The original falls through to the final `forward(evt)` after a completed
@@ -933,7 +933,7 @@ pub(crate) fn apply_claude_event<'a>(
         anchor.get(c"touchActivity")?,
         &[session, turn.get(c"turnId")?],
     )?;
-    call(anchor.get(c"observeClaude")?, &[cs, evt])?;
+    call(anchor.get(c"observeClaude")?, &[cs, evt, session])?;
     let logger = anchor.get(c"logger")?;
     let mode = intercept(anchor, runner, evt, cs, session, turn, logger)?;
     if matches!(mode, Mode::Drop | Mode::Suppress) {
@@ -1354,7 +1354,7 @@ fn apply_adapter_one<'a>(
         ports.get(c"scrub")?,
         &[runner.optional(c"providerAttempt")?, evt],
     )?;
-    call(ports.get(c"observeAdapter")?, &[cs, evt])?;
+    call(ports.get(c"observeAdapter")?, &[cs, evt, session])?;
 
     if evt.get(c"type")?.is_string("claude_event")? {
         return apply_claude_event(

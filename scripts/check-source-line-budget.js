@@ -165,10 +165,13 @@ const MIGRATION_DEBT = Object.freeze({
   // 端口），server.js 因此从 2999 抬到 3013/159953，按棘轮登记实测高水位。
   // 同一天删掉 `claude -p` 聊天车道：会话创建的退役 id 归一化收进同一行、
   // 可用性循环压成一行旧 schema 注释也压缩，实测降到 3008/159885。
+  // 2026-11-10 Batch 2: the RustTurnProgress owner keeps the four turn-progress
+  // readers (heartbeat, timing, timeline, probes) behind one construction; the
+  // engine deps are wired here, measured 3023 lines / 160674 bytes.
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3008,
-    byteCeiling: 159885,
+    ceiling: 3023,
+    byteCeiling: 160674,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

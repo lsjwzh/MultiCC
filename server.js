@@ -212,7 +212,7 @@ const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/l
 const { createPushRuntime } = require('./src/push/runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
-const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
+const { TurnProgressHeartbeat, createTurnProgress } = require('./src/chat/turn-progress');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost } = require('./src/task-context-host');
@@ -273,6 +273,11 @@ const auxRunLog = createAuxRunLog({ dir: MULTICC_PATHS.auxRunsDir, log: (event, 
 // the data paths are known.
 const stateOwner = createStateOwner();
 const chatSessions = createChatSessions(stateOwner);
+// One Rust owner for the turn-progress state machines (heartbeat cadence, turn
+// timing, per-session model timeline, delivery probes). Wired below into the
+// heartbeat, the engine, the liveness runtime and the two persistence hosts.
+const turnProgress = createTurnProgress();
+chatSessions.setForgetHook(turnProgress.forgetSession);
 let chatHistoryRuntime = null;
 let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
@@ -287,6 +292,10 @@ const routerToolHost = createRouterToolHost({
   activeTurnForSession: id => chatSessions.get(id)?._activeTurn,
 });
 const turnProgressHeartbeat = new TurnProgressHeartbeat({
+  owner: turnProgress.owner,
+  logWarn: (message, error) => logger.warn(message, {
+    error: error && error.message ? error.message : String(error),
+  }),
   onHeartbeat(event) {
     const active = chatSessions.get(event.sessionId);
     if (!active || !active.isStreaming || active._activeTurn?.turnId !== event.turnId) {
@@ -1312,6 +1321,7 @@ const livenessRuntime = createLivenessRuntime({
   chatSessions,
   chatStreamStatus: id => { try { return chatStream.status(id); } catch (_) { return null; } },
   turnHeartbeatStatus: id => turnProgressHeartbeat.status(id),
+  timelineCurrentStage: turnProgress.timeline.currentStage,
   thresholds: process.env.MULTICC_STALL_SILENT_MS ? { stallSilentMs: Number(process.env.MULTICC_STALL_SILENT_MS) } : {},
   probeSession: async (sessionId, sig) => livenessProcessProbe.probe(
     sig && Number.isInteger(sig.pid) ? sig.pid : null, livenessRolloutPath(persistedSessions.get(sessionId))),
@@ -2283,6 +2293,7 @@ const {
   runDurablePostTurn,
 } = createChatHostRuntime({
   appendMessage: appendChatMessage,
+  timelineField: turnProgress.timeline.field,
   persistUsage: accumulateTokenUsage,
   afterUsageCommit: (sessionId, attribution) => {
     broadcastProviderTokenStats(sessionId, attribution);
@@ -2305,6 +2316,7 @@ const codexUsageHost = createCodexUsageHost({
   recordDurableTurnUsage,
   recordResultEvent,
   setSessionStatus,
+  timelineField: turnProgress.timeline.field,
   logger,
 });
 
@@ -2568,6 +2580,9 @@ const chatTurnEngine = createChatTurnEngine({
   detached,
   routerToolHost,
   turnProgressHeartbeat,
+  turnTiming: turnProgress.timing(),
+  turnTimeline: turnProgress.timeline,
+  deliveryProbeRegistry: turnProgress.deliveryProbe(),
   providerRouterRuntime, providerAttemptRuntime, providerLimitCache, quotaGuard,
   apiErrorHost,
   codexUsageHost,

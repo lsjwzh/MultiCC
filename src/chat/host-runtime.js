@@ -3,7 +3,7 @@
 const { createChatHostCoordinator } = require('./host-coordinator');
 const { redactProviderRouteCapability } = require('../observability');
 const { protocolFamilyOf } = require('../cli/cli-capability');
-const turnTimeline = require('./turn-timeline');
+const turnProgress = require('./turn-progress');
 
 const REQUIRED_PORTS = Object.freeze([
   'appendMessage',
@@ -137,6 +137,7 @@ function modelAttributionField(state, turn, runner) {
 
 function createChatHostRuntime(rawPorts) {
   const ports = assertHostRuntimePorts(rawPorts);
+  const timelineField = typeof ports.timelineField === 'function' ? ports.timelineField : turnProgress.field;
   const liveState = (sessionId, state) => ports.getSessionState(sessionId) === state ? state : null;
   const current = (sessionId, state, turn, runner) => {
     const live = liveState(sessionId, state);
@@ -165,7 +166,7 @@ function createChatHostRuntime(rawPorts) {
       if (attribution.modelAttribution) message = { ...message, ...attribution };
       // Model request/thinking/output spans for the replay trajectory strip;
       // every lane persists through here, so this is the one stamping point.
-      if (!message.timeline) message = { ...message, ...turnTimeline.field(state) };
+      if (!message.timeline) message = { ...message, ...timelineField(sessionId, state) };
     }
     const result = coordinator.appendFinal({
       turn,

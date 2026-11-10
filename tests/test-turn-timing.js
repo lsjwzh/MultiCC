@@ -1,16 +1,16 @@
 'use strict';
 
-// Isolated tests for the chat turn-timing instrumentation (src/chat/turn-timing.js
-// + the chat-stream streaming hooks). No real CLI processes: the recorder runs
-// against an injected clock/emitter, and chat-stream runs against a fake
-// child_process.spawn installed via require.cache before first require.
+// Isolated tests for the chat turn-timing instrumentation (src/chat/turn-progress.js
+// over the Rust owner + the chat-stream streaming hooks). No real CLI processes:
+// the recorder runs against an injected clock/emitter, and chat-stream runs
+// against a fake child_process.spawn installed via require.cache before first require.
 
 const test = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
-const { createTurnTimingRecorder } = require('../src/chat/turn-timing');
+const { createTurnTimingRecorder } = require('../src/chat/turn-progress');
 
 function makeRecorder(startTs = 1_700_000_000_000) {
   const lines = [];

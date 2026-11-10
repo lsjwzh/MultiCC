@@ -573,7 +573,7 @@ function ensure(name, cfg) {
  * Send a user message and resolve when that turn completes (`result` event).
  * onEvent receives every stream-json event for live forwarding to the UI.
  * opts.onTiming?.('spawned'|'sent') reports process-readiness and stdin-write
- * instants for turn-timing instrumentation (see src/chat/turn-timing.js).
+ * instants for turn-timing instrumentation (see src/chat/turn-progress.js).
  * Turns are serialized per session: a send while a turn is in flight queues.
  */
 function send(name, text, onEvent, opts = {}) {

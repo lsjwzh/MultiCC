@@ -8,6 +8,7 @@ pub mod auth_security;
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
 pub mod background_hold;
+
 pub mod background_tasks;
 pub mod chat_events;
 pub mod chat_finalize;
@@ -58,6 +59,7 @@ pub mod task_routing;
 pub mod task_run_context;
 pub mod task_store;
 pub mod transcript_prune;
+pub mod turn_progress;
 pub mod turn_request;
 pub mod turn_state;
 pub mod virtual_provider;

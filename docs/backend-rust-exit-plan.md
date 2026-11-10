@@ -1722,3 +1722,147 @@ pre-existing) and 1 pre-existing S6 todo. `tests/test-source-line-budget.js`
 now pins `server.js` in the declared debt set next to `public/run-config.js`;
 line budget, test tiers, release consistency, architecture, repository-artifact
 and runtime-write governance checks and `git diff --check` are all clean.
+
+## Native turn-progress owner: heartbeat, timing, timeline and delivery probes (2026-11-10)
+
+Batch 2 of the Node-to-Rust exit (spec
+`data/plans/batch2-turn-progress-spec-20261110.md`). Four private-state chat
+modules moved into one native owner: the silent-period progress heartbeat
+(282 lines), per-turn spawn/send/first-byte timing (115), the model-request
+timeline (172) and the delivery-handoff probe registry (60). All four are
+deleted from `src/`; there is no dual path, no fallback and no environment
+switch, and their legacy bodies exist only as frozen oracles under
+`tests/helpers/legacy-{progress-heartbeat,turn-timing,turn-timeline,delivery-probe}.js`
+(645 lines, only the require paths and a FROZEN header changed).
+
+What moved into Rust: `native/core/src/turn_progress/{heartbeat,timing,
+timeline,probe}.rs` (2,268 lines with 28 unit tests) are pure kernels over the
+lossless `JsValue` transport. `native/addon/src/turn_progress.rs` (997 lines,
+33 `#[napi]` methods) is the single `RustTurnProgress` class; per-call `Ports`
+objects are read lazily so every throwing-clock and throwing-callback path
+keeps its exact JS mutation order, and a throwing port is rethrown as the
+original JS exception. The facade `src/chat/turn-progress.js` (404 lines) keeps
+every caller's surface: `DEFAULT_INTERVAL_MS`, `MERGE_GAP_MS`,
+`TurnProgressHeartbeat`, `createTurnTimingRecorder`, `createDeliveryProbeRegistry`,
+`createTurnProgress` (one owner behind all four readers),
+`createTurnTimelinePort`, `shouldReexecutePersistedDelivery`, `sanitizePhase`
+and `sanitizeToolKind`. Callers unchanged in shape: `server.js` constructs the
+one owner and wires the engine deps (`turnTiming`, `turnTimeline`,
+`deliveryProbeRegistry`), `turn-engine.js`, `host-runtime.js`,
+`finalize-host.js`, `src/codex/usage.js`, `src/liveness/runtime.js`, the six
+`nativeChatEventPorts` entries in the reducer, and `sessions.js`
+(`setForgetHook` fires on delete and clear).
+
+Decisions recorded against the spec (the spec's line numbers were stale; the
+code won): the addon constructor is positional `new RustTurnProgress(intervalMs,
+maxIdentities)` rather than an options object with `maxTimingRecords`; the
+ports object is the trailing argument of every method rather than the first;
+`timelineStart(session, cs, at)` reads `cs.turnStartedAt` inside Rust instead of
+the facade resolving an origin; `startTurn` returns the origin number (the
+legacy timeline object was unused by callers); the timing record cap stays the
+legacy constant 512 with no option; and the injected timer names stay
+`setInterval`/`clearInterval` (the spec said `setTimer`/`clearTimer`). Timeline
+state is keyed by session name inside Rust (decision 1), never on `cs`, and is
+cleared together with the probe table by the session-delete forget hook. The
+reducer ports stay ports in this batch (direct reducer-to-owner calls are a
+batch-3 follow-up).
+
+### Fixed bugs (each fix landed as a failing test first, then the Rust fix, then a named intentional-divergence scenario in `tests/test-turn-progress-differential.js`)
+
+1. Prototype-table aliasing. `sanitizePhase('constructor')` and
+   `sanitizePhase('__proto__')` returned `Object` / `Object.prototype` because
+   the legacy used an object literal as a lookup table. Rust matches only the
+   literal phase/tool-kind names, so both answer `running` / `other` and the
+   snapshot's `phase` / `toolKind` are strings, never functions. Scenario:
+   "intentional difference (bug 1): prototype members are not aliases".
+2. Streaming retry lost the heartbeat. The turn engine stopped the heartbeat
+   before deciding whether the failure schedules an owned retry, so a turn that
+   retried in the same engine path lost its liveness signal. The stop now
+   happens after the `retry-api` branch (the scheduled path keeps it; the early
+   throw inside the scheduled start stops it, since that finalize is terminal).
+   Asserted by the source-guard scenario "bug 2: the streaming finalize keeps
+   the heartbeat alive across a scheduled retry".
+3. A throwing heartbeat callback escaped as an uncaught interval exception.
+   Legacy let the `onHeartbeat` throw out of `_tick`; Rust catches it and logs
+   `progress_heartbeat_failed`. Scenario: "intentional difference (bug 3): a
+   throwing callback is caught and logged" (the legacy side throws
+   `Error: callback boom`, the Rust side logs twice with two active turns).
+4. Nondeterministic due-time ticks. Legacy armed one `setInterval(intervalMs)`
+   per active turn, so each turn drifted independently with the event loop.
+   The facade owns exactly one unref'd timer, armed from `heartbeatNextDue()`
+   with `max(0, due - now)`, and re-arms in a `finally` after every per-call
+   tick. Scenario: "intentional difference (bug 4): one timer re-armed from
+   nextDue" (three legacy timers vs one, same payloads).
+5. Timing fields computed from null instants. The legacy `turnTimingsField`
+   subtracted `null` as 0, so a record with `t1`/`t2` missing and `t3` present
+   persisted nonsense (`spawnMs: -100`, `sendMs: 0`, `firstByteMs: 300`). Rust
+   emits `null` for each delta whose endpoint is missing and keeps the field
+   undefined until `t3`. Scenario: "intentional difference (bug 5): no null
+   arithmetic in the persisted field" plus `Tims`-shaped unit tests.
+6. Empty probe tables leaked and a non-positive cap could spin. Legacy created
+   the per-session table before reading the clock and never pruned an emptied
+   one; a negative `maxIdentities` even looped deleting from an empty map. Rust
+   prunes empty tables and stops the trim loop at empty, so cap 0 or negative
+   cannot spin. Scenario: "intentional difference (bug 6): empty probe sessions
+   are pruned, no cap spin", plus `session_count` assertions.
+
+Preserved, not changed (list-only in the spec, asserted by "intentional
+preservation (bug 7)" and the probe scripted scenarios): zero-length request
+spans are dropped at snapshot time, `MAX_SPANS` stays 4000 with the oldest-span
+trim, same-kind spans merge at exactly `MERGE_GAP_MS` (1500, `<=`), an unknown
+probe identity still deletes the oldest identity, and a later `handedOff:true`
+record still overwrites the earlier `turnId` with `null`.
+
+Tests: `tests/test-turn-progress-differential.js` (1,088 lines, 25 tests) is a
+step-by-step differential: seeded ids, a fake clock, fake `setInterval`
+schedules, ports resolved in the same order on both sides, and per-step
+comparison of returns, thrown codes and port-call logs. It covers every public
+method of all four readers, trimmed ids and object updates, throwing clocks and
+throwing callbacks with exact mutation order, 4+4+3+4 seeds of randomized
+interleavings with deterministic re-entrancy, the 512-record eviction, the
+timeline's Claude frame list (30 frames) and adapter event list (19 events),
+origin strictness, the 4000-span cap and zero-length request rule, the probe LRU
+table, one-owner wiring, the chat-session forget hook, and source guards for
+`server.js`/`turn-engine.js` plus the deleted-module/frozen-oracle set. The
+rewritten source-guard tests (`tests/test-turn-timeline.js`,
+`test-progress-heartbeat.js`, `test-turn-timing.js`, `test-liveness-runtime.js`,
+`test-delivery-handoff-probe.js`) now exercise the facade/legacy oracles instead
+of regexing the deleted files. `scripts/rust-source-cache.js` gained the export,
+prototype-method and fake-ports smoke probe for `RustTurnProgress` in the same
+edit.
+
+Mutation faults (12, each failed a test and was reverted with a byte-compare
+afterwards): heartbeat silence comparison `<` to `<=` (3 unit tests); fire
+deadline drift `+1ms` (1); `touchVisible` not resetting the heartbeat period
+(1); `touchActivity` not refreshing the activity age (2 differential tests);
+`start` not dropping the session's predecessor (1); the first-byte logged
+guard removed, logging twice (1); eviction picking an unlogged record (1);
+`MERGE_GAP_MS` comparison `<=` to `<` (seeded timeline differential); keeping
+zero-length request spans (1); `MAX_SPANS` `>=` to `>` (bug-7 differential);
+probe record not refreshing LRU order (seeded probe differential); and empty
+probe tables not pruned (1).
+
+Rust workspace: all green after the sweep; `cargo fmt --check` clean and clippy
+reports no diagnostics in `turn_progress`. Fingerprint
+`46642830de94d58281a77275`; the artifact is
+`data/rust-source/46642830de94d58281a77275/darwin-arm64/multicc_core.node` in
+the primary repository (sha256
+`d575cb46b9f0a269e53367a96b48acfc0c2ef79c6b544738a35025f79baaa846`), built with
+`node scripts/ensure-source-rust.js` and passing the extended capability probe.
+
+Test tiers: 858 classified (core 413: deterministic 339 / isolated 43 /
+flutter 31); the audited release counts moved to 413 entries, 339 deterministic
+and 385 commands (382 Node entries); `server.js` is registered at 3023 lines /
+160674 bytes in the line-budget debt set (target 3000).
+
+Not verified: no live service restart and no real-account end-to-end turn, so
+the persisted `turnTimings`/`timeline` stamping is proven by the facade
+differential, the rewritten guards and the source guard, not against a live
+client. The spec asked for a section in `tests/test-chat-events-isolated.js`;
+that suite cannot exercise the Claude lane at this base commit (chat runs only
+on the resident Agent SDK lane, which spawns `MULTICC_CLAUDE_BIN`, while the
+test still overrides only `CLAUDE_CMD`; pointing both at the fake makes turns
+run but the task-shell scheduler never emits `session_queue completed` for the
+second turn because classification has no aux provider in that isolated root).
+That is a pre-existing red unrelated to this batch, so the file was left
+untouched.

@@ -6296,6 +6296,15 @@
       ]
     },
     {
+      "path": "tests/test-turn-progress-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-turn-state-rules.js",
       "tier": "core",
       "lane": "deterministic",

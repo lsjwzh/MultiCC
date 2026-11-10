@@ -283,6 +283,40 @@ function probeAddon(file, node = process.execPath) {
       'idleMs','connectMs','deadlineAt'].some(key=>typeof a.RustRequestWatch.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustRequestTimer.prototype.cancel!=='function'
       || ['feed','feedText'].some(key=>typeof a.RustModelStreamProgress.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustTurnProgress!=='function'
+      || ['heartbeatStart','heartbeatTouchVisible','heartbeatTouchActivity','heartbeatUpdatePhase',
+        'heartbeatStop','heartbeatStatus','heartbeatStopAll','heartbeatNextDue','heartbeatDue','heartbeatActiveTurns',
+        'timingBegin','timingMark','timingMarkFirstByte','timingAbort','timingGet','timingField','timingDrop',
+        'timelineStart','timelineObserveClaude','timelineObserveAdapter','timelineCurrentStage','timelineSnapshot',
+        'timelineField','timelineForget','probeRecord','probeLookup','probeForget','probeSessionCount'].some(key=>typeof a.RustTurnProgress.prototype[key]!=='function')
+      || ['turnProgressSanitizePhase','turnProgressSanitizeToolKind','turnProgressShouldReexecute'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    {
+      const tp=new a.RustTurnProgress(1000,4);
+      let clock=0; const seen=[];
+      const livePorts={now:()=>clock,onHeartbeat:e=>seen.push(e)};
+      tp.heartbeatStart('ps','pt',{phase:'thinking'},livePorts);
+      if(tp.heartbeatNextDue()!==1000 || tp.heartbeatActiveTurns()!==1) process.exit(1);
+      clock=1000; tp.heartbeatDue(1000,livePorts);
+      if(seen.length!==1 || seen[0].phase!=='thinking') process.exit(1);
+      if(tp.heartbeatStop('ps','pt')!==true || tp.heartbeatActiveTurns()!==0) process.exit(1);
+      const ports={now:()=>clock};
+      tp.timingBegin('ps','pt',{t0:100,cli:'codex'},ports);
+      tp.timingMark('ps','pt','t1',110,ports); tp.timingMark('ps','pt','t2',120,ports);
+      if(tp.timingField('ps','pt')!==undefined) process.exit(1);
+      const lines=[]; clock=130;
+      tp.timingMarkFirstByte('ps','pt',undefined,{now:()=>clock,emitTiming:plan=>lines.push(plan)});
+      const field=tp.timingField('ps','pt');
+      if(lines.length!==1 || !field || field.totalMs!==30 || field.spawnMs!==10) process.exit(1);
+      tp.timelineStart('ps',{turnStartedAt:50},60);
+      tp.timelineObserveClaude('ps',{turnStartedAt:50},{type:'stream_event',event:{type:'content_block_start',content_block:{type:'text'}}},70);
+      const snap=tp.timelineField('ps',{turnStartedAt:50},80);
+      if(!snap || !Array.isArray(snap.spans) || snap.spans.length!==2) process.exit(1);
+      if(!tp.timelineForget('ps')) process.exit(1);
+      tp.probeRecord('ps','cm','dl',{handedOff:false,turnId:'pt'},ports);
+      if(tp.probeLookup('ps','cm').turnId!=='pt' || tp.probeLookup('ps','dl').at!==130) process.exit(1);
+      if(a.turnProgressSanitizePhase('constructor')!=='running' || a.turnProgressSanitizeToolKind('')!==null) process.exit(1);
+      if(!a.turnProgressShouldReexecute(true,true,{known:true,handedOff:false})) process.exit(1);
+    }
     if(['cliSwitchCatalog','cliSwitchRequest','prepareCliSwitchRoute','turnRequestCatalog','turnRequestRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     (async()=>{ const model=new a.RustTaskReadModel();
       const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);
