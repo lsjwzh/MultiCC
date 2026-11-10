@@ -692,8 +692,13 @@
     return cliLabel(cli);
   }
 
+  // 旧会话与安装信息仍可能带兼容别名；选择器只展示接替它的车道。
+  function canonicalChoiceCli(cli) {
+    return cli === 'claude-exp' ? 'claude' : cli;
+  }
+
   function chatChoiceCli(cli) {
-    return cli === 'codex' ? 'codex-exp' : cli;
+    return cli === 'codex' ? 'codex-exp' : canonicalChoiceCli(cli);
   }
 
   let requestOverride = null; // 远程目标时 open() 换成走机器代理的请求函数
@@ -1530,25 +1535,13 @@
     }
 
     // ── 渲染：固定一条 ───────────────────────────────────────────────────────
-    // 一条 CLI 为什么不能出现在这个用途里：它在这个 kind 下不提供（chat 车道
-    // offered:false 的两条一次性车道），或者服务端根本没装。说的是具体规则，不是
-    // 「这个用途用不了」这种什么都没说的句子。
-    function cliPurposeReason(cli) {
-      const replacement = catalogApi.cliReplacedBy ? catalogApi.cliReplacedBy(cli) : null;
-      const base = terminalDraft
-        ? tt('runConfigCliNoTerminal', '终端模式不提供这条 CLI')
-        : tt('runConfigCliNoChat', '对话模式不提供这条 CLI');
-      return replacement ? `${base}（改用 ${cliLabel(replacement)}）` : base;
-    }
-
+    // 先折叠兼容别名并按用途筛选，再判断安装状态；退役 id 不再单列卡片。
     function availableClis() {
-      const known = new Set(Array.isArray(clis) ? clis.map(String) : []);
-      const list = [...new Set([...AUTO_CLIS, config.cli, ...known].filter(Boolean))].filter(offersIn);
+      const known = new Set(Array.isArray(clis) ? clis.map(String).map(canonicalChoiceCli) : []);
+      const list = [...new Set([...AUTO_CLIS, config.cli, ...known].filter(Boolean).map(canonicalChoiceCli))].filter(offersIn);
       return list.map(cli => {
-        if (cli === config.cli || known.has(cli) || (!terminalDraft && cli === chatChoiceCli(config.cli))) {
-          return offersIn(cli)
-            ? { cli, ok: true, reason: '' }
-            : { cli, ok: false, reason: cliPurposeReason(cli) };
+        if (cli === canonicalChoiceCli(config.cli) || known.has(cli) || (!terminalDraft && cli === chatChoiceCli(config.cli))) {
+          return { cli, ok: true, reason: '' };
         }
         return { cli, ok: false, reason: tt('runConfigCliMissing', '未安装') };
       });
@@ -1570,7 +1563,7 @@
         button.type = 'button';
         button.dataset.cli = item.cli;
         button.setAttribute('role', 'radio');
-        const selected = item.cli === (terminalDraft ? currentCli : chatChoiceCli(currentCli));
+        const selected = item.cli === (terminalDraft ? canonicalChoiceCli(currentCli) : chatChoiceCli(currentCli));
         button.setAttribute('aria-checked', String(selected));
         button.classList.toggle('selected', selected);
         button.classList.toggle('is-off', !item.ok);
@@ -2707,7 +2700,7 @@
       }));
       const available = new Set(availableClis().filter(item => item.ok).map(item => item.cli));
       for (const cli of new Set(nextRows.map(row => row.cli))) {
-        if (!available.has(cli)) { presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。'); presetSelect.value = activePresetId; return; }
+        if (!available.has(canonicalChoiceCli(cli))) { presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。'); presetSelect.value = activePresetId; return; }
         if (nextRows.some(row => row.cli === cli && !isNativeLine(row.providerId))) {
           try { await loadCatalog(cli); } catch (_) { presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。'); presetSelect.value = activePresetId; return; }
         }

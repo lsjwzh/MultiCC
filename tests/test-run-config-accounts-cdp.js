@@ -167,7 +167,7 @@ test('Command Code: add an account inline, save the pick, delete it back to the 
     assert.ok(page.requests.some(req => req.method === 'DELETE' && req.path === `/api/cli-accounts/commandcode/${NEW_ID}`));
 
     // Switching to a lane without key accounts hides the row and sends nothing for it.
-    await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-cli-card[data-cli="claude-exp"]').click()`);
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-cli-card[data-cli="claude"]').click()`);
     assert.ok(await page.waitFor(`!${visible('.rc-account-field')}`));
   });
 });

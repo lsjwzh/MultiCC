@@ -187,7 +187,7 @@ test('draft defaults prefill the global route (follows global) and follow family
     assert.match(await text(page, '.rc-sub-sync'), /同步给所有没单独设置子 agent 的 Codex 任务/);
     assert.match(await text(page, '.rc-sub-global-text'), /全局默认：Codex 便宜线路 · gpt-5-mini/);
     // 切回 claude 家族也一样。
-    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude-exp"]'))}).click()`);
+    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude"]'))}).click()`);
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'p-cheap'`));
     await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-config-close'))}).click()`);
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.air-config-close'))}) === null`));
@@ -253,7 +253,7 @@ test('existing session: switching to another sub-agent family seeds the new fami
     assert.equal((await text(page, '.rc-sub-state')).trim(), '跟随主线路');
 
     // 换到 claude 家族：没动过子 agent，按 claude 的全局默认预填并标成跟随全局。
-    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude-exp"]'))}).click()`);
+    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude"]'))}).click()`);
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'p-ds'`), '已有会话换家族也要预填新家族默认');
     assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-model'))}).value`), 'opus');
     assert.equal((await text(page, '.rc-sub-state')).trim(), '跟随全局默认');
@@ -283,13 +283,13 @@ test('existing session: an own sub-agent route on the same family survives a CLI
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/run-config-host.html');
     assert.ok(await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"'));
-    await openSession(page, { cli: 'claude', provider: 'p-main', model: 'claude-opus',
+    await openSession(page, { cli: 'claude-exp', provider: 'p-main', model: 'claude-opus',
       subagent: { providerId: 'p-main', model: 'claude-opus' }, cliAccounts: {} });
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}) !== null`));
     assert.equal((await text(page, '.rc-sub-state')).trim(), '已单独设置');
 
-    // claude → claude-exp 是同一族：单独设置的线路不能被家族默认盖掉。
-    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude-exp"]'))}).click()`);
+    // 旧 claude-exp 会话选择唯一的 Claude：单独设置的线路不能被家族默认盖掉。
+    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude"]'))}).click()`);
     await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'p-main'`);
     assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-model'))}).value`), 'claude-opus');
     assert.equal((await text(page, '.rc-sub-state')).trim(), '已单独设置');
