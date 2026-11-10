@@ -62,7 +62,7 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         };
     }
     if p.len() < 5
-        || p[0] != ""
+        || !p[0].is_empty()
         || !p[1].eq_ignore_ascii_case("api")
         || !p[2].eq_ignore_ascii_case("fleets")
         || p[3].is_empty()

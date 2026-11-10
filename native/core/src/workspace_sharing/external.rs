@@ -18,6 +18,14 @@ fn clock(now: Option<f64>) -> f64 {
 pub struct Runtime {
     store: Arc<Store>,
 }
+/// One remote workspace-sharing call. The transport consumes it as the
+/// `{kind, record, request, context}` envelope.
+struct RemoteCall<'a> {
+    kind: &'a str,
+    record: V,
+    request: V,
+    context: V,
+}
 impl Runtime {
     pub fn open(file: PathBuf) -> Result<Self> {
         Ok(Self {
@@ -35,14 +43,17 @@ impl Runtime {
     }
     async fn remote(
         &self,
-        kind: &str,
-        record: V,
-        request: V,
-        context: V,
+        call: RemoteCall<'_>,
         body: Option<Vec<u8>>,
         stream: Option<Upload>,
         timeout: f64,
     ) -> Result<Response> {
+        let RemoteCall {
+            kind,
+            record,
+            request,
+            context,
+        } = call;
         transport::execute(
             V::object(vec![
                 ("kind", V::string(kind)),
@@ -59,7 +70,17 @@ impl Runtime {
     async fn refresh(&self, id: &V, context: V, now: Option<f64>, timeout: f64) -> Result<V> {
         let record = self.query("externalAuthority", id, clock(now))?;
         let payload = self
-            .remote("refresh", record, V::Null, context, None, None, timeout)
+            .remote(
+                RemoteCall {
+                    kind: "refresh",
+                    record,
+                    request: V::Null,
+                    context,
+                },
+                None,
+                None,
+                timeout,
+            )
             .await?
             .value;
         self.mutate(
@@ -85,10 +106,12 @@ impl Runtime {
             "importExternal" => {
                 let payload = self
                     .remote(
-                        "import",
-                        V::Null,
-                        request.clone(),
-                        context,
+                        RemoteCall {
+                            kind: "import",
+                            record: V::Null,
+                            request: request.clone(),
+                            context,
+                        },
                         None,
                         None,
                         timeout,
@@ -119,10 +142,12 @@ impl Runtime {
             "issueExternalWsTicket" => {
                 let record = self.query("externalAuthority", id, clock(now))?;
                 self.remote(
-                    "ticket",
-                    record,
-                    request.clone(),
-                    context,
+                    RemoteCall {
+                        kind: "ticket",
+                        record,
+                        request: request.clone(),
+                        context,
+                    },
                     None,
                     None,
                     timeout,
@@ -139,10 +164,12 @@ impl Runtime {
                 };
                 let result = self
                     .remote(
-                        "proxy",
-                        record,
-                        request.clone(),
-                        context,
+                        RemoteCall {
+                            kind: "proxy",
+                            record,
+                            request: request.clone(),
+                            context,
+                        },
                         body,
                         stream,
                         timeout,

@@ -6,6 +6,12 @@ pub struct RustRequestWatch {
     inner: RequestWatch,
 }
 
+impl Default for RustRequestWatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustRequestWatch {
     #[napi(constructor)]

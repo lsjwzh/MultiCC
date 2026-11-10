@@ -275,7 +275,7 @@ pub async fn handle(
                 .auth
                 .request(Request::IssueTicket {
                     revision: snapshot.revision,
-                    path: path.into(),
+                    path,
                     metadata,
                 })
                 .await

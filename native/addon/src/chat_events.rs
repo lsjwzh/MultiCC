@@ -1356,6 +1356,9 @@ fn commit_final_persist<'a>(
     Ok(true)
 }
 
+// JS calls this export positionally; its arity is the napi ABI, not an API we
+// can reshape from Rust.
+#[allow(clippy::too_many_arguments)]
 #[napi]
 pub fn chat_commit_final_persist(
     env: Env,

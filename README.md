@@ -613,6 +613,26 @@ Key decisions: vendor transcripts are never translated; authoritative conversati
 
 **Built with:** Node.js · Express · ws · Rust SQLite (bundled through napi-rs) · sherpa-onnx (on-device ASR) · cli-provider-router · chokidar · tmux · Flutter · Electron (desktop shell). No frontend build step — the web client is plain JavaScript.
 
+### Build and test the Rust workspace
+
+The native side — the gateway front door, the core kernels, the N-API addon, the CPR proxy, remote screen and the CDP daemon — is one Cargo workspace in `native/`. It needs a stable Rust toolchain (the version is not pinned; CI uses `stable`).
+
+```bash
+# Build and test every crate in the workspace
+cargo build --locked --manifest-path native/Cargo.toml --workspace
+cargo test  --locked --manifest-path native/Cargo.toml --workspace
+
+# The lint gate CI runs; it has to stay at zero warnings and zero formatting diffs
+cargo fmt --all --manifest-path native/Cargo.toml --check
+cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
+
+# Rebuild the native module the server loads, then run the JavaScript-side native checks
+npm run build:rust
+npm run test:native
+```
+
+This is not yet a Rust-only product. The Rust gateway owns the public port and supervises `node server.js`; most HTTP routes and the chat turn coordinator still run in Node, so the server needs Node.js and `npm start` is still the way to run it. There is no Node-free start command, Dockerfile or CI path yet. How much has moved, what remains and the acceptance criteria for removing Node are tracked in [docs/backend-rust-exit-plan.md](docs/backend-rust-exit-plan.md); the front door is described in [docs/gateway.md](docs/gateway.md).
+
 **→ [Architecture](docs/architecture.md)**
 
 ---

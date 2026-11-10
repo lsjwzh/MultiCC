@@ -7,9 +7,13 @@ use multicc_core::{
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 
+// napi emits its registration (`cfg(not(test))`) only for non-test builds, so
+// the test build sees no Rust caller for exports that JS calls by name.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn initial(anchor: L<'_>) -> Result<L<'_>> {
     anchor.from_value(&RunState::default().value())?.freeze()
 }
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn previous(value: L<'_>) -> Result<(RunState, L<'_>)> {
     if !value.truthy()? || value.kind()? != sys::ValueType::napi_object {
         return Ok((RunState::default(), value.from_value(&V::string("idle"))?));
@@ -90,6 +94,7 @@ pub(crate) fn calculate<'a>(
     let at = now.explicit_number()?;
     core::transition(previous, status.unwrap(), at, pending).map_err(|e| requested.type_error(e))
 }
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn result<'a>(anchor: L<'a>, value: &Transition) -> Result<L<'a>> {
     let out = anchor.from_value(&V::Object(vec![]))?;
     out.set(c"state", anchor.from_value(&value.state.value())?.freeze()?)?;
@@ -103,6 +108,7 @@ pub(crate) fn result<'a>(anchor: L<'a>, value: &Transition) -> Result<L<'a>> {
     out.freeze()
 }
 #[napi]
+#[cfg_attr(test, allow(dead_code))]
 pub fn session_state_catalog(env: Env) -> Result<sys::napi_value> {
     unsafe {
         crate::js_bridge::write_value(
@@ -131,16 +137,19 @@ pub fn session_state_catalog(env: Env) -> Result<sys::napi_value> {
     }
 }
 #[napi]
+#[cfg_attr(test, allow(dead_code))]
 pub fn session_state_initial(env: Env, anchor: Unknown<'_>) -> Result<sys::napi_value> {
     Ok(initial(L::new(&env, anchor))?.raw())
 }
 #[napi]
+#[cfg_attr(test, allow(dead_code))]
 pub fn session_state_is_running(env: Env, value: Unknown<'_>) -> Result<bool> {
     Ok(L::new(&env, value)
         .string()?
         .is_some_and(|s| core::running(&s)))
 }
 #[napi]
+#[cfg_attr(test, allow(dead_code))]
 pub fn session_state_transition(
     env: Env,
     prior: Unknown<'_>,

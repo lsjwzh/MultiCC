@@ -74,7 +74,9 @@ fn hex(bytes: &[u8]) -> String {
 // Buffer.from(hex, 'hex') stops at the first invalid or incomplete pair.
 fn unhex(text: &str) -> Vec<u8> {
     text.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map_while(|p| {
             Some(((p[0] as char).to_digit(16)? * 16 + (p[1] as char).to_digit(16)?) as u8)
         })

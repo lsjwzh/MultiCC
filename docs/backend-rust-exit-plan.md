@@ -2891,3 +2891,38 @@ SHA256 `da07572125e1052abcc22a5a3ad78b3e66f229b53540f624a2dd0e842d0f2baa`，
 - 真实 `npm run test:core`（最终产物）：退出码 1；大 node:test 批次 2232/2232、`test:task-shells` 299/299、`test:task-first` 440/441。唯一失败是 main 既有红项 `tests/test-air-paint-budget.js`（`chat-unattended.css` 的 `@keyframes unat-pulse` 使用 `box-shadow`），与本批无关；新加的 3 条 task-lifecycle 用例使 `test:task-first` 由上一轮的 437/438 变为 440/441。命令链是 `&&` 且一路走到 `test:task-first`，说明此前所有阶段均已退出 0。
 - 诚实边界：代次只在进程内有效（队列本身也在内存，重启后自然清空），宿主必须对复用 id 调用 `registerSession`（审计范围同上一轮）；问题 2、问题 4 的限制如上；gateway 集成测试有一次与本批无关的偶发连接重置。
 - 按协调者要求未跑 `npm test` 整套、`test:cdp` 与会打活服务的 `tests/test-classify-api-errors*`；未提交、未 stash、未重置、未重启服务、未向活服务写。
+
+## Workspace lint gates and the Node-exit premise check (2026-11-11)
+
+This entry records two things: the Rust workspace was brought to a clean lint/format/test state, and the "delete the Node backend" step of the exit plan was checked against the repository and **not executed**. No acceptance criterion in the table at the top changes state.
+
+### CI gate state before the cleanup
+
+`.github/workflows/rust-kernels.yml` runs `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings`. Both were already red on main: clippy reported 48 warnings plus one deny-level error (`clippy::unused_io_amount` in a `multicc-cpr` test), and `cargo fmt --check` reported 25 hunks in `native/core/src/unattended.rs` and `native/addon/src/chat_history_runtime.rs`. `cargo build` and `cargo test` over the workspace were green.
+
+### What changed (23 files under `native/`, no JavaScript, no dependency or `Cargo.lock` change)
+
+- `multicc-cpr` test upstream: the stub now reads until the request head is complete (or EOF) instead of one unchecked `read`, so a split request cannot be misread; a `MutexGuard` that crossed an `.await` is scoped before the await.
+- Twelve addon structs gained `Default` (delegating to `new()`); no napi signature changed.
+- `build_state` (unattended) and `Runtime::remote` (workspace sharing) take parameter structs; every call site was migrated field by field and the JSON written/sent is unchanged.
+- Float comparisons keep their NaN behaviour: `quota_guard::should_refresh` spells out `partial_cmp` (a plain `<` would let NaN through); the `positive_integer` range uses `RangeInclusive::contains`, which is the same predicate.
+- `chunks_exact(2)` became `as_chunks::<2>().0` (both drop the trailing remainder), `map_or` became `is_none_or`/`is_some_and`, three redundant `return`s and two same-type conversions were removed.
+- Nine `#[napi]` functions that clippy called unused are used from JavaScript (`src/session/*`, `src/workspace/runtime.js`, the probe list in `scripts/rust-source-cache.js`); napi registers them only in non-test builds, so they carry `#[cfg_attr(test, allow(dead_code))]` with the reason. Nothing was deleted.
+- Eight item-level `#[allow]`s with a reason each: four napi exports whose argument list is the JavaScript call contract (`too_many_arguments`), three functions returning napi error objects (`result_large_err`), and `from_value(self, ..)` (`wrong_self_convention`, renaming touches about 393 call sites). There is no crate-level allow and no lint configuration change.
+- `cargo fmt --all` was applied; for the two drifting files the byte stream with whitespace and commas removed is identical before and after.
+
+### Final receipt (one sequential run on the final tree)
+
+- Native source fingerprint `3cf5b9d4e3f12e17f64aefaf`, `darwin-arm64/multicc_core.node` 18,100,032 bytes, SHA-256 `09d17251a9def7a23d251ec567985419d3abfd2e107e916967ebec337f4507a8`; `builtFromSource=true`.
+- `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings` and the `--workspace` form: exit 0 with zero warnings or errors. `cargo build --locked --workspace`: exit 0. `cargo test --locked --workspace`: 850 passed, 0 failed.
+- All `npm` stages on this artifact (core, task-board-auto, cpu-hotpaths, security, state, git, worktree-reclamation, bridges, architecture, governance, provider-router, desktop, standalone, contracts, native): 6968 tests, 6964 passed, 1 failed, 2 skipped, 1 todo. The one failure is the existing `tests/test-air-paint-budget.js` (`chat-unattended.css` animates `box-shadow`); `test:core` ran through to `test:task-first`, so no earlier stage stopped it.
+- The cargo and npm runs were sequential on purpose: a concurrent run once starved the timing-sensitive `workspace_sharing::control` test (5 s timeout); it passes serially and on the baseline.
+
+### Node-exit premise check (not executed)
+
+- Remaining Node backend: 132,677 lines under `src/` plus 3,067 in `server.js`. The generated inventories still list Node HTTP registrations: `docs/backend-runtime-inventory.md` (570 captured routes at the time it was generated, 500 table rows after later batches) and `docs/backend-route-inventory.md` (519 static candidates). The two counts use different methods and are not a fresh measurement.
+- All four acceptance criteria in the table at the top remain Open; the Node production exit row says the gateway still supervises `server.js` and the Node path can be disabled only after the other three pass.
+- Consequences: a Rust-only start command, a Node-free Dockerfile or CI, and Rust integration tests for "the main HTTP endpoints" have no Rust server to run or test; there is no product Dockerfile today (only the task-shell and command-code containers under `docker/`), and 6 of the 9 workflows install or call Node. Deleting `server.js`, `src/` and the Node dependencies would remove the product without a replacement, so it was not done. The README now documents the Rust build/test/lint commands and says so explicitly.
+- Next dependency is unchanged: keep moving route domains together with their state owners (6c), then chat orchestration (6d) and the remaining writers (6e), and only then disable the Node path (6f).
+
+No service was restarted and no live service or user data was written during this work.

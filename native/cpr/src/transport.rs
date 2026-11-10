@@ -601,7 +601,23 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
             let mut buffer = [0u8; 4096];
-            socket.read(&mut buffer).unwrap();
+            // Consume the full request head before answering: a single read may
+            // return only part of it, and responding mid-write can reset the peer.
+            let mut received = 0usize;
+            loop {
+                let read = socket.read(&mut buffer[received..]).unwrap();
+                if read == 0 {
+                    break;
+                }
+                received += read;
+                if buffer[..received]
+                    .windows(4)
+                    .any(|part| part == b"\r\n\r\n")
+                {
+                    break;
+                }
+            }
+            assert!(received > 0, "upstream received no request bytes");
             let frame = b"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"x\"}}\n\n";
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n", frame.len()).unwrap();
             socket.write_all(frame).unwrap();
@@ -835,18 +851,19 @@ mod tests {
         barrier.wait();
         let result = finish.join().unwrap();
         assert_eq!(abort.join().unwrap(), None);
-        let state = exchange
-            .stream_watch
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if result.is_none() {
-            assert!(state.completed && !state.cancelled);
-        } else {
-            assert_eq!(result, Some("CLIENT_DISCONNECTED"));
-            assert!(state.cancelled && !state.completed);
+        {
+            let state = exchange
+                .stream_watch
+                .inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if result.is_none() {
+                assert!(state.completed && !state.cancelled);
+            } else {
+                assert_eq!(result, Some("CLIENT_DISCONNECTED"));
+                assert!(state.cancelled && !state.completed);
+            }
         }
-        drop(state);
         exchange.close().await;
         tokio::task::spawn_blocking(move || closed.recv_timeout(Duration::from_secs(2)).unwrap())
             .await

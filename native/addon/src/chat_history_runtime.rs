@@ -894,7 +894,10 @@ impl<'a> Runtime<'a> {
     fn register_session(&self, session: L<'a>) -> Result<L<'a>> {
         let cache_key = key(session)?;
         let next = self.epoch(&cache_key).wrapping_add(1);
-        self.owner.epochs.borrow_mut().insert(cache_key.clone(), next);
+        self.owner
+            .epochs
+            .borrow_mut()
+            .insert(cache_key.clone(), next);
         self.owner.removed.borrow_mut().remove(&cache_key);
         self.undefined()
     }
@@ -1347,10 +1350,7 @@ impl<'a> Runtime<'a> {
                         }
                         queue.append(&mut kept);
                     }
-                    if queues
-                        .get(cache_key)
-                        .map_or(true, |queue| queue.is_empty())
-                    {
+                    if queues.get(cache_key).is_none_or(|queue| queue.is_empty()) {
                         queues.remove(cache_key);
                     }
                 }
@@ -1634,7 +1634,7 @@ impl<'a> Runtime<'a> {
                                     Some(value) => self.read(value)?,
                                     None => self.undefined()?,
                                 };
-                                return self.mutation_completion(effects, true, false, result);
+                                self.mutation_completion(effects, true, false, result)
                             }
                             MutationKind::Replace => {
                                 if let Some(emit) = &job.emit {
@@ -1644,7 +1644,7 @@ impl<'a> Runtime<'a> {
                                     Some(value) => self.read(value)?,
                                     None => self.undefined()?,
                                 };
-                                return self.mutation_completion(effects, true, false, result);
+                                self.mutation_completion(effects, true, false, result)
                             }
                             _ => {
                                 self.prepare_visibility_write(&mut job)?;
@@ -1660,8 +1660,7 @@ impl<'a> Runtime<'a> {
                         Err(commit_error) => {
                             let value = caught(self.anchor, commit_error)?;
                             let _ = self.discard_pending(&job);
-                            return self
-                                .finish_failed_write(session, &cache_key, job, effects, value);
+                            self.finish_failed_write(session, &cache_key, job, effects, value)
                         }
                     }
                 }
@@ -2407,7 +2406,7 @@ impl<'a> Runtime<'a> {
             .borrow()
             .get(&cache_key)
             .copied()
-            .map_or(false, |(marker_epoch, _)| marker_epoch == current_epoch);
+            .is_some_and(|(marker_epoch, _)| marker_epoch == current_epoch);
         if self.owner.removed.borrow().contains(&cache_key) || deleting_current {
             return self.undefined();
         }

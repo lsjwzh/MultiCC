@@ -189,8 +189,8 @@ fn parse_verdict_from_value(value: &Value) -> Option<Value> {
 /// Clamp a start/update config. Returns `{ ok:true, config }` or
 /// `{ ok:false, error:'goal_required' }`.
 pub fn normalize_config(input: &str) -> Result<String, String> {
-    let value: Value =
-        crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let goal = clamp_text(&value_text(field(&value, "goal")), MAX_GOAL_CHARS);
     let mut criteria = Vec::new();
     if let Some(items) = field(&value, "criteria").and_then(Value::as_array) {
@@ -219,8 +219,8 @@ pub fn normalize_config(input: &str) -> Result<String, String> {
 
 /// Clamp `{maxDurationMinutes}` → `{maxDurationMinutes}` (default 120, 5..1440).
 pub fn clamp_duration(input: &str) -> Result<String, String> {
-    let value: Value =
-        crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     Ok(json!({ "maxDurationMinutes": clamp_duration_minutes(field(&value, "maxDurationMinutes")) }).to_string())
 }
 
@@ -234,8 +234,8 @@ pub fn clamp_duration(input: &str) -> Result<String, String> {
 ///
 /// Output `{startedAt, deadlineAt, maxDurationMinutes, clamped}`.
 pub fn arm_deadline(input: &str) -> Result<String, String> {
-    let value: Value =
-        crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let now = int_value(field(&value, "now")).unwrap_or(0).max(0);
     let started_at = int_value(field(&value, "startedAt"))
         .map(|value| value.max(0))
@@ -259,8 +259,8 @@ pub fn arm_deadline(input: &str) -> Result<String, String> {
 /// `{deadlineAt?, now}` → `{expired}`. A missing/null/zero deadline is never
 /// expired (legacy or non-active records).
 pub fn deadline_expired(input: &str) -> Result<String, String> {
-    let value: Value =
-        crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let now = int_value(field(&value, "now")).unwrap_or(0);
     let deadline_at = int_value(field(&value, "deadlineAt")).unwrap_or(0);
     Ok(json!({ "expired": deadline_at > 0 && now >= deadline_at }).to_string())
@@ -278,7 +278,10 @@ fn append_recent(out: &mut String, recent: Option<&Value>) {
         if role != "user" && role != "assistant" {
             continue;
         }
-        let text = clamp_text(&value_text(field(item, "content")), MAX_RECENT_MESSAGE_CHARS);
+        let text = clamp_text(
+            &value_text(field(item, "content")),
+            MAX_RECENT_MESSAGE_CHARS,
+        );
         if text.is_empty() {
             continue;
         }
@@ -298,7 +301,11 @@ fn append_history(out: &mut String, history: Option<&Value>) {
             "{}. {} — {}\n",
             index + 1,
             if verdict.is_empty() { "?" } else { &verdict },
-            if reason.is_empty() { "(no reason)" } else { &reason }
+            if reason.is_empty() {
+                "(no reason)"
+            } else {
+                &reason
+            }
         ));
     }
 }
@@ -337,8 +344,8 @@ fn append_pending_question(out: &mut String, pending: Option<&Value>) {
 /// `{goal, criteria, lastOutput, recent, history, pendingQuestion, rounds}`.
 /// `rounds` is informational only — there is no round budget to enforce.
 pub fn build_verdict_prompt(input: &str) -> Result<String, String> {
-    let value: Value =
-        crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let goal = clamp_text(&value_text(field(&value, "goal")), MAX_GOAL_CHARS);
     let rounds = int_value(field(&value, "rounds")).unwrap_or(0).max(0);
     let last_output = clamp_text(
@@ -472,7 +479,10 @@ fn copy_history(state: &Value) -> Vec<Value> {
                         return None;
                     }
                     let mut out = Map::new();
-                    out.insert("at".to_string(), json!(int_value(field(item, "at")).unwrap_or(0)));
+                    out.insert(
+                        "at".to_string(),
+                        json!(int_value(field(item, "at")).unwrap_or(0)),
+                    );
                     out.insert("verdict".to_string(), Value::String(verdict));
                     out.insert(
                         "reason".to_string(),
@@ -485,6 +495,14 @@ fn copy_history(state: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// The persisted stall counters folded into one value so `build_state` keeps a
+/// readable signature.
+struct StallCounts {
+    same_instruction: u32,
+    aux_failures: u32,
+    consecutive_faults: u32,
+}
+
 fn build_state(
     state: &Value,
     status: &str,
@@ -492,9 +510,7 @@ fn build_state(
     now: i64,
     verdict: Option<&Value>,
     history: Vec<Value>,
-    same_instruction: u32,
-    aux_failures: u32,
-    consecutive_faults: u32,
+    stall: StallCounts,
 ) -> Value {
     let goal = clamp_text(&state_text(state, "goal"), MAX_GOAL_CHARS);
     let criteria: Vec<Value> = field(state, "criteria")
@@ -535,10 +551,13 @@ fn build_state(
         out.insert("at".to_string(), json!(now));
         last_verdict = Value::Object(out);
     }
-    let mut stall = Map::new();
-    stall.insert("sameInstruction".to_string(), json!(same_instruction));
-    stall.insert("auxFailures".to_string(), json!(aux_failures));
-    stall.insert("consecutiveFaults".to_string(), json!(consecutive_faults));
+    let mut stall_state = Map::new();
+    stall_state.insert("sameInstruction".to_string(), json!(stall.same_instruction));
+    stall_state.insert("auxFailures".to_string(), json!(stall.aux_failures));
+    stall_state.insert(
+        "consecutiveFaults".to_string(),
+        json!(stall.consecutive_faults),
+    );
     let mut out = Map::new();
     out.insert("status".to_string(), json!(status));
     out.insert("goal".to_string(), json!(goal));
@@ -550,7 +569,7 @@ fn build_state(
     out.insert("updatedAt".to_string(), json!(now));
     out.insert("lastVerdict".to_string(), last_verdict);
     out.insert("history".to_string(), Value::Array(history));
-    out.insert("stall".to_string(), Value::Object(stall));
+    out.insert("stall".to_string(), Value::Object(stall_state));
     // A decide() result is always applied — the evaluation spinner is over and
     // the state is either active (no pause) or terminal (pausedBy has no point).
     out.insert("evaluating".to_string(), json!(false));
@@ -567,7 +586,9 @@ fn build_state(
 }
 
 fn priority_verdict(state: &Value) -> Option<Value> {
-    field(state, "lastVerdict").filter(|value| value.is_object()).cloned()
+    field(state, "lastVerdict")
+        .filter(|value| value.is_object())
+        .cloned()
 }
 
 /// Accept either the bare verdict object or a `parseVerdict` envelope
@@ -592,8 +613,8 @@ fn unwrap_verdict(raw: Option<&Value>) -> Option<Value> {
 /// the Aux answered a pending question — the JS supervisor then resolves the
 /// request the same way a human answer does instead of injecting a message.
 pub fn decide(input: &str) -> Result<String, String> {
-    let value: Value =
-        crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let state = field(&value, "state").cloned().unwrap_or_else(|| json!({}));
     let now = int_value(field(&value, "now")).unwrap_or(0);
     let parse_error = field(&value, "parseError")
@@ -640,9 +661,11 @@ pub fn decide(input: &str) -> Result<String, String> {
                 now,
                 previous.as_ref(),
                 next_history,
-                same_instruction,
-                failures,
-                0,
+                StallCounts {
+                    same_instruction,
+                    aux_failures: failures,
+                    consecutive_faults: 0,
+                },
             );
             return Ok(json!({
                 "nextState": next_state,
@@ -660,9 +683,11 @@ pub fn decide(input: &str) -> Result<String, String> {
             now,
             previous.as_ref(),
             next_history,
-            same_instruction,
-            failures,
-            0,
+            StallCounts {
+                same_instruction,
+                aux_failures: failures,
+                consecutive_faults: 0,
+            },
         );
         return Ok(json!({
             "nextState": next_state,
@@ -676,7 +701,10 @@ pub fn decide(input: &str) -> Result<String, String> {
     let reason = strip_tag(&state_text(&verdict, "reason"));
     let next_instruction = strip_tag(&state_text(&verdict, "nextInstruction"));
     let human_reason = strip_tag(&state_text(&verdict, "humanReason"));
-    let answer = clamp_text(&strip_tag(&state_text(&verdict, "answer")), MAX_ANSWER_CHARS);
+    let answer = clamp_text(
+        &strip_tag(&state_text(&verdict, "answer")),
+        MAX_ANSWER_CHARS,
+    );
 
     let history_entry = json!({ "at": now, "verdict": kind, "reason": reason });
 
@@ -731,13 +759,7 @@ pub fn decide(input: &str) -> Result<String, String> {
                 )
             } else {
                 let prefixed = format!("{UNATTENDED_TAG} {next_instruction}");
-                (
-                    "inject",
-                    prefixed,
-                    "active",
-                    rounds + 1,
-                    same_next,
-                )
+                ("inject", prefixed, "active", rounds + 1, same_next)
             }
         }
     };
@@ -749,10 +771,12 @@ pub fn decide(input: &str) -> Result<String, String> {
         now,
         Some(&verdict),
         capped_history(history, history_entry),
-        same_next,
-        0,
-        // Any D/W settle that reaches decide() is not a fault anymore.
-        0,
+        StallCounts {
+            same_instruction: same_next,
+            aux_failures: 0,
+            // Any D/W settle that reaches decide() is not a fault anymore.
+            consecutive_faults: 0,
+        },
     );
     let mut out = Map::new();
     out.insert("nextState".to_string(), next_state);
@@ -1039,8 +1063,8 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
 /// Input: `{state, now}`. Returns `{nextState, action, message}` with action
 /// `fault_continue | needs_human | none`.
 pub fn decide_fault(input: &str) -> Result<String, String> {
-    let value: Value =
-        crate::json_lenient::from_str(input).map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let state = field(&value, "state").cloned().unwrap_or_else(|| json!({}));
     let now = int_value(field(&value, "now")).unwrap_or(0);
     if state_text(&state, "status") != "active" {
@@ -1097,9 +1121,11 @@ fn fault_decision(state: &Value, now: i64) -> Value {
         now,
         previous.as_ref(),
         capped_history(history, entry),
-        same_instruction,
-        aux_failures,
-        faults,
+        StallCounts {
+            same_instruction,
+            aux_failures,
+            consecutive_faults: faults,
+        },
     );
     json!({
         "nextState": next_state,
@@ -1118,7 +1144,8 @@ mod tests {
         serde_json::from_str(&normalize_config(&input.to_string()).unwrap()).unwrap()
     }
     fn prompt(input: Value) -> String {
-        let out: Value = serde_json::from_str(&build_verdict_prompt(&input.to_string()).unwrap()).unwrap();
+        let out: Value =
+            serde_json::from_str(&build_verdict_prompt(&input.to_string()).unwrap()).unwrap();
         out["prompt"].as_str().unwrap().to_string()
     }
     fn parse(text: &str) -> Value {
@@ -1169,10 +1196,25 @@ mod tests {
 
     #[test]
     fn config_clamps_duration_and_ignores_legacy_rounds() {
-        assert_eq!(config(json!({ "goal": "g", "maxDurationMinutes": 0 }))["config"]["maxDurationMinutes"], json!(5));
-        assert_eq!(config(json!({ "goal": "g", "maxDurationMinutes": 5000 }))["config"]["maxDurationMinutes"], json!(1440));
-        assert_eq!(config(json!({ "goal": "g", "maxDurationMinutes": "12" }))["config"]["maxDurationMinutes"], json!(12));
-        assert_eq!(config(json!({ "goal": "g", "maxDurationMinutes": "oops" }))["config"]["maxDurationMinutes"], json!(120));
+        assert_eq!(
+            config(json!({ "goal": "g", "maxDurationMinutes": 0 }))["config"]["maxDurationMinutes"],
+            json!(5)
+        );
+        assert_eq!(
+            config(json!({ "goal": "g", "maxDurationMinutes": 5000 }))["config"]
+                ["maxDurationMinutes"],
+            json!(1440)
+        );
+        assert_eq!(
+            config(json!({ "goal": "g", "maxDurationMinutes": "12" }))["config"]
+                ["maxDurationMinutes"],
+            json!(12)
+        );
+        assert_eq!(
+            config(json!({ "goal": "g", "maxDurationMinutes": "oops" }))["config"]
+                ["maxDurationMinutes"],
+            json!(120)
+        );
         // The old round budget is accepted but never read or persisted.
         let legacy = config(json!({ "goal": "g", "maxRounds": 7 }));
         assert_eq!(legacy["config"]["maxDurationMinutes"], json!(120));
@@ -1213,10 +1255,22 @@ mod tests {
     #[test]
     fn duration_defaults_and_clamps() {
         assert_eq!(clamp_json(json!({}))["maxDurationMinutes"], json!(120));
-        assert_eq!(clamp_json(json!({ "maxDurationMinutes": 4 }))["maxDurationMinutes"], json!(5));
-        assert_eq!(clamp_json(json!({ "maxDurationMinutes": 1441 }))["maxDurationMinutes"], json!(1440));
-        assert_eq!(clamp_json(json!({ "maxDurationMinutes": "30" }))["maxDurationMinutes"], json!(30));
-        assert_eq!(clamp_json(json!({ "maxRounds": 9 }))["maxDurationMinutes"], json!(120));
+        assert_eq!(
+            clamp_json(json!({ "maxDurationMinutes": 4 }))["maxDurationMinutes"],
+            json!(5)
+        );
+        assert_eq!(
+            clamp_json(json!({ "maxDurationMinutes": 1441 }))["maxDurationMinutes"],
+            json!(1440)
+        );
+        assert_eq!(
+            clamp_json(json!({ "maxDurationMinutes": "30" }))["maxDurationMinutes"],
+            json!(30)
+        );
+        assert_eq!(
+            clamp_json(json!({ "maxRounds": 9 }))["maxDurationMinutes"],
+            json!(120)
+        );
     }
 
     #[test]
@@ -1233,7 +1287,8 @@ mod tests {
 
     #[test]
     fn arm_clamps_a_past_deadline_to_one_minute_from_now() {
-        let out = arm_json(json!({ "startedAt": 1000, "maxDurationMinutes": 5, "now": 10_000_000 }));
+        let out =
+            arm_json(json!({ "startedAt": 1000, "maxDurationMinutes": 5, "now": 10_000_000 }));
         assert_eq!(out["startedAt"], json!(1000));
         assert_eq!(out["deadlineAt"], json!(10_000_000 + EXPIRY_CLAMP_MS));
         assert_eq!(out["clamped"], json!(true));
@@ -1241,12 +1296,30 @@ mod tests {
 
     #[test]
     fn expired_only_when_a_real_deadline_has_passed() {
-        assert_eq!(expired_json(json!({ "deadlineAt": 1000, "now": 999 }))["expired"], json!(false));
-        assert_eq!(expired_json(json!({ "deadlineAt": 1000, "now": 1000 }))["expired"], json!(true));
-        assert_eq!(expired_json(json!({ "deadlineAt": 1000, "now": 5000 }))["expired"], json!(true));
-        assert_eq!(expired_json(json!({ "now": 5000 }))["expired"], json!(false));
-        assert_eq!(expired_json(json!({ "deadlineAt": null, "now": 5000 }))["expired"], json!(false));
-        assert_eq!(expired_json(json!({ "deadlineAt": 0, "now": 5000 }))["expired"], json!(false));
+        assert_eq!(
+            expired_json(json!({ "deadlineAt": 1000, "now": 999 }))["expired"],
+            json!(false)
+        );
+        assert_eq!(
+            expired_json(json!({ "deadlineAt": 1000, "now": 1000 }))["expired"],
+            json!(true)
+        );
+        assert_eq!(
+            expired_json(json!({ "deadlineAt": 1000, "now": 5000 }))["expired"],
+            json!(true)
+        );
+        assert_eq!(
+            expired_json(json!({ "now": 5000 }))["expired"],
+            json!(false)
+        );
+        assert_eq!(
+            expired_json(json!({ "deadlineAt": null, "now": 5000 }))["expired"],
+            json!(false)
+        );
+        assert_eq!(
+            expired_json(json!({ "deadlineAt": 0, "now": 5000 }))["expired"],
+            json!(false)
+        );
     }
 
     // ── buildVerdictPrompt ─────────────────────────────────────────────────
@@ -1317,10 +1390,7 @@ mod tests {
         );
         assert_eq!(fenced["ok"], json!(true));
         assert_eq!(fenced["verdict"]["verdict"], json!("continue"));
-        assert_eq!(
-            fenced["verdict"]["nextInstruction"],
-            json!("run the tests")
-        );
+        assert_eq!(fenced["verdict"]["nextInstruction"], json!("run the tests"));
     }
 
     #[test]
@@ -1364,7 +1434,10 @@ mod tests {
         assert_eq!(out["nextState"]["status"], json!("achieved"));
         assert_eq!(out["nextState"]["rounds"], json!(2));
         assert_eq!(out["nextState"]["updatedAt"], json!(200));
-        assert_eq!(out["nextState"]["lastVerdict"]["verdict"], json!("achieved"));
+        assert_eq!(
+            out["nextState"]["lastVerdict"]["verdict"],
+            json!("achieved")
+        );
         assert_eq!(out["nextState"]["lastVerdict"]["at"], json!(200));
         assert_eq!(out["nextState"]["history"].as_array().unwrap().len(), 1);
         assert!(out["message"].as_str().unwrap().contains("all green"));
@@ -1450,7 +1523,10 @@ mod tests {
         }));
         assert_eq!(out["action"], json!("needs_human"));
         assert_eq!(out["nextState"]["status"], json!("needs_human"));
-        assert!(out["message"].as_str().unwrap().contains("need the API key"));
+        assert!(out["message"]
+            .as_str()
+            .unwrap()
+            .contains("need the API key"));
     }
 
     #[test]
@@ -1581,7 +1657,10 @@ mod tests {
         assert_eq!(out["action"], json!("inject"));
         assert_eq!(out["nextState"]["maxDurationMinutes"], json!(120));
         assert_eq!(out["nextState"]["startedAt"], json!(1));
-        assert_eq!(out["nextState"]["deadlineAt"], json!(1 + 120 * MS_PER_MINUTE));
+        assert_eq!(
+            out["nextState"]["deadlineAt"],
+            json!(1 + 120 * MS_PER_MINUTE)
+        );
     }
 
     // ── v2: optimistic tag stripping ───────────────────────────────────────
@@ -1718,14 +1797,20 @@ mod tests {
         assert_eq!(out["reason"], json!("policy_retry"));
         // The retry reuses the same turn object: claiming it as handled here
         // would make the retry's real settle a duplicate and lock the session.
-        assert!(out.get("nextState").is_none(), "policy retry must not claim the turn");
+        assert!(
+            out.get("nextState").is_none(),
+            "policy retry must not claim the turn"
+        );
 
         let settled = turn_end_json(json!({
             "state": active_state(1), "now": 300, "kind": "settle", "settle": "D",
             "turnId": "turn-retry",
         }));
-        assert_eq!(settled["action"], json!("evaluate"),
-            "the same turn id must still be evaluable after a policy retry");
+        assert_eq!(
+            settled["action"],
+            json!("evaluate"),
+            "the same turn id must still be evaluable after a policy retry"
+        );
 
         let fail_fast = turn_end_json(json!({
             "state": active_state(1), "now": 200, "kind": "fault", "retryScheduled": false,

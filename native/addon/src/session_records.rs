@@ -2513,7 +2513,10 @@ impl RustSessionRecords {
     }
 }
 
+// napi emits its registration (`cfg(not(test))`) only for non-test builds, so
+// the test build sees no Rust caller for exports that JS calls by name.
 #[napi]
+#[cfg_attr(test, allow(dead_code))]
 pub fn session_records_protocol_version() -> u32 {
     1
 }
@@ -2521,6 +2524,7 @@ pub fn session_records_protocol_version() -> u32 {
 /// `TASK_STATE_DEFAULTS` for the JS export, built from the same core rule the
 /// record owner merges with, so the two can never drift.
 #[napi]
+#[cfg_attr(test, allow(dead_code))]
 pub fn session_records_task_state_defaults(env: Env) -> Result<sys::napi_value> {
     unsafe { crate::js_bridge::write_value(env.raw(), &task_state_defaults()) }
 }
