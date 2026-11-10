@@ -317,3 +317,176 @@ test('the host clock is sampled only when a retry is scheduled and its errors su
   assert.doesNotThrow(() => native.planTurnFinalization(finalize, { retry: { now: throwing } }));
   assert.doesNotThrow(() => legacy.planTurnFinalization(finalize, { retry: { now: throwing } }));
 });
+
+
+// 执行器以迁移前冻结的宿主实现为对照，比较完整端口轨迹和可见状态。
+const legacyExecutor = require('./helpers/legacy-chat-finalize-host');
+const nativeExecutor = require('../src/chat/finalize-host');
+
+function executionHarness(owner, input, options = {}) {
+  const calls = [];
+  const runner = { id: 'runner' };
+  runner.self = runner;
+  const context = {
+    sessionName: 's1', runnerKind: input.runnerKind, runner,
+    turn: { resultDurable: input.resultDurable === true, turnId: 't1',
+      task: { id: 'admitted-task', start: options.taskStart, source: options.taskSource } },
+    cs: { cli: input.cli, _activeRunner: options.replaced ? {} : runner,
+      isStreaming: true, claudeProc: runner, streamReplay: ['frame'],
+      currentAssistantText: input.hasOutput ? 'answer' : '', currentToolCalls: ['tool'],
+      chatTurnCount: options.count ?? 3, turnStartedAt: 100,
+      _resultSaved: false, _sawApiError: input.apiError },
+    stderrTail: options.stderrTail ?? ' stderr ', pendingTransportError: options.transport,
+    code: input.code, signal: input.signal,
+    ...options.context,
+  };
+  const captured = {};
+  const error = new Error('port unavailable');
+  const record = (name, args) => {
+    calls.push([name, ...args]);
+    if (options.fail === name) throw options.thrown ?? error;
+  };
+  const ports = {
+    persistAssistant(ctx, append) {
+      assert.equal(this, ports);
+      assert.equal(ctx.cs, context.cs);
+      assert.equal(ctx.runner, runner);
+      assert.equal(Object.isFrozen(append), true);
+      captured.context = ctx;
+      record('persist', [append]);
+      if (options.liveDurable !== undefined) ctx.turn.resultDurable = options.liveDurable;
+      else if (options.persisted !== false && append.final) ctx.turn.resultDurable = true;
+      return options.persisted !== undefined ? options.persisted : true;
+    },
+    commitUsage(ctx) {
+      assert.equal(this, ports);
+      record('usage', [ctx.turn.resultDurable]);
+      return options.usage !== undefined ? options.usage : true;
+    },
+    broadcast(session, event) { record('broadcast', [session, event]); },
+    cancelClassify(cs) { assert.equal(cs, context.cs); record('cancel', []); },
+    clearIncrementalSave(session) { record('clear', [session]); },
+    setStatus(session, status) { record('status', [session, status]); },
+    completeSessionTurn(session) {
+      record('complete', [session]);
+      if (options.rejectComplete) return Promise.reject(error);
+    },
+    classifyTurnEnd(cs, session, opts) { record('classify', [session, opts]); },
+    resetInterrupted(session) { record('reset', [session]); },
+    resumeInterrupted(session) { record('resume', [session]); return options.resumed; },
+    freezeInterrupted(session, reason) { record('freeze', [session, reason]); },
+    emitTurnOutcome(session, event) { record('outcome', [session, event]); },
+    runPostTurn(ctx, entry) {
+      captured.postEntry = entry;
+      record('post', [entry, ctx.finalText, ctx.appendPersisted, ctx.usageAttempted,
+        ctx.usageDurable, ctx.usageError, ctx.terminalBlocked]);
+    },
+    recordRunResult(ctx, result) {
+      captured.recorded = result;
+      record('record', [result]);
+    },
+    now() { assert.equal(this, undefined); record('clock', []); return 200; },
+    timelineField(session, cs, now) {
+      assert.equal(this, undefined);
+      record('timeline', [session, now]);
+      return { timeline: { elapsed: 100 } };
+    },
+    log(event, detail) { record('log', [event, detail]); },
+    logError(event, detail) {
+      // 原生桥接产生的类型错误使用不同引擎文案；业务端口错误仍保留对象身份。
+      if (detail.error === error) captured.errorIdentity = true;
+      record('log-error', [event, detail.action, detail.error?.message ?? detail.error]);
+    },
+  };
+  const plan = native.planTurnFinalization(clone(input), stableDeps());
+  const result = owner.createTurnFinalizationExecutor(ports).execute(plan, context);
+  const state = { ...context.cs, _activeRunner: context.cs._activeRunner === runner ? 'original'
+    : context.cs._activeRunner === null ? null : 'replacement',
+  claudeProc: context.cs.claudeProc === runner ? 'original' : context.cs.claudeProc };
+  return { calls, state, turn: context.turn, result, captured, plan };
+}
+
+const EXECUTION_BASE = {
+  completion: { version: 1, state: 'completed', settled: true },
+  current: true, runnerKind: 'process', cli: 'codex', code: 0, signal: null,
+  hasOutput: true, resultEvent: true, resultDurable: false,
+};
+
+function compareExecution(input, options, label) {
+  const before = executionHarness(legacyExecutor, input, options);
+  const after = executionHarness(nativeExecutor, input, options);
+  for (const key of ['calls', 'state', 'turn', 'result']) {
+    assert.deepEqual(view(after[key]), view(before[key]), `${label}: ${key}`);
+  }
+  assert.equal(Object.isFrozen(after.result), true);
+  if (after.captured.recorded && after.result.resolved.code !== 'finalization_execution_failed') {
+    assert.equal(after.captured.recorded, after.result.resolved);
+  }
+  if (after.captured.postEntry && after.result.resolved.code !== 'finalization_execution_failed') {
+    assert.equal(Object.isFrozen(after.captured.postEntry), true);
+    assert.equal(after.captured.postEntry,
+      after.result.resolved.effects.find(entry => entry.type === 'run-post-turn'));
+  }
+  if (after.plan.action === 'finalize' && after.result.resolved.code !== 'finalization_execution_failed') {
+    assert.equal(after.result.resolved.facts, after.plan.facts);
+    assert.equal(after.result.resolved.append, after.plan.append);
+  }
+  return { before, after };
+}
+
+test('收尾执行：正常、重试、取消、历史失败及用量失败与旧宿主轨迹一致', () => {
+  const variants = [
+    {}, { current: false }, { resultDurable: true }, { resultEvent: false },
+    { hasOutput: false, resultEvent: false }, { killReason: 'user_cancel' },
+    { apiError: true }, { adapterError: true }, { signal: 'SIGTERM' }, { code: 1 },
+    { pendingStreamError: 'disconnect', nativeSession: true, resultEvent: false },
+    { handoff: { status: 'pending', reusedTarget: true, toCli: 'codex' }, hasOutput: false, resultEvent: false },
+    { apiError: true, apiErrorDecision: DECISIONS[2] },
+  ];
+  const outcomes = [{}, { persisted: false }, { usage: false }, { usage: 'true' },
+    { persisted: 'true', liveDurable: false }, { persisted: false, liveDurable: true },
+    { fail: 'usage' }, { fail: 'persist' }, { replaced: true, taskStart: true },
+    { count: '2', taskStart: true, taskSource: 'task-board' }];
+  for (const runnerKind of ['process', 'stream']) {
+    for (const variant of variants) {
+      for (const outcome of outcomes) {
+        const input = { ...EXECUTION_BASE, runnerKind, ...variant };
+        compareExecution(input, outcome, JSON.stringify([runnerKind, variant, outcome]));
+      }
+    }
+  }
+});
+
+test('收尾执行：宿主异常、Promise 拒绝和后续再次执行保留行为', async () => {
+  for (const fail of ['cancel', 'clear', 'broadcast', 'status', 'complete', 'classify',
+    'reset', 'outcome', 'post', 'record', 'usage', 'persist']) {
+    compareExecution(EXECUTION_BASE, { fail }, fail);
+  }
+  for (const thrown of ['text error', { message: 'object error' }, 0, false]) {
+    compareExecution(EXECUTION_BASE, { fail: 'usage', thrown }, String(thrown));
+  }
+  const before = executionHarness(legacyExecutor, EXECUTION_BASE, { rejectComplete: true });
+  const after = executionHarness(nativeExecutor, EXECUTION_BASE, { rejectComplete: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(view(after.calls), view(before.calls));
+  compareExecution(EXECUTION_BASE, {}, 'after failures');
+});
+
+test('收尾执行：随机计划及结果与冻结宿主一致', () => {
+  const random = mulberry32(0x71f1);
+  for (let i = 0; i < 350; i++) {
+    compareExecution(randomInput(random), {
+      persisted: pick(random, [true, false, 1]), usage: pick(random, [true, false, 1]),
+      liveDurable: pick(random, [undefined, true, false]),
+      replaced: random() < 0.5, transport: pick(random, [undefined, '连接中断']),
+    }, `execution#${i}`);
+  }
+});
+
+test('收尾执行：错误正文保留 UTF-16 代码单元及显式字符串转换', () => {
+  const emptyRetry = { ...EXECUTION_BASE, isRetry: true, hasOutput: false, resultEvent: false };
+  for (const stderrTail of [' \ud800 ', Symbol('stderr'), { toString: () => 'stderr object' }]) {
+    compareExecution(emptyRetry, { stderrTail }, 'stderr coercion');
+  }
+  compareExecution(emptyRetry, { transport: '\udc00 transport' }, 'transport UTF-16');
+});

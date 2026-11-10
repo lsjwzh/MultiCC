@@ -157,7 +157,7 @@ function probeAddon(file, node = process.execPath) {
     if(['chatApplyClaudeEvent','chatApplyAdapterEvent','chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
       'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
-      'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure','chatExecuteTurnFinalization'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['transcriptPruneDefaults','transcriptProjectDir','transcriptFind','transcriptPruneFile',
       'transcriptPruneMaybe','transcriptMeasureFile','transcriptMeasure','transcriptRealUserTurn',
       'transcriptSubstantiveTurn','transcriptUserVisibleText','transcriptTriggersFor',

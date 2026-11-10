@@ -1,9 +1,8 @@
 'use strict';
 
-// Real gateway + real server + fake Claude CLI on an isolated data root. Drives
-// the process/stream finalization boundary end-to-end: a clean turn, an abrupt
-// close with no result, a zero-exit close with no result, and a mid-stream
-// cancel. Each scenario uses its own session so a frozen disposition cannot leak
+// 真实网关与服务端，使用隔离数据目录和假的 SDK 子进程。
+// 覆盖正常结束、无结果异常退出、无结果正常退出、排队续接与中途取消。
+// Each scenario uses its own session so a frozen disposition cannot leak
 // into the next assertion. Never touches ~/.multicc, the main checkout's data
 // directory or the live service.
 
@@ -170,6 +169,11 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 }
 `);
   fs.chmodSync(fakeCli, 0o755);
+  // Claude 聊天已统一到内置 SDK，CLAUDE_CMD 只影响非聊天用途。
+  // 仅在隔离测试子进程中替换二进制定位器，仍经过真实 Rust lane 和收尾链路。
+  const preload = path.join(root, 'sdk-test-preload.cjs');
+  fs.writeFileSync(preload, `require(${JSON.stringify(path.join(ROOT, 'src/cli/claude-bundled-binary'))})
+    .bundledClaudeCodeBinary = () => ${JSON.stringify(fakeCli)};\n`);
 
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
@@ -187,6 +191,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     env: {
       ...process.env,
       NODE_ENV: 'test',
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require ${JSON.stringify(preload)}`,
       HOST: '127.0.0.1',
       PORT: String(port),
       ACCESS_TOKEN: TOKEN,
@@ -306,9 +311,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     await hang.until(frames => frames.some(frame =>
       frame?.type === 'notify' && frame.taskId === hangTask && frame.state === 'error'),
     'cancel settlement', 45000);
-    assert.ok(hang.frames.some(frame => frame?.type === 'task_state'
+    // SDK 的结束通知可先于取消事务的状态快照，等待取消事实本身。
+    await hang.until(frames => frames.some(frame => frame?.type === 'task_state'
       && frame.taskId === hangTask && frame.cancelReason === 'user_cancelled'),
-    'cancelled turn must freeze the task state as user-cancelled');
+    'cancelled turn must freeze the task state as user-cancelled', 45000);
     // A fresh turn on the same session proves the runtime returned to idle.
     sendUser(hang, 'PLAIN_TWO');
     await hang.until(frames => hasText(frames, 'echo:PLAIN_TWO'), 'post-cancel turn');

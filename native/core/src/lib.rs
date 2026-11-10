@@ -5,6 +5,7 @@ pub mod background;
 pub mod background_hold;
 pub mod chat_events;
 pub mod chat_finalize;
+pub mod chat_finalize_execution;
 pub mod chat_runtime;
 pub mod chat_turn_lifecycle;
 pub mod classify_vocab;
