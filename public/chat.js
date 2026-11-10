@@ -781,6 +781,26 @@ function createAssistantBubble() {
   return bubble;
 }
 
+// 后台任务状态行的落点：这一轮还在生成就用生成中的气泡，否则贴最后一条助手
+// 气泡 —— 轮次结束了，任务还在后台跑，状态行照样留在对话里，不脱离气泡。
+function lastAssistantBubble() {
+  if (!messagesEl) return null;
+  const list = messagesEl.querySelectorAll('.msg.assistant');
+  return list.length ? list[list.length - 1] : null;
+}
+
+// 一行状态只属于一条气泡：换了落点就把上一条气泡上的后台状态行收掉，避免同一条
+// 任务在两处重复闪烁。
+function clearStrayBgStatus(target) {
+  if (!messagesEl) return;
+  const keep = target
+    ? (target.classList?.contains('msg-content') ? target : target.querySelector?.('.msg-content'))
+    : null;
+  messagesEl.querySelectorAll('.msg-content.has-bg-task').forEach(content => {
+    if (content !== keep) chatLiveUi.removeStreamTail(content);
+  });
+}
+
 function accumulateLiveUsage(usage, bucket) { return chatLiveUi.accumulateLiveUsage(usage, bucket); }
 function buildUsageLine(usage, roleBreakdown) { return chatLiveUi.buildUsageLine(usage, roleBreakdown); }
 function fmtDuration(ms) { return chatLiveUi.fmtDuration(ms); }
@@ -2462,7 +2482,12 @@ const chatBgActivity = window.MultiCCChatBgActivity.create({
   getMessagesEl: () => messagesEl,
   getIsStreaming: () => isStreaming,
   // 合进消息最底部的状态行（与动态点、归属同一行）；没有生成中的气泡才回退胶囊。
-  setStatus: (text, title) => !!currentMsgEl && chatLiveUi.setStreamStatus(currentMsgEl, 'bg', text, title),
+  setStatus: (text, title) => {
+    const target = currentMsgEl || lastAssistantBubble();
+    if (!target) return false;
+    clearStrayBgStatus(target);
+    return chatLiveUi.setStreamStatus(target, 'bg', text, title, { allowFinished: true });
+  },
   translate: tt,
   getSessionId: () => _sessionName || sessionId || '',
   fetchJson: path => chatApi.json(withToken(path)),
@@ -2546,11 +2571,14 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   transportSend: hostTransportSend,
   retryTransport: () => chatTransport.retryNow(),
   addSystemMessage: addSystemMsg,
-  // Deliberately inert: the user bubble appears only on the server's
-  // queued=false confirmation (chat-event-controller session_queue), never
-  // optimistically on send. The old stagedUserBubbles map stored every sent
-  // message forever with no reader (M6); staging now just discards.
-  stageUserMessage: () => {},
+  // 用户按下发送就立刻把气泡画进对话里，不等服务端回执：这一轮在排队/判定时
+  // 服务端只回 queued=true，按旧逻辑消息会一直藏在队列条里，看起来像"没发出去"。
+  // 回执与历史回放都按 clientMsgId 去重（findByClientMsgId），不会画两遍。
+  stageUserMessage: (text, clientMsgId) => {
+    if (!text) return;
+    if (clientMsgId && chatHistoryView.findByClientMsgId?.(clientMsgId)) return;
+    addUserMsg(text, clientMsgId);
+  },
   addUserMessage: addUserMsg,
   resetHistory: () => {
     resetHistoryPagination();

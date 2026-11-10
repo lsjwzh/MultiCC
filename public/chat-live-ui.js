@@ -481,6 +481,7 @@
         tail.remove();
       }
       content.classList?.remove('has-stream-tail');
+      content.classList?.remove('has-bg-task');
     }
 
     function updateTailMarquee(clip) {
@@ -497,12 +498,16 @@
       }
     }
 
-    // 只给还在生成的气泡建（content 带 streaming-dot）；已结束的气泡返回 null。
-    function ensureStreamTail(target) {
+    // 生成中的气泡（content 带 streaming-dot）总是能建；已结束的气泡只有后台任务
+    // 状态行（allowFinished）才建 —— 「任务还在跑」比「这一轮说完了」更值得可见。
+    function ensureStreamTail(target, options = {}) {
       const content = contentOf(target);
-      if (!content || !content.classList || !content.classList.contains('streaming-dot')) return null;
+      if (!content || !content.classList) return null;
+      const streaming = content.classList.contains('streaming-dot');
+      if (!streaming && options.allowFinished !== true) return null;
       const existing = content.querySelector('.msg-stream-tail');
       if (existing) return existing;
+      if (!streaming) content.classList.add('has-bg-task');
       const tail = doc.createElement('div');
       tail.className = 'msg-stream-tail';
       const dot = doc.createElement('span');
@@ -545,12 +550,18 @@
     }
 
     // source: 'bg'（后台任务）| 'tool'（主流程最新工具调用）。text 为空即清掉该槽。
-    // 返回 true 表示写进了状态行（气泡还在生成），false 表示没有可写的状态行。
-    function setStreamStatus(target, source, text, title) {
-      const tail = ensureStreamTail(target);
+    // allowFinished：允许写进已经结束的气泡（后台任务跑完之前那条状态行一直在）。
+    // 返回 true 表示写进了状态行，false 表示没有可写的状态行。
+    function setStreamStatus(target, source, text, title, options = {}) {
+      const tail = ensureStreamTail(target, options);
       if (!tail) return false;
       tail._mcStatus[source] = text ? { text: String(text), title: title ? String(title) : '' } : null;
       paintStreamStatus(tail);
+      // 已结束的气泡只为后台任务借这一行；任务收完就把整行摘掉，不留空壳。
+      if (!text && source === 'bg') {
+        const content = contentOf(target);
+        if (content && !content.classList.contains('streaming-dot')) removeStreamTail(content);
+      }
       return true;
     }
 
