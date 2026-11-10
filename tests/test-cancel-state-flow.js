@@ -209,6 +209,7 @@ function harness(t, options = {}) {
         : { state: 'inactive', reason: 'fixture_idle' },
     }),
     getTaskContextHost: () => ({
+      continues: (cs, prev, forceNew) => !forceNew && !!prev,
       recordGoal: (sessionName, goal, phase, cs, classifyState) => {
         record({ kind: 'task_context_goal', sessionName, goal, phase, classifyState });
       },
@@ -221,7 +222,7 @@ function harness(t, options = {}) {
     getApiErrorHost: () => ({}),
     getWaitInjector: () => ({ resetAuto() { record({ kind: 'wait_reset_auto' }); }, resetInterrupted() {} }),
     setTaskState: (sessionId, patch, opts) => {
-      record({ kind: 'task_state_write', sessionId, patch });
+      record({ kind: 'task_state_write', sessionId, patch, save: !(opts && opts.save === false) });
       return taskStateStore.setTaskState(sessionId, patch, opts);
     },
     getTaskState: taskStateStore.getTaskState,
@@ -263,7 +264,7 @@ function harness(t, options = {}) {
     resolveUserInput: (...args) => inputHost.resolve(...args),
     broadcast: (sessionId, payload) => record({ kind: 'chat_broadcast', sessionId, payload }),
     setTaskState: (sessionId, patch, opts) => {
-      record({ kind: 'task_state_write', sessionId, patch });
+      record({ kind: 'task_state_write', sessionId, patch, save: !(opts && opts.save === false) });
       return taskStateStore.setTaskState(sessionId, patch, opts);
     },
     onTaskBoardQueueEvent: event => taskBoard.onQueueEvent(event),
@@ -933,4 +934,39 @@ test('task-state store: a failing broadcast never fails the write', () => {
   const next = store.setTaskState('s1', { classifyState: 'W' });
   assert.equal(next.classifyState, 'W');
   assert.equal(persistedSessions.get('s1').taskState.classifyState, 'W');
+});
+
+test('turn start persists activeTurnId in the same P write — one save, not two', t => {
+  // The in-flight identity is what a restart-recovered cancel reads. It used to
+  // be a second full save right after the P write; it now rides on that same
+  // write, so a turn start costs exactly one disk save.
+  const h = harness(t);
+  const writesSince = marker => h.events.slice(marker)
+    .filter(event => event.kind === 'task_state_write' && event.save);
+
+  const beforeContinuation = h.events.length;
+  h.classify.ensureCurrentTask(h.chatState, 's1', '继续做', false, {
+    taskId: 'tsk-1', turnId: 'turn-a',
+  });
+  const continuationWrites = writesSince(beforeContinuation);
+  assert.equal(continuationWrites.length, 1, 'continuation turn start = one save');
+  assert.equal(continuationWrites[0].patch.classifyState, 'P');
+  assert.equal(continuationWrites[0].patch.activeTurnId, 'turn-a',
+    'the P write carries the in-flight identity');
+
+  const beforeNew = h.events.length;
+  h.classify.ensureCurrentTask(h.chatState, 's1', '换一个新任务', true, {
+    taskId: 'tsk-2', turnId: 'turn-b',
+  });
+  const newWrites = writesSince(beforeNew);
+  assert.equal(newWrites.length, 1, 'new-task turn start = one save');
+  assert.equal(newWrites[0].patch.classifyState, 'P');
+  assert.equal(newWrites[0].patch.activeTurnId, 'turn-b');
+
+  // No second, identity-only write survives anywhere in the turn engine.
+  const engine = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  assert.doesNotMatch(engine, /setTaskState\(sessionName,\s*\{\s*activeTurnId:\s*turn\.turnId/,
+    'activeTurnId must not get its own full save at turn start');
+  assert.match(engine, /ensureCurrentTask\(cs, sessionName, text, taskBoundaryChanged, \{[\s\S]{0,400}?turnId,/,
+    'the turn engine passes its turnId into the same P write');
 });

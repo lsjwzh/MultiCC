@@ -12,6 +12,7 @@ const test = require('node:test');
 
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
+const { createUnattendedHost } = require('../src/unattended/host');
 const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 
 const FAIL_FAST = Object.freeze({
@@ -32,6 +33,7 @@ function fixture({
   backgroundPending = false,
   hasBackgroundPending = () => backgroundPending,
   unattendedHost = null,
+  realUnattended = null,
   pendingUserInput = false,
 } = {}) {
   const record = {
@@ -63,6 +65,7 @@ function fixture({
     transitionTaskIds: [],
     broadcasts: [], pushes: [], evaluated: 0, evaluatedRaw: [], boardTurnEnds: 0,
     auxRuns: [], annotations: [], taskAttributionSettled: [],
+    injected: [], unattendedNotices: [],
   };
   let releaseAux = () => {};
   const auxQueue = {
@@ -76,6 +79,37 @@ function fixture({
     },
     cancelClassifyFor(sessionKey) { observed.cancelledFor.push(sessionKey); return 1; },
   };
+  // A REAL unattended host (real Rust kernel) when a test wants the actual
+  // turn-end policy instead of a call recorder. Only its external ports are
+  // doubles: the record, history and an immediate aux verdict.
+  if (realUnattended) {
+    const verdict = realUnattended.auxReply
+      || '{"verdict":"continue","reason":"more","nextInstruction":"keep going"}';
+    unattendedHost = createUnattendedHost({
+      getRecord: id => persistedSessions.get(id),
+      persistState: (id, next) => {
+        const stored = persistedSessions.get(id);
+        if (!stored) return null;
+        if (next == null) delete stored.unattended;
+        else stored.unattended = next;
+        return stored.unattended || null;
+      },
+      getHistory: () => history,
+      setTaskState: (_id, patch) => { record.taskState = { ...record.taskState, ...(patch || {}) }; },
+      getPendingQuestion: () => null,
+      getAuxQueue: () => ({
+        enqueue: async () => ({ text: verdict }),
+      }),
+      deliver: async (_id, text, options) => observed.injected.push({ text, options }),
+      inject: (_id, text) => observed.injected.push({ text }),
+      notify: (...args) => observed.unattendedNotices.push(args),
+      broadcast: () => {},
+      appendMessage: () => true,
+      hasQueuedDeliveries: async () => false,
+      isRunActive: () => false,
+      now: Date.now,
+    });
+  }
   const machine = createClassifyStateMachine({
     persistedSessions,
     chatSessions,
@@ -133,7 +167,8 @@ function fixture({
     hasBackgroundPending,
     getUnattendedHost: () => unattendedHost,
   });
-  return { machine, record, chatState, history, observed, releaseAux: () => releaseAux() };
+  return { machine, record, chatState, history, observed, unattendedHost,
+    releaseAux: () => releaseAux() };
 }
 
 // Builds a real background-task-runtime instance (not a stubbed boolean) so the
@@ -433,24 +468,127 @@ test('a host reason never overrides a decision the boundary already made', () =>
 
 test('an E with no bounded retry asks the unattended supervisor to continue; a planned retry does not', () => {
   const faults = [];
-  const unattendedHost = { onFault: (id, detail) => faults.push({ id, detail }) };
+  const unattendedHost = { onTurnEnd: (id, detail) => faults.push({ id, detail }) };
   const h = fixture({ unattendedHost });
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'api-error' });
-  assert.equal(faults.length, 1, 'fault continuation is offered exactly once');
+  assert.equal(faults.length, 1, 'the turn end is reported exactly once');
   assert.equal(faults[0].id, 's1');
-  assert.equal(faults[0].detail.reason, 'unknown', 'the policy category travels with the fault');
+  assert.equal(faults[0].detail.kind, 'fault', 'an E fault is not a settle');
+  assert.equal(faults[0].detail.retryScheduled, false);
 
   faults.length = 0;
   const retried = fixture({ unattendedHost, lastDecision: { ...FAIL_FAST, action: 'retry' } });
   retried.machine.classifyTurnEnd(retried.chatState, 's1', { classification: 'api-error' });
-  assert.equal(faults.length, 0, 'the API policy already owns the retry — the supervisor must do nothing');
+  assert.equal(faults.length, 1, 'the turn end is still reported');
+  assert.equal(faults[0].detail.retryScheduled, true,
+    'the fact that the API policy owns the retry travels to the kernel; it decides no action');
+});
+
+test('every host-side cancel reaches the supervisor through the one turn-end entry', () => {  // The incident: a watchdog/stalled-recovery/shutdown cancel ended the turn but
+  // reached none of the supervisor entries, so an unattended session stayed
+  // active with nothing running. One entry, one fact envelope, for every cause.
+  for (const source of ['process_watchdog', 'stalled_recovery', 'shutdown', 'cli_switch', 'manual_cancel']) {
+    const events = [];
+    const h = fixture({ unattendedHost: { onTurnEnd: (id, detail) => events.push({ id, detail }) } });
+    h.machine.dispatchStateAction({
+      state: 'E', goal: '定位 codex 冷启瓶颈', phase: 'planning',
+      cancel: { source, reason: source, at: Date.now(), runnerStopped: true },
+    }, { sessionName: 's1', sessionId: 's1', cs: h.chatState, isTerminal: false, source: 'multicc/cancel',
+      turnId: 'turn-cancel-1' });
+    assert.equal(events.length, 1, `${source}: exactly one supervisor turn end`);
+    assert.equal(events[0].id, 's1');
+    assert.equal(events[0].detail.kind, 'cancel');
+    assert.equal(events[0].detail.cancelSource, source);
+    assert.equal(events[0].detail.turnId, 'turn-cancel-1',
+      'the dedupe key travels with the cancel observer');
+    assert.equal(h.record.taskState.turnId, 'turn-cancel-1',
+      'the persisted task state carries the same turn identity for restart replay');
+  }
+});
+
+const settleMicrotasks = async (rounds = 4) => {
+  for (let index = 0; index < rounds; index += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+};
+
+function observerContext(h, turnId, killReason = null) {
+  return {
+    sessionName: 's1', sessionId: 's1', cs: h.chatState, isTerminal: false,
+    source: 'multicc/turn-rules', liveness: { state: 'inactive', reason: 'test' },
+    turnId, killReason,
+  };
+}
+
+test('the settle and host-cancel observers act exactly once per turn in either arrival order', async () => {
+  // High 2: the turn-finalize observer and the cancel observer both report the
+  // same turn. The persisted turn identity makes the second report a no-op, so
+  // a host-side interrupt injects exactly one continuation.
+  for (const order of ['settle-first', 'cancel-first']) {
+    const h = fixture({ realUnattended: {} });
+    h.unattendedHost.armFromRequest('s1', { goal: '定位 codex 冷启瓶颈', maxDurationMinutes: 30 },
+      { defaultGoal: '定位 codex 冷启瓶颈' });
+    const ctx = observerContext(h, 'turn-race');
+    const settle = () => h.machine.dispatchStateAction(
+      { state: 'D', goal: '定位 codex 冷启瓶颈', phase: 'implementing' }, ctx);
+    const cancel = () => h.machine.dispatchStateAction({
+      state: 'E', goal: '定位 codex 冷启瓶颈', phase: 'implementing',
+      cancel: { source: 'process_watchdog', reason: 'process_watchdog', at: Date.now(), runnerStopped: true },
+    }, ctx);
+    if (order === 'settle-first') {
+      settle();
+      await settleMicrotasks();
+      cancel();
+    } else {
+      cancel();
+      await settleMicrotasks();
+      settle();
+    }
+    await settleMicrotasks();
+    assert.equal(h.observed.injected.length, 1, `${order}: exactly one supervisor action`);
+    assert.match(h.observed.injected[0].text, /无人值守/);
+    assert.equal(h.unattendedHost.get('s1').lastTurnEndId, 'turn-race');
+    assert.equal(h.record.taskState.turnId, 'turn-race');
+  }
+});
+
+test('the fault and user-cancel observers never inject and end paused in either arrival order', async () => {
+  // High 1: a user cancel can reach turn end as an E fault (stream reject) or as
+  // the cancel writer. Source attribution is independent of `kind`: both report
+  // the same user source and the supervisor pauses, never injects.
+  for (const order of ['fault-first', 'cancel-first']) {
+    const h = fixture({ realUnattended: {} });
+    h.unattendedHost.armFromRequest('s1', { goal: '定位 codex 冷启瓶颈', maxDurationMinutes: 30 },
+      { defaultGoal: '定位 codex 冷启瓶颈' });
+    const ctx = observerContext(h, 'turn-user', 'user_cancel');
+    const fault = () => h.machine.dispatchStateAction(
+      { state: 'E', goal: '定位 codex 冷启瓶颈', phase: 'implementing' }, ctx);
+    const cancel = () => h.machine.dispatchStateAction({
+      state: 'E', goal: '定位 codex 冷启瓶颈', phase: 'implementing',
+      cancel: { source: 'manual_cancel', reason: 'user_cancel', at: Date.now(), runnerStopped: true },
+    }, ctx);
+    if (order === 'fault-first') {
+      fault();
+      await settleMicrotasks();
+      cancel();
+    } else {
+      cancel();
+      await settleMicrotasks();
+      fault();
+    }
+    await settleMicrotasks();
+    assert.equal(h.observed.injected.length, 0, `${order}: a user cancel never injects`);
+    assert.equal(h.unattendedHost.get('s1').status, 'stopped');
+    assert.equal(h.unattendedHost.get('s1').pausedBy, 'cancel');
+    assert.equal(h.observed.unattendedNotices.length, 0, `${order}: no continuation notice`);
+  }
 });
 
 test('a D settle holds its classic push for the supervisor and hands it back as the fallback', () => {
   const settled = [];
   const unattendedHost = {
     shouldHoldPush: () => true,
-    onTurnSettled: (id, detail) => settled.push({ id, detail }),
+    onTurnEnd: (id, detail) => settled.push({ id, detail }),
   };
   const h = fixture({ unattendedHost });
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
@@ -458,6 +596,8 @@ test('a D settle holds its classic push for the supervisor and hands it back as 
   assert.deepEqual(h.observed.pushes, [], 'the classic succeeded push is held while the verdict runs');
   assert.equal(settled.length, 1);
   assert.equal(settled[0].id, 's1');
+  assert.equal(settled[0].detail.kind, 'settle');
+  assert.equal(settled[0].detail.settle, 'D');
   assert.equal(typeof settled[0].detail.fallbackPush, 'function');
   settled[0].detail.fallbackPush();
   assert.equal(h.observed.pushes.length, 1, 'a no-op verdict still releases the held push');
@@ -468,13 +608,15 @@ test('a W settle also holds its waiting push; a B settle never does', () => {
   const settled = [];
   const unattendedHost = {
     shouldHoldPush: () => true,
-    onTurnSettled: (id, detail) => settled.push({ id, detail }),
+    onTurnEnd: (id, detail) => settled.push({ id, detail }),
   };
   const waiting = fixture({ unattendedHost, pendingUserInput: true });
   waiting.machine.classifyTurnEnd(waiting.chatState, 's1', { classification: 'succeeded' });
   assert.equal(waiting.record.taskState.classifyState, 'W');
   assert.deepEqual(waiting.observed.pushes, [], 'W holds its waiting push');
   assert.equal(settled.length, 1);
+  assert.equal(settled[0].detail.kind, 'settle');
+  assert.equal(settled[0].detail.settle, 'W');
   assert.equal(typeof settled[0].detail.fallbackPush, 'function');
 
   settled.length = 0;

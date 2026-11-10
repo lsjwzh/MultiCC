@@ -962,6 +962,44 @@ function createChatTurnEngine(deps) {
     let preparationStateActivated = false;
     let messageDurable = false;
     let preparationAttempt = null;
+    let preparationSettled = false;
+
+    // A turn that dies between the P write and the runner handoff has no
+    // provider process and no finalizer of its own. Leaving it as persisted P +
+    // `activeTurnId` makes the processing watchdog cancel a turn that never ran,
+    // and the supervisor treats that phantom as a host fault. Settle it here
+    // instead, through the same single entry a host cancel uses: the kernel owns
+    // what `preparation_failed` means (a host-side interruption → the armed
+    // supervisor continues under its fault cap), Node only reports the fact.
+    const settlePreparationFailure = async () => {
+      if (preparationSettled || !preparationStateActivated) return;
+      preparationSettled = true;
+      if (cs) cs._activeTurn = null;
+      const host = typeof getSessionWorkHost === 'function' ? getSessionWorkHost() : null;
+      if (!host || typeof host.cancelActiveTurn !== 'function') {
+        try {
+          setTaskState(sessionName, { activeTurnId: null }, { save: true });
+        } catch (error) {
+          logger.warn?.('chat_preparation_identity_clear_failed', {
+            sessionId: sessionName, error: error && error.message,
+          });
+        }
+        return;
+      }
+      try {
+        await host.cancelActiveTurn(sessionName, {
+          reason: preparationFailure,
+          killReason: preparationFailure,
+          source: 'preparation_failed',
+        });
+      } catch (error) {
+        logger.warn?.('chat_preparation_settle_failed', {
+          sessionId: sessionName,
+          reason: preparationFailure,
+          error: error && error.message,
+        });
+      }
+    };
 
     try {
     // A real user/trigger turn resets auto-continue guards.
@@ -1090,6 +1128,9 @@ function createChatTurnEngine(deps) {
       taskText: messageTask.text || text,
       taskSource: messageTask.source,
       explicitContinuation: identityLocked,
+      // The in-flight identity is persisted by that same P write, not by a
+      // second full save: one turn start = one disk write.
+      turnId,
     });
     cs.currentTaskName = cs.currentTask ? cs.currentTask.goal : '新任务'; // compat for legacy callers
     // Identity attribution starts as soon as the canonical user event is
@@ -1183,6 +1224,7 @@ function createChatTurnEngine(deps) {
       try { chatBroadcast(sessionName, { type: 'error', error: `消息组装失败：${e && e.message ? e.message : e}` }); } catch (_) {}
       setSessionStatus(sessionName, { status: 'idle', currentFile: null });
       cs.isStreaming = false;
+      await settlePreparationFailure();
       return false;
     }
     const promptText = renderPrompt(envelope);
@@ -1233,6 +1275,7 @@ function createChatTurnEngine(deps) {
       );
       if (!accepted) {
         preparationFailure = 'stream-runner-rejected';
+        await settlePreparationFailure();
         return false;
       }
       runnerHandedOff = true;
@@ -1748,6 +1791,7 @@ function createChatTurnEngine(deps) {
     cs.claudeProc = spawnChat(initialInvocation, false);
     if (!cs.claudeProc) {
       preparationFailure = 'process-runner-rejected';
+      await settlePreparationFailure();
       return false;
     }
     runnerHandedOff = true;
@@ -1784,6 +1828,7 @@ function createChatTurnEngine(deps) {
       if (preparationStateActivated) {
         setSessionStatus(sessionName, { status: 'idle', currentFile: null });
       }
+      await settlePreparationFailure();
       return false;
     } finally {
       // Record the runner-handoff outcome for this delivery identity so the

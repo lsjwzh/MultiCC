@@ -1569,3 +1569,29 @@ test('a redelivered persisted message is never refused by the configuration step
   assert.equal(step(false, { applyPendingConfiguration: () => true }, 's', {}, 't', admitted), 'admitted');
   assert.equal(step(false, {}, 's', {}, 't', admitted), 'admitted');
 });
+
+test('a preparation failure after turn start settles through the one host entry', () => {
+  // Composition failure, a rejected streaming runner, a rejected process spawn
+  // and the pre-handoff catch all leave a persisted P turn with an in-flight
+  // identity but no runner to finalize it. Each exit must settle once through
+  // the same cancel entry instead of waiting for the watchdog to declare a
+  // phantom dead turn. The decision (host interruption => fault continuation)
+  // stays in Rust (`preparation_failed` in HOST_CANCEL_SOURCES).
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const start = source.indexOf('function runChatTurn(sessionName, text, opts = {})');
+  const end = source.indexOf('function runChatTurnStreaming(', start);
+  assert.ok(start >= 0 && end > start);
+  const body = source.slice(start, end);
+
+  assert.match(body,
+    /const settlePreparationFailure = async \(\) => \{[\s\S]{0,400}?!preparationStateActivated\) return;[\s\S]{0,600}?preparationSettled = true;[\s\S]{0,900}?host\.cancelActiveTurn\(sessionName, \{[\s\S]{0,200}?source: 'preparation_failed'/,
+    'the settle helper is idempotent and reports the host-cancel fact');
+  assert.equal((body.match(/await settlePreparationFailure\(\);/g) || []).length, 4,
+    'every post-start failure exit settles (compose, stream reject, spawn reject, catch)');
+  // A failure before the P write has no turn to settle: the guard keeps the
+  // helper out of the message-not-durable / proof / user-input exits.
+  const activated = body.indexOf('preparationStateActivated = true;');
+  const firstCall = body.indexOf('await settlePreparationFailure();');
+  assert.ok(activated >= 0 && firstCall > activated,
+    'nothing is settled before the turn identity exists');
+});

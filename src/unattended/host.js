@@ -1,7 +1,5 @@
 'use strict';
 
-const { isWaitForUserLetter } = require('../classify/vocab');
-
 // Unattended-mode supervisor glue. All decisions (goal caps, verdict prompt,
 // parse tolerance, stall/fault policy, wall-clock deadline math) are in
 // native/core/src/unattended.rs; this host only gathers evidence, calls the aux
@@ -37,11 +35,17 @@ function createUnattendedHost(options = {}) {
     getAuxQueue = () => null,
     deliver,
     inject,
+    withdrawQueued = null,
     notify = () => {},
     broadcast = () => {},
     appendMessage = null,
     hasQueuedDeliveries = null,
     isRunActive = () => false,
+    // Restart reconciliation: the scheduler is the authority on whether a turn
+    // is still live, and the persisted task state names the interrupted cause.
+    getTaskState = () => ({}),
+    getSchedulerStatus = () => null,
+    listSessionIds = () => [],
     now = Date.now,
     setTimeout: setTimeoutFn = setTimeout,
     clearTimeout: clearTimeoutFn = clearTimeout,
@@ -60,6 +64,12 @@ function createUnattendedHost(options = {}) {
   // that does not produce its own supervisor notice drains these, so a settle is
   // never silent (docs/unattended-mode.md → notifications).
   const heldPushes = new Map();
+  // Scheduler entry ids of supervisor messages that were admitted but are still
+  // QUEUED (not yet claimed). A user takeover pauses the run, so its own
+  // not-yet-started continuations must be withdrawn instead of running one more
+  // round after the pause. Only ids the scheduler says are still pending are
+  // removed; a claimed/running entry is owned by the normal cancel path.
+  const pendingInjections = new Map();
   // Exactly one expiry timer per active session (setTimeout to deadlineAt,
   // unref'd). Cleared on every non-active write, stop/pause/resume and shutdown;
   // re-armed by the boot migration (src/unattended/runtime.js) and by resume.
@@ -191,6 +201,11 @@ function createUnattendedHost(options = {}) {
       log(`[unattended] persist failed for ${sessionId}: ${error && error.message ? error.message : error}`);
       return false;
     }
+    // Leaving active (pause, achieved, needs_human, expiry, error) means the
+    // supervisor must not start another round, including one it already
+    // admitted into the FIFO. Only withdraw after the state write landed: a
+    // failed write means the pause did not happen.
+    if (next && next.status !== STATUS.ACTIVE) withdrawPendingInjections(sessionId);
     syncTimer(sessionId, next);
     try {
       broadcast(sessionId, { type: 'unattended_state', unattended: next });
@@ -513,7 +528,7 @@ function createUnattendedHost(options = {}) {
     write(sessionId, { ...state, evaluating: value === true, updatedAt: now() });
   }
 
-  async function runEvaluation(sessionId, reason, assistantText) {
+  async function runEvaluation(sessionId, reason, assistantText, settledAt = null) {
     if (expireIfDue(sessionId)) return { ok: false, code: 'expired' };
     const state = stateOf(sessionId);
     if (!state || state.status !== STATUS.ACTIVE) return { ok: false, code: 'not_active' };
@@ -568,10 +583,14 @@ function createUnattendedHost(options = {}) {
       evaluation: collected,
       now: now(),
     });
-    if (!write(sessionId, decision.nextState)) {
+    // `lastSettleAt` is the restart-reconciliation watermark: a settle that was
+    // handled here must never be replayed by the boot pass.
+    const nextState = settledAt ? { ...decision.nextState, lastSettleAt: settledAt } : decision.nextState;
+    if (!write(sessionId, nextState)) {
       setEvaluating(sessionId, false);
       return { ok: false, code: 'persist_failed' };
     }
+    decision.nextState = nextState;
     traceDecision(sessionId, decision);
     try {
       await apply(sessionId, decision);
@@ -602,7 +621,7 @@ function createUnattendedHost(options = {}) {
 
   // One evaluation in flight per session; a settle that arrives meanwhile is
   // coalesced into exactly one follow-up run (its held push travels with it).
-  function evaluate(sessionId, { reason = 'turn_end', assistantText = '', fallbackPush = null } = {}) {
+  function evaluate(sessionId, { reason = 'turn_end', assistantText = '', fallbackPush = null, settledAt = null } = {}) {
     rememberHeldPush(sessionId, fallbackPush);
     // A late timer must never allow another injection: check the deadline
     // before anything else. Expiry releases the held push itself.
@@ -617,7 +636,7 @@ function createUnattendedHost(options = {}) {
       return Promise.resolve({ ok: false, code: 'not_active' });
     }
     inFlight.add(sessionId);
-    return runEvaluation(sessionId, reason, assistantText)
+    return runEvaluation(sessionId, reason, assistantText, settledAt)
       .catch(error => {
         log(`[unattended] evaluation failed for ${sessionId}: ${error && error.message ? error.message : error}`);
         return { ok: false, code: 'evaluation_failed' };
@@ -646,16 +665,17 @@ function createUnattendedHost(options = {}) {
         // The aux answered the pending question itself: deliver it exactly like
         // a user's answer so the wait_for_user_answer request is resolved. The
         // marker + 🔇 prefix keep it out of "real user" classification.
-        await deliver(sessionId, tagged(decision.answer), {
+        const sent = await deliver(sessionId, tagged(decision.answer), {
           userInputRequestId: decision.pendingQuestionId,
           unattendedSystem: true,
           system: true,
         });
+        rememberInjection(sessionId, sent);
         return;
       }
       // The marker is added by code, never by the model; re-tagging also
       // normalises any marker the aux emitted itself.
-      if (typeof inject === 'function') inject(sessionId, tagged(message));
+      if (typeof inject === 'function') trackInjection(sessionId, inject(sessionId, tagged(message)));
       return;
     }
     if (action === 'achieved') {
@@ -693,52 +713,171 @@ function createUnattendedHost(options = {}) {
     return !!String(text || '').trim();
   }
 
-  function resetFaultCounter(sessionId) {
-    const state = stateOf(sessionId);
-    if (!state || state.status !== STATUS.ACTIVE) return;
-    const stall = state.stall || {};
-    if (!stall.consecutiveFaults) return;
-    write(sessionId, {
-      ...state,
-      stall: { ...stall, consecutiveFaults: 0 },
-      updatedAt: now(),
+  function firePush(push) {
+    if (typeof push !== 'function') return;
+    try { push(); } catch (error) {
+      log(`[unattended] fallback push failed: ${error && error.message ? error.message : error}`);
+    }
+  }
+
+  // The delivery boundary resolves to the scheduler admission result
+  // `{ ok, entry: { id }, queued }`. Remember only entries that are still
+  // waiting; an admitted-and-selected continuation is already a live turn.
+  function rememberInjection(sessionId, result) {
+    if (!withdrawQueued || !result || result.ok === false || result.duplicate === true) return;
+    if (result.queued !== true) return;
+    const entryId = result.entry && result.entry.id;
+    if (!entryId) return;
+    const set = pendingInjections.get(sessionId) || new Set();
+    set.add(entryId);
+    pendingInjections.set(sessionId, set);
+  }
+
+  function trackInjection(sessionId, sent) {
+    if (!withdrawQueued || !sent) return;
+    if (typeof sent.then !== 'function') { rememberInjection(sessionId, sent); return; }
+    sent.then(result => rememberInjection(sessionId, result)).catch(error => {
+      log(`[unattended] continuation admission failed for ${sessionId}: ${error && error.message ? error.message : error}`);
     });
   }
 
-  // Called by the classify state machine when a turn settles as D or W.
-  // `settle` is the classify letter. A D with staged FIFO work is NOT judged
-  // yet: the scheduler will drain that queue on its own, and a verdict on this
-  // now-stale output would only burn a round and queue an instruction ahead of
-  // the user's work (a supervisor continuation is an "insert now" control).
-  // The last backlog turn's own D settle then makes the verdict. W must still
-  // be judged: its pending question is exactly what the aux has to answer.
-  async function onTurnSettled(sessionId, { assistantText = '', fallbackPush = null, settle = 'D' } = {}) {
-    const state = stateOf(sessionId);
-    if (!state || state.status !== STATUS.ACTIVE) {
-      if (typeof fallbackPush === 'function') {
-        try { fallbackPush(); } catch (_) {}
+  function withdrawPendingInjections(sessionId) {
+    const set = pendingInjections.get(sessionId);
+    pendingInjections.delete(sessionId);
+    if (!set || !set.size || !withdrawQueued) return;
+    for (const entryId of set) {
+      try {
+        Promise.resolve(withdrawQueued(sessionId, entryId)).catch(error => {
+          log(`[unattended] queued continuation withdraw failed for ${sessionId}/${entryId}: ${error && error.message ? error.message : error}`);
+        });
+      } catch (error) {
+        log(`[unattended] queued continuation withdraw failed for ${sessionId}/${entryId}: ${error && error.message ? error.message : error}`);
       }
-      return null;
     }
-    // A clean D/W settle proves the upstream recovered.
-    resetFaultCounter(sessionId);
-    // A late deadline must not let a stale backlog deferral buy another round.
-    if (expireIfDue(sessionId)) return null;
-    if (!isWaitForUserLetter(settle) && await backlogPending(sessionId)) {
-      // Release the held classic push as every no-op path does, so this settle
-      // is never silent while the scheduler drains the backlog.
-      rememberHeldPush(sessionId, fallbackPush);
-      releaseHeldPushes(sessionId);
-      return { ok: false, code: 'backlog_pending' };
-    }
-    return evaluate(sessionId, { reason: 'turn_end', assistantText, fallbackPush });
   }
 
-  // A user Cancel is a deliberate stop, not a fault.
-  function onManualCancel(sessionId) {
+  function markSettle(state, at) {
+    return { ...state, lastSettleAt: at };
+  }
+
+  // The ONE entry for every way a turn can end: D/W settle, E fault, user
+  // cancel, host-side cancel (watchdog, stalled recovery, restart/shutdown,
+  // provider reclaim) and a boot replay of a settle that happened before this
+  // host was ready. The host only gathers facts — the classify letter, the
+  // cancel attribution, whether the API policy scheduled a retry, whether the
+  // scheduler still has staged backlog — and native/core/src/unattended.rs
+  // decides the single action (`evaluate | fault_continue | needs_human |
+  // pause | none`). Every no-action/decision-failure branch releases the held
+  // classic push, so a settle is never silent.
+  async function onTurnEnd(sessionId, facts = {}) {
+    const {
+      kind = 'settle',
+      settle = '',
+      turnId = '',
+      cancelSource = '',
+      killReason = '',
+      retryScheduled,
+      assistantText = '',
+      fallbackPush = null,
+    } = facts;
+    const push = typeof fallbackPush === 'function' ? fallbackPush : null;
     const state = stateOf(sessionId);
-    if (!state || state.status !== STATUS.ACTIVE) return null;
-    return pause(sessionId, 'cancel');
+    if (!state || state.status !== STATUS.ACTIVE) {
+      firePush(push);
+      return null;
+    }
+    // A late deadline must not let a stale settle buy another round. Expiry
+    // produces its own notice, so the held push stays suppressed.
+    if (expireIfDue(sessionId)) return null;
+    // Only a settle needs the backlog fact; the read is async and a user
+    // message may pause us meanwhile.
+    const backlog = kind === 'settle' ? await backlogPending(sessionId) : false;
+    const latest = stateOf(sessionId);
+    if (!latest || latest.status !== STATUS.ACTIVE) {
+      releaseHeldPushes(sessionId);
+      firePush(push);
+      return null;
+    }
+    let decision;
+    try {
+      decision = kernel.decideTurnEnd({
+        state: latest,
+        now: now(),
+        kind,
+        settle,
+        turnId,
+        cancelSource,
+        killReason,
+        // Strict fact contract: pass the value through unchanged (undefined when
+        // absent). A non-boolean is rejected by the kernel instead of being
+        // silently coerced, which is how a scheduled retry used to double-inject.
+        retryScheduled,
+        backlogPending: backlog,
+      });
+    } catch (error) {
+      log(`[unattended] turn-end decision failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+      releaseHeldPushes(sessionId);
+      firePush(push);
+      return null;
+    }
+    const action = decision && decision.action ? decision.action : 'none';
+    if (action === 'evaluate') {
+      // Claim the turn synchronously before the async verdict. The second
+      // observer may report the same turn while the Aux call is in flight; the
+      // persisted turn id is what makes that report a no-op.
+      if (decision.nextState) write(sessionId, markSettle(decision.nextState, now()));
+      return evaluate(sessionId, {
+        reason: 'turn_end', assistantText, fallbackPush: push, settledAt: now(),
+      });
+    }
+    if (action === 'pause') {
+      // The kernel names the pause cause (`cancel`, or `input` for an insert).
+      const by = decision.pausedBy === 'input' ? 'input' : 'cancel';
+      const next = markSettle({
+        ...(decision.nextState || latest),
+        status: STATUS.STOPPED,
+        pausedBy: by,
+        evaluating: false,
+        updatedAt: now(),
+      }, now());
+      if (!write(sessionId, next)) {
+        firePush(push);
+        return null;
+      }
+      try { tracePaused(sessionId, by); } catch (_) {}
+      return next;
+    }
+    if (action === 'fault_continue' || action === 'needs_human') {
+      if (!decision.nextState) {
+        firePush(push);
+        return null;
+      }
+      if (!write(sessionId, markSettle(decision.nextState, now()))) {
+        firePush(push);
+        return null;
+      }
+      if (action === 'fault_continue') {
+        trace(sessionId, tagged(`故障后自动继续（第 ${decision.faults || 1} 次）`));
+        if (typeof inject === 'function') trackInjection(sessionId, inject(sessionId, tagged(decision.message)));
+        return decision;
+      }
+      traceDecision(sessionId, decision);
+      Promise.resolve(apply(sessionId, decision)).catch(error => {
+        log(`[unattended] fault apply failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+      });
+      return decision;
+    }
+    // none: the kernel may still ask for a bookkeeping write (fault reset,
+    // settle watermark, turn identity for the deferred/retry branches). The
+    // held push must fire exactly once.
+    if (decision && decision.nextState) {
+      write(sessionId, markSettle(decision.nextState, now()));
+    }
+    if (push) {
+      rememberHeldPush(sessionId, push);
+      releaseHeldPushes(sessionId);
+    }
+    return { ok: false, code: (decision && decision.reason) || 'none' };
   }
 
   // A real user message takes over: pause first, then the caller delivers the
@@ -749,25 +888,69 @@ function createUnattendedHost(options = {}) {
     return pause(sessionId, 'input');
   }
 
-  // Immediate fault (E) continuation, no Aux call. The API-error policy has
-  // already decided there is no bounded retry left to make.
-  function onFault(sessionId, { reason = 'api_error' } = {}) {
-    if (expireIfDue(sessionId)) return null;
-    const state = stateOf(sessionId);
-    if (!state || state.status !== STATUS.ACTIVE) return null;
-    const decision = kernel.decideFault({ state, now: now(), reason });
-    if (!decision || decision.action === 'none') return null;
-    if (!write(sessionId, decision.nextState)) return null;
-    if (decision.action === 'fault_continue') {
-      trace(sessionId, tagged(`故障后自动继续（第 ${decision.faults} 次）`));
-      if (typeof inject === 'function') inject(sessionId, tagged(decision.message));
-      return decision;
+  // A restart can settle a turn before this host is ready: the processing
+  // watchdog writes E + cancelledAt straight to the task state, and the live
+  // `onTurnEnd` never runs. Replay those settles — once. `lastSettleAt` is
+  // persisted together with every state write this host makes, so a settle it
+  // already handled is never replayed. Only cancellations are replayed here: a
+  // plain D/W/E that this host never saw is ambiguous with an API-policy retry
+  // and must not be guessed.
+  //
+  // A persisted `P` turn with no cancel record belongs to the processing
+  // watchdog, not to boot: the runner is gone, so its dead-runner detection
+  // cancels it through the same single entry (`cancelSource:process_watchdog`).
+  // This function therefore never invents a settle for that shape — two owners
+  // would depend on `duplicate_turn` for the continuation to stay single.
+  async function reconcileStartup() {
+    const settled = [];
+    const failed = [];
+    let ids = [];
+    try { ids = Array.from(listSessionIds() || []); } catch (_) { ids = []; }
+    const replay = async (sessionId, facts) => {
+      const result = await onTurnEnd(sessionId, facts);
+      if (result && !(result.ok === false && result.code === 'duplicate_turn')) settled.push(result);
+    };
+    for (const sessionId of ids) {
+      // One broken session must never stop the rest of the boot pass.
+      try {
+        let state;
+        try { state = stateOf(sessionId); } catch (_) { state = null; }
+        if (!state || state.status !== STATUS.ACTIVE) continue;
+        let taskState;
+        try { taskState = getTaskState(sessionId) || {}; } catch (_) { taskState = {}; }
+        const cancelledAt = Number(taskState.cancelledAt || 0);
+        const cancelSource = taskState.cancelSource || '';
+        // A live `P` (or a shutdown-killed one) has no cancel record: the
+        // processing watchdog owns that turn end. Only a recorded cancel is
+        // replayed here.
+        if (!cancelledAt || !cancelSource) continue;
+        // Only events inside the CURRENT run belong to it. A historical settle
+        // that predates this run's startedAt must not pause or continue it.
+        const startedAt = Number(state.startedAt || 0);
+        const settledAt = Math.max(Number(taskState.endedAt || 0), cancelledAt);
+        if (!(settledAt > startedAt)) continue;
+        if (!(settledAt > Number(state.lastSettleAt || 0))) continue;
+        let status = null;
+        try { status = await getSchedulerStatus(sessionId); } catch (_) { status = null; }
+        // A live/recovered slot is not this replay's business; the watchdog and
+        // the normal turn end own it.
+        if (status && status.active) continue;
+        await replay(sessionId, {
+          kind: 'cancel',
+          settle: 'E',
+          turnId: taskState.turnId || '',
+          cancelSource,
+          killReason: taskState.cancelReason || cancelSource,
+        });
+      } catch (error) {
+        failed.push({ sessionId, error });
+        log(`[unattended] startup reconcile failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+      }
     }
-    traceDecision(sessionId, decision);
-    Promise.resolve(apply(sessionId, decision)).catch(error => {
-      log(`[unattended] fault apply failed for ${sessionId}: ${error && error.message ? error.message : error}`);
-    });
-    return decision;
+    if (failed.length) {
+      log(`[unattended] startup reconcile: ${failed.length} session(s) failed: ${failed.map(item => item.sessionId).join(', ')}`);
+    }
+    return { settled, failed, failedIds: failed.map(item => item.sessionId) };
   }
 
   function stats() {
@@ -779,9 +962,8 @@ function createUnattendedHost(options = {}) {
     evaluate,
     get,
     noteUserMessage,
-    onFault,
-    onManualCancel,
-    onTurnSettled,
+    onTurnEnd,
+    reconcileStartup,
     rearmTimer,
     resume,
     shouldHoldPush,

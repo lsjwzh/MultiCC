@@ -194,7 +194,7 @@ function createClassifyStateMachine(rawDeps) {
     // ordinary rule verdict: same letter, same transition, same writer — the extra
     // envelope only records who asked and whether the runner actually stopped.
     const cancel = result.cancel && typeof result.cancel === 'object' ? result.cancel : null;
-    const { sessionName, sessionId, cs, isTerminal, source } = ctx;
+    const { sessionName, sessionId, cs, isTerminal, source, turnId = null } = ctx;
     const liveness = ctx.liveness || turnLivenessForClassify(sessionName);
 
     // ── Classify history (persisted, last 7 days) ────────────────────────
@@ -356,7 +356,7 @@ function createClassifyStateMachine(rawDeps) {
       setSessionStatus(sessionName, { status: 'succeeded' });
       // D triggers no later state write, so persist it immediately. Otherwise a
       // crash before the next durable operation restores a stale P/W/E snapshot.
-      setTaskState(sessionName, { classifyState: 'D', goalState, endedAt: Date.now() });
+      setTaskState(sessionName, { classifyState: 'D', goalState, endedAt: Date.now(), activeTurnId: null });
       getWaitInjector().resetAuto(sessionName);
       // Clear the resume-interrupted counter so any future P-misclassify restarts from
       // count=1 rather than compounding on this concluded task. (Note: this clears the
@@ -366,7 +366,11 @@ function createClassifyStateMachine(rawDeps) {
       // Unattended mode: a finished turn is the only verdict trigger besides an
       // explicit start/resume. Fire and forget — the supervisor guards itself;
       // `fallbackPush` fires if it ends in a no-op.
-      try { getUnattendedHost()?.onTurnSettled(sessionName, { assistantText: settledAssistantText, fallbackPush, settle: 'D' }); } catch (_) {}
+      try {
+        getUnattendedHost()?.onTurnEnd(sessionName, {
+          kind: 'settle', settle: 'D', turnId, assistantText: settledAssistantText, fallbackPush,
+        });
+      } catch (_) {}
       return;
     }
 
@@ -425,18 +429,20 @@ function createClassifyStateMachine(rawDeps) {
         provider: persisted?.cli || 'unknown',
         policyAction: cs?._lastApiErrorDecision?.action || 'fail_fast',
       });
-      // Unattended fault continuation: only when the centralized policy is done
-      // (it may have scheduled its own bounded retry — then there is nothing to
-      // do). No Aux call, counts as a round, 3 consecutive faults need a human.
-      if (cs?._lastApiErrorDecision?.action !== 'retry') {
-        try {
-          getUnattendedHost()?.onFault?.(sessionName, {
-            reason: cs?._lastApiErrorDecision?.error?.category
-              || cs?._lastApiErrorDecision?.category
-              || ctx.killReason || 'api_error',
-          });
-        } catch (_) {}
-      }
+      // Unattended fault continuation: report the turn end either way and let
+      // the kernel decide — when the centralized policy already scheduled its
+      // own bounded retry there is nothing to do; otherwise a fixed continue
+      // instruction goes out (no Aux call, counts as a round, 3 consecutive
+      // faults need a human).
+      try {
+        getUnattendedHost()?.onTurnEnd?.(sessionName, {
+          kind: 'fault',
+          settle: 'E',
+          turnId,
+          killReason: ctx.killReason || '',
+          retryScheduled: cs?._lastApiErrorDecision?.action === 'retry',
+        });
+      } catch (_) {}
     }
 
     // Common waiting-state broadcast — driven by classifyState letter.
@@ -503,6 +509,10 @@ function createClassifyStateMachine(rawDeps) {
         classifyState: cls,
         goalState: null,
         endedAt: Date.now(),
+        turnId: turnId || null,
+        // The turn is over: its identity is now the settled `turnId`, never the
+        // in-flight marker a recovered cancel uses.
+        activeTurnId: null,
         cancelledAt: cancel.at || Date.now(),
         cancelReason: cancel.reason || 'user_cancelled',
         cancelSource: cancel.source || 'manual_cancel',
@@ -510,20 +520,30 @@ function createClassifyStateMachine(rawDeps) {
         cancelSuperseded: cancel.superseded === true,
         supersededByEntryId: cancel.supersededByEntryId || null,
       }
-      : { classifyState: cls, goalState: null, endedAt: Date.now() });
+      : { classifyState: cls, goalState: null, endedAt: Date.now(), turnId: turnId || null, activeTurnId: null });
     // Reset auto-continue guard when the user is in charge now. B/E keep their own flow.
     if (isWaitForUserLetter(state)) {
       getWaitInjector().resetAuto(sessionName);
     }
-    // Unattended mode: a human Cancel disarms it; a W (waiting on the user) is a
-    // finished turn and gets a verdict like D. B (background) and E (fault) do
-    // not — their own policies own them.
+    // Unattended mode: every turn end is reported through the one entry. The
+    // kernel decides whether a cancel pauses (a human stopped it) or continues
+    // (the host/upstream interrupted it) — the state machine only passes the
+    // structured facts. A W (waiting on the user) is a finished turn and gets a
+    // verdict like D; B is owned by its background policy and is not a settle.
     try {
       const unattended = getUnattendedHost();
       if (cancel) {
-        if (cancel.source === 'manual_cancel') unattended?.onManualCancel(sessionName);
+        unattended?.onTurnEnd?.(sessionName, {
+          kind: 'cancel',
+          settle: cls,
+          turnId,
+          cancelSource: cancel.source || 'manual_cancel',
+          killReason: cancel.reason || '',
+        });
       } else if (isWaitForUserLetter(state)) {
-        unattended?.onTurnSettled(sessionName, { assistantText: settledAssistantText, fallbackPush, settle: 'W' });
+        unattended?.onTurnEnd?.(sessionName, {
+          kind: 'settle', settle: 'W', turnId, assistantText: settledAssistantText, fallbackPush,
+        });
       }
     } catch (_) {}
   }
@@ -632,6 +652,10 @@ function createClassifyStateMachine(rawDeps) {
     // Liveness independently proved the structured verdict may commit.
     const actionContext = {
       sessionName, sessionId, cs, isTerminal: false, cwd, source, liveness,
+      // The per-turn identity that makes the supervisor's turn-end report
+      // idempotent: the finalize observer and the cancel observer report the
+      // same turn, and only one of them may act. Persisted with the settle.
+      turnId: options.turnId || cs?._activeTurn?.turnId || null,
       // Only a turn-end verdict carries a host-side stop reason; scan-driven
       // reclassifications leave it null and fall back to the transcript.
       killReason: options.killReason || null,
@@ -1576,6 +1600,9 @@ function createClassifyStateMachine(rawDeps) {
       // is still running (classify will refine shortly).
       setTaskState(sessionName, {
         classifyState: 'P',
+        // 回合一旦存在就落盘在途身份（`_activeTurn` 只在内存里）。这与本行的 P
+        // 是同一次写盘：重启后的恢复取消只认它，不认回合结束才写的 `taskState.turnId`。
+        activeTurnId: identity.turnId || null,
         // 新一轮开始了，上一次 D 判定的子状态不再描述任何东西（同下面那批取消
         // 信封字段：留着就是一条自相矛盾的记录）。
         goalState: null,
@@ -1604,7 +1631,8 @@ function createClassifyStateMachine(rawDeps) {
       taskIdentityState: explicitContinuation ? 'canonical' : 'provisional',
       taskIdentityPending: !explicitContinuation,
       taskIdentityAnchorMessageId: anchorMessageId,
-      classifyState: 'P', goalState: null, cancelledAt: null, cancelReason: null,
+      classifyState: 'P', activeTurnId: identity.turnId || null,
+      goalState: null, cancelledAt: null, cancelReason: null,
       cancelSuperseded: false, supersededByEntryId: null,
     });
     recordTaskBoardGoal(sessionName, cs.currentTask.goal, cs.currentTask.phase, cs, 'P');

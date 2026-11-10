@@ -2440,7 +2440,12 @@ const userInputSignalHost = createUserInputSignalHost(
 // ── Unattended mode supervisor (docs/unattended-mode.md; decisions in Rust) ──
 const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions: savePersistedSessionsBestEffort,
   loadHistory: loadChatHistory, setTaskState, userInputSignalHost, getAuxQueue: () => auxQueue, taskContextHost,
-  waitInjector, triggerPush, chatBroadcast, logger, appendMessage: appendChatMessageSync, isRunActive: id => sessionWorkHost?.isRunActive(id) === true, hasQueuedDeliveries: id => (sessionWorkHost ? sessionWorkHost.hasQueuedDeliveries(id) : false) });
+  waitInjector, deliverInjection: (id, text) => sessionDelivery.deliverSystem(id, text),
+  withdrawQueued: (id, entryId) => (orchestrationRuntime
+    ? orchestrationRuntime.sessionScheduler.cancelQueued(id, entryId, { actor: 'unattended', reason: 'paused' })
+    : { ok: false, code: 'scheduler_unavailable' }),
+  triggerPush, chatBroadcast, logger, appendMessage: appendChatMessageSync, isRunActive: id => sessionWorkHost?.isRunActive(id) === true, hasQueuedDeliveries: id => (sessionWorkHost ? sessionWorkHost.hasQueuedDeliveries(id) : false),
+  getTaskState: id => getTaskState(persistedSessions.get(id)), getSchedulerStatus: id => (orchestrationRuntime ? orchestrationRuntime.sessionScheduler.status(id) : null), listSessionIds: () => [...persistedSessions.keys()] });
 sessionWorkHost = createSessionWorkHost({
   runtime: () => orchestrationRuntime,
   getRecord: id => persistedSessions.get(id),
@@ -2959,6 +2964,17 @@ app.use(safeErrorHandler(logger));
   await startupRepoReady;
   workspaceAdmission.initialize();
   await orchestrationRuntime.start();
+  // Replay restart-settled turns once (watchdog/startup recovery may have written E+cancelledAt
+  // before the supervisor was ready), so a live session is never left input-locked.
+  const reconciled = await unattendedHost.reconcileStartup().catch(error => {
+    logger.warn('unattended_startup_reconcile_failed', { error: error?.message || String(error || '') });
+    return null;
+  });
+  if (reconciled?.failedIds?.length) {
+    logger.warn('unattended_startup_reconcile_partial', {
+      failed: reconciled.failedIds.length, sessionIds: reconciled.failedIds,
+    });
+  }
   workspaceRuntime.hydrateQueueStatuses(await orchestrationRuntime.sessionScheduler.queueSummaries([...persistedSessions.keys()]));
   const gatewayChildMode = gatewayChild.isGatewayChild(process.env);
   if (!gatewayChildMode && networkPolicy.development) {

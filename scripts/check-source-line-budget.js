@@ -187,10 +187,17 @@ const MIGRATION_DEBT = Object.freeze({
   // 3038 行 / 162261 字节，按棘轮下调。
   // Provider 出口选择：Claude/Codex 两条协议代理共用一个出口解析器（+4 行），
   // 实测 3042/162591；本批改接异步历史确认并压缩兼容门面后降到 3040/162535。
+  // 2026-11-10 无人值守轮次结束统一入口：server.js 多接 getTaskState/
+  // getSchedulerStatus/listSessionIds 三个事实端口，并在启动收尾补一次
+  // reconcileStartup（重启遗留的已结算轮次只回放一次），实测高水位
+  // 3045/163172，按棘轮登记。协调审查后启动回放按会话隔离并汇总失败数
+  // （+8 行日志与端口读取），实测 3053/163405；第二轮把监督器的注入接到
+  // session delivery（deliverInjection）并接上排队撤回端口（+4 行），
+  // 实测 3057/163703。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3040,
-    byteCeiling: 162535,
+    ceiling: 3057,
+    byteCeiling: 163703,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),
