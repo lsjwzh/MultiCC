@@ -780,8 +780,8 @@ class AirQuickComposer extends StatefulWidget {
   /// 重试就是原样再点一次（同 Web Air 只在成功后清）。
   ///
   /// [text] 是**最终正文**：附件路径已经按 Web 的写法拼在末尾（`\n\n附件：…`）。
-  /// [unattended] 是无人值守配置（`{goal?, criteria?, maxRounds?}`），只有勾上
-  /// 「无人值守」才有值；它随第一条消息发给服务端（docs/unattended-mode.md）。
+  /// [unattended] 是无人值守配置（`{goal?, criteria?, maxDurationMinutes?}`），
+  /// 只有勾上「无人值守」才有值；它随第一条消息发给服务端（docs/unattended-mode.md）。
   final AirComposerSubmit onSubmit;
 
   @override
@@ -792,10 +792,12 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   final _controller = TextEditingController();
 
   // 无人值守（docs/unattended-mode.md 的创建入口）：勾上之后才展开目标、判断
-  // 标准和轮次上限。都是可选的 —— goal 空着由服务端默认成第一条消息正文。
+  // 标准和最长值守时间。都是可选的 —— goal 空着由服务端默认成第一条消息正文。
   final _unattendedGoalCtrl = TextEditingController();
   final _unattendedCriteriaCtrl = TextEditingController();
-  final _unattendedRoundsCtrl = TextEditingController(text: '30');
+  final _unattendedDurationCtrl = TextEditingController(
+    text: '${const UnattendedLimits().maxDurationMinutesDefault}',
+  );
   bool _unattended = false;
   bool _prechecking = false;
   String _precheckError = '';
@@ -925,7 +927,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     _controller.dispose();
     _unattendedGoalCtrl.dispose();
     _unattendedCriteriaCtrl.dispose();
-    _unattendedRoundsCtrl.dispose();
+    _unattendedDurationCtrl.dispose();
     super.dispose();
   }
 
@@ -938,10 +940,14 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
             : line.trim(),
   ].take(UnattendedState.maxCriteria).toList();
 
-  /// 轮次上限：默认 30，范围 1..200（服务端 limits 的硬边界）。
-  int _readMaxRounds() {
-    final value = int.tryParse(_unattendedRoundsCtrl.text.trim()) ?? 30;
-    return value.clamp(1, 200);
+  /// 最长值守时间（分钟）：默认 120，按服务端 limits 的 5..1440 收口。
+  int _readMaxDurationMinutes() {
+    const limits = UnattendedLimits();
+    final parsed = int.tryParse(_unattendedDurationCtrl.text.trim());
+    if (parsed == null) return limits.maxDurationMinutesDefault;
+    return limits.clampDurationMinutes(
+      parsed <= 0 ? limits.maxDurationMinutesMin : parsed,
+    );
   }
 
   /// 组装随第一条消息发出去的无人值守配置。空 goal 不发（服务端默认用正文）。
@@ -952,7 +958,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     return {
       if (goal.isNotEmpty) 'goal': goal,
       if (criteria.isNotEmpty) 'criteria': criteria,
-      'maxRounds': _readMaxRounds(),
+      'maxDurationMinutes': _readMaxDurationMinutes(),
     };
   }
 
@@ -1087,7 +1093,8 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
       _attachError = '';
       _unattendedGoalCtrl.clear();
       _unattendedCriteriaCtrl.clear();
-      _unattendedRoundsCtrl.text = '30';
+      _unattendedDurationCtrl.text =
+          '${const UnattendedLimits().maxDurationMinutesDefault}';
       _precheckError = '';
       _precheckNotes = const [];
     });
@@ -1284,7 +1291,8 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
             ),
           ),
           // 无人值守的展开面板（勾上才问）：目标（可空 = 用正文）、判断标准
-          // 一行一条、轮次上限，外加一个用目标预检草拟判断标准的按钮。
+          // 一行一条、最长值守时间（分钟），外加一个用目标预检草拟判断标准的
+          // 按钮（这里保持手动触发；聊天页的「启动」才自动预检）。
           if (_unattended) ...[
             Container(
               margin: const EdgeInsets.only(top: 8),
@@ -1393,15 +1401,15 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                   Row(
                     children: [
                       const Text(
-                        '轮次上限',
+                        '最长值守时间',
                         style: TextStyle(color: AppColors.muted, fontSize: 12),
                       ),
                       const SizedBox(width: 6),
                       SizedBox(
                         width: 72,
                         child: TextField(
-                          key: const ValueKey('air-quick-unattended-rounds'),
-                          controller: _unattendedRoundsCtrl,
+                          key: const ValueKey('air-quick-unattended-duration'),
+                          controller: _unattendedDurationCtrl,
                           enabled: !widget.busy,
                           keyboardType: TextInputType.number,
                           inputFormatters: [
@@ -1425,7 +1433,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                       ),
                       const SizedBox(width: 6),
                       const Text(
-                        '1–200，默认 30',
+                        '分钟 · 5–1440，默认 120',
                         style: TextStyle(color: AppColors.faint, fontSize: 11),
                       ),
                     ],

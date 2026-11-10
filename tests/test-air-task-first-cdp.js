@@ -1017,8 +1017,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`document.getElementById('create').click()`);
     assert.ok(await page.waitFor(`document.getElementById('quick-task-dialog').open===true`));
-    await page.evaluate(`(()=>{const s=document.getElementById('quick-task-dialog-directory');s.value='d2';s.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quick-task-input').value='从目录首页创建任务';const t=document.getElementById('quick-task-unattended');t.checked=true;t.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quick-unattended-goal').value='完成上线';document.getElementById('quick-unattended-rounds').value='12'})()`);
-    assert.equal(await page.evaluate(`document.getElementById('quick-unattended').hidden`), false, '开关打开后露出目标/标准/轮次');
+    await page.evaluate(`(()=>{const s=document.getElementById('quick-task-dialog-directory');s.value='d2';s.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quick-task-input').value='从目录首页创建任务';const t=document.getElementById('quick-task-unattended');t.checked=true;t.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quick-unattended-goal').value='完成上线';document.getElementById('quick-unattended-duration').value='3';document.getElementById('quick-unattended-duration-unit').value='h'})()`);
+    assert.equal(await page.evaluate(`document.getElementById('quick-unattended').hidden`), false, '开关打开后露出目标/标准/最长值守时间');
     await page.evaluate(`document.getElementById('quick-unattended-draft').click()`);
     assert.ok(await page.waitFor(`document.getElementById('quick-unattended-criteria').value.includes('构建通过')`), 'AI 补全把 criteria 填进文本框');
     assert.deepEqual(quickPrechecks, [{ task: '完成上线' }]);
@@ -1028,7 +1028,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(quickDispatches.length, 1);
     assert.equal(quickDispatches[0].text, '从目录首页创建任务');
     assert.deepEqual(quickDispatches[0].unattended,
-      { goal: '完成上线', criteria: ['构建通过', '测试通过'], maxRounds: 12 },
+      { goal: '完成上线', criteria: ['构建通过', '测试通过'], maxDurationMinutes: 180 },
       '第一条消息体带上无人值守配置');
     assert.equal('goal' in quickDispatches[0], false, '旧的 Goal mode 字段已经退场');
     // What the pills collected is what the task is created with — the runtime is

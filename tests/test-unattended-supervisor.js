@@ -17,8 +17,8 @@ const TAG = '[无人值守 Unattended]';
 
 function nextState(extra = {}) {
   return {
-    status: STATUS.ACTIVE, goal: 'ship it', criteria: [], maxRounds: 5, rounds: 1,
-    startedAt: 1, updatedAt: 2, lastVerdict: null, history: [],
+    status: STATUS.ACTIVE, goal: 'ship it', criteria: [], maxDurationMinutes: 5, rounds: 1,
+    startedAt: 1, deadlineAt: 1 + 5 * 60000, updatedAt: 2, lastVerdict: null, history: [],
     stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 0 },
     evaluating: false, pausedBy: null,
     ...extra,
@@ -47,6 +47,7 @@ function harness({
   busy = false,
   hasQueued = false,
   fault = null,
+  clock = 1234,
 } = {}) {
   const records = new Map([[record.id, record]]);
   const calls = { persist: [], broadcast: [], notify: [], inject: [], deliver: [], taskState: [],
@@ -54,6 +55,9 @@ function harness({
   const kernelCalls = { prompts: [], decisions: [], faults: [] };
   const failures = { persist: false, inject: false };
   let appendSeq = 0;
+  let currentClock = clock;
+  const timers = new Map();
+  let timerSeq = 0;
   const kernel = {
     tag: () => TAG,
     normalizeConfig(input) {
@@ -62,8 +66,24 @@ function harness({
       return { ok: true, config: {
         goal,
         criteria: Array.isArray(input.criteria) ? input.criteria.map(String) : [],
-        maxRounds: Math.max(1, Math.min(200, Math.floor(Number(input.maxRounds) || 30))),
+        maxDurationMinutes: Math.max(5, Math.min(1440, Math.floor(Number(input.maxDurationMinutes) || 120))),
       } };
+    },
+    clampDuration(input) {
+      return { maxDurationMinutes: Math.max(5, Math.min(1440, Math.floor(Number(input.maxDurationMinutes) || 120))) };
+    },
+    armDeadline(input) {
+      const at = Number(input.now) || 0;
+      const startedAt = input.startedAt == null ? at : Number(input.startedAt) || 0;
+      const minutes = Math.max(5, Math.min(1440, Math.floor(Number(input.maxDurationMinutes) || 120)));
+      let deadlineAt = startedAt + minutes * 60000;
+      let clamped = false;
+      if (deadlineAt <= at) { deadlineAt = at + 60000; clamped = true; }
+      return { startedAt, deadlineAt, maxDurationMinutes: minutes, clamped };
+    },
+    deadlineExpired(input) {
+      const deadlineAt = Number(input.deadlineAt) || 0;
+      return { expired: deadlineAt > 0 && (Number(input.now) || 0) >= deadlineAt };
     },
     buildVerdictPrompt(evidence) {
       kernelCalls.prompts.push(evidence);
@@ -124,18 +144,41 @@ function harness({
     },
     hasQueuedDeliveries: async () => hasQueued,
     isRunActive: () => busy,
-    now: () => 1234,
+    now: () => currentClock,
+    setTimeout: (fn, delay) => {
+      const id = ++timerSeq;
+      timers.set(id, { fn, at: currentClock + Math.max(0, Number(delay) || 0) });
+      return { id, unref() {} };
+    },
+    clearTimeout: timer => {
+      const id = timer && timer.id;
+      if (id) timers.delete(id);
+    },
     kernel,
   });
   async function arm(options = {}) {
-    const result = await host.start('s1', { goal: 'ship it', maxRounds: 5, evaluateNow: false, ...options });
+    const result = await host.start('s1', { goal: 'ship it', maxDurationMinutes: 5, evaluateNow: false, ...options });
     assert.equal(result.ok, true);
     calls.persist.length = 0;
     calls.broadcast.length = 0;
     calls.append.length = 0;
     return result;
   }
-  return { host, records, calls, kernelCalls, failures, arm, record };
+  function advance(ms) { currentClock += ms; }
+  function fireDueTimers(at = currentClock) {
+    currentClock = at;
+    let fired = 0;
+    for (const [id, timer] of [...timers]) {
+      if (timer.at <= currentClock) {
+        timers.delete(id);
+        fired += 1;
+        timer.fn();
+      }
+    }
+    return fired;
+  }
+  return { host, records, calls, kernelCalls, failures, arm, record, timers, advance, fireDueTimers,
+    clock: () => currentClock };
 }
 
 test('continue injects a tagged instruction, persists the new state and writes a trace', async () => {
@@ -461,20 +504,148 @@ test('a clean D/W settle resets the consecutive fault counter', async () => {
 
 test('first-message arming is idempotent for the same config', async () => {
   const f = harness();
-  const first = f.host.armFromRequest('s1', { maxRounds: 5 }, { defaultGoal: 'ship it' });
+  const first = f.host.armFromRequest('s1', { maxDurationMinutes: 90 }, { defaultGoal: 'ship it' });
   assert.equal(first.ok, true);
   assert.equal(first.unattended.goal, 'ship it');
-  assert.equal(first.unattended.maxRounds, 5);
+  assert.equal(first.unattended.maxDurationMinutes, 90);
   assert.equal(first.unattended.evaluating, false);
   assert.equal(first.unattended.pausedBy, null);
   assert.ok(first.unattended.startedAt === 1234);
-  const again = f.host.armFromRequest('s1', { maxRounds: 5 }, { defaultGoal: 'ship it' });
+  assert.equal(first.unattended.deadlineAt, 1234 + 90 * 60000);
+  const again = f.host.armFromRequest('s1', { maxDurationMinutes: 90 }, { defaultGoal: 'ship it' });
   assert.equal(again.unchanged, true);
   assert.equal(again.unattended, first.unattended, 'a receipt retry must not reset rounds');
   assert.deepEqual(f.host.armFromRequest('s1', {}, { defaultGoal: '   ' }),
     { ok: false, code: 'goal_required' });
-  assert.deepEqual(f.host.armFromRequest('missing', { maxRounds: 2 }),
+  assert.deepEqual(f.host.armFromRequest('missing', { maxDurationMinutes: 30 }),
     { ok: false, code: 'session_not_found' });
+});
+
+test('legacy maxRounds in a request is accepted but never persisted', async () => {
+  const f = harness();
+  const armed = f.host.armFromRequest('s1', { goal: 'ship it', maxRounds: 7 }, { defaultGoal: 'ship it' });
+  assert.equal(armed.ok, true);
+  assert.equal('maxRounds' in armed.unattended, false);
+  assert.equal(armed.unattended.maxDurationMinutes, 120);
+  assert.equal('maxRounds' in f.records.get('s1').unattended, false);
+
+  const started = await f.host.start('s1', { goal: 'ship it', maxRounds: 3, maxDurationMinutes: 60,
+    evaluateNow: false });
+  assert.equal(started.ok, true);
+  assert.equal('maxRounds' in started.unattended, false);
+  assert.equal(started.unattended.maxDurationMinutes, 60);
+  assert.equal(f.host.stats().timers, 1, 'one expiry timer for the active session');
+});
+
+test('the expiry timer fires without any turn settle', async () => {
+  const f = harness();
+  await f.arm({ maxDurationMinutes: 5 });
+  const deadlineAt = f.host.get('s1').deadlineAt;
+  assert.equal(deadlineAt, 1234 + 5 * 60000);
+  assert.equal(f.host.stats().timers, 1);
+
+  assert.equal(f.fireDueTimers(deadlineAt), 1);
+  await tick();
+  const state = f.host.get('s1');
+  assert.equal(state.status, STATUS.EXHAUSTED);
+  assert.equal(state.pausedBy, null);
+  assert.match(state.lastVerdict.humanReason, /^\[无人值守 Unattended\] 已达到最长值守时间$/);
+  const trace = f.calls.append.find(row => row.message.kind === 'unattended_trace');
+  assert.equal(trace.message.content, `${TAG} 已达到最长值守时间`);
+  assert.ok(f.calls.broadcast.some(row => row.payload.type === 'unattended_state'
+    && row.payload.unattended.status === STATUS.EXHAUSTED));
+  assert.deepEqual(f.calls.notify[0], { id: 's1', type: 'error', message: `${TAG} 已达到最长值守时间`,
+    options: { classifyState: 'E' } });
+  assert.equal(f.calls.enqueue.length, 0, 'expiry needs no verdict');
+  assert.equal(f.host.stats().timers, 0, 'the timer disarms after firing');
+});
+
+test('expiry releases the held classic push and blocks a late injection', async () => {
+  const f = harness({ planned: decision('inject') });
+  await f.arm({ maxDurationMinutes: 5 });
+  f.advance(5 * 60000);
+  const pushes = [];
+  const result = await f.host.evaluate('s1', {
+    assistantText: 'working', fallbackPush: () => pushes.push('classic'),
+  });
+  assert.deepEqual(result, { ok: false, code: 'expired' });
+  assert.deepEqual(pushes, ['classic'], 'the user is still told the session needs them');
+  assert.equal(f.calls.enqueue.length, 0, 'a late timer never allows another injection');
+  assert.equal(f.host.get('s1').status, STATUS.EXHAUSTED);
+  assert.equal(f.calls.inject.length, 0);
+});
+
+test('the timer is cleared on stop/pause and re-armed on resume', async () => {
+  const f = harness();
+  await f.arm({ maxDurationMinutes: 30 });
+  assert.equal(f.host.stats().timers, 1);
+  f.host.stop('s1');
+  assert.equal(f.host.stats().timers, 0, 'stop clears the timer');
+
+  await f.host.resume('s1');
+  await tick();
+  assert.equal(f.host.stats().timers, 1, 'resume re-arms the clock');
+  assert.equal(f.host.get('s1').status, STATUS.ACTIVE);
+
+  f.host.noteUserMessage('s1');
+  assert.equal(f.host.stats().timers, 0, 'a human takeover pauses and disarms');
+  f.host.shutdown();
+  assert.equal(f.host.stats().timers, 0);
+});
+
+test('resume re-arms the clock from now and accepts a new duration', async () => {
+  const f = harness();
+  await f.arm({ maxDurationMinutes: 30 });
+  f.advance(1000);
+  f.host.stop('s1');
+  const resumed = await f.host.resume('s1', { maxDurationMinutes: 10 });
+  assert.equal(resumed.ok, true);
+  const state = resumed.unattended;
+  assert.equal(state.maxDurationMinutes, 10);
+  assert.equal(state.startedAt, 2234, 'resume starts a new clock');
+  assert.equal(state.deadlineAt, 2234 + 10 * 60000);
+});
+
+test('update recomputes the deadline from the original startedAt and clamps a past one', async () => {
+  const f = harness();
+  await f.arm({ maxDurationMinutes: 30 });
+  const startedAt = f.host.get('s1').startedAt;
+  f.advance(2000);
+  const updated = f.host.update('s1', { maxDurationMinutes: 60 });
+  assert.equal(updated.ok, true);
+  assert.equal(updated.unattended.startedAt, startedAt, 'the original start is preserved');
+  assert.equal(updated.unattended.deadlineAt, startedAt + 60 * 60000);
+  assert.equal(f.host.stats().timers, 1, 'the timer follows the new deadline');
+
+  // Shrink the duration until the recomputed deadline is already past.
+  f.advance(startedAt + 60 * 60000 - f.clock());
+  const clamped = f.host.update('s1', { maxDurationMinutes: 5 });
+  assert.equal(clamped.ok, true);
+  assert.equal(clamped.unattended.deadlineAt, f.clock() + 60000);
+  assert.match(f.calls.append.find(row => row.message.kind === 'unattended_trace').message.content,
+    /截止时间顺延到 1 分钟后$/);
+});
+
+test('thirty-one-plus rounds keep inject instead of exhausting', async () => {
+  const f = harness({
+    planned: input => ({
+      nextState: {
+        ...input.state,
+        rounds: (Number(input.state.rounds) || 0) + 1,
+        lastVerdict: { verdict: 'continue', reason: 'more', nextInstruction: 'keep going', humanReason: '' },
+      },
+      action: 'inject',
+      message: `${TAG} keep going`,
+    }),
+  });
+  await f.arm({ maxDurationMinutes: 1440 });
+  for (let index = 0; index < 31; index += 1) {
+    const result = await f.host.evaluate('s1', { assistantText: `output ${index}` });
+    assert.equal(result.action, 'inject', `round ${index + 1} still injects`);
+  }
+  assert.equal(f.host.get('s1').rounds, 31);
+  assert.equal(f.host.get('s1').status, STATUS.ACTIVE);
+  assert.equal(f.calls.notify.length, 0);
 });
 
 test('one in-flight evaluation coalesces a second settle', async () => {
@@ -495,14 +666,18 @@ test('one in-flight evaluation coalesces a second settle', async () => {
   assert.ok(f.calls.enqueue.length >= 2);
 });
 
-test('boot clears a stale evaluating:true so no spinner survives a restart', () => {
+test('boot migrates legacy records, clears a stale evaluating:true and re-arms active timers', () => {
   const { createUnattendedRuntime } = require('../src/unattended/runtime');
   const records = new Map([
-    ['s1', { id: 's1', type: null, unattended: { status: 'active', evaluating: true } }],
-    ['s2', { id: 's2', type: null, unattended: { status: 'active', evaluating: false } }],
+    ['s1', { id: 's1', type: null, unattended: {
+      status: 'active', evaluating: true, maxRounds: 5, rounds: 4,
+    } }],
+    ['s2', { id: 's2', type: null, unattended: {
+      status: 'stopped', evaluating: false, maxRounds: 9, updatedAt: 777,
+    } }],
   ]);
   const saves = [];
-  createUnattendedRuntime({
+  const host = createUnattendedRuntime({
     persistedSessions: records,
     saveSessions: source => saves.push(source),
     loadHistory: () => [],
@@ -515,6 +690,21 @@ test('boot clears a stale evaluating:true so no spinner survives a restart', () 
     chatBroadcast: () => {},
     logger: { log: () => {} },
   });
-  assert.equal(records.get('s1').unattended.evaluating, false);
+  const active = records.get('s1').unattended;
+  assert.equal(active.evaluating, false);
+  assert.equal('maxRounds' in active, false, 'the legacy round budget is dropped');
+  assert.equal(active.maxDurationMinutes, 120);
+  assert.equal(active.rounds, 4, 'rounds survive as an informational counter');
+  assert.equal(active.deadlineAt, active.startedAt + 120 * 60000);
+  assert.equal(host.stats().timers, 1, 'an active record is re-armed at boot');
+
+  const stopped = records.get('s2').unattended;
+  assert.equal('maxRounds' in stopped, false);
+  assert.equal(stopped.maxDurationMinutes, 120);
+  assert.equal(stopped.startedAt, 777, 'null-safe startedAt falls back to updatedAt');
+  assert.equal(stopped.deadlineAt, 777 + 120 * 60000);
   assert.deepEqual(saves, ['unattended.boot']);
+
+  host.shutdown();
+  assert.equal(host.stats().timers, 0);
 });

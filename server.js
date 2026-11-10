@@ -2946,7 +2946,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   qwenAudioSupervisor,
   sessionHibernationRuntime,
 });
-shutdownCoordinator.onClose(async () => { await workspaceRuntime.close(); taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.()); shutdownCoordinator.onClose(() => providerQuotaHistory.close());
+shutdownCoordinator.onClose(async () => { await workspaceRuntime.close(); taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.()); shutdownCoordinator.onClose(() => providerQuotaHistory.close()); shutdownCoordinator.onClose(() => unattendedHost.shutdown());
 // Terminal error handler: redacts next(err)/asyncHandler failures so clients cannot
 // fingerprint the filesystem. Registered LAST so everything falls here.
 app.use(safeErrorHandler(logger));

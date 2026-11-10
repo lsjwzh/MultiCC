@@ -1327,8 +1327,9 @@ class AirService {
   }
 
   /// 发第一条消息。无人值守配置挂在**这一条消息**上（不是任务上）：
-  /// `unattended: { goal?, criteria?, maxRounds? }`，契约见 docs/unattended-mode.md。
-  /// goal 省略时服务端默认用第一条消息正文；criteria 可选；maxRounds 1..200。
+  /// `unattended: { goal?, criteria?, maxDurationMinutes? }`，契约见
+  /// docs/unattended-mode.md。goal 省略时服务端默认用第一条消息正文；criteria
+  /// 可选；maxDurationMinutes 由服务端 limits 收口（默认 120，5..1440）。
   Future<void> sendFirstMessage({
     required String taskId,
     required String text,

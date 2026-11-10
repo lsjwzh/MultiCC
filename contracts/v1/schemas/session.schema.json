@@ -310,9 +310,10 @@
         "status",
         "goal",
         "criteria",
-        "maxRounds",
+        "maxDurationMinutes",
         "rounds",
         "startedAt",
+        "deadlineAt",
         "updatedAt",
         "lastVerdict",
         "history",
@@ -343,16 +344,20 @@
             "maxLength": 300
           }
         },
-        "maxRounds": {
+        "maxDurationMinutes": {
           "type": "integer",
-          "minimum": 1,
-          "maximum": 200
+          "minimum": 5,
+          "maximum": 1440
         },
         "rounds": {
           "type": "integer",
           "minimum": 0
         },
         "startedAt": {
+          "type": "number",
+          "minimum": 0
+        },
+        "deadlineAt": {
           "type": "number",
           "minimum": 0
         },

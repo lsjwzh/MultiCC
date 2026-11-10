@@ -250,7 +250,7 @@ test('unattended_state is forwarded to the host, including the null reset', () =
   const fixture = controllerFixture({
     applyUnattendedState(value) { seen.push(value); },
   });
-  const state = { status: 'active', goal: 'ship it', criteria: [], maxRounds: 30, rounds: 0 };
+  const state = { status: 'active', goal: 'ship it', criteria: [], maxDurationMinutes: 120, rounds: 0 };
   const generation = fixture.controller.beginGeneration();
   fixture.controller.handleEvent({ type: 'unattended_state', unattended: state }, generation);
   fixture.controller.handleEvent({ type: 'unattended_state', unattended: null }, generation);

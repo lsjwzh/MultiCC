@@ -33,8 +33,8 @@
 | `POST` | `/api/sessions/:id/sync` | Merge the directory base branch into this session's worktree |
 | `POST` | `/api/sessions/:id/merge` | Merge this session branch back into the directory base branch |
 | `POST` | `/api/sessions/:id/notes` | Leave a passive note for another agent in the same directory |
-| `GET` | `/api/sessions/:id/unattended` | Unattended-mode state (`{ ok, unattended, limits }`; `unattended` is `null` when never armed; v2 adds `evaluating`, `pausedBy`, `stall.consecutiveFaults`) |
-| `POST` | `/api/sessions/:id/unattended` | Arm/update/stop/resume unattended mode (`{ action: "start" \| "update" \| "stop" \| "resume", goal?, criteria?, maxRounds?, evaluateNow? }`; `stop` sets `pausedBy:"user"`, `resume` clears it and defers evaluation while a turn/delivery is live; contract in `docs/unattended-mode.md`) |
+| `GET` | `/api/sessions/:id/unattended` | Unattended-mode state (`{ ok, unattended, limits }`; `unattended` is `null` when never armed; `limits = { maxDurationMinutesDefault: 120, maxDurationMinutesMin: 5, maxDurationMinutesMax: 1440 }`; state carries `evaluating`, `pausedBy`, `stall.consecutiveFaults`, `maxDurationMinutes`, `startedAt`, `deadlineAt`; `rounds` is informational, there is no round budget) |
+| `POST` | `/api/sessions/:id/unattended` | Arm/update/stop/resume unattended mode (`{ action: "start" \| "update" \| "stop" \| "resume", goal?, criteria?, maxDurationMinutes?, evaluateNow? }`; legacy `maxRounds`/`goalLimits.maxRounds` are accepted and ignored; `stop` sets `pausedBy:"user"`, `resume` re-arms the clock (optional `maxDurationMinutes`) and defers evaluation while a turn/delivery is live; contract in `docs/unattended-mode.md`) |
 | `GET` | `/api/agent-resources/skills` | List installed Claude and Codex skills |
 | `GET` | `/api/agent-resources/claude-sessions` | List Claude Code history sessions |
 | `DELETE` | `/api/agent-resources/claude-sessions/:project/:id` | Delete one unlinked Claude history session |

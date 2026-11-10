@@ -6,9 +6,10 @@ const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 // 会话中的无人值守面板（public/chat-unattended.js）：
 //   GET/POST /api/sessions/:id/unattended、POST /api/goal/precheck。
 // 这里跑真实 chat.html：面板由 chat.js 在启动时 create，GET 一次校准；点开之后
-// 做预检、启动、停止、继续，并量一次手机上图标不压发送键。
-// v2 追加：active 锁输入 + banner（暂停并接管/继续无人值守）、判定中 spinner、
-// 标记消息与 UI-only 轨迹的渲染、待答问题卡的锁定。
+// 启动前预检（目标不清 → 可编辑建议卡；预检挂了 → 仍然启动/取消）、启动、停止、
+// 继续，并量一次手机上图标不压发送键。
+// v3 把「轮次上限」换成「最长值守时间」：请求体只发 maxDurationMinutes，banner 与
+// 状态块显示剩余时间（30 秒定时器只在该刷新时刷新）。
 const publicDir = path.resolve(__dirname, '../public');
 const json = value => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
 
@@ -33,16 +34,24 @@ routes['/api/settings/goal'] = () => json({ ok: true, precheckWaitMs: 30000, dim
 let unattended = null;
 const unattendedPosts = [];
 const prechecks = [];
-const limits = { maxRoundsDefault: 30, maxRoundsMax: 200 };
+const limits = { maxDurationMinutesDefault: 120, maxDurationMinutesMin: 5, maxDurationMinutesMax: 1440 };
+// precheckMode: warn（默认，有疑点）/ ok（直接启动）/ error（预检不可用）。
+let precheckMode = 'warn';
+let precheckDelayMs = 0;
 routes['/api/sessions/s1/unattended'] = () => json({ ok: true, unattended, limits });
 routes['POST /api/sessions/s1/unattended'] = ({ body }) => {
   const value = JSON.parse(body);
   unattendedPosts.push(value);
   if (value.action === 'start') {
+    // 夹具的 deadlineAt 多留 30 秒，让「剩余 90 分」在渲染瞬间向下取整后仍是
+    // 1小时30分（刚好 = now + 90min 时会因为几毫秒误差变成 1小时29分）。
+    const startedAt = Date.now();
+    const minutes = Number(value.maxDurationMinutes) || limits.maxDurationMinutesDefault;
     unattended = {
       status: 'active', goal: value.goal, criteria: value.criteria || [],
-      maxRounds: value.maxRounds || 30, rounds: 0, history: [],
-      evaluating: false, pausedBy: null,
+      maxDurationMinutes: minutes, rounds: 0, startedAt,
+      deadlineAt: startedAt + minutes * 60000 + 30000,
+      history: [], evaluating: false, pausedBy: null,
       lastVerdict: { verdict: 'continue', reason: '还需要构建', nextInstruction: '继续构建', humanReason: '', at: Date.now() },
     };
   } else if (value.action === 'stop') {
@@ -50,12 +59,28 @@ routes['POST /api/sessions/s1/unattended'] = ({ body }) => {
   } else if (value.action === 'resume') {
     if (unattended) unattended = { ...unattended, status: 'active', pausedBy: null, evaluating: false, updatedAt: Date.now() };
   } else if (value.action === 'update') {
-    if (unattended) unattended = { ...unattended, ...value, action: undefined, updatedAt: Date.now() };
+    if (unattended) {
+      unattended = {
+        ...unattended,
+        goal: value.goal != null ? value.goal : unattended.goal,
+        criteria: value.criteria != null ? value.criteria : unattended.criteria,
+        maxDurationMinutes: value.maxDurationMinutes != null ? value.maxDurationMinutes : unattended.maxDurationMinutes,
+        updatedAt: Date.now(),
+      };
+    }
   }
   return json({ ok: true, unattended, limits });
 };
-routes['POST /api/goal/precheck'] = ({ body }) => {
+routes['POST /api/goal/precheck'] = async ({ body }) => {
   prechecks.push(JSON.parse(body));
+  if (precheckDelayMs) await new Promise(resolve => setTimeout(resolve, precheckDelayMs));
+  if (precheckMode === 'error') return json({ ok: false, code: 'AUX_FAILED', error: '辅助模型不可用' });
+  if (precheckMode === 'ok') {
+    return json({
+      ok: true, verdict: 'ok', score: 92, issues: [], questions: [],
+      criteria: ['构建通过'], revised: '',
+    });
+  }
   return json({
     ok: true, verdict: 'warn', score: 62, issues: ['缺少可验证的验收标准'], questions: [],
     criteria: ['构建通过', '测试通过'], revised: '把目标改成可验收的版本',
@@ -77,10 +102,16 @@ const INPUT_LOCK = `(() => ({
   bannerReason: (() => { const r = document.querySelector('.unat-banner-reason'); return r.hidden ? '' : r.textContent; })(),
 }))()`;
 
-test('chat unattended panel: precheck, start/stop/resume, input lock and a non-overlapping icon', async t => {
+const expectedRemaining = page => page.evaluate(
+  `t('unattendedRemainingHourMinute', { hours: 1, minutes: 30 })`);
+
+test('chat unattended panel: duration, precheck-on-start card, start/stop/resume/update', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   unattended = null;
   unattendedPosts.length = 0;
+  prechecks.length = 0;
+  precheckMode = 'warn';
+  precheckDelayMs = 0;
   await withCdpHarness({ routes, screenshotDir: qaDir() }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
     await page.navigate('/chat.html?session=s1');
@@ -111,13 +142,31 @@ test('chat unattended panel: precheck, start/stop/resume, input lock and a non-o
     assert.ok(await page.waitFor(`document.getElementById('unattended-panel').hidden === false`));
     assert.equal(await page.evaluate(`document.getElementById('unattended-panel').getAttribute('aria-labelledby')`), 'unattended-panel-title');
 
-    // 空目标：本地先拦下，不发 start。
+    // 浅色主题 + 390px：面板（含新增的时长行与预检卡样式）不能横向溢出。
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+    const light = await page.evaluate(`(() => {
+      const panel = document.getElementById('unattended-panel').getBoundingClientRect();
+      return { viewport: innerWidth, left: panel.left, right: panel.right,
+               overflow: document.documentElement.scrollWidth > innerWidth + 1 };
+    })()`);
+    assert.equal(light.overflow, false, '浅色 390px 下不能横向滚动：' + JSON.stringify(light));
+    assert.ok(light.left >= -1 && light.right <= light.viewport + 1, '面板要落在视口内：' + JSON.stringify(light));
+    await page.screenshot('unattended-panel-light-390');
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+
+    // 最长值守时间：默认 2 小时，单位可切；旧的轮次输入已不存在。
+    assert.equal(await page.evaluate(`document.querySelector('.unat-duration').value`), '2');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-duration-unit').value`), 'h');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-rounds') === null`), true, '轮次输入已退场');
+
+    // 空目标：本地先拦下，不发预检也不发 start。
     await page.evaluate(`document.querySelector('.unat-actions [data-action="start"]').click()`);
     assert.ok(await page.waitFor(`document.querySelector('.unat-error').hidden === false`));
     assert.equal(await page.evaluate(`document.querySelector('.unat-error').textContent === t('unattendedGoalRequired')`), true);
     assert.equal(unattendedPosts.length, 0, '空目标不发请求');
+    assert.equal(prechecks.length, 0, '空目标不做预检');
 
-    // 预检 → 标准被填进各行 → 改写版可一键采用。
+    // 手动预检 → 标准被填进各行 → 改写版可一键采用。
     await page.evaluate(`(() => {
       const goal = document.querySelector('.unat-goal');
       goal.value = '把上线流程走完';
@@ -131,20 +180,50 @@ test('chat unattended panel: precheck, start/stop/resume, input lock and a non-o
     await page.evaluate(`document.querySelector('.unat-use-revised').click()`);
     assert.equal(await page.evaluate(`document.querySelector('.unat-goal').value`), '把目标改成可验收的版本');
 
+    // 把值守时间改成 90 分钟（分钟单位），启动时只发 maxDurationMinutes。
     await page.evaluate(`(() => {
-      const rounds = document.querySelector('.unat-rounds');
-      rounds.value = '12';
-      rounds.dispatchEvent(new Event('input', { bubbles: true }));
-      document.querySelector('.unat-actions [data-action="start"]').click();
+      const unit = document.querySelector('.unat-duration-unit');
+      unit.value = 'm';
+      unit.dispatchEvent(new Event('change', { bubbles: true }));
+      const duration = document.querySelector('.unat-duration');
+      duration.value = '90';
+      duration.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+
+    // 启动先自动预检：warn 不启动，给可编辑的建议卡。
+    await page.evaluate(`document.querySelector('.unat-actions [data-action="start"]').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.unat-precheck-title')`));
+    assert.equal(unattendedPosts.length, 0, '预检有疑点时不启动');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-precheck-title').textContent === t('unattendedPrecheckTitle')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-revised-goal').value`), '把目标改成可验收的版本');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-revised-criteria').value`), '构建通过\n测试通过');
+    const issuesText = await page.evaluate(`document.querySelector('.unat-precheck-issues').textContent`);
+    assert.ok(issuesText.includes('缺少可验证的验收标准'), issuesText);
+
+    // 编辑建议字段后，主按钮用的是编辑后的文本。
+    await page.evaluate(`(() => {
+      document.querySelector('.unat-revised-goal').value = '编辑后的目标';
+      document.querySelector('.unat-revised-criteria').value = '构建通过\\n测试通过\\n验收截图';
+      document.querySelector('.unat-precheck-adopt').click();
     })()`);
     assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`));
     assert.equal(unattendedPosts.length, 1);
     assert.deepEqual(unattendedPosts[0], {
-      action: 'start', goal: '把目标改成可验收的版本',
-      criteria: ['构建通过', '测试通过'], maxRounds: 12, evaluateNow: true,
+      action: 'start', goal: '编辑后的目标',
+      criteria: ['构建通过', '测试通过', '验收截图'], maxDurationMinutes: 90, evaluateNow: true,
     });
+    assert.equal('maxRounds' in unattendedPosts[0], false, '不再发送 maxRounds');
     assert.equal(await page.evaluate(`document.querySelector('.unat-status-label').className.includes('unat-status-active')`), true);
-    assert.equal(await page.evaluate(`document.querySelector('.unat-round').textContent === t('unattendedRoundProgress', { round: 0, max: 12 })`), true);
+
+    // 剩余时间来自 deadlineAt（夹具 = startedAt + 90min + 30s → 1小时30分）。
+    const remaining = await expectedRemaining(page);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-round').textContent`),
+      await page.evaluate(`t('unattendedStatusMeta', { rounds: 0, remaining: ${JSON.stringify(remaining)} })`));
+    assert.equal((await page.evaluate(INPUT_LOCK)).bannerText,
+      await page.evaluate(`t('unattendedBannerActive', { remaining: ${JSON.stringify(remaining)} })`));
+    assert.equal(await page.evaluate(`document.querySelector('.unat-deadline').hidden`), false);
+    assert.ok((await page.evaluate(`document.querySelector('.unat-deadline').textContent`)).startsWith('截止 '));
+    assert.equal(await page.evaluate(`chatUnattended.isTicking()`), true, 'active 时倒计时表在跑');
 
     // v2：active 锁死输入区，banner 就在输入栏上方，按钮是「暂停并接管」。
     const locked = await page.evaluate(INPUT_LOCK);
@@ -154,17 +233,17 @@ test('chat unattended panel: precheck, start/stop/resume, input lock and a non-o
     assert.equal(locked.mic, true, 'active 时语音入口必须锁定');
     assert.equal(locked.placeholder, await page.evaluate(`t('unattendedInputLockedPlaceholder')`));
     assert.equal(locked.bannerHidden, false);
-    assert.equal(locked.bannerText, await page.evaluate(`t('unattendedBannerActive', { round: 0, max: 12 })`));
     assert.equal(locked.bannerLabel, await page.evaluate(`t('unattendedPauseTakeover')`));
     assert.equal(locked.bannerAction, 'stop');
     // 取消键仍可用：锁不解掉正在跑的这一轮的停止控制。
     assert.equal(await page.evaluate(`document.getElementById('cancel-btn').disabled`), false);
 
-    // banner 的「暂停并接管」= POST stop，并立即解锁。
+    // banner 的「暂停并接管」= POST stop，并立即解锁、清掉倒计时表。
     await page.evaluate(`document.querySelector('.unat-banner-btn').click()`);
     assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-stopped')`));
     assert.equal(unattendedPosts.length, 2);
     assert.equal(unattendedPosts[1].action, 'stop');
+    assert.equal(await page.evaluate(`chatUnattended.isTicking()`), false, '终态清掉倒计时表');
     const unlocked = await page.evaluate(INPUT_LOCK);
     assert.equal(unlocked.input, true, '夹具无 WS：输入框只因未连接而禁用，解锁不强行打开');
     assert.equal(unlocked.attach, false);
@@ -178,14 +257,16 @@ test('chat unattended panel: precheck, start/stop/resume, input lock and a non-o
     assert.equal(await page.evaluate(`document.querySelector('.unat-paused').hidden`), false, '面板状态块显示 pausedBy');
     assert.equal(await page.evaluate(`document.querySelector('.unat-paused').textContent === t('unattendedPausedByUser')`), true);
 
-    // banner 的「继续无人值守」= POST resume，再次上锁。
+    // banner 的「继续无人值守」= POST resume，再次上锁；resume 不预检。
+    const prechecksBeforeResume = prechecks.length;
     await page.evaluate(`document.querySelector('.unat-banner-btn').click()`);
     assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`));
     assert.equal(unattendedPosts.length, 3);
     assert.equal(unattendedPosts[2].action, 'resume');
+    assert.equal(prechecks.length, prechecksBeforeResume, 'resume 不调用 /api/goal/precheck');
     assert.equal((await page.evaluate(INPUT_LOCK)).input, true, 'resume 后重新锁定');
 
-    // 面板自己的 Stop / Resume 仍然工作（与 banner 共用同一份状态）。
+    // 面板自己的 Stop 仍然工作（与 banner 共用同一份状态）。
     assert.equal(await page.evaluate(`document.querySelector('.unat-actions [data-action="start"]').hidden`), true, 'active 时交给 Update/Stop，不重复 Start');
     await page.evaluate(`document.querySelector('.unat-actions [data-action="stop"]').click()`);
     assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-stopped')`));
@@ -196,6 +277,27 @@ test('chat unattended panel: precheck, start/stop/resume, input lock and a non-o
     assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`));
     assert.equal(unattendedPosts[4].action, 'resume');
 
+    // Update 换目标/时长：不发 maxRounds，也不预检。
+    const prechecksBeforeUpdate = prechecks.length;
+    await page.evaluate(`(() => {
+      const goal = document.querySelector('.unat-goal');
+      goal.value = '更新后的目标';
+      goal.dispatchEvent(new Event('input', { bubbles: true }));
+      const unit = document.querySelector('.unat-duration-unit');
+      unit.value = 'm';
+      unit.dispatchEvent(new Event('change', { bubbles: true }));
+      const duration = document.querySelector('.unat-duration');
+      duration.value = '30';
+      duration.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.unat-actions [data-action="update"]').click();
+    })()`);
+    assert.ok(await page.waitFor(`document.querySelector('.unat-goal').value === '更新后的目标'`));
+    assert.equal(unattendedPosts[5].action, 'update');
+    assert.deepEqual(unattendedPosts[5], {
+      action: 'update', goal: '更新后的目标', criteria: ['构建通过', '测试通过', '验收截图'], maxDurationMinutes: 30,
+    });
+    assert.equal(prechecks.length, prechecksBeforeUpdate, 'update 不调用 /api/goal/precheck');
+
     // 关掉面板，浮动图标仍在，且状态色继续跟随。
     await page.evaluate(`document.querySelector('.unat-close').click()`);
     assert.equal(await page.evaluate(`document.getElementById('unattended-panel').hidden`), true);
@@ -203,47 +305,158 @@ test('chat unattended panel: precheck, start/stop/resume, input lock and a non-o
   });
 });
 
-test('initial/replayed state locks the composer and shows 判定中 while evaluating', async t => {
+test('precheck-on-start: clear goal + criteria starts immediately', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
-  unattended = {
-    status: 'active', goal: '把上线走完', criteria: ['构建通过'], maxRounds: 10, rounds: 3,
-    history: [], evaluating: true, pausedBy: null,
-    lastVerdict: { verdict: 'continue', reason: '还没构建', nextInstruction: '继续构建', humanReason: '', at: Date.now() },
-  };
+  unattended = null;
   unattendedPosts.length = 0;
-  await withCdpHarness({ routes, screenshotDir: qaDir() }, async page => {
+  prechecks.length = 0;
+  precheckMode = 'ok';
+  precheckDelayMs = 0;
+  await withCdpHarness({ routes }, async page => {
     await page.navigate('/chat.html?session=s1');
-    assert.ok(await page.waitFor(`document.getElementById('unattended-fab')`));
-    // GET 在创建时校准：这就是刷新/重连重放拿到的同一份状态。
-    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`));
-    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-evaluating')`));
-    const locked = await page.evaluate(INPUT_LOCK);
-    assert.equal(locked.input, true, '重连重放 active 也必须锁输入');
-    assert.equal(locked.bannerHidden, false);
-    assert.equal(locked.bannerText, await page.evaluate(`t('unattendedBannerActive', { round: 3, max: 10 })`));
-    assert.equal(await page.evaluate(`document.querySelector('.unat-banner .unat-spinner').hidden`), false, 'banner 转「判定中」');
-
+    assert.ok(await page.waitFor(`document.getElementById('unattended-fab') && document.getElementById('unattended-panel')`));
     await page.evaluate(`document.getElementById('unattended-fab').click()`);
     assert.ok(await page.waitFor(`document.getElementById('unattended-panel').hidden === false`));
-    assert.ok(await page.waitFor(`document.querySelector('.unat-evaluating').hidden === false`));
-    assert.equal(await page.evaluate(`document.querySelector('.unat-evaluating').textContent === t('unattendedJudging')`), true);
-    await page.evaluate(`document.querySelector('.unat-close').click()`);
+    await page.evaluate(`(() => {
+      const goal = document.querySelector('.unat-goal');
+      goal.value = '把上线走完';
+      goal.dispatchEvent(new Event('input', { bubbles: true }));
+      const criterion = document.querySelector('.unat-criterion input[data-criterion]');
+      criterion.value = '构建通过';
+      criterion.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.unat-actions [data-action="start"]').click();
+    })()`);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`));
+    assert.equal(prechecks.length, 1);
+    assert.deepEqual(prechecks[0], { task: '把上线走完' });
+    assert.equal(unattendedPosts.length, 1);
+    assert.deepEqual(unattendedPosts[0], {
+      action: 'start', goal: '把上线走完', criteria: ['构建通过'],
+      maxDurationMinutes: 120, evaluateNow: true,
+    });
+    assert.equal(await page.evaluate(`document.querySelector('.unat-precheck-title') === null`), true, '直接启动，不弹建议卡');
+  });
+});
 
-    // 服务端转入终态：下一次校准（WS 帧走同一个 applyState）立刻解锁。
-    unattended = { ...unattended, status: 'stopped', pausedBy: 'cancel', evaluating: false };
+test('precheck-on-start: a second click during precheck is ignored', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  unattended = null;
+  unattendedPosts.length = 0;
+  prechecks.length = 0;
+  precheckMode = 'ok';
+  precheckDelayMs = 250;
+  await withCdpHarness({ routes }, async page => {
+    await page.navigate('/chat.html?session=s1');
+    assert.ok(await page.waitFor(`document.getElementById('unattended-panel')`));
     await page.evaluate(`document.getElementById('unattended-fab').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-stopped')`));
-    // 夹具没有 WS，输入框仍因未连接而禁用；锁定是否解除看 composer 类与占位符
-    // （applyInputLock(false) 会立刻复原它们）。
-    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false);
-    assert.equal(await page.evaluate(`document.getElementById('input').placeholder`), 'Type a message… or paste files here');
-    assert.equal(await page.evaluate(`document.querySelector('.unat-fab').classList.contains('unat-evaluating')`), false, '终态清掉判定中');
-    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-reason').textContent === t('unattendedPausedByCancel')`), true);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-panel').hidden === false`));
+    await page.evaluate(`(() => {
+      const goal = document.querySelector('.unat-goal');
+      goal.value = '走完上线';
+      goal.dispatchEvent(new Event('input', { bubbles: true }));
+      const criterion = document.querySelector('.unat-criterion input[data-criterion]');
+      criterion.value = '构建通过';
+      criterion.dispatchEvent(new Event('input', { bubbles: true }));
+      const button = document.querySelector('.unat-actions [data-action="start"]');
+      const fire = () => button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      fire();
+      // 第二下发生在预检挂起期间；即使按钮的 disabled 被绕过，也必须被 busy 守卫拦住。
+      button.disabled = false;
+      fire();
+    })()`);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`, { timeout: 5000 }));
+    assert.equal(prechecks.length, 1, '预检只发一次');
+    assert.equal(unattendedPosts.length, 1, '只启动一次');
+  });
+});
+
+test('precheck card: cancel and start-as-written both work', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  unattended = null;
+  unattendedPosts.length = 0;
+  prechecks.length = 0;
+  precheckMode = 'warn';
+  precheckDelayMs = 0;
+  await withCdpHarness({ routes }, async page => {
+    await page.navigate('/chat.html?session=s1');
+    assert.ok(await page.waitFor(`document.getElementById('unattended-panel')`));
+    await page.evaluate(`document.getElementById('unattended-fab').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-panel').hidden === false`));
+    // 没有判断标准 → 必然走建议卡（即使服务端 verdict=ok）。
+    await page.evaluate(`(() => {
+      const goal = document.querySelector('.unat-goal');
+      goal.value = '原样目标';
+      goal.dispatchEvent(new Event('input', { bubbles: true }));
+      const unit = document.querySelector('.unat-duration-unit');
+      unit.value = 'h';
+      unit.dispatchEvent(new Event('change', { bubbles: true }));
+      const duration = document.querySelector('.unat-duration');
+      duration.value = '1';
+      duration.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.unat-actions [data-action="start"]').click();
+    })()`);
+    assert.ok(await page.waitFor(`document.querySelector('.unat-precheck-title')`));
+    assert.equal(unattendedPosts.length, 0);
+    const issues = await page.evaluate(`document.querySelector('.unat-precheck-issues').textContent`);
+    assert.ok(issues.includes(await page.evaluate(`t('unattendedMissingCriteria')`)), issues);
+
+    // 取消：卡片收起，不启动。
+    await page.evaluate(`document.querySelector('.unat-precheck-cancel').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-precheck-title') === null`), true);
+    assert.equal(unattendedPosts.length, 0, '取消不启动');
+
+    // 再点启动 → 卡片再出现 → 按我的原样启动（原目标、空标准、60 分钟）。
+    await page.evaluate(`document.querySelector('.unat-actions [data-action="start"]').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.unat-precheck-original')`));
+    await page.evaluate(`document.querySelector('.unat-precheck-original').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`));
+    assert.equal(unattendedPosts.length, 1);
+    assert.deepEqual(unattendedPosts[0], {
+      action: 'start', goal: '原样目标', criteria: [], maxDurationMinutes: 60, evaluateNow: true,
+    });
+  });
+});
+
+test('precheck unavailable: still-start and cancel, never a silent start', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  unattended = null;
+  unattendedPosts.length = 0;
+  prechecks.length = 0;
+  precheckMode = 'error';
+  precheckDelayMs = 0;
+  await withCdpHarness({ routes }, async page => {
+    await page.navigate('/chat.html?session=s1');
+    assert.ok(await page.waitFor(`document.getElementById('unattended-panel')`));
+    await page.evaluate(`document.getElementById('unattended-fab').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-panel').hidden === false`));
+    await page.evaluate(`(() => {
+      const goal = document.querySelector('.unat-goal');
+      goal.value = '预检挂了也要能启动';
+      goal.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.unat-actions [data-action="start"]').click();
+    })()`);
+    assert.ok(await page.waitFor(`document.querySelector('.unat-precheck-cancel')`));
+    assert.equal(unattendedPosts.length, 0, '预检不可用时绝不静默启动');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-precheck-verdict').textContent === t('unattendedPrecheckUnavailable')`), true);
+
+    await page.evaluate(`document.querySelector('.unat-precheck-cancel').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-precheck-cancel') === null`), true);
+    assert.equal(unattendedPosts.length, 0);
+
+    // 再试一次，这回「仍然启动」。
+    await page.evaluate(`document.querySelector('.unat-actions [data-action="start"]').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.unat-precheck-adopt')`));
+    await page.evaluate(`document.querySelector('.unat-precheck-adopt').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`));
+    assert.equal(unattendedPosts.length, 1);
+    assert.deepEqual(unattendedPosts[0], {
+      action: 'start', goal: '预检挂了也要能启动', criteria: [], maxDurationMinutes: 120, evaluateNow: true,
+    });
   });
 });
 
 // 状态帧语义不依赖 WS：把模块挂在一个最小 fixture 上，直接 applyState（服务端
-// 重放与实时帧走的就是这一个入口），并顺带验待答问题卡的锁定。
+// 重放与实时帧走的就是这一个入口），验剩余时间、到点终态与待答问题卡的锁定。
 routes['/unattended-fixture.html'] = {
   headers: { 'content-type': 'text/html; charset=utf-8' },
   body: `<!doctype html><html><head><meta charset="utf-8"></head><body>
@@ -265,12 +478,17 @@ routes['/unattended-fixture.html'] = {
     <script src="/chat-unattended.js"></script>
     <script src="/chat-user-input-card.js"></script>
     <script>
+      // 让剩余时间可被测试驱动：30 秒定时器（这里缩成 25ms）每跳一次都会读到伪 now。
+      let fakeNow = Date.now();
+      Date.now = () => fakeNow;
+      window.__setNow = value => { fakeNow = value; };
       window.__locks = [];
       window.__u = MultiCCChatUnattended.create({
         document, window, translate: t,
         getSessionId: () => '',
         request: async () => ({ ok: true, unattended: null }),
         applyInputLock: locked => window.__locks.push(locked),
+        tickMs: 25,
       });
       window.__card = MultiCCChatUserInputCard.createController({
         document, translate: t,
@@ -281,31 +499,72 @@ routes['/unattended-fixture.html'] = {
   </body></html>`,
 };
 
-test('applyState locks/unlocks immediately and a pending question card is disabled', async t => {
+test('applyState shows remaining time, expires at the deadline, and locks immediately', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes }, async page => {
     await page.navigate('/unattended-fixture.html');
     assert.ok(await page.waitFor(`window.__u && window.__card`));
     assert.equal(await page.evaluate(`document.getElementById('unattended-banner').hidden`), true);
 
+    const base = await page.evaluate(`Date.now()`);
+    // 80 分 30 秒 → 显示 1小时20分。
+    const deadlineAt = base + 80 * 60000 + 30000;
     await page.evaluate(`window.__u.applyState({
-      status: 'active', rounds: 2, maxRounds: 5, evaluating: true, pausedBy: null, goal: 'x',
+      status: 'active', rounds: 2, maxDurationMinutes: 120, startedAt: ${base},
+      deadlineAt: ${deadlineAt}, evaluating: true, pausedBy: null, goal: 'x',
     })`);
     assert.deepEqual(await page.evaluate(`window.__locks`), [true]);
-    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent === t('unattendedBannerActive', { round: 2, max: 5 })`), true);
+    const expected80 = await page.evaluate(`t('unattendedRemainingHourMinute', { hours: 1, minutes: 20 })`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent`),
+      await page.evaluate(`t('unattendedBannerActive', { remaining: ${JSON.stringify(expected80)} })`));
+    assert.equal(await page.evaluate(`document.querySelector('.unat-round').textContent`),
+      await page.evaluate(`t('unattendedStatusMeta', { rounds: 2, remaining: ${JSON.stringify(expected80)} })`));
+    const expectedClock = await page.evaluate(`(() => {
+      const d = new Date(${deadlineAt});
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    })()`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-deadline').hidden`), false);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-deadline').textContent`),
+      await page.evaluate(`t('unattendedDeadline', { time: ${JSON.stringify(expectedClock)} })`));
     assert.equal(await page.evaluate(`document.querySelector('.unat-banner .unat-spinner').hidden`), false);
     assert.equal(await page.evaluate(`document.getElementById('unattended-fab').classList.contains('unat-evaluating')`), true);
+    assert.equal(await page.evaluate(`window.__u.isTicking()`), true);
 
-    // 同一帧的 pausedBy 显示在面板状态块。
-    await page.evaluate(`window.__u.applyState({ status: 'stopped', pausedBy: 'input', goal: 'x' })`);
+    // 30 秒定时器（夹具 25ms）：时间推进 35 分钟后，banner 自己变成 45分。
+    await page.evaluate(`window.__setNow(${base} + 35 * 60000)`);
+    const expected45 = await page.evaluate(`t('unattendedRemainingMinute', { minutes: 45 })`);
+    assert.ok(await page.waitFor(
+      `document.querySelector('.unat-banner-text').textContent === t('unattendedBannerActive', { remaining: ${JSON.stringify(expected45)} })`));
+
+    // 到点：服务端写 exhausted + human reason；banner 说明原因，倒计时表停掉。
+    await page.evaluate(`window.__u.applyState({
+      status: 'exhausted', rounds: 2, maxDurationMinutes: 120, deadlineAt: ${deadlineAt},
+      evaluating: false, pausedBy: null, goal: 'x',
+      lastVerdict: { verdict: 'needs_human', reason: '已到时间', humanReason: '已达到最长值守时间', at: ${base} },
+    })`);
     assert.deepEqual(await page.evaluate(`window.__locks`), [true, false], '非 active 帧立刻解锁');
-    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-reason').textContent === t('unattendedPausedByInput')`), true);
-    assert.equal(await page.evaluate(`document.querySelector('.unat-paused').textContent === t('unattendedPausedByInput')`), true);
+    assert.equal(await page.evaluate(`document.getElementById('unattended-fab').classList.contains('unat-state-exhausted')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent === t('unattendedStatusExhausted')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-reason').textContent === t('unattendedMaxDurationReached')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-human').textContent === t('unattendedMaxDurationReached')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-verdict').hidden`), false);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-deadline').hidden`), true, '终态不再显示剩余时间');
+    assert.equal(await page.evaluate(`window.__u.isTicking()`), false, '终态停表');
+
+    // 停表后继续推进时间：banner 不再变化。
+    await page.evaluate(`window.__setNow(${base} + 300 * 60000)`);
+    await page.waitFor(`new Promise(resolve => setTimeout(resolve, 80))`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent === t('unattendedStatusExhausted')`), true);
 
     // active 帧再次上锁，而且只在布尔真的翻转时通知宿主。
-    await page.evaluate(`window.__u.applyState({ status: 'active', rounds: 2, maxRounds: 5, evaluating: false, pausedBy: null, goal: 'x' })`);
-    await page.evaluate(`window.__u.applyState({ status: 'active', rounds: 3, maxRounds: 5, evaluating: false, pausedBy: null, goal: 'x' })`);
+    await page.evaluate(`window.__u.applyState({ status: 'active', rounds: 4, maxDurationMinutes: 120, deadlineAt: ${deadlineAt}, evaluating: false, pausedBy: null, goal: 'x' })`);
+    await page.evaluate(`window.__u.applyState({ status: 'active', rounds: 5, maxDurationMinutes: 120, deadlineAt: ${deadlineAt}, evaluating: false, pausedBy: null, goal: 'x' })`);
     assert.deepEqual(await page.evaluate(`window.__locks`), [true, false, true]);
+
+    // pausedBy 显示在面板状态块。
+    await page.evaluate(`window.__u.applyState({ status: 'stopped', pausedBy: 'input', goal: 'x' })`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-reason').textContent === t('unattendedPausedByInput')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-paused').textContent === t('unattendedPausedByInput')`), true);
 
     // 待答问题卡：锁定时选项/输入/提交全禁用，并出现「AI 会自己回答」提示。
     await page.evaluate(`window.__card.render({ requestId: 'usrq-1', question: '部署？', options: ['是', '否'] })`);
@@ -384,6 +643,17 @@ test('connected session is NOT locked unless the supervisor is active', async t 
       barLocked: document.getElementById('input-bar').classList.contains('unattended-locked'),
       placeholder: document.getElementById('input').placeholder,
     })`);
+    // 真正的「被挡住」：未启用时没有任何东西盖在输入区上 —— 遮罩必须是隐藏的，输入框、
+    // 发送键、附件键的中心点命中的必须是它们自己（而不是全屏遮罩）。
+    assert.equal(await page.evaluate(`document.querySelector('.unat-scrim').hidden`), true, '遮罩初始必须隐藏');
+    assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('.unat-scrim')).display`), 'none');
+    const hits = await page.evaluate(`['input', 'send-btn', 'attach-btn', 'mic-btn'].map(id => {
+      const node = document.getElementById(id);
+      const rect = node.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return { id, hit: !!top && (top === node || node.contains(top)), top: top && (top.id || top.className) };
+    })`);
+    for (const item of hits) assert.equal(item.hit, true, item.id + ' 被 ' + item.top + ' 盖住了');
     const none = await open();
     assert.deepEqual([none.input, none.send, none.attach, none.mic, none.barLocked], [false, false, false, false, false],
       '未启用：已连接的输入区必须全部可用');
@@ -392,7 +662,7 @@ test('connected session is NOT locked unless the supervisor is active', async t 
     // 只有 active 才锁；其余五个状态（含 achieved）一律不锁。状态走 WS 帧同一个入口。
     for (const status of ['stopped', 'achieved', 'needs_human', 'exhausted', 'error']) {
       const state = {
-        status, goal: 'g', criteria: [], maxRounds: 5, rounds: 1, history: [],
+        status, goal: 'g', criteria: [], maxDurationMinutes: 120, rounds: 1, history: [],
         evaluating: false, pausedBy: status === 'stopped' ? 'user' : null, lastVerdict: null,
       };
       await page.evaluate(`chatUnattended.applyState(${JSON.stringify(state)})`);
@@ -402,7 +672,7 @@ test('connected session is NOT locked unless the supervisor is active', async t 
     }
     // 真正的 active 帧才锁；随后回到 null（会话被清空）立刻解开。
     await page.evaluate(`chatUnattended.applyState(${JSON.stringify({
-      status: 'active', goal: 'g', criteria: [], maxRounds: 5, rounds: 1, history: [],
+      status: 'active', goal: 'g', criteria: [], maxDurationMinutes: 120, rounds: 1, history: [],
       evaluating: false, pausedBy: null, lastVerdict: null,
     })})`);
     const active = await open();

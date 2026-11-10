@@ -259,7 +259,7 @@ function createTaskShellHost(deps) {
     const result = await rt.send(shell.id, { text: intent === 'cancel' ? '' : message.text,
       clientMsgId: message.clientMsgId, taskId: intent === 'work' ? null : rt.owns(id)?.id || shell.currentTaskId, intent,
       ...(message.unattended && typeof message.unattended === 'object' ? { unattended: message.unattended }
-        : message.goal === true ? { unattended: { maxRounds: message.goalLimits && message.goalLimits.maxRounds } } : {}),
+        : message.goal === true ? { unattended: {} } : {}),
       ...(message.lang ? { lang: message.lang } : {}),
       ...(message.inputSource === 'voice' ? { inputSource: 'voice', voiceRaw: message.voiceRaw } : {}),
       ...(intent !== 'work' ? { turnId: message.turnId, requestId: message.userInputRequestId } : {}) });

@@ -179,10 +179,13 @@ const MIGRATION_DEBT = Object.freeze({
   // late-bound ports; measured 3040 lines / 162307 bytes (the line count is
   // unchanged; the scheduler read-only `hasQueuedDeliveries` port name is longer
   // than the removed FIFO-evidence projection, so the byte ceiling ratchets up).
+  // Same day, wall-clock deadlines replace the round budget: the unattended host
+  // owns one timer per active session, so server.js also registers its shutdown
+  // hook on the last line; measured 3040 lines / 162369 bytes.
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
     ceiling: 3040,
-    byteCeiling: 162307,
+    byteCeiling: 162369,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),
@@ -615,9 +618,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 无人值守 v2 网页锁定/轨迹：+10 双语键（unattendedBadge、锁定占位、
     // banner 进行中/继续、暂停并接管、判定中、pausedBy 三种原因、待答卡提示），
     // 中英各 10 行 = +20 行；countLines 口径实测 10308/668786，抬一格。
-    maxLines: 10308,
+    // 无人值守时长预算（最长值守时间取代轮次上限）：中英各 +20 行（时长控件、
+    // 剩余时间格式、预检建议卡、暂停/到点原因、Air 时长单位），并删掉 4 条轮次键；
+    // countLines 口径实测 10358/671712，抬一格。
+    maxLines: 10358,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 668786,
+    maxBytes: 671712,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

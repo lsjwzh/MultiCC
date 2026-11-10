@@ -25,7 +25,11 @@ routes['/fixture.html'] = {
       <label><span></span><textarea id="quick-unattended-goal"></textarea></label>
       <label><span></span><textarea id="quick-unattended-criteria"></textarea></label>
       <div>
-        <label><input id="quick-unattended-rounds" type="number" value="30" min="1" max="200"></label>
+        <label><input id="quick-unattended-duration" type="number" value="2" min="1" step="1">
+          <select id="quick-unattended-duration-unit">
+            <option value="h" selected>小时</option>
+            <option value="m">分钟</option>
+          </select></label>
         <button id="quick-unattended-draft" type="button"></button>
       </div>
       <p id="quick-unattended-status"></p>
@@ -53,6 +57,13 @@ routes['POST /api/goal/precheck'] = ({ body }) => {
   };
 };
 
+const duration = async (page, value, unit) => page.evaluate(`(() => {
+  const input = document.getElementById('quick-unattended-duration');
+  input.value = ${JSON.stringify(String(value))};
+  const select = document.getElementById('quick-unattended-duration-unit');
+  select.value = ${JSON.stringify(unit)};
+})()`);
+
 test('air unattended fields collect a safe payload and draft criteria via precheck', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes }, async page => {
@@ -60,20 +71,30 @@ test('air unattended fields collect a safe payload and draft criteria via preche
     assert.ok(await page.waitFor(`window.MultiCCAirUnattended && document.getElementById('quick-unattended')`));
     assert.equal(await page.evaluate(`document.getElementById('quick-unattended').hidden`), true);
     assert.equal(await page.evaluate(`window.__collect('任务正文')`), null, '开关关着不产生 unattended');
+    assert.equal(await page.evaluate(`document.getElementById('quick-unattended-duration').value`), '2');
+    assert.equal(await page.evaluate(`document.getElementById('quick-unattended-duration-unit').value`), 'h');
+    assert.equal(await page.evaluate(`document.getElementById('quick-unattended-rounds') === null`), true, '轮次输入已退场');
 
     await page.evaluate(`(() => { const t = document.getElementById('quick-task-unattended'); t.checked = true; t.dispatchEvent(new Event('change')); })()`);
     assert.equal(await page.evaluate(`document.getElementById('quick-unattended').hidden`), false);
     assert.deepEqual(await page.evaluate(`window.__collect('任务正文')`),
-      { goal: '任务正文', maxRounds: 30 }, '目标留空时用任务正文，标准为空就不传');
+      { goal: '任务正文', maxDurationMinutes: 120 }, '目标留空时用任务正文，标准为空就不传；默认 2 小时');
 
     await page.evaluate(`(() => {
       document.getElementById('quick-unattended-goal').value = '  把上线走完  ';
       document.getElementById('quick-unattended-criteria').value = '  构建通过\\n\\n测试通过  \\n验收截图 ';
-      document.getElementById('quick-unattended-rounds').value = '999';
     })()`);
+    // 分钟单位：45 分钟原样带出；1 分钟夹到下限 5；999 小时夹到上限 1440。
+    await duration(page, 45, 'm');
     assert.deepEqual(await page.evaluate(`window.__collect('任务正文')`),
-      { goal: '把上线走完', criteria: ['构建通过', '测试通过', '验收截图'], maxRounds: 200 },
-      '标准逐行 trim、去空行，轮次夹在 1..200');
+      { goal: '把上线走完', criteria: ['构建通过', '测试通过', '验收截图'], maxDurationMinutes: 45 },
+      '标准逐行 trim、去空行，分钟单位按分钟带出');
+    await duration(page, 1, 'm');
+    assert.equal((await page.evaluate(`window.__collect('任务正文')`)).maxDurationMinutes, 5, '下限 5 分钟');
+    await duration(page, 999, 'h');
+    assert.equal((await page.evaluate(`window.__collect('任务正文')`)).maxDurationMinutes, 1440, '上限 24 小时');
+    await duration(page, 6, 'h');
+    assert.equal((await page.evaluate(`window.__collect('任务正文')`)).maxDurationMinutes, 360);
 
     // 先清空标准，否则 includes('构建通过') 会被上面的旧内容满足，测不出补全。
     await page.evaluate(`document.getElementById('quick-unattended-criteria').value = ''`);
@@ -87,7 +108,8 @@ test('air unattended fields collect a safe payload and draft criteria via preche
     assert.equal(await page.evaluate(`document.getElementById('quick-task-unattended').checked`), false);
     assert.equal(await page.evaluate(`document.getElementById('quick-unattended').hidden`), true);
     assert.equal(await page.evaluate(`document.getElementById('quick-unattended-goal').value`), '');
-    assert.equal(await page.evaluate(`document.getElementById('quick-unattended-rounds').value`), '30');
+    assert.equal(await page.evaluate(`document.getElementById('quick-unattended-duration').value`), '2');
+    assert.equal(await page.evaluate(`document.getElementById('quick-unattended-duration-unit').value`), 'h');
     assert.equal(await page.evaluate(`window.__collect('任务正文')`), null);
   });
 });

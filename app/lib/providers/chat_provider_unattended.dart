@@ -17,7 +17,7 @@ mixin ChatProviderUnattended on ChangeNotifier {
 
   // ── Unattended mode (docs/unattended-mode.md) ─────────────────────────────
   // WS `unattended_state` 每次变化都会广播，连接时重放；GET 只补 limits
-  // （maxRounds 默认值/硬上限）。动作走 POST，响应与 GET 同形。
+  // （最长值守时间的默认值/上下限）。动作走 POST，响应与 GET 同形。
   UnattendedState? _unattended;
   UnattendedState? get unattended => _unattended;
   UnattendedLimits _unattendedLimits = const UnattendedLimits();
@@ -89,10 +89,11 @@ mixin ChatProviderUnattended on ChangeNotifier {
   }
 
   /// `start`：目标必填；`evaluateNow` 默认 true（空闲时也立刻对最后输出判一次）。
+  /// 轮次不再有上限，改由 `maxDurationMinutes` 限定最长值守时间（服务端 limits）。
   Future<bool> startUnattended({
     required String goal,
     List<String> criteria = const [],
-    int? maxRounds,
+    int? maxDurationMinutes,
     bool evaluateNow = true,
   }) {
     final trimmed = goal.trim();
@@ -105,7 +106,7 @@ mixin ChatProviderUnattended on ChangeNotifier {
       'action': 'start',
       'goal': trimmed,
       if (criteria.isNotEmpty) 'criteria': criteria,
-      if (maxRounds != null) 'maxRounds': maxRounds,
+      if (maxDurationMinutes != null) 'maxDurationMinutes': maxDurationMinutes,
       'evaluateNow': evaluateNow,
     });
   }
@@ -114,17 +115,21 @@ mixin ChatProviderUnattended on ChangeNotifier {
   Future<bool> updateUnattended({
     String? goal,
     List<String>? criteria,
-    int? maxRounds,
+    int? maxDurationMinutes,
   }) => _unattendedAction({
     'action': 'update',
     if (goal != null && goal.trim().isNotEmpty) 'goal': goal.trim(),
     if (criteria != null) 'criteria': criteria,
-    if (maxRounds != null) 'maxRounds': maxRounds,
+    if (maxDurationMinutes != null) 'maxDurationMinutes': maxDurationMinutes,
   });
 
   Future<bool> stopUnattended() => _unattendedAction({'action': 'stop'});
 
-  Future<bool> resumeUnattended() => _unattendedAction({'action': 'resume'});
+  /// `resume`：可选重新指定最长值守时间（不改就用服务端保存的值）。
+  Future<bool> resumeUnattended({int? maxDurationMinutes}) => _unattendedAction({
+    'action': 'resume',
+    if (maxDurationMinutes != null) 'maxDurationMinutes': maxDurationMinutes,
+  });
 
   void clearUnattendedError() {
     if (_unattendedError == null) return;

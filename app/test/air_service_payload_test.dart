@@ -418,7 +418,7 @@ void main() {
       });
     });
 
-    test('无人值守配置落在 unattended 键上，不发旧的 goal/goalLimits', () async {
+    test('无人值守配置落在 unattended 键上，只发 maxDurationMinutes', () async {
       final settings = await _settings();
       final posts = _sink();
       await _service(settings, posts).sendFirstMessage(
@@ -428,18 +428,22 @@ void main() {
         unattended: const {
           'goal': '完成登录页错误提示',
           'criteria': ['文案说清原因', 'analyze 通过'],
-          'maxRounds': 200,
+          'maxDurationMinutes': 240,
         },
       );
       final body = posts.single['body']!;
       expect(body['unattended'], {
         'goal': '完成登录页错误提示',
         'criteria': ['文案说清原因', 'analyze 通过'],
-        'maxRounds': 200,
+        'maxDurationMinutes': 240,
       });
-      // 旧键名不能再出现 —— 服务端只认 unattended（docs/unattended-mode.md）。
+      // 旧键名不能再出现 —— 轮次上限已经退场（docs/unattended-mode.md）。
       expect(body.containsKey('goal'), isFalse);
       expect(body.containsKey('goalLimits'), isFalse);
+      expect(
+        (body['unattended'] as Map).containsKey('maxRounds'),
+        isFalse,
+      );
     });
 
     test('unattended 为空时不发这个键（不勾无人值守的普通任务）', () async {

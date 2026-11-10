@@ -29,12 +29,17 @@ void main() {
             'status': 'active',
             'goal': '修好登录流程',
             'criteria': ['测试通过'],
-            'maxRounds': 30,
+            'maxDurationMinutes': 90,
             'rounds': 4,
             'startedAt': 1,
+            'deadlineAt': 5400001,
             'updatedAt': 2,
           },
-          'limits': {'maxRoundsDefault': 30, 'maxRoundsMax': 200},
+          'limits': {
+            'maxDurationMinutesDefault': 120,
+            'maxDurationMinutesMin': 5,
+            'maxDurationMinutesMax': 1440,
+          },
         }),
         200,
         headers: {'content-type': 'application/json; charset=utf-8'},
@@ -50,10 +55,12 @@ void main() {
     expect(snapshot.state!.isActive, isTrue);
     expect(snapshot.state!.goal, '修好登录流程');
     expect(snapshot.state!.rounds, 4);
-    expect(snapshot.limits.maxRoundsMax, 200);
+    expect(snapshot.state!.maxDurationMinutes, 90);
+    expect(snapshot.state!.deadlineAt, 5400001);
+    expect(snapshot.limits.maxDurationMinutesMax, 1440);
   });
 
-  test('POST 动作把 body 原样发出去，并回填服务端状态', () async {
+  test('POST 动作把 body 原样发出去（只发 maxDurationMinutes），并回填服务端状态', () async {
     Map<String, dynamic>? sent;
     final client = MockClient((request) async {
       expect(request.method, 'POST');
@@ -65,10 +72,16 @@ void main() {
           'unattended': {
             'status': 'active',
             'goal': '修好登录流程',
-            'maxRounds': 10,
+            'maxDurationMinutes': 90,
             'rounds': 0,
+            'startedAt': 1000,
+            'deadlineAt': 5401000,
           },
-          'limits': {'maxRoundsDefault': 30, 'maxRoundsMax': 200},
+          'limits': {
+            'maxDurationMinutesDefault': 120,
+            'maxDurationMinutesMin': 5,
+            'maxDurationMinutesMax': 1440,
+          },
         }),
         200,
         headers: {'content-type': 'application/json; charset=utf-8'},
@@ -82,7 +95,7 @@ void main() {
       'action': 'start',
       'goal': '修好登录流程',
       'criteria': ['测试通过'],
-      'maxRounds': 10,
+      'maxDurationMinutes': 90,
       'evaluateNow': true,
     });
 
@@ -90,10 +103,44 @@ void main() {
       'action': 'start',
       'goal': '修好登录流程',
       'criteria': ['测试通过'],
-      'maxRounds': 10,
+      'maxDurationMinutes': 90,
       'evaluateNow': true,
     });
-    expect(snapshot.state!.maxRounds, 10);
+    // 旧的轮次上限键不能再出现。
+    expect(sent!.containsKey('maxRounds'), isFalse);
+    expect(snapshot.state!.maxDurationMinutes, 90);
+    expect(snapshot.state!.deadlineAt, 5401000);
+  });
+
+  test('resume 只带可选时限；stop 只带 action', () async {
+    final bodies = <Map<String, dynamic>>[];
+    final client = MockClient((request) async {
+      bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+      return http.Response(
+        jsonEncode({
+          'ok': true,
+          'unattended': {'status': 'active', 'maxDurationMinutes': 60},
+          'limits': <String, Object>{},
+        }),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+
+    final service = SessionService(
+      settings: await _settings(),
+      httpClient: client,
+    );
+    await service.postUnattended('s1', {
+      'action': 'resume',
+      'maxDurationMinutes': 60,
+    });
+    await service.postUnattended('s1', {'action': 'stop'});
+
+    expect(bodies, [
+      {'action': 'resume', 'maxDurationMinutes': 60},
+      {'action': 'stop'},
+    ]);
   });
 
   test('服务端拒绝时抛出它给的原因（goal_required）', () async {

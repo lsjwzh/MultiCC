@@ -167,7 +167,8 @@ test('Air projects compact unattended progress onto task cards without mutating 
     refs: [{ sessionId: 's', dirId: 'd1', ts: 300 }] };
   mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', unattended: {
-      status: 'active', goal: 'ship it', criteria: ['tests pass'], rounds: 2, maxRounds: 30,
+      status: 'active', goal: 'ship it', criteria: ['tests pass'], rounds: 2, maxDurationMinutes: 120,
+      startedAt: 100, deadlineAt: 7200100,
       history: [{ round: 1, verdict: 'continue' }], stall: { sameInstruction: 0, auxFailures: 0 },
     } }]]),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
@@ -175,7 +176,8 @@ test('Air projects compact unattended progress onto task cards without mutating 
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: false }) } });
   const res = airResponse(); await handlers.get('/api/air')({}, res);
   const [task] = JSON.parse(res.body).tasks;
-  assert.deepEqual(task.unattended, { status: 'active', rounds: 2, maxRounds: 30, evaluating: false });
+  assert.deepEqual(task.unattended, { status: 'active', rounds: 2, deadlineAt: 7200100, evaluating: false });
+  assert.equal('maxRounds' in task.unattended, false);
   assert.equal('unattended' in cached, false, 'the cached task card is never mutated');
   assert.equal(JSON.stringify(JSON.parse(res.body)).includes('ship it'), false,
     'task rows only expose compact progress, not the goal text');
