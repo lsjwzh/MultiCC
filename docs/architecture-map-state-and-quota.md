@@ -151,7 +151,7 @@ C 走 `src/token-global.js`：扫 `~/.claude/projects`（`:21`）+ `~/.codex/ses
 卡片余量走势另存一份**只追加的采样库**：`provider-limit-cache.record` 成功后经 `onRecord`
 交给 `src/quota/provider-quota-history.js`，由 Rust 内核 `native/core/src/quota_history.rs`
 持有（SQLite `provider-quota-history.db`，WAL，同窗口 5 分钟去重，默认保留 14 天，按桶降采样）；
-出口 `src/routes/provider-limit-history.js /api/providers/limit-history`，前端
+出口 `/api/providers/limit-history`（Rust 前门 `native/gateway/src/app/provider_limit_history.rs`），前端
 `public/air-provider-trend.js` 在卡片内画迷你曲线、点击展开详情大图。内核缺失时接口答
 `available:false`，卡片只是不画趋势，不影响线路列表本身。
 

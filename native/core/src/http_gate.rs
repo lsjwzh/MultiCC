@@ -413,6 +413,336 @@ pub fn query_param(original_url: &str, name: &str) -> QueryParam {
     }
 }
 
+/// `req.query[name]` keeping the value shapes `qs` produces, for routes that
+/// pass the value through `Number()` / `typeof === 'string'`. Express parses
+/// with `qs.parse(str, { allowPrototypes: true, arrayLimit: 1000 })`, so a
+/// single `a[0]=5` is an array (and `Number()` is 5), while `a[1000]=5` and
+/// `a[k]=5` are objects (NaN).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryValue {
+    Missing,
+    Text(String),
+    /// A qs array. Elements stay nested because `Number([['5']])` is 5.
+    List(Vec<QueryValue>),
+    /// Any object: `Number()` is NaN and it is never a string.
+    Object,
+}
+
+/// Express's qs options (`node_modules/express/lib/utils.js`).
+const QS_ARRAY_LIMIT: usize = 1000;
+/// qs' default `depth`; express does not override it.
+const QS_DEPTH: usize = 5;
+
+/// The value tree qs builds before compaction. `None` is a hole: JS arrays keep
+/// their length while compacting drops the holes at the end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QsValue {
+    Text(String),
+    List(Vec<Option<QsValue>>),
+    Object,
+    /// qs' `markOverflow` object: an index past `arrayLimit` (or an array that
+    /// grew past it) becomes an object that later scalars append to, so it can
+    /// never turn back into an array.
+    Overflow,
+}
+
+/// `parseValues` runs this over the whole query before splitting: literal
+/// brackets arrive percent-encoded and must open a key group.
+fn qs_unescape_brackets(query: &str) -> String {
+    let bytes = query.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() && bytes[index + 1] == b'5' {
+            match bytes[index + 2] {
+                b'B' | b'b' => {
+                    out.push(b'[');
+                    index += 3;
+                    continue;
+                }
+                b'D' | b'd' => {
+                    out.push(b']');
+                    index += 3;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| query.to_string())
+}
+
+pub fn query_value(original_url: &str, name: &str) -> QueryValue {
+    let Some((_, query)) = original_url.split_once('?') else {
+        return QueryValue::Missing;
+    };
+    let query = query.split('#').next().unwrap_or("");
+    let query = qs_unescape_brackets(query);
+    let query = query.as_str();
+    // qs first groups equal (decoded) keys, combining repeats into an array,
+    // and then parses each distinct key into the nested accumulator.
+    let mut flat: Vec<(String, QsValue)> = Vec::new();
+    for pair in query.split('&').take(QS_PARAMETER_LIMIT) {
+        if pair.is_empty() {
+            continue;
+        }
+        let (raw_key, raw_value) = match pair.find("]=") {
+            Some(bracket) => (&pair[..bracket + 1], &pair[bracket + 2..]),
+            None => pair.split_once('=').unwrap_or((pair, "")),
+        };
+        let key = percent_decode_plus(raw_key);
+        if key.is_empty() {
+            continue;
+        }
+        let value = QsValue::Text(percent_decode_plus(raw_value));
+        match flat.iter_mut().find(|(other, _)| *other == key) {
+            Some((_, existing)) => *existing = qs_combine(existing.clone(), value),
+            None => flat.push((key, value)),
+        }
+    }
+    let mut accumulator: Option<QsValue> = None;
+    for (key, value) in flat {
+        if let Some(contribution) = qs_contribution(&key, value, name) {
+            accumulator = Some(qs_merge(accumulator, contribution));
+        }
+    }
+    match accumulator {
+        Some(value) => qs_classify(&value),
+        None => QueryValue::Missing,
+    }
+}
+
+/// `utils.combine`, which is `[].concat(a, b)` for two flat values.
+fn qs_combine(left: QsValue, right: QsValue) -> QsValue {
+    let mut items = match left {
+        QsValue::List(items) => items,
+        other => vec![Some(other)],
+    };
+    match right {
+        QsValue::List(items) => items,
+        other => vec![Some(other)],
+    }
+    .into_iter()
+    .for_each(|item| items.push(item));
+    if items.len() > QS_ARRAY_LIMIT {
+        QsValue::Overflow
+    } else {
+        QsValue::List(items)
+    }
+}
+
+/// One decoded key → the value it contributes to the top-level `name`.
+fn qs_contribution(key: &str, value: QsValue, name: &str) -> Option<QsValue> {
+    let segments = qs_segments(key);
+    if segments.first().map(String::as_str) != Some(name) {
+        return None;
+    }
+    let mut leaf = value;
+    for segment in segments[1..].iter().rev() {
+        leaf = qs_segment(segment, leaf);
+    }
+    Some(leaf)
+}
+
+/// `splitKeyIntoSegments` with `allowDots: false` and qs' default depth.
+fn qs_segments(key: &str) -> Vec<String> {
+    let bytes = key.as_bytes();
+    let mut segments = Vec::new();
+    let Some(first) = key.find('[') else {
+        return vec![key.to_string()];
+    };
+    if first > 0 {
+        segments.push(key[..first].to_string());
+    }
+    let mut open = Some(first);
+    let mut collected = 0;
+    while let Some(start) = open {
+        if collected >= QS_DEPTH {
+            break;
+        }
+        let mut level = 1;
+        let mut index = start + 1;
+        let mut close = None;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'[' => level += 1,
+                b']' => {
+                    level -= 1;
+                    if level == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        let Some(end) = close else {
+            // Unterminated group: qs wraps the remainder in one literal segment.
+            segments.push(format!("[{}]", &key[start..]));
+            return segments;
+        };
+        segments.push(key[start..=end].to_string());
+        collected += 1;
+        open = key[end + 1..].find('[').map(|hit| end + 1 + hit);
+    }
+    if let Some(start) = open {
+        // `strictDepth` is off, so the tail becomes one literal segment.
+        segments.push(format!("[{}]", &key[start..]));
+    }
+    segments
+}
+
+/// One bracket segment, folded from the leaf backwards (`parseObject`).
+fn qs_segment(segment: &str, leaf: QsValue) -> QsValue {
+    if segment == "[]" {
+        let items = match leaf {
+            QsValue::List(items) => items,
+            other => vec![Some(other)],
+        };
+        return qs_limit(items);
+    }
+    let inner = &segment[1..segment.len() - 1];
+    match qs_index(inner) {
+        Some(index) if index < QS_ARRAY_LIMIT => {
+            let mut items = vec![None; index + 1];
+            items[index] = Some(leaf);
+            QsValue::List(items)
+        }
+        // An index past `arrayLimit` is an object marked overflow.
+        Some(_) => QsValue::Overflow,
+        // Named keys are plain properties on an object.
+        None => QsValue::Object,
+    }
+}
+
+/// qs' `isValidArrayIndex`: canonical non-negative decimal digits only.
+fn qs_index(text: &str) -> Option<usize> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if text.len() > 1 && text.starts_with('0') {
+        return None;
+    }
+    text.parse().ok()
+}
+
+fn qs_is_object(value: &QsValue) -> bool {
+    matches!(
+        value,
+        QsValue::List(_) | QsValue::Object | QsValue::Overflow
+    )
+}
+
+/// `utils.merge(target, source, { arrayLimit: 1000, strictMerge: true })` for
+/// one root property, with objects collapsed (their contents never affect
+/// `Number()` or `typeof`).
+fn qs_merge(target: Option<QsValue>, source: QsValue) -> QsValue {
+    // The first line of `merge` is `if (!source) return target;`, so an empty
+    // string never replaces an existing value.
+    if matches!(&source, QsValue::Text(text) if text.is_empty()) {
+        return target.unwrap_or_else(|| QsValue::Text(String::new()));
+    }
+    match source {
+        QsValue::Text(text) => match target {
+            None => QsValue::Text(text),
+            Some(QsValue::Overflow) => QsValue::Overflow,
+            Some(QsValue::List(mut items)) => {
+                if items.len() >= QS_ARRAY_LIMIT {
+                    return QsValue::Overflow;
+                }
+                items.push(Some(QsValue::Text(text)));
+                QsValue::List(items)
+            }
+            Some(QsValue::Text(previous)) => QsValue::List(vec![
+                Some(QsValue::Text(previous)),
+                Some(QsValue::Text(text)),
+            ]),
+            // `strictMerge` (the qs 6.15 default): a scalar merged into a plain
+            // object becomes `[object, scalar]` instead of a property.
+            Some(QsValue::Object) => {
+                QsValue::List(vec![Some(QsValue::Object), Some(QsValue::Text(text))])
+            }
+        },
+        QsValue::List(items) => match target {
+            None => qs_limit(items),
+            Some(QsValue::Overflow) => QsValue::Overflow,
+            Some(QsValue::Text(previous)) => {
+                let mut merged = vec![Some(QsValue::Text(previous))];
+                merged.extend(items);
+                qs_limit(merged)
+            }
+            Some(QsValue::List(mut previous)) => {
+                qs_merge_lists(&mut previous, items);
+                qs_limit(previous)
+            }
+            // `arrayToObject`: an array merged into an object stays an object.
+            Some(QsValue::Object) => QsValue::Object,
+        },
+        QsValue::Object => match target {
+            None | Some(QsValue::Object) => QsValue::Object,
+            Some(QsValue::Overflow) => QsValue::Overflow,
+            Some(QsValue::Text(previous)) => {
+                QsValue::List(vec![Some(QsValue::Text(previous)), Some(QsValue::Object)])
+            }
+            Some(QsValue::List(_)) => QsValue::Object,
+        },
+        // An overflow object only ever grows by numeric index, so every later
+        // contribution leaves it an object.
+        QsValue::Overflow => QsValue::Overflow,
+    }
+}
+
+/// The array branch of `utils.merge`: holes are skipped, an occupied slot with
+/// a non-object on either side appends, and two objects merge in place.
+fn qs_merge_lists(target: &mut Vec<Option<QsValue>>, source: Vec<Option<QsValue>>) {
+    for (index, item) in source.into_iter().enumerate() {
+        let Some(item) = item else {
+            continue;
+        };
+        if index < target.len() {
+            if let Some(previous) = target[index].as_ref() {
+                if qs_is_object(previous) && qs_is_object(&item) {
+                    let previous = target[index].take();
+                    target[index] = Some(qs_merge(previous, item));
+                } else {
+                    target.push(Some(item));
+                }
+            } else {
+                target[index] = Some(item);
+            }
+        } else {
+            target.resize(index + 1, None);
+            target[index] = Some(item);
+        }
+    }
+}
+
+fn qs_limit(items: Vec<Option<QsValue>>) -> QsValue {
+    if items.len() > QS_ARRAY_LIMIT {
+        QsValue::Overflow
+    } else {
+        QsValue::List(items)
+    }
+}
+
+/// `utils.compact` (holes disappear recursively) and the QueryValue shape.
+fn qs_classify(value: &QsValue) -> QueryValue {
+    match value {
+        QsValue::Text(text) => QueryValue::Text(text.clone()),
+        QsValue::Object | QsValue::Overflow => QueryValue::Object,
+        QsValue::List(items) => QueryValue::List(
+            items
+                .iter()
+                .flatten()
+                .map(qs_classify)
+                .collect::<Vec<QueryValue>>(),
+        ),
+    }
+}
+
 /// `req.query.token` as Express's `qs` parser yields it, when it is a plain
 /// string: exactly one `token=` pair and no `token[...]` forms.
 pub fn query_token(original_url: &str) -> Option<String> {
@@ -917,5 +1247,48 @@ mod node_golden {
                 row[2]
             );
         }
+    }
+
+    /// The fixture's shape, one level of `query_value`.
+    fn query_shape(value: &QueryValue) -> serde_json::Value {
+        match value {
+            QueryValue::Missing => serde_json::json!({ "kind": "missing" }),
+            QueryValue::Text(text) => serde_json::json!({ "kind": "text", "value": text }),
+            QueryValue::Object => serde_json::json!({ "kind": "object" }),
+            QueryValue::List(items) => serde_json::json!({
+                "kind": "array",
+                "items": items.iter().map(query_shape).collect::<Vec<_>>(),
+            }),
+        }
+    }
+
+    #[test]
+    fn query_value_matches_the_real_express_query_parser() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/qs-query-cases.json"))
+                .expect("qs query fixture");
+        for case in fixture["cases"].as_array().unwrap() {
+            let key = case["key"].as_str().unwrap();
+            let query = case["query"].as_str().unwrap();
+            let url = format!("/probe/{key}?{query}");
+            assert_eq!(
+                query_shape(&query_value(&url, key)),
+                case["expected"],
+                "{}: ?{}",
+                case["name"],
+                query
+            );
+        }
+    }
+
+    #[test]
+    fn query_value_keeps_string_routes_on_the_plain_pairs() {
+        // query_param/query_token back auth and download links; they only care
+        // that a repeated or bracketed key is not a plain string.
+        assert_eq!(query_param("/x?a=1", "a"), QueryParam::Text("1".into()));
+        assert_eq!(query_param("/x?a=1&a=2", "a"), QueryParam::Other);
+        assert_eq!(query_param("/x?a[0]=1", "a"), QueryParam::Other);
+        assert_eq!(query_param("/x?b=1", "a"), QueryParam::Missing);
+        assert_eq!(query_token("/x?token=a%2Bb"), Some("a+b".into()));
     }
 }

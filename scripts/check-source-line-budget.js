@@ -206,10 +206,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 注册，实测 3068/164926，按棘轮登记实测高水位。
   // 结构化删除结论接进任务删除：canDeleteHistory 改为 Rust deletionVerdict，
   // 实测 3068/164925（名字短一字节），棘轮双向跟到实测值。
+  // 2026-11-11 GET /api/providers/limit-history 迁到 Rust 前门：server.js 删掉
+  // 该路由的 require 与挂载两行，实测回落到 3066/164657，按棘轮下调。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3068,
-    byteCeiling: 164925,
+    ceiling: 3066,
+    byteCeiling: 164657,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

@@ -171,10 +171,12 @@ async function run(spec, argv = process.argv.slice(2)) {
   const nodePort = nodeServer.address().port;
 
   // The gateway's Node child is a stub: every request in the corpus must be
-  // answered by Rust; a forwarded one shows up as the body "forwarded".
-  fs.writeFileSync(path.join(gwDir, 'server.js'),
+  // answered by Rust; a forwarded one shows up as the stub's answer. A spec
+  // that compares forwarding itself supplies its own script (it has to parse
+  // the PROXY v1 line, like the real child).
+  fs.writeFileSync(path.join(gwDir, 'server.js'), spec.upstream || (
     "require('http').createServer((q,s)=>{s.end('forwarded')}).listen(Number(process.env.MULTICC_GATEWAY_INTERNAL_PORT),'127.0.0.1');"
-    + "process.stdin.resume();process.stdin.on('end',()=>process.exit(0));");
+    + "process.stdin.resume();process.stdin.on('end',()=>process.exit(0));"));
   const gwPort = await freePort();
   gw = spawn(gatewayBin, ['serve', '--cwd', gwDir, '--node', process.execPath, 'server.js'], {
     env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(gwPort), ACCESS_TOKEN: TOKEN,
@@ -188,14 +190,22 @@ async function run(spec, argv = process.argv.slice(2)) {
     ctx.cookie = authSecurity.createCookie();
     let same = 0;
     const diffs = [];
+    const views = [];
     const sides = { node: { name: 'node', state: {}, port: nodePort }, rust: { name: 'rust', state: {}, port: gwPort } };
     const normalizeText = spec.normalize || (text => text);
     for (const [name, request, hooks = {}] of spec.corpus(ctx)) {
       const seen = {};
       for (const side of [sides.node, sides.rust]) {
         step = `${side.name}: ${name}`;
-        if (hooks.before) hooks.before(side);
-        const raw = await send(side.port, typeof request === 'function' ? request(side) : request);
+        // A hook may seed state through the async native kernels (one group
+        // migrates a route whose store is written by the Rust addon).
+        if (hooks.before) await hooks.before(side);
+        let raw;
+        try {
+          raw = await send(side.port, typeof request === 'function' ? request(side) : request);
+        } catch (error) {
+          throw new Error(`${step}: ${error.message}`);
+        }
         if (hooks.capture) hooks.capture(raw, side);
         let v = view(raw);
         v.body = normalizeText(v.body, work);
@@ -204,6 +214,7 @@ async function run(spec, argv = process.argv.slice(2)) {
       }
       if (JSON.stringify(seen.node) === JSON.stringify(seen.rust)) same++;
       else diffs.push({ name, node: seen.node, rust: seen.rust });
+      views.push({ name, node: seen.node, rust: seen.rust });
     }
     step = 'comparing stores';
     const stores = (spec.stores || []).map((file) => {
@@ -216,12 +227,18 @@ async function run(spec, argv = process.argv.slice(2)) {
       const b = read(gwData);
       return { file, same: JSON.stringify(a) === JSON.stringify(b), node: a, rust: b };
     });
-    fs.writeFileSync(path.join(work, 'result.json'), JSON.stringify({ same, diffs, stores }, null, 2));
+    // A group with a binary store (SQLite) or a baseline dump diffs it itself
+    // and returns { ok, details }; it may also mute store entries it already
+    // folded into its own comparison by returning same:true.
+    const extra = typeof spec.finalize === 'function'
+      ? await spec.finalize({ views, nodeData, gwData, work, sides })
+      : null;
+    fs.writeFileSync(path.join(work, 'result.json'), JSON.stringify({ same, diffs, stores, extra }, null, 2));
     for (const diff of diffs) console.log(JSON.stringify(diff));
     for (const store of stores.filter(s => !s.same)) console.log(JSON.stringify(store));
     const storeText = stores.map(s => `${s.file}: ${s.same ? `identical (mode ${s.node.mode || 'absent'})` : 'DIFFERENT'}`).join(', ');
     console.log(`[${spec.name}] same ${same}/${same + diffs.length}; ${storeText || 'no stores'}; details ${work}/result.json`);
-    return diffs.length === 0 && stores.every(s => s.same);
+    return diffs.length === 0 && stores.every(s => s.same) && (!extra || extra.ok !== false);
   } finally {
     clearTimeout(watchdog);
     killGateway();

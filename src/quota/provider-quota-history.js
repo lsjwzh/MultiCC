@@ -2,9 +2,10 @@
 // Adapter between the provider-limit cache and the Rust quota-history kernel.
 //
 // The kernel owns the samples table, dedupe/retention and downsampling; this
-// file only marshals JSON and keeps the native handle lazy. Constructor failure
-// (unreadable/corrupt database) still degrades the provider cards to "no trend"
-// instead of failing the providers API.
+// file only marshals the sampling writes and keeps the native handle lazy.
+// Reads (GET /api/providers/limit-history) live in the Rust front door now.
+// Constructor failure (unreadable/corrupt database) still degrades provider
+// cards to "no trend" instead of failing the providers API.
 
 const fs = require('node:fs');
 const { getNative, runNative } = require('../native/runtime');
@@ -23,7 +24,6 @@ function createProviderQuotaHistory({
   let handle = null;
   let unavailable = false;
   let warned = false;
-  let lastError = null;
 
   function ensure() {
     if (handle) return handle;
@@ -36,7 +36,6 @@ function createProviderQuotaHistory({
       try { fs.chmodSync(file, 0o600); } catch (_) { /* best effort */ }
     } catch (error) {
       unavailable = true;
-      lastError = error;
       if (!warned) {
         warned = true;
         logger.warn?.(`[multicc/quota-history] 历史库不可用，趋势图将不显示：${error.message}`);
@@ -51,7 +50,6 @@ function createProviderQuotaHistory({
     return runNative(() => instance[method](JSON.stringify(payload)))
       .then(result => JSON.parse(result.result))
       .catch(error => {
-        lastError = error;
         if (!warned) {
           warned = true;
           logger.warn?.(`[multicc/quota-history] ${method} 失败，趋势图将暂时缺失：${error.message}`);
@@ -73,28 +71,11 @@ function createProviderQuotaHistory({
     });
   }
 
-  function query({ providers, sinceMs, points } = {}) {
-    if (!Array.isArray(providers) || !providers.length) return Promise.resolve(null);
-    return call('query', {
-      providers: providers.slice(0, 64),
-      ...(Number.isFinite(Number(sinceMs)) ? { sinceMs: Math.trunc(Number(sinceMs)) } : {}),
-      ...(Number.isFinite(Number(points)) ? { points: Math.trunc(Number(points)) } : {}),
-    });
-  }
-
-  function available() {
-    return !!ensure();
-  }
-
-  function status() {
-    return { available: !!handle, lastError: lastError ? String(lastError.message || lastError) : null };
-  }
-
   function close() {
     handle = null;
   }
 
-  return Object.freeze({ available, recordEntry, query, status, close });
+  return Object.freeze({ recordEntry, close });
 }
 
 module.exports = { createProviderQuotaHistory, DEFAULT_RETENTION_MS };

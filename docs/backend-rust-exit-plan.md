@@ -2926,3 +2926,48 @@ This entry records two things: the Rust workspace was brought to a clean lint/fo
 - Next dependency is unchanged: keep moving route domains together with their state owners (6c), then chat orchestration (6d) and the remaining writers (6e), and only then disable the Node path (6f).
 
 No service was restarted and no live service or user data was written during this work.
+
+## Provider 余量历史读取端点迁入 Rust 前门（2026-11-11）
+
+`GET/HEAD/OPTIONS /api/providers/limit-history` 整组迁到 Rust 前门，Node 路由与适配层读取侧删除。采样写入仍在 Node（`recordEntry` 经 napi 调同一内核），这是本域不可避免的宿主适配。
+
+### Rust 实现
+
+- `native/core/src/provider_limit_history.rs`：参数语义（`range` 的 UTF-16 截断与未知值回退、`since` 的 90 天夹取与 `toString`/`valueOf` → NaN、`points` 的 `trunc(Number())`/默认 48/夹取 2..240、`appType` 严格 `claude|codex`、`id` 严格 `row.id === id`）、响应键顺序、`available:false` 降级形状、内核输入组装（身份上限 64、非有限数值省略）。8 个单测。
+- `native/core/src/provider_catalog.rs`：逐行复刻 `official-catalog` 的身份枚举（别名、已登录账号按 `createdAt` 升序、非官方记录、官方形状过滤、`slice(0, 64)`）与 `id` 的严格比较。4 个单测。
+- `native/gateway/src/app/provider_limit_history.rs`：进程内单个 `History` 句柄；首次打开失败后永久 unavailable；首次成功打开后尽力 chmod 0600。请求在 `spawn_blocking` 中读库，鉴权与 Express 行为复用 `http_gate` / `express`。
+- `native/gateway/src/app/mod.rs`：精确 claim `providers/limit-history` 的 GET/HEAD/OPTIONS；其它方法继续转发 Node；200/304 都带 `Cache-Control: no-store`；OPTIONS 为 `Allow: GET,HEAD`、`text/html; charset=utf-8`、body `GET,HEAD`。协议号保持 12（与以往按路由组迁移的前例一致，未 bump）。
+
+### 删除清单
+
+- `src/routes/provider-limit-history.js`（91 行）整文件删除。
+- `server.js` 删除该路由的 require 与挂载（2 行），`providerQuotaHistory` 的构造与关停 `close()` 保留。
+- `src/quota/provider-quota-history.js` 删除不再使用的 query/available/status 与 `lastError`，只保留 `recordEntry` / `close` / 懒打开 / chmod。
+- `tests/test-provider-limit-history.js` 删除，`package.json` 的 `test:provider-router` 与 `tests/test-tiers.json` 同步移除；`tests/test-provider-quota-history.js` 改为直接调用 `RustQuotaHistory.query` 校验内核语义。
+- `tests/helpers/legacy-provider-limit-history-route.js` 作为冻结的 Node oracle 保留在 tests/ 下；`src/` 与 `server.js` 不得 require 它。
+
+### 查询参数解析层（qs 数字下标）
+
+复核发现解析层与 Express 不一致：`?points[0]=5` 在 Node 得到 `5`（数组 `Number('5')`），Rust 因把 `points[0]` 当普通键而回退 48；`?since[0]=<ms>` 同理被丢弃。修复放在共享解析层 `native/core/src/http_gate.rs` 的 `query_value`，按已安装的 Express 4.22.2 + qs 6.15.3 默认参数（`arrayLimit: 1000`、`depth: 5`、`parameterLimit: 1000`、`duplicates: combine`、`strictMerge`、逗号不拆分）逐条复刻：解析前全局反转义 `%5B`/`%5D`、按解码后的键做 combine、`splitKeyIntoSegments` 平衡括号扫描、稀疏数组按规范索引压紧、索引 ≥ 1000 变溢出对象、对象与标量 merge 成 `[object, scalar]`、空串 merge 为 no-op。
+
+- 语料与生成器：`scripts/generate-qs-query-fixture.js` 启动真实 Express 应用，对 81 个用例采集 `req.query` 形状，写入 `native/core/tests/fixtures/qs-query-cases.json`（默认校验，`--write` 才写盘）。覆盖 `a[0]`、`a[1]`、`a[0]&a[1]` 顺序、`a[20]`、`a[21]`、`a[999]`、`a[1000]`、`a[]`、`a[b]`、`a[0][b]`、`a[0][0]`、混合、`a[0]=1&a[]=2`、百分号编码括号、重复键、空值、深度 5/6、未闭合括号、parameterLimit 边界等。
+- 测试：`tests/test-qs-query-fixture.js`（3 个用例：fixture 与实装 Express 一致、语料必备名齐全、关键形状抽查）与 Rust 单测 `http_gate::node_golden::query_value_matches_the_real_express_query_parser` 读同一 fixture；`query_value_keeps_string_routes_on_the_plain_pairs` 锁定 `query_param` / `query_token`（download、auth、source-workspaces 等原生路由）在普通键与重复/括号键上的旧行为不变。
+- 红/绿：修复前 default 差分 113/120，7 条差异为 `GET points index 0/1/20/21/encoded/nested` 与 `GET since index 0`；修复并重建产物后 default 120/120。`provider_limit_history` 的 Rust 单测同步补齐 `points[0]/[1]/[20]/[21]/[1000]/[0][0]/[0]+[]`、`since[0]`、`range[0]` 等用例。
+
+### 差分与集成验证
+
+- 差分脚本 `docs/rust-migration/differential/provider-limit-history.js`：Node 侧为冻结 oracle 跑真实 Express 流水线，Rust 侧为 release 前门；两组各有独立 data root 与 HOME。六组全部逐字节一致：default 120/120、empty-db 3/3、fresh-db 2/2、unavailable-garbage 5/5、unavailable-readonly 5/5、relative-data-dir 5/5；同一轮内 964 行数据库摘要两侧相同、mode 600。
+- `relative-data-dir`：两侧都把 `MULTICC_DATA_DIR` 设为相对路径（Node 相对包根、网关相对 `--cwd` 中的 `server.js` 包根），读取各自的 providers 与样本库后回答一致；若任一侧按进程 cwd 解析，种子目录会落空，5 条请求即出现差异。
+- 机器授权（machine grant）：共享闸门既有的 `native/core/src/http_gate.rs::tests::gate_follows_the_node_order` 已断言有效 `x-multicc-machine-grant`（`mcg_ok`）直接放行、无效凭据（`mcg_bad`）即使带合法 cookie 也被拒（AuthRequired），本域未另造重复测试。
+- 网关集成测试 `native/gateway/tests/provider_limit_history.rs`：`golden_responses_match_the_frozen_node_oracle`、`head_and_options_carry_the_express_contract`、`if_none_match_star_answers_304_with_no_store`、`unavailable_store_is_permanent_and_matches_the_oracle`、`first_open_restricts_the_database_to_the_owner`，5/5 通过。
+- golden fixture 生成器：`node scripts/generate-provider-limit-history-fixture.js [--write]`（默认只校验）。它从冻结 oracle + 真实 napi 内核采集，`now` 固定注入、时间戳归一化，产出 27 个 golden 请求 + 2 个 unavailable 请求到 `native/gateway/tests/fixtures/provider-limit-history.json`；连跑两次字节一致，且与提交文件相同。
+- 有意差异：`/API/providers/limit-history`（大写前缀）此前被 Express 大小写不敏感地匹配并返回 200；前门只 claim 区分大小写的 `/api/` 前缀，Node 路由删除后该变体落回 Express 404。百分号编码变体在 Node 实测本就 404，无差异。
+
+### 最终产物与验证
+
+- Rust 源码指纹 `c613805fb1de0d36f39565d8`（`darwin-arm64/`）：`multicc_core.node` 18,083,504 字节，SHA-256 `dce4c48940dbc54806d7ede04dec58e98a8533780a76306936cda77d7f5971ec`；`multicc-gateway` 9,194,960 字节，SHA-256 `4d1dc75403bc788bc08b3e1c9770766557165eb9ad19828b4274cd873e307b17`；`multicc-cdpd` 2,012,208 字节，SHA-256 `63f2c7491bcf7522edec80d7f7adb7f5cbc39cd9a12ab5bc836c0d447ee6363d`；`multicc-remote` 7,328,800 字节，SHA-256 `d800dd5939b02d3670aa4530ab06fb5e2393a5d979017965b495747682d2979d`；四者 `builtFromSource=true`。
+- `cargo fmt --all --check` 退出 0；`cargo clippy --locked --all-targets -- -D warnings` 零警告；`cargo test --locked --workspace` 869 passed / 0 failed。
+- JS：`tests/test-qs-query-fixture.js` + `tests/test-provider-quota-history.js` 7/7；`test:contracts` 137/137；`test:architecture` 128/128；`test:native` 271/271（含 `test:rust`）；`test:governance` 20/20（新增核心测试后重审：421 entries / 347 deterministic / 393 commands）；`test:security` 1139 项、1138 通过、0 失败、1 既有 TODO；`test:provider-router` 退出 0，1221 项全通过。
+- `node scripts/check-source-line-budget.js` 通过，`server.js` 棘轮保持 3066 行 / 164657 字节。
+- 两份生成清单已重跑：`docs/backend-route-inventory.md`（586 文件、507 个静态候选）与 `docs/backend-runtime-inventory.md`（指纹 `c613805fb1de0d36f39565d8`，558 条运行时注册、34 层中间件），均不再列出该路由。
+- 未运行整套 `npm test`、`test:cdp`、`tests/test-classify-api-errors*`（会改写活跃会话）。未提交、未 stash、未重置、未重启服务、未向活服务写；临时文件均在 `/tmp/provider-limit-history-port/`，结束后已删除。

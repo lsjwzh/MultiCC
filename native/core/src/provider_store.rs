@@ -44,7 +44,7 @@ fn revision(v: &Option<Value>) -> String {
         Sha1::digest(serde_json::to_vec(v).unwrap_or_default())
     )
 }
-fn records(v: &Option<Value>) -> Result<Vec<Value>, String> {
+pub(crate) fn records(v: &Option<Value>) -> Result<Vec<Value>, String> {
     match v {
         None => Ok(vec![]),
         Some(v) => v

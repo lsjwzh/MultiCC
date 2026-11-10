@@ -4552,15 +4552,6 @@
       ]
     },
     {
-      "path": "tests/test-provider-limit-history.js",
-      "tier": "other",
-      "lane": "deterministic",
-      "owner": "npm:test:provider-router",
-      "entrypoints": [
-        "npm:test:provider-router"
-      ]
-    },
-    {
       "path": "tests/test-provider-log-watchdog.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4824,6 +4815,15 @@
       "owner": "npm:test:provider-router",
       "entrypoints": [
         "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-qs-query-fixture.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
       ]
     },
     {
