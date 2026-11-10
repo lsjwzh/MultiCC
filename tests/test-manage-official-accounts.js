@@ -191,7 +191,8 @@ function signinHarness(apiImpl) {
   const body = { innerHTML: '', querySelectorAll: () => [] };
   let click;
   const context = vm.createContext({
-    window: { t, MultiCCApi: { json: apiImpl }, open: (url) => opened.push(url), isSecureContext: true },
+    window: { t, MultiCCApi: { json: apiImpl }, open: (url) => opened.push(url), isSecureContext: true,
+      addEventListener() {}, removeEventListener() {} },
     navigator: { clipboard: { writeText: async (text) => { copied.push(text); } } },
     document: {
       body: { dataset: {}, appendChild() {} },
@@ -350,4 +351,55 @@ test('an official Provider card still opens the editor, because the egress-IP al
     're-login stays, as an extra action next to edit');
   // And the editor keeps its official mode: identity read-only, only the allowlist is written.
   assert.match(provider, /if \(form\.dataset\.official === '1'\) \{[^}]*body = \{ egressIpAllowlist \};/s);
+});
+
+// 账号是在「加账号」这一步注册的：登录链接与换码都从这台机器发出，出口必须在这里
+// 就选好，而不是登录完再去线路编辑器里补。
+test('the add-account sheet picks the egress before the login link is generated', async () => {
+  const id = 'ffffffffffffffff';
+  const calls = [];
+  const h = signinHarness(async (url, options) => {
+    calls.push({ url, method: options?.method || 'GET', body: options?.json });
+    if (url === '/api/plugins') return { plugins: [{ id: 'chrome-proxy-launcher', engine: { available: true } }] };
+    if (url === '/api/plugins/chrome-proxy-launcher/run') return { ok: true, profiles: [{ id: 'us-home', name: 'US Home', egressText: '203.0.113.7' }] };
+    if (url === '/api/claude/accounts' && options?.method === 'POST') return { ok: true, accountId: id, oauthUrl: 'https://claude.ai/oauth/authorize?x=1' };
+    if (url === '/api/claude/accounts') return { accounts: [] };
+    if (url === '/api/codex/accounts') return { accounts: [] };
+    return { state: 'pending' };
+  });
+  h.context.window.MultiCCOfficialAccounts.add('claude');
+  const sheet = h.overlays[0];
+  await h.flush(); await h.flush(); await h.flush();
+  const select = sheet.querySelector('[data-k="egress"]');
+  assert.match(select.innerHTML, /US Home · 203\.0\.113\.7/);
+  assert.equal(select.value, 'us-home', 'a new account starts on the first egress profile');
+  assert.equal(sheet.querySelector('[data-act="open-plugin"]').style.display, 'none');
+  sheet.querySelector('[data-k="label"]').value = '出口号';
+  sheet.querySelector('[data-act="ok"]').onclick();
+  await h.flush(); await h.flush();
+  const create = calls.find(c => c.url === '/api/claude/accounts' && c.method === 'POST');
+  // 跨 vm realm 的对象原型不同，deepStrictEqual 会拿原型说事，按 JSON 比较。
+  assert.deepEqual(JSON.parse(JSON.stringify(create.body)), {
+    label: '出口号',
+    egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' },
+  });
+});
+
+test('with no egress profile the sheet says so and points at the isolation plugin', async () => {
+  const h = signinHarness(async (url) => {
+    if (url === '/api/plugins') return { plugins: [{ id: 'chrome-proxy-launcher', engine: { available: true } }] };
+    if (url === '/api/plugins/chrome-proxy-launcher/run') return { ok: true, profiles: [] };
+    if (url === '/api/claude/accounts') return { accounts: [] };
+    if (url === '/api/codex/accounts') return { accounts: [] };
+    return { state: 'pending' };
+  });
+  h.context.window.MultiCCOfficialAccounts.add('codex');
+  const sheet = h.overlays[0];
+  await h.flush(); await h.flush(); await h.flush();
+  assert.match(sheet.querySelector('[data-k="egress-hint"]').textContent, /还没有身份/);
+  assert.equal(sheet.querySelector('[data-k="egress"]').disabled, true);
+  const open = sheet.querySelector('[data-act="open-plugin"]');
+  assert.notEqual(open.style.display, 'none');
+  open.onclick();
+  assert.deepEqual(h.opened, ['/air?view=plugins']);
 });

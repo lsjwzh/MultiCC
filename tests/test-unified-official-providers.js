@@ -183,3 +183,53 @@ test('production core initializes from prior default account, persists switches 
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'providers.json'))).length, records.length);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// 账号在「加账号」这一步就选出口：绑定必须在返回登录链接之前落盘，否则换码和
+// 之后的所有请求都还走本机网络，登录后补设置已经晚了。
+for (const vendor of ['codex', 'claude']) test(`${vendor} account creation stores the egress picked before the login link exists`, async () => {
+  const handlers = new Map();
+  const app = Object.fromEntries(['get', 'post', 'delete'].map(method => [method, (url, fn) => handlers.set(`${method} ${url}`, fn)]));
+  const updates = [];
+  const providers = {
+    listProviders: () => [],
+    getProvider: () => null,
+    getOfficialAccountSelection: () => 'global',
+    createProvider() { throw new Error('unified mode must not create a provider row'); },
+    updateProvider: (type, id, patch) => { updates.push({ type, id, patch }); },
+  };
+  const cap = vendor === 'codex' ? 'Codex' : 'Claude';
+  const accounts = {
+    [`list${cap}Accounts`]: () => [],
+    [`create${cap}Account`]: () => ({ id: A }),
+    [`delete${cap}Account`]: () => {},
+  };
+  const deps = {
+    providers, accounts,
+    credentials: { status: () => ({}) },
+    logger: { info() {}, warn() {}, error() {} },
+    waitForCallback: () => ({
+      promise: new Promise(() => {}), cancel() {},
+      redirectUri: 'http://127.0.0.1:1455/auth/callback',
+    }),
+  };
+  (vendor === 'codex' ? mountCodexAccountRoutes : mountClaudeAccountRoutes)(app, deps);
+  const call = body => new Promise((resolve, reject) => {
+    const res = { statusCode: 200, status(n) { this.statusCode = n; return this; }, json(payload) { resolve({ statusCode: this.statusCode, body: payload }); return this; } };
+    try {
+      const out = handlers.get(`post /api/${vendor}/accounts`)({ body, params: {} }, res);
+      if (out && typeof out.catch === 'function') out.catch(reject);
+    } catch (error) { reject(error); }
+  });
+
+  const created = await call({ label: '出口号', egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' } });
+  assert.equal(created.statusCode, 201);
+  assert.deepEqual(updates, [{
+    type: vendor,
+    id: `${vendor}-official-${A}`,
+    patch: { egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' } },
+  }]);
+
+  const rejected = await call({ label: '坏绑定', egressBinding: { pluginId: 'chrome-proxy-launcher' } });
+  assert.equal(rejected.statusCode, 400);
+  assert.equal(updates.length, 1, 'a malformed binding creates neither an account nor a record');
+});

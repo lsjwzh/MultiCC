@@ -1364,13 +1364,15 @@ function handleProxyOutcome(event) {
   }
 }
 const { createProxyBroadcasters } = require('./src/chat/proxy-broadcast');
-// 官方账号的「专用出口」：CPR 拨上游前按账号问出口（「Chrome 隔离出口启动器」插件里的身份）；
-// 装着的 CPR 不认这个钩子时，绑了出口的账号在读令牌处失败，绝不悄悄从本机 IP 直连。
+// 每条线路的「专用出口」：CPR 拨上游前按线路问出口（「Chrome 隔离出口启动器」插件里的身份），
+// Claude 与 Codex 两条协议代理共用同一个解析器；装着的 CPR 不认这个钩子时，绑了出口的线路
+// 在读令牌处失败，绝不悄悄从本机 IP 直连。
 const claudeEgress = require('./src/claude-auth/egress-agent');
 const claudeEgressSupported = providerRouterRuntime.routerSupports('upstreamAgent');
 if (!claudeEgressSupported) logger.error('claude_egress_router_outdated', { need: 'cli-provider-router >= 0.5.2 (CAPABILITIES.upstreamAgent)' });
+const claudeEgressResolver = claudeEgress.createClaudeEgressAgentResolver({ logger });
 providerRouterRuntime.mountProtocolProxies(app, {
-  protocols: ['claude'], authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, claudeProxy: { readOfficialCredential: claudeEgress.guardCredentialReader(arg => claudeAccountCredentials.readOfficialCredential(arg), { supported: claudeEgressSupported }), recoverOfficialCredential: (arg, token) => claudeAccountCredentials.recoverOfficialCredential(arg, token), resolveUpstreamAgent: claudeEgress.createClaudeEgressAgentResolver({ logger }).resolveUpstreamAgent },
+  protocols: ['claude'], authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, claudeProxy: { readOfficialCredential: claudeEgress.guardCredentialReader(arg => claudeAccountCredentials.readOfficialCredential(arg), { supported: claudeEgressSupported }), recoverOfficialCredential: (arg, token) => claudeAccountCredentials.recoverOfficialCredential(arg, token), resolveUpstreamAgent: claudeEgressResolver.resolveUpstreamAgent },
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
   onRejected: event => logger.warn('provider_proxy_route_rejected', event),
@@ -1383,6 +1385,8 @@ machines.mount(app, express); app.use(express.json({ limit: '50mb' }));
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
 const codexProxyMounts = providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
+  // 同一条线路级出口：Codex 上游拨号也要能从插件身份出去（键线路同样有 IP 被污染的风险）。
+  codexProxy: { resolveUpstreamAgent: claudeEgressResolver.resolveUpstreamAgent },
   getPort: () => PORT, authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, codexOfficialRelay: { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) }, // multi-account: providers marked settingsConfig.officialAccount resolve the account's own auth.json
   onTransportRotate: event => { metrics.inc('multicc_provider_dispatcher_rotations_total'); logger.warn('provider_dispatcher_rotated', event); },
   onUsageObserved: handleProxyUsage,
