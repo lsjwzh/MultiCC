@@ -1638,7 +1638,9 @@
           optionMap[value] = option;
           select.appendChild(option);
         }
-        select.value = current === 'claude' ? 'claude-exp' : current === 'codex' ? 'codex-exp' : current;
+        // Retired ids are never offered again, but a persisted session may still
+        // carry one: preselect the lane that replaced it (claude-exp -> claude).
+        select.value = current === 'codex' ? 'codex-exp' : (current === 'claude-exp' ? 'claude' : current);
         const targetInfo = doc.createElement('div');
         targetInfo.style.cssText = 'min-height:34px;font-size:12px;color:var(--chat-muted);line-height:1.5;margin-bottom:8px;';
         const resetRow = doc.createElement('label');
@@ -1777,10 +1779,14 @@
             return;
           }
           // 选中态是**车道**，而 specs 是**家族**键（升级/安装的对象是家族的 CLI 制品）:
-          // 先落到家族。bundled 车道（引擎随 MultiCC 走，今天只有 claude-exp）没有制品
-          // 可装 —— 拿家族的命令去装会让人以为修好了，所以如实说去哪儿升。
+          // 先落到家族。chat-only 的 bundled 车道（引擎随 MultiCC 走）没有制品可装
+          // —— 拿家族的命令去装会让人以为修好了，所以如实说去哪儿升。`claude` 这类
+          // 同一 id 还拥有终端制品的车道仍按家族制品处理。
           const catalog = window.MultiCCProviderCatalog;
-          if (catalog && catalog.cliIsBundled && catalog.cliIsBundled(cli)) {
+          const hasOwnArtifact = catalog && (catalog.cliHasOwnArtifact
+            ? catalog.cliHasOwnArtifact(cli)
+            : !catalog.cliIsBundled(cli));
+          if (catalog && !hasOwnArtifact) {
             const engines = catalog.cliBundledEnginesOf(cli).map(e => e.engine).join(' / ');
             targetInfo.textContent = `${label} 的引擎${engines ? `（${engines}）` : ''}随 MultiCC 一起发布，请升级 MultiCC 本身。`;
             return;

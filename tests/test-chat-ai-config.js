@@ -16,15 +16,16 @@ const ROOT = path.join(__dirname, '..');
 // 原本在四个地方各有一份（chat.js 的 CLI_META、air-task-settings.js 的 CLI_LABELS…），
 // 现在 Web 侧只有 public/provider-catalog.js 一份，服务端权威表在
 // src/cli/cli-capability.js；三端一致性由 tests/test-cli-display-parity.js 锁。
-test('claude-exp shows as "Claude" with the engine line "Claude Agent SDK", never "Claude Exp"', () => {
+test('the retired claude-exp id shows as "Claude" with the engine line "Claude Agent SDK", never "Claude Exp"', () => {
   assert.equal(providerCatalog.cliDisplayName('claude-exp'), 'Claude');
   assert.equal(providerCatalog.cliMeta('claude-exp').label, 'Claude');
-  assert.equal(providerCatalog.CLI_DISPLAY['claude-exp'].displayName, 'Claude');
-  assert.equal(providerCatalog.cliEngine('claude-exp'), 'Claude Agent SDK');
   assert.equal(providerCatalog.cliMeta('claude-exp').engine, 'Claude Agent SDK');
+  assert.deepEqual([...providerCatalog.cliMeta('claude-exp').kinds], ['chat', 'terminal']);
+  assert.equal(providerCatalog.cliDisplayName('claude'), 'Claude');
+  assert.equal(providerCatalog.cliEngine('claude'), 'Claude Agent SDK');
   assert.equal(providerCatalog.cliShortMark('claude-exp'), 'C');
   // 页面不再各持一份标签表：这些文件里不该再出现 claude-exp 的字面标签。
-  const anyUi = ['public/chat.js', 'public/air-task-settings.js', 'src/cli-adapters/claude-exp.js', 'src/cli/switch-runtime.js'];
+  const anyUi = ['public/chat.js', 'public/air-task-settings.js', 'src/cli-adapters/claude.js', 'src/cli/switch-runtime.js'];
   for (const file of anyUi) {
     const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
     assert.ok(!source.includes('Claude Exp'), `${file} still says "Claude Exp"`);

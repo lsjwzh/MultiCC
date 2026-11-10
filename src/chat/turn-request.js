@@ -7,7 +7,7 @@
 // fields (`identity` / `origin` / `route.route`) and freezes the result graph.
 
 const { assertProviderBinding } = require('../providers/binding');
-const { CAPABILITIES, transportOf } = require('../cli/cli-capability');
+const { ALIASES, CAPABILITIES, transportOf } = require('../cli/cli-capability');
 const { getNative } = require('../native/runtime');
 
 // No Node fallback: these kernels are Rust-only.
@@ -19,9 +19,12 @@ const FORBIDDEN_FIELDS = new Set(CATALOG.forbiddenFields);
 const PROVIDER_ROUTE_EVIDENCE_KEYS = new Set(CATALOG.providerRouteEvidenceKeys);
 
 // Transport is a column of the canonical CLI capability table, so the resident
-// set is derived here rather than listed again inside the kernel.
+// set is derived here rather than listed again inside the kernel. Retired ids
+// are included: a persisted `claude-exp` turn must keep the resident transport
+// of the lane it now names, and `transportOf` folds the alias.
 const RESIDENT_CLIS = Object.freeze(
-  Object.keys(CAPABILITIES).filter(cli => transportOf(cli) === 'claude-stream'),
+  [...Object.keys(CAPABILITIES), ...Object.keys(ALIASES)]
+    .filter(cli => transportOf(cli) === 'claude-stream'),
 );
 
 class TurnRequestError extends TypeError {

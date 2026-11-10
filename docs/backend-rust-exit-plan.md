@@ -1156,7 +1156,8 @@ Rule (one implementation, no dual path):
    exactly as before (provider aliases still resolve through `aliasMap`).
 2. Otherwise the model the user selected most often on that lane wins. History
    is the explicit `session.model` values in the persisted session records;
-   `claude` and `claude-exp` share one lane, and official provider ids
+   `claude` (the retired `claude-exp` id is only an alias for it), and official
+   provider ids
    (`claude-official`, `claude-official-<account>`) share the provider-less
    official line. Ties resolve to the earlier entry of the model list.
 3. No usable history → the first entry of the lane's model list. Entries that
@@ -1173,7 +1174,7 @@ picker shows, with `CLAUDE_MODELS_FALLBACK` when the CLI has not been scanned);
 official Codex uses `readCodexOfficialModels()`; provider lanes use the
 provider summary's `modelOptions`.
 
-Adapters always pass an explicit model: `claude`/`claude-exp` via
+Adapters always pass an explicit model: `claude` via
 `--model`, `codex` via `-c model=...`, `codex-exp` via `--model` and the
 per-turn `turnOptions.model`. The official Claude lane additionally writes the
 per-session `--settings` override (`src/providers/claude-settings-override.js`)

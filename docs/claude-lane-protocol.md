@@ -751,7 +751,8 @@ TL;DR：Rust 版「SDK」需要
 - 常驻驱动：`src/chat/claude-sdk-stream.js`
 - 选项物化 / 设置文件：`src/chat/claude-sdk-config.js`
 - 受管路由 relay：`src/chat/claude-sdk-route.js`
-- 单轮桥接（兼容入口）：`src/cli-adapters/claude-agent-sdk-bridge.mjs`、`claude-exp.js`
+- 单轮桥接（兼容入口）：`src/cli-adapters/claude-agent-sdk-bridge.mjs`（原
+  `claude-exp.js` 已删除，`claude-exp` 只是 `claude` 的别名）
 - hook 语义：`src/chat/monitor-admission.js`、`background-hold.js`、`result-completion.js`
 - 运行层说明：`docs/claude-agent-sdk-runtime.md`
 - 回归用例：`tests/test-claude-sdk-stream.js`（真实 SDK + 假 HTTP Messages 上游，

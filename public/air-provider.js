@@ -83,7 +83,7 @@
   };
   const protocolName = value => ({ anthropic: 'Anthropic Messages', openai_responses: 'OpenAI Responses' }[value] || value);
   // CLI 展示名走共享 CLI 目录（权威表：服务端 src/cli/cli-capability.js）。这里原本
-  // 只列了 claude/codex/opencode/zcode 四个，其余 CLI（含 kimi、claude-exp）在线路上
+  // 只列了 claude/codex/opencode/zcode 四个，其余 CLI（含 kimi、旧 claude-exp id）在线路上
   // 只能显示内部 id。
   const cliName = value => (catalogApi && catalogApi.cliDisplayName ? catalogApi.cliDisplayName(value) : value);
 

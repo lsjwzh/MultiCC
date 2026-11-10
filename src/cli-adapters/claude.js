@@ -1,19 +1,22 @@
 'use strict';
 
-const { createResultCompletionTracker, isMainResult } = require('./result-completion');
-
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { renderPrompt } = require('../message-composer');
-const { claudeLikeMcpArgs } = require('./router-mcp');
+const { createResultCompletionTracker, isMainResult } = require('./result-completion');
+const { displayNameOf } = require('../cli/cli-capability');
 
-function createClaudeAdapter(deps) {
+// One adapter for the whole Claude family. Chat always runs the resident Agent
+// SDK lane: the adapter enters it by returning `sdkOptions`, which is what
+// `stream-router` routes to `claude-sdk-stream.js` (the native RustClaudeLane).
+// The old `claude -p` chat invocation is gone; the terminal still runs the
+// `claude` executable, so `buildTerminalCmd` keeps its argv.
+function createClaudeAdapter(deps = {}) {
   const {
     cmd,
     args = [],
     chatDisallowedTools = [],
-    multiccImgHint,
     resolveSessionWireModel,
     cliEffortLevel,
     normalizeEffort,
@@ -21,7 +24,7 @@ function createClaudeAdapter(deps) {
     routerMcpNode,
     routerMcpScript,
   } = deps;
-  const routerArgs = claudeLikeMcpArgs(routerMcpNode, routerMcpScript);
+  const bridge = deps.bridge || path.join(__dirname, 'claude-agent-sdk-bridge.mjs');
 
   return {
     name: 'claude',
@@ -43,7 +46,6 @@ function createClaudeAdapter(deps) {
     },
     buildInvocation(env) {
       const so = env.spawnOpts;
-      const sysPrompt = env.systemPrompt;
       const model = resolveSessionWireModel(so.rawModel, {
         providerModel: so.providerModel,
         providerModels: so.providerModels,
@@ -51,51 +53,42 @@ function createClaudeAdapter(deps) {
         defaultModel: so.effectiveModel || null,
       });
       const effort = cliEffortLevel({ effort: so.rawEffort });
-      const payload = renderPrompt(env);
-
-      if (so.mode === 'streaming') {
-        const extraArgs = [];
-        if (so.rawAgent) extraArgs.push('--agent', so.rawAgent);
-        if (effort) extraArgs.push('--effort', effort);
-        if (chatDisallowedTools.length) {
-          extraArgs.push('--disallowedTools', chatDisallowedTools.join(','));
-        }
-        const args = [
-          '-p', ...routerArgs,
-          '--input-format', 'stream-json', '--output-format', 'stream-json',
-          '--verbose', '--include-partial-messages', '--dangerously-skip-permissions',
-          ...(model ? ['--model', model] : []),
-          ...(sysPrompt ? ['--append-system-prompt', sysPrompt] : []),
-          ...extraArgs,
-        ];
-        debugLogClaudeInvoke({ model: so.rawModel, effort: so.rawEffort }, args);
-        return { cmd, args, payload };
-      }
-
-      const args = [
-        '-p', ...routerArgs,
-        '--output-format', 'stream-json', '--verbose',
-        '--include-partial-messages', '--dangerously-skip-permissions',
-        '--append-system-prompt', sysPrompt,
-      ];
-      if (model) args.push('--model', model);
-      if (so.rawAgent) args.push('--agent', so.rawAgent);
-      if (effort) args.push('--effort', effort);
+      const sdkArgs = [bridge];
+      if (env.historyHandle.isFirstTurn) sdkArgs.push('--session-id', env.historyHandle.cliSessionId);
+      else sdkArgs.push('--resume', env.historyHandle.cliSessionId);
+      if (model) sdkArgs.push('--model', model);
+      if (effort) sdkArgs.push('--effort', effort);
+      if (so.rawAgent) sdkArgs.push('--agent', so.rawAgent);
+      if (env.systemPrompt) sdkArgs.push('--system-prompt', env.systemPrompt);
       if (chatDisallowedTools.length) {
-        args.push('--disallowedTools', chatDisallowedTools.join(','));
+        sdkArgs.push('--disallowed-tools-json', JSON.stringify(chatDisallowedTools));
       }
-      if (so.maxTurns > 0) args.push('--max-turns', String(so.maxTurns));
-      if (env.historyHandle.isFirstTurn) args.push('--session-id', env.historyHandle.cliSessionId);
-      else args.push('--resume', env.historyHandle.cliSessionId);
-      debugLogClaudeInvoke({ model: so.rawModel, effort: so.rawEffort }, [...args, payload]);
-      // Ultracode rides in the structured `settings` field (merged into the
-      // per-session --settings override file by the spawn path) instead of an
-      // inline --settings flag: the provider routing env override uses the same
-      // flag, and the CLI accepts only one.
+      if (so.maxTurns > 0) sdkArgs.push('--max-turns', String(so.maxTurns));
+      if (routerMcpNode && routerMcpScript) {
+        sdkArgs.push('--router-node', routerMcpNode, '--router-script', routerMcpScript);
+      }
+      sdkArgs.push('--');
       const ultracode = normalizeEffort(so.rawEffort) === 'ultracode';
-      return { cmd, args, payload, ...(ultracode ? { settings: { ultracode: true } } : {}) };
+      debugLogClaudeInvoke?.({ model: so.rawModel, effort: so.rawEffort }, [...sdkArgs, renderPrompt(env)]);
+      return {
+        cmd: process.execPath,
+        args: sdkArgs,
+        payload: renderPrompt(env),
+        sdkOptions: {
+          model, effort, agent: so.rawAgent, systemPrompt: env.systemPrompt,
+          disallowedTools: chatDisallowedTools, maxTurns: so.maxTurns,
+          routerNode: routerMcpNode, routerScript: routerMcpScript,
+        },
+        ...(ultracode ? { settings: { ultracode: true } } : {}),
+      };
     },
     decodeEvent(event) {
+      if (event?.type === 'system' && event.subtype === 'sdk_error') {
+        return [{
+          type: 'error', label: displayNameOf('claude'), kind: 'provider',
+          message: event.error || 'Claude Agent SDK bridge failed',
+        }];
+      }
       if (event?.type === 'result' && !isMainResult(event)) return [];
       if (event && event.type === 'system' && event.subtype === 'init') {
         return [{ type: 'session_init', model: event.model, raw: event }];

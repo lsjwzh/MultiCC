@@ -441,17 +441,17 @@ void main() {
         ),
       );
 
-      // Legacy one-shot lanes stay hidden even for an existing session;
-      // its modern Claude card shows the selection without changing the ID.
+      // Legacy one-shot lanes stay hidden; id 退役后一个产品只剩一条聊天
+      // 车道，Claude 卡片就是 `claude` 本身。
       expect(find.byKey(const Key('run-cli-option-codex')), findsNothing);
-      expect(find.byKey(const Key('run-cli-option-claude')), findsNothing);
-      final claudeCard = find.byKey(const Key('run-cli-option-claude-exp'));
+      final claudeCard = find.byKey(const Key('run-cli-option-claude'));
       expect(claudeCard, findsOneWidget);
       final claudeRadio = tester.widget<Radio<SessionCli>>(
         find.descendant(of: claudeCard, matching: find.byType(Radio<SessionCli>)),
       );
-      expect(claudeRadio.value, SessionCli.claudeExp);
-      expect(claudeRadio.groupValue, SessionCli.claudeExp);
+      expect(claudeRadio.value, SessionCli.claude);
+      expect(claudeRadio.groupValue, SessionCli.claude);
+      expect(find.byKey(const Key('run-cli-option-claude-exp')), findsNothing);
       expect(find.byKey(const Key('run-cli-option-codex-exp')), findsOneWidget);
 
       // 用不了的车道默认折在「未安装的 N 个」底下，先点开。

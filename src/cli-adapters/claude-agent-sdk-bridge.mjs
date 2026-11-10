@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-// One-shot `claude-exp` lane. The adapter spawns this file with a prompt in
-// argv and reads stream-json lines from stdout. It used to wrap
+// The `claude` chat lane's bridge (the retired `claude-exp` id folded into this
+// lane). The adapter spawns this file with a prompt in argv and reads
+// stream-json lines from stdout. It used to wrap
 // `query()` from @anthropic-ai/claude-agent-sdk; it now drives the same native
 // `claude` binary through the native lane (Rust), so no SDK JavaScript runs.
 
@@ -179,7 +180,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     write({ type: 'system', subtype: 'sdk_error', error: message.slice(0, 4000) });
-    process.stderr.write(`[claude-exp] ${message}\n`);
+    process.stderr.write(`[claude] ${message}\n`);
     process.exitCode = 1;
   }
 }

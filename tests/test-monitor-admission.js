@@ -139,8 +139,8 @@ async function untilRequests(s, count) {
   }
 }
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor holds its turn open: events and end stream into that turn, never a 🔇`, { timeout: 30000 }, async t => {
-  const attempts = createProviderAttemptRuntime({ runtimeEpoch: `monitor-${lane}` });
+test(`real sdk Monitor holds its turn open: events and end stream into that turn, never a 🔇`, { timeout: 30000 }, async t => {
+  const attempts = createProviderAttemptRuntime({ runtimeEpoch: 'monitor' });
   let attempt, admitted = false, turns = 0, queued = Promise.resolve();
   const requests = [], rejected = [], injections = [], results = [], errors = [], decisions = [];
   const f = await sdkFixture(t, ({ index }) => index === 1 ? {
@@ -163,8 +163,8 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor holds its turn 
     tengu_amber_sentinel: true, tengu_breezy_crescent: false,
   } }));
   f.env.CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF = '1';
-  const stream = lane === 'sdk' ? createStreamRouter({}, createSdkStream()) : require('../src/chat/chat-stream');
-  const workspace = { id: `monitor-${lane}`, path: f.cwd };
+  const stream = createStreamRouter({}, createSdkStream());
+  const workspace = { id: 'monitor', path: f.cwd };
   const state = { cwd: f.cwd, currentToolCalls: [], isStreaming: false };
   const delivery = createSessionDelivery({ admit(id, text, metadata) {
     assert.equal(metadata.originContinue, true);
@@ -189,7 +189,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor holds its turn 
     state.isStreaming = true;
     state._activeTurn = { turnId: `monitor-turn-${++turns}` };
     attempt = attempts.beginAttempt({ sessionId: 'monitor', turnId: state._activeTurn.turnId,
-      cli: lane === 'sdk' ? 'claude-exp' : 'claude', providerId: 'test-provider',
+      cli: 'claude', providerId: 'test-provider',
       providerRevision: 'test-revision', protocol: 'anthropic_messages', attemptNo: 1,
       model: 'claude-sonnet-4-6', spawnKey: 'stable-monitor-route' });
     cfg = { cwd: f.cwd, sessionId, idleMs: 30, monitorAdmission: true, backgroundHold: { quietMs: 300 },
@@ -202,12 +202,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor holds its turn 
       },
       isBackgroundActive: () => background.hasProcessBackgroundTasks('monitor'),
       onExit: () => background.reapSessionShadows('monitor'),
-      ...(lane === 'sdk' ? { sdkOptions: { model: 'claude-sonnet-4-6' } } : {
-        cmd: path.join(path.dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), '..',
-          `claude-agent-sdk-${process.platform}-${process.arch}`, 'claude'),
-        baseArgs: ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json',
-          '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6'],
-      }),
+      sdkOptions: { model: 'claude-sonnet-4-6' },
     };
     stream.ensure('monitor', cfg);
     try {
@@ -256,7 +251,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor holds its turn 
   assert.equal(stream.status('monitor').pid, pid, 'the resident process is reused');
 });
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during a live turn reaches that turn natively`, { timeout: 30000 }, async t => {
+test(`real sdk Monitor progress during a live turn reaches that turn natively`, { timeout: 30000 }, async t => {
   const seen = [], injections = [], hooks = [], shown = [];
   const f = await sdkFixture(t, ({ index, input }) => {
     // The command text also contains the marker; only a delivered event counts.
@@ -271,7 +266,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
   fs.writeFileSync(path.join(f.configDir, '.claude.json'), JSON.stringify({ cachedGrowthBookFeatures: {
     tengu_amber_sentinel: true, tengu_breezy_crescent: false } }));
   f.env.CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF = '1';
-  const stream = lane === 'sdk' ? createStreamRouter({}, createSdkStream()) : require('../src/chat/chat-stream');
+  const stream = createStreamRouter({}, createSdkStream());
   const state = { cwd: f.cwd, currentToolCalls: [], isStreaming: true, _activeTurn: { turnId: 'turn-1' } };
   const background = createBackgroundTaskRuntime({
     broadcast: (id, event) => { if (event.type === 'monitor_progress') shown.push(event.description); },
@@ -282,7 +277,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
     getuid: () => process.getuid?.() || 0, now: Date.now,
     setTimer: setTimeout, clearTimer: clearTimeout, completionWindowMs: 30,
   });
-  await stream.claimWorkspace('inturn', { id: `inturn-${lane}`, path: f.cwd });
+  await stream.claimWorkspace('inturn', { id: 'inturn', path: f.cwd });
   stream.ensure('inturn', { cwd: f.cwd, sessionId: randomUUID(), idleMs: 30000, monitorAdmission: true, env: { ...f.env },
     backgroundHold: { quietMs: 300 },
     onBackgroundEvent: event => {
@@ -291,11 +286,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
       return verdict;
     },
     isBackgroundActive: () => background.hasProcessBackgroundTasks('inturn'),
-    ...(lane === 'sdk' ? { sdkOptions: { model: 'claude-sonnet-4-6' } } : {
-      cmd: path.join(path.dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), '..',
-        `claude-agent-sdk-${process.platform}-${process.arch}`, 'claude'),
-      baseArgs: ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json',
-        '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6'] }) });
+    sdkOptions: { model: 'claude-sonnet-4-6' } });
   f.teardown.tasks.push(async () => {
     fs.writeFileSync(path.join(f.cwd, 'monitor-stop'), 'stop');
     try { await stream.closeAndWait('inturn'); } finally { background.stopAll(); }
@@ -316,7 +307,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
 
 // A resident session driven turn by turn against the fake upstream, with the
 // production background runtime deciding every native notification.
-async function residentSession(t, lane, reply, backgroundHold = { quietMs: 300 }, managedRoute = false) {
+async function residentSession(t, reply, backgroundHold = { quietMs: 300 }, managedRoute = false) {
   const injections = [], decisions = [], main = [], broadcasts = [];
   const recentEvents = [];
   let turnError;
@@ -326,8 +317,8 @@ async function residentSession(t, lane, reply, backgroundHold = { quietMs: 300 }
     main.push(JSON.stringify(args.input.messages));
     return reply.main(main.length, main.at(-1));
   });
-  const stream = lane === 'sdk' ? createStreamRouter({}, createSdkStream()) : require('../src/chat/chat-stream');
-  const name = `resident-${lane}-${randomUUID().slice(0, 8)}`;
+  const stream = createStreamRouter({}, createSdkStream());
+  const name = `resident-${randomUUID().slice(0, 8)}`;
   const state = { cwd: f.cwd, currentToolCalls: [], isStreaming: false };
   const background = createBackgroundTaskRuntime({
     broadcast: (id, event) => broadcasts.push(event), observeTask() {}, noteBgResultInjected() {},
@@ -351,11 +342,7 @@ async function residentSession(t, lane, reply, backgroundHold = { quietMs: 300 }
       return verdict;
     },
     isBackgroundActive: () => background.hasProcessBackgroundTasks(name),
-    ...(lane === 'sdk' ? { sdkOptions: { model: 'claude-sonnet-4-6' } } : {
-      cmd: path.join(path.dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), '..',
-        `claude-agent-sdk-${process.platform}-${process.arch}`, 'claude'),
-      baseArgs: ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json',
-        '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6'] }) });
+    sdkOptions: { model: 'claude-sonnet-4-6' } });
   f.teardown.tasks.push(async () => {
     for (const file of ['bg-go', 'agent-go']) fs.writeFileSync(path.join(f.cwd, file), 'go');
     try { await stream.closeAndWait(name); } finally { background.stopAll(); }
@@ -400,8 +387,8 @@ const slowBash = { type: 'tool_use', id: 'bg-tool', name: 'Bash', input: { run_i
 const settled = promise => Promise.race([promise.then(() => true, () => true),
   new Promise(resolve => setTimeout(resolve, 500, false))]);
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Bash finishing after its answer continues that same turn`, { timeout: 40000 }, async t => {
-  const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null });
+test(`real sdk background Bash finishing after its answer continues that same turn`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, { main: n => n === 1 ? slowBash : null });
   const turn = s.turn('Start the background job');
   await untilRequests(s, 2);
   assert.equal(await settled(turn), false, 'the answer is held while the job runs');
@@ -415,8 +402,8 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Bash finishi
   assert.deepEqual(s.injections, [], 'no 🔇 for a completion the turn received');
 });
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Agent finishing after its answer continues that same turn with its report`, { timeout: 40000 }, async t => {
-  const s = await residentSession(t, lane, { main: n => n === 1 ? backgroundAgent : null, sub: subagentReply });
+test(`real sdk background Agent finishing after its answer continues that same turn with its report`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, { main: n => n === 1 ? backgroundAgent : null, sub: subagentReply });
   const turn = s.turn('Research in the background');
   await untilRequests(s, 2);
   const agent = s.broadcasts.find(event => event.type === 'monitor_started' && event.subagent_type === 'general-purpose');
@@ -441,8 +428,8 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Agent finish
   assert.deepEqual(s.injections, [], 'no 🔇 for a report the turn received');
 });
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} a message typed during the held phase runs inside that same turn`, { timeout: 40000 }, async t => {
-  const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null });
+test(`real sdk a message typed during the held phase runs inside that same turn`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, { main: n => n === 1 ? slowBash : null });
   const turn = s.turn('Start the background job');
   await untilRequests(s, 2);
   assert.equal(await settled(turn), false, 'the answer is held while the job runs');
@@ -466,8 +453,8 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} a message typed during 
   assert.deepEqual(s.injections, [], 'no 🔇 for anything this turn received');
 });
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} background work outliving the hold cap keeps the turn open and the wake inside it`, { timeout: 40000 }, async t => {
-  const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null }, { quietMs: 300, maxMs: 600 });
+test(`real sdk background work outliving the hold cap keeps the turn open and the wake inside it`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, { main: n => n === 1 ? slowBash : null }, { quietMs: 300, maxMs: 600 });
   const turn = s.turn('Start the background job');
   await untilRequests(s, 2);
   // The cap is a warning, not a release: past it the turn is still held and the
@@ -488,7 +475,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} background work outlivi
 test('real sdk turn held past the cap with a background agent mid-request keeps its answer and the process', { timeout: 40000 }, async t => {
   let unblock;
   const blocked = new Promise(resolve => { unblock = resolve; });
-  const s = await residentSession(t, 'sdk', { main: n => n === 1 ? backgroundAgent : null,
+  const s = await residentSession(t, { main: n => n === 1 ? backgroundAgent : null,
     sub: async () => { await blocked; return { type: 'text', text: 'AGENT_FINAL_REPORT END_OF_REPORT' }; } },
   { quietMs: 300, maxMs: 600 }, true);
   t.after(() => unblock());
@@ -506,8 +493,8 @@ test('real sdk turn held past the cap with a background agent mid-request keeps 
   assert.equal(s.main.length, 3, 'the agent report woke the same turn');
 });
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} cancelling a held turn keeps its answer and stops the background work`, { timeout: 40000 }, async t => {
-  const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null });
+test(`real sdk cancelling a held turn keeps its answer and stops the background work`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, { main: n => n === 1 ? slowBash : null });
   const turn = s.turn('Start the background job');
   await untilRequests(s, 2);
   assert.equal(await settled(turn), false, 'the answer is held while the job runs');
@@ -522,8 +509,8 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} cancelling a held turn 
   assert.deepEqual(s.injections, [], 'a cancelled job never wakes the session');
 });
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Agent finishing inside its turn reaches that turn natively`, { timeout: 40000 }, async t => {
-  const s = await residentSession(t, lane, { main: n => n === 1 ? backgroundAgent
+test(`real sdk background Agent finishing inside its turn reaches that turn natively`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, { main: n => n === 1 ? backgroundAgent
     : n === 2 ? { type: 'tool_use', id: 'fg-tool', name: 'Bash', input: {
       command: 'touch agent-go; sleep 4; echo slept', description: 'wait for the agent' } }
       : null, sub: subagentReply });

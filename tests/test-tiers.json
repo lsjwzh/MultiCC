@@ -2583,6 +2583,15 @@
       ]
     },
     {
+      "path": "tests/test-claude-adapter.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-claude-api-error-message.js",
       "tier": "core",
       "lane": "deterministic",
@@ -2598,24 +2607,6 @@
       "owner": "npm:test:provider-router",
       "entrypoints": [
         "npm:test:provider-router"
-      ]
-    },
-    {
-      "path": "tests/test-claude-exp-adapter.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-claude-exp-sdk.js",
-      "tier": "core",
-      "lane": "isolated",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
       ]
     },
     {
@@ -2717,6 +2708,15 @@
       "path": "tests/test-claude-sdk-host.js",
       "tier": "core",
       "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-sdk-lane.js",
+      "tier": "core",
+      "lane": "isolated",
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"

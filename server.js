@@ -100,6 +100,8 @@ const {
   buildHandoffCheckpoint,
   renderHandoffPrompt,
 } = require('./src/cli-switch');
+const { isAlias, nameOf: canonicalCli } = require('./src/cli/cli-capability');
+const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
 // MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
@@ -578,11 +580,7 @@ const commandsForAvailability = require('./src/cli-adapters/commands').createCom
 function cliAvailabilitySummary() {
   const commands = commandsForAvailability();
   const out = {};
-  for (const cli of SUPPORTED_CHAT_CLIS) {
-    let available = cliCommandAvailable(commands[cli]);
-    if (cli === 'claude-exp' && !require('./src/cli/claude-bundled-binary').bundledClaudeCodeBinary()) available = false;
-    out[cli] = { available };
-  }
+  for (const cli of CLIENT_CHAT_CLIS) out[cli] = { available: cliCommandAvailable(commands[cli]) };
   return out;
 }
 
@@ -705,11 +703,8 @@ async function ensureDirGitReady(dir) {
 }
 
 // ── Directory + session persistence ──
-// Schema:
-//   directories.json: [{ id, name, path, createdAt, baseBranch?, gitInitialized? }]
-//   sessions.json:    [{ id, dirId, cli, kind, cliSessionId, label?, createdAt, worktreePath?, branch? }]  (+ __aux__)
-//
-// Old flat schemas are auto-migrated on first load. Paths flow through MULTICC_PATHS (MULTICC_DATA_DIR relocates them).
+// Schema: directories.json / sessions.json; old flat schemas auto-migrate on first load.
+// Paths flow through MULTICC_PATHS (MULTICC_DATA_DIR relocates them).
 const SESSIONS_FILE = MULTICC_PATHS.sessionsFile;
 const DIRECTORIES_FILE = MULTICC_PATHS.directoriesFile;
 
@@ -1564,7 +1559,7 @@ function createSessionRecord(input) {
   return require('./src/session/create-record').createSessionRecordFactory({
     sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
     SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath: MULTICC_PATHS.loginWorkspacePath
-  })(input);
+  })(input && typeof input === 'object' && input.cli != null ? { ...input, cli: canonicalCli(input.cli) } : input);
 }
 
 // Login terminals are one-shot (src/session/login-terminal.js): each login
@@ -2541,7 +2536,7 @@ require('./src/workspace/air-routes').mountAirRoutes(app, {
   directories,
   shell: taskShellHost,
   getBoard: () => taskBoardRuntime.getBoard(), markTaskSeen: id => taskBoardRuntime.markTaskSeen(id),
-  clis: SUPPORTED_CHAT_CLIS,
+  clis: CLIENT_CHAT_CLIS,
   providerName: sessionProviderName,
   effectiveModel: effectiveSessionModel,
   effectiveEffort: effectiveSessionEffort, mergeStateCached,
@@ -2865,7 +2860,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskTitle: id => taskShellHost.artifactTaskTitle(id), resolveTaskId: id => taskShellHost.artifactTaskId(id), resolveDir: id => directories.get(persistedSessions.get(id)?.dirId)?.path || null }); secretsVault.mount(app); annotationLive.mount(app); remoteScreen.mount(app,{logger}); pluginsRoutes.createPluginsRoutes({ pluginsDir: path.join(__dirname, 'plugins'), paths: MULTICC_PATHS, autoRefresh: true, platform: process.platform, arch: process.arch, logger, resident: { port: () => PORT, alert: pushRuntime.notifyHost } }).mount(app); // docs-registry/secrets-vault/annotation-live=管理表/保险箱/标注通道；plugins=内置+已装插件、插件列表、常驻插件。同行守 3000 行
 cronTasks.init({
   directories,
-  clis: SUPPORTED_CHAT_CLIS,
+  clis: CLIENT_CHAT_CLIS,
   ready: startupRepoReady,
   createTask: input => taskShellHost.createTask(input),
   getTask: id => taskShellHost.taskEntry(id),

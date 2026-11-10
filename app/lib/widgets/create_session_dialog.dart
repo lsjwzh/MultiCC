@@ -128,11 +128,14 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   bool get _isCodex => _pickedCli.isCodexFamily;
 
   /// 这张弹窗能给哪种会话挑哪条车道，是车道的事实（服务端 cli-capability 的 kinds
-  /// 列），不是这里的分支：chat 只给常驻车道（`claude -p` / `codex exec` 那两个
-  /// 一次性可执行文件归终端），终端反过来只给能真跑起来的原生命令。
+  /// 列），不是这里的分支：chat 只给常驻车道（`codex exec` 那个一次性可执行文件归
+  /// 终端），终端反过来只给能真跑起来的原生命令。退役 id（`claude-exp`）仍能解析旧
+  /// 会话，但绝不进选择器。
   Iterable<SessionCli> get _selectableClis {
     final kind = widget.kind == SessionKind.chat ? 'chat' : 'terminal';
-    return SessionCli.values.where((cli) => cliOffersIn(cli.name, kind));
+    return SessionCli.values.where(
+      (cli) => cli.name != 'claude-exp' && cliOffersIn(cli.name, kind),
+    );
   }
 
   bool get _isQoder => _pickedCli == SessionCli.qoder;
@@ -208,11 +211,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _presetSvc = AgentPresetService(settings: widget.settings);
     // 先落地：下面挑默认 CLI 的第一句就要问 [_cliAvailable]。
     _availability = widget.cliAvailability;
-    _pickedCli =
-        widget.defaultCli ??
-        (widget.kind == SessionKind.chat
-            ? SessionCli.claudeExp
-            : SessionCli.claude);
+    _pickedCli = widget.defaultCli ?? SessionCli.claude;
     // If the requested default CLI isn't installed on this host, fall back to
     // the first available one (or keep Claude when nothing is known).
     if (!_selectableClis.contains(_pickedCli) || !_cliAvailable(_pickedCli)) {

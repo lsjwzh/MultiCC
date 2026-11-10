@@ -955,6 +955,16 @@ function createChatTurnEngine(deps) {
     // reset the D auto-continue guard so a future background-wait gets fresh budget.
     if (!originContinue || directUserInput) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
     // CLI switches retain WS state, so allocate native identity independently.
+    // A session from the deleted `claude -p` lane first carries its live
+    // transcript id over: that lane stored it in `_streamSessionId`, while the
+    // Agent SDK lane resumes by `cliSessionId`. Both name the same
+    // `~/.claude/projects/<cwd>/<id>.jsonl`, so no conversation loses history.
+    if (persisted.cli === 'claude' && persisted._streamSessionId) {
+      persisted.cliSessionId = persisted._streamSessionId;
+      delete persisted._streamSessionId;
+      rememberActiveCliState(persisted);
+      savePersistedSessionsBestEffort('runtime.claude-native-id-migrate');
+    }
     if ((turnRequest.cli === 'claude' || turnRequest.cli === 'claude-exp') && !persisted.cliSessionId) {
       persisted.cliSessionId = crypto.randomUUID();
       savePersistedSessionsBestEffort('runtime.chat-session-id-allocate');

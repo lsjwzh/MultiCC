@@ -317,8 +317,8 @@ test('the deprecation plan is identical on all three platforms', () => {
   assert.equal(CATALOG.cliMeta('mystery-cli').engine, 'mystery-cli');
   // 选择器拿到的就是 meta，所以「哪种会话给这条车道」也得跟着它走 —— 一个只拿到
   // {label, color} 的选择器只能自己再判断一遍，那正是这次要收掉的东西。
-  assert.deepEqual([...CATALOG.cliMeta('claude').kinds], ['terminal']);
-  assert.deepEqual([...CATALOG.cliMeta('claude-exp').kinds], ['chat']);
+  assert.deepEqual([...CATALOG.cliMeta('claude').kinds], ['chat', 'terminal']);
+  assert.deepEqual([...CATALOG.cliMeta('claude-exp').kinds], ['chat', 'terminal']);
   assert.deepEqual([...CATALOG.cliMeta('opencode').kinds], ['chat', 'terminal']);
   assert.deepEqual([...CATALOG.cliMeta('mystery-cli').kinds], ['chat', 'terminal']);
 });
@@ -350,16 +350,17 @@ test('the engine line and the picker kinds are one fact on all three platforms',
   assert.equal(CAP.engineOf('codex-exp'), 'Codex App Server');
   assert.equal(CATALOG.cliEngine('codex-exp'), 'Codex App Server');
   // 其余车道没有引擎名，小字就是自己的 id —— 终端里那行小字指的就是要跑的命令。
-  assert.equal(CAP.engineOf('claude'), 'claude');
+  assert.equal(CAP.engineOf('claude'), 'Claude Agent SDK');
   assert.equal(CAP.engineOf('codex'), 'codex');
   assert.equal(CAP.engineOf('zcode'), 'zcode');
   assert.equal(CAP.engineOf('mystery-cli'), 'mystery-cli');
   assert.equal(CATALOG.cliEngine(''), '');
-  // The rule itself: `claude` is `claude -p`, `codex` is `codex exec`. Neither has
-  // a place in a chat picker; both are exactly what a terminal runs.
-  assert.deepEqual(CAP.kindsOf('claude'), ['terminal']);
+  // The rule itself: `claude`'s chat seat is the Agent SDK lane and its terminal
+  // seat is the executable, so the folded id answers both; `codex` is `codex exec`
+  // and has no place in a chat picker; `codex-exp` is the resident Codex lane.
+  assert.deepEqual(CAP.kindsOf('claude'), ['chat', 'terminal']);
   assert.deepEqual(CAP.kindsOf('codex'), ['terminal']);
-  assert.deepEqual(CAP.kindsOf('claude-exp'), ['chat']);
+  assert.deepEqual(CAP.kindsOf('claude-exp'), ['chat', 'terminal']);
   assert.deepEqual(CAP.kindsOf('codex-exp'), ['chat']);
   // A CLI this table has never heard of answers both — it must not vanish from a
   // picker just because nobody added a row for it.
@@ -515,8 +516,9 @@ test('一条车道的家族归属三端一致，未知 id 不冒充任何家族'
 
 test('derivatives are a family fact, so a second surface cannot invent one', () => {
   // 一个家族只在「同一场景给多条衍生」或「两种场景叫法不同」时才列 lanes。今天的
-  // 两类：claude / codex（chat 一条常驻 + 一条退出 chat 的一次性车道，terminal 一条
-  // 原生命令），以及 ACP 三家（chat 走桥 `xxx acp`，terminal 跑原生 `xxx`）。
+  // 两类：claude / codex（claude 的 chat 与 terminal 共用 id，codex 的 chat 只留常驻
+  // codex-exp、一次性 codex 只在 terminal），以及 ACP 三家（chat 走桥 `xxx acp`，
+  // terminal 跑原生 `xxx`）。
   const DERIVED = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'commandcode', 'pi'];
   for (const familyId of families) {
     if (DERIVED.includes(familyId)) continue;
@@ -537,11 +539,10 @@ test('derivatives are a family fact, so a second surface cannot invent one', () 
     assert.equal(CATALOG.cliLanesOf(familyId, 'chat')[0].engine, `${familyId} acp`, `${familyId}: web chat engine`);
     assert.equal(CATALOG.cliLanesOf(familyId, 'terminal')[0].engine, familyId, `${familyId}: web terminal engine`);
   }
-  // 两条扶正家族的 chat 各给两条衍生，其中一次性那条 offered:false —— 它仍然是
-  // 一条真实的车道（记录里存着这个 id），只是选择器不再提供。
+  // claude 的 chat 只剩 Agent SDK 这条常驻车道：被删掉的 `claude -p` 不再是一行
+  // 衍生。codex 仍保留一次性 codex（offered:false）作为退役兜底。
   assert.deepEqual(CAP.lanesOf('claude', 'chat').map(l => [l.lane, l.label, l.engine, l.offered]), [
-    ['claude-exp', 'Claude', 'Claude Agent SDK', true],
-    ['claude', 'Claude', 'claude -p', false],
+    ['claude', 'Claude', 'Claude Agent SDK', true],
   ]);
   assert.deepEqual(CAP.lanesOf('claude', 'terminal').map(l => [l.lane, l.label, l.engine, l.offered]), [
     ['claude', 'Claude', 'claude', true],
@@ -583,7 +584,15 @@ test('every CLI the server accepts has a display entry', () => {
     ['contracts/v1 session.schema.json cli.enum', schema.properties.cli.enum],
   ];
   for (const [label, set] of sets) {
-    for (const id of set) assert.ok(ids.includes(id), `${label} accepts ${id} but DISPLAY has no row for it`);
+    for (const id of set) {
+      // A retired id is still accepted on input but intentionally has no row of
+      // its own: it resolves to the lane that replaced it.
+      if (CAP.isAlias(id)) {
+        assert.equal(CAP.displayNameOf(id), CAP.displayNameOf('claude'), `${label}: alias ${id} resolves`);
+        continue;
+      }
+      assert.ok(ids.includes(id), `${label} accepts ${id} but DISPLAY has no row for it`);
+    }
   }
 });
 
@@ -626,7 +635,7 @@ test('lookups tolerate the spacing and casing a session record carries', () => {
 
 test('the update unit is the family, on all three platforms', () => {
   // 面板列出的是「这个 CLI 能不能更新」，而 CLI 是家族：codex 的两条车道跑同一个
-  // 二进制、同一条安装脚本；claude-exp 根本没有自己的制品。所以升级规格挂在家族上，
+  // 二进制、同一条安装脚本；claude 的 chat 车道根本没有自己的制品。所以升级规格挂在家族上，
   // 按任一车道 id 问都答同一份。
   const specs = CAP.updateSpecs();
   assert.deepEqual(Object.keys(specs).sort(), [...families].sort(), 'every family must say what upgrading it means');
@@ -663,15 +672,16 @@ test('the update unit is the family, on all three platforms', () => {
 });
 
 test('a bundled lane says its engine rides with MultiCC, not with the CLI', () => {
-  // claude-exp 的引擎是 MultiCC 自己的依赖（Agent SDK 是个库，不是一个可执行文件），
-  // 所以「装/升级这个 CLI」的动作装不到它。这一列存在的唯一理由就是让升级行说实话。
-  assert.equal(CAP.isBundled('claude-exp'), true);
-  assert.equal(CATALOG.cliIsBundled('claude-exp'), true);
-  assert.equal(CAP.isBundled('claude'), false);
+  // claude 的 chat 引擎是 MultiCC 自己的依赖（Agent SDK 是个库，不是一个可执行
+  // 文件），所以「装/升级这个 CLI」的动作装不到它。这一列存在的唯一理由就是让
+  // 升级行说实话。
+  assert.equal(CAP.isBundled('claude'), true);
+  assert.equal(CATALOG.cliIsBundled('claude'), true);
+  assert.equal(CAP.isBundled('claude-exp'), true, 'the retired id answers its live lane');
   assert.equal(CAP.isBundled('codex-exp'), false);
   assert.equal(CAP.isBundled('mystery-cli'), false);
   assert.equal(CATALOG.cliIsBundled('mystery-cli'), false);
-  assert.deepEqual(CAP.bundledEnginesOf('claude'), [{ lane: 'claude-exp', engine: 'Claude Agent SDK', kind: 'chat' }]);
+  assert.deepEqual(CAP.bundledEnginesOf('claude'), [{ lane: 'claude', engine: 'Claude Agent SDK', kind: 'chat' }]);
   assert.deepEqual(CAP.bundledEnginesOf('claude-exp'), CAP.bundledEnginesOf('claude'), 'a lane answers its family');
   assert.deepEqual(CAP.bundledEnginesOf('codex'), [], 'codex-exp is resident but still its own binary');
   assert.deepEqual(CATALOG.cliBundledEnginesOf('claude'), CAP.bundledEnginesOf('claude'));

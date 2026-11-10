@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
-const prepareTurn = require('./helpers/claude-exp-turn');
+const prepareTurn = require('./helpers/claude-turn');
 const { processSpawnArgs } = require('../src/chat/process-spawn-args');
 
 function sdkProcess(invocation, cwd, env) {

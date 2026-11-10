@@ -12,7 +12,7 @@
 //     message waiting because its spawn contract changed is announced as
 //     waiting for background work — not as a wedged workspace.
 //
-// The lane-level proof (real CLI child, both backends) lives in
+// The lane-level proof (real CLI child, Agent SDK lane) lives in
 // tests/test-monitor-admission.js.
 
 const assert = require('node:assert/strict');

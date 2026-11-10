@@ -1,6 +1,7 @@
 # Claude Agent SDK 常驻运行时
 
-`claude-exp` 的聊天路径由 `chat-stream` 统一分派到 `claude-sdk-stream`。
+`claude` 的聊天路径由 `chat-stream` 统一分派到 `claude-sdk-stream`（旧的
+`claude-exp` id 只是别名，读到即折叠为 `claude`）。
 首次发送时调用一次 `query({ prompt: AsyncIterable, options })`，之后的用户消息
 写入同一个异步输入队列。主 `result` 事件结束当前 MultiCC 回合，不结束输入流。
 SDK 启动的 Claude Code 子进程保持存活；SDK 输出循环继续接收后台任务事件。

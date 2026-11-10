@@ -70,7 +70,7 @@ test('a cancel that reaps the child is distinguished from one that interrupts in
   // it, and merely "no turn in flight" on a lane whose cancel interrupts and
   // keeps the child. Conflating the two either reports a stopped runner that is
   // still running, or waits for a process that is designed to survive.
-  assert.equal(cancelStopsProcess('claude'), true);
+  assert.equal(cancelStopsProcess('claude'), false, 'the Agent SDK lane interrupts the turn, not the child');
   assert.equal(cancelStopsProcess('codex-exp'), true);
   assert.equal(cancelStopsProcess('zcode'), true);
   assert.equal(cancelStopsProcess('claude-exp'), false, 'the SDK lane interrupts the turn, not the child');
@@ -132,8 +132,8 @@ test('the wire transport names stay the values a minted provider route expects',
 });
 
 test('the protocol each lane speaks is described, not inferred from the lane', () => {
-  assert.equal(protocolOf('claude'), 'claude-stream');
-  assert.equal(protocolOf('claude-exp'), 'claude-stream-sdk');
+  assert.equal(protocolOf('claude'), 'claude-stream-sdk');
+  assert.equal(protocolOf('claude-exp'), 'claude-stream-sdk', 'the retired id resolves to the same lane');
   assert.equal(protocolOf('codex-exp'), 'codex-app-server');
   assert.equal(protocolOf('codex'), 'codex-exec-json');
   // ACP is a per-turn local agent protocol: the bridge spawns the agent for the
@@ -186,25 +186,29 @@ test('the one-shot codex lane is marked as the fallback it now is', () => {
 
 test('the chat lanes are the resident ones, and the terminal keeps the native commands', () => {
   // 2026-09-26：两条常驻车道扶正 —— 大字是产品名、小字是它们底下的引擎；两条一次性
-  // 车道退出 chat。`claude` 是 `claude -p`、`codex` 是 `codex exec`：chat 里没有它们
-  // 的位置，但终端真要把这两个可执行文件跑起来，所以只退出 chat、留在终端。
+  // 车道退出 chat。`claude -p` 那条 chat 车道已删除：`claude` 的 chat 位置由 Agent
+  // SDK 常驻车道接替，同一个 id 在终端仍跑 `claude` 可执行文件；`codex` 是
+  // `codex exec`，chat 里没有它的位置，但仍留在终端。
+  assert.equal(displayNameOf('claude'), 'Claude');
+  assert.equal(engineOf('claude'), 'Claude Agent SDK');
   assert.equal(displayNameOf('claude-exp'), 'Claude');
   assert.equal(engineOf('claude-exp'), 'Claude Agent SDK');
   assert.equal(displayNameOf('codex-exp'), 'Codex');
   assert.equal(engineOf('codex-exp'), 'Codex App Server');
   // 两条扶正车道的引擎是随 MultiCC 走的（Agent SDK 是库、app-server 是常驻子进程），
-  // 所以「装/升级这个 CLI」装不到它们 —— claude-exp 的引擎 multicc 自己带。
+  // 所以「装/升级这个 CLI」装不到它们 —— claude 的 chat 引擎 multicc 自己带。
+  assert.equal(isBundled('claude'), true);
   assert.equal(isBundled('claude-exp'), true);
   assert.equal(isBundled('codex-exp'), false);
-  assert.equal(isBundled('claude'), false);
-  assert.deepEqual(kindsOf('claude-exp'), ['chat']);
+  assert.deepEqual(kindsOf('claude'), ['chat', 'terminal']);
+  assert.deepEqual(kindsOf('claude-exp'), ['chat', 'terminal']);
   assert.deepEqual(kindsOf('codex-exp'), ['chat']);
-  assert.deepEqual(kindsOf('claude'), ['terminal']);
   assert.deepEqual(kindsOf('codex'), ['terminal']);
-  assert.equal(offersIn('claude', 'chat'), false);
+  assert.equal(offersIn('claude', 'chat'), true);
   assert.equal(offersIn('claude', 'terminal'), true);
+  assert.equal(offersIn('claude-exp', 'chat'), true, 'the retired id still reads as its live lane');
   // 其余车道没有引擎名，小字就是自己的 id —— 终端里那行小字写的就是要跑的命令。
-  for (const cli of ['claude', 'codex', 'zcode']) assert.equal(engineOf(cli), cli);
+  for (const cli of ['codex', 'zcode']) assert.equal(engineOf(cli), cli);
   // ACP 三家的 chat 小字是桥的形态（`<id> acp`），终端仍是原生命令：同一条车道在
   // 两种场景里说的不是一件事，所以这一列必须逐场景写。
   for (const cli of ['opencode', 'gemini', 'grok']) {
@@ -218,7 +222,7 @@ test('the chat lanes are the resident ones, and the terminal keeps the native co
   assert.equal(offersIn('mystery-cli', 'chat'), true);
   assert.equal(engineOf('mystery-cli'), 'mystery-cli');
   // 记录里带着的空格与大小写不该改变答案。
-  assert.equal(offersIn(' CLAUDE ', ' CHAT '), false);
+  assert.equal(offersIn(' CLAUDE ', ' CHAT '), true);
   assert.equal(offersIn(' Claude-Exp ', 'Chat'), true);
   assert.equal(engineOf(undefined), '');
 });

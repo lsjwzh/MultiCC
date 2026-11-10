@@ -85,7 +85,8 @@ MULTICC_LIVE_SESSION=<session-id> npm run test:subagent-live
 
 ## 同 CLI 全局默认：同步与清除
 
-每个 CLI 家族（`claude` 与 `claude-exp` 一族，`codex` 与 `codex-exp` 一族）至多一条子 agent
+每个 CLI 家族（`claude` 一族——旧的 `claude-exp` id 已折叠为它的别名，`codex` 与
+`codex-exp` 一族）至多一条子 agent
 全局默认，存在 `provider-defaults.json` 的 `subagent` 键。任务上的子 agent 线路分三种：没有
 （跟随主线路）、来自全局默认（线路对象带 `inherited: true`）、任务自己单独设置的。
 

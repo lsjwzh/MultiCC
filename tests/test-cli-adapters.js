@@ -2,7 +2,6 @@
 
 const assert = require('assert');
 const { createClaudeAdapter } = require('../src/cli-adapters/claude');
-const { createClaudeExpAdapter } = require('../src/cli-adapters/claude-exp');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
 const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
@@ -12,11 +11,6 @@ const { createKimiAdapter } = require('../src/cli-adapters/kimi');
 
 const claude = createClaudeAdapter({
   cmd: 'claude', resolveSessionWireModel: model => model,
-  claudeDefaultModel: () => null, cliEffortLevel: () => null,
-  normalizeEffort: () => null, debugLogClaudeInvoke: () => {},
-});
-const claudeExp = createClaudeExpAdapter({
-  resolveSessionWireModel: model => model,
   claudeDefaultModel: () => null, cliEffortLevel: () => null,
   normalizeEffort: () => null, debugLogClaudeInvoke: () => {},
 });
@@ -34,7 +28,7 @@ const zcode = createZcodeAdapter({ cmd: 'zcode' });
 const qoder = createQoderAdapter({ cmd: 'qoderclicn' });
 const kimi = createKimiAdapter({ cmd: 'kimi' });
 
-for (const adapter of [claude, claudeExp, codex, codexExp, opencode, zcode, qoder, kimi]) {
+for (const adapter of [claude, codex, codexExp, opencode, zcode, qoder, kimi]) {
   assert.strictEqual(typeof adapter.buildInvocation, 'function', `${adapter.name} buildInvocation`);
   assert.strictEqual(typeof adapter.decodeEvent, 'function', `${adapter.name} decodeEvent`);
   assert.strictEqual(adapter.shape, undefined, `${adapter.name} has no shape API`);
@@ -385,12 +379,13 @@ const claudeRouterArgs = claudeWithRouter.buildInvocation({
   systemPrompt: 'system',
   spawnOpts: { ...opencodeEnvelope.spawnOpts, mode: 'streaming' },
 }).args;
-const claudeMcpIndex = claudeRouterArgs.indexOf('--mcp-config');
-assert.notEqual(claudeMcpIndex, -1);
-assert.deepStrictEqual(
-  JSON.parse(claudeRouterArgs[claudeMcpIndex + 1]).mcpServers.multicc_router,
-  { command: '/opt/node', args: ['/opt/multicc/router-mcp.js'] },
-);
+// The Agent SDK bridge owns the router MCP server now; the retired `-p` argv
+// (`--mcp-config`) is gone.
+const claudeRouterNode = claudeRouterArgs.indexOf('--router-node');
+assert.notEqual(claudeRouterNode, -1);
+assert.equal(claudeRouterArgs[claudeRouterNode + 1], '/opt/node');
+assert.equal(claudeRouterArgs[claudeRouterNode + 2], '--router-script');
+assert.equal(claudeRouterArgs[claudeRouterNode + 3], '/opt/multicc/router-mcp.js');
 const qoderWithRouter = createQoderAdapter({
   cmd: 'qoderclicn',
   routerMcpNode: '/opt/node',
@@ -512,7 +507,7 @@ assert.strictEqual(
 
 console.log('CLI adapter contract and decoder tests passed');
 require('./test-codex-exp-adapter');
-require('./test-claude-exp-adapter');
+require('./test-claude-adapter');
 
 // CODEX_CMD 指向不存在的绝对路径时回退自动探测; 可执行/裸命令名原样保留
 {

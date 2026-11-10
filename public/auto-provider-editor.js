@@ -209,7 +209,10 @@
   // and no candidate carries a cli field, which is exactly what a stored
   // single-lane pool looks like.
   function normalizeCli(value) {
-    const cli = String(value == null ? '' : value).trim();
+    const raw = String(value == null ? '' : value).trim();
+    // A retired row may still name the old `claude-exp` lane; it is the same
+    // Claude lane now, so read it as `claude` and never write the old id back.
+    const cli = raw === 'claude-exp' ? 'claude' : raw;
     return AUTO_CLI_SET.has(cli) ? cli : '';
   }
 
@@ -1910,10 +1913,9 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       cliSelect.title = tt('autoEditorCliLabel', '这条线路跑在哪个 CLI');
       // '' first: the session's own lane is the default every pool starts on,
       // and the only value that writes no `cli` field at all.
-      const choices = ['', ...AUTO_CLIS.filter(value => value !== 'claude' && value !== 'codex')];
+      const choices = ['', ...AUTO_CLIS.filter(value => value !== 'codex' && value !== 'claude-exp')];
       // A saved legacy row keeps its ID, represented by the same family option.
-      const visibleChoices = choices.map(value => (lane === 'claude' && value === 'claude-exp')
-        || (lane === 'codex' && value === 'codex-exp') ? lane : value);
+      const visibleChoices = choices.map(value => lane === 'codex' && value === 'codex-exp' ? lane : value);
       for (const value of visibleChoices) {
         const option = make('option', '', cliOptionLabel(value));
         option.value = value;

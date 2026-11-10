@@ -24,7 +24,10 @@ function builtinChunks(text) {
 // rules again would bill the same instructions twice on every call. Other lanes
 // have no host system prompt, so the managed context remains their only copy.
 const MAX_QUERY_HITS = 8;
-const SYSTEM_PROMPT_SECRET_RULE_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'codebuddy', 'qoder', 'pi']);
+const SYSTEM_PROMPT_SECRET_RULE_CLIS = new Set(['claude', 'codex', 'codex-exp', 'codebuddy', 'qoder', 'pi']);
+// Persisted sessions may still carry the retired claude-exp id; it runs on the
+// same claude adapter (and therefore the same host system prompt).
+const RETIRED_CLI_ALIASES = { 'claude-exp': 'claude' };
 
 // Read only the caller's scopes. Never follow symlinks into another scope.
 function safeFiles(root, folder, diagnostics) {
@@ -114,7 +117,7 @@ function retrieveMemory(root, folders, persisted, query) {
     }
   }
   const builtins = [['builtin:docs-registry', 'MultiCC · 文档与服务登记', DOCS_REGISTRY_RULE]];
-  if (!SYSTEM_PROMPT_SECRET_RULE_CLIS.has(persisted.cli)) builtins.push(
+  if (!SYSTEM_PROMPT_SECRET_RULE_CLIS.has(RETIRED_CLI_ALIASES[persisted.cli] || persisted.cli)) builtins.push(
     ['builtin:secret-vault', 'MultiCC · 敏感信息保险箱', SECRET_VAULT_RULE],
     ['builtin:shared-files', 'MultiCC · 共享文件约定', SHARED_FILES_RULE]);
   for (const [id, taskName, rule] of builtins.reverse()) inventory.unshift({ id, version: hash(rule), mode: 'memory:builtin',

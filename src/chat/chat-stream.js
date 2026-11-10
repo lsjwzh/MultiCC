@@ -6,18 +6,22 @@ const { createMonitorControl } = require('./monitor-control');
 const { createBackgroundHold } = require('./background-hold');
 const { envDigest } = require('../secrets-vault');
 
-// ── Persistent streaming Claude process per chat session ──
+// ── Persistent streaming CLI process per chat session ──
 //
-// Why this exists: the default chat path spawns `claude -p ... <prompt>` once
-// PER TURN and the process exits when the model yields its turn. That works,
-// but a turn that ends in a "waiting for external data" state leaves nothing
-// running — continuing requires a fresh `--resume` spawn (cold + can fail).
+// The legacy backend for the lanes that still drive a line-oriented JSON
+// stream themselves (codex). Claude's chat lane lives on the resident Agent
+// SDK now (src/cli-adapters/claude.js -> claude-sdk-stream.js), so the
+// `claude -p` examples below are historical, not a live invocation.
 //
-// This module keeps ONE `claude -p --input-format stream-json
-// --output-format stream-json` process alive for the whole session. User
-// messages are written as JSON lines on stdin; the model replies and the
-// process STAYS ALIVE (verified: after a `result` event the process idles,
-// ready for the next message, with full in-process context — no --resume).
+// Why this exists: a one-shot chat backend spawns the CLI once PER TURN and
+// the process exits when the model yields its turn. That works, but a turn
+// that ends in a "waiting for external data" state leaves nothing running —
+// continuing requires a fresh `--resume` spawn (cold + can fail).
+//
+// This module keeps ONE CLI process alive for the whole session. User messages
+// are written as JSON lines on stdin; the model replies and the process STAYS
+// ALIVE (after a `result` event the process idles, ready for the next message,
+// with full in-process context — no --resume).
 //
 // IMPORTANT (proven by experiment, not assumed): a persistent process does
 // NOT auto-continue. The model still ends its turn (emits `result`) when it

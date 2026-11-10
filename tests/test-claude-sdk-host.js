@@ -7,7 +7,7 @@ const { createProviderBinding } = require('../src/providers/binding');
 const { createTurnRuntimeStore } = require('../src/chat/runtime-store');
 const chatStream = require('../src/chat/chat-stream');
 const providers = require('../src/providers/core');
-const prepareTurn = require('./helpers/claude-exp-turn');
+const prepareTurn = require('./helpers/claude-turn');
 const { createStreamRouter } = require('../src/chat/stream-router');
 
 test('the real host selects the persistent SDK runner and preserves native session identity', t => {

@@ -861,9 +861,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
 
   // ── 车道目录 ──────────────────────────────────────────────────────────
 
-  /// 只展示当前聊天车道。旧会话保留原 id，但选项按产品家族高亮。
-  List<SessionCli> get _offeredClis =>
-      SessionCli.values.where((cli) => cliOffersIn(cli.name, 'chat')).toList();
+  /// 只展示当前聊天车道。旧会话保留原 id（`claude-exp` 仍能解析），但退役 id 不进
+  /// 选项，选项按产品家族高亮。
+  List<SessionCli> get _offeredClis => SessionCli.values
+      .where((cli) => cli.name != 'claude-exp' && cliOffersIn(cli.name, 'chat'))
+      .toList();
 
   bool _available(SessionCli cli) =>
       widget.cliAvailability[cli] ??

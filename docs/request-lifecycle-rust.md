@@ -432,7 +432,8 @@ this checkpoint.
 
 ## Claude lane ownership
 
-The resident Claude lane (`claude-exp` and the per-session `sdk` stream) no
+The resident Claude lane (`claude`, including the per-session `sdk` stream;
+the retired `claude-exp` id is an alias) no
 longer runs the JavaScript `@anthropic-ai/claude-agent-sdk` transport. It
 spawns the same native `claude` binary and speaks its stdio JSONL protocol
 directly. Ownership is split in three:
@@ -464,12 +465,13 @@ directly. Ownership is split in three:
   API and observable event stream are unchanged; only `status().backend`
   reports `native` instead of `sdk`.
 
-The one-shot `claude-exp` bridge (`src/cli-adapters/claude-agent-sdk-bridge.mjs`)
-drives the same native lane, so no Node SDK code runs on a production path. The
+The bridge (`src/cli-adapters/claude-agent-sdk-bridge.mjs`) is the entry the
+folded `claude` adapter returns as `sdkOptions`; it drives the same native lane,
+so no Node SDK code runs on a production path. The
 `@anthropic-ai/claude-agent-sdk` entry remains in `package.json` solely because
 it is the per-platform distribution of the `claude` binary;
 `src/cli/claude-bundled-binary.js` resolves that platform package (with a
-`MULTICC_CLAUDE_BIN` override), and the `claude-exp` availability check in
+`MULTICC_CLAUDE_BIN` override), and the `claude` availability check in
 `server.js` consults it.
 
 Tests drive a real child process speaking the protocol

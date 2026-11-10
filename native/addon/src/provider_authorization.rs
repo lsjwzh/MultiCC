@@ -2,7 +2,7 @@
 //! No host references are retained and no native borrow crosses a host call.
 use crate::js_live::LiveValue;
 use multicc_core::{
-    cli_capability::CAPABILITIES,
+    cli_capability::is_resident,
     js::{JsString, JsValue},
 };
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
@@ -45,11 +45,9 @@ pub(crate) fn background_lingers(record: LiveValue<'_>) -> Result<bool> {
     }
     let cli = record.get(c"cli")?.clean_text()?;
     let cli = cli.get(c"toLowerCase")?.call(cli, &[])?.string()?;
-    Ok(cli.is_some_and(|cli| {
-        CAPABILITIES
-            .iter()
-            .any(|(id, capability)| cli == *id && capability.lifecycle == "resident")
-    }))
+    // `is_resident` folds retired ids (claude-exp) and trims, so a record that
+    // still spells the old lane answers like the lane that replaced it.
+    Ok(cli.is_some_and(|cli| is_resident(&cli.to_string_lossy())))
 }
 
 #[napi]

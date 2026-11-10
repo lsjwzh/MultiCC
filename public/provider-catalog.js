@@ -136,9 +136,9 @@
   //
   // `update` 是家族的**升级单元** —— 这个家族的 CLI 制品（package 读上游版本、
   // command 装/升级、没有脚本时写 manual）。它是家族事实而不是车道事实：codex 两条
-  // 车道跑同一个二进制、同一条安装脚本，而 claude-exp 的引擎根本不来自任何 CLI 制品
+  // 车道跑同一个二进制、同一条安装脚本，而 claude 的 chat 引擎根本不来自任何 CLI 制品
   // （Agent SDK 是 MultiCC 自己的依赖，见车道上的 bundled）。把升级单元挂在车道上，
-  // 就是「CLI 更新」浮层里 codex 出现两行、claude-exp 出现一行却只会说「请升级
+  // 就是「CLI 更新」浮层里 codex 出现两行、已退休的 claude-exp 出现一行却只会说「请升级
   // MultiCC」的原因。
   //
   // 镜像之前，同样的列在页面上被抄了六七遍且各抄各的：chat.js 的 CLI_META、
@@ -156,8 +156,7 @@
       update: { package: '@anthropic-ai/claude-code', command: 'npm install -g @anthropic-ai/claude-code' },
       lanes: {
         chat: [
-          { id: 'claude-exp', mark: 'A', engine: 'Claude Agent SDK', bundled: true },
-          { id: 'claude', engine: 'claude -p', offered: false },
+          { id: 'claude', engine: 'Claude Agent SDK', bundled: true },
         ],
         terminal: [{ id: 'claude', mark: 'C', engine: 'claude' }],
       },
@@ -246,7 +245,14 @@
   const CLI_DEFAULT_COLOUR = '#8b949e';
   const CLI_DEFAULT_KINDS = ['chat', 'terminal'];
 
-  const cliKey = cli => String(cli == null ? '' : cli).trim().toLowerCase();
+  // Retired ids resolve to the lane that replaced them (claude-exp -> claude).
+  // Persisted sessions keep displaying as Claude; the catalogue never offers
+  // the alias again.
+  const CLI_ALIASES = { 'claude-exp': 'claude' };
+  const cliKey = cli => {
+    const key = String(cli == null ? '' : cli).trim().toLowerCase();
+    return CLI_ALIASES[key] || key;
+  };
   const cliEntry = cli => CLI_DISPLAY[cliKey(cli)] || null;
 
   // 摊平视图：一行一条衍生车道。与服务端同形同规则（那边是 buildDisplay），
@@ -363,8 +369,9 @@
     return specs;
   }
 
-  // 这条车道的引擎不来自家族的 CLI 制品，而是随 MultiCC 走（今天只有 claude-exp）。
-  // 任何安装/升级动作都装不了它，所以那一行要说这句话而不是给一颗按钮。
+  // 这条车道的引擎不来自家族的 CLI 制品，而是随 MultiCC 走（今天只有 claude 的
+  // chat 车道）。任何安装/升级动作都装不了那台引擎，所以那一行要说这句话而不是给
+  // 一颗按钮。
   function cliIsBundled(cli) {
     const key = cliKey(cli);
     for (const familyId of Object.keys(CLI_FAMILIES)) {
@@ -375,6 +382,13 @@
       }
     }
     return false;
+  }
+
+  // 同一个 id 可以既是 bundled 引擎又拥有家族的终端制品：claude 的 chat 跑内置
+  // Agent SDK，终端跑的就是 `claude` 这个可执行文件。只有 chat-only 的 bundled
+  // 车道才真的没有东西可装。
+  function cliHasOwnArtifact(cli) {
+    return !cliIsBundled(cli) || cliOffersIn(cli, 'terminal');
   }
 
   // 这个家族里随 MultiCC 内置的引擎（升级行下面那一句小字）。
@@ -1355,6 +1369,7 @@
     cliUpdateOf,
     cliUpdateSpecs,
     cliIsBundled,
+    cliHasOwnArtifact,
     cliBundledEnginesOf,
     providerlessClis,
     nativeRouteLabel,

@@ -22,7 +22,6 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 const { composeMessage, renderPrompt, buildAutoCommitStatusPrompt, normalizeVoiceInput } = require('../src/message-composer');
-const { createClaudeAdapter } = require('../src/cli-adapters/claude');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
@@ -294,15 +293,6 @@ const providersStub = {
     return model || (o && o.defaultModel) || null;
   },
 };
-function claudeAdapterWith(disallowed) {
-  return createClaudeAdapter({
-    cmd: 'claude', args: [], chatDisallowedTools: disallowed || [],
-    multiccImgHint: IMG_HINT, resolveSessionWireModel: providersStub.resolveSessionWireModel,
-    claudeDefaultModel: () => 'claude-default',
-    cliEffortLevel, normalizeEffort,
-    debugLogClaudeInvoke: () => {},
-  });
-}
 const codexAdapter = createCodexAdapter({
   cmd: 'codex', args: [],
   codexReasoningConfigArg, codexModelConfigArg,
@@ -315,29 +305,6 @@ const opencodeAdapter = createOpencodeAdapter({ cmd: 'opencode', env: { MULTICC_
 const zcodeAdapter = createZcodeAdapter({ cmd: 'zcode' });
 
 function todayBuildChatArgs(adapter, persisted, promptText, o) {
-  if (adapter.name === 'claude') {
-    const sysPrompt = o.rolePrompt ? `${IMG_HINT}\n\n${o.rolePrompt}` : IMG_HINT;
-    const result = [
-      '-p', '--output-format', 'stream-json', '--verbose',
-      '--include-partial-messages', '--dangerously-skip-permissions',
-      '--append-system-prompt', sysPrompt,
-    ];
-    const model = providersStub.resolveSessionWireModel(persisted.model, {
-      providerModel: o.providerModel, providerModels: o.providerModels,
-      skipDefaultModel: o.skipDefaultModel, defaultModel: 'claude-default',
-    });
-    if (model) result.push('--model', model);
-    if (persisted.agent) result.push('--agent', persisted.agent);
-    const effort = cliEffortLevel(persisted);
-    if (effort) result.push('--effort', effort);
-    // ultracode no longer rides an inline --settings flag: the adapter returns it
-    // as a structured `settings` field, merged into the per-session --settings
-    // override file by the spawn path (providers/claude-settings-override).
-    if (o.disallowedTools.length) result.push('--disallowedTools', o.disallowedTools.join(','));
-    if (o.maxTurns > 0) result.push('--max-turns', String(o.maxTurns));
-    result.push(o.isFirstTurn ? '--session-id' : '--resume', persisted.cliSessionId, promptText);
-    return result;
-  }
   if (adapter.name === 'codex') {
     let payload = o.isFirstTurn
       ? `${IMG_HINT}\n\n${ENV_CONSTRAINT}\n\n[Role prompt]\n${o.rolePrompt}\n[End of role prompt]\n\n${promptText}`
@@ -409,25 +376,7 @@ function shapeEquiv(label, { adapter, persisted, isFirstTurn, disallowedTools, m
     console.error('    --- new ---'); console.error(JSON.stringify(newArr));
     console.error('    --- today ---'); console.error(JSON.stringify(todayArr));
   }
-  if (adapter.name === 'claude') {
-    const wantSettings = normalizeEffort(persisted.effort) === 'ultracode' ? { ultracode: true } : undefined;
-    assert(eq(settings, wantSettings), `${label}: structured settings field = ${JSON.stringify(wantSettings)}`);
-  }
 }
-
-// 3a: claude per-turn, first turn, ultracode (=> settings field + --effort xhigh)
-shapeEquiv('3a claude per-turn first ultracode', {
-  adapter: claudeAdapterWith(['Bash', 'WebFetch']),
-  persisted: basePersisted({ cli: 'claude', type: null, effort: 'ultracode', agent: 'reviewer' }),
-  isFirstTurn: true, disallowedTools: ['Bash', 'WebFetch'],
-});
-
-// 3b: claude per-turn, resume (subsequent) turn, non-ultracode + maxTurns
-shapeEquiv('3b claude per-turn resume +maxTurns', {
-  adapter: claudeAdapterWith([]),
-  persisted: basePersisted({ cli: 'claude', type: null, effort: 'high' }),
-  isFirstTurn: false, maxTurns: 5,
-});
 
 // 3c: codex first turn (systemBlock inlined + stayAlive)
 shapeEquiv('3c codex first-turn', {
@@ -464,77 +413,6 @@ shapeEquiv('3g zcode first-turn', {
   isFirstTurn: true,
 });
 
-// ═══════════════════════════════════════════════════════════════════════
-// Suite 4: claude.buildInvocation(streaming) byte-equivalence
-//
-// The legacy streaming base args are re-derived below. The session handle
-// (--session-id/--resume) is appended by chat-stream at spawn time and
-// is explicitly OUT of scope for shape args. ultracode --settings and
-// --max-turns are intentionally NOT added to streaming today (drift preserved
-// per iron rule #3); shape(streaming) must match that drift exactly.
-// ═══════════════════════════════════════════════════════════════════════
-console.log('── Suite 4: claude.buildInvocation(streaming) byte-equivalence ──');
-
-function todayStreamingBaseArgs(persisted, { sysPrompt, model, disallowedTools }) {
-  // Replicates chat-stream.spawnProc prefix (minus sessionArgs) +
-  // runChatTurnStreaming extraArgs (effort + disallowedTools), no prompt, no handle.
-  const extraArgs = [];
-  if (persisted.agent) extraArgs.push('--agent', persisted.agent);
-  const effort = cliEffortLevel(persisted);
-  if (effort) extraArgs.push('--effort', effort);
-  if (disallowedTools && disallowedTools.length) {
-    extraArgs.push('--disallowedTools', disallowedTools.join(','));
-  }
-  return [
-    '-p',
-    '--input-format', 'stream-json',
-    '--output-format', 'stream-json',
-    '--verbose', '--include-partial-messages', '--dangerously-skip-permissions',
-    ...(model ? ['--model', model] : []),
-    ...(sysPrompt ? ['--append-system-prompt', sysPrompt] : []),
-    ...extraArgs,
-  ];
-}
-
-(function suite4() {
-  const sessionName = 's1';
-  delete notesStore[sessionName];
-  const deps = makeDeps();
-  const disallowed = ['Bash'];
-  const persisted = basePersisted({ cli: 'claude', type: null, effort: 'high', agent: 'reviewer', streaming: true });
-  const opts = {
-    isFirstTurn: true, mode: 'streaming',
-    providerModel: 'fable-wire', providerModels: ['fable-wire'], skipDefaultModel: false,
-    disallowedTools: disallowed,
-  };
-  const envelope = composeMessage({ text: '继续上一步', persisted, sessionName, opts, deps });
-
-  // today payload (stdin) = the promptText runChatTurn assembled and passed in
-  const todayPayload = todayPrompt({ text: '继续上一步', persisted, sessionName, bare: false }, deps);
-  const todayModel = providersStub.resolveSessionWireModel(persisted.model, {
-    providerModel: opts.providerModel, providerModels: opts.providerModels,
-    skipDefaultModel: opts.skipDefaultModel, defaultModel: 'claude-default',
-  });
-  const todaySys = envelope.rolePrompt ? `${IMG_HINT}\n\n${envelope.rolePrompt}` : IMG_HINT;
-  const todayArgs = todayStreamingBaseArgs(persisted, { sysPrompt: todaySys, model: todayModel, disallowedTools: disallowed });
-
-  const adapter = claudeAdapterWith(disallowed);
-  if (typeof adapter.buildInvocation !== 'function') {
-    assert(false, '4a claude.buildInvocation(streaming): not implemented');
-    return;
-  }
-  const { args, payload } = adapter.buildInvocation(envelope);
-  const okArgs = assert(eq(args, todayArgs), '4a streaming: invocation.args === legacy base args (no handle, no --settings, no --max-turns)');
-  if (!okArgs) {
-    console.error('    --- shape.args ---'); console.error(JSON.stringify(args));
-    console.error('    --- todayArgs  ---'); console.error(JSON.stringify(todayArgs));
-  }
-  const okPayload = assert(payload === todayPayload, '4b streaming: shape.payload === today promptText (stdin)');
-  if (!okPayload) {
-    console.error('    --- payload   ---'); console.error(JSON.stringify(payload));
-    console.error('    --- todayPayload ---'); console.error(JSON.stringify(todayPayload));
-  }
-})();
 // ═══════════════════════════════════════════════════════════════════════
 // Suite 5: task-context layer (P4 · task-bound cold start)
 //

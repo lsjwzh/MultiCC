@@ -47,7 +47,7 @@
   const laneLabel = (cli, route) => (typeof ctx.laneRouteLabel === 'function' ? ctx.laneRouteLabel(cli, route) : cli);
   const cliChoices = () => (typeof ctx.clis === 'function' ? ctx.clis() : []);
   const cliInChat = cli => (typeof ctx.cliOffersInChat === 'function' ? ctx.cliOffersInChat(cli) : true);
-  const firstChatCli = () => (typeof ctx.firstChatCli === 'function' ? ctx.firstChatCli() : 'claude-exp');
+  const firstChatCli = () => (typeof ctx.firstChatCli === 'function' ? ctx.firstChatCli() : 'claude');
   const cliOptionLabel = cli => (typeof ctx.cliOptionLabel === 'function' ? ctx.cliOptionLabel(cli) : cli);
 
   const isScript = task => task.kind === 'script';
