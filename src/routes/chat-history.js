@@ -1,10 +1,17 @@
 'use strict';
 
-const { createChatHistoryVisibility } = require('../session/chat-history-visibility');
+// 历史宿主运行时的同步核心（可见性缓存、蒸馏批次、增量保存定时器、追加/分页/
+// 标注）已全部归 Rust 的 `RustChatHistoryRuntime`。本文件只剩三件事：
+//   1. 依赖校验与常量（保持对外形状和报错文案）；
+//   2. 运行时的构造接线（把既有服务所有者、端口和惰性路由依赖传进去）；
+//   3. 仍必须留在 Node 的异步/流程代码：clearHistory 的 await 顺序、
+//      原生上下文轮换的 handoff 事务、Express 路由与 context-level 读取。
+// 这里不复制历史状态：服务（RustChatHistory）和运行时共用同一个原生实例。
 
 const crypto = require('node:crypto');
-const { createChatHistoryService } = require('../session/chat-history-service');
+const { createChatHistoryServiceWithOwner } = require('../session/chat-history-service');
 const { sanitizePublicText } = require('../http/public-safety');
+const { getNative } = require('../native/runtime');
 
 const DEFAULT_HISTORY_PAGE_SIZE = 5;
 const DEFAULT_HISTORY_LIMIT = 10000;
@@ -35,6 +42,8 @@ function assertChatHistoryDeps(deps) {
   if (!deps.chatSessions || typeof deps.chatSessions.get !== 'function') {
     throw new TypeError('chat history dependency missing: chatSessions');
   }
+  // saveBestEffort / trackPendingMemoryDistill 从未被运行时使用；它们仍是
+  // 其他运行时的依赖，但不再属于本运行时的必需注入。
   for (const name of [
     'idFactory',
     'chatBroadcast',
@@ -44,8 +53,6 @@ function assertChatHistoryDeps(deps) {
     'clearAllNativeCliStates',
     'buildHandoffCheckpoint',
     'rememberActiveCliState',
-    'saveBestEffort',
-    'trackPendingMemoryDistill',
   ]) requireFunction(deps, name);
   if (!deps.chatStream || typeof deps.chatStream.close !== 'function') {
     throw new TypeError('chat history dependency missing: chatStream.close');
@@ -76,70 +83,13 @@ function positiveInteger(value, fallback) {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
-function publicError(error, fallback) {
-  return sanitizePublicText(error && error.message, fallback);
-}
-
+// 投影规则在 Rust 中只有一份；这里的导出保持既有名字与调用形状。
 function publicCommittedMessage(message) {
-  if (!message || message.role !== 'user' || !message.id) return null;
-  const projected = {
-    id: String(message.id).slice(0, 160),
-    role: 'user',
-    content: String(message.content || ''),
-    ts: Number.isFinite(Number(message.ts)) ? Number(message.ts) : null,
-  };
-  if (typeof message.clientMsgId === 'string' && message.clientMsgId) {
-    projected.clientMsgId = message.clientMsgId.slice(0, 160);
-  }
-  // Surface the wait_for_user_answer settlement marker so multi-window clients
-  // can close the prompt card from the message itself (live or replay), not just
-  // from the user_input_resolved event. Metadata-only; never reaches the model.
-  if (typeof message.answeredQuestionId === 'string' && message.answeredQuestionId) {
-    projected.answeredQuestionId = message.answeredQuestionId.slice(0, 160);
-  }
-  if (Array.isArray(message.bgToolUseIds) && message.bgToolUseIds.length) {
-    projected.bgToolUseIds = message.bgToolUseIds
-      .filter(value => typeof value === 'string' && value)
-      .slice(0, 64)
-      .map(value => value.slice(0, 160));
-  }
-  for (const field of ['turnId', 'taskId', 'taskName', 'taskShortCode', 'auxRunId']) {
-    if (typeof message[field] === 'string' && message[field]) {
-      projected[field] = message[field].slice(0, 160);
-    }
-  }
-  return Object.freeze(projected);
+  return getNative().chatHistoryPublicCommittedMessage(message);
 }
 
-// Build the authoritative reconnect page without representing one live turn
-// twice. Incremental crash-safety persistence may already have placed a
-// trailing `_interim` assistant in the canonical page; in that case promote
-// that same stable-id message to the live streaming tail instead of appending
-// a second id-less copy containing the cumulative text again.
 function buildReplayMessages(pageMessages, state, now = Date.now) {
-  const messages = Array.isArray(pageMessages)
-    ? pageMessages.map(message => ({ ...message }))
-    : [];
-  const text = String(state?.currentAssistantText || '');
-  const tools = Array.isArray(state?.currentToolCalls) ? state.currentToolCalls : [];
-  const hasInProgress = !state?._resultSaved && !!(text || tools.length);
-  if (!hasInProgress) return messages;
-
-  const live = {
-    role: 'assistant',
-    content: text,
-    tools: tools.length ? tools : undefined,
-    ts: now(),
-    streaming: state?.isStreaming === true,
-  };
-  if (state?._currentTaskId) live.taskId = state._currentTaskId;
-  const last = messages[messages.length - 1];
-  if (last?.role === 'assistant' && last._interim) {
-    messages[messages.length - 1] = { ...last, ...live, id: last.id };
-  } else {
-    messages.push(live);
-  }
-  return messages;
+  return getNative().chatHistoryBuildReplayMessages(pageMessages, state, now);
 }
 
 function createChatHistoryRuntime(rawDeps) {
@@ -150,120 +100,31 @@ function createChatHistoryRuntime(rawDeps) {
   const setTimeoutFn = typeof deps.setTimeout === 'function' ? deps.setTimeout : setTimeout;
   const clearTimeoutFn = typeof deps.clearTimeout === 'function' ? deps.clearTimeout : clearTimeout;
   const randomBytes = typeof deps.randomBytes === 'function' ? deps.randomBytes : crypto.randomBytes;
-  const taskShortCodeFor = typeof deps.taskShortCode === 'function' ? deps.taskShortCode : null;
   const historyPageSize = positiveInteger(deps.historyPageSize, DEFAULT_HISTORY_PAGE_SIZE);
   const memoryDistillBatch = positiveInteger(deps.memoryDistillBatch, DEFAULT_MEMORY_DISTILL_BATCH);
   const incrementalSaveDelayMs = Number.isFinite(deps.incrementalSaveDelayMs)
     && deps.incrementalSaveDelayMs >= 0
     ? deps.incrementalSaveDelayMs
     : DEFAULT_INCREMENTAL_SAVE_DELAY_MS;
-  const droppedForMemory = new Map();
-  const incrementalSaveTimers = new Map();
-  let stopped = false;
   // Lazy: the OpenCode SQLite reader is only constructed when an opencode
   // session actually asks for its context water level.
   let opencodeContextReader = null;
 
-  function logFailure(event, error, sessionId) {
-    const payload = {
-      error: publicError(error, 'chat history operation failed'),
-    };
-    if (sessionId) payload.sessionId = sanitizePublicText(String(sessionId), 'unknown_session').slice(0, 128);
-    try {
-      if (typeof logger.warn === 'function') logger.warn(event, payload);
-      else if (typeof logger.error === 'function') logger.error(event, payload);
-    } catch (_) {}
-  }
+  let runtime = null;
+  let runtimeAnchor = null;
 
-  // The four-character task code is a server-owned display handle backed by
-  // the collision-safe task-code registry. Never derive it by slicing taskId
-  // in a client: the same task must keep the same handle on every surface,
-  // including old history loaded after an upgrade.
-  function taskCode(taskId) {
-    if (!taskShortCodeFor || !taskId) return '';
-    const code = String(taskShortCodeFor(taskId) || '').trim().toUpperCase();
-    return /^[0-9A-Z]{4}$/.test(code) ? code : '';
-  }
-
-  function stampTaskCode(message) {
-    if (!message || typeof message !== 'object') return message;
-    const code = taskCode(message.taskId);
-    if (code) message.taskShortCode = code;
-    return message;
-  }
-
-  function projectTaskCode(message) {
-    if (!message || typeof message !== 'object' || message.taskShortCode) return message;
-    const code = taskCode(message.taskId);
-    return code ? { ...message, taskShortCode: code } : message;
-  }
-
-  function startMemoryDistill(sessionId, messages) {
-    let result;
-    try {
-      result = deps.distillHistoryIntoMemory(sessionId, messages);
-    } catch (error) {
-      logFailure('chat_history_memory_distill_failed', error, sessionId);
-      return null;
-    }
-    Promise.resolve(result).catch(error => {
-      logFailure('chat_history_memory_distill_failed', error, sessionId);
-    });
-    return result;
-  }
-
+  // postPersist 仍是 JS 端口：RustChatHistory 的外部契约就是调用
+  // `ports.postPersist`，这里只把事件原样交给运行时所有者。
   function handleCommittedHistoryEvent(event) {
-    if (!event || !event.sessionId) return;
-    if (event.type === 'delete') visibility.invalidate(event.sessionId);
-    if (event.type === 'append') {
-      for (const dropped of event.dropped || []) {
-        if (event.sessionId === deps.auxSessionId || !dropped) continue;
-        const buffer = droppedForMemory.get(event.sessionId) || [];
-        buffer.push(dropped);
-        if (buffer.length >= memoryDistillBatch) {
-          startMemoryDistill(event.sessionId, buffer.slice());
-          droppedForMemory.set(event.sessionId, []);
-        } else {
-          droppedForMemory.set(event.sessionId, buffer);
-        }
-      }
-
-      const message = event.message;
-      if (message) {
-        const committedMessage = publicCommittedMessage(message);
-        deps.chatBroadcast(event.sessionId, {
-          type: 'chat_msg_meta',
-          id: message.id,
-          role: message.role,
-          ts: message.ts,
-          clientMsgId: message.clientMsgId || null,
-          // Backward-compatible expansion: older clients consume only the
-          // metadata above, while multi-window clients can render the committed
-          // message immediately instead of waiting for a reconnect page.
-          message: committedMessage || undefined,
-        });
-        if (!event.deduplicated && message.role === 'assistant' && !message._interim
-            && !message.cancelled && !message.partial && !message.error) {
-          scheduleImmediate(() => {
-            if (stopped) return;
-            try { deps.maybeSchedulePeriodicMemoryReview(event.sessionId); }
-            catch (error) {
-              logFailure('chat_history_memory_review_schedule_failed', error, event.sessionId);
-            }
-          });
-        }
-      }
-      return;
-    }
-    if (event.type === 'remove' && event.message) {
-      deps.chatBroadcast(event.sessionId, {
-        type: 'chat_msg_deleted',
-        id: event.message.id,
-      });
-    }
+    runtime.run(runtimeAnchor, 'handleCommittedHistoryEvent', [event]);
   }
 
-  const service = createChatHistoryService({
+  function onPostPersistError(error, event) {
+    runtime.run(runtimeAnchor, 'postPersistError', [error, event]);
+  }
+
+  // 历史服务只构造一次；运行时通过它的 `run` 派发，绝不复制服务缓存。
+  const { service, owner: serviceOwner, anchor: serviceAnchor } = createChatHistoryServiceWithOwner({
     history: deps.history,
     idFactory: deps.idFactory,
     clock: now,
@@ -273,271 +134,116 @@ function createChatHistoryRuntime(rawDeps) {
     isMessageProtected: deps.isMessageProtected,
     referencingTasks: deps.referencingTasks,
     postPersist: handleCommittedHistoryEvent,
-    onPostPersistError: (error, event) => {
-      logFailure('chat_history_post_persist_failed', error, event && event.sessionId);
-    },
+    onPostPersistError,
   });
 
-  const visibility = createChatHistoryVisibility({
-    history: deps.history, service,
-    limitFor: sessionId => {
-      const policy = deps.retentionPolicy?.(String(sessionId));
-      return positiveInteger(policy?.maxMessages ?? policy ?? deps.maxMessages, DEFAULT_HISTORY_LIMIT);
+  function run(method, ...args) {
+    return runtime.run(runtimeAnchor, method, args);
+  }
+
+  // 零参回调由 Rust 用 `fn.bind(null, ...)` 生成；这些函数只做一次转发，
+  // 让定时器与 Promise 拒绝处理重新进入同一个所有者。
+  function runIncrementalSave(sessionId, state) {
+    run('incrementalSaveTick', sessionId, state);
+  }
+  function runPeriodicReview(sessionId) {
+    run('runPeriodicReview', sessionId);
+  }
+  function runDistillFailure(sessionId, error) {
+    run('distillFailed', sessionId, error);
+  }
+  function afterCommitTick(state, at) {
+    run('lastActivityCommit', state, at);
+  }
+  function logFailure(event, error, sessionId) {
+    run('logFailure', event, error, sessionId);
+  }
+
+  runtimeAnchor = {
+    ports: {
+      history: deps.history,
+      service: serviceOwner,
+      serviceAnchor,
+      chatSessions: deps.chatSessions,
+      idFactory: deps.idFactory,
+      clock: now,
+      chatBroadcast: deps.chatBroadcast,
+      distillHistoryIntoMemory: deps.distillHistoryIntoMemory,
+      maybeSchedulePeriodicMemoryReview: deps.maybeSchedulePeriodicMemoryReview,
+      auxSessionId: deps.auxSessionId,
+      taskShortCode: typeof deps.taskShortCode === 'function' ? deps.taskShortCode : null,
+      projectMessages: typeof deps.projectMessages === 'function' ? deps.projectMessages : null,
+      retentionPolicy: typeof deps.retentionPolicy === 'function' ? deps.retentionPolicy : null,
+      maxMessages: deps.maxMessages,
+      historyPageSize,
+      memoryDistillBatch,
+      incrementalSaveDelayMs,
+      logger,
+      sanitizePublicText,
+      setImmediate: scheduleImmediate,
+      setTimeout: setTimeoutFn,
+      clearTimeout: clearTimeoutFn,
+      runIncrementalSave,
+      runPeriodicReview,
+      runDistillFailure,
+      afterCommitTick,
     },
-  });
+  };
+  runtime = new (getNative().RustChatHistoryRuntime)(runtimeAnchor);
 
   function load(sessionId) {
-    return service.read(sessionId);
+    return run('load', sessionId);
   }
 
-  // Read-only transcript for callers that only measure it (token totals,
-  // context level) and never hand the messages on. load()'s deep clone buys
-  // them nothing: summarizing a codex session's usage on every WS connect was
-  // cloning the whole transcript to add up numbers.
   function viewHistory(sessionId) {
-    return service.view(sessionId);
+    return run('viewHistory', sessionId);
   }
 
-  // Deep-copy a page before it leaves this module, so a caller can never reach
-  // back into the service cache through the messages it was handed. Cloning one
-  // page is bounded work; cloning the transcript it came from was not.
-  function isolate(messages) {
-    return JSON.parse(JSON.stringify(messages));
-  }
-
-  // Read-only: the result may share messages with the service cache, so every
-  // caller must clone whatever it hands out. Projection is copy-on-write, and
-  // paginate() clones only the page it returns — deep-cloning the whole
-  // transcript here to then slice five messages out of it was the single
-  // hottest thing the WS replay did.
   function projectedMessages(sessionId, includeHidden = false) {
-    const messages = service.view(sessionId);
-    const visible = values => includeHidden ? values : visibility.filter(sessionId, values);
-    if (!deps.projectMessages) return visible(messages).map(projectTaskCode);
-    try {
-      const projected = deps.projectMessages(String(sessionId), messages);
-      return visible(Array.isArray(projected) ? projected : messages).map(projectTaskCode);
-    } catch (error) {
-      logFailure('chat_history_projection_failed', error, sessionId);
-      return visible(messages).map(projectTaskCode);
-    }
+    return run('projectedMessages', sessionId, includeHidden);
   }
 
-  function paginate(sessionId, { before, around, limit = historyPageSize, includeHidden = false } = {}) {
-    const messages = projectedMessages(sessionId, includeHidden);
-    const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || historyPageSize));
-    if (around) {
-      const targetId = String(around).slice(0, 160);
-      const targetIndex = messages.findIndex(message => message.id === targetId);
-      if (targetIndex < 0) {
-        return Object.freeze({
-          messages: [], hasMore: false, before: null, found: false, hasNewer: false,
-        });
-      }
-      const halfWindow = Math.floor((pageSize - 1) / 2);
-      let start = Math.max(0, targetIndex - halfWindow);
-      const end = Math.min(messages.length, start + pageSize);
-      start = Math.max(0, end - pageSize);
-      return Object.freeze({
-        messages: isolate(messages.slice(start, end)),
-        hasMore: start > 0,
-        before: start > 0 ? messages[start].id : null,
-        found: true,
-        hasNewer: end < messages.length,
-      });
-    }
-    let end = messages.length;
-    if (before) {
-      const index = messages.findIndex(message => message.id === before);
-      if (index < 0) return Object.freeze({ messages: [], hasMore: false, before: null });
-      end = index;
-    }
-    const start = Math.max(0, end - pageSize);
-    return Object.freeze({
-      messages: isolate(messages.slice(start, end)),
-      hasMore: start > 0,
-      before: start > 0 ? messages[start].id : null,
-    });
+  function paginate(sessionId, options = {}) {
+    return run('paginate', sessionId, options);
   }
 
-  // Bulk display-level removal for moves (e.g. task separation): the canonical
-  // transcript is kept, the messages just stop rendering in the default view —
-  // the same semantics as the single-message DELETE route. `quiet` writes the
-  // batch once without per-message broadcasts; the caller publishes one
-  // authoritative page afterwards (task-shell "keep the latest N").
-  function hideMessages(sessionId, ids, { quiet = false } = {}) {
-    const key = String(sessionId);
-    if (quiet) return visibility.removeMany(key, (Array.isArray(ids) ? ids : []).filter(id => typeof id === 'string' && id)).length;
-    let hidden = 0;
-    for (const id of Array.isArray(ids) ? ids : []) {
-      if (typeof id !== 'string' || !id) continue;
-      try {
-        if (!visibility.remove(key, id)) continue;
-        hidden += 1;
-        deps.chatBroadcast(key, { type: 'chat_msg_deleted', id, displayOnly: true });
-      } catch (error) {
-        logFailure('chat_history_hide_failed', error, key);
-      }
-    }
-    return hidden;
+  function hideMessages(sessionId, ids, options = {}) {
+    return run('hideMessages', sessionId, ids, options);
   }
 
   function latestAssistantAt(sessionId) {
-    return service.latestAssistantAt(sessionId);
+    return run('latestAssistantAt', sessionId);
   }
 
   function lastActivity(sessionId, activeChat) {
-    const saved = latestAssistantAt(sessionId);
-    const live = activeChat && activeChat.lastActivity
-      ? new Date(activeChat.lastActivity)
-      : null;
-    const liveValid = live && Number.isFinite(live.getTime());
-    if (saved && liveValid) return saved.getTime() >= live.getTime() ? saved : live;
-    return saved || (liveValid ? live : null);
+    return run('lastActivity', sessionId, activeChat);
   }
 
   function appendMessage(sessionId, message) {
-    if (!message || typeof message !== 'object') return false;
-    if (!message.id) message.id = deps.idFactory();
-    // Stamp the task this message belongs to. The interim save path has always
-    // done this; doing it here covers user messages and finals too, which is
-    // what makes a transcript groupable by task instead of only by session.
-    // An explicit taskId on the message wins — callers replaying or importing
-    // history know better than the live session pointer.
-    if (message.taskId == null) {
-      const owner = deps.chatSessions.get(sessionId);
-      if (owner && owner._currentTaskId) message.taskId = owner._currentTaskId;
-    }
-    stampTaskCode(message);
-    if (message.turnId == null) {
-      const owner = deps.chatSessions.get(sessionId);
-      if (owner?._activeTurn?.turnId) message.turnId = owner._activeTurn.turnId;
-    }
-    let afterCommit;
-    if (message.role === 'assistant') {
-      const stamp = Number(message.ts);
-      const at = Number.isFinite(stamp) && stamp > 0 ? new Date(stamp) : new Date(now());
-      const state = deps.chatSessions.get(sessionId);
-      if (message.durationMs == null && state && state.turnStartedAt) {
-        message.durationMs = Math.max(0, at.getTime() - state.turnStartedAt);
-      }
-      afterCommit = () => { if (state) state.lastActivity = at; };
-    }
-    try {
-      service.append(sessionId, message, { afterCommit });
-      return true;
-    } catch (error) {
-      logFailure('chat_history_append_failed', error, sessionId);
-      return false;
-    }
+    return run('appendMessage', sessionId, message);
   }
 
   function clearIncrementalSave(sessionId) {
-    const key = String(sessionId);
-    const timer = incrementalSaveTimers.get(key);
-    if (!timer) return false;
-    clearTimeoutFn(timer);
-    incrementalSaveTimers.delete(key);
-    return true;
+    return run('clearIncrementalSave', sessionId);
   }
 
-  function annotateTurn(sessionId, turnId, patch = {}, { anchorMessageId = null } = {}) {
-    const history = service.read(sessionId);
-    let selected = new Set();
-    if (turnId) {
-      selected = new Set(history.filter(message => message?.turnId === turnId).map(message => message.id));
-    }
-    // Legacy/fallback path for a just-finished turn that predates turnId: anchor
-    // on the judged assistant and include the nearest preceding user message.
-    if (!selected.size && anchorMessageId) {
-      const anchor = history.findIndex(message => message?.id === anchorMessageId);
-      if (anchor !== -1) {
-        let start = anchor;
-        while (start >= 0 && history[start]?.role !== 'user') start -= 1;
-        for (let index = Math.max(0, start); index <= anchor; index += 1) {
-          if (history[index]?.id) selected.add(history[index].id);
-        }
-      }
-    }
-    if (!selected.size) return [];
-
-    const changed = [];
-    const next = history.map(message => {
-      if (!selected.has(message?.id)) return message;
-      const updated = { ...message };
-      for (const field of ['taskId', 'taskName', 'auxRunId']) {
-        if (patch[field] !== undefined) updated[field] = patch[field];
-      }
-      stampTaskCode(updated);
-      if (message.role === 'user') {
-        for (const field of ['taskStart', 'taskSource', 'taskText']) {
-          if (patch[field] !== undefined) updated[field] = patch[field];
-        }
-      }
-      changed.push(updated);
-      return updated;
-    });
-    try {
-      service.replace(sessionId, next, { reason: 'aux-task-attribution' });
-      deps.chatBroadcast(String(sessionId), {
-        type: 'chat_history_annotation',
-        messages: changed.map(message => ({
-          id: message.id,
-          turnId: message.turnId || null,
-          taskId: message.taskId || null,
-          taskName: message.taskName || null,
-          taskShortCode: message.taskShortCode || null,
-          auxRunId: message.auxRunId || null,
-        })),
-      });
-      return changed;
-    } catch (error) {
-      logFailure('chat_history_annotation_failed', error, sessionId);
-      return [];
-    }
+  function annotateTurn(sessionId, turnId, patch = {}, options = {}) {
+    return run('annotateTurn', sessionId, turnId, patch, options);
   }
 
   function clearAllIncrementalSaves() {
-    for (const timer of incrementalSaveTimers.values()) clearTimeoutFn(timer);
-    const count = incrementalSaveTimers.size;
-    incrementalSaveTimers.clear();
-    return count;
+    return run('clearAllIncrementalSaves');
   }
 
   function scheduleIncrementalSave(sessionId, state) {
-    const key = String(sessionId);
-    if (stopped || incrementalSaveTimers.has(key)) return false;
-    const timer = setTimeoutFn(() => {
-      incrementalSaveTimers.delete(key);
-      if (stopped || !state || !state.currentAssistantText
-          || state.currentAssistantText.length < 20) return;
-      const tools = Array.isArray(state.currentToolCalls) && state.currentToolCalls.length
-        ? state.currentToolCalls
-        : undefined;
-      try {
-        const interim = {
-          role: 'assistant',
-          content: state.currentAssistantText,
-          tools,
-          ts: now(),
-          _interim: true,
-        };
-        if (state._currentTaskId) interim.taskId = state._currentTaskId;
-        stampTaskCode(interim);
-        service.upsertInterim(key, interim);
-      } catch (error) {
-        logFailure('chat_history_interim_save_failed', error, key);
-      }
-    }, incrementalSaveDelayMs);
-    if (timer && typeof timer.unref === 'function') timer.unref();
-    incrementalSaveTimers.set(key, timer);
-    return true;
+    return run('scheduleIncrementalSave', sessionId, state);
   }
 
   async function clearHistoryUnsafe(sessionId, message, chatState) {
     const key = String(sessionId);
     const keep = Math.max(0, parseInt(message?.keep || '0', 10) || 0);
-    const result = visibility.clear(key, keep);
+    // 可见性写入、持久化 id 与缓存更新都在运行时所有者内部完成。
+    const result = run('clearVisibility', key, keep);
     const page = paginate(key, { limit: historyPageSize });
     deps.chatBroadcast(key, {
       type: 'chat_history_reset',
@@ -690,7 +396,7 @@ function createChatHistoryRuntime(rawDeps) {
         return res.status(404).json({ error: 'session not found' });
       }
       try {
-        const removed = visibility.remove(sessionId, req.params.msgId);
+        const removed = run('removeVisibility', sessionId, req.params.msgId);
         if (!removed) return res.status(404).json({ error: 'message not found' });
         deps.chatBroadcast(sessionId, { type: 'chat_msg_deleted', id: req.params.msgId, displayOnly: true });
         return res.json({ ok: true });
@@ -797,11 +503,7 @@ function createChatHistoryRuntime(rawDeps) {
   }
 
   function stop() {
-    if (stopped) return false;
-    stopped = true;
-    clearAllIncrementalSaves();
-    droppedForMemory.clear();
-    return true;
+    return run('stop');
   }
 
   return Object.freeze({
@@ -810,7 +512,7 @@ function createChatHistoryRuntime(rawDeps) {
     clearAllIncrementalSaves,
     clearHistory,
     clearIncrementalSave,
-    hasIncrementalSave: sessionId => incrementalSaveTimers.has(String(sessionId)),
+    hasIncrementalSave: sessionId => run('hasIncrementalSave', sessionId),
     hideMessages,
     lastActivity,
     latestAssistantAt,

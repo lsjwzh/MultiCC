@@ -2268,3 +2268,47 @@ Node 兼容错误映射集中在新模块 `native/core/src/node_fs_error.rs`：`
 合并前 main 前进 8 个提交（无人值守功能，含原生改动），本批 rebase 无冲突后按新指纹 `1722e12cac65c2f4404555ee` 重建（原生模块 SHA256 `a50e0f166c5cc4f8b623700babd057683c81d794138ae29da1f112d7bafc118e`）并复验：11 文件定向组合 158/158，三个治理脚本退出 0，本批 4 个 Rust 文件 rustfmt 检查通过（`cargo fmt --check` 唯一差异在 main 新增的 `native/core/src/unattended.rs`，非本批改动，未顺带修改）。完整 `npm test` 在 `test:core` 末段 `test:task-first` 停止，唯一失败为 main 新增 `chat-unattended.css` 的 `@keyframes unat-pulse` 动画 `box-shadow`，违反 `tests/test-air-paint-budget.js` 的“永续动画只碰 transform/opacity”门禁；本批未改动 `public/` 与该测试，与 main 字节相同。其余 14 个阶段（`test:task-board-auto` 至 `test:native`）逐个单独运行均退出 0。两段合计 node:test 6868 项，6864 通过、1 失败（上述 main 红项）、2 项既有跳过、1 项既有待办。日志在主仓 `data/rust-source/1722e12cac65c2f4404555ee/validation/history-io-rebased/`。
 
 下一批边界（只读调研已完成）：把 `src/routes/chat-history.js` 宿主运行时的同步核心归 Rust 单一所有者——可见性缓存（删除 `chat-history-visibility.js`）、分页/重放/投影、`appendMessage` 打标与提交后广播顺序、增量保存计时表（Rust 经 `setTimeout`/`clearTimeout` 端口持有句柄，`clear` 同步生效）、被裁消息攒批蒸馏、`annotateTurn`、`hideMessages`；WS 广播、记忆蒸馏、CLI/git/handoff、`projectMessages`、`taskShortCode`、日志保留为宿主端口；删除从未调用的必需依赖 `saveBestEffort`、`trackPendingMemoryDistill`。所有调用方的同步返回契约不变；`clearHistory`/rotate 中 await git 快照的异步流程与 context-level 路由推迟。异步化必须同时改变 `turn-engine.js`、`appendHeldAnswer` 与收尾规划器的等待/ACK 契约，不能把未等待的 Promise 当作已保存。
+
+## 历史宿主运行时同步核心归 Rust（2026-11-10）
+
+本批把 `src/routes/chat-history.js` 从 837 行缩到 539 行，删除 `src/session/chat-history-visibility.js`（57 行），新增 `native/addon/src/chat_history_runtime.rs`（1522 行，napi 类 `RustChatHistoryRuntime` 加两个纯函数导出）。生产代码只剩一个所有者：`RustChatHistoryRuntime` 独占可见性缓存、蒸馏缓冲与增量保存定时器表；历史服务仍是同一个 `RustChatHistory` 实例（`createChatHistoryServiceWithOwner` 只暴露既有 owner 与 anchor，运行时通过 `owner.run(anchor, ...)` 派发），没有第二个服务或第二份缓存。
+
+Rust 现在唯一拥有：可见性缓存与全部操作（filter/hide/clear/remove/removeMany/invalidate，`chat-history-visibility.js` 已删）；任务短码标注与投影；蒸馏批次缓冲与 `distillHistoryIntoMemory` 的同步抛错/异步拒绝日志；`handleCommittedHistoryEvent`（append/remove/delete 广播、去重消息攒批、`setImmediate` 复盘调度）；`load`/`viewHistory`/`projectedMessages`（含 `projectMessages` 抛错回退与 `chat_history_projection_failed`）/`paginate`（around/before/limit 边界、`Object.freeze` 与 JSON 克隆隔离）；`hideMessages`；`latestAssistantAt`；`lastActivity`；`appendMessage`（id 生成、活会话 taskId/turnId 打标、任务码、assistant `durationMs`、afterCommit 写 lastActivity、失败日志与同步布尔 ACK）；`annotateTurn`（turnId 选择、锚点回退、替换/广播失败日志）；增量保存定时器表（`setTimeout`/`clearTimeout`/`unref`、每会话一个、`stopped` 复检、文本 <20 与 tools/taskId 规则）与 `stop()`。`publicCommittedMessage`、`buildReplayMessages` 的规则也迁入 Rust，仍从 `src/routes/chat-history.js` 以同名导出，行为、冻结与字段顺序不变。
+
+保留在 Node 的部分与移除条件：
+
+- `clearHistoryUnsafe`/`clearHistory`：先 `run('clearVisibility')` 再 `paginate` 并广播 `chat_history_reset`，`await` 与 broadcast 顺序、`{...result, clearedNativeSessions: 0}` 与失败包装错误码都保持旧实现。移除以 `turn-engine.js`/`appendHeldAnswer` 的等待/ACK 边界改成异步 Rust IO 为前提。
+- `rotateNativeContext`/`rotateNativeContextUnsafe`：等待 `cliSwitchGitSnapshot`、`sessionPersistence.mutate` 的 handoff 事务与 `chatStream.close` 顺序。移除条件同上（异步会话持久化进 Rust）。
+- `mountRoutes`（Express 路由）与 context-level 路由：Express 仍在 Node；context-level 需要惰性 `opencodeContextReader`、`transcript-prune` 与 `cwdForSession`。移除条件是把路由归属迁到 Rust 前门时。
+- 端口 `history`（原生仓库转发器）、`service`/`serviceAnchor`（既有原生服务）、`chatSessions`、`idFactory`、`clock`、`chatBroadcast`、`distillHistoryIntoMemory`、`maybeSchedulePeriodicMemoryReview`、`taskShortCode`、`retentionPolicy`、`projectMessages`、`logger`、`sanitizePublicText`、`setTimeout`/`clearTimeout`/`setImmediate`：宿主对象/ECMAScript 适配或唯一外部契约。`postPersist` 仍是 JS 端口，因为 `RustChatHistory::emit` 的外部契约就是调用 `ports.postPersist`（与 `afterCommit` 顺序固定），运行时直连会改变服务对外契约；移除条件是把 postPersist 回调注册也纳入服务构造的原生 API。
+- 删除死依赖：`saveBestEffort`、`trackPendingMemoryDistill` 从 `assertChatHistoryDeps` 必需列表与 `server.js` 的本运行时注入移除（其他运行时仍用 `saveBestEffort`）。
+
+发现并解决的行为差异（均由新差分测试捕获）：
+
+1. around 分页的 `before` 取错下标：旧实现返回 `messages[start].id`，初版 Rust 返回 `messages[start-1].id`。已改成 `start`。
+2. 蒸馏异步拒绝处理：Rust 用 `call_plain` 调 `Promise.resolve`，`this` 为 undefined，触发 `PromiseResolve called on non-object`，被服务的 postPersist 错误处理捕获成 `chat_history_post_persist_failed`，而不是 `chat_history_memory_distill_failed`。改为以 `Promise` 构造器为 receiver 调用。
+3. 增量保存 tick 的 try 边界：旧实现把 interim 构造（含 `clock()`）、任务码标注与 `upsertInterim` 一起放在 try 内，初版 Rust 只捕获 `upsertInterim`。已按旧边界包住整个构造段。
+4. `clearVisibility` 的 `retainedCount`（独立复核发现，用户可见回归）：旧实现是 `visible.length - removed.length`，其中 `visible` 含 `_interim` 流式尾；初版 Rust 用 `completed.length - removedCount`。3 条已完成 + 1 条 `_interim` 时旧实现返回 `retainedCount: 1`，初版返回 0，并直接进入 `chat_history_reset` 广播与 `clearHistory` 返回值（`public/chat-event-controller.js`、App `chat_provider.dart` 消费）。已改为按整个可见视图计数，并新增差分用例与显式数值断言（removedCount=3 / retainedCount=1）。
+
+差分 harness 自身也暴露两点非运行时差异：`idFactory`/`taskShortCode` 都是构造时捕获的端口，测试改成通过端口内部模式注入失败，而不是替换 deps 属性；旧实现读取两者时同样是捕获引用。
+
+独立复核与协调者全量分阶段跑共提出五项，处理如下：
+
+1. `npm run test:security` 门禁红：`tests/test-chat-history-store.js` 断言旧源码文本 `visibility.clear(key, keep)`。该断言原本证明“持久可见性清除先于 reset 广播”。现改为匹配新调用形状 `run('clearVisibility', key, keep)`，并在同一 `clearHistoryUnsafe` 块内用索引比较显式断言“清除在广播之前”；同一顺序在差分测试里另有行为断言（`writeVisibility` 轨迹先于 `broadcast`），不是只改正则。全域 grep 确认没有其他测试读取 `src/routes/chat-history.js` 或已删除的 `chat-history-visibility.js` 源码文本。
+2. `clearVisibility` 的 `retainedCount` 回归：见差异 4，已修复并有差分与显式数值断言。
+3. 覆盖缺口：差分测试补上 `clearHistory` 与 `rotateNativeContext`（见下），删掉 `trace.length >= 0` 的同义反复断言，改为对可见性文件与投影结果的真实比较；并新增“`appendMessage` 原地写入调用者对象（id/taskId/turnId/taskShortCode/durationMs）、`load()[0]` 不是同一对象”的双端断言。
+4. 已知差异（仅记录，不修）：非法参数的 `TypeError` 文案不同——`paginate(s, null)`、`annotateTurn(s, null, patch, null)`、对只读 `id` 的消息 `appendMessage`，两端都抛 `TypeError`，但消息文本不同。这些不是生产路径（调用方都传合法参数或对象字面量），本批不新增字符串映射。
+5. 流程更正：此前报告的指纹 `da45f177…` 在最后一次构建后已被 `scripts/rust-source-cache.js` 的编辑超越（该脚本参与指纹）。本轮所有编辑完成后重新构建，指纹与产物见下。
+
+测试证据（最终产物 `data/rust-source/b83e547741e4250a3dd1986d/darwin-arm64/multicc_core.node`，SHA256 `c1cc1a246759c8644e23293f05f1d47fb24f8a979904f8416c4820b4090625c1`，17951136 字节；所有测试均同时设置 `MULTICC_RUST_PREBUILT_DIR` 与该 `MULTICC_RUST_ADDON`）：
+
+- `node --test tests/test-chat-history-runtime-differential.js`：15/15 通过。双端各自使用真实临时数据根、真实文件仓库、同一套假端口与固定种子；逐步比较返回值（含同步布尔、冻结状态、克隆隔离）、抛出错误、完整调用轨迹（广播载荷、蒸馏、复盘调度、定时器 create/clear/unref、日志、`chatSessions` 与 `persistedSessions` 活对象写入、git 快照/checkpoint/stream close 顺序）、持久记录与磁盘字节，覆盖追加、去重蒸馏攒批与 aux 排除、同步抛错/异步拒绝、复盘与 stop 复检、隐藏、分页、标注、增量保存、最近活动、重入、**`clearHistory`（keep 0/默认/2/超界/负数/非数字、interim 尾部、已隐藏、durable 失败抛错且不广播、返回形状与 `Object.freeze`、清除先于广播）**、**`rotateNativeContext`（未找到/非 chat/pending 复用/runState 三种忙/后台任务/成功 mutate+close+广播/快照失败/persist 失败/preserveHistory 委托与失败透传/缺 rotation 端口）**、追加原地写入与 clone 隔离，以及 320 步固定种子多会话序列。红证：把 `retainedCount` 临时改回旧表达式（`completed.length - removedCount`）重新构建后，新用例按预期失败（legacy `retainedCount: 1`、native `0`），恢复修复后重新构建得到同一指纹与同一 SHA256。`clearHistory` 用例不传带进行中内容的 `chatState`（`buildReplayMessages` 的 `ts` 默认取真实 `Date.now`），因此比较字段全部确定。
+- `node --test tests/test-chat-history-store.js`：16/16 通过（含改写的 reset 顺序用例）；`npm run test:security` 退出 0：node:test 1138 项，1137 通过、0 失败、1 项既有待办，`test-ws-backpressure` 14/14。
+- 要求回归的 8 文件 `node --test` 组合（routes、task-history-retention、chat-dto-golden、chat-history-ordering、chat-history-differential、history-repository-differential、session-domain、architecture-boundaries）：113/113 通过。既有测试只改了 `tests/test-chat-history-store.js` 的上述源码文本断言；没有其他既有测试引用被删除的 `chat-history-visibility.js`。
+- `npm run test:architecture`：node:test 123/123 通过，`test-detached` 全部通过。
+- `node --test tests/test-release-version-consistency.js`：5/5 通过。新测试登记为 `tests/test-tiers.json` 的 core/deterministic（owner/entrypoints = `npm:test:architecture`），复核计数更新为 419 entries、345 deterministic、391 commands（388 Node entries）；`node scripts/check-test-tiers.js` 报告 873 项已分类（core 419）。
+- `node scripts/check-source-line-budget.js`、`check-runtime-write-inventory.js`、`check-repository-artifacts.js`：均退出 0（`server.js` 迁移债务按实测下调为 3038 行 / 162261 字节；45 项写入治理；4 项既有产物基线）。
+- `rustfmt --edition 2021 --check native/addon/src/chat_history_runtime.rs native/addon/src/lib.rs`：退出 0；`cargo clippy -p multicc-core -p multicc-addon --all-targets` 对 `chat_history_runtime.rs` 无任何诊断（其余为既有告警）；`cargo test --manifest-path native/Cargo.toml -p multicc-core`：620/620 通过。
+- `npm run test:core`：本轮按协调者指示未重跑。上一轮（修复前产物 `da45f177…`）观察到退出码 1，唯一失败为 main 既有红项 `tests/test-air-paint-budget.js`（`chat-unattended.css` 的 `@keyframes unat-pulse` 用 `box-shadow`）；node:test 三段合计 2914 项，2913 通过、1 失败。该数字不代表当前产物，当前产物由协调者全量复跑。
+
+下一批边界：`clearHistory`/rotate 的异步流程、context-level 路由，然后才是 `turn-engine.js` 等历史调用者与异步 ACK（把 `appendMessage` 的同步布尔变成可等待的持久确认）。本批不提交、不合并、不推送、不重启生产。

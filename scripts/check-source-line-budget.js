@@ -182,10 +182,13 @@ const MIGRATION_DEBT = Object.freeze({
   // Same day, wall-clock deadlines replace the round budget: the unattended host
   // owns one timer per active session, so server.js also registers its shutdown
   // hook on the last line; measured 3040 lines / 162369 bytes.
+  // 2026-11-10 历史宿主运行时归 Rust：运行时不再使用 saveBestEffort /
+  // trackPendingMemoryDistill，server.js 的注入表少两行，实测高水位降到
+  // 3038 行 / 162261 字节，按棘轮下调。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3040,
-    byteCeiling: 162369,
+    ceiling: 3038,
+    byteCeiling: 162261,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

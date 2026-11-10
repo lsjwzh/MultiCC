@@ -535,13 +535,17 @@ test('core runner covers every selected path and expands declared variants', () 
   // 无人值守监督器 v2：test-unattended-supervisor/routes/fifo-order 三个文件用假 aux、
   // 内存调度器与固定时钟，不访问端口、真实账号或模型，登记核心确定性层：
   // 418 entries、344 deterministic、390 commands。
-  assert.equal(core.length, 418, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 418);
+  // 历史宿主运行时迁移：test-chat-history-runtime-differential.js 用假端口、真实
+  // 临时数据根与固定种子随机序列比较旧运行时与 RustChatHistoryRuntime，不访问
+  // 端口、真实账号或用户数据，登记核心确定性层：419 entries、345 deterministic、
+  // 391 commands（388 Node entries）。
+  assert.equal(core.length, 419, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 419);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 344);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 345);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -551,8 +555,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 390,
-    '387 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 391,
+    '388 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

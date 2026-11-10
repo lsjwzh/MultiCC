@@ -2269,12 +2269,10 @@ chatHistoryRuntime = createChatHistoryRuntime({
   clearAllNativeCliStates,
   buildHandoffCheckpoint,
   rememberActiveCliState,
-  saveBestEffort: savePersistedSessionsBestEffort,
   sessionPersistence,
   getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle',
   getActiveBackgroundTasks: id => backgroundTaskRuntime?.listActiveBackgroundTasks(id) || [],
   chatStream, cwdForSession,
-  trackPendingMemoryDistill: _trackPendingMemoryDistill,
   projectMessages: (sessionId, messages) => projectHistoryUsage(messages, {
     perTurn: persistedSessions.get(sessionId)?.cli === 'codex-exp',
   }), taskShortCode, logger,

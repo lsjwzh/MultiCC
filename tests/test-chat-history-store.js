@@ -238,8 +238,14 @@ test('durable history reset broadcasts an authoritative page and invalidates eve
   assert.match(server, /await (?:chatHistoryRuntime|getChatHistoryRuntime\(\))\.clearHistory\(sessionName, msg, cs\)/,
     'the WebSocket host must delegate clear ownership to the history runtime');
   assert.match(historyRuntime,
-    /visibility\.clear\(key, keep\)[\s\S]*type: 'chat_history_reset'/,
+    /run\('clearVisibility', key, keep\)[\s\S]*type: 'chat_history_reset'/,
     'reset must be broadcast only after durable display state');
+  const clearBody = historyRuntime.match(/async function clearHistoryUnsafe\([\s\S]*?\n  \}/);
+  assert.ok(clearBody, 'the durable clear must stay in one reviewable block');
+  assert.ok(
+    clearBody[0].indexOf("run('clearVisibility', key, keep)") < clearBody[0].indexOf("type: 'chat_history_reset'"),
+    'the durable visibility clear must be ordered before the reset broadcast',
+  );
   assert.match(historyRuntime, /displayOnly: true/);
 
   const resetHandler = events.match(/function handleHistoryReset\(message\)\s*\{([\s\S]*?)\n\s*function handleEvent/);
