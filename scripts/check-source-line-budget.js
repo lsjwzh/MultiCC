@@ -154,9 +154,11 @@ const MIGRATION_DEBT = Object.freeze({
   // Measured 3178 lines / 162291 bytes; remaining model status/refresh orchestration stays here.
   // 2026-11-10 The retired `claude-exp` lane id folded into `claude`, so the
   // lane comments shrank; measured 3178 lines / 162224 bytes.
+  // 2026-11-10 Fold picker aliases and remove unreachable purpose warnings;
+  // measured 3171 lines / 161873 bytes.
   'public/run-config.js': Object.freeze({
-    ceiling: 3178,
-    byteCeiling: 162224,
+    ceiling: 3171,
+    byteCeiling: 161873,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
