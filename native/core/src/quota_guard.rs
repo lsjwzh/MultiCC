@@ -357,7 +357,13 @@ impl Guard {
     }
 
     pub fn should_refresh(&mut self, id: &str, now: f64) -> bool {
-        if !(now - self.stale_notified_at.get(id).copied().unwrap_or(0.0) >= 60_000.0) {
+        let elapsed = now - self.stale_notified_at.get(id).copied().unwrap_or(0.0);
+        // `!(elapsed >= 60_000.0)` deliberately also rejects NaN, which a plain
+        // `elapsed < 60_000.0` would let through; spell the partial order out.
+        if !matches!(
+            elapsed.partial_cmp(&60_000.0),
+            Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater)
+        ) {
             return false;
         }
         self.stale_notified_at.insert(id.to_string(), now);

@@ -115,6 +115,12 @@ pub struct RustCurrentAttempts {
     inner: CurrentAttempts<StrongAttempt>,
 }
 
+impl Default for RustCurrentAttempts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustCurrentAttempts {
     #[napi(constructor)]
@@ -221,6 +227,12 @@ fn main_producer_value(
     Ok(undefined)
 }
 
+impl Default for RustMainProducers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustMainProducers {
     #[napi(constructor)]
@@ -235,6 +247,8 @@ impl RustMainProducers {
         main_producer_value(&env, self.inner.active(&producer_key(&env, key)?))
     }
 
+    // JS calls this method positionally; its arity is the napi ABI.
+    #[allow(clippy::too_many_arguments)]
     #[napi]
     pub fn set_active(
         &mut self,
@@ -312,6 +326,12 @@ pub struct RustNonMainProducers {
     inner: NonMainProducers,
 }
 
+impl Default for RustNonMainProducers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustNonMainProducers {
     #[napi(constructor)]
@@ -336,6 +356,12 @@ impl RustNonMainProducers {
     #[napi]
     pub fn bind_usage(&mut self, env: Env, key: Unknown<'_>) -> Result<bool> {
         Ok(self.inner.bind_usage(&producer_key(&env, key)?))
+    }
+}
+
+impl Default for RustProviderAttemptGenerations {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -374,6 +400,8 @@ pub struct AttemptStatusSnapshot {
 
 #[napi]
 impl RustProviderAttemptLifecycle {
+    // JS calls this constructor positionally; its arity is the napi ABI.
+    #[allow(clippy::too_many_arguments)]
     #[napi(constructor)]
     pub fn new(
         env: Env,

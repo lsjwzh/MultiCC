@@ -15,8 +15,7 @@ pub fn valid_identity(value: &JsString) -> bool {
 pub fn positive_integer(value: Option<f64>) -> bool {
     value.is_some_and(|number| {
         number.is_finite()
-            && number >= 1.0
-            && number <= 9_007_199_254_740_991.0
+            && (1.0..=9_007_199_254_740_991.0).contains(&number)
             && number.fract() == 0.0
     })
 }

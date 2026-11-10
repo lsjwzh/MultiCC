@@ -52,6 +52,12 @@ pub struct RustWorkspaceQueues {
     inner: Mutex<Store>,
 }
 
+impl Default for RustWorkspaceQueues {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustWorkspaceQueues {
     #[napi(constructor)]

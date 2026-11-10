@@ -220,6 +220,12 @@ pub struct RustChatRunnerLifecycle {
     inner: ChatRunnerLifecycle,
 }
 
+impl Default for RustChatRunnerLifecycle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustChatRunnerLifecycle {
     #[napi(constructor)]
@@ -247,6 +253,12 @@ impl RustChatRunnerLifecycle {
     #[napi]
     pub fn end_usage(&mut self) {
         self.inner.end_usage();
+    }
+}
+
+impl Default for RustChatTurnLifecycle {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

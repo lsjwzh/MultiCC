@@ -6,6 +6,12 @@ use napi_derive::napi;
 pub struct RustModelStreamProgress {
     inner: ModelStreamProgress,
 }
+impl Default for RustModelStreamProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustModelStreamProgress {
     #[napi(constructor)]

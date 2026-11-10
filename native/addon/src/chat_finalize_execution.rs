@@ -644,6 +644,9 @@ pub fn chat_execute_turn_finalization(
     Ok(value.raw())
 }
 
+// JS calls this export positionally; its arity is the napi ABI, not an API we
+// can reshape from Rust.
+#[allow(clippy::too_many_arguments)]
 #[napi]
 pub fn chat_commit_turn_finalization(
     env: Env,

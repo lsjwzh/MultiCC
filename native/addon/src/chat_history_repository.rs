@@ -299,6 +299,9 @@ fn visibility_path(root: &Path, session_id: &str) -> PathBuf {
 
 /// `mkdirSync(dir, { recursive: true, mode: 0o700 })` semantics from the sync
 /// path, without a JS anchor: newly created ancestors get the private mode too.
+// HistoryWriteError is a `#[napi(object)]` crossing the JS boundary; boxing it
+// here would force every caller to unbox and still has to build that shape.
+#[allow(clippy::result_large_err)]
 fn ensure_private_dir_io(dir: &Path) -> std::result::Result<(), HistoryWriteError> {
     let mut missing = Vec::new();
     let mut probe = Some(dir);
@@ -452,6 +455,7 @@ fn io_write_error(
     write_error("Error", message, Some(&error), Some(syscall), path, dest)
 }
 
+#[allow(clippy::result_large_err)]
 fn transcript_bytes(messages_json: &str) -> std::result::Result<Vec<u8>, HistoryWriteError> {
     let parsed = json_parse(messages_json).map_err(|error| {
         write_error(
@@ -622,6 +626,9 @@ fn probe_value(value: &SemanticValue, delivery_id: &str) -> Option<bool> {
     Some(matches("deliveryId") || matches("clientMsgId"))
 }
 
+// HistoryProbeError is a `#[napi(object)]` crossing the JS boundary; boxing it
+// here would force every caller to unbox and still has to build that shape.
+#[allow(clippy::result_large_err)]
 fn probe_transcript(body: &str, delivery_id: &str) -> std::result::Result<bool, HistoryProbeError> {
     let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let Some(first) = body.chars().find(|ch| !is_js_whitespace_char(*ch)) else {

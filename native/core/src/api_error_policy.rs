@@ -783,9 +783,7 @@ pub fn reset_after_from_text(
             .iter()
             .find(|(name, _)| unit == *name)
             .map(|(_, scale)| *scale);
-        let Some(scale) = scale else {
-            return None;
-        };
+        let scale = scale?;
         if !amount.is_finite() || amount <= 0.0 {
             return None;
         }

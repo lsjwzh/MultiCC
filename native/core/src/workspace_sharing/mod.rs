@@ -201,14 +201,18 @@ pub fn password_matches(candidate: &str, record: &V) -> bool {
     let raw = or_text(get(record, "passwordHash"));
     let expected: Vec<u8> = raw
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map_while(|p| {
             Some(((p[0] as char).to_digit(16)? * 16 + (p[1] as char).to_digit(16)?) as u8)
         })
         .collect();
     let actual: Vec<u8> = candidate
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
         .collect();
     expected.len() == 32 && bool::from(actual.ct_eq(&expected))

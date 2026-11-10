@@ -59,6 +59,12 @@ fn host_evidence<'a>(
     )
 }
 
+impl Default for RustCliCompletionTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustCliCompletionTracker {
     #[napi(constructor)]
@@ -481,6 +487,12 @@ pub struct RustKimiCompletionTracker {
     resume_hint: Cell<bool>,
 }
 
+impl Default for RustKimiCompletionTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl RustKimiCompletionTracker {
     #[napi(constructor)]
@@ -541,6 +553,12 @@ struct PiEvidence {
 #[napi]
 pub struct RustPiCompletionTracker {
     latest: RefCell<PiEvidence>,
+}
+
+impl Default for RustPiCompletionTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]

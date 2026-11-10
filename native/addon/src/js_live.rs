@@ -217,6 +217,9 @@ impl<'env> LiveValue<'env> {
             .string()?
             .expect("ToString returned a string"))
     }
+    // Anchor-style conversion kept under its bridge name; renaming it would
+    // touch hundreds of call sites without changing behaviour.
+    #[allow(clippy::wrong_self_convention)]
     pub fn from_value(self, value: &JsValue) -> Result<Self> {
         Ok(self.with_value(unsafe { crate::js_bridge::write_value(self.env, value) }?))
     }
