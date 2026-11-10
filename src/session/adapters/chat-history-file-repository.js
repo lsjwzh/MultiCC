@@ -1,24 +1,18 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const { createPaths } = require('../../paths');
-const { atomicWriteText, ensurePrivateDir } = require('../../runtime-security');
 const { getNative } = require('../../native/runtime');
+const { reportFailure } = require('../../state/store');
 
-// 同步文件端口暂时保留，以兼容宿主的写入确认及可注入文件系统。
-// 格式、路径规则、追加账本及失败处理由 Rust 唯一拥有；宿主异步化后再迁 IO。
+// 历史文件协议、路径规则、追加账本与全部文件 IO 都由 Rust 唯一拥有。
+// 这里只计算数据根、构造原生所有者并转发同步调用；没有可注入文件系统，
+// 也没有 Node 回退路径。
 function createChatHistoryFileRepository({
   dataDir,
-  fsImpl = fs,
-  writeText = atomicWriteText,
   appendEnabled = process.env.MULTICC_HISTORY_APPEND !== '0',
 } = {}) {
   const root = createPaths({ dataDir }).chatHistoryDir;
-  const anchor = { ports: { root, fsImpl, path, writeText, appendEnabled,
-    ensureDir: dir => fsImpl === fs ? ensurePrivateDir(dir)
-      : fsImpl.mkdirSync(dir, { recursive: true, mode: 0o700 }),
-  } };
+  const anchor = { ports: { root, appendEnabled, reportFailure } };
   const owner = new (getNative().RustChatHistoryRepository)(anchor);
   const methods = ['deleteSession', 'fileFor', 'hasPersistedDelivery', 'listSessionIds',
     'read', 'readVisibility', 'renameSession', 'write', 'writeVisibility', 'visibilityFileFor'];

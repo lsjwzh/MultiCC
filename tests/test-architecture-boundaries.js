@@ -40,7 +40,7 @@ test('session bounded-context core has no host or cross-context dependencies', (
 
 test('session filesystem adapter depends only on shared data-root infrastructure', () => {
   const file = 'src/session/adapters/chat-history-file-repository.js';
-  const allowed = new Set(['fs', 'path', '../../paths', '../../runtime-security', '../../native/runtime']);
+  const allowed = new Set(['../../paths', '../../native/runtime', '../../state/store']);
   for (const dependency of requires(file)) assert.equal(allowed.has(dependency), true, dependency);
 });
 

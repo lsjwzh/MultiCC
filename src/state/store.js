@@ -113,7 +113,7 @@ function writeTextAtomic(target, text, { mode = 0o600, dirMode = 0o700, enforceD
   }
   catch (e) {
     if (e.code !== 'EEXIST') {
-      try { failureReporter(e, { operation: 'mkdir', target }); } catch (_) {}
+      reportFailure(e, { operation: 'mkdir', target });
       throw new Error(`[state-store] mkdir ${dir}: ${e.message}`);
     }
   }
@@ -130,7 +130,7 @@ function writeTextAtomic(target, text, { mode = 0o600, dirMode = 0o700, enforceD
     fs.chmodSync(target, mode);
     fsyncDir(dir);
   } catch (e) {
-    try { failureReporter(e, { operation: 'atomic_write', target }); } catch (_) {}
+    reportFailure(e, { operation: 'atomic_write', target });
     try { fs.unlinkSync(tmp); } catch (_) {}
     throw e;
   } finally {
@@ -153,6 +153,14 @@ let counter = 0;
 
 function setFailureReporter(reporter) {
   failureReporter = typeof reporter === 'function' ? reporter : () => {};
+}
+
+// Best-effort persistence failure report. Metrics/logger are installed in
+// server.js through setFailureReporter; the reporter's own failure must never
+// change the error the caller is about to see. Native writers call this port
+// with the exact error object they are about to throw.
+function reportFailure(error, meta) {
+  try { failureReporter(error, meta); } catch (_) {}
 }
 
 // Load a state file. Returns:
@@ -233,5 +241,6 @@ module.exports = {
   recoverFromBackup,
   createStore,
   SCHEMA_KEY,
+  reportFailure,
   setFailureReporter,
 };

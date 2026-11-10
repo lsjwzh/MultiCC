@@ -530,32 +530,33 @@ test('chat history deletes the repository before invalidating its cache', () => 
   assert.deepEqual(service.read('s1'), []);
 });
 
-// Real fs for the append path, with the full-rewrite door instrumented so a
-// test can tell which of the two ran.
+// Real fs. The native repository only has one door, so the tests tell the two
+// write strategies apart by inode: an atomic rewrite renames a fresh temp file
+// over the target (new inode), while append/truncate keeps the existing file.
 function transcriptHarness(t, prefix) {
   const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const rewrites = [];
-  const { atomicWriteText } = require('../src/runtime-security');
-  const repository = createChatHistoryFileRepository({
-    dataDir: root,
-    writeText: (file, text) => { rewrites.push(file); atomicWriteText(file, text); },
-  });
+  const repository = createChatHistoryFileRepository({ dataDir: root });
   const lines = sessionId => fs.readFileSync(repository.fileFor(sessionId), 'utf8')
     .split('\n').filter(Boolean);
-  return { repository, rewrites, lines };
+  const inode = sessionId => {
+    try { return fs.statSync(repository.fileFor(sessionId)).ino; }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  };
+  return { repository, lines, inode };
 }
 
 test('appending a message extends the transcript instead of rewriting it', (t) => {
-  const { repository, rewrites, lines } = transcriptHarness(t, 'multicc-history-append-');
+  const { repository, inode, lines } = transcriptHarness(t, 'multicc-history-append-');
   const first = { id: 'a', role: 'user', content: 'one' };
   const second = { id: 'b', role: 'assistant', content: 'two' };
 
   repository.write('s1', [first]);
-  assert.equal(rewrites.length, 1, 'the first write has to materialize the file');
+  const created = inode('s1');
+  assert.notEqual(created, null, 'the first write has to materialize the file');
 
   repository.write('s1', [first, second]);
-  assert.equal(rewrites.length, 1, 'appending must not rewrite the whole transcript');
+  assert.equal(inode('s1'), created, 'appending must not rewrite the whole transcript');
   assert.equal(lines('s1').length, 2);
   assert.deepEqual(repository.read('s1'), [first, second]);
 
@@ -564,14 +565,15 @@ test('appending a message extends the transcript instead of rewriting it', (t) =
   const interimA = { id: 'c', role: 'assistant', content: 'partial…', _interim: true };
   const interimB = { id: 'c', role: 'assistant', content: 'partial… more', _interim: true };
   repository.write('s1', [first, second, interimA]);
+  const appended = inode('s1');
   repository.write('s1', [first, second, interimB]);
-  assert.equal(rewrites.length, 1, 'replacing the trailing message truncates and appends');
+  assert.equal(inode('s1'), appended, 'replacing the trailing message truncates and appends');
   assert.equal(lines('s1').length, 3, 'the superseded interim leaves no residue');
   assert.deepEqual(repository.read('s1'), [first, second, interimB]);
 
   // Trimming from the front cannot be expressed as a tail edit.
   repository.write('s1', [second, interimB]);
-  assert.equal(rewrites.length, 2, 'a front trim falls back to the full rewrite');
+  assert.notEqual(inode('s1'), appended, 'a front trim falls back to the full rewrite');
   assert.deepEqual(repository.read('s1'), [second, interimB]);
 });
 
@@ -601,32 +603,34 @@ test('an interrupted append loses only its own line; real corruption still surfa
 });
 
 test('legacy JSON-array transcripts stay readable and convert on the next write', (t) => {
-  const { repository, rewrites, lines } = transcriptHarness(t, 'multicc-history-legacy-');
+  const { repository, inode, lines } = transcriptHarness(t, 'multicc-history-legacy-');
   const legacy = [{ id: 'a', role: 'user', content: 'one' }];
   fs.mkdirSync(repository.root, { recursive: true, mode: 0o700 });
   fs.writeFileSync(repository.fileFor('s1'), JSON.stringify(legacy, null, 2), { mode: 0o600 });
+  const before = inode('s1');
 
   assert.deepEqual(repository.read('s1'), legacy, 'pre-JSONL files still load');
   assert.equal(repository.hasPersistedDelivery('s1', 'nope'), false);
 
   const next = [...legacy, { id: 'b', role: 'assistant', content: 'two' }];
   repository.write('s1', next);
-  assert.equal(rewrites.length, 1, 'an untracked file is rewritten, which migrates it');
+  assert.notEqual(inode('s1'), before, 'an untracked file is rewritten, which migrates it');
   assert.equal(lines('s1').length, 2, 'the file is JSONL afterwards');
   assert.deepEqual(repository.read('s1'), next);
 });
 
 test('a transcript touched by anything else is rewritten rather than appended to', (t) => {
-  const { repository, rewrites, lines } = transcriptHarness(t, 'multicc-history-foreign-');
+  const { repository, inode, lines } = transcriptHarness(t, 'multicc-history-foreign-');
   const first = { id: 'a', role: 'user', content: 'one' };
   repository.write('s1', [first]);
-  assert.equal(rewrites.length, 1);
+  const before = inode('s1');
+  assert.notEqual(before, null);
 
   // Another writer (a second process, a restore, a manual edit) invalidates the
   // recorded offsets; appending onto them would corrupt the file.
   fs.appendFileSync(repository.fileFor('s1'), `${JSON.stringify({ id: 'x' })}\n`);
   repository.write('s1', [first, { id: 'b', role: 'assistant', content: 'two' }]);
-  assert.equal(rewrites.length, 2, 'a size mismatch forces the safe path');
+  assert.notEqual(inode('s1'), before, 'a size mismatch forces the safe path');
   assert.equal(lines('s1').length, 2);
   assert.deepEqual(repository.read('s1').map(m => m.id), ['a', 'b']);
 });
@@ -634,17 +638,13 @@ test('a transcript touched by anything else is rewritten rather than appended to
 test('MULTICC_HISTORY_APPEND=0 restores full-rewrite-only writes', (t) => {
   const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-history-killswitch-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const rewrites = [];
-  const { atomicWriteText } = require('../src/runtime-security');
-  const repository = createChatHistoryFileRepository({
-    dataDir: root,
-    appendEnabled: false,
-    writeText: (file, text) => { rewrites.push(file); atomicWriteText(file, text); },
-  });
+  const repository = createChatHistoryFileRepository({ dataDir: root, appendEnabled: false });
+  const inode = () => fs.statSync(repository.fileFor('s1')).ino;
   const first = { id: 'a', role: 'user', content: 'one' };
   repository.write('s1', [first]);
+  const created = inode();
   repository.write('s1', [first, { id: 'b', role: 'assistant', content: 'two' }]);
-  assert.equal(rewrites.length, 2, 'every write goes through the atomic rewrite');
+  assert.notEqual(inode(), created, 'every write goes through the atomic rewrite');
   assert.deepEqual(repository.read('s1').map(m => m.id), ['a', 'b'],
     'both modes read and write the same files');
 });
@@ -684,18 +684,23 @@ test('chat history file adapter strictly proves persisted deliveries and deletes
   assert.equal(repository.deleteSession('s1'), false);
 });
 
-test('chat history delivery proof propagates permission errors and bypasses service cache', () => {
-  const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
-  const repository = createChatHistoryFileRepository({
-    dataDir: path.join(os.tmpdir(), 'multicc-history-denied'),
-    fsImpl: {
-      readFileSync: () => { throw denied; },
-      unlinkSync: () => { throw denied; },
-      mkdirSync: () => {},
-    },
-    writeText: () => {},
+test('chat history delivery proof propagates permission errors and bypasses service cache',
+  { skip: typeof process.getuid === 'function' && process.getuid() === 0 }, (t) => {
+  const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-history-denied-')));
+  const file = path.join(root, 'chat_history', 's1.json');
+  t.after(() => {
+    try { fs.chmodSync(file, 0o600); } catch (_) {}
+    fs.rmSync(root, { recursive: true, force: true });
   });
-  assert.throws(() => repository.hasPersistedDelivery('s1', 'delivery-1'), /permission denied/);
+  const repository = createChatHistoryFileRepository({ dataDir: root });
+  repository.write('s1', [{ role: 'user', content: 'safe', deliveryId: 'delivery-1' }]);
+  assert.equal(repository.hasPersistedDelivery('s1', 'delivery-1'), true);
+  assert.equal(repository.hasPersistedDelivery('s1', 'missing'), false);
+
+  // A real read failure is not "no such delivery": it must surface.
+  fs.chmodSync(file, 0o000);
+  assert.throws(() => repository.hasPersistedDelivery('s1', 'delivery-1'), { code: 'EACCES' });
+  fs.chmodSync(file, 0o600);
 
   let persisted = [];
   const service = createChatHistoryService({

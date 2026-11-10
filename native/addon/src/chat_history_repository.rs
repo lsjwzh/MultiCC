@@ -1,13 +1,23 @@
-//! 历史文件协议与追加账本。同步 IO 暂经旧文件端口，调用方迁为异步后再移除。
+//! 历史文件协议与追加账本。文件 IO 已由 Rust 原生完成。
+//! 解析仍调用宿主引擎的 JSON.parse/stringify，因为调用方需要 JS 消息对象；
+//! 文件字节、行末字节偏移、原子写入与失败清理都由 Rust 唯一拥有。
 //! 不跨宿主回调持有借用；消息引用由可追踪 anchor 保存，不克隆正文。
 use crate::{
     js_host_value::{Value, Values},
     js_live::LiveValue as L,
+    node_fs_error,
 };
-use multicc_core::js::{JsString, JsValue as J};
+use multicc_core::{js::JsValue as J, state_file};
 use napi::{bindgen_prelude::Unknown, sys, Env, Error, Result};
 use napi_derive::napi;
-use std::{cell::RefCell, collections::HashMap, ffi::CStr};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi::CStr,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
 
 fn text<'a>(a: L<'a>, value: &str) -> Result<L<'a>> {
     a.from_value(&J::string(value))
@@ -68,6 +78,24 @@ fn missing(error: L<'_>, guarded: bool) -> Result<bool> {
     }
     error.get(c"code")?.is_string("ENOENT")
 }
+fn range_error(a: L<'_>, value: f64) -> Result<Error> {
+    let rendered = a
+        .global()?
+        .get(c"String")?
+        .call_plain(&[number(a, value)?])?;
+    let rendered = rendered
+        .string()?
+        .map(|value| value.to_string_lossy())
+        .unwrap_or_default();
+    let message =
+        format!("The value of \"len\" is out of range. It must be an integer. Received {rendered}");
+    let error = a
+        .global()?
+        .get(c"RangeError")?
+        .construct(&[text(a, &message)?])?;
+    error.set(c"code", text(a, "ERR_OUT_OF_RANGE")?)?;
+    Ok(error.throw_error())
+}
 fn parse_transcript(input: L<'_>) -> Result<L<'_>> {
     let body = method(
         input,
@@ -124,6 +152,17 @@ fn parse_transcript(input: L<'_>) -> Result<L<'_>> {
     Ok(messages)
 }
 
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
 #[derive(Clone)]
 struct Written {
     messages: Value,
@@ -133,51 +172,173 @@ struct Written {
 #[napi]
 pub struct RustChatHistoryRepository {
     values: Values,
-    written: RefCell<HashMap<JsString, Written>>,
+    written: RefCell<HashMap<PathBuf, Written>>,
     can_append: bool,
+    root: PathBuf,
 }
 struct Repository<'a> {
     owner: &'a RustChatHistoryRepository,
     env: &'a Env,
     anchor: L<'a>,
-    ports: L<'a>,
 }
 impl<'a> Repository<'a> {
-    fn port(&self, name: &CStr, args: &[L<'a>]) -> Result<L<'a>> {
-        self.ports.get(name)?.call_plain(args)
+    fn throw_io(
+        &self,
+        error: std::io::Error,
+        syscall: &str,
+        path: Option<&Path>,
+        dest: Option<&Path>,
+    ) -> Error {
+        node_fs_error::throw(self.anchor, &error, syscall, path, dest)
     }
-    fn fs(&self, name: &CStr, args: &[L<'a>]) -> Result<L<'a>> {
-        method(self.ports.get(c"fsImpl")?, name, args)
-    }
-    fn path(&self, name: &CStr, args: &[L<'a>]) -> Result<L<'a>> {
-        method(self.ports.get(c"path")?, name, args)
+    fn path_for(&self, session: L<'a>, visibility: bool) -> Result<PathBuf> {
+        let safe = safe_name(session)?;
+        let safe = safe
+            .string()?
+            .ok_or_else(|| Error::from_reason("history repository session name is not a string"))?
+            .to_string_lossy();
+        let name = format!("{safe}.json");
+        Ok(if visibility {
+            self.owner.root.join(".views").join(name)
+        } else {
+            self.owner.root.join(name)
+        })
     }
     fn file(&self, session: L<'a>, visibility: bool) -> Result<L<'a>> {
-        let name = method(safe_name(session)?, c"concat", &[text(session, ".json")?])?;
-        let root = self.ports.get(c"root")?;
-        if visibility {
-            self.path(c"join", &[root, text(root, ".views")?, name])
-        } else {
-            self.path(c"join", &[root, name])
+        let path = self.path_for(session, visibility)?;
+        text(self.anchor, &path.to_string_lossy())
+    }
+    fn ensure_private_dir(&self, dir: &Path) -> Result<()> {
+        // Node 的 `mkdirSync(dir, { recursive: true, mode: 0o700 })` 会把 mode
+        // 应用到它新建的每一级父目录；`create_dir_all` 只用默认权限建父目录，
+        // 所以这里补上新建祖先目录的 chmod（历史根可能由写视图时隐式创建）。
+        let mut missing = Vec::new();
+        let mut probe = Some(dir);
+        while let Some(path) = probe {
+            if path.exists() {
+                break;
+            }
+            missing.push(path.to_path_buf());
+            probe = path.parent();
         }
+        fs::create_dir_all(dir).map_err(|error| self.throw_io(error, "mkdir", Some(dir), None))?;
+        for path in missing.iter().rev() {
+            set_mode(path, state_file::DIR_MODE)
+                .map_err(|error| self.throw_io(error, "chmod", Some(path), None))?;
+        }
+        set_mode(dir, state_file::DIR_MODE)
+            .map_err(|error| self.throw_io(error, "chmod", Some(dir), None))?;
+        Ok(())
     }
     fn ensure_root(&self) -> Result<()> {
-        self.port(c"ensureDir", &[self.ports.get(c"root")?])?;
+        self.ensure_private_dir(&self.owner.root)
+    }
+    /// Split a failed atomic write into the value to throw, the value the host
+    /// failure reporter receives, and the reporter's `operation` label. For a
+    /// mkdir failure the store reports the raw fs error but throws the
+    /// `[state-store] mkdir ...` wrapper, exactly like `writeTextAtomic`; for
+    /// the rename/write/fsync steps reporter and thrown error are the same
+    /// object.
+    fn write_failure_values(
+        &self,
+        failure: &state_file::WriteFailure,
+    ) -> Result<(L<'a>, L<'a>, &'static str)> {
+        use state_file::WriteStage;
+        let path = Some(failure.path.as_path());
+        let reported = match failure.stage {
+            WriteStage::Mkdir => {
+                node_fs_error::build(self.anchor, &failure.error, "mkdir", path, None)?
+            }
+            WriteStage::ChmodDir | WriteStage::ChmodTarget => {
+                node_fs_error::build(self.anchor, &failure.error, "chmod", path, None)?
+            }
+            WriteStage::OpenTemporary | WriteStage::OpenDirectory => {
+                node_fs_error::build(self.anchor, &failure.error, "open", path, None)?
+            }
+            WriteStage::Write => {
+                node_fs_error::build(self.anchor, &failure.error, "write", None, None)?
+            }
+            WriteStage::Fsync | WriteStage::FsyncDirectory => {
+                node_fs_error::build(self.anchor, &failure.error, "fsync", None, None)?
+            }
+            // The history repository never installs a before-rename hook, so
+            // this arm is unreachable from it; both late steps name `rename`.
+            WriteStage::BeforeRename | WriteStage::Rename => node_fs_error::build(
+                self.anchor,
+                &failure.error,
+                "rename",
+                path,
+                failure.dest.as_deref(),
+            )?,
+        };
+        if failure.stage == WriteStage::Mkdir {
+            let inner = node_fs_error::failure_message(&failure.error, "mkdir", path, None);
+            let thrown = node_fs_error::build_message(
+                self.anchor,
+                c"Error",
+                &format!(
+                    "[state-store] mkdir {}: {inner}",
+                    failure.path.to_string_lossy()
+                ),
+            )?;
+            return Ok((thrown, reported, "mkdir"));
+        }
+        Ok((reported, reported, "atomic_write"))
+    }
+    /// Best-effort host report. The metric/logger live in Node
+    /// (`stateStore.setFailureReporter`), so Rust calls the port with the exact
+    /// error it is about to throw. A throwing reporter must not replace that
+    /// error, hence the JS try/catch boundary.
+    fn report_failure(&self, error: L<'a>, operation: &str, target: &Path) {
+        let outcome = self.anchor.catch(|| {
+            let reporter = self.anchor.get(c"ports")?.get(c"reportFailure")?;
+            if reporter.kind()? != sys::ValueType::napi_function {
+                return self.anchor.from_value(&J::Undefined);
+            }
+            let meta = self.anchor.from_value(&J::object(vec![
+                ("operation", J::string(operation)),
+                ("target", J::string(&target.to_string_lossy())),
+            ]))?;
+            reporter.call_plain(&[error, meta])
+        });
+        let _ = outcome;
+    }
+    fn write_atomic(&self, target: &Path, bytes: &[u8]) -> Result<()> {
+        match state_file::write_bytes_atomic_traced(
+            target,
+            bytes,
+            state_file::FILE_MODE,
+            state_file::DIR_MODE,
+        ) {
+            Ok(()) => Ok(()),
+            Err(failure) => {
+                let (thrown, reported, operation) = self.write_failure_values(&failure)?;
+                self.report_failure(reported, operation, target);
+                Err(thrown.throw_error())
+            }
+        }
+    }
+    fn read_text(&self, path: &Path) -> Result<String> {
+        // Node's readFileSync opens first and only then fails EISDIR on read,
+        // and its `read` errors carry no `path` property.
+        let mut file =
+            File::open(path).map_err(|error| self.throw_io(error, "open", Some(path), None))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|error| self.throw_io(error, "read", None, None))?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+    fn forget(&self, file: &Path) -> Result<()> {
+        self.owner.written.borrow_mut().remove(file);
         Ok(())
     }
-    fn forget(&self, file: L<'a>) -> Result<()> {
-        let key = file.coerce_string()?;
-        self.owner.written.borrow_mut().remove(&key);
-        Ok(())
-    }
-    fn record(&self, file: L<'a>, messages: L<'a>, line_ends: Vec<f64>) -> Result<()> {
-        // slice 在 IO 成功之后调用，与旧实现相同；允许 slice/文件端口重入。
+    fn record(&self, file: &Path, messages: L<'a>, line_ends: Vec<f64>) -> Result<()> {
+        // slice 在 IO 成功之后调用，与旧实现相同；允许迭代器重入。
         let snapshot = method(messages, c"slice", &[])?;
         let messages = self.owner.values.capture(self.env, snapshot)?;
-        let key = file.coerce_string()?;
         let size = line_ends.last().copied().unwrap_or(0.0);
         self.owner.written.borrow_mut().insert(
-            key,
+            file.to_path_buf(),
             Written {
                 messages,
                 line_ends,
@@ -189,77 +350,79 @@ impl<'a> Repository<'a> {
     fn serialize(
         &self,
         value: L<'a>,
-        chunks: L<'a>,
+        out: &mut Vec<u8>,
         offset: &mut f64,
         ends: &mut Vec<f64>,
     ) -> Result<()> {
         let serialized = json(value, c"stringify")?;
         // 模板字符串允许 stringify(undefined) 产生 "undefined\n"；保留旧行为。
-        // 正文留在引擎内拼接，避免 UTF-16 经 Rust 再复制一遍。
+        // 字节由 Rust 一次性编码：lone surrogate 变成 U+FFFD，与 Buffer.from 相同。
         let line = method(
             text(value, "")?,
             c"concat",
             &[serialized, text(value, "\n")?],
         )?;
-        method(chunks, c"push", &[line])?;
-        *offset += method(
-            line.global()?.get(c"Buffer")?,
-            c"byteLength",
-            &[line, text(line, "utf8")?],
-        )?
-        .number()?;
+        let line = line
+            .string()?
+            .ok_or_else(|| Error::from_reason("history line serialization is not a string"))?;
+        let bytes = line.utf8_lossy_bytes();
+        out.extend_from_slice(&bytes);
+        *offset += bytes.len() as f64;
         ends.push(*offset);
         Ok(())
     }
-    fn full_rewrite(&self, file: L<'a>, messages: L<'a>) -> Result<()> {
-        let chunks = array(file)?;
+    fn full_rewrite(&self, file: &Path, messages: L<'a>) -> Result<()> {
+        let mut bytes = Vec::new();
         let mut ends = vec![];
         let mut offset = 0.0;
-        messages.for_each(|message| self.serialize(message, chunks, &mut offset, &mut ends))?;
-        let body = method(chunks, c"join", &[text(file, "")?])?;
+        messages.for_each(|message| self.serialize(message, &mut bytes, &mut offset, &mut ends))?;
         self.ensure_root()?;
-        self.port(c"writeText", &[file, body])?;
+        self.write_atomic(file, &bytes)?;
         self.record(file, messages, ends)
     }
-    fn append_at(&self, file: L<'a>, offset: Option<f64>, body: L<'a>) -> Result<()> {
-        if let Some(offset) = offset {
-            self.fs(c"truncateSync", &[file, number(file, offset)?])?;
+    fn truncate_to(&self, path: &Path, offset: f64) -> Result<()> {
+        if !offset.is_finite() || offset.fract() != 0.0 || offset < 0.0 {
+            return Err(range_error(self.anchor, offset)?);
         }
-        let fd = self.fs(
-            c"openSync",
-            &[file, text(file, "a")?, number(file, 0o600 as f64)?],
-        )?;
-        let written = (|| {
-            self.fs(c"writeSync", &[fd, body])?;
-            if self.ports.get(c"fsImpl")?.get(c"fsyncSync")?.kind()?
-                == sys::ValueType::napi_function
-            {
-                file.catch(|| self.fs(c"fsyncSync", &[fd]))?;
-            }
-            Ok(())
-        })();
-        // finally 的 close 错误优先；否则必须抛原异常对象（也可能是 null）。
-        let failed = match written {
-            Ok(()) => None,
-            Err(error) => Some(caught(file, error)?),
-        };
-        self.fs(c"closeSync", &[fd])?;
-        if let Some(error) = failed {
-            return Err(error.throw_error());
-        }
+        let file = OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|error| self.throw_io(error, "open", Some(path), None))?;
+        file.set_len(offset as u64)
+            .map_err(|error| self.throw_io(error, "ftruncate", None, None))?;
         Ok(())
     }
-    fn incremental(&self, file: L<'a>, messages: L<'a>) -> Result<bool> {
-        let key = file.coerce_string()?;
-        let state = self.owner.written.borrow().get(&key).cloned();
+    fn append_at(&self, path: &Path, offset: Option<f64>, bytes: &[u8]) -> Result<()> {
+        if let Some(offset) = offset {
+            self.truncate_to(path, offset)?;
+        }
+        let mut options = OpenOptions::new();
+        options.append(true).create(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(state_file::FILE_MODE);
+        }
+        let mut file = options
+            .open(path)
+            .map_err(|error| self.throw_io(error, "open", Some(path), None))?;
+        file.write_all(bytes)
+            .map_err(|error| self.throw_io(error, "write", None, None))?;
+        // Match the durability of the atomic rewrite; a filesystem that
+        // rejects fsync must not fail the append.
+        let _ = file.sync_all();
+        Ok(())
+    }
+    fn incremental(&self, file: &Path, messages: L<'a>) -> Result<bool> {
+        let state = self.owner.written.borrow().get(file).cloned();
         let Some(state) = state else {
             return Ok(false);
         };
-        let actual = file.catch(|| self.fs(c"statSync", &[file])?.get(c"size"))?;
-        let Some(actual) = actual else {
-            return Ok(false);
+        let actual = match fs::metadata(file) {
+            Ok(metadata) => metadata.len() as f64,
+            Err(_) => return Ok(false),
         };
-        if !actual.equals(number(file, state.size)?)? {
+        if actual != state.size {
             return Ok(false);
         }
         let previous = self
@@ -293,21 +456,20 @@ impl<'a> Repository<'a> {
             offset
         };
         let mut ends = state.line_ends[..keep.min(state.line_ends.len())].to_vec();
-        let chunks = array(file)?;
+        let mut bytes = Vec::new();
         let mut offset = offset.unwrap_or(f64::NAN);
         let mut index = keep;
         while index < length(messages)? {
             self.serialize(
                 messages.element(index as u32)?,
-                chunks,
+                &mut bytes,
                 &mut offset,
                 &mut ends,
             )?;
             index += 1;
         }
-        let body = method(chunks, c"join", &[text(file, "")?])?;
-        if body.truthy()? || truncate.is_some() {
-            self.append_at(file, truncate, body)?;
+        if !bytes.is_empty() || truncate.is_some() {
+            self.append_at(file, truncate, &bytes)?;
         }
         self.record(file, messages, ends)?;
         Ok(true)
@@ -316,44 +478,39 @@ impl<'a> Repository<'a> {
         if !messages.is_array()? {
             return Err(messages.type_error("[session] chat history write requires an array"));
         }
-        let file = self.file(session, false)?;
+        let file = self.path_for(session, false)?;
         let result = (|| {
-            if self.owner.can_append && self.incremental(file, messages)? {
+            if self.owner.can_append && self.incremental(&file, messages)? {
                 return Ok(());
             }
-            self.full_rewrite(file, messages)
+            self.full_rewrite(&file, messages)
         })();
         if let Err(error) = result {
-            let error = caught(file, error)?;
-            self.forget(file)?;
+            let error = caught(self.anchor, error)?;
+            self.forget(&file)?;
             return Err(error.throw_error());
         }
         Ok(())
     }
     fn read_strict(&self, session: L<'a>, allow_empty: bool) -> Result<L<'a>> {
-        let body = self.fs(
-            c"readFileSync",
-            &[self.file(session, false)?, text(session, "utf8")?],
-        )?;
+        let path = self.path_for(session, false)?;
+        let body = self.read_text(&path)?;
+        let body = text(self.anchor, &body)?;
         if allow_empty && !method(body, c"trim", &[])?.truthy()? {
-            return array(session);
+            return array(self.anchor);
         }
         parse_transcript(body)
     }
     fn read_visibility(&self, session: L<'a>) -> Result<L<'a>> {
+        let path = self.path_for(session, true)?;
         let state = (|| {
-            json(
-                self.fs(
-                    c"readFileSync",
-                    &[self.file(session, true)?, text(session, "utf8")?],
-                )?,
-                c"parse",
-            )
+            let body = self.read_text(&path)?;
+            json(text(self.anchor, &body)?, c"parse")
         })();
         let state = match state {
             Ok(state) => state,
             Err(error) => {
-                let error = caught(session, error)?;
+                let error = caught(self.anchor, error)?;
                 if missing(error, false)? {
                     return session.from_value(&J::Null);
                 }
@@ -379,62 +536,71 @@ impl<'a> Repository<'a> {
         Ok(state)
     }
     fn write_visibility(&self, session: L<'a>, state: L<'a>) -> Result<()> {
-        let dir = self.path(c"dirname", &[self.file(session, true)?])?;
-        self.port(c"ensureDir", &[dir])?;
-        self.port(
-            c"writeText",
-            &[self.file(session, true)?, json(state, c"stringify")?],
-        )?;
+        // 旧实现对 visibilityFileFor 调用了两次（dirname 与写入目标）。
+        let dir = self.path_for(session, true)?;
+        let parent = dir
+            .parent()
+            .ok_or_else(|| Error::from_reason("history visibility file has no parent"))?;
+        self.ensure_private_dir(parent)?;
+        let target = self.path_for(session, true)?;
+        // `atomicWriteText` 会先 String(value)：JSON.stringify 返回 undefined
+        // 时旧实现把 "undefined" 写进文件，这里保持同样的字节。
+        let serialized = json(state, c"stringify")?;
+        let body = state.global()?.get(c"String")?.call_plain(&[serialized])?;
+        let body = body.string()?.ok_or_else(|| {
+            Error::from_reason("history visibility serialization is not a string")
+        })?;
+        self.write_atomic(&target, &body.utf8_lossy_bytes())?;
         Ok(())
     }
+    fn unlink(&self, path: &Path) -> Result<()> {
+        fs::remove_file(path).map_err(|error| self.throw_io(error, "unlink", Some(path), None))
+    }
     fn delete(&self, session: L<'a>) -> Result<bool> {
-        let file = self.file(session, false)?;
-        self.forget(file)?;
-        let deleted = (|| {
-            self.fs(c"unlinkSync", &[file])?;
-            let remove_visibility = (|| self.fs(c"unlinkSync", &[self.file(session, true)?]))();
-            if let Err(error) = remove_visibility {
-                let error = caught(file, error)?;
-                if !missing(error, false)? {
-                    return Err(error.throw_error());
-                }
+        let file = self.path_for(session, false)?;
+        self.forget(&file)?;
+        if let Err(error) = self.unlink(&file) {
+            let error = caught(self.anchor, error)?;
+            if missing(error, false)? {
+                return Ok(false);
             }
-            Ok(true)
+            return Err(error.throw_error());
+        }
+        // 内层 catch：视图路径转换失败与 unlink 的 ENOENT 同属一次忽略。
+        let visibility = (|| {
+            let file = self.path_for(session, true)?;
+            self.unlink(&file)
         })();
-        match deleted {
-            Ok(value) => Ok(value),
-            Err(error) => {
-                let error = caught(file, error)?;
-                if missing(error, true)? {
-                    Ok(false)
-                } else {
-                    Err(error.throw_error())
-                }
+        if let Err(error) = visibility {
+            let error = caught(self.anchor, error)?;
+            if !missing(error, false)? {
+                return Err(error.throw_error());
             }
         }
+        Ok(true)
     }
-    fn rename(&self, from: L<'a>, to: L<'a>) -> Result<bool> {
-        let source = self.file(from, false)?;
-        let target = self.file(to, false)?;
-        if !self.fs(c"existsSync", &[source])?.truthy()?
-            || self.fs(c"existsSync", &[target])?.truthy()?
-        {
+    fn rename_session(&self, from: L<'a>, to: L<'a>) -> Result<bool> {
+        let source = self.path_for(from, false)?;
+        let target = self.path_for(to, false)?;
+        if !source.exists() || target.exists() {
             return Ok(false);
         }
         self.ensure_root()?;
-        self.forget(source)?;
-        self.forget(target)?;
+        self.forget(&source)?;
+        self.forget(&target)?;
         let visibility = self.read_visibility(from)?;
         if visibility.truthy()? {
             self.write_visibility(to, visibility)?;
         }
-        self.fs(c"renameSync", &[source, target])?;
+        fs::rename(&source, &target).map_err(|error| {
+            node_fs_error::throw(self.anchor, &error, "rename", Some(&source), Some(&target))
+        })?;
         if visibility.truthy()? {
-            self.fs(c"unlinkSync", &[self.file(from, true)?])?;
+            let file = self.path_for(from, true)?;
+            self.unlink(&file)?;
         }
-        if self.ports.get(c"fsImpl")?.get(c"chmodSync")?.kind()? == sys::ValueType::napi_function {
-            self.fs(c"chmodSync", &[target, number(target, 0o600 as f64)?])?;
-        }
+        set_mode(&target, state_file::FILE_MODE)
+            .map_err(|error| self.throw_io(error, "chmod", Some(&target), None))?;
         Ok(true)
     }
     fn delivery(&self, session: L<'a>, delivery: L<'a>) -> Result<bool> {
@@ -444,7 +610,7 @@ impl<'a> Repository<'a> {
         let messages = match self.read_strict(session, false) {
             Ok(messages) => messages,
             Err(error) => {
-                let error = caught(session, error)?;
+                let error = caught(self.anchor, error)?;
                 if missing(error, true)? {
                     return Ok(false);
                 }
@@ -463,27 +629,36 @@ impl<'a> Repository<'a> {
         Ok(false)
     }
     fn list(&self) -> Result<L<'a>> {
-        let names = match self.fs(c"readdirSync", &[self.ports.get(c"root")?]) {
-            Ok(names) => names,
+        let mut names: Vec<String> = Vec::new();
+        match fs::read_dir(&self.owner.root) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry.map_err(|error| {
+                        self.throw_io(error, "scandir", Some(&self.owner.root), None)
+                    })?;
+                    names.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
             Err(error) => {
-                let error = caught(self.anchor, error)?;
-                if missing(error, true)? {
+                if error.kind() == std::io::ErrorKind::NotFound {
                     return array(self.anchor);
                 }
-                return Err(error.throw_error());
-            }
-        };
-        let ids = array(self.anchor)?;
-        for i in 0..length(names)? {
-            let name = names.element(i as u32)?;
-            if name.kind()? == sys::ValueType::napi_string
-                && method(name, c"endsWith", &[text(name, ".json")?])?.truthy()?
-            {
-                let id = method(name, c"slice", &[number(name, 0.0)?, number(name, -5.0)?])?;
-                method(ids, c"push", &[id])?;
+                return Err(self.throw_io(error, "scandir", Some(&self.owner.root), None));
             }
         }
-        method(ids, c"sort", &[])
+        let listed = array(self.anchor)?;
+        for name in names {
+            let name = text(self.anchor, &name)?;
+            if method(name, c"endsWith", &[text(self.anchor, ".json")?])?.truthy()? {
+                let id = method(
+                    name,
+                    c"slice",
+                    &[number(self.anchor, 0.0)?, number(self.anchor, -5.0)?],
+                )?;
+                method(listed, c"push", &[id])?;
+            }
+        }
+        method(listed, c"sort", &[])
     }
     fn run(&self, action: &str, args: L<'a>) -> Result<L<'a>> {
         let session = args.element(0)?;
@@ -506,7 +681,9 @@ impl<'a> Repository<'a> {
                 session.from_value(&J::Undefined)?
             }
             "deleteSession" => session.from_value(&J::Bool(self.delete(session)?))?,
-            "renameSession" => session.from_value(&J::Bool(self.rename(session, value)?))?,
+            "renameSession" => {
+                session.from_value(&J::Bool(self.rename_session(session, value)?))?
+            }
             "hasPersistedDelivery" => {
                 session.from_value(&J::Bool(self.delivery(session, value)?))?
             }
@@ -522,25 +699,17 @@ impl RustChatHistoryRepository {
     pub fn new(env: Env, anchor: Unknown<'_>) -> Result<Self> {
         let anchor = L::new(&env, anchor);
         let ports = anchor.get(c"ports")?;
-        let mut can_append = ports.get(c"appendEnabled")?.truthy()?;
-        if can_append {
-            for name in [
-                c"openSync",
-                c"writeSync",
-                c"closeSync",
-                c"statSync",
-                c"truncateSync",
-            ] {
-                if ports.get(c"fsImpl")?.get(name)?.kind()? != sys::ValueType::napi_function {
-                    can_append = false;
-                    break;
-                }
-            }
-        }
+        let root = ports
+            .get(c"root")?
+            .string()?
+            .ok_or_else(|| Error::from_reason("history repository root must be a string"))?
+            .to_string_lossy();
+        let can_append = ports.get(c"appendEnabled")?.truthy()?;
         Ok(Self {
             values: Values::new(anchor)?,
             written: RefCell::default(),
             can_append,
+            root: PathBuf::from(root),
         })
     }
     #[napi]
@@ -557,7 +726,6 @@ impl RustChatHistoryRepository {
             owner: self,
             env: &env,
             anchor,
-            ports: anchor.get(c"ports")?,
         };
         let result = repository.run(&action, L::new(&env, args))?;
         self.values.drain(&env)?;
