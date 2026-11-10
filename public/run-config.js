@@ -1158,7 +1158,15 @@
       const value = clean(providerId);
       const cli = nativeLineCli(value);
       if (cli === 'opencode') {
-        return aiApi.openCodeNativeProviders().some(item => item.value === value);
+        // OpenCode 的模型目录是 1 小时 TTL 的本地缓存；冷缓存（还没加载 /
+        // opencode 暂时不可用）不代表这条原生线路没了。只有缓存是热的、且确实
+        // 查不到这条线路（比如在 opencode 登录里删掉了那个 provider）才判
+        // 「不可用」。比对走 openCodeNativeIdKey：`opencodego` ↔ `opencode-go`
+        // 指同一条线路。
+        const list = aiApi.openCodeNativeProviders();
+        if (!list.length) return true;
+        const key = aiApi.openCodeNativeIdKey(aiApi.openCodeNativeProviderOf(value));
+        return list.some(item => aiApi.openCodeNativeIdKey(aiApi.openCodeNativeProviderOf(item.value)) === key);
       }
       if (cli) {
         const list = aiApi.vendorNativeProvidersFor ? aiApi.vendorNativeProvidersFor(cli) : [];
