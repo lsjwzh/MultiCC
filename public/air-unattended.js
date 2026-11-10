@@ -1,11 +1,11 @@
 'use strict';
 
-// Air「新任务」里的无人值守开关 —— 目标 / 判断标准 / 轮次上限 + 辅助 AI 补全判断标准。
+// Air「新任务」里的无人值守开关 —— 目标 / 判断标准 / 最长值守时间 + 辅助 AI 补全判断标准。
 // 这里是创建入口，不是会话中的接管面板（那个在 public/chat-unattended.js）：
-// 打开开关后，第一条消息体带上 unattended: { goal?, criteria?, maxRounds? }，
+// 打开开关后，第一条消息体带上 unattended: { goal?, criteria?, maxDurationMinutes }，
 // 由服务端在任务第一条消息落库时建 record.unattended（契约 docs/unattended-mode.md）。
 //   目标留空 = 用任务正文；标准可选（每行一条，最多 12 条、每条 300 字）；
-//   轮次 1..200，服务端缺省 30。
+//   最长值守时间 = 数字 + 单位（分钟/小时），默认 2 小时，夹在 5 分钟 – 24 小时。
 // 补全标准复用既有 POST /api/goal/precheck { task }，把返回的 criteria 填进文本框。
 // 样式也归这个文件：air.css 不认识 quick-unattended-*，而这块只有本文件是主人。
 (function initAirUnattended(root) {
@@ -15,8 +15,9 @@
   const MAX_CRITERIA = 12;
   const CRITERION_MAX = 300;
   const GOAL_MAX = 2000;
-  const ROUNDS_MAX = 200;
-  const ROUNDS_DEFAULT = 30;
+  const DURATION_DEFAULT_MINUTES = 120;
+  const DURATION_MIN_MINUTES = 5;
+  const DURATION_MAX_MINUTES = 1440;
 
   let context = null;
   let styleNode = null;
@@ -53,8 +54,17 @@
       }
       .quick-unattended-field > textarea:focus { border-color: var(--accent); outline: none; }
       .quick-unattended-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-      .quick-unattended-rounds { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
-      .quick-unattended-rounds > input { width: 72px; }
+      .quick-unattended-duration { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+      .quick-unattended-duration > input { width: 64px; }
+      .quick-unattended-duration > select {
+        padding: 3px 6px;
+        border: 1px solid var(--hairline);
+        border-radius: 7px;
+        background: #fff;
+        color: var(--text);
+        font: inherit;
+        font-size: 11.5px;
+      }
       .quick-unattended-draft {
         padding: 5px 10px;
         border: 1px solid var(--hairline);
@@ -86,7 +96,8 @@
   const box = () => el('quick-unattended');
   const goalInput = () => el('quick-unattended-goal');
   const criteriaInput = () => el('quick-unattended-criteria');
-  const roundsInput = () => el('quick-unattended-rounds');
+  const durationInput = () => el('quick-unattended-duration');
+  const durationUnit = () => el('quick-unattended-duration-unit');
   const draftBtn = () => el('quick-unattended-draft');
   const statusEl = () => el('quick-unattended-status');
 
@@ -107,10 +118,21 @@
     node.className = 'quick-unattended-status' + (kind ? ' ' + kind : '');
   }
 
-  function clampRounds(value) {
-    const parsed = parseInt(value, 10);
-    if (!Number.isFinite(parsed)) return ROUNDS_DEFAULT;
-    return Math.max(1, Math.min(ROUNDS_MAX, parsed));
+  // 数字 × 单位（小时=60）→ 分钟，夹在 5..1440；空/非法按默认 2 小时。
+  function collectDurationMinutes() {
+    const parsed = parseInt(durationInput() && durationInput().value, 10);
+    if (!Number.isFinite(parsed)) return DURATION_DEFAULT_MINUTES;
+    const perUnit = durationUnit() && durationUnit().value === 'h' ? 60 : 1;
+    return Math.max(DURATION_MIN_MINUTES, Math.min(DURATION_MAX_MINUTES, parsed * perUnit));
+  }
+
+  // 回填：整小时显示小时，否则显示分钟。
+  function setDurationDisplay(minutes) {
+    const total = Math.max(DURATION_MIN_MINUTES, Math.min(DURATION_MAX_MINUTES,
+      Number.isFinite(Number(minutes)) ? Number(minutes) : DURATION_DEFAULT_MINUTES));
+    const whole = total >= 60 && total % 60 === 0;
+    if (durationUnit()) durationUnit().value = whole ? 'h' : 'm';
+    if (durationInput()) durationInput().value = String(whole ? total / 60 : total);
   }
 
   function parseCriteria(text) {
@@ -131,7 +153,7 @@
     return {
       ...(goal ? { goal } : {}),
       ...(criteria.length ? { criteria } : {}),
-      maxRounds: clampRounds(roundsInput() && roundsInput().value),
+      maxDurationMinutes: collectDurationMinutes(),
     };
   }
 
@@ -139,7 +161,7 @@
     if (toggle()) toggle().checked = false;
     if (goalInput()) goalInput().value = '';
     if (criteriaInput()) criteriaInput().value = '';
-    if (roundsInput()) roundsInput().value = String(ROUNDS_DEFAULT);
+    setDurationDisplay(DURATION_DEFAULT_MINUTES);
     setStatus('');
     syncVisible();
   }
@@ -195,9 +217,9 @@
       syncVisible();
     };
     if (draftBtn()) draftBtn().onclick = () => void draft();
-    if (roundsInput()) {
-      roundsInput().addEventListener('change', () => {
-        roundsInput().value = String(clampRounds(roundsInput().value));
+    if (durationInput()) {
+      durationInput().addEventListener('change', () => {
+        setDurationDisplay(collectDurationMinutes());
       });
     }
     syncVisible();

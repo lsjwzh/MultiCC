@@ -248,10 +248,10 @@ test('unattended arming rides the first message and only real human text pauses 
   });
   const first = await host.deliverSessionMessage('worker', 'ship it', {
     clientMsgId: 'unattended-1',
-    unattended: { maxRounds: 5 },
+    unattended: { maxDurationMinutes: 90 },
   });
   assert.equal(first.ok, true);
-  assert.deepEqual(armed, [{ id: 'worker', spec: { maxRounds: 5 }, text: 'ship it' }]);
+  assert.deepEqual(armed, [{ id: 'worker', spec: { maxDurationMinutes: 90 }, text: 'ship it' }]);
   assert.deepEqual(noted, [], 'the first message arms the supervisor; it must not pause its own start');
 
   // Every host-authored class must NOT pause the supervisor:

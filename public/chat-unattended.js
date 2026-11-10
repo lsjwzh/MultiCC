@@ -17,7 +17,14 @@
   const MAX_CRITERIA = 12;
   const CRITERION_MAX_LENGTH = 300;
   const GOAL_MAX_LENGTH = 2000;
-  const ROUNDS_HARD_MAX = 200;
+  // 服务端 limits 缺失时（老服务端 / 测试夹具）的兜底：最长值守时间 5 分钟 – 24 小时。
+  const DURATION_LIMITS = Object.freeze({
+    maxDurationMinutesDefault: 120,
+    maxDurationMinutesMin: 5,
+    maxDurationMinutesMax: 1440,
+  });
+  // 剩余时间只按 30 秒刷新，且只在 active 时挂表：定时器不许在终态泄漏。
+  const TICK_INTERVAL_MS = 30000;
   // 预检是一次真 Aux 推理，服务端 owns 等待预算（/api/settings/goal 的 precheckWaitMs）。
   // 这里只加一层兜底，别让客户端 15s 的通用预算先把预检掐死。
   const PRECHECK_FALLBACK_WAIT_MS = 180000;
@@ -69,12 +76,14 @@
     if (!doc || !doc.body || typeof request !== 'function') return null;
 
     let state = null;
-    let limits = { maxRoundsDefault: 30, maxRoundsMax: ROUNDS_HARD_MAX };
+    let limits = { ...DURATION_LIMITS };
     let mounted = false;
     let panelOpen = false;
     let formDirty = false;
     let busy = false;
     let precheckBusy = false;
+    let tickTimer = null;
+    const tickMs = Number(opts.tickMs) > 0 ? Number(opts.tickMs) : TICK_INTERVAL_MS;
     // 服务端拥有预检的等待预算（/api/settings/goal 的 precheckWaitMs）。客户端只读
     // 它，再加一点余量，让服务端自己的 AUX_TIMEOUT 先到，而不是被通用 15s 预算掐死。
     // 读不到（老服务端 / 网络抖）才用兜底值。
@@ -112,6 +121,9 @@
 
     const root = el('div', 'unat-root');
     const scrim = el('div', 'unat-scrim');
+    // 遮罩必须和面板一样初始隐藏：它是全屏 pointer-events:auto 的，一旦可见就会
+    // 盖住整页并吃掉所有点击（close() 在面板没开时直接返回，救不了它）。
+    scrim.hidden = true;
     const panel = el('section', 'unat-panel');
     panel.id = 'unattended-panel';
     panel.hidden = true;
@@ -143,6 +155,10 @@
     evaluating.hidden = true;
     const roundLabel = el('span', 'unat-round');
     statusLine.append(statusLabel, evaluating, roundLabel);
+    // active 时补一行「截止 HH:MM」：剩余时间已经在上面的 roundLabel 里，这一行
+    // 是给需要对齐日程的人看的绝对时间。终态隐藏。
+    const deadlineLine = el('p', 'unat-deadline');
+    deadlineLine.hidden = true;
     const humanReason = el('p', 'unat-human');
     humanReason.hidden = true;
     // pausedBy（v2）：用户接管 / 输入触发 / 取消，三种暂停原因都落在状态块里。
@@ -150,7 +166,7 @@
     pausedLine.hidden = true;
     const verdictLine = el('p', 'unat-verdict');
     verdictLine.hidden = true;
-    statusCard.append(statusLine, humanReason, pausedLine, verdictLine);
+    statusCard.append(statusLine, deadlineLine, humanReason, pausedLine, verdictLine);
 
     const goalField = el('label', 'unat-field');
     goalField.append(el('span', 'unat-label', tr('unattendedGoal')));
@@ -169,17 +185,26 @@
     addCriterion.type = 'button';
     criteriaField.append(criteriaLabel, criteriaHint, criteriaList, addCriterion);
 
-    const roundsField = el('label', 'unat-field unat-rounds-field');
-    roundsField.append(el('span', 'unat-label', tr('unattendedMaxRounds')));
-    const roundsInput = el('input', 'unat-rounds');
-    roundsInput.type = 'number';
-    roundsInput.min = '1';
-    roundsInput.max = String(ROUNDS_HARD_MAX);
-    roundsInput.value = '30';
-    const roundsHint = el('span', 'unat-hint', tr('unattendedMaxRoundsRange'));
-    const roundsRow = el('span', 'unat-rounds-row');
-    roundsRow.append(roundsInput, roundsHint);
-    roundsField.append(roundsRow);
+    // 最长值守时间：数字 + 单位选择（分钟/小时）。旧版的「轮次上限」已经退场，
+    // 服务端只认 maxDurationMinutes；面板默认 2 小时，按 limits 夹取。
+    const durationField = el('label', 'unat-field unat-duration-field');
+    durationField.append(el('span', 'unat-label', tr('unattendedMaxDuration')));
+    const durationInput = el('input', 'unat-duration');
+    durationInput.type = 'number';
+    durationInput.min = '1';
+    durationInput.step = '1';
+    durationInput.value = '2';
+    const durationUnit = el('select', 'unat-duration-unit');
+    const durationHourOption = el('option', '', tr('unattendedDurationUnitHours'));
+    durationHourOption.value = 'h';
+    const durationMinuteOption = el('option', '', tr('unattendedDurationUnitMinutes'));
+    durationMinuteOption.value = 'm';
+    durationUnit.append(durationHourOption, durationMinuteOption);
+    durationUnit.value = 'h';
+    const durationHint = el('span', 'unat-hint', tr('unattendedMaxDurationRange'));
+    const durationRow = el('span', 'unat-duration-row');
+    durationRow.append(durationInput, durationUnit, durationHint);
+    durationField.append(durationRow);
 
     const draftBtn = el('button', 'unat-draft', tr('unattendedDraftCriteria'));
     draftBtn.type = 'button';
@@ -194,7 +219,7 @@
     const errorLine = el('p', 'unat-error');
     errorLine.hidden = true;
 
-    body.append(statusCard, goalField, criteriaField, roundsField, draftBtn, precheckBox, historyBox, errorLine);
+    body.append(statusCard, goalField, criteriaField, durationField, draftBtn, precheckBox, historyBox, errorLine);
 
     const footer = el('div', 'unat-actions');
     const startBtn = el('button', 'unat-primary', tr('unattendedStart'));
@@ -243,14 +268,106 @@
       return key ? tr(key) : '';
     }
 
-    // banner 的「为什么暂停」：需要人工时优先给 humanReason，其余看 pausedBy。
+    // banner 的「为什么暂停」：需要人工时优先给 humanReason；到时间时给
+    // 「已达到最长值守时间」；其余看 pausedBy。
     function bannerReasonText() {
       const status = state && state.status;
       if (status === 'needs_human') {
         const reason = String(state.lastVerdict?.humanReason || state.lastVerdict?.reason || '');
         return reason ? tr('unattendedHumanReason', { reason }) : statusWord();
       }
+      if (status === 'exhausted') return exhaustedReasonText();
       return pausedByText();
+    }
+
+    // 到时间退场：服务端会写一条 human reason「已达到最长值守时间」。中文原文在
+    // 英文界面里会露中文，所以认识这句（以及旧的「轮次用尽」）就换成本地文案；
+    // 其它原因原样展示。
+    function exhaustedReasonText() {
+      const raw = String((state && (state.lastVerdict?.humanReason || state.lastVerdict?.reason)) || '');
+      if (!raw || /已达到最长值守时间|轮次用尽|rounds?\s*(?:exhausted|run out)/i.test(raw)) {
+        return tr('unattendedMaxDurationReached');
+      }
+      return raw;
+    }
+
+    // ── 剩余时间 / 截止时间 ──────────────────────────────────────────────────
+    // 契约的主时钟是 deadlineAt（epoch ms）；老服务端只给 startedAt + 时长时按
+    // 二者推算，别让面板因此空着。没有 deadline 的老状态就只显示判定次数。
+    function deadlineMs() {
+      if (!state) return 0;
+      const direct = Number(state.deadlineAt);
+      if (Number.isFinite(direct) && direct > 0) return direct;
+      const started = Number(state.startedAt);
+      const minutes = Number(state.maxDurationMinutes);
+      if (Number.isFinite(started) && started > 0 && Number.isFinite(minutes) && minutes > 0) {
+        return started + minutes * 60000;
+      }
+      return 0;
+    }
+
+    // 紧凑格式：1小时20分 / 45分 / <1分。向下取整，避免把「还剩 59 秒」写成 1分。
+    function formatRemaining(ms) {
+      if (!Number.isFinite(ms)) return '';
+      const totalMinutes = Math.floor(ms / 60000);
+      if (totalMinutes < 1) return tr('unattendedRemainingLessMinute');
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      if (hours > 0) {
+        return minutes > 0
+          ? tr('unattendedRemainingHourMinute', { hours, minutes })
+          : tr('unattendedRemainingHour', { hours });
+      }
+      return tr('unattendedRemainingMinute', { minutes });
+    }
+
+    function remainingText() {
+      const deadline = deadlineMs();
+      return deadline ? formatRemaining(deadline - Date.now()) : '';
+    }
+
+    function clockText(epochMs) {
+      const date = new Date(epochMs);
+      return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
+    }
+
+    function activeBannerText() {
+      const remaining = remainingText();
+      return remaining
+        ? tr('unattendedBannerActive', { remaining })
+        : tr('unattendedBannerActiveNoTime');
+    }
+
+    // 一个 30 秒定时器，只在 active 且有 deadline 时存在；终态立刻清掉。
+    // 它只改剩余时间那几处文本，不整块 render（否则会打断正在输入的焦点）。
+    function renderTiming() {
+      const active = !!(state && state.status === 'active');
+      if (state) {
+        const rounds = Number(state.rounds) || 0;
+        const remaining = active ? remainingText() : '';
+        roundLabel.textContent = remaining
+          ? tr('unattendedStatusMeta', { rounds, remaining })
+          : tr('unattendedRoundsOnly', { rounds });
+        roundLabel.hidden = false;
+      } else {
+        roundLabel.textContent = '';
+        roundLabel.hidden = true;
+      }
+      const clock = active && deadlineMs() ? clockText(deadlineMs()) : '';
+      deadlineLine.hidden = !clock;
+      deadlineLine.textContent = clock ? tr('unattendedDeadline', { time: clock }) : '';
+      if (active) bannerText.textContent = activeBannerText();
+      renderFab();
+    }
+
+    function syncTimer() {
+      const shouldTick = !!(state && state.status === 'active' && deadlineMs());
+      if (shouldTick && !tickTimer) {
+        tickTimer = win.setInterval(renderTiming, tickMs);
+      } else if (!shouldTick && tickTimer) {
+        win.clearInterval(tickTimer);
+        tickTimer = null;
+      }
     }
 
     function position() {
@@ -279,7 +396,9 @@
       fab.className = 'unat-fab unat-state-' + current;
       fab.classList.toggle('unat-evaluating', !!state?.evaluating);
       fabIcon.textContent = ICON[current] || ICON.idle;
+      const remaining = state && state.status === 'active' ? remainingText() : '';
       const label = tr('unattendedFabTooltip') + ' · ' + statusWord()
+        + (remaining ? ' · ' + tr('unattendedRemaining', { remaining }) : '')
         + (state?.evaluating ? ' · ' + tr('unattendedJudging') : '');
       fab.title = label;
       fab.setAttribute('aria-label', label);
@@ -289,20 +408,15 @@
       statusLabel.textContent = statusWord();
       statusLabel.className = 'unat-status-label unat-status-' + (state && state.status ? state.status : 'idle');
       evaluating.hidden = !(state && state.evaluating);
-      if (state) {
-        roundLabel.textContent = tr('unattendedRoundProgress', {
-          round: Number(state.rounds) || 0,
-          max: Number(state.maxRounds) || limits.maxRoundsDefault,
-        });
-        roundLabel.hidden = false;
-      } else {
-        roundLabel.textContent = '';
-        roundLabel.hidden = true;
-      }
+      renderTiming();
       const needsHuman = state && state.status === 'needs_human';
-      const reason = needsHuman ? String(state.lastVerdict?.humanReason || state.lastVerdict?.reason || '') : '';
+      const expired = state && state.status === 'exhausted';
+      const reason = needsHuman
+        ? String(state.lastVerdict?.humanReason || state.lastVerdict?.reason || '')
+        : (expired ? exhaustedReasonText() : '');
       humanReason.hidden = !reason;
-      humanReason.textContent = reason ? tr('unattendedHumanReason', { reason }) : '';
+      humanReason.textContent = !reason ? ''
+        : (needsHuman ? tr('unattendedHumanReason', { reason }) : reason);
       const paused = pausedByText();
       pausedLine.hidden = !paused;
       pausedLine.textContent = paused;
@@ -343,9 +457,11 @@
       updateBtn.hidden = !(state && EDITABLE.has(status));
       stopBtn.hidden = !(state && EDITABLE.has(status));
       resumeBtn.hidden = !(state && RESUMABLE.has(status));
-      for (const button of [startBtn, updateBtn, stopBtn, resumeBtn]) button.disabled = busy;
+      for (const button of [startBtn, updateBtn, stopBtn, resumeBtn]) button.disabled = busy || precheckBusy;
       draftBtn.disabled = busy || precheckBusy;
       addCriterion.disabled = busy;
+      durationInput.disabled = busy || precheckBusy;
+      durationUnit.disabled = busy || precheckBusy;
     }
 
     // ── 输入锁 + 输入栏上方 banner ────────────────────────────────────────────
@@ -371,10 +487,7 @@
       banner.classList.toggle('unat-banner-paused', !active && resumable);
       bannerBtn.disabled = busy;
       if (active) {
-        bannerText.textContent = tr('unattendedBannerActive', {
-          round: Number(state.rounds) || 0,
-          max: Number(state.maxRounds) || limits.maxRoundsDefault,
-        });
+        bannerText.textContent = activeBannerText();
         bannerSpinner.hidden = !state.evaluating;
         bannerReason.hidden = true;
         bannerReason.textContent = '';
@@ -405,15 +518,17 @@
       renderStatus();
       renderActions();
       renderBanner();
+      syncTimer();
       position();
       if (syncForm) {
         goalInput.value = state && state.goal ? String(state.goal) : '';
         const criteria = state && Array.isArray(state.criteria) ? state.criteria : [];
         renderCriteria(criteria.length ? criteria : ['']);
-        roundsInput.value = String(
-          state && state.maxRounds ? state.maxRounds : (limits.maxRoundsDefault || 30),
+        setDurationFromMinutes(
+          state && state.maxDurationMinutes
+            ? Number(state.maxDurationMinutes)
+            : limits.maxDurationMinutesDefault,
         );
-        roundsInput.max = String(limits.maxRoundsMax || ROUNDS_HARD_MAX);
         formDirty = false;
       }
     }
@@ -454,8 +569,39 @@
 
     // ── form input ──────────────────────────────────────────────────────────
     goalInput.addEventListener('input', () => { formDirty = true; });
-    roundsInput.addEventListener('input', () => { formDirty = true; });
+    durationInput.addEventListener('input', () => { formDirty = true; });
+    durationUnit.addEventListener('change', () => { syncDurationBounds(); formDirty = true; });
     addCriterion.addEventListener('click', () => { addCriterionRow(''); formDirty = true; });
+
+    function durationUnitMinutes() { return durationUnit.value === 'h' ? 60 : 1; }
+
+    // 输入框的 min/max 跟着单位走（小时模式下 1–24），发送前再按 limits 夹一次。
+    function syncDurationBounds() {
+      const perUnit = durationUnitMinutes();
+      durationInput.min = String(Math.max(1, Math.ceil(limits.maxDurationMinutesMin / perUnit)));
+      durationInput.max = String(Math.max(1, Math.floor(limits.maxDurationMinutesMax / perUnit)));
+    }
+
+    function collectDurationMinutes() {
+      const parsed = parseInt(durationInput.value, 10);
+      if (!Number.isFinite(parsed)) return limits.maxDurationMinutesDefault;
+      return clampInt(parsed * durationUnitMinutes(), limits.maxDurationMinutesMin,
+        limits.maxDurationMinutesMax, limits.maxDurationMinutesDefault);
+    }
+
+    // 从服务端状态回填：整小时用小时显示（2 小时），否则用分钟（90 分）。
+    function setDurationFromMinutes(minutes) {
+      const total = clampInt(minutes, limits.maxDurationMinutesMin, limits.maxDurationMinutesMax,
+        limits.maxDurationMinutesDefault);
+      if (total >= 60 && total % 60 === 0) {
+        durationUnit.value = 'h';
+        durationInput.value = String(total / 60);
+      } else {
+        durationUnit.value = 'm';
+        durationInput.value = String(total);
+      }
+      syncDurationBounds();
+    }
 
     function collectCriteria() {
       const values = [...criteriaList.querySelectorAll('input[data-criterion]')]
@@ -471,10 +617,10 @@
       return {
         goal,
         criteria: collectCriteria(),
-        maxRounds: clampInt(roundsInput.value, 1, limits.maxRoundsMax || ROUNDS_HARD_MAX,
-          limits.maxRoundsDefault || 30),
+        maxDurationMinutes: collectDurationMinutes(),
       };
     }
+    syncDurationBounds();
 
     // ── API ─────────────────────────────────────────────────────────────────
     function sessionPath() {
@@ -495,10 +641,24 @@
 
     function applyPayload(data, syncForm) {
       if (data && data.limits && typeof data.limits === 'object') {
-        limits = {
-          maxRoundsDefault: Number(data.limits.maxRoundsDefault) || limits.maxRoundsDefault,
-          maxRoundsMax: Number(data.limits.maxRoundsMax) || limits.maxRoundsMax,
+        const next = {
+          maxDurationMinutesDefault: Number(data.limits.maxDurationMinutesDefault),
+          maxDurationMinutesMin: Number(data.limits.maxDurationMinutesMin),
+          maxDurationMinutesMax: Number(data.limits.maxDurationMinutesMax),
         };
+        // 缺 limits（老服务端）就保留兜底值；maxDurationMinutes* 的 limits 是新的
+        // 唯一一组，旧的 maxRounds* 即使还在也不再读。
+        limits = {
+          maxDurationMinutesDefault: Number.isFinite(next.maxDurationMinutesDefault) && next.maxDurationMinutesDefault > 0
+            ? next.maxDurationMinutesDefault : DURATION_LIMITS.maxDurationMinutesDefault,
+          maxDurationMinutesMin: Number.isFinite(next.maxDurationMinutesMin) && next.maxDurationMinutesMin > 0
+            ? next.maxDurationMinutesMin : DURATION_LIMITS.maxDurationMinutesMin,
+          maxDurationMinutesMax: Number.isFinite(next.maxDurationMinutesMax) && next.maxDurationMinutesMax > 0
+            ? next.maxDurationMinutesMax : DURATION_LIMITS.maxDurationMinutesMax,
+        };
+        if (limits.maxDurationMinutesMax < limits.maxDurationMinutesMin) {
+          limits.maxDurationMinutesMax = limits.maxDurationMinutesMin;
+        }
       }
       state = data && data.unattended != null ? data.unattended : null;
       if (!panelOpen) formDirty = false;
@@ -543,7 +703,7 @@
       }
     }
 
-    function start() {
+    function startWithForm() {
       const form = collectForm();
       if (!form.goal) {
         showError(tr('unattendedGoalRequired'));
@@ -551,6 +711,49 @@
         return;
       }
       void act('start', { ...form, evaluateNow: true });
+    }
+
+    // 启动前自动预检（只有 start 走这条路，update/resume 不预检）：目标不清楚或
+    // 判断标准缺失时先给一张可编辑的「目标预检」卡，让用户采用建议或按原样启动。
+    async function start() {
+      if (busy || precheckBusy) return;
+      const form = collectForm();
+      if (!form.goal) {
+        showError(tr('unattendedGoalRequired'));
+        goalInput.focus();
+        return;
+      }
+      precheckBusy = true;
+      showError('');
+      closePrecheck();
+      startBtn.textContent = tr('unattendedCheckingGoal');
+      render(false);
+      let launch = false;
+      try {
+        if (!precheckWaitMs) await loadPrecheckBudget();
+        const data = await request('/api/goal/precheck', {
+          method: 'POST',
+          json: { task: form.goal },
+          timeoutMs: goalPrecheckTimeoutMs(),
+        });
+        if (data && data.ok === false) throw data;
+        const issues = Array.isArray(data && data.issues) ? data.issues.filter(Boolean) : [];
+        if (data && data.verdict === 'ok' && !issues.length && form.criteria.length) {
+          // (a) 目标清晰、标准也在：直接启动，不打断。
+          launch = true;
+        } else {
+          // (b) 有疑点 / 缺标准：不启动，展示可编辑的建议与三个动作。
+          renderPrecheck(data || {}, { mode: 'start', criteria: form.criteria });
+        }
+      } catch (_) {
+        // (c) 预检挂了也不能把人堵死：给「仍然启动 / 取消」，绝不静默启动。
+        renderPrecheckUnavailable();
+      } finally {
+        precheckBusy = false;
+        startBtn.textContent = tr('unattendedStart');
+        render(false);
+      }
+      if (launch) await act('start', { ...form, evaluateNow: true });
     }
 
     function update() {
@@ -564,21 +767,106 @@
     }
 
     // ── precheck ────────────────────────────────────────────────────────────
-    function renderPrecheck(data) {
-      precheckBox.replaceChildren();
-      precheckBox.hidden = false;
+    // 预检结果卡：手动「AI 补全判断标准」与启动前自动预检共用同一套渲染。
+    //   mode=draft：只展示结论 + 「采用改写版」（标准已直接填进上方各行）。
+    //   mode=start：展示结论 + 可编辑的建议目标/标准 + 三个动作。
+    function precheckIssueList(data, criteria) {
+      const issues = Array.isArray(data && data.issues) ? data.issues.filter(Boolean).map(String) : [];
+      const has = text => issues.some(item => item.includes(text));
+      if (!issues.length && data && data.verdict !== 'ok') issues.push(tr('unattendedGoalUnclear'));
+      if (!criteria.length && !has(tr('unattendedMissingCriteria'))) {
+        issues.push(tr('unattendedMissingCriteria'));
+      }
+      return issues;
+    }
+
+    function precheckSummary(data) {
       const ok = data && data.verdict === 'ok';
       const summary = el('div', 'unat-precheck-verdict ' + (ok ? 'ok' : 'warn'),
         ok ? tr('unattendedPrecheckOk') : tr('unattendedPrecheckWarn'));
-      precheckBox.append(summary);
       if (data && data.score != null) {
         summary.append(' · ' + tr('unattendedPrecheckScore', { score: data.score }));
       }
-      const issues = Array.isArray(data && data.issues) ? data.issues.filter(Boolean) : [];
+      return summary;
+    }
+
+    function parseCriteriaText(text) {
+      return String(text || '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .slice(0, MAX_CRITERIA)
+        .map(line => line.slice(0, CRITERION_MAX_LENGTH));
+    }
+
+    function closePrecheck() {
+      precheckBox.hidden = true;
+      precheckBox.replaceChildren();
+    }
+
+    function adoptRecommendation(goalNode, criteriaNode) {
+      const goal = String(goalNode.value || '').trim().slice(0, GOAL_MAX_LENGTH);
+      if (!goal) {
+        showError(tr('unattendedGoalRequired'));
+        goalNode.focus();
+        return;
+      }
+      void act('start', {
+        goal,
+        criteria: parseCriteriaText(criteriaNode.value),
+        maxDurationMinutes: collectDurationMinutes(),
+        evaluateNow: true,
+      });
+    }
+
+    function renderStartCard(data, criteria, revised) {
+      const goalText = revised || String(goalInput.value || '').trim();
+      const suggested = Array.isArray(data && data.criteria) && data.criteria.length
+        ? data.criteria
+        : criteria;
+      const goalField = el('label', 'unat-field');
+      goalField.append(el('span', 'unat-label', tr('unattendedRecommendGoal')));
+      const goalNode = el('textarea', 'unat-revised-goal');
+      goalNode.rows = 2;
+      goalNode.maxLength = GOAL_MAX_LENGTH;
+      goalNode.value = String(goalText || '').slice(0, GOAL_MAX_LENGTH);
+      goalField.append(goalNode);
+      const criteriaField = el('label', 'unat-field');
+      criteriaField.append(el('span', 'unat-label', tr('unattendedRecommendCriteria')));
+      const criteriaNode = el('textarea', 'unat-revised-criteria');
+      criteriaNode.rows = 3;
+      criteriaNode.value = parseCriteriaText(suggested.join('\n')).join('\n');
+      criteriaField.append(criteriaNode);
+      const actions = el('div', 'unat-precheck-actions');
+      const adopt = el('button', 'unat-precheck-adopt unat-primary', tr('unattendedPrecheckAdopt'));
+      const original = el('button', 'unat-precheck-original', tr('unattendedPrecheckStartOriginal'));
+      const cancel = el('button', 'unat-precheck-cancel', tr('unattendedPrecheckCancel'));
+      for (const button of [adopt, original, cancel]) button.type = 'button';
+      // 注意：这里不能按 precheckBusy 禁用 —— 这张卡就是预检返回时（busy 仍为 true）
+      // 画出来的，禁用会让主按钮永远点不动。重复点击由 start/act 的 busy 守卫兜住。
+      adopt.onclick = () => adoptRecommendation(goalNode, criteriaNode);
+      original.onclick = () => { closePrecheck(); startWithForm(); };
+      cancel.onclick = closePrecheck;
+      actions.append(adopt, original, cancel);
+      precheckBox.append(goalField, criteriaField, actions);
+    }
+
+    function renderPrecheck(data, options) {
+      const mode = options && options.mode === 'start' ? 'start' : 'draft';
+      const criteria = options && Array.isArray(options.criteria) ? options.criteria : collectCriteria();
+      precheckBox.replaceChildren();
+      precheckBox.hidden = false;
+      if (mode === 'start') precheckBox.append(el('div', 'unat-precheck-title', tr('unattendedPrecheckTitle')));
+      precheckBox.append(precheckSummary(data));
+      const issues = precheckIssueList(data, criteria);
       if (issues.length) {
         precheckBox.append(el('p', 'unat-precheck-issues', tr('unattendedPrecheckIssues', { items: issues.join('；') })));
       }
       const revised = data && typeof data.revised === 'string' ? data.revised.trim() : '';
+      if (mode === 'start') {
+        renderStartCard(data, criteria, revised);
+        return;
+      }
       if (revised && revised !== String(goalInput.value || '').trim()) {
         const row = el('div', 'unat-revised');
         row.append(el('span', 'unat-revised-text', revised.slice(0, 600)));
@@ -594,6 +882,23 @@
       }
     }
 
+    // 预检不可用（超时 / 辅助模型故障）：说明情况，给出「仍然启动 / 取消」。
+    function renderPrecheckUnavailable() {
+      precheckBox.replaceChildren();
+      precheckBox.hidden = false;
+      precheckBox.append(el('div', 'unat-precheck-verdict warn', tr('unattendedPrecheckUnavailable')));
+      precheckBox.append(el('p', 'unat-precheck-issues', tr('unattendedPrecheckUnavailableHint')));
+      const actions = el('div', 'unat-precheck-actions');
+      const still = el('button', 'unat-precheck-adopt unat-primary', tr('unattendedStillStart'));
+      const cancel = el('button', 'unat-precheck-cancel', tr('unattendedPrecheckCancel'));
+      still.type = 'button';
+      cancel.type = 'button';
+      still.onclick = () => { closePrecheck(); startWithForm(); };
+      cancel.onclick = closePrecheck;
+      actions.append(still, cancel);
+      precheckBox.append(actions);
+    }
+
     async function draft() {
       if (precheckBusy || busy) return;
       const goal = String(goalInput.value || '').trim();
@@ -606,6 +911,7 @@
       draftBtn.disabled = true;
       draftBtn.textContent = tr('unattendedDrafting');
       showError('');
+      render(false);
       try {
         if (!precheckWaitMs) await loadPrecheckBudget();
         const data = await request('/api/goal/precheck', {
@@ -619,7 +925,7 @@
           renderCriteria(criteria);
           formDirty = true;
         }
-        renderPrecheck(data || {});
+        renderPrecheck(data || {}, { mode: 'draft', criteria: criteria.length ? criteria : collectCriteria() });
       } catch (error) {
         showError(errorMessage(error, 'unattendedDraftFailed'));
       } finally {
@@ -702,12 +1008,29 @@
         state = value == null ? null : value;
         if (!panelOpen) formDirty = false;
         render(!formDirty || !panelOpen);
+        syncTimer();
       },
       refresh: () => refresh(true),
       open,
       close,
       position,
       isOpen: () => panelOpen,
+      // 仅为测试/宿主清理暴露：30 秒倒计时表是否还挂着。
+      isTicking: () => !!tickTimer,
+      destroy() {
+        if (tickTimer) {
+          win.clearInterval(tickTimer);
+          tickTimer = null;
+        }
+        try {
+          fab.remove();
+          root.remove();
+          banner.remove();
+        } catch (_) { /* 节点可能已被宿主移走 */ }
+        mounted = false;
+        state = null;
+        inputLocked = false;
+      },
     });
   }
 

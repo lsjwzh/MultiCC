@@ -402,8 +402,12 @@
                           data-i18n-placeholder="airUnattendedCriteriaPlaceholder"></textarea>
               </label>
               <div class="quick-unattended-row">
-                <label class="quick-unattended-rounds"><span data-i18n="airUnattendedMaxRounds">轮次上限</span>
-                  <input id="quick-unattended-rounds" type="number" value="30" min="1" max="200"></label>
+                <label class="quick-unattended-duration"><span data-i18n="airUnattendedMaxDuration">最长值守时间</span>
+                  <input id="quick-unattended-duration" type="number" value="2" min="1" step="1">
+                  <select id="quick-unattended-duration-unit" aria-label="duration unit">
+                    <option value="h" selected data-i18n="airUnattendedUnitHours">小时</option>
+                    <option value="m" data-i18n="airUnattendedUnitMinutes">分钟</option>
+                  </select></label>
                 <button id="quick-unattended-draft" class="quick-unattended-draft" type="button"
                         data-i18n="airUnattendedDraft">AI 补全判断标准</button>
               </div>

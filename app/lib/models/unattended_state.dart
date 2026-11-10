@@ -3,6 +3,10 @@
 // 会话上只有一份 `record.unattended`；never-used 时服务端给 null。`active` 是唯一
 // 「武装中」的状态，其余都是终态，要 resume/start 才回到 active。
 //
+// 产品决定（2026-11）：不再有「轮次上限」这种说不清的单位，改成**最长值守时间**
+// （maxDurationMinutes + deadlineAt）。`rounds` 只剩信息价值（面板显示「已判定 N
+// 次」），不再参与任何门控；到点后服务端把状态置为 exhausted。
+//
 // 和 classify 的 `goalState` 不是一回事：那边的 achieved/interact 是每轮结果的
 // 子状态，这里的 status 是跨轮次的监督器状态。
 
@@ -92,6 +96,13 @@ class UnattendedStall {
   };
 }
 
+/// 宽容取整数：数字、数字字符串都收；其余给 [fallback]。
+int _intOf(dynamic raw, int fallback) {
+  if (raw is num) return raw.toInt();
+  if (raw is String) return int.tryParse(raw.trim()) ?? fallback;
+  return fallback;
+}
+
 class UnattendedState {
   static const statusActive = 'active';
   static const statusAchieved = 'achieved';
@@ -109,12 +120,21 @@ class UnattendedState {
   static const maxGoalLength = 2000;
   static const maxCriterionLength = 300;
 
+  /// 旧服务端/缺字段时的兜底值守时长（分钟）；limits 会在拿到服务端值后覆盖。
+  static const defaultMaxDurationMinutes = 120;
+
   final String status;
   final String goal;
   final List<String> criteria;
-  final int maxRounds;
+
+  /// 最长值守时间（分钟）。到点后服务端置 exhausted，客户端按 deadlineAt 显示剩余。
+  final int maxDurationMinutes;
   final int rounds;
   final int startedAt;
+
+  /// 起跑时间 + maxDurationMinutes，epoch ms。0 表示服务端没给（旧快照）。
+  final int deadlineAt;
+
   final int updatedAt;
   final UnattendedVerdict? lastVerdict;
   final List<UnattendedHistoryEntry> history;
@@ -130,9 +150,10 @@ class UnattendedState {
     this.status = statusStopped,
     this.goal = '',
     this.criteria = const [],
-    this.maxRounds = 30,
+    this.maxDurationMinutes = defaultMaxDurationMinutes,
     this.rounds = 0,
     this.startedAt = 0,
+    this.deadlineAt = 0,
     this.updatedAt = 0,
     this.lastVerdict,
     this.history = const [],
@@ -155,6 +176,13 @@ class UnattendedState {
   bool get canResume =>
       needsHuman || isExhausted || isStopped || isError;
 
+  /// 距离截止还有多久；没有 deadlineAt（旧服务端 / 从未启动）时返回 null。
+  /// 返回值可以是负数（已过期但服务端状态还没落到 exhausted）。
+  Duration? remaining(int nowMs) {
+    if (deadlineAt <= 0) return null;
+    return Duration(milliseconds: deadlineAt - nowMs);
+  }
+
   static UnattendedState? fromJson(dynamic raw) {
     if (raw is! Map) return null;
     final map = Map<String, dynamic>.from(raw);
@@ -166,14 +194,20 @@ class UnattendedState {
       for (final item in (map['history'] as List?) ?? const [])
         if (UnattendedHistoryEntry.fromJson(item) case final entry?) entry,
     ];
+    // 旧快照里的 maxRounds 直接忽略：轮次上限已经不是产品概念了。
+    final duration = _intOf(
+      map['maxDurationMinutes'],
+      defaultMaxDurationMinutes,
+    );
     return UnattendedState(
       status: (map['status'] ?? statusStopped).toString(),
       goal: (map['goal'] ?? '').toString(),
       criteria: criteria,
-      maxRounds: (map['maxRounds'] as num?)?.toInt() ?? 30,
-      rounds: (map['rounds'] as num?)?.toInt() ?? 0,
-      startedAt: (map['startedAt'] as num?)?.toInt() ?? 0,
-      updatedAt: (map['updatedAt'] as num?)?.toInt() ?? 0,
+      maxDurationMinutes: duration > 0 ? duration : defaultMaxDurationMinutes,
+      rounds: _intOf(map['rounds'], 0),
+      startedAt: _intOf(map['startedAt'], 0),
+      deadlineAt: _intOf(map['deadlineAt'], 0),
+      updatedAt: _intOf(map['updatedAt'], 0),
       lastVerdict: UnattendedVerdict.fromJson(map['lastVerdict']),
       history: history,
       stall: UnattendedStall.fromJson(map['stall']),
@@ -197,9 +231,10 @@ class UnattendedState {
     'status': status,
     'goal': goal,
     'criteria': criteria,
-    'maxRounds': maxRounds,
+    'maxDurationMinutes': maxDurationMinutes,
     'rounds': rounds,
     'startedAt': startedAt,
+    'deadlineAt': deadlineAt,
     'updatedAt': updatedAt,
     if (lastVerdict != null) 'lastVerdict': lastVerdict!.toJson(),
     'history': history.map((entry) => entry.toJson()).toList(),
@@ -209,29 +244,52 @@ class UnattendedState {
   };
 }
 
-/// GET/POST `/api/sessions/:id/unattended` 的 `limits`：轮次默认值 / 硬上限。
+/// GET/POST `/api/sessions/:id/unattended` 的 `limits`：最长值守时间的默认值 / 上下限。
 class UnattendedLimits {
-  final int maxRoundsDefault;
-  final int maxRoundsMax;
+  final int maxDurationMinutesDefault;
+  final int maxDurationMinutesMin;
+  final int maxDurationMinutesMax;
 
   const UnattendedLimits({
-    this.maxRoundsDefault = 30,
-    this.maxRoundsMax = 200,
+    this.maxDurationMinutesDefault = 120,
+    this.maxDurationMinutesMin = 5,
+    this.maxDurationMinutesMax = 1440,
   });
+
+  static int _positive(dynamic raw, int fallback) {
+    final value = _intOf(raw, fallback);
+    return value > 0 ? value : fallback;
+  }
 
   static UnattendedLimits fromJson(dynamic raw) {
     if (raw is! Map) return const UnattendedLimits();
-    final def = (raw['maxRoundsDefault'] as num?)?.toInt() ?? 30;
-    final max = (raw['maxRoundsMax'] as num?)?.toInt() ?? 200;
+    var min = _positive(raw['maxDurationMinutesMin'], 5);
+    var max = _positive(raw['maxDurationMinutesMax'], 1440);
+    // 服务端给了颠倒的边界也不让界面崩：交换后继续，默认值再夹一次。
+    if (max < min) {
+      final swap = min;
+      min = max;
+      max = swap;
+    }
+    final def = _positive(raw['maxDurationMinutesDefault'], 120);
     return UnattendedLimits(
-      maxRoundsDefault: def > 0 ? def : 30,
-      maxRoundsMax: max > 0 ? max : 200,
+      maxDurationMinutesDefault: def < min
+          ? min
+          : (def > max ? max : def),
+      maxDurationMinutesMin: min,
+      maxDurationMinutesMax: max,
     );
   }
 
+  /// 把界面输入夹到服务端公布的边界内。
+  int clampDurationMinutes(int minutes) => minutes < maxDurationMinutesMin
+      ? maxDurationMinutesMin
+      : (minutes > maxDurationMinutesMax ? maxDurationMinutesMax : minutes);
+
   Map<String, dynamic> toJson() => {
-    'maxRoundsDefault': maxRoundsDefault,
-    'maxRoundsMax': maxRoundsMax,
+    'maxDurationMinutesDefault': maxDurationMinutesDefault,
+    'maxDurationMinutesMin': maxDurationMinutesMin,
+    'maxDurationMinutesMax': maxDurationMinutesMax,
   };
 }
 

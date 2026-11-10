@@ -5,6 +5,10 @@
 // Contract: docs/unattended-mode.md.
 
 const { createUnattendedHost } = require('./host');
+const kernel = require('./kernel');
+
+const DURATION_DEFAULT = 120;
+const MS_PER_MINUTE = 60_000;
 
 function createUnattendedRuntime({
   persistedSessions,
@@ -36,8 +40,23 @@ function createUnattendedRuntime({
   // always stale and would leave every UI spinner stuck. Pre-v2 records also
   // predate `evaluating` / `pausedBy` / `stall.consecutiveFaults`; backfill them
   // once here so GET and the session schema always see the v2 shape.
+  //
+  // The round budget was replaced by a wall-clock deadline. Legacy records keep
+  // `maxRounds` until this migration drops it (accepted-but-ignored on the wire,
+  // never persisted again). An active record without a deadline gets a fresh
+  // 120-minute window starting now; non-active records get a null-safe
+  // startedAt/deadlineAt so the schema and DTO never see null.
+  const clampMinutes = value => {
+    const out = kernel.clampDuration({ maxDurationMinutes: value });
+    return Number(out && out.maxDurationMinutes) || DURATION_DEFAULT;
+  };
+  const positive = value => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : null;
+  };
   let migrated = false;
   try {
+    const at = Date.now();
     for (const record of persistedSessions.values()) {
       const state = record && record.unattended;
       if (!state || typeof state !== 'object') continue;
@@ -51,6 +70,37 @@ function createUnattendedRuntime({
         state.stall.consecutiveFaults = 0;
         migrated = true;
       }
+      if ('maxRounds' in state) {
+        delete state.maxRounds;
+        migrated = true;
+      }
+      const minutes = clampMinutes(state.maxDurationMinutes);
+      if (state.maxDurationMinutes !== minutes) {
+        state.maxDurationMinutes = minutes;
+        migrated = true;
+      }
+      if (state.status === 'active') {
+        if (positive(state.deadlineAt) === null) {
+          // A legacy active record: one full default window from boot.
+          state.maxDurationMinutes = DURATION_DEFAULT;
+          state.startedAt = at;
+          state.deadlineAt = at + DURATION_DEFAULT * MS_PER_MINUTE;
+          migrated = true;
+        } else if (positive(state.startedAt) === null) {
+          state.startedAt = positive(state.updatedAt) || at;
+          migrated = true;
+        }
+      } else {
+        const startedAt = positive(state.startedAt) || positive(state.updatedAt) || at;
+        if (state.startedAt !== startedAt) {
+          state.startedAt = startedAt;
+          migrated = true;
+        }
+        if (positive(state.deadlineAt) === null) {
+          state.deadlineAt = startedAt + state.maxDurationMinutes * MS_PER_MINUTE;
+          migrated = true;
+        }
+      }
     }
   } catch (error) {
     logger.log?.(`[unattended] boot migration failed: ${error && error.message ? error.message : error}`);
@@ -59,7 +109,7 @@ function createUnattendedRuntime({
     try { saveSessions('unattended.boot'); } catch (_) { /* best effort at boot */ }
   }
 
-  return createUnattendedHost({
+  const host = createUnattendedHost({
     getRecord,
     persistState,
     getHistory: id => loadHistory(id),
@@ -75,6 +125,12 @@ function createUnattendedRuntime({
     isRunActive: id => isRunActive(id) === true,
     log: message => logger.log?.(message) || console.log(message),
   });
+  // Re-arm one expiry timer per persisted active session. A restart must still
+  // expire a session whose deadline passes while no turn ever settles.
+  for (const [sessionId, record] of persistedSessions.entries()) {
+    if (record && record.unattended && record.unattended.status === 'active') host.rearmTimer(sessionId);
+  }
+  return host;
 }
 
 module.exports = { createUnattendedRuntime };

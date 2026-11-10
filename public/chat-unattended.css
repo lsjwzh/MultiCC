@@ -143,6 +143,12 @@
 .unat-status-stopped,
 .unat-status-idle { color: var(--muted, #9aa7b8); }
 .unat-round { font-size: 11px; color: var(--muted, #9aa7b8); white-space: nowrap; }
+.unat-deadline {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted, #9aa7b8);
+}
+.unat-deadline[hidden] { display: none; }
 .unat-human {
   margin: 6px 0 0;
   padding: 6px 8px;
@@ -179,7 +185,10 @@
 }
 .unat-goal:focus-visible,
 .unat-criterion-input:focus-visible,
-.unat-rounds:focus-visible { outline: 1px solid var(--accent, #4c8dff); outline-offset: 1px; }
+.unat-duration:focus-visible,
+.unat-duration-unit:focus-visible,
+.unat-revised-goal:focus-visible,
+.unat-revised-criteria:focus-visible { outline: 1px solid var(--accent, #4c8dff); outline-offset: 1px; }
 
 .unat-criteria { display: flex; flex-direction: column; gap: 5px; }
 .unat-criterion { display: flex; align-items: center; gap: 6px; }
@@ -223,9 +232,9 @@
 .unat-add-criterion:hover:not(:disabled) { color: var(--fg, #e6ecf5); }
 .unat-add-criterion:disabled { opacity: .45; cursor: default; }
 
-.unat-rounds-row { display: flex; align-items: center; gap: 8px; }
-.unat-rounds {
-  width: 76px;
+.unat-duration-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.unat-duration {
+  width: 72px;
   padding: 5px 7px;
   border-radius: 7px;
   border: 1px solid var(--border, rgba(140, 160, 190, 0.3));
@@ -234,7 +243,16 @@
   font: inherit;
   font-size: 13px;
 }
-.unat-rounds-field .unat-hint { flex: 1 1 auto; }
+.unat-duration-unit {
+  padding: 5px 7px;
+  border-radius: 7px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.3));
+  background: var(--input-bg, rgba(0, 0, 0, 0.2));
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+.unat-duration-field .unat-hint { flex: 1 1 150px; }
 
 .unat-draft {
   align-self: flex-start;
@@ -261,10 +279,44 @@
   line-height: 1.45;
 }
 .unat-precheck[hidden] { display: none; }
+.unat-precheck-title { font-size: 12px; font-weight: 600; }
 .unat-precheck-verdict { font-weight: 600; }
 .unat-precheck-verdict.ok { color: #2fbf71; }
 .unat-precheck-verdict.warn { color: #f0a429; }
 .unat-precheck-issues { margin: 0; color: var(--muted, #9aa7b8); overflow-wrap: anywhere; }
+.unat-precheck-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.unat-precheck-actions button {
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.36));
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg, #e6ecf5);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.unat-precheck-actions button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.unat-precheck-actions button:disabled { opacity: .55; cursor: default; }
+.unat-precheck-actions .unat-primary {
+  border-color: rgba(47, 191, 113, 0.55);
+  background: rgba(47, 191, 113, 0.16);
+  color: #6fe0a2;
+  font-weight: 600;
+}
+.unat-revised-goal,
+.unat-revised-criteria {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border, rgba(140, 160, 190, 0.3));
+  background: var(--input-bg, rgba(0, 0, 0, 0.2));
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
 .unat-revised { display: flex; flex-direction: column; gap: 5px; }
 .unat-revised-text { color: var(--muted, #9aa7b8); white-space: pre-wrap; overflow-wrap: anywhere; }
 .unat-use-revised {
@@ -352,6 +404,7 @@
   .unat-intro,
   .unat-hint,
   .unat-round,
+  .unat-deadline,
   .unat-verdict,
   .unat-history-empty,
   .unat-history-verdict,
@@ -359,7 +412,12 @@
   .unat-status-card { background: rgba(20, 30, 45, 0.03); }
   .unat-goal,
   .unat-criterion-input,
-  .unat-rounds { background: #f6f8fb; }
+  .unat-duration,
+  .unat-duration-unit,
+  .unat-revised-goal,
+  .unat-revised-criteria { background: #f6f8fb; }
+  .unat-precheck-actions button { background: #f6f8fb; color: #1d2733; }
+  .unat-precheck-actions .unat-primary { background: rgba(47, 191, 113, 0.14); color: #1c6b42; }
 }
 
 /* ── 判定中 spinner（面板 + 浮动图标 + banner 共用） ── */
@@ -562,4 +620,7 @@
   .unat-banner-main { flex-basis: 100%; }
   .unat-banner-btn { margin-left: auto; }
   .unat-fab.unat-evaluating::after { inset: 3px; }
+  /* 390px 上三个动作按钮各占一行太占高度：允许两行折行，主按钮占满一行。 */
+  .unat-precheck-actions { gap: 5px; }
+  .unat-precheck-actions .unat-precheck-adopt { flex: 1 1 100%; }
 }

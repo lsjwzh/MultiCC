@@ -45,19 +45,22 @@ class DemoServer {
   int get _now => DateTime.now().millisecondsSinceEpoch;
 
   static const Map<String, int> _unattendedLimits = {
-    'maxRoundsDefault': 30,
-    'maxRoundsMax': 200,
+    'maxDurationMinutesDefault': 120,
+    'maxDurationMinutesMin': 5,
+    'maxDurationMinutesMax': 1440,
   };
 
   /// 演示里的无人值守只保留面板能看到的那几个字段：不跑真正的督导轮次，
-  /// 只让启动 / 停止 / 继续三个动作和状态配色有东西可显示。
+  /// 只让启动 / 停止 / 继续三个动作和状态配色有东西可显示。轮次上限已退场，
+  /// 最长值守时间用 deadlineAt 表达（面板据此算剩余）。
   Map<String, dynamic> _unattendedJson({
     required String status,
     required String goal,
     required Object? criteria,
-    required Object? maxRounds,
+    required Object? maxDurationMinutes,
     required Map<String, dynamic>? previous,
     required bool resetRounds,
+    String? pausedBy,
   }) {
     final cleaned = <String>[];
     for (final item in (criteria is List ? criteria : const [])) {
@@ -70,18 +73,38 @@ class DemoServer {
     final startedAt = resetRounds
         ? _now
         : ((previous?['startedAt'] as num?)?.toInt() ?? _now);
+    final minutes = _clampDuration(
+      maxDurationMinutes ?? previous?['maxDurationMinutes'],
+    );
     return {
       'status': status,
       'goal': goal.length > 2000 ? goal.substring(0, 2000) : goal,
       'criteria': cleaned,
-      'maxRounds': ((maxRounds is num ? maxRounds.toInt() : 30)).clamp(1, 200),
+      'maxDurationMinutes': minutes,
       'rounds': rounds,
       'startedAt': startedAt,
+      'deadlineAt': startedAt + minutes * 60000,
       'updatedAt': _now,
       'lastVerdict': previous?['lastVerdict'],
       'history': previous?['history'] ?? const [],
       'stall': {'sameInstruction': 0, 'auxFailures': 0},
+      'evaluating': false,
+      'pausedBy': pausedBy,
     };
+  }
+
+  static int _clampDuration(Object? raw) {
+    final parsed = raw is num
+        ? raw.toInt()
+        : int.tryParse('$raw') ?? _unattendedLimits['maxDurationMinutesDefault']!;
+    if (parsed <= 0) return _unattendedLimits['maxDurationMinutesMin']!;
+    if (parsed < _unattendedLimits['maxDurationMinutesMin']!) {
+      return _unattendedLimits['maxDurationMinutesMin']!;
+    }
+    if (parsed > _unattendedLimits['maxDurationMinutesMax']!) {
+      return _unattendedLimits['maxDurationMinutesMax']!;
+    }
+    return parsed;
   }
 
   String _nextId() => 'demo-${_now.toRadixString(36)}-${_seq++}';
@@ -333,7 +356,7 @@ class DemoServer {
                   status: 'active',
                   goal: goal,
                   criteria: body['criteria'],
-                  maxRounds: body['maxRounds'],
+                  maxDurationMinutes: body['maxDurationMinutes'],
                   previous: previous,
                   resetRounds: true,
                 );
@@ -348,7 +371,8 @@ class DemoServer {
                   status: 'active',
                   goal: '${body['goal'] ?? previous['goal'] ?? ''}',
                   criteria: body['criteria'] ?? previous['criteria'],
-                  maxRounds: body['maxRounds'] ?? previous['maxRounds'],
+                  maxDurationMinutes:
+                      body['maxDurationMinutes'] ?? previous['maxDurationMinutes'],
                   previous: previous,
                   resetRounds: false,
                 );
@@ -363,9 +387,10 @@ class DemoServer {
                   status: 'stopped',
                   goal: '${previous['goal'] ?? ''}',
                   criteria: previous['criteria'],
-                  maxRounds: previous['maxRounds'],
+                  maxDurationMinutes: previous['maxDurationMinutes'],
                   previous: previous,
                   resetRounds: false,
+                  pausedBy: 'user',
                 );
               case 'resume':
                 final resumable = const {
@@ -384,7 +409,8 @@ class DemoServer {
                   status: 'active',
                   goal: '${previous!['goal'] ?? ''}',
                   criteria: previous['criteria'],
-                  maxRounds: previous['maxRounds'],
+                  maxDurationMinutes:
+                      body['maxDurationMinutes'] ?? previous['maxDurationMinutes'],
                   previous: previous,
                   resetRounds: previous['status'] == 'exhausted',
                 );
@@ -402,6 +428,22 @@ class DemoServer {
             });
           }
         }
+      }
+      // 目标预检：演示模式给一个固定的「通过 + 两条建议标准」，让聊天页的
+      // 「启动前自动预检」两条分支都能走通（已有标准 → 直接启动；没标准 →
+      // 推荐卡）。真正的判断在服务端，演示只负责把界面点亮。
+      if (path == '/api/goal/precheck' && method == 'POST') {
+        final body = await _body(req);
+        final task = '${body['task'] ?? ''}'.trim();
+        return _json(req, {
+          'ok': true,
+          'verdict': 'ok',
+          'score': 85,
+          'issues': <Object>[],
+          'questions': <Object>[],
+          'criteria': ['目标描述里的结果已经达成', '检查/测试结果通过'],
+          'revised': task,
+        });
       }
       // 首页和控制台顺手会读的几项：给空但合法的结果，界面就显示「暂无」，
       // 不会冒出加载失败的提示。

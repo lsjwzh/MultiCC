@@ -415,3 +415,26 @@ test('Pi sessions retain their CLI identity through the public contract', () => 
   assertValid('session.schema.json', dto);
   assert.equal(serialized(dto).includes('private-native-id'), false);
 });
+
+test('session DTO exposes the wall-clock unattended shape and drops the legacy round budget', () => {
+  const dto = toSessionDto({
+    id: 'session-unattended', dirId: 'directory-contract', cli: 'claude', kind: 'chat',
+    unattended: {
+      status: 'active', goal: 'ship it', criteria: ['tests pass'], maxRounds: 30,
+      maxDurationMinutes: 90, rounds: 7, startedAt: 1784332800000, deadlineAt: 1784338200000,
+      updatedAt: 1784332800000, lastVerdict: null, history: [], stall: {}, evaluating: false, pausedBy: null,
+    },
+  });
+  assertValid('session.schema.json', dto);
+  assert.equal(dto.unattended.maxDurationMinutes, 90);
+  assert.equal(dto.unattended.deadlineAt, 1784338200000);
+  assert.equal('maxRounds' in dto.unattended, false, 'the legacy round budget is not on the wire');
+
+  // Out-of-range durations are clamped by the DTO, never rejected.
+  const clamped = toSessionDto({
+    id: 'session-unattended-clamped', cli: 'claude', kind: 'chat',
+    unattended: { status: 'active', maxDurationMinutes: 5000, rounds: 0, startedAt: 1, deadlineAt: 2 },
+  });
+  assertValid('session.schema.json', clamped);
+  assert.equal(clamped.unattended.maxDurationMinutes, 1440);
+});

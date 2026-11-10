@@ -49,7 +49,7 @@ class _ComposerProvider extends ChatProvider {
   }
 
   @override
-  Future<bool> resumeUnattended() async {
+  Future<bool> resumeUnattended({int? maxDurationMinutes}) async {
     resumeCalls++;
     applyUnattendedEvent(const {'status': 'active'});
     return true;
@@ -102,7 +102,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => I18n.init('zh'));
 
-  testWidgets('active：横幅带轮次与锁定提示，输入/发送全禁用；暂停后恢复发送', (
+  testWidgets('active：横幅带剩余时间与锁定提示，输入/发送全禁用；暂停后恢复发送', (
     tester,
   ) async {
     final settings = await _settings();
@@ -119,21 +119,25 @@ void main() {
     await tester.pump();
     expect(_sendTarget(tester).onTap, isNotNull);
 
-    provider.applyUnattendedEvent(const {
+    // 45 分钟余量：多留 15 秒，避免测试执行到 build 时刚好跨过分钟边界。
+    final deadline =
+        DateTime.now().millisecondsSinceEpoch + 45 * 60000 + 15000;
+    provider.applyUnattendedEvent({
       'status': 'active',
       'rounds': 2,
-      'maxRounds': 30,
+      'maxDurationMinutes': 120,
+      'deadlineAt': deadline,
       'evaluating': true,
     });
     await tester.pump();
 
-    // 横幅：轮次 + 判定中，主按钮是「暂停并接管」。
+    // 横幅：剩余时间 + 判定中，主按钮是「暂停并接管」。
     expect(find.byKey(const ValueKey('unattended-banner')), findsOneWidget);
     expect(
       tester
           .widget<Text>(find.byKey(const ValueKey('unattended-banner-text')))
           .data,
-      '${t('unattendedBannerActive', {'round': '2', 'max': '30'})}'
+      '${t('unattendedBannerActive', {'remaining': '45分'})}'
       ' · ${t('unattendedJudging')}',
     );
     expect(

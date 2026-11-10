@@ -422,17 +422,18 @@ function mountAirRoutes(app, deps) {
     const overlayFacts = { now: projectNow, facts, merges, capacityReasons };
     const tasks = cardCache.overlayAsync ? await cardCache.overlayAsync(resolved, overlayFacts)
       : await taskDomainAsync({ op: 'cardOverlayBatch', entries, ...overlayFacts });
-    // 无人值守模式（docs/unattended-mode.md）：任务行只带状态条需要的三个数
-    // 字，完整状态仍走 GET /api/sessions/:id/unattended。这里必须复制而不是
+    // 无人值守模式（docs/unattended-mode.md）：任务行只带状态条需要的字段，
+    // 完整状态仍走 GET /api/sessions/:id/unattended。这里必须复制而不是
     // 原地改：`held.cards` 是卡片缓存的原对象，写回去会让状态粘在缓存里。
     const compactUnattended = task => {
       const sessionId = task.chatSessionId || task.sessionId;
       const state = sessionId ? deps.records.get(sessionId)?.unattended : null;
       if (!state || typeof state !== 'object') return task;
+      const deadlineAt = Number(state.deadlineAt);
       return { ...task, unattended: {
         status: state.status ?? null,
         rounds: Math.max(0, Math.floor(Number(state.rounds) || 0)),
-        maxRounds: Math.max(1, Math.floor(Number(state.maxRounds) || 1)),
+        deadlineAt: Number.isFinite(deadlineAt) && deadlineAt > 0 ? deadlineAt : null,
         evaluating: state.evaluating === true,
       } };
     };

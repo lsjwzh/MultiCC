@@ -121,9 +121,22 @@ function fixture(t) {
       config: {
         goal: String(input.goal || ''),
         criteria: Array.isArray(input.criteria) ? input.criteria.map(String) : [],
-        maxRounds: Number(input.maxRounds) || 30,
+        maxDurationMinutes: Number(input.maxDurationMinutes) || 120,
       },
     }),
+    clampDuration: input => ({ maxDurationMinutes: Math.max(5, Math.min(1440,
+      Math.floor(Number(input.maxDurationMinutes) || 120))) }),
+    armDeadline: input => {
+      const at = Number(input.now) || 0;
+      const startedAt = input.startedAt == null ? at : Number(input.startedAt) || 0;
+      const minutes = Math.max(5, Math.min(1440, Math.floor(Number(input.maxDurationMinutes) || 120)));
+      let deadlineAt = startedAt + minutes * 60000;
+      let clamped = false;
+      if (deadlineAt <= at) { deadlineAt = at + 60000; clamped = true; }
+      return { startedAt, deadlineAt, maxDurationMinutes: minutes, clamped };
+    },
+    deadlineExpired: input => ({ expired: (Number(input.deadlineAt) || 0) > 0
+      && (Number(input.now) || 0) >= (Number(input.deadlineAt) || 0) }),
     buildVerdictPrompt: () => 'PROMPT',
     parseVerdict: () => ({ ok: true }),
     decide() {
@@ -219,7 +232,7 @@ function fixture(t) {
     plan(value) { plan = value; },
     planFault(value) { faultPlan = value; },
     advance(ms = 1) { clock += ms; },
-    arm: () => unattended.start(SESSION, { goal: 'ship it', maxRounds: 9, evaluateNow: false }),
+    arm: () => unattended.start(SESSION, { goal: 'ship it', maxDurationMinutes: 90, evaluateNow: false }),
   };
 }
 

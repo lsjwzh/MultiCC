@@ -460,9 +460,10 @@ function createTaskShellRuntime(ports) {
       turnId: raw.turnId == null ? null : identifier(raw.turnId, 'turnId'),
       requestId: raw.requestId == null ? null : identifier(raw.requestId, 'requestId') };
     // Unattended mode replaces Goal mode. First-message arming only; the
-    // legacy `goal:true` + `goalLimits` shape keeps nothing but maxRounds.
+    // legacy `goal:true` + `goalLimits` shape only signals unattended mode
+    // (`maxRounds` / `goalLimits` are ignored, never persisted).
     if (raw.unattended && typeof raw.unattended === 'object') result.unattended = raw.unattended;
-    else if (raw.goal === true) result.unattended = { maxRounds: raw.goalLimits && raw.goalLimits.maxRounds };
+    else if (raw.goal === true) result.unattended = {};
     // Per-message presentation hints carried to composeMessage: the send-time
     // UI language and the voice-dictation marker with its raw ASR transcript.
     if (raw.lang === 'zh' || raw.lang === 'en') result.lang = raw.lang;

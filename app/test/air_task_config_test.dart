@@ -369,9 +369,10 @@ void main() {
   /// 快速新建里的无人值守入口（docs/unattended-mode.md 的创建层）。
   ///
   /// 三件事要锁住：**勾上才问**（不勾时不发 `unattended`，也不会把上次填的
-  /// 轮次当成用户的意思），**轮次收口到 1..200**，以及**判断标准按行、去空行**
-  /// 后随第一条消息发出。目标留空时不发 `goal`，服务端拿任务正文当目标。
-  testWidgets('无人值守：勾上才展开，轮次收口 1..200，判断标准按行发出', (tester) async {
+  /// 时长当成用户的意思），**最长值守时间收口到 5..1440 分钟**，以及
+  /// **判断标准按行、去空行**后随第一条消息发出。目标留空时不发 `goal`，
+  /// 服务端拿任务正文当目标。这里的「AI 补全判断标准」保持手动触发。
+  testWidgets('无人值守：勾上才展开，时长收口 5..1440，判断标准按行发出', (tester) async {
     final settings = await _settings();
     Map<String, dynamic>? seen;
     var submits = 0;
@@ -406,7 +407,7 @@ void main() {
     Finder field(String key) => find.byKey(ValueKey(key));
 
     // 没勾：展开区不出现，也不带配置。
-    expect(field('air-quick-unattended-rounds'), findsNothing);
+    expect(field('air-quick-unattended-duration'), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('air-quick-unattended')));
     await tester.pumpAndSettle();
@@ -414,11 +415,11 @@ void main() {
     expect(find.text('AI 补全判断标准'), findsOneWidget);
     expect(
       tester
-          .widget<TextField>(field('air-quick-unattended-rounds'))
+          .widget<TextField>(field('air-quick-unattended-duration'))
           .controller!
           .text,
-      '30',
-      reason: '默认 30 轮',
+      '120',
+      reason: '默认 120 分钟（2 小时）',
     );
 
     await tester.enterText(
@@ -430,17 +431,18 @@ void main() {
       field('air-quick-unattended-criteria'),
       '错误文案能说清原因\n\n  改完跑 flutter analyze  ',
     );
-    await tester.enterText(field('air-quick-unattended-rounds'), '999');
+    await tester.enterText(field('air-quick-unattended-duration'), '9999');
     await tester.tap(find.byKey(const ValueKey('air-quick-submit')));
     await tester.pumpAndSettle();
 
     expect(submits, 1);
-    expect(seen!['maxRounds'], 200, reason: '超过 200 按 200 算');
+    expect(seen!['maxDurationMinutes'], 1440, reason: '超过 1440 按 1440 算');
+    expect(seen!.containsKey('maxRounds'), isFalse);
     expect(seen!['criteria'], ['错误文案能说清原因', '改完跑 flutter analyze']);
     expect(seen!.containsKey('goal'), isFalse, reason: '目标留空 = 用任务正文');
 
-    // 提交成功后收起并复位：轮次回到默认 30。
-    expect(field('air-quick-unattended-rounds'), findsNothing);
+    // 提交成功后收起并复位：时长回到默认 120。
+    expect(field('air-quick-unattended-duration'), findsNothing);
     await tester.enterText(
       find.byKey(const ValueKey('air-quick-input')),
       '再来一次',
@@ -449,18 +451,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       tester
-          .widget<TextField>(field('air-quick-unattended-rounds'))
+          .widget<TextField>(field('air-quick-unattended-duration'))
           .controller!
           .text,
-      '30',
+      '120',
     );
 
-    // 下限也是 1，不是 0 或空。
-    await tester.enterText(field('air-quick-unattended-rounds'), '0');
+    // 下限是 5，不是 0 或空。
+    await tester.enterText(field('air-quick-unattended-duration'), '0');
     await tester.tap(find.byKey(const ValueKey('air-quick-submit')));
     await tester.pumpAndSettle();
     expect(submits, 2);
-    expect(seen!['maxRounds'], 1);
+    expect(seen!['maxDurationMinutes'], 5);
     expect(tester.takeException(), isNull);
   });
 

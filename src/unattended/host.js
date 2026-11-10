@@ -3,9 +3,13 @@
 const { isWaitForUserLetter } = require('../classify/vocab');
 
 // Unattended-mode supervisor glue. All decisions (goal caps, verdict prompt,
-// parse tolerance, budget/stall/fault policy) are in
+// parse tolerance, stall/fault policy, wall-clock deadline math) are in
 // native/core/src/unattended.rs; this host only gathers evidence, calls the aux
-// queue, persists `record.unattended`, applies the decided action and broadcasts.
+// queue, persists `record.unattended`, applies the decided action, broadcasts
+// and keeps one expiry timer per active session.
+//
+// There is no round budget: `rounds` is an informational counter and
+// `maxDurationMinutes` / `startedAt` / `deadlineAt` bound supervision time.
 //
 // State shape and the wire contract: docs/unattended-mode.md ("Backend notes (v2)").
 
@@ -39,6 +43,8 @@ function createUnattendedHost(options = {}) {
     hasQueuedDeliveries = null,
     isRunActive = () => false,
     now = Date.now,
+    setTimeout: setTimeoutFn = setTimeout,
+    clearTimeout: clearTimeoutFn = clearTimeout,
     log = () => {},
   } = options;
   const kernel = options.kernel || require('./kernel');
@@ -54,6 +60,10 @@ function createUnattendedHost(options = {}) {
   // that does not produce its own supervisor notice drains these, so a settle is
   // never silent (docs/unattended-mode.md → notifications).
   const heldPushes = new Map();
+  // Exactly one expiry timer per active session (setTimeout to deadlineAt,
+  // unref'd). Cleared on every non-active write, stop/pause/resume and shutdown;
+  // re-armed by the boot migration (src/unattended/runtime.js) and by resume.
+  const timers = new Map();
 
   let cachedTag = '';
   function tag() {
@@ -83,6 +93,97 @@ function createUnattendedHost(options = {}) {
     return stateOf(sessionId);
   }
 
+  // ── Wall-clock deadline / expiry timer ────────────────────────────────────
+
+  function armDeadline(startedAt, maxDurationMinutes, at = now()) {
+    return kernel.armDeadline({
+      startedAt: startedAt == null ? at : startedAt,
+      maxDurationMinutes,
+      now: at,
+    });
+  }
+
+  function clearTimer(sessionId) {
+    const timer = timers.get(sessionId);
+    if (timer === undefined) return;
+    timers.delete(sessionId);
+    try { clearTimeoutFn(timer); } catch (_) { /* already fired */ }
+  }
+
+  function syncTimer(sessionId, state) {
+    clearTimer(sessionId);
+    if (!state || state.status !== STATUS.ACTIVE) return;
+    const deadlineAt = Number(state.deadlineAt);
+    if (!Number.isFinite(deadlineAt) || deadlineAt <= 0) return;
+    const delay = Math.max(0, deadlineAt - now());
+    const timer = setTimeoutFn(() => {
+      if (timers.get(sessionId) === timer) timers.delete(sessionId);
+      expireIfDue(sessionId);
+    }, delay);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    timers.set(sessionId, timer);
+  }
+
+  // Re-arm once from the persisted record (boot migration); idempotent.
+  function rearmTimer(sessionId) {
+    syncTimer(sessionId, stateOf(sessionId));
+  }
+
+  function shutdown() {
+    for (const sessionId of [...timers.keys()]) clearTimer(sessionId);
+  }
+
+  // Checked at the top of every evaluation/fault AND by the timer, so a late
+  // timer can never allow another injection.
+  function expireIfDue(sessionId) {
+    const state = stateOf(sessionId);
+    if (!state || state.status !== STATUS.ACTIVE) return false;
+    const deadlineAt = Number(state.deadlineAt);
+    if (!Number.isFinite(deadlineAt) || deadlineAt <= 0) return false;
+    let expired = false;
+    try {
+      expired = kernel.deadlineExpired({ deadlineAt, now: now() }).expired === true;
+    } catch (_) {
+      expired = false;
+    }
+    if (!expired) return false;
+    return expire(sessionId, state) !== null;
+  }
+
+  // Deadline reached: reuse the terminal `exhausted` status, broadcast the usual
+  // state + trace, tell the user and release the held classic push exactly like
+  // the other no-op paths.
+  function expire(sessionId, current) {
+    const at = now();
+    const humanReason = tagged('已达到最长值守时间');
+    const next = {
+      ...current,
+      status: STATUS.EXHAUSTED,
+      evaluating: false,
+      pausedBy: null,
+      lastVerdict: {
+        verdict: 'needs_human',
+        reason: '已达到最长值守时间',
+        nextInstruction: '',
+        humanReason,
+        at,
+      },
+      updatedAt: at,
+    };
+    if (!write(sessionId, next)) return null;
+    trace(sessionId, humanReason);
+    try {
+      Promise.resolve(apply(sessionId, { action: 'exhausted', message: humanReason, nextState: next }))
+        .catch(error => {
+          log(`[unattended] expiry apply failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+        });
+    } catch (error) {
+      log(`[unattended] expiry apply failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+    }
+    releaseHeldPushes(sessionId);
+    return next;
+  }
+
   function write(sessionId, next) {
     try {
       persistState(sessionId, next);
@@ -90,6 +191,7 @@ function createUnattendedHost(options = {}) {
       log(`[unattended] persist failed for ${sessionId}: ${error && error.message ? error.message : error}`);
       return false;
     }
+    syncTimer(sessionId, next);
     try {
       broadcast(sessionId, { type: 'unattended_state', unattended: next });
     } catch (_) { /* a dead socket must not fail the state write */ }
@@ -98,13 +200,15 @@ function createUnattendedHost(options = {}) {
 
   function freshState(config) {
     const at = now();
+    const armed = armDeadline(at, config.maxDurationMinutes, at);
     return {
       status: STATUS.ACTIVE,
       goal: config.goal,
       criteria: Array.isArray(config.criteria) ? config.criteria : [],
-      maxRounds: config.maxRounds,
+      maxDurationMinutes: config.maxDurationMinutes,
       rounds: 0,
-      startedAt: at,
+      startedAt: armed.startedAt,
+      deadlineAt: armed.deadlineAt,
       updatedAt: at,
       lastVerdict: null,
       history: [],
@@ -116,7 +220,7 @@ function createUnattendedHost(options = {}) {
 
   function sameConfig(state, config) {
     return state.goal === config.goal
-      && state.maxRounds === config.maxRounds
+      && state.maxDurationMinutes === config.maxDurationMinutes
       && JSON.stringify(state.criteria || []) === JSON.stringify(config.criteria || []);
   }
 
@@ -169,7 +273,7 @@ function createUnattendedHost(options = {}) {
         body = `判定：停滞 · ${reason || message || '连续给出同一条指令却没有进展'}`;
         break;
       case 'exhausted':
-        body = `判定：轮次用尽 · ${message || '目标仍未达成'}`;
+        body = `判定：时长用尽 · ${message || '已达到最长值守时间'}`;
         break;
       case 'error':
         body = `判定：出错 · ${message || '辅助模型未能给出可解析的判定'}`;
@@ -199,7 +303,7 @@ function createUnattendedHost(options = {}) {
     const normalized = kernel.normalizeConfig({
       goal: spec.goal == null || spec.goal === '' ? defaultGoal : spec.goal,
       criteria: spec.criteria,
-      maxRounds: spec.maxRounds,
+      maxDurationMinutes: spec.maxDurationMinutes,
     });
     if (!normalized.ok) return { ok: false, code: normalized.error || 'goal_required' };
     const current = stateOf(sessionId);
@@ -237,7 +341,7 @@ function createUnattendedHost(options = {}) {
     const normalized = kernel.normalizeConfig({
       goal: body.goal,
       criteria: body.criteria,
-      maxRounds: body.maxRounds,
+      maxDurationMinutes: body.maxDurationMinutes,
     });
     if (!normalized.ok) return { ok: false, code: normalized.error || 'goal_required', status: 400 };
     const next = freshState(normalized.config);
@@ -256,20 +360,30 @@ function createUnattendedHost(options = {}) {
     if (current.status !== STATUS.ACTIVE && current.status !== STATUS.NEEDS_HUMAN) {
       return { ok: false, code: 'invalid_state', status: 409 };
     }
+    const at = now();
     const normalized = kernel.normalizeConfig({
       goal: body.goal == null ? current.goal : body.goal,
       criteria: body.criteria == null ? current.criteria : body.criteria,
-      maxRounds: body.maxRounds == null ? current.maxRounds : body.maxRounds,
+      maxDurationMinutes: body.maxDurationMinutes == null ? current.maxDurationMinutes : body.maxDurationMinutes,
     });
     if (!normalized.ok) return { ok: false, code: normalized.error || 'goal_required', status: 400 };
+    // While active the deadline is recomputed from the ORIGINAL startedAt; when
+    // the new deadline is already past it is clamped to now + 1 minute and the
+    // trace notes it.
+    const startedAt = Number(current.startedAt) > 0 ? Number(current.startedAt) : at;
+    const armed = armDeadline(startedAt, normalized.config.maxDurationMinutes, at);
     const next = {
       ...current,
       goal: normalized.config.goal,
       criteria: normalized.config.criteria,
-      maxRounds: normalized.config.maxRounds,
-      updatedAt: now(),
+      maxDurationMinutes: normalized.config.maxDurationMinutes,
+      deadlineAt: armed.deadlineAt,
+      updatedAt: at,
     };
     if (!write(sessionId, next)) return { ok: false, code: 'persist_failed', status: 500 };
+    if (current.status === STATUS.ACTIVE && armed.clamped === true) {
+      try { trace(sessionId, tagged('新的值守时长已使截止时间落在过去，截止时间顺延到 1 分钟后')); } catch (_) {}
+    }
     return { ok: true, unattended: next };
   }
 
@@ -299,19 +413,31 @@ function createUnattendedHost(options = {}) {
     return { ok: true, unattended: next };
   }
 
-  async function resume(sessionId) {
+  async function resume(sessionId, body = {}) {
     const current = stateOf(sessionId);
     if (!current) return { ok: false, code: 'no_unattended', status: 409 };
     const resumable = [STATUS.NEEDS_HUMAN, STATUS.EXHAUSTED, STATUS.STOPPED, STATUS.ERROR];
     if (!resumable.includes(current.status)) return { ok: false, code: 'invalid_state', status: 409 };
+    const normalized = kernel.normalizeConfig({
+      goal: current.goal,
+      criteria: current.criteria,
+      maxDurationMinutes: body.maxDurationMinutes == null ? current.maxDurationMinutes : body.maxDurationMinutes,
+    });
+    if (!normalized.ok) return { ok: false, code: normalized.error || 'goal_required', status: 400 };
+    const at = now();
+    // Resume re-arms the clock: startedAt = now, deadlineAt = now + duration.
+    const armed = armDeadline(at, normalized.config.maxDurationMinutes, at);
     const next = {
       ...current,
       status: STATUS.ACTIVE,
       pausedBy: null,
       evaluating: false,
+      maxDurationMinutes: normalized.config.maxDurationMinutes,
+      startedAt: armed.startedAt,
+      deadlineAt: armed.deadlineAt,
       rounds: current.status === STATUS.EXHAUSTED ? 0 : current.rounds,
       stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 0 },
-      updatedAt: now(),
+      updatedAt: at,
     };
     if (!write(sessionId, next)) return { ok: false, code: 'persist_failed', status: 500 };
     const deferred = await evaluationDeferred(sessionId);
@@ -359,7 +485,7 @@ function createUnattendedHost(options = {}) {
       history: state.history,
       pendingQuestion,
       rounds: state.rounds,
-      maxRounds: state.maxRounds,
+      maxDurationMinutes: state.maxDurationMinutes,
     };
   }
 
@@ -388,6 +514,7 @@ function createUnattendedHost(options = {}) {
   }
 
   async function runEvaluation(sessionId, reason, assistantText) {
+    if (expireIfDue(sessionId)) return { ok: false, code: 'expired' };
     const state = stateOf(sessionId);
     if (!state || state.status !== STATUS.ACTIVE) return { ok: false, code: 'not_active' };
     const collected = evidence(sessionId, state, assistantText);
@@ -477,6 +604,9 @@ function createUnattendedHost(options = {}) {
   // coalesced into exactly one follow-up run (its held push travels with it).
   function evaluate(sessionId, { reason = 'turn_end', assistantText = '', fallbackPush = null } = {}) {
     rememberHeldPush(sessionId, fallbackPush);
+    // A late timer must never allow another injection: check the deadline
+    // before anything else. Expiry releases the held push itself.
+    if (expireIfDue(sessionId)) return Promise.resolve({ ok: false, code: 'expired' });
     if (inFlight.has(sessionId)) {
       queued.add(sessionId);
       return Promise.resolve({ ok: true, deferred: true });
@@ -592,6 +722,8 @@ function createUnattendedHost(options = {}) {
     }
     // A clean D/W settle proves the upstream recovered.
     resetFaultCounter(sessionId);
+    // A late deadline must not let a stale backlog deferral buy another round.
+    if (expireIfDue(sessionId)) return null;
     if (!isWaitForUserLetter(settle) && await backlogPending(sessionId)) {
       // Release the held classic push as every no-op path does, so this settle
       // is never silent while the scheduler drains the backlog.
@@ -620,6 +752,7 @@ function createUnattendedHost(options = {}) {
   // Immediate fault (E) continuation, no Aux call. The API-error policy has
   // already decided there is no bounded retry left to make.
   function onFault(sessionId, { reason = 'api_error' } = {}) {
+    if (expireIfDue(sessionId)) return null;
     const state = stateOf(sessionId);
     if (!state || state.status !== STATUS.ACTIVE) return null;
     const decision = kernel.decideFault({ state, now: now(), reason });
@@ -638,7 +771,7 @@ function createUnattendedHost(options = {}) {
   }
 
   function stats() {
-    return { inFlight: inFlight.size, queued: queued.size, heldPushes: heldPushes.size };
+    return { inFlight: inFlight.size, queued: queued.size, heldPushes: heldPushes.size, timers: timers.size };
   }
 
   return Object.freeze({
@@ -649,8 +782,10 @@ function createUnattendedHost(options = {}) {
     onFault,
     onManualCancel,
     onTurnSettled,
+    rearmTimer,
     resume,
     shouldHoldPush,
+    shutdown,
     start,
     stats,
     stop,

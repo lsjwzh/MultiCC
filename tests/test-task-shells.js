@@ -560,7 +560,7 @@ test('unattended config survives normalized receipt retry without changing the m
     if (fail) throw new Error('response lost');
     return { ok: true };
   } });
-  const unattended = { goal: 'ship it', criteria: ['tests pass'], maxRounds: 4 };
+  const unattended = { goal: 'ship it', criteria: ['tests pass'], maxDurationMinutes: 90 };
   await assert.rejects(f.runtime.send(f.a.id, input('goal', null, { unattended })));
   const receipt = f.store.list('receipt')[0];
   fail = false;
@@ -569,10 +569,10 @@ test('unattended config survives normalized receipt retry without changing the m
   assert.deepEqual(seen[1].unattended, seen[0].unattended);
   assert.equal(seen[1].idempotencyKey, seen[0].idempotencyKey);
 
-  // Old clients keep sending `goal:true` + `goalLimits`; only maxRounds
-  // survives, mapped onto the new `unattended` key.
+  // Old clients keep sending `goal:true` + `goalLimits`; it only signals
+  // unattended mode now — the round budget is ignored, never persisted.
   await f.runtime.send(f.a.id, input('legacy-goal', null, { goal: true, goalLimits: { maxRounds: 4, maxBudget: 1000 } }));
-  assert.deepEqual(seen[2].unattended, { maxRounds: 4 });
+  assert.deepEqual(seen[2].unattended, {});
 });
 
 test('voice marker and send-time language reach delivery options; junk values are dropped', async t => {

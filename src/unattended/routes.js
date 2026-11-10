@@ -5,8 +5,10 @@
 //   GET  /api/sessions/:id/unattended → { ok, unattended, limits }
 //   POST /api/sessions/:id/unattended → { ok, unattended, limits }
 //
-// The supervisor host is late-bound (`deps.getUnattended`): it is composed after
-// this module is required, like the other runtime hosts.
+// `limits` is `{ maxDurationMinutesDefault: 120, maxDurationMinutesMin: 5,
+// maxDurationMinutesMax: 1440 }` (from the Rust kernel); there is no round
+// budget. The supervisor host is late-bound (`deps.getUnattended`): it is
+// composed after this module is required, like the other runtime hosts.
 
 const { LIMITS } = require('./kernel');
 
@@ -55,7 +57,7 @@ function mountUnattendedRoutes(app, deps = {}) {
       case 'start': return respond(res, await host.start(id, body));
       case 'update': return respond(res, host.update(id, body));
       case 'stop': return respond(res, host.stop(id));
-      case 'resume': return respond(res, await host.resume(id));
+      case 'resume': return respond(res, await host.resume(id, body));
       default:
         return res.status(400).json({ ok: false, error: 'bad_action', unattended: host.get(id) || null });
     }

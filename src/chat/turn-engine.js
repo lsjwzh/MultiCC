@@ -2641,11 +2641,12 @@ function createChatTurnEngine(deps) {
             return;
           }
           // Unattended mode replaces Goal mode. The old Flutter builds still
-          // send `goal:true` + `goalLimits`: that maps to `{ maxRounds }` and
-          // nothing else (the message text becomes the goal).
+          // send `goal:true` + `goalLimits`: it only signals unattended mode and
+          // the message text becomes the goal. `maxRounds` / `goalLimits` are
+          // ignored, never persisted.
           const unattended = msg.unattended && typeof msg.unattended === 'object'
             ? msg.unattended
-            : (msg.goal ? { maxRounds: msg.goalLimits && msg.goalLimits.maxRounds } : null);
+            : (msg.goal ? {} : null);
           const turnOpts = unattended ? { unattended } : {};
           if (typeof msg.clientMsgId === 'string' && msg.clientMsgId.trim()) turnOpts.clientMsgId = msg.clientMsgId;
           if (typeof msg.userInputRequestId === 'string' && msg.userInputRequestId.trim()) {
