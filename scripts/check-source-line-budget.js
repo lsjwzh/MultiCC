@@ -158,6 +158,16 @@ const MIGRATION_DEBT = Object.freeze({
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
+  // 2026-11-10「后台工作属于本回合」：投递进持有中的回合需要三处接线
+  // （构造 heldTurnInjection、tryInjectHeldTurn、heldTurnInjectable/heldForBackground
+  // 端口），server.js 因此从 2999 抬到 3013/159953，按棘轮登记实测高水位。
+  // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
+  'server.js': Object.freeze({
+    ceiling: 3013,
+    byteCeiling: 159953,
+    target: 3000,
+    reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
+  }),
 });
 
 // Reviewed third-party/generated assets are not first-party maintainability

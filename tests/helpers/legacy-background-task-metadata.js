@@ -1,3 +1,7 @@
+/* FROZEN: differential-test oracle. Background-task metadata ledger. Copy of the pre-Rust
+ * implementation, kept only so tests can compare it with the Rust owner.
+ * Never require this from product code. */
+
 'use strict';
 
 const FIELDS = ['parent_task_id', 'run_id', 'subagent_type', 'task_type'];

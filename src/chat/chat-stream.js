@@ -114,6 +114,10 @@ function spawnProc(name, cfg) {
   // at the next turn boundary and triggers a --resume respawn.
   s.spawnedFingerprint = routeFingerprint(s.env);
   s.spawnedVault = envDigest(s.env);
+  // Which spawn contract this process actually serves (see ensure's
+  // spawnContract). A typed message may be delivered into a held turn only
+  // while the live process is still the one a fresh turn would use.
+  s.spawnedContract = s.spawnContract ?? null;
   s.lineBuf = '';
   s.stderrTail = '';
 
@@ -296,6 +300,8 @@ function onStdout(name, chunk) {
 // Returns true when the main result is held until background work finishes.
 function holdTurn(name, s, cur, evt) {
   cur.hold ||= createBackgroundHold({ ...s.backgroundHold, hasBackground: () => !!s.isBackgroundActive?.(),
+    onCapReached: ms => console.warn(`[multicc/chat-stream] [${name}] background work still owns this turn after `
+      + `${Math.round(ms / 60_000)} min of holding; the turn stays open until that work ends or the user cancels`),
     release: result => {
       if (sessions.get(name) !== s || s.current !== cur) return;
       try { cur.onEvent?.(result); } catch (_) {}
@@ -526,6 +532,7 @@ function ensure(name, cfg) {
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       isBackgroundActive: cfg.isBackgroundActive || null,
       backgroundHold: cfg.backgroundHold || null,
+      spawnContract: cfg.spawnContract ?? null,
       onExit: cfg.onExit || null,
       onDispose: cfg.onDispose || null,
       onNewSessionId: cfg.onNewSessionId || null,
@@ -553,6 +560,7 @@ function ensure(name, cfg) {
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
     if (cfg.isBackgroundActive !== undefined) s.isBackgroundActive = cfg.isBackgroundActive;
     if (cfg.backgroundHold !== undefined) s.backgroundHold = cfg.backgroundHold;
+    if (cfg.spawnContract !== undefined) s.spawnContract = cfg.spawnContract;
   }
   return s;
 }
@@ -701,8 +709,42 @@ function status(name) {
   };
 }
 
+// Deliver a message the user typed INTO the held turn: the CLI is idle after
+// its main result, so a user line goes to the same live stdin a normal
+// next-turn message would use. The hold counts the outstanding reply so the
+// turn cannot end before that answer lands. Returns false when there is no held
+// turn or no live process — the caller keeps waiting instead.
+function injectHeldTurn(name, text) {
+  const s = sessions.get(name);
+  const hold = s && s.current && s.current.hold;
+  if (!hold || !hold.held || !isAlive(name) || s.recycling) return false;
+  if (!hold.beginInjection()) return false;
+  try {
+    s.proc.stdin.write(userMessageLine(String(text)));
+    return true;
+  } catch (_) {
+    hold.abortInjection();
+    return false;
+  }
+}
+
+// Facts for the delivery predicate: the held phase, whether an injected answer
+// is still outstanding, process liveness and the spawn contract it serves.
+function heldTurn(name) {
+  const s = sessions.get(name);
+  if (!s) return null;
+  const hold = s.current?.hold;
+  return {
+    held: !!hold?.held,
+    injectionInFlight: (hold?.injectionsInFlight || 0) > 0,
+    alive: isAlive(name),
+    contract: s.spawnedContract ?? null,
+  };
+}
+
 module.exports = require('./stream-router').createStreamRouter(
   { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle, isClosing: closer.isClosing,
+    injectHeldTurn, heldTurn,
     waitForClose: (name, opts) => closer.wait(name, () => {}, opts) },
   require('./claude-sdk-stream').createSdkStream(),
   require('./codex-app-stream').createCodexAppStream(),

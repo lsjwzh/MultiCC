@@ -146,6 +146,9 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         if (isMainResult(event) && !item.cancelled) {
           s.started = true;
           item.hold ||= createBackgroundHold({ ...s.cfg.backgroundHold, hasBackground: () => hasBackground(s),
+            onCapReached: ms => console.warn(`[multicc/chat-sdk-stream] [${s.cfg.sessionId}] background work`
+              + ` still owns this turn after ${Math.round(ms / 60_000)} min of holding; the turn stays open`
+              + ' until that work ends or the user cancels'),
             release: result => { if (s.run === run && s.current === item && !item.finishing) {
               safe(item.onEvent, result); finish(s, run, item, result);
             } } });
@@ -243,6 +246,10 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
       run.fingerprint = fingerprint(cfg);
       run.vaultDigest = envDigest(cfg.env);
       run.model = cfg.sdkOptions.model;
+      // Which spawn contract this process serves (see background-hold): a
+      // typed message may enter a held turn only while the live process is
+      // still the one a fresh turn would spawn.
+      run.contract = cfg.spawnContract ?? null;
       const command = binary || bundledClaudeCodeBinary();
       if (!command) throw new Error('Bundled Claude Code binary is not available');
       run.admission = cfg.onBackgroundEvent ? createMonitorAdmission(
@@ -442,8 +449,43 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     void pump(s);
     return { ok: true, applied: 'now' };
   }
+  // Deliver a message the user typed INTO the held turn (the item's answer is
+  // complete, its background work still runs): the next user line goes to the
+  // same live lane the pump uses, and the hold counts the outstanding answer so
+  // the turn cannot end before it lands.
+  async function injectHeldTurn(name, text) {
+    const s = sessions.get(name);
+    const item = s && s.current;
+    const run = s && s.run;
+    if (!item || !item.sent || item.finishing || item.cancelled || !alive(run)) return false;
+    const hold = item.hold;
+    if (!hold || !hold.held || !hold.beginInjection()) return false;
+    try {
+      await run.lane.sendUser(JSON.stringify({ type: 'user', session_id: s.cfg.sessionId,
+        uuid: randomUUID(), parent_tool_use_id: null,
+        message: { role: 'user', content: [{ type: 'text', text: String(text) }] } }));
+      return true;
+    } catch (_) {
+      hold.abortInjection();
+      return false;
+    }
+  }
+
+  // Facts for the delivery predicate (held phase, outstanding injected answer,
+  // liveness, spawn contract of the running process).
+  function heldTurn(name) {
+    const s = sessions.get(name);
+    const hold = s && s.current?.hold;
+    return {
+      held: !!hold?.held,
+      injectionInFlight: (hold?.injectionsInFlight || 0) > 0,
+      alive: alive(s?.run),
+      contract: s?.run?.contract ?? null,
+    };
+  }
+
   return { ensure, send, inject: send, cancel, close, closeAndWait, waitForClose, status, recycle,
-    getTaskOutput, stopTask,
+    getTaskOutput, stopTask, injectHeldTurn, heldTurn,
     isAlive: name => alive(sessions.get(name)?.run), isClosing: name => closing.has(name) };
 }
 

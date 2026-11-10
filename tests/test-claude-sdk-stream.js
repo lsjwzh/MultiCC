@@ -54,7 +54,10 @@ async function laneFixture(t, { scenario = 'basic', streamDeps = {} } = {}) {
       env: { PATH: process.env.PATH, HOME: root, TMPDIR: root,
         FAKE_CLAUDE_SCENARIO: scenario, FAKE_CLAUDE_LOG: log },
       isBackgroundActive: () => background,
-      backgroundHold: { maxMs: 0 },
+      // No cap warning; a short quiet window so a held turn releases quickly
+      // once the test clears the background fact (the hold itself is the
+      // behaviour under test, the exact quiet length is not).
+      backgroundHold: { maxMs: 0, quietMs: 20 },
       ...overrides,
     };
     runtime.ensure('sdk', cfg);
@@ -141,11 +144,15 @@ test('idle cleanup holds live background work, then resumes the same history', {
   const f = await laneFixture(t);
   f.configure({ idleMs: 25 });
   f.setBackground(true);
-  await f.send('IDLE_HISTORY_MARKER');
+  // Background work is part of the turn: the answer is held instead of ending
+  // it, so `send` only resolves once that work is gone.
+  const turn = f.send('IDLE_HISTORY_MARKER');
+  await until(() => f.runtime.heldTurn('sdk')?.held === true, 'the answer was not held');
   await sleep(90);
   assert.equal(f.runtime.status('sdk').alive, true, 'background work owns the process');
   const pid = f.runtime.status('sdk').pid;
   f.setBackground(false);
+  assert.equal((await turn).subtype, 'success', 'the held answer completes the turn');
   await until(() => f.runtime.status('sdk').alive === false, 'idle cleanup did not close the child');
   f.configure();
   await f.send('after idle cleanup');

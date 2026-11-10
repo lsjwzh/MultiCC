@@ -78,10 +78,11 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // budget is a violation above, so this pins the declared set — a new god file
   // cannot be quietly parked here, and retiring an entry (by splitting the file
   // back under 3000) means shrinking this list in the same commit.
-  // Remaining debt is the run-config model panel. The macOS Agent was split
-  // below 3000 lines, and server.js returned under it when its inline task-state
-  // store moved to src/routes/task-state-store.js; neither has a debt entry.
-  // New debt must be listed here; retiring debt must shrink both lists.
+  // Remaining debt is the run-config model panel and server.js, which went back
+  // over 3000 with the held-turn injection wiring (chat delivery) and must be
+  // split again to retire the entry. The macOS Agent was split below 3000 lines
+  // and has no debt entry. New debt must be listed here; retiring debt must
+  // shrink both lists.
   assert.deepEqual(result.debts.map(entry => entry.file),
-    ['public/run-config.js']);
+    ['public/run-config.js', 'server.js']);
 });

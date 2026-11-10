@@ -92,6 +92,12 @@ function createOrchestrationRuntime({
   // refused, which is the only signal the workspace escalation reacts to (a
   // pinned lease means a writer exists, not that anyone is waiting on it).
   noteBlockedDelivery = null,
+  // Optional: (descriptor) → boolean. True when a message the human typed can
+  // be delivered INTO the running turn it is waiting behind (a held resident
+  // Claude turn, see src/chat/held-turn-injection.js). Asked before the outbox
+  // claim so such an item is not left waiting on the busy gate forever; the
+  // decision itself is the Rust predicate behind the port.
+  heldTurnInjectable = null,
   isDeliveryLocked = () => false,
   deliveryGroup = id => id,
   hasPersistedDelivery = async () => false,
@@ -101,6 +107,10 @@ function createOrchestrationRuntime({
   // crash-recovery reading (persisted = delivered).
   runnerDeliveryProbe = null,
   beforeDeliver = async () => {},
+  // Optional: ({ item, sessionId, text, opts, taskId }) → { delivered: boolean }.
+  // Delivers a typed message INTO the turn a resident lane is still holding open
+  // for background work. Absent / `delivered: false` keeps the queued path.
+  tryInjectHeldTurn = null,
   deliverOutbox = null,
   // Optional: ({ sessionId, item, error }) → void. Called when a message a human
   // typed is dead-lettered, i.e. when it will never reach its session. The
@@ -114,6 +124,12 @@ function createOrchestrationRuntime({
   // used to be silent in the UI and visible only as `delivery_skipped` in the
   // log. See reportWedgedDelivery.
   notifyStuckDelivery = null,
+  // Optional: (sessionId) → boolean. True while that session's running turn is
+  // held open for its own background work (turn over, background alive). Such a
+  // wait IS explained by a running turn — but only by saying "the background
+  // work owns it", which is what the notice then does. Absent keeps the old
+  // silence for `run_active` waits.
+  heldForBackground = null,
   // How long a typed message may wait behind a held workspace with nothing
   // running before the transcript says so. A slow turn is not a wedge.
   stuckDeliveryNoticeMs = 60_000,
@@ -887,6 +903,31 @@ function createOrchestrationRuntime({
     let deliveryOutcome = { accepted: false, durable: false };
     try {
       await resolveSessionWorkLineage(item);
+      // A running turn that is only waiting for its own background work can
+      // take a message the human typed right now: the resident Claude lane is
+      // idle after its main result but the same live process still owns the
+      // turn, so the message becomes another query inside it instead of a
+      // queued next turn. No scheduler claim and no workspace lease — the turn
+      // already holds both. When the predicate says no (no held turn, different
+      // spawn contract, another injected answer outstanding) this is a no-op and
+      // the normal waiting path below is unchanged.
+      if (typeof tryInjectHeldTurn === 'function') {
+        let injected = null;
+        try {
+          injected = await Promise.resolve(tryInjectHeldTurn({
+            item, sessionId: item.sessionId, text: deliveryText(item), opts: deliveryOptions(item),
+            taskId: itemTaskId(item),
+          }));
+        } catch (error) {
+          log(`[orchestration] held-turn injection failed: ${error.message}`);
+          injected = null;
+        }
+        if (injected?.delivered === true) {
+          const acknowledged = await acknowledgeDelivery(item);
+          if (acknowledged.ok) log(`[orchestration] delivery ${item.id} delivered into the held turn`);
+          return acknowledged;
+        }
+      }
       // The host-busy read must happen before our own claim: claiming emits
       // 'claimed', which projects queueState 'running' onto the session
       // record, so a post-claim isBusy would read its own claim as busy and
@@ -1067,9 +1108,14 @@ function createOrchestrationRuntime({
     // queue does not move and nothing on screen says why — so it starts the
     // same 60s clock and gets the same one notice per wedge. A running turn
     // is excluded either way: it explains the wait by itself.
+    const runActive = Array.isArray(reasons) && reasons.includes('run_active');
+    let heldForBackgroundTurn = false;
+    if (runActive && typeof heldForBackground === 'function') {
+      try { heldForBackgroundTurn = heldForBackground(sessionId) === true; } catch (_) { heldForBackgroundTurn = false; }
+    }
     const wedged = (reason === 'session_busy' || reason === 'delivery_locked')
       && isUserTypedWork(item.payload)
-      && !(Array.isArray(reasons) && reasons.includes('run_active'));
+      && (!runActive || heldForBackgroundTurn);
     if (!wedged) { blockedDelivery.delete(sessionId); return; }
     let state = blockedDelivery.get(sessionId);
     if (!state) {
@@ -1082,7 +1128,8 @@ function createOrchestrationRuntime({
     if (state.notified || at - state.since < stuckDeliveryNoticeMs) return;
     state.notified = true;
     try {
-      notifyStuckDelivery?.({ sessionId, item, reason, reasons, waitedMs: at - state.since });
+      notifyStuckDelivery?.({ sessionId, item, reason, reasons, waitedMs: at - state.since,
+        heldForBackground: heldForBackgroundTurn });
     } catch (error) {
       log(`[orchestration] stuck-delivery notice failed: ${error.message}`);
     }
@@ -1123,11 +1170,27 @@ function createOrchestrationRuntime({
       // process restarts.
       if (!item) return null;
       if (isBusy(item.sessionId, projected)) {
-        noteDeliverySkip(item, 'session_busy', projected);
-        if (typeof noteBlockedDelivery === 'function') {
-          try { noteBlockedDelivery(item.sessionId); } catch (_) { /* diagnostics never veto */ }
+        // A held turn is busy because it IS the current turn, but its resident
+        // process sits idle after the main result: a message the human typed can
+        // go into it instead of waiting behind it. The decision is the Rust
+        // predicate (via the host port); when it says yes the item is claimed so
+        // deliver() can inject it before the busy gate, with no scheduler claim
+        // and no workspace lease. Any refusal keeps the old waiting behaviour.
+        const injectable = typeof heldTurnInjectable === 'function' && (() => {
+          try {
+            return heldTurnInjectable({
+              item, sessionId: item.sessionId, text: deliveryText(item),
+              opts: deliveryOptions(item), taskId: itemTaskId(item),
+            }) === true;
+          } catch (_) { return false; }
+        })();
+        if (!injectable) {
+          noteDeliverySkip(item, 'session_busy', projected);
+          if (typeof noteBlockedDelivery === 'function') {
+            try { noteBlockedDelivery(item.sessionId); } catch (_) { /* diagnostics never veto */ }
+          }
+          return null;
         }
-        return null;
       }
       if (inFlightDeliveries.has(item.id)) return null;
       if (isDeliveryLocked(item.sessionId, projected)) {

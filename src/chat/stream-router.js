@@ -136,6 +136,17 @@ function createStreamRouter(legacy, sdk, appServer) {
     const impl = backend(name).stopTask;
     return typeof impl === 'function' ? impl(name, taskId) : Promise.resolve(false);
   };
+  // Deliver a typed message into the turn a resident lane is still holding
+  // open for its background work. Only lanes with a live stdin implement it;
+  // everywhere else the delivery stays on the normal waiting path.
+  api.injectHeldTurn = (name, text) => {
+    const impl = backend(name).injectHeldTurn;
+    return typeof impl === 'function' ? impl(name, text) : Promise.resolve(false);
+  };
+  api.heldTurn = (name) => {
+    const impl = backend(name).heldTurn;
+    return typeof impl === 'function' ? impl(name) : null;
+  };
   api.inject = api.send;
   return api;
 }

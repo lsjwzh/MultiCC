@@ -1,6 +1,6 @@
 'use strict';
 // Reproduction / regression harness for the background-completion-nudge dedup gap
-// and its coalescing fix (src/bg-completion-coalescer.js, C1/C2).
+// and its coalescing fix (native RustBackgroundTasks, C1/C2).
 //
 // It drives a throwaway chat session end-to-end against a running multicc server:
 //   - launches TWO abandoned bg tasks (Y1, Y2) that finish together while idle,

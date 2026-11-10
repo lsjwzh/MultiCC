@@ -57,6 +57,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   stream.close('idle-plain');
 
   // ── Case 2: live background work → process is HELD across idle windows ──
+  // (The fake CLI's result is not a main result, so the background HOLD never
+  // engages here — this case is the idle guard alone.)
   let bgActive = true;
   ensure('idle-bg', { isBackgroundActive: () => bgActive });
   await stream.send('idle-bg', 'start a long background task', () => {});

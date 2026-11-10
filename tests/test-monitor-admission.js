@@ -10,7 +10,6 @@ const { createStreamRouter } = require('../src/chat/stream-router');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const { createSessionDelivery } = require('../src/session/delivery');
-const coalescing = require('../src/bg-completion-coalescer');
 const sdkFixture = require('./helpers/claude-sdk-fixture');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('../src/chat/monitor-admission');
 
@@ -38,7 +37,7 @@ test('Monitor hook only captures known native notifications and never captures s
   assert.equal(seen.filter(event => !event.probe).length, 0, 'a mixed batch must not partially duplicate delivery');
 });
 
-test('background hold releases after quiet, waits out a busy self-wake at the cap, and lets the last self-wake decide the outcome', async () => {
+test('background hold releases after quiet, keeps holding past the cap while background work is alive, and lets the last self-wake decide the outcome', async () => {
   const { createBackgroundHold } = require('../src/chat/background-hold');
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const main = { type: 'result', subtype: 'success', is_error: false, result: 'first', usage: { input_tokens: 1 } };
@@ -91,14 +90,21 @@ test('background hold releases after quiet, waits out a busy self-wake at the ca
   assert.equal(ignored[0].result, 'kept', 'cancel/abort/interrupt does not replace the tracked outcome');
   assert.notEqual(ignored[0].is_error, true);
 
-  const capped = [];
-  const busy = createBackgroundHold({ hasBackground: () => true, release: r => capped.push(r), quietMs: 10, tickMs: 10, maxMs: 30 });
+  const capped = [], capNotices = [];
+  let busyActive = true;
+  const busy = createBackgroundHold({ hasBackground: () => busyActive, release: r => capped.push(r),
+    quietMs: 10, tickMs: 10, maxMs: 30, onCapReached: ms => capNotices.push(ms) });
   assert.equal(busy.start(main), true);
   busy.observe({ type: 'system', subtype: 'init' });
   await wait(80);
   assert.deepEqual(capped, [], 'the cap does not cut a running self-wake query');
   busy.observe(wake('late'));
-  await wait(20);
+  await wait(80);
+  assert.deepEqual(capped, [], 'the cap does not release while the background work is alive');
+  assert.deepEqual(capNotices, [30], 'the cap says so out loud exactly once');
+  // Background work is part of the turn: it ends when that work ends.
+  busyActive = false;
+  await wait(80);
   assert.equal(capped[0]?.result, 'late');
 
   const idle = createBackgroundHold({ hasBackground: () => false, release() { throw new Error('not held'); } });
@@ -169,8 +175,6 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor holds its turn 
   const background = createBackgroundTaskRuntime({
     broadcast() {}, observeTask() {}, noteBgResultInjected() {},
     deliverSystem: delivery.deliverSystem,
-    createCoalescer: coalescing.createCoalescer, buildNudge: coalescing.buildNudge,
-    classifyCompletion: coalescing.classifyBgCompletion,
     spawn() { throw new Error('Monitor must not create a writer shadow'); },
     readFile: fs.readFileSync, realpath: fs.realpathSync, tmpdir: () => f.root,
     getuid: () => process.getuid?.() || 0, now: Date.now,
@@ -273,8 +277,6 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
     broadcast: (id, event) => { if (event.type === 'monitor_progress') shown.push(event.description); },
     observeTask() {}, noteBgResultInjected() {},
     deliverSystem: (id, text) => { injections.push(text); },
-    createCoalescer: coalescing.createCoalescer, buildNudge: coalescing.buildNudge,
-    classifyCompletion: coalescing.classifyBgCompletion,
     spawn() { throw new Error('Monitor must not create a writer shadow'); },
     readFile: fs.readFileSync, realpath: fs.realpathSync, tmpdir: () => f.root,
     getuid: () => process.getuid?.() || 0, now: Date.now,
@@ -330,8 +332,6 @@ async function residentSession(t, lane, reply, backgroundHold = { quietMs: 300 }
   const background = createBackgroundTaskRuntime({
     broadcast: (id, event) => broadcasts.push(event), observeTask() {}, noteBgResultInjected() {},
     deliverSystem: (id, text) => { injections.push(text); },
-    createCoalescer: coalescing.createCoalescer, buildNudge: coalescing.buildNudge,
-    classifyCompletion: coalescing.classifyBgCompletion,
     spawn: require('node:child_process').spawn,
     readFile: fs.readFileSync, realpath: fs.realpathSync, tmpdir: () => f.root,
     getuid: () => process.getuid?.() || 0, now: Date.now,
@@ -441,33 +441,69 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Agent finish
   assert.deepEqual(s.injections, [], 'no 🔇 for a report the turn received');
 });
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} background work outliving the hold cap falls back to one 🔇 wake-up`, { timeout: 40000 }, async t => {
-  const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null }, { quietMs: 300, maxMs: 600 });
-  await s.turn('Start the background job');
-  assert.equal(s.main.length, 2);
+for (const lane of ['sdk', 'legacy']) test(`real ${lane} a message typed during the held phase runs inside that same turn`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null });
+  const turn = s.turn('Start the background job');
+  await untilRequests(s, 2);
+  assert.equal(await settled(turn), false, 'the answer is held while the job runs');
+  // The human types while the turn is held: the same live process takes it.
+  const injected = s.stream.injectHeldTurn(s.name, 'TYPED_WHILE_HELD');
+  assert.equal(await injected, true, 'the held turn accepts the message');
+  await untilRequests(s, 3);
+  assert.match(s.main[2], /TYPED_WHILE_HELD/, 'the message reached the same resident process');
+  // Its answer streams into the turn (a normal assistant event), and neither
+  // the answer nor the injected query ends the turn: the background job still
+  // owns it.
+  await until(() => s.recentEvents.some(event => Array.isArray(event.content)
+    && event.content.some(block => block?.type === 'text' && block.text === 'sdk-answer-3')),
+  'the injected answer did not stream into the turn');
+  assert.equal(await settled(turn), false, 'the injected answer does not end the turn');
   s.go('bg-go');
-  const deadline = Date.now() + 15000;
-  while (!s.injections.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
-  await new Promise(resolve => setTimeout(resolve, 500));
-  assert.equal(s.injections.length, 1, `one wake-up (${s.decisions.join(', ')})`);
-  assert.match(s.injections[0], /slow background job/);
-  assert.equal(s.main.length, 2, 'the native self-wake never ran outside admission');
+  const response = await turn;
+  const result = response.type === 'result' ? response : response.result;
+  assert.equal(s.main.length, 4, 'the background completion woke the same turn');
+  assert.equal(result.result, 'sdk-answer-4', 'the turn ends with the last answer it received');
+  assert.deepEqual(s.injections, [], 'no 🔇 for anything this turn received');
 });
 
-test('real sdk turn released at the hold cap with a background agent mid-request keeps its answer and the process', { timeout: 40000 }, async t => {
+for (const lane of ['sdk', 'legacy']) test(`real ${lane} background work outliving the hold cap keeps the turn open and the wake inside it`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null }, { quietMs: 300, maxMs: 600 });
+  const turn = s.turn('Start the background job');
+  await untilRequests(s, 2);
+  // The cap is a warning, not a release: past it the turn is still held and the
+  // completion still runs natively inside it.
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  assert.equal(await settled(turn), false, `the cap does not end the turn (${s.decisions.join(', ')})`);
+  assert.equal(s.main.length, 2);
+  assert.deepEqual(s.injections, [], 'no queued 🔇 while the turn is held');
+  s.go('bg-go');
+  const response = await turn;
+  const result = response.type === 'result' ? response : response.result;
+  assert.equal(s.main.length, 3, 'the native self-wake runs inside the turn');
+  assert.match(s.main[2], /slow background job/);
+  assert.equal(result.result, 'sdk-answer-3', 'the turn ends with the self-wake answer');
+  assert.deepEqual(s.injections, [], 'no 🔇 for a completion the turn received');
+});
+
+test('real sdk turn held past the cap with a background agent mid-request keeps its answer and the process', { timeout: 40000 }, async t => {
   let unblock;
   const blocked = new Promise(resolve => { unblock = resolve; });
   const s = await residentSession(t, 'sdk', { main: n => n === 1 ? backgroundAgent : null,
     sub: async () => { await blocked; return { type: 'text', text: 'AGENT_FINAL_REPORT END_OF_REPORT' }; } },
   { quietMs: 300, maxMs: 600 }, true);
   t.after(() => unblock());
-  const response = await s.turn('Research in the background');
-  const result = response.type === 'result' ? response : response.result;
-  assert.equal(result.is_error, false, 'the relay still carrying the agent request does not fail the finished turn');
-  assert.match(result.result, /^sdk-answer-/);
+  const turn = s.turn('Research in the background');
+  await untilRequests(s, 2);
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  assert.equal(await settled(turn), false, 'the cap does not release a turn whose agent is still running');
   assert.equal(s.stream.isAlive(s.name), true, 'the process and its background agent survive');
   assert.equal(s.background.hasProcessBackgroundTasks(s.name), true);
   unblock();
+  const response = await turn;
+  const result = response.type === 'result' ? response : response.result;
+  assert.equal(result.is_error, false, 'the relay still carrying the agent request does not fail the finished turn');
+  assert.match(result.result, /^sdk-answer-/);
+  assert.equal(s.main.length, 3, 'the agent report woke the same turn');
 });
 
 for (const lane of ['sdk', 'legacy']) test(`real ${lane} cancelling a held turn keeps its answer and stops the background work`, { timeout: 40000 }, async t => {

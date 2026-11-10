@@ -218,6 +218,43 @@ function probeAddon(file, node = process.execPath) {
         'backpressureResult','close'].some(key=>typeof a.RustWorkspaceSockets.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustProviderAttemptGenerations!=='function'
       || typeof a.RustProviderAttemptGenerations.prototype.next!=='function') process.exit(1);
+    if(typeof a.RustBackgroundTasks!=='function'
+      || ['handleEvent','recordMainToolUseId','markTaskOutputAwaiting','hasLiveBackgroundTasks',
+        'hasProcessBackgroundTasks','backgroundSilenceMs','listActiveBackgroundTasks',
+        'reapSessionShadows','stopForInsert','takeStoppedNote','stopSession','stopAll',
+        'nextDue','tick','applyControlOutput'].some(key=>typeof a.RustBackgroundTasks.prototype[key]!=='function')) process.exit(1);
+    {
+      const seen=[];const bgPorts={now:()=>1000,broadcast:(s,f)=>seen.push(f),observe:()=>{},noteBgResultInjected:()=>{},
+        deliverSystem:()=>{},logWarn:()=>{},safeText:v=>String(v||''),readFile:()=>'',
+        redactEvent:v=>v,redactText:t=>t,tmpdir:()=>'/tmp',realpath:p=>p,getuid:()=>0,
+        requestEnrich:()=>{},requestStopTask:()=>{}};
+      const bg=new a.RustBackgroundTasks({});
+      const started=bg.handleEvent(bgPorts,'smoke',null,{subtype:'codex_task_started',task_id:'codex_probe',description:'child'});
+      if(!started||!started.handled||!started.changed) process.exit(1);
+      const done=bg.handleEvent(bgPorts,'smoke',null,{subtype:'codex_task_done',task_id:'codex_probe',description:'child',status:'completed'});
+      if(!done||!done.handled||!seen.some(frame=>frame&&frame.type==='monitor_done')) process.exit(1);
+    }
+    if(typeof a.RustBackgroundHold!=='function'
+      || ['start','observe','tick','flush','beginInjection','abortInjection','capReached','dispose']
+        .some(key=>typeof a.RustBackgroundHold.prototype[key]!=='function')
+      || ['held','injections','maxMs'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustBackgroundHold.prototype,key)?.get!=='function')
+      || ['backgroundHoldMaxMs','backgroundHoldMayInject','backgroundHoldSpawnContract'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    {
+      if(a.backgroundHoldMaxMs(undefined)!==3600000 || a.backgroundHoldMaxMs('0')!==0) process.exit(1);
+      const digest=a.backgroundHoldSpawnContract({cli:'claude',model:'probe'});
+      if(!/^[0-9a-f]{64}$/.test(digest) || digest!==a.backgroundHoldSpawnContract({model:'probe',cli:'claude'})) process.exit(1);
+      const decision=a.backgroundHoldMayInject({held:true,userTyped:true,turnActive:true,processAlive:true,
+        processContract:digest,wantedContract:digest});
+      if(!decision||decision.inject!==true||decision.reason!=='held') process.exit(1);
+      const hold=new a.RustBackgroundHold({quietMs:50,maxMs:1000});
+      const main={type:'result',subtype:'success',is_error:false,result:'main',usage:{input_tokens:1}};
+      if(!hold.start(main,{mainResult:true,backgroundActive:true})||!hold.held||hold.maxMs!==1000) process.exit(1);
+      if(hold.tick({now:0,backgroundActive:true})!==null||!hold.capReached(true)||hold.capReached(true)) process.exit(1);
+      if(!hold.beginInjection()||hold.injections!==1||!hold.observe({type:'result',subtype:'success',is_error:false,result:'typed'})) process.exit(1);
+      if(hold.injections!==0||hold.tick({now:0,backgroundActive:false})!==null) process.exit(1);
+      const released=hold.tick({now:50,backgroundActive:false});
+      if(!released||released.result!=='typed'||hold.held||hold.flush()!==null) process.exit(1);
+    }
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
       'redactionSecretKey','redactionAnchors','redactionExactFragments',

@@ -506,13 +506,27 @@ test('core runner covers every selected path and expands declared variants', () 
   // entrypoint, so this tranche adds one entry (the differential suite) and
   // three Node commands: 408 + 1 = 409 entries, 334 + 1 = 335 deterministic,
   // 380 + 1 = 381 commands (378 Node entries).
-  assert.equal(core.length, 409, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 409);
+  // Re-audited for the Rust background-task owner:
+  // tests/test-background-tasks-differential.js compares the native owner with
+  // the frozen legacy runtime (helpers only, no real tail child) over hand-built
+  // and seeded randomized interleavings with a fake clock and temporary output
+  // files only (no port, real service, live account or user data), so it is
+  // deterministic core under npm:test:core.
+  // Re-audited for the Rust background-hold owner and held-turn injection:
+  // tests/test-background-hold-differential.js compares the native hold with the
+  // frozen legacy hold under a fake clock (timers only, no port, real service,
+  // live account or user data) and tests/test-held-turn-injection.js exercises
+  // the delivery wiring over a temporary database and stubbed ports (no real
+  // CLI), so both are deterministic core under npm:test:core.
+  // 410 + 2 = 412 entries, 336 + 2 = 338 deterministic, 382 + 2 = 384 commands
+  // (381 Node entries).
+  assert.equal(core.length, 412, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 412);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 335);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 338);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -522,8 +536,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 381,
-    '378 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 384,
+    '381 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

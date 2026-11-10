@@ -1,11 +1,10 @@
 'use strict';
 
 const assert = require('assert');
-const { EventEmitter } = require('events');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
-const bgCompletion = require('../src/bg-completion-coalescer');
 
 function makeClock() {
   let time = 0;
@@ -46,20 +45,8 @@ function makeHarness(overrides = {}) {
   const observations = [];
   const notes = [];
   const injections = [];
-  const processes = [];
   const files = new Map();
   const logs = [];
-  function spawn(command, args, options) {
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.command = command;
-    child.args = args;
-    child.options = options;
-    child.killed = false;
-    child.kill = () => { child.killed = true; };
-    processes.push(child);
-    return child;
-  }
   const dependencies = {
     broadcast: (sessionName, event) => broadcasts.push({ sessionName, event }),
     observeTask: observation => { observations.push(observation); },
@@ -67,10 +54,6 @@ function makeHarness(overrides = {}) {
     deliverSystem: (sessionName, text, origin) => {
       injections.push({ sessionName, text, origin });
     },
-    createCoalescer: bgCompletion.createCoalescer,
-    buildNudge: bgCompletion.buildNudge,
-    classifyCompletion: bgCompletion.classifyBgCompletion,
-    spawn,
     readFile: file => {
       if (!files.has(file)) throw new Error('ENOENT');
       return files.get(file);
@@ -89,7 +72,14 @@ function makeHarness(overrides = {}) {
     ...overrides,
   };
   const runtime = createBackgroundTaskRuntime(dependencies);
-  return { runtime, clock, broadcasts, observations, notes, injections, processes, files, logs, dependencies };
+  return { runtime, clock, broadcasts, observations, notes, injections, files, logs, dependencies };
+}
+
+// The writer shadow no longer spawns `tail`; it polls the output file through
+// readFile on a 500ms clock (see native/addon/src/background_tasks.rs).
+const SHADOW_POLL_MS = 500;
+function shadowFile(taskId, sessionId = 'native') {
+  return `/private/tmp/claude-501/-real-repo/${sessionId}/tasks/${taskId}.output`;
 }
 
 let passed = 0;
@@ -170,9 +160,12 @@ async function test(name, fn) {
     assert.strictEqual(h.broadcasts[0].event.background, false);
     assert.strictEqual(h.broadcasts[0].event.command, 'echo hi');
     assert.strictEqual(h.broadcasts[1].event.background, true);
-    assert.deepStrictEqual(h.processes[0].args, [
-      '-n', '+1', '-F', '/private/tmp/claude-501/-real-repo/native/tasks/task-fg.output',
-    ]);
+    // A non-Monitor task gets a polling writer shadow on its output file.
+    h.broadcasts.length = 0;
+    h.files.set(shadowFile('task-fg'), 'hello from the shadow\n');
+    h.clock.advance(SHADOW_POLL_MS);
+    assert.deepStrictEqual(h.broadcasts.map(item => item.event.type), ['monitor_progress']);
+    assert.strictEqual(h.broadcasts[0].event.description, 'foreground');
   });
 
   await test('live-task tracking distinguishes background work from foreground sync Bash', () => {
@@ -206,9 +199,12 @@ async function test(name, fn) {
     // died mid-line, so it reports unbounded silence rather than a young age.
     assert.strictEqual(h.runtime.backgroundSilenceMs('s1'), Infinity);
     h.clock.advance(6000);
-    h.processes[0].stdout.emit('data', 'still building\n');
+    h.files.set(shadowFile('task-bg'), 'still building\n');
+    h.clock.advance(SHADOW_POLL_MS); // the poll that sees the first line starts the gap
+    assert.strictEqual(h.runtime.backgroundSilenceMs('s1'), 0,
+      'a poll that just consumed the line reports zero gap');
     h.clock.advance(2000);
-    assert.strictEqual(h.runtime.backgroundSilenceMs('s1'), 2000, 'the last progress line starts the gap');
+    assert.strictEqual(h.runtime.backgroundSilenceMs('s1'), 2000, 'the last progress poll starts the gap');
     assert.strictEqual(h.runtime.backgroundSilenceMs('other-session'), 0);
     // A persistent Monitor runs without a tail shadow: it cannot report progress,
     // so it must not be read as silent background work either.
@@ -231,7 +227,6 @@ async function test(name, fn) {
     h.observations.length = 0;
     const reaped = h.runtime.reapSessionShadows('s1', { reason: 'stream_exit' });
     assert.strictEqual(reaped, 1);
-    assert.strictEqual(h.processes[0].killed, true, 'shadow tail is killed');
     const done = h.broadcasts.find(b => b.event.type === 'monitor_done');
     assert.ok(done, 'a synthetic monitor_done is broadcast');
     assert.strictEqual(done.event.status, 'interrupted');
@@ -244,7 +239,7 @@ async function test(name, fn) {
     assert.strictEqual(h.runtime.reapSessionShadows('s1', { reason: 'stream_exit' }), 0);
   });
 
-  await test('tail activity emits only a safe throttled progress description, never the raw line', () => {
+  await test('shadow polling emits only a safe throttled progress description, never the raw line', () => {
     const h = makeHarness();
     h.runtime.handleEvent('s1', {
       cwd: '/repo',
@@ -254,16 +249,53 @@ async function test(name, fn) {
       session_id: 'native', description: 'build\nstep',
     });
     h.broadcasts.length = 0;
-    h.processes[0].stdout.emit('data', 'SECRET RAW OUTPUT\n');
-    h.processes[0].stdout.emit('data', 'SECOND SECRET\n');
-    h.clock.advance(4999);
-    h.processes[0].stdout.emit('data', 'THIRD SECRET\n');
-    h.clock.advance(1);
-    h.processes[0].stdout.emit('data', 'FOURTH SECRET\n');
-    assert.strictEqual(h.broadcasts.length, 2, 'first signal and one after throttle window');
+    const file = shadowFile('task-bg');
+    h.files.set(file, 'SECRET RAW OUTPUT\n');
+    h.clock.advance(SHADOW_POLL_MS);
+    h.files.set(file, 'SECRET RAW OUTPUT\nSECOND SECRET\n');
+    h.clock.advance(5000); // the per-shadow throttle is 5000ms
+    // The comparison is `<`, so a poll exactly one window after the last signal
+    // still broadcasts; only a strictly smaller gap is throttled.
+    assert.strictEqual(h.broadcasts.length, 2, 'a poll exactly at the throttle boundary emits');
+    h.files.set(file, 'SECRET RAW OUTPUT\nSECOND SECRET\nTHIRD SECRET\n');
+    h.clock.advance(SHADOW_POLL_MS);
+    assert.strictEqual(h.broadcasts.length, 2, 'first signal and one after the throttle window');
     assert.deepStrictEqual(h.broadcasts.map(item => item.event.description), ['build step', 'build step']);
-    assert.ok(!JSON.stringify(h.broadcasts).includes('SECRET'), 'raw tail bytes never leave the runtime');
+    assert.ok(!JSON.stringify(h.broadcasts).includes('SECRET'), 'raw output bytes never leave the runtime');
     assert.ok(h.broadcasts.every(item => item.event.type === 'monitor_progress'));
+  });
+
+  await test('shadow polling reads a real output file through the host readFile port', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-bg-shadow-'));
+    try {
+      const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
+      const realRoot = fs.realpathSync(root);
+      const encoded = realRoot.replace(/[/.]/g, '-');
+      const outputDir = path.join(realRoot, `claude-${uid}`, encoded, 'native', 'tasks');
+      fs.mkdirSync(outputDir, { recursive: true });
+      const outputFile = path.join(outputDir, 'task-real.output');
+      const h = makeHarness({
+        readFile: fs.readFileSync,
+        realpath: fs.realpathSync,
+        tmpdir: () => root,
+        getuid: () => uid,
+      });
+      h.runtime.handleEvent('s1', {
+        cwd: realRoot,
+        currentToolCalls: [{ id: 'tool-real', name: 'Bash', input: { run_in_background: true } }],
+      }, {
+        subtype: 'task_started', task_id: 'task-real', tool_use_id: 'tool-real',
+        session_id: 'native', description: 'real file',
+      });
+      h.broadcasts.length = 0;
+      fs.writeFileSync(outputFile, 'real output line\n');
+      h.clock.advance(SHADOW_POLL_MS);
+      const progress = h.broadcasts.filter(item => item.event.type === 'monitor_progress');
+      assert.strictEqual(progress.length, 1, 'the real file must surface as one progress frame');
+      assert.strictEqual(progress[0].event.description, 'real file');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   await test('task progress normalizes ledger status and keeps raw output out of the UI DTO', () => {
@@ -324,7 +356,6 @@ async function test(name, fn) {
       session_id: 'native', description: '1688 image extraction pass progress',
     });
     assert.strictEqual(started.kind, 'monitor');
-    assert.strictEqual(h.processes.length, 0, 'Monitor lifetime is separate from writer shadows');
     assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), true);
     h.broadcasts.length = 0;
     h.observations.length = 0;
@@ -359,7 +390,6 @@ async function test(name, fn) {
       session_id: 'native', description: 'persistent progress',
     });
     assert.strictEqual(started.kind, 'monitor-persistent');
-    assert.strictEqual(h.processes.length, 0, 'persistent Monitor does not need the tail shadow fallback');
     assert.strictEqual(h.runtime.hasLiveBackgroundTasks('s1'), false);
     h.broadcasts.length = 0;
     h.observations.length = 0;
@@ -441,7 +471,6 @@ async function test(name, fn) {
     assert.strictEqual(h.runtime.reapSessionShadows('s1'), 1);
     assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), false);
     assert.strictEqual(h.runtime.reapSessionShadows('s1'), 0);
-    assert.strictEqual(h.processes.length, 0);
     assert.strictEqual(h.observations.at(-1).status, 'interrupted');
   });
 
@@ -460,7 +489,7 @@ async function test(name, fn) {
     }
     assert.deepStrictEqual(h.notes, ['s1', 's1']);
     assert.strictEqual(h.injections.length, 0, 'fixed window has not flushed yet');
-    assert.strictEqual(h.clock.unrefCount, 1, 'coalescer timer is unrefed');
+    assert.ok(h.clock.unrefCount >= 1, 'the single wait timer is unrefed');
     h.clock.advance(100);
     assert.strictEqual(h.injections.length, 1);
     assert.deepStrictEqual(h.injections[0].origin, {
@@ -576,7 +605,6 @@ async function test(name, fn) {
       }).decision, 'stale-run');
     }
     assert.strictEqual(h.broadcasts.length, before);
-    assert.strictEqual(h.processes[0].killed, false);
     assert.strictEqual(h.runtime.listActiveBackgroundTasks('s1')[0].run_id, '002');
     h.runtime.handleEvent('s1', state, {
       subtype: 'task_progress', task_id: 'child', run_id: '003', description: '继续检查',
@@ -585,6 +613,33 @@ async function test(name, fn) {
     h.runtime.stopSession('s1');
     h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'child', description: '旧版任务' });
     assert.strictEqual(h.broadcasts.at(-1).event.run_id, undefined);
+  });
+
+  await test('十进制 run_id 按数值比较：10 晚于 9 被接受，9 晚于 10 被拒绝，非数字仍按字符串', () => {
+    const h = makeHarness();
+    const state = { cwd: '/repo', currentToolCalls: [] };
+    h.runtime.handleEvent('s1', state, {
+      subtype: 'task_started', task_id: 't', run_id: '9', description: 'run9',
+    });
+    // 数值比较："10" 晚于 "9"，迟到的 "10" 应被接受。
+    h.runtime.handleEvent('s1', state, {
+      subtype: 'task_progress', task_id: 't', run_id: '10', description: 'run10',
+    });
+    assert.strictEqual(h.runtime.listActiveBackgroundTasks('s1')[0].run_id, '10');
+    assert.strictEqual(h.runtime.listActiveBackgroundTasks('s1')[0].description, 'run10');
+    // 数值比较："9" 早于 "10"，迟到的 "9" 被判定为旧运行。
+    assert.strictEqual(h.runtime.handleEvent('s1', state, {
+      subtype: 'task_progress', task_id: 't', run_id: '9', description: 'stale',
+    }).decision, 'stale-run');
+    assert.strictEqual(h.runtime.listActiveBackgroundTasks('s1')[0].run_id, '10');
+    assert.strictEqual(h.runtime.listActiveBackgroundTasks('s1')[0].description, 'run10');
+    // 非数字 run_id 保持旧字符串比较："x-10" < "x-9"，故被拒绝。
+    const h2 = makeHarness();
+    h2.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 't', run_id: 'x-9' });
+    assert.strictEqual(h2.runtime.handleEvent('s1', state, {
+      subtype: 'task_progress', task_id: 't', run_id: 'x-10',
+    }).decision, 'stale-run');
+    assert.strictEqual(h2.runtime.listActiveBackgroundTasks('s1')[0].run_id, 'x-9');
   });
 
   await test('stopSession and stopAll kill tails, cancel coalescing, and clear dedup ledgers', () => {
@@ -602,9 +657,7 @@ async function test(name, fn) {
     });
     h.runtime.markTaskOutputAwaiting('s1', { block: true, task_id: 'old-await' });
     assert.strictEqual(h.runtime.stopSession('s1'), 1);
-    assert.strictEqual(h.processes[0].killed, true);
     assert.strictEqual(h.runtime.stopAll(), 1);
-    assert.strictEqual(h.processes[1].killed, true);
     h.clock.advance(100);
     assert.strictEqual(h.injections.length, 0, 'shutdown canceled the buffered completion');
 
@@ -937,7 +990,6 @@ async function test(name, fn) {
     assert.strictEqual(h.runtime.hasLiveBackgroundTasks('s1'), false);
     h.clock.advance(100);
     assert.strictEqual(h.injections.length, 0);
-    assert.strictEqual(h.processes.length, 0);
     h.runtime.handleEvent('s1', state, event);
     assert.strictEqual(h.runtime.reapSessionShadows('s1'), 1);
     assert.strictEqual(h.broadcasts.filter(b => b.event.type === 'monitor_done').at(-1).event.status, 'interrupted');

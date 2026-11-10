@@ -69,6 +69,7 @@ const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
 const { fitHistoryFrame } = require('./history-frame-budget');
 const chatStream = require('./chat-stream');
+const { spawnContractOf } = require('./held-turn-injection');
 const secretsVault = require('../secrets-vault');
 const waitInjector = require('../wait/injector');
 const providers = require('../providers/core');
@@ -1908,8 +1909,14 @@ function createChatTurnEngine(deps) {
       rememberActiveCliState(persisted);
       savePersistedSessionsBestEffort('runtime.streaming-session-id-allocate');
     }
+    // Which spawn contract this process will serve. The chat stream stores it
+    // with the child; a message the user types while the turn is held can be
+    // delivered into that process only while the persisted record still
+    // projects the same digest (see held-turn-injection.js).
+    const spawnContractDigest = spawnContractOf(persisted);
     chatStream.ensure(sessionName, {
       cmd: invocation.cmd,
+      spawnContract: spawnContractDigest,
       cwd: cs.cwd,
       sessionId: persisted[nativeKey],
       sdkOptions: invocation.sdkOptions,

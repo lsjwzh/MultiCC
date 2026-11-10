@@ -1859,7 +1859,6 @@ const {
   recordApiError, recordApiSuccess, evaluateTurnApiError, meaningfulTurnOutput,
   turnHasSideEffects, clearSessionApiErrorState, scheduleOwnedRetry,
 } = apiErrorHost;
-const bgCoalesce = require('./src/bg-completion-coalescer');
 const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
 const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = require('./src/ios-ota').createIosOta({ fs, path, rootDir: __dirname });
@@ -2477,10 +2476,6 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   observeTask: observation => orchestrationRuntime.observeTask(observation),
   noteBgResultInjected: sessionName => waitInjector.noteBgResultInjected(sessionName),
   deliverSystem: (sessionName, text, origin) => sessionDelivery.deliverSystem(sessionName, text, origin),
-  createCoalescer: bgCoalesce.createCoalescer,
-  buildNudge: bgCoalesce.buildNudge,
-  classifyCompletion: bgCoalesce.classifyBgCompletion,
-  spawn,
   readFile: fs.readFileSync,
   realpath: fs.realpathSync,
   tmpdir: () => '/tmp',
@@ -2658,11 +2653,29 @@ bus.on('chat:run', (sessionName, text, opts) => {
 });
 services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 
+// Delivery into a turn a resident Claude lane is still holding open for its
+// background work (see src/chat/held-turn-injection.js). Facts only — the
+// decision lives in Rust and the write lives in the chat stream backends.
+const heldTurnInjection = require('./src/chat/held-turn-injection').createHeldTurnInjection({
+  getRecord: id => persistedSessions.get(id),
+  chatStream,
+  isRunActive: id => sessionWorkHost.isRunActive(id),
+  appendMessage: (id, message) => appendChatMessage(id, message),
+  activeTurnId: id => chatSessions.get(id)?._activeTurn?.turnId || null,
+  hasPersistedDelivery: (id, identity) => chatTurnEngine.persistedOrchestrationDelivery(id, identity),
+  log: message => console.log('[multicc/held-turn]', message),
+});
+
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
   isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, noteBlockedDelivery: id => workspaceAdmission?.noteBlockedDelivery(id), deliveryGroup: id => taskShellHost.workspaceGroup(id),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
+  // A typed message goes INTO the held turn when the lane can take it; the
+  // predicate is Rust (background-hold) and refusals are a no-op.
+  tryInjectHeldTurn: heldTurnInjection.tryInject,
+  heldTurnInjectable: heldTurnInjection.canInject,
+  heldForBackground: id => { try { return chatStream.heldTurn(id)?.held === true; } catch (_) { return false; } },
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   // A typed message that dead-letters — or that cannot even start — must not vanish silently (src/chat/session-notices.js).
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox, ...require('./src/chat/session-notices').createSessionNotices({ appendChatMessage, chatBroadcast }),
