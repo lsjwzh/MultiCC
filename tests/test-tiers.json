@@ -3682,6 +3682,11 @@
       ]
     },
     {
+      "path": "tests/test-history-repository-differential.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-hooks-ui-cdp.js",
       "tier": "flow",
       "lane": "cdp",
@@ -5059,6 +5064,15 @@
     },
     {
       "path": "tests/test-run-config-opencode-refresh-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-run-config-preset-apply-cdp.js",
       "tier": "flow",
       "lane": "cdp",
       "owner": "npm:test:cdp",

@@ -405,6 +405,17 @@
     const ids = [...new Set(readOpenCodeModelsSync().map(m => m.provider).filter(Boolean))];
     return ids.map(id => ({ value: OPENCODE_NATIVE_PREFIX + id, label: `OpenCode 原生 · ${openCodeNativeProviderLabel(id)}` }));
   }
+  function openCodeNativeLineAvailable(value) {
+    // OpenCode 的模型目录是 1 小时 TTL 的本地缓存；冷缓存（还没加载 /
+    // opencode 暂时不可用）不代表这条原生线路没了。只有缓存是热的、且确实
+    // 查不到这条线路（比如在 opencode 登录里删掉了那个 provider）才判
+    // 「不可用」。比对走 openCodeNativeIdKey：`opencodego` ↔ `opencode-go`
+    // 指同一条线路。
+    const list = openCodeNativeProviders();
+    if (!list.length) return true;
+    const key = openCodeNativeIdKey(openCodeNativeProviderOf(value));
+    return list.some(item => openCodeNativeIdKey(openCodeNativeProviderOf(item.value)) === key);
+  }
   // 把（可能带旧别名的）原生线路值对齐到当前模型目录里的真实 id；非原生线路或
   // 目录里找不到对应 id 时原样返回。刷新后旧会话的 `opencodego` 才能落到
   // `opencode-go` 上，而不是匹配不到任何模型。
@@ -1202,6 +1213,7 @@
     normalizeModel,
     buildModelChoices,
     openCodeNativeProviders,
+    openCodeNativeLineAvailable,
     openCodeNativeProviderOf,
     openCodeNativeProviderLabel,
     openCodeNativeIdKey,
