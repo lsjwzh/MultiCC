@@ -1,3 +1,7 @@
+/* FROZEN: differential-test oracle. Background-task completion coalescer. Copy of the pre-Rust
+ * implementation, kept only so tests can compare it with the Rust owner.
+ * Never require this from product code. */
+
 'use strict';
 
 // Coalesce background-task completion nudges.

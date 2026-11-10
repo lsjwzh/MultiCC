@@ -38,7 +38,7 @@ Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, `kimi`, 
 
 | CLI | Terminal mode | Chat mode | Provider isolation |
 |-----|---------------|-----------|--------------------|
-| **Claude Code** | `claude` inside `tmux`, resumed by session id | `claude -p --output-format stream-json` | Per-session `ANTHROPIC_*` env vars; clean default login for sessions without a provider override |
+| **Claude Code** | `claude` inside `tmux`, resumed by session id | in-tree Claude Agent SDK bridge (resident; the old `claude -p` chat runner is gone) | Per-session `ANTHROPIC_*` env vars; clean default login for sessions without a provider override |
 | **Codex** | `codex` / `codex resume <id>` inside `tmux` | `codex exec --json` | Per-provider `CODEX_HOME` under `~/.multicc/codex-homes`; local proxy for non-OpenAI endpoints |
 | **OpenCode** | `opencode --session <id>` inside `tmux` | `opencode run --format json` | Uses the Claude-compatible provider pool; native session id retained per logical chat |
 | **ZCode** | ZCode TUI (engine) inside `tmux` | in-tree bridge → `zcode.cjs --prompt --json` | Drives the headless engine inside the ZCode.app bundle; provider/auth owned by ZCode in `~/.zcode/cli/config.json`, located via `ZCODE_ENGINE` |

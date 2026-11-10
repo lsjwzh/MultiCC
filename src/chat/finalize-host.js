@@ -1,7 +1,7 @@
 'use strict';
 
 const { planRetryBlockedFinalization, resolveTurnFinalization } = require('./finalize-plan');
-const turnTimeline = require('./turn-timeline');
+const turnProgress = require('./turn-progress');
 
 const REQUIRED_PORTS = Object.freeze([
   'persistAssistant',
@@ -29,6 +29,7 @@ function assertFinalizeHostPorts(ports) {
 function createTurnFinalizationExecutor(rawPorts) {
   const ports = assertFinalizeHostPorts(rawPorts);
   const now = typeof ports.now === 'function' ? ports.now : Date.now;
+  const timelineField = typeof ports.timelineField === 'function' ? ports.timelineField : turnProgress.field;
   const log = typeof ports.log === 'function' ? ports.log : () => {};
   const logError = typeof ports.logError === 'function' ? ports.logError : () => {};
 
@@ -112,7 +113,7 @@ function createTurnFinalizationExecutor(rawPorts) {
           usage: {},
           durationMs: cs.turnStartedAt ? now() - cs.turnStartedAt : undefined,
           num_turns: cs.chatTurnCount,
-          ...turnTimeline.field(cs, now()),
+          ...timelineField(sessionName, cs, now()),
         });
         break;
       case 'capture-final-text':

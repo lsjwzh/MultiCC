@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createCodexBackgroundEvents, safeText } = require('../src/cli-adapters/codex-background-events.cjs');
-const { createNativeBackgroundTasks } = require('../src/chat/native-background-tasks');
+const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
 const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
 
 function fixture(overrides = {}) {
@@ -124,23 +124,30 @@ test('摘要脱敏且长度有界', () => {
 test('任务快照隔离会话，心跳不伪造活动，退出中断且不重复投递结果', () => {
   let time = 10;
   const messages = [], observed = [];
-  const runtime = createNativeBackgroundTasks({ broadcast: (name, event) => messages.push({ name, event }),
-    observe: o => observed.push(o), now: () => time });
+  const runtime = createBackgroundTaskRuntime({
+    broadcast: (name, event) => messages.push({ name, event }),
+    observeTask: o => observed.push(o),
+    noteBgResultInjected() {}, deliverSystem() {},
+    readFile: () => { throw new Error('ENOENT'); }, realpath: value => value,
+    tmpdir: () => '/tmp', getuid: () => 501,
+    setTimer: () => ({}), clearTimer() {},
+    now: () => time, logger: { info() {}, warn() {} },
+  });
   const started = { subtype: 'codex_task_started', task_id: 'codex-agent:a', description: '检查代码', kind: 'agent' };
-  runtime.handle('s1', started);
-  assert.equal(runtime.has('s1'), true); assert.equal(runtime.has('s2'), false);
-  assert.equal(runtime.list('s1')[0].description, '检查代码');
+  runtime.handleEvent('s1', null, started);
+  assert.equal(runtime.hasLiveBackgroundTasks('s1'), true); assert.equal(runtime.hasLiveBackgroundTasks('s2'), false);
+  assert.equal(runtime.listActiveBackgroundTasks('s1')[0].description, '检查代码');
   time = 1000;
-  runtime.handle('s1', { ...started, subtype: 'codex_task_progress', heartbeat: true });
-  assert.equal(runtime.silence('s1', time), 990);
+  runtime.handleEvent('s1', null, { ...started, subtype: 'codex_task_progress', heartbeat: true });
+  assert.equal(runtime.backgroundSilenceMs('s1', time), 990);
   assert.equal(observed.length, 1);
-  assert.equal(runtime.reap('s1'), 1);
-  assert.equal(runtime.reap('s1'), 0);
+  assert.equal(runtime.reapSessionShadows('s1'), 1);
+  assert.equal(runtime.reapSessionShadows('s1'), 0);
   assert.equal(messages.at(-1).event.status, 'interrupted');
-  runtime.handle('s1', { ...started, subtype: 'codex_task_progress' });
-  assert.equal(runtime.has('s1'), false);
-  runtime.handle('s1', { ...started, subtype: 'codex_task_started' });
-  assert.equal(runtime.has('s1'), true);
+  runtime.handleEvent('s1', null, { ...started, subtype: 'codex_task_progress' });
+  assert.equal(runtime.hasLiveBackgroundTasks('s1'), false);
+  runtime.handleEvent('s1', null, { ...started, subtype: 'codex_task_started' });
+  assert.equal(runtime.hasLiveBackgroundTasks('s1'), true);
 });
 
 test('适配器展示原生 Agent 工具卡片及中文状态', () => {

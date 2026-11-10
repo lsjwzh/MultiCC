@@ -820,12 +820,12 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   @override
   void initState() {
     super.initState();
-    // 任务的线路是 chat 线路：取列表里第一条能作 chat 的车道 —— 一次性
-    // `claude -p` / `codex exec` 已经不在 chat 的选择里了（服务端 cli-capability 的
-    // kinds 列），所以这里也不再默认到它们。
+    // 任务的线路是 chat 线路：取列表里第一条能作 chat 的车道 —— `claude -p` 那个
+    // 一次性命令已经不在 chat 的选择里了（服务端 cli-capability 的 kinds 列），
+    // 所以这里也不再默认到它。
     final cli = widget.clis.firstWhere(
       (cli) => cliOffersIn(cli, 'chat'),
-      orElse: () => 'claude-exp',
+      orElse: () => 'claude',
     );
     _runtime = AirTaskRuntime(cli: cli);
     _followLastRuntime();

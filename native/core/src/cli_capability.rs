@@ -27,8 +27,7 @@
 //!
 //!   ```text
 //!   家族     场景      车道        大字      小字
-//!   claude   chat      claude-exp  Claude    Claude Agent SDK  （bundled）
-//!            chat      claude      Claude    claude -p         （offered: false）
+//!   claude   chat      claude      Claude    Claude Agent SDK  （bundled）
 //!            terminal  claude      Claude    claude
 //!   codex    chat      codex-exp   Codex     Codex App Server
 //!            chat      codex       Codex     codex exec        （offered: false）
@@ -37,16 +36,18 @@
 //!            terminal  opencode    OpenCode  opencode
 //!   ```
 //!
-//!   `claude` 是 `claude -p` 的一次性车道、`codex` 是 `codex exec`：chat 里已经没有
-//!   它们的位置，但终端真要把这两个可执行文件跑起来，所以只退出 chat、留在终端。
-//!   claude-exp / codex-exp 是进程内的 SDK / app-server 车道，没有可执行文件能丢进
-//!   终端。ACP 家族的 chat 车道多写一截 ` acp`：同一个可执行文件在 chat 里是被 ACP
-//!   桥驱动的，在终端里就是它自己。id 一律不动：会话记录、Provider 池、路由、适配器
-//!   label 全记着旧 id。
+//!   Claude's chat lane is the resident Agent SDK; the old `claude -p` one-shot
+//!   chat lane was deleted, so the terminal keeps the `claude` executable and
+//!   chat speaks the same id. `codex` is still `codex exec` and only lost its
+//!   chat seat; codex-exp is the resident app-server lane. claude-exp no longer
+//!   exists as a lane — it is an accepted **alias** of `claude` ([`ALIASES`]), so
+//!   persisted sessions keep resolving while no picker offers it again.
+//!   ACP families write ` acp` on their chat lane: the same executable is driven
+//!   by the ACP bridge in chat and runs itself in a terminal.
 //!
 //!   The `update` artifact is a **family** fact, never a lane one: both of
-//!   codex's lanes run the same binary behind the same install script, and
-//!   claude-exp has no artifact of its own at all (its engine is a library
+//!   codex's lanes run the same binary behind the same install script, and the
+//!   Claude Agent SDK has no artifact of its own at all (its engine is a library
 //!   MultiCC requires), so it is marked `bundled` instead.
 //!
 //! The server reads one frozen snapshot of all of this ([`catalog`]) through
@@ -84,10 +85,11 @@ const fn cap(protocol: &'static str, lifecycle: &'static str, cancel: &'static s
 }
 
 pub const CAPABILITIES: &[(&str, Capability)] = &[
-    ("claude", cap("claude-stream", "resident", "process")),
-    // The SDK lane interrupts the in-flight turn and keeps its child, so a
-    // session is stopped as soon as no turn runs — not when the process goes.
-    ("claude-exp", cap("claude-stream-sdk", "resident", "turn")),
+    // Claude chat is the resident Agent SDK lane now (the old `claude -p`
+    // chat lane was deleted). The SDK lane interrupts the in-flight turn and
+    // keeps its child, so a session is stopped as soon as no turn runs — not
+    // when the process goes. `claude-exp` is only an alias of this row.
+    ("claude", cap("claude-stream-sdk", "resident", "turn")),
     ("codex", cap("codex-exec-json", "per-turn", "process")),
     // `codex app-server --listen stdio://` is long-lived and the bridge holds it
     // across turns (`--resident`). The thread survives a reap, so cancel and
@@ -121,7 +123,6 @@ pub enum ProtocolFamily {
 
 const PROTOCOL_FAMILIES: &[(&str, ProtocolFamily)] = &[
     ("claude", ProtocolFamily::Anthropic),
-    ("claude-exp", ProtocolFamily::Anthropic),
     ("codex", ProtocolFamily::OpenAi),
     ("codex-exp", ProtocolFamily::OpenAi),
     ("opencode", ProtocolFamily::Acp),
@@ -209,25 +210,17 @@ pub const CLIS: &[Family] = &[
             "npm install -g @anthropic-ai/claude-code",
         ),
         lanes: Some(&[
-            // 常驻的 Agent SDK 车道就是 chat 里的 Claude（内部 id 仍是 claude-exp）。
-            // 它的引擎由 MultiCC 内置，没有可安装的制品 —— 所以是 bundled。
+            // Chat runs the resident Agent SDK; terminal runs the `claude`
+            // executable. One id, two kinds — the old `claude -p` chat lane is
+            // gone and `claude-exp` is now only an alias of this id.
             (
                 "chat",
-                &[
-                    Lane {
-                        id: "claude-exp",
-                        mark: Some("A"),
-                        engine: Some("Claude Agent SDK"),
-                        bundled: true,
-                        ..LANE
-                    },
-                    Lane {
-                        id: "claude",
-                        engine: Some("claude -p"),
-                        offered: false,
-                        ..LANE
-                    },
-                ],
+                &[Lane {
+                    id: "claude",
+                    engine: Some("Claude Agent SDK"),
+                    bundled: true,
+                    ..LANE
+                }],
             ),
             // 终端跑的就是 `claude` 这个可执行文件，大字与家族同名。
             (
@@ -461,9 +454,47 @@ pub const CLIS: &[Family] = &[
     },
 ];
 
-/// The spelling every lookup normalizes to: trimmed, lower-case.
+/// Retired lane ids that still resolve to a live one. `claude-exp` was the
+/// internal id of the Agent SDK chat lane; that lane is now simply `claude`.
+/// Persisted sessions, provider pools and queued items still spell the old id,
+/// so every lookup accepts it — but the catalogue never offers it again.
+pub const ALIASES: &[(&str, &str)] = &[("claude-exp", "claude")];
+
+fn alias_of(key: &str) -> String {
+    ALIASES.iter().find(|(alias, _)| *alias == key).map_or_else(
+        || key.to_string(),
+        |(_, canonical)| (*canonical).to_string(),
+    )
+}
+
+/// The spelling every lookup normalizes to: trimmed, lower-case, then any
+/// retired id folded into its live lane. This is the single place a CLI id is
+/// canonicalized.
+///
+/// Trimming follows ECMAScript's `String.prototype.trim`, not Rust's Unicode
+/// `White_Space`: the mirrors in JS (`src/cli/cli-capability.js`,
+/// `public/provider-catalog.js`) trim with `.trim()`, and U+0085 is whitespace
+/// to Rust but not to JS. Normalizing differently would let the same record be
+/// resident in one table and per-turn in another.
 pub fn name_of(cli: &str) -> String {
-    cli.trim().to_lowercase()
+    alias_of(js_trim(&cli.to_lowercase()))
+}
+
+fn js_trim(value: &str) -> &str {
+    value.trim_matches(|c: char| {
+        matches!(c,
+            '\u{0009}'..='\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}')
+    })
 }
 
 pub fn capability_of(cli: &str) -> Capability {
@@ -879,6 +910,7 @@ fn build(families: &[Family]) -> Result<Value, String> {
         "defaultCapability": capability_record(&DEFAULT_CAPABILITY),
         "capabilities": capabilities,
         "protocolFamilies": protocol_families,
+        "aliases": Map::from_iter(ALIASES.iter().map(|(alias, canonical)| ((*alias).to_string(), json!(canonical)))),
         "clis": clis,
         "display": display,
         "laneFamily": lane_family,
@@ -942,26 +974,52 @@ mod tests {
     }
 
     #[test]
+    fn retired_claude_exp_is_an_alias_of_claude() {
+        // The old SDK lane id still resolves everywhere, but it is not a lane.
+        assert_eq!(name_of(" Claude-EXP "), "claude");
+        assert_eq!(capability_of("claude-exp"), capability_of("claude"));
+        assert_eq!(protocol_family("claude-exp"), ProtocolFamily::Anthropic);
+        assert_eq!(
+            family_of("claude-exp").map(|family| family.id),
+            Some("claude")
+        );
+        let value = snapshot();
+        assert!(value["display"].get("claude-exp").is_none());
+        assert_eq!(value["aliases"]["claude-exp"], "claude");
+    }
+
+    #[test]
+    fn trimming_matches_ecmascript_not_unicode_white_space() {
+        // Mirrors `String.prototype.trim`: these fold to the live lane.
+        assert_eq!(name_of("\u{FEFF}CLAUDE-EXP\u{FEFF}"), "claude");
+        assert_eq!(name_of("\u{00A0}claude\u{2028}"), "claude");
+        // U+0085 NEL is Unicode whitespace but not ECMAScript whitespace: JS
+        // sees an unknown id here, so Rust must too instead of making it
+        // resident.
+        assert_eq!(name_of("\u{0085}claude-exp"), "\u{0085}claude-exp");
+        assert!(!is_resident("\u{0085}claude-exp"));
+    }
+
+    #[test]
     fn display_rows_follow_the_catalogue() {
         let value = snapshot();
         let display = &value["display"];
-        assert_eq!(display["claude-exp"]["displayName"], "Claude");
-        assert_eq!(display["claude-exp"]["engine"], "Claude Agent SDK");
-        assert_eq!(display["claude-exp"]["kinds"], json!(["chat"]));
-        assert_eq!(display["claude"]["kinds"], json!(["terminal"]));
-        assert_eq!(display["claude"]["engine"], "claude");
+        assert_eq!(display["claude"]["displayName"], "Claude");
+        assert_eq!(display["claude"]["engine"], "Claude Agent SDK");
+        assert_eq!(display["claude"]["shortMark"], "C");
+        assert!(display["claude"].get("kinds").is_none());
         assert_eq!(display["codex"]["shortMark"], "E");
         assert_eq!(display["codex"]["replacedBy"], "codex-exp");
         assert_eq!(display["opencode"]["engine"], "opencode acp");
         assert!(display["opencode"].get("kinds").is_none());
         assert_eq!(display["qoder"]["shortMark"], "Q");
         assert!(display["qoder"].get("engine").is_none());
-        assert_eq!(value["laneFamily"]["claude-exp"], "claude");
-        assert_eq!(value["bundled"]["claude-exp"], true);
-        assert_eq!(value["bundled"]["claude"], false);
+        assert_eq!(value["laneFamily"]["claude"], "claude");
+        assert!(value["laneFamily"].get("claude-exp").is_none());
+        assert_eq!(value["bundled"]["claude"], true);
         assert_eq!(
             value["bundledEngines"]["claude"],
-            json!([{ "lane": "claude-exp", "engine": "Claude Agent SDK", "kind": "chat" }])
+            json!([{ "lane": "claude", "engine": "Claude Agent SDK", "kind": "chat" }])
         );
         assert_eq!(value["updates"]["zcode"]["auto"], false);
         assert!(value["npmPackages"].get("qoder").is_none());

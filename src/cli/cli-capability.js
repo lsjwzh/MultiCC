@@ -31,14 +31,19 @@ const {
   capabilities: CAPABILITIES,
   clis: CLIS,
   display: DISPLAY,
+  aliases: ALIASES,
 } = SNAPSHOT;
 
 // Own keys only: an id like `constructor` must not resolve to Object.prototype.
 const own = (table, key) => (Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined);
 const raw = cli => String(cli == null ? '' : cli).trim();
 
+// The single normalization point: trimmed, lower-case, then any retired id
+// (claude-exp) folded into the lane that replaced it. Every lookup below is by
+// this key, so a persisted old id answers exactly like its successor.
 function nameOf(cli) {
-  return raw(cli).toLowerCase();
+  const key = raw(cli).toLowerCase();
+  return own(ALIASES, key) || key;
 }
 
 function capabilityOf(cli) {
@@ -119,6 +124,12 @@ function kindsOf(cli) {
 
 function offersIn(cli, kind) {
   return kindsOf(cli).includes(nameOf(kind));
+}
+
+// A retired id that resolves to a live lane (`claude-exp` -> `claude`). Pickers
+// must not offer it; input paths keep accepting it.
+function isAlias(cli) {
+  return Object.prototype.hasOwnProperty.call(ALIASES, raw(cli).toLowerCase());
 }
 
 function knownClis() {
@@ -202,6 +213,7 @@ function protocolFamilyOf(cli, format = 'wire') {
 }
 
 module.exports = {
+  ALIASES,
   CAPABILITIES,
   CLIS,
   DEFAULT_CAPABILITY,
@@ -222,12 +234,14 @@ module.exports = {
   familyOf,
   isBundled,
   isDeprecated,
+  isAlias,
   isProviderless,
   isResident,
   isResidentSession,
   kindsOf,
   knownClis,
   lanesOf,
+  nameOf,
   npmPackages,
   offersIn,
   protocolFamilyOf,

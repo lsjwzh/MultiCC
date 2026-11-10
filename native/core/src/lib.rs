@@ -1,6 +1,8 @@
 pub mod api_error_policy;
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
+pub mod background;
+pub mod background_hold;
 pub mod chat_events;
 pub mod chat_finalize;
 pub mod chat_runtime;
@@ -50,6 +52,7 @@ pub mod task_routing;
 pub mod task_run_context;
 pub mod task_store;
 pub mod transcript_prune;
+pub mod turn_progress;
 pub mod turn_request;
 pub mod turn_state;
 pub mod usage;

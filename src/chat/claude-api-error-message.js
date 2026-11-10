@@ -1,6 +1,7 @@
 'use strict';
 
-// The resident Claude CLIs (chat-stream / claude-exp SDK) render an upstream
+// The resident Claude CLI (`claude`, whose retired `claude-exp` id is an alias)
+// renders an upstream
 // failure as a synthetic assistant message (model "<synthetic>",
 // is_api_error_message/api_error_status on the event, or the camelCase local
 // transcript spelling). Its only content is an "API Error: …" envelope, and it

@@ -126,15 +126,16 @@ void main() {
         model: '',
         effort: 'medium',
         cliAvailability: {
-          SessionCli.claudeExp: true,
+          SessionCli.claude: true,
           SessionCli.codexExp: true,
         },
       ),
       out,
     );
     expect(tester.takeException(), isNull);
-    expect(find.byKey(const Key('run-cli-option-claude')), findsNothing);
-    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
+    // 一个产品只有一条聊天车道：当前这条只出现一次，不再有并排的旧 id。
+    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsNothing);
     expect(find.textContaining('Agent SDK'), findsNothing);
     expect(find.textContaining('App Server'), findsNothing);
     final save = find.widgetWithText(ElevatedButton, '保存');
@@ -165,7 +166,7 @@ void main() {
     expect(find.text('运行配置'), findsOneWidget);
     expect(find.byKey(const Key('run-mode-fixed')), findsOneWidget);
     expect(find.byKey(const Key('run-order-order')), findsNothing);
-    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
     // 用不了的车道折在「未安装的 N 个」底下，点开才铺出来。
     expect(find.byKey(const Key('run-cli-option-codex-exp')), findsNothing);
     expect(find.byKey(const Key('run-cli-unavailable-toggle')), findsOneWidget);
@@ -327,18 +328,18 @@ void main() {
       ),
       out,
     );
-    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('run-mode-auto')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('run-order-order')), findsOneWidget);
-    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsNothing);
+    expect(find.byKey(const Key('run-cli-option-claude')), findsNothing);
     // 空池子先给一句提示，而且存不出去。
     expect(find.text('池子还是空的，先添加线路'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('run-mode-fixed')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
     expect(find.byKey(const Key('run-order-order')), findsNothing);
     expect(out.value, isNull);
   });
@@ -611,7 +612,7 @@ void main() {
         providerSelection: pool,
         settings: s,
         httpClient: client,
-        cliAvailability: const {SessionCli.claudeExp: true},
+        cliAvailability: const {SessionCli.claude: true},
       ),
       out,
     );
@@ -621,10 +622,10 @@ void main() {
     await tester.pumpAndSettle();
 
     final withLimit = find.byKey(
-      const Key('run-add-line-claude-exp-exp-with-limit'),
+      const Key('run-add-line-claude-exp-with-limit'),
     );
     final noLimit = find.byKey(
-      const Key('run-add-line-claude-exp-exp-no-limit'),
+      const Key('run-add-line-claude-exp-no-limit'),
     );
     expect(withLimit, findsOneWidget);
     expect(noLimit, findsOneWidget);
@@ -1228,16 +1229,16 @@ void main() {
     expect(position.pixels, greaterThan(0));
     expect(tester.getTopLeft(search).dy, searchTop);
     await tester.scrollUntilVisible(
-      find.byKey(const Key('run-add-line-claude-exp-line-31')),
+      find.byKey(const Key('run-add-line-claude-line-31')),
       350,
       scrollable: scrollable,
     );
-    final last = find.byKey(const Key('run-add-line-claude-exp-line-31'));
+    final last = find.byKey(const Key('run-add-line-claude-line-31'));
     expect(last.hitTestable(), findsOneWidget);
     await tester.tap(last);
     await tester.pumpAndSettle();
     expect(
-      find.byKey(const Key('run-pool-row-claude-exp:line-31')),
+      find.byKey(const Key('run-pool-row-claude:line-31')),
       findsOneWidget,
     );
     expect(tester.takeException(), isNull);
@@ -1816,7 +1817,7 @@ void main() {
     );
 
     // 只有会话现在这条能用：其余全折在「▸ 未安装的 N 个」底下。
-    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
     expect(find.byKey(const Key('run-cli-option-codex-exp')), findsNothing);
     expect(find.byKey(const Key('run-cli-option-opencode')), findsNothing);
     expect(find.textContaining('未安装的'), findsOneWidget);
@@ -1854,8 +1855,7 @@ void main() {
         .widgetList<PopupMenuItem<String>>(find.byType(PopupMenuItem<String>))
         .map((item) => item.value)
         .toList();
-    expect(items, containsAll(['claude-exp', 'codex-exp']));
-    expect(items, isNot(contains('claude')));
+    expect(items, containsAll(['claude', 'codex-exp']));
     expect(items, isNot(contains('codex')));
     expect(find.text('Codex'), findsOneWidget);
     expect(find.text('Kimi Code'), findsOneWidget);
@@ -2511,7 +2511,7 @@ void main() {
     return _json(404, {'error': 'not found'});
   });
 
-  testWidgets('会话面板：从 codex-exp 换到 claude-exp，子 agent 套上 Claude 家族默认', (
+  testWidgets('会话面板：从 codex-exp 换到 claude，子 agent 套上 Claude 家族默认', (
     tester,
   ) async {
     final s = await settings(host: 'http://server.example');
@@ -2528,7 +2528,7 @@ void main() {
         httpClient: laneSwitchClient(),
         cliAvailability: const {
           SessionCli.codexExp: true,
-          SessionCli.claudeExp: true,
+          SessionCli.claude: true,
         },
       ),
       out,
@@ -2537,16 +2537,16 @@ void main() {
     expect(find.text('跟随主线路'), findsOneWidget);
 
     await tester.ensureVisible(
-      find.byKey(const Key('run-cli-option-claude-exp')),
+      find.byKey(const Key('run-cli-option-claude')),
     );
-    await tester.tap(find.byKey(const Key('run-cli-option-claude-exp')));
+    await tester.tap(find.byKey(const Key('run-cli-option-claude')));
     await tester.pumpAndSettle();
 
     // 换道后直接显示「跟随全局默认」，保存时带上这条路由 —— 不能发成显式
     // null 把服务端刚按 switch-cli 套上的默认抹掉。
     expect(find.text('跟随全局默认'), findsOneWidget);
     await _save(tester);
-    expect(out.value?.switchToCli, 'claude-exp');
+    expect(out.value?.switchToCli, 'claude');
     expect(out.value?.subagent?.providerId, 'relay');
     expect(out.value?.subagent?.model, 'glm-5.2');
     expect(out.value?.subagentCleared, isFalse);
@@ -2569,7 +2569,7 @@ void main() {
         draft: true,
         cliAvailability: const {
           SessionCli.codexExp: true,
-          SessionCli.claudeExp: true,
+          SessionCli.claude: true,
         },
       ),
       out,
@@ -2577,9 +2577,9 @@ void main() {
     expect(find.text('跟随主线路'), findsOneWidget);
 
     await tester.ensureVisible(
-      find.byKey(const Key('run-cli-option-claude-exp')),
+      find.byKey(const Key('run-cli-option-claude')),
     );
-    await tester.tap(find.byKey(const Key('run-cli-option-claude-exp')));
+    await tester.tap(find.byKey(const Key('run-cli-option-claude')));
     await tester.pumpAndSettle();
 
     expect(find.text('跟随全局默认'), findsOneWidget);
@@ -2593,7 +2593,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('同一家族内换道：用户单独设置的子 agent 不被重置', (tester) async {
+  testWidgets('同一家族内换道：旧 claude-exp 会话换到 claude，子 agent 不被重置', (
+    tester,
+  ) async {
     final s = await settings(host: 'http://server.example');
     final client = MockClient((request) async {
       if (request.url.path == '/api/providers') {
@@ -2611,7 +2613,8 @@ void main() {
     await _open(
       tester,
       RunConfigSheet(
-        cli: SessionCli.claude,
+        // 旧会话仍可能带着退役 id 落盘，切到现代 id 不能把设置清成随主。
+        cli: SessionCli.claudeExp,
         providers: _claudeProviders,
         provider: 'relay',
         model: '',
@@ -2621,16 +2624,16 @@ void main() {
         subInherited: false,
         settings: s,
         httpClient: client,
-        cliAvailability: const {SessionCli.claudeExp: true},
+        cliAvailability: const {SessionCli.claude: true},
       ),
       out,
     );
     expect(find.text('已单独设置'), findsOneWidget);
 
     await tester.ensureVisible(
-      find.byKey(const Key('run-cli-option-claude-exp')),
+      find.byKey(const Key('run-cli-option-claude')),
     );
-    await tester.tap(find.byKey(const Key('run-cli-option-claude-exp')));
+    await tester.tap(find.byKey(const Key('run-cli-option-claude')));
     await tester.pumpAndSettle();
 
     // 线路池是家族共用的：同一家族内换道不该把这条自己的设置清成随主。

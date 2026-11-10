@@ -414,6 +414,25 @@
       }
     }
 
+    // A query boundary closes only its answer bubble. Background work and
+    // later injected queries still belong to the same running host turn.
+    function handleHeldQueryBoundary(event) {
+      const message = event.message;
+      if (!message || !message.id || !message.heldResultId) return;
+      // A replay for an already committed row must not close a newer bubble.
+      const existing = historyView.findById?.(message.id);
+      if (existing && existing !== state.currentMsgEl) return;
+      handleCommittedMessage(event);
+      if (state.currentMsgEl) {
+        state.currentTextContent = typeof message.content === 'string' ? message.content : state.currentTextContent;
+        if (message.usage) liveUi.attachUsageLine?.(state.currentMsgEl, message.usage, state.roleTokens);
+      }
+      settleThinkingCards();
+      finishStreaming();
+      state.lastFinishedText = ''; // Equal text in the next query is still a new answer.
+      host.updateUI?.();
+    }
+
     function handleResult(message) {
       state.isStreaming = false;
       state.contextTrace = message.contextTrace && typeof message.contextTrace === 'object'
@@ -618,6 +637,7 @@
         case 'user':
           if (message.tool_use_result || message.message?.content) handleToolResult(message);
           break;
+        case 'held_query_boundary': handleHeldQueryBoundary(message); break;
         case 'result': handleResult(message); break;
         case 'provider_token_stats':
           if (message.windows) { state.providerTokenWindows = message.windows; host.updateContextBar?.(); }

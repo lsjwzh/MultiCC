@@ -1129,15 +1129,15 @@ mod tests {
         assert_eq!(pick(false, "draining", draining), json!(0));
         // Both draining, neither near-limit yet: the roomier one answers
         // first; a sticky route among draining lines does not churn.
-        let both = json!([line("worse", Some(88.0), 0), line("less-bad", Some(82.0), 1)]);
+        let both = json!([
+            line("worse", Some(88.0), 0),
+            line("less-bad", Some(82.0), 1)
+        ]);
         assert_eq!(pick(true, "", both.clone()), json!(1));
         assert_eq!(pick(true, "worse", both), json!(0));
         // An unmeasured line is never judged tight: the sticky blind route
         // survives even a measured draining challenger.
-        let mixed = json!([
-            line("blind", None, 0),
-            line("draining", Some(85.0), 1)
-        ]);
+        let mixed = json!([line("blind", None, 0), line("draining", Some(85.0), 1)]);
         assert_eq!(pick(true, "blind", mixed), json!(0));
     }
 

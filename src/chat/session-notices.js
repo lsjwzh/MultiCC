@@ -46,6 +46,27 @@ function stuckDeliveryText({ reason = 'session_busy', reasons = [], waitedMs = 0
     + '不想等也可以先取消占用它的后台任务。';
 }
 
+// A held turn is not a wedged workspace: the turn is running by design (the
+// user's rule — background work is part of the turn), and the message will be
+// executed as soon as that work ends. Saying "no turn is running" here would be
+// false, so this notice names the real owner of the wait.
+function heldBackgroundText({ waitedMs = 0 } = {}) {
+  return `⏳ 这条消息等了 ${formatWait(waitedMs)}还没能开始：本轮的回复已经给出，但本轮的`
+    + '后台任务（Agent / 后台命令 / Monitor）还没结束，回合会一直保持到它们结束。'
+    + '后台任务结束后这条会自动执行；想马上开始，可以在聊天队列里点「立刻插入」'
+    + '（会先结束本轮并停掉这些后台任务）。';
+}
+
+// The hold cap is visibility, not release (L2): a turn whose background work
+// runs abnormally long must say so out loud instead of staying open silently.
+// Rust fires this exactly once per held turn; the turn itself stays open.
+function heldCapText({ minutes = 0 } = {}) {
+  const span = Number(minutes) >= 1 ? `${Math.round(Number(minutes))} 分钟` : '一段时间';
+  return `⏱ 本轮的后台任务（Agent / 后台命令 / Monitor）已经跑了 ${span}，`
+    + '回合会继续保持开启，直到它们结束（后台工作属于本轮，回复已给出不等于本轮结束）。'
+    + '想马上结束本轮，可以在聊天队列里点「立刻插入」或停止本轮（会同时停掉这些后台任务）。';
+}
+
 function createSessionNotices({ appendChatMessage, chatBroadcast, now = Date.now }) {
   // Persist first: a live broadcast that no client happened to receive is the
   // same silence this exists to end, and the append is what a reload shows.
@@ -56,10 +77,15 @@ function createSessionNotices({ appendChatMessage, chatBroadcast, now = Date.now
   }
   return {
     notifyLostMessage({ sessionId, error }) { say(sessionId, lostMessageText(error)); },
-    notifyStuckDelivery({ sessionId, reason, reasons, waitedMs }) {
-      say(sessionId, stuckDeliveryText({ reason, reasons, waitedMs }));
+    notifyStuckDelivery({ sessionId, reason, reasons, waitedMs, heldForBackground = false }) {
+      say(sessionId, heldForBackground
+        ? heldBackgroundText({ waitedMs })
+        : stuckDeliveryText({ reason, reasons, waitedMs }));
     },
+    notifyHoldCap({ sessionId, minutes }) { say(sessionId, heldCapText({ minutes })); },
   };
 }
 
-module.exports = { createSessionNotices, lostMessageText, stuckDeliveryText };
+module.exports = {
+  createSessionNotices, lostMessageText, stuckDeliveryText, heldBackgroundText, heldCapText,
+};

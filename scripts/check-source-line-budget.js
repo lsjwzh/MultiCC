@@ -152,11 +152,31 @@ const MIGRATION_DEBT = Object.freeze({
   // 复用托管/原生目录组合减少重复分支；保留 3k 拆分目标。
   // 2026-11-09 Stable model/pool controls and request ownership moved to run-config-controls.js.
   // Measured 3178 lines / 162291 bytes; remaining model status/refresh orchestration stays here.
+  // 2026-11-10 The retired `claude-exp` lane id folded into `claude`, so the
+  // lane comments shrank; measured 3178 lines / 162224 bytes.
   'public/run-config.js': Object.freeze({
     ceiling: 3178,
-    byteCeiling: 162291,
+    byteCeiling: 162224,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
+  }),
+  // 2026-11-10「后台工作属于本回合」：投递进持有中的回合需要三处接线
+  // （构造 heldTurnInjection、tryInjectHeldTurn、heldTurnInjectable/heldForBackground
+  // 端口），server.js 因此从 2999 抬到 3013/159953，按棘轮登记实测高水位。
+  // 同一天删掉 `claude -p` 聊天车道：会话创建的退役 id 归一化收进同一行、
+  // 可用性循环压成一行旧 schema 注释也压缩，实测降到 3008/159885。
+  // 2026-11-10 Batch 2: the RustTurnProgress owner keeps the four turn-progress
+  // readers (heartbeat, timing, timeline, probes) behind one construction; the
+  // engine deps are wired here, measured 3023 lines / 160674 bytes.
+  // 2026-11-10 held-turn redesign: claude availability reads the bundled engine
+  // binary (M1) and the native load-time identity normalisation owns one boot
+  // save (M4), measured 3037 lines / 161434 bytes.
+  // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
+  'server.js': Object.freeze({
+    ceiling: 3037,
+    byteCeiling: 161434,
+    target: 3000,
+    reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),
 });
 

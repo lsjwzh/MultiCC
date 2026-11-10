@@ -604,4 +604,27 @@ void main() {
       service.dispose();
     });
   });
+  test('held query boundary leaves the turn streaming until its real result', () async {
+    await setupSettings();
+    fakeAsync((async) {
+      final (service, channels) = makeService();
+      final events = <ChatEvent>[];
+      service.events.listen(events.add);
+      service.connect();
+      async.flushMicrotasks();
+      channels.single.incoming.add(jsonEncode({'type': 'stream_start'}));
+      expect(service.isStreaming, isTrue);
+      channels.single.incoming.add(jsonEncode({
+        'type': 'held_query_boundary',
+        'message': {'id': 'turn:held:1', 'heldResultId': 'turn:held:1', 'content': 'answer'},
+      }));
+      async.flushMicrotasks();
+      expect(service.isStreaming, isTrue);
+      expect(events.map((event) => event.type), contains('held_query_boundary'));
+      channels.single.incoming.add(jsonEncode({'type': 'result'}));
+      expect(service.isStreaming, isFalse);
+      service.dispose();
+    });
+  });
+
 }

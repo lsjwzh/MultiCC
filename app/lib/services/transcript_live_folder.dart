@@ -409,6 +409,29 @@ class TranscriptLiveFolder {
     );
   }
 
+  /// Close an individual query bubble while its enclosing turn stays active.
+  /// History ids make reconnect/replay idempotent without closing a newer tail.
+  void heldQueryBoundary(Object? value) {
+    if (value is! Map) return;
+    final row = Map<String, dynamic>.from(value);
+    final id = row['id']?.toString();
+    if (id == null || id.isEmpty || row['heldResultId'] == null) return;
+    final existing = messages.where((message) => message.id == id).firstOrNull;
+    if (existing != null && existing != currentMsg) return;
+    final target = existing ?? currentMsg;
+    if (target == null) {
+      final message = ChatMessage.fromHistory(row);
+      messages.add(message);
+      lastAssistantMsg = message;
+    } else {
+      target.id = id;
+      if (row['content'] is String) target.content = row['content'] as String;
+      attachResultUsage(row);
+      finishStreaming();
+    }
+    _emit();
+  }
+
   void finishStreaming() {
     if (currentMsg != null) {
       currentMsg!.isStreaming = false;

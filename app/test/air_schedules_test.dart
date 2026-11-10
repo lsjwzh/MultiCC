@@ -578,14 +578,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('air-schedule-save')));
     await tester.pumpAndSettle();
     expect(calls.paths, ['/api/cron', '/api/cron', '/api/cron']);
-    // 没挑线路时落在这张表的第一格：现在是扶正后的常驻车道 claude-exp（旧默认是
-    // 一次性车道 `claude -p`，chat 侧已经不给它留位置）。
+    // 没挑线路时落在第一格：退役的 `claude -p` 车道删掉后只剩 claude 一条。
     expect(calls.bodies.single, {
       'name': '夜间巡检',
       'dirId': 'd2',
       'prompt': '检查一遍线上日志',
       'cron': '0 * * * *',
-      'cli': 'claude-exp',
+      'cli': 'claude',
       'enabled': true,
       'createdBy': 'app',
     });

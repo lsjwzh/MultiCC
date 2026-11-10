@@ -1156,7 +1156,8 @@ Rule (one implementation, no dual path):
    exactly as before (provider aliases still resolve through `aliasMap`).
 2. Otherwise the model the user selected most often on that lane wins. History
    is the explicit `session.model` values in the persisted session records;
-   `claude` and `claude-exp` share one lane, and official provider ids
+   `claude` (the retired `claude-exp` id is only an alias for it), and official
+   provider ids
    (`claude-official`, `claude-official-<account>`) share the provider-less
    official line. Ties resolve to the earlier entry of the model list.
 3. No usable history → the first entry of the lane's model list. Entries that
@@ -1173,7 +1174,7 @@ picker shows, with `CLAUDE_MODELS_FALLBACK` when the CLI has not been scanned);
 official Codex uses `readCodexOfficialModels()`; provider lanes use the
 provider summary's `modelOptions`.
 
-Adapters always pass an explicit model: `claude`/`claude-exp` via
+Adapters always pass an explicit model: `claude` via
 `--model`, `codex` via `-c model=...`, `codex-exp` via `--model` and the
 per-turn `turnOptions.model`. The official Claude lane additionally writes the
 per-session `--settings` override (`src/providers/claude-settings-override.js`)
@@ -1351,9 +1352,9 @@ assertions, passed.
 The two pre-resume size guards now live in one Rust module.
 `src/chat/codex-rollout-guard.js` is a 157-line facade (+123/-239) and
 `src/chat/native-session-guard.js` is a 123-line facade (+93/-253) around two
-addon classes; `native/core/src/native_session_guard.rs` (1,265 lines, plus 449
+addon classes; `native/core/src/native_session_guard.rs` (1,267 lines, plus 469
 lines of unit tests in `native_session_guard/tests.rs`) owns every decision, and
-`native/addon/src/native_session_guard.rs` (159 lines) moves values over the
+`native/addon/src/native_session_guard.rs` (151 lines) moves values over the
 lossless bridge.
 
 What moved: codex rollout discovery (`sessions/**/rollout-*-<thread>.jsonl`
@@ -1426,3 +1427,721 @@ the primary repository. It was built from source with
 `scripts/rust-source-cache.js` with the four new exports, the class prototype
 methods (`enforce` / `sweep` on both, plus `handles` / `storeTruthy` on the
 native class), both getters and a temporary-directory smoke check, passed.
+
+## Native background-task and turn-nudge owner (2026-11-10)
+
+The whole background-task runtime is now one Rust owner.
+`src/chat/background-task-runtime.js` is a 154-line facade around the
+`RustBackgroundTasks` addon class; the three satellite modules
+`src/chat/native-background-tasks.js`, `src/chat/background-task-metadata.js`
+and `src/bg-completion-coalescer.js` are deleted. `native/core/src/background/`
+holds the kernels (`state.rs`, `snippet.rs`, `coalescer.rs`, `metadata.rs`,
+`native_tasks.rs`), and `native/addon/src/background_tasks.rs` (2,706 lines)
+owns every decision and the JS boundary.
+
+What moved: event dispatch (`monitor_prompt`, `task_started`,
+`task_progress`/`task_updated`, `task_notification`, `background_tasks_changed`
+and the codex native sub-task events), the stale-run gate, the completion
+classifier (awaiting TaskOutput, sync result, sub-agent/sidechain suppression,
+Monitor, inject, failed), turn-result detection, the output snippet rules
+(agent-report JSONL sidechain extraction, report head truncation, log tail,
+redaction text), the nudge coalescer (fixed window from the first completion,
+800-unit merged cap, single and `×N` wordings, the `【后台事件】` Monitor
+prefix), the per-session metadata ledger (parent fields, snapshots, TTLs), the
+codex native store (liveness, heartbeat silence, listing, reap), the output-file
+shadow watcher, the ledger broadcasts (`monitor_progress` / `monitor_done`), the
+`deliverSystem` injection and the `stopForInsert` / `stopSession` / `stopAll`
+teardown paths.
+
+Rust API surface (addon): the `RustBackgroundTasks` class with
+`handleEvent(ports, sessionName, event)`, `tick(ports)`, `nextDue()`,
+`applyControlOutput(token, text, truncated)`, `backgroundSilenceMs(session)`,
+`hasLiveBackgroundTasks`, `hasProcessBackgroundTasks`,
+`listActiveBackgroundTasks`, `markTaskOutputAwaiting`,
+`recordMainToolUseId`, `reapSessionShadows`, `stopAll`, `stopForInsert`,
+`stopSession` and `takeStoppedNote`. Ports are the only way back into Node:
+`now`, `broadcast`, `observe`, `noteBgResultInjected`, `deliverSystem`,
+`logWarn`, `safeText`, `readFile`, `redactEvent`, `redactText`, `tmpdir`,
+`realpath`, `getuid`, `requestEnrich` and `requestStopTask`. Frames are typed
+internally and serialized at the boundary in the legacy property order, so the
+wire shape is byte-for-byte the old one.
+
+What remains in Node: only the 12-key frozen facade. It resolves the native
+module, builds the ports object, owns the single unref'd `setTimeout` armed from
+`nextDue()` (callback runs `owner.tick(ports)` in try/catch and re-arms), and
+wraps the two async escape hatches `fetchTaskOutput` / `stopTask` as Promise
+calls. `server.js` lost the `createCoalescer` / `buildNudge` /
+`classifyCompletion` / `spawn` dependencies and the `bg-completion-coalescer`
+require; the `chat_events.rs` host still calls the facade for
+`record_main_tool_use_id` and `mark_task_output_awaiting` through
+`nativeChatEventPorts` (allowed partial, no state duplication). No legacy logic
+or fallback path remains in Node.
+
+Deleted Node logic: 966 lines (719 from the 873-line runtime, 63 + 64 + 120
+from the three satellites). The frozen oracles are
+`tests/helpers/legacy-background-task-runtime.js` (877 lines) with
+`legacy-native-background-tasks.js`, `legacy-background-task-metadata.js` and
+`legacy-bg-completion-coalescer.js`.
+
+Intentional differences versus the legacy runtime: the output shadow is
+whole-file polling every 500 ms instead of a `tail -n +1 -F` child, so there is
+no spawn-failure or exit path and no tail log line; bytes produced inside the
+5 s progress throttle are acknowledged but not broadcast, just like the old
+throttle, and a poll that observes several deltas emits one progress frame;
+`now()` call counts differ (only user-visible effects are compared); a
+non-finite completion window is clamped to zero; the unreachable `invalid`
+classifier branch is gone; session keys and list/reap ids go through `String()`
+normalisation. Preserved quirks: `task_ledger finish` is observed before the
+classifier runs, `stopShadow` runs even when only a native id is known, the
+awaiting/TaskOutput dedup TTL still consumes on match, merged snippets keep
+`[refs:a,b]` in completion order, the stopped note text is unchanged, and
+`markTaskOutputAwaiting` requires `block === true`.
+
+Fixed bugs versus the legacy runtime (authorised deviations, each pinned by a
+test): the metadata ledger compared `run_id` values as raw strings, so a run
+`10` looked OLDER than `9` and a newer run's late event could be dropped as
+stale. The Rust metadata kernel now compares ids numerically when BOTH are
+canonical non-negative decimals (ASCII digits, no leading zero unless the id is
+exactly `0`) by digit count then lexicographically, and keeps the old string
+comparison for anything else; real CLI ids such as `0mw7l8fr0-58e28fed` and
+equal-width fixtures are unchanged, so only genuine decimal ids get the fix. A
+`background_tasks_changed` whose `tasks` list is empty (or absent) now retires
+every live Monitor watch, matching the oracle; the port previously skipped
+retirement whenever the id set was empty. The differential suite carries an
+explicit intentional-divergence scenario that asserts the new run-id ordering on
+each side (legacy keeps `9`, Rust accepts `10`); its random generator only
+emits zero-padded `00X` ids so it can never straddle the digit-count boundary.
+
+Oracle and differential coverage: `tests/test-background-tasks-differential.js`
+(686 lines, 25 scenarios) runs the frozen Node oracle and the Rust facade side
+by side under a shared fake clock, feeding legacy `tail` deltas at the same
+500 ms boundaries at which Rust re-reads the file. It covers 16 hand-built
+scenarios (run-in-background lifecycle, foreground/sub-agent suppression,
+TaskOutput TTL, Monitor watch/progress/terminal/dedup/retirement, empty-list
+watch retirement, a duplicate `event_id` surviving a watch reset, persistent
+Monitor, reap consuming the task origin, metadata snapshots and stale runs,
+sync-bash marker consumption, stopForInsert note plus the late notification that
+must stay native, stopSession/stopAll, codex sub-tasks, turn-result suppression,
+output snippets and redaction, unknown events and a non-array
+`background_tasks_changed` TypeError), one named intentional-divergence scenario
+for the numeric run-id fix, plus 8 seeded randomized interleavings of 60 steps
+each. Every op compares return values, thrown error constructor names, the
+broadcast / observation / injection / warning logs and the per-session liveness,
+silence, active-list and snapshot state.
+`tests/test-background-task-runtime.js` (39 tests, including a real-FS shadow
+poll through the `readFile`/`realpath`/`tmpdir` ports, an exact
+throttle-boundary assertion and a facade-level numeric run-id test) and
+`tests/test-bg-completion-coalescer.js` (18 tests) keep their intent against the
+facade and Rust owner; the old `spawn`/`tail` assertions were replaced with
+polling-progress assertions.
+
+Mutation faults (each failed a unit or differential test and was reverted, no
+marker left behind): the coalescer re-anchored its deadline on every added item
+instead of the first, `DEFAULT_WINDOW_MS` changed from 1500, the `due` boundary
+became `>` instead of `>=`, the report cap multiplier changed from 8, the
+heartbeat overwrote `at` instead of freezing it, the stale-run string comparison
+was reversed, the completion fallback status became `completed` (caught by the
+differential suite, which rebuilds the addon from the mutator); in the
+re-audit, snippet head/tail extraction and the per-shadow progress throttle
+(`<` to `<=`, now pinned by an exact-boundary assertion), the Monitor
+`event_id` dedup, the reap-time `task_origins` consumption and the
+`delivered` flag set by `stopForInsert` were each mutated and caught by the
+runtime test or the differential suite before being reverted. In the batch-1
+follow-up the Monitor `terminalQueued` mark and the sync-bash marker consumption
+were each removed, rebuilt and caught by the differential suite, and the
+empty-list watch-retirement fix was reverted to the old `ids`-guard to prove the
+new differential scenario catches it; every mutation was reverted exactly (empty
+`git diff` on the mutated span).
+
+Rust workspace: 743 passed, 0 failed (26 new background unit tests); `rustfmt
+--check` is clean on the changed files and clippy reports no warning in the new
+modules.
+
+Test tiers: 855 classified (core 410: deterministic 336 / isolated 43 /
+flutter 31); plus the new differential suite the audited release counts in
+`tests/test-release-version-consistency.js` move to 410 entries and 382
+commands (379 Node entries).
+
+Fingerprint `aa26b00f69b01f49fefb1a0b`; the artifact is
+`data/rust-source/aa26b00f69b01f49fefb1a0b/darwin-arm64/multicc_core.node` in
+the primary repository (sha256
+`48374fbc0711784f4d0dd83f895ba9937a96ec8c2d3714b69386fe308501319f`). It was
+built with `node scripts/ensure-source-rust.js` and the capability probe in
+`scripts/rust-source-cache.js`, extended with the `RustBackgroundTasks` export,
+its prototype methods and a fake-ports smoke check, passed.
+
+The full `npm test` on this artifact finished with exit 0: 6,735 Node test
+records, 6,732 passed, 0 failed, 2 skipped (desktop toolchain and pwsh, both
+pre-existing) and 1 pre-existing S6 todo. The rustfmt, clippy (no warnings in
+the new modules), `cargo test --workspace` (743 passed), tier, source
+line-budget, architecture, repository-artifact and runtime-write governance
+checks and `git diff --check` are all clean.
+
+## Native background-hold owner and held-turn injection (2026-11-10)
+
+User's rule, recorded in `data/plans/turn-includes-background-20261110.md`:
+background work is part of the turn. A resident Claude turn whose main
+`result` already arrived while its Agent / `run_in_background` Bash / Monitor is
+still alive is therefore still the CURRENT turn, and the user's next typed
+message belongs IN it. This section supersedes the older lease/admission plan
+for this area; workspace admission, leases, the provider route fence and proxy
+attribution were not touched.
+
+Scope: the two resident Claude backends (`src/chat/chat-stream.js` legacy CLI
+lane and `src/chat/claude-sdk-stream.js` SDK lane). `src/zcode-bridge.cjs` keeps
+its own hold copy and is unchanged, and the codex/app-server lanes never hold a
+finished turn open, so nothing changes for them (the spec's facts were checked
+against the code first; this is the one place where only some backends could
+take the change).
+
+What moved into Rust: the whole hold lifecycle. `native/core/src/background_hold.rs`
+(640 lines, 10 unit tests) owns `Hold::new/start/observe/tick/finish/
+begin_injection/abort_injection/cap_reached/dispose`, the quiet-window release
+(5 s default, 1 s tick), the self-wake bookkeeping (last self-wake wins; a
+failure released as failure; a cancel leaves the held answer untouched), the
+outstanding-injection counter, and the cap decision. `native/addon/src/
+background_hold.rs` (210 lines) is the JS boundary: the `RustBackgroundHold`
+class plus `backgroundHoldMaxMs`, `backgroundHoldMayInject` and
+`backgroundHoldSpawnContract`. `src/chat/background-hold.js` shrank from the
+134-line implementation to a 111-line facade (70 insertions / 93 deletions)
+with the same surface for both backends; the frozen oracle is
+`tests/helpers/legacy-background-hold.js` (140 lines, only require paths and a
+FROZEN header changed). `scripts/rust-source-cache.js` gained the export,
+prototype-method, getter and fake-ports smoke probes for the new class and free
+functions in the same edit.
+
+Behaviour change (a) — the cap no longer releases. The timeout
+(`MULTICC_BACKGROUND_HOLD_MAX_MS`, default 60 min) now only calls the hold's
+`cap_reached`, which is true exactly once and only while held with background
+active; the facade forwards it to an `onCapReached` logging callback in both
+backends. The turn stays open for as long as the background work is alive, and
+the release still happens on the quiet window after that work ends. Tests that
+pinned the old cap release were updated:
+`tests/test-monitor-admission.js` (the two cap-release tests became "background
+work outliving the hold cap keeps the turn open and the wake inside it" and
+"real sdk turn held past the cap with a background agent mid-request keeps its
+answer and the process"; the unit cap block now asserts no release and one
+notice), `tests/test-claude-sdk-stream.js`, `tests/test-claude-sdk-stream-vault.js`
+and `tests/test-chat-stream-idle-guard.js` (fixture/comment only). The
+differential suite carries the named intentional-divergence scenario "the cap
+warns instead of releasing", which asserts the legacy side releases and the
+Rust side does not.
+
+Behaviour change (b) — the delivery predicate is Rust. `may_inject` decides,
+in this exact order, with these refusal reasons: `not_held` (no held turn),
+`injection_in_flight` (an injected answer is still streaming),
+`no_active_turn` (the turn engine does not consider this session to be
+running), `not_user_typed` (not a direct human chat message — dispatch,
+triggers, `originContinue` continuations and task-shell items are excluded),
+`process_not_alive`, `spawn_contract_changed` (either digest missing or the
+live process's digest differs from the persisted record's) and
+`already_delivered` (this delivery identity was already written). Only then
+does it answer `inject` with reason `held`. The spawn-contract digest is
+sha256 over the stable-stringified, persisted-only facts `cli`, `provider`,
+`providerSelection`, `model`, `effort`, `subagent`, `cliAccounts`,
+`pendingConfiguration` and `nativeSessionId` (`cliSessionId ??
+_streamSessionId`), so a route change staged or applied mid-turn makes the
+digests differ and the message waits for the next turn. None of this logic
+lives in Node: `src/chat/held-turn-injection.js` (167 lines, new) only
+translates host objects into the predicate's facts, performs the write and
+keeps the exactly-once memory.
+
+Behaviour change (c) — thin wiring, exactly-once delivery. The outbox busy gate
+in `src/orchestration/runtime.js` now consults a new sync port
+`heldTurnInjectable` before it defers; without that the item could never reach
+`deliver()`, because the gate runs before the claim. In `deliver()`,
+`tryInjectHeldTurn` is called after lineage resolution and before the scheduler
+claim / workspace lease / `beforeDeliver`; a delivered result acknowledges the
+outbox item and returns, so a held turn takes the message with no scheduler
+claim and no workspace lease. Any refusal is a no-op and the item keeps waiting
+exactly as before. The write goes through the lane's `injectHeldTurn`: the
+legacy backend writes the normal `userMessageLine` to the live stdin, the SDK
+backend calls `run.lane.sendUser(...)` with the user message frame; both mark
+`beginInjection()` first so the hold cannot release before that answer lands,
+and abort on a write failure. After the live write the user row is appended
+with `heldTurnInjected: true` (the exactly-once marker; the durable row with
+the same client id is the second guard, and a row without the marker keeps its
+normal meaning). The stream router falls back to `false`/`null` for lanes
+without a live stdin, so those keep the waiting path. `server.js` wires
+`heldTurnInjectable`, `tryInjectHeldTurn` and `heldForBackground`, and the
+stuck-delivery notice now names the real owner ("本轮的后台任务…回合会一直保持到
+它们结束") instead of claiming no turn is running. `src/chat/turn-engine.js`
+passes the spawn-contract digest to `chatStream.ensure`, and both backends
+store it with the child.
+
+Tests: `tests/test-background-hold-differential.js` (523 lines, 7 tests: hold
+lifecycle over 9 deterministic scenarios, 12 seeded randomized interleavings,
+the cap divergence scenario, an injected message keeping the hold open, the
+predicate table for both resident backends, 9 mutants all caught by a 5-scenario
+plus 6-seed corpus, and the `holdMaxMs` environment table). The node:test mock
+clock moves `Date.now()` once per `tick(ms)` jump, so the suite steps the clock
+in 1 s increments (`advanceClock`) rather than jumping; that is documented in
+the file header. `tests/test-held-turn-injection.js` (333 lines, 10 tests)
+covers the spawn-contract facts, the direct-user-typed filter, the exact
+appended row, every refusal reason writing nothing, write/row persistence
+failure reporting for outbox retry, the no-claim/no-lease path, the
+different-process wait with the background-work notice, a message typed while
+the answer is still generating, the normal path after the turn ends, and the
+waiting notice wording. `tests/test-monitor-admission.js` gained the two real
+lane injection tests (a message typed during the held phase runs inside that
+same turn on both sdk and legacy, and the wake still decides the final answer).
+
+Mutation faults (each caught and reverted exactly; the differential rebuilds
+the oracle variant from the mutated source): release on the background fact,
+release while a wake answer streams, forget a failing self-wake, hide a failing
+self-wake behind the held answer, hold a failing main result, leak a failing
+self-wake, keep the held answer instead of the final wake answer, leak a
+cancelled wake result, and merge a quiet release without the last wake. All 9
+are caught.
+
+Rust workspace: 753 passed, 0 failed (10 new background-hold unit tests);
+`cargo fmt --check` is clean; `cargo clippy -p multicc-core -p multicc-addon
+--all-targets` exits 0 with no warning in `background_hold` (the workspace-wide
+clippy run still fails on the pre-existing `unused_io_amount` deny in
+`native/cpr/src/transport.rs`, untouched by this batch).
+
+Fingerprint `8cc19cc2fbe04a0bcf80b34b`; the artifact is
+`data/rust-source/8cc19cc2fbe04a0bcf80b34b/darwin-arm64/multicc_core.node` in
+the primary repository (sha256
+`6bbba71419d1ad7dcb3cd9b9b0191458717819834a418a6d0b1fa92699c625b4`), built with
+`node scripts/ensure-source-rust.js` and passing the extended capability probe.
+
+Test tiers: 857 classified (core 412: deterministic 338 / isolated 43 /
+flutter 31); the audited release counts in
+`tests/test-release-version-consistency.js` moved to 412 entries, 338
+deterministic and 384 commands (381 Node entries).
+
+Not verified: no live end-to-end run against a real Claude upstream (no
+service restart, no real account turn), so the injection frame was only proven
+against the fake CLI fixtures in `tests/test-monitor-admission.js`; the zcode
+resident lane keeps its own hold and was left unchanged.
+
+The full `npm test` on this artifact finished with exit 0: 6,754 Node test
+records, 6,751 passed, 0 failed, 2 skipped (desktop toolchain and pwsh, both
+pre-existing) and 1 pre-existing S6 todo. `tests/test-source-line-budget.js`
+now pins `server.js` in the declared debt set next to `public/run-config.js`;
+line budget, test tiers, release consistency, architecture, repository-artifact
+and runtime-write governance checks and `git diff --check` are all clean.
+
+## Native turn-progress owner: heartbeat, timing, timeline and delivery probes (2026-11-10)
+
+Batch 2 of the Node-to-Rust exit (spec
+`data/plans/batch2-turn-progress-spec-20261110.md`). Four private-state chat
+modules moved into one native owner: the silent-period progress heartbeat
+(282 lines), per-turn spawn/send/first-byte timing (115), the model-request
+timeline (172) and the delivery-handoff probe registry (60). All four are
+deleted from `src/`; there is no dual path, no fallback and no environment
+switch, and their legacy bodies exist only as frozen oracles under
+`tests/helpers/legacy-{progress-heartbeat,turn-timing,turn-timeline,delivery-probe}.js`
+(645 lines, only the require paths and a FROZEN header changed).
+
+What moved into Rust: `native/core/src/turn_progress/{heartbeat,timing,
+timeline,probe}.rs` (2,268 lines with 28 unit tests) are pure kernels over the
+lossless `JsValue` transport. `native/addon/src/turn_progress.rs` (997 lines,
+33 `#[napi]` methods) is the single `RustTurnProgress` class; per-call `Ports`
+objects are read lazily so every throwing-clock and throwing-callback path
+keeps its exact JS mutation order, and a throwing port is rethrown as the
+original JS exception. The facade `src/chat/turn-progress.js` (404 lines) keeps
+every caller's surface: `DEFAULT_INTERVAL_MS`, `MERGE_GAP_MS`,
+`TurnProgressHeartbeat`, `createTurnTimingRecorder`, `createDeliveryProbeRegistry`,
+`createTurnProgress` (one owner behind all four readers),
+`createTurnTimelinePort`, `shouldReexecutePersistedDelivery`, `sanitizePhase`
+and `sanitizeToolKind`. Callers unchanged in shape: `server.js` constructs the
+one owner and wires the engine deps (`turnTiming`, `turnTimeline`,
+`deliveryProbeRegistry`), `turn-engine.js`, `host-runtime.js`,
+`finalize-host.js`, `src/codex/usage.js`, `src/liveness/runtime.js`, the six
+`nativeChatEventPorts` entries in the reducer, and `sessions.js`
+(`setForgetHook` fires on delete and clear).
+
+Decisions recorded against the spec (the spec's line numbers were stale; the
+code won): the addon constructor is positional `new RustTurnProgress(intervalMs,
+maxIdentities)` rather than an options object with `maxTimingRecords`; the
+ports object is the trailing argument of every method rather than the first;
+`timelineStart(session, cs, at)` reads `cs.turnStartedAt` inside Rust instead of
+the facade resolving an origin; `startTurn` returns the origin number (the
+legacy timeline object was unused by callers); the timing record cap stays the
+legacy constant 512 with no option; and the injected timer names stay
+`setInterval`/`clearInterval` (the spec said `setTimer`/`clearTimer`). Timeline
+state is keyed by session name inside Rust (decision 1), never on `cs`, and is
+cleared together with the probe table by the session-delete forget hook. The
+reducer ports stay ports in this batch (direct reducer-to-owner calls are a
+batch-3 follow-up).
+
+### Fixed bugs (each fix landed as a failing test first, then the Rust fix, then a named intentional-divergence scenario in `tests/test-turn-progress-differential.js`)
+
+1. Prototype-table aliasing. `sanitizePhase('constructor')` and
+   `sanitizePhase('__proto__')` returned `Object` / `Object.prototype` because
+   the legacy used an object literal as a lookup table. Rust matches only the
+   literal phase/tool-kind names, so both answer `running` / `other` and the
+   snapshot's `phase` / `toolKind` are strings, never functions. Scenario:
+   "intentional difference (bug 1): prototype members are not aliases".
+2. Streaming retry lost the heartbeat. The turn engine stopped the heartbeat
+   before deciding whether the failure schedules an owned retry, so a turn that
+   retried in the same engine path lost its liveness signal. The stop now
+   happens after the `retry-api` branch (the scheduled path keeps it; the early
+   throw inside the scheduled start stops it, since that finalize is terminal).
+   Asserted by the source-guard scenario "bug 2: the streaming finalize keeps
+   the heartbeat alive across a scheduled retry".
+3. A throwing heartbeat callback escaped as an uncaught interval exception.
+   Legacy let the `onHeartbeat` throw out of `_tick`; Rust catches it and logs
+   `progress_heartbeat_failed`. Scenario: "intentional difference (bug 3): a
+   throwing callback is caught and logged" (the legacy side throws
+   `Error: callback boom`, the Rust side logs twice with two active turns).
+4. Nondeterministic due-time ticks. Legacy armed one `setInterval(intervalMs)`
+   per active turn, so each turn drifted independently with the event loop.
+   The facade owns exactly one unref'd timer, armed from `heartbeatNextDue()`
+   with `max(0, due - now)`, and re-arms in a `finally` after every per-call
+   tick. Scenario: "intentional difference (bug 4): one timer re-armed from
+   nextDue" (three legacy timers vs one, same payloads).
+5. Timing fields computed from null instants. The legacy `turnTimingsField`
+   subtracted `null` as 0, so a record with `t1`/`t2` missing and `t3` present
+   persisted nonsense (`spawnMs: -100`, `sendMs: 0`, `firstByteMs: 300`). Rust
+   emits `null` for each delta whose endpoint is missing and keeps the field
+   undefined until `t3`. Scenario: "intentional difference (bug 5): no null
+   arithmetic in the persisted field" plus `Tims`-shaped unit tests.
+6. Empty probe tables leaked and a non-positive cap could spin. Legacy created
+   the per-session table before reading the clock and never pruned an emptied
+   one; a negative `maxIdentities` even looped deleting from an empty map. Rust
+   prunes empty tables and stops the trim loop at empty, so cap 0 or negative
+   cannot spin. Scenario: "intentional difference (bug 6): empty probe sessions
+   are pruned, no cap spin", plus `session_count` assertions.
+
+Preserved, not changed (list-only in the spec, asserted by "intentional
+preservation (bug 7)" and the probe scripted scenarios): zero-length request
+spans are dropped at snapshot time, `MAX_SPANS` stays 4000 with the oldest-span
+trim, same-kind spans merge at exactly `MERGE_GAP_MS` (1500, `<=`), an unknown
+probe identity still deletes the oldest identity, and a later `handedOff:true`
+record still overwrites the earlier `turnId` with `null`.
+
+Tests: `tests/test-turn-progress-differential.js` (1,088 lines, 25 tests) is a
+step-by-step differential: seeded ids, a fake clock, fake `setInterval`
+schedules, ports resolved in the same order on both sides, and per-step
+comparison of returns, thrown codes and port-call logs. It covers every public
+method of all four readers, trimmed ids and object updates, throwing clocks and
+throwing callbacks with exact mutation order, 4+4+3+4 seeds of randomized
+interleavings with deterministic re-entrancy, the 512-record eviction, the
+timeline's Claude frame list (30 frames) and adapter event list (19 events),
+origin strictness, the 4000-span cap and zero-length request rule, the probe LRU
+table, one-owner wiring, the chat-session forget hook, and source guards for
+`server.js`/`turn-engine.js` plus the deleted-module/frozen-oracle set. The
+rewritten source-guard tests (`tests/test-turn-timeline.js`,
+`test-progress-heartbeat.js`, `test-turn-timing.js`, `test-liveness-runtime.js`,
+`test-delivery-handoff-probe.js`) now exercise the facade/legacy oracles instead
+of regexing the deleted files. `scripts/rust-source-cache.js` gained the export,
+prototype-method and fake-ports smoke probe for `RustTurnProgress` in the same
+edit.
+
+Mutation faults (12, each failed a test and was reverted with a byte-compare
+afterwards): heartbeat silence comparison `<` to `<=` (3 unit tests); fire
+deadline drift `+1ms` (1); `touchVisible` not resetting the heartbeat period
+(1); `touchActivity` not refreshing the activity age (2 differential tests);
+`start` not dropping the session's predecessor (1); the first-byte logged
+guard removed, logging twice (1); eviction picking an unlogged record (1);
+`MERGE_GAP_MS` comparison `<=` to `<` (seeded timeline differential); keeping
+zero-length request spans (1); `MAX_SPANS` `>=` to `>` (bug-7 differential);
+probe record not refreshing LRU order (seeded probe differential); and empty
+probe tables not pruned (1).
+
+Rust workspace: all green after the sweep; `cargo fmt --check` clean and clippy
+reports no diagnostics in `turn_progress`. Fingerprint
+`46642830de94d58281a77275`; the artifact is
+`data/rust-source/46642830de94d58281a77275/darwin-arm64/multicc_core.node` in
+the primary repository (sha256
+`d575cb46b9f0a269e53367a96b48acfc0c2ef79c6b544738a35025f79baaa846`), built with
+`node scripts/ensure-source-rust.js` and passing the extended capability probe.
+
+Test tiers: 858 classified (core 413: deterministic 339 / isolated 43 /
+flutter 31); the audited release counts moved to 413 entries, 339 deterministic
+and 385 commands (382 Node entries); `server.js` is registered at 3023 lines /
+160674 bytes in the line-budget debt set (target 3000).
+
+Not verified: no live service restart and no real-account end-to-end turn, so
+the persisted `turnTimings`/`timeline` stamping is proven by the facade
+differential, the rewritten guards and the source guard, not against a live
+client. The spec asked for a section in `tests/test-chat-events-isolated.js`;
+that suite cannot exercise the Claude lane at this base commit (chat runs only
+on the resident Agent SDK lane, which spawns `MULTICC_CLAUDE_BIN`, while the
+test still overrides only `CLAUDE_CMD`; pointing both at the fake makes turns
+run but the task-shell scheduler never emits `session_queue completed` for the
+second turn because classification has no aux provider in that isolated root).
+That is a pre-existing red unrelated to this batch, so the file was left
+untouched.
+
+## Held-turn redesign: settlement is a uuid fact, not a counter (2026-11-10)
+
+Spec `data/plans/held-turn-fixes-20261110.md`, review repros under
+`data/plans/repros/` (`repro_hold.js` H1, `repro_dup.js` H2, `repro_c5.js` M2).
+Base `abb72cf4`. The user's rule, from a live screenshot: while background work
+a turn started is still alive, that turn is still the current turn; a message
+typed into the chat box must be answered inside it, not queue behind it with
+"workspace occupied and no turn is running". The previous batch kept the hold
+but settled injections by decrementing a counter on *any* result, which lost
+the answer, re-wrote messages on retry and let the injected answer become the
+turn's outcome. This batch replaces counting with the attribution facts the CLI
+actually reports, and moves the whole state machine into one Rust owner.
+
+### Observed SDK facts (real bundled Claude Code binary, SDK 0.3.317; recorded before any code change)
+
+Harness: a temp HOME/configDir fixture with a fake upstream, the real
+`RustClaudeLane` (bundled binary), a background `run_in_background` Bash.
+Output `/tmp/held-observe.out`; notes `/tmp/held-fix-notes.md`.
+
+- The main turn result carries the opening prompt's uuid:
+  `{"type":"result","subtype":"success","result":"sdk-answer-2","uuid":"4711d5ca-...","user_message_uuid":"bc31f8ad-...","user_message_uuids":["bc31f8ad-..."],"is_error":false}`
+- A result answering ONE injected user message carries the uuid the injector
+  stamped on the stdin line (`user_message_uuid` and `user_message_uuids`), and
+  no `origin`:
+  `{"type":"result",...,"result":"sdk-answer-3","user_message_uuid":"98973382-...","user_message_uuids":["98973382-..."],"is_error":false}`
+- TWO messages written back-to-back while held are coalesced into ONE result:
+  `{"type":"result",...,"result":"sdk-answer-5","user_message_uuid":"da77c62a-...","user_message_uuids":["663fac7d-...","da77c62a-..."],"is_error":false}`
+  `user_message_uuid` is the LAST uuid; `user_message_uuids` lists BOTH, in
+  order. Queued messages are therefore NOT answered one result each.
+- A self-wake result (background job finished) carries no uuid fields and a
+  task-notification origin:
+  `{"type":"result",...,"result":"sdk-answer-6","origin":{"kind":"task-notification","producer":"session-task","runId":"..."},"origin_kind":"task-notification","is_error":false}`
+- The only user-role events observed are tool_result echoes (uuid present); the
+  injected prompt is not echoed back as a `user` message.
+
+So the attribution fields ARE emitted and settlement is a membership test:
+a result settles exactly those pending injections whose uuid appears in
+`user_message_uuids` (falling back to `user_message_uuid`); a
+`task-notification` self-wake never settles anything. The spec's "one result per
+queued message" was an assumption; the binary coalesces, and the implementation
+settles every covered injection from that one result, in order.
+
+### State machine (owner: `native/core/src/background_hold.rs`, wrapper `native/addon/src/background_hold.rs`)
+
+`Hold { quiet_ms, max_ms, held, latest, last_wake, busy, quiet_since, done,
+pending, written, exchanges, cap_noted }`.
+
+- `start(main_result, backgroundActive)` holds only when the event is the main
+  result (`isMainResult` port) AND background work is alive. The cap timer is
+  armed for visibility, never for release (`cap_reached` answers true once;
+  `cap_noted` latches it).
+- `observe(event)`: a self-wake (origin task-notification / the existing
+  monitor-handoff classifier) becomes the turn's own latest outcome and never
+  touches `pending`; an answer whose uuid list contains a pending uuid settles
+  exactly those pending injections into `exchanges` (identity, uuid, result,
+  usage, cost, is_error) and removes them from `pending`. Any result that
+  carries an injected uuid is that message's answer and never the turn's own
+  outcome; a duplicate of an already-settled uuid is swallowed without adding a
+  second exchange.
+- `tick(now, backgroundActive)`: releases only after `quiet_ms` with no
+  background, no pending injection and no held event. The cap releases nothing.
+- `begin_injection(identity, uuid)` registers BEFORE the stdin write and answers
+  `write | append_only | refuse`; `abort_injection(identity)` releases a failed
+  write. Written identities are remembered with their bound uuid
+  (`REMEMBERED_LIMIT = 1024`, drop-oldest).
+- Release event = the turn's own outcome (`latest`, else `last_wake`) plus
+  `injected_exchanges[]`, `injected_usage` and `injected_cost_usd`. The usage
+  recorder adds `injected_usage` to the durable usage
+  (`usage_with_injected` in `native/addon/src/chat_events.rs`).
+- `may_inject(InjectFacts)` is the single predicate over
+  `{held, user_typed, attributable, turn_active, process_alive, process_stale,
+  process_contract, wanted_contract, delivery_settled}`; refusal reasons in
+  order: `not_held`, `no_active_turn`, `not_user_typed`, `unattributable_lane`,
+  `process_not_alive`, `process_changed`, `spawn_contract_changed`,
+  `already_delivered`.
+- `process_stale(running, wanted)` is the ONE staleness comparison over
+  `{routeUrl, routeToken, fingerprint, vaultDigest}`, returning
+  `{routeChanged, configChanged, vaultStale, stale}`; the stream pump and the
+  injectable predicate both call it (`M3`).
+
+Node is wiring only: `src/chat/background-hold.js` (129 lines) constructs the
+owner and forwards ports; `src/chat/held-turn-injection.js` (145 lines) projects
+host objects into facts, registers the delivery, writes the stdin line and
+appends the history row. The `remembered` Set, `MAX_REMEMBERED`,
+`isDirectUserTyped`, `injectionInFlight` and the retry rule are deleted from
+Node (47 added / 69 removed). The plain stream-json lanes (`src/chat/chat-stream.js`)
+lose their injection attempt and `injectionInFlight` too: they write a user line
+without a uuid and their results carry no `user_message_uuid(s)`, so an injected
+message there could never be settled. Their `heldTurn()` reports
+`attributable: false`, the Rust predicate refuses with `unattributable_lane`,
+and the typed message stays on the normal waiting path until the turn ends
+while the hold itself still keeps the turn open for its background work.
+
+### Findings closed (each fix landed as a failing test first)
+
+- H1 (any result decremented the counter): settlement is now uuid membership;
+  a self-wake while an injection is pending does not release the turn.
+  Tests: "an injected message is settled by its own answer, never by a
+  self-wake" (`tests/test-background-hold-differential.js`), repro_hold now
+  prints "not released (the typed answer is still pending) - FIXED".
+- H2 (retry re-wrote the message): `beginInjection` registers the identity and
+  uuid before the write; a retry gets `append_only` and only re-appends the
+  row; a failed write calls `abortInjection`. Tests: "exactly-once: a retry
+  appends the row only, an abort releases the identity",
+  "a retry after write/row failure never writes stdin twice (H2)"
+  (`tests/test-held-turn-injection.js`); repro_dup prints
+  `attempt2 {"delivered":true,...} writes=1 appended=1`.
+- M1 (availability read PATH `claude`): `server.js` now reports `claude`
+  availability through `bundledClaudeCodeBinary() != null`, the same function
+  spawn uses (`claudeLaneAvailable`); a machine without a global `claude` still
+  reports available, a missing bundled binary reports unavailable.
+- M2 (injected answer became the turn result/usage): the turn outcome is the
+  main result / its self-wakes only; the injected answer is a separate
+  `InjectedExchange`, its usage carried on the release event and folded into
+  durable usage. Tests: "two queued messages are settled by one coalesced
+  answer, in order" (differential), repro_c5 prints "turn result kept: true
+  injected kept separate: true".
+- M3 (spawn digest ignored route/credential changes): one Rust
+  `process_stale` feeds both the pump and the predicate; `heldTurn()` reports
+  `stale` from the latest desired config; a stale process waits for the next
+  turn (`process_changed`). Tests: the predicate table and
+  `live({stale:true}) -> 'process_changed'` in
+  `tests/test-held-turn-injection.js`; the pump uses the same call.
+- M4 (`_streamSessionId -> cliSessionId` was Node logic): the native session
+  record owner normalizes at load (`normalize_claude_native_id` in
+  `native/addon/src/session_records.rs`), `init` returns whether it changed
+  anything, `records.loadMigrated` exposes it and `server.js` sets
+  `_state.needsSave` so exactly one boot save follows. The Node block in
+  `turn-engine.js` is deleted. Tests: "load-time normalisation migrates the
+  retired claude -p identity once (M4)"
+  (`tests/test-session-records-durable.js`); the adapter test that used to pin
+  the Node rewrite now loads the record through the owner first
+  (`tests/test-claude-adapter.js`, "a legacy claude -p session carries its
+  streaming identity into the SDK lane").
+- L2 (cap notice was console-only): `onCapReached` now writes one persisted
+  system row and broadcasts one notice per held turn (`heldCapText` /
+  `notifyHoldCap` in `src/chat/session-notices.js`, wired as `onHoldCap` in
+  `turn-engine.js`). The cap never releases. Tests: "the cap warns instead of
+  releasing" (differential), "the hold cap is one visible notice, never a
+  release" (held-turn-injection).
+- Screenshot case: a background Agent (`local_agent`) keeps the turn open and a
+  typed message is answered inside it, with no queue notice. Test: "real sdk a
+  typed message is answered inside the turn a background Agent holds open"
+  (`tests/test-monitor-admission.js`, real bundled binary).
+
+### Intentional divergences from the frozen oracle (named scenarios)
+
+`tests/test-background-hold-differential.js` keeps the frozen interactive
+oracle and pins the deliberate differences in its header plus four named
+scenarios: (1) the cap warns instead of releasing; (2) an injected message is
+settled by its own answer, never by a self-wake (the oracle's counter); (3) the
+turn outcome is the main result / its self-wakes, and injected answers are
+separate exchanges; (4) two queued messages are settled by one coalesced answer
+in order (observed CLI behaviour; the spec assumed one result per message). The
+oracle is unchanged; `mutations of the frozen oracle are all caught by the
+differential` still runs.
+
+### Files and size
+
+Rust: `native/core/src/background_hold.rs` +560/-67 (1,133 lines, 16 unit
+tests), `native/addon/src/background_hold.rs` +112/-20 (302 lines),
+`native/addon/src/chat_events.rs` +36/-1,
+`native/addon/src/session_records.rs` +31/-2.
+Node: `src/chat/held-turn-injection.js` +47/-69 (the counter, `MAX_REMEMBERED`,
+`isDirectUserTyped` and the retry rule removed; 145 lines),
+`src/chat/claude-sdk-stream.js` +72/-19 (registration before write, one
+staleness call for pump and predicate, `attributable: true`),
+`src/chat/background-hold.js` +27/-9 (pass-through of the new owner calls),
+`src/chat/chat-stream.js` +8/-23 (legacy injection attempt and
+`injectionInFlight` deleted; `attributable: false`),
+`src/chat/turn-engine.js` +16/-11 (M4 block deleted, `onHoldCap` added),
+`src/chat/session-notices.js` +14/-1, `src/chat/stream-router.js` +2/-2,
+`src/session/records.js` +8/-1, `server.js` +15/-1 (M1, M4 boot save).
+Scripts: `scripts/rust-source-cache.js` +28/-6 (capability probe rewritten for
+the new exports and the `attributable` refusal in the same edit),
+`scripts/check-source-line-budget.js` +5/-2 (`server.js` registered at 3,037
+lines / 161,434 bytes, ratcheted).
+Tests: differential +114/-19, held-turn-injection +76/-17, monitor-admission
++35/-2, session-records-durable +28, claude-adapter +5/-0 (the deleted Node
+rewrite's assertion now loads through the owner).
+
+Artifact: fingerprint `047153b8db78edb677eac2ac`, file
+`data/rust-source/047153b8db78edb677eac2ac/darwin-arm64/multicc_core.node`
+(sha256 `b35ade6c74f2fd7f04880c2830cfdee8650c56fedbda47c6fc59dbf40e5b5484`),
+built with `node scripts/ensure-source-rust.js` after the `attributable` fact,
+the duplicate-answer rule and `cargo fmt` reflow.
+
+### Verification
+
+`cargo test --workspace` all green (577 core lib tests plus every other suite),
+`cargo fmt --check` clean after formatting, clippy has no new diagnostics in the
+three touched Rust files (the pre-existing warning classes elsewhere are
+unchanged). Focused JS against the artifact: differential 9/9,
+held-turn-injection 11/11, session-records-durable 12/12, claude-sdk-stream
+15/15, claude-adapter 9/9, monitor-admission 12/12. Repro outputs after the fix:
+`repro_hold.js` - `beginInjection(m1,uuid)` answers
+`{"action":"write","uuid":"1111..."}`, a self-wake leaves `injections: 1` and
+prints "not released (the typed answer is still pending) - FIXED", the answer
+releases with `result:"WAKE"`, `injected_exchanges:[{identity:"m1",result:"USER
+ANSWER",usage:{input_tokens:3},total_cost_usd:0.03}]` and
+`injected_usage:{input_tokens:3}`; `repro_c5.js` - release keeps
+`result:"TASK ANSWER"` with the injected exchange separate ("turn result kept:
+true injected kept separate: true"); `repro_dup.js` - attempt 1
+`{"delivered":false,"reason":"row_not_persisted"} writes=1 appended=0`,
+attempt 2 `{"delivered":true,"identity":"cm-1"} writes=1 appended=1`,
+"DUPLICATE WRITES (must be false): false".
+
+Not verified: no service restart and no real-account end-to-end turn (the
+coordinator restarts), so held-turn behaviour on the live service is proven by
+the real-binary harness (`test-monitor-admission.js`) and the differential, not
+against the user's account. The `_streamSessionId` normalisation was exercised
+only on temp files, not on a copy of the production session store. Queued
+messages were observed coalescing only in the fixture's fake upstream; whether
+a real provider always coalesces back-to-back injections is not proven (the
+settlement rule tolerates both shapes).
+
+## 持有回合修复：独立复核后的最终协议（2026-11-10）
+
+本节修订上方 `7407beef` 初版的状态机和验证结论。初版已有 UUID 归属，但独立复核确认仍有合并回答重复计量、写入尚未完成即视为成功、历史失败后提前释放、注入回答没有独立历史行等问题。本轮在既有实现上修复，未重做已完成的回合进度迁移。
+
+### 回合何时结束
+
+Rust `Hold` 分别记录注入预登记、stdin 写入确认、按 UUID 归属的回答、用户消息历史确认和回答历史确认。自然结束必须同时满足：后台工作结束、没有正在生成的查询、所有注入收到自己的回答、所有用户消息及回答已保存，且经过静默窗口。超时上限只提示，不强制释放。
+
+- 预登记后、写入完成前，同身份重入返回 `injection_in_flight`，不写第二次，也不确认投递成功。
+- 已确认写入的身份重试只补历史；即使目标配置已经改变，也允许补这条历史，不向旧线路写新消息。
+- 历史读取失败不能充当保存成功。回答先于写回调到达可证明消息已收到，迟到的写失败不能撤销这一事实。
+- `origin.kind=task-notification` 优先判为自唤醒，不结算注入；重复结果不清除另一条正在生成的查询状态。
+- 取消或进程死亡仍可终止回合。这是存活回合内的去重和保存协议，不承诺跨进程崩溃的持久化“恰好执行一次”。持续写盘失败会保持等待并重试。
+
+### 回答、用量与历史
+
+SDK 的 `usage` 是每次查询的用量；`total_cost_usd`、`modelUsage` 是累计快照。一个结果覆盖多个用户 UUID 时仅计量一次。释放事件的 `held_usage` 汇总所有唯一查询，费用和模型用量取最新快照；移除不正确的 `injected_cost_usd` 累加。主回合结果仍取主回答或最后自唤醒，注入回答不能顶替它。
+
+每个真实查询结束生成 `held_query_result`。Rust reducer 捕获该段文本与工具，生成独立历史行，ID 包含回合、runner 和查询序号；一个合并回答只保存一行，用 `heldIdentities` 关联多个提问。提问历史未确认或前一个回答尚未保存时，只捕获该段，不提前追加；重试使用同一行，不占用下一查询的输出缓冲。只有保存成功才 ACK 回合所有者。
+
+Web 和 Flutter 的 `held_query_boundary` 只结束当前回答气泡，保持整轮运行。最终收尾恢复主回答/自唤醒的正文及错误状态，避免向 dispatch/gateway 返回空正文，也避免注入 API 错误污染主回合。历史去重通过 Rust 查询身份判断，防止相同文字的不同回答互相覆盖。
+
+后端决策留在 Rust。Node 改动限于 SDK 写入确认、历史读写端口、ACK 回调及兼容门面；这些端口依赖现存 SDK/历史宿主，待相应宿主迁出后再移除，不增加 Node 业务状态机。
+
+### 产物和验收
+
+最终源码指纹：`46a42cacfe17093efea241eb`。
+原生模块 SHA256：`df6e709daf0d64c1ff183ad55517887f783c374b0769fb204b280c585866648c`。
+源码指纹、产物来源和接口探针均已独立核对。主仓证据目录：
+`data/rust-source/46a42cacfe17093efea241eb/validation/held-turn-review/`。
+
+已完成事件/历史专项 159/159、Web 专项 84/84、Flutter 22/22；源码预算、858 项测试分层、两项治理及格式检查通过。完整 npm 与 Rust 工作区最终结果已收取，详见以下验收收据。
+
+初轮回归中 SDK 用例因只保留最近 5 帧而遗漏已流出的回答；测试现单独保存 assistant 事件，失败项已通过。Rust 并发工作区测试一项既有分享控制测试超时，串行复跑该项已通过。两次失败日志保留，不计为通过。历史 `/tmp/held-observe.out` 有清理失败，也不作为整组通过的证据；真实 SDK 的最终证据使用隔离假上游测试，不涉及真实账号或生产配置。
+
+最终只读复审核对上述改动和原生产物短测，未发现剩余确认阻断项。本轮没有提交、合并、推送或重启生产服务；部署验收尚未执行。
+
+### 最终验收收据
+
+- `npm test` 完整进程退出 0；node:test 统计 6787 项，6784 通过、0 失败、2 跳过、1 待办。跳过及待办为既有测试；手写脚本与门禁均随完整命令通过。
+- `cargo test --workspace -- --test-threads=1` 完整退出 0，27 组共 792 项通过、0 失败（core 580）。
+- 架构依赖门禁已精确登记历史查询身份规则使用共享原生加载器，相关架构/历史测试 47/47；未放宽其他模块依赖。
+- 只读复审无剩余确认阻断项；构建者和复审代理均已完成，全部本轮测试进程已结束。
+- 五步修复计划已完成。本轮保留工作树改动，不提交、不合并、不推送、不重启；整体 Node 退出迁移和生产部署不在本次完成声明内。
+- 机器可读收据：上述证据目录中的 `receipt.json`；完整日志 `npm-test-verified.log`、`rust-tests-serial.log`。初次失败日志同时保留。
+
+## 迟到复审追加核对（2026-11-10，第 6 步）
+
+收到的复审针对旧版7407beef，不能直接套用到上一轮46a42产物。逐项核对后，以下问题已被前轮覆盖：显式自唤醒origin优先于UUID、无后台但注入未答仍触发cap通知、自然结束等待用户与回答历史ACK、唯一查询用量累加及最新费用快照。旧报告关于合并结果“用量只计一次”的结论不适用于其原始代码，前轮已用双UUID复现并修正。
+
+本轮补齐仍存在的失败出口：
+
+- 注入失败仅带errors数组、或synthetic错误正文未进入缓冲时，Rust生成可读错误行；有部分输出时追加错误说明，取消也明确显示“这条消息的回答已取消”。原46a42产物上新增429错误数组用例确实失败（空正文），新产物通过。
+- cancel/立刻插入终止持有回合前，Rust给所有未答注入生成独立取消结果，关联原identity/UUID，保留已生成的部分。取消事件不能冒充真实stdin写入确认；主回答保持原有完成结果。用户历史已保存且存储可写时取消回答随边界落盘，强制终止不因此承诺跨崩溃持久化。
+- settings读取失败直接传播，不能把异常当作配置未变化而复用旧进程；SDK真实子进程测试确认后续请求未写入旧进程。
+- 已确认写入且已有持久历史的注入，由Rust返回已投递结论，直接确认出站项，避免当前hold内重复claim/defer。仅历史存在而无当前hold写入证明的普通消息仍沿原有runner接管校验，不能错误确认未执行消息。
+
+明确保留的边界：未重新ensure配置时，不保证即时发现凭据值轮换；provider/model/accounts/pendingConfiguration的记录摘要比较仍有效，不能把它描述为所有凭据的热变化检测。注入查询失败单独显示，不重跑已完成的主回合；独立查询自动重试未实现。显式取消、进程死亡及跨崩溃的持久化恰好一次仍不在本协议保证内。旧生命周期随机差分不覆盖新增注入协议；新协议由专门的归属、并发写、保存顺序、失败及取消用例验证，不声称与旧计数器行为等价。
+
+最终指纹：`2b8946a0992a22fdd59b3465`；原生SHA256：`6818663a6652dfaf1f98c4d16a27b55a6144966ee2238024a6c07b5687c7527c`。源码/来源/接口探针全部匹配。最终定向回归175/175（0失败、0跳过），Rust持有回合专项20/20；覆盖真实SDK取消、错误历史、投递去重、配置异常、历史顺序、架构和源构建缓存。预算、858项测试分层、两项治理、格式及diff检查通过。
+
+证据目录：`data/rust-source/2b8946a0992a22fdd59b3465/validation/held-late-review/`。本轮未重跑全量npm或Flutter；前节全量结果只适用于当时46a42产物，不冒充本轮验证。本轮没有新派发代理，全部测试/构建已结束；没有提交、合并、推送或生产重启。追加第6步核对与以上修补完成，已知边界如上。

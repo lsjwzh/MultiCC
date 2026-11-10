@@ -26,7 +26,7 @@
   };
   // chat 的默认线路：列表里第一条 chat 车道。`claude -p` / `codex exec` 那两个一次性
   // 命令已经不在这张列表里了，兜底也只兜到常驻车道。
-  const firstChatCli = () => (Array.isArray(data?.clis) ? data.clis : []).find(cliOffersInChat) || 'claude-exp';
+  const firstChatCli = () => (Array.isArray(data?.clis) ? data.clis : []).find(cliOffersInChat) || 'claude';
   function readRouteParams() {
     const params = new URLSearchParams(location.search);
     if (params.get('view') === 'planner') {

@@ -421,9 +421,9 @@ test('a lane switch puts a never-set sub-agent route on the destination family d
   const h = subagentDefaultsHarness(codexTask(), { claude: { providerId: 'p-ds', model: 'opus' }, codex: null });
   const res = await h.invoke({ body: { cli: 'claude-exp' } });
   assert.equal(res.statusCode, 200);
-  assert.equal(h.session.cli, 'claude-exp');
+  assert.equal(h.session.cli, 'claude');
   assert.deepEqual(h.session.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
-  assert.deepEqual(h.session.cliStates['claude-exp'].subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
+  assert.deepEqual(h.session.cliStates.claude.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
   assert.deepEqual(res.body.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
   // Back to Codex: that family has no default, so the inherited Claude route
   // must not leak into it, and the Codex lane keeps following the main line.
@@ -465,7 +465,7 @@ test('a deferred lane switch stages the destination family default for the next 
   assert.deepEqual(h.session.pendingConfiguration.profile.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
   h.chat.isStreaming = false;
   assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
-  assert.equal(h.session.cli, 'claude-exp');
+  assert.equal(h.session.cli, 'claude');
   assert.deepEqual(h.session.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
 });
 
@@ -749,12 +749,13 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
   assert.equal(res.body.versions.qoder.cmd, '/bin/qoderclicn');
   assert.equal(res.body.versions.qoder.available, true);
   assert.equal(res.body.versions.claude.version, '2.0.1');
-  // claude-exp 的引擎随 MultiCC 走, 不在升级范围里: 所以它没有自己的一行, 而是挂在
-  // 家族的 bundled 上(面板把这一行写成副标题, 不给装不了的按钮)。版本优先读实际
-  // 装着的 SDK(读不到才退回 package.json 的声明值) —— 两条路径都以真实依赖为准。
+  // claude 的 chat 引擎随 MultiCC 走, 不在升级范围里: 它挂在家族的 bundled 上
+  // (面板把这一行写成副标题, 不给装不了的按钮), 同一 id 的终端二进制仍照常探测。
+  // 版本优先读实际装着的 SDK(读不到才退回 package.json 的声明值) —— 两条路径都以
+  // 真实依赖为准。
   const sdkDep = require('../package.json').dependencies['@anthropic-ai/claude-agent-sdk'];
   assert.deepEqual(res.body.versions.claude.bundled, [{
-    lane: 'claude-exp', engine: 'Claude Agent SDK', kind: 'chat',
+    lane: 'claude', engine: 'Claude Agent SDK', kind: 'chat',
     available: true, version: String(sdkDep).replace(/^[~^]/, ''),
     // 这个用例没有注入内置引擎的 Claude Code 版本: 基线照实报 null, 不编一个。
     cliVersion: null,
@@ -1286,18 +1287,29 @@ test('cli/versions counts a lane against its family, so one CLI is one row', asy
   assert.equal(res.body.versions['codex-exp'], undefined);
 });
 
-test('a bundled engine cannot be installed or upgraded — it rides with MultiCC', async () => {
-  // claude-exp 的引擎是 multicc 自己的依赖: 没有制品可装。绝不能拿家族的
-  // `npm install -g @anthropic-ai/claude-code` 糊弄过去 —— 用户会以为修好了。
-  const harness = createHarness({
-    availability: { 'claude-exp': { available: false } },
-  });
-  for (const invoke of [harness.invokeInstall, harness.invokeUpgrade]) {
-    const res = await invoke('claude-exp');
-    assert.equal(res.statusCode, 400);
-    assert.equal(res.body.manual, true);
-    assert.match(res.body.error, /MultiCC/);
-  }
+test('the retired claude-exp id installs and upgrades the live claude artifact', async () => {
+  // The old id is still accepted on input, but it names `claude` now: the same
+  // lane whose chat engine rides with MultiCC also owns the terminal binary, so
+  // there is a real artifact to install/upgrade and the job is recorded as
+  // `claude`, never under the retired spelling.
+  const makeProc = () => {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+  const options = {
+    spawnProcess: makeProc,
+    cliCommands: { claude: '/usr/local/bin/claude' },
+    availability: { claude: { available: false } },
+  };
+  const installed = await createHarness(options).invokeInstall('claude-exp');
+  assert.equal(installed.statusCode, 202);
+  assert.equal(installed.body.cli, 'claude');
+  const upgraded = await createHarness(options).invokeUpgrade('claude-exp');
+  assert.equal(upgraded.statusCode, 202);
+  assert.equal(upgraded.body.cli, 'claude');
 });
 
 test('upgrade runs the official command even though the cli is already installed', async () => {

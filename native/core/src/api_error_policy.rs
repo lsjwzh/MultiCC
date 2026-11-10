@@ -252,8 +252,7 @@ const MODEL_ENTITLEMENT: [&str; 6] = [
     "套餐不支持",
 ];
 
-const RESET_IN_TEXT_SOURCE: &str =
-    r"\breset(?:s|ting)?\s+in\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b";
+const RESET_IN_TEXT_SOURCE: &str = r"\breset(?:s|ting)?\s+in\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b";
 const RESET_AT_TEXT_SOURCE: &str = r"\breset(?:s|ting)?\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:\s*(?:Z|[+-]\d{2}:?\d{2}))?)";
 
 const QUOTA_GUARD_CODE_SOURCE: &str = r#""code"\s*:\s*"quota[_-]?guard"#;
@@ -282,7 +281,10 @@ const HARMLESS_STDERR_LINE_SOURCES: [&str; 7] = [
 ];
 
 const CLAUDE_ERROR_ENVELOPE_CODES: [(&str, &str); 5] = [
-    ("response_stalled_mid_stream", r"response stalled mid-stream"),
+    (
+        "response_stalled_mid_stream",
+        r"response stalled mid-stream",
+    ),
     (
         "response_stalled_before_response",
         r"response stalled while thinking",
@@ -300,17 +302,13 @@ const CLAUDE_ERROR_ENVELOPE_CODES: [(&str, &str); 5] = [
 
 const TEXT_FALLBACK_AUTH_SOURCE: &str = r"\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication (?:failed|required)|failed to authenticate|authorization failed|invalid api key|insufficient scope|please (?:use|run)\s*\/login|please log\s*in again|oauth token revoked|token (?:has been |was )?revoked|credentials? (?:have been |were )?revoked|not logged in|login required|未登录|请先登录|尚未登录";
 const TEXT_FALLBACK_RATE_SOURCE: &str = r"\b429\b|rate limit|too many requests";
-const TEXT_FALLBACK_CONTEXT_SOURCE: &str =
-    r"context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit";
-const TEXT_FALLBACK_TOOL_SOURCE: &str =
-    r"invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error";
+const TEXT_FALLBACK_CONTEXT_SOURCE: &str = r"context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit";
+const TEXT_FALLBACK_TOOL_SOURCE: &str = r"invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error";
 const TEXT_FALLBACK_CANCEL_SOURCE: &str =
     r"cancelled by user|canceled by user|server (?:is )?shutting down|sigterm|sigint";
-const TEXT_FALLBACK_INVALID_SESSION_SOURCE: &str =
-    r"invalid session id\. must be a valid uuid\b";
+const TEXT_FALLBACK_INVALID_SESSION_SOURCE: &str = r"invalid session id\. must be a valid uuid\b";
 const TEXT_FALLBACK_NO_SESSION_SOURCE: &str = r"no conversation found with session id\b";
-const TEXT_FALLBACK_SESSION_BUSY_SOURCE: &str =
-    r"\bsession id\s+\S+\s+is already in use\b";
+const TEXT_FALLBACK_SESSION_BUSY_SOURCE: &str = r"\bsession id\s+\S+\s+is already in use\b";
 const TEXT_FALLBACK_CONFIG_SOURCE: &str = r"provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed|\b(?:eacces|enoent|enoexec)\b|\bexit(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*-13\b";
 const TEXT_FALLBACK_TIMEOUT_SOURCE: &str =
     r"etimedout|timed? out|timeout|deadline exceeded|response stalled|stream idle";
@@ -646,12 +644,7 @@ pub fn spread_clone(value: &JsValue) -> JsValue {
             items
                 .iter()
                 .enumerate()
-                .map(|(index, item)| {
-                    (
-                        JsString::from_rust_str(&index.to_string()),
-                        item.clone(),
-                    )
-                })
+                .map(|(index, item)| (JsString::from_rust_str(&index.to_string()), item.clone()))
                 .collect(),
         ),
         _ => JsValue::object(Vec::<(JsString, JsValue)>::new()),
@@ -692,8 +685,7 @@ pub fn source_message(raw: &JsValue) -> JsValue {
         get(raw, "reason"),
     ]);
     if let Some(value) = direct.as_ref() {
-        if truthy(value) && js_to_string(value).trim().to_lowercase() != "error_during_execution"
-        {
+        if truthy(value) && js_to_string(value).trim().to_lowercase() != "error_during_execution" {
             return value.clone();
         }
     }
@@ -986,10 +978,7 @@ fn boundary_unit(unit: u16) -> bool {
 }
 
 fn seam_unit(unit: u16) -> bool {
-    matches!(
-        unit,
-        0x000A | 0x3002 | 0xFF1A | 0x003A | 0xFF1B | 0x003B
-    )
+    matches!(unit, 0x000A | 0x3002 | 0xFF1A | 0x003A | 0xFF1B | 0x003B)
 }
 
 fn sentence_punct(unit: u16) -> bool {
@@ -1166,10 +1155,7 @@ fn envelope_entry(
 ) -> JsValue {
     let provider_name = provider_or_claude(provider).to_lowercase();
     js_object(vec![
-        (
-            "source",
-            text_value(envelope_source(provider)),
-        ),
+        ("source", text_value(envelope_source(provider))),
         ("provider", string_value(provider_name)),
         ("message", string_value(message)),
         ("httpStatus", optional_number(http_status)),
@@ -1223,10 +1209,7 @@ pub fn claude_error_envelope(provider: &JsValue, text: &JsValue) -> JsValue {
             let provider_option = Some(provider.clone());
             let provider_name = provider_or_claude(&provider_option).to_lowercase();
             return js_object(vec![
-                (
-                    "source",
-                    text_value(envelope_source(&provider_option)),
-                ),
+                ("source", text_value(envelope_source(&provider_option))),
                 ("provider", string_value(provider_name)),
                 ("code", text_value(code)),
                 ("message", string_value(message)),
@@ -1415,7 +1398,9 @@ fn user_action(category: &str, retry_after_ms: Option<f64>, rejection: &JsValue)
         }
     }
     match category {
-        "authentication_permission" => "重新登录、更新 API 凭据或补足权限后重试（官方账号可在「模型线路」面板点「重新登录」）",
+        "authentication_permission" => {
+            "重新登录、更新 API 凭据或补足权限后重试（官方账号可在「模型线路」面板点「重新登录」）"
+        }
         "billing_quota" => {
             if retry_after_ms.is_some() {
                 "等待额度重置后重试"
@@ -1536,7 +1521,9 @@ pub fn source_and_provider(
         provider = Some(text_value("unknown"));
     }
     Ok((
-        js_to_string(&source.unwrap()).to_lowercase().truncate_units(40),
+        js_to_string(&source.unwrap())
+            .to_lowercase()
+            .truncate_units(40),
         js_to_string(&provider.unwrap())
             .to_lowercase()
             .truncate_units(40),
@@ -1729,13 +1716,19 @@ pub fn normalize_outcome(
         256,
     );
     let provider_route_scope = strict_string(&get(context, "providerRouteScope"), "attempt")
-        && runtime_epoch.as_ref().is_some_and(|value| !value.is_empty())
+        && runtime_epoch
+            .as_ref()
+            .is_some_and(|value| !value.is_empty())
         && turn_id.as_ref().is_some_and(|value| !value.is_empty())
         && decision_id.as_ref().is_some_and(|value| !value.is_empty())
-        && route_attempt_id.as_ref().is_some_and(|value| !value.is_empty())
+        && route_attempt_id
+            .as_ref()
+            .is_some_and(|value| !value.is_empty())
         && route_generation.is_some()
         && attempt_no.is_some()
-        && provider_revision.as_ref().is_some_and(|value| !value.is_empty());
+        && provider_revision
+            .as_ref()
+            .is_some_and(|value| !value.is_empty());
 
     let upstream = deps.upstream.clone();
     let code = normalize_code(&pick_truthy(&[
@@ -1817,7 +1810,8 @@ pub fn normalize_outcome(
     }
 
     let structured_rejection = deps.rejection.clone();
-    let http_status_is_429 = matches!(&http_status, Some(JsValue::Number(number)) if *number == 429.0);
+    let http_status_is_429 =
+        matches!(&http_status, Some(JsValue::Number(number)) if *number == 429.0);
     let rejection_applies = truthy_value(&structured_rejection)
         && (http_status_is_429
             || (http_status.as_ref().is_none_or(|value| value.is_nullish())
@@ -1881,10 +1875,8 @@ pub fn normalize_outcome(
         phase.to_string_lossy().as_str(),
         "connect" | "before_first_token" | "request"
     );
-    let safe_to_retry = truthy_value(&retryable)
-        && replay_safe_phase
-        && !partial_output
-        && !side_effects;
+    let safe_to_retry =
+        truthy_value(&retryable) && replay_safe_phase && !partial_output && !side_effects;
 
     let request_id_raw = pick_truthy(&[
         get(raw, "requestId"),
@@ -1961,57 +1953,57 @@ pub fn normalize_outcome(
         value: js_object(vec![
             ("category", text_value(&category)),
             ("provider", string_value(provider)),
-        ("providerId", optional_text(provider_id)),
-        ("providerName", optional_text(provider_name)),
-        (
-            "providerRouteScope",
-            if provider_route_scope {
-                text_value("attempt")
-            } else {
-                JsValue::Null
-            },
-        ),
-        ("runtimeEpoch", optional_text(runtime_epoch)),
-        ("turnId", optional_text(turn_id)),
-        ("decisionId", optional_text(decision_id)),
-        ("routeAttemptId", optional_text(route_attempt_id)),
-        ("routeGeneration", optional_number(route_generation)),
-        ("attemptNo", optional_number(attempt_no)),
-        ("providerRevision", optional_text(provider_revision)),
-        (
-            "code",
-            if code.is_empty() {
-                JsValue::Null
-            } else {
-                string_value(code.clone())
-            },
-        ),
-        ("httpStatus", http_status.unwrap_or(JsValue::Null)),
-        ("retryable", retryable),
-        ("requestDeadlineAt", optional_number(request_deadline)),
-        (
-            "retryBudgetExhausted",
-            JsValue::Bool(
-                matches!(get(raw, "retryBudgetExhausted"), Some(JsValue::Bool(true)))
-                    || code == "model_request_deadline",
+            ("providerId", optional_text(provider_id)),
+            ("providerName", optional_text(provider_name)),
+            (
+                "providerRouteScope",
+                if provider_route_scope {
+                    text_value("attempt")
+                } else {
+                    JsValue::Null
+                },
             ),
-        ),
-        ("retryAfterMs", optional_number(retry_after_ms)),
-        ("safeToRetry", JsValue::Bool(safe_to_retry)),
-        ("phase", string_value(phase)),
-        ("partialOutput", JsValue::Bool(partial_output)),
-        ("sideEffects", JsValue::Bool(side_effects)),
-        ("attempt", JsValue::Number(attempt)),
-        ("maxAttempts", JsValue::Null),
-        ("userAction", user_action_value),
-        ("diagnosis", diagnosis_value),
-        ("rejection", rejection),
-        ("sanitizedMessage", string_value(sanitized_message)),
-        ("rootCause", string_value(root_cause)),
-        ("param", optional_text(param)),
-        ("cause", cause),
-        ("source", string_value(source)),
-        ("requestId", optional_text(request_id)),
+            ("runtimeEpoch", optional_text(runtime_epoch)),
+            ("turnId", optional_text(turn_id)),
+            ("decisionId", optional_text(decision_id)),
+            ("routeAttemptId", optional_text(route_attempt_id)),
+            ("routeGeneration", optional_number(route_generation)),
+            ("attemptNo", optional_number(attempt_no)),
+            ("providerRevision", optional_text(provider_revision)),
+            (
+                "code",
+                if code.is_empty() {
+                    JsValue::Null
+                } else {
+                    string_value(code.clone())
+                },
+            ),
+            ("httpStatus", http_status.unwrap_or(JsValue::Null)),
+            ("retryable", retryable),
+            ("requestDeadlineAt", optional_number(request_deadline)),
+            (
+                "retryBudgetExhausted",
+                JsValue::Bool(
+                    matches!(get(raw, "retryBudgetExhausted"), Some(JsValue::Bool(true)))
+                        || code == "model_request_deadline",
+                ),
+            ),
+            ("retryAfterMs", optional_number(retry_after_ms)),
+            ("safeToRetry", JsValue::Bool(safe_to_retry)),
+            ("phase", string_value(phase)),
+            ("partialOutput", JsValue::Bool(partial_output)),
+            ("sideEffects", JsValue::Bool(side_effects)),
+            ("attempt", JsValue::Number(attempt)),
+            ("maxAttempts", JsValue::Null),
+            ("userAction", user_action_value),
+            ("diagnosis", diagnosis_value),
+            ("rejection", rejection),
+            ("sanitizedMessage", string_value(sanitized_message)),
+            ("rootCause", string_value(root_cause)),
+            ("param", optional_text(param)),
+            ("cause", cause),
+            ("source", string_value(source)),
+            ("requestId", optional_text(request_id)),
         ]),
         text_entitlement_rejection: synthesized_entitlement,
     }
@@ -2041,7 +2033,11 @@ fn cli_retried_rate_limit(error: &JsValue) -> bool {
 fn max_attempts_for(error: &JsValue) -> f64 {
     let category = get(error, "category");
     if strict_string(&category, "rate_limit") {
-        return if cli_retried_rate_limit(error) { 0.0 } else { 2.0 };
+        return if cli_retried_rate_limit(error) {
+            0.0
+        } else {
+            2.0
+        };
     }
     if strict_string(&category, "provider_transient") || strict_string(&category, "network") {
         return 2.0;
@@ -2317,7 +2313,10 @@ fn reset_wait_label(delay_ms: &JsValue) -> String {
     )
 }
 
-fn label_for(table: &[(&'static str, &'static str)], code: &Option<JsValue>) -> Option<&'static str> {
+fn label_for(
+    table: &[(&'static str, &'static str)],
+    code: &Option<JsValue>,
+) -> Option<&'static str> {
     let code = string_or_empty(code).to_lowercase();
     table
         .iter()
@@ -2344,8 +2343,7 @@ fn ends_with_sentence_punct(text: &JsString) -> bool {
 }
 
 pub fn retry_notice(decision: &JsValue) -> JsString {
-    if !truthy_value(decision)
-        || !get(decision, "error").is_some_and(|value| truthy_value(&value))
+    if !truthy_value(decision) || !get(decision, "error").is_some_and(|value| truthy_value(&value))
     {
         return jstr("\u{4e0a}\u{6e38} API \u{8bf7}\u{6c42}\u{5931}\u{8d25}\u{ff0c}\u{672a}\u{81ea}\u{52a8}\u{91cd}\u{8bd5}\u{3002}");
     }
@@ -2375,7 +2373,11 @@ pub fn retry_notice(decision: &JsValue) -> JsString {
             if found {
                 JsString::new()
             } else {
-                cat(&[jstr("\u{ff08}\u{53c2}\u{6570}\u{ff1a}"), text, jstr("\u{ff09}")])
+                cat(&[
+                    jstr("\u{ff08}\u{53c2}\u{6570}\u{ff1a}"),
+                    text,
+                    jstr("\u{ff09}"),
+                ])
             }
         }
         None => JsString::new(),
@@ -2388,7 +2390,12 @@ pub fn retry_notice(decision: &JsValue) -> JsString {
         } else {
             jstr("\u{3002}")
         };
-        cat(&[jstr("\u{6839}\u{56e0}\u{ff1a}"), cause.clone(), parameter.clone(), full_stop])
+        cat(&[
+            jstr("\u{6839}\u{56e0}\u{ff1a}"),
+            cause.clone(),
+            parameter.clone(),
+            full_stop,
+        ])
     };
     let user_action = js_to_string(&get(&error, "userAction").unwrap_or(JsValue::Undefined));
     let category = get(&error, "category").unwrap_or(JsValue::Undefined);
@@ -2420,7 +2427,11 @@ pub fn retry_notice(decision: &JsValue) -> JsString {
     let reason = get(decision, "reason").unwrap_or(JsValue::Undefined);
     if strict_string(&Some(action.clone()), "retry") {
         let delay = js_to_number(&get(decision, "delayMs").unwrap_or(JsValue::Undefined));
-        let delay = if delay.is_nan() || delay == 0.0 { 0.0 } else { delay };
+        let delay = if delay.is_nan() || delay == 0.0 {
+            0.0
+        } else {
+            delay
+        };
         let seconds = js_max(1.0, (delay / 1000.0).ceil());
         let attempt = js_to_string(&get(decision, "attempt").unwrap_or(JsValue::Undefined));
         let max_attempts = js_to_string(&get(&error, "maxAttempts").unwrap_or(JsValue::Undefined));
@@ -2526,7 +2537,10 @@ mod tests {
     #[test]
     fn normalize_code_matches_the_javascript_rules() {
         assert_eq!(normalize_code(&Some(js("-13"))), "exit_13");
-        assert_eq!(normalize_code(&Some(js("  Too Many.Requests "))), "too_many_requests");
+        assert_eq!(
+            normalize_code(&Some(js("  Too Many.Requests "))),
+            "too_many_requests"
+        );
         assert_eq!(normalize_code(&Some(JsValue::Number(-32603.0))), "_32603");
         assert_eq!(normalize_code(&None), "");
     }
@@ -2541,10 +2555,7 @@ mod tests {
             ),
         ]);
         assert_eq!(source_message(&raw), js("one | two"));
-        let placeholder = JsValue::object(vec![(
-            "message",
-            js("error_during_execution"),
-        )]);
+        let placeholder = JsValue::object(vec![("message", js("error_during_execution"))]);
         assert_eq!(source_message(&placeholder), js("error_during_execution"));
     }
 
@@ -2556,13 +2567,19 @@ mod tests {
             get(&envelope, "message").unwrap(),
             js("API Error: Request rejected (429) rate limited")
         );
-        assert_eq!(get(&envelope, "httpStatus").unwrap(), JsValue::Number(429.0));
+        assert_eq!(
+            get(&envelope, "httpStatus").unwrap(),
+            JsValue::Number(429.0)
+        );
         assert_eq!(get(&envelope, "body").unwrap(), js("这是正文"));
         assert_eq!(
             split_trailing_error_envelope(&text),
             JsValue::object(vec![
                 ("body", js("这是正文")),
-                ("envelope", js("API Error: Request rejected (429) rate limited")),
+                (
+                    "envelope",
+                    js("API Error: Request rejected (429) rate limited")
+                ),
             ])
         );
     }
@@ -2615,7 +2632,10 @@ mod tests {
 
     #[test]
     fn parse_helpers_agree_with_the_javascript_examples() {
-        assert_eq!(parse_retry_after(&Some(js("7")), 0.0, &no_date), Some(7_000.0));
+        assert_eq!(
+            parse_retry_after(&Some(js("7")), 0.0, &no_date),
+            Some(7_000.0)
+        );
         assert_eq!(parse_reset(&Some(js("120")), 1_000.0), Some(120_000.0));
         assert_eq!(
             reset_after_from_text(&Some(js("It will reset in 12 minutes.")), 0.0, &no_date),

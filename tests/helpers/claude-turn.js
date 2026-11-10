@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { createChatTurnEngine } = require('../../src/chat/turn-engine');
-const { createClaudeExpAdapter } = require('../../src/cli-adapters/claude-exp');
+const { createClaudeAdapter } = require('../../src/cli-adapters/claude');
 
 // Drive the real host through admission, context composition, and adapter argv.
 // Stop at buildInvocation, before any provider attempt or process can start.
@@ -12,7 +12,7 @@ module.exports = function prepareTurn({ record, cwd, history = [], connected = f
   const ok = () => ({ ok: true });
   let prepared;
   const errors = [];
-  const adapter = createClaudeExpAdapter({
+  const adapter = createClaudeAdapter({
     resolveSessionWireModel: value => value,
     claudeDefaultModel: () => null,
     cliEffortLevel: () => null,

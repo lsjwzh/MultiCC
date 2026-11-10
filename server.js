@@ -100,6 +100,8 @@ const {
   buildHandoffCheckpoint,
   renderHandoffPrompt,
 } = require('./src/cli-switch');
+const { isAlias, nameOf: canonicalCli } = require('./src/cli/cli-capability');
+const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
 // MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
@@ -210,7 +212,7 @@ const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/l
 const { createPushRuntime } = require('./src/push/runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
 const { createChatHistoryFileRepository } = require('./src/session');
-const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
+const { TurnProgressHeartbeat, createTurnProgress } = require('./src/chat/turn-progress');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost } = require('./src/task-context-host');
@@ -271,6 +273,11 @@ const auxRunLog = createAuxRunLog({ dir: MULTICC_PATHS.auxRunsDir, log: (event, 
 // the data paths are known.
 const stateOwner = createStateOwner();
 const chatSessions = createChatSessions(stateOwner);
+// One Rust owner for the turn-progress state machines (heartbeat cadence, turn
+// timing, per-session model timeline, delivery probes). Wired below into the
+// heartbeat, the engine, the liveness runtime and the two persistence hosts.
+const turnProgress = createTurnProgress();
+chatSessions.setForgetHook(turnProgress.forgetSession);
 let chatHistoryRuntime = null;
 let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
@@ -285,6 +292,10 @@ const routerToolHost = createRouterToolHost({
   activeTurnForSession: id => chatSessions.get(id)?._activeTurn,
 });
 const turnProgressHeartbeat = new TurnProgressHeartbeat({
+  owner: turnProgress.owner,
+  logWarn: (message, error) => logger.warn(message, {
+    error: error && error.message ? error.message : String(error),
+  }),
   onHeartbeat(event) {
     const active = chatSessions.get(event.sessionId);
     if (!active || !active.isStreaming || active._activeTurn?.turnId !== event.turnId) {
@@ -574,14 +585,21 @@ function cliCommandAvailable(command) {
 
 // Re-resolve when the environment moved: a just-installed CLI must show up.
 const commandsForAvailability = require('./src/cli-adapters/commands').createCommandResolver({ isWindows, seed: cliCommands });
+const { bundledClaudeCodeBinary } = require('./src/cli/claude-bundled-binary');
+
+// The `claude` chat lane runs the BUNDLED engine binary (the Agent SDK's
+// per-platform package), not whatever `claude` on PATH resolves to. Reporting
+// PATH here was wrong in both directions (M1): "missing" for an install that
+// runs fine, "available" for one that would spawn a different engine.
+function claudeLaneAvailable() {
+  try { return bundledClaudeCodeBinary() != null; } catch (_) { return false; }
+}
 
 function cliAvailabilitySummary() {
   const commands = commandsForAvailability();
   const out = {};
-  for (const cli of SUPPORTED_CHAT_CLIS) {
-    let available = cliCommandAvailable(commands[cli]);
-    if (cli === 'claude-exp' && !require('./src/cli/claude-bundled-binary').bundledClaudeCodeBinary()) available = false;
-    out[cli] = { available };
+  for (const cli of CLIENT_CHAT_CLIS) {
+    out[cli] = { available: cli === 'claude' ? claudeLaneAvailable() : cliCommandAvailable(commands[cli]) };
   }
   return out;
 }
@@ -705,11 +723,8 @@ async function ensureDirGitReady(dir) {
 }
 
 // ── Directory + session persistence ──
-// Schema:
-//   directories.json: [{ id, name, path, createdAt, baseBranch?, gitInitialized? }]
-//   sessions.json:    [{ id, dirId, cli, kind, cliSessionId, label?, createdAt, worktreePath?, branch? }]  (+ __aux__)
-//
-// Old flat schemas are auto-migrated on first load. Paths flow through MULTICC_PATHS (MULTICC_DATA_DIR relocates them).
+// Schema: directories.json / sessions.json; old flat schemas auto-migrate on first load.
+// Paths flow through MULTICC_PATHS (MULTICC_DATA_DIR relocates them).
 const SESSIONS_FILE = MULTICC_PATHS.sessionsFile;
 const DIRECTORIES_FILE = MULTICC_PATHS.directoriesFile;
 
@@ -742,6 +757,9 @@ const _state = stateBootstrap.state;
 // the native owner already holds the directory table. Neither source Map remains
 // a second live table.
 const persistedSessions = createSessionRecords(_state.persistedSessions, stateOwner);
+// The native load-time normalizer may have renamed `_streamSessionId` to
+// `cliSessionId` on a live record (M4); the boot save below persists it.
+if (persistedSessions.loadMigrated) _state.needsSave = true;
 const directories = createDirectoryTable(stateOwner);
 mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 
@@ -1317,6 +1335,7 @@ const livenessRuntime = createLivenessRuntime({
   chatSessions,
   chatStreamStatus: id => { try { return chatStream.status(id); } catch (_) { return null; } },
   turnHeartbeatStatus: id => turnProgressHeartbeat.status(id),
+  timelineCurrentStage: turnProgress.timeline.currentStage,
   thresholds: process.env.MULTICC_STALL_SILENT_MS ? { stallSilentMs: Number(process.env.MULTICC_STALL_SILENT_MS) } : {},
   probeSession: async (sessionId, sig) => livenessProcessProbe.probe(
     sig && Number.isInteger(sig.pid) ? sig.pid : null, livenessRolloutPath(persistedSessions.get(sessionId))),
@@ -1564,7 +1583,7 @@ function createSessionRecord(input) {
   return require('./src/session/create-record').createSessionRecordFactory({
     sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
     SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath: MULTICC_PATHS.loginWorkspacePath
-  })(input);
+  })(input && typeof input === 'object' && input.cli != null ? { ...input, cli: canonicalCli(input.cli) } : input);
 }
 
 // Login terminals are one-shot (src/session/login-terminal.js): each login
@@ -1859,7 +1878,6 @@ const {
   recordApiError, recordApiSuccess, evaluateTurnApiError, meaningfulTurnOutput,
   turnHasSideEffects, clearSessionApiErrorState, scheduleOwnedRetry,
 } = apiErrorHost;
-const bgCoalesce = require('./src/bg-completion-coalescer');
 const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
 const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = require('./src/ios-ota').createIosOta({ fs, path, rootDir: __dirname });
@@ -2289,6 +2307,7 @@ const {
   runDurablePostTurn,
 } = createChatHostRuntime({
   appendMessage: appendChatMessage,
+  timelineField: turnProgress.timeline.field,
   persistUsage: accumulateTokenUsage,
   afterUsageCommit: (sessionId, attribution) => {
     broadcastProviderTokenStats(sessionId, attribution);
@@ -2311,6 +2330,7 @@ const codexUsageHost = createCodexUsageHost({
   recordDurableTurnUsage,
   recordResultEvent,
   setSessionStatus,
+  timelineField: turnProgress.timeline.field,
   logger,
 });
 
@@ -2477,10 +2497,6 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   observeTask: observation => orchestrationRuntime.observeTask(observation),
   noteBgResultInjected: sessionName => waitInjector.noteBgResultInjected(sessionName),
   deliverSystem: (sessionName, text, origin) => sessionDelivery.deliverSystem(sessionName, text, origin),
-  createCoalescer: bgCoalesce.createCoalescer,
-  buildNudge: bgCoalesce.buildNudge,
-  classifyCompletion: bgCoalesce.classifyBgCompletion,
-  spawn,
   readFile: fs.readFileSync,
   realpath: fs.realpathSync,
   tmpdir: () => '/tmp',
@@ -2546,7 +2562,7 @@ require('./src/workspace/air-routes').mountAirRoutes(app, {
   directories,
   shell: taskShellHost,
   getBoard: () => taskBoardRuntime.getBoard(), markTaskSeen: id => taskBoardRuntime.markTaskSeen(id),
-  clis: SUPPORTED_CHAT_CLIS,
+  clis: CLIENT_CHAT_CLIS,
   providerName: sessionProviderName,
   effectiveModel: effectiveSessionModel,
   effectiveEffort: effectiveSessionEffort, mergeStateCached,
@@ -2578,6 +2594,9 @@ const chatTurnEngine = createChatTurnEngine({
   detached,
   routerToolHost,
   turnProgressHeartbeat,
+  turnTiming: turnProgress.timing(),
+  turnTimeline: turnProgress.timeline,
+  deliveryProbeRegistry: turnProgress.deliveryProbe(),
   providerRouterRuntime, providerAttemptRuntime, providerLimitCache, quotaGuard,
   apiErrorHost,
   codexUsageHost,
@@ -2658,11 +2677,29 @@ bus.on('chat:run', (sessionName, text, opts) => {
 });
 services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 
+// Delivery into a turn a resident Claude lane is still holding open for its
+// background work (see src/chat/held-turn-injection.js). Facts only — the
+// decision lives in Rust and the write lives in the chat stream backends.
+const heldTurnInjection = require('./src/chat/held-turn-injection').createHeldTurnInjection({
+  getRecord: id => persistedSessions.get(id),
+  chatStream,
+  isRunActive: id => sessionWorkHost.isRunActive(id),
+  appendMessage: (id, message) => appendChatMessage(id, message),
+  activeTurnId: id => chatSessions.get(id)?._activeTurn?.turnId || null,
+  hasPersistedDelivery: (id, identity) => chatTurnEngine.persistedOrchestrationDelivery(id, identity),
+  log: message => console.log('[multicc/held-turn]', message),
+});
+
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
   isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, noteBlockedDelivery: id => workspaceAdmission?.noteBlockedDelivery(id), deliveryGroup: id => taskShellHost.workspaceGroup(id),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
+  // A typed message goes INTO the held turn when the lane can take it; the
+  // predicate is Rust (background-hold) and refusals are a no-op.
+  tryInjectHeldTurn: heldTurnInjection.tryInject,
+  heldTurnInjectable: heldTurnInjection.canInject,
+  heldForBackground: id => { try { return chatStream.heldTurn(id)?.held === true; } catch (_) { return false; } },
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   // A typed message that dead-letters — or that cannot even start — must not vanish silently (src/chat/session-notices.js).
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox, ...require('./src/chat/session-notices').createSessionNotices({ appendChatMessage, chatBroadcast }),
@@ -2852,7 +2889,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskTitle: id => taskShellHost.artifactTaskTitle(id), resolveTaskId: id => taskShellHost.artifactTaskId(id), resolveDir: id => directories.get(persistedSessions.get(id)?.dirId)?.path || null }); secretsVault.mount(app); annotationLive.mount(app); remoteScreen.mount(app,{logger}); pluginsRoutes.createPluginsRoutes({ pluginsDir: path.join(__dirname, 'plugins'), paths: MULTICC_PATHS, autoRefresh: true, platform: process.platform, arch: process.arch, logger, resident: { port: () => PORT, alert: pushRuntime.notifyHost } }).mount(app); // docs-registry/secrets-vault/annotation-live=管理表/保险箱/标注通道；plugins=内置+已装插件、插件列表、常驻插件。同行守 3000 行
 cronTasks.init({
   directories,
-  clis: SUPPORTED_CHAT_CLIS,
+  clis: CLIENT_CHAT_CLIS,
   ready: startupRepoReady,
   createTask: input => taskShellHost.createTask(input),
   getTask: id => taskShellHost.taskEntry(id),

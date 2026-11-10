@@ -3,11 +3,13 @@
 const { EVENT_TYPES, ALIASES } = require('./catalog');
 const { ACTION_KINDS } = require('./rules');
 const { SUPPORTED_CHAT_CLIS } = require('../cli-switch');
+const { isAlias } = require('../cli/cli-capability');
+const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
 
 // HTTP surface: catalog, recent events, global rules CRUD, manual test emit.
 function mountEventRoutes(app, { hub, engine }) {
   app.get('/api/events/catalog', (req, res) => {
-    res.json({ events: EVENT_TYPES, aliases: ALIASES, actions: ACTION_KINDS, clis: SUPPORTED_CHAT_CLIS });
+    res.json({ events: EVENT_TYPES, aliases: ALIASES, actions: ACTION_KINDS, clis: CLIENT_CHAT_CLIS });
   });
   app.get('/api/events/recent', (req, res) => {
     const limit = parseInt(req.query.limit, 10);

@@ -1,3 +1,7 @@
+// FROZEN legacy oracle: the legacy turn timing recorder (src/chat/turn-timing.js).
+// Kept verbatim (only this header) so tests/test-turn-progress-differential.js
+// can compare the JS implementation against the Rust owner. Never require
+// this from production code and never edit the body.
 'use strict';
 
 // Turn timing recorder: the four lifecycle instants of a chat turn, shared by

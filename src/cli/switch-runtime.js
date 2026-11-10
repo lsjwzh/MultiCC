@@ -54,11 +54,11 @@ const CLI_VERSION_MAX_BUFFER = 64 * 1024;
 // 随 MultiCC 走的引擎(目录里的 bundled 列)的版本。这类引擎不躺在家族的 CLI 制品
 // 里 —— npm 上没有它、安装脚本也不含它 —— 所以既没有 `--version` 可探, 也没有
 // 发布源可比: 版本就是 multicc 自己依赖里那一行, 升级它的唯一动作是升级 MultiCC。
-// 今天只有 claude-exp: 它跑的是 @anthropic-ai/claude-agent-sdk-<platform>-<arch>
+// 今天只有 claude 车道的 chat 引擎: 它跑的是 @anthropic-ai/claude-agent-sdk-<platform>-<arch>
 // 里的原生 claude 二进制(协议由 Rust 车道直接说)。面板把这一行写成副标题, 而不是
-// 给它一颗装不了的按钮 —— 旧表按车道铺开时, claude-exp 就是这么挤出一行假动作的。
+// 给它一颗装不了的按钮 —— 旧表按车道铺开时, 已退休的 claude-exp 就是这么挤出一行假动作的。
 const BUNDLED_ENGINE_VERSIONS = Object.freeze({
-  'claude-exp': (() => {
+  claude: (() => {
     // 面板上写的「内置版本」必须是**实际装着的**那一份: 只读 package.json 会报声明值,
     // 而 node_modules 落后一个版本时(改过依赖却没重装), 用户看到的数字与真正在跑的
     // 引擎对不上 —— 这个面板最不该骗人的地方正是这里。装了读不到才退回声明值。
@@ -279,20 +279,29 @@ function createCliSwitchRuntime(options) {
   }
 
   // 探测/上报的计划: 一个家族一行。两个组成都由目录推导 ——
-  // ① 「谁代言家族的 CLI 制品」= 家族里第一条已支持的非 bundled 车道(它解析出的
-  //    二进制就是命令表里那一条);
+  // ① 「谁代言家族的 CLI 制品」= 家族里第一条已支持的车道(它解析出的二进制就是
+  //    命令表里那一条);
   // ② 「哪些引擎随 MultiCC 走」= 目录的 bundled 列。
   // 手写过一版按车道铺开的表, 于是 codex 与 codex-exp 变成两行跑同一条命令,
-  // claude-exp 变成一行只能回「请升级 MultiCC」的假动作。
+  // 旧的 claude-exp 变成一行只能回「请升级 MultiCC」的假动作。
   // 一个家族若只有 bundled 车道(今天没有), 它没有制品可升级, 也就不出现在这里。
   function familyTargets() {
     const targets = new Map();
     for (const cli of supportedClis) {
       const family = installTargetOf(cli);
-      if (targets.has(family) || capability.isBundled(cli)) continue;
+      if (targets.has(family) || !hasOwnArtifact(cli)) continue;
       targets.set(family, cli);
     }
     return targets;
+  }
+
+  // `bundled` answers "does this lane's engine ship inside MultiCC", but the
+  // same id can still name the family's own executable: `claude` runs the Agent
+  // SDK in chat (bundled) and the `claude` binary in a terminal (not). Only a
+  // chat-only bundled lane has no artifact of its own to install or upgrade;
+  // refusing `claude` outright would take the terminal binary's update away.
+  function hasOwnArtifact(cli) {
+    return !capability.isBundled(cli) || capability.offersIn(cli, 'terminal');
   }
 
   // 随 MultiCC 走的引擎: 版本读本机依赖, 可用性沿用宿主的口径。面板把它写成
@@ -906,6 +915,10 @@ function createCliSwitchRuntime(options) {
   }
 
   function performCliSwitch(session, targetCli, switchOptions = {}) {
+    // The route already canonicalizes, but a pending configuration staged by an
+    // older build may still say `claude-exp`: fold it here too so applying it
+    // never writes the retired id back into the session.
+    targetCli = capability.nameOf(String(targetCli == null ? '' : targetCli).trim());
     const fromCli = session.cli || 'claude';
     const now = clock();
     const checkpoint = options.buildHandoffCheckpoint({
@@ -1162,10 +1175,13 @@ function createCliSwitchRuntime(options) {
       if (session.kind !== 'chat') {
         return res.status(400).json({ error: 'only chat sessions can switch CLI' });
       }
-      const targetCli = String(req.body && req.body.cli || '').trim().toLowerCase();
-      if (!supportedClis.includes(targetCli)) {
+      const requestedCli = String(req.body && req.body.cli || '').trim().toLowerCase();
+      if (!supportedClis.includes(requestedCli)) {
         return res.status(400).json({ error: `cli must be one of: ${supportedClis.join(', ')}` });
       }
+      // A retired id (`claude-exp`) is accepted, but the switch target is the
+      // live lane, so availability, preparation and persistence all see it.
+      const targetCli = capability.nameOf(requestedCli);
       const fresh = !!(req.body && req.body.fresh);
       if ((session.cli || 'claude') === targetCli && !fresh && !session.pendingConfiguration) {
         sessionPersistence.mutate('http.switch-cli-noop', () => options.ensureCliStates(session));
@@ -1239,8 +1255,8 @@ function createCliSwitchRuntime(options) {
         // Host-level availability lets a brand-new client choose a working
         // default before any session exists. Previously the App could only
         // discover this through an existing session and guessed "Claude" on
-        // an empty installation. 这一份仍是**车道**键: 可用性天然是「这个 id 能不能
-        // 被派生」, 而 claude-exp 与 claude 是两条不同的派生路径。
+        // an empty installation. 这一份是**车道**键: 可用性天然是「这个 id 能不能
+        // 被派生」。退休 id 仍在输入侧被接受，但只回它折叠后的活车道。
         availability: options.cliAvailabilitySummary(),
       });
     }));
@@ -1255,11 +1271,12 @@ function createCliSwitchRuntime(options) {
     }
 
     app.post('/api/cli/:cli/install', asyncHandler(async (req, res) => {
-      const cli = String((req.params && req.params.cli) || '').trim().toLowerCase();
-      if (!supportedClis.includes(cli)) {
+      const requestedCli = String((req.params && req.params.cli) || '').trim().toLowerCase();
+      if (!supportedClis.includes(requestedCli)) {
         return res.status(400).json({ ok: false, error: 'unsupported cli' });
       }
-      if (capability.isBundled(cli)) {
+      const cli = capability.nameOf(requestedCli);
+      if (!hasOwnArtifact(cli)) {
         return res.status(400).json({ ok: false, manual: true, error: bundledRefusal(cli) });
       }
       const availability = options.cliAvailabilitySummary();
@@ -1316,8 +1333,12 @@ function createCliSwitchRuntime(options) {
     // 只有用户在面板上点了才会走到这里; 不删除原值(留成注释方便回退), 也不碰系统环境。
     // 变量不在 .env 里(来自 launchd/shell)时拒绝, 因为我们改不了, 如实说明。
     app.post('/api/cli/:cli/unpin', asyncHandler(async (req, res) => {
-      const cli = String((req.params && req.params.cli) || '').trim().toLowerCase();
-      if (!supportedClis.includes(cli) || !CLI_CMD_ENV[cli]) {
+      const requestedCli = String((req.params && req.params.cli) || '').trim().toLowerCase();
+      if (!supportedClis.includes(requestedCli)) {
+        return res.status(400).json({ ok: false, error: 'unsupported cli' });
+      }
+      const cli = capability.nameOf(requestedCli);
+      if (!CLI_CMD_ENV[cli]) {
         return res.status(400).json({ ok: false, error: 'unsupported cli' });
       }
       const name = CLI_CMD_ENV[cli];
@@ -1358,11 +1379,12 @@ function createCliSwitchRuntime(options) {
     // 而升级的前提恰恰是已经装了。其余(同一 CLI 串行、INSTALL_TIMEOUT_MS 超时、
     // 日志尾部、失败分类提示)与安装完全同一条链路。成功后 exit 处理里会作废版本缓存。
     app.post('/api/cli/:cli/upgrade', asyncHandler(async (req, res) => {
-      const cli = String((req.params && req.params.cli) || '').trim().toLowerCase();
-      if (!supportedClis.includes(cli)) {
+      const requestedCli = String((req.params && req.params.cli) || '').trim().toLowerCase();
+      if (!supportedClis.includes(requestedCli)) {
         return res.status(400).json({ ok: false, error: 'unsupported cli' });
       }
-      if (capability.isBundled(cli)) {
+      const cli = capability.nameOf(requestedCli);
+      if (!hasOwnArtifact(cli)) {
         return res.status(400).json({ ok: false, manual: true, error: bundledRefusal(cli) });
       }
       const target = installTargetOf(cli);

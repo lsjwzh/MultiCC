@@ -17,7 +17,7 @@ const path = require('node:path');
 
 // formula / cask 名只允许这些字符 —— 名字要拼进 bash -c, 不合规的一律不接管。
 const SAFE_NAME = /^[A-Za-z0-9@._+-]+$/;
-// 运行时本身永不接管: claude-exp 派生的是 node, 卸掉它 npm 也跟着没了。
+// 运行时本身永不接管: claude 的 chat 车道派生的是 node, 卸掉它 npm 也跟着没了。
 const RUNTIME_NAME = /^(node|nodejs|npm)(@[\d.]+)?$/;
 
 function resolveOnPath(cmd, envPath) {

@@ -17,7 +17,6 @@ const path = require('node:path');
 
 const adapters = [
   require('../src/cli-adapters/claude').createClaudeAdapter({}),
-  require('../src/cli-adapters/claude-exp').createClaudeExpAdapter({}),
   require('../src/cli-adapters/codex').createCodexAdapter({}),
   require('../src/cli-adapters/codex-exp').createCodexExpAdapter({}),
   // Legacy JSON lane; the default ACP lane's completion is covered by test-acp-adapter.js.
@@ -30,7 +29,7 @@ const adapters = [
 ];
 const successResult = { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed' };
 const traces = {
-  claude: [successResult], 'claude-exp': [successResult], qoder: [{ type: 'result', subtype: 'success', is_error: false }],
+  claude: [successResult], qoder: [{ type: 'result', subtype: 'success', is_error: false }],
   codebuddy: [{ type: 'result', subtype: 'success', is_error: false }],
   codex: [{ type: 'turn.completed', usage: {} }],
   'codex-exp': [{ method: 'turn/completed', params: { turn: { id: 'turn-exp', status: 'completed' } } }],
@@ -442,7 +441,7 @@ for (const adapter of adapters) {
   });
 }
 
-for (const name of ['claude', 'claude-exp', 'qoder', 'codebuddy']) {
+for (const name of ['claude', 'qoder', 'codebuddy']) {
   const adapter = adapters.find(a => a.name === name);
   test(`${name}: historical result variants distinguish boundary from success`, () => {
     for (const result of [

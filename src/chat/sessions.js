@@ -32,7 +32,7 @@ class ChatSessionMap extends Map {
   constructor(shared) {
     super();
     if (!shared || !shared.native) throw new TypeError('chat session owner is required');
-    owners.set(this, shared);
+    owners.set(this, { native: shared.native, forget: null });
   }
 
   get size() { return ownerOf(this).chatSize(); }
@@ -43,8 +43,29 @@ class ChatSessionMap extends Map {
   }
 
   has(key) { return ownerOf(this).chatHas(key); }
-  delete(key) { return ownerOf(this).chatDelete(key); }
-  clear() { ownerOf(this).chatClear(); }
+  // Turn-progress state (timeline, delivery probes) is keyed by session name
+  // inside the Rust owner and has to leave with the session. See
+  // `setForgetHook` and src/chat/turn-progress.js.
+  delete(key) {
+    const removed = ownerOf(this).chatDelete(key);
+    if (removed) {
+      const slot = owners.get(this);
+      if (slot.forget) slot.forget(key);
+    }
+    return removed;
+  }
+  clear() {
+    const keys = entriesOf(this).map(entry => entry[0]);
+    ownerOf(this).chatClear();
+    const slot = owners.get(this);
+    if (slot.forget) for (const key of keys) slot.forget(key);
+  }
+  /// Hook invoked with the session name after it leaves the table (server wires
+  /// it to the turn-progress owner). Without a hook, behaviour is unchanged.
+  setForgetHook(fn) {
+    owners.get(this).forget = typeof fn === 'function' ? fn : null;
+    return this;
+  }
   keys() { return entriesOf(this).map(entry => entry[0])[Symbol.iterator](); }
   values() { return entriesOf(this).map(entry => entry[1])[Symbol.iterator](); }
   entries() { return entriesOf(this)[Symbol.iterator](); }

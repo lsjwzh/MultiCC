@@ -16,8 +16,8 @@ chat.html                          server.js (组装/广播漏斗)
       ├ chat-event-controller ←───────      ├ src/session-work-*     ← 队列/串行
       ├ chat-history-store/view              ├ src/chat/finalize-*   ← 收尾状态机
       ├ chat-live-ui                         ├ src/chat/host-*       ← 持久化协调
-      ├ chat-composer                        └ src/chat-stream.js  ──→ claude -p (常驻)
-      └ 其余 ~15 个功能模块                       spawnChat        ──→ codex/opencode/… (每 turn)
+      ├ chat-composer                        ├ claude-sdk-stream.js ──→ Claude Agent SDK (常驻)
+      └ 其余 ~15 个功能模块                    └ chat-stream.js      ──→ codex/opencode/… (每 turn 或常驻)
 ```
 
 关键结论：**chat.js 已经是纯宿主层**，2973 行里几乎没有业务逻辑，全部是「创建模块 + 注入回调 + 持有状态」。
@@ -70,7 +70,7 @@ graph TB
   end
 
   subgraph Child["CLI 子进程"]
-    STREAM["chat-stream.js<br/>claude -p 常驻 · JSONL stdin"]
+    STREAM["claude-sdk-stream.js<br/>Agent SDK 常驻 · codex chat-stream 常驻"]
     SPAWN["spawnChat<br/>codex/opencode/zcode/qoder/kimi<br/>每 turn 一次 · prompt 走 argv"]
   end
 
@@ -131,7 +131,7 @@ sequenceDiagram
   participant WS as turn-engine<br/>handleChatWs
   participant Q as session-work<br/>scheduler
   participant R as runChatTurn
-  participant P as claude -p<br/>(常驻进程)
+  participant P as Claude Agent SDK<br/>(常驻进程)
   participant E as chat-event-controller
   participant V as history-view
 

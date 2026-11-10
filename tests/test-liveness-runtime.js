@@ -350,19 +350,20 @@ test('explicit cs.heartbeatSilentMs still wins over the live heartbeat', () => {
 
 test('working verdict carries the model stage only while a turn is in flight', () => {
   const now = clockFrom(10_000);
-  const turnTimeline = require('../src/chat/turn-timeline');
+  const turnTimeline = require('../src/chat/turn-progress');
   const cs = { cli: 'codex', isStreaming: true, turnStartedAt: 9_000, lastStreamAt: 9_500 };
-  turnTimeline.startTurn(cs, 9_000);
+  turnTimeline.startTurn('s', cs, 9_000);
   const rt = make({ now, sessions: { s: { cli: 'codex' } }, chat: { s: cs } });
   const v = rt.verdict('s');
   assert.equal(v.state, 'working');
   assert.equal(v.stage, 'request');
   assert.equal(v.stagePrecise, false);
-  turnTimeline.observeAdapter(cs, { type: 'thinking', text: 'x' }, 9_800);
+  turnTimeline.observeAdapter('s', cs, { type: 'thinking', text: 'x' }, 9_800);
   assert.equal(rt.verdict('s').stage, 'thinking');
   // Turn over: the leftover timeline must not label an idle session.
   cs.isStreaming = false;
   assert.equal(rt.verdict('s').stage, null);
+  turnTimeline.forget('s');
 });
 
 test('verdict exposes silentMs (the field the web/App pill reads) equal to heartbeatSilentMs', () => {

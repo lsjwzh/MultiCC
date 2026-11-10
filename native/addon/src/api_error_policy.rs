@@ -168,7 +168,11 @@ pub fn api_error_signatures_quoted() -> Result<String> {
 /// `{ source, provider, rejection }`: the parts of `normalizeApiError` that
 /// must be read before the host classifier and extractor run.
 #[napi]
-pub fn api_error_prepare(env: Env, raw: Unknown<'_>, context: Unknown<'_>) -> Result<sys::napi_value> {
+pub fn api_error_prepare(
+    env: Env,
+    raw: Unknown<'_>,
+    context: Unknown<'_>,
+) -> Result<sys::napi_value> {
     let anchor = LiveValue::new(&env, raw);
     let mut raw = read(&env, anchor)?;
     enrich(&env, anchor, &mut raw)?;
@@ -238,7 +242,10 @@ pub fn api_error_decide(
 #[napi]
 pub fn api_error_retry_notice(env: Env, decision: Unknown<'_>) -> Result<sys::napi_value> {
     let decision = read(&env, LiveValue::new(&env, decision))?;
-    write(&env, &JsValue::String(api_error_policy::retry_notice(&decision)))
+    write(
+        &env,
+        &JsValue::String(api_error_policy::retry_notice(&decision)),
+    )
 }
 
 #[napi]
@@ -256,7 +263,10 @@ pub fn api_error_is_error_only_text(env: Env, value: Unknown<'_>) -> Result<bool
 #[napi]
 pub fn api_error_split_trailing_envelope(env: Env, value: Unknown<'_>) -> Result<sys::napi_value> {
     let value = read(&env, LiveValue::new(&env, value))?;
-    write(&env, &api_error_policy::split_trailing_error_envelope(&value))
+    write(
+        &env,
+        &api_error_policy::split_trailing_error_envelope(&value),
+    )
 }
 
 #[napi]
@@ -267,7 +277,10 @@ pub fn api_error_detect_envelope(
 ) -> Result<sys::napi_value> {
     let provider = read(&env, LiveValue::new(&env, provider))?;
     let text = read(&env, LiveValue::new(&env, text))?;
-    write(&env, &api_error_policy::detect_error_envelope(&provider, &text))
+    write(
+        &env,
+        &api_error_policy::detect_error_envelope(&provider, &text),
+    )
 }
 
 #[napi]
@@ -278,7 +291,10 @@ pub fn api_error_claude_envelope(
 ) -> Result<sys::napi_value> {
     let provider = read(&env, LiveValue::new(&env, provider))?;
     let text = read(&env, LiveValue::new(&env, text))?;
-    write(&env, &api_error_policy::claude_error_envelope(&provider, &text))
+    write(
+        &env,
+        &api_error_policy::claude_error_envelope(&provider, &text),
+    )
 }
 
 #[napi]

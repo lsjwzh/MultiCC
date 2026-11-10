@@ -7,14 +7,12 @@ const os = require('node:os');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { createClaudeExpAdapter } = require('../src/cli-adapters/claude-exp');
+const { createClaudeAdapter } = require('../src/cli-adapters/claude');
 const { processSpawnArgs } = require('../src/chat/process-spawn-args');
-const { createSessionRecordFactory } = require('../src/session/create-record');
-const { isResidentSession } = require('../src/cli/cli-capability');
-const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { hasNativeHistory } = require('../src/cli-adapters/claude-exp-history');
-const prepareTurn = require('./helpers/claude-exp-turn');
+const prepareTurn = require('./helpers/claude-turn');
+const { recordsOf } = require('./helpers/session-records');
 
 const SESSION_UUID = '05de20f7-563a-4d09-af34-b748c7b189ca';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -34,7 +32,7 @@ function envelope({ first = true, sessionId = SESSION_UUID, effort = 'high' } = 
 }
 
 function adapter() {
-  return createClaudeExpAdapter({
+  return createClaudeAdapter({
     bridge: '/opt/claude-agent-sdk-bridge.mjs',
     resolveSessionWireModel: model => model,
     claudeDefaultModel: () => 'claude-sonnet-5',
@@ -47,10 +45,10 @@ function adapter() {
   });
 }
 
-test('claude-exp invokes the Agent SDK bridge with first-turn and resume identity', () => {
+test('claude chat invokes the Agent SDK bridge with first-turn and resume identity', () => {
   const instance = adapter();
   const first = instance.buildInvocation(envelope());
-  assert.equal(instance.name, 'claude-exp');
+  assert.equal(instance.name, 'claude');
   assert.equal(first.cmd, process.execPath);
   assert.deepEqual(first.args, [
     '/opt/claude-agent-sdk-bridge.mjs', '--session-id', SESSION_UUID,
@@ -60,6 +58,8 @@ test('claude-exp invokes the Agent SDK bridge with first-turn and resume identit
     '--router-script', '/opt/multicc-router-mcp.js', '--',
   ]);
   assert.equal(first.payload, 'context\n\nhello');
+  assert.equal(first.sdkOptions.model, 'claude-opus-5');
+  assert.equal(first.streamBackend, undefined, 'the SDK options are what route it to the resident lane');
 
   const resumed = instance.buildInvocation(envelope({ first: false }));
   assert.deepEqual(resumed.args.slice(0, 3), [
@@ -68,7 +68,7 @@ test('claude-exp invokes the Agent SDK bridge with first-turn and resume identit
   assert.equal(resumed.args.includes('--session-id'), false);
 });
 
-test('turn spawn keeps settings before the prompt separator for claude-exp', () => {
+test('turn spawn keeps settings before the prompt separator for claude', () => {
   const invocation = adapter().buildInvocation(envelope());
   assert.deepEqual(processSpawnArgs(invocation, '/tmp/settings.json').slice(-4), [
     '--settings', '/tmp/settings.json', '--', 'context\n\nhello',
@@ -80,7 +80,7 @@ test('turn spawn keeps settings before the prompt separator for claude-exp', () 
   ]);
 });
 
-test('claude-exp preserves Claude stream-json event and completion semantics', () => {
+test('claude preserves Claude stream-json event and completion semantics', () => {
   const instance = adapter();
   assert.deepEqual(instance.decodeEvent({ type: 'system', subtype: 'init', model: 'opus' }), [{
     type: 'session_init', model: 'opus',
@@ -88,7 +88,9 @@ test('claude-exp preserves Claude stream-json event and completion semantics', (
   }]);
   assert.equal(instance.decodeEvent({ type: 'stream_event', event: { type: 'content_block_delta' } })[0].type, 'claude_event');
   assert.equal(instance.decodeEvent({ type: 'assistant', message: { content: [] } })[0].type, 'claude_event');
-  assert.equal(instance.decodeEvent({ type: 'system', subtype: 'sdk_error', error: 'boom' })[0].type, 'error');
+  const failure = instance.decodeEvent({ type: 'system', subtype: 'sdk_error', error: 'boom' })[0];
+  assert.equal(failure.type, 'error');
+  assert.equal(failure.label, 'Claude');
 
   const tracker = createAdapterCompletion(instance);
   const result = { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed' };
@@ -145,19 +147,9 @@ test('native bridge maps MultiCC options without making a live request', async (
   assert.deepEqual(emitted.map(item => item.type), ['system', 'result']);
 });
 
-test('claude-exp is chat-only at the canonical session boundary', async () => {
-  const create = createSessionRecordFactory({
-    isResidentSession, SUPPORTED_CHAT_CLIS,
-    validateExperimentalSession: () => ({ ok: true }), tuiChatMirrorEnabled: () => false,
-  });
-  assert.deepEqual(await create({ dir: { id: 'd' }, cli: 'claude-exp', kind: 'terminal' }), {
-    ok: false, error: 'claude-exp only supports chat sessions',
-  });
-});
-
 // Exercise real turn admission/preparation up to the next preparation port;
 // stop there so these identity regressions never start a CLI or contact an API.
-function prepareIdentity({ cli = 'claude-exp', connected = true, nativeId = null, reject = false } = {}) {
+function prepareIdentity({ cli = 'claude', connected = true, nativeId = null, reject = false } = {}) {
   const noop = () => {};
   const record = { id: 'sdk-identity-test', kind: 'chat', cli, cliSessionId: nativeId };
   const chat = { cli, chatTurnCount: nativeId ? 1 : 0, clients: new Set() };
@@ -186,15 +178,13 @@ function prepareIdentity({ cli = 'claude-exp', connected = true, nativeId = null
 
 test('accepted turns allocate Claude UUIDs after CLI switches and without a WebSocket', t => {
   t.mock.method(console, 'error', () => {});
-  for (const cli of ['claude-exp', 'claude']) {
-    for (const connected of [true, false]) {
-      const result = prepareIdentity({ cli, connected });
-      assert.match(result.preparedId || '', UUID_RE, `${cli}, connected=${connected}`);
-      assert.deepEqual(result.saved, [result.preparedId]);
-      const invocation = adapter().buildInvocation(envelope({ sessionId: result.preparedId }));
-      assert.equal(invocation.args[1], '--session-id');
-      assert.match(invocation.args[2], UUID_RE);
-    }
+  for (const connected of [true, false]) {
+    const result = prepareIdentity({ connected });
+    assert.match(result.preparedId || '', UUID_RE, `connected=${connected}`);
+    assert.deepEqual(result.saved, [result.preparedId]);
+    const invocation = adapter().buildInvocation(envelope({ sessionId: result.preparedId }));
+    assert.equal(invocation.args[1], '--session-id');
+    assert.match(invocation.args[2], UUID_RE);
   }
 });
 
@@ -209,6 +199,22 @@ test('existing native sessions survive preparation and rejected turns allocate n
     assert.equal(rejected.preparedId, undefined);
     assert.deepEqual(rejected.saved, []);
   }
+});
+
+test('a legacy claude -p session carries its streaming identity into the SDK lane', t => {
+  t.mock.method(console, 'error', () => {});
+  const record = { id: 'legacy-claude-p', kind: 'chat', cli: 'claude', cliSessionId: null,
+    _streamSessionId: SESSION_UUID };
+  const history = [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'old reply' }];
+  // The retired key is renamed by the native owner at load time (M4), not by
+  // the turn engine: load the record the way boot does before preparing.
+  const records = recordsOf([[record.id, record]]);
+  assert.equal(records.loadMigrated, true, 'the load normalisation owes one save');
+  const { invocation } = prepareTurn({ record, cwd: '/tmp', history });
+  assert.equal(record.cliSessionId, SESSION_UUID, 'the streaming id becomes the SDK identity');
+  assert.equal(record._streamSessionId, undefined, 'the retired key is gone');
+  assert.deepEqual(invocation.args.slice(1, 3), ['--resume', SESSION_UUID],
+    'history-bearing sessions resume the same transcript instead of starting over');
 });
 
 test('source CLI display replies cannot make a new Claude Exp target resume', t => {

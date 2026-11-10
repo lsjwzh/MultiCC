@@ -125,6 +125,14 @@ pub fn chat_clear_succeeded_errors(
     Ok(had_errors)
 }
 
+/// Shared transition after a current runner's output is confirmed on disk.
+pub(crate) fn mark_result_durable(turn: LiveValue<'_>, runner: LiveValue<'_>) -> Result<()> {
+    let yes = turn.from_value(&JsValue::Bool(true))?;
+    turn.assign(c"resultDurable", yes)?;
+    turn.assign(c"resultRunnerId", runner.get(c"runnerId")?)?;
+    Ok(())
+}
+
 #[napi]
 pub fn chat_record_result_event(
     env: Env,
@@ -141,8 +149,7 @@ pub fn chat_record_result_event(
     let yes = turn.from_value(&JsValue::Bool(true))?;
     runner.assign(c"resultEvent", yes)?;
     if facts.get(c"persisted")?.is_true()? {
-        turn.assign(c"resultDurable", yes)?;
-        turn.assign(c"resultRunnerId", runner.get(c"runnerId")?)?;
+        mark_result_durable(turn, runner)?;
     }
     let ok = facts.get(c"persisted")?.is_true()?;
     let code = if facts.get(c"persisted")?.is_true()? {

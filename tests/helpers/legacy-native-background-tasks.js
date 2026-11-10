@@ -1,6 +1,10 @@
+/* FROZEN: differential-test oracle. Codex native background task records. Copy of the pre-Rust
+ * implementation, kept only so tests can compare it with the Rust owner.
+ * Never require this from product code. */
+
 'use strict';
 
-const { safeText } = require('../cli-adapters/codex-background-events.cjs');
+const { safeText } = require('../../src/cli-adapters/codex-background-events.cjs');
 
 // 原生子线程只负责展示和存活状态；结果由 CLI 自己回传主 Agent，避免重复唤醒。
 function createNativeBackgroundTasks({ broadcast, observe, now }) {

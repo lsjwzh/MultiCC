@@ -10,7 +10,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
-const { createClaudeExpAdapter } = require('../src/cli-adapters/claude-exp');
+const { createClaudeAdapter } = require('../src/cli-adapters/claude');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createBackgroundHold } = require('../src/chat/background-hold');
 const { isMainResult } = require('../src/cli-adapters/result-completion');
@@ -23,14 +23,14 @@ const BODY = '巡检照常：19:00 整点，21:00 起每 15 分钟一次。';
 const AUTO_TURN = { enabled: false, failover: () => null, prepareHandoff: () => null, recordSuccess: noop };
 
 function build({ replayFence = 'visible_output', onPersist = noop, onUsage = noop } = {}) {
-  const adapter = createClaudeExpAdapter({
+  const adapter = createClaudeAdapter({
     resolveSessionWireModel: v => v, claudeDefaultModel: () => null,
     cliEffortLevel: () => null, normalizeEffort: () => null,
   });
-  const persisted = { id: 'sess', cli: 'claude-exp', model: 'opus' };
+  const persisted = { id: 'sess', cli: 'claude', model: 'opus' };
   const chatSessions = new Map();
   const writes = [], decisions = [], classified = [], forwarded = [];
-  const attempt = { cli: 'claude-exp', runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1',
+  const attempt = { cli: 'claude', runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1',
     routeAttemptId: 'attempt-1', routeGeneration: 1, attemptNo: 1, providerId: 'provider-1',
     providerRevision: 'revision-1', sessionId: 'sess' };
   const engine = createChatTurnEngine({
@@ -70,7 +70,7 @@ function build({ replayFence = 'visible_output', onPersist = noop, onUsage = noo
     clearSessionApiErrorState: noop, recordApiSuccess: noop, codexUsageHost: { complete: noop },
     assistantCheckpointKey: () => 'checkpoint-1', getPort: () => 3000,
   });
-  const cs = { cli: 'claude-exp', clients: new Set(), chatTurnCount: 0, currentAssistantText: '',
+  const cs = { cli: 'claude', clients: new Set(), chatTurnCount: 0, currentAssistantText: '',
     currentToolCalls: [], currentCost: null, streamReplay: [], turnStartedAt: Date.now(), isStreaming: true };
   const turn = { turnId: 'turn-1', sessionId: 'sess' };
   const runner = { runnerId: 'stream_1', completionOutcome: null, pendingClaudeResult: null,
@@ -234,7 +234,7 @@ test('duplicate synthetic delivery is dropped in the error-only path too', () =>
 
 test('a synthetic message the text regex does not recognize is still an API error', () => {
   const text = 'Upstream said no (429)';
-  assert.equal(detectErrorEnvelope('claude-exp', text), null, 'the wording is invisible to the text regex');
+  assert.equal(detectErrorEnvelope('claude', text), null, 'the wording is invisible to the text regex');
   const env = build({ replayFence: 'none' });
   runStream(env, [userEvent('hi'),
     textEvent(text, { is_api_error_message: true, api_error_status: 429, error: 'rate_limit', uuid: 'u-2' }),

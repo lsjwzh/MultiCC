@@ -1,6 +1,6 @@
 # 统一消息构建模块 -- 详细消息构造与举例
 
-> 历史快照说明：本文保留旧版本 message-builder 的逐字节样例，其中出现的 dispatch marker 仅用于解释当时的字符串构造，不是当前可执行协议。当前跨会话派发只走 Router MCP。
+> 历史快照说明：本文保留旧版本 message-builder 的逐字节样例，其中出现的 dispatch marker 仅用于解释当时的字符串构造，不是当前可执行协议。当前跨会话派发只走 Router MCP。文中的 `claude -p` 聊天通道也已删除 —— 现在 `claude` 只走 Agent SDK，下面的 argv 样例仅用于解释当时的构造。
 
 ## 1. 一句话总览
 

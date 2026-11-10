@@ -1016,9 +1016,10 @@ class _ScheduleEditorDialog extends StatefulWidget {
 
 class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
   /// 这份列表的五个位置与 cron_screen 那份一致：定时任务跑的是 chat 线路，所以两个
-  /// 家族取扶正后的常驻车道（`claude -p` / `codex exec` 那两个一次性命令留给终端）。
+  /// 家族取扶正后的常驻车道（Claude Agent SDK / `codex exec`）——`claude -p` 那个
+  /// 一次性命令留给终端。
   static const List<String> _cliChoices = [
-    'claude-exp',
+    'claude',
     'codex-exp',
     'opencode',
     'zcode',

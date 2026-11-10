@@ -12,7 +12,6 @@ const test = require('node:test');
 
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
-const { EventEmitter } = require('events');
 const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 
 const FAIL_FAST = Object.freeze({
@@ -143,23 +142,12 @@ function fixture({
 // hasLiveBackgroundTasks, which only inspects tail-shadowed tasks and never sees
 // Monitor-tool watches.
 function makeBackgroundRuntime() {
-  const spawned = [];
-  function spawn() {
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.kill = () => {};
-    spawned.push(child);
-    return child;
-  }
+  // The background-task owner is native now: the facade only needs host ports.
   const runtime = createBackgroundTaskRuntime({
     broadcast() {},
     observeTask() {},
     noteBgResultInjected() {},
     deliverSystem() {},
-    createCoalescer: () => ({ add() {}, flush() {}, clear() {} }),
-    buildNudge: () => '',
-    classifyCompletion: () => ({ kind: 'unknown' }),
-    spawn,
     readFile: () => { throw new Error('ENOENT'); },
     realpath: value => value,
     tmpdir: () => '/tmp',
@@ -169,7 +157,7 @@ function makeBackgroundRuntime() {
     now: () => Date.now(),
     logger: { info() {}, warn() {}, error() {} },
   });
-  return { runtime, spawned };
+  return { runtime };
 }
 
 test('a turn ending while a persistent Monitor is still live must not be classified D', () => {

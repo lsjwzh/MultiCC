@@ -764,3 +764,18 @@ test('native session transition reads only selected fields in the original gette
     assert.deepEqual(exercise(next, status), exercise(old, status), String(status));
   }
 });
+
+test('held query identities preserve identical adjacent answers across history reload', () => {
+  const store = new Map();
+  const create = () => createChatHistoryService({
+    history: {
+      read: id => store.get(id) || [], write: (id, rows) => store.set(id, rows),
+      deleteSession: id => store.delete(id), hasPersistedDelivery: () => false,
+    }, idFactory: () => 'unused', clock: () => 1000,
+  });
+  const history = create();
+  history.append('s', { id: 't1:held:1', heldResultId: 't1:held:1', role: 'assistant', content: '相同的回答' });
+  history.append('s', { id: 't1:held:2', heldResultId: 't1:held:2', role: 'assistant', content: '相同的回答' });
+  assert.equal(store.get('s').length, 2);
+  assert.equal(create().read('s').length, 2);
+});

@@ -6,18 +6,22 @@ const { createMonitorControl } = require('./monitor-control');
 const { createBackgroundHold } = require('./background-hold');
 const { envDigest } = require('../secrets-vault');
 
-// ── Persistent streaming Claude process per chat session ──
+// ── Persistent streaming CLI process per chat session ──
 //
-// Why this exists: the default chat path spawns `claude -p ... <prompt>` once
-// PER TURN and the process exits when the model yields its turn. That works,
-// but a turn that ends in a "waiting for external data" state leaves nothing
-// running — continuing requires a fresh `--resume` spawn (cold + can fail).
+// The legacy backend for the lanes that still drive a line-oriented JSON
+// stream themselves (codex). Claude's chat lane lives on the resident Agent
+// SDK now (src/cli-adapters/claude.js -> claude-sdk-stream.js), so the
+// `claude -p` examples below are historical, not a live invocation.
 //
-// This module keeps ONE `claude -p --input-format stream-json
-// --output-format stream-json` process alive for the whole session. User
-// messages are written as JSON lines on stdin; the model replies and the
-// process STAYS ALIVE (verified: after a `result` event the process idles,
-// ready for the next message, with full in-process context — no --resume).
+// Why this exists: a one-shot chat backend spawns the CLI once PER TURN and
+// the process exits when the model yields its turn. That works, but a turn
+// that ends in a "waiting for external data" state leaves nothing running —
+// continuing requires a fresh `--resume` spawn (cold + can fail).
+//
+// This module keeps ONE CLI process alive for the whole session. User messages
+// are written as JSON lines on stdin; the model replies and the process STAYS
+// ALIVE (after a `result` event the process idles, ready for the next message,
+// with full in-process context — no --resume).
 //
 // IMPORTANT (proven by experiment, not assumed): a persistent process does
 // NOT auto-continue. The model still ends its turn (emits `result`) when it
@@ -114,6 +118,10 @@ function spawnProc(name, cfg) {
   // at the next turn boundary and triggers a --resume respawn.
   s.spawnedFingerprint = routeFingerprint(s.env);
   s.spawnedVault = envDigest(s.env);
+  // Which spawn contract this process actually serves (see ensure's
+  // spawnContract). A typed message may be delivered into a held turn only
+  // while the live process is still the one a fresh turn would use.
+  s.spawnedContract = s.spawnContract ?? null;
   s.lineBuf = '';
   s.stderrTail = '';
 
@@ -296,6 +304,8 @@ function onStdout(name, chunk) {
 // Returns true when the main result is held until background work finishes.
 function holdTurn(name, s, cur, evt) {
   cur.hold ||= createBackgroundHold({ ...s.backgroundHold, hasBackground: () => !!s.isBackgroundActive?.(),
+    onCapReached: ms => console.warn(`[multicc/chat-stream] [${name}] background work still owns this turn after `
+      + `${Math.round(ms / 60_000)} min of holding; the turn stays open until that work ends or the user cancels`),
     release: result => {
       if (sessions.get(name) !== s || s.current !== cur) return;
       try { cur.onEvent?.(result); } catch (_) {}
@@ -526,6 +536,7 @@ function ensure(name, cfg) {
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       isBackgroundActive: cfg.isBackgroundActive || null,
       backgroundHold: cfg.backgroundHold || null,
+      spawnContract: cfg.spawnContract ?? null,
       onExit: cfg.onExit || null,
       onDispose: cfg.onDispose || null,
       onNewSessionId: cfg.onNewSessionId || null,
@@ -553,6 +564,7 @@ function ensure(name, cfg) {
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
     if (cfg.isBackgroundActive !== undefined) s.isBackgroundActive = cfg.isBackgroundActive;
     if (cfg.backgroundHold !== undefined) s.backgroundHold = cfg.backgroundHold;
+    if (cfg.spawnContract !== undefined) s.spawnContract = cfg.spawnContract;
   }
   return s;
 }
@@ -561,7 +573,7 @@ function ensure(name, cfg) {
  * Send a user message and resolve when that turn completes (`result` event).
  * onEvent receives every stream-json event for live forwarding to the UI.
  * opts.onTiming?.('spawned'|'sent') reports process-readiness and stdin-write
- * instants for turn-timing instrumentation (see src/chat/turn-timing.js).
+ * instants for turn-timing instrumentation (see src/chat/turn-progress.js).
  * Turns are serialized per session: a send while a turn is in flight queues.
  */
 function send(name, text, onEvent, opts = {}) {
@@ -701,8 +713,27 @@ function status(name) {
   };
 }
 
+// Facts for the delivery predicate: the held phase, process liveness, whether
+// this lane can say which user message a result answers, and the spawn contract
+// it serves. The plain stream-json lanes write a user line without a uuid and
+// their results carry no `user_message_uuid(s)`, so an injected message there
+// could never be settled: `attributable: false` keeps it on the waiting path
+// (the Rust predicate refuses with `unattributable_lane`).
+function heldTurn(name) {
+  const s = sessions.get(name);
+  if (!s) return null;
+  const hold = s.current?.hold;
+  return {
+    held: !!hold?.held,
+    alive: isAlive(name),
+    attributable: false,
+    contract: s.spawnedContract ?? null,
+  };
+}
+
 module.exports = require('./stream-router').createStreamRouter(
   { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle, isClosing: closer.isClosing,
+    heldTurn,
     waitForClose: (name, opts) => closer.wait(name, () => {}, opts) },
   require('./claude-sdk-stream').createSdkStream(),
   require('./codex-app-stream').createCodexAppStream(),

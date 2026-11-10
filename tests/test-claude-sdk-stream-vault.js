@@ -49,8 +49,8 @@ async function setup(t) {
       env: vault.applyEnvOverlay({ ...fixture.env,
         MULTICC_LANE_LEDGER: spawnFile, MULTICC_LANE_REAL_BINARY: bundledClaudeCodeBinary() }),
       isBackgroundActive: () => background,
-      // 零持有上限：后台活跃时回答也立即放行（与 idle 清理测试同一做法），只测进程是否被保留。
-      backgroundHold: { maxMs: 0 },
+      // 不设上限提示；静默窗缩短，后台一结束就放行（只测进程是否被保留）。
+      backgroundHold: { maxMs: 0, quietMs: 20 },
     };
     turn += 1;
     runtime.ensure('sdk', cfg);
@@ -61,6 +61,14 @@ async function setup(t) {
 }
 
 const envOf = spawn => spawn.env;
+
+async function until(predicate, message, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(message);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
 
 test('existing vault entries reach the resident child env at spawn', { timeout: 90000 }, async t => {
   const f = await setup(t);
@@ -110,10 +118,13 @@ test('live background work defers the vault restart instead of refusing the turn
   await f.sendTurn('start');
   f.setBackground(true);
   vault.upsert({ name: 'DEFERRED_KEY', value: 'd' });
-  assert.equal((await f.sendTurn('turn while background runs')).subtype, 'success', 'turn is not refused');
+  // 后台工作是回合的一部分：回答先被持有，进程保留（重启顺延到下一个回合边界）。
+  const held = f.sendTurn('turn while background runs');
+  await until(() => f.runtime.heldTurn('sdk')?.held === true, 'the answer was not held');
   assert.equal(f.spawns().length, 1, 'background work keeps its process');
 
   f.setBackground(false);
+  assert.equal((await held).subtype, 'success', 'turn is not refused');
   await f.sendTurn('after background ends');
   assert.equal(f.spawns().length, 2);
   assert.equal(envOf(f.spawns()[1]).DEFERRED_KEY, 'd');

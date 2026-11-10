@@ -12,8 +12,7 @@
 // **场景**（chat / terminal）里给出一组**衍生车道**（[CliLane]）。于是「一个 CLI，
 // 多种展示」是同一张表的两种读法：
 //
-//   claude 在 chat 里   大字 Claude、小字 Claude Agent SDK（外加一条 offered:false
-//                       的 `claude -p`，chat 里不再提供它）
+//   claude 在 chat 里   大字 Claude、小字 Claude Agent SDK（跑的就是这条常驻车道）
 //   claude 在 terminal 里 大字 Claude、小字 `claude` —— 跑的就是这个可执行文件
 //   （2026-09-26 起终端的大字照实写家族名 Claude / Codex，不再另起 "Claude Code"
 //   "Codex Exec"：一个 CLI 只有两个名字就够了，多出来的那个没人能对上号。）
@@ -50,12 +49,12 @@ class CliLane {
   /// 这个场景里的角标；null = 家族给的那个。
   final String? mark;
 
-  /// 这个场景的选择器给不给这条衍生。是**策略**不是能力：`claude -p` 不是不能
-  /// chat，是产品不再在 chat 里提供它。
+  /// 这个场景的选择器给不给这条衍生。是**策略**不是能力：退役的 `claude -p` 仍能
+  /// 从旧会话记录里读出来，但产品不再在 chat 里提供它。
   final bool offered;
 
-  /// 这条车道的引擎不来自家族的 CLI 制品，而是随 MultiCC 走（今天只有
-  /// claude-exp：Agent SDK 是 MultiCC 自己的依赖）。任何安装/升级动作都装不了它。
+  /// 这条车道的引擎不来自家族的 CLI 制品，而是随 MultiCC 走（claude 的 chat 车道：
+  /// Agent SDK 是 MultiCC 自己的依赖）。任何安装/升级动作都装不了它。
   final bool bundled;
 
   /// 这条衍生在这个场景里仍在用、但已在淘汰路上；[replacedBy] 是该换的那条。
@@ -66,8 +65,8 @@ class CliLane {
 /// 家族的**升级单元**：这个家族的 CLI 制品。装/升级一行动作的就是它。
 ///
 /// 这是家族事实而不是车道事实：codex 两条车道跑同一个二进制、同一条安装脚本；
-/// claude-exp 则根本没有制品（见 [CliLane.bundled]）。挂在车道上就是「CLI 更新」
-/// 里 codex 出现两行、claude-exp 出现一行却只会说「请升级 MultiCC」的原因。
+/// claude 的 chat 车道则根本没有独立制品（见 [CliLane.bundled]）。挂在车道上就是
+/// 「CLI 更新」里 codex 出现两行、claude 出现两行却只会说「请升级 MultiCC」的原因。
 class CliUpdate {
   const CliUpdate({this.package, this.command, this.manual});
 
@@ -172,8 +171,7 @@ class CliLaneView {
 /// claude / codex（终端里那行大字就是命令名，不再另起 "Claude Code"）。
 ///
 ///   家族      场景       车道        大字       小字
-///   claude    chat      claude-exp  Claude     Claude Agent SDK  （bundled）
-///             chat      claude      Claude     claude -p         （offered: false）
+///   claude    chat      claude      Claude     Claude Agent SDK  （bundled）
 ///             terminal  claude      Claude     claude
 ///   codex     chat      codex-exp   Codex      Codex App Server
 ///             chat      codex       Codex      codex exec        （offered: false）
@@ -185,27 +183,23 @@ class CliLaneView {
 ///   grok      chat      grok        Grok       grok acp
 ///             terminal  grok        Grok       grok
 ///
-/// `claude` 是 `claude -p`、`codex` 是 `codex exec`：chat 里已经没有它们的位置，但
-/// 终端真的要把这两个可执行文件跑起来，所以只退出 chat、留在终端。
+/// `claude` 的 chat 车道是常驻 Agent SDK；终端那份 `claude` 才是 `claude -p` 的
+/// 可执行文件。`codex` 是 `codex exec`：chat 里已经没有它的位置，但终端真的要把
+/// 这两个可执行文件跑起来，所以只退出 chat、留在终端。
 ///
 /// ACP 三家的 chat 小字是 `<id> acp` —— 那是 MultiCC 起的 acp-bridge 形态，终端里
 /// 却是原生命令 `<id>`，所以这行小字必须逐场景写，不能靠 id 回落。角标跟着名字走
 /// —— X 归 Codex，A 归 Claude Agent SDK；同一张任务卡上两颗 X 分不出是哪条车道。
 ///
 /// 升级单元是**家族**（[CliFamily.update]），不是车道：装/升级一行动作的对象是这个
-/// 家族的 CLI 制品。claude-exp 没有制品（[CliLane.bundled]），所以「CLI 更新」里
-/// 只该出现一行 Claude，而不是 claude-exp / claude 各一行。
+/// 家族的 CLI 制品。claude 的 chat 车道没有独立制品（[CliLane.bundled]），所以
+/// 「CLI 更新」里只该出现一行 Claude，而不是 chat / terminal 各一行。
 const Map<String, CliFamily> kCliFamilies = <String, CliFamily>{
   'claude': CliFamily('Claude', AppColors.claude,
       update: CliUpdate(package: '@anthropic-ai/claude-code', command: 'npm install -g @anthropic-ai/claude-code'),
       lanes: <String, List<CliLane>>{
-        'chat': <CliLane>[
-          CliLane('claude-exp', mark: 'A', engine: 'Claude Agent SDK', bundled: true),
-          CliLane('claude', engine: 'claude -p', offered: false),
-        ],
-        'terminal': <CliLane>[
-          CliLane('claude', mark: 'C', engine: 'claude'),
-        ],
+        'chat': <CliLane>[CliLane('claude', engine: 'Claude Agent SDK', bundled: true)],
+        'terminal': <CliLane>[CliLane('claude', mark: 'C', engine: 'claude')],
       }),
   'codex': CliFamily('Codex', AppColors.codex,
       update: CliUpdate(package: '@openai/codex', command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh'),
@@ -263,7 +257,14 @@ const Map<String, CliFamily> kCliFamilies = <String, CliFamily>{
 /// 这个 CLI 目录认识哪两种场景。
 const List<String> kCliKinds = <String>['chat', 'terminal'];
 
-String _key(String? id) => (id ?? '').trim().toLowerCase();
+/// 退役 id 折叠到接替它的车道（claude-exp -> claude）：旧会话继续按 Claude
+/// 显示，但选择器不会再提供它。
+const Map<String, String> _cliAliases = <String, String>{'claude-exp': 'claude'};
+
+String _key(String? id) {
+  final key = (id ?? '').trim().toLowerCase();
+  return _cliAliases[key] ?? key;
+}
 
 String _firstLetter(String name) {
   final text = name.trim();
@@ -354,7 +355,7 @@ String? cliFamilyOf(String? id) {
   return null;
 }
 
-/// 对外的那个名字：claude / claude-exp 以及这条家族以后任何一条衍生都答 'Claude'。
+/// 对外的那个名字：claude 以及这条家族以后任何一条衍生（含退役的 claude-exp）都答 'Claude'。
 /// 未知 id 回落成 id 本身（不是 'Claude'）。
 String cliFamilyName(String? id) {
   final family = cliFamilyOf(id);
@@ -477,6 +478,12 @@ bool cliIsBundled(String? id) {
   }
   return false;
 }
+
+/// 同一个 id 可以既是 bundled 引擎又拥有家族的终端制品：claude 的 chat 跑内置
+/// Agent SDK，终端跑的就是 `claude` 这个可执行文件。只有 chat-only 的 bundled
+/// 车道才真的没有东西可装。
+bool cliHasOwnArtifact(String? id) =>
+    !cliIsBundled(id) || cliOffersIn(id, 'terminal');
 
 /// 一个家族里「随 MultiCC 走」的那些引擎，用来在升级行下面补一句说明。
 List<CliBundledEngine> cliBundledEnginesOf(String? id) {

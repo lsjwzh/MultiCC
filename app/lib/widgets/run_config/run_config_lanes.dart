@@ -32,7 +32,7 @@ const Map<String, List<String>> kLaneProtocols = <String, List<String>>{
 /// 自动池新建线路可选的车道；旧车道仍由协议表支持，但不再作为新选项。
 /// `kimi` 在展示表里但没有 [SessionCli] 枚举值，所以这里用的是车道 id 字符串。
 const List<String> kAutoLanes = <String>[
-  'claude-exp',
+  'claude',
   'codex-exp',
   'opencode',
   'zcode',

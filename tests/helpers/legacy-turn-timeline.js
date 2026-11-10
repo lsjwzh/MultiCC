@@ -1,3 +1,7 @@
+// FROZEN legacy oracle: the legacy per-turn model timeline (src/chat/turn-timeline.js).
+// Kept verbatim (only this header) so tests/test-turn-progress-differential.js
+// can compare the JS implementation against the Rust owner. Never require
+// this from production code and never edit the body.
 'use strict';
 
 // Per-turn model timeline: the spans of a turn that are NOT tool execution.

@@ -218,6 +218,67 @@ function probeAddon(file, node = process.execPath) {
         'backpressureResult','close'].some(key=>typeof a.RustWorkspaceSockets.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustProviderAttemptGenerations!=='function'
       || typeof a.RustProviderAttemptGenerations.prototype.next!=='function') process.exit(1);
+    if(typeof a.RustBackgroundTasks!=='function'
+      || ['handleEvent','recordMainToolUseId','markTaskOutputAwaiting','hasLiveBackgroundTasks',
+        'hasProcessBackgroundTasks','backgroundSilenceMs','listActiveBackgroundTasks',
+        'reapSessionShadows','stopForInsert','takeStoppedNote','stopSession','stopAll',
+        'nextDue','tick','applyControlOutput'].some(key=>typeof a.RustBackgroundTasks.prototype[key]!=='function')) process.exit(1);
+    {
+      const seen=[];const bgPorts={now:()=>1000,broadcast:(s,f)=>seen.push(f),observe:()=>{},noteBgResultInjected:()=>{},
+        deliverSystem:()=>{},logWarn:()=>{},safeText:v=>String(v||''),readFile:()=>'',
+        redactEvent:v=>v,redactText:t=>t,tmpdir:()=>'/tmp',realpath:p=>p,getuid:()=>0,
+        requestEnrich:()=>{},requestStopTask:()=>{}};
+      const bg=new a.RustBackgroundTasks({});
+      const started=bg.handleEvent(bgPorts,'smoke',null,{subtype:'codex_task_started',task_id:'codex_probe',description:'child'});
+      if(!started||!started.handled||!started.changed) process.exit(1);
+      const done=bg.handleEvent(bgPorts,'smoke',null,{subtype:'codex_task_done',task_id:'codex_probe',description:'child',status:'completed'});
+      if(!done||!done.handled||!seen.some(frame=>frame&&frame.type==='monitor_done')) process.exit(1);
+    }
+    if(typeof a.chatAssistantSameQuery!=='function'||typeof a.RustBackgroundHold!=='function'
+      || ['start','observe','tick','flush','beginInjection','confirmInjection','acknowledgeHistory','historyPending','historyWritten','interruptInjections','requireAnswerHistory','pendingBoundaries','acknowledgeAnswer','abortInjection','capReached','dispose']
+        .some(key=>typeof a.RustBackgroundHold.prototype[key]!=='function')
+      || ['held','injections','maxMs'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustBackgroundHold.prototype,key)?.get!=='function')
+      || ['backgroundHoldMaxMs','backgroundHoldMayInject','backgroundHoldUserTyped',
+        'backgroundHoldProcessStale','backgroundHoldSpawnContract'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    {
+      if(a.backgroundHoldMaxMs(undefined)!==3600000 || a.backgroundHoldMaxMs('0')!==0) process.exit(1);
+      const digest=a.backgroundHoldSpawnContract({cli:'claude',model:'probe'});
+      if(!/^[0-9a-f]{64}$/.test(digest) || digest!==a.backgroundHoldSpawnContract({model:'probe',cli:'claude'})) process.exit(1);
+      const decision=a.backgroundHoldMayInject({held:true,userTyped:true,attributable:true,turnActive:true,processAlive:true,
+        processStale:false,processContract:digest,wantedContract:digest});
+      if(!decision||decision.inject!==true||decision.reason!=='held') process.exit(1);
+      const stale=a.backgroundHoldMayInject({held:true,userTyped:true,attributable:true,turnActive:true,processAlive:true,
+        processStale:true,processContract:digest,wantedContract:digest});
+      if(!stale||stale.inject!==false||stale.reason!=='process_changed') process.exit(1);
+      const unattributed=a.backgroundHoldMayInject({held:true,userTyped:true,attributable:false,turnActive:true,processAlive:true,
+        processStale:false,processContract:digest,wantedContract:digest});
+      if(!unattributed||unattributed.inject!==false||unattributed.reason!=='unattributable_lane') process.exit(1);
+      if(a.backgroundHoldUserTyped({payload:{type:'session.work',source:'direct'}},{})!==true) process.exit(1);
+      if(a.backgroundHoldUserTyped({payload:{type:'dispatch'}},{})!==false) process.exit(1);
+      const same=a.backgroundHoldProcessStale({routeUrl:'https://a',routeToken:'t',fingerprint:'f',vaultDigest:'v'},
+        {routeUrl:'https://a',routeToken:'t',fingerprint:'f',vaultDigest:'v'});
+      if(!same||same.stale!==false) process.exit(1);
+      const moved=a.backgroundHoldProcessStale({routeUrl:'https://a',routeToken:'t'},{routeUrl:'https://b',routeToken:'t'});
+      if(!moved||moved.routeChanged!==true||moved.stale!==true) process.exit(1);
+      const hold=new a.RustBackgroundHold({quietMs:50,maxMs:1000});
+      const main={type:'result',subtype:'success',is_error:false,result:'main',usage:{input_tokens:1}};
+      if(!hold.start(main,{mainResult:true,backgroundActive:true})||!hold.held||hold.maxMs!==1000) process.exit(1);
+      if(hold.tick({now:0,backgroundActive:true})!==null||!hold.capReached(true)||hold.capReached(true)) process.exit(1);
+      const uuid='11111111-1111-1111-1111-111111111111';
+      const registration=hold.beginInjection('probe-identity',uuid);
+      if(!registration||registration.action!=='write'||registration.uuid!==uuid||hold.injections!==1) process.exit(1);
+      if(hold.beginInjection('probe-identity','other').reason!=='injection_in_flight') process.exit(1);
+      if(!hold.confirmInjection('probe-identity',uuid)||!hold.acknowledgeHistory('probe-identity',uuid)) process.exit(1);
+      if(hold.beginInjection('probe-identity','22222222-2222-2222-2222-222222222222').action!=='append_only') process.exit(1);
+      const answered={type:'result',subtype:'success',is_error:false,result:'typed',
+        user_message_uuid:uuid,user_message_uuids:[uuid],usage:{input_tokens:3}};
+      if(!hold.observe(answered)||hold.injections!==0) process.exit(1);
+      if(hold.tick({now:0,backgroundActive:false})!==null) process.exit(1);
+      const released=hold.tick({now:50,backgroundActive:false});
+      if(!released||released.result!=='main'||!Array.isArray(released.injected_exchanges)
+        ||released.injected_exchanges.length!==1||released.injected_exchanges[0].uuid!==uuid
+        ||released.injected_usage.input_tokens!==3||hold.held||hold.flush()!==null) process.exit(1);
+    }
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
       'redactionSecretKey','redactionAnchors','redactionExactFragments',
@@ -246,6 +307,40 @@ function probeAddon(file, node = process.execPath) {
       'idleMs','connectMs','deadlineAt'].some(key=>typeof a.RustRequestWatch.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustRequestTimer.prototype.cancel!=='function'
       || ['feed','feedText'].some(key=>typeof a.RustModelStreamProgress.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustTurnProgress!=='function'
+      || ['heartbeatStart','heartbeatTouchVisible','heartbeatTouchActivity','heartbeatUpdatePhase',
+        'heartbeatStop','heartbeatStatus','heartbeatStopAll','heartbeatNextDue','heartbeatDue','heartbeatActiveTurns',
+        'timingBegin','timingMark','timingMarkFirstByte','timingAbort','timingGet','timingField','timingDrop',
+        'timelineStart','timelineObserveClaude','timelineObserveAdapter','timelineCurrentStage','timelineSnapshot',
+        'timelineField','timelineForget','probeRecord','probeLookup','probeForget','probeSessionCount'].some(key=>typeof a.RustTurnProgress.prototype[key]!=='function')
+      || ['turnProgressSanitizePhase','turnProgressSanitizeToolKind','turnProgressShouldReexecute'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    {
+      const tp=new a.RustTurnProgress(1000,4);
+      let clock=0; const seen=[];
+      const livePorts={now:()=>clock,onHeartbeat:e=>seen.push(e)};
+      tp.heartbeatStart('ps','pt',{phase:'thinking'},livePorts);
+      if(tp.heartbeatNextDue()!==1000 || tp.heartbeatActiveTurns()!==1) process.exit(1);
+      clock=1000; tp.heartbeatDue(1000,livePorts);
+      if(seen.length!==1 || seen[0].phase!=='thinking') process.exit(1);
+      if(tp.heartbeatStop('ps','pt')!==true || tp.heartbeatActiveTurns()!==0) process.exit(1);
+      const ports={now:()=>clock};
+      tp.timingBegin('ps','pt',{t0:100,cli:'codex'},ports);
+      tp.timingMark('ps','pt','t1',110,ports); tp.timingMark('ps','pt','t2',120,ports);
+      if(tp.timingField('ps','pt')!==undefined) process.exit(1);
+      const lines=[]; clock=130;
+      tp.timingMarkFirstByte('ps','pt',undefined,{now:()=>clock,emitTiming:plan=>lines.push(plan)});
+      const field=tp.timingField('ps','pt');
+      if(lines.length!==1 || !field || field.totalMs!==30 || field.spawnMs!==10) process.exit(1);
+      tp.timelineStart('ps',{turnStartedAt:50},60);
+      tp.timelineObserveClaude('ps',{turnStartedAt:50},{type:'stream_event',event:{type:'content_block_start',content_block:{type:'text'}}},70);
+      const snap=tp.timelineField('ps',{turnStartedAt:50},80);
+      if(!snap || !Array.isArray(snap.spans) || snap.spans.length!==2) process.exit(1);
+      if(!tp.timelineForget('ps')) process.exit(1);
+      tp.probeRecord('ps','cm','dl',{handedOff:false,turnId:'pt'},ports);
+      if(tp.probeLookup('ps','cm').turnId!=='pt' || tp.probeLookup('ps','dl').at!==130) process.exit(1);
+      if(a.turnProgressSanitizePhase('constructor')!=='running' || a.turnProgressSanitizeToolKind('')!==null) process.exit(1);
+      if(!a.turnProgressShouldReexecute(true,true,{known:true,handedOff:false})) process.exit(1);
+    }
     if(['cliSwitchCatalog','cliSwitchRequest','prepareCliSwitchRoute','turnRequestCatalog','turnRequestRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     (async()=>{ const model=new a.RustTaskReadModel();
       const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);

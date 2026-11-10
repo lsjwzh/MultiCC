@@ -6,7 +6,7 @@ const { managedRoute, createRouteRelay } = require('./claude-sdk-route');
 const { fingerprint, laneOptions } = require('./claude-sdk-config');
 const { envDigest } = require('../secrets-vault');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('./monitor-admission');
-const { createBackgroundHold } = require('./background-hold');
+const { createBackgroundHold, processStale } = require('./background-hold');
 const { bundledClaudeCodeBinary } = require('../cli/claude-bundled-binary');
 const { getNative } = require('../native/runtime');
 
@@ -53,6 +53,37 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     if (!laneKeepAliveCount && laneKeepAlive) { clearInterval(laneKeepAlive); laneKeepAlive = null; }
   }
   function hasBackground(s) { return !!s.cfg.isBackgroundActive?.(); }
+  // The facts one staleness comparison needs. The kernel side decides what
+  // counts as drift (route/credentials, config, vault), so the pump and the
+  // injectable predicate cannot drift apart. Route identity only exists for a
+  // relay-bound process; without a relay both sides stay null and never differ.
+  function runningProcessFacts(run) {
+    return {
+      routeUrl: run?.relay ? (run.routeUrl ?? null) : null,
+      routeToken: run?.relay ? (run.routeToken ?? null) : null,
+      fingerprint: run?.fingerprint ?? null,
+      vaultDigest: run?.vaultDigest ?? null,
+    };
+  }
+  function wantedProcessFacts(cfg) {
+    const env = cfg?.env || {};
+    return {
+      routeUrl: env.ANTHROPIC_BASE_URL ?? null,
+      routeToken: env.ANTHROPIC_AUTH_TOKEN ?? null,
+      fingerprint: fingerprint(cfg),
+      vaultDigest: envDigest(env),
+    };
+  }
+  function stalenessOf(run, cfg) {
+    const none = { routeChanged: false, configChanged: false, vaultStale: false, stale: false };
+    if (!run) return none;
+    const stale = processStale(runningProcessFacts(run), wantedProcessFacts(cfg));
+    // A lane without a relay has no route identity. Configuration IO errors
+    // propagate: callers must never interpret unreadable settings as freshness.
+    if (!run.relay) stale.routeChanged = false;
+    stale.stale = stale.routeChanged === true || stale.configChanged === true || stale.vaultStale === true;
+    return stale;
+  }
   function clearIdle(s) { clearTimeout(s.idleTimer); s.idleTimer = null; }
   function armIdle(s) {
     clearIdle(s);
@@ -146,6 +177,10 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         if (isMainResult(event) && !item.cancelled) {
           s.started = true;
           item.hold ||= createBackgroundHold({ ...s.cfg.backgroundHold, hasBackground: () => hasBackground(s),
+            // Visibility, not release (L2): the cap fires at most once per held
+            // turn and the host writes one session notice.
+            onCapReached: ms => safe(s.cfg.onHoldCap, ms),
+            onBoundary: event => safe(item.onEvent, event),
             release: result => { if (s.run === run && s.current === item && !item.finishing) {
               safe(item.onEvent, result); finish(s, run, item, result);
             } } });
@@ -243,6 +278,10 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
       run.fingerprint = fingerprint(cfg);
       run.vaultDigest = envDigest(cfg.env);
       run.model = cfg.sdkOptions.model;
+      // Which spawn contract this process serves (see background-hold): a
+      // typed message may enter a held turn only while the live process is
+      // still the one a fresh turn would spawn.
+      run.contract = cfg.spawnContract ?? null;
       const command = binary || bundledClaudeCodeBinary();
       if (!command) throw new Error('Bundled Claude Code binary is not available');
       run.admission = cfg.onBackgroundEvent ? createMonitorAdmission(
@@ -289,14 +328,14 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         if (s.cfg.sessionId !== item.cfg.sessionId) s.started = item.cfg.resume === true;
         s.cfg = item.cfg;
         if (s.run?.lane && !alive(s.run)) await stop(s);
-        const routeChanged = s.run?.relay && (s.run.routeUrl !== s.cfg.env.ANTHROPIC_BASE_URL
-          || s.run.routeToken !== s.cfg.env.ANTHROPIC_AUTH_TOKEN);
-        const changed = s.run && s.run.fingerprint !== fingerprint(s.cfg);
-        // 保险箱变化不算路由变化：后台任务占着进程时顺延到下个回合，不拒绝本回合。
-        const vaultStale = s.run && s.run.vaultDigest !== envDigest(s.cfg.env);
+        // The same staleness comparison the injectable predicate makes, so the
+        // pump and the predicate can never disagree about a live process.
+        const { routeChanged, configChanged: changed, vaultStale } = stalenessOf(s.run, s.cfg);
         if ((routeChanged || changed || s.recycleRequested) && hasBackground(s)) {
           throw Object.assign(new Error('SDK background work still owns the process'), { code: 'SDK_BACKGROUND_ACTIVE' });
         }
+        // Vault drift is not route drift: with background work owning the
+        // process it waits for the next turn instead of refusing this one.
         if (changed || s.recycleRequested || (vaultStale && !hasBackground(s))) {
           await stop(s); s.recycleRequested = false;
         }
@@ -354,7 +393,8 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     const item = s.current;
     if (!item || item.cancelled) return;
     if (item.hold?.held) {
-      // The answer is complete; only its background work is cut short.
+      // Preserve explicit outcomes for injected answers cut short by cancel.
+      item.hold.interruptInjections();
       const result = item.hold.flush();
       void stop(s).then(() => settle(s, item, null, result));
       return;
@@ -442,8 +482,67 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     void pump(s);
     return { ok: true, applied: 'now' };
   }
+  // Deliver a message the user typed INTO the held turn (the item's answer is
+  // complete, its background work still runs): the next user line goes to the
+  // same live lane the pump uses, and the hold counts the outstanding answer so
+  // the turn cannot end before it lands.
+  //
+  // Exactly-once: the delivery identity is registered in Rust BEFORE the line is
+  // written. `write` writes the line with the registered uuid, `append_only`
+  // re-appends only the missing history row of a line already written once, and
+  // `refuse` waits for a normal turn. A failed write aborts the registration.
+  async function injectHeldTurn(name, text, identity) {
+    const s = sessions.get(name);
+    const item = s && s.current;
+    const run = s && s.run;
+    if (!item || !item.sent || item.finishing || item.cancelled || !alive(run)) {
+      return { delivered: false, reason: 'no_held_turn' };
+    }
+    const hold = item.hold;
+    if (!hold || !hold.held) return { delivered: false, reason: 'not_held' };
+    const id = String(identity ?? '');
+    const registration = hold.beginInjection(id, randomUUID());
+    const action = registration?.action;
+    if (action === 'refuse') return { delivered: false, reason: registration.reason || 'refused' };
+    const acknowledgeHistory = () => hold.acknowledgeHistory(id, registration.uuid);
+    if (action === 'append_only') return { delivered: true, appendOnly: true, identity: id, uuid: registration.uuid, acknowledgeHistory };
+    if (action !== 'write') return { delivered: false, reason: 'refused' };
+    try {
+      await run.lane.sendUser(JSON.stringify({ type: 'user', session_id: s.cfg.sessionId,
+        uuid: registration.uuid, parent_tool_use_id: null,
+        message: { role: 'user', content: [{ type: 'text', text: String(text) }] } }));
+      hold.confirmInjection(id, registration.uuid);
+      return { delivered: true, identity: id, uuid: registration.uuid, acknowledgeHistory };
+    } catch (_) {
+      hold.abortInjection(id);
+      return { delivered: false, reason: 'write_failed' };
+    }
+  }
+
+  // Facts for the delivery predicate (held phase, liveness, spawn contract of
+  // the running process and whether that process still matches what a fresh
+  // turn would want). `attributable` says the lane reports which user message
+  // each result answers — this one stamps a uuid on the injected line and the
+  // SDK echoes it in `user_message_uuids`.
+  function heldTurn(name, identity) {
+    const s = sessions.get(name);
+    const hold = s && s.current?.hold;
+    return {
+      held: !!hold?.held,
+      historyPending: !!hold?.historyPending(String(identity ?? '')),
+      historyWritten: !!hold?.historyWritten(String(identity ?? '')),
+      alive: alive(s?.run),
+      attributable: true,
+      // Compare against the LATEST desired configuration: a queued turn whose
+      // ensure already staged another provider/route/vault is a process change
+      // too, so the typed message must wait instead of entering the old process.
+      stale: s ? stalenessOf(s.run, s.nextCfg || s.cfg).stale === true : false,
+      contract: s?.run?.contract ?? null,
+    };
+  }
+
   return { ensure, send, inject: send, cancel, close, closeAndWait, waitForClose, status, recycle,
-    getTaskOutput, stopTask,
+    getTaskOutput, stopTask, injectHeldTurn, heldTurn,
     isAlive: name => alive(sessions.get(name)?.run), isClosing: name => closing.has(name) };
 }
 

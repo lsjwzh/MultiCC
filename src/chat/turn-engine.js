@@ -8,8 +8,14 @@
 // by reference. Pure/stateless helpers are required directly from src/*.
 
 const crypto = require('crypto');
-const turnTimeline = require('./turn-timeline');
+const {
+  createTurnTimingRecorder,
+  createDeliveryProbeRegistry,
+  createTurnTimelinePort,
+  shouldReexecutePersistedDelivery,
+} = require('./turn-progress');
 const claudeApiError = require('./claude-api-error-message');
+const { heldCapText } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
@@ -69,6 +75,7 @@ const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
 const { fitHistoryFrame } = require('./history-frame-budget');
 const chatStream = require('./chat-stream');
+const { spawnContractOf } = require('./held-turn-injection');
 const secretsVault = require('../secrets-vault');
 const waitInjector = require('../wait/injector');
 const providers = require('../providers/core');
@@ -99,7 +106,6 @@ function claudeSettingsExtra(invocation, spawnOpts, binding, cli) {
 }
 
 const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
-const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const { captureNativeSessionId } = require('./native-session-state');
@@ -107,7 +113,6 @@ const { hasNativeHistory } = require('../cli-adapters/claude-exp-history');
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context-guard');
 const { opencodeProcessError } = require('../cli-adapters/opencode-error');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
-const { createDeliveryProbeRegistry, shouldReexecutePersistedDelivery } = require('./delivery-probe');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
 const { processSpawnArgs } = require('./process-spawn-args');
 const { isResident, isResidentSession } = require('../cli/cli-capability');
@@ -346,11 +351,18 @@ function createChatTurnEngine(deps) {
     GATEWAY_ID,
     MULTICC_IMG_HINT,
     CHAT_HISTORY_PAGE,
+    // Turn progress (Rust owner). Production passes the process-wide recorder /
+    // timeline port / probe registry; unit tests may omit them.
+    turnTiming: injectedTurnTiming = null,
+    turnTimeline: injectedTurnTimeline = null,
+    deliveryProbeRegistry: injectedDeliveryProbeRegistry = null,
   } = deps;
 
   // Shared [turn-timing] recorder: one instance for every adapter path (claude
-  // stream + per-turn spawn). See src/chat/turn-timing.js for the t0-t3 contract.
-  const turnTiming = createTurnTimingRecorder();
+  // stream + per-turn spawn). See src/chat/turn-progress.js for the t0-t3
+  // contract; the record lives in the Rust owner.
+  const turnTiming = injectedTurnTiming || createTurnTimingRecorder();
+  const turnTimeline = injectedTurnTimeline || createTurnTimelinePort();
   const attemptRuntime = providerAttemptRuntime || createProviderAttemptRuntime();
 
   // ── Persisted ≠ delivered (delivery probe) ──
@@ -364,7 +376,7 @@ function createChatTurnEngine(deps) {
   // by THIS live process; orchestration probes it before acknowledging a
   // persisted delivery as delivered.
   const DELIVERY_PROBE_MAX_IDENTITIES = 64;
-  const deliveryProbeRegistry = createDeliveryProbeRegistry({
+  const deliveryProbeRegistry = injectedDeliveryProbeRegistry || createDeliveryProbeRegistry({
     maxIdentities: DELIVERY_PROBE_MAX_IDENTITIES,
   });
   const recordDeliveryProbe = deliveryProbeRegistry.record;
@@ -456,15 +468,10 @@ function createChatTurnEngine(deps) {
   }, 10000);
   rolloutArchiveSweepTimer.unref?.();
   function turnTimingsField(sessionName, turnId) {
-    const record = turnTiming.get(sessionName, turnId);
-    if (!record || record.t3 === null) return undefined;
-    return {
-      t0: record.t0, t1: record.t1, t2: record.t2, t3: record.t3,
-      spawnMs: record.t1 - record.t0,
-      sendMs: record.t2 - record.t1,
-      firstByteMs: record.t3 - record.t2,
-      totalMs: record.t3 - record.t0,
-    };
+    // Rust owns the record: the persisted field is undefined until t3 lands and
+    // its deltas guard missing intermediates (the legacy arithmetic produced
+    // null/NaN fields for a t0-only record).
+    return turnTiming.field(sessionName, turnId);
   }
   function contextTraceFor(sessionName, cs) {
     if (!cs?._taskShellReceiptId) return null;
@@ -542,8 +549,8 @@ function createChatTurnEngine(deps) {
     isCurrent: (cs, turn, runner) => isCurrentTurnRunner(cs, turn, runner),
     scrub: (attempt, event) => attemptRuntime.scrubAttemptStructure(attempt, event),
     touchActivity: (sessionName, turnId) => turnProgressHeartbeat.touchActivity(sessionName, turnId),
-    observeClaude: (cs, event) => turnTimeline.observeClaude(cs, event),
-    observeAdapter: (cs, event) => turnTimeline.observeAdapter(cs, event),
+    observeClaude: (cs, event, session) => turnTimeline.observeClaude(session, cs, event),
+    observeAdapter: (cs, event, session) => turnTimeline.observeAdapter(session, cs, event),
     decodeEvent: (provider, rawEvent) => provider.decodeEvent(rawEvent),
     rememberActiveCliState: (record) => rememberActiveCliState(record),
     savePersistedSessions: (reason) => savePersistedSessionsBestEffort(reason),
@@ -563,12 +570,13 @@ function createChatTurnEngine(deps) {
     clearIncrementalSave: (sessionName) => getChatHistoryRuntime().clearIncrementalSave(sessionName),
     contextTrace: (sessionName, cs) => contextTraceFor(sessionName, cs),
     isMapped: (sessionName, cs) => chatSessions?.get(sessionName) === cs,
+    appendHeldAnswer: (sessionName, message) => appendChatMessage(sessionName, message),
     persistFinal: (sessionName, cs, turn, runner, message, options) => persistFinalAssistantResult(sessionName, cs, turn, runner, message, options),
     recordDurableUsage: (sessionName, runner, usage) => recordDurableTurnUsage(sessionName, runner, usage),
     proxyFailure: (attempt) => attemptRuntime.proxyFailure?.(attempt),
     onTurnComplete: (sessionName) => usageLimitPoller.onTurnComplete(sessionName),
     modelAttribution: (cs, turn, runner) => modelAttributionField(cs, turn, runner),
-    timelineField: (cs) => turnTimeline.field(cs),
+    timelineField: (cs, session) => turnTimeline.field(session, cs),
     turnTimings: (sessionName, turnId) => turnTimingsField(sessionName, turnId),
     markHostEnvelope: (event) => markHostErrorEnvelope(event),
     logger,
@@ -953,7 +961,11 @@ function createChatTurnEngine(deps) {
     // A real (non-auto-continue) message means the user/trigger is driving again →
     // reset the D auto-continue guard so a future background-wait gets fresh budget.
     if (!originContinue || directUserInput) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
-    // CLI switches retain WS state, so allocate native identity independently.
+    // A session from the deleted `claude -p` lane carried its live transcript id
+    // in `_streamSessionId`; the load-time normalizer in Rust
+    // (native/addon/src/session_records.rs) has already renamed it to
+    // `cliSessionId` and flagged the store for one save, so nothing is migrated
+    // here.
     if ((turnRequest.cli === 'claude' || turnRequest.cli === 'claude-exp') && !persisted.cliSessionId) {
       persisted.cliSessionId = crypto.randomUUID();
       savePersistedSessionsBestEffort('runtime.chat-session-id-allocate');
@@ -1094,7 +1106,7 @@ function createChatTurnEngine(deps) {
     cs.currentCost = null;
     cs.isStreaming = true;
     preparationStateActivated = true;
-    cs.turnStartedAt = Date.now(); turnTimeline.startTurn(cs);  // durationMs + trajectory origin
+    cs.turnStartedAt = Date.now(); turnTimeline.startTurn(sessionName, cs);  // durationMs + trajectory origin
     cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
     cs.streamReplay = [];
     cs._resultSaved = false;
@@ -1908,8 +1920,24 @@ function createChatTurnEngine(deps) {
       rememberActiveCliState(persisted);
       savePersistedSessionsBestEffort('runtime.streaming-session-id-allocate');
     }
+    // Which spawn contract this process will serve. The chat stream stores it
+    // with the child; a message the user types while the turn is held can be
+    // delivered into that process only while the persisted record still
+    // projects the same digest (see held-turn-injection.js).
+    const spawnContractDigest = spawnContractOf(persisted);
     chatStream.ensure(sessionName, {
       cmd: invocation.cmd,
+      spawnContract: spawnContractDigest,
+      // L2: the hold cap is visibility, not release. Rust fires this at most
+      // once per held turn; say it where the turn is being watched.
+      onHoldCap: ms => {
+        try {
+          const text = heldCapText({ minutes: (Number(ms) || 0) / 60_000 });
+          if (appendChatMessage(sessionName, { role: 'system', content: text, ts: Date.now() })) {
+            chatBroadcast?.(sessionName, { type: 'system', subtype: 'notice', message: text });
+          }
+        } catch (_) {}
+      },
       cwd: cs.cwd,
       sessionId: persisted[nativeKey],
       sdkOptions: invocation.sdkOptions,
@@ -2107,6 +2135,7 @@ function createChatTurnEngine(deps) {
       );
     },
     broadcast: chatBroadcast,
+    timelineField: turnTimeline.field,
     cancelClassify,
     clearIncrementalSave: sessionName => getChatHistoryRuntime().clearIncrementalSave(sessionName),
     setStatus(sessionName, status) {
@@ -2262,7 +2291,6 @@ function createChatTurnEngine(deps) {
       sameDurablePartial: hasMatchingPartialCheckpoint(runner, finalizeCheckpointKey),
       handoff: persisted.pendingCliHandoff,
     });
-    turnProgressHeartbeat.stop(sessionName, turn.turnId);
     if (plan.action === 'retry-api') {
       finishProviderAttempt(runner, 'failed', {
         errorCategory: apiErrorDecision?.error?.category || 'api_error',
@@ -2299,6 +2327,9 @@ function createChatTurnEngine(deps) {
             const blockedPlan = planRetryBlockedFinalization(plan, {
               retryUnavailableReason: error && error.code || 'attempt_prepare_failed', handoff: persisted.pendingCliHandoff,
             });
+            // The retry never started: this is a terminal finalize, so the
+            // heartbeat dies with the turn here (the scheduled path keeps it).
+            turnProgressHeartbeat.stop(sessionName, turn.turnId);
             turnFinalizationExecutor.execute(blockedPlan, {
               runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
             });
@@ -2308,6 +2339,8 @@ function createChatTurnEngine(deps) {
       });
       return;
     }
+    // Not a retry: the turn ends now, so stop the heartbeat before finalizing.
+    turnProgressHeartbeat.stop(sessionName, turn.turnId);
     const succeeded = isCompleted(runner.completionOutcome) && turn.resultDurable && !apiErrorDecision;
     if (succeeded) autoTurn.recordSuccess(runner.providerAttempt);
     finishProviderAttempt(runner, succeeded ? 'succeeded' : 'failed', {

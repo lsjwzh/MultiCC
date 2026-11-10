@@ -4,7 +4,6 @@ const path = require('path');
 const { resolveCliCommands, createCommandResolver } = require('./commands');
 const { createCliProviderRegistry } = require('./core');
 const { createClaudeAdapter } = require('./claude');
-const { createClaudeExpAdapter } = require('./claude-exp');
 const { createCodexAdapter } = require('./codex');
 const { createCodexExpAdapter } = require('./codex-exp');
 const { createOpencodeAdapter } = require('./opencode');
@@ -38,19 +37,6 @@ function createCliAdapters(deps) {
       cmd: commands.claude,
       args: deps.claudeArgs,
       chatDisallowedTools: deps.claudeChatDisallowedTools,
-      multiccImgHint: deps.multiccImgHint,
-      resolveSessionWireModel: deps.resolveSessionWireModel,
-      cliEffortLevel: deps.cliEffortLevel,
-      normalizeEffort: deps.normalizeEffort,
-      debugLogClaudeInvoke: deps.debugLogClaudeInvoke,
-      routerMcpNode,
-      routerMcpScript,
-    }),
-    createClaudeExpAdapter({
-      cmd: commands.claude,
-      claudeCmd: commands.claude,
-      chatDisallowedTools: deps.claudeChatDisallowedTools,
-      multiccImgHint: deps.multiccImgHint,
       resolveSessionWireModel: deps.resolveSessionWireModel,
       cliEffortLevel: deps.cliEffortLevel,
       normalizeEffort: deps.normalizeEffort,

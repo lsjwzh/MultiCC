@@ -1800,7 +1800,25 @@
       ]
     },
     {
+      "path": "tests/test-background-hold-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-background-task-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-background-tasks-differential.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",
@@ -2565,6 +2583,15 @@
       ]
     },
     {
+      "path": "tests/test-claude-adapter.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-claude-api-error-message.js",
       "tier": "core",
       "lane": "deterministic",
@@ -2580,24 +2607,6 @@
       "owner": "npm:test:provider-router",
       "entrypoints": [
         "npm:test:provider-router"
-      ]
-    },
-    {
-      "path": "tests/test-claude-exp-adapter.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-claude-exp-sdk.js",
-      "tier": "core",
-      "lane": "isolated",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
       ]
     },
     {
@@ -2699,6 +2708,15 @@
       "path": "tests/test-claude-sdk-host.js",
       "tier": "core",
       "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-sdk-lane.js",
+      "tier": "core",
+      "lane": "isolated",
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
@@ -3634,6 +3652,15 @@
       "owner": "npm:test:cdp",
       "entrypoints": [
         "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-held-turn-injection.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
       ]
     },
     {
@@ -6261,6 +6288,15 @@
     },
     {
       "path": "tests/test-turn-ledger.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-turn-progress-differential.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",

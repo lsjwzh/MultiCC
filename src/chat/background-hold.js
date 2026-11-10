@@ -1,134 +1,143 @@
 'use strict';
 
-const { isMainResult } = require('../cli-adapters/result-completion');
-
+// Background hold — JavaScript facade.
+//
+// The state machine lives in native/addon/src/background_hold.rs over
+// multicc_core::background_hold. This file only supplies the host facts the
+// kernel cannot know (`isMainResult` from the CLI adapter, `hasBackground` from
+// the background-task runtime), arms one unref'd interval and the cap timer, and
+// forwards the released event to the caller's `release` port. No bookkeeping
+// state may return here — Node is frozen.
+//
 // A resident Claude turn ends at the CLI's main `result`, but background work it
 // started (Agent, run_in_background Bash, Monitor) completes later and the CLI
 // wakes itself with a <task-notification> query. Holding the host turn open
 // until that work is done lets those queries run inside the turn (admitted
 // provider route, live stream consumer) instead of being re-queued as a
-// separate 🔇 turn. The cap is the backstop for work that never ends; after it,
-// completions fall back to the queued notice.
+// separate 🔇 turn.
 //
-// The LAST self-wake result decides the released outcome: a later success
-// supersedes an earlier failure and vice versa, while cancellations/aborts and
-// unknown results leave it untouched. Releasing a turn whose last wake failed
-// as a success is how a 429 from a task-notification wake was hidden behind the
-// held answer.
+// Background work is part of the turn: the turn ends when that work ends (or the
+// user cancels). The cap (`MULTICC_BACKGROUND_HOLD_MAX_MS`) is no longer a
+// release trigger — it only makes the host say out loud that a turn has been
+// held longer than expected, so a never-ending task cannot keep the turn open
+// silently.
+
+const { isMainResult } = require('../cli-adapters/result-completion');
+const { getNative } = require('../native/runtime');
+
 const QUIET_MS = 5000;
 const TICK_MS = 1000;
-const DEFAULT_MAX_MS = 60 * 60 * 1000;
-const BUSY_OVERRUN_MS = 10 * 60 * 1000;
 
 function holdMaxMs(env = process.env) {
-  const n = Number(env.MULTICC_BACKGROUND_HOLD_MAX_MS);
-  return env.MULTICC_BACKGROUND_HOLD_MAX_MS !== undefined && Number.isFinite(n) && n >= 0 ? n : DEFAULT_MAX_MS;
+  return getNative().backgroundHoldMaxMs(env.MULTICC_BACKGROUND_HOLD_MAX_MS);
 }
 
-const succeeded = event => event?.subtype === 'success' && event.is_error === false;
-// The last self-wake request is what decides the turn: a failure that no later
-// success superseded must be released as a failure, not hidden behind the held
-// main answer. Cancellations/aborts/interrupts and unrecognized results carry no
-// upstream verdict and therefore leave the tracked outcome untouched.
-const CANCELLED = new Set(['cancelled', 'aborted', 'interrupted']);
-const failed = event => event?.is_error === true || /^error(?:_|$)/.test(event?.subtype || '')
-  || event?.terminal_reason === 'api_error';
-const CONTINUATION = new Set(['assistant', 'user', 'stream_event']);
-
-const pickFrom = (latest, held) => key => (latest[key] !== undefined ? latest[key] : held[key]);
-
-// The released event keeps the held main result's identity (it is what the
-// completion tracker adjudicates) and takes the final answer, usage and cost
-// from the last successful self-wake query.
-function merge(held, latest) {
-  if (!latest) return held;
-  const pick = pickFrom(latest, held);
-  return { ...held, result: pick('result'), usage: pick('usage'), modelUsage: pick('modelUsage'),
-    total_cost_usd: pick('total_cost_usd') };
-}
-
-// A failed last wake releases the held turn as an API error. `result` is
-// intentionally undefined when the failing result carried no text: the held
-// main answer must not masquerade as the failed request's output.
-function failedRelease(held, failure) {
-  const pick = pickFrom(failure, held);
-  return { ...held, subtype: failure.subtype, is_error: true,
-    terminal_reason: failure.terminal_reason ?? 'api_error',
-    api_error_status: failure.api_error_status, result: failure.result, errors: failure.errors,
-    usage: pick('usage'), modelUsage: pick('modelUsage'), total_cost_usd: pick('total_cost_usd'),
-    background_wake_failed: true };
+function backgroundActive(hasBackground) {
+  try { return !!hasBackground?.(); } catch (_) { return false; }
 }
 
 function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tickMs = TICK_MS,
-  maxMs = holdMaxMs() } = {}) {
-  let held = null, latest = null, lastWake = null, busy = false, expired = false, quietSince = 0, done = false;
-  let ticker = null, capTimer = null, overrunTimer = null;
+  maxMs = holdMaxMs(), onCapReached = null, onBoundary = null } = {}) {
+  const owner = new (getNative().RustBackgroundHold)({ quietMs, tickMs, maxMs });
+  let ticker = null, capTimer = null, done = false;
+  if (onBoundary) owner.requireAnswerHistory();
+  function flushBoundaries() {
+    if (!onBoundary) return;
+    for (const event of owner.pendingBoundaries()) {
+      try { onBoundary({ ...event, acknowledge: () => owner.acknowledgeAnswer(event.held_result_id) }); } catch (_) {}
+    }
+  }
 
   function clear() {
-    clearInterval(ticker); clearTimeout(capTimer); clearTimeout(overrunTimer);
-    ticker = capTimer = overrunTimer = null;
+    clearInterval(ticker); clearTimeout(capTimer);
+    ticker = capTimer = null;
   }
   function finish() {
-    if (done || !held) return null;
+    if (done) return null;
+    const result = owner.flush();
+    if (!result) return null;
     done = true;
     clear();
-    const result = lastWake && failed(lastWake) ? failedRelease(held, lastWake) : merge(held, latest);
-    held = latest = lastWake = null;
     release(result);
     return result;
   }
   function tick() {
-    if (!held || busy) { quietSince = 0; return; }
-    if (expired) { finish(); return; }
-    let active = true;
-    try { active = !!hasBackground(); } catch (_) {}
-    if (active) { quietSince = 0; return; }
-    if (!quietSince) quietSince = Date.now();
-    if (Date.now() - quietSince >= quietMs) finish();
+    flushBoundaries();
+    const result = owner.tick({ now: Date.now(), backgroundActive: backgroundActive(hasBackground) });
+    if (!result) return;
+    done = true;
+    clear();
+    release(result);
+  }
+  function noteCap() {
+    if (!owner.capReached(backgroundActive(hasBackground))) return;
+    try { onCapReached?.(owner.maxMs); } catch (_) {}
   }
 
   return {
-    get held() { return !!held; },
+    get held() { return owner.held; },
+    get injectionsInFlight() { return owner.injections; },
     // Returns true when `event` (a main result) is held instead of ending the turn.
     start(event) {
-      if (done || held || !isMainResult(event) || !succeeded(event)) return false;
-      let active = false;
-      try { active = !!hasBackground(); } catch (_) {}
-      if (!active) return false;
-      held = event;
+      if (done) return false;
+      const started = owner.start(event, {
+        mainResult: isMainResult(event),
+        backgroundActive: backgroundActive(hasBackground),
+      });
+      if (!started) return false;
+      flushBoundaries();
       ticker = setInterval(tick, tickMs);
       ticker.unref?.();
-      capTimer = setTimeout(() => {
-        expired = true;
-        tick();
-        overrunTimer = setTimeout(finish, BUSY_OVERRUN_MS);
-        overrunTimer.unref?.();
-      }, maxMs);
-      capTimer.unref?.();
+      // Visibility, not release: the cap timer only unlocks one notice.
+      if (Number.isFinite(maxMs) && maxMs > 0) {
+        capTimer = setTimeout(noteCap, maxMs);
+        capTimer.unref?.();
+      }
       return true;
     },
-    // Returns true when a held turn swallows `event` (self-wake query results).
-    observe(event) {
-      if (!held) return false;
-      if (event?.type === 'result') {
-        busy = false;
-        quietSince = 0;
-        if (CANCELLED.has(event?.terminal_reason)) { tick(); return true; }
-        if (succeeded(event)) { latest = event; lastWake = event; }
-        else if (failed(event)) lastWake = event;
-        tick();
-        return true;
-      }
-      if (CONTINUATION.has(event?.type) || (event?.type === 'system' && event.subtype === 'init')) {
-        busy = true;
-        quietSince = 0;
-      }
-      return false;
-    },
+    // Returns true when a held turn swallows `event` (self-wake / injected query).
+    observe(event) { const swallowed = owner.observe(event); flushBoundaries(); return swallowed; },
+    // Register a delivery identity BEFORE the line is written. The answer is
+    // `{ action: 'write' | 'append_only' | 'refuse', uuid?, reason? }`: only
+    // 'write' may touch stdin, 'append_only' just re-appends the history row of
+    // a line that was already written, 'refuse' waits for a normal turn.
+    beginInjection(identity, uuid) { return owner.beginInjection(String(identity ?? ''), String(uuid ?? '')); },
+    confirmInjection(identity, uuid) { return owner.confirmInjection(identity, uuid); },
+    acknowledgeHistory(identity, uuid) { return owner.acknowledgeHistory(identity, uuid); },
+    historyWritten(identity) { return owner.historyWritten(identity); },
+    interruptInjections() { owner.interruptInjections(); flushBoundaries(); },
+    historyPending(identity) { return owner.historyPending(identity); },
+    abortInjection(identity) { owner.abortInjection(String(identity ?? '')); },
     // Release now (cancel / insert-now): the held answer is complete.
     flush: finish,
-    dispose() { done = true; held = latest = lastWake = null; clear(); },
+    dispose() { done = true; owner.dispose(); clear(); },
   };
 }
 
-module.exports = { createBackgroundHold, holdMaxMs };
+// Pure predicate: may this typed message be delivered INTO the held turn?
+// Every fact is supplied by the host; the rule itself lives in Rust.
+function mayInjectIntoHeldTurn(facts) {
+  return getNative().backgroundHoldMayInject(facts);
+}
+
+// "A human typed this in the chat box" (excludes dispatch, triggers, machine
+// continuations and task-page messages). The rule lives in Rust.
+function isDirectUserTyped(item, opts) {
+  return getNative().backgroundHoldUserTyped(item ?? null, opts ?? null) === true;
+}
+
+// One staleness comparison for both the stream pump and the injectable
+// predicate. `{ routeChanged, configChanged, vaultStale, stale }`.
+function processStale(running, wanted) {
+  return getNative().backgroundHoldProcessStale(running || {}, wanted || {});
+}
+
+// Stable digest of the facts that decide which process serves a turn.
+function spawnContract(facts) {
+  return getNative().backgroundHoldSpawnContract(facts);
+}
+
+module.exports = {
+  createBackgroundHold, holdMaxMs, mayInjectIntoHeldTurn, isDirectUserTyped, processStale,
+  spawnContract,
+};

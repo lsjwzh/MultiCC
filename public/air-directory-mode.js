@@ -301,7 +301,7 @@
 
   // 可选的 CLI：快照里服务端认的那一份（`/api/air` 的 `clis`）。哪条车道能进终端
   // 是车道自己的事实（服务端 cli-capability 的 kinds 列，经共享 CLI 目录下发），
-  // 这里不自己维护一张排除表 —— 常驻车道（claude-exp / codex-exp）是进程内的
+  // 这里不自己维护一张排除表 —— 常驻车道（claude / codex-exp）是进程内的
   // SDK / app-server，没有可执行文件能丢进终端，目录里本来就说不支持 terminal；
   // 目录还没加载时退回旧口径（`-exp` 后缀 = chat 专用适配器，不是给人用的终端）。
   function terminalClis() {

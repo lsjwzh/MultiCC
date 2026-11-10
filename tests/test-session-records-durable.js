@@ -268,3 +268,31 @@ test('GC: a deleted record is not retained by the owner', async () => {
   }
   assert.equal(ref.deref(), undefined, 'no strong reference survives delete()');
 });
+
+test('load-time normalisation migrates the retired claude -p identity once (M4)', t => {
+  // The deleted `claude -p` lane stored the live transcript id in
+  // `_streamSessionId` and left a placeholder in `cliSessionId`; the Agent SDK
+  // lane resumes by `cliSessionId`. The rename is the Rust owner's load-time
+  // normalisation (native/addon/src/session_records.rs), not Node decision
+  // logic, and it reports that one save is owed.
+  const both = { id: 'both', cli: 'claude', cliSessionId: 'placeholder', _streamSessionId: 'transcript' };
+  const onlyStream = { id: 'only-stream', cli: 'claude', cliSessionId: null, _streamSessionId: 'transcript-b' };
+  const onlyCli = { id: 'only-cli', cli: 'claude', cliSessionId: 'native-c' };
+  const otherCli = { id: 'codex', cli: 'codex', cliSessionId: 'thread-d', _streamSessionId: 'stream-d' };
+  const records = recordsOf([both, onlyStream, onlyCli, otherCli].map(record => [record.id, record]));
+  assert.equal(records.loadMigrated, true);
+  // The live objects are mutated in place: the transcript id wins.
+  assert.equal(records.get('both').cliSessionId, 'transcript');
+  assert.equal('_streamSessionId' in records.get('both'), false);
+  assert.equal(records.get('only-stream').cliSessionId, 'transcript-b');
+  assert.equal('_streamSessionId' in records.get('only-stream'), false);
+  // Nothing to migrate: an established native id, and another CLI's state.
+  assert.equal(records.get('only-cli').cliSessionId, 'native-c');
+  assert.equal(records.get('codex').cliSessionId, 'thread-d');
+  assert.equal(records.get('codex')._streamSessionId, 'stream-d');
+  // Loading the already-normalised table owes no save.
+  const again = recordsOf([records.get('both'), records.get('only-stream'), records.get('only-cli'),
+    records.get('codex')].map(record => [record.id, record]));
+  assert.equal(again.loadMigrated, false);
+  assert.equal(again.get('both').cliSessionId, 'transcript');
+});

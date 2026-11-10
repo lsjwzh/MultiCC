@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const turnTimeline = require('../chat/turn-timeline');
+const turnProgress = require('../chat/turn-progress');
 
 const PRIVATE_USAGE_FIELDS = Object.freeze(['usageCumulative', 'usageEpoch']);
 
@@ -233,6 +233,7 @@ function createCodexUsageHost(deps = {}) {
   }
   const logger = deps.logger || console;
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  const timelineField = typeof deps.timelineField === 'function' ? deps.timelineField : turnProgress.field;
 
   function complete({ evt, cs, persisted, sessionName, turn, runner, forward, contextTrace = null }) {
     if (typeof forward !== 'function') throw new TypeError('Codex usage host missing: forward');
@@ -285,7 +286,7 @@ function createCodexUsageHost(deps = {}) {
       num_turns: cs.chatTurnCount,
       ...(contextTrace ? { contextTrace } : {}),
       ...attribution,
-      ...turnTimeline.field(cs, now()),
+      ...timelineField(sessionName, cs, now()),
     });
     // Completion/status belongs to the adapter + runner settlement boundary.
     return normalized;

@@ -693,7 +693,7 @@
   }
 
   function chatChoiceCli(cli) {
-    return cli === 'claude' ? 'claude-exp' : cli === 'codex' ? 'codex-exp' : cli;
+    return cli === 'codex' ? 'codex-exp' : cli;
   }
 
   let requestOverride = null; // 远程目标时 open() 换成走机器代理的请求函数
@@ -990,7 +990,7 @@
 
     // ── 状态 ────────────────────────────────────────────────────────────────
     let mode = MODE_FIXED;
-    let currentCli = config.cli || cliList[0] || (terminalDraft ? 'claude' : 'claude-exp');
+    let currentCli = config.cli || cliList[0] || 'claude';
     let providers = [];
     let providerValue = '';
     let modelValue = clean(config.model);

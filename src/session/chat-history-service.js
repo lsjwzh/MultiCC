@@ -1,6 +1,7 @@
 'use strict';
 
 const { assertChatHistoryPort } = require('./ports');
+const { getNative } = require('../native/runtime');
 
 function jsonClone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -41,6 +42,7 @@ function stableTools(value) {
 function sameAssistantPayload(left, right) {
   return !!left && !!right
     && left.role === 'assistant' && right.role === 'assistant'
+    && getNative().chatAssistantSameQuery(left, right)
     && left.content === right.content
     && stableTools(left.tools) === stableTools(right.tools);
 }
@@ -55,6 +57,7 @@ function assistantContains(prev, latest) {
   if (!prev || !latest) return false;
   if (prev.role !== 'assistant' || latest.role !== 'assistant') return false;
   if (prev._interim || latest._interim) return false;
+  if (!getNative().chatAssistantSameQuery(prev, latest)) return false;
   if (stableTools(prev.tools) !== stableTools(latest.tools)) return false;
 
   const prevContent = prev.content;

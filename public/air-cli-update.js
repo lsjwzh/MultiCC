@@ -8,9 +8,11 @@
  * One row per **CLI family**, not per lane: an upgrade replaces the family's CLI
  * artifact, and that artifact is one thing per family — `codex` and `codex-exp`
  * derive the same binary and run the same install command. A lane whose engine
- * does not come from that artifact at all (today `claude-exp`: the Claude Agent
- * SDK is a dependency of multicc itself) is not an installable row either; it is
- * reported as a second line under its family, naming who upgrades it.
+ * does not come from that artifact at all (today the `claude` chat engine: the
+ * Claude Agent SDK is a dependency of multicc itself) is not an installable row
+ * either; it is reported as a second line under its family, naming who upgrades
+ * it. The same id can still own the family's terminal artifact, in which case
+ * the family row stays.
  *
  * Where the numbers come from: `GET /api/cli/versions` reports both halves —
  * the version of the binary this host actually spawns (`<bin> --version`) and
