@@ -17,7 +17,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -125,10 +125,12 @@ impl Gateway {
             .env("FIXTURE_HOST_SCRIPT", &script_path)
             // `os.tmpdir()` for both the front door and the fixture.
             .env("TMPDIR", &upload_dir)
+            .env("TEMP", &upload_dir)
+            .env("TMP", &upload_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
-        for key in ["SystemRoot", "SYSTEMROOT", "windir", "TEMP", "TMP"] {
+        for key in ["SystemRoot", "SYSTEMROOT", "windir"] {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
@@ -430,11 +432,9 @@ fn upload_stores_the_chat_file_and_reports_it() {
     let body = response.json();
     assert_eq!(body["name"], "note.txt");
     let saved = body["path"].as_str().expect("path");
-    assert!(
-        saved.starts_with(&format!("{}/multicc_", gateway.upload_dir.display())),
-        "{saved}"
-    );
-    let file = saved.rsplit('/').next().unwrap();
+    let saved_path = Path::new(saved);
+    assert_eq!(saved_path.parent(), Some(gateway.upload_dir.as_path()));
+    let file = saved_path.file_name().unwrap().to_str().unwrap();
     let prefix = "multicc_";
     assert!(file.starts_with(prefix), "{file}");
     assert!(file.ends_with(".txt"), "{file}");

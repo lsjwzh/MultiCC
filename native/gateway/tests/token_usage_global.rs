@@ -362,11 +362,19 @@ fn token_usage_global_scans_dedupes_and_caches() {
     assert_success(&body, &BEFORE_EXTRA_FILE);
     assert_eq!(
         body["sources"]["claude"],
-        json!(gateway.home.join(".claude/projects").to_string_lossy())
+        json!(gateway
+            .home
+            .join(".claude")
+            .join("projects")
+            .to_string_lossy())
     );
     assert_eq!(
         body["sources"]["codex"],
-        json!(gateway.home.join(".codex/sessions").to_string_lossy())
+        json!(gateway
+            .home
+            .join(".codex")
+            .join("sessions")
+            .to_string_lossy())
     );
     let generated = body["generatedAt"].as_str().unwrap();
     assert_eq!(generated.len(), 24, "toISOString form: {generated}");

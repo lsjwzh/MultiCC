@@ -443,23 +443,34 @@ rustTest('Rust 传输的有效 SSE 帧续期空闲预算而无需 Node 再解析
   const toolStart = sse({ type: 'content_block_start', index: 0,
     content_block: { type: 'tool_use', id: 'fixture', name: 'test', input: {} } });
   const stop = sse({ type: 'message_stop' });
+  // Send progress immediately, then span multiple idle budgets. A generous
+  // per-frame margin keeps runner scheduling jitter out of the silence test.
+  const stallTimeoutMs = 1500, frameCount = 13, sentAt = [];
   const h = await harness(t, {
     authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 't1', routeAttemptId: 'r1',
-      connectTimeoutMs: 1000, stallTimeoutMs: 500, requestTimeoutMs: 5000 } }),
+      connectTimeoutMs: 3000, stallTimeoutMs, requestTimeoutMs: 10000 } }),
     upstream: (_req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.flushHeaders();
-      let count = 0;
+      const write = () => { sentAt.push(performance.now()); res.write(toolStart); };
+      write();
+      let count = 1;
       const timer = setInterval(() => {
-        if (++count <= 3) res.write(toolStart);
+        if (++count <= frameCount) write();
         else { clearInterval(timer); res.end(stop); }
-      }, 220);
+      }, 250);
       res.once('close', () => clearInterval(timer));
     },
   });
   const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
   assert.equal(res.status, 200);
-  assert.equal(await res.text(), toolStart.repeat(3) + stop);
+  const body = await res.text().catch(error => {
+    error.message += `; frames=${sentAt.length}; gapsMs=${JSON.stringify(sentAt.slice(1).map((at, i) => Math.round(at - sentAt[i])))}; timeouts=${JSON.stringify(h.outcomes.map(outcome => outcome.errorCode))}`;
+    throw error;
+  });
+  assert.equal(body, toolStart.repeat(frameCount) + stop);
+  assert.ok(sentAt.at(-1) - sentAt[0] > stallTimeoutMs * 1.5,
+    'valid progress must keep the stream alive beyond its initial idle budget');
   assert.equal(h.deltas.length, 0, 'the tool-start frame must itself renew the watchdog');
   assert.equal(h.outcomes.length, 1);
   assert.equal(h.outcomes[0].proxyOutcome.termination, 'completed');
