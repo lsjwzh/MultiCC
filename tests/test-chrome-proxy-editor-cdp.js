@@ -26,6 +26,7 @@ async function editor(t, operation) {
       const { command, input } = JSON.parse(body);
       if (command === 'list') return json(state);
       if (command === 'detect') return json({ core: '/fixture/meow', browser: '/fixture/chrome' });
+      if (command === 'launch') return json(state.launchResult);
       if (command === 'probe') {
         state.probes.push(input);
         return json({ exitIp: '192.0.2.1', latencyMs: 5 });
@@ -47,6 +48,15 @@ async function editor(t, operation) {
     await operation(page, state);
   });
 }
+
+test('launch warns persistently when the exit timezone is not applied', async t => {
+  await editor(t, async (page, state) => {
+    state.launchResult = { geo: { applied: false, reason: '出口地理服务未返回有效时区，浏览器时区未调整' } };
+    await page.evaluate(`[...document.querySelectorAll('#list button')].find(b => b.textContent === '启动浏览器').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('时区未调整')`));
+    assert.equal(await page.evaluate(`document.getElementById('notice').className`), 'bad');
+  });
+});
 
 const clickEdit = async page => {
   await page.evaluate(`(() => {
