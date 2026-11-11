@@ -571,13 +571,19 @@ test('core runner covers every selected path and expands declared variants', () 
   // recording calls, no port, clock, filesystem or process. Re-audited as
   // deterministic core:
   // 425 entries, 351 deterministic, 397 commands (394 Node entries).
-  assert.equal(core.length, 425, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 425);
+  // The token-usage role host-port contract (the Rust front door's callback
+  // surface after GET /api/token-usage/by-role moved into native/gateway) is the
+  // same kind of plain in-memory harness: fake Express app, a stub tracker
+  // recording calls, no port, clock, filesystem or process. Re-audited as
+  // deterministic core:
+  // 426 entries, 352 deterministic, 398 commands (395 Node entries).
+  assert.equal(core.length, 426, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 426);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 351);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 352);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -587,8 +593,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 397,
-    '394 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 398,
+    '395 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

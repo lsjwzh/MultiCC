@@ -137,6 +137,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/OPTIONS /api/{opencode,qoder,grok,commandcode,codebuddy}/models`、`GET/HEAD/OPTIONS /api/providers/:id/models`、`GET/HEAD/OPTIONS /api/codex/models`、`POST/OPTIONS /api/codex/models/sync` | `src/routes/codex-models.js`（已删）；五个 CLI 目录模块与 `src/routes/provider-models.js` 只剩列表/解析/缓存；宿主端口为 `src/routes/model-catalogs-host.js` | `native/gateway/src/app/model_catalogs.rs`：路径（含 `:id` 解码）、查询语义、状态码、字段顺序、`Cache-Control` 与错误映射；CLI spawn、provider 抓取与官方 Codex 目录运行时经 `/api/__host/model-catalogs` 回调 | 见 §32 |
 | `GET/HEAD/OPTIONS /api/agent-resources/skills`、`GET/HEAD/OPTIONS /api/agent-presets`、`GET/HEAD/OPTIONS /api/agent-presets/:id`、`GET/HEAD/OPTIONS/DELETE /api/agent-resources/claude-sessions`、`DELETE/OPTIONS /api/agent-resources/claude-sessions/:project/:id` | `src/routes/agent-resources.js` 只剩 presets 文件缓存/commander 覆盖/provider 富化与 Claude 历史读写；宿主端口为 `src/routes/agent-resources-host.js` | `native/gateway/src/app/agent_resources.rs`：路径（含两段解码参数）、`olderThanDays` 校验、purge 过滤循环、计数/求和、409/404/400/500 映射；磁盘扫描与文件读删经 `/api/__host/agent-resources` 回调 | 53/53 请求逐字节一致 + 9/9 预期差异（见 §33） |
 | `GET/HEAD/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets/:name/rename`、`DELETE/OPTIONS /api/secrets/:name`、`GET/HEAD/OPTIONS /api/secrets/:name/value` | `src/secrets-vault.js` 只剩进程内 entries 表、0600 store、audit 与 env 投影；宿主端口为 `src/routes/secrets-vault-host.js` | `native/gateway/src/app/secrets_vault.rs`：路径（含 `:name` 解码与 trim）、`NAME_RE`/`LEGACY_NAME_RE`、65536 UTF-16 值上限、400/404/409/503 映射；存储读写经 `/api/__host/secrets-vault` 回调 | 63/63 请求逐字节一致 + 10/10 预期差异（见 §34） |
+| `GET/HEAD/OPTIONS /api/token-usage/by-role` | `src/routes/token-usage.js` 只剩用量累计/广播/账本导出；宿主端口为 `src/routes/token-usage-host.js` | `native/gateway/src/app/token_usage_by_role.rs`：查询语义（qs 数组/对象 → 空快照）、空快照形状、公开 500 文案与 OPTIONS/HEAD；`RoleTokenTracker.snapshot` 与 `readLedger` 经 `/api/__host/token-usage` 回调 | 见 §35 |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -1864,3 +1865,60 @@ fixture 宿主脚本 50 行、差分 690 行、冻结 oracle 264 行。
 - 与前几批一致：大写 `/API/...` 前缀不再被 claim，落回 Node 404（旧 Express 曾是 200）。
 - 宿主端口失败在旧 Express 里多为 500 `internal_error`，迁移后统一为 503
   `rust_backend_unavailable`，已作为预期差异登记。
+## 35. Token 用量角色路由迁入 Rust（2026-11-11）
+
+`GET/HEAD/OPTIONS /api/token-usage/by-role` 原先由 `src/routes/token-usage.js` 的
+`mountRoutes` 回答。它读的是 Node 进程内的 `RoleTokenTracker`（`snapshot()` 的内存映射）与
+持久 ledger 文件，所以不能整条留在 Node：查询语义、空快照形状、状态码与错误文案搬进前门
+（`native/gateway/src/app/token_usage_by_role.rs`），两处读取经一个宿主端口回调。
+
+### 逐路由语义
+
+- `?session=<非空字符串>` → 宿主端口 `{"op":"snapshot","session":…}`；宿主不可达、回
+  `ok:false` 或缺 `payload` → 500 `{"error":"Token usage is temporarily unavailable"}`
+  （退役 handler 的 catch 分支原文，不是 503）。
+- 没有 `session` 或 `?session=`（空串）→ 宿主 `{"op":"ledger"}`，原样回 `readLedger()`。
+- `?session` 是 qs 数组或对象（重复键、`session[]=`、`session[k]=`）→ 在 JS 里是 truthy，
+  但 `Map#get(对象)` 永远匹配不到字符串键，答案必是空快照；这一支因此由 Rust 直接答
+  `{"main":null,"sub":null,"subByProvider":[]}`，不空跑一次往返。
+- `OPTIONS` → `Allow: GET,HEAD`；`HEAD` 与 `GET` 同头无体。路径字面段大小写不敏感、
+  `/api/` 前缀大小写敏感、允许一个尾斜杠。
+
+### 宿主端口
+
+`src/routes/token-usage-host.js`（64 行）挂在 `POST /api/__host/token-usage`，沿用
+§31–§34 的约定（PROXY v1 回环行、`isLocalRequest`、非回环 404、超时、不重试）。只有两个
+op：`snapshot`（空结果回落冻结的 `{main:null,sub:null,subByProvider:[]}`）与 `ledger`
+（透传）。tracker 抛错时宿主记 `token_usage_role_read_failed` 并回 `{ok:false}`，错误文本
+不出宿主；未知 op 回 `{ok:false}`。
+
+### 差分与集成
+
+- `native/gateway/tests/token_usage_by_role.rs`（579 行，11 个用例）：snapshot 命中
+  （逐字节字段顺序 main → mainByProvider → sub → subByProvider）、未命中空快照、ledger
+  原样与键序、空/缺省 session 都读 ledger、数组/对象形态 200 且不产生宿主调用、百分号
+  编码只解码一次、宿主不可达与 `ok:false` 同为公开 500、OPTIONS/HEAD、路径匹配，以及宿主
+  收到的 op/session 精确有序。测试的端口探测同样带「EADDRINUSE 就换端口重试」与
+  「零字节连接重置就重放」两条兜底。
+- `docs/rust-migration/differential/token-usage-by-role.js`：Node 侧用冻结 oracle
+  （`tests/helpers/legacy-token-usage-route.js`，退役 handler 的逐字副本）挂同一份脚本化
+  tracker，Rust 侧是前门 + 按 PROXY v1 接线的桩；tracker 对会话 `boom` 抛错、桩对同一
+  会话回 `ok:false`，两侧都走退役的 catch 分支。3 条预期差异单独校验：大写 `/API/` 前缀
+  （Express 大小写不敏感仍 200，前门不 claim 并转发）、`POST` 与多余路径段（前门转发，
+  旧路由 404）。
+- `tests/test-token-usage-routes.js` 删掉 by-role 的 HTTP 用例后只保留模块契约；
+  `tests/test-token-usage-host.js` 覆盖宿主端口两个 op、回环门禁、空快照回落、抛错日志与
+  非对象 body，登记在 `test:rust`。
+
+### 删除面
+
+退役的路由实现 21 行（`mountRoutes`），连同 `mountTokenUsageRoutes` 包装与导出共 30 行；
+`server.js` 净 +1 行（新增 require，挂载行替换），新增宿主端口 64 行。新增 Rust 87 行
+（`app/token_usage_by_role.rs`）、`mod.rs` claim/handle 与单测 23 行、集成测试 579 行、
+fixture 宿主脚本 30 行、差分 262 行、冻结 oracle 43 行。
+
+### 已知边界
+
+- 与前几批一致：大写 `/API/...` 前缀不再被 claim，落回 Node（旧 Express 曾是 200）。
+- 宿主端口失败在旧 Express 里是同一句 500 `Token usage is temporarily unavailable`，迁移后
+  仍是 500 同文案，因此差分里不需要给它登记预期差异。

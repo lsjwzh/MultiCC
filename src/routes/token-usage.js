@@ -476,30 +476,7 @@ function createTokenUsageRoutes(rawDeps) {
     deps.roleTokenTracker.reset(sessionId);
   }
 
-  function mountRoutes(app) {
-    if (!app || typeof app.get !== 'function') {
-      throw new TypeError('Express app.get is required');
-    }
-    app.get('/api/token-usage/by-role', (req, res) => {
-      try {
-        if (req.query && req.query.session) {
-          res.json(deps.roleTokenTracker.snapshot(req.query.session) || {
-            main: EMPTY_ROLE_SNAPSHOT.main,
-            sub: EMPTY_ROLE_SNAPSHOT.sub,
-            subByProvider: [],
-          });
-          return;
-        }
-        res.json(deps.roleTokenTracker.readLedger());
-      } catch (error) {
-        logFailure('token_usage_role_read_failed', error);
-        res.status(500).json({ error: PUBLIC_USAGE_ERROR });
-      }
-    });
-  }
-
   return Object.freeze({
-    mountRoutes,
     consumedInput,
     accumulateTokenUsage,
     accumulateTokenDaily,
@@ -513,12 +490,6 @@ function createTokenUsageRoutes(rawDeps) {
     reconcileCodexRoleUsage,
     resetRoleTokenUsage,
   });
-}
-
-function mountTokenUsageRoutes(app, deps) {
-  const runtime = createTokenUsageRoutes(deps);
-  runtime.mountRoutes(app);
-  return runtime;
 }
 
 module.exports = {
@@ -535,5 +506,4 @@ module.exports = {
   tokenCount,
   usageComponents,
   createTokenUsageRoutes,
-  mountTokenUsageRoutes,
 };

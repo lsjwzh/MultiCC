@@ -148,6 +148,7 @@ const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRuntime } = require('./src/routes/agent-resources');
 const { mountAgentResourcesHostRoute } = require('./src/routes/agent-resources-host');
 const { mountSecretsVaultHostRoute } = require('./src/routes/secrets-vault-host');
+const { mountTokenUsageHostRoute } = require('./src/routes/token-usage-host');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createLoginTerminalDisposer } = require('./src/session/login-terminal');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
@@ -2213,9 +2214,9 @@ mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes
 mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app, { quotaBarCache, recordVendor: limitRecorder.recordVendor, recordClaude: limitRecorder.recordClaude });
 mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/quota/official-account-usage').claudeUsageWindows(usage) }) }); require('./src/quota/official-account-usage').createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent, disposeLoginTerminal }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
-// Token APIs remain between the two Provider route phases so the established
-// route ordering stays byte-compatible while accounting lives in one runtime.
-tokenUsageRuntime.mountRoutes(app);
+// The token-usage host port stays between the two Provider route phases: the
+// public token APIs are served by the Rust front door, accounting still lives here.
+mountTokenUsageHostRoute(app, { tracker: roleTokenTracker, logFailure: (event, error) => logger.error(event, { code: error && error.code }) });
 
 // Workspace overview + manual sweep for the /manage「工作区」panel
 // (src/routes/workspaces.js): hibernation status, per-directory awake counts,
