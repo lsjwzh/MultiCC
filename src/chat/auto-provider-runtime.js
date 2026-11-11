@@ -311,9 +311,20 @@ function createAutoProviderRuntime(options = {}) {
       }
       return plan(session, pending);
     }
-    // A continuation stays on its lane unless a handoff reserved another one.
-    if (pending || (turnOptions.originContinue && !turnOptions.directUserInput)) return null;
+    if (pending) return null;
     const { candidates, ladder } = catalogCandidates(session, selection);
+    // A continuation stays on its lane unless a handoff reserved another one —
+    // or unless that lane is already out of usable lines. Staying then only
+    // fails at preparation and is re-admitted forever, so the continuation
+    // earns the same cross-lane escape a fresh turn gets; the per-lane choice
+    // below still returns it home whenever one line there is usable.
+    if (turnOptions.originContinue && !turnOptions.directUserInput) {
+      // A difficulty router owns its lane choice, continuation included.
+      if (selection.routing) return null;
+      const homeLane = candidates.filter(candidate => (candidate.cli || cli) === cli
+        && candidate.enabled !== false && candidate.limitState !== 'exhausted');
+      if (homeLane.length) return null;
+    }
     const seedLane = seedLaneBySession.get(session.id);
     if (seedLane) {
       seedLaneBySession.delete(session.id);

@@ -1070,16 +1070,34 @@ test('a background notification never plans a lane switch', () => {
   assert.deepEqual(events, []);
 });
 
-test('a continuation stays on its lane unless a handoff reserved another one', () => {
-  const { runtime, session } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
+test('a continuation stays on its lane while that lane still has a usable line', () => {
+  const { runtime, session, events } = crossFixture();
   assert.equal(runtime.planTurn({ session, text: '继续', turnOptions: { originContinue: true } }), null);
-  // A message the user actually sent is not a continuation, even when a
-  // continuation turn carries it.
+  assert.deepEqual(events, []);
+  // One line left on the lane is enough to keep the continuation home.
+  const partial = crossFixture({ exhausted: ['claude-b'] });
+  assert.equal(partial.runtime.planTurn({
+    session: partial.session, text: '继续', turnOptions: { originContinue: true },
+  }), null);
+  assert.deepEqual(partial.events, []);
+});
+
+test('a continuation escapes its lane once every line there is exhausted', () => {
+  // Staying would only fail at preparation and be re-admitted forever, so the
+  // continuation earns the cross-lane escape a fresh turn already has.
+  const { runtime, session, events } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
+  const planned = runtime.planTurn({ session, text: '继续', turnOptions: { originContinue: true } });
+  assert.equal(planned.cli, 'codex');
+  assert.deepEqual(events.map(event => event.routePhase), ['cli_switch_planned']);
+  // Still a continuation on the next call: the reservation is what carries it.
+  assert.equal(runtime.planTurn({ session, text: '继续', turnOptions: { originContinue: true } }).cli, 'codex');
+});
+
+test('a message the user sent is not held back by the continuation rule', () => {
+  const { runtime, session } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
   assert.equal(runtime.planTurn({
     session, text: '继续', turnOptions: { originContinue: true, directUserInput: true },
   }).cli, 'codex');
-  // ...and once a lane is reserved, the continuation follows the reservation.
-  assert.equal(runtime.planTurn({ session, text: '继续', turnOptions: { originContinue: true } }).cli, 'codex');
 });
 
 test('the turn after a plan starts on the reserved line of the new lane', () => {
