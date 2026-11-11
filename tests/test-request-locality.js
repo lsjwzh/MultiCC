@@ -112,7 +112,7 @@ test('locality checks stay limited to authentication and sensitive host controls
   const authRoutes = fs.readFileSync('src/routes/auth.js', 'utf8');
   const routerToolHost = fs.readFileSync('src/router-tool-host.js', 'utf8');
   const taskBoardRoutes = fs.readFileSync('src/routes/task-board.js', 'utf8');
-  const hostReadRoutes = fs.readFileSync('src/routes/host-read.js', 'utf8');
+  const hostReadHost = fs.readFileSync('src/routes/host-read-host.js', 'utf8');
   const hostWriteRoutes = fs.readFileSync('src/routes/host-write.js', 'utf8');
   const wsConnectionRouter = fs.readFileSync('src/ws/connection-router.js', 'utf8');
   const sourceFiles = ['server.js'];
@@ -139,11 +139,20 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/host-power-services.js',
     'src/request-locality.js',
     'src/router-tool-host.js',
+    // One host port per migrated route group: each internal listener accepts
+    // loopback calls only, so a request forwarded from a real client is 404.
+    'src/routes/agent-resources-host.js',
     'src/routes/auth.js',
     'src/routes/host-power.js',
-    'src/routes/host-read.js',
+    'src/routes/host-read-host.js',
     'src/routes/host-write.js',
+    'src/routes/model-catalogs-host.js',
     'src/routes/plugins.js',
+    // Passes the dependency through to the provider runtime, does not decide.
+    'src/routes/providers.js',
+    'src/routes/secrets-vault-host.js',
+    'src/routes/subagent-defaults-host.js',
+    'src/routes/token-usage-host.js',
     'src/ws/connection-router.js',
   ]);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
@@ -153,7 +162,10 @@ test('locality checks stay limited to authentication and sensitive host controls
   assert.match(routerToolHost, /isLocalRequest\(req\)/);
   assert.match(wsConnectionRouter, /isLocalRequest\(req\)/);
   assert.match(server, /mountWsConnectionRouter\(wss,/);
-  assert.match(hostReadRoutes, /canEdit:\s*deps\.isLocalRequest\(req\)/);
+  assert.match(hostReadHost, /isLocalRequest/);
+  const nativeHostRead = fs.readFileSync('native/gateway/src/app/host_read.rs', 'utf8');
+  assert.match(nativeHostRead, /http_gate::is_local_request\(peer, &ctx\.headers\)/,
+    'canEdit must be decided by the Rust front door on the real client peer');
   assert.match(hostWriteRoutes, /requireLocal\(deps, req, res/);
   assert.ok(
     server.indexOf('authRuntime.mountRoutes(app)') < server.indexOf('taskBoardRuntime.mountRoutes(app)'),

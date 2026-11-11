@@ -12,7 +12,7 @@
 //   ① 订阅状态只从 pwa.js 现读：订阅活在 pwa.js 的模块变量和浏览器的 PushManager 里，
 //      前端再存一份就有两个真相。开关也只能调 pwa.js 的 togglePush() —— 只有它会去申请
 //      通知权限、向服务端登记那条订阅；面板自己调 pushManager 是绕开它再写一遍那份逻辑。
-//   ② Bark 值服务端只回掩码（host-read.js 的 summarizeSecretUrl：`https://域名/••••`）。
+//   ② Bark 值服务端只回掩码（前门 Rust 的 summarize_secret_url：`https://域名/••••`）。
 //      掩码只当 placeholder 用，绝不写进 value —— 写进去它就成了「用户填的值」，下一次
 //      保存会把这段掩码当明文提交回去。
 //   ③ 保存时 Bark 与 Webhook 的空值含义不同：Bark 空着 = 这次不动它（所以不带这个字段），

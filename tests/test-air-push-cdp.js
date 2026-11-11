@@ -57,7 +57,7 @@ test('the Air push panel is native: masked Bark placeholder, exact POST bodies, 
   };
   let healthCase = 'healthy';
   let healthGets = 0;
-  // 掩码的形状跟真服务端（host-read.js 的 summarizeSecretUrl）一致：只留 origin。
+  // 掩码的形状跟真服务端（src/notify-settings.js 的 summarizeSecretUrl）一致：只留 origin。
   let notify = { hasBark: true, barkUrl: 'https://api.day.app/••••', webhookUrl: 'https://hooks.example.test/••••', hasWebhook: true };
   let notifyGets = 0, testPushResult = { ok: true, subscribers: 3 }, barkResult = { ok: true }, webhookResult = { ok: true };
   const resolveHealth = () => {

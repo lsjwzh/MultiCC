@@ -226,7 +226,7 @@ const MIGRATION_DEBT = Object.freeze({
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
     ceiling: 3069,
-    byteCeiling: 164521,
+    byteCeiling: 164513,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

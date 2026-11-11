@@ -1,8 +1,147 @@
 'use strict';
+// FROZEN COPY, DIFFERENTIAL ONLY — do not import from product code.
+//
+// This is the retired src/routes/host-read.js as it stood at HEAD (the file was
+// deleted when its ten GET routes moved to native/gateway/src/app/host_read.rs).
+// It exists only as the Node oracle of
+// docs/rust-migration/differential/host-read.js and must never be required by a
+// production path.
+//
+// Verbatim rule: `mountHostReadRoutes`, every handler factory and every DTO
+// helper below are copied unchanged from `git show HEAD:src/routes/host-read.js`
+// (only the export list grew `mount`, `readPowerSettings` and the battery
+// helpers). The retired module imported two product helpers
+// (`../host-power-services` and `../host-battery`); to keep this file dependent
+// on node builtins alone those two are frozen local copies:
+//
+//   * createBatteryReader / parsePmset / readLinux come verbatim from
+//     src/host-battery.js (itself builtins-only). The differential always
+//     injects `deps.readBattery`, so /usr/bin/pmset is never executed.
+//   * readPowerSettings comes verbatim from src/host-power-services.js. Its
+//     three lazy constructors (createUnlockPassword / createUnlockProbe /
+//     createPowerPreferences) are the only removed product imports; the two
+//     accessors that used them are replaced by accessors that throw, because
+//     the differential always injects `unlockPassword`, `unlockProbe` and
+//     `powerPreferences` and they are therefore unreachable.
+//
+// The scripted deps object (built by the differential) owns everything that
+// touches process state, the network or a real CLI.
 
 const crypto = require('node:crypto');
-const { readPowerSettings } = require('../host-power-services');
-const { createBatteryReader } = require('../host-battery');
+const fs = require('node:fs/promises');
+const { execFile } = require('node:child_process');
+
+// ── frozen local copy of src/host-battery.js ────────────────────────────────
+
+const CACHE_MS = 5000;
+const PROBE_TIMEOUT_MS = 3000;
+const UNAVAILABLE = Object.freeze({ available: false });
+
+// `pmset -g batt` prints e.g. "-InternalBattery-0 (id=1)\t25%; discharging; 1:26 remaining present: true".
+// Desktops answer with no InternalBattery line at all, which is "no battery", not an error.
+function parsePmset(text) {
+  const source = String(text || '');
+  const line = source.split('\n').find(row => /InternalBattery/.test(row));
+  if (!line) return UNAVAILABLE;
+  const percent = Number((line.match(/(\d{1,3})\s*%/) || [])[1]);
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100) return UNAVAILABLE;
+  const state = (line.match(/%;\s*([^;]+);/) || [])[1] || '';
+  const remaining = line.match(/(\d+):(\d{2}) remaining/);
+  const pluggedIn = /AC Power/.test(source);
+  return {
+    available: true,
+    percent,
+    charging: /^(charging|finishing charge)$/i.test(state.trim()),
+    pluggedIn,
+    remainingMinutes: remaining ? Number(remaining[1]) * 60 + Number(remaining[2]) : null,
+  };
+}
+
+async function readLinux(readFile) {
+  for (const name of ['BAT0', 'BAT1']) {
+    try {
+      const base = `/sys/class/power_supply/${name}`;
+      const percent = Number(String(await readFile(`${base}/capacity`, 'utf8')).trim());
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100) continue;
+      const status = String(await readFile(`${base}/status`, 'utf8').catch(() => '')).trim();
+      return {
+        available: true,
+        percent,
+        charging: /^charging$/i.test(status),
+        pluggedIn: /^(charging|full)$/i.test(status),
+        remainingMinutes: null,
+      };
+    } catch (_) { /* try the next battery node */ }
+  }
+  return UNAVAILABLE;
+}
+
+function createBatteryReader({
+  platform = process.platform,
+  run = (cmd, args) => new Promise((resolve, reject) => execFile(cmd, args, { timeout: PROBE_TIMEOUT_MS, env: { ...process.env, LC_ALL: 'C' } },
+    (error, stdout) => (error ? reject(error) : resolve(stdout)))),
+  readFile = fs.readFile,
+  now = Date.now,
+} = {}) {
+  let cached = null;
+  let cachedAt = 0;
+  let inflight = null;
+
+  async function probe() {
+    if (platform === 'darwin') return parsePmset(await run('/usr/bin/pmset', ['-g', 'batt']));
+    if (platform === 'linux') return readLinux(readFile);
+    return UNAVAILABLE;
+  }
+
+  return async function readBattery() {
+    if (cached && now() - cachedAt < CACHE_MS) return cached;
+    // Concurrent sidebars (Web + App) share one probe instead of spawning one each.
+    if (!inflight) {
+      inflight = probe().catch(() => UNAVAILABLE).then(value => {
+        cached = value;
+        cachedAt = now();
+        return value;
+      }).finally(() => { inflight = null; });
+    }
+    return inflight;
+  };
+}
+
+// ── frozen local copy of src/host-power-services.js ─────────────────────────
+
+// The three product constructors are replaced: the differential injects all
+// three services, so these accessors are unreachable (and throw loudly if the
+// frozen handler is ever mounted without the injected deps).
+const getUnlockPassword = () => { throw new Error('frozen host-read: deps.unlockPassword is required'); };
+const getUnlockProbe = () => { throw new Error('frozen host-read: deps.unlockProbe is required'); };
+const getPowerPreferences = () => { throw new Error('frozen host-read: deps.powerPreferences is required'); };
+
+async function readPowerSettings(deps, req) {
+  if (!deps.macosPower.isAvailable()) return { available: false, enabled: false };
+  const status = await deps.macosPower.getLidModeSettings();
+  if (deps.batteryGuard) status.batteryGuard = deps.batteryGuard.getStatus();
+  const password = deps.unlockPassword || getUnlockPassword();
+  const preferences = deps.powerPreferences || getPowerPreferences();
+  const canEdit = !!deps.isLocalRequest(req);
+  try {
+    const set = password.isAvailable() && await password.hasPassword();
+    const requested = preferences.read(set); // Preserve existing users' consent.
+    status.unlockPassword = { available: password.isAvailable(), set, canEdit,
+      requested, enabled: set && (requested || status.enabled), requiredByLid: status.enabled };
+    if (status.unlockPassword.enabled) {
+      const authorization = await (deps.unlockProbe || getUnlockProbe()).desktopPermissions();
+      if (authorization.state !== 'authorized') {
+        status.unlockPassword.enabled = false;
+        status.unlockPassword.authorization = authorization;
+      }
+    }
+  } catch {
+    status.unlockPassword = { available: password.isAvailable(), set: false, canEdit, error: 'read-failed' };
+  }
+  return status;
+}
+
+// ── verbatim retired handlers ───────────────────────────────────────────────
 
 const EMPTY_HEALTH = Object.freeze({
   successCount: 0,
@@ -277,4 +416,12 @@ module.exports = {
   createPowerSettingsHandler,
   createBatteryHandler,
   mountHostReadRoutes,
+  // Differential additions: the retired export name is kept above, `mount` is
+  // the harness entry point, and the two frozen service helpers are exposed so
+  // the stub Node child can answer the power op with the same body.
+  mount: mountHostReadRoutes,
+  readPowerSettings,
+  createBatteryReader,
+  parsePmset,
+  UNAVAILABLE,
 };

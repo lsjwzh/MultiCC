@@ -14,6 +14,7 @@ pub mod claude_models;
 pub mod download;
 pub mod express;
 pub mod external_workspaces;
+pub mod host_read;
 pub mod model_catalogs;
 pub mod provider_limit_history;
 pub mod quota_guard;
@@ -110,6 +111,8 @@ pub enum Route {
     SecretsOptionsRename,
     SecretsOptionsItem,
     SecretsOptionsValue,
+    HostReadGet(host_read::Route),
+    HostReadOptions(host_read::Route),
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -149,6 +152,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if let Some(route) = secrets_vault::claim(method, path) {
         return Some(route);
+    }
+    if let Some(claim) = host_read::claim(method, path) {
+        return Some(match claim {
+            host_read::Claim::Get(route) => Route::HostReadGet(route),
+            host_read::Claim::Options(route) => Route::HostReadOptions(route),
+        });
     }
     let rest = path.strip_prefix("/api/")?;
     let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
@@ -472,6 +481,7 @@ pub async fn handle(
         | Route::CodexSubscriptionOptions
         | Route::TokenUsageGlobalOptions => return options(&ctx, "GET,HEAD"),
         Route::TokenUsageByRoleOptions => return options(&ctx, "GET,HEAD"),
+        Route::HostReadOptions(route) => return options(&ctx, route.allow()),
         Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
         Route::DownloadTicket => {
             let (status, value) = download::issue(&app, &body, now_ms());
@@ -510,6 +520,7 @@ pub async fn handle(
         // The host port is the Node child's internal listener; a route that
         // needs in-process Node state asks it only through that one call.
         Route::TokenUsageByRoleGet => return token_usage_by_role::get(&ctx, host).await,
+        Route::HostReadGet(route) => return host_read::handle(&ctx, route, host, &peer).await,
         Route::SubagentDefaultsGet => return subagent_defaults::get(&app, &ctx, host).await,
         Route::SubagentDefaultsSync => {
             return subagent_defaults::sync(&app, &ctx, &body, host).await
