@@ -10,6 +10,7 @@ const net = require('node:net');
 const { spawn, execFileSync } = require('node:child_process');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
+const isolatedHostEnv = require('./helpers/isolated-host-env');
 
 const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-completion-e2e-')));
 const dataDir = path.join(root, 'data');
@@ -142,7 +143,11 @@ async function stop() {
     const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
     const base = `http://127.0.0.1:${port}`;
     server = spawn(process.execPath, ['server.js'], {
-      cwd: path.join(__dirname, '..'), env: { ...process.env, ...commands,
+      cwd: path.join(__dirname, '..'), env: { ...isolatedHostEnv(), ...commands,
+        // Claude chat uses the bundled SDK engine now, not CLAUDE_CMD. Keep
+        // that engine on this fixture too, so no real model request can run.
+        MULTICC_CLAUDE_BIN: commands.CLAUDE_CMD,
+        HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: path.join(root, 'claude'),
         PORT: String(port), HOST: '127.0.0.1', NODE_ENV: 'test', ACCESS_TOKEN: 'completion-test',
         MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'),
         PI_CODING_AGENT_DIR: path.join(root, 'pi-agent'),

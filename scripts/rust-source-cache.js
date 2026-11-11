@@ -176,8 +176,9 @@ function probeAddon(file, node = process.execPath) {
       'transcriptPruneMaybe','transcriptMeasureFile','transcriptMeasure','transcriptRealUserTurn',
       'transcriptSubstantiveTurn','transcriptUserVisibleText','transcriptTriggersFor',
       'transcriptCompactCutIndex'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    const transcriptHome=path.join(os.tmpdir(),'multicc-transcript-probe');
     if(a.transcriptPruneDefaults().maxBytes!==2*1024*1024
-      || a.transcriptProjectDir('/p/q','/h')!=='/h/.claude/projects/-p-q'
+      || a.transcriptProjectDir('/p/q',transcriptHome)!==path.join(transcriptHome,'.claude','projects','-p-q')
       || a.transcriptUserVisibleText('[gateway end]\\nhello')!=='hello') process.exit(1);
     if(['codexRolloutGuardDefaults','nativeSessionGuardDefaults','RustCodexRolloutGuard','RustNativeSessionGuard'].some(key=>typeof a[key]!=='function')
       || ['enforce','sweep'].some(key=>typeof a.RustCodexRolloutGuard.prototype[key]!=='function')

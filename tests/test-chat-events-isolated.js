@@ -17,6 +17,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
+const isolatedHostEnv = require('./helpers/isolated-host-env');
 
 const ROOT = path.join(__dirname, '..');
 const TOKEN = 'isolated-chat-events-token';
@@ -35,9 +36,10 @@ function freePort() {
 }
 
 async function waitReady(base) {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${base}/readyz`);
+      const response = await fetch(`${base}/readyz`, { signal: AbortSignal.timeout(1000) });
       if (response.status === 200) return;
     } catch (_) {}
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -148,7 +150,7 @@ const queueCompleted = frames => frames.filter(frame =>
   const child = spawn(gateway, ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...isolatedHostEnv(),
       NODE_ENV: 'test',
       HOST: '127.0.0.1',
       PORT: String(port),
@@ -163,6 +165,7 @@ const queueCompleted = frames => frames.filter(frame =>
       GIT_CONFIG_GLOBAL: gitConfig,
       GIT_CONFIG_SYSTEM: os.devNull,
       CLAUDE_CMD: fakeCli,
+      MULTICC_CLAUDE_BIN: fakeCli,
       CODEX_CMD: path.join(root, 'missing-codex'),
       OPENCODE_CMD: path.join(root, 'missing-opencode'),
       QODER_CMD: path.join(root, 'missing-qoder'),
@@ -310,7 +313,13 @@ const queueCompleted = frames => frames.filter(frame =>
   } catch (error) {
     console.error(output);
     console.error('FAKE LOG TAIL:', fs.existsSync(fakeLog)
-      ? fs.readFileSync(fakeLog, 'utf8').trim().split('\n').slice(-20).join('\n') : '(none)');
+      ? fs.readFileSync(fakeLog, 'utf8').trim().split('\n').slice(-20).map(line => {
+        try {
+          const record = JSON.parse(line);
+          delete record.env;
+          return JSON.stringify(record);
+        } catch (_) { return '[invalid fixture record omitted]'; }
+      }).join('\n') : '(none)');
     throw error;
   } finally {
     for (const socket of sockets) {

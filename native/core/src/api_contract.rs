@@ -119,10 +119,8 @@ pub fn error_dto(input: &V, ids: &(String, String)) -> V {
             },
         ),
     ];
-    for key in ["category"] {
-        if valid(get(input, key), 64, false) {
-            fields.push((key.into(), get(input, key).clone()));
-        }
+    if valid(get(input, "category"), 64, false) {
+        fields.push(("category".into(), get(input, "category").clone()));
     }
     if let V::String(s) = get(input, "detail") {
         if !s.trim().is_empty() {
