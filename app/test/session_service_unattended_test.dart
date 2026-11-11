@@ -164,4 +164,52 @@ void main() {
       ),
     );
   });
+
+  test('clearUnattended 只发 {action: clear}，服务端回 unattended: null', () async {
+    Map<String, dynamic>? sent;
+    final client = MockClient((request) async {
+      expect(request.method, 'POST');
+      expect(request.url.path, '/api/sessions/s1/unattended');
+      sent = jsonDecode(request.body) as Map<String, dynamic>;
+      return http.Response(
+        jsonEncode({
+          'ok': true,
+          'unattended': null,
+          'limits': <String, Object>{},
+        }),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+
+    final snapshot = await SessionService(
+      settings: await _settings(),
+      httpClient: client,
+    ).clearUnattended('s1');
+
+    expect(sent, {'action': 'clear'});
+    expect(snapshot.state, isNull);
+  });
+
+  test('clearUnattended 把 409 invalid_state 原样抛出', () async {
+    final client = MockClient(
+      (_) async => http.Response(
+        jsonEncode({'ok': false, 'error': 'invalid_state'}),
+        409,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      ),
+    );
+
+    await expectLater(
+      SessionService(
+        settings: await _settings(),
+        httpClient: client,
+      ).clearUnattended('s1'),
+      throwsA(
+        predicate<Object>(
+          (error) => error.toString().contains('invalid_state'),
+        ),
+      ),
+    );
+  });
 }

@@ -514,6 +514,43 @@ function createUnattendedHost(options = {}) {
     return { ok: true, unattended: next };
   }
 
+  // End the unattended run and delete `record.unattended`, so the banner and
+  // input lock disappear for every client and the panel returns to "not
+  // started". The allow/noop decision is Rust (`decide_clear`); this host only
+  // gathers the status and applies it. Active is refused — the UI must pause
+  // first, because clearing a live supervisor would silently drop its timers.
+  function clear(sessionId) {
+    const current = stateOf(sessionId);
+    let decision;
+    try {
+      decision = kernel.decideClear({ status: current ? current.status : null });
+    } catch (error) {
+      log(`[unattended] clear decision failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+      return { ok: false, code: 'decision_failed', status: 500 };
+    }
+    if (!decision || decision.allowed !== true) {
+      return { ok: false, code: (decision && decision.code) || 'invalid_state', status: 409 };
+    }
+    clearTimer(sessionId);
+    clearRetryTimer(sessionId);
+    if (!current || decision.noop === true) {
+      // Idempotent: no state means nothing to delete or broadcast. Still drain
+      // any stray supervisor bookkeeping so a late timer cannot resurrect it.
+      withdrawPendingInjections(sessionId);
+      releaseHeldPushes(sessionId);
+      return { ok: true, unattended: null, noop: true };
+    }
+    // `write(null)` deletes the record, clears both timers and broadcasts
+    // `unattended_state` with `unattended: null` to every open client.
+    if (!write(sessionId, null)) return { ok: false, code: 'persist_failed', status: 500 };
+    // Leaving active must drop the not-yet-started continuations and release
+    // any classic classify push that was held while the supervisor decided.
+    withdrawPendingInjections(sessionId);
+    releaseHeldPushes(sessionId);
+    trace(sessionId, tagged('无人值守已结束，设置已清除'));
+    return { ok: true, unattended: null };
+  }
+
   async function resume(sessionId, body = {}) {
     const current = stateOf(sessionId);
     if (!current) return { ok: false, code: 'no_unattended', status: 409 };
@@ -1108,6 +1145,7 @@ function createUnattendedHost(options = {}) {
 
   return Object.freeze({
     armFromRequest,
+    clear,
     evaluate,
     get,
     noteUserMessage,

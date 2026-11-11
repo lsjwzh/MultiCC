@@ -75,6 +75,20 @@ pub fn unattended_decide_fault(input: String) -> Result<String> {
     multicc_core::unattended::decide_fault(&input).map_err(napi::Error::from_reason)
 }
 
+/// Whether a rejected delivery keeps its outbox retry budget →
+/// `{retryable, reason}`.
+#[napi]
+pub fn unattended_delivery_retry_decision(input: String) -> Result<String> {
+    multicc_core::unattended::delivery_retry_decision(&input).map_err(napi::Error::from_reason)
+}
+
+/// Whether a persisted state may be cleared →
+/// `{allowed, noop}` / `{allowed:false, noop:false, code:"invalid_state"}`.
+#[napi]
+pub fn unattended_decide_clear(input: String) -> Result<String> {
+    multicc_core::unattended::decide_clear(&input).map_err(napi::Error::from_reason)
+}
+
 /// The one decision for every turn end →
 /// `{nextState?, action, message, reason?, pausedBy?, faults?, resetFaults?}`.
 #[napi]

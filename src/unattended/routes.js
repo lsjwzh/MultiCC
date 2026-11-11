@@ -58,6 +58,7 @@ function mountUnattendedRoutes(app, deps = {}) {
       case 'update': return respond(res, host.update(id, body));
       case 'stop': return respond(res, host.stop(id));
       case 'resume': return respond(res, await host.resume(id, body));
+      case 'clear': return respond(res, host.clear(id));
       default:
         return res.status(400).json({ ok: false, error: 'bad_action', unattended: host.get(id) || null });
     }

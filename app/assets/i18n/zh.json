@@ -5134,6 +5134,8 @@
   "unattendedSave": "保存修改",
   "unattendedStop": "停止",
   "unattendedResume": "继续",
+  "unattendedClear": "结束无人值守",
+  "unattendedClearHint": "结束本次无人值守并清除设置，横幅会消失",
   "unattendedStart": "启动",
   "unattendedStarted": "已启动无人值守",
   "unattendedStopped": "已停止无人值守",

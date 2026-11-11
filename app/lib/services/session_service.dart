@@ -1106,6 +1106,12 @@ class SessionService {
     return UnattendedSnapshot.fromJson(decoded ?? const {});
   }
 
+  /// POST `{action: 'clear'}`：结束本次无人值守并清除会话上的设置。
+  /// 服务端成功时回 `{ok, unattended: null, limits}`；仍是 active 的话会回
+  /// 409 `invalid_state`，原样抛给调用方展示。
+  Future<UnattendedSnapshot> clearUnattended(String id) =>
+      postUnattended(id, const {'action': 'clear'});
+
   // ── Directories ──────────────────────────────────────────────────────────
 
   Future<List<Directory>> fetchDirectories() async {

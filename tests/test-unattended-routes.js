@@ -49,6 +49,7 @@ function fixture({ host = true, records } = {}) {
     update: (id, body) => { calls.push(['update', id, body]); return { ok: false, code: 'no_unattended', status: 409 }; },
     stop: id => { calls.push(['stop', id]); return { ok: true, unattended: { status: 'stopped' } }; },
     resume: async (id, body) => { calls.push(['resume', id, body]); return { ok: false, code: 'invalid_state', status: 409 }; },
+    clear: id => { calls.push(['clear', id]); return { ok: true, unattended: null }; },
   };
   mountUnattendedRoutes(app, { records: store, getUnattended: () => (host ? fakeHost : null) });
   return { app, calls, store };
@@ -91,11 +92,14 @@ test('POST dispatches start, update, stop and resume', async () => {
 
   assert.equal((await invoke(handler, { body: { action: 'stop' } })).status, 200);
   assert.equal((await invoke(handler, { body: { action: 'resume', maxDurationMinutes: 30 } })).status, 409);
-  assert.deepEqual(calls.map(call => call[0]), ['start', 'update', 'stop', 'resume']);
+  const cleared = await invoke(handler, { body: { action: 'clear' } });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.unattended, null);
+  assert.deepEqual(calls.map(call => call[0]), ['start', 'update', 'stop', 'resume', 'clear']);
   assert.equal(calls[3][2].maxDurationMinutes, 30, 'resume forwards the new duration');
   // Legacy round fields ride along but are the host's host-to-ignore concern.
   await invoke(handler, { body: { action: 'start', goal: 'ship it', maxRounds: 5 } });
-  assert.equal(calls[4][2].maxRounds, 5);
+  assert.equal(calls[5][2].maxRounds, 5);
 });
 
 test('POST rejects a bad action, an aux/gateway session and an unknown session', async () => {

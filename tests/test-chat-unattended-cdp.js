@@ -68,6 +68,8 @@ routes['POST /api/sessions/s1/unattended'] = ({ body }) => {
         updatedAt: Date.now(),
       };
     }
+  } else if (value.action === 'clear') {
+    unattended = null;
   }
   return json({ ok: true, unattended, limits });
 };
@@ -883,5 +885,63 @@ test('retry state keeps the composer locked and pause-and-takeover works', async
     assert.equal(unlocked.mic, false);
     assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false);
     assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), false, '暂停后不再是重试态');
+  });
+});
+
+// 终态无人值守可以被用户「结束」：banner 与面板都要有那个安静的次要按钮，
+// 点击发 clear，服务端删掉状态后 banner 消失、输入保持可用，表单保留草稿。
+test('paused banner: 结束无人值守 clears the run, hides the banner and keeps the draft', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const startedAt = Date.now() - 60_000;
+  unattended = {
+    status: 'stopped', goal: '把上线走完', criteria: ['构建通过'], maxDurationMinutes: 60,
+    rounds: 1, startedAt, deadlineAt: startedAt + 60 * 60000, updatedAt: Date.now(),
+    history: [], evaluating: false, pausedBy: 'user', lastVerdict: null,
+  };
+  unattendedPosts.length = 0;
+  await withCdpHarness({ routes, screenshotDir: qaDir() }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await page.navigate('/chat.html?session=s1');
+    assert.ok(await page.waitFor(`document.getElementById('unattended-banner') && !document.getElementById('unattended-banner').hidden`));
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-clear').hidden`), false);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-clear').textContent`),
+      await page.evaluate(`t('unattendedClear')`));
+    // The fixture has no live WS, so the composer may be disabled for its own
+    // reasons; what must be false is the unattended input lock.
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false, '终态不锁输入');
+
+    await page.evaluate(`document.querySelector('.unat-banner-clear').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-banner').hidden`));
+    assert.deepEqual(unattendedPosts.map(post => post.action), ['clear']);
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false, 'clear 后输入仍解锁');
+
+    // 面板回到「未启用」：Start 可见，Clear 隐藏，表单保留刚才的草稿。
+    await page.evaluate(`document.getElementById('unattended-fab').click()`);
+    assert.ok(await page.waitFor(`!document.getElementById('unattended-panel').hidden`));
+    assert.equal(await page.evaluate(`document.querySelector('.unat-actions [data-action="start"]').hidden`), false);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-actions .unat-clear').hidden`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-goal').value`), '把上线走完');
+  });
+});
+
+test('active banner does NOT offer 结束无人值守 (pause first)', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const startedAt = Date.now();
+  unattended = {
+    status: 'active', goal: '把上线走完', criteria: [], maxDurationMinutes: 60,
+    rounds: 0, startedAt, deadlineAt: startedAt + 60 * 60000, updatedAt: startedAt,
+    history: [], evaluating: false, pausedBy: null, lastVerdict: null,
+  };
+  unattendedPosts.length = 0;
+  await withCdpHarness({ routes, screenshotDir: qaDir() }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await page.navigate('/chat.html?session=s1');
+    assert.ok(await page.waitFor(`document.getElementById('unattended-banner') && !document.getElementById('unattended-banner').hidden`));
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-btn').dataset.action`), 'stop');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-clear').hidden`), true);
+    await page.evaluate(`document.getElementById('unattended-fab').click()`);
+    assert.ok(await page.waitFor(`!document.getElementById('unattended-panel').hidden`));
+    assert.equal(await page.evaluate(`document.querySelector('.unat-actions .unat-clear').hidden`), true);
+    assert.equal(unattendedPosts.length, 0, 'no action was posted');
   });
 });

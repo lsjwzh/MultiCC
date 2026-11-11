@@ -39,6 +39,7 @@ function recordingKernel() {
       calls.decisions.push(input);
       return nativeKernel.decide(input);
     },
+    decideClear: input => nativeKernel.decideClear(input),
     decideTurnEnd: input => {
       calls.turnEnds.push(input);
       return nativeKernel.decideTurnEnd(input);
@@ -1198,4 +1199,96 @@ test('boot migrates legacy records, clears a stale evaluating:true and re-arms a
 
   host.shutdown();
   assert.equal(host.stats().timers, 0);
+});
+
+// ── clear (end an unattended run) ──────────────────────────────────────────
+
+test('clear from a terminal state deletes the record, cancels both timers and traces', () => {
+  const f = harness();
+  return f.arm().then(() => {
+    // Simulate a terminal record that still owns timers (a stale timer after a
+    // crash/reload): both must be cancelled by clear.
+    const active = { ...f.host.get('s1'), retryAt: f.clock() + 60_000, retryCategory: 'fault' };
+    f.records.get('s1').unattended = active;
+    f.host.rearmTimer('s1');
+    assert.equal(f.timers.size, 2, 'deadline + retry timers are armed');
+    f.records.get('s1').unattended = { ...active, status: 'stopped', pausedBy: 'user', retryAt: null, retryCategory: null };
+
+    const out = f.host.clear('s1');
+    assert.equal(out.ok, true);
+    assert.equal(out.unattended, null);
+    assert.equal(f.host.get('s1'), null, 'the state is gone');
+    assert.equal(f.calls.persist.at(-1).state, null, 'persisted as null (delete)');
+    assert.equal(f.timers.size, 0, 'deadline and retry timers are cancelled');
+    assert.deepEqual(f.calls.broadcast[0], {
+      id: 's1', payload: { type: 'unattended_state', unattended: null },
+    });
+    assert.equal(f.calls.broadcast[1].payload.type, 'unattended_trace');
+    assert.match(lastTrace(f).message.content, /无人值守已结束，设置已清除/);
+
+    // Idempotent: a second clear has nothing to delete and broadcasts nothing.
+    f.calls.persist.length = 0;
+    f.calls.broadcast.length = 0;
+    const again = f.host.clear('s1');
+    assert.deepEqual(again, { ok: true, unattended: null, noop: true });
+    assert.equal(f.calls.persist.length, 0);
+    assert.equal(f.calls.broadcast.length, 0);
+  });
+});
+
+test('clear while active is refused with 409 and leaves the state untouched', async () => {
+  const f = harness();
+  await f.arm();
+  const before = f.host.get('s1');
+  const out = f.host.clear('s1');
+  assert.equal(out.ok, false);
+  assert.equal(out.code, 'invalid_state');
+  assert.equal(out.status, 409);
+  assert.equal(f.host.get('s1'), before);
+  assert.equal(f.calls.persist.length, 0, 'nothing persisted');
+  assert.equal(f.calls.broadcast.length, 0, 'nothing broadcast');
+  assert.equal(f.timers.size, 1, 'the deadline timer keeps running');
+});
+
+test('clear with no state is an ok noop (no persist, broadcast or trace)', () => {
+  const f = harness();
+  const out = f.host.clear('s1');
+  assert.deepEqual(out, { ok: true, unattended: null, noop: true });
+  assert.equal(f.calls.persist.length, 0);
+  assert.equal(f.calls.broadcast.length, 0);
+  assert.equal(f.calls.append.length, 0);
+});
+
+test('clear through the runtime deletes record.unattended and broadcasts null', async () => {
+  const { createUnattendedRuntime } = require('../src/unattended/runtime');
+  const records = new Map([['s1', { id: 's1', type: null }]]);
+  const saves = [];
+  const broadcasts = [];
+  const traces = [];
+  const host = createUnattendedRuntime({
+    persistedSessions: records,
+    saveSessions: source => saves.push(source),
+    loadHistory: () => [],
+    setTaskState: () => {},
+    userInputSignalHost: { pending: () => null },
+    getAuxQueue: () => null,
+    taskContextHost: { deliverSessionMessage: async () => ({ ok: true }) },
+    waitInjector: { injectSystemMsg: () => {} },
+    triggerPush: () => {},
+    chatBroadcast: (id, payload) => broadcasts.push({ id, payload }),
+    appendMessage: (id, message) => { traces.push(message); return true; },
+    logger: { log: () => {} },
+  });
+  await host.start('s1', { goal: 'ship it', evaluateNow: false });
+  host.stop('s1');
+  broadcasts.length = 0;
+  const out = host.clear('s1');
+  assert.equal(out.ok, true);
+  assert.equal(out.unattended, null);
+  assert.equal('unattended' in records.get('s1'), false, 'the persisted key is deleted');
+  assert.deepEqual(broadcasts[0], { id: 's1', payload: { type: 'unattended_state', unattended: null } });
+  assert.equal(broadcasts[1].payload.type, 'unattended_trace', 'the trace line is broadcast too');
+  assert.match(traces.at(-1).content, /无人值守已结束，设置已清除/);
+  assert.equal(host.stats().timers, 0);
+  assert.equal(saves.at(-1), 'unattended.state');
 });

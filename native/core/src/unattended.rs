@@ -1239,6 +1239,100 @@ pub fn fault_instruction() -> String {
     FAULT_INSTRUCTION.to_string()
 }
 
+/// `Number(value)` for the fields a probe carries (epoch milliseconds).
+fn number_value(value: Option<&Value>) -> f64 {
+    match value {
+        None => f64::NAN,
+        Some(Value::Null) => 0.0,
+        Some(Value::Bool(flag)) => f64::from(u8::from(*flag)),
+        Some(Value::Number(number)) => number.as_f64().unwrap_or(f64::NAN),
+        Some(Value::String(text)) => crate::js::js_string_to_number(text),
+        Some(_) => f64::NAN,
+    }
+}
+
+/// Whether a rejected delivery keeps its outbox retry budget.
+///
+/// Request: `{ unattendedStatus, probe, startedAt }`. Answer:
+/// `{ retryable, reason }`.
+///
+/// A rejected delivery is normally retried. When an unattended supervisor is
+/// `active` and this very attempt was persisted and then aborted before the
+/// runner took over — probe `known`, not `handedOff`, stamped at or after
+/// `startedAt` — the supervisor's fault retry is the one driver: a durable
+/// outbox retry would race it and re-execute the same persisted turn.
+///
+/// The freshness window matters: the probe is written by the PREVIOUS attempt
+/// too, so only a probe stamped after this attempt started proves that THIS
+/// call is the one that failed before handoff. An old probe plus a failure from
+/// an earlier gate (background work, admission reject) stays retryable.
+pub fn delivery_retry_decision(input: &str) -> Result<String, String> {
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let retry = |reason: &str| json!({ "retryable": true, "reason": reason });
+    // `recovered.unattended?.status === 'active'`
+    if value_text(field(&value, "unattendedStatus")) != "active" {
+        return Ok(retry("unattended_inactive").to_string());
+    }
+    // `!!probe`
+    let Some(probe) = field(&value, "probe").and_then(Value::as_object) else {
+        let reason = if field(&value, "probe").is_none_or(Value::is_null) {
+            "probe_unavailable"
+        } else {
+            // A truthy non-object has no readable facts.
+            "probe_unknown"
+        };
+        return Ok(retry(reason).to_string());
+    };
+    // `probe.known === true`
+    if probe.get("known") != Some(&Value::Bool(true)) {
+        return Ok(retry("probe_unknown").to_string());
+    }
+    // `probe.handedOff === false`
+    if probe.get("handedOff") != Some(&Value::Bool(false)) {
+        return Ok(retry("runner_handed_off").to_string());
+    }
+    // `Number(probe.at) >= startedAt`
+    let started_at = number_value(field(&value, "startedAt"));
+    if number_value(probe.get("at")) >= started_at {
+        Ok(
+            json!({ "retryable": false, "reason": "preparation_failed_before_handoff" })
+                .to_string(),
+        )
+    } else {
+        Ok(retry("probe_stale").to_string())
+    }
+}
+
+/// Whether the persisted unattended state may be cleared, and whether there is
+/// nothing to do.
+///
+/// Request: `{ status }` (absent or null when the session has no record).
+/// Answer: `{ allowed, noop }`; while the supervisor is `active`:
+/// `{ allowed: false, noop: false, code: "invalid_state" }` — pause first.
+///
+/// Clearing a terminal state is idempotent: the host deletes
+/// `record.unattended`, so a second call sees no state and answers `noop`.
+/// Any non-`active` status is clearable, including a corrupt status on a legacy
+/// record — an unreadable terminal state must never become undeletable.
+pub fn decide_clear(input: &str) -> Result<String, String> {
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let status = value_text(field(&value, "status"));
+    if status.is_empty() {
+        return Ok(json!({ "allowed": true, "noop": true }).to_string());
+    }
+    if status == "active" {
+        return Ok(json!({
+            "allowed": false,
+            "noop": false,
+            "code": "invalid_state",
+        })
+        .to_string());
+    }
+    Ok(json!({ "allowed": true, "noop": false }).to_string())
+}
+
 /// Delay before the next continuation after `faults` consecutive faults:
 /// `1 → 0`, `2 → 60s`, `3 → 120s`, `4 → 300s`, `5 → 600s`, `n >= 6 → 900s`.
 fn fault_backoff_ms(faults: u32) -> i64 {
@@ -2566,5 +2660,135 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("retryScheduled"), "{error}");
+    }
+
+    // ── rejected-delivery retry decision ───────────────────────────────────
+
+    fn delivery_json(input: Value) -> Value {
+        serde_json::from_str(&delivery_retry_decision(&input.to_string()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_fresh_pre_handoff_rejection_belongs_to_the_supervisor() {
+        // Persisted, then aborted in preparation on THIS attempt: re-running the
+        // outbox item would race the supervisor's fault retry.
+        assert_eq!(
+            delivery_json(json!({
+                "unattendedStatus": "active",
+                "probe": { "known": true, "handedOff": false, "at": 1000 },
+                "startedAt": 1000,
+            })),
+            json!({ "retryable": false, "reason": "preparation_failed_before_handoff" })
+        );
+    }
+
+    #[test]
+    fn a_rejected_delivery_stays_retryable_when_the_probe_cannot_prove_it() {
+        let call = |probe: Value, status: &str, started: Value| {
+            delivery_json(json!({
+                "unattendedStatus": status, "probe": probe, "startedAt": started,
+            }))
+        };
+        let live = json!({ "known": true, "handedOff": false, "at": 1000 });
+        // The probe is from the previous attempt: an older failure (background
+        // work, admission reject) must keep its retry budget.
+        assert_eq!(
+            call(
+                json!({ "known": true, "handedOff": false, "at": 999 }),
+                "active",
+                json!(1000)
+            ),
+            json!({ "retryable": true, "reason": "probe_stale" })
+        );
+        // The runner did take this turn over.
+        assert_eq!(
+            call(
+                json!({ "known": true, "handedOff": true, "at": 1000 }),
+                "active",
+                json!(1000)
+            ),
+            json!({ "retryable": true, "reason": "runner_handed_off" })
+        );
+        // No unattended supervisor owns the next attempt.
+        assert_eq!(
+            call(live.clone(), "idle", json!(1000)),
+            json!({ "retryable": true, "reason": "unattended_inactive" })
+        );
+        assert_eq!(
+            call(live, "", json!(1000)),
+            json!({ "retryable": true, "reason": "unattended_inactive" })
+        );
+        // No probe was recorded at all.
+        assert_eq!(
+            call(Value::Null, "active", json!(1000)),
+            json!({ "retryable": true, "reason": "probe_unavailable" })
+        );
+        // The probe exists but does not know the outcome.
+        assert_eq!(
+            call(
+                json!({ "known": false, "handedOff": false, "at": 1000 }),
+                "active",
+                json!(1000)
+            ),
+            json!({ "retryable": true, "reason": "probe_unknown" })
+        );
+        // A probe with no timestamp cannot prove freshness.
+        assert_eq!(
+            call(
+                json!({ "known": true, "handedOff": false }),
+                "active",
+                json!(1000)
+            ),
+            json!({ "retryable": true, "reason": "probe_stale" })
+        );
+    }
+
+    // ── clear decision ──────────────────────────────────────────────────────
+
+    fn clear_json(input: Value) -> Value {
+        serde_json::from_str(&decide_clear(&input.to_string()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_active_state_must_be_paused_before_it_can_be_cleared() {
+        assert_eq!(
+            clear_json(json!({ "status": "active" })),
+            json!({ "allowed": false, "noop": false, "code": "invalid_state" })
+        );
+    }
+
+    #[test]
+    fn every_terminal_status_can_be_cleared() {
+        // The five reachable terminal states plus a corrupt legacy status: an
+        // unreadable terminal record must never become undeletable.
+        for status in [
+            "stopped",
+            "needs_human",
+            "exhausted",
+            "error",
+            "achieved",
+            "legacy_unknown",
+        ] {
+            assert_eq!(
+                clear_json(json!({ "status": status })),
+                json!({ "allowed": true, "noop": false }),
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn clearing_without_a_state_is_an_idempotent_noop() {
+        for input in [
+            json!({}),
+            json!({ "status": null }),
+            json!({ "status": "" }),
+        ] {
+            assert_eq!(
+                clear_json(input.clone()),
+                json!({ "allowed": true, "noop": true }),
+                "{input}"
+            );
+        }
     }
 }

@@ -20,6 +20,7 @@ class _ComposerProvider extends ChatProvider {
   final sent = <String>[];
   int stopCalls = 0;
   int resumeCalls = 0;
+  int clearCalls = 0;
   final ChatConnectionState _connectionState = ChatConnectionState.connected;
 
   _ComposerProvider({required super.settings})
@@ -53,6 +54,13 @@ class _ComposerProvider extends ChatProvider {
   Future<bool> resumeUnattended({int? maxDurationMinutes}) async {
     resumeCalls++;
     applyUnattendedEvent(const {'status': 'active'});
+    return true;
+  }
+
+  @override
+  Future<bool> clearUnattended() async {
+    clearCalls++;
+    applyUnattendedEvent(null);
     return true;
   }
 }
@@ -190,6 +198,72 @@ void main() {
     expect(provider.resumeCalls, 1);
     expect(find.byKey(const ValueKey('unattended-pause')), findsOneWidget);
     expect(tester.widget<TextField>(input).enabled, isFalse);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    provider.dispose();
+    manager.dispose();
+  });
+
+  testWidgets('终态横幅：次要按钮结束无人值守 -> 横幅消失、输入解锁；active 不出现', (
+    tester,
+  ) async {
+    final settings = await _settings();
+    final manager = SessionManager(settings: settings);
+    final provider = _ComposerProvider(settings: settings);
+
+    await tester.pumpWidget(_host(manager: manager, provider: provider));
+
+    provider.applyUnattendedEvent(const {
+      'status': 'stopped',
+      'pausedBy': 'user',
+    });
+    await tester.pump();
+
+    // 终态：主按钮「继续无人值守」+ 次要按钮「结束无人值守」并存。
+    expect(
+      find.byKey(const ValueKey('unattended-resume-banner')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('unattended-clear-banner')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<Tooltip>(
+            find
+                .ancestor(
+                  of: find.byKey(const ValueKey('unattended-clear-banner')),
+                  matching: find.byType(Tooltip),
+                )
+                .first,
+          )
+          .message,
+      t('unattendedClearHint'),
+    );
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('unattended-clear-banner')),
+    );
+    await tester.tap(find.byKey(const ValueKey('unattended-clear-banner')));
+    await tester.pump();
+
+    // 结束后本地状态落空：横幅消失，输入不再被无人值守锁住。
+    expect(provider.clearCalls, 1);
+    expect(find.byKey(const ValueKey('unattended-banner')), findsNothing);
+    final unlocked = tester.widget<TextField>(
+      find.byKey(const Key('chat-message-input')),
+    );
+    expect(unlocked.enabled, isTrue);
+
+    // active 只有「暂停并接管」，不出现结束按钮。
+    provider.applyUnattendedEvent(const {'status': 'active'});
+    await tester.pump();
+    expect(find.byKey(const ValueKey('unattended-pause')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('unattended-clear-banner')),
+      findsNothing,
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     provider.dispose();
