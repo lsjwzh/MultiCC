@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { defaultRepoActor } = require('../repo-actor');
+const { getNative, runNative } = require('../native/runtime');
 const digest = value => createHash('sha256').update(value).digest('hex');
 
 // Read actual tracked/untracked bytes without staging, committing, or following
@@ -33,40 +34,18 @@ async function observeCodeRevision(cwd, execGit, { maxBytes = 256 * 1024 * 1024,
   const files = [...new Set([...tracked.keys(), ...untracked.split('\0').filter(Boolean)])].sort();
   if (files.length > maxFiles) throw new Error('code_observation_limit');
   const fileMode = await git(['config', '--bool', 'core.filemode']).catch(() => 'true');
-  const hash = createHash('sha256'); let total = 0;
-  for (const relative of files) {
-    const absolute = path.resolve(cwd, relative);
-    if (!absolute.startsWith(path.resolve(cwd) + path.sep)) throw new Error('code_path_unsupported');
-    const stat = await fs.lstat(absolute).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
-    if (!stat) continue; // tracked deletion
-    // Reject symlinked parent directories: reading them could leave this worktree.
-    if (path.dirname(absolute) !== cwd && await fs.realpath(path.dirname(absolute)).catch(() => null) !== path.dirname(absolute)) throw new Error('code_parent_unsupported');
-    if (!stat.isFile() && !stat.isSymbolicLink()) throw new Error('code_file_unsupported');
-    total += stat.size; if (total > maxBytes) throw new Error('code_observation_limit');
-    let bytes;
-    if (stat.isSymbolicLink()) bytes = Buffer.from(await fs.readlink(absolute));
-    else {
-      const handle = await fs.open(absolute, require('node:fs').constants.O_RDONLY | require('node:fs').constants.O_NOFOLLOW);
-      try {
-        const opened = await handle.stat();
-        if (!opened.isFile() || opened.ino !== stat.ino || opened.dev !== stat.dev || opened.size !== stat.size) throw new Error('code_changed_during_observation');
-        bytes = await handle.readFile();
-      } finally { await handle.close(); }
-    }
-    if (bytes.length !== stat.size && !stat.isSymbolicLink()) throw new Error('code_changed_during_observation');
-    const after = await fs.lstat(absolute);
-    if (stat.ino !== after.ino || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs) throw new Error('code_changed_during_observation');
-    const mode = stat.isSymbolicLink() ? '120000' : fileMode === 'false' && tracked.has(relative)
-      ? tracked.get(relative) : stat.mode & 0o111 ? '100755' : '100644';
-    hash.update(JSON.stringify([relative, mode, digest(bytes)]) + '\n');
-  }
+  // Git stays in its existing repo actor. Rust owns the fresh file observation
+  // in one worker job; only path/mode descriptors cross the native boundary.
+  const hash = await runNative(() => getNative().observeCodeFiles(
+    cwd, files, files.map(file => tracked.get(file) || ''), fileMode !== 'false', maxBytes));
+  let gitlinkLines = '';
   // Appended after files so repositories without gitlinks keep their existing revisions.
   for (const [relative, oid] of [...gitlinks].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     const state = await observeGitlink(cwd, relative, execGit, { maxBytes, maxFiles, depth });
-    hash.update(JSON.stringify([relative, '160000', oid, state]) + '\n');
+    gitlinkLines += JSON.stringify([relative, '160000', oid, state]) + '\n';
   }
   if (head !== await git(['rev-parse', 'HEAD']) || status !== await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'])) throw new Error('code_changed_during_observation');
-  return { repoId: 'repo_' + digest(commonDir).slice(0, 32), head, revision: 'code_' + hash.digest('hex'),
+  return { repoId: 'repo_' + digest(commonDir).slice(0, 32), head, revision: 'code_' + hash.finish(gitlinkLines),
     dirty: !!status, observedAt: Date.now(), writersStopped: false };
 }
 

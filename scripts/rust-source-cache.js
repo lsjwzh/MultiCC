@@ -85,6 +85,7 @@ function probeAddon(file, node = process.execPath) {
   const script = `const a=require(process.argv[1]);
     if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function'
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
+      || typeof a.observeCodeFiles!=='function' || typeof a.RustWorkspaceRelease!=='function'
       || typeof a.windowsToolsDiscover!=='function' || typeof a.cliCatalog!=='function'
       || ['autoProviderLimitState','autoProviderChooseCandidate','autoProviderFailoverSafety','autoProviderPolicyFacts','providerErrorFacts','autoProviderFacts'].some(key=>typeof a[key]!=='function')
     || ['networkPolicyResolve','networkPolicyEnvEnabled','networkPolicyIsLoopbackHost','networkPolicyFindAvailablePort'].some(key=>typeof a[key]!=='function')

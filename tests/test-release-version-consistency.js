@@ -577,13 +577,16 @@ test('core runner covers every selected path and expands declared variants', () 
   // recording calls, no port, clock, filesystem or process. Re-audited as
   // deterministic core:
   // 426 entries, 352 deterministic, 398 commands (395 Node entries).
-  assert.equal(core.length, 426, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 426);
+  // Native code-revision differential coverage uses temporary Git fixtures and
+  // a frozen Node oracle; it reads no user checkout and contacts no service.
+  // Re-audited: 427 entries, 353 deterministic, 399 commands (396 Node entries).
+  assert.equal(core.length, 427, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 427);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 352);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 353);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -593,8 +596,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 398,
-    '395 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 399,
+    '396 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

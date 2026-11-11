@@ -2992,6 +2992,11 @@
       ]
     },
     {
+      "path": "tests/test-code-revision-native.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-codebuddy-models-route.js",
       "tier": "core",
       "lane": "deterministic"

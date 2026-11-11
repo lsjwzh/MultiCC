@@ -101,6 +101,7 @@ async function hostFixture(t, options = {}) {
     ensureDir: async () => ({ ok: true }), addWorktree: async () => { flags.creates++; git(['worktree', 'add', '-b', record.branch, record.worktreePath, 'main']); return { worktreePath: record.worktreePath, branch: record.branch }; },
     validate: async () => ({ ok: true }), hibernation: () => hibernationRuntime,
     budgets: options.limits,
+    captureCodeRevision: options.captureCodeRevision,
     hasBackground: () => flags.background, streamBusy: () => false, pendingInput: () => flags.pendingInput,
     closePersistent: async () => { flags.closes++; return { closed: true }; }, updateCwd: () => {}, log: () => {} };
   const host = createWorkspaceAdmission(deps); t.after(() => host.close()); host.initialize();
@@ -290,6 +291,145 @@ test('final runner evidence is captured before releasing the workspace for the n
   const result = f.host.deliveryEvidence(f.record.id).run;
   assert.equal(result.outcome, 'succeeded'); assert.equal(result.attemptId, 'attempt-final'); assert.ok(result.endCodeRevision);
   assert.equal(f.host.deliveryEvidence(f.record.id).barrier.writersStopped, true);
+});
+
+test('stopped-writer capture is shared by the result and barrier, while next admission observes fresh bytes', async t => {
+  const { captureCodeRevision } = require('../src/task-routing/code-revision');
+  const calls = [];
+  let hold, release;
+  const f = await hostFixture(t, { captureCodeRevision: async cwd => {
+    calls.push(cwd);
+    if (hold) await hold;
+    return captureCodeRevision(cwd);
+  } });
+  const releases = [];
+  f.deps.log = (event, fields) => { if (event === 'workspace_release_completed') releases.push(fields); };
+  const d = f.descriptor('one'), guard = await f.host.beforeDeliver(d);
+  f.host.bindTurn(f.record.id, d.opts, 'shared-scan', 'task');
+  f.host.starting(f.record.id, d.opts, 'attempt'); await guard.complete({ accepted: true });
+  f.flags.background = true;
+  f.host.settled(f.record.id, { status: 'completed' });
+  f.host.finalized({ sessionName: f.record.id, turn: { turnId: 'shared-scan', resultDurable: true }, usageDurable: true,
+    runner: { providerAttempt: { routeAttemptId: 'attempt' } } },
+  { effects: [{ type: 'classify-turn-end', classification: 'succeeded' }], facts: {} });
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 1, 'no end snapshot is taken while a writer is live');
+  assert.equal(f.host.deliveryEvidence(f.record.id).run, null);
+  fs.writeFileSync(path.join(f.record.worktreePath, 'last-write'), 'background completed');
+  hold = new Promise(resolve => { release = resolve; });
+  f.flags.background = false;
+  f.host.occupied(f.record.id);
+  for (let i = 0; i < 10 && calls.length < 2; i++) await new Promise(setImmediate);
+  assert.equal(calls.length, 2);
+  assert.equal(f.host.hasActiveLease(f.record.id), true, 'capture must finish before lease release');
+  await assert.rejects(f.host.beforeDeliver(f.descriptor('blocked')), { code: 'workspace_busy' });
+  release(); hold = null;
+  for (let i = 0; i < 100 && f.host.hasActiveLease(f.record.id); i++) await new Promise(r => setTimeout(r, 20));
+  assert.equal(f.host.hasActiveLease(f.record.id), false);
+  assert.equal(calls.length, 2, 'one start capture plus one stopped-writer capture');
+  assert.equal(releases.length, 1);
+  for (const key of ['terminalWaitMs', 'stopMs', 'evidenceMs', 'totalMs', 'observationQueueMs', 'observationMs']) {
+    assert.ok(Number.isInteger(releases[0][key]) && releases[0][key] >= 0, key);
+  }
+  const { run, barrier } = f.host.deliveryEvidence(f.record.id);
+  assert.equal(run.endCodeRevision, barrier.codeRevision);
+  assert.equal(barrier.dirty, true);
+  fs.writeFileSync(path.join(f.record.worktreePath, 'last-write'), 'external edit after release');
+  const next = f.descriptor('next'), nextGuard = await f.host.beforeDeliver(next);
+  f.host.bindTurn(f.record.id, next.opts, 'next-turn', 'task');
+  const binding = f.store.get('delivery:run', 'next-turn').binding;
+  assert.notEqual(binding.startCodeRevision, run.endCodeRevision, 'no stale cross-turn cache');
+  assert.equal(calls.length, 3);
+  await nextGuard.complete({ accepted: false });
+});
+
+test('forced cancellation without a finalizer still drains with one stopped-writer observation', async t => {
+  const { captureCodeRevision } = require('../src/task-routing/code-revision');
+  let captures = 0;
+  const f = await hostFixture(t, { captureCodeRevision: cwd => { captures++; return captureCodeRevision(cwd); } });
+  const d = f.descriptor('cancel'), guard = await f.host.beforeDeliver(d);
+  f.host.bindTurn(f.record.id, d.opts, 'cancelled-turn', 'task');
+  f.host.starting(f.record.id, d.opts, 'attempt'); await guard.complete({ accepted: true });
+  f.host.settled(f.record.id, { status: 'cancelled' });
+  for (let i = 0; i < 100 && f.host.hasActiveLease(f.record.id); i++) await new Promise(r => setTimeout(r, 20));
+  assert.equal(f.host.hasActiveLease(f.record.id), false);
+  assert.equal(captures, 2);
+  assert.equal(f.host.deliveryEvidence(f.record.id).run.outcome, 'cancelled');
+  assert.equal(f.host.deliveryEvidence(f.record.id).barrier.writersStopped, true);
+});
+
+test('a writer becoming live during observation retains the lease and requires a fresh capture', async t => {
+  const { captureCodeRevision } = require('../src/task-routing/code-revision');
+  let captures = 0, entered, finish;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const held = new Promise(resolve => { finish = resolve; });
+  const f = await hostFixture(t, { captureCodeRevision: async cwd => {
+    if (++captures === 2) { entered(); await held; }
+    return captureCodeRevision(cwd);
+  } });
+  const d = f.descriptor('race'), guard = await f.host.beforeDeliver(d);
+  f.host.bindTurn(f.record.id, d.opts, 'racing-turn', 'task');
+  f.host.starting(f.record.id, d.opts, 'attempt'); await guard.complete({ accepted: true });
+  f.host.settled(f.record.id, { status: 'cancelled' });
+  await waiting;
+  f.flags.background = true; finish();
+  await d.opts.workspacePermit.drainPromise;
+  assert.equal(f.host.hasActiveLease(f.record.id), true);
+  assert.equal(f.host.deliveryEvidence(f.record.id).run, null);
+  f.flags.background = false;
+  for (let i = 0; i < 100 && f.host.hasActiveLease(f.record.id); i++) {
+    f.host.occupied(f.record.id); await new Promise(r => setTimeout(r, 20));
+  }
+  assert.equal(f.host.hasActiveLease(f.record.id), false);
+  assert.equal(captures, 3);
+});
+
+test('a stopped writer without finalizer facts releases without manufacturing successful evidence', async t => {
+  for (const status of ['succeeded', 'cancelled', undefined]) {
+    const f = await hostFixture(t), d = f.descriptor('missing-finalizer');
+    const guard = await f.host.beforeDeliver(d);
+    f.host.bindTurn(f.record.id, d.opts, 'missing-finalizer-turn', 'task');
+    f.host.starting(f.record.id, d.opts); await guard.complete({ accepted: true });
+    f.host.settled(f.record.id, { status });
+    for (let i = 0; i < 100 && f.host.hasActiveLease(f.record.id); i++) await new Promise(r => setTimeout(r, 20));
+    assert.equal(f.host.hasActiveLease(f.record.id), false);
+    assert.equal(f.host.deliveryEvidence(f.record.id).run, null);
+    assert.equal(f.host.deliveryEvidence(f.record.id).barrier, null);
+  }
+});
+
+test('failed run-result persistence keeps the lease and retries with a fresh stopped-writer capture', async t => {
+  const { captureCodeRevision } = require('../src/task-routing/code-revision');
+  let captures = 0, failed;
+  const retained = new Promise(resolve => { failed = resolve; });
+  const f = await hostFixture(t, { captureCodeRevision: cwd => { captures++; return captureCodeRevision(cwd); } });
+  const { databaseConstructor } = require('../src/sqlite/driver');
+  const raw = new (databaseConstructor())(f.file);
+  t.after(() => raw.close());
+  raw.exec(`CREATE TRIGGER reject_result BEFORE INSERT ON shell_records
+    WHEN NEW.kind = 'task-first:run-result' BEGIN SELECT RAISE(ABORT, 'injected_write_failure'); END;`);
+  f.deps.log = event => { if (event === 'workspace_release_retained') failed(); };
+  const d = f.descriptor('write-failure'), guard = await f.host.beforeDeliver(d);
+  f.host.bindTurn(f.record.id, d.opts, 'write-failure-turn', 'task');
+  f.host.starting(f.record.id, d.opts, 'attempt'); await guard.complete({ accepted: true });
+  f.host.settled(f.record.id, { status: 'cancelled' });
+  await retained;
+  assert.equal(f.host.hasActiveLease(f.record.id), true);
+  assert.equal(f.host.deliveryEvidence(f.record.id).run, null);
+  assert.equal(f.host.deliveryEvidence(f.record.id).barrier, null);
+  assert.equal(f.store.get('delivery:run', 'write-failure-turn').state, 'running');
+  assert.equal(captures, 2);
+  raw.exec('DROP TRIGGER reject_result');
+  fs.writeFileSync(path.join(f.record.worktreePath, 'retry-content'), 'fresh after write failure');
+  for (let i = 0; i < 100 && f.host.hasActiveLease(f.record.id); i++) {
+    f.host.occupied(f.record.id); await new Promise(r => setTimeout(r, 20));
+  }
+  assert.equal(f.host.hasActiveLease(f.record.id), false);
+  assert.equal(captures, 3);
+  const { run, barrier } = f.host.deliveryEvidence(f.record.id);
+  assert.equal(run.outcome, 'cancelled');
+  assert.equal(run.endCodeRevision, barrier.codeRevision);
+  assert.equal(barrier.dirty, true);
 });
 
 test('separation barrier holds the workspace, rechecks the frozen revision and records application', async t => {

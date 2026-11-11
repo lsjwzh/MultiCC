@@ -11,6 +11,8 @@ pub mod auto_provider_pricing;
 pub mod auto_provider_routing;
 pub mod auto_provider_runtime;
 pub mod background_hold;
+pub mod code_revision;
+pub mod workspace_release;
 
 pub mod background_tasks;
 pub mod chat_context_rotation;
