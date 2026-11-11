@@ -16,6 +16,7 @@ const { createTurnLedger } = require('../src/turn-ledger/ledger');
 const { claudeVerdict, codexVerdict, createTurnEndEvidence } = require('../src/turn-ledger/evidence');
 const { createHookInstaller, WRAPPER_SOURCE } = require('../src/turn-ledger/hook-install');
 const { createTurnLedgerRuntime } = require('../src/turn-ledger/runtime');
+const { createTurnLedgerHost, mountTurnLedgerHostRoute, HOST_PATH } = require('../src/routes/turn-ledger-host');
 const hookScript = require('../scripts/multicc-turn-hook');
 
 const HOOK_SCRIPT = path.join(__dirname, '..', 'scripts', 'multicc-turn-hook.js');
@@ -297,4 +298,96 @@ test('adapters: terminal commands carry the injected hook flags', () => {
 
   const cmd = codex.buildTerminalCmd({ id: 's2', turnHookConfigArgs: ['hooks.Stop=[{hooks=[]}]'] });
   assert.match(cmd, / -c 'hooks\.Stop=\[\{hooks=\[\]\}\]'/);
+});
+
+test('host port: raw launch/record and the codex trust RPC', async t => {
+  const dataDir = tmpDir(t);
+  const trustCalls = [];
+  const installer = {
+    install() {},
+    claudeSettings() { return {}; },
+    codexConfigArgs() { return []; },
+    async codexTrustStatus(target) { trustCalls.push(['status', target]); return { state: 'trusted' }; },
+    async codexGrantTrust(target) { trustCalls.push(['grant', target]); return { state: 'trusted' }; },
+  };
+  const rt = createTurnLedgerRuntime({
+    dataDir, installer, logger: { log() {}, warn() {} }, ledgerOptions: { schedule: () => {} },
+  });
+  rt.prepareTerminal({ id: 's1', cli: 'codex' }, {});
+
+  // Raw material only: the Rust front door assembles the snapshot.
+  assert.deepEqual(Object.keys(rt.launch('s1')), ['epoch', 'cli', 'launchedAt', 'cwd', 'codexHome']);
+  assert.equal(rt.launch('s1').cli, 'codex');
+  assert.equal(rt.launch('missing'), null);
+  assert.equal(rt.record('s1'), null);
+
+  const spool = path.join(dataDir, 'turn-hooks', 'spool', 's1');
+  hookScript.writeSpool(spool, { v: 1, eventId: 'h1', ts: 5, sessionId: 's1', epoch: 1, cli: 'codex', event: 'UserPromptSubmit', turnId: 'p1' });
+  rt.sweep();
+  const record = rt.record('s1');
+  assert.equal(record.sessionId, 's1');
+  assert.equal(record.state, 'P');
+  assert.equal(record.ownership, 'running');
+  assert.equal(record.stopPending, false);
+  assert.equal(record.lastEventAt, 5);
+
+  const handle = createTurnLedgerHost({
+    launch: id => rt.launch(id),
+    record: id => rt.record(id),
+    trust: input => rt.trust(input),
+  });
+  const ledger = await handle({ op: 'ledger', sessionId: 's1' });
+  assert.equal(ledger.ok, true);
+  assert.equal(ledger.launch.cli, 'codex');
+  assert.equal(ledger.record.state, 'P');
+  assert.deepEqual(await handle({ op: 'ledger', sessionId: 'missing' }), { ok: true, launch: null, record: null });
+  assert.deepEqual(await handle({ op: 'launch', sessionId: 's1' }), { ok: true, launch: rt.launch('s1') });
+  assert.deepEqual(
+    await handle({ op: 'trust', write: false, codexHome: '/h', cwd: '/c' }),
+    { ok: true, value: { state: 'trusted' } },
+  );
+  assert.deepEqual(
+    await handle({ op: 'trust', write: true, codexHome: null, cwd: null }),
+    { ok: true, value: { state: 'trusted' } },
+  );
+  assert.deepEqual(trustCalls, [['status', { codexHome: '/h', cwd: '/c' }], ['grant', { codexHome: null, cwd: null }]]);
+  assert.deepEqual(await handle({ op: 'other' }), { ok: false });
+
+  const failing = createTurnLedgerHost({
+    launch: () => null,
+    record: () => null,
+    trust: async () => { throw new Error('codex app-server exited'); },
+  });
+  assert.deepEqual(
+    await failing({ op: 'trust', write: false }),
+    { ok: false, message: 'codex app-server exited' },
+  );
+});
+
+test('host port: route accepts loopback only', async () => {
+  const registered = {};
+  const app = { post: (route, handler) => { registered[route] = handler; } };
+  const seen = [];
+  mountTurnLedgerHostRoute(app, {
+    isLocal: req => req.local === true,
+    launch: id => ({ id }),
+    record: () => null,
+    trust: async () => ({ state: 'trusted' }),
+  });
+  assert.equal(HOST_PATH, '/api/__host/turn-ledger');
+  const handler = registered[HOST_PATH];
+  assert.equal(typeof handler, 'function');
+
+  const call = (req) => new Promise((resolve) => {
+    const res = {
+      status(code) { this.code = code; return this; },
+      json(body) { resolve({ code: this.code || 200, body }); },
+    };
+    handler(req, res);
+  });
+  assert.deepEqual(await call({ local: false, body: { op: 'ledger' } }), { code: 404, body: { error: 'not found' } });
+  const answer = await call({ local: true, body: { op: 'ledger', sessionId: 's9' } });
+  assert.equal(answer.code, 200);
+  assert.deepEqual(answer.body, { ok: true, launch: { id: 's9' }, record: null });
+  void seen;
 });

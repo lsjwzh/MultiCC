@@ -251,8 +251,25 @@ function createTurnLedger(deps = {}) {
     };
   }
 
+  // The raw per-session record, as the host port carries it to the Rust front
+  // door (native/gateway/src/app/turn_ledger.rs), which now assembles the
+  // diagnostic snapshot: the projected `liveness`, `reason` and the
+  // `lastEventAt || null` normalization live there. `stop` is flattened to the
+  // boolean the snapshot exposed.
+  function record(sessionId) {
+    const rec = records.get(sessionId);
+    if (!rec) return null;
+    return {
+      sessionId: rec.sessionId, epoch: rec.epoch, cli: rec.cli, cliSessionId: rec.cliSessionId,
+      cliPid: rec.cliPid, ownership: rec.ownership, turnId: rec.turnId, state: rec.state,
+      evidence: rec.evidence, boundary: rec.boundary, pendingUserInput: rec.pendingUserInput,
+      backgroundPending: rec.backgroundPending, stopPending: !!rec.stop, promptHead: rec.promptHead,
+      needsReview: rec.needsReview, lastEventAt: rec.lastEventAt, lastTransitionId: rec.lastTransitionId,
+    };
+  }
+
   return {
-    apply, tick, snapshot,
+    apply, tick, snapshot, record,
     ownership: sessionId => projectLiveness(records.get(sessionId)?.ownership),
     forget: sessionId => records.delete(sessionId),
     sessions: () => [...records.keys()],

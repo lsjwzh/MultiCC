@@ -7,6 +7,10 @@
 // classify, push or task boards yet: the ledger runs beside the existing
 // pipeline until its verdicts have been compared against real sessions.
 //
+// The diagnostics routes themselves now belong to the Rust front door
+// (native/gateway/src/app/turn_ledger.rs); this runtime only answers its host
+// port through `launch`, `record` and `trust`.
+//
 // Delivery is file-only. The hook writes one 0600 file per event under
 // <dataDir>/turn-hooks/spool/<sessionId>/; this runtime ingests in name order
 // (timestamp-prefixed), dedupes by eventId inside the ledger and deletes the
@@ -155,40 +159,28 @@ function createTurnLedgerRuntime(deps = {}) {
     clearTimeout(debounce);
   }
 
-  function launchFor(req, res) {
-    const sid = req.params.id;
-    const launch = SID_RE.test(sid) ? launches[sid] : null;
-    if (!launch || launch.cli !== 'codex') {
-      res.status(409).json({ error: 'not a launched codex terminal' });
-      return null;
-    }
-    return launch;
+  // Raw material for the host port (src/routes/turn-ledger-host.js). The Rust
+  // front door owns the diagnostics routes, including the `SID_RE` gate, the
+  // 409 for a session that is not a launched Codex terminal and the snapshot
+  // DTO; these three accessors are all it can ask Node for.
+  function launch(sid) {
+    return launches[sid] || null;
   }
 
-  function mountRoutes(app) {
-    app.get('/api/sessions/:id/turn-ledger', (req, res) => {
-      const sid = req.params.id;
-      res.json({ shadow: true, launch: launches[sid] || null, snapshot: ledger.snapshot(sid) });
-    });
-    app.get('/api/sessions/:id/turn-hooks/codex-trust', async (req, res) => {
-      const launch = launchFor(req, res);
-      if (!launch) return;
-      try { res.json(await installer.codexTrustStatus(launch)); }
-      catch (e) { res.status(502).json({ error: e.message }); }
-    });
-    // Explicit user action only (a UI button); writes hook trust into that
-    // terminal's CODEX_HOME through Codex's own config API.
-    app.post('/api/sessions/:id/turn-hooks/codex-trust', async (req, res) => {
-      const launch = launchFor(req, res);
-      if (!launch) return;
-      try { res.json(await installer.codexGrantTrust(launch)); }
-      catch (e) { res.status(502).json({ error: e.message }); }
-    });
-    return api;
+  function record(sid) {
+    return ledger.record(sid);
+  }
+
+  // `write: false` reads the current trust state; `true` is an explicit user
+  // action (a UI button) that writes hook trust into that terminal's CODEX_HOME
+  // through Codex's own config API.
+  function trust({ write, codexHome, cwd }) {
+    const target = { codexHome, cwd };
+    return write ? installer.codexGrantTrust(target) : installer.codexTrustStatus(target);
   }
 
   const api = {
-    prepareTerminal, sweep, start, stop, mountRoutes,
+    prepareTerminal, sweep, start, stop, launch, record, trust,
     snapshot: sid => ledger.snapshot(sid),
     ownership: sid => ledger.ownership(sid),
     ledger,
