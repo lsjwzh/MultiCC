@@ -11,12 +11,14 @@ const path = require('path');
 const WebSocket = require('ws');
 const { randomUUID } = require('crypto');
 const { assertTestDir } = require('../src/paths');
+const isolatedHostEnv = require('./helpers/isolated-host-env');
 
 const ROOT = path.join(__dirname, '..');
 let PORT = 0;
 let BASE = '';
 const TOKEN = 'cli-switch-failclosed-test';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-cli-failclosed-'));
+const home = path.join(tmpRoot, 'home');
 const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
 const project = path.join(tmpRoot, 'project');
 const fakeCli = path.join(tmpRoot, 'fake-opencode.js');
@@ -25,6 +27,7 @@ const fakeClaude = path.join(tmpRoot, 'fake-claude.js');
 const claudeCountFile = path.join(tmpRoot, 'claude-invocations');
 fs.mkdirSync(project, { recursive: true });
 fs.mkdirSync(dataRoot, { recursive: true });
+fs.mkdirSync(home, { recursive: true });
 fs.writeFileSync(fakeCli, `#!/usr/bin/env node
 const fs = require('fs');
 const readline = require('readline');
@@ -94,7 +97,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 fs.chmodSync(fakeCli, 0o755);
 fs.writeFileSync(fakeClaude, `#!/usr/bin/env node
 const fs = require('fs');
-if (!process.argv.includes('--input-format') || !process.argv.includes('stream-json')) process.exit(0);
+if (!process.argv.includes('--input-format=stream-json')
+    && !(process.argv.includes('--input-format') && process.argv.includes('stream-json'))) process.exit(0);
 const countFile = ${JSON.stringify(claudeCountFile)};
 let count = 0;
 try { count = Number(fs.readFileSync(countFile, 'utf8')) || 0; } catch (_) {}
@@ -220,7 +224,19 @@ async function cleanup() {
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...isolatedHostEnv(),
+      HOME: home,
+      USERPROFILE: home,
+      CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
+      MULTICC_ENV_FILE: path.join(tmpRoot, 'test.env'),
+      MULTICC_MEMORY_ROOT: path.join(dataRoot, 'memories'),
+      MULTICC_AGENT_AUTO_INSTALL: '0',
+      MULTICC_CHROME_BIN: path.join(tmpRoot, 'no-chrome'),
+      CLAUDE_OAUTH_AUTO_REFRESH: '0',
+      CODEX_OAUTH_AUTO_REFRESH: '0',
+      ASR_LOCAL: 'off',
+      HOST: '127.0.0.1',
+      NODE_ENV: 'test',
       PORT: String(PORT),
       ACCESS_TOKEN: TOKEN,
       MULTICC_DATA_DIR: dataRoot,
@@ -228,6 +244,8 @@ async function cleanup() {
       MULTICC_NATIVE_SESSION_PROBE: '0',
       OPENCODE_CMD: fakeCli,
       CLAUDE_CMD: fakeClaude,
+      // Native Claude chat launches the bundled engine independently of CLAUDE_CMD.
+      MULTICC_CLAUDE_BIN: fakeClaude,
       CODEX_CMD: '/usr/bin/true',
     },
     stdio: ['ignore', 'ignore', 'pipe'],

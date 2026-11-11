@@ -1438,10 +1438,11 @@ fn a_download_ticket_opens_one_file_for_a_remote_client() {
     let ticket = issued["ticket"].as_str().unwrap().to_string();
     assert_eq!(ticket.len(), 32);
     let target = issued["target"].as_str().unwrap().to_string();
-    assert!(
-        target.starts_with("/api/download?path=%2F") && target.ends_with("+b.txt&inline=1"),
-        "{target}"
-    );
+    let expected_query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("path", &file)
+        .append_pair("inline", "1")
+        .finish();
+    assert_eq!(target, format!("/api/download?{expected_query}"));
     assert!(issued["expiresAt"].as_i64().unwrap() > 0);
 
     let url = format!("{target}&download_ticket={ticket}");
@@ -1496,11 +1497,17 @@ fn upload_temp_files_are_counted_and_cleaned_by_the_front_door() {
     fs::write(tmp.join("multicc_two"), "12345").unwrap();
     fs::write(tmp.join("multicc_one"), "123").unwrap();
     fs::write(tmp.join("foreign"), "ignored").unwrap();
-    // os.tmpdir() drops one trailing slash.
+    // os.tmpdir() uses TEMP on Windows and TMPDIR on Unix, dropping one
+    // trailing platform separator.
+    let with_separator = format!("{}{}", tmp.display(), std::path::MAIN_SEPARATOR);
     let gateway = Gateway::start(
         "uploads",
         "echo",
-        &[("TMPDIR", format!("{}/", tmp.display()))],
+        &[
+            ("TMPDIR", with_separator.clone()),
+            ("TEMP", with_separator.clone()),
+            ("TMP", with_separator),
+        ],
     );
     let mut client = gateway.connect();
     let stats = request(&mut client, &api("GET", "/api/uploads/stats", &[LOCAL], ""));
