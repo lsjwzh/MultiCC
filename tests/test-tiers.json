@@ -5310,6 +5310,15 @@
       ]
     },
     {
+      "path": "tests/test-secrets-vault-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-secrets-vault.js",
       "tier": "core",
       "lane": "deterministic"
