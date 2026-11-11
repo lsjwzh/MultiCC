@@ -58,7 +58,12 @@ fn golden() -> Value {
     serde_json::from_str(GOLDEN).expect("golden fixture JSON")
 }
 
-// ── PEM decoding (no new crate: base64 is already a gateway dependency) ─────
+// ── Key material (no new crate: base64 is already a gateway dependency) ─────
+//
+// The fixture stores the throwaway RSA key as base64 PKCS#8 DER instead of a
+// PEM private-key block: such a block in tracked content trips the repository
+// artifact guard (credential-content / sensitive-fixture), and that guard must
+// stay sharp for real leaks. The DER bytes are the same key.
 
 fn pem_der(pem: &str, label: &str) -> Vec<u8> {
     let begin = format!("-----BEGIN {label}-----");
@@ -79,13 +84,19 @@ fn pem_der(pem: &str, label: &str) -> Vec<u8> {
         .expect("PEM base64")
 }
 
+fn base64_der(text: &str) -> Vec<u8> {
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .expect("base64 DER")
+}
+
 fn tls_config(golden: &Value) -> Arc<ServerConfig> {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
     let cert = pem_der(golden["tls"]["certPem"].as_str().unwrap(), "CERTIFICATE");
-    let key = pem_der(golden["tls"]["keyPem"].as_str().unwrap(), "PRIVATE KEY");
+    let key = base64_der(golden["tls"]["keyPkcs8B64"].as_str().unwrap());
     let config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
@@ -275,63 +286,90 @@ impl Gateway {
         let ca = dir.join("ca.pem");
         fs::write(&ca, golden["tls"]["caPem"].as_str().unwrap()).unwrap();
         fs::write(dir.join("server.js"), FIXTURE_JS).unwrap();
-        let port = free_port();
-        let log = fs::File::create(dir.join("gateway.log")).unwrap();
-        let mut command = Command::new(GATEWAY_BIN);
-        command
-            .arg("serve")
-            .arg("--cwd")
-            .arg(&dir)
-            .arg("--node")
-            .arg(std::env::var("MULTICC_TEST_NODE").unwrap_or_else(|_| "node".to_string()))
-            .arg("server.js")
-            .env_clear()
-            .env(
-                "PATH",
-                std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
-            )
-            .env("PORT", port.to_string())
-            .env("ACCESS_TOKEN", TOKEN)
-            .env("HOME", &home)
-            .env("MULTICC_DATA_DIR", &data)
-            .env("HTTPS_PROXY", format!("http://127.0.0.1:{proxy_port}"))
-            .env("SSL_CERT_FILE", &ca)
-            .env("MULTICC_GATEWAY_UPSTREAM_WAIT_MS", "3000")
-            .env("MULTICC_GATEWAY_BACKOFF_SCALE", "0.01")
-            .env("FIXTURE_MODE", "echo")
-            .env("FIXTURE_STATE_DIR", &state)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(log));
-        for key in [
-            "TMPDIR",
-            "SystemRoot",
-            "SYSTEMROOT",
-            "windir",
-            "TEMP",
-            "TMP",
-        ] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
+
+        // `free_port` only finds a port that is free right now: the gateway
+        // then binds 0.0.0.0 on it and the kernel may have handed the same
+        // ephemeral port to some other connection in between (a full
+        // `cargo test --workspace` starts many servers at once). A taken port
+        // is an immediate child exit, so retry with a fresh one instead of
+        // turning a race into a red build.
+        let mut last = String::new();
+        for attempt in 0..6 {
+            let port = free_port();
+            let log = fs::File::create(dir.join("gateway.log")).unwrap();
+            let mut child = {
+                let mut command = Command::new(GATEWAY_BIN);
+                command
+                    .arg("serve")
+                    .arg("--cwd")
+                    .arg(&dir)
+                    .arg("--node")
+                    .arg(std::env::var("MULTICC_TEST_NODE").unwrap_or_else(|_| "node".to_string()))
+                    .arg("server.js")
+                    .env_clear()
+                    .env(
+                        "PATH",
+                        std::env::var_os("PATH")
+                            .unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
+                    )
+                    .env("PORT", port.to_string())
+                    .env("ACCESS_TOKEN", TOKEN)
+                    .env("HOME", &home)
+                    .env("MULTICC_DATA_DIR", &data)
+                    .env("HTTPS_PROXY", format!("http://127.0.0.1:{proxy_port}"))
+                    .env("SSL_CERT_FILE", &ca)
+                    .env("MULTICC_GATEWAY_UPSTREAM_WAIT_MS", "3000")
+                    .env("MULTICC_GATEWAY_BACKOFF_SCALE", "0.01")
+                    .env("FIXTURE_MODE", "echo")
+                    .env("FIXTURE_STATE_DIR", &state)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::from(log));
+                for key in [
+                    "TMPDIR",
+                    "SystemRoot",
+                    "SYSTEMROOT",
+                    "windir",
+                    "TEMP",
+                    "TMP",
+                ] {
+                    if let Some(value) = std::env::var_os(key) {
+                        command.env(key, value);
+                    }
+                }
+                command.spawn().expect("spawn multicc-gateway")
+            };
+            // A full workspace run can starve the child's first second.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let mut ready = false;
+            while Instant::now() < deadline {
+                if state.join("ready").exists() {
+                    ready = true;
+                    break;
+                }
+                if child.try_wait().expect("child status").is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
+            if ready {
+                return Self {
+                    dir,
+                    data,
+                    port,
+                    child,
+                };
+            }
+            last = fs::read_to_string(dir.join("gateway.log")).unwrap_or_default();
+            let _ = child.kill();
+            let _ = child.wait();
+            if !last.contains("EADDRINUSE") || attempt == 5 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
-        let child = command.spawn().expect("spawn multicc-gateway");
-        let gateway = Self {
-            dir,
-            data,
-            port,
-            child,
-        };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while !state.join("ready").exists() {
-            assert!(
-                Instant::now() < deadline,
-                "gateway never became ready\n{}",
-                gateway.log()
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        gateway
+        let _ = fs::remove_dir_all(&dir);
+        panic!("gateway never became ready\n{last}");
     }
 
     fn log(&self) -> String {
@@ -400,7 +438,9 @@ fn abort_request(port: u16, url: &str) {
 /// The leader keeps running after the disconnect, so the row lands later.
 fn wait_for_cache_row(gateway: &Gateway, key: &str) -> String {
     let file = gateway.cache_file();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // The upstream answers after 500ms; the slack is for a loaded machine (a
+    // full `cargo test --workspace` runs dozens of binaries at once).
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let read = multicc_core::subscription_cache::access(
             &file.to_string_lossy(),

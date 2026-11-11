@@ -1913,6 +1913,12 @@ pub fn normalize_stored_provider_selection(request: &str) -> Result<String, Stri
     }
 }
 
+/// The same normalization, kept as a value for kernels that derive from it
+/// (`auto_provider_selection_key`) instead of re-parsing the JSON text.
+pub(crate) fn normalize_stored_selection(request: &str) -> Result<Option<Value>, String> {
+    normalize_request(request)
+}
+
 pub fn provider_selection_dto(request: &str) -> Result<String, String> {
     match normalize_request(request)? {
         Some(selection) => serde_json::to_string(&selection).map_err(|error| error.to_string()),

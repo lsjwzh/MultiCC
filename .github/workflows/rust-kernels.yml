@@ -1,7 +1,7 @@
 name: Rust kernels
 on:
   pull_request:
-    paths: ['native/**', 'src/native/**', 'src/sqlite/**', 'src/providers/rust-cpr.js', 'src/providers/router-runtime.js', 'src/claude-auth/egress-agent.js', 'tests/test-sqlite*', 'src/token-global.js', 'src/task-board/**', 'src/routes/task-search.js', 'scripts/*rust*', 'tests/*rust*', 'tests/fixtures/rust-kernel-fixtures.js', 'scripts/generate-outbound-proxy-corpus.js', 'scripts/generate-account-subscription-fixture.js', 'scripts/generate-provider-limit-history-fixture.js', 'scripts/generate-claude-models-fixture.js', 'src/network/proxy-policy.js', 'tests/helpers/legacy-*-route.js', '.github/workflows/rust-kernels.yml']
+    paths: ['native/**', 'src/native/**', 'src/sqlite/**', 'src/providers/rust-cpr.js', 'src/providers/router-runtime.js', 'src/claude-auth/egress-agent.js', 'tests/test-sqlite*', 'src/token-global.js', 'src/task-board/**', 'src/routes/task-search.js', 'scripts/*rust*', 'tests/*rust*', 'tests/fixtures/rust-kernel-fixtures.js', 'scripts/generate-outbound-proxy-corpus.js', 'scripts/generate-account-subscription-fixture.js', 'scripts/generate-provider-limit-history-fixture.js', 'scripts/generate-claude-models-fixture.js', 'scripts/generate-auto-provider-fixtures.js', 'tests/test-auto-provider-fixtures.js', 'src/network/proxy-policy.js', 'tests/helpers/legacy-*-route.js', 'tests/helpers/legacy-auto-provider-*.js', '.github/workflows/rust-kernels.yml']
   workflow_dispatch:
   workflow_call:
 permissions:

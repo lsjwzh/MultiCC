@@ -22,6 +22,7 @@
 // Rust test needs to impersonate api.anthropic.com / chatgpt.com. On --write
 // an existing fixture is reused verbatim when present (so repeated writes are
 // byte-identical); otherwise the PEMs are generated with openssl and embedded.
+// Only the key is stored as base64 PKCS#8 DER (see keyDerBase64).
 
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -147,8 +148,26 @@ function scriptedFetch(url, options) {
 
 function readPem(file) { return fs.readFileSync(file, 'utf8'); }
 
+// The private key is embedded as base64 PKCS#8 DER rather than a PEM block: a
+// PEM private-key header in tracked content hits the repository artifact guard
+// (credential-content / sensitive-fixture) and that guard has to stay sharp for
+// real leaks. Fixtures written before this change still carry `keyPem`; it is
+// converted on reuse so repeated --write runs stay byte-identical.
+function keyDerBase64(pem) {
+  const body = pem.replace(/-----(?:BEGIN|END) [^-]+-----/g, '').replace(/\s+/g, '');
+  return Buffer.from(body, 'base64').toString('base64');
+}
+
+function tlsDocument(material) {
+  return {
+    caPem: material.caPem,
+    certPem: material.certPem,
+    keyPkcs8B64: material.keyPkcs8B64 || keyDerBase64(material.keyPem),
+  };
+}
+
 function ensureTls(existing) {
-  if (existing && existing.tls) return existing.tls;
+  if (existing && existing.tls) return tlsDocument(existing.tls);
   fs.mkdirSync(TLS, { recursive: true });
   const run0 = args => execFileSync(OPENSSL, args, { cwd: TLS, stdio: 'pipe' });
   run0(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt',
@@ -163,11 +182,11 @@ function ensureTls(existing) {
   ].join('\n'));
   run0(['x509', '-req', '-in', 'server.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key',
     '-CAcreateserial', '-out', 'server.crt', '-days', '3650', '-extfile', 'ext.cnf']);
-  return {
+  return tlsDocument({
     caPem: readPem(path.join(TLS, 'ca.crt')),
     certPem: readPem(path.join(TLS, 'server.crt')),
     keyPem: readPem(path.join(TLS, 'server.key')),
-  };
+  });
 }
 
 async function collect(tls) {

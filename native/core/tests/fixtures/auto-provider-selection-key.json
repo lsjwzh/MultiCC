@@ -1,0 +1,930 @@
+{
+  "comment": [
+    "Frozen behaviour of src/chat/auto-provider-selection-key.js (2026-11-11).",
+    "Normalization runs in the retained auto-provider config bridge; this file",
+    "only pins which policy changes do and do not reset a session route.",
+    "Each call records its normalized selection so the Rust key derivation",
+    "can be replayed without the cross-module facts the JS bridge assembles."
+  ],
+  "cases": [
+    {
+      "name": "omitted defaults normalize to the same key as explicit defaults",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "omitted",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ]
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        },
+        {
+          "label": "explicit",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ],
+            "version": 1,
+            "preferMaxQuota": true,
+            "sticky": true,
+            "maxAttempts": 2
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        }
+      ],
+      "same": [
+        [
+          "omitted",
+          "explicit"
+        ]
+      ],
+      "expect": {
+        "keys": {
+          "omitted": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}",
+          "explicit": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}"
+        },
+        "equal": {
+          "omitted=explicit": true
+        }
+      }
+    },
+    {
+      "name": "cloned stored selection keeps the same key",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "original",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ],
+            "version": 1,
+            "protocol": "anthropic",
+            "maxAttempts": 2,
+            "sticky": true
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        },
+        {
+          "label": "clone",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ],
+            "version": 1,
+            "protocol": "anthropic",
+            "maxAttempts": 2,
+            "sticky": true
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        }
+      ],
+      "same": [
+        [
+          "original",
+          "clone"
+        ]
+      ],
+      "expect": {
+        "keys": {
+          "original": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}",
+          "clone": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}"
+        },
+        "equal": {
+          "original=clone": true
+        }
+      }
+    },
+    {
+      "name": "presetId is a display label and is ignored",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "left",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ],
+            "presetId": "preset-a"
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false,
+            "presetId": "preset-a"
+          }
+        },
+        {
+          "label": "right",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ],
+            "presetId": "preset-b"
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false,
+            "presetId": "preset-b"
+          }
+        },
+        {
+          "label": "withoutPreset",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ]
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        }
+      ],
+      "same": [
+        [
+          "left",
+          "right"
+        ],
+        [
+          "left",
+          "withoutPreset"
+        ]
+      ],
+      "expect": {
+        "keys": {
+          "left": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}",
+          "right": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}",
+          "withoutPreset": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}"
+        },
+        "equal": {
+          "left=right": true,
+          "left=withoutPreset": true
+        }
+      }
+    },
+    {
+      "name": "preferMaxQuota change makes a different key",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "left",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ]
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        },
+        {
+          "label": "right",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ],
+            "preferMaxQuota": false
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": false,
+            "allowCrossTrust": false
+          }
+        }
+      ],
+      "same": [],
+      "expect": {
+        "keys": {
+          "left": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}",
+          "right": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":false,\"allowCrossTrust\":false}"
+        },
+        "equal": {}
+      }
+    },
+    {
+      "name": "maxAttempts is derived from the pool and is not part of the key",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "left",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ]
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        },
+        {
+          "label": "right",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ],
+            "maxAttempts": 4
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        }
+      ],
+      "same": [
+        [
+          "left",
+          "right"
+        ]
+      ],
+      "expect": {
+        "keys": {
+          "left": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}",
+          "right": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}"
+        },
+        "equal": {
+          "left=right": true
+        }
+      }
+    },
+    {
+      "name": "candidate order and priority are part of the key",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "left",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ]
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        },
+        {
+          "label": "right",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "b",
+                "priority": 1
+              },
+              {
+                "providerId": "a",
+                "priority": 2
+              }
+            ]
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 1,
+                "enabled": true
+              },
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 2,
+                "enabled": true
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false
+          }
+        }
+      ],
+      "same": [],
+      "expect": {
+        "keys": {
+          "left": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}",
+          "right": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"b\",\"model\":null,\"priority\":1,\"enabled\":true},{\"providerId\":\"a\",\"model\":null,\"priority\":2,\"enabled\":true}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false}"
+        },
+        "equal": {}
+      }
+    },
+    {
+      "name": "cross-CLI candidate cli is part of the key",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "left",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1,
+                "cli": "claude"
+              },
+              {
+                "providerId": "b",
+                "priority": 2,
+                "cli": "codex"
+              }
+            ]
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true,
+                "cli": "claude"
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true,
+                "cli": "codex"
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false,
+            "cliSwitch": "failover"
+          }
+        },
+        {
+          "label": "right",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1,
+                "cli": "claude"
+              },
+              {
+                "providerId": "b",
+                "priority": 2,
+                "cli": "claude"
+              }
+            ]
+          },
+          "normalized": {
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "candidates": [
+              {
+                "providerId": "a",
+                "model": null,
+                "priority": 1,
+                "enabled": true,
+                "cli": "claude"
+              },
+              {
+                "providerId": "b",
+                "model": null,
+                "priority": 2,
+                "enabled": true,
+                "cli": "claude"
+              }
+            ],
+            "maxAttempts": 2,
+            "sticky": true,
+            "preferMaxQuota": true,
+            "allowCrossTrust": false,
+            "cliSwitch": "failover"
+          }
+        }
+      ],
+      "same": [],
+      "expect": {
+        "keys": {
+          "left": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true,\"cli\":\"claude\"},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true,\"cli\":\"codex\"}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false,\"cliSwitch\":\"failover\"}",
+          "right": "{\"version\":1,\"mode\":\"auto\",\"protocol\":\"anthropic\",\"candidates\":[{\"providerId\":\"a\",\"model\":null,\"priority\":1,\"enabled\":true,\"cli\":\"claude\"},{\"providerId\":\"b\",\"model\":null,\"priority\":2,\"enabled\":true,\"cli\":\"claude\"}],\"maxAttempts\":2,\"sticky\":true,\"preferMaxQuota\":true,\"allowCrossTrust\":false,\"cliSwitch\":\"failover\"}"
+        },
+        "equal": {}
+      }
+    },
+    {
+      "name": "null / undefined / manual / non-object return null",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "nullValue",
+          "input": null,
+          "normalized": null
+        },
+        {
+          "label": "undefinedValue",
+          "input": "$undefined",
+          "normalized": null
+        },
+        {
+          "label": "manual",
+          "input": {
+            "mode": "manual"
+          },
+          "normalized": null
+        },
+        {
+          "label": "string",
+          "input": "auto",
+          "normalized": null
+        },
+        {
+          "label": "array",
+          "input": [],
+          "normalized": null
+        }
+      ],
+      "same": [],
+      "expect": {
+        "keys": {
+          "nullValue": null,
+          "undefinedValue": null,
+          "manual": null,
+          "string": null,
+          "array": null
+        },
+        "equal": {}
+      }
+    },
+    {
+      "name": "invalid pools return null",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "oneCandidate",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              }
+            ]
+          },
+          "normalized": null
+        },
+        {
+          "label": "noCandidates",
+          "input": {
+            "mode": "auto",
+            "candidates": []
+          },
+          "normalized": null
+        },
+        {
+          "label": "duplicateProvider",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "a",
+                "priority": 2
+              }
+            ]
+          },
+          "normalized": null
+        },
+        {
+          "label": "badVersion",
+          "input": {
+            "version": 2,
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "a",
+                "priority": 1
+              },
+              {
+                "providerId": "b",
+                "priority": 2
+              }
+            ]
+          },
+          "normalized": null
+        }
+      ],
+      "same": [],
+      "expect": {
+        "keys": {
+          "oneCandidate": null,
+          "noCandidates": null,
+          "duplicateProvider": null,
+          "badVersion": null
+        },
+        "equal": {}
+      }
+    },
+    {
+      "name": "more than eight candidates return null",
+      "op": "selectionKey",
+      "calls": [
+        {
+          "label": "nineCandidates",
+          "input": {
+            "mode": "auto",
+            "candidates": [
+              {
+                "providerId": "p0",
+                "priority": 0
+              },
+              {
+                "providerId": "p1",
+                "priority": 1
+              },
+              {
+                "providerId": "p2",
+                "priority": 2
+              },
+              {
+                "providerId": "p3",
+                "priority": 3
+              },
+              {
+                "providerId": "p4",
+                "priority": 4
+              },
+              {
+                "providerId": "p5",
+                "priority": 5
+              },
+              {
+                "providerId": "p6",
+                "priority": 6
+              },
+              {
+                "providerId": "p7",
+                "priority": 7
+              },
+              {
+                "providerId": "p8",
+                "priority": 8
+              }
+            ]
+          },
+          "normalized": null
+        }
+      ],
+      "same": [],
+      "expect": {
+        "keys": {
+          "nineCandidates": null
+        },
+        "equal": {}
+      }
+    }
+  ]
+}

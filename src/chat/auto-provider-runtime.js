@@ -1,5 +1,15 @@
 'use strict';
 
+// Auto Provider turn runtime.
+//
+// The decisions and the per-session route state live in
+// `native/core/src/auto_provider_runtime.rs`. This file keeps only the host
+// wiring: assembling the candidate pool (providers catalog, OpenCode/vendor
+// synthetic lines, limit cache, quota guard, price table), the clocks, the
+// `emit`/`logger` sinks, the `lastGoodRoute` and lane-availability lookups,
+// and the difficulty-routing store. Every native answer is an envelope
+// `{ value, undefined, error, effects }`: the effects are replayed here in the
+// order the old closure produced them, so the wire narration stays identical.
 const {
   protocolOf,
   trustDomainOf,
@@ -15,22 +25,13 @@ const {
   syntheticVendorProvider,
 } = require('../providers/native-vendor');
 const { peekOpenCodeModels } = require('../routes/opencode-models');
-const {
-  chooseCandidate,
-  failoverSafety,
-  limitState,
-} = require('./auto-provider-policy');
+const { limitState } = require('./auto-provider-policy');
 const { createAutoProviderRouting } = require('./auto-provider-routing');
 const { expandCandidates, modelChoices, priceLadder } = require('./auto-provider-pricing');
 const { createRoutingAdmissionPhase } = require('./admission-progress');
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
 const { selectionKey } = require('./auto-provider-selection-key');
-
-const UNSAFE_HANDOFF_REASONS = new Set([
-  'unsafe_failure_phase',
-  'unsafe_replay_boundary',
-  'provider_replay_fence_closed',
-]);
+const { getNative } = require('../native/runtime');
 
 class AutoProviderError extends Error {
   constructor(message, code = 'AUTO_PROVIDER_UNAVAILABLE') {
@@ -49,8 +50,7 @@ function createAutoProviderRuntime(options = {}) {
   const limitCache = options.providerLimitCache || null;
   // Hard account protection (src/quota/quota-guard), distinct from the steering
   // hint inside chooseCandidate: a guarded candidate is withdrawn from the pool
-  // entirely, sticky or not, because the goal is to stop spending before the
-  // window empties rather than to prefer a roomier line.
+  // entirely, sticky or not.
   const quotaGuard = options.quotaGuard && typeof options.quotaGuard.check === 'function'
     ? options.quotaGuard : null;
   const staleAfterMs = Math.max(1_000, Number(options.limitCacheStaleMs) || STALE_MS_DEFAULT);
@@ -63,14 +63,13 @@ function createAutoProviderRuntime(options = {}) {
   // Only a cross-CLI pool ever asks.
   const isCliAvailable = typeof options.isCliAvailable === 'function'
     ? options.isCliAvailable : () => true;
+  const hasCliProbe = typeof options.isCliAvailable === 'function';
   // (selectionKey, sessionId) => the line another session of this same pool
-  // last finished a turn on, or null. Lets a fresh session of a preset start on
-  // what is known to work instead of re-probing from priority #1.
-  // The route notes emitter owns those records, so it carries the lookup too.
+  // last finished a turn on, or null. The route notes emitter owns those
+  // records, so it carries the lookup too.
   const lastGoodRoute = [options.lastGoodRoute, options.emit && options.emit.lastGoodRoute]
     .find(fn => typeof fn === 'function') || null;
-  // The shared price table is only touched by a pool that prices its lines, so
-  // a legacy pool never starts its refresh timer. `null` disables pricing.
+  // The shared price table is only touched by a pool that prices its lines.
   let priceTable = options.priceTable;
   function pricing() {
     if (priceTable === undefined) {
@@ -80,8 +79,7 @@ function createAutoProviderRuntime(options = {}) {
     return priceTable;
   }
   // Difficulty routing owns its own store; the runtime is the single owner of
-  // both the pool and the tier verdict so a turn cannot be routed by one and
-  // spawned by the other.
+  // both the pool and the tier verdict.
   const routing = options.routing || createAutoProviderRouting({
     logger,
     fetchImpl: options.fetchImpl,
@@ -89,36 +87,64 @@ function createAutoProviderRuntime(options = {}) {
     ttlMs: options.routingTtlMs,
     resolveLadder: ({ session, selection }) => catalogCandidates(session, selection).ladder.tiers,
   });
-  const stickyBySession = new Map();
-  const currentBySession = new Map();
-  const selectionKeyBySession = new Map();
-  const pendingBySession = new Map();
-  // A remembered pool line on another lane, waiting for planTurn to move there.
-  const seedLaneBySession = new Map();
-  // Lane switches since the last successful turn. A cross-CLI pool whose every
-  // lane is failing would otherwise hand the session back and forth forever.
-  const hopsBySession = new Map();
+
+  // The route state and turn closures live in Rust; one instance per runtime,
+  // exactly like the closure this file used to hold.
+  const state = new (getNative().RustAutoProviderRuntime)();
+
+  function native(method, ...args) {
+    const answer = state[method](...args);
+    return answer == null ? null : JSON.parse(answer);
+  }
+
+  // Replay the native effects and unwrap the envelope. `emit` is wrapped (the
+  // old code swallowed a throwing emit); `logger` is not (it never was).
+  function apply(envelope) {
+    for (const effect of envelope.effects) {
+      if (effect.kind === 'emit') {
+        try { emit(effect.sessionId, effect.event); } catch (_) {}
+      } else if (effect.kind === 'info') {
+        logger.info?.(effect.name, effect.fields);
+      }
+    }
+    if (envelope.error) {
+      throw new AutoProviderError(envelope.error.message, envelope.error.code);
+    }
+    return envelope.undefined ? undefined : envelope.value;
+  }
+
+  function call(method, ...args) {
+    return apply(native(method, ...args));
+  }
+
+  function backgroundActive(sessionId) {
+    if (!liveBackgroundGate) return false;
+    try { return liveBackgroundGate(sessionId) === true; }
+    catch (_) { return true; }
+  }
+
+  // `isCliAvailable` for every lane this pool could name. The kernel only asks
+  // about lanes it would have asked about; `null` means "the default probe",
+  // which answers true for every lane.
+  function availabilityMap(candidates, home) {
+    if (!hasCliProbe) return null;
+    const lanes = new Set([home]);
+    for (const candidate of candidates) lanes.add(candidate.cli || home);
+    const map = {};
+    for (const lane of lanes) map[lane] = Boolean(isCliAvailable(lane));
+    return map;
+  }
 
   // The `<id>/<model>` wire ids OpenCode's own providers serve, read straight
-  // from the 1-hour model cache the /api/opencode/models route keeps. A cold
-  // cache is not a failure: the native line simply keeps no model list and the
-  // CLI falls back to its own default.
+  // from the 1-hour model cache the /api/opencode/models route keeps.
   function nativeModelOptions(id) {
     return (peekOpenCodeModels() || [])
       .filter(entry => entry && entry.provider === id && entry.model)
       .map(entry => `${entry.provider}/${entry.model}`);
   }
 
-  // `nativeIds` are the OpenCode-native ids this pool names on the lane (see
-  // catalogCandidates). They are not MultiCC providers, so a synthetic entry is
-  // added per id: the runtime then treats the line exactly like any other route
-  // (model choices included) while the spawn path resolves it to OpenCode's own
-  // config.
+  // `nativeIds` are the OpenCode-native ids this pool names on the lane.
   function laneCatalog(cli, nativeIds = null) {
-    // Vendor-native lanes: one synthetic line per lane, catalogued from that
-    // vendor's own model cache. dsh/grok additionally run managed lines, so
-    // their catalog is the normal one plus the native line; the provider-less
-    // lanes have only the native line.
     if (VENDOR_NATIVE_SET.has(cli) && cli !== 'dsh' && cli !== 'grok') {
       const line = syntheticVendorProvider(cli);
       return new Map([[line.id, line]]);
@@ -151,8 +177,6 @@ function createAutoProviderRuntime(options = {}) {
   function catalogCandidates(session, selection) {
     const home = session.cli || 'claude';
     const lanes = new Map();
-    // Native OpenCode ids this pool names, per lane: a synthetic entry is built
-    // only for a line the pool actually uses.
     const nativeIds = new Map();
     for (const candidate of selection.candidates) {
       const cli = candidate.cli || home;
@@ -198,10 +222,6 @@ function createAutoProviderRuntime(options = {}) {
     });
     const priced = selection.routing && selection.routing.tiering === 'price';
     if (!priced) {
-      // A manual ladder is hand-tagged on the lines themselves. An auto-model
-      // line still expands over the models its provider serves — every variant
-      // keeps the line's tier — and inside a tier the variants go cheapest
-      // first, by price alone. Price is an internal sort key here, never shown.
       const expands = !!selection.routing && base.some(candidate => candidate.autoModel);
       const candidates = expands
         ? expandCandidates(base, { priceTable: pricing(), requirePrice: false })
@@ -220,78 +240,61 @@ function createAutoProviderRuntime(options = {}) {
   }
 
   // A cloned policy is still the same pool. A changed policy starts afresh;
-  // after a process restart, restore a matching route. Legacy records without
-  // a policy signature must also match the current lane and model catalog.
+  // after a process restart, restore a matching route. The reset itself lives
+  // in Rust; this side supplies the two host facts it may need (`lastGoodRoute`
+  // and the lane's model choices).
   function syncSelection(session, rawSelection, selection) {
     const sessionId = session.id;
     const key = selectionKey(rawSelection);
-    if (selectionKeyBySession.get(sessionId) === key) return;
-    const firstSeen = !selectionKeyBySession.has(sessionId);
-    stickyBySession.delete(sessionId);
-    currentBySession.delete(sessionId);
-    pendingBySession.delete(sessionId);
-    seedLaneBySession.delete(sessionId);
-    hopsBySession.delete(sessionId);
-    selectionKeyBySession.set(sessionId, key);
     const last = session.autoProviderLastRoute;
+    const hasKey = last ? Object.prototype.hasOwnProperty.call(last, 'selectionKey') : false;
     const cli = session.cli || 'claude';
-    if (!last) {
-      seedFromPool(session, selection, key, cli);
-      return;
-    }
-    if (!firstSeen || !key || !selection.sticky || (last.cli && last.cli !== cli)) return;
-    const candidate = selection.candidates.find(item => item.enabled !== false
-      && item.providerId === last.providerId && (!item.cli || item.cli === cli));
-    if (!candidate) return;
-    if (Object.prototype.hasOwnProperty.call(last, 'selectionKey')) {
-      if (last.selectionKey === key) stickyBySession.set(sessionId, last.providerId);
-      return;
-    }
-    // Do not reinterpret a mismatching/null signature as an old record. For an
-    // actual old record, the persisted model must still be one this line runs.
-    const nativeId = cli === 'opencode' ? nativeOpenCodeId(candidate.providerId) : null;
-    const provider = laneCatalog(cli, nativeId === null ? null : new Set([nativeId]))
-      .get(candidate.providerId);
-    if (!provider) return;
-    const model = candidate.model || provider.model || null;
-    const choices = candidate.autoModel ? modelChoices(provider) : [];
-    const matches = choices.length ? choices.includes(last.model) : (last.model || null) === model;
-    if (matches) stickyBySession.set(sessionId, last.providerId);
-  }
-
-  // A session that has no line of its own under this pool yet starts from the
-  // line the pool last finished a turn on, in any session. It is only a sticky
-  // preference: a line the quota cache marks exhausted is still skipped, and a
-  // failure fails over exactly as from any other first pick.
-  function seedFromPool(session, selection, key, cli) {
-    if (!lastGoodRoute || !key || !selection.sticky) return;
-    let seed = null;
-    try { seed = lastGoodRoute(key, session.id); } catch (_) { seed = null; }
-    if (!seed || !seed.providerId) return;
-    const seedCli = seed.cli || cli;
-    const known = selection.candidates.some(item => item.enabled !== false
-      && item.providerId === seed.providerId && (item.cli || cli) === seedCli);
-    if (!known) return;
-    if (seedCli === cli) stickyBySession.set(session.id, seed.providerId);
-    // Another lane is reached through planTurn's lane switch; a difficulty
-    // router owns the lane choice itself, so it is not overridden.
-    else if (selection.cliSwitch && !selection.routing) {
-      seedLaneBySession.set(session.id, { cli: seedCli, providerId: seed.providerId });
-    } else return;
-    logger.info?.('auto_provider_pool_memory_seed', {
-      sessionId: session.id, cli: seedCli, providerId: seed.providerId, succeededAt: seed.succeededAt || null,
+    // `syncPrepare` answers a bare `{ action }` (it never narrates), unlike the
+    // envelope-returning steps below.
+    const step = native('syncPrepare', {
+      sessionId,
+      key,
+      cli,
+      selection,
+      lastRoute: last ?? null,
+      lastRouteHasSelectionKey: hasKey,
     });
-  }
-
-  function priceFields(candidate) {
-    return candidate && candidate.price
-      ? { price: candidate.price.blended, priceSource: candidate.price.source || null } : {};
+    if (!step || step.action === 'same' || step.action === 'none') return;
+    if (step.action === 'seed') {
+      if (!step.want || !lastGoodRoute) {
+        call('syncFinishSeed', { sessionId, cli, selection, seed: null });
+        return;
+      }
+      let seed = null;
+      try { seed = lastGoodRoute(key, session.id); } catch (_) { seed = null; }
+      call('syncFinishSeed', { sessionId, cli, selection, seed });
+      return;
+    }
+    if (step.action === 'legacy') {
+      const remembered = step.candidate || {};
+      const nativeId = cli === 'opencode' ? nativeOpenCodeId(remembered.providerId) : null;
+      const provider = laneCatalog(cli, nativeId === null ? null : new Set([nativeId]))
+        .get(remembered.providerId);
+      if (!provider) {
+        call('syncFinishLegacy', { sessionId, found: false });
+        return;
+      }
+      const model = remembered.model || provider.model || null;
+      const choices = remembered.autoModel ? modelChoices(provider) : [];
+      call('syncFinishLegacy', {
+        sessionId,
+        found: true,
+        providerId: remembered.providerId,
+        model,
+        choices,
+        lastModel: last && last.model != null ? last.model : null,
+      });
+    }
   }
 
   // Before a turn starts, decide whether it should run on another CLI lane.
   // Returns null to stay, or the lane (and the line reserved on it) to switch
-  // to; the reservation is what beginTurn then picks on the new lane. Called by
-  // the switch runtime, which owns the actual lane switch and its handoff.
+  // to; the reservation is what beginTurn then picks on the new lane.
   function planTurn({ session, text, turnOptions = {} } = {}) {
     const rawSelection = session && session.providerSelection;
     if (!rawSelection || rawSelection.mode !== 'auto') return null;
@@ -302,128 +305,25 @@ function createAutoProviderRuntime(options = {}) {
     if (!validated.ok || !validated.value.cliSwitch) return null;
     const selection = validated.value;
     syncSelection(session, rawSelection, selection);
-    if ((hopsBySession.get(session.id) || 0) >= selection.maxAttempts) return null;
-    const pending = pendingBySession.get(session.id) || null;
-    if (pending && pending.cli && pending.cli !== cli) {
-      if (!isCliAvailable(pending.cli)) {
-        pendingBySession.delete(session.id);
-        return null;
-      }
-      return plan(session, pending);
-    }
-    if (pending) return null;
     const { candidates, ladder } = catalogCandidates(session, selection);
-    // A continuation stays on its lane unless a handoff reserved another one —
-    // or unless that lane is already out of usable lines. Staying then only
-    // fails at preparation and is re-admitted forever, so the continuation
-    // earns the same cross-lane escape a fresh turn gets; the per-lane choice
-    // below still returns it home whenever one line there is usable.
-    if (turnOptions.originContinue && !turnOptions.directUserInput) {
-      // A difficulty router owns its lane choice, continuation included.
-      if (selection.routing) return null;
-      const homeLane = candidates.filter(candidate => (candidate.cli || cli) === cli
-        && candidate.enabled !== false && candidate.limitState !== 'exhausted');
-      if (homeLane.length) return null;
-    }
-    const seedLane = seedLaneBySession.get(session.id);
-    if (seedLane) {
-      seedLaneBySession.delete(session.id);
-      const remembered = candidates.find(candidate => candidate.cli === seedLane.cli
-        && candidate.providerId === seedLane.providerId && candidate.enabled !== false
-        && candidate.limitState !== 'exhausted');
-      if (remembered && isCliAvailable(remembered.cli)) {
-        const reservation = Object.freeze({
-          sessionId: session.id,
-          originTurnId: null,
-          fromCli: cli,
-          cli: remembered.cli,
-          fromProviderId: null,
-          fromProviderName: null,
-          providerId: remembered.providerId,
-          providerName: remembered.providerName,
-          model: remembered.model,
-          reasonCode: 'auto_pool_memory',
-          planned: true,
-        });
-        pendingBySession.set(session.id, reservation);
-        return plan(session, reservation, remembered);
-      }
-    }
-    const reachable = candidates.filter(candidate => candidate.cli === cli || isCliAvailable(candidate.cli));
+    // A difficulty router owns the lane choice itself.
     const decision = selection.routing ? routing.resolveTier({
       selection,
       verdict: routing.consume({ sessionId: session.id, text }),
       tiers: ladder.tiers || undefined,
     }) : null;
-    const choose = list => chooseCandidate({
-      candidates: list,
-      preferredTier: decision && decision.tier || null,
+    return call('planTurn', {
+      sessionId: session.id,
+      cli,
+      selection,
+      candidates,
       ladder: ladder.tiers,
       byPrice: ladder.byPrice === true || !!ladder.tiers,
-      byQuota: selection.preferMaxQuota !== false,
-      preferCli: cli,
-      stickyProviderId: selection.sticky ? stickyBySession.get(session.id) : null,
-    }).candidate;
-    let picked;
-    if (selection.cliSwitch === 'routing') {
-      picked = choose(reachable);
-    } else {
-      if (choose(reachable.filter(candidate => candidate.cli === cli))) return null;
-      picked = choose(reachable.filter(candidate => candidate.cli !== cli));
-    }
-    if (!picked || picked.cli === cli) return null;
-    const reservation = Object.freeze({
-      sessionId: session.id,
-      originTurnId: null,
-      fromCli: cli,
-      cli: picked.cli,
-      fromProviderId: null,
-      fromProviderName: null,
-      providerId: picked.providerId,
-      providerName: picked.providerName,
-      model: picked.model,
-      reasonCode: selection.cliSwitch === 'routing' ? 'auto_cli_routing' : 'auto_cli_failover',
-      planned: true,
-    });
-    pendingBySession.set(session.id, reservation);
-    // A price ladder is the only pool that publishes a price: a manual pool uses
-    // it purely as an internal sort key.
-    return plan(session, reservation, picked, decision,
-      Array.isArray(ladder.tiers) && ladder.tiers.length > 0);
-  }
-
-  function plan(session, reservation, candidate = null, decision = null, priceTiered = false) {
-    hopsBySession.set(session.id, (hopsBySession.get(session.id) || 0) + 1);
-    const fromCli = session.cli || 'claude';
-    const event = Object.freeze({
-      type: 'provider_auto_route',
-      version: 1,
-      mode: 'auto',
-      sessionId: session.id,
-      turnId: null,
-      routePhase: 'cli_switch_planned',
-      cli: reservation.cli,
-      fromCli,
-      providerId: reservation.providerId,
-      providerName: reservation.providerName || null,
-      model: reservation.model || null,
-      tier: candidate && candidate.tier || null,
-      reasonCode: reservation.reasonCode || null,
-      routing: decision,
-      ...(priceTiered ? priceFields(candidate) : {}),
-    });
-    try { emit(session.id, event); } catch (_) {}
-    logger.info?.('auto_provider_cli_switch_planned', {
-      sessionId: session.id, fromCli, cli: reservation.cli,
-      providerId: reservation.providerId, reasonCode: reservation.reasonCode || null,
-    });
-    return Object.freeze({
-      cli: reservation.cli,
-      fromCli,
-      providerId: reservation.providerId,
-      providerName: reservation.providerName || null,
-      model: reservation.model || null,
-      reasonCode: reservation.reasonCode || null,
+      priceTiered: Array.isArray(ladder.tiers) && ladder.tiers.length > 0,
+      routingDecision: decision,
+      originContinue: !!turnOptions.originContinue,
+      directUserInput: !!turnOptions.directUserInput,
+      availability: availabilityMap(candidates, cli),
     });
   }
 
@@ -449,274 +349,55 @@ function createAutoProviderRuntime(options = {}) {
     const selection = validated.value;
     syncSelection(session, rawSelection, selection);
     const turnCli = session.cli || 'claude';
-    const pool = catalogCandidates(session, selection);
-    const ladder = pool.ladder;
-    // The turn runs on one lane; the rest of the pool is only reachable through
-    // a lane switch (planTurn before the turn, prepareHandoff after it).
-    const candidates = pool.candidates.filter(candidate => candidate.cli === turnCli);
-    const otherLanes = pool.candidates.filter(candidate => candidate.cli !== turnCli);
-    // Difficulty routing: one verdict per USER MESSAGE, consumed here and pinned
-    // for the whole turn — failover included — so a provider switch never
-    // silently re-rolls the tier mid-turn. A verdict that never arrived (gateway
-    // down, key missing, routing never prepared) resolves through onUnknown.
-    const routingDecision = selection.routing
-      ? routing.resolveTier({
-        selection,
-        verdict: routing.consume({ sessionId: session.id, text: promptText }),
-        tiers: ladder.tiers || undefined,
-      })
-      : null;
-    const preferredTier = routingDecision && routingDecision.tier ? routingDecision.tier : null;
-    const attempted = new Set();
-    let pending = pendingBySession.get(session.id) || null;
-    // A reservation for another lane whose switch never happened (lane gone,
-    // session busy) is void: this turn runs where the session actually is.
-    if (pending && pending.cli && pending.cli !== turnCli) {
-      pendingBySession.delete(session.id);
-      pending = null;
-    }
-    if (pending?.fromProviderId && (!pending.fromCli || pending.fromCli === turnCli)) {
-      attempted.add(pending.fromProviderId);
-    }
+    const { candidates, ladder } = catalogCandidates(session, selection);
+    // Difficulty routing: one verdict per USER MESSAGE, pinned for the whole
+    // turn — failover included.
+    const routingDecision = selection.routing ? routing.resolveTier({
+      selection,
+      verdict: routing.consume({ sessionId: session.id, text: promptText }),
+      tiers: ladder.tiers || undefined,
+    }) : null;
     const byPrice = ladder.byPrice === true || !!ladder.tiers;
-    // Only a price ladder publishes a price; a manual pool's variants carry one
-    // purely so the chooser can order them, and it never reaches the wire.
     const priceTiered = Array.isArray(ladder.tiers) && ladder.tiers.length > 0;
-    let current = null;
-    let physicalAttempt = 0;
-    let selectionFailureReason = null;
-
-    // The wire field is `routePhase`: three unrelated enums (turn-progress
-    // heartbeat, this policy narration, the attempt lifecycle) used to share the
-    // key `phase`, so a reader could not tell which enum it had without the
-    // message type. `phase` below is just this closure's local argument name.
-    function publish(phase, candidate, details = {}) {
-      const event = Object.freeze({
-        type: 'provider_auto_route',
-        version: 1,
-        mode: 'auto',
-        sessionId: session.id,
-        turnId,
-        protocol: candidate && candidate.protocol || selection.protocol,
-        routePhase: phase,
-        providerId: candidate && candidate.providerId || null,
-        providerName: candidate && candidate.providerName || null,
-        model: candidate && candidate.model || null,
-        // The picked line's own tier: it differs from preferredTier when every
-        // line of the preferred tier is exhausted or already attempted.
-        tier: candidate && candidate.tier || null,
-        trustDomain: candidate && candidate.trustDomain || null,
-        fromTrustDomain: null,
-        toTrustDomain: candidate && candidate.trustDomain || null,
-        attemptNo: physicalAttempt,
-        maxAttempts: selection.maxAttempts,
-        preferredTier,
-        routing: routingDecision,
-        // Lane and price only exist for the pools that have them, so a legacy
-        // pool's event keeps its exact shape.
-        ...(selection.cliSwitch ? { cli: candidate && candidate.cli || turnCli } : {}),
-        ...(priceTiered ? priceFields(candidate) : {}),
-        ...details,
-      });
-      currentBySession.set(session.id, event);
-      try { emit(session.id, event); } catch (_) {}
-      logger.info?.('auto_provider_route', {
-        sessionId: session.id, turnId, phase,
-        providerId: event.providerId, fromProviderId: event.fromProviderId || null,
-        trustDomain: event.trustDomain, fromTrustDomain: event.fromTrustDomain,
-        toTrustDomain: event.toTrustDomain,
-        reasonCode: event.reasonCode || null, attemptNo: physicalAttempt,
-      });
-      return event;
-    }
-
-    function select(reasonCode) {
-      selectionFailureReason = null;
-      // The budget is the enabled pool size, so reaching it means every line
-      // the turn could pick has already failed. Report the pool exhaustion
-      // (the common terminal) and keep `attempt_budget_exhausted` only for a
-      // defensive bound that some other path (an expanded auto-model pool that
-      // shares one providerId) hits first.
-      if (physicalAttempt >= selection.maxAttempts) {
-        selectionFailureReason = candidates.every(
-          candidate => candidate.enabled === false || attempted.has(candidate.providerId),
-        ) ? 'candidate_pool_exhausted' : 'attempt_budget_exhausted';
-        publish('exhausted', current, { reasonCode: selectionFailureReason });
-        return null;
-      }
-      const picked = chooseCandidate({
-        candidates,
-        attempted,
-        preferredTier,
-        ladder: ladder.tiers,
-        byPrice,
-        byQuota: selection.preferMaxQuota !== false,
-        pinned: pending ? { providerId: pending.providerId, model: pending.model || null } : null,
-        stickyProviderId: selection.sticky ? stickyBySession.get(session.id) : null,
-      });
-      if (!picked.candidate) {
-        selectionFailureReason = 'candidate_pool_exhausted';
-        publish('exhausted', current, {
-          reasonCode: selectionFailureReason,
-          skipped: picked.skipped,
-        });
-        return null;
-      }
-      const previous = current;
-      current = picked.candidate;
-      // A long turn can stop or need a continuation without reporting success.
-      // Its selected route remains current until it actually becomes unusable.
-      if (selection.sticky) stickyBySession.set(session.id, current.providerId);
-      if (pending) pendingBySession.delete(session.id);
-      attempted.add(current.providerId);
-      physicalAttempt += 1;
-      publish(previous ? 'switched' : 'selected', current, {
-        fromProviderId: previous && previous.providerId || null,
-        fromProviderName: previous && previous.providerName || null,
-        fromTrustDomain: previous && previous.trustDomain || null,
-        toTrustDomain: current.trustDomain,
-        reasonCode,
-        skipped: picked.skipped,
-      });
-      return Object.freeze({
-        providerId: current.providerId,
-        model: current.model,
-        reasonCode,
-      });
-    }
+    const started = call('beginTurn', {
+      sessionId: session.id,
+      turnId,
+      cli: turnCli,
+      selection,
+      candidates,
+      ladder: ladder.tiers,
+      byPrice,
+      priceTiered,
+      routingDecision,
+    });
+    const handle = started.handle;
 
     function initial() {
-      const result = select('auto_initial_selection');
-      if (!result) {
-        throw new AutoProviderError('Auto Provider has no eligible candidate', 'AUTO_PROVIDER_POOL_EXHAUSTED');
-      }
-      return result;
+      return call('turnInitial', handle);
     }
-
-    function terminalFailure(decision, reasonCode, attempt) {
-      const terminalDecision = Object.freeze({
-        ...decision,
-        action: 'fail_fast',
-        reason: reasonCode,
-        delayMs: 0,
-        retryAt: null,
-      });
-      return Object.freeze({
-        invocationOptions: null,
-        decision: terminalDecision,
-        terminal: true,
-        reasonCode,
-        fromProviderName: candidates.find(item => item.providerId === attempt?.providerId)?.providerName
-          || attempt?.providerId || current?.providerName || null,
-        toProviderName: null,
-      });
-    }
-
     function failover(decision, attempt) {
-      const safety = failoverSafety(decision, attempt);
-      if (!safety.ok) {
-        publish('blocked', current, { reasonCode: safety.reason });
-        return null;
-      }
-      let backgroundActive = false;
-      if (liveBackgroundGate) {
-        try { backgroundActive = liveBackgroundGate(session.id) === true; }
-        catch (_) { backgroundActive = true; }
-      }
-      if (backgroundActive) {
-        publish('blocked', current, { reasonCode: 'background_tasks_active' });
-        return terminalFailure(decision, 'auto_background_tasks_active', attempt);
-      }
-      const result = select(safety.reason);
-      if (!result) {
-        return terminalFailure(decision, `auto_${selectionFailureReason || 'provider_exhausted'}`, attempt);
-      }
-      const fromCandidate = candidates.find(item => item.providerId === attempt.providerId) || null;
-      const retryDecision = Object.freeze({
-        ...decision,
-        action: 'retry',
-        reason: 'provider_failover',
-        delayMs: 0,
-        retryAt: Number(now()),
-        attempt: physicalAttempt - 1,
-        providerFailover: Object.freeze({
-          fromProviderId: attempt.providerId,
-          toProviderId: result.providerId,
-          fromTrustDomain: fromCandidate && fromCandidate.trustDomain || null,
-          toTrustDomain: current.trustDomain,
-          category: decision?.error?.category || 'unknown',
-        }),
-      });
-      return Object.freeze({
-        invocationOptions: result,
-        decision: retryDecision,
-        fromProviderName: fromCandidate && fromCandidate.providerName || attempt.providerId,
-        toProviderName: current.providerName,
+      return call('turnFailover', {
+        handle,
+        decision: decision ?? null,
+        attempt: attempt ?? null,
+        now: Number(now()),
+        backgroundActive: backgroundActive(session.id),
       });
     }
-
-    // Unsafe replay boundaries cannot switch the physical route inside the
-    // current logical turn. Reserve an eligible route for one fresh continuation
-    // turn instead; the handoff coordinator owns durable injection and de-dup.
-    // A cross-CLI pool also reserves a line on another lane when this lane has
-    // nothing left — after an unsafe boundary, or after a safe failover ran the
-    // lane dry — and the continuation turn switches lanes before it starts.
     function prepareHandoff(decision, attempt) {
-      const safety = failoverSafety(decision, attempt);
-      const unsafe = !safety.ok && UNSAFE_HANDOFF_REASONS.has(safety.reason);
-      if (!unsafe && !(safety.ok && selection.cliSwitch)) return null;
-      let backgroundActive = false;
-      if (liveBackgroundGate) {
-        try { backgroundActive = liveBackgroundGate(session.id) === true; }
-        catch (_) { backgroundActive = true; }
-      }
-      if (backgroundActive) return null;
-      const excluded = new Set(attempted);
-      if (attempt?.providerId) excluded.add(attempt.providerId);
-      const order = {
-        attempted: excluded, preferredTier, ladder: ladder.tiers, byPrice,
-        byQuota: selection.preferMaxQuota !== false,
-      };
-      let picked = unsafe ? chooseCandidate({ candidates, ...order }) : { candidate: null, skipped: [] };
-      if (!picked.candidate && selection.cliSwitch
-          && (hopsBySession.get(session.id) || 0) < selection.maxAttempts) {
-        // The same route on another lane shares its quota, so it stays excluded.
-        picked = chooseCandidate({
-          candidates: otherLanes.filter(candidate => isCliAvailable(candidate.cli)), ...order,
-        });
-      }
-      if (!picked.candidate) return null;
-      const reasonCode = unsafe ? safety.reason : 'lane_pool_exhausted';
-      const reservation = Object.freeze({
-        sessionId: session.id,
-        originTurnId: turnId,
-        fromProviderId: attempt?.providerId || current?.providerId || null,
-        fromProviderName: candidates.find(item => item.providerId === attempt?.providerId)?.providerName
-          || attempt?.providerId || current?.providerName || null,
-        providerId: picked.candidate.providerId,
-        providerName: picked.candidate.providerName,
-        model: picked.candidate.model,
-        reasonCode,
-        ...(picked.candidate.cli !== turnCli ? { cli: picked.candidate.cli, fromCli: turnCli } : {}),
+      return call('turnPrepareHandoff', {
+        handle,
+        decision: decision ?? null,
+        attempt: attempt ?? null,
+        backgroundActive: backgroundActive(session.id),
+        // Re-probed now, like the old closure did at handoff time: a lane that
+        // was installed when the turn started may be gone by the time a
+        // continuation needs it.
+        availability: availabilityMap(candidates, turnCli),
       });
-      pendingBySession.set(session.id, reservation);
-      publish('handoff_pending', picked.candidate, {
-        fromProviderId: reservation.fromProviderId,
-        fromProviderName: reservation.fromProviderName,
-        fromTrustDomain: candidates.find(item => item.providerId === reservation.fromProviderId)?.trustDomain || null,
-        toTrustDomain: picked.candidate.trustDomain,
-        reasonCode,
-        skipped: picked.skipped,
-      });
-      return reservation;
     }
-
     function recordSuccess(attempt) {
-      const providerId = attempt && attempt.providerId || current && current.providerId;
-      if (!providerId) return;
-      if (selection.sticky) stickyBySession.set(session.id, providerId);
-      hopsBySession.delete(session.id);
-      publish('succeeded', current, { reasonCode: 'turn_succeeded' });
+      call('turnRecordSuccess', { handle, attempt: attempt ?? null });
     }
 
     return Object.freeze({
@@ -726,17 +407,14 @@ function createAutoProviderRuntime(options = {}) {
   }
 
   function snapshot(sessionId) {
-    const current = currentBySession.get(sessionId);
+    const current = native('snapshot', sessionId);
     return current ? Object.freeze({ ...current }) : null;
   }
 
   // Earliest epoch-ms at which THIS session's Auto pool could accept a turn
   // again, or null when some candidate is usable now / no reset is known.
-  // Read-only: it never mutates the session or the route, so the unattended
-  // supervisor can use it as a pure fact when parking after a fault. Mirrors the
-  // unblock fields `limit_state` reads: rejected parks (`blockedUntilMs`) and
-  // full quota windows (`usedPercent >= 100`, `resetMs` / `resetsAtMs`). A
-  // revoked credential has no self-recovery time and contributes nothing.
+  // Read-only: the decision lives in `auto_provider_runtime.rs`; this side only
+  // has the limit cache and hands each line's summary across.
   function retryNotBefore(session) {
     const rawSelection = session && session.providerSelection;
     if (!rawSelection || rawSelection.mode !== 'auto') return null;
@@ -749,53 +427,34 @@ function createAutoProviderRuntime(options = {}) {
       return null;
     }
     if (!validated.ok) return null;
-    const pool = catalogCandidates(session, validated.value);
     const cli = session.cli || 'claude';
-    const local = pool.candidates.filter(candidate => candidate.cli === cli && candidate.enabled !== false);
-    if (!local.length) return null;
-    // An exhausted candidate is not a whole-pool outage: another line can run.
-    if (local.some(candidate => candidate.limitState !== 'exhausted')) return null;
-    const nowMs = Number(now());
-    let earliest = null;
-    const later = (at) => {
-      const value = Number(at);
-      if (!Number.isFinite(value) || value <= nowMs) return;
-      if (earliest == null || value < earliest) earliest = value;
-    };
-    for (const candidate of local) {
+    const pool = catalogCandidates(session, validated.value);
+    const candidates = pool.candidates.map(candidate => {
       const provider = candidate.provider;
-      if (!limitCache || !provider) continue;
       let entry = null;
-      try { entry = limitCache.get(provider.appType, provider.id); } catch (_) { entry = null; }
-      const summary = entry && entry.summary;
-      if (!summary || typeof summary !== 'object') continue;
-      if (summary.revoked === true) continue;
-      if (summary.kind === 'availability' && summary.status === 'rejected') {
-        later(summary.blockedUntilMs);
+      if (limitCache && provider) {
+        try { entry = limitCache.get(provider.appType, provider.id); } catch (_) { entry = null; }
       }
-      for (const window of Array.isArray(summary.windows) ? summary.windows : []) {
-        if (!window || Number(window.usedPercent) < 100) continue;
-        later(window.resetMs);
-      }
-      if (Number(summary.usedPercentage) >= 100) later(summary.resetsAtMs);
-    }
-    return earliest;
+      return {
+        cli: candidate.cli,
+        enabled: candidate.enabled,
+        limitState: candidate.limitState,
+        summary: entry && entry.summary ? entry.summary : null,
+      };
+    });
+    const answer = JSON.parse(getNative().autoProviderRetryNotBefore({
+      cli, now: Number(now()), candidates,
+    }));
+    return answer == null ? null : answer;
   }
 
   function clearSession(sessionId) {
-    stickyBySession.delete(sessionId);
-    currentBySession.delete(sessionId);
-    selectionKeyBySession.delete(sessionId);
-    pendingBySession.delete(sessionId);
-    seedLaneBySession.delete(sessionId);
-    hopsBySession.delete(sessionId);
+    state.clearSession(sessionId);
     routing.clearSession(sessionId);
   }
 
   // Exposed for the chat admission path, which has the one async window before
-  // the synchronous turn resolves its route (see auto-provider-routing.js). The
-  // admission phase broadcasts its own progress frame, next to the wait it
-  // explains.
+  // the synchronous turn resolves its route.
   function prepareTurn(args) {
     return routing.prepareTurn(args);
   }

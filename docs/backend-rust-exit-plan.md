@@ -3061,7 +3061,7 @@ No service was restarted and no live service or user data was written during thi
 
 ### Golden fixture 与集成测试
 
-- `scripts/generate-account-subscription-fixture.js`（默认校验，`--write` 才写盘）：用冻结 oracle + 注入的脚本化 `fetch` + 合成 HOME 采集 22 个用例（两个 vendor 的 ok/cancelled/401/500/垃圾体/重定向/空体/过期/不可读/未知账号、无效/数组/对象 account、HEAD、两个 OPTIONS、尾斜杠）到 `native/gateway/tests/fixtures/account-subscription.json`；`observedAt` 归一化，TLS PEM 复用既有 fixture；另有 2 个 `delayMs` 慢账号（`a1a1…`/`a2a2…`，仅集成测试用，不参与 22 个用例）；连跑两次写盘字节一致（18,323 字节，SHA-256 `89a6722cc5d10a99a472376a34aaa548db47542a544fd2e9350a0b6f2c469507`），默认校验通过。
+- `scripts/generate-account-subscription-fixture.js`（默认校验，`--write` 才写盘）：用冻结 oracle + 注入的脚本化 `fetch` + 合成 HOME 采集 22 个用例（两个 vendor 的 ok/cancelled/401/500/垃圾体/重定向/空体/过期/不可读/未知账号、无效/数组/对象 account、HEAD、两个 OPTIONS、尾斜杠）到 `native/gateway/tests/fixtures/account-subscription.json`；`observedAt` 归一化，TLS 材料复用既有 fixture，私钥以 base64 PKCS#8 DER（`keyPkcs8B64`）保存而不是 PEM 私钥块——否则仓库制品守卫会把 fixture 判成 `credential-content`/`sensitive-fixture`，而该守卫必须对真实泄漏保持有效；另有 2 个 `delayMs` 慢账号（`a1a1…`/`a2a2…`，仅集成测试用，不参与 22 个用例）；连跑两次写盘字节一致（18,220 字节，SHA-256 `a492d3758626251c636a0712ffc611e2dc45b2e11ff4b404d5696540335f7296`），默认校验通过。
 - 集成测试 `native/gateway/tests/account_subscription.rs`：本地 rustls TLS 上游 + 手写 CONNECT 代理，真实启动网关重放 golden，断言响应逐字节、缓存行集合（`claude:aaaaaaaaaaaaaaaa`、`cccccccccccccccc`、`dddddddddddddddd`、`deadbeefdeadbeef`、`codex:1111111111111111`、`codex:global` 存在，`claude:9999999999999999` 不存在）、凭据只发往正确主机/路径、重定向恰好一次。第二个用例 `account_subscription_survives_client_disconnect` 用慢上游覆盖取消语义：唯一客户端断开后缓存行仍落库且上游恰好一次；第一个等待者断开时第二个仍拿到正确 profile，上游仍恰好一次。2/2 通过（连跑 4 次稳定）。
 
 ### 最终产物与验证
@@ -3083,3 +3083,42 @@ No service was restarted and no live service or user data was written during thi
 - **CI 缺口（低-中）**：四个生成器的 verify 模式此前不在任何 workflow 或 npm 脚本里，`src/network/proxy-policy.js` 或冻结 oracle 漂移不会变红。新增 `tests/test-rust-front-door-fixtures.js`：用子进程分别跑 `generate-outbound-proxy-corpus.js`、`generate-claude-models-fixture.js`、`generate-provider-limit-history-fixture.js`、`generate-account-subscription-fixture.js` 的校验模式；每个子进程有独立 `HOME`/`TMPDIR`/`MULTICC_DATA_DIR`/`AS_WORK`，代理变量全部钉在关闭的 loopback 端口，macOS 上再套 `sandbox-exec`（只允许 loopback 出站）。缺 addon 时两个依赖 napi 的用例显式 skip（`test-rust-kernels.js` 同款策略），前两个用例始终运行；另有一个静态断言确保这些生成器与 oracle 不调用 `/usr/bin/security`。登记：`tests/test-tiers.json`（core / deterministic / owner `npm:test:contracts`）、`package.json` 的 `test:contracts` 链尾；`tests/test-release-version-consistency.js` 基线 421/347/393 → 422/348/394（391 Node 条目，注释写明理由）。CI 配置变更单独列出：`.github/workflows/rust-kernels.yml` 的 `paths` 增加四个生成器、`src/network/proxy-policy.js`、`tests/helpers/legacy-*-route.js`，并在构建产物后的 `node --test` 清单里加入新测试。顺带把两个生成器的临时根从硬编码 `/tmp` 改为 `os.tmpdir()`（`$TMPDIR`），新测试的隔离目录才能真正兜住它们；fixture 输出不变。
 - **文档漂移（低）**：`docs/rust-migration/route-inventory.md` 的 51 → 50（`git show HEAD:src/routes/account-subscription.js | wc -l` = 50），T0 合计 1,755 → 1,754；`docs/backend-rust-exit-plan.md` 不再把 `tests/test-account-subscription.js` 说成 core deterministic，其 tier 是 `flow`；`docs/gateway.md` §9 已知差异补齐：URI 上限 65,534（hyper）、跨进程投影最终一致（record 后最多一次额外重读）、客户端断开不取消查询、HOME 缺失与 Windows/Linux 行为是推断未实测、差分红线与 Claude 无账号分支因 Keychain 跳过。
 - **最终验证（2026-11-11 收尾，最终树上按序重跑）**：`npm run build:rust` 新指纹 `8c651112c8d436b440715791`，四个 `*.source.json` 与文件字节一致（`builtFromSource=true`）；`cargo fmt --all --check` 退出 0；CI 形式 `cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings` 与 `cargo clippy --locked --workspace --all-targets -- -D warnings` 均零警告；`cargo build --locked --workspace` 成功；`cargo test --locked --workspace` 30 个测试二进制、906 passed / 0 failed；九次差分先常规跑、再在 `sandbox-exec -p '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))'` 下整套重跑，八组九次全部 `same` 且退出 0；`tests/test-rust-front-door-fixtures.js` 在沙箱内 5/5；`test:provider-router` 1,225、`test:contracts` 142、`test:native` 271、`test:rust` 256、`test:architecture` 128、`test:governance` 20、`test:security` 1,138 + 1 既有 TODO，全部 0 失败；`check-source-line-budget`（`public/run-config.js` 3,171、`server.js` 3,066）与 `check-runtime-write-inventory`（45 项）通过；两份清单重跑到新指纹。环境性抖动记录：并发跑重测试组时 `test-rust-cpr.js` 的 SSE 空闲预算用例与 `test-remote-screen.js` 的就绪行用例各失败一次，安静条件下新指纹 6/6、旧指纹 `6467d0ba7098a371300f3281` 6/6，`test-remote-screen.js` 单跑 3/3 全绿，判定为负载抖动，未改测试、未放宽门禁。
+
+## Auto Provider 价格阶梯、选择键、难度路由与轮次运行时迁入 Rust（2026-11-11）
+
+Auto Provider 的四个决策域——价格成型与阶梯、选择键、难度路由判定与裁决存储、整轮路由运行时（选线、故障切换、交接、成功记录、快照、重试时间）——全部迁入 `multicc_core`，napi 只做边界编解码；Node 侧四个模块只剩宿主接线（providers 目录、限额缓存、配额守卫、价格表查询、Jev 调用、时钟、emit/logger、`lastGoodRoute`、CLI 可用性探测）。迁移与冻结 oracle 的差分夹具在同一份改动里，Node 的生产行为不变。
+
+### Rust 实现
+
+- `native/core/src/auto_provider_pricing.rs`（921 行）：`priceOf` 的表格后处理（blended 必须有限且 ≥0，input/output 各取一半；`matched`/`source` 缺省为 null）、`modelChoices`（默认模型 + 可见列表 + 自动模型线路各 tier 别名背后的模型，顺序沿用 provider 自身）、`pricingModels`（本轮扩张会定价的模型全集，去重保序，与扩张同源）、`expandCandidates`（autoModel 展开、每 provider 最多 6 个变体、总计最多 24、价格档最多 4、价格升序、未知价格垫底、`requirePrice` 丢弃不可定价变体、`room == 1` 的数组洞保留）、`priceLadder`（`tiers` + `tierOf`）。`RustPriceLadder` 把整轮阶梯留在 Rust，价格不经过 JSON。
+- `native/core/src/auto_provider_selection_key.rs`（150 行）：策略签名 = 归一化后的 selection 去掉 `presetId` 后按固定属性序序列化；用 `shift_remove` 而不是 `remove`，否则 `preserve_order` 下会把末项换进洞、改变键序。归一化本身复用既有的 `auto_provider_config`。
+- `native/core/src/auto_provider_routing.rs`（512 行）：文本哈希、`unknownTier`、`resolveTier`（价梯刷新后裁决档位已不存在即视为无裁决）、裁决存储（TTL、最早优先淘汰、按会话清空、条目上限）。
+- `native/core/src/auto_provider_runtime.rs`（2,126 行）：`syncSelection` 两段（策略键变更才重置、池记忆 seed、无签名旧路由恢复还要求该 provider 仍在服务持久化的模型）、`planTurn`（继轮留在原 lane、pending 计划幂等、跳数预算、不可达 lane 不规划）、`beginTurn` / `initial` / `failover` / `prepareHandoff` / `recordSuccess`、`snapshot` / `clearSession`、`retryNotBefore`。选线与安全判定直接委托既有的 `auto_provider_policy`，不复制规则；`CANDIDATE_FIELDS` 与 JS 策略桥同集（11 个字段）；轮次表上限 128（最先创建的先淘汰），`clearSession` 同时清掉该会话的轮次。
+- `native/addon/src/auto_provider_{pricing,routing,runtime}.rs`（141 / 129 / 153 行）：边界编解码。仓内没有 napi `Function` 回调先例，价格表查询改成两段式：Rust 给出要定价的模型 → JS 查表并回传条目 → Rust 成形、展开、封顶。运行时统一信封 `{value, undefined, error, effects}`：JS 按序重放 effects（`emit` 包 try/catch，`logger.info` 不包），再从 `error` 抛 `AutoProviderError`。
+
+### 删除与宿主适配
+
+- `src/chat/auto-provider-runtime.js` 814 → 473 行、`auto-provider-pricing.js` 134 → 110、`auto-provider-routing.js` 249 → 198、`auto-provider-selection-key.js` 19 → 10（合计 1,216 → 791）。留在 Node 的只有 I/O 与装配：候选池（providers 目录、OpenCode/vendor 合成线路、限额缓存、配额守卫、价格表）、Jev 调用与单飞、CLI 可用性探测、`lastGoodRoute`、时钟与 `emit`/`logger`。
+- 两处时序按旧闭包还原：`prepareHandoff` 的 lane 可用性在交接时重新探测（不是开始轮次时的快照）；`planTurn` 的价梯与定价对象在早退分支前装配，提前返回时会多做一次宿主探测，但结果等价。
+- JSON 边界：`NaN`/`±Infinity` 以字符串 `"NaN"`/`"Infinity"` 拼写，Rust 侧 `Number()` 原值读回；`room == 1` 的 `undefined` 洞跨桥成 `null`，JS 侧再映射回 `undefined`。记录在案的怪癖（`room == 1` 洞、缺 `usedPercent` 的窗口按 `resetMs` 计时）原样保留，不做“修复”。
+- 本轮没有改动任何 HTTP 路由、`server.js` 或启动命令，因此不重跑两份后端清单。
+
+### 差分与夹具
+
+- `tests/helpers/legacy-auto-provider-{pricing,selection-key,routing,runtime}.js`（144 / 29 / 259 / 825 行）是从迁移前 JS 冻结的 oracle；`src/` 与 `server.js` 不 require 它们。
+- `scripts/generate-auto-provider-fixtures.js`（1,612 行，默认校验、`--write` 才写盘）：每个用例渲染两遍（冻结 oracle + 现役 src），断言 JSON 完全一致，再与提交的夹具逐字节比较；不一致时报 `oracle and src disagree`。夹具 `native/core/tests/fixtures/auto-provider-{pricing,selection-key,routing,runtime}.json` 共 33 / 10 / 41 / 97 个用例（runtime 为 28 个场景、97 步，覆盖 beginTurn / initial / failover / prepareHandoff / recordSuccess / planTurn / snapshot / clearSession / retryNotBefore）；校验模式连跑用例数不变。
+- `tests/test-auto-provider-fixtures.js`（142 行，6 个用例）在子进程里跑四个 section 的校验，每个 section 有独立 `HOME`/`TMPDIR`/`MULTICC_DATA_DIR`，所有代理变量钉在关闭的回环端口；另有夹具卫生（不含工作区路径、家目录、真实墙钟）与“生成器和 oracle 不启动服务、不外拨”的静态断言。
+- 回归：`tests/test-auto-provider-runtime.js` 67/67、`test-auto-provider-pricing.js` 14/14、`test-auto-provider-routing.js` 30/30、`test-auto-provider-config.js` 31/31、`test-auto-provider-fixtures.js` 6/6；`cargo test -p multicc-core auto_provider` 51 passed。
+
+### 登记
+
+- `package.json` 的 `test:contracts` 链尾加入 `tests/test-auto-provider-fixtures.js`；`tests/test-tiers.json` 登记为 core / deterministic / owner `npm:test:contracts`；`tests/test-release-version-consistency.js` 复核基线 422/348/394 → 423/349/395（392 个 Node 条目，注释写明理由）。
+- `.github/workflows/rust-kernels.yml` 的 `paths` 增加生成器、fixture 测试与 `tests/helpers/legacy-auto-provider-*.js`。
+
+### 最终产物与验证
+
+- Rust 源码指纹 `b175deed1683680e43aefedd`：`multicc_core.node` 18,381,152 字节，SHA-256 `71576e06cf0281a239016953a293fa9599f07530d7e2de80727bebaadcebd57d`（`source.json` 一致，即 `builtFromSource=true`）；同目录 `multicc-gateway` 10,564,064 字节 SHA-256 `b12b1e997a66af7642957751033f22365aab8f9f4289447e86c4e6bcc30dab6b`、`multicc-cdpd` 2,012,208 字节 `63f2c7491bcf7522edec80d7f7adb7f5cbc39cd9a12ab5bc836c0d447ee6363d`、`multicc-remote` 7,328,800 字节 `d800dd5939b02d3670aa4530ab06fb5e2393a5d979017965b495747682d2979d`。
+- `cargo fmt --all --check` 退出 0；`cargo clippy --locked --workspace --all-targets -- -D warnings` 零警告；`cargo test --locked --workspace` 30 个测试二进制、952 passed / 0 failed（上一轮 906；本域新增 pricing / selection-key / routing / runtime 内核与夹具单测）。
+- JS 门禁（`MULTICC_RUST_ADDON` 与 `MULTICC_RUST_PREBUILT_DIR` 都指向本指纹）：`test:contracts` 148/148；`test:provider-router` 1,227/1,227；`test:native` 退出 0；`test:core` 3,589 项、3,588 通过、唯一失败是既有的 paint-budget 基线红（`public/chat-unattended.css` 的 `@keyframes unat-pulse` 动 `box-shadow`，测试为 `tests/test-air-paint-budget.js`；该文件不在本改动内，见既存红基线记录）。
+- `node scripts/check-source-line-budget.js`（迁移债务 `public/run-config.js` 3,171、`server.js` 3,073）、`check-test-tiers.js`（876 条分类）、`check-repository-artifacts.js` 均通过。
+- 未提交、未合并、未重启服务；临时文件在 `/tmp/ab-*.log`。

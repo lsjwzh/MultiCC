@@ -926,8 +926,8 @@ fn settle_state(state: &Value) -> (Value, bool) {
         .and_then(|stall| field(stall, "consecutiveFaults"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let had_retry = field(state, "retryAt").map_or(false, |value| !value.is_null())
-        || field(state, "retryCategory").map_or(false, |value| !value.is_null());
+    let had_retry = field(state, "retryAt").is_some_and(|value| !value.is_null())
+        || field(state, "retryCategory").is_some_and(|value| !value.is_null());
     if streak != 0 {
         let mut stall = field(state, "stall")
             .and_then(Value::as_object)
@@ -1250,7 +1250,7 @@ fn fault_backoff_ms(faults: u32) -> i64 {
 }
 
 fn fault_category_is(category: &str, table: &[&str]) -> bool {
-    table.iter().any(|item| *item == category)
+    table.contains(&category)
 }
 
 fn non_recoverable_message(category: &str) -> String {
@@ -1327,9 +1327,8 @@ fn fault_decision(
     } else {
         "fault"
     };
-    let entry = |verdict: &str, reason: &str| {
-        json!({ "at": now, "verdict": verdict, "reason": reason })
-    };
+    let entry =
+        |verdict: &str, reason: &str| json!({ "at": now, "verdict": verdict, "reason": reason });
 
     // A human-only cause: stop now and say what must be fixed.
     if fault_category_is(&category, &NON_RECOVERABLE_FAULT_CATEGORIES) {
@@ -2041,7 +2040,11 @@ mod tests {
             let out = fault_json(json!({ "state": state, "now": 1000 }));
             let faults = streak + 1;
             assert_eq!(out["faults"], json!(faults), "streak {streak}");
-            assert_eq!(out["nextState"]["status"], json!("active"), "streak {streak}");
+            assert_eq!(
+                out["nextState"]["status"],
+                json!("active"),
+                "streak {streak}"
+            );
             assert_eq!(
                 out["nextState"]["stall"]["consecutiveFaults"],
                 json!(faults),
@@ -2136,7 +2139,11 @@ mod tests {
             }));
             assert_eq!(out["action"], json!("needs_human"), "{category}");
             assert_eq!(out["reason"], json!("non_recoverable_fault"), "{category}");
-            assert_eq!(out["nextState"]["status"], json!("needs_human"), "{category}");
+            assert_eq!(
+                out["nextState"]["status"],
+                json!("needs_human"),
+                "{category}"
+            );
             assert_eq!(out["nextState"]["retryAt"], Value::Null, "{category}");
             let message = out["message"].as_str().unwrap();
             assert!(message.contains("无人值守已停止自动续接"), "{category}");

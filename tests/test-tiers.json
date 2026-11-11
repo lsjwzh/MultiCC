@@ -1735,6 +1735,15 @@
       ]
     },
     {
+      "path": "tests/test-auto-provider-fixtures.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
       "path": "tests/test-auto-provider-handoff.js",
       "tier": "core",
       "lane": "deterministic",
