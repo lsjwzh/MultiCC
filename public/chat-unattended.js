@@ -56,6 +56,9 @@
     exhausted: '⊘', stopped: '■', error: '✕',
   });
   const RESUMABLE = new Set(['needs_human', 'exhausted', 'stopped', 'error']);
+  // Terminal states with a persisted record: the panel footer (and the paused
+  // banner for the RESUMABLE subset) can end the run and delete the record.
+  const CLEARABLE = new Set(['needs_human', 'exhausted', 'stopped', 'error', 'achieved']);
   const EDITABLE = new Set(['active', 'needs_human']);
 
   function clampInt(value, min, max, fallback) {
@@ -84,6 +87,9 @@
     let mounted = false;
     let panelOpen = false;
     let formDirty = false;
+    // After clearing, the panel keeps the last goal/criteria/duration as a draft
+    // so the user can restart quickly; every other state change still syncs.
+    let keepDraft = false;
     let busy = false;
     let precheckBusy = false;
     let tickTimer = null;
@@ -236,12 +242,15 @@
     const updateBtn = el('button', '', tr('unattendedSave'));
     const stopBtn = el('button', 'unat-stop', tr('unattendedStop'));
     const resumeBtn = el('button', 'unat-primary', tr('unattendedResume'));
-    for (const button of [startBtn, updateBtn, stopBtn, resumeBtn]) button.type = 'button';
+    const clearBtn = el('button', 'unat-clear', tr('unattendedClear'));
+    clearBtn.title = tr('unattendedClearHint');
+    clearBtn.dataset.action = 'clear';
+    for (const button of [startBtn, updateBtn, stopBtn, resumeBtn, clearBtn]) button.type = 'button';
     startBtn.dataset.action = 'start';
     updateBtn.dataset.action = 'update';
     stopBtn.dataset.action = 'stop';
     resumeBtn.dataset.action = 'resume';
-    footer.append(stopBtn, updateBtn, resumeBtn, startBtn);
+    footer.append(stopBtn, updateBtn, resumeBtn, clearBtn, startBtn);
 
     panel.append(head, body, footer);
 
@@ -264,7 +273,12 @@
     bannerReason.hidden = true;
     const bannerBtn = el('button', 'unat-banner-btn', tr('unattendedPauseTakeover'));
     bannerBtn.type = 'button';
-    banner.append(bannerMain, bannerReason, bannerBtn);
+    // Quiet secondary action next to the primary resume / pause button.
+    const bannerClearBtn = el('button', 'unat-banner-clear', tr('unattendedClear'));
+    bannerClearBtn.type = 'button';
+    bannerClearBtn.title = tr('unattendedClearHint');
+    bannerClearBtn.dataset.action = 'clear';
+    banner.append(bannerMain, bannerReason, bannerClearBtn, bannerBtn);
 
     // ── rendering ───────────────────────────────────────────────────────────
     function fmtVerdict(verdict) {
@@ -538,7 +552,10 @@
       updateBtn.hidden = !(state && EDITABLE.has(status));
       stopBtn.hidden = !(state && EDITABLE.has(status));
       resumeBtn.hidden = !(state && RESUMABLE.has(status));
-      for (const button of [startBtn, updateBtn, stopBtn, resumeBtn]) button.disabled = busy || precheckBusy;
+      clearBtn.hidden = !(state && CLEARABLE.has(status));
+      clearBtn.textContent = tr('unattendedClear');
+      clearBtn.title = tr('unattendedClearHint');
+      for (const button of [startBtn, updateBtn, stopBtn, resumeBtn, clearBtn]) button.disabled = busy || precheckBusy;
       draftBtn.disabled = busy || precheckBusy;
       addCriterion.disabled = busy;
       durationInput.disabled = busy || precheckBusy;
@@ -570,6 +587,7 @@
       // 不能让用户把它当成正常推进，也不能红得像报错。
       banner.classList.toggle('unat-banner-retry', active && retryPending());
       bannerBtn.disabled = busy;
+      bannerClearBtn.disabled = busy;
       if (active) {
         bannerText.textContent = activeBannerText();
         bannerSpinner.hidden = !state.evaluating;
@@ -577,6 +595,7 @@
         bannerReason.textContent = '';
         bannerBtn.textContent = tr('unattendedPauseTakeover');
         bannerBtn.dataset.action = 'stop';
+        bannerClearBtn.hidden = true;
         banner.hidden = false;
         return;
       }
@@ -589,11 +608,15 @@
         bannerReason.textContent = reason;
         bannerBtn.textContent = tr('unattendedBannerResume');
         bannerBtn.dataset.action = 'resume';
+        bannerClearBtn.textContent = tr('unattendedClear');
+        bannerClearBtn.title = tr('unattendedClearHint');
+        bannerClearBtn.hidden = false;
         banner.hidden = false;
         return;
       }
       bannerReason.hidden = true;
       bannerReason.textContent = '';
+      bannerClearBtn.hidden = true;
       banner.hidden = true;
     }
 
@@ -606,6 +629,7 @@
       syncRetryTimer();
       position();
       if (syncForm) {
+        if (keepDraft) return;
         goalInput.value = state && state.goal ? String(state.goal) : '';
         const criteria = state && Array.isArray(state.criteria) ? state.criteria : [];
         renderCriteria(criteria.length ? criteria : ['']);
@@ -773,14 +797,18 @@
         showError(tr('unattendedNoSession'));
         return;
       }
+      // Only clear keeps the typed form as a draft; every other action adopts
+      // the state the server returns.
+      keepDraft = action === 'clear';
       busy = true;
       showError('');
       render(false);
       try {
         const data = await request(path, { method: 'POST', json: { action, ...(extra || {}) } });
-        formDirty = false;
-        applyPayload(data, true);
+        formDirty = keepDraft;
+        applyPayload(data, !keepDraft);
       } catch (error) {
+        keepDraft = false;
         showError(errorMessage(error));
       } finally {
         busy = false;
@@ -1057,11 +1085,13 @@
     updateBtn.addEventListener('click', update);
     stopBtn.addEventListener('click', () => void act('stop'));
     resumeBtn.addEventListener('click', () => void act('resume'));
+    clearBtn.addEventListener('click', () => void act('clear'));
     draftBtn.addEventListener('click', () => void draft());
     bannerBtn.addEventListener('click', () => {
       const action = bannerBtn.dataset.action;
       if (action === 'stop' || action === 'resume') void act(action);
     });
+    bannerClearBtn.addEventListener('click', () => void act('clear'));
 
     function mount() {
       if (mounted) return;

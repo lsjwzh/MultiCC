@@ -494,6 +494,30 @@ class _UnattendedComposerBannerState extends State<UnattendedComposerBanner>
                   ),
                 ),
               ),
+            // 终态除了「继续无人值守」再给一条 quieter 的退场路：结束并清除
+            // 设置。不弹确认框（不阻塞），也刻意不用危险色。
+            if (!active)
+              Tooltip(
+                message: t('unattendedClearHint'),
+                child: TextButton(
+                  key: const ValueKey('unattended-clear-banner'),
+                  onPressed: busy ? null : provider.clearUnattended,
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.muted,
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: const Size(0, 30),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(
+                    t('unattendedClear'),
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
             TextButton(
               key: ValueKey(
                 active ? 'unattended-pause' : 'unattended-resume-banner',
@@ -895,6 +919,12 @@ class _UnattendedSheetState extends State<_UnattendedSheet>
     final ok = await widget.provider.stopUnattended();
     if (!mounted) return;
     if (ok) _snack(t('unattendedStopped'));
+  }
+
+  /// 结束无人值守并清除设置。成功后 provider 状态落空，面板自然回到「启动」态；
+  /// 表单控制器不动，用户填的目标/标准/时长原样留作草稿。
+  Future<void> _clear() async {
+    await widget.provider.clearUnattended();
   }
 
   void _snack(String text) {
@@ -1663,6 +1693,20 @@ class _UnattendedSheetState extends State<_UnattendedSheet>
           ),
         ] else ...[
           if (canResume) ...[
+            Tooltip(
+              message: t('unattendedClearHint'),
+              child: TextButton(
+                key: const ValueKey('unattended-clear'),
+                onPressed: disabled ? null : _clear,
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.muted,
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                ),
+                child: Text(t('unattendedClear')),
+              ),
+            ),
+            const SizedBox(width: 4),
             Expanded(
               child: OutlinedButton(
                 key: const ValueKey('unattended-stop'),
@@ -1680,7 +1724,24 @@ class _UnattendedSheetState extends State<_UnattendedSheet>
                 child: Text(t('unattendedResume')),
               ),
             ),
-          ] else
+          ] else ...[
+            // 已达成等终态只能重新 start，但同样要有一条退场路。
+            if (state != null) ...[
+              Tooltip(
+                message: t('unattendedClearHint'),
+                child: TextButton(
+                  key: const ValueKey('unattended-clear'),
+                  onPressed: disabled ? null : _clear,
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.muted,
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                  ),
+                  child: Text(t('unattendedClear')),
+                ),
+              ),
+              const SizedBox(width: 4),
+            ],
             Expanded(
               child: FilledButton(
                 key: const ValueKey('unattended-start'),
@@ -1702,6 +1763,7 @@ class _UnattendedSheetState extends State<_UnattendedSheet>
                     : Text(t('unattendedStart')),
               ),
             ),
+          ],
         ],
       ],
     );

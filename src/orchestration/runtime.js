@@ -14,6 +14,7 @@ const { createWaitService } = require('../wait/service');
 const { deliveryClassForItem } = require('./delivery-classes');
 const { createSessionWorkScheduler } = require('../session-work/scheduler');
 const { isWaitForUserLetter } = require('../classify/vocab');
+const { deliveryRetryDecision } = require('../unattended/kernel');
 const { isUserTypedWork } = require('../session-work/user-input');
 const {
   TERMINAL_OPERATION_STATES,
@@ -920,21 +921,21 @@ function createOrchestrationRuntime({
   // `chat_turn_reexecute_persisted_delivery` loop that head-of-line blocked
   // every other session.
   //
-  // The freshness window matters: the probe is written by the PREVIOUS attempt
-  // too, so only a probe stamped after this attempt started proves that THIS
-  // call is the one that failed before handoff. An old probe plus a failure
-  // from an earlier gate (background work, admission reject) must stay
-  // retryable.
-  async function rejectedBeforeHandoff(item, startedAt) {
-    if (typeof runnerDeliveryProbe !== 'function') return false;
+  // Only the inputs are gathered here (the unattended status and the runner's
+  // handoff probe); the decision itself, including the freshness window that
+  // keeps a PREVIOUS attempt's probe from proving this one failed before
+  // handoff, lives in native/core/src/unattended.rs (`delivery_retry_decision`).
+  async function rejectedDeliveryRetry(item, recovered, startedAt) {
+    const unattendedStatus = recovered.unattended?.status ?? null;
+    // The rule reads the probe only while a supervisor is active; without one
+    // the probe cannot change the answer, so it is not even asked for.
     let probe = null;
-    try {
-      probe = await Promise.resolve(runnerDeliveryProbe(item.sessionId, deliveryProbeIdentity(item)));
-    } catch (_) { return false; }
-    return !!probe
-      && probe.known === true
-      && probe.handedOff === false
-      && Number(probe.at) >= startedAt;
+    if (unattendedStatus === 'active' && typeof runnerDeliveryProbe === 'function') {
+      try {
+        probe = await Promise.resolve(runnerDeliveryProbe(item.sessionId, deliveryProbeIdentity(item)));
+      } catch (_) { probe = null; }
+    }
+    return deliveryRetryDecision({ unattendedStatus, probe, startedAt });
   }
 
   async function deliver(item) {
@@ -1030,20 +1031,18 @@ function createOrchestrationRuntime({
         // transport lease first (retry budget), then release the claim so the
         // 'claim_released' broadcast carries the post-rollback FIFO snapshot.
         const recovered = getSessionRecoveryState(item.sessionId) || {};
-        const unattendedActive = recovered.unattended?.status === 'active';
-        const preparationFailure = unattendedActive
-          && await rejectedBeforeHandoff(item, deliveryStartedAt);
-        if (preparationFailure) {
+        const rejection = await rejectedDeliveryRetry(item, recovered, deliveryStartedAt);
+        if (!rejection.retryable) {
           // The supervisor's fault retry is the one driver from here; a durable
           // outbox retry would race it and re-execute the same persisted turn.
           log(`[orchestration] delivery ${item.id} aborted before runner handoff;`
             + ' dead-lettering it and leaving the retry to the unattended supervisor');
         }
         const failed = await outbox.fail(item.id, item.leaseToken,
-          preparationFailure
-            ? 'turn preparation failed before runner handoff; unattended supervisor owns the retry'
-            : 'runChatTurn rejected delivery',
-          { retryable: !preparationFailure });
+          rejection.retryable
+            ? 'runChatTurn rejected delivery'
+            : 'turn preparation failed before runner handoff; unattended supervisor owns the retry',
+          { retryable: rejection.retryable });
         await sessionScheduler.releaseClaim(item, 'delivery_deferred');
         return failed;
       }

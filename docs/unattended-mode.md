@@ -22,8 +22,8 @@ sub-state on cards) is a different concept and stays. Unattended "achieved" writ
    `unattended: { goal?, criteria?, maxDurationMinutes? }`.
 2. **Mid-conversation**: a floating icon on the chat page (Web `chat.html` and Flutter
    `chat_screen`). Click → panel: goal textarea, criteria list (editable), maximum
-   supervision time, "AI 补全判断标准" (precheck), Start / Stop / Resume, and a live status
-   block (rounds sent so far, remaining time, last verdict + reason, history). The icon
+   supervision time, "AI 补全判断标准" (precheck), Start / Stop / Resume / End (clear), and a
+   live status block (rounds sent so far, remaining time, last verdict + reason, history). The icon
    state: idle (grey), active (green, pulsing), needs_human (amber), achieved (check),
    stopped/exhausted/error (red/grey).
    Takeover works at any time, also when the agent is idle: `start` with
@@ -53,10 +53,20 @@ A goal or criteria is mandatory (`goal` non-empty; criteria optional but recomme
 }
 ```
 
-`status === 'active'` is the only armed state. Everything else is terminal until `resume`/`start`.
-There is no round budget: supervision ends when `now >= deadlineAt` (status `exhausted`,
+`status === 'active'` is the only armed state. Everything else is terminal until `resume`/`start`
+or `clear`. There is no round budget: supervision ends when `now >= deadlineAt` (status `exhausted`,
 trace `[无人值守 Unattended] 已达到最长值守时间`). UIs show the remaining time computed from
 `deadlineAt` — never from a round counter.
+
+```
+active ──stop / user input / cancel / expiry / verdict──▶ stopped | needs_human | exhausted | error | achieved
+any non-active ──resume──▶ active
+any non-active ──clear──▶ (no record.unattended; "not started")
+```
+
+`clear` is refused while `active` (409 `invalid_state`): the UI must pause first, since deleting
+a live supervisor would silently drop its timers. Clearing an already-cleared session is an
+idempotent no-op (`{ ok: true, unattended: null }`).
 
 ## HTTP
 
@@ -71,6 +81,11 @@ trace `[无人值守 Unattended] 已达到最长值守时间`). UIs show the rem
   - `resume`: `{ maxDurationMinutes? }`; from `needs_human | exhausted | stopped | error` back
     to `active`, re-arms the clock (`startedAt = now`, `deadlineAt = now + maxDurationMinutes * 60000`),
     `rounds` reset to 0 for `exhausted`, kept otherwise; runs `evaluateNow` when idle.
+  - `clear`: end the run and delete `record.unattended` (also from `achieved`). Cancels the
+    deadline and retry timers, withdraws still-queued supervisor continuations, releases held
+    classic pushes, broadcasts `unattended_state` with `unattended: null`, and writes one trace
+    line (`无人值守已结束，设置已清除`). 409 `invalid_state` while `active`; a session with no
+    state answers `{ ok: true, unattended: null }` (idempotent).
   - `maxRounds` and `goalLimits.maxRounds` in a request are IGNORED: accepted, never an
     error, never persisted. Out-of-range `maxDurationMinutes` is clamped, not rejected.
   - 404 unknown session, 409 for terminal/aux-less states where it cannot apply, 400 bad action.
@@ -139,6 +154,9 @@ Product decisions (user, 2026-11-10):
    and is then delivered normally, so a stale client can never make human and supervisor fight.
    `stop` from the UI sets `pausedBy: 'user'`, a Cancel sets `pausedBy: 'cancel'`.
    `resume` while a turn is streaming/queued must NOT run `evaluateNow`; the turn-end settle does it.
+   A terminal record can be ended for good with "结束无人值守 / End unattended" (`clear`) in the
+   paused banner and the panel footer; it deletes the state and the banner disappears. The panel
+   keeps the last form values as a draft so the user can start again without retyping.
 2. **优先级：解决等待/异常 → FIFO → 普通自动接续。** 无人值守处于 `active`
    时，W 等待和 E 异常保持 FIFO 暂存，先由无人值守回答问题或发送恢复指令。
    恢复回合正常完成后，按用户重排后的顺序发送 FIFO；队列清空后才发送普通自动
@@ -341,6 +359,9 @@ fields. `POST` action semantics added by v2:
 - `stop` → `status: "stopped"`, `pausedBy: "user"`.
 - `resume` → clears `pausedBy`; runs `evaluateNow` **only** when no turn is streaming and no
   delivery is queued — otherwise the turn-end settle evaluates.
+- `clear` → deletes the persisted state (terminal states only; active is 409) and drops the
+  banner/input lock on every client. The Web panel keeps the last goal/criteria/duration as a
+  draft so a restart is one click.
 - `start` same rule for its default `evaluateNow`.
 - A real user message that arrives while `active` is paused first (`status: "stopped"`,
   `pausedBy: "input"`) and then delivered normally. System-injected messages

@@ -25,6 +25,7 @@ class _SheetProvider extends ChatProvider {
   final starts = <Map<String, dynamic>>[];
   final updates = <Map<String, dynamic>>[];
   int resumes = 0;
+  int clears = 0;
 
   @override
   Future<bool> startUnattended({
@@ -84,6 +85,13 @@ class _SheetProvider extends ChatProvider {
   @override
   Future<bool> stopUnattended() async {
     applyUnattendedEvent(const {'status': 'stopped'});
+    return true;
+  }
+
+  @override
+  Future<bool> clearUnattended() async {
+    clears++;
+    applyUnattendedEvent(null);
     return true;
   }
 }
@@ -501,6 +509,91 @@ void main() {
     expect(provider.resumes, 1);
     expect(requests, isEmpty);
     expect(provider.updates, isEmpty);
+
+    await _closeSheet(tester);
+    provider.dispose();
+  });
+
+  testWidgets('终态面板可结束无人值守：草稿保留，面板回到启动态', (tester) async {
+    final settings = await _settings();
+    final provider = _SheetProvider(settings: settings);
+    provider.applyUnattendedEvent(const {
+      'status': 'stopped',
+      'goal': '旧目标',
+      'criteria': ['旧标准'],
+      'maxDurationMinutes': 60,
+    });
+
+    await _openSheet(
+      tester,
+      provider,
+      client: _client(precheck: _precheckOk()),
+    );
+
+    // 先在表单里改出一份草稿，结束之后必须原样留着。
+    await _type(tester, 'unattended-goal', '我想保留的草稿目标');
+    await _type(tester, 'unattended-criterion-0', '我想保留的草稿标准');
+    await _type(tester, 'unattended-max-duration', '3');
+
+    expect(find.byKey(const ValueKey('unattended-clear')), findsOneWidget);
+    await _tap(tester, 'unattended-clear');
+
+    expect(provider.clears, 1);
+    // 状态落空：退场按钮与「继续」都消失，只剩「启动」。
+    expect(find.byKey(const ValueKey('unattended-clear')), findsNothing);
+    expect(find.byKey(const ValueKey('unattended-resume')), findsNothing);
+    expect(find.byKey(const ValueKey('unattended-start')), findsOneWidget);
+
+    // 草稿没有被清空，重启不用重填。
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('unattended-goal')))
+          .controller!
+          .text,
+      '我想保留的草稿目标',
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const ValueKey('unattended-criterion-0')),
+          )
+          .controller!
+          .text,
+      '我想保留的草稿标准',
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const ValueKey('unattended-max-duration')),
+          )
+          .controller!
+          .text,
+      '3',
+    );
+
+    await _closeSheet(tester);
+    provider.dispose();
+  });
+
+  testWidgets('已达成（achieved）面板也提供结束入口', (tester) async {
+    final settings = await _settings();
+    final provider = _SheetProvider(settings: settings);
+    provider.applyUnattendedEvent(const {
+      'status': 'achieved',
+      'goal': '已经完成的目标',
+      'criteria': ['已完成'],
+    });
+
+    await _openSheet(
+      tester,
+      provider,
+      client: _client(precheck: _precheckOk()),
+    );
+
+    // achieved 不能 resume，但同样要给一条退场路。
+    expect(find.byKey(const ValueKey('unattended-resume')), findsNothing);
+    expect(find.byKey(const ValueKey('unattended-clear')), findsOneWidget);
+    expect(find.byKey(const ValueKey('unattended-start')), findsOneWidget);
 
     await _closeSheet(tester);
     provider.dispose();

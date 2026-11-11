@@ -384,6 +384,11 @@
   border-color: rgba(239, 91, 91, 0.45);
   color: #f38b8b;
 }
+/* 「结束无人值守」：安静的次要动作，不是危险操作（红色留给 Stop/接管）。 */
+.unat-actions .unat-clear {
+  background: transparent;
+  color: var(--muted, #9aa7b8);
+}
 
 @media (max-width: 560px) {
   /* 手机上改成底部抽屉：宽度贴边，仍留出图标那一列，避免把面板压到发送键上。 */
@@ -515,6 +520,21 @@
 }
 .unat-banner-btn:hover:not(:disabled) { background: rgba(47, 191, 113, 0.32); }
 .unat-banner-btn:disabled { opacity: .55; cursor: default; }
+/* banner 上的「结束」是幽灵按钮：与主按钮（继续/暂停并接管）同排但不抢视线。 */
+.unat-banner-clear {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted, #9aa7b8);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.unat-banner-clear[hidden] { display: none; }
+.unat-banner-clear:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
+.unat-banner-clear:disabled { opacity: .55; cursor: default; }
 .unat-banner-paused {
   border-color: var(--border, rgba(140, 160, 190, 0.28));
   background: rgba(255, 255, 255, 0.035);
@@ -628,6 +648,7 @@
 @media (prefers-color-scheme: light) {
   .unat-banner { color: #1c6b42; background: rgba(47, 191, 113, 0.1); }
   .unat-banner-btn { color: #1c6b42; }
+  .unat-banner-clear { color: #5b6878; }
   .unat-banner-reason { color: #5b6878; }
   .unat-banner-paused { color: #5b6878; }
   .unat-banner-paused .unat-banner-text { color: #1d2733; }
@@ -646,6 +667,7 @@
   .unat-banner { margin: 0 8px 3px; padding: 6px 8px; }
   .unat-banner-main { flex-basis: 100%; }
   .unat-banner-btn { margin-left: auto; }
+  .unat-banner-clear { margin-left: auto; }
   .unat-fab.unat-evaluating::after { inset: 3px; }
   /* 390px 上三个动作按钮各占一行太占高度：允许两行折行，主按钮占满一行。 */
   .unat-precheck-actions { gap: 5px; }

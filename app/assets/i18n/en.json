@@ -5134,6 +5134,8 @@
   "unattendedSave": "Save changes",
   "unattendedStop": "Stop",
   "unattendedResume": "Resume",
+  "unattendedClear": "End unattended",
+  "unattendedClearHint": "End this unattended run and clear its settings",
   "unattendedStart": "Start",
   "unattendedStarted": "Unattended started",
   "unattendedStopped": "Unattended stopped",

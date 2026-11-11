@@ -131,6 +131,10 @@ mixin ChatProviderUnattended on ChangeNotifier {
     if (maxDurationMinutes != null) 'maxDurationMinutes': maxDurationMinutes,
   });
 
+  /// `clear`：结束本次无人值守并清除设置。成功后服务端回 `unattended: null`，
+  /// 本地状态随之落空（横幅消失、输入解锁）；active 时服务端会回 409。
+  Future<bool> clearUnattended() => _unattendedAction({'action': 'clear'});
+
   void clearUnattendedError() {
     if (_unattendedError == null) return;
     _unattendedError = null;

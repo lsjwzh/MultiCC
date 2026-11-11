@@ -655,9 +655,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 实测 10364/672445，抬一格。
     // 无人值守故障恢复退避：+3 双语键（unattendedRetryCapacity/Fault/Soon），中英各 3 行
     // = +6 行；countLines 口径实测 10370/672985，抬一格。
-    maxLines: 10370,
+    // 无人值守「结束并清除」：+2 双语键（unattendedClear/ClearHint），中英各 2 行
+    // = +4 行；countLines 口径实测 10374/673236，抬一格。
+    maxLines: 10374,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 672985,
+    maxBytes: 673236,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

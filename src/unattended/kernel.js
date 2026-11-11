@@ -1,8 +1,9 @@
 'use strict';
 
 // Native bridge for unattended mode. Every rule (caps, verdict prompt, tolerant
-// JSON parsing, stall/aux-failure policy, wall-clock deadline math) lives in
-// native/core/src/unattended.rs; this file only marshals JSON across napi.
+// JSON parsing, stall/aux-failure policy, wall-clock deadline math, the
+// rejected-delivery retry decision) lives in native/core/src/unattended.rs;
+// this file only marshals JSON across napi.
 // There is deliberately no JavaScript fallback — a missing addon must fail loudly
 // the same way classify vocab does.
 
@@ -48,8 +49,23 @@ function parseVerdict(text) {
   return JSON.parse(native().unattendedParseVerdict(String(text == null ? '' : text)));
 }
 
+// Whether a rejected delivery keeps its outbox retry budget (`retryable`) —
+// an active supervisor plus a fresh pre-handoff probe hands the retry to it.
+// The rule (and its freshness window) lives in native/core/src/unattended.rs
+// (`delivery_retry_decision`); the host only gathers the probe and the
+// unattended status.
+function deliveryRetryDecision(input) {
+  return JSON.parse(native().unattendedDeliveryRetryDecision(JSON.stringify(input || {})));
+}
+
 function decide(input) {
   return JSON.parse(native().unattendedDecide(JSON.stringify(input || {})));
+}
+
+// Whether a persisted state may be ended/cleared. The rule lives in
+// native/core/src/unattended.rs (`decide_clear`); the host only applies it.
+function decideClear(input) {
+  return JSON.parse(native().unattendedDecideClear(JSON.stringify(input || {})));
 }
 
 // The one marker every supervisor message carries. The literal lives in Rust so
@@ -86,8 +102,10 @@ module.exports = {
   clampDuration,
   deadlineExpired,
   decide,
+  decideClear,
   decideTurnEnd,
   deferEvaluation,
+  deliveryRetryDecision,
   faultInstruction,
   normalizeConfig,
   parseVerdict,
