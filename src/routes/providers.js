@@ -370,8 +370,9 @@ function createProviderRoutes(rawDeps) {
 
   function mountManagementRoutes(app) {
     for (const method of ['get', 'post', 'patch', 'delete', 'put']) assertAppMethod(app, method);
-    // 子任务默认线路 + 一键同步（迁移桥接：Rust 决策，Node 落盘/逐会话 PATCH）。
-    require('./subagent-defaults').mountSubagentDefaultsRoutes(app, {
+    // 子任务默认线路 + 一键同步：公开路由由 Rust 前门独占（native/gateway/），这里只剩
+    // 前门回调的宿主端口：会话表/provider 事实、默认值落盘与逐会话 PATCH。
+    require('./subagent-defaults-host').mountSubagentDefaultsHostRoute(app, {
       providerDefaults,
       sessions: deps.persistedSessions,
       validProviderId,
@@ -379,7 +380,7 @@ function createProviderRoutes(rawDeps) {
       applySessionPatch: deps.applySessionPatch,
       previewSessionPatch: deps.previewSessionPatch,
       persistDefaults: persistProviderDefaults,
-      ...(typeof deps.getNative === 'function' ? { getNative: deps.getNative } : {}),
+      ...(typeof deps.isLocalRequest === 'function' ? { isLocal: deps.isLocalRequest } : {}),
     });
 
     app.post('/api/providers/import', (req, res) => {

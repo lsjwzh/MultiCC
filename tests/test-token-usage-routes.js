@@ -103,7 +103,6 @@ function createHarness(root, overrides = {}) {
       writes.push({ file, value: JSON.parse(JSON.stringify(value)) });
       fs.writeFileSync(file, JSON.stringify(value));
     },
-    getGlobalUsage: async ({ force }) => ({ force, windows: { all: {} } }),
     readProviderWindows: () => ({}),
     getProviderSummary: (_cli, providerId) => ({ id: providerId, name: `Name ${providerId}` }),
     getEffectiveSessionModel: (session) => session.model || null,
@@ -149,15 +148,7 @@ test('mounts legacy routes, preserves DTOs, and fixes public error text', async 
     const app = createApp();
     harness.runtime.mountRoutes(app);
 
-    let response = await invoke(app, '/api/token-usage/global');
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.body, { force: false, windows: { all: {} } });
-    response = await invoke(app, '/api/token-usage/global', { query: { refresh: '1' } });
-    assert.equal(response.body.force, true);
-    response = await invoke(app, '/api/token-usage/global', { query: { refresh: 'true' } });
-    assert.equal(response.body.force, false, 'only the established refresh=1 flag forces a scan');
-
-    response = await invoke(app, '/api/token-usage/by-role', { query: { session: 'session-a' } });
+    let response = await invoke(app, '/api/token-usage/by-role', { query: { session: 'session-a' } });
     assert.deepEqual(response.body, {
       main: { inputTokens: 3 }, sub: null, subByProvider: [],
     });
@@ -165,19 +156,6 @@ test('mounts legacy routes, preserves DTOs, and fixes public error text', async 
     assert.deepEqual(response.body, { main: null, sub: null, subByProvider: [] });
     response = await invoke(app, '/api/token-usage/by-role');
     assert.deepEqual(response.body, { '2026-07-19': { main: {} } });
-
-    const failing = createHarness(root, {
-      getGlobalUsage: async () => {
-        throw new Error('secret-token at /Users/private/transcript.jsonl');
-      },
-    });
-    const failingApp = createApp();
-    failing.runtime.mountRoutes(failingApp);
-    response = await invoke(failingApp, '/api/token-usage/global');
-    assert.equal(response.statusCode, 500);
-    assert.deepEqual(response.body, { error: PUBLIC_USAGE_ERROR });
-    assert.equal(JSON.stringify(response.body).includes('secret-token'), false);
-    assert.equal(JSON.stringify(failing.logs).includes('/Users/private'), false);
 
     const failingRole = createHarness(root, {
       roleTokenTracker: createRoleTracker({

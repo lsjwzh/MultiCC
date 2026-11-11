@@ -29,7 +29,6 @@ function assertDependencies(deps) {
     throw new TypeError('token usage dependency missing: fs.readFileSync');
   }
   assertFunction(deps.atomicWriteJson, 'atomicWriteJson');
-  assertFunction(deps.getGlobalUsage, 'getGlobalUsage');
   assertFunction(deps.readProviderWindows, 'readProviderWindows');
   assertFunction(deps.getProviderSummary, 'getProviderSummary');
   assertFunction(deps.getEffectiveSessionModel, 'getEffectiveSessionModel');
@@ -481,18 +480,6 @@ function createTokenUsageRoutes(rawDeps) {
     if (!app || typeof app.get !== 'function') {
       throw new TypeError('Express app.get is required');
     }
-    app.get('/api/token-usage/global', async (req, res) => {
-      try {
-        const data = await deps.getGlobalUsage({
-          force: !!(req.query && req.query.refresh === '1'),
-        });
-        res.json(data);
-      } catch (error) {
-        logFailure('token_usage_global_read_failed', error);
-        res.status(500).json({ error: PUBLIC_USAGE_ERROR });
-      }
-    });
-
     app.get('/api/token-usage/by-role', (req, res) => {
       try {
         if (req.query && req.query.session) {

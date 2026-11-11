@@ -9,7 +9,9 @@
 //
 // A group script supplies: mount(app, ctx), corpus(ctx), stores and
 // optionally seed(dataRoot), auth(repo) (the auth modules as they were before
-// the removal), gatewayEnv(work) and normalize(text, work).
+// the removal), gatewayEnv(work), normalize(text, work) and
+// normalizeView(view, side) (whole-view pass after `normalize`, for the
+// response headers derived from a body field both sides stamp themselves).
 // A corpus entry is [name, request | (side) => request, hooks?]: `side` is
 // { name: 'node' | 'rust', state } so a request can use a value one side
 // handed out (a ticket); hooks.capture(response, side) stores such values and
@@ -213,6 +215,7 @@ async function run(spec, argv = process.argv.slice(2)) {
         if (hooks.capture) hooks.capture(raw, side);
         let v = view(raw);
         v.body = normalizeText(v.body, work);
+        if (spec.normalizeView) v = spec.normalizeView(v, side) || v;
         if (hooks.normalize) v = hooks.normalize(v, side) || v;
         seen[side.name] = v;
       }

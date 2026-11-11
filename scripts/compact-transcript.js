@@ -27,7 +27,7 @@
  *                     gate; tokens are the wall — see transcript-prune.js.
  *
  * Removed entries are appended to <name>.pruned.jsonl so global token accounting
- * (src/token-global.js walks **\/*.jsonl) still reads their usage.
+ * (the gateway's token_usage_global route walks **\/*.jsonl) still reads their usage.
  */
 'use strict';
 

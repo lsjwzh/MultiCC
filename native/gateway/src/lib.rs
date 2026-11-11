@@ -14,6 +14,7 @@ pub mod auth_control;
 pub mod backoff;
 pub mod daemon;
 pub mod forward;
+pub mod host_port;
 pub mod proxy_header;
 
 /// Version of the front-door ⇄ Node contract. Must match the probe in

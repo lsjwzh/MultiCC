@@ -3122,3 +3122,67 @@ Auto Provider 的四个决策域——价格成型与阶梯、选择键、难度
 - JS 门禁（`MULTICC_RUST_ADDON` 与 `MULTICC_RUST_PREBUILT_DIR` 都指向本指纹）：`test:contracts` 148/148；`test:provider-router` 1,227/1,227；`test:native` 退出 0；`test:core` 3,589 项、3,588 通过、唯一失败是既有的 paint-budget 基线红（`public/chat-unattended.css` 的 `@keyframes unat-pulse` 动 `box-shadow`，测试为 `tests/test-air-paint-budget.js`；该文件不在本改动内，见既存红基线记录）。
 - `node scripts/check-source-line-budget.js`（迁移债务 `public/run-config.js` 3,171、`server.js` 3,073）、`check-test-tiers.js`（876 条分类）、`check-repository-artifacts.js` 均通过。
 - 未提交、未合并、未重启服务；临时文件在 `/tmp/ab-*.log`。
+
+## 全局 Token 统计路由迁入 Rust 前门（2026-11-11）
+
+`GET/HEAD/OPTIONS /api/token-usage/global` 原先由 `src/token-global.js` 与 `src/routes/token-usage.js` 的 global 路由回答：Node 枚举 `$HOME/.claude/projects` 与 `$HOME/.codex/sessions` 下的 `*.jsonl`、算本地窗口、拼 JSON、做两分钟缓存，行聚合交给 `multicc_core::usage`。本次把这层外壳整体搬进前门，Node 侧实现删除。`by-role` 路由留在 Node：它读 Node 持有的会话/角色表（`?session=` 分支），拆分收益低于成本。
+
+### Rust 实现
+
+- `native/gateway/src/app/token_usage_global.rs`（520 行，含 7 个单测）：`answer(home, original_url, clock, state)` 是路由语义的全部。`?refresh=1` 用 `multicc_core::http_gate::query_value` 按 Express 的字典序取值（严格 `=== '1'`）；120 秒缓存（成功才写、失败不写，TTL 判定用请求到达时刻、`at` 在扫描完成后取钟）；`system_timezone()` 复刻 `Intl.DateTimeFormat().resolvedOptions().timeZone` 的解析链（`TZ` 去前导 `:` → `/etc/localtime` 的 `zoneinfo/` 后缀 → `/etc/timezone` → UTC；显式设置但不可用的 `TZ` 返回路由的公开 500 `{"error":"Token usage is temporarily unavailable"}`）；`collect_jsonl` 按 libuv `strcmp` 名字序递归、目录内原地展开（缺失/不可读目录贡献零），codex 文件再按 UTF-16 码元序排序（`Array#sort` 语义）；`window_starts` 复刻 `today/week/month` 的本地日期键；输出用 `js_json_stringify` 保持 `{generatedAt, sources, ...kernel}` 的键序、数字格式与 `toISOString()`/`localDateKey()` 的补零规则。
+- `native/gateway/src/app/mod.rs`：claim `token-usage/global` 的 `GET/HEAD/OPTIONS`（区分大小写 `/api/` 前缀、允许一个尾斜杠），GET/HEAD 走 `spawn_blocking` + 本模块互斥量，OPTIONS 由既有 `options()` 返回 `Allow: GET,HEAD`；其它方法、其它路径照常转发。
+- `native/gateway/Cargo.toml` 增加 `chrono` / `chrono-tz`；`native/Cargo.lock` 只多这两个包。
+
+### 删除与宿主适配
+
+- `src/token-global.js` 95 行删除；`src/routes/token-usage.js` 的 global 路由 12 行与 `getGlobalUsage` 依赖断言 1 行删除；`server.js` 的 require 与接线 2 行删除。合计 110 行（`git diff --numstat`：`src/routes/token-usage.js` 13 行、`server.js` 2 行，加整文件删除的 95 行）。
+- `tests/test-token-global.js` 改为只测内核（`_compute` 的时区/窗口断言不变）；`tests/test-token-usage-routes.js` 去掉 global 路由用例；新增的 `tests/helpers/legacy-token-usage-global-route.js` 是冻结 oracle（保留旧的缓存与 `inFlight` 语义），`src/` 与 `server.js` 不 require 它；`tests/test-rust-kernels.js` 的 TZ 子进程改用该 oracle 的 `_compute`（原来 require 已删除的 `src/token-global`）。
+- `.github/workflows/rust-kernels.yml` 的 `paths` 把已删除的 `src/token-global.js` 换成 `src/routes/token-usage.js`。
+
+### 差分与集成测试
+
+- `docs/rust-migration/differential/token-usage-global.js`：Node 侧用冻结 oracle 跑真实 Express 流水线（真实认证运行时、`express.json`、`/api` gzip、`safeErrorHandler`），Rust 侧是 release 前门 + 按 PROXY v1 接线的桩；两侧共用隔离 `HOME` 与 `TZ=Asia/Shanghai`（`tz-gmt` 组除外，见下），语料的时间戳按运行时的本地日期生成。
+- 六组 68 条请求：65 条逐字节一致 — default 42/42、trees 8/8、rows 11/11、empty 4/4 — 另有 3 条预期差异按两侧各自的形状单独校验：大写 `/API/token-usage/global`（Express 大小写不敏感，Node 200，前门只 claim 区分大小写的 `/api/` 前缀，转发给桩）、前门 `TZ=Bogus/Zone`（Node 用自己的进程时区答 200，前门返回公开 500）、两侧同为 `TZ=GMT`（ICU 把 `GMT` 规范化成定点偏移 id `+00:00`，内核拒绝、Node 路由答公开 500；前门直接解析原始 `TZ`，`GMT` 是合法时区，返回 200 的 UTC 窗口数据 —— 方向与上一条相反，属修正但改变了旧行为，故单独登记）。语料覆盖首扫/缓存命中/12 种 `refresh` 拼写/新文件后缓存与强制刷新/HEAD/OPTIONS/尾斜杠/大小写路径/`If-None-Match` 命中、`*`、未命中/gzip 大（80 个模型）与小体/`x-gzip`/未 claim 的方法与相邻路径/认证矩阵（远端无凭证、token、cookie、`X-Forwarded-For`、Tailscale Host）/目录遍历（名字序、非 jsonl 与点文件、名为 `*.jsonl` 的目录、符号链接文件与目录、`chmod 000` 目录、`projects` 是文件）/行级边界（坏行、缺字段、全零、分数与 1e21、字符串金额、不可解析时间戳、去重、未知与 unicode 模型、孤立代理项、CRLF）/空 `HOME`。
+- 差分 harness（`docs/rust-migration/differential/lib.js`）新增可选的 `spec.normalizeView`（默认无操作）：两侧各自盖 `generatedAt`，由它派生的弱 ETag 必然不同，因此只在归一化了 `generatedAt` 的响应上（含 HEAD/304 的空实体）掩掉 ETag；其余响应头与正文仍然逐字节比较。顺带修掉两个 harness 自身的问题：转发桩需要 `MULTICC_RUST_ADDON`（否则 `src/auth-security` 让网关子进程崩溃重启、每组只会在看门狗处结束），`before` 钩子每侧各跑一次因此必须幂等（符号链接与 `chmod 000` 两例）。
+- 集成测试 `native/gateway/tests/token_usage_global.rs`（434 行，3 个用例）：运行时按相对今天的日期在 `Asia/Shanghai` 造 `HOME`，真启动网关，断言首次扫描的去重与窗口归属、缓存命中与新文件后的强制刷新、`generatedAt` 形状、`sources` 路径、HEAD 与 OPTIONS、`TZ=Bogus/Zone` 的公开 500 且错误不缓存、空 `HOME` 返回零。3/3 通过。
+
+### 最终产物与验证
+
+- Rust 源码指纹 `b6b8f226ee510d75e3bc5ff4`：`multicc_core.node` 18,364,576 字节，SHA-256 `6294bdf983577af17a3f7efe3d73eb8264fab1feb567a45d66728d25ad257724`（`source.json` 一致，即 `builtFromSource=true`）；同目录 `multicc-gateway` 11,920,704 字节 SHA-256 `b895b947d3757bf8e085b148e3842ecfd4fec7fe0f209ed9aed184d91404668f`、`multicc-cdpd` 2,012,208 字节 `63f2c7491bcf7522edec80d7f7adb7f5cbc39cd9a12ab5bc836c0d447ee6363d`、`multicc-remote` 7,328,800 字节 `d800dd5939b02d3670aa4530ab06fb5e2393a5d979017965b495747682d2979d`。
+- `cargo fmt --all --check` 退出 0；`cargo clippy --locked --workspace --all-targets -- -D warnings` 零警告；`cargo test --locked --workspace --no-fail-fast` 31 个测试二进制、967 passed / 0 failed（上一轮 952；本域新增 7 个模块单测、3 个前门集成测试，另加编译期网关单测增量）。首轮不带 `--no-fail-fast` 的全量运行里，`account_subscription_survives_client_disconnect`（30 秒等待缓存行，测试自身注释写明全量并行时易抖）与 `provider_limit_history` 的 golden 用例（`free_port` 选回环端口后前门绑 `0.0.0.0` 撞 `EADDRINUSE`，属既有的端口竞态）各失败一次；两者单独运行 2/2 与全部通过，随后同一条命令 `--no-fail-fast` 全量重跑 967/967 绿，按环境性抖动处理，未改测试、未放宽门禁。
+- JS 门禁（`MULTICC_RUST_ADDON` 与 `MULTICC_RUST_PREBUILT_DIR` 都指向本指纹）：`test:contracts` 148/148；`test:provider-router` 退出 0（含 `tests/test-token-global.js`）；`test:native` 退出 0（271 项）；`test:core` 3,593 项、3,592 通过，唯一失败是既有的 paint-budget 基线红（`public/chat-unattended.css` 的 `@keyframes unat-pulse` 动 `box-shadow`，测试为 `tests/test-air-paint-budget.js`；该文件不在本改动内，见既存红基线记录）；`tests/test-rust-kernels.js` 24/24（TZ 子进程改用 oracle 的 `_compute` 后，`runtime.record('usage')` 计数断言恢复）、`tests/test-rust-front-door-fixtures.js` 5/5、`tests/test-source-line-budget.js` 5/5、架构边界与运行时治理 11/11；`check-source-line-budget`（`server.js` 3,071 行 / 164,919 字节）、`check-test-tiers`（876 条）、`governance:artifacts`、`governance:runtime-writes` 全部通过。差分 `docs/rust-migration/differential/token-usage-global.js` 在最终产物上重跑：65 条逐字节一致 + 3 条预期差异验证通过（六组 68 条请求），退出 0。
+- 未提交、未合并、未重启服务；临时文件在 `/tmp/tug-*.log` 与 `/tmp/token-usage-global-port/`。
+
+## 子任务默认线路路由迁入 Rust 前门（2026-11-11）
+
+`GET/HEAD/OPTIONS /api/subagent-defaults` 与 `POST/OPTIONS /api/subagent-defaults/sync` 原先由 `src/routes/subagent-defaults.js` 回答；规则（归一化存储值、校验目标线路、生成整批计划）本来就在 `multicc_core::subagent_defaults`，Node 只做外壳与宿主事实。本次把外壳整体搬进前门，Node 文件删除。
+
+这条路由依赖 Node 进程内状态（会话表 Map、provider store 对象、`applySessionPatch`/`previewSessionPatch` 的暂存与广播），不能整条留在 Node。做法是前门独占路由，Node 只保留一个显式的最小宿主端口：`src/routes/subagent-defaults-host.js` 在内部端口上提供 `POST /api/__host/subagent-defaults`，前门用新增的 `native/gateway/src/host_port.rs` 反向调用它。宿主端口只回答 Node 独有的事实与副作用：`state`（会话表投影 + provider-defaults 的 `subagent`）、`facts`（provider 可用/Codex 可代理/官方 OAuth）、`persist`（原子写默认值）、`patch`（逐会话暂存或应用）。路由、解析、校验、计划、序列化与错误映射全部在 Rust。
+
+### Rust 实现
+
+- `native/gateway/src/app/subagent_defaults.rs`（397 行）：`get(app, ctx, host)` 与 `sync(app, ctx, body, host)` 持有 `App::subagent_defaults` 的 `Mutex<()>`（旧 handler 是同步的，整条请求必须原子）；先从宿主端口取 `state`，sync 再按需取 `facts`（仅 family 与 providerId 都非空时），然后调 `multicc_core::subagent_defaults::plan_sync`。计划错误按 `status/error/code` 原样透传；`dryRun` 仍是旧的真值判定（`true` / `'1'` / `'true'`）；非 dry 时先 `persist`（失败 → 500 `save_failed`，零 PATCH），再逐会话 `patch`，把结果映射为 `applied` / `deferred` / `skipped`（宿主失败或 `status !== 200` → `patch_rejected` + 经 `sanitizePublicText` 的 detail）；响应键序 `ok, dryRun, family, subagent, defaults, counts, sessions, truncated`，结果上限 `MAX_RESULTS = 200`。宿主在任何副作用之前失败 → 503 `rust_backend_unavailable`。
+- `native/gateway/src/host_port.rs`（88 行）：内网端口上一条 `POST`，先写真实的 PROXY v1 行（`127.0.0.1` 源/目的 + 连接真实端口），60 秒超时、`Connection: close`、不重试；非 200、chunked 或非法 JSON 都算「没有回答」，避免不幂等操作被重放。
+- `native/gateway/src/app/mod.rs`：claim `("subagent-defaults", "GET"|"HEAD"|"OPTIONS")`、`("subagent-defaults/sync", "POST"|"OPTIONS")`；集合的 OPTIONS 允许列表是 `GET,HEAD`（退役路由只在 `/sync` 上挂 POST，差分第一轮把这里写成 `GET,HEAD,POST` 被 Node 侧实测纠正）；`App` 增加私有 `subagent_defaults: tokio::sync::Mutex<()>`。`forward.rs` 把内网端口传给 `app::handle`，`lib.rs` 注册 `host_port`。
+- `src/routes/subagent-defaults-host.js`（155 行）：宿主端口。`if (!isLocal(req)) return res.status(404)` 与其它本机判定同源；`state` 用与退役实现逐字段一致的 `planSessions`（pending 配置应用后的期望状态）；`patch` 在 dry run 且没有预览运行时时返回兼容答案 `{ok:true, compat:true}`，异常按 `status:500` 报告并同样清洗 detail。`src/routes/providers.js` 的旧挂载换成这个宿主端口挂载；`server.js` 不需要改动（旧路由本来就由 providers.js 挂载）。
+
+### 删除与宿主适配
+
+- `src/routes/subagent-defaults.js` 整文件 256 行删除；`src/routes/providers.js` 旧挂载 3 行删除、换成 4 行宿主端口挂载。合计删除 259 行 Node（`git diff --numstat`：`src/routes/subagent-defaults.js` 0/256、`src/routes/providers.js` 4/3）。`package.json` 只有 `test:rust` 的文件清单提到测试名，没有路由模块接线；`.github/workflows/rust-kernels.yml` 不引用该文件，无需改动。
+- `tests/helpers/legacy-subagent-defaults-route.js`（260 行）是冻结 oracle（旧文件逐字副本，只改 require 路径）；`src/` 与 `server.js` 不 require 它。`tests/test-subagent-defaults.js`（554 行，23 个用例）改为宿主端口契约 + 原样保留的会话创建默认归并测试；`tests/test-tiers.json` 不需要改（文件仍在 `test:rust`）。
+- 仍在 Node 的宿主端口只有 `src/routes/subagent-defaults-host.js`；等会话存储与 provider 默认值迁入 Rust 后删除。
+
+### 差分与集成测试
+
+- `docs/rust-migration/differential/subagent-defaults.js`：Node 侧用冻结 oracle 跑真实 Express 流水线（真实认证运行时、`express.json`、`/api` gzip、`safeErrorHandler`），Rust 侧是 release 前门 + 按 PROXY v1 接线的桩；两侧的会话投影由同一个 `planSessions` 生成。差分 harness 的桩必须自己接上认证控制流（`createAuthSecurity` + `connectAuthControl`，并继承 `MULTICC_RUST_ADDON`），否则前门每个原生路由都答 503 `internal_error`。
+- 28 条请求逐字节一致：GET/HEAD/OPTIONS、两组 OPTIONS、dry run 的 claude / claude-exp / 清空（`null`、空串、空对象）/ cli 空白归一化 / Codex 可代理 / Codex 官方 / 无效 provider / 坏 model / 缺 model / 缺 providerId / 字符串目标 / 不支持的 cli / 无 cli / `dryRun` 为 `'true'` 与 `1`、无 body、数组 body、坏 JSON，以及唯一一条真实应用（会话演化与 Node 一致）。
+- 集成测试 `native/gateway/tests/subagent_defaults.rs`（512 行，11 个用例）：GET 归一化、损坏存储值折叠、dry run 各桶且不落盘、真实应用先落盘后 PATCH 且 patch 目标正确、清空下发 `null`、400 校验码、500 保存失败零 PATCH、宿主不可达 503、OPTIONS 允许列表、HEAD 与 GET 头一致、200 会话截断。测试用的 Node 进程是共享 fixture（`tests/fixtures/upstream.js` 新增宿主端口脚本模式）。
+
+### 最终产物与验证
+
+- Rust 源码指纹 `6fddeab9cd37213921846af8`：`multicc_core.node` 18,364,576 字节，SHA-256 `6294bdf983577af17a3f7efe3d73eb8264fab1feb567a45d66728d25ad257724`（本批未改 `native/core`，与上一批同字节）；同目录 `multicc-gateway` 12,003,840 字节 SHA-256 `4e3faac6ec75199def4d90465e5939616d871b681fa18bf343ad963d0f923bf8`、`multicc-cdpd` 2,012,208 字节 `63f2c7491bcf7522edec80d7f7adb7f5cbc39cd9a12ab5bc836c0d447ee6363d`、`multicc-remote` 7,328,800 字节 `d800dd5939b02d3670aa4530ab06fb5e2393a5d979017965b495747682d2979d`。
+- `cargo fmt --all --check` 退出 0；`cargo clippy --locked --workspace --all-targets` 无告警；`cargo test --locked --workspace --no-fail-fast` 32 个测试二进制、978 passed / 0 failed（其中 gateway 8 个二进制 94 项，含新增 11 个集成测试）。
+- JS 门禁（`MULTICC_RUST_ADDON` 与 `MULTICC_RUST_PREBUILT_DIR` 都指向本指纹的根目录）：`test:rust` 253/253；`test:contracts` 148/148；`test:native` 退出 0（11 + 4 + 253）；`npm run test:governance` 与 `governance:line-budget` 通过（迁移债务 `public/run-config.js` 3,171→3,000、`server.js` 3,071→3,000）。
+- 两份后端清单已重新生成：`docs/backend-route-inventory.md`（585 个后端文件、138,465 行，503 个注册候选；`src/routes/subagent-defaults.js` 的两条消失，新增一条计算路径的宿主端口）、`docs/backend-runtime-inventory.md`（指纹 `6fddeab9cd37213921846af8`，553 条路由注册、34 层中间件）。
+- `docs/gateway.md` 新增 §31 与路由表一行；`docs/rust-migration/route-inventory.md` 的清单与推荐顺序同步。
+- 本轮按用户指令提交并合入；未重启服务，路由由前门接管要等用户手动重启后才生效。

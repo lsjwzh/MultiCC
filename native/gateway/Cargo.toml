@@ -27,6 +27,8 @@ hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
 multicc-core = { path = "../core" }
 multicc-cpr = { path = "../cpr" }
+chrono = "0.4"
+chrono-tz = "0.10"
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = "1"
 sha1 = "0.10"

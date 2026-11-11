@@ -64,7 +64,7 @@ Rust 没有消除全部主线程工作：搜索仍要准备字符串、计算缓
 
 - `native/core`：独立 Rust 业务库；`native/addon`：Node-API 绑定。后续全 Rust 后端可复用核心库。
 - `/api/task-board/search` 使用可切换后端。任务自动归类的同步调用链继续使用 Node 搜索，消息全文检索的 SQLite FTS 路径也保持原状。
-- 全局 Token 的 `getGlobalUsage` 接入原生扫描，仍保留两分钟缓存和并发请求合并；Node 负责文件枚举与窗口边界。
+- 全局 Token 的 `getGlobalUsage` 接入原生扫描，仍保留两分钟缓存；Node 负责文件枚举与窗口边界。（2026-11-11 后续：该路由整体迁入 Rust 前门，`native/gateway/src/app/token_usage_global.rs` 自己枚举文件、解析时区、做缓存，进程内不再合并并发请求——改为串行化；`src/token-global.js` 已删。）
 - NFKC、小写转换、UTF-16 高亮、本地化同分排序由 Node 保持原契约；Rust 持有索引并计算分词与 BM25。
 - 时区由 Node 显式传入 Rust 的 IANA 时区库，覆盖 UTC、上海、纽约及夏令时转换；不是假定所有机器都在同一时区。
 - 原生任务在 libuv 工作线程执行，最多同时执行两个、排队十六个。

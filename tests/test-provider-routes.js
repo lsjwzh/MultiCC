@@ -217,8 +217,7 @@ test('provider route extraction preserves the mounted surface and response DTOs'
   assert.deepEqual(harness.app.routes, [
     'GET /api/providers',
     'GET /api/providers/stats',
-    'GET /api/subagent-defaults',
-    'POST /api/subagent-defaults/sync',
+    'POST /api/__host/subagent-defaults',
     'POST /api/providers/import',
     'POST /api/providers',
     'PATCH /api/providers/:appType/:id',

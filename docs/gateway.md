@@ -78,6 +78,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - 地址文本与 Node 直接监听时 `socket.remoteAddress` 的写法一致：IPv4 监听上是 `192.168.1.5`；IPv6 双栈监听上的 IPv4 客户端是 `::ffff:192.168.1.5`（Rust `Ipv6Addr` 的 Display 正好是这个写法）。`remoteFamily` 取 `IPv4` / `IPv6`。
 - Node 侧解析规则：5 秒内必须收到；整行不超过 107 字节；格式不对、`PROXY UNKNOWN`、或缺头，一律直接销毁连接（fail closed）。
 - 内网监听器只绑 `127.0.0.1`。本机进程即使直连内网端口并伪造 PROXY 头，也拿不到比直连公开端口更多的权限（本机连接本来就是本机）。
+- 前门自己的宿主端口调用（§31）也走这个内网端口：PROXY 行写真实的本机连接 `PROXY TCP4 127.0.0.1 127.0.0.1 <源端口> <目的端口>`，因此 Node 的 `isLocalRequest` 与其它本机请求同判；被前门转发的远端客户端写的是它的真实地址，拿不到宿主端口。
 - 客户端无法伪造：前门总是先写自己的头；客户端发来的 `PROXY …` 文本现在会被前门的 HTTP 解析器当作非法请求行直接拒绝（400 / 断开），根本到不了 Node。
 
 ### 6. 转发（L7）
@@ -130,7 +131,9 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/PUT/OPTIONS /api/settings/quota-guard` | `src/routes/quota-guard.js`（已删）、`src/quota/quota-guard.js` 的配置读取/归一化、额度判定与刷新节流（已移除） | `native/gateway/src/app/quota_guard.rs` + `multicc_core::quota_guard` / `settings`，运行时通过 `RustQuotaGuard` 与无损 napi 接口调用同一内核 | 10,096 组策略对拍一致；136 组 HTTP 请求的状态、正文、相关响应头与落盘字节一致 |
 | `GET/HEAD/OPTIONS /api/providers/limit-history` | `src/routes/provider-limit-history.js`（已删）、`src/quota/provider-quota-history.js` 的读取侧（已移除；采样写入仍由 Node 经 napi 进内核） | `native/gateway/src/app/provider_limit_history.rs` + `multicc_core::provider_limit_history` / `provider_catalog`，读 `multicc_core::quota_history` 持有的 `<data>/provider-quota-history.db` | 120/120 默认请求逐字节一致（含 964 行数据库摘要）；空库 3/3、新库 2/2、损坏库 5/5、只读库 5/5、相对数据根 5/5 一致 |
 | `GET/HEAD/OPTIONS /api/claude/subscription`、`GET/HEAD/OPTIONS /api/codex/subscription` | `src/routes/account-subscription.js`（已删）；跨进程读取器 `read()` 与 `cache.register` 搬进 `src/quota/account-subscription-reader.js`，虚拟线路/额度刷新仍经它取数 | `native/gateway/src/app/account_subscription.rs` + `multicc_core::account_subscription`（账号解析、凭据 peek、请求计划、结果映射）与 `multicc_core::outbound_proxy`（`src/network/proxy-policy.js` 的完整移植）；HTTP 走既有 `multicc_cpr` 传输，观察写入 `<data>/provider-limit-cache.db` 的 `provider_subscriptions` | 77 个请求逐字节一致（default 27/27、credentials 28/28、cache 6/6、concurrency 1/1、proxy 2/2+2/2、protocol 8/8、relative-data-dir 1/1、abort 2/2），另有 1 条大写 `/API` 前缀差异单独校验 1/1；缓存行（vendor/account/subscription_json）两侧一致，6 并发同账号请求各只打一次上游，`abort` 组（500ms 慢上游 + 50ms 断开）证明客户端断开不取消查询；代理策略另有 3,094 条 `proxy` 语料 + 351 条 bypass + 237 条 resolve 对拍 |
+| `GET/HEAD/OPTIONS /api/token-usage/global` | `src/token-global.js`（已删）与 `src/routes/token-usage.js` 的 global 路由（已删）；`by-role` 路由留在 Node | `native/gateway/src/app/token_usage_global.rs`：自己枚举 `$HOME/.claude/projects` 与 `$HOME/.codex/sessions` 下的 `*.jsonl`、解析时区、做两分钟缓存，行聚合仍用 `multicc_core::usage::compute` | | 68 个请求：65 条逐字节一致 — default 42/42、trees 8/8、rows 11/11、empty 4/4；另有 3 条预期差异单独校验 3/3（大写 `/API` 前缀、网关 TZ 不可用、两侧同为 `TZ=GMT` 时前门 200 而 Node 公开 500） |
 | `GET/HEAD/OPTIONS /api/claude/models` | `src/routes/claude-models.js`（已删）；静态兜底清单与跨进程同步读取器保留在 `src/claude-models.js` | `native/gateway/src/app/claude_models.rs` + `multicc_core::claude_models`，扫描 `$HOME/.local/bin/claude` 真身或 `$HOME/.local/share/claude/versions` 下最新文件，成功后写 `<data>/claude-models-cache.json`（0600） | 1,300 个对拍用例逐字节一致：default 46/46、fallback 14/14、window 8/8、semantics 17/17、fuzz 1,200/1,200、concurrent 1/1（8 并发请求 1 次 cli + 7 次 cache）、edge 8/8、relative-data-dir 4/4、真实 bundle 2/2（首扫单次计时：node 1,131ms / rust 486ms；另一次独立运行为 1,166ms / 497ms，随运行波动，不作性能结论）；另有 2 条 `refresh[toString]` 预期差异单独校验 2/2；缓存文件 `{at,bundleKey,models}` 0600，Node 读取器读到同一组 id |
+| `GET/HEAD/OPTIONS /api/subagent-defaults`、`POST/OPTIONS /api/subagent-defaults/sync` | `src/routes/subagent-defaults.js`（已删）；`src/routes/subagent-defaults-host.js` 只剩前门回调的宿主端口 | `native/gateway/src/app/subagent_defaults.rs` + `multicc_core::subagent_defaults`；宿主事实与副作用经 `native/gateway/src/host_port.rs` 调 Node 的内部端点 `/api/__host/subagent-defaults` | 28/28 请求逐字节一致（GET/HEAD/OPTIONS、dry run 全部分支、校验失败、一次真实应用） |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -168,6 +171,11 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - 代理发现语义只在单测/语料层对拍：差分和集成测试始终显式设置 `HTTPS_PROXY`，并且要求 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` 全部指向 loopback 才开始（缺一个就抛错退出，不是跳过），因此两边都不会执行 `scutil --proxy`；新增任何差分或探针都必须自己固定代理变量，否则会落回系统代理——曾经有一次探针漏设 `HTTPS_PROXY`，走到用户 Clash，4 个假 token 请求打到了 api.anthropic.com。直连、`NO_PROXY` 后缀/CIDR/`<local>`、PAC/SOCKS 拒绝分别由 `native/core/tests/fixtures/outbound-proxy-cases.json`（由 `scripts/generate-outbound-proxy-corpus.js` 从真实 `proxy-policy.js` 生成）逐层验证。端到端不测试「绕过代理直连真实账号域名」，因为那会真的打到上游，违反本次迁移的红线。
 - subscription 与其它已迁路由一样，大写 `/API/claude/subscription`、`/API/codex/subscription` 不再被前门 claim；Node 路由删除后该变体在真实服务中落回 Node 404（旧 Express 大小写不敏感时会命中）。差分把这一条按预期差异单独校验：Node 侧 200，Rust 侧转发给桩。
 - 官方账号目录与 `claude/models` 的 bundle 定位都只用 `HOME` 拼接；`HOME` 缺失时前门得到空路径（相对 cwd），Node 的 `os.homedir()` 会回退到系统账户数据库。Windows/Linux 上 `os.homedir()` 另有回退（如 `USERPROFILE`），前门只读 `HOME`，因此这些平台的行为是推断，没有实测。
+- `token-usage/global` 的并发语义变了：旧 Node `getGlobalUsage` 用模块级 `inFlight` promise 让同进程并发请求共享一次扫描，Rust 前门用本模块的互斥量把它们**串行化**——第二个请求等第一个扫完后再扫一次（`?refresh=1` 与普通请求都一样），不共享结果。单请求的结果、两分钟 TTL、「成功才写缓存、失败不写」都不变；并发时前门的扫描次数（和 CPU）比 Node 多，这是为不引入进程内 promise 表付出的代价。
+- `token-usage/global` 的时区由前门自己解析：`TZ`（去掉前导 `:`）→ `/etc/localtime` 的 zoneinfo 后缀 → `/etc/timezone` → UTC；都不可用时报路由的公开 500 `{"error":"Token usage is temporarily unavailable"}`，且不缓存错误。Node 用的是自己进程的 `Intl.DateTimeFormat().resolvedOptions().timeZone`，差别有两个方向，差分各按预期差异单独校验：① Node 的 ICU 认识一些前门没有的别名（如 `PST`→`America/Los_Angeles`），此时 Node 200、前门 500；② `TZ=GMT`（Docker/部分发行版常见默认值）被 ICU 规范化成定点偏移 id `+00:00`，内核拒绝、Node 路由答公开 500，而前门把 `GMT` 当合法时区、返回 200 的 UTC 窗口数据。②是修正而非回归，但它确实改变了旧路由的行为，因此单独登记。
+- 大写 `/API/token-usage/global`：Express 大小写不敏感，旧 Node 路由能命中；前门只 claim 区分大小写的 `/api/` 前缀，路由删除后该变体在真实服务里落回 Express 404。差分按预期差异单独校验（Node 200、前门转发给桩）。
+- `token-usage/global` 的缓存只在前门进程内，从不落盘，重启后第一次请求重新全量扫描；旧 Node 实现同样如此。`by-role` 路由（含它的 `?session=` 分支）留在 Node：它读 Node 持有的会话/角色表。
+- `token-usage/global` 的 `sources` 路径同样用 `HOME` 拼，`HOME` 缺失时前门得到空路径，与上面 `claude/models` 的说明一致。
 
 ### 10. 通用请求准入迁移（2026-11-08）
 
@@ -1536,3 +1544,63 @@ Flutter 48 项以及完整 npm 回归通过；真实隔离 gateway + server 检�
 完整收据与剩余边界见 `backend-rust-exit-plan.md` 的“本批集成验收”一节；
 日志在主仓 `data/rust-source/49e5cffd731f59f5e73f0d26/validation/merged-chat-batch/`。
 网关控制协议仍为 12，整体迁移账本仍为 5/6。
+
+## 31. 子任务默认线路迁入 Rust 与宿主端口（2026-11-11）
+
+`GET/HEAD/OPTIONS /api/subagent-defaults` 与 `POST/OPTIONS /api/subagent-defaults/sync`
+原先由 `src/routes/subagent-defaults.js` 回答（规则早已在
+`multicc_core::subagent_defaults`）。本次把路由入口、请求解析、校验、计划、响应组装与
+错误映射整体搬进前门（`native/gateway/src/app/subagent_defaults.rs`），Node 文件删除，
+只留下一个仅供前门回调的宿主端口 `src/routes/subagent-defaults-host.js`（155 行）。
+
+### 宿主端口：前门 → 自己的 Node 子进程
+
+这是前门第一次反向调用 Node，实现在 `native/gateway/src/host_port.rs`：用内网端口向
+自己的 Node 子进程发 `POST /api/__host/subagent-defaults`，连接开头照常写 PROXY v1，
+源与目的都是真实的 `127.0.0.1`，端口是这条连接真实的端口。于是：
+
+- Node 侧 `isLocalRequest` 得到回环对端，与其它本机请求同一套判定；
+- 经前门转发的真实远端客户端，PROXY 行写的是它的真实地址，宿主端口的
+  `if (!isLocal(req)) return res.status(404)` 直接 404——即使它带了合法凭据
+  （Express 认证闸门先放行，宿主端口仍然拒绝）；
+- 前门**不 claim** `/api/__host/*`：公网端口上这条路径照常转发给 Node，先经过
+  Express 认证闸门，再由宿主端口按回环判定兜底。
+
+宿主端口只做 Node 独有的事实与副作用，规则一行不写：`state`（会话表投影 +
+provider-defaults 的 `subagent` 字段）、`facts`（provider 是否可用 / Codex 是否可代理 /
+是否官方 OAuth）、`persist`（原子写 provider-defaults.json 并更新进程内对象身份）、
+`patch`（逐会话 `applySessionPatch` / `previewSessionPatch`）。每次调用都是
+`Connection: close`、60 秒超时、不重试（这些操作不幂等，重复落盘或重复 PATCH 都是错的）；
+非 200、chunked 或非法 JSON 一律按「没有回答」处理。
+
+失败映射：产生任何副作用之前失败（GET 的 state、sync 的 state/facts）返回 503
+`{"error":"子任务默认线路接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；
+`persist` 失败返回 500 `save_failed` 且不 PATCH 任何会话；单个会话 PATCH 失败只把该会话
+记成 `skipped`/`patch_rejected`，不掩盖已经落盘的默认值。旧 handler 是同步的，Rust 用
+`App` 上的私有 `Mutex<()>` 把整条 handler 串行化，保持「读计划 → 落盘 → 逐会话 PATCH →
+组装响应」的原子性。
+
+### 差分与集成
+
+- `docs/rust-migration/differential/subagent-defaults.js`：Node 侧用冻结 oracle
+  （`tests/helpers/legacy-subagent-defaults-route.js`）跑真实 Express 流水线，Rust 侧是
+  release 前门 + 按 PROXY v1 接线的桩，两侧共用同一份会话投影。28 条请求逐字节一致：
+  GET/HEAD/OPTIONS、两组 OPTIONS、dry run 的全部分支（清空、cli 归一化、Codex 可代理/官方、
+  各类校验失败、`dryRun` 为 `'true'`/`1` 的旧真值判定），以及唯一一条真实应用。桩的
+  `state` 按旧投影语义跟随 PATCH 演化（pending 会话仍报 pending 配置），否则后续计划会漂移。
+- `native/gateway/tests/subagent_defaults.rs`：11 个集成测试，锁住归一化、损坏存储值折叠、
+  dry run 不落盘、先落盘再 PATCH、清空时下发 `null`、400 校验码、500 保存失败且零 PATCH、
+  宿主不可达的 503、OPTIONS 允许列表、HEAD 与 GET 头一致、200 会话截断。
+- `tests/test-subagent-defaults.js`：公开路由的部分改为宿主端口契约（含「只有回环能调」），
+  其余会话创建时的默认线路归并逻辑原样保留。
+
+### 删除面
+
+`src/routes/subagent-defaults.js` 整文件 256 行删除；`src/routes/providers.js` 的旧挂载
+3 行删除、换成 4 行宿主端口挂载。合计删除 259 行 Node。新增 Rust 485 行
+（`app/subagent_defaults.rs` 397 + `host_port.rs` 88，`mod.rs`/`forward.rs`/`lib.rs` 的
+claim 与接线另计）、集成测试 512 行、宿主端口 155 行、差分 228 行、冻结 oracle 260 行。
+
+源码指纹 `6fddeab9cd37213921846af8`；`cargo test -p multicc-gateway` 全绿、
+`cargo clippy --workspace --all-targets` 零告警；差分 28/28；`test:rust` 253/253、
+`test:contracts` 148/148、`test:native` 退出 0、`test:governance` 与行数闸门通过。
