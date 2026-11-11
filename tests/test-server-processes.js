@@ -276,17 +276,25 @@ test('multicc status reports a process behind the front door', {
   fs.writeFileSync(path.join(root, 'scripts', 'check-runtime-deps.js'), 'process.exit(0);');
   fs.writeFileSync(path.join(root, 'scripts', 'ensure-source-rust.js'), 'process.exit(0);');
   fs.writeFileSync(path.join(root, 'server.js'), 'setInterval(()=>{},1000);');
-  // A real process whose argv is "<dir>/multicc-gateway serve --cwd <root>":
-  // copy a tiny system utility so the command line starts with that path.
+  // A real native process with gateway-shaped argv. Use the known Node runtime:
+  // system utilities can dispatch by executable name or reject gateway flags.
+  // A symlink preserves the runtime's relative shared-library locations.
   const gateway = path.join(root, 'runtime', 'multicc-gateway');
-  fs.copyFileSync('/usr/bin/yes', gateway);
-  fs.chmodSync(gateway, 0o755);
-  // GNU yes parses options after operands too; -- keeps the gateway flags as
-  // literal text so the native fixture stays alive on Linux as well as macOS.
-  const child = spawn(gateway, ['--', 'serve', '--cwd', root, '--node', process.execPath, 'server.js'],
-    { cwd: root, stdio: 'ignore' });
+  fs.symlinkSync(process.execPath, gateway);
+  fs.writeFileSync(path.join(root, 'serve'), 'setInterval(()=>{},1000);');
+  const child = spawn(gateway, ['serve', '--cwd', root, '--node', process.execPath, 'server.js'], {
+    cwd: root, stdio: ['ignore', 'ignore', 'pipe'],
+    env: { PATH: process.env.PATH, HOME: root, LANG: 'C' },
+  });
+  let stderr = '', spawnError;
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  child.on('error', error => { spawnError = error; });
   t.after(async () => {
-    try { child.kill('SIGKILL'); } catch (_) {}
+    if (child.exitCode === null && child.signalCode === null && !spawnError) {
+      const exited = new Promise(resolve => child.once('exit', resolve));
+      child.kill('SIGKILL');
+      await exited;
+    }
     fs.rmSync(root, { recursive: true, force: true });
   });
   const config = { rootDir: root, entry: path.join(root, 'server.js'), execPath: process.execPath };
@@ -294,10 +302,13 @@ test('multicc status reports a process behind the front door', {
   // scan quadratic (~800 processes x ~40ms) and pushed the fixture past its
   // 30s test timeout on a busy machine.
   await wait(() => {
+    if (spawnError) throw spawnError;
+    assert.equal(child.exitCode, null, `fixture exited: ${stderr}`);
+    assert.equal(child.signalCode, null, `fixture terminated before discovery: ${stderr}`);
     const table = processTable();
     return table.some(p => isServer(p, config, undefined, table));
   }, {
-    diagnostics: () => JSON.stringify(processTable().filter(p => p.pid === child.pid)),
+    diagnostics: () => JSON.stringify({ stderr, processes: processTable().filter(p => p.pid === child.pid) }),
   });
   const result = spawn(path.join(root, 'multicc'), ['status'], {
     cwd: root,

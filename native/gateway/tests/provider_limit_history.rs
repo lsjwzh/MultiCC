@@ -101,6 +101,7 @@ impl Response {
 
 struct Gateway {
     dir: PathBuf,
+    #[cfg(unix)]
     data: PathBuf,
     port: u16,
     child: Child,
@@ -166,6 +167,7 @@ impl Gateway {
         let child = command.spawn().expect("spawn multicc-gateway");
         let gateway = Self {
             dir,
+            #[cfg(unix)]
             data,
             port,
             child,
@@ -186,6 +188,7 @@ impl Gateway {
         fs::read_to_string(self.dir.join("gateway.log")).unwrap_or_default()
     }
 
+    #[cfg(unix)]
     fn db(&self) -> PathBuf {
         self.data.join("provider-quota-history.db")
     }
