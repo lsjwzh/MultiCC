@@ -135,6 +135,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/OPTIONS /api/claude/models` | `src/routes/claude-models.js`（已删）；静态兜底清单与跨进程同步读取器保留在 `src/claude-models.js` | `native/gateway/src/app/claude_models.rs` + `multicc_core::claude_models`，扫描 `$HOME/.local/bin/claude` 真身或 `$HOME/.local/share/claude/versions` 下最新文件，成功后写 `<data>/claude-models-cache.json`（0600） | 1,300 个对拍用例逐字节一致：default 46/46、fallback 14/14、window 8/8、semantics 17/17、fuzz 1,200/1,200、concurrent 1/1（8 并发请求 1 次 cli + 7 次 cache）、edge 8/8、relative-data-dir 4/4、真实 bundle 2/2（首扫单次计时：node 1,131ms / rust 486ms；另一次独立运行为 1,166ms / 497ms，随运行波动，不作性能结论）；另有 2 条 `refresh[toString]` 预期差异单独校验 2/2；缓存文件 `{at,bundleKey,models}` 0600，Node 读取器读到同一组 id |
 | `GET/HEAD/OPTIONS /api/subagent-defaults`、`POST/OPTIONS /api/subagent-defaults/sync` | `src/routes/subagent-defaults.js`（已删）；`src/routes/subagent-defaults-host.js` 只剩前门回调的宿主端口 | `native/gateway/src/app/subagent_defaults.rs` + `multicc_core::subagent_defaults`；宿主事实与副作用经 `native/gateway/src/host_port.rs` 调 Node 的内部端点 `/api/__host/subagent-defaults` | 28/28 请求逐字节一致（GET/HEAD/OPTIONS、dry run 全部分支、校验失败、一次真实应用） |
 | `GET/HEAD/OPTIONS /api/{opencode,qoder,grok,commandcode,codebuddy}/models`、`GET/HEAD/OPTIONS /api/providers/:id/models`、`GET/HEAD/OPTIONS /api/codex/models`、`POST/OPTIONS /api/codex/models/sync` | `src/routes/codex-models.js`（已删）；五个 CLI 目录模块与 `src/routes/provider-models.js` 只剩列表/解析/缓存；宿主端口为 `src/routes/model-catalogs-host.js` | `native/gateway/src/app/model_catalogs.rs`：路径（含 `:id` 解码）、查询语义、状态码、字段顺序、`Cache-Control` 与错误映射；CLI spawn、provider 抓取与官方 Codex 目录运行时经 `/api/__host/model-catalogs` 回调 | 见 §32 |
+| `GET/HEAD/OPTIONS /api/agent-resources/skills`、`GET/HEAD/OPTIONS /api/agent-presets`、`GET/HEAD/OPTIONS /api/agent-presets/:id`、`GET/HEAD/OPTIONS/DELETE /api/agent-resources/claude-sessions`、`DELETE/OPTIONS /api/agent-resources/claude-sessions/:project/:id` | `src/routes/agent-resources.js` 只剩 presets 文件缓存/commander 覆盖/provider 富化与 Claude 历史读写；宿主端口为 `src/routes/agent-resources-host.js` | `native/gateway/src/app/agent_resources.rs`：路径（含两段解码参数）、`olderThanDays` 校验、purge 过滤循环、计数/求和、409/404/400/500 映射；磁盘扫描与文件读删经 `/api/__host/agent-resources` 回调 | 53/53 请求逐字节一致 + 9/9 预期差异（见 §33） |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -1692,3 +1693,95 @@ Node 侧合计删除 556 行、新增 27 行（净 −529）：`src/routes/codex
   （`/claude-proxy/:id/remote/models`、`/codex-proxy/:id/models`）不在本批：它们与协议代理的
   挂载顺序耦合，随代理组另批迁移。
 - 与前面几批一致：大写 `/API/...` 前缀不再被 claim，路由删除后该变体落回 Express 404。
+
+## 33. Agent resources 迁入 Rust（2026-11-11）
+
+本批把六条路由从 Node 搬进前门（`native/gateway/src/app/agent_resources.rs`）：
+
+- `GET/HEAD/OPTIONS /api/agent-resources/skills`
+- `GET/HEAD/OPTIONS /api/agent-presets` 与 `GET/HEAD/OPTIONS /api/agent-presets/:id`
+- `GET/HEAD/OPTIONS/DELETE /api/agent-resources/claude-sessions`
+- `DELETE/OPTIONS /api/agent-resources/claude-sessions/:project/:id`
+
+路径匹配（含 `:id` / `:project` 两段 `decodeURIComponent`）、`olderThanDays` 校验、purge 的
+cutoff 与过滤循环、计数/求和、以及 409/404/400/500 的映射都在 Rust。Node 只剩 Rust 看不见的
+事实与副作用：presets 文件的进程内缓存与 Agent Commander 覆盖、按 provider store 的
+`defaultProviderId`/`defaultProviderName` 富化、skills 磁盘扫描、Claude 历史文件的读取/删除
+（路径校验、linked 保护、unlink 与附属目录清理、失败日志）。这些经一个宿主端口按需回调。
+
+### 宿主端口
+
+`src/routes/agent-resources-host.js`（64 行）挂在 `POST /api/__host/agent-resources`，沿用
+§31/§32 的约定：PROXY v1 回环行、`isLocalRequest` 判定、非回环 404、60 秒超时、不重试。
+操作只有五个：
+
+- `skills` → `{ok:true, skills}` 或 `{ok:false}`（扫描抛错）；
+- `presets` → presets 信封原文（`source`/`version`/`generatedAt`/`categories`/`featured`/
+  `presets`，列表项已去掉 `prompt`），文件不可读时 `{ok:false}`；
+- `preset`（带 `id`）→ `{ok:true, found, preset}` 或 `{ok:false}`；
+- `claude-sessions` → `{ok:true, sessions}` 或 `{ok:false}`；
+- `claude-session-delete`（带 `project`、`id`，均已解码）→ `{ok:true, freed}`、
+  `{ok:false, error}`（字符串原样给前端）或 `{ok:false, threw:true}`（宿主已记
+  `agent_resources_failure`）。
+
+### 逐路由语义
+
+- `skills`：`counts.claude`/`counts.codex` 只对 `provider === 'claude'` / `'codex'` 严格计数
+  （大小写敏感），其余 provider 不计。
+- `presets`：信封字段顺序固定；`source`/`version`/`generatedAt` 只在宿主给出时出现（与
+  `JSON.stringify` 丢弃 `undefined` 一致）；`categories`/`featured` 取宿主的真值，否则 `[]`；
+  文件不可读 → 500 `{"error":"agent presets unavailable"}`（不是 `internal_error`）。
+- `preset/:id`：未知 id → 404 `{"error":"not found"}`；宿主不可达 → 503；文件不可读 → 500。
+- `claude-sessions`：`count` 是数组长度，`totalSize` 按 `sum + size` 求和（缺 `size` 变成
+  NaN，序列化为 `null`，与 `JSON.stringify` 一致），`protectedCount` 统计 JS 真值的 `linked`。
+- 单条删除：`{ok:true, freed}` → 200 原样；`error` 字符串含 `protected` → 409，否则 404；
+  `threw`/非字符串 error → 500 `{"error":"history delete failed"}`；宿主不可达 → 503。
+- 批量清理：先校验 `Number(String(req.query.olderThanDays || ''))`，非有限或 < 1 → 400
+  `{"error":"olderThanDays must be at least 1"}`；cutoff = 现在 − days×86400000。按宿主返回
+  的顺序逐个判断：`linked` 真值、`updatedAt` 不是 RFC 3339（`toISOString` 产物）或解析失败、
+  `updatedAt >= cutoff` 一律跳过；其余逐个回调删除，只累计 `ok:true` 的 `deleted`/`freed`，
+  单条失败被忽略（与退役循环的 `try/catch` 一致）。
+- `OPTIONS`：`/api/agent-resources/claude-sessions` 同时注册 GET 与 DELETE，Express 会把二者
+  合并成 `Allow: GET,HEAD,DELETE`；两参数删除路径只有 `Allow: DELETE`。`HEAD` 与 `GET` 同头无体。
+
+### 差分与集成
+
+- `native/gateway/tests/agent_resources.rs`：13 个集成测试，锁住 skills 计数（含大小写变体）、
+  presets 信封顺序与缺键、`:id` 解码与 404/500、Claude 列表的 count/totalSize/protectedCount、
+  单条删除的 200/409/404/500、`olderThanDays` 的 400、purge 对 linked/非法日期/新鲜条目的跳过
+  与删除调用顺序、OPTIONS/HEAD、宿主不可达的 503，以及无关路径仍转发给 Node。
+- `docs/rust-migration/differential/agent-resources.js`：Node 侧用冻结 oracle
+  （`tests/helpers/legacy-agent-resource-routes.js`，退役 handler 的逐字副本）跑真实 Express
+  流水线，Rust 侧是前门 + 按 PROXY v1 接线的桩，两侧共用同一份脚本化的 skills/presets/历史
+  回答（oracle 时钟固定，`updatedAt` 只用远离 cutoff 的 RFC 3339 串）。62 条请求：53 条逐字节
+  一致，另 9 条预期差异单独校验——6 条宿主端口不可达（Node 仍 200，Rust 503
+  `rust_backend_unavailable`）、3 条宿主 `ok:false`（退役 handler 抛异常由 Express 给 500
+  `internal_error`，Rust 映射为同一家族 503）；`presets` 文件不可读两侧都是逐字节相同的 500，
+  不计入预期差异。
+- `tests/test-agent-resources-routes.js` 改为 runtime 契约（presets 缓存、commander 覆盖、
+  provider 富化、删除映射）并断言 Node 模块里不再留任何 HTTP 路由；
+  `tests/test-agent-resources-host.js` 覆盖宿主端口五个操作、回环门禁与异常映射，登记在
+  `test:rust`。
+- 六个前门集成测试的 `exchange` 帮手统一加了一次「零字节连接重置就重放（最多 3 次）」的
+  兜底（`account_subscription` / `claude_models` / `model_catalogs` / `provider_limit_history` /
+  `subagent_defaults` / `token_usage_global`）。测试的 `free_port()` 在松开探测端口到前门真正
+  bind 之间有竞态，并行跑全量时偶发 `ConnectionReset`；只重放一个字节都没读到的请求，读到
+  部分响应仍直接判失败，所以不会掩盖真实的截断。只改测试帮手，不改产品代码。
+
+### 删除面
+
+退役的路由实现共 91 行（`src/routes/agent-resources.js` 的 `mountRoutes` 147–237），
+`server.js` 的挂载接线 3 行；同文件新增 runtime 访问器 73 行，新增宿主端口 64 行。新增 Rust
+432 行（`app/agent_resources.rs`）、`mod.rs` claim/handle 与单测 142 行、集成测试 571 行、
+fixture 宿主脚本 50 行、差分 690 行、冻结 oracle 264 行。
+
+### 已知边界
+
+- purge 现在是每个待删会话一次宿主回调（原来一次进程内调用），N 条旧会话即 N 次回环往返；
+  单条失败仍被忽略，语义不变。
+- `updatedAt` 只复刻 RFC 3339（所有写入方都是 `Date#toISOString`）；`Date.parse` 接受的其他
+  格式（本地化字符串、裸日期）不再等价，这类条目的 purge 会被跳过。
+- 宿主扫描/读取抛错在旧 Express 里是 500 `internal_error`，迁移后统一为该家族的 503
+  `rust_backend_unavailable`（与 §32 同类失败路径），已作为预期差异登记。
+- 与前面几批一致：大写 `/API/...` 前缀不再被 claim，落回 Express 404。
+

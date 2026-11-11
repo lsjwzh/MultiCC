@@ -217,10 +217,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 3071/164919，按棘轮双向调到实测值。
   // 2026-11-11 模型目录八条路由迁到 Rust 前门：server.js 的五个 mount* 接线换成
   // 宿主端口挂载，实测 3066/164092，按棘轮双向调到实测值。
+  // 2026-11-11 agent-resources 六条路由迁到 Rust 前门：六次 mountRoutes 接线换成
+  // 一个宿主端口挂载（多一行 require 拆分），实测 3067/164212。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3066,
-    byteCeiling: 164092,
+    ceiling: 3067,
+    byteCeiling: 164212,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

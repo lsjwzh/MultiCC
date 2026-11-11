@@ -3288,3 +3288,109 @@ state → refresh(wait:false) → state 调用顺序、旧客户端的一次全�
 - `docs/gateway.md` 新增 §32 与路由表一行；`docs/rust-migration/route-inventory.md` 的
   文件清单与推荐顺序第 6 组同步。
 - 本组按用户指令完成；未重启服务，路由由前门接管要等用户手动重启后才生效。
+
+## Agent 资源路由迁入 Rust 前门（2026-11-11）
+
+六条路由（六次注册、三处挂载）原先都由 `src/routes/agent-resources.js` 的 `mountRoutes`
+回答：`GET /api/agent-resources/skills`、`GET|HEAD /api/agent-presets`、
+`GET|HEAD /api/agent-presets/:id`、`GET|HEAD /api/agent-resources/claude-sessions`、
+`DELETE /api/agent-resources/claude-sessions/:project/:id`，以及同路径不带参数的
+`DELETE /api/agent-resources/claude-sessions?olderThanDays=N`（历史清理）。它们依赖 Node
+进程内状态（presets 文件缓存与 commander 覆盖、provider 缺省值富化、skills 目录扫描、
+Claude 历史索引与单条删除），但同样不能整条留在 Node：路径/方法匹配、查询语义、校验、
+序列化与错误映射搬进前门，Node 只保留一个显式宿主端口。
+
+### Rust 实现
+
+- `native/gateway/src/app/agent_resources.rs`（432 行）：claim 用 Express 口径匹配
+  （区分大小写 `/api/` 前缀、一个尾斜杠、字面段大小写不敏感）；`preset_id` 只接受
+  `agent-presets/` 后一个非空段并用 `decode_uri_component` 解码、失败回退原串，
+  `session_delete_params` 只接受恰两个非空段。六个 handler 保留旧文案与状态码：
+  宿主不可达 503 `{"error":"agent resources interface is not ready","code":"rust_backend_unavailable"}`，
+  presets 读取失败 500 `{"error":"agent presets unavailable"}`，未知 preset 404
+  `{"error":"not found"}`；skills 的计数只认严格 `provider === "claude" | "codex"`；
+  presets 信封按 source/version/generatedAt（仅宿主提供时）→ categories → featured →
+  presets 的顺序建 Map，后三者非数组时补 `[]`；claude-sessions 的 `totalSize` 走
+  `number_value`，`NaN` → `null`，`protectedCount` 只数 truthy 的 `linked`；
+  单删把宿主回答映射成 `{ok:true,freed}`（freed 仅存在时带）、`protected` 409、
+  缺失 404、宿主抛错 500 `history delete failed`。清理路由用
+  `js_string_to_number(query_string(query_value(original_url,"olderThanDays")))`
+  复现 `Number(req.query...)`：非有限或 `< 1` → 400
+  `{"error":"olderThanDays must be at least 1"}`；cutoff = `now_ms()` − days×86400000，
+  `updatedAt` 只按 RFC3339 解析，跳过 linked、无效或仍新鲜的会话，逐条调用宿主删除并只
+  累计成功数。
+- `native/gateway/src/app/mod.rs`：9 个 `Route` 变体、claim 接线与 6 个 handler arm；
+  三组 OPTIONS 分别答 `GET,HEAD`、`DELETE` 与 `GET,HEAD,DELETE`（Express 把同路径的
+  GET 与 DELETE 合并）。单测 `agent_resource_claims_keep_the_express_shape` 覆盖尾斜杠、
+  大小写混合、`:id` 解码、`/API/` 前缀拒绝、`//` 拒绝与三段式删除路径不成立。
+
+### 删除与宿主适配
+
+- `src/routes/agent-resources.js`：`mountRoutes` 及其守卫 88 行删除，运行时改名为
+  `createAgentResourcesRuntime`；presets 缓存、commander 覆盖、provider 富化保留，新增
+  73 行宿主访问器（`installedSkills` / `presetsList` / `presetLookup` / `claudeSessions` /
+  `removeClaudeSession`），文件现为 237 行。
+- `src/routes/agent-resources-host.js`（64 行）：`POST /api/__host/agent-resources`，
+  `if (!isLocal(req)) return res.status(404)`，op 映射到上面五个访问器，缺失或非字符串
+  的 id/project 按 `''` 传入，未知 op 回 `{ok:false}`，访问器抛错回 500
+  `{"error":"host operation failed"}`。
+- `server.js` 三处接线改写（require 改名并新增宿主端口一行、`createAgentResourcesRuntime`、
+  `mountRoutes` → `mountAgentResourcesHostRoute`），行数 3066 → 3067（新增一行注释），
+  行预算棘轮 3071/164919 → 3067/164212。
+- 测试面：`tests/test-agent-resources-routes.js` 改为纯运行时契约（含「不再有 HTTP 路由面」
+  的源码守卫）；新增 `tests/test-agent-resources-host.js`（7 条，含只有回环能调）；
+  新增差分 oracle 的冻结副本 `tests/helpers/legacy-agent-resource-routes.js`（264 行，
+  退役 handler 逐字复制，仅供差分）；`tests/test-tiers.json` 877 条、`test:rust` 增加
+  宿主端口测试、`test-release-version-consistency` 复核集合 424/350/396/393。
+
+### 集成测试
+
+`native/gateway/tests/agent_resources.rs`（571 行，13 个用例）：skills 计数（忽略其他
+provider 与非对象项）、presets 信封的字段顺序与缺省、`:id` 解码与 404、退役的 500、
+claude-sessions 的 count/totalSize/protectedCount、单删的 ok/protected/缺失/抛错四种映射、
+清理的 `olderThanDays` 校验、清理跳过 linked/无效/新鲜只删过期、OPTIONS 允许列表、HEAD
+与 GET 同形无正文、宿主不可达时整族形状一致、无关路径仍转发 Node。共享 fixture
+`tests/fixtures/upstream.js` 新增 `POST /api/__host/agent-resources` 脚本模式
+（记录 `agent-calls.jsonl`，用 `agent.skills|data|presets|sessions|remove` 与
+`agent.*Down` 控制回答）。
+
+另外，六个前门集成测试的 `exchange` 帮手统一加入一次「零字节连接重置就重放」的兜底
+（`account_subscription` / `claude_models` / `model_catalogs` / `provider_limit_history` /
+`subagent_defaults` / `token_usage_global`）：测试的 `free_port()` 在松开探测端口到前门真正
+bind 之间存在竞态，并行跑全量时偶发 `ConnectionReset`（本机约 1/3 概率，单线程运行 0 次）。
+只重放「一个字节都没读到」的请求（最多 3 次），读到部分响应仍直接判失败，避免掩盖真实的
+截断。此改动只动测试帮手，不改产品代码。
+
+### 差分与验证
+
+- `docs/rust-migration/differential/agent-resources.js`：Node 侧用冻结 oracle
+  （`tests/helpers/legacy-agent-resource-routes.js`）跑真实 Express 流水线，Rust 侧是
+  前门 + 按 PROXY v1 接线的桩；两侧共用同一份宿主脚本与固定时钟（1768000000000）。
+  62 条请求：53 条逐字节一致（状态码、正文、ETag、`Content-Length`、相关响应头），
+  9 条预期差异单独校验并登记 —— 6 条是宿主端口不可达时 Rust 的 503
+  `rust_backend_unavailable` 对旧 Node 的 200（旧路由没有这条失败路径），3 条是宿主
+  `{ok:false}` 时旧 Node 走 `safeErrorHandler` 的 500 `internal_error` 对 Rust 的 503；
+  语料覆盖 skills/presets/单 preset/claude-sessions/单删/清理/OPTIONS/未认领路径。
+- 源码指纹 `025acdeb9c55c26ca44c7ef5`：本组只改 Rust 测试，所以 `multicc_core.node`
+  （18,364,576 字节，SHA-256 `6294bdf9…5724`）与 `multicc-gateway`（12,070,160 字节，
+  SHA-256 `12831fa4…1cdedf`）都与上一批同字节，`multicc-remote` / `multicc-cdpd` 亦然；
+  指纹变化只来自 `native/gateway/tests/*.rs`。
+- `cargo fmt --all --check` 退出 0；`cargo clippy --locked -p multicc-gateway
+  --all-targets -- -D warnings` 零告警；`cargo test --locked -p multicc-gateway` 连续
+  三次全绿（11 个测试二进制，合计 123 passed / 0 failed）。
+- JS 门禁（`MULTICC_RUST_ADDON` 与 `MULTICC_RUST_PREBUILT_DIR` 指向本指纹根目录）：
+  `test:rust` 275/275、`test:contracts` 148/148、`test:native` 退出 0（275/275）、
+  `test:architecture` 128/128、`test:governance` 退出 0（20/20，`check-test-tiers` 877 条、
+  `governance:artifacts`、`governance:runtime-writes`）、本组相关 4 个测试文件 28/28。
+- 两份后端清单已重新生成：`docs/backend-route-inventory.md`（586 个后端文件、138,141 行、
+  491 个注册候选，与上一批同数；删掉六个公开注册、新增一条宿主端口在上批已计入），
+  `docs/backend-runtime-inventory.md`（指纹 `025acdeb9c55c26ca44c7ef5`，541 条路由注册、
+  34 层中间件，注册数不变）。
+- `docs/gateway.md` 新增 §33 与路由表一行；`docs/rust-migration/route-inventory.md`
+  增加宿主端口文件行、把 `src/routes/agent-resources.js` 标为 0 条路由 ✅，并更新推荐顺序
+  第 7 组。
+- 本组按用户指令完成：删除 Node 路由实现 91 行（88 行 `mountRoutes` + 3 行 `server.js`
+  接线），新增宿主适配 137 行（73 行访问器 + 64 行宿主端口）。剩余的纯宿主垫片文件：
+  `src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
+  `src/routes/subagent-defaults-host.js`。未重启服务，路由由前门接管要等用户手动重启后
+  才生效。

@@ -989,6 +989,15 @@
       ]
     },
     {
+      "path": "tests/test-agent-resources-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-agent-resources-routes.js",
       "tier": "core",
       "lane": "deterministic",

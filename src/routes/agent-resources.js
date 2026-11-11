@@ -1,5 +1,27 @@
 'use strict';
 
+// Agent presets / installed skills / Claude history runtime.
+//
+// The six public routes (GET /api/agent-resources/skills, GET /api/agent-presets,
+// GET /api/agent-presets/:id, GET /api/agent-resources/claude-sessions,
+// DELETE /api/agent-resources/claude-sessions/:project/:id and
+// DELETE /api/agent-resources/claude-sessions) now live in the Rust front door
+// (native/gateway/src/app/agent_resources.rs): path matching, query validation,
+// the purge loop, counts/totals and every status code are decided there.
+//
+// What remains here is Node-only state and side effects, served to the front door
+// through src/routes/agent-resources-host.js:
+//   - the parsed public/agent-presets.json file (read once, cached for the process)
+//   - the Agent Commander override (COMMANDER_ROUTER_PROMPT) and the provider
+//     enrichment that resolves defaultProviderId/defaultProviderName from the
+//     provider store
+//   - listInstalledSkills() filesystem scan
+//   - listClaudeHistory() / removeClaudeHistorySession() over $HOME/.claude/projects
+//     (path validation, linked-session protection, unlink + sidecar cleanup)
+//
+// agentCommanderPreset()/agentCommanderPrompt() stay exported because server.js
+// binds them for the task-attribution tests.
+
 const AGENT_COMMANDER_PRESET_ID = 'specialized__agent-commander';
 const COMMANDER_ROUTER_PROMPT = [
   '# Workspace Commander',
@@ -65,12 +87,10 @@ function assertDependencies(deps) {
   return deps;
 }
 
-function createAgentResourcesRoutes(rawDeps) {
+function createAgentResourcesRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
-  const now = deps.now || Date.now;
   let presetsCache = null;
   let presetsError = null;
-  let mounted = false;
 
   function loadAgentPresets() {
     if (presetsCache || presetsError) return presetsCache;
@@ -144,108 +164,74 @@ function createAgentResourcesRoutes(rawDeps) {
     return preset ? enrichAgentPresetDefaults(preset) : null;
   }
 
-  function mountRoutes(app) {
-    if (!app || typeof app.get !== 'function' || typeof app.delete !== 'function') {
-      throw new TypeError('[agent-resources] Express-compatible app is required');
+  // Host-port operations. Each returns the JSON body the Rust front door expects;
+  // an `ok:false` answer means "no preset file" or "host call failed", and the
+  // front door maps it to the retired 500/503 shape.
+
+  function installedSkills() {
+    return deps.listInstalledSkills();
+  }
+
+  function presetsList() {
+    const data = loadAgentPresets();
+    if (!data) return { ok: false };
+    const presets = (data.presets || []).map(rawPreset => {
+      const preset = rawPreset.id === AGENT_COMMANDER_PRESET_ID ? agentCommanderPreset() : rawPreset;
+      const { prompt, ...metadata } = enrichAgentPresetDefaults(preset);
+      return metadata;
+    });
+    return {
+      ok: true,
+      source: data.source,
+      version: data.version,
+      generatedAt: data.generatedAt,
+      categories: data.categories || [],
+      featured: data.featured || [],
+      presets,
+    };
+  }
+
+  function presetLookup(id) {
+    const data = loadAgentPresets();
+    if (!data) return { ok: false };
+    const preset = agentPreset(id);
+    if (!preset) return { ok: true, found: false };
+    return { ok: true, found: true, preset };
+  }
+
+  function claudeSessions() {
+    return deps.listClaudeHistory();
+  }
+
+  function removeClaudeSession(project, id) {
+    try {
+      const result = deps.removeClaudeHistorySession(project, id);
+      if (!result || !result.ok) {
+        return { ok: false, error: result && result.error };
+      }
+      return { ok: true, freed: result.freed };
+    } catch (error) {
+      if (typeof deps.reportError === 'function') {
+        try { deps.reportError(error, { operation: 'claude_history_delete' }); } catch (_) {}
+      }
+      return { ok: false, threw: true };
     }
-    if (mounted) throw new Error('[agent-resources] routes already mounted');
-    mounted = true;
-
-    app.get('/api/agent-resources/skills', (req, res) => {
-      const skills = deps.listInstalledSkills();
-      res.json({
-        skills,
-        counts: {
-          claude: skills.filter(skill => skill.provider === 'claude').length,
-          codex: skills.filter(skill => skill.provider === 'codex').length,
-        },
-      });
-    });
-
-    app.get('/api/agent-presets', (req, res) => {
-      const data = loadAgentPresets();
-      if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-      const presets = (data.presets || []).map(rawPreset => {
-        const preset = rawPreset.id === AGENT_COMMANDER_PRESET_ID ? agentCommanderPreset() : rawPreset;
-        const { prompt, ...metadata } = enrichAgentPresetDefaults(preset);
-        return metadata;
-      });
-      res.json({
-        source: data.source,
-        version: data.version,
-        generatedAt: data.generatedAt,
-        categories: data.categories || [],
-        featured: data.featured || [],
-        presets,
-      });
-    });
-
-    app.get('/api/agent-presets/:id', (req, res) => {
-      const data = loadAgentPresets();
-      if (!data) return res.status(500).json({ error: 'agent presets unavailable' });
-      const preset = agentPreset(req.params.id);
-      if (!preset) return res.status(404).json({ error: 'not found' });
-      res.json(preset);
-    });
-
-    app.get('/api/agent-resources/claude-sessions', (req, res) => {
-      const sessions = deps.listClaudeHistory();
-      res.json({
-        sessions,
-        count: sessions.length,
-        totalSize: sessions.reduce((sum, session) => sum + session.size, 0),
-        protectedCount: sessions.filter(session => session.linked).length,
-      });
-    });
-
-    app.delete('/api/agent-resources/claude-sessions/:project/:id', (req, res) => {
-      try {
-        const result = deps.removeClaudeHistorySession(req.params.project, req.params.id);
-        if (!result.ok) {
-          return res.status(result.error.includes('protected') ? 409 : 404).json({ error: result.error });
-        }
-        res.json(result);
-      } catch (error) {
-        if (typeof deps.reportError === 'function') {
-          try { deps.reportError(error, { operation: 'claude_history_delete' }); } catch (_) {}
-        }
-        res.status(500).json({ error: 'history delete failed' });
-      }
-    });
-
-    app.delete('/api/agent-resources/claude-sessions', (req, res) => {
-      const olderThanDays = Number(req.query.olderThanDays);
-      if (!Number.isFinite(olderThanDays) || olderThanDays < 1) {
-        return res.status(400).json({ error: 'olderThanDays must be at least 1' });
-      }
-      const cutoff = now() - olderThanDays * 86400 * 1000;
-      let deleted = 0;
-      let freed = 0;
-      for (const session of deps.listClaudeHistory()) {
-        const updatedAt = new Date(session.updatedAt).getTime();
-        if (session.linked || !Number.isFinite(updatedAt) || updatedAt >= cutoff) continue;
-        try {
-          const result = deps.removeClaudeHistorySession(session.project, session.id);
-          if (result.ok) {
-            deleted += 1;
-            freed += result.freed;
-          }
-        } catch (_) {}
-      }
-      res.json({ ok: true, deleted, freed });
-    });
   }
 
   return Object.freeze({
     agentPreset,
     agentCommanderPreset,
     agentCommanderPrompt,
-    mountRoutes,
+    installedSkills,
+    presetsList,
+    presetLookup,
+    claudeSessions,
+    removeClaudeSession,
   });
 }
 
 module.exports = {
   AGENT_COMMANDER_PRESET_ID,
   COMMANDER_ROUTER_PROMPT,
-  createAgentResourcesRoutes,
+  createAgentResourcesRuntime,
 };

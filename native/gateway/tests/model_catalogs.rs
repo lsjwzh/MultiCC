@@ -149,10 +149,6 @@ impl Gateway {
     }
 
     fn exchange(&self, method: &str, url: &str, body: Option<&Value>) -> Response {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect gateway");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .unwrap();
         let payload = body.map(|value| value.to_string()).unwrap_or_default();
         let mut request = format!(
             "{method} {url} HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: diff-req-1\r\nConnection: close\r\n"
@@ -165,9 +161,35 @@ impl Gateway {
         }
         request.push_str("\r\n");
         request.push_str(&payload);
-        stream.write_all(request.as_bytes()).unwrap();
+        // The gateway's port is probed and released before it binds, so a
+        // parallel run can briefly steer a fresh connection at another
+        // listener that resets it. Replay only when nothing was read: a reset
+        // after any byte arrived means the response really was cut short.
         let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).unwrap();
+        for attempt in 0..4 {
+            let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect gateway");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+            raw.clear();
+            match stream.read_to_end(&mut raw) {
+                Ok(_) => break,
+                Err(error)
+                    if raw.is_empty()
+                        && attempt < 3
+                        && matches!(
+                            error.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::BrokenPipe
+                        ) =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("gateway exchange failed: {error:?}"),
+            }
+        }
         let split = raw
             .windows(4)
             .position(|window| window == b"\r\n\r\n")

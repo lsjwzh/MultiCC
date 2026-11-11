@@ -560,13 +560,18 @@ test('core runner covers every selected path and expands declared variants', () 
   // each section in an isolated child with loopback-pinned proxies and opens no
   // service. Re-audited as deterministic core:
   // 423 entries, 349 deterministic, 395 commands (392 Node entries).
-  assert.equal(core.length, 423, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 423);
+  // The agent-resources host-port contract (the Rust front door's callback
+  // surface after the six public routes moved into native/gateway) is a plain
+  // in-memory harness: fake Express app, fake runtime object, no port, clock,
+  // filesystem or process. Re-audited as deterministic core:
+  // 424 entries, 350 deterministic, 396 commands (393 Node entries).
+  assert.equal(core.length, 424, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 424);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 349);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 350);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -576,8 +581,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 395,
-    '392 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 396,
+    '393 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
