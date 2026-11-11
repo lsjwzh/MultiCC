@@ -14,6 +14,7 @@ pub mod claude_models;
 pub mod download;
 pub mod express;
 pub mod external_workspaces;
+pub mod file_transfer;
 pub mod host_read;
 pub mod model_catalogs;
 pub mod provider_limit_history;
@@ -113,6 +114,10 @@ pub enum Route {
     SecretsOptionsValue,
     HostReadGet(host_read::Route),
     HostReadOptions(host_read::Route),
+    FilesGet,
+    FilesOptions,
+    Upload,
+    UploadOptions,
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -152,6 +157,18 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if let Some(route) = secrets_vault::claim(method, path) {
         return Some(route);
+    }
+    if let Some(claim) = file_transfer::claim(method, path) {
+        return Some(match claim {
+            file_transfer::Claim::Handle(route) => match route {
+                file_transfer::Route::Files => Route::FilesGet,
+                file_transfer::Route::Upload => Route::Upload,
+            },
+            file_transfer::Claim::Options(route) => match route {
+                file_transfer::Route::Files => Route::FilesOptions,
+                file_transfer::Route::Upload => Route::UploadOptions,
+            },
+        });
     }
     if let Some(claim) = host_read::claim(method, path) {
         return Some(match claim {
@@ -426,6 +443,12 @@ pub async fn handle(
     if let Some(refusal) = app.gate(&ctx, &peer, &snapshot) {
         return refusal;
     }
+    // multer owns the raw multipart body: the upload route runs in front of the
+    // global `express.json` (it applies that step itself for JSON bodies, which
+    // is where the retired stack parsed them).
+    if let Route::Upload = route {
+        return file_transfer::upload(&ctx, body).await;
+    }
     // The ticket route sits in front of the global `express.json` with its
     // own `express.json({ limit: '4kb' })`; everything else gets the global one.
     let limit = match route {
@@ -482,6 +505,8 @@ pub async fn handle(
         | Route::TokenUsageGlobalOptions => return options(&ctx, "GET,HEAD"),
         Route::TokenUsageByRoleOptions => return options(&ctx, "GET,HEAD"),
         Route::HostReadOptions(route) => return options(&ctx, route.allow()),
+        Route::FilesOptions => return options(&ctx, file_transfer::Route::Files.allow()),
+        Route::UploadOptions => return options(&ctx, file_transfer::Route::Upload.allow()),
         Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
         Route::DownloadTicket => {
             let (status, value) = download::issue(&app, &body, now_ms());
@@ -521,6 +546,7 @@ pub async fn handle(
         // needs in-process Node state asks it only through that one call.
         Route::TokenUsageByRoleGet => return token_usage_by_role::get(&ctx, host).await,
         Route::HostReadGet(route) => return host_read::handle(&ctx, route, host, &peer).await,
+        Route::FilesGet => return file_transfer::files(&ctx, host).await,
         Route::SubagentDefaultsGet => return subagent_defaults::get(&app, &ctx, host).await,
         Route::SubagentDefaultsSync => {
             return subagent_defaults::sync(&app, &ctx, &body, host).await
@@ -724,8 +750,21 @@ mod tests {
         assert_eq!(claim(&Method::GET, "/API/token-usage/by-role"), None);
         assert_eq!(claim(&Method::GET, "/api/token-usage/by-role/x"), None);
         assert_eq!(claim(&Method::GET, "/api/token-usage"), None);
-        assert_eq!(claim(&Method::GET, "/api/files"), None);
-        assert_eq!(claim(&Method::POST, "/api/upload"), None);
+        assert_eq!(claim(&Method::GET, "/api/files"), Some(Route::FilesGet));
+        assert_eq!(claim(&Method::HEAD, "/api/Files/"), Some(Route::FilesGet));
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/files"),
+            Some(Route::FilesOptions)
+        );
+        assert_eq!(claim(&Method::POST, "/api/files"), None);
+        assert_eq!(claim(&Method::GET, "/api/files//"), None);
+        assert_eq!(claim(&Method::POST, "/api/upload"), Some(Route::Upload));
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/Upload/"),
+            Some(Route::UploadOptions)
+        );
+        assert_eq!(claim(&Method::GET, "/api/upload"), None);
+        assert_eq!(claim(&Method::HEAD, "/api/upload"), None);
     }
 
     #[test]

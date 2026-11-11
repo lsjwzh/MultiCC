@@ -3681,3 +3681,101 @@ OPTIONS/HEAD、路径匹配、宿主收到的 op/session 精确有序。测试�
   `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`、
   `src/routes/token-usage-host.js`、`src/routes/host-read-host.js`。未重启服务，路由由前门
   接管要等用户手动重启后才生效。
+
+## 文件浏览与聊天附件上传迁入 Rust 前门（2026-11-11）
+
+`GET|HEAD|OPTIONS /api/files` 与 `POST|OPTIONS /api/upload` 原先由
+`src/routes/file-transfer.js`（`mountFileTransferRoutes`）与 `src/upload-middleware.js`
+的 multer 聊天流水线回答。目录列表唯一依赖 Node 的是进程内会话表与 ICU
+`localeCompare` 排序；上传是自足的输入到落盘函数。因此路径匹配、query trim 语义、
+`parent` 组装、整个 multipart 解析与策略表、限额、配额、临时目录落盘与命名全部进前门，
+只剩会话解析与排序经宿主端口回调。
+
+### Rust 实现
+
+- `native/gateway/src/app/file_transfer.rs`（1,103 行，含 7 个单测）：`claim` 接受
+  `GET`/`HEAD`/`OPTIONS` 的 `/api/files` 与 `POST`/`OPTIONS` 的 `/api/upload`
+  （`/api/` 前缀区分大小写、路径字面段大小写不敏感、允许一个尾斜杠），`Allow` 分别是
+  `GET,HEAD` 与 `POST`。列表：`path`/`session` 先 `trim()`（数组或对象 query 复刻
+  `req.query.path.trim` 不存在的 handler TypeError → 500），`path` 优先、否则
+  `session` 走活动会话/持久化会话/`homedir()`，`~` 展开后 `path.resolve`；宿主的
+  `entries` 原样组装成 `{name,isDir,path,size,parent}`（目录 `size` 恒 `null`），
+  `parent` 按 `path.parse(dir).root === dir ? null : dirname(dir)`，读目录失败复刻旧
+  400 `{"error":<message>}`。
+- 上传：`Content-Type` essence 为 `application/json` 时先复刻 `express.json`（非法
+  JSON 400、超限 413、字符集 415）再按 `No file`；`boundary` 缺失或无法定位 → 500
+  `UPLOAD_FAILED`；解析器按 busboy 1.6 语义（`parts` 初值 -1、开头伪 CRLF 匹配、每个
+  分隔符 `++parts === partsLimit`、part 类型 = `Content-Type === 'application/octet-stream'`
+  或带 `filename`、`partType` 缺省 `text/plain`、`disp.params.filename` 真值判断），
+  再按 multer 的 file 处理顺序（字段名 > 64 → `LIMIT_FIELD_KEY`、`!filename` → 跳过、
+  无 `name` → 500、字段名不是 `file` → `UPLOAD_UNEXPECTED_FIELD`、媒体类型白名单
+  → 415、字节数 ≥ 25 MiB → `LIMIT_FILE_SIZE`），最后落盘 `safeOriginalName` +
+  `path.posix.extname` 白名单扩展名 + `Date.now()`/4 随机字节/`wx` 0600/最多 3 次，
+  成功打 `[multicc] Uploaded: <path> (<name>)` 并回 `{path,name}`。
+- 建槽表 `{1:1,2:1,3:1,4:1}`，满额 429 `UPLOAD_BUSY` 且带 `Connection: close`；
+  临时目录 `multicc_*` ≥ 200 个或累计字节 + 本文件 > 512 MiB → 507
+  `UPLOAD_STORAGE_QUOTA_EXCEEDED`。
+- `native/gateway/src/app/mod.rs`（+43 行）、`express.rs`（+4：`media_type`/`collect`）、
+  `uploads.rs`（+16：`join`/`temp_usage`）、`Cargo.toml`（+`getrandom`）。
+
+### 删除与宿主适配
+
+- `src/routes/file-transfer.js` 整文件删除（98 行）。
+- `src/routes/file-transfer-host.js`（106 行）：`POST /api/__host/file-transfer`，沿用
+  §31–§36 的回环约定；唯一 op `files`，只回原料 `{ok,dir,entries}`（已按目录优先 + ICU
+  排序）或 `{ok:false,message}`；`parent` 与 DTO 由前门决定。上传不需要任何往返。
+- `src/upload-middleware.js` 220 → 150 行：删掉聊天半（`CHAT_APPLICATION_TYPES`、
+  `chatMimeAllowed`、`tempUploadStats`、`persistChatUpload` 与 `chat` 中间件），只剩
+  voice；文件头注释写明聊天上传归前门。
+- `server.js` 3,069 → 3,067 行（−2：require 换成宿主挂载、`createUploadSuite` 只留
+  voice），行预算棘轮同步 `3067` 行 / `164505` 字节。
+- 测试面：`tests/test-file-transfer-routes.js` 改为宿主端口契约（8 条）；
+  `tests/test-upload-middleware.js` 只测 voice；`tests/test-request-locality.js`
+  白名单加入 `src/routes/file-transfer-host.js`；
+  `tests/helpers/legacy-file-transfer-routes.js`（332 行）保留退役 handler 与 multer
+  聊天半的逐字副本，只供差分使用。
+
+### 集成测试
+
+`native/gateway/tests/file_transfer.rs`（694 行，11 个用例）：列表形状与 `parent`、根
+目录无 `parent`、列表失败旧 400、宿主故障与端口不可达 500、数组 query 的 handler
+TypeError、完整上传（0600、命名模式、字节、日志行）、latin1 文件名、无文件分支、完整
+策略表逐条（第二个 part / 空文件名 / octet 无文件名 / 无 `name` 参数 / 字段名过长 /
+415）、恰好 25 MiB 与 25 MiB+1 的 413、逐路由 `OPTIONS Allow`。
+`tests/fixtures/upstream.js` 新增 `POST /api/__host/file-transfer` 脚本模式。
+
+### 差分与验证
+
+- `docs/rust-migration/differential/file-transfer.js`（399 行）：Node 侧挂冻结 oracle
+  与真实目录树，Rust 侧是前门 + 按 PROXY v1 接线的宿主桩（桩里就是真实的
+  `createFileTransferHost`），两侧写各自的临时目录。结果：63 条请求中 58 条逐字节一致，
+  5 条预期差异单独校验 5/5（`GET|HEAD /api/upload`、`POST /api/files`、
+  `/api/files/x` 三者 oracle 404 / 前门转发；`/API/files` oracle 200 / 前门转发）。
+  `finalize` 比对两侧上传目录：各 11 个文件，归一化名、模式 `600`、大小与字节完全一致。
+  两侧共用 `LANG`/`LC_*`（ICU 排序依赖环境 locale），不碰真实上传目录、真实服务或真实
+  上游。
+- 两份后端清单已重新生成：`docs/backend-route-inventory.md`（589 个后端文件、138,099
+  行、477 个注册候选），`docs/backend-runtime-inventory.md`（指纹
+  `a812788f6c8b91480adc697b`，527 条路由注册、34 层中间件）。
+
+### 最终产物与验证
+
+- 源码指纹 `a812788f6c8b91480adc697b`：`multicc_core.node` 18,364,576 字节
+  （SHA-256 `6294bdf9…`）、`multicc-gateway` 12,186,848 字节（SHA-256 `a36a97d9…`）、
+  `multicc-remote`（`d800dd59…`）、`multicc-cdpd`（`63f2c749…`）。
+- `cargo fmt --all` 成功；`cargo clippy -p multicc-gateway --all-targets -- -D warnings`
+  零告警；`cargo test -p multicc-gateway` 全绿（lib 58 条，全部测试二进制合计 194
+  passed，0 failed，其中 `file_transfer` 11 条）。
+- JS 门禁（`MULTICC_RUST_ADDON` 指向本指纹的 `darwin-arm64/multicc_core.node`，
+  `MULTICC_RUST_PREBUILT_DIR` 指向指纹根目录）：`test:rust` 292/292；`test:architecture`
+  128/128；`test:contracts` 148/148；`test:security` 1,138 通过 / 0 失败；
+  `test:governance` 全绿（含 `governance:runtime-writes` 45 项）；
+  `check-test-tiers` 与 `check-source-line-budget` 通过（`server.js` 3,067 行 /
+  164,505 字节）；`test-file-transfer-routes` 8/8，`test-upload-middleware` +
+  `test-request-locality` 合计 23/23。
+- 本组按用户指令完成：删除 Node 路由实现 98 行（整文件），新增宿主端口 106 行，
+  `src/upload-middleware.js` −70 行，`server.js` −2 行，Node 净变化 −64 行。剩余的纯宿主
+  垫片文件：`src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
+  `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`、
+  `src/routes/token-usage-host.js`、`src/routes/host-read-host.js`、
+  `src/routes/file-transfer-host.js`。未重启服务，路由由前门接管要等用户手动重启后才生效。

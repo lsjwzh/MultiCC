@@ -2,15 +2,13 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const http = require('node:http');
-const os = require('node:os');
-const path = require('node:path');
 const express = require('express');
 const {
   UPLOAD_LIMITS,
   createUploadSuite,
-  persistChatUpload,
+  mapUploadError,
+  voiceMimeAllowed,
 } = require('../src/upload-middleware');
 
 async function withServer(configure, run) {
@@ -36,59 +34,51 @@ function formWith(files, fields = {}) {
   return form;
 }
 
-test('multer 2 upload policy accepts one compatible chat file and one audio file', async () => {
+test('multer 2 voice upload policy accepts one compatible audio file', async () => {
   const upload = createUploadSuite({ fileSize: 1024 });
   await withServer(app => {
-    app.post('/chat', upload.chat, (req, res) => res.json({ name: req.file.originalname, size: req.file.size, type: req.file.mimetype }));
-    app.post('/voice', upload.voice, (req, res) => res.json({ size: req.file.size, type: req.file.mimetype }));
+    app.post('/voice', upload.voice, (req, res) => res.json({ name: req.file.originalname, size: req.file.size, type: req.file.mimetype }));
   }, async base => {
-    const chat = await fetch(`${base}/chat`, {
-      method: 'POST', body: formWith([{ name: 'notes.txt', type: 'text/plain', body: 'hello' }]),
-    });
-    assert.equal(chat.status, 200);
-    assert.deepEqual(await chat.json(), { name: 'notes.txt', size: 5, type: 'text/plain' });
-
     const voice = await fetch(`${base}/voice`, {
       method: 'POST', body: formWith([{ name: 'voice.wav', type: 'audio/wav', body: 'RIFF' }]),
     });
     assert.equal(voice.status, 200);
-    assert.equal((await voice.json()).type, 'audio/wav');
+    assert.deepEqual(await voice.json(), { name: 'voice.wav', size: 4, type: 'audio/wav' });
   });
 });
 
-test('upload policy maps size, count, field and media errors without a generic 500', async () => {
+test('voice upload policy maps size, count, field and media errors without a generic 500', async () => {
   const upload = createUploadSuite({ fileSize: 8 });
   await withServer(app => {
-    app.post('/chat', upload.chat, (req, res) => res.json({ ok: true }));
     app.post('/voice', upload.voice, (req, res) => res.json({ ok: true }));
   }, async base => {
     const cases = [
       {
-        path: '/chat', status: 413, code: 'UPLOAD_FILE_TOO_LARGE',
-        form: formWith([{ name: 'large.txt', type: 'text/plain', body: '123456789' }]),
+        status: 413, code: 'UPLOAD_FILE_TOO_LARGE',
+        form: formWith([{ name: 'large.wav', type: 'audio/wav', body: '123456789' }]),
       },
       {
-        path: '/chat', status: 400, code: 'UPLOAD_TOO_MANY_PARTS',
+        status: 400, code: 'UPLOAD_TOO_MANY_PARTS',
         form: formWith([
-          { name: 'a.txt', type: 'text/plain', body: 'a' },
-          { name: 'b.txt', type: 'text/plain', body: 'b' },
+          { name: 'a.wav', type: 'audio/wav', body: 'a' },
+          { name: 'b.wav', type: 'audio/wav', body: 'b' },
         ]),
       },
       {
-        path: '/chat', status: 400, code: 'UPLOAD_TOO_MANY_PARTS',
-        form: formWith([{ name: 'a.txt', type: 'text/plain', body: 'a' }], { caption: 'not allowed' }),
+        status: 400, code: 'UPLOAD_TOO_MANY_PARTS',
+        form: formWith([{ name: 'a.wav', type: 'audio/wav', body: 'a' }], { caption: 'not allowed' }),
       },
       {
-        path: '/voice', status: 415, code: 'UPLOAD_UNSUPPORTED_MEDIA_TYPE',
+        status: 415, code: 'UPLOAD_UNSUPPORTED_MEDIA_TYPE',
         form: formWith([{ name: 'image.png', type: 'image/png', body: 'png' }]),
       },
       {
-        path: '/chat', status: 415, code: 'UPLOAD_UNSUPPORTED_MEDIA_TYPE',
-        form: formWith([{ name: 'binary.exe', type: 'application/x-msdownload', body: 'MZ' }]),
+        status: 415, code: 'UPLOAD_UNSUPPORTED_MEDIA_TYPE',
+        form: formWith([{ name: 'notes.txt', type: 'text/plain', body: 'hello' }]),
       },
     ];
     for (const item of cases) {
-      const response = await fetch(`${base}${item.path}`, { method: 'POST', body: item.form });
+      const response = await fetch(`${base}/voice`, { method: 'POST', body: item.form });
       assert.equal(response.status, item.status);
       assert.equal((await response.json()).code, item.code);
     }
@@ -102,18 +92,18 @@ test('shared admission gate rejects concurrent in-memory uploads with 429', asyn
   let releaseResolve;
   const release = new Promise(resolve => { releaseResolve = resolve; });
   await withServer(app => {
-    app.post('/chat', upload.chat, async (req, res) => {
+    app.post('/voice', upload.voice, async (req, res) => {
       enteredResolve();
       await release;
       res.json({ ok: true });
     });
   }, async base => {
-    const first = fetch(`${base}/chat`, {
-      method: 'POST', body: formWith([{ name: 'first.txt', type: 'text/plain', body: 'one' }]),
+    const first = fetch(`${base}/voice`, {
+      method: 'POST', body: formWith([{ name: 'first.wav', type: 'audio/wav', body: 'one' }]),
     });
     await entered;
-    const second = await fetch(`${base}/chat`, {
-      method: 'POST', body: formWith([{ name: 'second.txt', type: 'text/plain', body: 'two' }]),
+    const second = await fetch(`${base}/voice`, {
+      method: 'POST', body: formWith([{ name: 'second.wav', type: 'audio/wav', body: 'two' }]),
     });
     assert.equal(second.status, 429);
     assert.equal((await second.json()).code, 'UPLOAD_BUSY');
@@ -122,24 +112,16 @@ test('shared admission gate rejects concurrent in-memory uploads with 429', asyn
   });
 });
 
-test('temporary chat storage is private and fails closed on count/byte quota', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-upload-policy-'));
-  try {
-    const first = persistChatUpload({ originalname: '..\\folder/unsafe.txt', buffer: Buffer.from('hello') }, {
-      tmpDir: dir, maxFiles: 2, maxBytes: 8,
-    });
-    assert.equal(path.dirname(first.path), dir);
-    assert.equal(first.name, 'unsafe.txt');
-    if (process.platform !== 'win32') assert.equal(fs.statSync(first.path).mode & 0o777, 0o600);
-    assert.throws(
-      () => persistChatUpload({ originalname: 'second.txt', buffer: Buffer.from('more') }, {
-        tmpDir: dir, maxFiles: 2, maxBytes: 8,
-      }),
-      error => error.code === 'UPLOAD_STORAGE_QUOTA_EXCEEDED' && error.status === 507,
-    );
-    assert.equal(UPLOAD_LIMITS.tempFiles, 200);
-    assert.equal(UPLOAD_LIMITS.tempBytes, 512 * 1024 * 1024);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+test('voice mime allowlist and upload limits stay pinned', () => {
+  for (const mime of ['audio/wav', 'audio/webm;codecs=opus', 'video/webm', 'application/ogg', 'AUDIO/MPEG']) {
+    assert.equal(voiceMimeAllowed(mime), true, mime);
   }
+  for (const mime of ['image/png', 'text/plain', 'video/mp4', 'application/pdf', '', undefined]) {
+    assert.equal(voiceMimeAllowed(mime), false, String(mime));
+  }
+  assert.equal(mapUploadError(Object.assign(new Error('too large'), { code: 'LIMIT_FILE_SIZE' })).code, 'UPLOAD_FILE_TOO_LARGE');
+  assert.equal(mapUploadError(new Error('boom')).code, 'UPLOAD_FAILED');
+  assert.equal(UPLOAD_LIMITS.fileSize, 25 * 1024 * 1024);
+  assert.equal(UPLOAD_LIMITS.files, 1);
+  assert.equal(UPLOAD_LIMITS.maxActive, 4);
 });

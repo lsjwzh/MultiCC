@@ -223,10 +223,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 宿主端口挂载（多一行 require），实测 3068/164328，按棘轮双向调到实测值。
   // 2026-11-11 token-usage/by-role 迁到 Rust 前门：tokenUsageRuntime.mountRoutes(app)
   // 换成宿主端口挂载并多一行 require，实测 3069/164521，按棘轮双向调到实测值。
+  // 2026-11-11 /api/files 与 /api/upload 迁到 Rust 前门：mountFileTransferRoutes
+  // 换成宿主端口挂载并删掉聊天上传接线，实测 3067/164505，按棘轮双向调到实测值。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3069,
-    byteCeiling: 164513,
+    ceiling: 3067,
+    byteCeiling: 164505,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

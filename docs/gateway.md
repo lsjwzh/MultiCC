@@ -126,6 +126,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | 路由 | 原 Node 实现 | Rust 实现 | 差分 |
 |---|---|---|---|
 | `GET/HEAD/PUT/OPTIONS /api/run-config/presets`、`POST/OPTIONS /api/run-config/presets/merge` | `src/routes/run-config-presets.js`（已删） | `native/gateway/src/app/run_config_presets.rs` + `multicc_core::run_config_presets`，落盘 `multicc_core::state_file`（与 `atomicWriteJson` 同格式、0600） | 39/39 请求逐字节一致，落盘文件一致 |
+| `GET/HEAD/OPTIONS /api/files`、`POST/OPTIONS /api/upload` | `src/routes/file-transfer.js`（已删）与 `src/upload-middleware.js` 的聊天上传半（已删）；`src/routes/file-transfer-host.js` 只剩会话表与 ICU 排序 | `native/gateway/src/app/file_transfer.rs`：目录解析与 `parent`、multer 2 的 multipart 语义与完整策略表、25 MiB/1 file/0 fields/2 parts/并发 4/临时文件配额、0600 `wx` 落盘与 `multicc_<ms>_<hex><ext>` 命名；会话表与 `localeCompare` 顺序经 `/api/__host/file-transfer` 回调 | 63 条请求：58 条逐字节一致，5 条预期差异单独校验 5/5；两侧落盘目录 11 个文件同名（归一化）、0600、同字节（见 §37） |
 | `GET/HEAD/OPTIONS /api/download`、`POST/OPTIONS /api/auth/download-ticket`、`GET/HEAD/OPTIONS /api/uploads/stats`、`DELETE/OPTIONS /api/uploads/cleanup` | `src/routes/file-transfer.js` 的 `createDownloadHandler` 与上传临时文件统计/清理、`src/routes/auth.js` 的 download-ticket 签发和闸门 ticket 分支、`src/auth-security.js` 的 download ticket（均已删） | `native/gateway/src/app/download.rs` + `uploads.rs`，`multicc_core::download_ticket`（ticket 存储搬进前门进程）、`multicc_core::http_send`（`res.sendFile`/`res.download` 的发送语义）；闸门的 ticket 豁免由 `multicc_core::http_gate::authorize` 自己实现 | 71/71 请求逐字节一致（含百分号解码回退、中文文件名、ticket 目标归一化与复用、临时目录清理计数） |
 | `/api/service-routes` 管理及 `/services/*` HTTP/WS | `src/service-routes.js` 与 server/auth/voice 接线（已删） | `native/core/src/service_routes.rs` + gateway `services.rs` / `service_transport.rs` | 80 组 HTTP 对拍及真实流式、WS、TLS 测试，见 §13 |
 | `GET/HEAD/PUT/OPTIONS /api/settings/quota-guard` | `src/routes/quota-guard.js`（已删）、`src/quota/quota-guard.js` 的配置读取/归一化、额度判定与刷新节流（已移除） | `native/gateway/src/app/quota_guard.rs` + `multicc_core::quota_guard` / `settings`，运行时通过 `RustQuotaGuard` 与无损 napi 接口调用同一内核 | 10,096 组策略对拍一致；136 组 HTTP 请求的状态、正文、相关响应头与落盘字节一致 |
@@ -2029,3 +2030,96 @@ DTO helper）。`server.js` 净 0 行（require 与挂载行替换，挂载点�
   是 Node 的 `src/routes/host-write.js`；前门只 claim GET/HEAD/OPTIONS，所以 OPTIONS 的
   `Allow` 必须带上 POST。
 - 与前几批一致：大写 `/API/...` 前缀不再被 claim，路由删除后该变体落回 Express 404。
+
+## 37. 文件浏览与聊天上传迁入 Rust（2026-11-11）
+
+`src/routes/file-transfer.js` 的最后两条路由 —— `GET|HEAD|OPTIONS /api/files` 与
+`POST|OPTIONS /api/upload` —— 原先由 `mountFileTransferRoutes` 与
+`src/upload-middleware.js` 的 multer 流水线回答。目录列表依赖 Node 进程内的会话表
+（`sessions` / `persistedSessions`）与 ICU `localeCompare` 排序；上传则是纯输入到落盘的
+函数：能拿到的输入只有请求头、请求体与临时目录。因此路由匹配、query 的 trim 语义、目录
+条目与 `parent` 组装、整个 multipart 解析与策略表、限额、配额、落盘与命名都进前门
+（`native/gateway/src/app/file_transfer.rs`），只有会话解析与排序经宿主端口回调。
+
+### 逐路由语义
+
+- `GET /api/files`：`path` 或 `session` 先 `trim()`（`?path[]=` 这类数组/对象会让
+  `req.query.path.trim` 不存在 → safeErrorHandler 的 500）。目录优先：`path` 非空用它，
+  否则 `session` 查活动会话、再查持久化会话、再落 `os.homedir()`；`~` 与 `~/…` 展开后
+  `path.resolve`。条目是 `{name,isDir,path,size}`，目录的 `size` 恒为 `null`，非目录
+  `statSync().size` 失败时也留 `null`；`parent` 是 `path.parse(dir).root === dir ? null :
+  path.dirname(dir)`。`readdirSync`/`stat` 抛错 → 400 `{"error":<message>}`。
+- `POST /api/upload`：`Content-Type` 的 essence 是 `application/json` 时先走
+  `express.json`（非法 JSON → 400，超限 → 413，字符集错误 → 415），然后仍按 `No file`
+  回答。multipart 的 `boundary` 缺失 → 500 `UPLOAD_FAILED`；`boundary` 允许带引号并含
+  `;`。整条请求体在 25 MiB 之上再留 1 MiB 余量缓冲，超限按 multer 的
+  `LIMIT_FILE_SIZE` → 413。
+- 上传策略表（逐条由冻结 oracle 实测）：
+
+  | 输入 | 答案 |
+  |---|---|
+  | 一个 `name="file"` 的 file part（文件名非空、媒体类型允许、< 25 MiB） | 200 `{"path","name"}` |
+  | 第二个 part（第二个文件 / 字段 / 无 disposition 的段） | 400 `UPLOAD_TOO_MANY_PARTS` |
+  | 唯一 file part 的字段名不是 `file` | 400 `UPLOAD_UNEXPECTED_FIELD` |
+  | 唯一 part 是字段（含空文件名、长字段名） | 400 `UPLOAD_TOO_MANY_PARTS` |
+  | file part 的字段名 > 64 | 400 `UPLOAD_FIELD_INVALID` |
+  | 媒体类型不在白名单 | 415 `UPLOAD_UNSUPPORTED_MEDIA_TYPE` |
+  | 文件字节数 ≥ 25 MiB | 413 `UPLOAD_FILE_TOO_LARGE` |
+  | file part 无 `name` 参数 | 500 `UPLOAD_FAILED` |
+  | `application/octet-stream` part 但没有文件名 | 跳过该 part，最终 400 `No file` |
+  | 文件名 `""` | 该 part 不算 file（busboy 的 `if (disp.params.filename)` 对空串为假） |
+  | 文件名 `/`（basename 后为空） | 算 file 但被 multer 跳过，最终 400 `No file` |
+  | 空表单 / 截断表单 / 边界没有结尾 `--` | 400 `No file` / 500 `UPLOAD_FAILED` |
+
+  并发上限 4（第 5 个 → 429 `UPLOAD_BUSY` + `Connection: close`），准入槽在响应构造时
+  释放。落盘：临时目录里 `multicc_*` 文件数 ≥ 200 或字节数 + 本文件 > 512 MiB → 507
+  `UPLOAD_STORAGE_QUOTA_EXCEEDED`；文件名走 `safeOriginalName`（`\` → `/`、basename、
+  去 C0/DEL、255 截断、空则 `upload.bin`），扩展名取 `path.posix.extname` 后只留
+  `[a-z0-9.]`、12 截断、空则 `.bin`；`Date.now()` + 4 随机字节、`wx` 0600 最多 3 次。
+  成功后 `console.log("[multicc] Uploaded: <path> (<name>)")` 与
+  `res.json({path,name})`。`HEAD`/`OPTIONS`：`/api/files` 允许 `GET,HEAD`，
+  `/api/upload` 允许 `POST`。
+
+### 宿主端口
+
+`src/routes/file-transfer-host.js`（106 行）挂在 `POST /api/__host/file-transfer`，沿用
+§31–§36 的回环约定（PROXY v1 回环行、`isLocalRequest`、非回环 404、超时、不重试）。唯一
+op 是 `files`，入参 `{op,path,session}`，只回原料 `{ok,dir,entries}`（`entries` 是已按
+目录优先 + ICU 排序的数组）或 `{ok:false,message}`；`parent` 与最终 DTO 由 Rust 决定。
+上传完全不需要往返：multipart 解析、配额与落盘都在前门进程内完成。
+
+### 差分与集成
+
+- `native/gateway/tests/file_transfer.rs`（694 行，11 个用例）：列表形状与 `parent`、
+  根目录无 `parent`、列表失败的旧 400、宿主故障与端口不可达 500、数组 query 的
+  handler TypeError、一次完整上传（0600、命名模式、字节、`[multicc] Uploaded:` 日志）、
+  latin1 文件名、无文件时的 400/500 分支、完整策略表逐条、恰好 25 MiB 与 25 MiB+1 的
+  413、`OPTIONS` 的 `Allow`。
+- `docs/rust-migration/differential/file-transfer.js`（399 行）：Node 侧挂冻结 oracle
+  （`tests/helpers/legacy-file-transfer-routes.js`，332 行：退役路由与 multer 聊天半的
+  逐字副本）与真实目录树，Rust 侧是前门 + 按 PROXY v1 接线的宿主桩，桩里就挂真实的
+  `createFileTransferHost`。63 条请求：58 条逐字节一致，5 条预期差异单独校验 5/5
+  （`GET|HEAD /api/upload`、`POST /api/files`、`/api/files/x` 三者 oracle 404 / 前门转发；
+  `/API/files` oracle 200 / 前门转发）。`finalize` 比对两侧上传目录：各 11 个文件，
+  归一化文件名、模式 `600`、大小与字节完全一致。两侧都写自己的临时目录，不碰真实上传
+  目录与真实服务。
+
+### 删除面
+
+`src/routes/file-transfer.js` 整文件删除（98 行）；`src/upload-middleware.js` 删掉聊天半
+（`CHAT_APPLICATION_TYPES`、`chatMimeAllowed`、`tempUploadStats`、`persistChatUpload`、
+`chat` 中间件，220 → 150 行），只剩 voice 上传；`server.js` −2 行（require 与挂载替换，
+`createUploadSuite` 只留 voice）。新增宿主端口 106 行。净 Node 变化 −64 行
+（−98 − 70 − 2 + 106）。Rust：`app/file_transfer.rs` 1,103 行（含 7 个单测）、`mod.rs`
++43、`express.rs` +4（`media_type`/`collect`）、`uploads.rs` +16（`join`/`temp_usage`）、
+`Cargo.toml` +`getrandom`。
+
+### 已知边界
+
+- 目录顺序仍是 Node 的 ICU `localeCompare`，前门只按宿主给的顺序组装；排序本身由
+  `tests/test-file-transfer-routes.js` 覆盖。差分两侧必须共用同一个 `LANG`/`LC_*`，
+  否则同一份目录会排出两种顺序（差分 spec 已显式传下去）。
+- multipart 的 disposition 参数解析覆盖良构头（含引号、`filename*` 扩展值）；busboy 对
+  畸形参数会整段跳过，这里按观测到的错误表对齐，未逐个复刻畸形参数的边界。
+- 与 §9 一样，前门只在内部端口上以回环身份被 Node 调用；`/api/__host/file-transfer`
+  不是公开 API。与前几批一致，大写 `/API/...` 前缀不再被 claim。

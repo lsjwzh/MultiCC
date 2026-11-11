@@ -386,7 +386,7 @@ fn fail(status: u16, reason: &'static str) -> BodyError {
     BodyError { status, reason }
 }
 
-fn media_type(content_type: &str) -> (String, Option<String>) {
+pub(crate) fn media_type(content_type: &str) -> (String, Option<String>) {
     let mut parts = content_type.split(';');
     let essence = parts.next().unwrap_or("").trim().to_ascii_lowercase();
     let charset = parts.find_map(|param| {
@@ -398,7 +398,7 @@ fn media_type(content_type: &str) -> (String, Option<String>) {
     (essence, charset)
 }
 
-async fn collect(body: Body, limit: usize) -> Result<Vec<u8>, BodyError> {
+pub(crate) async fn collect(body: Body, limit: usize) -> Result<Vec<u8>, BodyError> {
     let mut body = body;
     let mut out = Vec::new();
     while let Some(frame) = body.frame().await {

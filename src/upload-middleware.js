@@ -1,8 +1,10 @@
 'use strict';
 
-const crypto = require('crypto');
-const fs = require('fs');
-const os = require('os');
+// Voice uploads only. Chat attachments (multipart parsing, limits, the temp-file
+// quota and the on-disk write) live in the Rust front door (multicc-gateway);
+// Node keeps this suite for the in-process ASR/voice routes, which still pass
+// buffers straight to the voice host.
+
 const path = require('path');
 const multer = require('multer');
 
@@ -21,26 +23,6 @@ const UPLOAD_LIMITS = Object.freeze({
   tempBytes: 512 * MIB,
 });
 
-const CHAT_APPLICATION_TYPES = new Set([
-  'application/octet-stream',
-  'application/pdf',
-  'application/json',
-  'application/ld+json',
-  'application/xml',
-  'application/zip',
-  'application/gzip',
-  'application/x-gzip',
-  'application/x-tar',
-  'application/x-7z-compressed',
-  'application/vnd.rar',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-]);
-
 class UploadPolicyError extends Error {
   constructor(message, code, status) {
     super(message);
@@ -52,11 +34,6 @@ class UploadPolicyError extends Error {
 
 function normalizedMime(value) {
   return String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
-}
-
-function chatMimeAllowed(value) {
-  const mime = normalizedMime(value);
-  return /^(?:image|text|audio|video)\//.test(mime) || CHAT_APPLICATION_TYPES.has(mime);
 }
 
 function voiceMimeAllowed(value) {
@@ -158,63 +135,16 @@ function createUploadSuite({
 } = {}) {
   const gate = createAdmissionGate(maxActive);
   return Object.freeze({
-    chat: gate(createParser(multerImpl, { fileSize, allowed: chatMimeAllowed })),
     voice: gate(createParser(multerImpl, { fileSize, allowed: voiceMimeAllowed })),
   });
-}
-
-function tempUploadStats({ tmpDir = os.tmpdir(), fsImpl = fs } = {}) {
-  let count = 0;
-  let bytes = 0;
-  for (const name of fsImpl.readdirSync(tmpDir)) {
-    if (!name.startsWith('multicc_')) continue;
-    try {
-      const stat = fsImpl.statSync(path.join(tmpDir, name));
-      if (!stat.isFile()) continue;
-      count += 1;
-      bytes += stat.size;
-    } catch (_) {}
-  }
-  return { count, bytes };
-}
-
-function persistChatUpload(file, {
-  tmpDir = os.tmpdir(),
-  fsImpl = fs,
-  maxFiles = UPLOAD_LIMITS.tempFiles,
-  maxBytes = UPLOAD_LIMITS.tempBytes,
-} = {}) {
-  if (!file || !Buffer.isBuffer(file.buffer)) {
-    throw new UploadPolicyError('No file', 'UPLOAD_FILE_REQUIRED', 400);
-  }
-  const stats = tempUploadStats({ tmpDir, fsImpl });
-  if (stats.count >= maxFiles || stats.bytes + file.buffer.length > maxBytes) {
-    throw new UploadPolicyError('temporary upload quota exceeded', 'UPLOAD_STORAGE_QUOTA_EXCEEDED', 507);
-  }
-  const originalName = safeOriginalName(file.originalname);
-  const ext = path.extname(originalName).replace(/[^a-z0-9.]/gi, '').slice(0, 12) || '.bin';
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const name = `multicc_${Date.now()}_${crypto.randomBytes(4).toString('hex')}${ext.startsWith('.') ? ext : `.${ext}`}`;
-    const target = path.join(tmpDir, name);
-    try {
-      fsImpl.writeFileSync(target, file.buffer, { mode: 0o600, flag: 'wx' });
-      return Object.freeze({ path: target, name: originalName, size: file.buffer.length });
-    } catch (error) {
-      if (error.code !== 'EEXIST' || attempt === 2) throw error;
-    }
-  }
-  throw new UploadPolicyError('could not allocate upload path', 'UPLOAD_STORAGE_FAILED', 500);
 }
 
 module.exports = {
   UPLOAD_LIMITS,
   UploadPolicyError,
-  chatMimeAllowed,
   createAdmissionGate,
   createUploadSuite,
   mapUploadError,
-  persistChatUpload,
   sendUploadError,
-  tempUploadStats,
   voiceMimeAllowed,
 };

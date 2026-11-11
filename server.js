@@ -43,7 +43,7 @@ const os = require('os');
 const fs = require('fs');
 const { StringDecoder } = require('string_decoder');
 const { spawn, execFile } = require('child_process');
-const { createUploadSuite, persistChatUpload, sendUploadError } = require('./src/upload-middleware');
+const { createUploadSuite } = require('./src/upload-middleware');
 const chokidar = require('chokidar');
 const cron = require('node-cron');
 const upload = createUploadSuite();
@@ -128,7 +128,7 @@ const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
 const { createCommanderMigrationState } = require('./src/commander-migration');
-const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
+const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
@@ -1819,17 +1819,15 @@ createSessionMetaRuntime({
   getLivenessRuntime: () => livenessRuntime,
 }).mountRoutes(app);
 
-// ── File browser, download and upload lifecycle ──
-mountFileTransferRoutes(app, {
+// Host port for the file browser: the Rust front door owns /api/files and
+// /api/upload; Node is asked only for the session table and the directory
+// listing order.
+mountFileTransferHostRoute(app, {
   fs,
   path,
   os,
-  upload,
-  persistChatUpload,
-  sendUploadError,
   getActiveSession: id => sessions.get(id),
   getPersistedSession: id => persistedSessions.get(id),
-  log: message => console.log(message),
 });
 
 // ── Host .env management + Web Push (PWA notifications) ──

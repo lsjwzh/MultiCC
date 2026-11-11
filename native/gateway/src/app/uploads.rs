@@ -42,7 +42,7 @@ pub fn tmpdir() -> String {
 }
 
 /// `path.join(dir, name)` for a plain file name.
-fn join(dir: &str, name: &str) -> String {
+pub(crate) fn join(dir: &str, name: &str) -> String {
     let separator = if cfg!(windows) { '\\' } else { '/' };
     if dir.ends_with(separator) || (cfg!(windows) && dir.ends_with('/')) {
         format!("{dir}{name}")
@@ -80,6 +80,20 @@ fn upload_names(dir: &str) -> Result<Vec<String>, String> {
 fn file_stat(path: &str) -> Option<FileStat> {
     let meta = std::fs::metadata(Path::new(path)).ok()?;
     meta.is_file().then(|| super::download::file_stat(&meta))
+}
+
+/// `tempUploadStats`: the `multicc_*` files and their bytes in `dir`.
+pub(crate) fn temp_usage(dir: &str) -> Result<(usize, u64), String> {
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    for name in upload_names(dir)? {
+        let Some(stat) = file_stat(&join(dir, &name)) else {
+            continue;
+        };
+        count += 1;
+        bytes += stat.size;
+    }
+    Ok((count, bytes))
 }
 
 /// `GET /api/uploads/stats`.
