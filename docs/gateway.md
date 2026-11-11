@@ -138,6 +138,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/OPTIONS /api/agent-resources/skills`、`GET/HEAD/OPTIONS /api/agent-presets`、`GET/HEAD/OPTIONS /api/agent-presets/:id`、`GET/HEAD/OPTIONS/DELETE /api/agent-resources/claude-sessions`、`DELETE/OPTIONS /api/agent-resources/claude-sessions/:project/:id` | `src/routes/agent-resources.js` 只剩 presets 文件缓存/commander 覆盖/provider 富化与 Claude 历史读写；宿主端口为 `src/routes/agent-resources-host.js` | `native/gateway/src/app/agent_resources.rs`：路径（含两段解码参数）、`olderThanDays` 校验、purge 过滤循环、计数/求和、409/404/400/500 映射；磁盘扫描与文件读删经 `/api/__host/agent-resources` 回调 | 53/53 请求逐字节一致 + 9/9 预期差异（见 §33） |
 | `GET/HEAD/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets/:name/rename`、`DELETE/OPTIONS /api/secrets/:name`、`GET/HEAD/OPTIONS /api/secrets/:name/value` | `src/secrets-vault.js` 只剩进程内 entries 表、0600 store、audit 与 env 投影；宿主端口为 `src/routes/secrets-vault-host.js` | `native/gateway/src/app/secrets_vault.rs`：路径（含 `:name` 解码与 trim）、`NAME_RE`/`LEGACY_NAME_RE`、65536 UTF-16 值上限、400/404/409/503 映射；存储读写经 `/api/__host/secrets-vault` 回调 | 63/63 请求逐字节一致 + 10/10 预期差异（见 §34） |
 | `GET/HEAD/OPTIONS /api/token-usage/by-role` | `src/routes/token-usage.js` 只剩用量累计/广播/账本导出；宿主端口为 `src/routes/token-usage-host.js` | `native/gateway/src/app/token_usage_by_role.rs`：查询语义（qs 数组/对象 → 空快照）、空快照形状、公开 500 文案与 OPTIONS/HEAD；`RoleTokenTracker.snapshot` 与 `readLedger` 经 `/api/__host/token-usage` 回调 | 见 §35 |
+| `GET/HEAD/OPTIONS /api/push/vapid-key`、`/api/push/health`、`/api/settings/notify`、`/api/settings/tunnel`、`/api/settings/access-token`、`/api/settings/power`、`/api/host/battery`；`GET/HEAD/POST/OPTIONS /api/tunnel/funnel`、`/api/tunnel/ipv6`、`/api/tunnel/sakurafrp`（POST 仍由 Node 写路径回答） | `src/routes/host-read.js`（已删）；push Map/配置、tunnel 客户端、macOS 电源服务与电量探针留在 Node，宿主端口为 `src/routes/host-read-host.js`；通知占位符 helper 在 `src/notify-settings.js` | `native/gateway/src/app/host_read.rs`：10 条路径与逐路由 OPTIONS `Allow`、推送健康 DTO（失败分类、`sha256:` 端点指纹）、notify origin 掩码、access-token 掩码、`canEdit` 本地性判定与 `safeErrorHandler` 映射；运行时事实经 `/api/__host/host-read` 回调 | 见 §36 |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -1922,3 +1923,109 @@ fixture 宿主脚本 30 行、差分 262 行、冻结 oracle 43 行。
 - 与前几批一致：大写 `/API/...` 前缀不再被 claim，落回 Node（旧 Express 曾是 200）。
 - 宿主端口失败在旧 Express 里是同一句 500 `Token usage is temporarily unavailable`，迁移后
   仍是 500 同文案，因此差分里不需要给它登记预期差异。
+
+## 36. 只读主机路由迁入 Rust（2026-11-11）
+
+`GET/HEAD/OPTIONS` 的十条只读主机路由原先由 `src/routes/host-read.js` 的
+`mountHostReadRoutes` 回答：`/api/push/vapid-key`、`/api/push/health`、
+`/api/settings/notify`、`/api/settings/tunnel`、`/api/tunnel/funnel`、`/api/tunnel/ipv6`、
+`/api/tunnel/sakurafrp`、`/api/settings/access-token`、`/api/settings/power`、
+`/api/host/battery`。答案几乎全部来自 Node 进程内状态（push 的 `subscriptions` /
+`healthStats` / `globalStats` Map 与 bark/webhook 客户端、tunnel 客户端、`macosPower`
+服务、电量探针缓存），所以路由匹配、DTO 组装、掩码、`canEdit` 判定与错误映射搬进前门
+（`native/gateway/src/app/host_read.rs`），运行时事实经一个宿主端口回调。
+
+### 逐路由语义
+
+- `push/vapid-key` → `{"publicKey":<值>}`；宿主回缺省 payload 时按 `res.json({publicKey:
+  undefined})` 落成 `{}`。
+- `push/health` → `{"subscriptions":[…],"subscriptionCount":N,"global":…,"bark":…,
+  "webhook":…}`。每条订阅按端点顺序组装：`endpointFingerprint`（`"sha256:"` + SHA-256
+  前 16 位小写 hex，空串是 `sha256:e3b0c44298fc1c14`）、`lastSuccessTime`/`lastFailTime`/
+  `lastFailReason`、`successCount`/`failCount` 等；来自 Map 的计数只保留有限非负数，其余
+  归 0，`lastFailReason` 按退役时的分类表归一化：HTTP 状态 → `http_<n>xx`，`timed out` /
+  `ETIMEDOUT` / `timeout` / `aborted` → `timeout`，`ENOTFOUND`/`EAI_AGAIN`/DNS →
+  `dns_error`，证书/TLS/SSL → `tls_error`，401/403/token/credential → `authentication_error`，
+  `ECONNREFUSED` → `connection_refused`，`ECONNRESET`/socket/network → `network_error`，
+  其他文案 → `delivery_error`。`global` 是 `{totalSent,totalSuccess,totalFail,lastPushTime,
+  lastPushType}` 的固定字段顺序（`lastPushType` 只放行 `succeeded`/`completed`/`waiting`/
+  `error`，非空未知值归一成 `other`）；`bark`/`webhook` 是 `{configured,lastSendTime,
+  lastSuccess,lastError}`。
+  `subscriptionCount` 取宿主给的 `size`（数字时），否则取数组长度。
+- `settings/notify` → `{"barkUrl":<origin>/••••,"barkOrigin":…,"hasBark":…,[barkDevices],
+  "webhookUrl":…,"webhookOrigin":…,"hasWebhook":…}`。掩码只保留 URL 的
+  `origin()`（`http`/`https` 之外或不可解析时整串变成 `••••`）；`hasBark` 原样透传宿主值
+  （未给时回退 `bark.configured`），`barkDevices` 只在宿主给出时出现。
+- `tunnel/funnel` → `{"status":<宿主 payload>}`；缺省 payload 时是 `{}`。
+- `tunnel/ipv6`、`tunnel/sakurafrp`、`host/battery` → 原样回宿主 payload；缺省时按
+  `res.json(undefined)` 发 200 空体、`Content-Type: application/json; charset=utf-8`、
+  `Content-Length: 0`，且不带 ETag。
+- `settings/access-token` → `{"hasToken":…,"masked":…,"canEdit":…}`。掩码按 JS 的
+  UTF-16 长度取末四位：长度 > 4 是 `****` + 末四位，否则 `****`；空 token 掩码是空串。
+  `canEdit` 由前门依据**真实客户端**判定（见下）。
+- `settings/power` → 宿主 `readPowerSettings` 组装好的完整 DTO 原样回，前门只额外注入
+  `canEdit`；`powerPreferences` / `unlockPassword` / `unlockProbe` 都留在 Node。
+- 每路由的自动 OPTIONS `Allow`：`notify`、`tunnel`、`funnel`、`access-token`、`power` 是
+  `GET,HEAD,POST`（对应的写路径 POST 仍挂在 Node 的 `src/routes/host-write.js`），其余五条
+  是 `GET,HEAD`。`HEAD` 与 `GET` 同头无体；`/api/` 前缀区分大小写，路径字面段大小写不
+  敏感并允许一个尾斜杠。
+- 宿主抛错走 `safeErrorHandler` 的复刻：状态取描述符里的 4xx/5xx（否则 500），5xx 客户端
+  看到 `internal_error` + code `internal_error`，4xx 看到 `safeMessage`（无则
+  `request_error`）；错误 code 只在像标识符（≤96 个 UTF-16 单元、仅 `[A-Za-z0-9_.-]`）时
+  回显，否则回退。宿主不可达本身是 500 `internal_error`，细节只进 `http_error` 日志。
+
+### 宿主端口
+
+`src/routes/host-read-host.js`（148 行）挂在 `POST /api/__host/host-read`，沿用 §31–§35
+的约定（PROXY v1 回环行、`isLocalRequest`、非回环 404、超时、不重试）。op 与路由一一对应：
+`vapid-key`、`push-health`、`notify`、`tunnel`、`funnel`、`ipv6`、`sakurafrp`、
+`access-token`、`power`、`battery`；未知 op 与非对象 body 回 `{ok:false}`。它只回原料：
+`push-health` 给 `endpoints`/`health`/`size`/`globalStats`/`barkConfigured`/`barkHealth`/
+`webhookConfigured`/`webhookHealth`，`notify` 给原始 `barkUrl`/`webhookUrl`/`hasBark`/
+`barkDevices`，掩码与字段顺序由 Rust 决定。抛错转成
+`{ok:false,status,code,safeMessage,detail}`。电量读取器只在构造时创建一次（缓存与并发合并
+不变）。`power` 的 `isLocalRequest` 被替换成 `() => body.canEdit === true`——宿主端口自己
+永远看到回环，本地性必须由前门判定后随 payload 下发。
+
+### 差分与集成
+
+- `native/gateway/tests/host_read.rs`（872 行，16 个用例）：vapid 包装与缺省 payload、
+  推送健康指纹/分类/缺健康项归零、notify 掩码与不可解析 URL、tunnel/ipv6/sakurafrp/battery
+  原样透传、funnel 包装、access-token 掩码、`canEdit` 随真实客户端、power 把本地性判定传
+  给宿主、宿主失败映射成 safeError DTO、宿主不可达 500、逐路由 OPTIONS `Allow`、HEAD 与
+  gzip（≥1024 字节的 `/api/` JSON）、大小写/尾斜杠路径匹配，以及缺失 token 被认证闸门
+  拒绝。`free_port()` 只占 `127.0.0.1`，绑定冲突时换端口重试（最多 6 次）。
+  `tests/fixtures/upstream.js` 新增 `POST /api/__host/host-read` 脚本模式
+  （`host-read-calls.jsonl`，`script.hostRead.answers[op]` 控制回答、`hostDown` 模拟不可达）。
+- `docs/rust-migration/differential/host-read.js`（562 行）：Node 侧挂冻结 oracle
+  （`tests/helpers/legacy-host-read-routes.js`，427 行，退役 handler 的逐字副本），Rust 侧是
+  前门 + 按 PROXY v1 接线的宿主桩，两侧读同一份脚本化事实，逐字节比对状态、正文、ETag 与
+  响应头。39 条请求：35 条逐字节一致，4 条预期差异单独校验（大写 `/API/` 前缀 Node 200 /
+  前门转发、`POST /api/settings/power`、`DELETE /api/push/vapid-key`、`GET
+  /api/settings/notify/<多余段>` 三者 Node 404 / 前门转发）。
+- `tests/test-host-read-routes.js` 重写为宿主端口契约（12 个用例：挂载与依赖校验、回环
+  404、推送原料、tunnel 透传、抛错描述符、live token、power 的 canEdit 与授权撤回、notify
+  占位符回填、server 接线与「十条 GET 不在 Node」），`tests/test-host-battery.js` 改用
+  `createHostReadHost`，`tests/test-request-locality.js` 的白名单换成
+  `src/routes/host-read-host.js` 并断言 `canEdit` 由 Rust 前门判定。
+
+### 删除面
+
+`src/routes/host-read.js` 整文件删除（281 行：`mountHostReadRoutes`、十个 handler 工厂与
+DTO helper）。`server.js` 净 0 行（require 与挂载行替换，挂载点上方的注释改写）；
+`src/routes/host-write.js` 1 行改为从 `src/notify-settings.js` 取占位符回填 helper。新增
+宿主端口 148 行、`src/notify-settings.js` 46 行、Rust `app/host_read.rs` 695 行（含 6 个
+单测）、`mod.rs` 11 行、集成测试 872 行、fixture 30 行、差分与冻结 oracle 见上。净 Node
+变化 −87 行（−281 + 148 + 46）。
+
+### 已知边界
+
+- `settings/power` 的 DTO 仍在 Node 组装：它要读 `macosPower`、`powerPreferences`、
+  `unlockPassword` 与 `unlockProbe` 四个服务，Rust 只把 `canEdit` 塞进去再原样转发。
+- `canEdit` 不能由宿主端口判定：宿主端口看到的对端永远是回环，所以前门用
+  `http_gate::is_local_request(peer, &ctx.headers)` 在真实客户端地址上判定，`power` 与
+  `access-token` 共用同一结果。
+- 这五条路径的写路径（`notify`、`tunnel`、`funnel`、`access-token`、`power` 的 POST）仍
+  是 Node 的 `src/routes/host-write.js`；前门只 claim GET/HEAD/OPTIONS，所以 OPTIONS 的
+  `Allow` 必须带上 POST。
+- 与前几批一致：大写 `/API/...` 前缀不再被 claim，路由删除后该变体落回 Express 404。

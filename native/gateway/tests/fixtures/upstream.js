@@ -386,6 +386,36 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the read-only host routes retired from
+  // src/routes/host-read.js (native/gateway/src/app/host_read.rs). The script
+  // file carries one answer per op under `hostRead.answers`, so the Rust side
+  // can be driven through every response shape, including the failure answer
+  // `{ ok: false, status, code, safeMessage, detail }`. Every call is appended
+  // so the tests can assert the exact payload (and `canEdit`) the front door
+  // sent.
+  if (route === '/api/__host/host-read' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'host-read-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      const hostRead = script.hostRead || {};
+      const answers = hostRead.answers || {};
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (Object.prototype.hasOwnProperty.call(answers, input.op)) {
+        return send(answers[input.op]);
+      }
+      send({ ok: false });
+    });
+    return;
+  }
   if (route === '/echo' && req.method === 'POST') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));

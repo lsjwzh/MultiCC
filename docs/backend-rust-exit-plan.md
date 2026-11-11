@@ -3572,3 +3572,112 @@ OPTIONS/HEAD、路径匹配、宿主收到的 op/session 精确有序。测试�
   `src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
   `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`、
   `src/routes/token-usage-host.js`。未重启服务，路由由前门接管要等用户手动重启后才生效。
+
+## 只读主机路由迁入 Rust 前门（2026-11-11）
+
+`GET/HEAD/OPTIONS` 的十条只读主机路由原先由 `src/routes/host-read.js` 的
+`mountHostReadRoutes` 回答：`/api/push/vapid-key`、`/api/push/health`、
+`/api/settings/notify`、`/api/settings/tunnel`、`/api/tunnel/funnel`、`/api/tunnel/ipv6`、
+`/api/tunnel/sakurafrp`、`/api/settings/access-token`、`/api/settings/power`、
+`/api/host/battery`。答案依赖 Node 进程内的推送 Map/配置、tunnel 客户端、macOS 电源服务与
+电量探针，所以不能整条留在 Node：路径匹配、每路由 OPTIONS `Allow`、推送健康 DTO（失败分类、
+`sha256:` 端点指纹）、notify origin 掩码、access-token 掩码、`canEdit` 本地性判定与
+`safeErrorHandler` 错误映射进前门，运行时事实经一个宿主端口回调。
+
+### Rust 实现
+
+- `native/gateway/src/app/host_read.rs`（695 行，含 6 个单测）：`claim` 解析
+  `GET`/`HEAD`/`OPTIONS`，`/api/` 前缀区分大小写、路径字面段大小写不敏感、允许一个尾斜杠；
+  `Route::allow()` 按路由给 `GET,HEAD` 或 `GET,HEAD,POST`。`push-health` 复刻
+  `healthDto`/`globalHealthDto`/`channelHealthDto` 的字段顺序与归一化（有限非负数、
+  `lastFailReason` 六类分类、`lastPushType` 白名单），端点指纹是
+  `sha256:` + SHA-256 前 16 位小写 hex。`notify` 用 `url` crate 只留 `origin()`，非法或非
+  http(s) 值退化成 `••••`。`access-token` 按 UTF-16 长度取末四位。`canEdit` 由前门用
+  `http_gate::is_local_request(peer, &ctx.headers)` 在真实客户端地址上判定（`power` 随
+  payload 下发给宿主，`access-token` 直接进 DTO）。宿主抛错按 `safeErrorHandler` 复刻：
+  `status` 取描述符的 4xx/5xx（否则 500）、5xx 文案 `internal_error`、4xx 用
+  `safeMessage`/`request_error`、code 只在像标识符（≤96 UTF-16 单元、
+  `[A-Za-z0-9_.-]`）时回显。`res.json(undefined)` 单独实现：200、空体、
+  `Content-Length: 0`、无 ETag。
+- `native/gateway/src/app/mod.rs`（+11 行）：`host_read` 模块、两个 `Route` 变体、claim
+  接线、OPTIONS arm 与 handler arm。
+- `native/gateway/Cargo.toml`：`regex` 进 runtime 依赖，`sha2` 从 dev-dependencies 提升为
+  runtime 依赖（指纹改由前门计算）。
+
+### 删除与宿主适配
+
+- `src/routes/host-read.js` 整文件删除（281 行：`mountHostReadRoutes`、十个 handler 工厂与
+  all DTO helper）。
+- `src/routes/host-read-host.js`（148 行）：`POST /api/__host/host-read`，沿用 §31–§35 的
+  回环约定；十个 op 只回原料（push 的 endpoints/health/size/globalStats/渠道健康、notify 的
+  原始 URL、live token、tunnel 客户端结果、`readPowerSettings` 结果、电量读数），未知 op 与
+  非对象 body 回 `{ok:false}`，抛错回
+  `{ok:false,status,code,safeMessage,detail}`；电量读取器只在构造时创建一次。
+  `power` op 的 `isLocalRequest` 被替换成 `() => body.canEdit === true`。
+- `src/notify-settings.js`（46 行）：`summarizeSecretUrl`、
+  `matchesCurrentNotifyPlaceholder`、`resolveNotifySettingsUpdates` 从删除文件原样搬到独立
+  模块，供 `POST /api/settings/notify` 的写路径继续使用；`src/routes/host-write.js` 只改
+  require 一行。
+- `server.js` 净 0 行（require 与挂载行替换、上方注释改写）；行预算棘轮按实测把
+  `server.js` 的字节上限从 164521 下调到 164513（3069 行不变）。
+- 测试面：`tests/test-host-read-routes.js` 重写为宿主端口契约（12 条）；
+  `tests/test-host-battery.js` 改用 `createHostReadHost`；`tests/test-request-locality.js`
+  的白名单加入 `src/routes/host-read-host.js`（顺带修掉 main 上已存在的白名单缺项）并断言
+  `canEdit` 由 Rust 前门判定；`tests/test-air-push-cdp.js` 与 `public/air-push.js` 的注释
+  改指 `src/notify-settings.js` / 前门实现。
+
+### 集成测试
+
+`native/gateway/tests/host_read.rs`（872 行，16 个用例）：vapid 包装与缺省 payload、推送
+健康指纹/分类/缺健康项归零、notify 掩码与不可解析 URL、tunnel/ipv6/sakurafrp/battery 原样
+透传、funnel 包装、access-token 掩码、`canEdit` 随真实客户端、power 把本地性判定传给宿主、
+宿主失败映射成 safeError DTO、宿主不可达 500、逐路由 OPTIONS `Allow`、HEAD 与 gzip（≥1024
+字节的 `/api/` JSON）、大小写/尾斜杠路径匹配，以及缺失 token 被认证闸门拒绝。
+`free_port()` 只占 `127.0.0.1`，绑定冲突时换端口重试（最多 6 次）。
+`tests/fixtures/upstream.js` 新增 `POST /api/__host/host-read` 脚本模式
+（`host-read-calls.jsonl`，`script.hostRead.answers[op]` 控制回答、`hostDown` 模拟不可达）。
+
+### 差分与验证
+
+- `docs/rust-migration/differential/host-read.js`（562 行）：Node 侧挂冻结 oracle
+  （`tests/helpers/legacy-host-read-routes.js`，427 行，退役 handler 的逐字副本 + 只读
+  `readPowerSettings` 注入），Rust 侧是前门 + 按 PROXY v1 接线的宿主桩，两侧读同一份脚本
+  化事实，逐字节比对状态、正文、ETag 与响应头；五条带 POST 的路径在 oracle 侧补了
+  pass-through POST 以复刻 Express 的 `Allow: GET,HEAD,POST`。
+- 结果：39 条请求，35 条逐字节一致，4 条预期差异单独校验 4/4（大写 `/API/` 前缀 Node 200 /
+  前门转发、`POST /api/settings/power`、`DELETE /api/push/vapid-key`、
+  `GET /api/settings/notify/<多余段>` 三者 Node 404 / 前门转发）。canEdit=false 用
+  `X-Forwarded-For` 触发，两侧 locality 判定一致；tunnel/power/battery/push 全部脚本化，
+  不碰网络、真实 CLI 或 `/usr/bin/pmset`。
+- 两份后端清单已重新生成：`docs/backend-route-inventory.md`（589 个后端文件、138,163 行、
+  478 个注册候选；删 10 条公开 GET、新增 1 条宿主端口），`docs/backend-runtime-inventory.md`
+  （指纹 `56e872d76cc5fd8f9bd4d0b3`，528 条路由注册、34 层中间件）。
+
+### 最终产物与验证
+
+- 源码指纹 `56e872d76cc5fd8f9bd4d0b3`：`multicc_core.node` 18,364,576 字节
+  （SHA-256 `b7ddd207…`，与上一批同字节）、`multicc-gateway` 12,170,288 字节
+  （SHA-256 `1c55dbd0…`）、`multicc-remote`（`d800dd59…`）、`multicc-cdpd`
+  （`63f2c749…`）。
+- `cargo fmt --all` 成功；`cargo clippy -p multicc-gateway --all-targets -- -D warnings`
+  零告警；`cargo test -p multicc-gateway` 13 个测试二进制全绿（lib + 集成合计 176 passed，
+  其中 `host_read` 16 条）。
+- JS 门禁（`MULTICC_RUST_ADDON` 指向本指纹的 `darwin-arm64/multicc_core.node`，
+  `MULTICC_RUST_PREBUILT_DIR` 指向指纹根目录）：`test:rust` 292/292（单独重跑两次均全绿）；
+  `test:architecture` 128/128；`test:contracts` 148/148；`test:governance` 20/20（含
+  `governance:runtime-writes`）；`check-test-tiers` 与 `check-source-line-budget` 通过
+  （`server.js` 3,069 行 / 164,513 字节）；`test:security` 全量 1,139 项、1,138 通过、0 失败、
+  1 todo。`test:native` 三次运行中 `tests/test-rust-cpr.js` 的既有用例「Rust 传输的有效 SSE
+  帧续期空闲预算而无需 Node 再解析」失败一次（`other side closed`）：该用例 220ms 写帧对比
+  `stallTimeoutMs: 500`，当时机器负载均值约 11；该文件单独运行 33/33 全绿，`test:rust` 前缀
+  加该文件独跑亦全绿，判为负载敏感的既存环境抖动，与本组改动无关。
+- 差分 `docs/rust-migration/differential/host-read.js` 在最终产物上重跑两次：每次 35 条逐字节
+  一致，4 条登记差异全部命中（大写 `/API/` Node 200、`POST /api/settings/power` Node 200、
+  `DELETE /api/push/vapid-key` Node 404、`GET /api/settings/notify/<extra>` Node 404）；不触达
+  真实服务与真实上游。
+- 本组按用户指令完成：删除 Node 路由实现 281 行（整文件），新增宿主端口 148 行、
+  `src/notify-settings.js` 46 行，`server.js` 净 0 行，Node 净变化 −87 行。剩余的纯宿主
+  垫片文件：`src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
+  `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`、
+  `src/routes/token-usage-host.js`、`src/routes/host-read-host.js`。未重启服务，路由由前门
+  接管要等用户手动重启后才生效。

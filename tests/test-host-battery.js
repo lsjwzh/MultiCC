@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { parsePmset, createBatteryReader } = require('../src/host-battery');
-const { createBatteryHandler } = require('../src/routes/host-read');
+const { createHostReadHost } = require('../src/routes/host-read-host');
 
 const BATT = `Now drawing from 'Battery Power'\n -InternalBattery-0 (id=6488163)\t7%; discharging; 0:21 remaining present: true\n\tBattery Warning: Early\n`;
 const CHARGING = `Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t83%; charging; 0:40 remaining present: true\n`;
@@ -34,13 +34,20 @@ const DESKTOP = `Now drawing from 'AC Power'\n`;
   const linux = createBatteryReader({ platform: 'linux', readFile: async file => (file.endsWith('capacity') ? '64\n' : 'Discharging\n') });
   assert.deepStrictEqual(await linux(), { available: true, percent: 64, charging: false, pluggedIn: false, remainingMinutes: null });
 
-  // 路由：把读数原样回给客户端；异常交给 next。
-  let body = null;
-  await createBatteryHandler({ readBattery: async () => ({ available: true, percent: 7 }) })({}, { json: v => { body = v; } }, assert.ifError);
-  assert.deepStrictEqual(body, { available: true, percent: 7 });
-  let err = null;
-  await createBatteryHandler({ readBattery: async () => { throw new Error('x'); } })({}, {}, e => { err = e; });
-  assert.ok(err);
+  // 宿主端口：把读数原样交给 Rust 前门；异常变成错误描述而不是抛出。
+  const batteryDeps = readBattery => ({
+    getVapidPublicKey: () => '',
+    getAccessToken: () => '',
+    push: { subscriptions: new Map(), healthStats: new Map(), globalStats: {}, cfg: {}, barkHealth: {}, webhookHealth: {} },
+    tunnel: { getStatus: () => ({}) },
+    macosPower: { isAvailable: () => false },
+    readBattery,
+  });
+  const answer = await createHostReadHost(batteryDeps(async () => ({ available: true, percent: 7 })))({ op: 'battery' });
+  assert.deepStrictEqual(answer, { ok: true, payload: { available: true, percent: 7 } });
+  const failed = await createHostReadHost(batteryDeps(async () => { throw new Error('x'); }))({ op: 'battery' });
+  assert.strictEqual(failed.ok, false);
+  assert.strictEqual(failed.status, 500);
 
   // Web：模块在 air.html 里加载，且电量行在 .side-bottom 内；低电量/充电/不可用三态。
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'air.html'), 'utf8');

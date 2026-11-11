@@ -1,6 +1,6 @@
 'use strict';
 
-const { resolveNotifySettingsUpdates } = require('./host-read');
+const { resolveNotifySettingsUpdates } = require('../notify-settings');
 const { createPowerSettingsHandler, mountPowerWriteRoutes } = require('./host-power');
 
 const LOCAL_ONLY_MESSAGE = '仅可在本机修改';

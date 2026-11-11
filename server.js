@@ -122,7 +122,7 @@ const { createMemoModule } = require('./src/memo');
 const { mountScanRoutes } = require('./src/routes/scan');
 const { mountSystemRoutes } = require('./src/routes/system');
 const { createApkDistribution } = require('./src/apk-distribution');
-const { mountHostReadRoutes } = require('./src/routes/host-read');
+const { mountHostReadHostRoute } = require('./src/routes/host-read-host');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
@@ -1931,9 +1931,9 @@ mountSystemRoutes(app, {
   apkDistribution, iosOta,
 });
 
-// Read-only host control-plane endpoints share one narrow boundary. Mutable
-// counterparts remain below until their persistence/auth semantics are split.
-mountHostReadRoutes(app, {
+// Host port for the read-only host plane: the Rust front door owns those routes.
+// Node is asked only for runtime facts it cannot see.
+mountHostReadHostRoute(app, {
   getVapidPublicKey: () => vapidKeys.pubKey,
   push,
   tunnel,

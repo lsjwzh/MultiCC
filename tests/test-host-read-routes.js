@@ -1,39 +1,24 @@
 'use strict';
 
+// Host read routes are now answered by the Rust front door
+// (native/gateway/src/app/host_read.rs). What is left in Node is one internal
+// host port (src/routes/host-read-host.js) that hands over the runtime facts
+// Rust cannot see: push Maps and config, tunnel clients, macOS power services
+// and the battery probe. This file covers that port and the notify helpers
+// that the write path still shares (src/notify-settings.js). Response shapes,
+// masking and classification are covered by the Rust tests and the
+// differential run (docs/rust-migration/differential/host-read.js).
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { safeErrorHandler } = require('../src/http-errors');
 
-const {
-  fingerprintEndpoint,
-  resolveNotifySettingsUpdates,
-  mountHostReadRoutes,
-} = require('../src/routes/host-read');
+const { createHostReadHost, mountHostReadHostRoute, HOST_PATH } = require('../src/routes/host-read-host');
+const { resolveNotifySettingsUpdates } = require('../src/notify-settings');
 
-const EXPECTED_PATHS = [
-  '/api/push/vapid-key',
-  '/api/push/health',
-  '/api/settings/notify',
-  '/api/settings/tunnel',
-  '/api/tunnel/funnel',
-  '/api/tunnel/ipv6',
-  '/api/tunnel/sakurafrp',
-  '/api/settings/access-token',
-  '/api/settings/power',
-  '/api/host/battery',
-];
-
-function createHarness(overrides = {}) {
-  const routes = new Map();
-  const app = {
-    get(routePath, handler) {
-      assert.equal(routes.has(routePath), false, `duplicate route: ${routePath}`);
-      routes.set(routePath, handler);
-    },
-  };
-  const deps = {
+function createDeps(overrides = {}) {
+  return {
     getVapidPublicKey: () => 'vapid-public',
     push: {
       subscriptions: new Map(),
@@ -50,7 +35,6 @@ function createHarness(overrides = {}) {
       sakuraAccess: async () => ({ ok: false, reason: 'no_token' }),
     },
     getAccessToken: () => '',
-    isLocalRequest: () => false,
     macosPower: {
       isAvailable: () => false,
       getLidModeSettings: async () => ({ available: true, enabled: true }),
@@ -63,104 +47,210 @@ function createHarness(overrides = {}) {
     },
     ...overrides,
   };
-  mountHostReadRoutes(app, deps);
-  return { routes, deps };
 }
 
-function createResponse() {
-  return {
-    statusCode: 200,
-    body: undefined,
-    status(code) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body) {
-      this.body = body;
-      return this;
+test('mounts exactly one internal host port and validates its dependencies', () => {
+  const routes = new Map();
+  const app = {
+    post(routePath, handler) {
+      assert.equal(routes.has(routePath), false, `duplicate route: ${routePath}`);
+      routes.set(routePath, handler);
     },
   };
-}
-
-async function invoke(routes, routePath, req = {}) {
-  const handler = routes.get(routePath);
-  assert.equal(typeof handler, 'function', `missing handler: ${routePath}`);
-  const res = createResponse();
-  await handler(req, res, (error) => { res.nextError = error; });
-  return res;
-}
-
-function presentSafely(error) {
-  const res = createResponse();
-  res.locals = { requestId: 'host-read-test', correlationId: 'host-read-test' };
-  safeErrorHandler({ error() {} })(error, {
-    id: 'host-read-test',
-    correlationId: 'host-read-test',
-    method: 'GET',
-    path: '/api/test',
-  }, res, () => {});
-  return res;
-}
-
-test('mounts the complete host read route group exactly once', () => {
-  const { routes } = createHarness();
-  assert.deepEqual([...routes.keys()], EXPECTED_PATHS);
-  assert.throws(() => mountHostReadRoutes({}, {}), /Express app\.get is required/);
+  mountHostReadHostRoute(app, createDeps());
+  assert.deepEqual([...routes.keys()], [HOST_PATH]);
+  assert.throws(() => mountHostReadHostRoute({}, createDeps()), /Express-compatible app is required/);
+  assert.throws(() => createHostReadHost({}), /dependency missing: getVapidPublicKey/);
   assert.throws(
-    () => mountHostReadRoutes({ get() {} }, {}),
-    /host read route dependency missing: getVapidPublicKey/,
+    () => createHostReadHost({ getVapidPublicKey() {}, getAccessToken() {} }),
+    /service dependencies are required/,
   );
 });
 
-test('returns VAPID key and notification summaries without URL secrets', async () => {
-  const barkSecret = 'https://device:password@api.day.app/device-key?token=query-secret#fragment-secret';
-  const webhookSecret = 'https://hooks.example.test/private/path/webhook-token?sig=query-secret#fragment';
-  const { routes } = createHarness({
-    getVapidPublicKey: () => 'public-key-123',
-    push: {
-      subscriptions: new Map(),
-      healthStats: new Map(),
-      globalStats: {},
-      cfg: {
-        BARK_URL: barkSecret,
-        WEBHOOK_URL: webhookSecret,
-      },
-      barkHealth: {},
-      webhookHealth: {},
-    },
+test('the host port refuses anything that is not a loopback call', async () => {
+  let mounted = null;
+  mountHostReadHostRoute({ post(_path, handler) { mounted = handler; } }, createDeps());
+  const answers = [];
+  const res = (code) => ({
+    status(value) { this.code = value; return this; },
+    json(body) { answers.push([this.code || code || 200, body]); return this; },
   });
-  assert.deepEqual((await invoke(routes, '/api/push/vapid-key')).body, { publicKey: 'public-key-123' });
-  assert.deepEqual((await invoke(routes, '/api/settings/notify')).body, {
-    barkUrl: 'https://api.day.app/••••',
-    barkOrigin: 'https://api.day.app',
-    hasBark: true,
-    webhookUrl: 'https://hooks.example.test/••••',
-    webhookOrigin: 'https://hooks.example.test',
-    hasWebhook: true,
-  });
-  const serialized = JSON.stringify((await invoke(routes, '/api/settings/notify')).body);
-  for (const secret of ['device', 'password', 'device-key', 'query-secret', 'fragment-secret', 'private/path', 'webhook-token']) {
-    assert.equal(serialized.includes(secret), false, secret);
-  }
+  mounted({ headers: {} }, res());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(answers, [[404, { error: 'not found' }]]);
+});
 
-  const opaque = createHarness({
+test('push facts cross the boundary as raw state, not as a DTO', async () => {
+  const endpoint = 'https://push.example.test/device-token';
+  const handle = createHostReadHost(createDeps({
     push: {
-      subscriptions: new Map(),
-      healthStats: new Map(),
-      globalStats: {},
-      cfg: { BARK_URL: 'opaque-device-secret', WEBHOOK_URL: 'not-a-url/private-token' },
-      barkHealth: {},
+      subscriptions: new Map([[endpoint, {}]]),
+      healthStats: new Map([[endpoint, { successCount: 7, failCount: 2 }]]),
+      globalStats: { totalSent: 9 },
+      cfg: { BARK_URL: 'https://api.day.app/key', WEBHOOK_URL: '' },
+      barkHealth: { lastSendTime: 55 },
+      webhookHealth: {},
+      hasBarkDevices: () => true,
+      barkDevices: { list: () => [{ id: 'd1' }] },
+    },
+  }));
+  assert.deepEqual(await handle({ op: 'push-health' }), {
+    ok: true,
+    payload: {
+      endpoints: [endpoint],
+      health: [{ successCount: 7, failCount: 2 }],
+      size: 1,
+      globalStats: { totalSent: 9 },
+      barkConfigured: true,
+      barkHealth: { lastSendTime: 55 },
+      webhookConfigured: false,
       webhookHealth: {},
     },
   });
-  assert.deepEqual((await invoke(opaque.routes, '/api/settings/notify')).body, {
-    barkUrl: '••••',
-    barkOrigin: '',
-    hasBark: true,
-    webhookUrl: '••••',
-    webhookOrigin: '',
-    hasWebhook: true,
+  assert.deepEqual(await handle({ op: 'notify' }), {
+    ok: true,
+    payload: {
+      barkUrl: 'https://api.day.app/key',
+      webhookUrl: '',
+      hasBark: true,
+      barkDevices: [{ id: 'd1' }],
+    },
   });
+  assert.deepEqual(await handle({ op: 'vapid-key' }), { ok: true, payload: 'vapid-public' });
+  assert.deepEqual(await handle({ op: 'unknown' }), { ok: false });
+  assert.deepEqual(await handle(null), { ok: false });
+});
+
+test('health entries absent from the Map are handed over as null', async () => {
+  const endpoint = 'https://push.example.test/missing-health';
+  const handle = createHostReadHost(createDeps({
+    push: {
+      subscriptions: new Map([[endpoint, {}]]),
+      healthStats: new Map(),
+      globalStats: {},
+      cfg: { BARK_URL: '', WEBHOOK_URL: '' },
+      barkHealth: {},
+      webhookHealth: {},
+    },
+  }));
+  const answer = await handle({ op: 'push-health' });
+  assert.deepEqual(answer.payload.health, [null]);
+  assert.equal(answer.payload.barkConfigured, false);
+});
+
+test('tunnel clients are awaited and their payloads passed through', async () => {
+  const handle = createHostReadHost(createDeps());
+  assert.deepEqual(await handle({ op: 'tunnel' }), {
+    ok: true,
+    payload: { config: { intervalSec: 30 }, healthy: true },
+  });
+  assert.deepEqual(await handle({ op: 'funnel' }), { ok: true, payload: { enabled: true, port: 3000 } });
+  assert.deepEqual(await handle({ op: 'ipv6' }), { ok: true, payload: { available: true, direct: false } });
+  assert.deepEqual(await handle({ op: 'sakurafrp' }), { ok: true, payload: { ok: false, reason: 'no_token' } });
+});
+
+test('a thrown tunnel error becomes a safe-error descriptor, not a 500 body', async () => {
+  const error = new Error('funnel failed /Users/private token=secret');
+  error.code = 'EBOOM';
+  const handle = createHostReadHost(createDeps({
+    tunnel: { getStatus: () => ({}), funnelStatus: async () => { throw error; } },
+  }));
+  assert.deepEqual(await handle({ op: 'funnel' }), {
+    ok: false,
+    status: 500,
+    code: 'EBOOM',
+    safeMessage: null,
+    detail: 'funnel failed /Users/private token=secret',
+  });
+});
+
+test('access tokens cross the boundary raw and live, never snapshotted', async () => {
+  let token = 'secret-123456';
+  const handle = createHostReadHost(createDeps({ getAccessToken: () => token }));
+  assert.deepEqual(await handle({ op: 'access-token' }), { ok: true, payload: { token: 'secret-123456' } });
+  token = 'abc';
+  assert.deepEqual(await handle({ op: 'access-token' }), { ok: true, payload: { token: 'abc' } });
+  token = '';
+  assert.deepEqual(await handle({ op: 'access-token' }), { ok: true, payload: { token: '' } });
+});
+
+test('power reads the live services and takes canEdit from the front door', async () => {
+  const unavailable = createHostReadHost(createDeps());
+  assert.deepEqual(await unavailable({ op: 'power', canEdit: true }), {
+    ok: true,
+    payload: { available: false, enabled: false },
+  });
+
+  const available = createHostReadHost(createDeps({
+    macosPower: {
+      isAvailable: () => true,
+      getLidModeSettings: async () => ({ available: true, enabled: true, source: 'pmset' }),
+    },
+  }));
+  assert.deepEqual(await available({ op: 'power', canEdit: false }), {
+    ok: true,
+    payload: {
+      available: true,
+      enabled: true,
+      source: 'pmset',
+      unlockPassword: {
+        available: true, set: false, canEdit: false, requested: false,
+        enabled: false, requiredByLid: true,
+      },
+    },
+  });
+
+  const hasPassword = createHostReadHost(createDeps({
+    macosPower: {
+      isAvailable: () => true,
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
+    },
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => true },
+  }));
+  assert.deepEqual((await hasPassword({ op: 'power', canEdit: true })).payload.unlockPassword,
+    { available: true, set: true, canEdit: true, requested: false, enabled: true, requiredByLid: true });
+});
+
+test('saved unlock consent is not reported ready after desktop permissions are revoked', async () => {
+  let ready = false;
+  const handle = createHostReadHost(createDeps({
+    macosPower: { isAvailable: () => true, getLidModeSettings: async () => ({ available: true, enabled: false }) },
+    powerPreferences: { read: () => true },
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => true },
+    unlockProbe: { desktopPermissions: async () => ({ state: ready ? 'authorized' : 'permissions-required' }) },
+  }));
+  const revoked = (await handle({ op: 'power', canEdit: true })).payload.unlockPassword;
+  assert.equal(revoked.requested, true);
+  assert.equal(revoked.enabled, false);
+  assert.equal(revoked.authorization.state, 'permissions-required');
+  ready = true;
+  assert.equal((await handle({ op: 'power', canEdit: true })).payload.unlockPassword.enabled, true);
+});
+
+test('power failures carry the error code and status for the front door', async () => {
+  const operationError = new Error('pmset denied /Users/private token=secret');
+  const failing = createHostReadHost(createDeps({
+    macosPower: {
+      isAvailable: () => true,
+      getLidModeSettings: async () => { throw operationError; },
+    },
+  }));
+  const answer = await failing({ op: 'power', canEdit: true });
+  assert.equal(answer.ok, false);
+  assert.equal(answer.status, 500);
+  assert.equal(answer.code, null);
+  assert.match(answer.detail, /pmset denied/);
+
+  const availabilityError = new Error('availability failed');
+  availabilityError.code = 'EACCES';
+  const availabilityFailing = createHostReadHost(createDeps({
+    macosPower: {
+      isAvailable: () => { throw availabilityError; },
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
+    },
+  }));
+  const coded = await availabilityFailing({ op: 'power', canEdit: true });
+  assert.equal(coded.code, 'EACCES');
 });
 
 test('notification placeholders preserve current values while empty strings clear them', () => {
@@ -183,248 +273,30 @@ test('notification placeholders preserve current values while empty strings clea
     BARK_URL: 'https://new.example.test/new-key',
     WEBHOOK_URL: 'https://new-hooks.example.test/new-hook',
   });
+  assert.deepEqual(resolveNotifySettingsUpdates({ barkUrl: 42 }, current), {});
 });
 
-test('push health exposes fingerprints and explicit safe health DTOs only', async () => {
-  const longEndpoint = `https://push.example.test/${'x'.repeat(55)}`;
-  const shortEndpoint = 'https://push.test/short';
-  const push = {
-    subscriptions: new Map([[longEndpoint, {}], [shortEndpoint, {}]]),
-    healthStats: new Map([[longEndpoint, {
-      successCount: 7,
-      failCount: 2,
-      lastFailTime: 33,
-      lastFailReason: 'request to /Users/private failed: token=super-secret',
-      custom: 'must-not-cross-dto',
-    }]]),
-    globalStats: {
-      totalSent: 9,
-      totalSuccess: 7,
-      totalFail: 2,
-      lastPushTime: 44,
-      lastPushType: 'secret-token-value',
-      lastPushSessionId: 'private-session-id',
-      custom: 'must-not-cross-dto',
-    },
-    cfg: { BARK_URL: 'bark', WEBHOOK_URL: '' },
-    barkHealth: { lastSendTime: 55, lastSuccess: false, lastError: 'HTTP 401 /secret' },
-    webhookHealth: { lastSendTime: 0, lastSuccess: true, custom: 'drop-me' },
-  };
-  const { routes } = createHarness({ push });
-  const response = await invoke(routes, '/api/push/health');
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, {
-    subscriptions: [
-      {
-        endpointFingerprint: fingerprintEndpoint(longEndpoint),
-        successCount: 7,
-        failCount: 2,
-        lastSuccessTime: 0,
-        lastFailTime: 33,
-        lastFailReason: 'authentication_error',
-        consecutiveFails: 0,
-      },
-      {
-        endpointFingerprint: fingerprintEndpoint(shortEndpoint),
-        successCount: 0,
-        failCount: 0,
-        lastSuccessTime: 0,
-        lastFailTime: 0,
-        lastFailReason: '',
-        consecutiveFails: 0,
-      },
-    ],
-    subscriptionCount: 2,
-    global: {
-      totalSent: 9,
-      totalSuccess: 7,
-      totalFail: 2,
-      lastPushTime: 44,
-      lastPushType: 'other',
-    },
-    bark: {
-      configured: true,
-      lastSendTime: 55,
-      lastSuccess: false,
-      lastError: 'http_4xx',
-    },
-    webhook: {
-      configured: false,
-      lastSendTime: 0,
-      lastSuccess: true,
-      lastError: '',
-    },
-  });
-  const serialized = JSON.stringify(response.body);
-  for (const secret of [longEndpoint, shortEndpoint, '/Users/private', 'super-secret', 'secret-token-value', 'private-session-id', 'must-not-cross-dto']) {
-    assert.equal(serialized.includes(secret), false, secret);
-  }
-});
-
-test('settings read the live access token instead of a mount-time snapshot', async () => {
-  let token = 'secret-123456';
-  const localRequest = { ip: '127.0.0.1' };
-  const { routes } = createHarness({
-    getAccessToken: () => token,
-    isLocalRequest: (req) => req === localRequest,
-  });
-  assert.deepEqual((await invoke(routes, '/api/settings/access-token', localRequest)).body, {
-    hasToken: true,
-    masked: '****3456',
-    canEdit: true,
-  });
-
-  token = 'abc';
-  assert.deepEqual((await invoke(routes, '/api/settings/access-token', {})).body, {
-    hasToken: true,
-    masked: '****',
-    canEdit: false,
-  });
-});
-
-test('tunnel settings and diagnostics preserve success payloads', async () => {
-  const status = { config: { intervalSec: 15 }, runtime: { phddns: 'ok' } };
-  const { routes } = createHarness({
-    tunnel: {
-      getStatus: () => status,
-      funnelStatus: async () => ({ enabled: false, output: 'off' }),
-      ipv6Status: async () => ({ available: true, direct: true, address: '::1' }),
-    },
-  });
-  assert.equal((await invoke(routes, '/api/settings/tunnel')).body, status);
-  assert.deepEqual((await invoke(routes, '/api/tunnel/funnel')).body, {
-    status: { enabled: false, output: 'off' },
-  });
-  assert.deepEqual((await invoke(routes, '/api/tunnel/ipv6')).body, {
-    available: true,
-    direct: true,
-    address: '::1',
-  });
-});
-
-test('tunnel diagnostic failures delegate raw errors to the safe error boundary', async () => {
-  const funnelError = new Error('funnel failed /Users/private token=secret');
-  const ipv6Error = new Error('ipv6 failed /private/path?token=secret');
-  const { routes } = createHarness({
-    tunnel: {
-      getStatus: () => ({}),
-      funnelStatus: async () => { throw funnelError; },
-      ipv6Status: async () => { throw ipv6Error; },
-    },
-  });
-  const funnel = await invoke(routes, '/api/tunnel/funnel');
-  assert.equal(funnel.statusCode, 200);
-  assert.equal(funnel.body, undefined);
-  assert.equal(funnel.nextError, funnelError);
-  assert.equal(presentSafely(funnel.nextError).body.error, 'internal_error');
-  assert.doesNotMatch(JSON.stringify(presentSafely(funnel.nextError).body), /Users|private|secret/);
-  const ipv6 = await invoke(routes, '/api/tunnel/ipv6');
-  assert.equal(ipv6.statusCode, 200);
-  assert.equal(ipv6.body, undefined);
-  assert.equal(ipv6.nextError, ipv6Error);
-  assert.doesNotMatch(JSON.stringify(presentSafely(ipv6.nextError).body), /private|secret/);
-});
-
-test('sakurafrp enrichment delegates the redacted payload and forwards errors', async () => {
-  const payload = {
-    ok: true,
-    user: { id: 1, name: 'lsjwzh', trafficUsed: 100, trafficTotal: 2000, signed: false },
-    access: { tunnelId: 9, name: 'multicc', online: true, needsBoundDomain: true, publicUrl: null },
-    tunnelCount: 1,
-    configUrl: '',
-    needsBoundDomain: true,
-  };
-  const ok = createHarness({ tunnel: { getStatus: () => ({}), sakuraAccess: async () => payload } });
-  assert.deepEqual((await invoke(ok.routes, '/api/tunnel/sakurafrp')).body, payload);
-
-  const boom = new Error('sakura api failed token=secret');
-  const failing = createHarness({ tunnel: { getStatus: () => ({}), sakuraAccess: async () => { throw boom; } } });
-  const res = await invoke(failing.routes, '/api/tunnel/sakurafrp');
-  assert.equal(res.body, undefined);
-  assert.equal(res.nextError, boom);
-  assert.equal(presentSafely(res.nextError).body.error, 'internal_error');
-});
-
-test('power settings preserve success branches and delegate all errors', async () => {
-  const unavailable = createHarness();
-  assert.deepEqual((await invoke(unavailable.routes, '/api/settings/power')).body, {
-    available: false,
-    enabled: false,
-  });
-
-  const available = createHarness({
-    macosPower: {
-      isAvailable: () => true,
-      getLidModeSettings: async () => ({ available: true, enabled: true, source: 'pmset' }),
-    },
-  });
-  assert.deepEqual((await invoke(available.routes, '/api/settings/power')).body, {
-    available: true,
-    enabled: true,
-    source: 'pmset',
-    unlockPassword: { available: true, set: false, canEdit: false, requested: false, enabled: false, requiredByLid: true },
-  });
-
-
-  const hasPassword = createHarness({
-    macosPower: {
-      isAvailable: () => true,
-      getLidModeSettings: async () => ({ available: true, enabled: true }),
-    },
-    unlockPassword: { isAvailable: () => true, hasPassword: async () => true },
-  });
-  assert.deepEqual((await invoke(hasPassword.routes, '/api/settings/power')).body.unlockPassword,
-    { available: true, set: true, canEdit: false, requested: false, enabled: true, requiredByLid: true });
-
-  const operationError = new Error('pmset denied /Users/private token=secret');
-  const failing = createHarness({
-    macosPower: {
-      isAvailable: () => true,
-      getLidModeSettings: async () => { throw operationError; },
-    },
-  });
-  const response = await invoke(failing.routes, '/api/settings/power');
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body, undefined);
-  assert.equal(response.nextError, operationError);
-  assert.doesNotMatch(JSON.stringify(presentSafely(response.nextError).body), /Users|private|secret/);
-
-  const availabilityError = new Error('availability failed /private/path?secret=yes');
-  const availabilityFailing = createHarness({
-    macosPower: {
-      isAvailable: () => { throw availabilityError; },
-      getLidModeSettings: async () => ({ available: true, enabled: true }),
-    },
-  });
-  const availabilityResponse = await invoke(availabilityFailing.routes, '/api/settings/power');
-  assert.equal(availabilityResponse.body, undefined);
-  assert.equal(availabilityResponse.nextError, availabilityError);
-  assert.doesNotMatch(JSON.stringify(presentSafely(availabilityResponse.nextError).body), /private|secret/);
-});
-
-test('server delegates every migrated GET without retaining inline duplicates', () => {
+test('server mounts the host port and retains no inline host read GETs', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const writeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-write.js'), 'utf8');
-  assert.match(source, /mountHostReadRoutes\(app, \{/);
+  assert.match(source, /mountHostReadHostRoute\(app, \{/);
   assert.match(source, /mountHostWriteRoutes\(app, \{/);
   assert.match(writeSource, /resolveNotifySettingsUpdates\(req\.body \|\| \{\}, current\)/);
-  for (const routePath of EXPECTED_PATHS) {
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'src', 'routes', 'host-read.js')), false);
+  for (const routePath of [
+    '/api/push/vapid-key',
+    '/api/push/health',
+    '/api/settings/notify',
+    '/api/settings/tunnel',
+    '/api/tunnel/funnel',
+    '/api/tunnel/ipv6',
+    '/api/tunnel/sakurafrp',
+    '/api/settings/access-token',
+    '/api/settings/power',
+    '/api/host/battery',
+  ]) {
     assert.equal(source.includes(`app.get('${routePath}'`), false, routePath);
   }
-});
-
-test('saved unlock consent is not reported ready after desktop permissions are revoked', async () => {
-  let ready = false;
-  const { routes } = createHarness({
-    macosPower: { isAvailable: () => true, getLidModeSettings: async () => ({ available: true, enabled: false }) },
-    powerPreferences: { read: () => true },
-    unlockPassword: { isAvailable: () => true, hasPassword: async () => true },
-    unlockProbe: { desktopPermissions: async () => ({ state: ready ? 'authorized' : 'permissions-required' }) },
-  });
-  const revoked = (await invoke(routes, '/api/settings/power')).body.unlockPassword;
-  assert.equal(revoked.requested, true);
-  assert.equal(revoked.enabled, false);
-  assert.equal(revoked.authorization.state, 'permissions-required');
-  ready = true;
-  assert.equal((await invoke(routes, '/api/settings/power')).body.unlockPassword.enabled, true);
+  const rust = fs.readFileSync(path.join(__dirname, '..', 'native', 'gateway', 'src', 'app', 'host_read.rs'), 'utf8');
+  assert.match(rust, /http_gate::is_local_request\(peer, &ctx\.headers\)/);
 });
