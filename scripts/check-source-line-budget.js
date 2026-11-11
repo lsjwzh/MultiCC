@@ -210,10 +210,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 该路由的 require 与挂载两行，实测回落到 3066/164657，按棘轮下调。
   // 2026-11-11 无人值守故障退避：server.js 注入惰性 getRetryNotBefore 端口
   // （从 Auto 候选/限流缓存读最早的解禁时刻），实测 3073/165078，按棘轮登记。
+  // 同日 GET /api/claude/models 迁到 Rust 前门：挂载那一行改成说明注释（行数不变），
+  // rebase 后 split(/\n/).length 量到 3073 行 / 165036 字节，按实测双向贴住。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
     ceiling: 3073,
-    byteCeiling: 165078,
+    byteCeiling: 165036,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

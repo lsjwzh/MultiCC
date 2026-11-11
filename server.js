@@ -2205,7 +2205,7 @@ require('./src/routes/pricing').mountPricingRoutes(app, { priceTable: require('.
 // GET /api/qoder/models — the Qoder CN catalog entitled to the logged-in
 // account (`qoderclicn --list-models`, cached for 1 day). Lets each qoder
 // session pick its own model instead of sharing ~/.qoder-cn/settings.json.
-mountQoderModelRoutes(app); mountCodebuddyModelRoutes(app); mountCommandcodeModelRoutes(app); mountGrokModelRoutes(app); require('./src/routes/claude-models').mountClaudeModelRoutes(app); // GET /api/claude/models — ids extracted from the local claude CLI bundle, cached 1 day (see src/routes/claude-models.js)
+mountQoderModelRoutes(app); mountCodebuddyModelRoutes(app); mountCommandcodeModelRoutes(app); mountGrokModelRoutes(app); // GET /api/claude/models is served by the Rust front door (native/gateway, docs/gateway.md §9); ids are extracted from the local claude CLI bundle.
 
 // GET /api/opencode/quota — drive whatever Chrome the user already has open
 // (src/chrome-cdp.js) to scrape the OpenCode Zen console's Go subscription

@@ -44,67 +44,18 @@ pub async fn read_cli(input: &str) -> Result<Value, String> {
 }
 
 pub async fn subscription_plan(input: Value) -> Result<Value, String> {
-    let vendor = input["vendor"].as_str().unwrap_or("");
-    let mut headers = json!({"Accept":"application/json"});
-    let (url, token, fallback) = match vendor {
-        "codex" => {
-            let file = input["authFile"].as_str().unwrap_or("").to_owned();
-            let auth = tokio::task::spawn_blocking(move || {
-                provider_credentials::run(&json!({"operation":"codexAuth","file":file}))
-            })
-            .await
-            .map_err(|_| "CREDENTIAL_READ_FAILED")??;
-            if auth.is_null() {
-                return Ok(json!({"result":{"status":"no_auth"}}));
-            }
-            headers["ChatGPT-Account-Id"] = auth["accountId"].clone();
-            headers["originator"] = json!("codex_cli_rs");
-            (
-                "https://chatgpt.com/backend-api/wham/usage",
-                auth["accessToken"].as_str().unwrap_or("").to_owned(),
-                auth["subscription"].clone(),
-            )
-        }
-        "claude" => {
-            headers["Accept"] = json!("application/json, text/plain, */*");
-            headers["User-Agent"] = json!("axios/1.15.2");
-            headers["Cache-Control"] = json!("no-cache");
-            (
-                "https://api.anthropic.com/api/oauth/profile",
-                input["token"].as_str().unwrap_or("").to_owned(),
-                Value::Null,
-            )
-        }
-        _ => return Err("SUBSCRIPTION_INVALID_VENDOR".into()),
-    };
-    if token.is_empty() {
-        return Ok(json!({"result":{"status":"no_auth"}}));
-    }
-    headers["Authorization"] = json!(format!("Bearer {token}"));
-    Ok(json!({"vendor":vendor,"url":url,"headers":headers,"fallback":fallback}))
+    tokio::task::spawn_blocking(move || {
+        multicc_core::account_subscription::plan(
+            input["vendor"].as_str().unwrap_or(""),
+            std::path::Path::new(input["authFile"].as_str().unwrap_or("")),
+            input["token"].as_str().unwrap_or(""),
+        )
+    })
+    .await
+    .map_err(|_| "CREDENTIAL_READ_FAILED")?
 }
 pub fn subscription_result(v: &Value) -> Value {
-    let plan = &v["plan"];
-    let status = v["status"].as_u64().unwrap_or(0);
-    if status == 401 {
-        return json!({"status":"no_auth"});
-    }
-    if !(200..300).contains(&status) || !v["body"].is_object() {
-        return if plan["vendor"] == "codex" {
-            json!({"status":"unavailable","subscription":plan["fallback"],"stale":true})
-        } else {
-            json!({"status":"unavailable"})
-        };
-    }
-    let parsed = multicc_core::subscription::parse(
-        &json!({"body":v["body"],"source":if plan["vendor"] == "codex" {"usage"} else {"profile"},
-        "observedAt":v["now"]})
-        .to_string(),
-    )
-    .ok()
-    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-    .unwrap_or(Value::Null);
-    json!({"status":"ok","subscription":if parsed.is_null() {plan["fallback"].clone()} else {parsed}})
+    multicc_core::account_subscription::result(v)
 }
 pub async fn subscription_query(plan: Value) -> Value {
     let request = async {

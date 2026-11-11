@@ -1,3 +1,4 @@
+pub mod account_subscription;
 pub mod api_error_policy;
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
@@ -28,6 +29,7 @@ pub mod native_session_guard;
 pub mod network_policy;
 pub mod node_fs_error;
 pub mod opencode_context;
+pub mod outbound_proxy;
 pub mod provider_attempt_identity;
 pub mod provider_error;
 pub mod provider_scrub;
@@ -65,6 +67,7 @@ pub mod windows_tools;
 pub mod worktree_sync;
 
 pub mod claude_lane;
+pub mod claude_models;
 pub mod claude_refresh;
 pub mod cli_completion;
 pub mod codex_models;

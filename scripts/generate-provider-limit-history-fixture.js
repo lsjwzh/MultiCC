@@ -15,7 +15,7 @@
 //
 // The napi addon is resolved like the rest of the tree: MULTICC_RUST_ADDON,
 // then MULTICC_RUST_PREBUILT_DIR, then native/prebuilt/<platform>-<arch>.
-// Isolation: its own data root, HOME and TMPDIR under /tmp/provider-limit-history-port/.
+// Isolation: its own data root, HOME and working directory under $TMPDIR/provider-limit-history-port/.
 
 const fs = require('node:fs');
 const http = require('node:http');
@@ -203,7 +203,7 @@ async function mountApp(dataRoot, historyFile, base) {
 }
 
 async function build() {
-  const work = path.join('/tmp', 'provider-limit-history-port', `fixture-${process.pid}`);
+  const work = path.join(os.tmpdir(), 'provider-limit-history-port', `fixture-${process.pid}`);
   const data = path.join(work, 'data');
   const home = path.join(work, 'home');
   const unavailable = path.join(work, 'unavailable');

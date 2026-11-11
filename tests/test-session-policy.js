@@ -11,7 +11,7 @@ const {
   createReportedModelRuntime,
   CODEX_STREAM_DISCONNECT_CONTINUE_MAX,
 } = require('../src/cli/session-policy');
-const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/routes/claude-models');
+const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/claude-models');
 
 // Default-model tests must see the static picker list, not a live CLI scan.
 _resetCacheForTest();

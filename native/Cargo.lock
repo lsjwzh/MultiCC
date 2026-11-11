@@ -1486,6 +1486,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "multicc-core",
+ "multicc-cpr",
  "rustls",
  "rustls-native-certs",
  "serde",

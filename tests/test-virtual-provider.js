@@ -107,7 +107,7 @@ test('virtual validation rejects cross-CLI and nested members without mutating t
 
 test('账号订阅查询持久化后参与自动切换，续费恢复、失败及旧快照不会串号或覆盖新数据', { skip: !available }, async t => {
   const subscriptions = require('../src/quota/account-subscription-cache');
-  const { mountAccountSubscriptionRoute } = require('../src/routes/account-subscription');
+  const { registerAccountSubscriptionReader } = require('../src/quota/account-subscription-reader');
   const account = 'aaaaaaaaaaaaaaaa', other = 'bbbbbbbbbbbbbbbb';
   const file = path.join(root, 'subscription-limits.db');
   const cache = createProviderLimitCache({ file });
@@ -120,8 +120,8 @@ test('账号订阅查询持久化后参与自动切换，续费恢复、失败�
   const oldList = core.listProviders;
   core.listProviders = () => members;
   t.after(() => { core.listProviders = oldList; subscriptions.configure(); virtual.configure(); virtual.setRefresher(null); cache.close(); });
-  let calls = 0, handler, cancelled = true;
-  mountAccountSubscriptionRoute({ get(_, fn) { handler = fn; } }, 'claude', {
+  let calls = 0, cancelled = true;
+  const readSubscription = registerAccountSubscriptionReader('claude', {
     accounts: { listClaudeAccounts: () => [{ id: account }, { id: other }] },
     credentials: { peekAccountToken: async id => ({ token: `fixture-${id}` }) },
     fetch: async (_, options) => {
@@ -136,7 +136,7 @@ test('账号订阅查询持久化后参与自动切换，续费恢复、失败�
   virtual.setRefresher(async (appType, id) => cache.record(appType, id, { kind: 'window',
     summary: { kind: 'window', usedPercentage: 10 }, fetchedAt: Date.now() }));
   await virtual.refresh(pool);
-  assert.equal(calls, 2, '路由前自动读取每个账号的订阅');
+  assert.equal(calls, 2, '自动切换前读取每个账号的订阅');
   assert.equal(virtual.status(pool, members).selectedId, members[1].id);
   assert.equal(subscriptions.project(members)[0].subscription.autoRenew, false);
   await virtual.refresh(pool);
@@ -148,7 +148,7 @@ test('账号订阅查询持久化后参与自动切换，续费恢复、失败�
   assert.equal(virtual.status(pool, members).selectedId, members[1].id, '失败及旧登录快照不覆盖较新的取消续费');
   assert.equal(subscriptions.project([{ ...members[0], isOfficial: false }])[0].subscription.autoRenew, true, '普通线路不能串用官方账号缓存');
   cancelled = false;
-  await handler({ query: { account } }, { set() {}, json() {} });
+  await readSubscription(account);
   assert.equal(virtual.status(pool, members).selectedId, members[0].id, '新的实时续费观察恢复该成员');
   assert.ok(subscriptions.project(members)[0].subscription.nextBillingAt > now);
   const disk = JSON.parse(await native.accountSubscriptionCache(file, JSON.stringify({ operation: 'read' })));

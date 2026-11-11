@@ -190,6 +190,10 @@ async function run(spec, argv = process.argv.slice(2)) {
     ctx.cookie = authSecurity.createCookie();
     let same = 0;
     const diffs = [];
+    // A case whose two sides are documented to differ: its normalize hook
+    // maps both answers onto the agreed shape, and the case is counted (and
+    // printed) apart from the byte-for-byte same count.
+    const expected = [];
     const views = [];
     const sides = { node: { name: 'node', state: {}, port: nodePort }, rust: { name: 'rust', state: {}, port: gwPort } };
     const normalizeText = spec.normalize || (text => text);
@@ -212,7 +216,21 @@ async function run(spec, argv = process.argv.slice(2)) {
         if (hooks.normalize) v = hooks.normalize(v, side) || v;
         seen[side.name] = v;
       }
-      if (JSON.stringify(seen.node) === JSON.stringify(seen.rust)) same++;
+      const equal = JSON.stringify(seen.node) === JSON.stringify(seen.rust);
+      if (hooks.expectedDifference) {
+        // Each side is checked against its own documented shape; the case is
+        // never counted as a byte-for-byte same. Guard rails, so the hook can
+        // never become a way to wave a real difference through: both side
+        // predicates are mandatory, each must answer exactly `true`, and the
+        // two sides must actually differ (an expectation that stopped being
+        // true has to be moved to the plain, byte-for-byte path, not kept).
+        const check = hooks.expectedDifference;
+        if (!check || typeof check.node !== 'function' || typeof check.rust !== 'function') {
+          throw new Error(`[${spec.name}] ${name}: expectedDifference needs a node and a rust predicate`);
+        }
+        const matched = !equal && check.node(seen.node) === true && check.rust(seen.rust) === true;
+        expected.push({ name, matched, node: seen.node, rust: seen.rust });
+      } else if (equal) same++;
       else diffs.push({ name, node: seen.node, rust: seen.rust });
       views.push({ name, node: seen.node, rust: seen.rust });
     }
@@ -233,12 +251,17 @@ async function run(spec, argv = process.argv.slice(2)) {
     const extra = typeof spec.finalize === 'function'
       ? await spec.finalize({ views, nodeData, gwData, work, sides })
       : null;
-    fs.writeFileSync(path.join(work, 'result.json'), JSON.stringify({ same, diffs, stores, extra }, null, 2));
+    fs.writeFileSync(path.join(work, 'result.json'), JSON.stringify({ same, diffs, expected, stores, extra }, null, 2));
     for (const diff of diffs) console.log(JSON.stringify(diff));
+    for (const item of expected.filter(entry => !entry.matched)) console.log(JSON.stringify(item));
     for (const store of stores.filter(s => !s.same)) console.log(JSON.stringify(store));
     const storeText = stores.map(s => `${s.file}: ${s.same ? `identical (mode ${s.node.mode || 'absent'})` : 'DIFFERENT'}`).join(', ');
-    console.log(`[${spec.name}] same ${same}/${same + diffs.length}; ${storeText || 'no stores'}; details ${work}/result.json`);
-    return diffs.length === 0 && stores.every(s => s.same) && (!extra || extra.ok !== false);
+    const expectedText = expected.length
+      ? `; expected differences ${expected.filter(e => e.matched).length}/${expected.length} validated`
+      : '';
+    console.log(`[${spec.name}] same ${same}/${same + diffs.length}${expectedText}; ${storeText || 'no stores'}; details ${work}/result.json`);
+    return diffs.length === 0 && expected.every(e => e.matched) && stores.every(s => s.same)
+      && (!extra || extra.ok !== false);
   } finally {
     clearTimeout(watchdog);
     killGateway();

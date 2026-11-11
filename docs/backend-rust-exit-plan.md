@@ -2971,3 +2971,115 @@ No service was restarted and no live service or user data was written during thi
 - `node scripts/check-source-line-budget.js` 通过，`server.js` 棘轮保持 3066 行 / 164657 字节。
 - 两份生成清单已重跑：`docs/backend-route-inventory.md`（586 文件、507 个静态候选）与 `docs/backend-runtime-inventory.md`（指纹 `c613805fb1de0d36f39565d8`，558 条运行时注册、34 层中间件），均不再列出该路由。
 - 未运行整套 `npm test`、`test:cdp`、`tests/test-classify-api-errors*`（会改写活跃会话）。未提交、未 stash、未重置、未重启服务、未向活服务写；临时文件均在 `/tmp/provider-limit-history-port/`，结束后已删除。
+
+## Claude 模型目录端点迁入 Rust 前门（2026-11-11）
+
+`GET/HEAD/OPTIONS /api/claude/models` 整组迁到 Rust 前门，Node 路由删除。Node 仍保留静态兜底清单（`CLAUDE_MODELS_FALLBACK`）与一个只读跨进程缓存的同步读取器，因为 spawn/listing 热路径不能等待一次 300MB 的 bundle 扫描。
+
+### Rust 实现
+
+- `native/core/src/claude_models.rs`（632 行）：手写复刻 JS 正则 `/(?<![\w-])claude-(opus|sonnet|haiku|fable)-(\d+)(?:[.-](\d{1,2}))?(?:-(\d{8}))?(\[1m\])?(?![\w-])/g`（`regex` crate 无 lookbehind，也不新增依赖），包括 V8 的回溯优先级（minor 2 位→1 位→缺席、date、`[1m]` 的尝试顺序）、`\w` 的 ASCII 定义、窗口首尾字节边界与非法 UTF-8 的 U+FFFD 等价；采集侧保持插入序、稳定排序 `vb[0]-va[0] || vb[1]-va[1] || a.length-b.length`、`Number(m[1])||0` 的 f64 版本键、第 500 个不同 id 立刻返回、每族最新 2 个、只有 bundle 带 `[1m]` 变体才产出 1M 行、族序 opus/sonnet/fable/haiku。窗口划分与 Node 完全相同（4MiB 窗口、64 字节重叠、400MiB 上限），没有「顺手改好」。
+- 缓存机：`{at, models, bundleKey}`；命中条件 `!force && cache && sameBundle && (now-at)<1day`；`sameBundle = cache.bundleKey == null || !key || cache.bundleKey === key`；来源 cache/cli/fallback；fallback 永不缓存；空结果与扫描异常都落 fallback；`?refresh` 用 `/^(?:1|true)$/i.test(String(...))`（qs 数组/对象的 `String()` 语义沿用 `http_gate::query_value`）；时钟可注入，TTL 边界有单测。
+- Bundle 定位：`realpath($HOME/.local/bin/claude)` 且为普通文件优先，否则 `$HOME/.local/share/claude/versions` 下按 mtime 最新的普通文件，再否则空路径。`HOME` 缺失与 Windows 的行为差异见 `docs/gateway.md` §9。
+- `native/gateway/src/app/claude_models.rs`（68 行）：进程内缓存槽；请求在 `spawn_blocking` 中执行并持有 `store_lock`，因此 8 个并发请求与 Node 单线程事件循环一样得到 1 次 cli + 7 次 cache。成功扫描后经 `multicc_core::state_file::write_json_atomic` 写 `<data root>/claude-models-cache.json`（0600，缩进与 JS `JSON.stringify` 一致，无结尾换行）；写失败只记 `claude_models_cache_write_failed` 日志，不影响响应。
+- `native/gateway/src/app/mod.rs`：精确 claim `claude/models` 的 GET/HEAD/OPTIONS；其它方法继续转发 Node；OPTIONS 为 `Allow: GET,HEAD`、`text/html; charset=utf-8`、body `GET,HEAD`；协议号保持 12。
+
+### 删除清单
+
+- `src/routes/claude-models.js`（247 行）整文件删除。
+- `server.js` 只改挂载那一行（替换为注释），实测 `split(/\n/).length` 3066 行 / 164615 字节；`scripts/check-source-line-budget.js` 按棘轮把字节上限从 164657 下调到 164615（行数上限不变）。
+- `tests/test-claude-models-route.js`（151 行）删除，替换为 `tests/test-claude-models-fallback.js`（150 行，7 个用例）；`tests/test-tiers.json` 与 `package.json` 的 `test:provider-router` 同步改名。
+- `src/cli/session-policy.js`、`src/providers/relay-share-code.js`、`src/routes/providers.js` 及两个测试文件的 require 改指 `src/claude-models.js`（保留 `CLAUDE_MODELS_FALLBACK` 与 `listClaudeModelsSync`）。
+- 依赖可删性：旧路由只用 `fs` / `path` / `os` 三个 Node 内置模块；新 Node 模块只用 `fs` / `path` 与既有 `createPaths()`。没有可删除的 npm 依赖，`native/Cargo.toml` 未改（matcher 手写，未加 `regex` 等依赖）。
+
+### 差分与红证
+
+- 差分脚本 `docs/rust-migration/differential/claude-models.js`：Node 侧为冻结 oracle（`tests/helpers/legacy-claude-models-route.js`）跑真实 Express 流水线，Rust 侧为 release 前门；两侧使用各自的 data root 与同一个隔离 HOME fixture，响应无时钟/随机字段，因此逐字节比较、无需归一化（只有 edge 组的 `refresh[toString]` 两条例外，按下述预期差异单独断言）。
+- 全部一致：default 46/46、fallback 14/14、window 8/8、semantics 17/17、fuzz 1,200/1,200、concurrent 1/1、edge 8/8、relative-data-dir 4/4、真实 bundle 2/2，共 1,300 个对拍用例全部逐字节一致；另有 2 条 `refresh[toString]` 预期差异按两侧各自的文档形状单独断言 2/2（`lib.js` 的 `hooks.expectedDifference`，不进入 same 计数）。
+- 红证：临时把 matcher 的 `[1m]` 组改成永不匹配并重建产物，default 只剩 `same 21/46`（25 条差异）；恢复后重建为 `46/46`。
+- 复核修复红证（2026-11-11）：把 versions 名字序与分数毫秒 mtime 临时退回旧实现后，核心单测 `version_sort_is_name_first_then_stable_mtime_desc`（left `2.0.0` ≠ right `0.9.0`）、`mtime_ms_matches_node_fractional_milliseconds`（`1700000000123.0` ≠ `1700000000123.4568`）、`versions_sub_millisecond_mtime_is_not_truncated` 失败；edge 差分组同时红两条：40 个完全并列 mtime 的版本文件 Node 选 `v00`（`claude-opus-999`），旧 Rust 选哈希序首个文件（`claude-sonnet-4-6`）；40 个分数 mtime 文件（`1700000000000.0999` ×39、`v39` = `1700000000000.2`）同理。把缓存 `at` 退回请求到达时刻后，`cache_at_is_stamped_after_the_scan` 失败（时钟调用 1 ≠ 2）。恢复后全部转绿。
+
+### 复核修复（3 项低危差异）
+
+- versions 目录 mtime 完全并列：libuv 的 scandir 先按名字 strcmp 排序，V8 的 `Array.prototype.sort` 稳定，所以并列取字节序更早的文件名。Rust 先按名字字节序（Unix 用 `OsStrExt::as_bytes`，非 Unix 用 lossy 字节）排序，再做稳定的 mtime 降序；纯函数 `sort_version_files` 有独立单测。
+- 亚毫秒 mtime：Unix 用 `MetadataExt::mtime()/mtime_nsec()`，按 Node `statSync().mtimeMs` 的整毫秒 + `nsec % 1e6 / 1e6` 分数公式计算（先实测 Node 26 的 300 组回读值确认两种写法在真实 epoch 量级浮点等价）；非 Unix 回退到 `as_nanos()/1e6`。`bundleKey` 继续用纳秒，不弱于 Node 的分数毫秒，同一毫秒内同尺寸重写同样失效。
+- 缓存 `at`：`answer` 改为接收时钟函数；TTL 命中判定在请求到达时取钟，`at` 在扫描完成后取钟，写入缓存文件的值与内存缓存一致。
+- 只写文档的差异：`?refresh[toString]=1` / `?refresh[toString]=` 在旧 Node 抛 TypeError → 500 `internal_error`，Rust 视为对象 → 非强制刷新 200；与 `limit-history` 的 `points[toString]` 同类，属有意消除的缺陷。`store_lock` 约 270ms 的扫描独占 vs Node 阻塞事件循环约 215ms（独立复核的一次实测，修复轮次未重测，只作量级参考）：整体不更差，暂不改，争用可观测时再改路由私有互斥量。
+- concurrent 组 8 个并发请求：Node 与 Rust 都是 7 次 cache + 1 次 cli，来源多重集完全相同。
+- 真实 bundle：`~/.local/bin/claude`（2.1.318），13 个模型；首扫单次计时 Node 1,166ms、Rust 497ms（修复后另一次独立运行为 1,131ms / 486ms，随运行波动，不作性能结论），响应逐字节一致，缓存文件与 Node 读取器一致。
+- window 组覆盖 k≈0..70 的 4MiB/8MiB 窗口边界（k=63/64/65、窗口末端、被 word/dash/underscore 阻断等 8 个场景），并显式断言每个 ID 是否命中。
+- `relative-data-dir`：两侧都把 `MULTICC_DATA_DIR` 设为相对路径；缓存文件 0600，`{at,bundleKey,models}` 三键，Node 的 `listClaudeModelsSync()` 读到的 id 与响应一致。
+
+### Golden fixture 与集成测试
+
+- `scripts/generate-claude-models-fixture.js`（默认校验，`--write` 才写盘）：从冻结 oracle + 合成 HOME（两个版本文件，固定 mtime）采集 12 个路由用例与 6 个 fallback 用例到 `native/gateway/tests/fixtures/claude-models.json`；响应无时钟字段，连跑多次字节一致。生成器在写盘前断言 oracle 与 `src/claude-models.js` 的 fallback 清单完全相同；fixture 的 `fallback` 同时被 Rust 集成测试与 JS 测试引用，任一侧漂移都会失败。
+- 集成测试 `native/gateway/tests/claude_models.rs`：`claude_models_replays_golden_cases`、`claude_models_falls_back_without_a_bundle`，2/2 通过；覆盖 cli/cache/refresh 序列、HEAD/OPTIONS/304、fallback 永不写缓存、缓存文件 0600 与键集。
+- Core 单测 17 个：`fallback_matches_the_node_constant`、`extraction_keeps_insertion_order_and_one_m_subset`、`lookbehind_lookahead_and_backtracking_match_v8`、`labels_use_ecmascript_number_formatting`、`invalid_utf8_bytes_are_boundaries_like_u_fffd`、`matcher_folds_dates_dots_and_brackets`、`curation_orders_by_version_then_length_with_insertion_ties`、`refresh_values_follow_js_string_truthiness`、`five_hundred_distinct_ids_stop_the_scan_immediately`、`versions_dir_mtime_picks_newest_file_and_symlink_wins`、`cache_ttl_force_and_bundle_key_follow_the_node_machine`、`window_boundaries_reproduce_the_sliding_scan`，以及复核修复新增的 5 个：`versions_ties_pick_the_bytewise_earlier_name`、`version_sort_is_name_first_then_stable_mtime_desc`、`versions_sub_millisecond_mtime_is_not_truncated`、`mtime_ms_matches_node_fractional_milliseconds`、`cache_at_is_stamped_after_the_scan`。
+
+### 最终产物与验证
+
+- Rust 源码指纹 `335ecb241754074fbf26513f`（`darwin-arm64/`，四个 `*.source.json` 的 fingerprint 与 SHA-256 均与本文件一致，即 `builtFromSource=true`）：`multicc_core.node` 18,034,000 字节，SHA-256 `c85dfed07070be7fdcb467ec426dcb0e0924d46089d6862a78f88f02343e0b35`；`multicc-gateway` 9,245,872 字节，SHA-256 `08cc02840dc05cfd960e8d072e730dfc76eb00a40d6e700bde152ade37098672`；`multicc-cdpd` 2,012,208 字节，SHA-256 `63f2c7491bcf7522edec80d7f7adb7f5cbc39cd9a12ab5bc836c0d447ee6363d`；`multicc-remote` 7,328,800 字节，SHA-256 `d800dd5939b02d3670aa4530ab06fb5e2393a5d979017965b495747682d2979d`。
+- `cargo fmt --all -- --check` 退出 0；`cargo clippy --locked --all-targets -- -D warnings` 与 `--workspace` 形式均零警告；`cargo build --locked --workspace` 成功；`cargo test --locked --workspace` 888 passed / 0 failed（新增 12 个 core 单测 + 2 个网关集成测试，复核修复再 +5 个 core 单测）。
+- JS：`tests/test-claude-models-fallback.js` 7/7；`test:provider-router` 退出 0，1,220 项全通过（旧路由测试 8 个用例被 7 个读取器用例替换）；`test:contracts` 137/137；`test:native` 271/271（含 `test:rust`）；`test:architecture` 128/128；`test:governance` 20/20（874 条测试全部分类，deterministic 347；reviewed core set 基线保持 421/347/393 不变）；`test:security` 1,139 项、1,138 通过、0 失败、1 既有 TODO。
+- `node scripts/check-source-line-budget.js` 通过，`server.js` 3066 行 / 164615 字节。
+- 两份生成清单已重跑：`docs/backend-route-inventory.md`（586 文件、506 个静态候选）与 `docs/backend-runtime-inventory.md`（指纹 `335ecb241754074fbf26513f`，557 条运行时注册、34 层中间件），均不再列出该路由。
+- 运行时写入治理：`node scripts/check-runtime-write-inventory.js` 通过（45 项）。新增的 `claude-models-cache.json` 由 Rust 前门写入数据根，Node 只读；不新增 Node 侧高风险根锚点。
+- Docker、CI workflow、README 与启动命令均未引用该路由，逐项检查后无需改动。
+- 未运行整套 `npm test`、`test:cdp`、`tests/test-classify-api-errors*`（会改写活跃会话）。未提交、未 stash、未重置、未重启服务、未向活服务写；临时文件均在 `/tmp/claude-models-port/`，结束后已删除。
+
+## 订阅额度端点迁入 Rust 前门（2026-11-11）
+
+`GET/HEAD/OPTIONS /api/claude/subscription` 与 `GET/HEAD/OPTIONS /api/codex/subscription` 整组迁到 Rust 前门，Node 路由删除。路由语义、出站代理策略、凭据只读探测与结果映射全部在 Rust 内核；Node 只保留“跨模块读者”与跨进程缓存投影，因为虚拟线路/额度刷新仍在 Node 侧调用它取数。
+
+### Rust 实现
+
+- `native/core/src/account_subscription.rs`（208 行）：逐行复刻旧 Node 判断——`?account=` 的 qs 解析（复用 `http_gate::query_value`，数组取逗号连接、对象取 `[object Object]`、首尾 JS 空白裁剪）、只接受 16 位小写 hex、`listClaudeAccounts` 对应的 `<home>/.multicc/official-accounts/claude/<id>.json` 普通文件枚举、codex 的 `<id>/auth.json` 与全局 `~/.codex/auth.json`、Claude 账号凭据的只读 peek（严格 `expiresAt > now + 60000`，`expired` 接受 RFC3339 字符串或毫秒，不续期、不加锁）、CLI 全局登录要求 `ok` 且未过期、两个 vendor 的请求计划（URL/头/story）与响应映射（status/nextBillingAt/currentPeriodEnd/autoRenew/profile/usage，401→`no_auth`，其余异常→`unavailable`）。8 个单测，凭据 reader 可注入，因此 macOS Keychain 分支不需要接触真实凭据也能测。
+- `native/core/src/outbound_proxy.rs`（482 行）：`src/network/proxy-policy.js` 的完整移植——按“存在即生效”判断代理环境变量、小写优先于大写的 nullish 语义、拒绝 SOCKS/PAC-only、`scutil --proxy` 解析（含 `ExceptionsList`）、NO_PROXY 的空白/逗号拆分、CIDR→区间、`*.`/`.` 后缀、loopback 直连、30 秒 TTL 与失败保留上次已知值。语料 `native/core/tests/fixtures/outbound-proxy-cases.json` 由 `scripts/generate-outbound-proxy-corpus.js` 从真实 JS 生成，共 3,721 条（parse 14、cidr 15、bypass 351、resolve 237、proxy 3,094、cache 7、errorMessages 3），默认校验、`--write` 才写盘；6 个 Rust 单测逐条对拍。
+- `native/gateway/src/app/account_subscription.rs`：请求内 I/O——环境未点名代理时才读 `scutil --proxy`（2 秒超时、32KB 上限、30 秒缓存、发现过程串行化），用既有 `multicc_cpr::provider_host` 发请求（与 napi 适配器同一条传输），`attemptAt` 在查询前取、结果经 `subscription_cache` 同步落库（失败吞掉但必须 awaited）。单飞不再用 `OnceCell`：`vendor\0id` 槽位只保存 `watch` 广播的接收端，leader 任务由 `tokio::spawn` 持有发送端，查询、映射、record 与槽位清理都在任务内；客户端断开只是丢一个订阅者，panic 时 `Drop` 守卫按 `Arc::ptr_eq` 清理槽位。`claude_account_known` 的目录读取移入 `spawn_blocking`，不在 async 线程上做 `read_dir`。响应复用 `express::json`（弱 ETag/304、≥1024 字节 gzip），`Cache-Control: no-store` 只加在最终 200；OPTIONS 为 `Allow: GET,HEAD`、`text/html; charset=utf-8`、body `GET,HEAD`。
+- `native/gateway/src/app/mod.rs`：精确 claim 两个路径的 GET/HEAD/OPTIONS（大小写不敏感其余部分、允许一个尾斜杠），其它方法继续转发 Node；协议号保持 12。
+
+### 删除与宿主适配
+
+- `src/routes/account-subscription.js`（50 行）整文件删除；`src/routes/claude-accounts.js` 与 `src/routes/codex-quota.js` 的两处挂载改为 `registerAccountSubscriptionReader('<vendor>', deps)`，同文件同位置，`server.js` 无改动（仍是 3066 行 / 164615 字节，行预算棘轮沿用上一批的实测值，无需再调）。
+- 新增 `src/quota/account-subscription-reader.js`（64 行）：`read(id)` 与 `cache.register` 从路由搬来，语义不变（Claude 账号先查存在性、只读 peek；codex 解析 auth 文件；单飞；`attemptAt` 先取；记录失败不影响回答）。没有这个文件，`subscriptions.refresh(provider)` 会静默失去数据源且全仓没有失败测试。
+- `tests/test-account-subscription.js` 改指冻结 oracle，共 11 个用例：挂载点注册的读者仍是 `subscriptions.refresh` 的数据源；跨进程写入后同步 `project()` 最终能看到；Node 记录与网关并发写同一 SQLite 不丢写、不抛 `SQLITE_BUSY`（5 秒 `busy_timeout`）；新增确定性的「record 期间外部写入」复现（假 native 在 record 返回前插入第二行）与随机多写者最终一致压测（40 轮写入/记录/投影，有限步内全部可见）。
+- `tests/test-virtual-provider.js` 从“路由”改调读者，5 个用例全过。
+- `tests/helpers/legacy-account-subscription-route.js`（57 行）是冻结的 Node oracle；`src/` 与 `server.js` 不 require 它，只有测试引用。
+- `package.json` 与 `tests/test-tiers.json`：`tests/test-account-subscription.js` 原本就在 `test:provider-router`，其 tier 是 `flow`（deterministic 车道），不是 core；本域没有为它新增登记。复核轮新增 `tests/test-rust-front-door-fixtures.js`（core/deterministic，owner `npm:test:contracts`，见下）。依赖可删性：旧路由只用 `node:path`、`node:os` 与仓内模块，没有只被它使用的 npm 包；`native/Cargo.lock` 只多一行内部 path 依赖（`multicc-gateway` → `multicc-cpr`），无新增外部 crate。
+
+### 跨进程缓存投影
+
+- `src/quota/account-subscription-cache.js` 不再假设“只有本进程写库”：每次同步 `project()` 比较主库与 `-wal`/`-shm` 的 mtime/size 指纹，变化时启动一次异步重读；发现变化的当次仍用旧快照，下一次 `project()` 起生效（最终一致）。`record()` 完成后把指纹置空，每次记录后最多多一次廉价重读；不取 record 之后的 stamp，避免把「record 返回后才落库的并发写」并入指纹而永久漏读。所有读写走同一条串行队列，重读不会越过先前的写入；SQLite `busy_timeout` 5 秒。
+- 单飞是两张进程内表：网关的 `vendor\0id` 槽位与 Node 读者的 `pending` Map 互不知情；同一账号的 HTTP 请求与虚拟线路刷新并发时最多各打一次上游。旧实现也只有 Node 进程内一张表，这不是回退，跨进程合并需要新的协调层，暂不做。客户端断开不影响网关的 leader 任务（查询照常完成并落库），仍在等待的其它请求共享同一结果。
+
+### 差分与红证
+
+- 差分脚本 `docs/rust-migration/differential/account-subscription.js`：Node 侧为冻结 oracle 跑真实 Express 流水线，Rust 侧为 release 前门；两侧各有独立 data root 与隔离 HOME（仅假 token），本地自签 CA + CONNECT 代理 + 假 TLS 上游按 Host/path/token 回放脚本并记录 `Authorization`。红线硬化：进程环境与网关子进程环境都必须同时具备 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` 且全部指向 loopback，缺一个或指向外部就抛错退出（不是跳过）；这样任何漏设都会当场失败，而不是落回 `scutil` 的系统代理。所有组都走本地代理，`proxy-invalid` 断言两侧上游请求数均为 0，任何一侧直连真实主机都会失败。
+- 九次运行逐字节一致：default 27/27、credentials 28/28、cache 6/6、concurrency 1/1、proxy-lowercase 2/2、proxy-invalid 2/2、protocol 8/8、relative-data-dir 1/1、abort 2/2，共 77 条；另有 1 条大写 `/API` 前缀差异按预期差异单独校验（Node 200，Rust 转发给桩）。缓存行（vendor/account/subscription_json）两侧一致；6 并发同账号请求两侧各只打一次上游；重定向用例两侧各只发一次请求、不跟随；`abort` 组用 500ms 慢上游 + 50ms 断开：唯一客户端断开后两侧仍各打一次上游并落一行缓存，两个等待者中第一个断开时仍只有一次上游且第二个拿到正确响应。
+- 红线处理：`GET /api/claude/subscription`（不带 `?account=`）在 macOS 读 Keychain `Claude Code-credentials`（绝对路径 `/usr/bin/security`），差分与集成测试都不请求该分支，规则由可注入 reader 的 Rust 单测覆盖；Codex 全局登录在隔离 HOME 的 `$HOME/.codex/auth.json` 下正常参与差分。
+- 红证：临时去掉 200 的 `Cache-Control: no-store` 并重建产物，default 从 27/27 掉到 5/27、退出码 1；恢复后重建回到 27/27、退出码 0。取消语义的红证：把 leader 任务临时改回「在 handler future 里 `await` 查询」，`account_subscription_survives_client_disconnect` 在 10.6 秒后超时失败；恢复 `tokio::spawn` 后 1.1 秒通过。
+
+### Golden fixture 与集成测试
+
+- `scripts/generate-account-subscription-fixture.js`（默认校验，`--write` 才写盘）：用冻结 oracle + 注入的脚本化 `fetch` + 合成 HOME 采集 22 个用例（两个 vendor 的 ok/cancelled/401/500/垃圾体/重定向/空体/过期/不可读/未知账号、无效/数组/对象 account、HEAD、两个 OPTIONS、尾斜杠）到 `native/gateway/tests/fixtures/account-subscription.json`；`observedAt` 归一化，TLS PEM 复用既有 fixture；另有 2 个 `delayMs` 慢账号（`a1a1…`/`a2a2…`，仅集成测试用，不参与 22 个用例）；连跑两次写盘字节一致（18,323 字节，SHA-256 `89a6722cc5d10a99a472376a34aaa548db47542a544fd2e9350a0b6f2c469507`），默认校验通过。
+- 集成测试 `native/gateway/tests/account_subscription.rs`：本地 rustls TLS 上游 + 手写 CONNECT 代理，真实启动网关重放 golden，断言响应逐字节、缓存行集合（`claude:aaaaaaaaaaaaaaaa`、`cccccccccccccccc`、`dddddddddddddddd`、`deadbeefdeadbeef`、`codex:1111111111111111`、`codex:global` 存在，`claude:9999999999999999` 不存在）、凭据只发往正确主机/路径、重定向恰好一次。第二个用例 `account_subscription_survives_client_disconnect` 用慢上游覆盖取消语义：唯一客户端断开后缓存行仍落库且上游恰好一次；第一个等待者断开时第二个仍拿到正确 profile，上游仍恰好一次。2/2 通过（连跑 4 次稳定）。
+
+### 最终产物与验证
+
+- Rust 源码指纹 `8c651112c8d436b440715791`（`darwin-arm64/`，四个 `*.source.json` 的 fingerprint 与 SHA-256 均与实际文件一致，即 `builtFromSource=true`）：`multicc_core.node` 18,050,464 字节，SHA-256 `28a5d91d73883dd1a9b426e5a255ebf2b7fee1ab86e4231ad4b38ad8042b5a99`（与上一轮字节一致，本轮修复都在网关侧）；`multicc-gateway` 10,547,344 字节，SHA-256 `ccec042b7379cb9097a7c81f551370204751129fd3600fc04b18677849c7f493`（上一轮 10,464,416，+82,928；leader 任务 / `watch` 单飞 / `spawn_blocking` 目录读取）；`multicc-cdpd` 2,012,208 字节，SHA-256 `63f2c7491bcf7522edec80d7f7adb7f5cbc39cd9a12ab5bc836c0d447ee6363d`；`multicc-remote` 7,328,800 字节，SHA-256 `d800dd5939b02d3670aa4530ab06fb5e2393a5d979017965b495747682d2979d`。
+- `cargo fmt --all --check` 退出 0；`cargo clippy --locked --all-targets -- -D warnings` 与 `--workspace --all-targets` 形式均零警告；`cargo build --locked --workspace` 成功；`cargo test --locked --workspace` 906 passed / 0 failed（上一轮 903；+2 网关取消语义单测、+1 取消语义集成测试）。
+- JS：差分九次运行退出 0（default 27、credentials 28、cache 6、concurrency 1、proxy 2+2、protocol 8、relative-data-dir 1、abort 2，共 77 例），并在 `sandbox-exec`「仅允许 loopback 出站」profile 下重跑全部九次，退出码均为 0；`scripts/generate-outbound-proxy-corpus.js` 校验通过；四个 golden 生成器校验通过；`tests/test-rust-front-door-fixtures.js` + `tests/test-account-subscription.js` + `tests/test-virtual-provider.js` + `tests/test-release-version-consistency.js` 合计 26/26；`test:provider-router` 退出 0，1,225 项全通过；`test:contracts` 142/142；`test:native` 271/271；`test:rust` 256/256；`test:architecture` 128/128；`test:governance` 20/20（reviewed 基线 422/348/394，为本轮新增的 fixture 测试同步）；`test:security` 1,139 项、1,138 通过、0 失败、1 既有 TODO。注：`test:rust` 的 `test-rust-cpr.js` SSE 空闲预算用例与 `test:security` 的 `test-remote-screen.js` 就绪行用例在其它重测试组并发跑时会各抖一次；单独运行时新旧指纹各 6/6 与 3/3 全绿（见下），按环境性抖动处理，未改测试。
+- `node scripts/check-source-line-budget.js` 通过，`server.js` 3066 行 / 164615 字节；`node scripts/check-runtime-write-inventory.js` 通过（45 项，本域没有新增 Node 写入根）。
+- 两份生成清单已重跑：`docs/backend-route-inventory.md`（586 文件、138,598 行、505 个静态候选）与 `docs/backend-runtime-inventory.md`（指纹 `8c651112c8d436b440715791`，555 条运行时注册、34 层中间件），均不再列出该路由。
+- `docs/gateway.md` §9 增加两条路由的表格行与已知差异（跨进程单飞与取消语义、投影最终一致且 record 后最多一次额外重读、URI 上限 65,534、Claude 无账号分支因 Keychain 不在差分、代理发现只到语料级并强制 loopback 代理、大写 `/API` 前缀、HOME 缺失与 Windows/Linux 推断未实测）；`docs/rust-migration/route-inventory.md` 把该文件划掉并把推荐顺序第 4 组标为已完成。
+- Docker、CI workflow、README 与启动命令均未引用该路由；逐项检查后无需改动。
+- 未运行整套 `npm test`、`test:cdp`、`tests/test-classify-api-errors*`（会改写活跃会话）。未提交、未 stash、未重置、未重启服务、未向活服务写；临时文件均在 `/tmp/account-subscription-port/`，结束后已删除。
+
+### 复核修复（2026-11-11 第二轮）
+
+- **缓存竞态（中）**：`src/quota/account-subscription-cache.js` 的 `access()` 原先把 `stamp()` 取在 `record` 之后，`record` 返回与 stamp 之间落库的并发写会被并进指纹、却不在 `entries` 里，此后永远不再重读（复核压测窗口 152/600，真实窗口 33–92µs）。修复取严格保守的一侧：`read` 只在读之前取 stamp，`record` 之后把 `fingerprint` 置空，因此每次记录后最多多一次廉价重读，不需要证明「写完之后的 stamp 可信」。红证：把 `fingerprint = before` 临时改回「record 后取 stamp」，确定性用例在 50 次投影内报 `project() must eventually observe a gateway row written during record`；修复后同一用例立即变绿。新增随机多写者压测（两个 `DatabaseSync` 连接 + record + project 交错 40 轮，有限步内全部可见）。
+- **取消语义（低-中）**：旧 `OnceCell` 把上游查询放在 handler future 里，客户端断开就取消查询和 record；leader 被取消后，下一个请求会重新发起，等于一次客户端行为产生两次上游请求。改为 leader 任务：`tokio::spawn` 持有查询、映射、record 与槽位清理，槽位只存 `watch` 接收端，所有请求者（含第一个）都订阅；`send_replace` 让结果在没有接收者时也保留，`Drop` 守卫按 `Arc::ptr_eq` 只删自己的槽，订阅者遇到发送端关闭（leader panic）返回 `{"status":"unavailable"}`，不挂起。测试：网关单测 2 个（panic 清理后下一次请求正常；两个等待者共享一次查询、第一个被 abort 后第二个仍拿到结果），集成测试 1 个（唯一客户端断开仍落库且上游一次；两个等待者第一个断开仍一次上游），差分新增 `abort` 组 2/2 两侧同形。红证：把查询改回 handler future 内 `await`，集成用例 10.6 秒超时失败；恢复 `tokio::spawn` 后 1.1 秒通过。
+- **目录读取（低）**：`claude_account_known` 的 `read_dir` 移入 `tokio::task::spawn_blocking`，不在 async 线程上做同步文件系统调用；失败按「账号不存在」处理，与旧行为一致。
+- **CI 缺口（低-中）**：四个生成器的 verify 模式此前不在任何 workflow 或 npm 脚本里，`src/network/proxy-policy.js` 或冻结 oracle 漂移不会变红。新增 `tests/test-rust-front-door-fixtures.js`：用子进程分别跑 `generate-outbound-proxy-corpus.js`、`generate-claude-models-fixture.js`、`generate-provider-limit-history-fixture.js`、`generate-account-subscription-fixture.js` 的校验模式；每个子进程有独立 `HOME`/`TMPDIR`/`MULTICC_DATA_DIR`/`AS_WORK`，代理变量全部钉在关闭的 loopback 端口，macOS 上再套 `sandbox-exec`（只允许 loopback 出站）。缺 addon 时两个依赖 napi 的用例显式 skip（`test-rust-kernels.js` 同款策略），前两个用例始终运行；另有一个静态断言确保这些生成器与 oracle 不调用 `/usr/bin/security`。登记：`tests/test-tiers.json`（core / deterministic / owner `npm:test:contracts`）、`package.json` 的 `test:contracts` 链尾；`tests/test-release-version-consistency.js` 基线 421/347/393 → 422/348/394（391 Node 条目，注释写明理由）。CI 配置变更单独列出：`.github/workflows/rust-kernels.yml` 的 `paths` 增加四个生成器、`src/network/proxy-policy.js`、`tests/helpers/legacy-*-route.js`，并在构建产物后的 `node --test` 清单里加入新测试。顺带把两个生成器的临时根从硬编码 `/tmp` 改为 `os.tmpdir()`（`$TMPDIR`），新测试的隔离目录才能真正兜住它们；fixture 输出不变。
+- **文档漂移（低）**：`docs/rust-migration/route-inventory.md` 的 51 → 50（`git show HEAD:src/routes/account-subscription.js | wc -l` = 50），T0 合计 1,755 → 1,754；`docs/backend-rust-exit-plan.md` 不再把 `tests/test-account-subscription.js` 说成 core deterministic，其 tier 是 `flow`；`docs/gateway.md` §9 已知差异补齐：URI 上限 65,534（hyper）、跨进程投影最终一致（record 后最多一次额外重读）、客户端断开不取消查询、HOME 缺失与 Windows/Linux 行为是推断未实测、差分红线与 Claude 无账号分支因 Keychain 跳过。
+- **最终验证（2026-11-11 收尾，最终树上按序重跑）**：`npm run build:rust` 新指纹 `8c651112c8d436b440715791`，四个 `*.source.json` 与文件字节一致（`builtFromSource=true`）；`cargo fmt --all --check` 退出 0；CI 形式 `cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings` 与 `cargo clippy --locked --workspace --all-targets -- -D warnings` 均零警告；`cargo build --locked --workspace` 成功；`cargo test --locked --workspace` 30 个测试二进制、906 passed / 0 failed；九次差分先常规跑、再在 `sandbox-exec -p '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))'` 下整套重跑，八组九次全部 `same` 且退出 0；`tests/test-rust-front-door-fixtures.js` 在沙箱内 5/5；`test:provider-router` 1,225、`test:contracts` 142、`test:native` 271、`test:rust` 256、`test:architecture` 128、`test:governance` 20、`test:security` 1,138 + 1 既有 TODO，全部 0 失败；`check-source-line-budget`（`public/run-config.js` 3,171、`server.js` 3,066）与 `check-runtime-write-inventory`（45 项）通过；两份清单重跑到新指纹。环境性抖动记录：并发跑重测试组时 `test-rust-cpr.js` 的 SSE 空闲预算用例与 `test-remote-screen.js` 的就绪行用例各失败一次，安静条件下新指纹 6/6、旧指纹 `6467d0ba7098a371300f3281` 6/6，`test-remote-screen.js` 单跑 3/3 全绿，判定为负载抖动，未改测试、未放宽门禁。

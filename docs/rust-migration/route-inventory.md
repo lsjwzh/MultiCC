@@ -229,7 +229,7 @@
 | `src/push/fcm-devices.js` | 4 | 83 | GET '/api/push/fcm' @71<br>POST '/api/push/fcm' @72<br>DELETE '/api/push/fcm' @73<br>POST '/api/push/fcm/test' @74 | b,c | T1 |
 | `src/push/runtime.js` | 7 | 501 | POST '/api/push/subscribe' @380<br>DELETE '/api/push/subscribe' @398<br>POST '/api/push/validate' @412<br>POST '/api/push/test' @417<br>POST '/api/push/notify' @430<br>POST '/api/push/test-bark' @453<br>POST '/api/push/test-webhook' @461 | a,b,c | T1 |
 | `src/remote-screen-rust.js` | 1 | 609 | USE '/api/remote-screen' @557 | a,d | T2 |
-| `src/routes/account-subscription.js` | 1 | 51 | GET `/api/${vendor}/subscription` @39 | b,d | T0 |
+| ~~`src/routes/account-subscription.js`~~（已迁至前门，见 docs/gateway.md §9） | 1 | 50 | GET `/api/${vendor}/subscription` @39（`vendor` ∈ `claude`/`codex`） | b,d | T0 |
 | `src/routes/agent-resources.js` | 6 | 252 | GET '/api/agent-resources/skills' @154<br>GET '/api/agent-presets' @165<br>GET '/api/agent-presets/:id' @183<br>GET '/api/agent-resources/claude-sessions' @191<br>DELETE '/api/agent-resources/claude-sessions/:project/:id' @201<br>DELETE '/api/agent-resources/claude-sessions' @216 | b | T1 |
 | `src/routes/aliyun-quota.js` | 2 | 179 | GET '/api/aliyun/quota' @144<br>POST '/api/aliyun/quota/login' @160 | b,c | T1 |
 | `src/routes/ark-quota.js` | 3 | 278 | GET '/api/ark/quota' @218<br>POST '/api/ark/quota/login' @244<br>POST '/api/ark/quota/install' @263 | b,c | T1 |
@@ -239,7 +239,6 @@
 | `src/routes/aux-runs.js` | 2 | 38 | GET '/api/sessions/:id/aux-runs' @12<br>GET '/api/sessions/:id/aux-runs/:runId' @25 | a,b | T2 |
 | `src/routes/chat-history.js` | 3 | 838 | DELETE '/api/sessions/:id/messages/:msgId' @687<br>GET '/api/sessions/:id/history' @704<br>GET '/api/sessions/:id/context-level' @734 | a,b | T2 |
 | `src/routes/claude-accounts.js` | 8 | 269 | POST '/api/claude/accounts/:id/activate' @65<br>GET '/api/claude/accounts' @150<br>POST '/api/claude/accounts' @154<br>GET '/api/claude/accounts/:id/login-status' @175<br>POST '/api/claude/accounts/:id/login-callback' @187<br>POST '/api/claude/accounts/:id/relogin' @214<br>DELETE '/api/claude/accounts/:id' @222<br>GET '/api/claude/accounts/:id/quota' @239 | b,c | T1 |
-| `src/routes/claude-models.js` | 1 | 237 | GET '/api/claude/models' @214 | b | T1 |
 | `src/routes/claude-oauth.js` | 2 | 185 | GET '/api/claude/oauth/status' @108<br>POST '/api/claude/oauth/login' @132 | b,c | T2 |
 | `src/routes/claude-usage-quota.js` | 2 | 593 | GET '/api/claude/quota' @522<br>POST '/api/claude/quota/login' @559 | b,c | T1 |
 | `src/routes/cli-key-accounts.js` | 4 | 83 | GET '/api/cli-accounts/:cli' @38<br>POST '/api/cli-accounts/:cli' @44<br>PATCH '/api/cli-accounts/:cli/:id' @53<br>DELETE '/api/cli-accounts/:cli/:id' @64 | b | T1 |
@@ -326,7 +325,7 @@
 
 ## 6. 分层合计与迁移顺序
 
-> 进度：已迁出 2 组（`run-config-presets` 与 `provider-limit-history`，前门原生应答，Node 代码已删）。迁移顺序里第 4、5 组实际依赖 Node 内存态（扫描环形缓冲、账户凭据），不是 T0，要等它们的状态先搬进 Rust。
+> 进度：已迁出 3 组（`run-config-presets`、`provider-limit-history` 与 `account-subscription`，前门原生应答，Node 代码已删）。原表把 `account-subscription` 记为“账户凭据在 Node”的风险项，迁出时已把只读凭据读取（60s 余量、不续期、不加锁）落到 Rust 内核并以可注入 reader 单测覆盖；第 5 组 `scan` 仍依赖 Node 内存态（扫描环形缓冲），要等它的状态先搬进 Rust。
 
 ### 6.1 合计
 
@@ -334,7 +333,7 @@
 
 | Tier | 文件数 | 注册数 | Node 行数 | 说明 |
 |---|---:|---:|---:|---|
-| T0 | 8 | 18 | 1,755 | 纯静态/只读配置/Rust 薄桥；`system.js` 318 行、`static-assets.js` 189、`artifacts.js` 127、`provider-limit-history.js` 91、`scan.js` 34、`account-subscription.js` 51、`rust-cpr.js` 290、`official-relay.js` 655 |
+| T0 | 8 | 18 | 1,754 | 纯静态/只读配置/Rust 薄桥；`system.js` 318 行、`static-assets.js` 189、`artifacts.js` 127、`provider-limit-history.js` 91、`scan.js` 34、`account-subscription.js` 50、`rust-cpr.js` 290、`official-relay.js` 655 |
 | T1 | 49 | 163 | 13,469 | 只依赖持久化状态（JSON/SQLite/JSONL）或外部网络；不含 session/turn 内存态 |
 | T2 | 51 | 382 | 18,836 | 依赖 Node 内存态（session Map、WS clients、waiter/dispatch/job Map、缓存），或插件运行态 |
 | 胶水 | 1 | 7 | 2,990 | `server.js` 组合根与 health/metrics |
@@ -355,9 +354,9 @@
 | 1 | ✅ `provider-limit-history`（1 条 / 91 行，T0；已迁至前门） | 数据已由 Rust `quota_history` 持有（`src/paths.js:158-161`），Node 只做 DTO 组装 | 网关集成测试 `native/gateway/tests/provider_limit_history.rs`（冻结 Node oracle 的 golden fixture） |
 | 2 | ✅ `run-config-presets`（3 条 / 125 行，T1，`d`；已迁至前门） | Rust `run_config_presets` 已是权威；Node 侧只是校验 + 文件读写 | `tests/test-run-config-presets.js`（`test:security`、`test:core`） |
 | 3 | `subagent-defaults`（2 条 / 257 行，T1，`d`） | Rust `subagent_defaults` 持有继承/清除逻辑；无 session 内存态 | `tests/test-subagent-defaults.js` |
-| 4 | `account-subscription`（1 条 / 51 行，T0，`d`） | Rust `account_subscription`；单端点、DTO 窄 | `tests/test-account-subscription.js`（`test:provider-router`） |
+| 4 | ✅ `account-subscription`（1 条 / 50 行，T0，`d`；已迁至前门） | Rust `account_subscription` 内核 + 出站代理策略；两个 GET 端点、DTO 窄，凭据读取可注入 | `native/gateway/tests/account_subscription.rs`（冻结 Node oracle 的 golden fixture）；Node 侧读取器 `tests/test-account-subscription.js`（`test:provider-router`） |
 | 5 | `scan`（1 条 / 34 行，T0） | 只读扫描历史文件；无派生进程；单文件 | `tests/test-scan-route.js`（`test:core`） |
-| 6 | 模型目录 8 个文件（10 条 / 1,583 行，T1）<br>`claude-models`、`codex-models`、`opencode-models`、`qoder-models`、`grok-models`、`commandcode-models`、`codebuddy-models`、`provider-models` | 只读 provider 配置 + 模型缓存；Rust `provider_store`/`codex_models` 已有；彼此同构，可一次性抽公共层 | `tests/test-claude-models-route.js`、`test-codex-models-route.js`、`test-opencode-models.js`、`test-qoder-models-route.js`、`test-commandcode-grok-models-route.js`、`test-codebuddy-models-route.js`、`test-provider-models-route.js`（`test:provider-router`） |
+| 6 | 模型目录 7 个文件（9 条 / 1,346 行，T1；`claude-models` 已迁至前门）<br>`codex-models`、`opencode-models`、`qoder-models`、`grok-models`、`commandcode-models`、`codebuddy-models`、`provider-models` | 只读 provider 配置 + 模型缓存；Rust `provider_store`/`codex_models` 已有；彼此同构，可一次性抽公共层 | `tests/test-claude-models-fallback.js`、`test-codex-models-route.js`、`test-opencode-models.js`、`test-qoder-models-route.js`、`test-commandcode-grok-models-route.js`、`test-codebuddy-models-route.js`、`test-provider-models-route.js`（`test:provider-router`）；`claude-models` 见网关集成测试 `native/gateway/tests/claude_models.rs` |
 | 7 | `agent-resources`（6 条 / 252 行，T1） | 只读 skills/presets/Claude session 列表；不碰 turn 内存态；删除面清晰 | `tests/test-agent-resources-routes.js`（`test:core`） |
 | 8 | `secrets-vault`（5 条 / 260 行，T1） | `secrets.json` 0600 + 审计 JSONL；接口小、语义独立 | `tests/test-secrets-vault.js`、`tests/test-secrets-entry-visibility.js` |
 | 9 | `token-usage`（2 条 / 553 行，T1，`d`） | 统计由 Rust `computeUsage` 内核产出；Node 只读 token_usage/token_daily/token_by_role | `tests/test-token-usage-routes.js` |
