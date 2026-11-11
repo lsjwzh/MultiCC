@@ -1,35 +1,22 @@
 'use strict';
 
+// Agent presets / skills / Claude history runtime.
+//
+// The 6 public routes now live in the Rust front door
+// (native/gateway/src/app/agent_resources.rs; byte-level integration tests in
+// native/gateway/tests/agent_resources.rs). What remains in Node is the presets
+// file cache, the Agent Commander override, provider enrichment and the Claude
+// history filesystem operations. This file asserts exactly that surface; the
+// host contract is covered by tests/test-agent-resources-host.js.
+
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
   AGENT_COMMANDER_PRESET_ID,
   COMMANDER_ROUTER_PROMPT,
-  createAgentResourcesRoutes,
+  createAgentResourcesRuntime,
 } = require('../src/routes/agent-resources');
-
-function fakeApp() {
-  const routes = new Map();
-  return {
-    routes,
-    get(path, handler) { routes.set(`GET ${path}`, handler); },
-    delete(path, handler) { routes.set(`DELETE ${path}`, handler); },
-  };
-}
-
-async function invoke(app, method, route, { params = {}, query = {} } = {}) {
-  const handler = app.routes.get(`${method} ${route}`);
-  assert.equal(typeof handler, 'function', `missing ${method} ${route}`);
-  const response = {
-    statusCode: 200,
-    body: undefined,
-    status(code) { this.statusCode = code; return this; },
-    json(body) { this.body = body; return this; },
-  };
-  await handler({ params, query }, response);
-  return response;
-}
 
 function fixture(options = {}) {
   const presets = options.presets || {
@@ -58,7 +45,7 @@ function fixture(options = {}) {
   const removals = [];
   const reportedErrors = [];
   const histories = options.histories || [];
-  const service = createAgentResourcesRoutes({
+  const runtime = createAgentResourcesRuntime({
     fs: {
       readFileSync() {
         reads += 1;
@@ -93,51 +80,50 @@ function fixture(options = {}) {
       return { ok: true, freed: 10 };
     },
     reportError(error, fields) { reportedErrors.push({ error, fields }); },
-    now: options.now || (() => Date.parse('2026-01-10T00:00:00Z')),
   });
-  const app = fakeApp();
-  service.mountRoutes(app);
-  return { app, presets, reads: () => reads, removals, reportedErrors, service };
+  return { runtime, presets, reads: () => reads, removals, reportedErrors };
 }
 
-test('dependency and mount boundaries fail closed and own the complete route surface', () => {
-  assert.throws(() => createAgentResourcesRoutes({}), /preset storage/);
-  const current = fixture();
-  assert.deepEqual([...current.app.routes.keys()].sort(), [
-    'DELETE /api/agent-resources/claude-sessions',
-    'DELETE /api/agent-resources/claude-sessions/:project/:id',
-    'GET /api/agent-presets',
-    'GET /api/agent-presets/:id',
-    'GET /api/agent-resources/claude-sessions',
-    'GET /api/agent-resources/skills',
-  ]);
-  assert.throws(() => current.service.mountRoutes(current.app), /already mounted/);
+test('the runtime fails closed and exposes only the host-port operations', () => {
+  assert.throws(() => createAgentResourcesRuntime({}), /preset storage/);
+  const { runtime } = fixture();
+  for (const name of [
+    'agentPreset', 'agentCommanderPreset', 'agentCommanderPrompt',
+    'installedSkills', 'presetsList', 'presetLookup', 'claudeSessions', 'removeClaudeSession',
+  ]) {
+    assert.equal(typeof runtime[name], 'function', name);
+  }
+  assert.equal(Object.isFrozen(runtime), true);
 });
 
-test('preset cache and commander prompt preserve provider default resolution', async () => {
+test('no http route surface is left in the Node module', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'src', 'routes', 'agent-resources.js'), 'utf8');
+  const code = source.split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
+  assert.doesNotMatch(code, /app\.(?:get|delete|post)\(/);
+  assert.doesNotMatch(code, /\/api\/agent-(?:presets|resources)/);
+  assert.doesNotMatch(code, /mountRoutes/);
+});
+
+test('preset cache and commander prompt preserve provider default resolution', () => {
   const current = fixture();
-  assert.equal(current.service.agentCommanderPrompt(), COMMANDER_ROUTER_PROMPT);
+  assert.equal(current.runtime.agentCommanderPrompt(), COMMANDER_ROUTER_PROMPT);
   assert.equal(current.reads(), 1);
-  assert.equal(current.service.agentCommanderPreset().id, AGENT_COMMANDER_PRESET_ID);
-  assert.equal(current.service.agentPreset('xf').id, 'xf');
-  assert.equal(current.service.agentPreset('missing'), null);
-  assert.equal(current.service.agentCommanderPrompt(), COMMANDER_ROUTER_PROMPT);
+  assert.equal(current.runtime.agentCommanderPreset().id, AGENT_COMMANDER_PRESET_ID);
+  assert.equal(current.runtime.agentPreset('xf').id, 'xf');
+  assert.equal(current.runtime.agentPreset('missing'), null);
+  assert.equal(current.runtime.agentCommanderPrompt(), COMMANDER_ROUTER_PROMPT);
   assert.equal(current.reads(), 1);
-  const commander = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
-    params: { id: AGENT_COMMANDER_PRESET_ID },
-  });
-  assert.equal(commander.body.defaultProviderId, 'official');
-  const xf = await invoke(current.app, 'GET', '/api/agent-presets/:id', { params: { id: 'xf' } });
-  assert.equal(xf.body.defaultProviderId, 'xf-model');
-  assert.equal(xf.body.defaultProviderName, 'summary:xf-model');
-  const server = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
-  assert.doesNotMatch(server, /createCommanderMigrationHost\(/);
-  assert.match(server, /taskShellHost\.migrateTaskSessions\(\)/);
-  assert.doesNotMatch(server, /r\.session\.rolePrompt = commander\.prompt/);
-  const migration = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, '..', 'src', 'commander-migration.js'), 'utf8');
-  assert.doesNotMatch(migration, /isTrustedLegacyCommander|isExactLegacyCommanderLabel|hasLegacyCommanderPromptSignature|stampSession/,
-    'migration recognizes only stable type metadata and never stamps an untyped session');
+  const commander = current.runtime.presetLookup(AGENT_COMMANDER_PRESET_ID);
+  assert.deepEqual(Object.keys(commander), ['ok', 'found', 'preset']);
+  assert.equal(commander.preset.defaultProviderId, 'official');
+  const xf = current.runtime.presetLookup('xf');
+  assert.equal(xf.preset.defaultProviderId, 'xf-model');
+  assert.equal(xf.preset.defaultProviderName, 'summary:xf-model');
+  const server = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(server, /mountAgentResourcesHostRoute\(app, \{ runtime: agentResources \}\)/);
+  assert.doesNotMatch(server, /agentResources\.mountRoutes/);
 });
 
 test('generated Agent Commander asset carries the same busy-aware MCP routing contract', () => {
@@ -147,45 +133,43 @@ test('generated Agent Commander asset carries the same busy-aware MCP routing co
   assert.equal(preset.prompt, COMMANDER_ROUTER_PROMPT);
 });
 
-test('preset list strips prompts while detail preserves them and returns legacy errors', async () => {
+test('preset list strips prompts while detail preserves them', () => {
   const current = fixture();
-  const list = await invoke(current.app, 'GET', '/api/agent-presets');
-  assert.equal(list.statusCode, 200);
-  assert.equal(list.body.source, 'fixture');
-  assert.equal(list.body.presets.length, 2);
-  assert.equal(Object.hasOwn(list.body.presets[0], 'prompt'), false);
-  assert.equal(list.body.presets[0].defaultProviderId, 'official');
-  const detail = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
-    params: { id: AGENT_COMMANDER_PRESET_ID },
-  });
-  assert.equal(detail.body.prompt, COMMANDER_ROUTER_PROMPT);
-  assert.match(detail.body.description, /Route-first/);
-  assert.match(detail.body.prompt, /not strictly route-only/);
-  assert.match(detail.body.prompt, /The ONLY channel for cross-session dispatch is MCP/);
-  assert.match(detail.body.prompt, /The two receipt modes of dispatch_master/);
-  assert.match(detail.body.prompt, /Do not output <<route>> or <<dispatch>>/);
-  assert.match(detail.body.prompt, /routingState="waiting_user"/);
-  assert.match(detail.body.prompt, /prefer the related session when its load="available"/);
-  assert.match(detail.body.prompt, /related session has load="running".*prefer another qualified load="available"/);
-  assert.match(detail.body.prompt, /every qualified session is busy.*FIFO/);
-  assert.match(detail.body.prompt, /explicitly named by the user must be chosen as-is, never redirected/);
-  assert.match(detail.body.prompt, /waiting_user.*background.*error/);
-  assert.match(detail.body.prompt, /goal, known facts, constraints.*acceptance criteria/);
-  assert.match(detail.body.prompt, /never a full conversation or secrets/);
-  assert.doesNotMatch(detail.body.prompt, /不要因此改投不相关 worker/);
-  assert.match(detail.body.prompt, /list order carries no priority/);
-  assert.match(detail.body.prompt, /dispatch_status/);
-  assert.match(detail.body.prompt, /timeout, terminated stream/);
-  assert.match(detail.body.prompt, /\/api\/sessions\/:id\/dispatches/);
+  const list = current.runtime.presetsList();
+  assert.equal(list.ok, true);
+  assert.equal(list.source, 'fixture');
+  assert.equal(list.version, 2);
+  assert.equal(list.generatedAt, '2026-01-01');
+  assert.deepEqual(list.categories, ['specialized']);
+  assert.deepEqual(list.featured, [AGENT_COMMANDER_PRESET_ID]);
+  assert.equal(list.presets.length, 2);
+  assert.equal(Object.hasOwn(list.presets[0], 'prompt'), false);
+  assert.equal(list.presets[0].defaultProviderId, 'official');
+  const detail = current.runtime.presetLookup(AGENT_COMMANDER_PRESET_ID).preset;
+  assert.equal(detail.prompt, COMMANDER_ROUTER_PROMPT);
+  assert.match(detail.description, /Route-first/);
+  assert.match(detail.prompt, /not strictly route-only/);
+  assert.match(detail.prompt, /The ONLY channel for cross-session dispatch is MCP/);
+  assert.match(detail.prompt, /The two receipt modes of dispatch_master/);
+  assert.match(detail.prompt, /Do not output <<route>> or <<dispatch>>/);
+  assert.match(detail.prompt, /routingState="waiting_user"/);
+  assert.match(detail.prompt, /prefer the related session when its load="available"/);
+  assert.match(detail.prompt, /related session has load="running".*prefer another qualified load="available"/);
+  assert.match(detail.prompt, /every qualified session is busy.*FIFO/);
+  assert.match(detail.prompt, /explicitly named by the user must be chosen as-is, never redirected/);
+  assert.match(detail.prompt, /waiting_user.*background.*error/);
+  assert.match(detail.prompt, /goal, known facts, constraints.*acceptance criteria/);
+  assert.match(detail.prompt, /never a full conversation or secrets/);
+  assert.doesNotMatch(detail.prompt, /不要因此改投不相关 worker/);
+  assert.match(detail.prompt, /list order carries no priority/);
+  assert.match(detail.prompt, /dispatch_status/);
+  assert.match(detail.prompt, /timeout, terminated stream/);
+  assert.match(detail.prompt, /\/api\/sessions\/:id\/dispatches/);
   assert.equal(current.reads(), 1);
-  const missing = await invoke(current.app, 'GET', '/api/agent-presets/:id', {
-    params: { id: 'missing' },
-  });
-  assert.equal(missing.statusCode, 404);
-  assert.deepEqual(missing.body, { error: 'not found' });
+  assert.deepEqual(current.runtime.presetLookup('missing'), { ok: true, found: false });
 });
 
-test('provider fallback keeps model and name priority plus id name fallback', async () => {
+test('provider fallback keeps model and name priority plus id name fallback', () => {
   const current = fixture({
     presets: {
       presets: [
@@ -204,101 +188,50 @@ test('provider fallback keeps model and name priority plus id name fallback', as
     },
     providerSummary: () => null,
   });
-  const openai = await invoke(current.app, 'GET', '/api/agent-presets/:id', { params: { id: 'openai' } });
-  assert.equal(openai.body.defaultProviderId, 'gpt');
-  assert.equal(openai.body.defaultProviderName, 'gpt');
-  const xf = await invoke(current.app, 'GET', '/api/agent-presets/:id', { params: { id: 'xf' } });
-  assert.equal(xf.body.defaultProviderId, 'xf-name');
+  const openai = current.runtime.presetLookup('openai').preset;
+  assert.equal(openai.defaultProviderId, 'gpt');
+  assert.equal(openai.defaultProviderName, 'gpt');
+  const xf = current.runtime.presetLookup('xf').preset;
+  assert.equal(xf.defaultProviderId, 'xf-name');
 });
 
-test('preset read failure is cached and preserves the unavailable response', async () => {
+test('preset read failure is cached and reported as the not-ok host answer', () => {
   const current = fixture({ readError: new Error('disk failed') });
   for (let index = 0; index < 2; index += 1) {
-    const response = await invoke(current.app, 'GET', '/api/agent-presets');
-    assert.equal(response.statusCode, 500);
-    assert.deepEqual(response.body, { error: 'agent presets unavailable' });
+    assert.deepEqual(current.runtime.presetsList(), { ok: false });
+    assert.deepEqual(current.runtime.presetLookup('xf'), { ok: false });
   }
   assert.equal(current.reads(), 1);
-  assert.equal(current.service.agentCommanderPrompt(), null);
+  assert.equal(current.runtime.agentCommanderPrompt(), null);
 });
 
-test('skills and Claude history summaries preserve counts and sizes', async () => {
+test('skills and Claude history are passed through untouched', () => {
   const histories = [
     { id: 'a', project: 'p', size: 10, linked: true },
     { id: 'b', project: 'p', size: 25, linked: false },
   ];
-  const current = fixture({
-    skills: [
-      { name: 'a', provider: 'claude' },
-      { name: 'b', provider: 'claude' },
-      { name: 'c', provider: 'codex' },
-      { name: 'd', provider: 'other' },
-    ],
-    histories,
-  });
-  const skills = await invoke(current.app, 'GET', '/api/agent-resources/skills');
-  assert.deepEqual(skills.body.counts, { claude: 2, codex: 1 });
-  const history = await invoke(current.app, 'GET', '/api/agent-resources/claude-sessions');
-  assert.deepEqual(history.body, {
-    sessions: histories,
-    count: 2,
-    totalSize: 35,
-    protectedCount: 1,
-  });
+  const skills = [
+    { name: 'a', provider: 'claude' },
+    { name: 'b', provider: 'codex' },
+  ];
+  const current = fixture({ skills, histories });
+  assert.deepEqual(current.runtime.installedSkills(), skills);
+  assert.deepEqual(current.runtime.claudeSessions(), histories);
 });
 
-test('single history delete maps protected, missing, success and thrown results', async () => {
-  for (const [result, status] of [
-    [{ ok: false, error: 'protected linked session' }, 409],
-    [{ ok: false, error: 'not found' }, 404],
-    [{ ok: true, freed: 12 }, 200],
+test('single history delete maps protected, missing, success and thrown results', () => {
+  for (const [result, expected] of [
+    [{ ok: false, error: 'protected linked session' }, { ok: false, error: 'protected linked session' }],
+    [{ ok: false, error: 'not found' }, { ok: false, error: 'not found' }],
+    [{ ok: true, freed: 12 }, { ok: true, freed: 12 }],
   ]) {
     const current = fixture({ remove: () => result });
-    const response = await invoke(current.app, 'DELETE', '/api/agent-resources/claude-sessions/:project/:id', {
-      params: { project: 'p', id: 's' },
-    });
-    assert.equal(response.statusCode, status);
-    assert.deepEqual(response.body, result.ok ? result : { error: result.error });
+    assert.deepEqual(current.runtime.removeClaudeSession('p', 's'), expected);
+    assert.deepEqual(current.removals, [{ project: 'p', id: 's' }]);
   }
   const thrown = fixture({ remove: () => { throw new Error('cleanup failed'); } });
-  const response = await invoke(thrown.app, 'DELETE', '/api/agent-resources/claude-sessions/:project/:id', {
-    params: { project: 'p', id: 's' },
-  });
-  assert.equal(response.statusCode, 500);
-  assert.deepEqual(response.body, { error: 'history delete failed' });
-  assert.equal(JSON.stringify(response.body).includes('cleanup failed'), false);
+  assert.deepEqual(thrown.runtime.removeClaudeSession('p', 's'), { ok: false, threw: true });
   assert.equal(thrown.reportedErrors.length, 1);
-});
-
-test('bulk cleanup validates age and skips linked, recent and failed histories', async () => {
-  const now = Date.parse('2026-01-10T00:00:00Z');
-  const histories = [
-    { id: 'linked', project: 'p', size: 1, linked: true, updatedAt: '2025-01-01' },
-    { id: 'recent', project: 'p', size: 2, linked: false, updatedAt: '2026-01-09' },
-    { id: 'cutoff', project: 'p', size: 2, linked: false, updatedAt: '2026-01-03' },
-    { id: 'old-ok', project: 'p', size: 3, linked: false, updatedAt: '2025-12-01' },
-    { id: 'old-no', project: 'p', size: 4, linked: false, updatedAt: '2025-12-02' },
-    { id: 'old-throw', project: 'p', size: 5, linked: false, updatedAt: '2025-12-03' },
-    { id: 'invalid-date', project: 'p', size: 6, linked: false, updatedAt: 'not-a-date' },
-  ];
-  const current = fixture({
-    histories,
-    now: () => now,
-    remove(project, id) {
-      if (id === 'old-ok') return { ok: true, freed: 33 };
-      if (id === 'old-throw') throw new Error('ignored');
-      return { ok: false, error: 'not found' };
-    },
-  });
-  for (const value of [undefined, '0', 'nan']) {
-    const invalid = await invoke(current.app, 'DELETE', '/api/agent-resources/claude-sessions', {
-      query: { olderThanDays: value },
-    });
-    assert.equal(invalid.statusCode, 400);
-  }
-  const response = await invoke(current.app, 'DELETE', '/api/agent-resources/claude-sessions', {
-    query: { olderThanDays: '7' },
-  });
-  assert.deepEqual(response.body, { ok: true, deleted: 1, freed: 33 });
-  assert.deepEqual(current.removals.map(item => item.id), ['old-ok', 'old-no', 'old-throw']);
+  assert.equal(thrown.reportedErrors[0].fields.operation, 'claude_history_delete');
+  assert.equal(JSON.stringify(thrown.runtime.removeClaudeSession('p', 's')).includes('cleanup failed'), false);
 });

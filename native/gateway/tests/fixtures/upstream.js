@@ -259,6 +259,56 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the agent resource routes (docs/gateway.md §33). The script
+  // file carries the installed skills, the preset payloads and the Claude
+  // history rows the Rust side turns into responses.
+  if (route === '/api/__host/agent-resources' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'agent-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      const agent = script.agent || {};
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (input.op === 'skills') {
+        if (agent.skillsDown === true) return send({ ok: false });
+        return send({ ok: true, skills: agent.skills || [] });
+      }
+      if (input.op === 'presets') {
+        if (agent.presetsDown === true) return send({ ok: false });
+        // Verbatim: the script object carries `ok` itself, like `catalogs`.
+        return send(agent.data || {});
+      }
+      if (input.op === 'preset') {
+        if (agent.presetsDown === true) return send({ ok: false });
+        const presets = agent.presets || {};
+        if (Object.prototype.hasOwnProperty.call(presets, input.id)) {
+          return send({ ok: true, found: true, preset: presets[input.id] });
+        }
+        return send({ ok: true, found: false });
+      }
+      if (input.op === 'claude-sessions') {
+        if (agent.sessionsDown === true) return send({ ok: false });
+        return send({ ok: true, sessions: agent.sessions || [] });
+      }
+      if (input.op === 'claude-session-delete') {
+        const remove = agent.remove || {};
+        const key = `${input.project}/${input.id}`;
+        return send(Object.prototype.hasOwnProperty.call(remove, key)
+          ? remove[key]
+          : { ok: false, error: 'not found' });
+      }
+      send({ ok: false });
+    });
+    return;
+  }
   if (route === '/echo' && req.method === 'POST') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));

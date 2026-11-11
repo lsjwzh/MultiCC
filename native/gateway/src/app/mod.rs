@@ -8,6 +8,7 @@
 
 pub mod accept;
 pub mod account_subscription;
+pub mod agent_resources;
 pub mod auth;
 pub mod claude_models;
 pub mod download;
@@ -84,6 +85,17 @@ pub enum Route {
     CodexModelsOptions,
     CodexModelsSync,
     CodexModelsSyncOptions,
+    AgentResourcesSkills,
+    AgentPresets,
+    AgentPreset,
+    AgentClaudeSessions,
+    AgentClaudeSessionDelete,
+    AgentClaudeSessionsPurge,
+    AgentResourcesOptionsGet,
+    AgentResourcesOptionsDelete,
+    /// `/api/agent-resources/claude-sessions` registers both a GET and a
+    /// DELETE route, so Express answers OPTIONS with both.
+    AgentResourcesOptionsShared,
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -117,6 +129,9 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
             Models::CodexModelsSync => Route::CodexModelsSync,
             Models::CodexModelsSyncOptions => Route::CodexModelsSyncOptions,
         });
+    }
+    if let Some(route) = agent_resources::claim(method, path) {
+        return Some(route);
     }
     let rest = path.strip_prefix("/api/")?;
     let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
@@ -400,6 +415,19 @@ pub async fn handle(
         Route::ProviderModelsGet => return model_catalogs::provider(&ctx, host).await,
         Route::CodexModelsGet => return model_catalogs::codex(&ctx, &body, host, false).await,
         Route::CodexModelsSync => return model_catalogs::codex(&ctx, &body, host, true).await,
+        Route::AgentResourcesOptionsGet => return options(&ctx, "GET,HEAD"),
+        Route::AgentResourcesOptionsDelete => return options(&ctx, "DELETE"),
+        Route::AgentResourcesOptionsShared => return options(&ctx, "GET,HEAD,DELETE"),
+        Route::AgentResourcesSkills => return agent_resources::skills(&ctx, host).await,
+        Route::AgentPresets => return agent_resources::presets(&ctx, host).await,
+        Route::AgentPreset => return agent_resources::preset(&ctx, host).await,
+        Route::AgentClaudeSessions => return agent_resources::claude_sessions(&ctx, host).await,
+        Route::AgentClaudeSessionDelete => {
+            return agent_resources::delete_session(&ctx, host).await
+        }
+        Route::AgentClaudeSessionsPurge => {
+            return agent_resources::purge_sessions(&ctx, host).await
+        }
         Route::PresetsOptions | Route::QuotaGuardOptions => return options(&ctx, "GET,HEAD,PUT"),
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
         Route::SubagentDefaultsOptions => return options(&ctx, "GET,HEAD"),
@@ -686,6 +714,120 @@ mod tests {
         );
         assert_eq!(claim(&Method::GET, "/api/codex/models/sync"), None);
         assert_eq!(claim(&Method::GET, "/api/opencode/models/extra"), None);
+    }
+
+    #[test]
+    fn agent_resource_claims_keep_the_express_shape() {
+        for (path, mixed, route) in [
+            (
+                "/api/agent-resources/skills",
+                "/api/Agent-Resources/Skills/",
+                Route::AgentResourcesSkills,
+            ),
+            (
+                "/api/agent-presets",
+                "/api/Agent-Presets/",
+                Route::AgentPresets,
+            ),
+        ] {
+            assert_eq!(claim(&Method::GET, path), Some(route));
+            assert_eq!(claim(&Method::HEAD, mixed), Some(route));
+            assert_eq!(
+                claim(&Method::OPTIONS, path),
+                Some(Route::AgentResourcesOptionsGet)
+            );
+            assert_eq!(claim(&Method::POST, path), None);
+            assert_eq!(claim(&Method::DELETE, path), None);
+            assert_eq!(claim(&Method::GET, &format!("{path}//")), None);
+            assert_eq!(claim(&Method::GET, &path.replace("/api/", "/API/")), None);
+        }
+        // The :id is one non-empty segment, decoded, and keeps its case.
+        assert_eq!(
+            claim(&Method::GET, "/api/Agent-Presets/My%20Preset"),
+            Some(Route::AgentPreset)
+        );
+        assert_eq!(
+            agent_resources::preset_id_from_path("/api/agent-presets/My%20Preset"),
+            Some("My Preset".to_string())
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/agent-presets/my-preset/"),
+            Some(Route::AgentPreset)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/agent-presets/my-preset"),
+            Some(Route::AgentResourcesOptionsGet)
+        );
+        assert_eq!(
+            claim(&Method::GET, "/api/agent-presets"),
+            Some(Route::AgentPresets)
+        );
+        assert_eq!(claim(&Method::GET, "/api/agent-presets/a/b"), None);
+
+        // `/api/agent-resources/claude-sessions` registers GET and DELETE, so
+        // OPTIONS collects both; the two-parameter path only has DELETE.
+        assert_eq!(
+            claim(&Method::GET, "/api/agent-resources/claude-sessions"),
+            Some(Route::AgentClaudeSessions)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/Agent-Resources/Claude-Sessions/"),
+            Some(Route::AgentClaudeSessions)
+        );
+        assert_eq!(
+            claim(&Method::DELETE, "/api/agent-resources/claude-sessions"),
+            Some(Route::AgentClaudeSessionsPurge)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/agent-resources/claude-sessions"),
+            Some(Route::AgentResourcesOptionsShared)
+        );
+        assert_eq!(
+            claim(
+                &Method::DELETE,
+                "/api/agent-resources/claude-sessions/proj/abc"
+            ),
+            Some(Route::AgentClaudeSessionDelete)
+        );
+        assert_eq!(
+            agent_resources::session_delete_params_from_path(
+                "/api/agent-resources/claude-sessions/My%20Project/s%2Fid",
+            ),
+            Some(("My Project".to_string(), "s/id".to_string()))
+        );
+        assert_eq!(
+            claim(
+                &Method::OPTIONS,
+                "/api/agent-resources/claude-sessions/proj/abc"
+            ),
+            Some(Route::AgentResourcesOptionsDelete)
+        );
+        assert_eq!(
+            claim(
+                &Method::GET,
+                "/api/agent-resources/claude-sessions/proj/abc"
+            ),
+            None
+        );
+        // Exactly two extra segments.
+        assert_eq!(
+            claim(
+                &Method::DELETE,
+                "/api/agent-resources/claude-sessions/a/b/c"
+            ),
+            None
+        );
+        assert_eq!(
+            claim(&Method::DELETE, "/api/agent-resources/claude-sessions//abc"),
+            None
+        );
+        assert_eq!(
+            claim(
+                &Method::DELETE,
+                "/api/agent-resources/claude-sessions/proj/"
+            ),
+            None
+        );
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {

@@ -145,7 +145,8 @@ const { mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes } = require('.
 const { createProviderRelayModelCatalogRuntime, mountProviderRelayModelCatalogRoutes } = require('./src/providers/relay-model-catalog');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
-const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
+const { createAgentResourcesRuntime } = require('./src/routes/agent-resources');
+const { mountAgentResourcesHostRoute } = require('./src/routes/agent-resources-host');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createLoginTerminalDisposer } = require('./src/session/login-terminal');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
@@ -347,7 +348,7 @@ const providerRouterRuntime = createProviderRouterRuntime({
   onShadowDiff: recordProviderRouterShadowComparison,
   logger,
 });
-const agentResources = createAgentResourcesRoutes({
+const agentResources = createAgentResourcesRuntime({
   fs,
   presetsFile: path.join(__dirname, 'public', 'agent-presets.json'),
   providers,
@@ -1555,7 +1556,7 @@ app.get('/api/v1/providers', (req, res) => {
 });
 
 // Agent presets, installed skills and Claude history share one read/cleanup boundary.
-agentResources.mountRoutes(app);
+mountAgentResourcesHostRoute(app, { runtime: agentResources });
 
 // ── Directory REST API (src/directory: controller / service / repository) ──
 // Routes: GET /api/fs/list · GET|POST /api/directories · PATCH|DELETE
