@@ -13,6 +13,7 @@ pub mod claude_models;
 pub mod download;
 pub mod express;
 pub mod external_workspaces;
+pub mod model_catalogs;
 pub mod provider_limit_history;
 pub mod quota_guard;
 pub mod run_config_presets;
@@ -75,6 +76,14 @@ pub enum Route {
     SubagentDefaultsOptions,
     SubagentDefaultsSync,
     SubagentDefaultsSyncOptions,
+    ModelCatalogGet(model_catalogs::Catalog),
+    ModelCatalogOptions(model_catalogs::Catalog),
+    ProviderModelsGet,
+    ProviderModelsOptions,
+    CodexModelsGet,
+    CodexModelsOptions,
+    CodexModelsSync,
+    CodexModelsSyncOptions,
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -95,6 +104,19 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if let Some(route) = auth::claim(method, path) {
         return Some(Route::Auth(route));
+    }
+    if let Some(route) = model_catalogs::claim(method, path) {
+        use model_catalogs::Route as Models;
+        return Some(match route {
+            Models::CatalogGet(catalog) => Route::ModelCatalogGet(catalog),
+            Models::CatalogOptions(catalog) => Route::ModelCatalogOptions(catalog),
+            Models::ProviderModelsGet => Route::ProviderModelsGet,
+            Models::ProviderModelsOptions => Route::ProviderModelsOptions,
+            Models::CodexModelsGet => Route::CodexModelsGet,
+            Models::CodexModelsOptions => Route::CodexModelsOptions,
+            Models::CodexModelsSync => Route::CodexModelsSync,
+            Models::CodexModelsSyncOptions => Route::CodexModelsSyncOptions,
+        });
     }
     let rest = path.strip_prefix("/api/")?;
     let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
@@ -368,6 +390,16 @@ pub async fn handle(
         Err(error) => return express::error(&ctx, error.status, error.reason),
     };
     match route {
+        Route::ModelCatalogOptions(_)
+        | Route::ProviderModelsOptions
+        | Route::CodexModelsOptions => return options(&ctx, "GET,HEAD"),
+        Route::CodexModelsSyncOptions => return options(&ctx, "POST"),
+        Route::ModelCatalogGet(catalog) => {
+            return model_catalogs::catalog(catalog, &ctx, host).await
+        }
+        Route::ProviderModelsGet => return model_catalogs::provider(&ctx, host).await,
+        Route::CodexModelsGet => return model_catalogs::codex(&ctx, &body, host, false).await,
+        Route::CodexModelsSync => return model_catalogs::codex(&ctx, &body, host, true).await,
         Route::PresetsOptions | Route::QuotaGuardOptions => return options(&ctx, "GET,HEAD,PUT"),
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
         Route::SubagentDefaultsOptions => return options(&ctx, "GET,HEAD"),
@@ -605,6 +637,55 @@ mod tests {
         assert_eq!(claim(&Method::GET, "/API/token-usage/global"), None);
         assert_eq!(claim(&Method::GET, "/api/files"), None);
         assert_eq!(claim(&Method::POST, "/api/upload"), None);
+    }
+
+    #[test]
+    fn model_catalog_claims_keep_the_express_shape() {
+        use model_catalogs::Catalog;
+        for (path, catalog) in [
+            ("/api/opencode/models", Catalog::OpenCode),
+            ("/api/Qoder/Models/", Catalog::Qoder),
+            ("/api/grok/models", Catalog::Grok),
+            ("/api/commandcode/models", Catalog::Commandcode),
+            ("/api/codebuddy/models", Catalog::Codebuddy),
+        ] {
+            assert_eq!(
+                claim(&Method::GET, path),
+                Some(Route::ModelCatalogGet(catalog))
+            );
+            assert_eq!(
+                claim(&Method::HEAD, path),
+                Some(Route::ModelCatalogGet(catalog))
+            );
+            assert_eq!(
+                claim(&Method::OPTIONS, path),
+                Some(Route::ModelCatalogOptions(catalog))
+            );
+            assert_eq!(claim(&Method::POST, path), None);
+            assert_eq!(claim(&Method::GET, &format!("{path}//")), None);
+        }
+        // The :id is one segment and keeps its case; the literal segments do
+        // not.
+        assert_eq!(
+            claim(&Method::GET, "/api/Providers/Main/models"),
+            Some(Route::ProviderModelsGet)
+        );
+        assert_eq!(
+            model_catalogs::provider_id_from_path("/api/Providers/My%20Relay/models"),
+            Some("My Relay".to_string())
+        );
+        assert_eq!(claim(&Method::GET, "/api/providers//models"), None);
+        assert_eq!(claim(&Method::GET, "/api/providers/a/b/models"), None);
+        assert_eq!(
+            claim(&Method::GET, "/api/codex/models"),
+            Some(Route::CodexModelsGet)
+        );
+        assert_eq!(
+            claim(&Method::POST, "/api/codex/models/sync"),
+            Some(Route::CodexModelsSync)
+        );
+        assert_eq!(claim(&Method::GET, "/api/codex/models/sync"), None);
+        assert_eq!(claim(&Method::GET, "/api/opencode/models/extra"), None);
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {

@@ -3186,3 +3186,105 @@ Auto Provider 的四个决策域——价格成型与阶梯、选择键、难度
 - 两份后端清单已重新生成：`docs/backend-route-inventory.md`（585 个后端文件、138,465 行，503 个注册候选；`src/routes/subagent-defaults.js` 的两条消失，新增一条计算路径的宿主端口）、`docs/backend-runtime-inventory.md`（指纹 `6fddeab9cd37213921846af8`，553 条路由注册、34 层中间件）。
 - `docs/gateway.md` 新增 §31 与路由表一行；`docs/rust-migration/route-inventory.md` 的清单与推荐顺序同步。
 - 本轮按用户指令提交并合入；未重启服务，路由由前门接管要等用户手动重启后才生效。
+
+## 模型目录路由迁入 Rust 前门（2026-11-11）
+
+八条路由（八次注册）原先由七个 Node 文件回答：`/api/{opencode,qoder,grok,commandcode,codebuddy}/models`
+（各模块的 `mount*ModelRoutes`）、`/api/providers/:id/models`
+（`src/routes/provider-models.js` 的 `mount()`）与 `/api/codex/models`、
+`/api/codex/models/sync`（`src/routes/codex-models.js`）。它们都依赖 Node 进程内状态
+（CLI 子进程与进程内 TTL、provider store 投影与 relay 抓取、官方 Codex 目录运行时），
+但不能整条留在 Node：路由、解析、校验、序列化与错误映射搬进前门，Node 只保留一个显式的
+宿主端口。
+
+### Rust 实现
+
+- `native/gateway/src/app/model_catalogs.rs`（441 行）：路径与方法的 Express 匹配
+  （区分大小写 `/api/` 前缀、一个尾斜杠、字面段大小写不敏感、`:id` 用
+  `decode_uri_component` 解码且保留大小写），查询语义统一走
+  `multicc_core::http_gate::query_value`/`query_string`。`catalog()` 按路由决定刷新标记
+  （opencode 是 `String(...) === '1'`，其余 `/^(?:1|true)$/i`），把宿主回答映射成
+  `{models, source, cached}` 与各自的 503 文案。`provider()` 原样透传宿主的
+  `{status, body}` 并始终加 `Cache-Control: no-store`。`codex()` 持有全部线路判定与两种
+  客户端协议：`providerId` 取 query → body → `codex-official`；找不到 404、非 Codex 400、
+  lookup 异常 500；借道线路改走 provider 目录并重组成 `fallback:'custom'` 形状；官方线路的
+  旧客户端（GET 且无 `providerId`/`poll`）等待一次全局刷新（`call_with` 300 秒，旧 handler
+  没有超时）后只 peek，其余请求先 kick 不等待的刷新再 peek，`refreshing` 因此反映刚 kick 的
+  刷新。
+- `native/gateway/src/app/mod.rs`：8 个 `Route` 变体、claim 接线与 4 个 early arm（两组
+  OPTIONS 分别答 `Allow: GET,HEAD` / `POST`），并新增单测
+  `model_catalog_claims_keep_the_express_shape`（GET/HEAD/OPTIONS、尾斜杠、大小写混合、
+  `//`、`:id` 解码、`codex/models/sync`）。
+- `native/gateway/src/host_port.rs`：新增 `call_with(port, path, payload, timeout)`，
+  `call()` 保持 60 秒默认预算；两种失败都按「没有回答」返回给路由映射。
+- `src/routes/model-catalogs-host.js`（152 行）：宿主端口 `POST /api/__host/model-catalogs`，
+  `if (!isLocal(req)) return res.status(404)`，四种 op：五个 CLI 目录（`list(cb)` →
+  `{ok, models, source}`）、`provider`（`listProviderModels` → `{status, body}`）、
+  `codex-state`（resolveProvider + 官方判定 + peek/isRefreshing）、`codex-refresh`
+  （`refreshProvider`，`wait:false` 时不等待）。
+
+### 删除与宿主适配
+
+- `src/routes/codex-models.js` 整文件 458 行删除（旧运行时的 `createCodexModelsRuntime`
+  等导出只被它自己和两个测试使用）。
+- 五个 CLI 模块的 `mount*ModelRoutes` 与其导出/接线删除 66 行；`provider-models.js` 的
+  `mount()` 与 `mountProviderModelRoutes` 删除 19 行；`server.js` 挂载接线 13 行删除、
+  8 行新增（宿主端口 + 注释）。合计删除 556 行、新增 27 行（净 −529）。
+- 解析/列表导出全部保留（`listOpenCodeModels`、`parse*`、`peek*`、`validate*`、
+  `_setCacheForTest` 等），因为 Auto Provider 与 native-vendor 热路径同步读它们维护的缓存。
+- 测试面：`tests/test-codex-models-route.js`（449 行、17 条）随模块删除；
+  `test-qoder/codebuddy/commandcode/grok-models-route.js` 去掉挂载与查询解析断言、保留
+  列表/解析/缓存；`test-provider-models-route.js` 改直接调 `runtime.listProviderModels`
+  并新增 baseUrl 失效与失败冷却两例；`test-codex-model-catalog-native.js` 增加 4 条宿主
+  语义用例；新增 `tests/test-model-catalogs-host.js`（11 条，含「只有回环能调」）。
+  `package.json` 的 `test:provider-router` 去掉已删文件、`test:rust` 增加宿主端口测试，
+  `tests/test-tiers.json` 同步（876 条）。
+- 仍在 Node 的模型目录面：宿主端口之外只有 `src/providers/relay-model-catalog.js` 的两条
+  relay 目录路由（与协议代理挂载顺序耦合，另批迁移）。
+
+### 集成测试
+
+`native/gateway/tests/model_catalogs.rs`（526 行，14 个用例）：五个 CLI 目录的成功/503 形状、
+各路由刷新标记约定、provider 的状态码与 `no-store` 透传、`:id` 解码
+（`/api/Providers/My%20Relay/models` → `My Relay`）、Codex 官方线路的
+state → refresh(wait:false) → state 调用顺序、旧客户端的一次全局等待、未知/非 Codex 线路的
+404/400、借道线路的目录形状、`sync` 从 body 取 providerId、OPTIONS/HEAD、宿主不可达的
+503，以及无关路径仍转发给 Node。共享 fixture `tests/fixtures/upstream.js` 新增
+`POST /api/__host/model-catalogs` 脚本模式（记录 `model-calls.jsonl` 与
+`model-refresh.jsonl`，并用 `peekAfterRefresh` 复现刷新后的快照）。
+
+### 差分与验证
+
+- `docs/rust-migration/differential/model-catalogs.js`：Node 侧用冻结 oracle
+  （`tests/helpers/legacy-model-catalog-routes.js`，退役 handler 的逐字副本）跑真实 Express
+  流水线，Rust 侧是前门 + 按 PROXY v1 接线的桩，两侧共用同一份脚本化的 CLI 目录、provider
+  抓取与 Codex 目录回答。61 条请求：59 条逐字节一致（状态码、正文、ETag、
+  `Content-Length`、相关响应头），2 条预期差异单独校验并登记 ——
+  `GET /api/providers/:id/models` 与 `GET /api/codex/models` 在宿主端口不可达时的 503
+  `rust_backend_unavailable` 是迁移引入的 Rust-only 失败路径，旧 Node 路由没有这个形态
+  （oracle 仍正常答 200）。语料覆盖五族 CLI 目录的正常/503、刷新约定（opencode 严格
+  `'1'`，其余 `1|true` 大小写不敏感）、尾斜杠与大小写混合、HEAD、OPTIONS 允许列表；
+  provider 的 `:id` 解码、404 与 `no-store`；Codex 的官方 poll/kick/legacy 等待/借道目录/
+  `sync` 的 body 取参以及 404/400。
+- 源码指纹 `43304407e8e5df10688e9ce3`：`multicc-core` 未改（`multicc_core.node` 18,364,576
+  字节，SHA-256 `6294bdf9…5724`，与上一批同字节）；`multicc-gateway` 12,020,544 字节 SHA-256
+  `d39c84f7a2b6d39692d983b3c2683ac9c811d4698d06cce16a9f83a2f7994546`，`multicc-cdpd` /
+  `multicc-remote` 同上一批。
+- `cargo fmt --all --check` 退出 0；`cargo clippy --locked --workspace --all-targets
+  -- -D warnings` 零告警；`cargo test --locked --workspace --no-fail-fast` 27 个测试二进制、
+  992 passed / 1 failed：失败的是 `subagent_defaults::head_matches_get_without_a_body`
+  的既有端口竞态（`free_port` 选回环端口后前门绑 `0.0.0.0` 撞 `EADDRINUSE`），单跑该
+  测试二进制 11/11 绿，未改测试、未放宽门禁。
+- JS 门禁（`MULTICC_RUST_ADDON` 与 `MULTICC_RUST_PREBUILT_DIR` 指向本指纹根目录）：
+  `test:rust` 268/268（含新增 11 条宿主端口用例与 4 条 Codex 宿主语义用例）、
+  `test:contracts` 148/148、`test:native` 268/268、`test:provider-router` 1,210/1,210、
+  `test:architecture` 128/128、`test:governance` 退出 0（`check-test-tiers` 876 条、
+  `governance:artifacts`、`governance:runtime-writes`）。`check-source-line-budget` 的
+  `server.js` 天花板按棘轮双向下调 3071/164919 → 3066/164092。
+- 两份后端清单已重新生成：`docs/backend-route-inventory.md`（585 个后端文件、138,089 行、
+  496 个注册候选；`src/routes/codex-models.js` 的两条与七个挂载消失，新增宿主端口一条）、
+  `docs/backend-runtime-inventory.md`（指纹 `43304407e8e5df10688e9ce3`，546 条路由注册、
+  34 层中间件；比上一批少 7 条 = 删除 8 条公开注册 + 新增 1 条宿主端口）。
+- `docs/gateway.md` 新增 §32 与路由表一行；`docs/rust-migration/route-inventory.md` 的
+  文件清单与推荐顺序第 6 组同步。
+- 本组按用户指令完成；未重启服务，路由由前门接管要等用户手动重启后才生效。

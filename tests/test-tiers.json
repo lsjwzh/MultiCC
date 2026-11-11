@@ -3073,15 +3073,6 @@
       "owner": "npm:test:rust"
     },
     {
-      "path": "tests/test-codex-models-route.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:provider-router",
-      "entrypoints": [
-        "npm:test:provider-router"
-      ]
-    },
-    {
       "path": "tests/test-codex-oauth-login.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4173,6 +4164,15 @@
       "entrypoints": [
         "npm:test:cli-switch",
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-model-catalogs-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
       ]
     },
     {

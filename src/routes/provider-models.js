@@ -1,4 +1,7 @@
 'use strict';
+// 路由由 Rust 前门独占（native/gateway/src/app/model_catalogs.rs）：路径参数、
+// 状态码、Cache-Control 与响应形状都在那边；这里的 provider store 投影与 3s 上游
+// 抓取（含进程内 1h 缓存 / 60s 失败冷却）只经宿主端口 src/routes/model-catalogs-host.js 提供。
 
 // GET /api/providers/:id/models — live model catalog for ONE stored provider.
 //
@@ -198,20 +201,8 @@ function createProviderModelsRuntime(options = {}) {
     return { status: 200, body: fallbackBody(summary) };
   }
 
-  function mount(app) {
-    if (!app || typeof app.get !== 'function') return;
-    app.get('/api/providers/:id/models', async (req, res) => {
-      const result = await listProviderModels(req.params && req.params.id, {
-        refresh: isRefresh(req.query && req.query.refresh),
-      });
-      res.set?.('Cache-Control', 'no-store');
-      return res.status(result.status).json(result.body);
-    });
-  }
-
   return Object.freeze({
     listProviderModels,
-    mount,
     _resetForTest() { cache.clear(); failedAt.clear(); },
   });
 }
@@ -222,14 +213,7 @@ function getSharedProviderModelsRuntime() {
   return sharedRuntime;
 }
 
-function mountProviderModelRoutes(app, options = {}) {
-  const runtime = options.runtime || getSharedProviderModelsRuntime();
-  runtime.mount(app);
-  return runtime;
-}
-
 module.exports = {
-  mountProviderModelRoutes,
   createProviderModelsRuntime,
   getSharedProviderModelsRuntime,
   modelsEndpointFor,

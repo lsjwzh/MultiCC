@@ -1,20 +1,27 @@
 'use strict';
 
+// 官方账号模型目录：原生刷新（真 addon）+ 宿主端口（src/routes/model-catalogs-host.js）。
+//
+// 公开的 GET/POST /api/codex/models 已由 Rust 前门独占
+// （native/gateway/src/app/model_catalogs.rs）。Node 侧剩下的只有宿主端口上的两件事：
+// provider 分类（存在？Codex？官方 OAuth 还是借道？）与 peek/refreshing 透传、
+// 以及后台刷新的启动/等待。HTTP 状态码与响应体由 Rust 的集成测试覆盖。
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { createCodexAccountModelCatalogRuntime } = require('../src/codex/model-catalog');
+const { createModelCatalogsHost } = require('../src/routes/model-catalogs-host');
 const { summarize } = require('../src/providers/core');
-const { mountCodexModelRoutes } = require('../src/routes/codex-models');
 
 let addon;
 try { addon = process.env.MULTICC_RUST_ADDON ? require(process.env.MULTICC_RUST_ADDON)
   : require('../src/native/runtime').getNative(); } catch (_) {}
 const nativeReady = typeof addon?.codexModelsRefresh === 'function';
 
-test('原生目录经账号桥和模型接口完成冷启动、缓存命中、升级刷新与失败保留', { skip: !nativeReady }, async t => {
+test('原生目录经账号桥完成冷启动、缓存命中、升级刷新与失败保留', { skip: !nativeReady }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-catalog-native-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, 'account');
@@ -60,21 +67,8 @@ require('readline').createInterface({input:process.stdin}).on('line', line => {
   assert.equal(fs.readFileSync(countFile, 'utf8').trim().split('\n').length, 1, '一天内不重新发现模型');
 
   fs.writeFileSync(versionFile, '2.0.0');
-  const routes = new Map();
-  mountCodexModelRoutes({ get: (p, fn) => routes.set(p, fn) }, undefined, runtime);
-  const read = async poll => {
-    let body;
-    await routes.get('/api/codex/models')({ query: { providerId: provider.id, ...(poll ? { poll: '1' } : {}) } },
-      { set() {}, json(value) { body = value; } });
-    return body;
-  };
-  const immediate = await read(false);
-  assert.equal(immediate.models[0].model, 'account-model-1.0.0', '后台更新前先显示已有目录');
-  assert.equal(immediate.refreshing, true);
-  await runtime.refreshProvider(provider.id); // 合并同一后台任务
-  const upgraded = await read(true);
+  const upgraded = await runtime.refreshProvider(provider.id);
   assert.equal(upgraded.models[0].model, 'account-model-2.0.0');
-  assert.equal(upgraded.refreshing, false);
   assert.equal(fs.readFileSync(countFile, 'utf8').trim().split('\n').length, 2);
 
   fs.writeFileSync(versionFile, '3.0.0');
@@ -82,4 +76,94 @@ require('readline').createInterface({input:process.stdin}).on('line', line => {
   assert.equal(failed.stale, true);
   assert.equal(failed.models[0].model, 'account-model-2.0.0');
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'multicc_models_catalog.json'), 'utf8')).cliVersion, '2.0.0');
+});
+
+// 宿主端口只回答 Rust 前门的问题：线路是否存在、是否官方、peek/refreshing 与后台刷新。
+function hostHarness() {
+  const official = { id: 'codex-official-account', appType: 'codex',
+    settingsConfig: { auth: { auth_mode: 'chatgpt' }, officialAccount: { id: '0123456789abcdef' } } };
+  const relay = { id: 'relay', appType: 'codex', settingsConfig: {
+    auth: { OPENAI_API_KEY: 'test-fixture' }, config: 'base_url = "https://relay.invalid/v1"' } };
+  let refreshing = false;
+  let calls = 0;
+  let complete;
+  let snapshot = { models: [], source: 'none', diagnostic: { code: 'not_loaded' } };
+  const runtime = {
+    resolveProvider: value => value === official.id ? official : value === relay.id ? relay : null,
+    peekProvider: () => snapshot,
+    isRefreshing: () => refreshing,
+    refreshProvider: () => {
+      calls += 1;
+      refreshing = true;
+      return new Promise(resolve => {
+        complete = () => {
+          snapshot = { models: [{ model: 'account-only', label: 'Account only' }], source: 'account_cache' };
+          refreshing = false;
+          resolve(snapshot);
+        };
+      });
+    },
+  };
+  return {
+    handle: createModelCatalogsHost({ codexRuntime: runtime }),
+    official, relay, calls: () => calls, complete: () => complete(),
+  };
+}
+
+test('codex-state reports a missing line, and classifies official vs relay', async () => {
+  const harness = hostHarness();
+  assert.deepEqual(await harness.handle({ op: 'codex-state', providerId: 'missing' }), { found: false });
+
+  const relay = await harness.handle({ op: 'codex-state', providerId: harness.relay.id });
+  assert.deepEqual(relay, { found: true, id: harness.relay.id, appType: 'codex', official: false });
+  assert.equal(Object.prototype.hasOwnProperty.call(relay, 'peek'), false,
+    'a relay line has its own baseURL/key and never peeks the official account catalog');
+  assert.equal(Object.prototype.hasOwnProperty.call(relay, 'refreshing'), false);
+
+  const official = await harness.handle({ op: 'codex-state', providerId: harness.official.id });
+  assert.deepEqual(official, {
+    found: true, id: harness.official.id, appType: 'codex', official: true,
+    peek: { models: [], source: 'none', diagnostic: { code: 'not_loaded' } },
+    refreshing: false,
+  });
+});
+
+test('codex-refresh kicks one background refresh and state passes peek/refreshing through', async () => {
+  const harness = hostHarness();
+  const initial = await harness.handle({ op: 'codex-state', providerId: harness.official.id });
+  assert.equal(initial.refreshing, false);
+  assert.deepEqual(initial.peek.models, []);
+
+  assert.deepEqual(await harness.handle({ op: 'codex-refresh', providerId: harness.official.id, wait: false }), { ok: true });
+  assert.equal(harness.calls(), 1);
+  const pending = await harness.handle({ op: 'codex-state', providerId: harness.official.id });
+  assert.equal(pending.refreshing, true, 'the same background task is visible while it runs');
+  assert.deepEqual(pending.peek.models, [], 'the previous catalog stays visible until the refresh lands');
+
+  harness.complete();
+  const ready = await harness.handle({ op: 'codex-state', providerId: harness.official.id });
+  assert.equal(ready.refreshing, false);
+  assert.equal(ready.peek.models[0].model, 'account-only');
+  assert.equal(harness.calls(), 1, 'polling state never starts another refresh');
+});
+
+test('codex-refresh with wait:true answers only after the refresh resolves', async () => {
+  const harness = hostHarness();
+  let settled = false;
+  const refresh = harness.handle({ op: 'codex-refresh', providerId: harness.official.id, wait: true })
+    .then(value => { settled = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'wait:true must not answer before the refresh resolves');
+  harness.complete();
+  assert.deepEqual(await refresh, { ok: true });
+  const state = await harness.handle({ op: 'codex-state', providerId: harness.official.id });
+  assert.equal(state.refreshing, false);
+  assert.equal(state.peek.models[0].model, 'account-only');
+});
+
+test('a runtime that cannot resolve the line answers error:true', async () => {
+  const handle = createModelCatalogsHost({
+    codexRuntime: { resolveProvider() { throw new Error('store unavailable'); } },
+  });
+  assert.deepEqual(await handle({ op: 'codex-state', providerId: 'any' }), { error: true });
 });

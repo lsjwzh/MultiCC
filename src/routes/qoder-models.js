@@ -1,4 +1,7 @@
 'use strict';
+// 路由由 Rust 前门独占（native/gateway/src/app/model_catalogs.rs）：路径、查询串、
+// 状态码与响应形状都在那边；这里的 CLI 枚举、解析与进程内缓存只经宿主端口
+// src/routes/model-catalogs-host.js 提供。
 
 // GET /api/qoder/models — list the models the local Qoder CN CLI may use.
 //
@@ -77,18 +80,6 @@ function listQoderModels(callback, opts = {}) {
   });
 }
 
-function mountQoderModelRoutes(app) {
-  if (!app || typeof app.get !== 'function') return;
-  app.get('/api/qoder/models', (req, res) => {
-    // ?refresh=1 skips the 1-day cache (the picker 刷新模型 button).
-    const refresh = /^(?:1|true)$/i.test(String((req && req.query && req.query.refresh) || ''));
-    listQoderModels((err, models, source) => {
-      if (err) return res.status(503).json({ error: 'qoder models unavailable', models: [] });
-      res.json({ models, source, cached: source === 'cache' });
-    }, { refresh });
-  });
-}
-
 // Synchronous view for the Auto Provider runtime: warm cache or the bundled
 // tier fallback, never a network call from a turn.
 function peekQoderModels() {
@@ -97,7 +88,6 @@ function peekQoderModels() {
 }
 
 module.exports = {
-  mountQoderModelRoutes,
   peekQoderModels,
   listQoderModels,
   parseQoderStdout,
