@@ -138,6 +138,7 @@ const controllerApi = require(path.join(PUBLIC, 'chat-event-controller.js'));
 /* ─────────────────────── 会话装配（复刻 chat.js 接线） ─────────────────────── */
 
 function createRig(cli = 'claude') {
+  const queues = [];
   const messagesEl = new El('div');
   messagesEl.className = 'messages';
   const state = {
@@ -173,7 +174,7 @@ function createRig(cli = 'claude') {
     loadSessionModel() {}, rearmUnread() {},
     translate: (k) => k,
     addSystemMsg() {}, addAgentNotes() {}, showNotifyToast() {},
-    renderSessionQueue() {}, renderPendingUserInput: () => false,
+    renderSessionQueue(items, metadata) { queues.push({ items, metadata }); }, renderPendingUserInput: () => false,
     consumeUserInputRequestId() {}, removeHistoryMessageById() {},
     resetHistoryPagination() {}, getSessionName: () => 'diag-session',
     speakNotify() {},
@@ -215,7 +216,7 @@ function createRig(cli = 'claude') {
   });
   const generation = controller.beginGeneration();
   return {
-    state, messagesEl, historyView, historyStore, controller,
+    state, messagesEl, historyView, historyStore, controller, queues,
     feed(events) {
       for (const evt of events) controller.handleEvent(evt, generation);
     },

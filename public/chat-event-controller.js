@@ -173,6 +173,8 @@
     let activeProviderModelRoute = null;
     let activeProviderModelSource = '';
     const pendingAdmissionIds = new Set();
+    let queueSnapshot = null;
+    let queuedClientIds = new Set();
     // The "Jev is judging…" line of the message being admitted; the turn's
     // selected route rewrites it in place into the verdict.
     let autoRouteNoteEl = null;
@@ -508,6 +510,31 @@
       } else host.addSystemMsg?.(host.translate('contextCleared'));
     }
 
+    function reconcileSessionQueue(message) {
+      queueSnapshot = message;
+      const visibleItems = (Array.isArray(message.items) ? message.items : []).filter(item => {
+        if (item?.entryId && (item.entryId === message.active?.entryId
+            || (message.queued === false && item.entryId === message.entryId))) return false;
+        // Durable transcript input already belongs to a started turn. A late
+        // queue snapshot must neither delete it nor put it back in the FIFO.
+        return !historyView.findByClientMsgId?.(item?.clientMsgId)?.dataset?.msgId;
+      });
+      queuedClientIds = new Set(visibleItems.map(item => item?.clientMsgId).filter(Boolean));
+      let retiredAdmission = false;
+      for (const id of queuedClientIds) {
+        const node = historyView.findByClientMsgId?.(id);
+        if (node && !node.dataset?.msgId) {
+          node.remove();
+          if (state.lastUserBubble === node) state.lastUserBubble = null;
+        }
+        if (pendingAdmissionIds.delete(id)) retiredAdmission = true;
+      }
+      if (retiredAdmission && !pendingAdmissionIds.size && !state.isStreaming) liveUi.hideThinking();
+      host.renderSessionQueue?.(visibleItems, {
+        state: message.state, freezeReason: message.freezeReason || null,
+      });
+    }
+
     function handleCommittedMessage(event) {
       const committed = event && event.message;
       // A user message that settles a wait_for_user_answer prompt carries the
@@ -528,11 +555,13 @@
         });
         state.currentMsgEl = result.currentElement;
         state.lastUserBubble = result.lastUserElement;
+        if (committed.role === 'user' && queueSnapshot) reconcileSessionQueue(queueSnapshot);
         host.maybeScrollToBottom?.();
         return;
       }
       if (event.id && event.role) {
         historyView.tagLatestMessage(event.role, event.id, event.clientMsgId, event);
+        if (event.role === 'user' && queueSnapshot) reconcileSessionQueue(queueSnapshot);
       }
     }
 
@@ -693,6 +722,7 @@
           break;
         case 'chat_history':
           host.applyHistoryPlan?.(historyStore.acceptHistory(message, historyView.visibleIds()));
+          if (queueSnapshot) reconcileSessionQueue(queueSnapshot);
           break;
         case 'chat_history_reset': handleHistoryReset(message); break;
         // A turn's task attribution is decided when the turn ends, which is
@@ -773,8 +803,9 @@
         case 'message_admission_progress': {
           const clientMsgId = typeof message.clientMsgId === 'string' ? message.clientMsgId.trim() : '';
           const text = typeof message.message === 'string' ? message.message : '';
+          if (queuedClientIds.has(clientMsgId) && message.state !== 'failed') break;
           if (clientMsgId) pendingAdmissionIds.add(clientMsgId);
-          if (clientMsgId && text && !historyView.findByClientMsgId?.(clientMsgId)) {
+          if (clientMsgId && text && !queuedClientIds.has(clientMsgId) && !historyView.findByClientMsgId?.(clientMsgId)) {
             host.addUserMessage?.(text, clientMsgId);
           }
           if (message.stage === 'auto_provider_routing' && message.state === 'waiting') {
@@ -818,7 +849,6 @@
           break;
         }
         case 'session_queue': {
-          const items = Array.isArray(message.items) ? message.items : [];
           // A claimed message has left `items` and its transcript record only
           // appears when the turn starts. Until then the snapshot's `active`
           // carries the sender's text, so any reload/reconnect can re-render
@@ -832,13 +862,9 @@
           if (activeInput && !historyView.findByClientMsgId?.(activeInput.clientMsgId)) {
             host.addUserMessage?.(activeInput.text, activeInput.clientMsgId);
           }
-          const visibleItems = message.event === 'queued' && message.queued === false
-            ? items.filter(item => item?.entryId !== message.entryId)
-            : items;
-          // Insert user bubble now if queued=false (immediate). A queued=true
-          // message stays off-screen until its turn runs (the queued entry is
-          // visible in the queue strip below); the old stagedUserBubbles side
-          // map had no reader and grew unboundedly (M6) - nothing is staged.
+          // Immediate input keeps its optimistic bubble; queued input moves to
+          // the FIFO until the scheduler claims it. Reconcile every snapshot,
+          // not only the original ACK, so reconnects and edits behave alike.
           if (message.event === 'queued') {
             const text = message.message;
             const clientMsgId = message.clientMsgId;
@@ -850,13 +876,7 @@
               else if (pendingAdmissionIds.size === 0) liveUi.hideThinking();
             }
           }
-          host.renderSessionQueue?.(
-            visibleItems,
-            {
-              state: message.state,
-              freezeReason: message.freezeReason || null,
-            },
-          );
+          reconcileSessionQueue(message);
           if (message.event === 'queued' && message.queued !== false) {
             host.showNotifyToast?.(
               message.queuePosition
