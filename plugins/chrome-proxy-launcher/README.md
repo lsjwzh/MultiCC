@@ -168,7 +168,9 @@ meow v0.26.1，MIT，许可与校验值见 `THIRD_PARTY.md`）。首次使用时
 失败降级语义：geo 服务不可用时退回原有出口可用性验证（`exit_ip`），
 只是**不套用时区/语言**，不阻塞启动；`checkProxy: false` 时跳过探测。
 launch 返回的 `geo` 字段记录套用结果（`applied: true` + 国家/时区/locale，
-或 `applied: false` + 原因），probe / egress(check) 同样返回 `geo`。
+或 `applied: false` + 原因），probe / egress(check) 同样返回 `geo`。启动提示会
+明确显示识别失败或时区缺失，避免将未设置时区误认为已对齐。时区在每次启动时
+识别；运行中若代理出口发生变化，需要停止并重新启动该身份才能重新识别。
 
 时长预算：宿主（`src/routes/plugins.js`）对每条插件命令有 20 秒硬超时，到点
 直接 SIGKILL，会跳过插件里的所有清理、留下孤儿内核/中继。所以 launch 总预算
@@ -228,7 +230,7 @@ mkdir -p bin/darwin-arm64 && cp target/release/chrome-proxy-launcher bin/darwin-
 
 ```sh
 cargo test --manifest-path plugins/chrome-proxy-launcher/Cargo.toml
-node --test --test-concurrency=1 plugins/chrome-proxy-launcher/tests/isolation.cjs plugins/chrome-proxy-launcher/tests/fingerprint.cjs plugins/chrome-proxy-launcher/tests/automatic.cjs
+node --test --test-concurrency=1 plugins/chrome-proxy-launcher/tests/isolation.cjs plugins/chrome-proxy-launcher/tests/fingerprint.cjs plugins/chrome-proxy-launcher/tests/automatic.cjs plugins/chrome-proxy-launcher/tests/timezone.cjs
 ```
 
 集成测试默认使用上面构建的 release 二进制（可用 `PLUGIN_TEST_BIN` 指定）。

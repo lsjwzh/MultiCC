@@ -514,7 +514,11 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
         Some(found) => {
             let mut value = serde_json::to_value(found).unwrap_or_else(|_| serde_json::json!({}));
             if let Some(map) = value.as_object_mut() {
-                map.insert("applied".into(), json!(true));
+                let applied = !found.timezone.is_empty();
+                map.insert("applied".into(), json!(applied));
+                if !applied {
+                    map.insert("reason".into(), json!("出口地理服务未返回有效时区，浏览器时区未调整"));
+                }
             }
             value
         }
