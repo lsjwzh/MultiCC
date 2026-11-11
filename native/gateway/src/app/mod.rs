@@ -19,6 +19,7 @@ pub mod run_config_presets;
 mod service_transport;
 pub mod services;
 pub mod source_workspaces;
+pub mod subagent_defaults;
 pub mod token_usage_global;
 pub mod uploads;
 
@@ -70,6 +71,10 @@ pub enum Route {
     UploadCleanupOptions,
     TokenUsageGlobalGet,
     TokenUsageGlobalOptions,
+    SubagentDefaultsGet,
+    SubagentDefaultsOptions,
+    SubagentDefaultsSync,
+    SubagentDefaultsSyncOptions,
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -120,6 +125,10 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         ("uploads/cleanup", "OPTIONS") => Some(Route::UploadCleanupOptions),
         ("token-usage/global", "GET" | "HEAD") => Some(Route::TokenUsageGlobalGet),
         ("token-usage/global", "OPTIONS") => Some(Route::TokenUsageGlobalOptions),
+        ("subagent-defaults", "GET" | "HEAD") => Some(Route::SubagentDefaultsGet),
+        ("subagent-defaults", "OPTIONS") => Some(Route::SubagentDefaultsOptions),
+        ("subagent-defaults/sync", "POST") => Some(Route::SubagentDefaultsSync),
+        ("subagent-defaults/sync", "OPTIONS") => Some(Route::SubagentDefaultsSyncOptions),
         _ => None,
     }
 }
@@ -149,6 +158,9 @@ pub struct App {
     pub claude_models: claude_models::Shared,
     /// The global-usage aggregate and its 120s cache (was src/token-global.js).
     pub token_usage_global: token_usage_global::Shared,
+    /// One sync request at a time, like the retired Node handler, which ran a
+    /// whole request synchronously on the event loop.
+    pub subagent_defaults: tokio::sync::Mutex<()>,
     /// The observation cache the retired Node route wrote, plus the
     /// process-local single-flight table and the system-proxy slot. `Arc` lets
     /// the leader query outlive the HTTP request that started it.
@@ -210,6 +222,7 @@ impl App {
             provider_limit_history: Mutex::new(provider_limit_history::State::default()),
             claude_models: Mutex::new(claude_models::State::default()),
             token_usage_global: Mutex::new(token_usage_global::State::default()),
+            subagent_defaults: tokio::sync::Mutex::new(()),
             account_subscription: subscriptions,
             home_dir: std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -302,6 +315,7 @@ pub async fn handle(
     route: Route,
     request: Request<Body>,
     client: SocketAddr,
+    host: u16,
 ) -> Response<Body> {
     if let Route::ExternalWorkspaces(route) = route {
         return external_workspaces::handle(app, route, request, client).await;
@@ -356,6 +370,8 @@ pub async fn handle(
     match route {
         Route::PresetsOptions | Route::QuotaGuardOptions => return options(&ctx, "GET,HEAD,PUT"),
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
+        Route::SubagentDefaultsOptions => return options(&ctx, "GET,HEAD"),
+        Route::SubagentDefaultsSyncOptions => return options(&ctx, "POST"),
         Route::DownloadOptions
         | Route::UploadStatsOptions
         | Route::ProviderLimitHistoryOptions
@@ -397,6 +413,12 @@ pub async fn handle(
                 ),
                 Err(_) => express::error(&ctx, 500, "native route panicked"),
             };
+        }
+        // The host port is the Node child's internal listener; a route that
+        // needs in-process Node state asks it only through that one call.
+        Route::SubagentDefaultsGet => return subagent_defaults::get(&app, &ctx, host).await,
+        Route::SubagentDefaultsSync => {
+            return subagent_defaults::sync(&app, &ctx, &body, host).await
         }
         Route::ClaudeSubscriptionGet => {
             return account_subscription::get(&app, "claude", &ctx).await

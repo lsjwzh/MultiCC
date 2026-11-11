@@ -1,4 +1,8 @@
 'use strict';
+// 冻结的 Node 原始实现（迁移前的 src/routes/subagent-defaults.js 逐字副本），
+// 只给 docs/rust-migration/differential/subagent-defaults.js 当对照 oracle。
+// 不参与生产路径，除差异测试外不要 require。
+
 
 // 迁移桥接：子任务全局默认线路（每个 CLI 家族一条 `{providerId, model}`）的设置与清除。
 // 同步只改同家族里没有单独设置子 agent 的会话（随主线路的、或线路来自全局默认的），
@@ -8,8 +12,8 @@
 // 是否官方）并通过现有端口执行：默认值走 providers.js 的原子配置文件写入，会话逐个走
 // session-profile.js 的 applySessionPatch / previewSessionPatch（与单会话 AI 配置同一个
 // 校验、暂存与广播路径）。Rust 接管会话存储与 provider 默认值后本模块即可删除。
-const { sanitizePublicText } = require('../http/public-safety');
-const { desiredSession } = require('../session/pending-configuration');
+const { sanitizePublicText } = require('../../src/http/public-safety');
+const { desiredSession } = require('../../src/session/pending-configuration');
 
 // 响应是 UI 负载，不是导出：400 个会话的机队不能把一个弹窗变成多兆的帧。
 const MAX_RESULTS = 200;
@@ -75,7 +79,7 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
   const previewSessionPatch = options.previewSessionPatch;
   // Tests inject a stub; production resolves the same addon every other Rust
   // bridge uses, once per request so a rebuilt addon needs no restart.
-  const getNative = options.getNative || (() => require('../native/runtime').getNative());
+  const getNative = options.getNative || (() => require('../../src/native/runtime').getNative());
 
   function unavailable(res) {
     return res.status(503).json({

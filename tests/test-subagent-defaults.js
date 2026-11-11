@@ -1,32 +1,21 @@
 'use strict';
-// 子任务默认线路（每个 CLI 家族一条 `{providerId, model}`）+ 一键同步到同家族会话。
+// 子任务默认线路（每个 CLI 家族一条 `{providerId, model}`）+ 一键同步。
 //
-// 覆盖三层：
-//   1. Rust 计划经 Node 迁移桥（src/routes/subagent-defaults.js）的契约形状与语义：
-//      dry run / apply / clear / codex skip / patch_rejected / unchanged / 排除系统会话；
-//   2. 与 providers.js 的接线：provider-defaults.json 的落盘、GET /api/providers
-//      的 defaults.subagent、PUT /api/provider-defaults 保留该键、加载时归一化/透传、
-//      save_failed 时一个会话都不许动；
+// 公开路由 GET /api/subagent-defaults、POST /api/subagent-defaults/sync 已由 Rust
+// 前门独占（native/gateway/src/app/subagent_defaults.rs，逐字节对比在
+// docs/rust-migration/differential/subagent-defaults.js）。这里覆盖 Node 侧剩下的两层：
+//
+//   1. 宿主端口（src/routes/subagent-defaults-host.js）：前门回调时读到的会话表投影、
+//      provider 事实、默认值落盘（含进程内对象身份）与逐会话 PATCH 预览/执行。
+//      规则、校验、计数与错误映射都不在这里，改由 Rust 集成测试覆盖。
+//   2. providers.js 接线：provider-defaults.json 的落盘、GET /api/providers 的
+//      defaults.subagent、PUT /api/provider-defaults 保留该键、加载时归一化。
 //   3. createSessionRecord 的缺省应用：省略 → 默认；显式 null/''/{} → 不要；
 //      默认失效（provider 被删、codex 没有主线）→ 静默无子任务，绝不阻断创建。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-// 宿主进程可能带着 MULTICC_RUST_ADDON 指向一个没有本模块的旧 addon；测试显式指定的
-// 预编译目录优先，否则这里永远只看到旧模块。
-if (process.env.MULTICC_RUST_PREBUILT_DIR) delete process.env.MULTICC_RUST_ADDON;
-
-const nativeRuntime = require('../src/native/runtime');
-let addon = null;
-try { addon = nativeRuntime.getNative(); } catch (_) { /* availability is asserted below */ }
-const available = typeof addon?.normalizeSubagentDefaults === 'function'
-  && typeof addon?.planSubagentSync === 'function';
-if (process.env.MULTICC_REQUIRE_RUST_TESTS === '1') {
-  assert.equal(available, true, '必须构建包含子任务默认线路的 Rust 模块');
-}
-const rustTest = (name, fn) => test(name, { skip: !available && '未构建可选 Rust 模块' }, fn);
-
-const { mountSubagentDefaultsRoutes } = require('../src/routes/subagent-defaults');
+const { mountSubagentDefaultsHostRoute, HOST_PATH } = require('../src/routes/subagent-defaults-host');
 const { createProviderRoutes } = require('../src/routes/providers');
 const { createSessionRecordFactory } = require('../src/session/create-record');
 const { isResidentSession } = require('../src/cli/cli-capability');
@@ -68,8 +57,8 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-// ────────────────────────── 迁移桥（纯契约） ──────────────────────────
-function bridgeHarness(options = {}) {
+// ────────────────────────── 宿主端口（host port） ──────────────────────────
+function hostHarness(options = {}) {
   const app = createApp();
   const sessions = new Map();
   for (const session of options.sessions || []) sessions.set(session.id, session);
@@ -91,11 +80,12 @@ function bridgeHarness(options = {}) {
     codexProviderProxyable: id => proxyable.has(id),
     isOfficialCodexOAuthProvider: provider => officials.has(provider?.id),
   };
-  mountSubagentDefaultsRoutes(app, {
+  mountSubagentDefaultsHostRoute(app, {
     providerDefaults,
     sessions,
     validProviderId: (cli, id) => (validIds.has(id) ? { ok: true, value: id } : { ok: false }),
     providers,
+    isLocal: options.isLocal || (() => true),
     applySessionPatch(sessionId, body) {
       applied.push({ sessionId, body: clone(body) });
       const session = sessions.get(sessionId);
@@ -108,14 +98,18 @@ function bridgeHarness(options = {}) {
       } else delete session.subagent;
       return { status: 200, body: { subagent: clone(body.subagent) } };
     },
-    previewSessionPatch(sessionId, body) {
-      previewed.push({ sessionId, body: clone(body) });
-      if (!sessions.has(sessionId)) return { status: 404, body: { error: 'session not found' } };
-      if (rejected.has(sessionId)) return { status: 400, body: { error: SENSITIVE } };
-      return { status: 200, body: { subagent: clone(body.subagent) } };
+    ...(options.withoutPreview ? {} : {
+      previewSessionPatch(sessionId, body) {
+        previewed.push({ sessionId, body: clone(body) });
+        if (!sessions.has(sessionId)) return { status: 404, body: { error: 'session not found' } };
+        if (rejected.has(sessionId)) return { status: 400, body: { error: SENSITIVE } };
+        return { status: 200, body: { subagent: clone(body.subagent) } };
+      },
+    }),
+    persistDefaults(next) {
+      if (options.writeError) throw options.writeError;
+      writes.push(clone(next));
     },
-    persistDefaults(next) { writes.push(clone(next)); },
-    getNative: options.getNative || (() => addon),
   });
   return { app, providerDefaults, sessions, writes, applied, previewed };
 }
@@ -127,283 +121,142 @@ function claudeSession(id, extra = {}) {
   };
 }
 
-rustTest('dry run plans without writing defaults or sessions', async () => {
-  const harness = bridgeHarness({
-    sessions: [
-      claudeSession('apply-me'),
-      claudeSession('same', { subagent: inherited(CLAUDE_ROUTE) }),
-      claudeSession('pending', { pendingConfiguration: { cli: 'claude', profile: { subagent: null } } }),
-      claudeSession('own', { subagent: clone(CLAUDE_ROUTE) }),
-    ],
-  });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE), dryRun: true },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, {
-    ok: true,
-    dryRun: true,
-    family: 'claude',
-    subagent: CLAUDE_ROUTE,
-    defaults: { claude: CLAUDE_ROUTE, codex: null },
-    counts: { applied: 1, deferred: 1, unchanged: 1, skipped: 0, kept: 1 },
-    sessions: [
-      { sessionId: 'apply-me', sessionName: 'apply-me', cli: 'claude', outcome: 'applied' },
-      { sessionId: 'pending', sessionName: 'pending', cli: 'claude', outcome: 'deferred' },
-      { sessionId: 'same', sessionName: 'same', cli: 'claude', outcome: 'unchanged' },
-      { sessionId: 'own', sessionName: 'own', cli: 'claude', outcome: 'kept' },
-    ],
-    truncated: false,
-  });
-  assert.deepEqual(harness.writes, [], 'dry run must not persist defaults');
-  assert.deepEqual(harness.applied, [], 'dry run must never apply a patch');
-  assert.deepEqual(harness.previewed.map(entry => entry.sessionId), ['apply-me', 'pending']);
-  assert.equal(harness.sessions.get('apply-me').subagent, undefined);
-  assert.equal(harness.providerDefaults.subagent, undefined);
-});
+function host(app, body) {
+  return invoke(app, 'POST', HOST_PATH, { body });
+}
 
-rustTest('apply persists defaults first and moves only sessions without an own route', async () => {
-  const harness = bridgeHarness({
+test('state projects the desired session table, pending configuration included', async () => {
+  const harness = hostHarness({
     sessions: [
-      claudeSession('apply-me'),
-      claudeSession('same', { subagent: inherited(CLAUDE_ROUTE) }),
-      claudeSession('busy', { provider: 'main', pendingConfiguration: { cli: 'claude', profile: {} } }),
-      claudeSession('old-global', { subagent: inherited({ providerId: 'main', model: 'old-model' }) }),
-      claudeSession('own', { subagent: { providerId: 'main', model: 'own-model' } }),
+      claudeSession('plain'),
+      { id: 'aux', type: 'aux', cli: 'claude', kind: 'chat' },
+      { id: 'opencode', cli: 'opencode', kind: 'chat' },
+      {
+        id: 'staged', cli: 'codex', kind: 'chat', provider: 'main',
+        pendingConfiguration: { cli: 'claude', profile: { subagent: inherited(CLAUDE_ROUTE) } },
+      },
     ],
-    deferred: ['busy'],
+    defaults: { subagent: { claude: CLAUDE_ROUTE, codex: null } },
   });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE) },
-  });
+  const response = await host(harness.app, { op: 'state' });
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.dryRun, false);
-  assert.deepEqual(response.body.counts, { applied: 2, deferred: 1, unchanged: 1, skipped: 0, kept: 1 });
-  assert.deepEqual(response.body.sessions.map(entry => [entry.sessionId, entry.outcome]), [
-    ['apply-me', 'applied'], ['old-global', 'applied'], ['busy', 'deferred'], ['same', 'unchanged'], ['own', 'kept'],
+  assert.deepEqual(response.body.subagent, { claude: CLAUDE_ROUTE, codex: null });
+  assert.deepEqual(response.body.sessions.map(session => [session.id, session.cli, session.pending, session.subagent]), [
+    // 归属判断读 pending 配置应用后的期望状态：staged 已经是 claude。
+    ['plain', 'claude', false, null],
+    ['aux', 'claude', false, null],
+    ['opencode', 'opencode', false, null],
+    ['staged', 'claude', true, inherited(CLAUDE_ROUTE)],
   ]);
-  assert.deepEqual(harness.writes, [{ subagent: { claude: CLAUDE_ROUTE, codex: null } }]);
-  assert.deepEqual(harness.providerDefaults.subagent, { claude: CLAUDE_ROUTE, codex: null });
-  assert.deepEqual(harness.sessions.get('apply-me').subagent, inherited(CLAUDE_ROUTE));
-  assert.deepEqual(harness.sessions.get('old-global').subagent, inherited(CLAUDE_ROUTE));
-  assert.deepEqual(harness.sessions.get('own').subagent, { providerId: 'main', model: 'own-model' });
-  assert.deepEqual(harness.applied.map(entry => entry.sessionId), ['apply-me', 'busy', 'old-global']);
-  for (const entry of harness.applied) {
-    assert.deepEqual(entry.body, { subagent: CLAUDE_ROUTE, subagentInherited: true });
-  }
 });
 
-rustTest('null / empty string / empty object clears the default and only the routes that followed it', async () => {
-  for (const target of [null, '', {}]) {
-    const harness = bridgeHarness({
-      sessions: [
-        claudeSession('has-route', { subagent: inherited(CLAUDE_ROUTE) }),
-        claudeSession('plain'),
-        claudeSession('own', { subagent: clone(CLAUDE_ROUTE) }),
-      ],
-      defaults: { claude: CLAUDE_ROUTE, codex: null },
-    });
-    const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-      body: { cli: 'claude', subagent: target },
-    });
-    assert.equal(response.statusCode, 200, JSON.stringify(target));
-    assert.equal(response.body.subagent, null);
-    assert.deepEqual(response.body.defaults, { claude: null, codex: null });
-    assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 1, skipped: 0, kept: 1 });
-    assert.deepEqual(harness.applied, [{ sessionId: 'has-route', body: { subagent: null } }]);
-    assert.equal(harness.sessions.get('has-route').subagent, undefined);
-    assert.deepEqual(harness.sessions.get('own').subagent, CLAUDE_ROUTE, 'own routes survive a clear');
-    assert.deepEqual(harness.writes, [{
-      claude: CLAUDE_ROUTE,
-      codex: null,
-      subagent: { claude: null, codex: null },
-    }]);
-  }
+test('state reports a missing stored default as null, never as a missing key', async () => {
+  const harness = hostHarness({});
+  const response = await host(harness.app, { op: 'state' });
+  assert.deepEqual(response.body, { subagent: null, sessions: [] });
 });
 
-rustTest('codex: sessions without a main provider are skipped, not failed', async () => {
-  const harness = bridgeHarness({
-    sessions: [
-      { id: 'with-main', cli: 'codex', kind: 'chat', provider: 'main' },
-      { id: 'no-main', cli: 'codex', kind: 'chat', provider: null },
-      { id: 'same', cli: 'codex-exp', kind: 'chat', provider: 'main', subagent: inherited(CODEX_ROUTE) },
-      { id: 'claude-other', cli: 'claude', kind: 'chat', provider: 'main' },
-    ],
+test('facts answer the three provider questions the front door cannot', async () => {
+  const harness = hostHarness({
+    validIds: ['sub-claude', 'sub-codex', 'official-codex'],
+    proxyable: ['sub-codex', 'official-codex'],
+    officials: ['official-codex'],
   });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'codex-exp', subagent: clone(CODEX_ROUTE) },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.family, 'codex');
-  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 1, skipped: 1, kept: 0 });
-  assert.deepEqual(response.body.sessions, [
-    { sessionId: 'with-main', sessionName: 'with-main', cli: 'codex', outcome: 'applied' },
-    { sessionId: 'no-main', sessionName: 'no-main', cli: 'codex', outcome: 'skipped',
-      reason: 'codex_requires_main_provider' },
-    { sessionId: 'same', sessionName: 'same', cli: 'codex-exp', outcome: 'unchanged' },
-  ]);
-  assert.deepEqual(harness.applied.map(entry => entry.sessionId), ['with-main']);
+  let response = await host(harness.app, { op: 'facts', family: 'codex', providerId: 'sub-codex' });
+  assert.deepEqual(response.body, { valid: true, proxyable: true, official: false });
+  response = await host(harness.app, { op: 'facts', family: 'codex', providerId: 'official-codex' });
+  assert.deepEqual(response.body, { valid: true, proxyable: true, official: true });
+  // A Claude provider never asks the Codex-only questions.
+  response = await host(harness.app, { op: 'facts', family: 'claude', providerId: 'sub-claude' });
+  assert.deepEqual(response.body, { valid: true, proxyable: false, official: false });
+  response = await host(harness.app, { op: 'facts', family: 'claude', providerId: 'ghost' });
+  assert.deepEqual(response.body, { valid: false, proxyable: false, official: false });
 });
 
-rustTest('a rejected patch is reported as skipped with a sanitized detail', async () => {
-  const harness = bridgeHarness({
-    sessions: [claudeSession('ok'), claudeSession('rejected')],
-    rejected: ['rejected'],
-  });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE) },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 0, skipped: 1, kept: 0 });
-  const skipped = response.body.sessions.at(-1);
-  assert.deepEqual(skipped, {
-    sessionId: 'rejected', sessionName: 'rejected', cli: 'claude',
-    outcome: 'skipped', reason: 'patch_rejected', detail: 'session patch rejected',
-  });
-  assert.equal(harness.writes.length, 1, 'defaults persist even when one session rejects');
-});
-
-rustTest('a patch that throws is reported for that session; the others still move', async () => {
-  const harness = bridgeHarness({
-    sessions: [claudeSession('first'), claudeSession('boom'), claudeSession('last')],
-    throwing: ['boom'],
-  });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE) },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.counts, { applied: 2, deferred: 0, unchanged: 0, skipped: 1, kept: 0 });
-  assert.deepEqual(harness.applied.map(entry => entry.sessionId), ['first', 'boom', 'last']);
-  assert.deepEqual(harness.sessions.get('last').subagent, inherited(CLAUDE_ROUTE));
-  const skipped = response.body.sessions.find(entry => entry.sessionId === 'boom');
-  assert.deepEqual(skipped, {
-    sessionId: 'boom', sessionName: 'boom', cli: 'claude',
-    outcome: 'skipped', reason: 'patch_rejected', detail: 'session patch rejected',
-  });
-});
-
-rustTest('dry run also previews rejections without writing', async () => {
-  const harness = bridgeHarness({
-    sessions: [claudeSession('rejected')],
-    rejected: ['rejected'],
-  });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE), dryRun: true },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.sessions, [{
-    sessionId: 'rejected', sessionName: 'rejected', cli: 'claude',
-    outcome: 'skipped', reason: 'patch_rejected', detail: 'session patch rejected',
+test('persist writes through the existing atomic path and keeps the live object identity', async () => {
+  const harness = hostHarness({ defaults: { claude: 'claude-one', codex: null } });
+  const before = harness.providerDefaults;
+  const response = await host(harness.app, { op: 'persist', defaults: { claude: CLAUDE_ROUTE, codex: null } });
+  assert.deepEqual(response.body, { ok: true });
+  assert.deepEqual(harness.writes, [{
+    claude: 'claude-one',
+    codex: null,
+    subagent: { claude: CLAUDE_ROUTE, codex: null },
   }]);
+  assert.equal(harness.providerDefaults, before, 'the same object other routes already hold is updated');
+  assert.deepEqual(harness.providerDefaults.subagent, { claude: CLAUDE_ROUTE, codex: null });
+});
+
+test('a failed persist answers ok:false and leaves the live object untouched', async () => {
+  const harness = hostHarness({ defaults: { claude: null, codex: null }, writeError: new Error('disk full') });
+  const response = await host(harness.app, { op: 'persist', defaults: { claude: CLAUDE_ROUTE, codex: null } });
+  assert.deepEqual(response.body, { ok: false });
   assert.deepEqual(harness.writes, []);
+  assert.equal(Object.prototype.hasOwnProperty.call(harness.providerDefaults, 'subagent'), false);
 });
 
-rustTest('system, terminal, ephemeral, login and foreign-CLI sessions are silently excluded', async () => {
-  const harness = bridgeHarness({
-    sessions: [
-      claudeSession('keep'),
-      claudeSession('aux', { type: 'aux' }),
-      claudeSession('gateway', { type: 'gateway' }),
-      claudeSession('terminal', { kind: 'terminal' }),
-      claudeSession('ephemeral', { ephemeral: true }),
-      claudeSession('login', { loginFlow: 'claude-auth-login' }),
-      { id: 'opencode', cli: 'opencode', kind: 'chat', provider: 'main' },
-      { id: 'codex', cli: 'codex', kind: 'chat', provider: 'main' },
-    ],
-  });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE), dryRun: true },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.sessions.map(entry => entry.sessionId), ['keep']);
-  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 0, skipped: 0, kept: 0 });
+test('patch applies the inherited route, or a null target when clearing', async () => {
+  const harness = hostHarness({ sessions: [claudeSession('a')] });
+  let response = await host(harness.app, { op: 'patch', sessionId: 'a', subagent: clone(CLAUDE_ROUTE), dryRun: false });
+  assert.deepEqual(response.body, { ok: true, status: 200, deferred: false });
+  assert.deepEqual(harness.applied, [{ sessionId: 'a', body: { subagent: CLAUDE_ROUTE, subagentInherited: true } }]);
+  assert.deepEqual(harness.sessions.get('a').subagent, inherited(CLAUDE_ROUTE));
+
+  response = await host(harness.app, { op: 'patch', sessionId: 'a', subagent: null, dryRun: false });
+  assert.deepEqual(response.body, { ok: true, status: 200, deferred: false });
+  assert.deepEqual(harness.applied.at(-1).body, { subagent: null });
+  assert.equal(harness.sessions.get('a').subagent, undefined);
 });
 
-rustTest('pending configuration decides the desired CLI and subagent', async () => {
-  // A busy codex session staged to become claude with no subagent: the claude
-  // sync must see it as an eligible, non-unchanged target.
-  const harness = bridgeHarness({
-    sessions: [{
-      id: 'staged', cli: 'codex', kind: 'chat', provider: 'main',
-      pendingConfiguration: { cli: 'claude', profile: { subagent: null } },
-    }],
-  });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE), dryRun: true },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.sessions.map(entry => entry.outcome), ['deferred']);
-  assert.deepEqual(response.body.sessions[0].cli, 'claude');
+test('a dry run previews instead of applying', async () => {
+  const harness = hostHarness({ sessions: [claudeSession('a')] });
+  const response = await host(harness.app, { op: 'patch', sessionId: 'a', subagent: clone(CLAUDE_ROUTE), dryRun: true });
+  assert.deepEqual(response.body, { ok: true, status: 200, deferred: false });
+  assert.deepEqual(harness.previewed.map(entry => entry.sessionId), ['a']);
+  assert.deepEqual(harness.applied, []);
 });
 
-rustTest('invalid targets answer the contract error codes', async () => {
-  const harness = bridgeHarness();
-  const cases = [
-    [{ cli: 'opencode', subagent: clone(CLAUDE_ROUTE) }, 400, 'unsupported_cli'],
-    [{ cli: 'claude', subagent: { providerId: 'ghost-route', model: 'm' } }, 400, 'invalid_provider'],
-    [{ cli: 'claude', subagent: { providerId: '', model: 'm' } }, 400, 'invalid_provider'],
-    [{ cli: 'claude', subagent: { providerId: 'sub-claude', model: 'bad model' } }, 400, 'invalid_subagent'],
-    [{ cli: 'claude', subagent: { providerId: 'sub-claude' } }, 400, 'invalid_subagent'],
-    [{ cli: 'claude', subagent: 'nope' }, 400, 'invalid_subagent'],
-    [{ cli: 'codex', subagent: { providerId: 'sub-claude', model: 'gpt-5-codex' } }, 400, 'provider_not_proxyable'],
-  ];
-  for (const [body, status, code] of cases) {
-    const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', { body });
-    assert.equal(response.statusCode, status, JSON.stringify(body));
-    assert.equal(response.body.code, code, JSON.stringify(body));
-    assert.equal(typeof response.body.error, 'string');
+test('a rejected or throwing patch reports the sanitized detail without leaking it', async () => {
+  const harness = hostHarness({
+    sessions: [claudeSession('rejected'), claudeSession('boom'), claudeSession('busy')],
+    rejected: ['rejected'], throwing: ['boom'], deferred: ['busy'],
+  });
+  const rejected = await host(harness.app, { op: 'patch', sessionId: 'rejected', subagent: clone(CLAUDE_ROUTE) });
+  assert.deepEqual(rejected.body, { ok: true, status: 400, detail: 'session patch rejected' });
+  const boom = await host(harness.app, { op: 'patch', sessionId: 'boom', subagent: clone(CLAUDE_ROUTE) });
+  assert.deepEqual(boom.body, { ok: true, status: 500, detail: 'session patch rejected' });
+  const busy = await host(harness.app, { op: 'patch', sessionId: 'busy', subagent: clone(CLAUDE_ROUTE) });
+  assert.deepEqual(busy.body, { ok: true, status: 200, deferred: true });
+});
+
+test('without a preview runtime a dry run reports the compatibility answer', async () => {
+  const harness = hostHarness({ sessions: [claudeSession('a')], withoutPreview: true });
+  const response = await host(harness.app, { op: 'patch', sessionId: 'a', subagent: clone(CLAUDE_ROUTE), dryRun: true });
+  assert.deepEqual(response.body, { ok: true, compat: true });
+  assert.deepEqual(harness.applied, []);
+});
+
+test('the host port only answers loopback requests', async () => {
+  const harness = hostHarness({
+    sessions: [claudeSession('a')],
+    defaults: { subagent: { claude: CLAUDE_ROUTE, codex: null } },
+    isLocal: () => false,
+  });
+  for (const body of [{ op: 'state' }, { op: 'facts', family: 'claude', providerId: 'sub-claude' }, { op: 'persist', defaults: {} }, { op: 'patch', sessionId: 'a' }]) {
+    const response = await host(harness.app, body);
+    assert.equal(response.statusCode, 404, JSON.stringify(body));
+    assert.deepEqual(response.body, { error: 'not found' });
   }
   assert.deepEqual(harness.writes, []);
   assert.deepEqual(harness.applied, []);
 });
 
-rustTest('the official codex provider cannot be a sub-task route', async () => {
-  const harness = bridgeHarness({
-    validIds: ['sub-claude', 'sub-codex', 'main', 'official-codex'],
-    proxyable: ['official-codex'],
-    officials: ['official-codex'],
-  });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'codex', subagent: { providerId: 'official-codex', model: 'gpt-5-codex' } },
-  });
-  assert.equal(response.statusCode, 400);
-  assert.equal(response.body.code, 'provider_not_proxyable');
-});
-
-test('missing native module answers 503 rust_backend_unavailable', async () => {
-  const harness = bridgeHarness({
-    sessions: [claudeSession('a')],
-    getNative: () => { throw new Error('rust_backend_unavailable'); },
-  });
-  for (const [method, routePath, body] of [
-    ['GET', '/api/subagent-defaults', {}],
-    ['POST', '/api/subagent-defaults/sync', { body: { cli: 'claude', subagent: null } }],
-  ]) {
-    const response = await invoke(harness.app, method, routePath, body);
-    assert.equal(response.statusCode, 503);
-    assert.equal(response.body.code, 'rust_backend_unavailable');
-    assert.equal(typeof response.body.error, 'string');
-  }
-  assert.deepEqual(harness.writes, []);
-});
-
-rustTest('GET returns both families even when nothing is stored', async () => {
-  const harness = bridgeHarness({ defaults: { claude: null, codex: null } });
-  const response = await invoke(harness.app, 'GET', '/api/subagent-defaults');
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, { ok: true, defaults: { claude: null, codex: null } });
-});
-
-rustTest('responses are bounded to 200 entries but counts stay complete', async () => {
-  const sessions = Array.from({ length: 205 }, (_, index) => claudeSession(`s${index}`));
-  const harness = bridgeHarness({ sessions });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE), dryRun: true },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.sessions.length, 200);
-  assert.equal(response.body.truncated, true);
-  assert.equal(response.body.counts.applied, 205);
+test('unknown operations and a missing sessionId are rejected', async () => {
+  const harness = hostHarness();
+  const unknown = await host(harness.app, { op: 'nope' });
+  assert.equal(unknown.statusCode, 400);
+  const missing = await host(harness.app, { op: 'patch' });
+  assert.equal(missing.statusCode, 400);
 });
 
 // ────────────────────────── providers.js 接线 ──────────────────────────
@@ -469,7 +322,7 @@ function providerHarness(options = {}) {
     http: { request() { throw new Error('unexpected HTTP'); } },
     https: { request() { throw new Error('unexpected HTTP'); } },
     logger: { error() {} },
-    ...(options.getNative ? { getNative: options.getNative } : {}),
+    isLocalRequest: () => true,
   });
   const app = createApp();
   routes.mountCatalogRoutes(app);
@@ -477,43 +330,39 @@ function providerHarness(options = {}) {
   return { app, routes, providerDefaults: routes.providerDefaults, writes, applied, sessions };
 }
 
-rustTest('a never-used feature keeps the exact legacy defaults shape; a sync adds the key', async () => {
+test('a never-used feature keeps the exact legacy defaults shape; persisting adds the key', async () => {
   const harness = providerHarness({
     stored: { claude: 'claude-one', codex: null },
     sessions: [claudeSession('a')],
-    getNative: () => addon,
   });
   // No key yet: response shapes stay exactly as before this feature.
   let response = await invoke(harness.app, 'GET', '/api/providers');
   assert.deepEqual(response.body.defaults, { claude: 'claude-one', codex: null });
   assert.equal(Object.prototype.hasOwnProperty.call(response.body.defaults, 'subagent'), false);
 
-  // Dry run also must not create it.
-  response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE), dryRun: true },
+  // The front door's persist op lands through the existing atomic write path.
+  response = await invoke(harness.app, 'POST', HOST_PATH, {
+    body: { op: 'persist', defaults: { claude: CLAUDE_ROUTE, codex: null } },
   });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(harness.writes, []);
-  assert.equal(Object.prototype.hasOwnProperty.call(harness.providerDefaults, 'subagent'), false);
-
-  // First real sync persists the key through the existing atomic write path.
-  response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE) },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.defaults, { claude: CLAUDE_ROUTE, codex: null });
+  assert.deepEqual(response.body, { ok: true });
   assert.deepEqual(harness.writes, [{
     file: '/runtime/provider-defaults.json',
     value: { claude: 'claude-one', codex: null, subagent: { claude: CLAUDE_ROUTE, codex: null } },
   }]);
-  assert.deepEqual(harness.applied, [{ sessionId: 'a', body: { subagent: CLAUDE_ROUTE, subagentInherited: true } }]);
 
   response = await invoke(harness.app, 'GET', '/api/provider-defaults');
   assert.deepEqual(response.body, { claude: 'claude-one', codex: null, subagent: { claude: CLAUDE_ROUTE, codex: null } });
   response = await invoke(harness.app, 'GET', '/api/providers');
   assert.deepEqual(response.body.defaults.subagent, { claude: CLAUDE_ROUTE, codex: null });
-  response = await invoke(harness.app, 'GET', '/api/subagent-defaults');
-  assert.deepEqual(response.body, { ok: true, defaults: { claude: CLAUDE_ROUTE, codex: null } });
+  response = await invoke(harness.app, 'POST', HOST_PATH, { body: { op: 'state' } });
+  assert.deepEqual(response.body.subagent, { claude: CLAUDE_ROUTE, codex: null });
+
+  // The front door then patches the sessions it planned.
+  response = await invoke(harness.app, 'POST', HOST_PATH, {
+    body: { op: 'patch', sessionId: 'a', subagent: clone(CLAUDE_ROUTE) },
+  });
+  assert.deepEqual(response.body, { ok: true, status: 200, deferred: false });
+  assert.deepEqual(harness.applied, [{ sessionId: 'a', body: { subagent: CLAUDE_ROUTE, subagentInherited: true } }]);
 
   // PUT /api/provider-defaults keeps the key intact.
   response = await invoke(harness.app, 'PUT', '/api/provider-defaults', { body: { claude: '' } });
@@ -522,30 +371,28 @@ rustTest('a never-used feature keeps the exact legacy defaults shape; a sync add
   assert.deepEqual(harness.writes.at(-1).value.subagent, { claude: CLAUDE_ROUTE, codex: null });
 });
 
-rustTest('stored defaults are normalized on load, including malformed entries', async () => {
+test('stored defaults are normalized on load, including malformed entries', async () => {
   const harness = providerHarness({
     stored: {
       claude: null, codex: null,
       subagent: { claude: { providerId: ' sub-claude ', model: 'claude-haiku-4-5' }, codex: 'junk' },
     },
-    getNative: () => addon,
   });
   assert.deepEqual(harness.providerDefaults.subagent, { claude: CLAUDE_ROUTE, codex: null });
-  const response = await invoke(harness.app, 'GET', '/api/subagent-defaults');
-  assert.deepEqual(response.body.defaults, { claude: CLAUDE_ROUTE, codex: null });
+  const response = await invoke(harness.app, 'POST', HOST_PATH, { body: { op: 'state' } });
+  assert.deepEqual(response.body.subagent, { claude: CLAUDE_ROUTE, codex: null });
 });
 
-rustTest('save_failed answers 500 and touches no session', async () => {
+test('a failed write answers ok:false and touches no session', async () => {
   const harness = providerHarness({
     sessions: [claudeSession('a')],
-    getNative: () => addon,
     writeError: new Error('disk full'),
   });
-  const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
-    body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE) },
+  const response = await invoke(harness.app, 'POST', HOST_PATH, {
+    body: { op: 'persist', defaults: { claude: CLAUDE_ROUTE, codex: null } },
   });
-  assert.equal(response.statusCode, 500);
-  assert.deepEqual(response.body, { error: '无法保存子任务默认线路', code: 'save_failed' });
+  assert.deepEqual(response.body, { ok: false });
+  assert.deepEqual(harness.writes, []);
   assert.deepEqual(harness.applied, [], 'a failed save must not touch any session');
   assert.equal(harness.sessions.get('a').subagent, undefined);
   assert.equal(Object.prototype.hasOwnProperty.call(harness.providerDefaults, 'subagent'), false);

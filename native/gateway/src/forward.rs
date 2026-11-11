@@ -197,7 +197,8 @@ async fn dispatch(
     request: Request<Body>,
 ) -> Response<Body> {
     if let Some(route) = crate::app::claim(request.method(), request.uri().path()) {
-        return crate::app::handle(app, route, request, upstream.state.client).await;
+        let host = upstream.state.port.load(Ordering::SeqCst);
+        return crate::app::handle(app, route, request, upstream.state.client, host).await;
     }
     forward(upstream, request).await
 }

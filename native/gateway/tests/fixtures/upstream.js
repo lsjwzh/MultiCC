@@ -169,6 +169,45 @@ const server = http.createServer((req, res) => {
     res.end(body);
     return;
   }
+  // Host port for routes that need in-process Node state (docs/gateway.md §10).
+  // FIXTURE_HOST_SCRIPT names a JSON file the test writes: subagent defaults,
+  // the session projection, provider facts and per-session patch outcomes.
+  if (route === '/api/__host/subagent-defaults' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'host-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      let out;
+      if (input.op === 'state') {
+        out = { subagent: script.subagent === undefined ? null : script.subagent, sessions: script.sessions || [] };
+      } else if (input.op === 'facts') {
+        out = (script.facts && script.facts[input.providerId]) || { valid: false, proxyable: false, official: false };
+      } else if (input.op === 'persist') {
+        if (script.persistFail === true) out = { ok: false };
+        else {
+          fs.writeFileSync(path.join(stateDir, 'persisted.json'), JSON.stringify(input.defaults));
+          out = { ok: true };
+        }
+      } else if (input.op === 'patch') {
+        const p = (script.patches && script.patches[input.sessionId]) || {};
+        if (p.compat === true) out = { ok: true, compat: true };
+        else if (p.threw === true) out = { ok: true, status: 500, detail: 'session patch rejected' };
+        else if (typeof p.status === 'number' && p.status !== 200) out = { ok: true, status: p.status, detail: p.detail || 'session patch rejected' };
+        else out = { ok: true, status: 200, deferred: p.deferred === true };
+        fs.appendFileSync(path.join(stateDir, 'patches.jsonl'), `${JSON.stringify({ sessionId: input.sessionId, subagent: input.subagent, dryRun: input.dryRun })}\n`);
+      } else {
+        out = { ok: false };
+      }
+      const text = JSON.stringify(out);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
   if (route === '/echo' && req.method === 'POST') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
