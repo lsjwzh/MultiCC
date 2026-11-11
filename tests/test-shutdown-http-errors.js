@@ -81,6 +81,7 @@ function fakeLogger() {
   {
     const order = [];
     let exits = 0;
+    let drainGrace;
     const rec = fakeLogger();
     const c = createShutdownCoordinator({
       logger: rec,
@@ -90,10 +91,14 @@ function fakeLogger() {
       closerReserveMs: 100,
       exit: () => { exits++; order.push('exit'); },
     });
-    c.onCheckpoint(() => { order.push('checkpoint'); });
+    c.onCheckpoint(async () => {
+      order.push('checkpoint');
+      // Checkpoint work consumes the shared budget before draining starts.
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
     // Grace is deliberately far larger than the budget: it must be capped by
     // the remaining total, not spent in full.
-    c.onDrain(() => { order.push('drain'); return new Promise(() => {}); });
+    c.onDrain(({ graceMs }) => { drainGrace = graceMs; order.push('drain'); return new Promise(() => {}); });
     c.onFinalFlush(() => { order.push('final-flush'); return new Promise(() => {}); });
     c.onClose(() => { order.push('closer'); return new Promise(() => {}); });
     const started = Date.now();
@@ -104,7 +109,8 @@ function fakeLogger() {
     ok(exits === 1, 'coordinator: exit runs even though every later phase hung');
     ok(elapsed <= 1_200,
       `coordinator: hung phases cannot add past one total budget (${elapsed}ms; 3x the 400ms budget)`);
-    ok(rec.rec.warn.some(m => /drain grace 200ms exceeded/.test(m)),
+    ok(drainGrace > 0 && drainGrace < 200
+      && rec.rec.warn.some(m => m.includes(`drain grace ${drainGrace}ms exceeded`)),
       'coordinator: drain grace is capped to budget minus final-flush/closer reserves');
   }
 

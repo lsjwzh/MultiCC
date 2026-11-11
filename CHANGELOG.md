@@ -2,6 +2,29 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.20.2 — Unattended tasks, resilient routing, and Rust request handling (2026-11-11)
+
+The v2.20.0 and v2.20.1 candidates did not reach a published Release. Both tags are preserved. The v2.20.1 release checks exposed timing assumptions in regression fixtures; this candidate corrects those checks and retains the feature updates below.
+
+- Validate shutdown drain grace against the remaining shared budget after checkpoint work, rather than an exact elapsed-time log string. Give streaming-timeout fixtures room for admission and connection startup while continuing to require correct timeout attribution, a single outcome, and upstream connection cleanup. Production timeout settings are unchanged.
+
+- Include the required Rust gateway in fresh-install and regression containers, validate transcript paths using the host platform, and remove a redundant loop rejected by Rust 1.99 Clippy.
+- Keep the gateway process fixture alive under GNU command-line parsing and route isolated Claude completion tests through the fake SDK engine so they never start the real model client.
+- Keep the stale restart lock's recovery guard until the replacement manager identity is recorded, preventing concurrent recovery requests from starting duplicate source servers. Retain the existing shell launcher and Node process-inspection adapter as the migration bridge: moving the restart lifecycle during this fix would also change bootstrap and process-drain behavior. Migrate them together once the Rust host preserves those lifecycle contracts.
+- Reconcile queued chat messages with the transcript so reconnects and message acknowledgements do not leave duplicate entries in the conversation.
+- Switch to the selected CLI before saving an automatic-provider configuration, preserving the provider selection for that CLI.
+- Share stopped-writer evidence across workspace checks and batch code-revision file hashing in Rust, reducing repeated scans while retaining publication evidence checks. The Node host remains a narrow adapter for existing repository and workspace lifecycle interfaces until those interfaces move to the Rust host.
+- Make release regression fixtures portable across Windows, macOS, and Linux, including temporary home directories, line endings, SQLite handle cleanup, gateway-owned routes, and streaming timeout attribution.
+
+- Add unattended supervision on web and mobile. Set a goal, acceptance criteria, and a time limit; MultiCC evaluates progress and queues follow-ups until the goal is reached, time expires, or human help is required. Pause to take over, resume when ready, and clear a finished run. Recover from transient capacity and host interruptions with bounded retry delays and visible status.
+- Improve Auto Provider continuity. An optional low-quota rule switches to the line with the most remaining quota when the current line falls below 20 percent, while preserving configured priority otherwise. A continuation can leave an exhausted lane, and run configuration presets can be updated in place on web and mobile.
+- Select a dedicated network exit before opening a Claude or Codex account login link, so account authorization and later requests use the selected route. The existing Node network and OAuth adapters remain necessary for the current login clients; move them when the Rust account host provides equivalent authorization and proxy behavior.
+- Keep background work and messages delivered during an active turn under one Rust runtime. Preserve query outcomes, delivery acknowledgements, route attribution, and progress through background completion and reconnects, and avoid finishing a turn while its queued work is still pending.
+- Persist chat history asynchronously in Rust and serialize history mutations, rotation, and transcript pruning. This also fixes recursive append callbacks and makes durable delivery checks wait for their history writes.
+- Route desktop and standalone startup through the Rust gateway on macOS, Windows, and Linux. Move authentication, selected API routes, workspace subscriptions, session persistence, provider routing decisions, and secret redaction into Rust while retaining the existing Node adapters for unmigrated host and SDK interfaces.
+- Consolidate Claude chat execution on the Agent SDK and normalize retired lane aliases in saved run configurations. The Node SDK adapter remains the compatibility boundary until the Rust host can support the same SDK transport and lifecycle.
+- Update the mobile app to 2.43.0 (build 191), including unattended controls, clearer live progress, and the latest Auto Provider settings.
+
 ## v2.20.1 — Unattended tasks, resilient routing, and Rust request handling (2026-11-11)
 
 The v2.20.0 candidate did not reach a published Release. Its tag is preserved. This release includes the feature updates below and fixes the cross-platform release checks.
