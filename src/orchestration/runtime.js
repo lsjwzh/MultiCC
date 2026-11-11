@@ -6,6 +6,7 @@
 // to runChatTurn().
 
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { createOrchestrationStore } = require('./store');
 const { createOrchestrationSqliteStore } = require('./sqlite-store');
 const { createOutbox } = require('../outbox');
@@ -147,6 +148,12 @@ function createOrchestrationRuntime({
   clearTimeoutFn = clearTimeout,
   workerIntervalMs = 1000,
   deliveryWatchdogMs = 120_000,
+  // How long ONE tick waits for the deliveries it just claimed. The watchdog
+  // above still reports a delivery that never comes back, but waiting for it
+  // made a single slow session head-of-line-block every other session's
+  // message for the whole watchdog window. Past this grace the delivery keeps
+  // running (its item and group stay parked below) while the tick moves on.
+  deliveryTickGraceMs = 1000,
   pollLeaseMs = 30_000,
   claimLimit = 8,
   workerId = `multicc-${process.pid}-${crypto.randomBytes(6).toString('hex')}`,
@@ -897,6 +904,39 @@ function createOrchestrationRuntime({
     return acknowledged;
   }
 
+  // The identity the turn engine files a handoff probe under (clientMsgId when
+  // the sender supplied one, else the delivery id).
+  function deliveryProbeIdentity(item) {
+    return item.payload?.options?.clientMsgId || item.payload?.clientMsgId || item.id;
+  }
+
+  // A rejected delivery is not always worth retrying. When a turn was persisted
+  // and then aborted in preparation (provider route exhausted, spawn refusal,
+  // preparation exception), re-running the same outbox item cannot succeed: the
+  // turn engine already settled the scheduler entry through the classify cancel
+  // path, and the unattended supervisor owns the next attempt via its fault
+  // retry (retryAt + FAULT_INSTRUCTION). Without this the item re-executed every
+  // backoff tick for the whole attempt budget — the observed
+  // `chat_turn_reexecute_persisted_delivery` loop that head-of-line blocked
+  // every other session.
+  //
+  // The freshness window matters: the probe is written by the PREVIOUS attempt
+  // too, so only a probe stamped after this attempt started proves that THIS
+  // call is the one that failed before handoff. An old probe plus a failure
+  // from an earlier gate (background work, admission reject) must stay
+  // retryable.
+  async function rejectedBeforeHandoff(item, startedAt) {
+    if (typeof runnerDeliveryProbe !== 'function') return false;
+    let probe = null;
+    try {
+      probe = await Promise.resolve(runnerDeliveryProbe(item.sessionId, deliveryProbeIdentity(item)));
+    } catch (_) { return false; }
+    return !!probe
+      && probe.known === true
+      && probe.handedOff === false
+      && Number(probe.at) >= startedAt;
+  }
+
   async function deliver(item) {
     const deliveryId = item.id;
     let schedulerClaimed = false;
@@ -977,6 +1017,9 @@ function createOrchestrationRuntime({
         taskId: itemTaskId(item),
       };
       deliveryGuard = await Promise.resolve(beforeDeliver(descriptor));
+      // Wall clock, not the injected `now`: the probe timestamp is stamped by
+      // Date.now() in the turn engine, and the two must be comparable here.
+      const deliveryStartedAt = Date.now();
       const accepted = await Promise.resolve(
         typeof deliverOutbox === 'function'
           ? deliverOutbox(descriptor)
@@ -986,9 +1029,21 @@ function createOrchestrationRuntime({
         // Delivery is transport state, never FIFO/classify state. Settle the
         // transport lease first (retry budget), then release the claim so the
         // 'claim_released' broadcast carries the post-rollback FIFO snapshot.
-        const failed = await outbox.fail(item.id, item.leaseToken, 'runChatTurn rejected delivery', {
-          retryable: true,
-        });
+        const recovered = getSessionRecoveryState(item.sessionId) || {};
+        const unattendedActive = recovered.unattended?.status === 'active';
+        const preparationFailure = unattendedActive
+          && await rejectedBeforeHandoff(item, deliveryStartedAt);
+        if (preparationFailure) {
+          // The supervisor's fault retry is the one driver from here; a durable
+          // outbox retry would race it and re-execute the same persisted turn.
+          log(`[orchestration] delivery ${item.id} aborted before runner handoff;`
+            + ' dead-lettering it and leaving the retry to the unattended supervisor');
+        }
+        const failed = await outbox.fail(item.id, item.leaseToken,
+          preparationFailure
+            ? 'turn preparation failed before runner handoff; unattended supervisor owns the retry'
+            : 'runChatTurn rejected delivery',
+          { retryable: !preparationFailure });
         await sessionScheduler.releaseClaim(item, 'delivery_deferred');
         return failed;
       }
@@ -1048,30 +1103,55 @@ function createOrchestrationRuntime({
     }
   }
 
-  // Item ids whose deliver() promise has not settled yet. Only the watchdog
-  // path can outlive its own tick, so this stays empty in normal operation.
+  // Item ids whose deliver() promise has not settled yet. Only a delivery that
+  // outlived its tick (watchdog log or the tick grace below) is in here, so
+  // this stays empty in normal operation.
   const inFlightDeliveries = new Set();
+  // The same deliveries as promises: the tick may return before them (grace),
+  // but a graceful stop still waits for the work it started, exactly as when
+  // the tick awaited every delivery.
+  const pendingDeliveries = new Set();
+  // Delivery groups with a delivery still running past its tick. The outbox
+  // claim already admits one item per group per tick; this extends the same
+  // ordering guarantee across ticks, so a parked delivery cannot be overtaken
+  // by a later message in the SAME workspace while other groups keep flowing.
+  const inFlightDeliveryGroups = new Map();
+  // tick() re-entrancy. Async context, not a depth counter: only a tick asked
+  // for BY a delivery that is still running is a re-entrant one. An unrelated
+  // caller (an admission, the worker interval) which happens to arrive while a
+  // tick is waiting on deliveries must keep its normal chained semantics.
+  const deliveryScope = new AsyncLocalStorage();
+  let tickRequested = false;
 
   // Belt to the isDeliveryLocked braces: no single delivery may freeze the
   // worker. Every tick chains onto tickTail, so one promise that never settles
-  // stops delivery for every session — and stops the lease recovery that would
-  // otherwise rescue the stuck item. The watchdog releases only the TICK; the
-  // delivery promise keeps running, and the expired lease is re-claimed later.
-  // deliver()'s hasPersistedDelivery guard keeps that retry idempotent.
+  // used to stop delivery for every session — and stop the lease recovery that
+  // would otherwise rescue the stuck item. The tick itself is bounded by
+  // deliveryTickGraceMs (processOutbox); the watchdog below still names a
+  // delivery that stopped making progress. deliver()'s hasPersistedDelivery
+  // guard keeps the eventual retry idempotent.
   function deliverWithinTick(item) {
-    const delivery = deliver(item);
-    if (!(deliveryWatchdogMs > 0)) return delivery;
+    const delivery = deliveryScope.run({ itemId: item.id }, () => deliver(item));
     delivery.catch(() => {});
-    // Releasing the tick must not turn one slow delivery into two: the lease
-    // can expire while the original is still in flight, and a re-claim would
-    // inject the same message twice whenever the first attempt has not reached
-    // its history write yet. Parking the id keeps that item (and only its own
-    // session) unselectable until the original delivery actually settles.
+    // Parking must not turn one slow delivery into two: the lease can expire
+    // while the original is still in flight, and a re-claim would inject the
+    // same message twice whenever the first attempt has not reached its history
+    // write yet. Parking the id keeps that item (and its workspace, whose
+    // delivery order the outbox claim already respects within a tick)
+    // unselectable until the original delivery actually settles.
     inFlightDeliveries.add(item.id);
-    delivery.then(
-      () => inFlightDeliveries.delete(item.id),
-      () => inFlightDeliveries.delete(item.id),
-    );
+    pendingDeliveries.add(delivery);
+    const group = deliveryGroup(item.sessionId);
+    inFlightDeliveryGroups.set(group, (inFlightDeliveryGroups.get(group) || 0) + 1);
+    const unpark = () => {
+      inFlightDeliveries.delete(item.id);
+      pendingDeliveries.delete(delivery);
+      const count = (inFlightDeliveryGroups.get(group) || 1) - 1;
+      if (count > 0) inFlightDeliveryGroups.set(group, count);
+      else inFlightDeliveryGroups.delete(group);
+    };
+    delivery.then(unpark, unpark);
+    if (!(deliveryWatchdogMs > 0)) return delivery;
     let timer = null;
     const watchdog = new Promise(resolve => {
       timer = setTimeoutFn(() => {
@@ -1194,6 +1274,14 @@ function createOrchestrationRuntime({
         }
       }
       if (inFlightDeliveries.has(item.id)) return null;
+      // The outbox claim keeps one item per group per tick; this keeps the same
+      // order across ticks while a previous delivery in that workspace is still
+      // running. Without it a parked delivery could be overtaken by the next
+      // message in the same workspace, reversing the FIFO the scheduler chose.
+      if (inFlightDeliveryGroups.has(deliveryGroup(item.sessionId))) {
+        noteDeliverySkip(item, 'delivery_in_flight');
+        return null;
+      }
       if (isDeliveryLocked(item.sessionId, projected)) {
         noteDeliverySkip(item, 'delivery_locked');
         return null;
@@ -1212,7 +1300,30 @@ function createOrchestrationRuntime({
       selectSessionItem: selectRunnableSessionItem,
       sessionGroup: deliveryGroup,
     });
-    await Promise.all(claimed.map(deliverWithinTick));
+    // Deliveries run inside the tick, and a delivery can legitimately call back
+    // into the worker (a turn aborted in preparation settles its scheduler
+    // entry through the classify cancel path, which asks for a tick). Such a
+    // nested tick must not chain onto this tick — that is a promise waiting for
+    // itself, released only by the watchdog. tick() detects it through
+    // deliveryScope and schedules the follow-up after this tick settles.
+    const deliveries = Promise.all(claimed.map(deliverWithinTick));
+    // Handled here as well so an error surfacing after the grace still counts as
+    // handled (the tick has returned by then).
+    deliveries.catch(() => {});
+    if (deliveryTickGraceMs > 0) {
+      let graceTimer = null;
+      const grace = new Promise(resolve => {
+        graceTimer = setTimeoutFn(resolve, deliveryTickGraceMs);
+        if (graceTimer && typeof graceTimer.unref === 'function') graceTimer.unref();
+      });
+      try {
+        await Promise.race([deliveries, grace]);
+      } finally {
+        if (graceTimer !== null) clearTimeoutFn(graceTimer);
+      }
+    } else {
+      await deliveries;
+    }
     return claimed.length;
   }
 
@@ -1420,11 +1531,45 @@ function createOrchestrationRuntime({
   function tick() {
     if (admissionWakeup !== null) clearTimeoutFn(admissionWakeup);
     admissionWakeup = null;
+    // Called from inside a delivery this runtime is running (a preparation
+    // failure cancels the turn, and the cancel path settles classify and asks
+    // for a tick). Chaining onto tickTail would make the nested tick await the
+    // tick that is awaiting this very delivery: a self-deadlock that left the
+    // entry leased for the whole watchdog window and re-executed it afterwards.
+    // Answer immediately and run exactly one follow-up tick once the current
+    // tick settles.
+    // Only while that delivery is still unsettled: async context also flows into
+    // everything the delivery started (a CLI process, its timers), and those
+    // must get the ordinary chained tick once the delivery itself is over.
+    const scope = deliveryScope.getStore();
+    if (scope && inFlightDeliveries.has(scope.itemId)) {
+      requestTickAfterDelivery();
+      return Promise.resolve(0);
+    }
     const operation = tickTail.then(runTick, runTick);
     tickTail = operation.catch(error => {
       log(`[orchestration] worker tick failed: ${error.message}`);
     });
     return operation;
+  }
+
+  function requestTickAfterDelivery() {
+    if (tickRequested) return;
+    tickRequested = true;
+    // `deliveryScope.exit` keeps this continuation (and the tick it starts) out
+    // of the delivery's async context — otherwise the follow-up tick would be
+    // mistaken for another re-entrant one.
+    deliveryScope.exit(() => {
+      const pending = tickTail;
+      pending.then(() => {
+        tickRequested = false;
+        if (!stopped) return tick();
+        return null;
+      }).catch(error => {
+        tickRequested = false;
+        log(`[orchestration] follow-up worker tick failed: ${error.message}`);
+      });
+    });
   }
 
   async function start() {
@@ -1458,6 +1603,9 @@ function createOrchestrationRuntime({
     // dispatches are intentionally left active for their dedicated reconcile.
     await operations.interruptActiveTasks();
     await tickTail;
+    // A delivery released by the tick grace may still be finishing; the store
+    // must not close under it.
+    if (pendingDeliveries.size) await Promise.allSettled([...pendingDeliveries]);
     await store.flush();
     if (typeof store.exportLegacy === 'function') await store.exportLegacy();
   }

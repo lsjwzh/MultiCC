@@ -45,6 +45,8 @@ function fixture(t, overrides = {}) {
     ...(overrides.onSchedulerEvent ? { onSchedulerEvent: overrides.onSchedulerEvent } : {}),
     ...(overrides.deliveryWatchdogMs !== undefined
       ? { deliveryWatchdogMs: overrides.deliveryWatchdogMs } : {}),
+    ...(overrides.deliveryTickGraceMs !== undefined
+      ? { deliveryTickGraceMs: overrides.deliveryTickGraceMs } : {}),
     hasPersistedDelivery: async (sessionId, deliveryId) => (
       history.get(sessionId)?.has(deliveryId) || false
     ),
@@ -1221,6 +1223,119 @@ test('a delivery that never settles releases the tick instead of freezing the wo
   );
 
   unblock();
+  await h.runtime.stop();
+});
+
+// Regression: a turn that is persisted and then aborted in preparation is not
+// a delivery that can succeed by being retried. The turn engine settles the
+// scheduler entry through the classify cancel path, which itself asks for a
+// worker tick — from inside the delivery that the worker tick is waiting for.
+// That used to self-deadlock the tick for the whole watchdog window and then
+// re-execute the same item on every backoff, head-of-line blocking every other
+// session (production incident 2026-11-11: `chat_turn_reexecute_persisted_delivery`
+// every ~2 minutes for one exhausted Auto lane).
+test('a preparation failure settles the delivery instead of re-executing it forever', async t => {
+  let injects = 0;
+  const h = fixture(t, {
+    // The unattended supervisor owns the next attempt (fault retryAt), so the
+    // outbox item must not retry on its own.
+    getSessionRecoveryState: () => ({ unattended: { status: 'active' } }),
+    runnerDeliveryProbe: () => ({ known: true, handedOff: false, at: Date.now() }),
+    runChatTurn: async (sessionId, text, opts) => {
+      injects += 1;
+      const ids = h.history.get(sessionId) || new Set();
+      ids.add(opts.deliveryId); // the user message is durable…
+      h.history.set(sessionId, ids);
+      await h.runtime.tick(); // …the cancel path settles classify and asks for a tick…
+      return false; // …and no runner ever took the turn over.
+    },
+  });
+  const admitted = await h.runtime.admitSessionWork({
+    sessionId: 'prep-fail', text: 'exhausted lane', idempotencyKey: 'prep-fail-1', options: {},
+  });
+  assert.equal(admitted.ok, true);
+
+  await withTimeout(h.runtime.tick(), 2000, 'the preparation settle deadlocked the worker tick');
+
+  const item = await h.runtime.outbox.get(admitted.entry.id);
+  assert.equal(item.state, 'dead-letter', 'a pre-handoff preparation failure must not stay retryable');
+  assert.equal(injects, 1);
+  const queue = await h.runtime.sessionScheduler.status('prep-fail');
+  assert.equal(queue.active, null, 'the scheduler claim is released, not left leased');
+
+  // The follow-up tick requested by the cancel path must run, and must not
+  // execute the dead-lettered item again.
+  await withTimeout(h.runtime.tick(), 2000, 'the follow-up tick never settled');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(injects, 1, 'a settled preparation failure is never re-executed');
+  await h.runtime.stop();
+});
+
+test('the same rejection stays retryable without an unattended supervisor', async t => {
+  let injects = 0;
+  const h = fixture(t, {
+    runnerDeliveryProbe: () => ({ known: true, handedOff: false, at: Date.now() }),
+    runChatTurn: async (sessionId, text, opts) => {
+      injects += 1;
+      const ids = h.history.get(sessionId) || new Set();
+      ids.add(opts.deliveryId);
+      h.history.set(sessionId, ids);
+      return false;
+    },
+  });
+  const admitted = await h.runtime.admitSessionWork({
+    sessionId: 'interactive', text: 'retry me', idempotencyKey: 'interactive-1', options: {},
+  });
+  await withTimeout(h.runtime.tick(), 2000, 'the rejected delivery did not settle the tick');
+  const item = await h.runtime.outbox.get(admitted.entry.id);
+  assert.equal(item.state, 'pending', 'an interactive session keeps its retry budget');
+  assert.equal(injects, 1);
+  await h.runtime.stop();
+});
+
+// Regression: one session whose delivery never comes back used to hold the whole
+// worker tick (and every session behind it) for the entire watchdog window.
+test('a hung delivery for one session does not delay another session', async t => {
+  let unblock = null;
+  const hung = new Promise(resolve => { unblock = resolve; });
+  const holdLoopOpen = setTimeout(() => {}, 60_000);
+  t.after(() => clearTimeout(holdLoopOpen));
+  const h = fixture(t, {
+    deliveryTickGraceMs: 30,
+    deliveryWatchdogMs: 5_000,
+    beforeDeliver: async descriptor => {
+      if (descriptor.sessionId === 'hung-x') await hung;
+    },
+  });
+
+  const x = await h.runtime.admitSessionWork({
+    sessionId: 'hung-x', text: 'hangs', idempotencyKey: 'hung-x-1', options: {},
+  });
+  await withTimeout(h.runtime.tick(), 1000, 'one hung delivery held the worker tick past its grace');
+  assert.equal(
+    (await h.runtime.outbox.get(x.entry.id)).state, 'leased',
+    'the grace only releases the tick; the delivery is still running',
+  );
+
+  await h.runtime.admitSessionWork({
+    sessionId: 'free-y', text: 'unrelated', idempotencyKey: 'free-y-1', options: {},
+  });
+  await withTimeout(h.runtime.tick(), 1000, 'a hung delivery delayed another session\'s delivery');
+  assert.ok(
+    h.injections.some(injection => injection.sessionId === 'free-y'),
+    'an unrelated session is delivered while one delivery hangs',
+  );
+  assert.equal(
+    h.injections.filter(injection => injection.sessionId === 'hung-x').length, 0,
+    'the parked item is not delivered twice',
+  );
+
+  unblock();
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    if ((await h.runtime.outbox.get(x.entry.id)).state === 'delivered') break;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
   await h.runtime.stop();
 });
 
