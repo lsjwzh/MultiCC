@@ -1,4 +1,7 @@
 'use strict';
+// 路由由 Rust 前门独占（native/gateway/src/app/model_catalogs.rs）：路径、查询串、
+// 状态码与响应形状都在那边；这里的 CLI 枚举、解析与进程内缓存只经宿主端口
+// src/routes/model-catalogs-host.js 提供。
 
 // GET /api/opencode/models — list models available to the local opencode CLI.
 //
@@ -458,20 +461,7 @@ function peekOpenCodeModels() {
   return cache && Array.isArray(cache.models) ? cache.models : [];
 }
 
-function mountOpenCodeModelRoutes(app) {
-  if (!app || typeof app.get !== 'function') return;
-  // ?refresh=1 skips the 1-hour cache (the picker 刷新模型 button, or a paid model unlocked by a new key).
-  app.get('/api/opencode/models', (req, res) => {
-    const refresh = String((req.query && req.query.refresh) || '') === '1';
-    listOpenCodeModels((err, models, source) => {
-      if (err) return res.status(503).json({ error: 'opencode models unavailable', models: [] });
-      res.json({ models, source, cached: source === 'cache' });
-    }, { refresh });
-  });
-}
-
 module.exports = {
-  mountOpenCodeModelRoutes,
   listOpenCodeModels,
   parseOpenCodeStdout,
   peekOpenCodeModels,

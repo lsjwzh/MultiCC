@@ -2,6 +2,11 @@
 
 // GET /api/providers/:id/models — live catalog for a relay (借道) provider.
 //
+// The public route itself is served by the Rust front door
+// (native/gateway/src/app/model_catalogs.rs); this file covers the Node runtime
+// behind the host port: the provider-store projection, the 3s upstream fetch,
+// the one-hour cache and the failure cooldown.
+//
 // The picker must be able to show models the upstream actually serves today,
 // while never letting the CLIENT decide which URL is dialed (SSRF) and never
 // leaking the stored credential. A gateway outage is a fallback, not an error.
@@ -11,7 +16,6 @@ const assert = require('node:assert/strict');
 
 const {
   createProviderModelsRuntime,
-  mountProviderModelRoutes,
   modelsFromPayload,
 } = require('../src/routes/provider-models');
 
@@ -49,23 +53,7 @@ function runtimeFor(fixture, fetchImpl) {
   return createProviderModelsRuntime({ providers: fixture.providers, fetch: fetchImpl });
 }
 
-function mount(app, runtime) {
-  app.get = (path, handler) => { app.routes.set(path, handler); };
-  mountProviderModelRoutes(app, { runtime });
-  return app.routes.get('/api/providers/:id/models');
-}
-
-function fakeRes() {
-  const res = {
-    statusCode: 200, body: undefined,
-    status(code) { this.statusCode = code; return this; },
-    set() {},
-    json(body) { this.body = body; return this; },
-  };
-  return res;
-}
-
-test('?refresh=1 pulls the live catalog from the provider base URL with its stored key', async () => {
+test('refresh=true pulls the live catalog from the provider base URL with its stored key', async () => {
   const fixture = providerFixture();
   const calls = [];
   const fetchImpl = async (url, options) => {
@@ -113,37 +101,78 @@ test('an unknown provider is a 404', async () => {
   assert.match(result.body.error, /not found/i);
 });
 
-test('the query string cannot redirect the fetch (SSRF) and the key never comes back', async () => {
+test('only the provider id selects a URL; the base URL comes from the store', async () => {
   const fixture = providerFixture();
   const calls = [];
-  const app = { routes: new Map() };
-  const handler = mount(app, runtimeFor(fixture, async url => {
+  const runtime = runtimeFor(fixture, async url => {
     calls.push(url);
     return response(200, { models: [{ id: 'safe-model' }] });
-  }));
-  const res = fakeRes();
-  await handler({
-    params: { id: 'relay-1' },
-    query: { refresh: '1', baseURL: 'https://evil.example', url: 'https://evil.example' },
-  }, res);
-  assert.equal(res.statusCode, 200);
+  });
+  const result = await runtime.listProviderModels('relay-1', { refresh: true });
+  assert.equal(result.status, 200);
   assert.deepEqual(calls, ['https://relay.example/v1/models']);
-  assert.equal(JSON.stringify(res.body).includes(FAKE_KEY), false);
-  assert.equal(JSON.stringify(res.body).includes('evil.example'), false);
+  assert.equal(JSON.stringify(result.body).includes(FAKE_KEY), false);
+  assert.equal(JSON.stringify(result.body).includes('evil.example'), false);
+  // A URL never resolves to a stored provider, so it cannot choose the dial target.
+  assert.deepEqual(await runtime.listProviderModels('https://evil.example', { refresh: true }), {
+    status: 404, body: { error: 'provider not found' },
+  });
+  assert.deepEqual(calls, ['https://relay.example/v1/models']);
 });
 
-test('a 401 with the stored key retries unauthenticated before falling back', async () => {
+test('editing the provider base URL invalidates the cached catalog immediately', async () => {
   const fixture = providerFixture();
-  const seen = [];
-  const fetchImpl = async (_url, options) => {
-    seen.push({ ...options.headers });
-    return seen.length === 1 ? response(401, {}) : response(200, { models: [{ id: 'anon-model' }] });
-  };
-  const body = (await runtimeFor(fixture, fetchImpl).listProviderModels('relay-1', { refresh: true })).body;
-  assert.equal(body.source, 'live');
-  assert.equal(body.models[0].model, 'anon-model');
-  assert.equal(seen[0].authorization, `Bearer ${FAKE_KEY}`);
-  assert.equal(seen[1].authorization, undefined);
+  const calls = [];
+  const runtime = runtimeFor(fixture, async url => {
+    calls.push(url);
+    return response(200, { data: [{ id: calls.length === 1 ? 'old-gateway-model' : 'new-gateway-model' }] });
+  });
+  assert.equal((await runtime.listProviderModels('relay-1')).body.models[0].model, 'old-gateway-model');
+  // A warm cache keyed only by provider id would hide the new gateway for an hour.
+  assert.equal((await runtime.listProviderModels('relay-1')).body.models[0].model, 'old-gateway-model');
+  assert.equal(calls.length, 1);
+  fixture.summary.baseUrl = 'https://relay.example/v2';
+  const fresh = await runtime.listProviderModels('relay-1');
+  assert.equal(fresh.body.source, 'live');
+  assert.equal(fresh.body.models[0].model, 'new-gateway-model');
+  assert.deepEqual(calls, ['https://relay.example/v1/models', 'https://relay.example/v2/models']);
+});
+
+test('a failed pull is cooled down for a minute before the gateway is dialed again', async () => {
+  const fixture = providerFixture();
+  let now = 1000;
+  let fetches = 0;
+  const runtime = createProviderModelsRuntime({
+    providers: fixture.providers,
+    now: () => now,
+    failureTtlMs: 60 * 1000,
+    fetch: async () => { fetches += 1; return response(500, {}); },
+  });
+  assert.equal((await runtime.listProviderModels('relay-1')).body.source, 'fallback');
+  assert.equal(fetches, 1);
+  assert.equal((await runtime.listProviderModels('relay-1')).body.source, 'fallback');
+  assert.equal(fetches, 1, 'within the cooldown the gateway is not dialed again');
+  now += 61 * 1000;
+  await runtime.listProviderModels('relay-1');
+  assert.equal(fetches, 2, 'after the cooldown the next read retries');
+  await runtime.listProviderModels('relay-1', { refresh: true });
+  assert.equal(fetches, 3, 'refresh=true always bypasses the cooldown');
+});
+
+test('a 401 or 403 with the stored key retries unauthenticated before falling back', async () => {
+  for (const deny of [401, 403]) {
+    const fixture = providerFixture();
+    const seen = [];
+    const fetchImpl = async (_url, options) => {
+      seen.push({ ...options.headers });
+      return seen.length === 1 ? response(deny, {}) : response(200, { models: [{ id: 'anon-model' }] });
+    };
+    const body = (await runtimeFor(fixture, fetchImpl).listProviderModels('relay-1', { refresh: true })).body;
+    assert.equal(body.source, 'live', `status ${deny}`);
+    assert.equal(body.models[0].model, 'anon-model');
+    assert.equal(seen[0].authorization, `Bearer ${FAKE_KEY}`);
+    assert.equal(seen[1].authorization, undefined);
+  }
 });
 
 test('Anthropic-format providers send x-api-key + anthropic-version', async () => {

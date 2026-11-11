@@ -111,7 +111,7 @@ test('grok: unreadable CLI falls back to the snapshot', async () => {
   assert.deepEqual(out.models.map(m => m.model), [...grok.GROK_MODEL_FALLBACK]);
 });
 
-test('commandcode: refresh skips the one-hour cache; the route accepts refresh=1/true', async () => {
+test('commandcode: refresh skips the one-hour cache', async () => {
   process.env.COMMAND_CODE_CMD = fakeCli('commandcode', CC_REAL);
   const cached = await listCc();
   assert.equal(cached.source, 'cli');
@@ -121,19 +121,9 @@ test('commandcode: refresh skips the one-hour cache; the route accepts refresh=1
   const fresh = await listCc({ refresh: true });
   assert.equal(fresh.source, 'cli');
   assert.deepEqual(fresh.models.map(m => m.model), ['new/model-a', 'new/model-b']);
-
-  const routes = new Map();
-  cc.mountCommandcodeModelRoutes({ get: (p, h) => routes.set(p, h) });
-  const handler = routes.get('/api/commandcode/models');
-  for (const value of ['1', 'true']) {
-    cc._setCacheForTest(Date.now(), [{ model: 'cached-model', label: 'cached-model', group: 'Open Source' }]);
-    const body = await new Promise(resolve => handler({ query: { refresh: value } }, { json: resolve }));
-    assert.equal(body.source, 'cli', `refresh=${value} bypasses the cache`);
-    assert.deepEqual(body.models.map(m => m.model), ['new/model-a', 'new/model-b']);
-  }
 });
 
-test('grok: refresh skips the one-hour cache; the route accepts refresh=1/true', async () => {
+test('grok: refresh skips the one-hour cache', async () => {
   process.env.GROK_CMD = fakeCli('grok', GROK_AUTHED);
   assert.equal((await listGrok()).source, 'cli');
   process.env.GROK_CMD = fakeCli('grok', 'Default model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-5-preview\n');
@@ -141,26 +131,4 @@ test('grok: refresh skips the one-hour cache; the route accepts refresh=1/true',
   const fresh = await listGrok({ refresh: true });
   assert.equal(fresh.source, 'cli');
   assert.deepEqual(fresh.models.map(m => m.model), ['grok-4.7', 'grok-5-preview']);
-
-  const routes = new Map();
-  grok.mountGrokModelRoutes({ get: (p, h) => routes.set(p, h) });
-  const handler = routes.get('/api/grok/models');
-  for (const value of ['1', 'true']) {
-    grok._setCacheForTest(Date.now(), [{ model: 'cached-model', label: 'cached-model' }]);
-    const body = await new Promise(resolve => handler({ query: { refresh: value } }, { json: resolve }));
-    assert.equal(body.source, 'cli', `refresh=${value} bypasses the cache`);
-    assert.deepEqual(body.models.map(m => m.model), ['grok-4.7', 'grok-5-preview']);
-  }
-});
-
-test('routes are mounted at the documented paths', async () => {
-  const routes = [];
-  const app = { get: (p, h) => routes.push({ p, h }) };
-  cc.mountCommandcodeModelRoutes(app);
-  grok.mountGrokModelRoutes(app);
-  assert.deepEqual(routes.map(r => r.p), ['/api/commandcode/models', '/api/grok/models']);
-  process.env.GROK_CMD = fakeCli('grok', GROK_AUTHED);
-  const payload = await new Promise(resolve => routes[1].h({}, { json: resolve, status() { return { json: resolve }; } }));
-  assert.equal(payload.source, 'cli');
-  assert.equal(payload.models[0].model, 'grok-4.6');
 });

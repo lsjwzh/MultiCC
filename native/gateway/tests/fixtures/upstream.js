@@ -77,6 +77,9 @@ if (!fixtureToken) {
 }
 let revision = 0;
 let fixtureShutdown = false;
+// Set once the scripted Node child has been asked to refresh the Codex catalog;
+// the next codex-state answer can then report the post-refresh snapshot.
+let refreshed = false;
 const controlPort = Number(process.env.MULTICC_GATEWAY_AUTH_PORT);
 const capability = process.env.MULTICC_GATEWAY_AUTH_CAPABILITY;
 delete process.env.MULTICC_GATEWAY_AUTH_PORT;
@@ -205,6 +208,54 @@ const server = http.createServer((req, res) => {
       const text = JSON.stringify(out);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
       res.end(text);
+    });
+    return;
+  }
+  // Host port for the model catalog routes (docs/gateway.md §32). The script
+  // file describes each Node-side answer: CLI catalogs, the live provider
+  // fetch and the official Codex catalog runtime.
+  if (route === '/api/__host/model-catalogs' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'model-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      const catalogs = script.catalogs || {};
+      const codex = script.codex || {};
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (Object.prototype.hasOwnProperty.call(catalogs, input.op)) {
+        return send(catalogs[input.op]);
+      }
+      if (input.op === 'provider') {
+        const entry = (script.providers && script.providers[input.providerId]) || script.provider;
+        return send(entry || { status: 200, body: { models: [], source: 'fallback' } });
+      }
+      if (input.op === 'codex-state') {
+        if (codex.stateError === true) return send({ error: true });
+        const states = codex.states || {};
+        const state = states[input.providerId];
+        if (!state) return send({ found: false });
+        if (refreshed && codex.peekAfterRefresh) return send({ ...state, peek: codex.peekAfterRefresh });
+        return send(state);
+      }
+      if (input.op === 'codex-refresh') {
+        if (codex.refreshError === true) return send({ error: true });
+        const finish = () => {
+          refreshed = true;
+          fs.appendFileSync(path.join(stateDir, 'model-refresh.jsonl'), `${JSON.stringify(input)}\n`);
+          send({ ok: true });
+        };
+        if (input.wait === true && codex.refreshDelayMs) return setTimeout(finish, codex.refreshDelayMs);
+        return finish();
+      }
+      send({ error: true });
     });
     return;
   }

@@ -26,7 +26,19 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One JSON request/response exchange with the Node child on `port`.
 pub async fn call(port: u16, path: &str, payload: &Value) -> io::Result<Value> {
-    tokio::time::timeout(TIMEOUT, exchange(port, path, payload))
+    call_with(port, path, payload, TIMEOUT).await
+}
+
+/// The same exchange with a route-specific budget. Only a route whose Node
+/// handler used to block without a timeout (the legacy Codex catalog wait) needs
+/// more than [`TIMEOUT`].
+pub async fn call_with(
+    port: u16,
+    path: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> io::Result<Value> {
+    tokio::time::timeout(timeout, exchange(port, path, payload))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "host port timed out"))?
 }

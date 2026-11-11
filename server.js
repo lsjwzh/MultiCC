@@ -133,9 +133,8 @@ const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/providers/relay-share-store');
-const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
+const { mountModelCatalogsHostRoute } = require('./src/routes/model-catalogs-host');
 const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
-const { mountQoderModelRoutes } = require('./src/routes/qoder-models'); const { mountCodebuddyModelRoutes } = require('./src/routes/codebuddy-models'); const { mountCommandcodeModelRoutes } = require('./src/routes/commandcode-models'); const { mountGrokModelRoutes } = require('./src/routes/grok-models');
 const { mountQoderQuotaRoutes } = require('./src/routes/qoder-quota');
 const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota'); const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex/accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
@@ -2183,13 +2182,12 @@ const providerRoutes = createProviderRoutes({
 });
 const { providerDefaults, validProviderId } = providerRoutes;
 providerRoutes.mountCatalogRoutes(app);
-// GET /api/providers/:id/models — 借道线路实时模型目录（服务端存储的 baseURL/key，1h 缓存）。
-require('./src/routes/provider-models').mountProviderModelRoutes(app, { providers });
-
-// GET /api/opencode/models — list models the local opencode CLI exposes
-// (provider/model strings, cached for 1 day). Used by the chat picker when an
-// opencode session has no multicc-managed provider's model list to render.
-mountOpenCodeModelRoutes(app); require('./src/routes/cli-key-accounts').mountCliKeyAccountRoutes(app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence }); require('./src/routes/codex-models').mountCodexModelRoutes(app);
+// The model catalogs (/api/{opencode,qoder,grok,commandcode,codebuddy}/models,
+// /api/providers/:id/models, /api/codex/models[/sync]) are served by the Rust
+// front door (native/gateway/src/app/model_catalogs.rs). Node only keeps the
+// CLI spawns, provider-store facts and in-process caches behind this host port.
+mountModelCatalogsHostRoute(app);
+require('./src/routes/cli-key-accounts').mountCliKeyAccountRoutes(app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence });
 require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(app, {
   directories, createSessionRecord, disposeLoginTerminal,
   getStatus: () => {
@@ -2200,10 +2198,7 @@ require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(app, {
 });
 require('./src/routes/pricing').mountPricingRoutes(app, { priceTable: require('./src/pricing/price-table').sharedPriceTable(), asyncHandler }); // GET /api/pricing/status|lookup|search + POST /api/pricing/refresh — process-wide models.dev price table for the Auto router (src/pricing/price-table.js)
 
-// GET /api/qoder/models — the Qoder CN catalog entitled to the logged-in
-// account (`qoderclicn --list-models`, cached for 1 day). Lets each qoder
-// session pick its own model instead of sharing ~/.qoder-cn/settings.json.
-mountQoderModelRoutes(app); mountCodebuddyModelRoutes(app); mountCommandcodeModelRoutes(app); mountGrokModelRoutes(app); // GET /api/claude/models is served by the Rust front door (native/gateway, docs/gateway.md §9); ids are extracted from the local claude CLI bundle.
+// GET /api/claude/models is served by the Rust front door (native/gateway, docs/gateway.md §9); ids are extracted from the local claude CLI bundle.
 
 // GET /api/opencode/quota — drive whatever Chrome the user already has open
 // (src/chrome-cdp.js) to scrape the OpenCode Zen console's Go subscription

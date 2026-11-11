@@ -95,37 +95,3 @@ test('refresh=1 skips the one-day cache (the picker 刷新模型 button)', async
   assert.equal(fresh.source, 'cli');
   assert.deepEqual(fresh.models.map(entry => entry.model), ['Qwen3.8-Max', 'GLM-5.2']);
 });
-
-test('the route accepts ?refresh=1 and ?refresh=true', async () => {
-  const routes = new Map();
-  mod.mountQoderModelRoutes({ get: (route, handler) => routes.set(route, handler) });
-  const handler = routes.get('/api/qoder/models');
-  mod._setCacheForTest(Date.now(), [{ model: 'cached-model', label: 'cached-model' }]);
-  process.env.QODER_CMD = fakeCli('MODEL\nlive-model');
-
-  const cachedBody = await new Promise(resolve => handler({ query: {} }, { json: resolve }));
-  assert.equal(cachedBody.source, 'cache');
-  assert.deepEqual(cachedBody.models.map(entry => entry.model), ['cached-model']);
-
-  for (const value of ['1', 'true']) {
-    mod._setCacheForTest(Date.now(), [{ model: 'cached-model', label: 'cached-model' }]);
-    const body = await new Promise(resolve => handler({ query: { refresh: value } }, { json: resolve }));
-    assert.equal(body.source, 'cli', `refresh=${value} bypasses the cache`);
-    assert.deepEqual(body.models.map(entry => entry.model), ['live-model']);
-  }
-});
-
-test('the route reports source and cached, and never 500s on a dead CLI', async () => {
-  process.env.QODER_CMD = '/nonexistent/qoderclicn';
-  const routes = new Map();
-  mod.mountQoderModelRoutes({ get: (route, handler) => routes.set(route, handler) });
-  const handler = routes.get('/api/qoder/models');
-  assert.equal(typeof handler, 'function');
-
-  const body = await new Promise((resolve) => {
-    handler({}, { json: resolve, status() { throw new Error('must not fail the request'); } });
-  });
-  assert.equal(body.source, 'fallback');
-  assert.equal(body.cached, false);
-  assert.ok(Array.isArray(body.models) && body.models.length > 0);
-});

@@ -134,6 +134,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/OPTIONS /api/token-usage/global` | `src/token-global.js`（已删）与 `src/routes/token-usage.js` 的 global 路由（已删）；`by-role` 路由留在 Node | `native/gateway/src/app/token_usage_global.rs`：自己枚举 `$HOME/.claude/projects` 与 `$HOME/.codex/sessions` 下的 `*.jsonl`、解析时区、做两分钟缓存，行聚合仍用 `multicc_core::usage::compute` | | 68 个请求：65 条逐字节一致 — default 42/42、trees 8/8、rows 11/11、empty 4/4；另有 3 条预期差异单独校验 3/3（大写 `/API` 前缀、网关 TZ 不可用、两侧同为 `TZ=GMT` 时前门 200 而 Node 公开 500） |
 | `GET/HEAD/OPTIONS /api/claude/models` | `src/routes/claude-models.js`（已删）；静态兜底清单与跨进程同步读取器保留在 `src/claude-models.js` | `native/gateway/src/app/claude_models.rs` + `multicc_core::claude_models`，扫描 `$HOME/.local/bin/claude` 真身或 `$HOME/.local/share/claude/versions` 下最新文件，成功后写 `<data>/claude-models-cache.json`（0600） | 1,300 个对拍用例逐字节一致：default 46/46、fallback 14/14、window 8/8、semantics 17/17、fuzz 1,200/1,200、concurrent 1/1（8 并发请求 1 次 cli + 7 次 cache）、edge 8/8、relative-data-dir 4/4、真实 bundle 2/2（首扫单次计时：node 1,131ms / rust 486ms；另一次独立运行为 1,166ms / 497ms，随运行波动，不作性能结论）；另有 2 条 `refresh[toString]` 预期差异单独校验 2/2；缓存文件 `{at,bundleKey,models}` 0600，Node 读取器读到同一组 id |
 | `GET/HEAD/OPTIONS /api/subagent-defaults`、`POST/OPTIONS /api/subagent-defaults/sync` | `src/routes/subagent-defaults.js`（已删）；`src/routes/subagent-defaults-host.js` 只剩前门回调的宿主端口 | `native/gateway/src/app/subagent_defaults.rs` + `multicc_core::subagent_defaults`；宿主事实与副作用经 `native/gateway/src/host_port.rs` 调 Node 的内部端点 `/api/__host/subagent-defaults` | 28/28 请求逐字节一致（GET/HEAD/OPTIONS、dry run 全部分支、校验失败、一次真实应用） |
+| `GET/HEAD/OPTIONS /api/{opencode,qoder,grok,commandcode,codebuddy}/models`、`GET/HEAD/OPTIONS /api/providers/:id/models`、`GET/HEAD/OPTIONS /api/codex/models`、`POST/OPTIONS /api/codex/models/sync` | `src/routes/codex-models.js`（已删）；五个 CLI 目录模块与 `src/routes/provider-models.js` 只剩列表/解析/缓存；宿主端口为 `src/routes/model-catalogs-host.js` | `native/gateway/src/app/model_catalogs.rs`：路径（含 `:id` 解码）、查询语义、状态码、字段顺序、`Cache-Control` 与错误映射；CLI spawn、provider 抓取与官方 Codex 目录运行时经 `/api/__host/model-catalogs` 回调 | 见 §32 |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -1604,3 +1605,90 @@ claim 与接线另计）、集成测试 512 行、宿主端口 155 行、差分 
 源码指纹 `6fddeab9cd37213921846af8`；`cargo test -p multicc-gateway` 全绿、
 `cargo clippy --workspace --all-targets` 零告警；差分 28/28；`test:rust` 253/253、
 `test:contracts` 148/148、`test:native` 退出 0、`test:governance` 与行数闸门通过。
+
+## 32. 模型目录迁入 Rust（2026-11-11）
+
+本批把八条模型目录路由从 Node 搬进前门（`native/gateway/src/app/model_catalogs.rs`）：
+
+- `GET/HEAD/OPTIONS /api/opencode/models`、`/api/qoder/models`、`/api/grok/models`、
+  `/api/commandcode/models`、`/api/codebuddy/models`（原五个 `src/routes/*-models.js` 的
+  `mount*ModelRoutes`）；
+- `GET/HEAD/OPTIONS /api/providers/:id/models`（`src/routes/provider-models.js`）；
+- `GET/HEAD/OPTIONS /api/codex/models` 与 `POST/OPTIONS /api/codex/models/sync`
+  （`src/routes/codex-models.js`）。
+
+路由入口、路径/方法匹配（含 `:id` 的 Express 大小写不敏感字面段与 `decodeURIComponent`）、
+查询解析、状态码、响应字段顺序、`Cache-Control` 与错误映射全部在 Rust。留在 Node 的只有
+Rust 看不见的进程内状态：CLI 子进程与它们的进程内 TTL 缓存、provider store 投影与 relay
+HTTP 抓取、官方 Codex 目录运行时（provider store + 出口绑定 + 原生
+`codexModelsPeek`/`Refresh`）。这些经一个宿主端口按需回调。
+
+### 宿主端口
+
+`src/routes/model-catalogs-host.js`（152 行）挂在 `POST /api/__host/model-catalogs`，
+沿用 §31 的约定：PROXY v1 回环行、`isLocalRequest` 判定、非回环 404、`Connection: close`、
+60 秒超时、不重试（这些操作不幂等，尤其刷新与落缓存）。唯一例外是旧 Codex 客户端的
+全局刷新等待：旧 handler 对它没有超时，前门用 `host_port::call_with` 给 300 秒预算。
+
+端口只取数、不做规则，四种操作：
+
+- `opencode`/`qoder`/`grok`/`commandcode`/`codebuddy`（带 `refresh`）：调用各自
+  `list(cb)`，回答 `{ok:true, models, source}` 或 `{ok:false, error}`；
+- `provider`（带 `providerId`、`refresh`）：`listProviderModels` 的 live 抓取，回答
+  `{status, body}`，状态码与正文原样透传；
+- `codex-state`：resolveProvider 后回答 `{found:false}` 或
+  `{found:true,id,appType,official,peek,refreshing}`，lookup 抛错回答 `{error:true}`；
+- `codex-refresh`：`refreshProvider(providerId)`；`wait:true` 时等完成，
+  `wait:false` 时 fire-and-forget 立即回答——与旧 handler 的 `void refreshProvider(...)`
+  顺序一致，因此随后的 peek 已能看到 `refreshing: true`。
+
+### 逐路由语义
+
+- 刷新标记：opencode 是 `String(req.query.refresh) === '1'`，其余按
+  `/^(?:1|true)$/i`；`?refresh[toString]=1` 这类对象值因此只有 opencode 不刷新。
+- 五条 CLI 目录路由失败（宿主不可达或 `ok:false`）保持各自的旧 503 文案
+  `{"error":"<cli> models unavailable","models":[]}`；`provider` 与 `codex` 在宿主不可达
+  时返回公共 503 `{"error":"模型目录接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`。
+- `providers/:id/models` 的所有状态码（含 404）都带 `Cache-Control: no-store`，因为旧
+  handler 在可用性检查之前设置它。
+- Codex：`providerId` 取 query 优先、其次 body、最后默认 `codex-official`；lookup 异常 →
+  500 `internal_error`；不存在 → 404 `{"error":"账号线路不存在"}`；`appType` 不是 `codex` →
+  400 `{"error":"该线路不是 Codex 官方账号"}`。借道（非官方）线路改用 provider 目录形状
+  （`fallback:"custom"`、`diagnostic:{code,message}`、`cached:false`、`refreshing:false`）。
+  官方线路：GET 且既无 `providerId` 也无 `poll` 的旧客户端先等一次 `codex-official` 全局
+  刷新（300 秒）再只 peek；其余请求先 kick 一次不等待的刷新、再 peek，因此 `refreshing`
+  反映刚 kick 的刷新。两条分支都带 `Cache-Control: no-store`。
+- `OPTIONS` 由前门自动应答（`Allow: GET,HEAD` / `POST`）；`HEAD` 与 `GET` 同头无体。
+
+### 差分与集成
+
+- `native/gateway/tests/model_catalogs.rs`：14 个集成测试，锁住 CLI 目录形状与 503 文案、
+  各路由刷新标记约定、provider 状态码与 `no-store` 透传、`:id` 的解码与大小写保留
+  （`/api/Providers/My%20Relay/models` → `My Relay`）、Codex 官方线路的
+  state → refresh(wait:false) → state 调用顺序与 `refreshing`、旧客户端的一次全局等待、
+  未知/非 Codex 线路的 404/400、借道线路的目录形状、`sync` 从 body 取 providerId、
+  OPTIONS/HEAD、宿主不可达时各家族的 503，以及无关路径仍转发给 Node。
+- `docs/rust-migration/differential/model-catalogs.js`：Node 侧用冻结 oracle
+  （`tests/helpers/legacy-model-catalog-routes.js`，退役 handler 的逐字副本）跑真实 Express
+  流水线，Rust 侧是 release 前门 + 按 PROXY v1 接线的桩，两侧共用同一份脚本化的 CLI 目录、
+  provider 抓取与 Codex 目录回答，逐字节比对状态码、正文、ETag、`Content-Length`、相关响应头与
+  宿主端口调用序列。61 条请求：59 条一致，另 2 条是宿主端口不可达时的 503
+  `rust_backend_unavailable`——迁移才有的失败路径（旧 Node 路由没有这个形态），按预期差异
+  单独校验。
+- `tests/test-*-models-route.js`、`tests/test-opencode-models.js`：公开路由部分改为宿主端口
+  契约，列表/解析/缓存部分原样保留。
+
+### 删除面
+
+Node 侧合计删除 556 行、新增 27 行（净 −529）：`src/routes/codex-models.js` 整文件 458 行；
+五个 CLI 目录模块的 `mount*` 与其导出/接线 66 行；`provider-models.js` 的 `mount()` 与
+`mountProviderModelRoutes` 19 行；`server.js` 13 行挂载接线。新增 Rust 441 行
+（`app/model_catalogs.rs`）、`host_port.rs` 13 行（`call_with`）、集成测试 526 行、宿主端口
+152 行。
+
+### 已知边界
+
+- `src/providers/relay-model-catalog.js` 的两条 relay 目录路由
+  （`/claude-proxy/:id/remote/models`、`/codex-proxy/:id/models`）不在本批：它们与协议代理的
+  挂载顺序耦合，随代理组另批迁移。
+- 与前面几批一致：大写 `/API/...` 前缀不再被 claim，路由删除后该变体落回 Express 404。
