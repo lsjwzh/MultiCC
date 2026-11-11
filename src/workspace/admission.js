@@ -10,6 +10,7 @@ const { createWriterEscalation } = require('./writer-escalation');
 const { WORKTREE_SUBDIR } = require('../git/service');
 const { captureCodeRevision } = require('../task-routing/code-revision');
 const { isChatStateBusy } = require('../session/runtime-busy');
+const { getNative } = require('../native/runtime');
 const BACKPRESSURE_CODES = new Set([
   'workspace_busy',
   'workspace_lease_unavailable',
@@ -42,6 +43,9 @@ const ESCALATION_SETTLE_MS = 2000;
 const DEFAULT_RESIDENCY_RECLAIM_MS = 60 * 1000;
 
 function createWorkspaceAdmission(deps) {
+  const { RustWorkspaceRelease } = getNative();
+  if (typeof RustWorkspaceRelease !== 'function') throw new Error('workspace_release_native_unavailable');
+  const capture = deps.captureCodeRevision || captureCodeRevision;
   const store = createTaskShellStore(deps.file);
   const registry = createWorkspaceRegistry(store, deps.budgets);
   const evidence = require('../task-routing/evidence').createDeliveryEvidence(store, {
@@ -245,7 +249,8 @@ function createWorkspaceAdmission(deps) {
     for (const record of deps.records.values()) if (record.id !== descriptor.sessionId
       && (record.workspaceOwnerSessionId || record.id) === source.id && isLive(record.id)) throw failure('workspace_busy');
     const lease = await acquireWithResidentRelief(workspace, descriptor.sessionId, descriptor.item.id);
-    const permit = { lease, sessionId: descriptor.sessionId, deliveryId: descriptor.item.id };
+    const permit = { lease, sessionId: descriptor.sessionId, deliveryId: descriptor.item.id,
+      releaseEvidence: new RustWorkspaceRelease() };
     permits.add(permit); active.set(descriptor.sessionId, permit);
     let materialized = false;
     try {
@@ -254,7 +259,7 @@ function createWorkspaceAdmission(deps) {
       await deps.claimPersistent?.(descriptor.sessionId, workspace);
       await materialize(descriptor.sessionId, lease);
       materialized = true;
-      try { permit.startCode = await captureCodeRevision(workspace.path); }
+      try { permit.startCode = await capture(workspace.path); }
       catch (error) { permit.startObservationError = /^code_[a-z_]+$/.test(error.message) ? error.message : 'code_observation_failed'; }
       await require('../task-shell/role-bindings').prepareRoleContext(store, descriptor, deps);
       // This delivery got through, so nothing is blocked behind the workspace any
@@ -323,13 +328,12 @@ function createWorkspaceAdmission(deps) {
     if (!permit?.evidenceBound || permit.turnId !== context.turn?.turnId || permit.evidencePending) return;
     const succeeded = !context.terminalBlocked && resolved.effects.some(e => e.type === 'classify-turn-end' && e.classification === 'succeeded');
     const pending = deps.pendingInput?.(context.sessionName);
-    const outcome = pending ? 'waiting' : succeeded ? 'succeeded'
-      : ['user_cancel', 'new_user_message'].includes(resolved.facts.killReason) || resolved.facts.completion?.state === 'cancelled' ? 'cancelled'
-        : resolved.facts.completion?.state === 'failed' || resolved.facts.apiError || resolved.facts.adapterError ? 'failed' : 'unknown';
-    permit.evidencePending = evidence.finalize(permit.turnId, { attemptId: context.runner.providerAttempt?.routeAttemptId,
-      outcome, pendingInput: !!pending, resultDurable: context.turn.resultDurable === true, usageDurable: context.usageDurable === true })
-      .catch(error => deps.log('delivery_evidence_failed', { sessionId: context.sessionName, code: error.code || 'evidence_write_failed' }))
-      .finally(() => { permit.evidencePending = null; void drain(context.sessionName, permit); });
+    permit.releaseEvidence.finalized({ attemptId: context.runner.providerAttempt?.routeAttemptId,
+      succeeded, pendingInput: !!pending,
+      cancelled: ['user_cancel', 'new_user_message'].includes(resolved.facts.killReason) || resolved.facts.completion?.state === 'cancelled',
+      failed: !!(resolved.facts.completion?.state === 'failed' || resolved.facts.apiError || resolved.facts.adapterError),
+      resultDurable: context.turn.resultDurable === true, usageDurable: context.usageDurable === true });
+    void drain(context.sessionName, permit);
   }
   function optionsForTurn(id, turn) {
     const permit = active.get(id);
@@ -340,6 +344,8 @@ function createWorkspaceAdmission(deps) {
     if (permit.draining) return permit.drainPromise || null;
     if (closed || active.get(id) !== permit || !permit.terminal || permit.evidencePending || isLive(id)) return null;
     permit.draining = true;
+    const startedAt = Date.now();
+    let observation = null;
     const release = (async () => {
       try {
         // Parked residency cannot accept new sends without the next execution
@@ -352,9 +358,22 @@ function createWorkspaceAdmission(deps) {
         const parked = residency?.parked === true;
         const stopped = parked ? null : await deps.closePersistent?.(id);
         if (closed || (!parked && stopped?.closed !== true) || active.get(id) !== permit || isLive(id)) return;
-        if (permit.evidenceBound) {
+        const stoppedAt = Date.now();
+        // A missing finalizer cannot pin a verified-stopped writer forever.
+        // Leave its delivery evidence absent, just as before this batching.
+        if (permit.evidenceBound && (permit.releaseEvidence.result() || evidence.deliveryFinalized(permit.turnId))) {
+          let code = null, error = null;
+          try { code = await capture(workspace.path); }
+          catch (cause) { error = /^code_[a-z_]+$/.test(cause.message) ? cause.message : 'code_observation_failed'; }
+          observation = require('../repo-actor').defaultRepoActor.status(code?.operationId);
+          if (closed || active.get(id) !== permit || isLive(id)) return;
+          const result = permit.releaseEvidence.result();
+          if (result) {
+            permit.evidencePending = evidence.finalize(permit.turnId, result, { code, error });
+            try { await permit.evidencePending; }
+            finally { permit.evidencePending = null; }
+          }
           try {
-            const code = await captureCodeRevision(permit.lease.workspaceId && registry.workspace(permit.lease.workspaceId)?.path);
             evidence.recordWriterBarrier({ sessionId: id, turnId: permit.turnId, workspaceId: permit.lease.workspaceId,
               leaseId: permit.lease.id, generation: permit.lease.generation, code });
           } catch (error) { deps.log('writer_barrier_not_recorded', { sessionId: id, code: error.code || error.message }); }
@@ -362,6 +381,11 @@ function createWorkspaceAdmission(deps) {
         if (closed || active.get(id) !== permit || isLive(id)) return;
         registry.release(permit.lease, { stopped: true, reason: permit.terminal.status || 'stopped' });
         active.delete(id);
+        deps.log('workspace_release_completed', { sessionId: id, turnId: permit.turnId,
+          terminalWaitMs: startedAt - permit.terminalAt, stopMs: stoppedAt - startedAt,
+          evidenceMs: Date.now() - stoppedAt, totalMs: Date.now() - permit.terminalAt,
+          observationQueueMs: observation ? observation.startedAt - observation.createdAt : null,
+          observationMs: observation ? observation.finishedAt - observation.startedAt : null });
       } catch (error) { deps.log('workspace_release_retained', { sessionId: id, code: error.code }); }
       finally { permit.draining = false; }
     })();
@@ -372,16 +396,9 @@ function createWorkspaceAdmission(deps) {
   function settled(id, outcome) {
     const permit = active.get(id); if (!permit) return;
     permit.terminal = outcome || { status: 'stopped' };
+    permit.terminalAt ??= Date.now();
     queueMicrotask(() => {
-      // Forced cancellation may never reach the normal runner finalizer. It
-      // can record cancellation, but cannot turn scheduler completion into success.
-      if (permit.evidenceBound && permit.attemptId && !permit.evidencePending
-        && ['cancelled', 'failed'].includes(permit.terminal.status) && !evidence.deliveryFinalized?.(permit.turnId)) {
-        permit.evidencePending = evidence.finalize(permit.turnId, { attemptId: permit.attemptId,
-          outcome: permit.terminal.status, resultDurable: false, usageDurable: false, pendingInput: !!deps.pendingInput?.(id) })
-          .catch(error => deps.log('delivery_evidence_failed', { sessionId: id, code: error.code || 'evidence_write_failed' }))
-          .finally(() => { permit.evidencePending = null; void drain(id, permit); });
-      }
+      permit.releaseEvidence.terminal(permit.terminal.status || 'stopped', permit.attemptId, !!deps.pendingInput?.(id));
       void drain(id, permit);
     });
   }
@@ -589,7 +606,7 @@ function createWorkspaceAdmission(deps) {
       const closedPersistent = await deps.closePersistent?.(sessionId);
       if (closedPersistent?.closed !== true || siblingLive()) throw failure('workspace_busy');
       stopped = true;
-      const code = await captureCodeRevision(workspace.path);
+      const code = await capture(workspace.path);
       const barrier = evidence.recordWriterBarrier({ sessionId, turnId, separationId,
         workspaceId: workspace.id, leaseId: lease.id, generation: lease.generation, code });
       return await work({ barrier, code, workspace: registry.workspace(workspace.id), lease });

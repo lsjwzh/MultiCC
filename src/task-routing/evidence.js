@@ -37,12 +37,17 @@ function createDeliveryEvidence(store, {
       put('run', turnId, { ...run, attemptId });
     });
   }
-  async function finalize(turnId, result) {
+  async function finalize(turnId, result, observation = null) {
     const run = get('run', turnId); if (!run) return null;
     const prior = facts.getFact('run-result', turnId); if (prior) return prior;
     if (run.attemptId !== result.attemptId) throw fail('final_attempt_mismatch');
     let code = null, observationError = null;
-    try { code = await capture(run.binding.workspacePath); }
+    // Host bridge: the drain supplies its fresh stopped-writer observation so
+    // the immutable result and writer barrier share one capture, never a cache.
+    try {
+      if (observation) { code = observation.code; observationError = observation.error; }
+      else code = await capture(run.binding.workspacePath);
+    }
     catch (error) { observationError = /^code_[a-z_]+$/.test(error.message) ? error.message : 'code_observation_failed'; }
     return store.transaction(() => {
       const current = get('run', turnId);

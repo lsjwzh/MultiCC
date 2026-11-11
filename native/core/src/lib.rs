@@ -18,6 +18,7 @@ pub mod classify_vocab;
 pub mod cli_capability;
 pub mod cli_switch;
 pub mod cli_switch_route;
+pub mod code_revision;
 pub mod dotenv;
 pub mod download_ticket;
 pub mod events;
@@ -68,6 +69,7 @@ pub mod unattended;
 pub mod usage;
 pub mod virtual_provider;
 pub mod windows_tools;
+pub mod workspace_release;
 pub mod worktree_sync;
 
 pub mod claude_lane;

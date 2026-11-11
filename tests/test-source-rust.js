@@ -134,6 +134,7 @@ test('addon preflight rejects an exported audit function that cannot write', t =
   };`);
   assert.equal(probeAddon(staleFence), false, 'a stale addon cannot bypass the provider replay fence');
   for (const name of ['providerEventFence', 'providerHostTextEnvelope', 'chatOwnsCurrentRunner', 'chatAssignKillReason',
+    'observeCodeFiles', 'RustWorkspaceRelease',
     'chatClearSucceededErrors', 'chatRecordResultEvent', 'chatRecordCloseResult', 'chatRecordPartialCheckpoint', 'chatHasPartialCheckpoint',
     'providerRequiredIdentity', 'providerPositiveInteger', 'providerTimeoutBudget', 'providerAttemptFields',
     'providerRevision', 'providerEncodeProxySession', 'providerDecodeProxySession', 'providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
