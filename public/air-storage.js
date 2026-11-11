@@ -1,7 +1,7 @@
 'use strict';
 
 // Air 原生「临时上传」面板 —— 上传缓存这份磁盘占用（原生 DOM，不再嵌旧 manage 页）。
-// 后端契约见 src/routes/file-transfer.js：GET /api/uploads/stats 读扫描结果
+// 后端契约由 Rust 前门（multicc-gateway）应答，见 docs/gateway.md：GET /api/uploads/stats 读扫描结果
 // （{ count, totalSize, dir }，另外还带一份 files 明细，这一页不用），
 // DELETE /api/uploads/cleanup 删掉临时目录里那批 multicc_* 文件。
 //

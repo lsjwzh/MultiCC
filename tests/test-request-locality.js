@@ -143,6 +143,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     // loopback calls only, so a request forwarded from a real client is 404.
     'src/routes/agent-resources-host.js',
     'src/routes/auth.js',
+    'src/routes/file-transfer-host.js',
     'src/routes/host-power.js',
     'src/routes/host-read-host.js',
     'src/routes/host-write.js',

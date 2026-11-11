@@ -6,9 +6,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  resolveDirectory,
-  mountFileTransferRoutes,
-} = require('../src/routes/file-transfer');
+  mountFileTransferHostRoute,
+  createFileTransferHost,
+  HOST_PATH,
+} = require('../src/routes/file-transfer-host');
 
 function createApp() {
   const routes = new Map();
@@ -25,107 +26,163 @@ function createResponse() {
   };
 }
 
-async function invoke(app, method, routePath, req = {}) {
-  const handlers = app.routes.get(`${method} ${routePath}`);
-  assert.ok(handlers, `route ${method} ${routePath} is mounted`);
-  const request = { query: {}, body: {}, ...req };
+function localRequest(body = {}) {
+  return {
+    body,
+    headers: { host: 'localhost:3000' },
+    socket: { remoteAddress: '127.0.0.1' },
+    connection: { remoteAddress: '127.0.0.1' },
+  };
+}
+
+async function invoke(app, request) {
+  const handlers = app.routes.get(`POST ${HOST_PATH}`);
+  assert.ok(handlers, `route POST ${HOST_PATH} is mounted`);
   const response = createResponse();
   await handlers.at(-1)(request, response);
+  // The mount answers from a promise chain, so let the microtask drain first.
+  await new Promise(resolve => setImmediate(resolve));
   return response;
 }
 
 function createHarness(overrides = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-file-routes-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-file-host-'));
   const home = path.join(root, 'home');
-  const temp = path.join(root, 'tmp');
   fs.mkdirSync(home);
-  fs.mkdirSync(temp);
-  const calls = { logs: [], errors: [], persisted: [] };
-  const uploadMiddleware = (req, res, next) => next();
   const deps = {
     fs,
     path,
-    os: { homedir: () => home, tmpdir: () => temp },
-    upload: { chat: uploadMiddleware },
-    persistChatUpload(file) {
-      calls.persisted.push(file);
-      return { path: path.join(temp, 'saved.txt'), name: 'saved.txt' };
-    },
-    sendUploadError(res, error) {
-      calls.errors.push(error);
-      return res.status(507).json({ error: 'upload_failed' });
-    },
+    os: { homedir: () => home },
     getActiveSession: () => null,
     getPersistedSession: () => null,
-    log: message => calls.logs.push(message),
     ...overrides,
   };
   const app = createApp();
-  mountFileTransferRoutes(app, deps);
-  return { app, deps, calls, root, home, temp, uploadMiddleware };
+  mountFileTransferHostRoute(app, deps);
+  return { app, deps, root, home };
 }
 
-test('mount owns the complete legacy file-transfer surface and upload middleware order', () => {
-  const { app, uploadMiddleware } = createHarness();
-  assert.deepEqual([...app.routes.keys()], [
-    'GET /api/files',
-    'POST /api/upload',
-  ]);
-  assert.equal(app.routes.get('POST /api/upload').length, 2);
-  assert.equal(app.routes.get('POST /api/upload')[0], uploadMiddleware);
+test('mount registers only the loopback host port', () => {
+  const { app } = createHarness();
+  assert.deepEqual([...app.routes.keys()], [`POST ${HOST_PATH}`]);
+  assert.equal(app.routes.get(`POST ${HOST_PATH}`).length, 1);
 });
 
-test('directory resolution preserves session, home and tilde precedence', () => {
-  const { deps, home } = createHarness({
-    getActiveSession: id => (id === 'active' ? { cwd: '/active/cwd' } : null),
-    getPersistedSession: id => (id === 'persisted' ? { cwd: '/persisted/cwd' } : null),
-  });
-  assert.equal(resolveDirectory('', 'active', deps), path.resolve('/active/cwd'));
-  assert.equal(resolveDirectory('', 'persisted', deps), path.resolve('/persisted/cwd'));
-  assert.equal(resolveDirectory('', 'missing', deps), path.resolve(home));
-  assert.equal(resolveDirectory('~', '', deps), path.resolve(home));
-  assert.equal(resolveDirectory('~/nested', '', deps), path.join(home, 'nested'));
-  assert.equal(resolveDirectory('/explicit', 'active', deps), path.resolve('/explicit'));
+test('non-local callers get a 404 and unknown ops get an empty failure', async () => {
+  const denied = createHarness({ isLocal: () => false });
+  let response = await invoke(denied.app, localRequest({ op: 'files', path: denied.home }));
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, { error: 'not found' });
+
+  const { app } = createHarness();
+  response = await invoke(app, localRequest({ op: 'upload' }));
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { ok: false });
+
+  response = await invoke(app, localRequest([]));
+  assert.deepEqual(response.body, { ok: false });
 });
 
-test('file listing keeps directories first, reports sizes and retains legacy errors', async () => {
+test('directory resolution preserves session, home and tilde precedence', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-file-host-resolve-'));
+  try {
+    const home = path.join(root, 'home');
+    const activeDir = path.join(root, 'active');
+    const persistedDir = path.join(root, 'persisted');
+    fs.mkdirSync(home);
+    fs.mkdirSync(activeDir);
+    fs.mkdirSync(persistedDir);
+    fs.mkdirSync(path.join(home, 'nested'));
+    const handle = createFileTransferHost({
+      fs,
+      path,
+      os: { homedir: () => home },
+      getActiveSession: id => (id === 'active' ? { cwd: activeDir } : null),
+      getPersistedSession: id => (id === 'persisted' ? { cwd: persistedDir } : null),
+    });
+    const resolved = async (rawPath, session) => (await handle({ op: 'files', path: rawPath, session })).dir;
+    assert.equal(await resolved('', 'active'), path.resolve(activeDir));
+    assert.equal(await resolved('', 'persisted'), path.resolve(persistedDir));
+    assert.equal(await resolved('', 'missing'), path.resolve(home));
+    assert.equal(await resolved('~', ''), path.resolve(home));
+    assert.equal(await resolved('~/nested', ''), path.join(home, 'nested'));
+    assert.equal(await resolved(home, 'active'), path.resolve(home));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('file listing returns the host-port payload with sizes and directories first', async () => {
   const { app, home } = createHarness();
   fs.mkdirSync(path.join(home, 'z-dir'));
   fs.writeFileSync(path.join(home, 'a.txt'), 'hello');
-  const response = await invoke(app, 'GET', '/api/files', { query: { path: home } });
+
+  const response = await invoke(app, localRequest({ op: 'files', path: home }));
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.path, home);
-  assert.equal(response.body.parent, path.dirname(home));
-  assert.deepEqual(response.body.files.map(entry => [entry.name, entry.isDir, entry.size]), [
-    ['z-dir', true, null],
-    ['a.txt', false, 5],
+  assert.deepEqual(Object.keys(response.body), ['ok', 'dir', 'entries']);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.dir, path.resolve(home));
+  assert.deepEqual(response.body.entries.map(entry => Object.keys(entry)), [
+    ['name', 'isDir', 'path', 'size'],
+    ['name', 'isDir', 'path', 'size'],
   ]);
-
-  const missing = await invoke(app, 'GET', '/api/files', { query: { path: path.join(home, 'missing') } });
-  assert.equal(missing.statusCode, 400);
-  assert.equal(typeof missing.body.error, 'string');
+  assert.deepEqual(response.body.entries, [
+    { name: 'z-dir', isDir: true, path: path.join(response.body.dir, 'z-dir'), size: null },
+    { name: 'a.txt', isDir: false, path: path.join(response.body.dir, 'a.txt'), size: 5 },
+  ]);
 });
 
-test('chat upload keeps response shape, releases buffer and delegates policy failures', async () => {
-  let harness = createHarness();
-  let response = await invoke(harness.app, 'POST', '/api/upload');
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.body, { error: 'No file' });
-
-  const file = { originalname: 'upload.txt', buffer: Buffer.from('body') };
-  response = await invoke(harness.app, 'POST', '/api/upload', { file });
-  assert.deepEqual(response.body, { path: path.join(harness.temp, 'saved.txt'), name: 'saved.txt' });
-  assert.equal(file.buffer, null);
-  assert.equal(harness.calls.persisted.length, 1);
-  assert.match(harness.calls.logs[0], /Uploaded:/);
-
-  const failure = new Error('quota');
-  harness = createHarness({ persistChatUpload: () => { throw failure; } });
-  response = await invoke(harness.app, 'POST', '/api/upload', {
-    file: { originalname: 'upload.txt', buffer: Buffer.from('body') },
+test('listing applies the ICU localeCompare order inside each directory group', async () => {
+  // A synthetic tree pins the ordering without relying on the host filesystem:
+  // macOS temp volumes are case-insensitive, so A.txt/a.txt cannot coexist there.
+  const names = ['zz-dir', 'b.txt', 'A.txt', 'a.txt'];
+  const handle = createFileTransferHost({
+    fs: {
+      readdirSync: () => names.map(name => ({ name, isDirectory: () => name === 'zz-dir' })),
+      statSync: () => ({ size: 3 }),
+    },
+    path,
+    os: { homedir: () => os.tmpdir() },
+    getActiveSession: () => null,
+    getPersistedSession: () => null,
   });
-  assert.equal(response.statusCode, 507);
-  assert.deepEqual(response.body, { error: 'upload_failed' });
-  assert.equal(harness.calls.errors[0], failure);
+
+  const result = await handle({ op: 'files', path: os.tmpdir(), session: '' });
+  assert.equal(result.ok, true);
+  // Pinned against Node's ICU order: lowercase sorts before uppercase for the same letter.
+  assert.deepEqual(result.entries.map(entry => entry.isDir), [true, false, false, false]);
+  assert.deepEqual(result.entries.map(entry => entry.name), ['zz-dir', 'a.txt', 'A.txt', 'b.txt']);
 });
 
+test('unreadable directories return the legacy error message', async () => {
+  const { app, home } = createHarness();
+  const response = await invoke(app, localRequest({ op: 'files', path: path.join(home, 'missing') }));
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, false);
+  assert.equal(typeof response.body.message, 'string');
+  assert.match(response.body.message, /^ENOENT/);
+});
+
+test('mount falls back to the shared loopback predicate when isLocal is not provided', async () => {
+  const { app, home } = createHarness();
+  let response = await invoke(app, localRequest({ op: 'files', path: home }));
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+
+  const remote = localRequest({ op: 'files', path: home });
+  remote.socket = { remoteAddress: '192.168.1.20' };
+  remote.connection = { remoteAddress: '192.168.1.20' };
+  response = await invoke(app, remote);
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, { error: 'not found' });
+});
+
+test('unexpected handler rejections surface as the 500 fallback', async () => {
+  const { app } = createHarness({
+    getActiveSession: () => { throw new Error('session table exploded'); },
+  });
+  const response = await invoke(app, localRequest({ op: 'files', path: '', session: 'boom' }));
+  assert.equal(response.statusCode, 500);
+  assert.equal(response.body.error, 'file transfer failed');
+  assert.match(response.body.detail, /session table exploded/);
+});
