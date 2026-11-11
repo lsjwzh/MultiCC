@@ -136,6 +136,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/OPTIONS /api/subagent-defaults`、`POST/OPTIONS /api/subagent-defaults/sync` | `src/routes/subagent-defaults.js`（已删）；`src/routes/subagent-defaults-host.js` 只剩前门回调的宿主端口 | `native/gateway/src/app/subagent_defaults.rs` + `multicc_core::subagent_defaults`；宿主事实与副作用经 `native/gateway/src/host_port.rs` 调 Node 的内部端点 `/api/__host/subagent-defaults` | 28/28 请求逐字节一致（GET/HEAD/OPTIONS、dry run 全部分支、校验失败、一次真实应用） |
 | `GET/HEAD/OPTIONS /api/{opencode,qoder,grok,commandcode,codebuddy}/models`、`GET/HEAD/OPTIONS /api/providers/:id/models`、`GET/HEAD/OPTIONS /api/codex/models`、`POST/OPTIONS /api/codex/models/sync` | `src/routes/codex-models.js`（已删）；五个 CLI 目录模块与 `src/routes/provider-models.js` 只剩列表/解析/缓存；宿主端口为 `src/routes/model-catalogs-host.js` | `native/gateway/src/app/model_catalogs.rs`：路径（含 `:id` 解码）、查询语义、状态码、字段顺序、`Cache-Control` 与错误映射；CLI spawn、provider 抓取与官方 Codex 目录运行时经 `/api/__host/model-catalogs` 回调 | 见 §32 |
 | `GET/HEAD/OPTIONS /api/agent-resources/skills`、`GET/HEAD/OPTIONS /api/agent-presets`、`GET/HEAD/OPTIONS /api/agent-presets/:id`、`GET/HEAD/OPTIONS/DELETE /api/agent-resources/claude-sessions`、`DELETE/OPTIONS /api/agent-resources/claude-sessions/:project/:id` | `src/routes/agent-resources.js` 只剩 presets 文件缓存/commander 覆盖/provider 富化与 Claude 历史读写；宿主端口为 `src/routes/agent-resources-host.js` | `native/gateway/src/app/agent_resources.rs`：路径（含两段解码参数）、`olderThanDays` 校验、purge 过滤循环、计数/求和、409/404/400/500 映射；磁盘扫描与文件读删经 `/api/__host/agent-resources` 回调 | 53/53 请求逐字节一致 + 9/9 预期差异（见 §33） |
+| `GET/HEAD/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets/:name/rename`、`DELETE/OPTIONS /api/secrets/:name`、`GET/HEAD/OPTIONS /api/secrets/:name/value` | `src/secrets-vault.js` 只剩进程内 entries 表、0600 store、audit 与 env 投影；宿主端口为 `src/routes/secrets-vault-host.js` | `native/gateway/src/app/secrets_vault.rs`：路径（含 `:name` 解码与 trim）、`NAME_RE`/`LEGACY_NAME_RE`、65536 UTF-16 值上限、400/404/409/503 映射；存储读写经 `/api/__host/secrets-vault` 回调 | 63/63 请求逐字节一致 + 10/10 预期差异（见 §34） |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -1785,3 +1786,81 @@ fixture 宿主脚本 50 行、差分 690 行、冻结 oracle 264 行。
   `rust_backend_unavailable`（与 §32 同类失败路径），已作为预期差异登记。
 - 与前面几批一致：大写 `/API/...` 前缀不再被 claim，落回 Express 404。
 
+## 34. 保险箱路由迁入 Rust（2026-11-11）
+
+本批把五条路由从 Node 搬进前门（`native/gateway/src/app/secrets_vault.rs`）：
+
+- `GET/HEAD/OPTIONS /api/secrets` 与 `POST/OPTIONS /api/secrets`
+- `POST/OPTIONS /api/secrets/:name/rename`
+- `DELETE/OPTIONS /api/secrets/:name`
+- `GET/HEAD/OPTIONS /api/secrets/:name/value`
+
+路径匹配（`:name` 解码与 `js_trim`）、两套名字正则、值的 UTF-16 长度上限、状态码与错误映射
+都在 Rust。Node 只剩 Rust 看不见的事实与副作用：进程内 entries 表、0600 store 读写、
+500 条容量、`localeCompare` 排序、`meta` 投影、secret audit，以及 `envOverlay`/`envDigest`
+（spawn 热路径同步读，必须与审计共享同一份内存）。这些经一个宿主端口回调。
+
+### 宿主端口
+
+`src/routes/secrets-vault-host.js`（103 行）挂在 `POST /api/__host/secrets-vault`，沿用
+§31–§33 的约定：PROXY v1 回环行、`isLocalRequest` 判定、非回环 404、超时、不重试。五个
+操作全部走 `src/secrets-vault.js` 的既有 audited 导出（`source:'http'` 不变）：
+
+- `list` → `{ok:true, entries}`（已按 store 排序，值不在其中）；
+- `upsert`（带 `name`/`value`/`source`，`description`/`sessionId` 仅按存在透传）→
+  `{ok:true, entry, created}` 或 `{ok:false, reason:'full'|'error'}`；
+- `rename`（`name`/`to`）→ `{ok:true, entry}` 或 `reason:'missing'|'exists'|'error'`；
+- `remove`（`name`）→ `{ok:true}` 或 `reason:'missing'|'error'`；
+- `reveal`（`name`）→ `{ok:true, name, value}` 或 `reason:'missing'|'error'`。
+
+`metaOf` 复刻私有 `meta()` 的键序 `{name,description,source,createdAt,updatedAt,updatedBy?}`，
+值是唯一被剔除的字段；明文只在 `reveal` 的响应里出现，不写日志。
+
+### 逐路由语义
+
+- 名字：新建/改名用 `NAME_RE = ^[A-Za-z_][A-Za-z0-9_]{0,63}$`（400 `NAME_RULE` 原文）；
+  查找/删除/揭示用 `LEGACY_NAME_RE = ^[A-Za-z0-9_.-]{1,64}$`，让收紧前的老条目仍可读可删。
+  名字先 `decodeURIComponent`（失败回退原串）再 `js_trim`。
+- 值：必须是字符串、非空、`value.length`（UTF-16 码元）≤ 65536，否则 400
+  `value is required and cannot exceed 65536 characters`。
+- `source`：只认严格 `=== 'agent'`，其余归 `user`。
+- 状态码：create 按宿主 `created` 回 201/200 `{ok:true,entry}`；rename 成功 200、`missing`
+  404 `entry not found`、`exists` 409 `target name already exists`；delete 成功 `{ok:true}`；
+  容量满 409 `vault is full`；宿主不可达或 `reason:'error'` 一律 503
+  `{"error":"secrets vault interface is not ready","code":"rust_backend_unavailable"}`。
+- 并发：Node 每请求单线程一次跑完（rename 的旧/新名与容量检查先读后写）；前门用
+  `App.secrets_vault`（`tokio::sync::Mutex<()>`）把每个请求的整个宿主往返串起来。
+- `OPTIONS`：四组路径分别答 `GET,HEAD,POST`、`DELETE`、`POST`、`GET,HEAD`；`HEAD` 与 `GET`
+  同头无体。
+
+### 差分与集成
+
+- `native/gateway/tests/secrets_vault.rs`：16 个集成测试，锁住列表透传、create 的
+  201/200、两套名字与值校验的 400、容量 409、rename 的 200/404/409、remove、reveal 的
+  明文隔离、编码与带空白的名字、尾斜杠、OPTIONS/HEAD、宿主不可达整族 503、未认领路径
+  仍转发 Node，以及宿主收到的 op/字段。
+- `docs/rust-migration/differential/secrets-vault.js`：Node 侧用冻结 oracle
+  （`tests/helpers/legacy-secrets-vault-routes.js`，退役 `mount()`/`meta()` 的逐字副本）跑
+  真实 Express 流水线，Rust 侧是前门 + 按 PROXY v1 接线的桩，两侧共用同一份宿主脚本与
+  固定时钟（oracle 使用隔离的 `MULTICC_DATA_DIR`）。73 条请求：63 条逐字节一致，10 条
+  预期差异单独校验——1 条大写 `/API/secrets`（旧 Express 路由大小写不敏感仍 200，前门不
+  claim 大写前缀故落回 Node 404）、1 条 `sessionId: 42`（旧 audit 桥对非字符串 sessionId
+  抛错 → `internal_error`，新路径 503 家族）、其余 8 条为宿主端口不可达 / `ok:false` 的
+  失败路径。`presets` 式的「两侧同为 500」不计入预期差异。
+- `tests/test-secrets-vault.js` 改为纯模块 API 契约并断言模块里不再有 `mount`；
+  `tests/test-secrets-vault-host.js` 覆盖宿主端口五个操作、回环门禁、`metaOf` 键序与异常
+  映射，登记在 `test:rust`。
+
+### 删除面
+
+退役的路由实现共 34 行（`src/secrets-vault.js` 的 `mount()`）；`server.js` 新增 require
+一行、挂载行替换（净 +1 行），新增宿主端口 103 行。新增 Rust 405 行
+（`app/secrets_vault.rs`）、`mod.rs` claim/handle 与单测 115 行、集成测试 719 行、fixture
+宿主脚本 47 行、差分 572 行、冻结 oracle 67 行。
+
+### 已知边界
+
+- 容量（500 条）、`localeCompare` 排序与描述截断都是 store 规则，留在宿主；前门只透传结果。
+- 与前几批一致：大写 `/API/...` 前缀不再被 claim，落回 Node 404（旧 Express 曾是 200）。
+- 宿主端口失败在旧 Express 里多为 500 `internal_error`，迁移后统一为 503
+  `rust_backend_unavailable`，已作为预期差异登记。

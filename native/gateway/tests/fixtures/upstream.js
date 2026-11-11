@@ -309,6 +309,53 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the secrets vault routes. The script file carries the
+  // metadata rows the list route re-emits and the scripted outcome of each
+  // write, so the Rust side can be driven through 201/200/404/409/503.
+  if (route === '/api/__host/secrets-vault' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'secret-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      const secret = script.secret || {};
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (secret.down === true) return send({ ok: false });
+      if (input.op === 'list') {
+        return send({ ok: true, entries: secret.entries || [] });
+      }
+      if (input.op === 'upsert') {
+        if (secret.upsert && typeof secret.upsert === 'object') return send(secret.upsert);
+        return send({
+          ok: true,
+          entry: { name: input.name, description: '', source: 'user', createdAt: null, updatedAt: null },
+          created: true,
+        });
+      }
+      if (input.op === 'rename') {
+        if (secret.rename && typeof secret.rename === 'object') return send(secret.rename);
+        return send({
+          ok: true,
+          entry: { name: input.to, description: '', source: 'user', createdAt: null, updatedAt: null },
+        });
+      }
+      if (input.op === 'remove') {
+        return send(secret.remove || { ok: true });
+      }
+      if (input.op === 'reveal') {
+        return send(secret.reveal || { ok: false, reason: 'missing' });
+      }
+      send({ ok: false });
+    });
+    return;
+  }
   if (route === '/echo' && req.method === 'POST') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));

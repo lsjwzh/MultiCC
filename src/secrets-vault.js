@@ -7,15 +7,17 @@
 //
 //   - Agents pop the secure dialog via the MCP tool `request_secret_input`
 //     (src/router-tool-runtime.js). The web client saves the typed value
-//     straight to POST /api/secrets and only a name-only confirmation ever
-//     becomes a chat message.
+//     straight to the vault and only a name-only confirmation ever becomes a
+//     chat message.
 //   - The user manages entries manually in the /manage「敏感信息」panel.
-//   - `list_secrets` (MCP) and GET /api/secrets return names/descriptions
-//     only; the value endpoint exists solely for the panel's reveal action.
+//   - `list_secrets` (MCP) and the vault list show names/descriptions only;
+//     reveal is the one path that returns a value.
 //
-// Writes are localhost-trusted exactly like the docs registry: the secure
-// dialog and the panel POST here without a token. The store file is 0600 via
-// atomicWriteJson and values are never logged.
+// The HTTP surface no longer lives here: the five /api/secrets* routes are
+// served by the Rust front door (multicc-gateway) and reach this module through
+// the loopback-only host port in src/routes/secrets-vault-host.js. This file
+// keeps the in-process store, validation, secret audit and env overlay. The
+// store file is 0600 via atomicWriteJson and values are never logged.
 
 const fs = require('fs');
 const path = require('path');
@@ -200,48 +202,12 @@ function applyEnvOverlay(env, context = {}) {
   });
 }
 
-function mount(app) {
-  app.get('/api/secrets', (req, res) => {
-    res.json(module.exports.list({ source: 'http' }));
-  });
-  app.post('/api/secrets', (req, res) => {
-    const body = req.body || {};
-    const result = module.exports.upsert({
-      name: body.name,
-      value: body.value,
-      description: body.description,
-      source: body.source === 'agent' ? 'agent' : 'user',
-      sessionId: body.sessionId,
-    }, { source: 'http', sessionId: body.sessionId });
-    if (result.error) return res.status(result.status || 400).json({ error: result.error });
-    res.status(result.created ? 201 : 200).json({ ok: true, entry: meta(result.entry) });
-  });
-  app.post('/api/secrets/:name/rename', (req, res) => {
-    const result = module.exports.rename(req.params.name, (req.body || {}).to, { source: 'http' });
-    if (result.error) return res.status(result.status || 400).json({ error: result.error });
-    res.json({ ok: true, entry: meta(result.entry) });
-  });
-  app.delete('/api/secrets/:name', (req, res) => {
-    const result = module.exports.remove(req.params.name, { source: 'http' });
-    if (result.error) return res.status(result.status || 404).json({ error: result.error });
-    res.json(result);
-  });
-  // Value read for the panel's reveal action only. Named separately from the
-  // list route so access logs make the value-touching calls obvious.
-  app.get('/api/secrets/:name/value', (req, res) => {
-    const result = module.exports.reveal(req.params.name, { source: 'http' });
-    if (result.error) return res.status(result.status || 404).json({ error: result.error });
-    res.json({ ok: true, name: result.entry.name, value: result.entry.value });
-  });
-}
-
 load();
 
 module.exports = {
   STORE,
   NAME_RE,
   LEGACY_NAME_RE,
-  mount,
   list: context => secretAudit.call('list', context, [], safeList),
   upsert: (input, context) => secretAudit.call('upsert', context, [input?.name], () => upsert(input)),
   remove: (name, context) => secretAudit.call('remove', context, [name], () => remove(name)),

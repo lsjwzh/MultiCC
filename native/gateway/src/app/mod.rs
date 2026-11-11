@@ -18,6 +18,7 @@ pub mod model_catalogs;
 pub mod provider_limit_history;
 pub mod quota_guard;
 pub mod run_config_presets;
+pub mod secrets_vault;
 mod service_transport;
 pub mod services;
 pub mod source_workspaces;
@@ -96,6 +97,16 @@ pub enum Route {
     /// `/api/agent-resources/claude-sessions` registers both a GET and a
     /// DELETE route, so Express answers OPTIONS with both.
     AgentResourcesOptionsShared,
+    SecretsList,
+    SecretsCreate,
+    SecretsRename,
+    SecretsDelete,
+    SecretsReveal,
+    /// `/api/secrets` registers GET and POST.
+    SecretsOptionsCollection,
+    SecretsOptionsRename,
+    SecretsOptionsItem,
+    SecretsOptionsValue,
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -131,6 +142,9 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         });
     }
     if let Some(route) = agent_resources::claim(method, path) {
+        return Some(route);
+    }
+    if let Some(route) = secrets_vault::claim(method, path) {
         return Some(route);
     }
     let rest = path.strip_prefix("/api/")?;
@@ -198,6 +212,9 @@ pub struct App {
     /// One sync request at a time, like the retired Node handler, which ran a
     /// whole request synchronously on the event loop.
     pub subagent_defaults: tokio::sync::Mutex<()>,
+    /// The vault answered each request to completion on one thread in Node;
+    /// every route here awaits one host round trip, so serialize them.
+    pub secrets_vault: tokio::sync::Mutex<()>,
     /// The observation cache the retired Node route wrote, plus the
     /// process-local single-flight table and the system-proxy slot. `Arc` lets
     /// the leader query outlive the HTTP request that started it.
@@ -260,6 +277,7 @@ impl App {
             claude_models: Mutex::new(claude_models::State::default()),
             token_usage_global: Mutex::new(token_usage_global::State::default()),
             subagent_defaults: tokio::sync::Mutex::new(()),
+            secrets_vault: tokio::sync::Mutex::new(()),
             account_subscription: subscriptions,
             home_dir: std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -428,6 +446,15 @@ pub async fn handle(
         Route::AgentClaudeSessionsPurge => {
             return agent_resources::purge_sessions(&ctx, host).await
         }
+        Route::SecretsOptionsCollection => return options(&ctx, "GET,HEAD,POST"),
+        Route::SecretsOptionsRename => return options(&ctx, "POST"),
+        Route::SecretsOptionsItem => return options(&ctx, "DELETE"),
+        Route::SecretsOptionsValue => return options(&ctx, "GET,HEAD"),
+        Route::SecretsList => return secrets_vault::list(&app, &ctx, host).await,
+        Route::SecretsCreate => return secrets_vault::create(&app, &ctx, &body, host).await,
+        Route::SecretsRename => return secrets_vault::rename(&app, &ctx, &body, host).await,
+        Route::SecretsDelete => return secrets_vault::remove(&app, &ctx, host).await,
+        Route::SecretsReveal => return secrets_vault::reveal(&app, &ctx, host).await,
         Route::PresetsOptions | Route::QuotaGuardOptions => return options(&ctx, "GET,HEAD,PUT"),
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
         Route::SubagentDefaultsOptions => return options(&ctx, "GET,HEAD"),
@@ -828,6 +855,94 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn secrets_vault_claims_keep_the_express_shape() {
+        // The literal segment is case-insensitive (Express default routing);
+        // the parameter is not.
+        assert_eq!(
+            claim(&Method::GET, "/api/SECRETS"),
+            Some(Route::SecretsList)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/Secrets/"),
+            Some(Route::SecretsList)
+        );
+        assert_eq!(
+            claim(&Method::POST, "/api/secrets"),
+            Some(Route::SecretsCreate)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/Secrets"),
+            Some(Route::SecretsOptionsCollection)
+        );
+        assert_eq!(claim(&Method::GET, "/API/secrets"), None);
+        assert_eq!(claim(&Method::GET, "/api/secrets//"), None);
+        assert_eq!(claim(&Method::PUT, "/api/secrets"), None);
+
+        // One parameter segment; its case survives into the decoded name.
+        assert_eq!(
+            claim(&Method::DELETE, "/api/secrets/MiXeD"),
+            Some(Route::SecretsDelete)
+        );
+        assert_eq!(
+            secrets_vault::path_name("/api/Secrets/MiXeD/"),
+            Some("MiXeD".to_string())
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/secrets/old"),
+            Some(Route::SecretsOptionsItem)
+        );
+        assert_eq!(claim(&Method::GET, "/api/secrets/old"), None);
+        // `rename` is an ordinary name for the DELETE route, and a trailing
+        // slash is what strict routing off accepts.
+        assert_eq!(
+            claim(&Method::DELETE, "/api/secrets/rename"),
+            Some(Route::SecretsDelete)
+        );
+        assert_eq!(
+            claim(&Method::DELETE, "/api/secrets/old/"),
+            Some(Route::SecretsDelete)
+        );
+
+        assert_eq!(
+            claim(&Method::POST, "/api/secrets/old/rename"),
+            Some(Route::SecretsRename)
+        );
+        assert_eq!(
+            claim(&Method::POST, "/api/secrets/old/rename/"),
+            Some(Route::SecretsRename)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/secrets/old/rename"),
+            Some(Route::SecretsOptionsRename)
+        );
+        assert_eq!(claim(&Method::GET, "/api/secrets/old/rename"), None);
+
+        assert_eq!(
+            claim(&Method::GET, "/api/secrets/old/value"),
+            Some(Route::SecretsReveal)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/secrets/old/value/"),
+            Some(Route::SecretsReveal)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/secrets/old/value"),
+            Some(Route::SecretsOptionsValue)
+        );
+        assert_eq!(claim(&Method::DELETE, "/api/secrets/old/value"), None);
+
+        // Two segments with any other suffix, an empty segment and one slash
+        // too many were not routes Express had.
+        assert_eq!(claim(&Method::POST, "/api/secrets/old/other"), None);
+        assert_eq!(claim(&Method::GET, "/api/secrets/old/value/extra"), None);
+        assert_eq!(claim(&Method::DELETE, "/api/secrets//"), None);
+        assert_eq!(claim(&Method::DELETE, "/api/secrets/old//"), None);
+        // A different route family.
+        assert_eq!(claim(&Method::GET, "/api/secret"), None);
+        assert_eq!(claim(&Method::GET, "/api/secrets-tokens"), None);
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {

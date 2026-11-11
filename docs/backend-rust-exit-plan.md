@@ -3394,3 +3394,101 @@ bind 之间存在竞态，并行跑全量时偶发 `ConnectionReset`（本机约
   `src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
   `src/routes/subagent-defaults-host.js`。未重启服务，路由由前门接管要等用户手动重启后
   才生效。
+
+## 保险箱路由迁入 Rust 前门（2026-11-11）
+
+五条 `/api/secrets*` 公开路由原先都由 `src/secrets-vault.js` 的 `mount()` 回答：`GET|HEAD
+/api/secrets`（元数据列表）、`POST /api/secrets`（upsert）、`POST /api/secrets/:name/rename`、
+`DELETE /api/secrets/:name`、`GET|HEAD /api/secrets/:name/value`（面板明文）。它们依赖 Node
+进程内状态（entries 表、0600 JSON store、secret audit、`envOverlay`/`envDigest` 的子进程注入
+热路径），但同样不能整条留在 Node：路径/方法匹配、请求校验、状态码、字段顺序与错误映射搬进
+前门，Node 只保留一个显式宿主端口。
+
+之前的清单笔记把阻塞点写成「解密密钥与 Node 启动期的密钥派生生命周期」，该判断有误：store
+就是 `atomicWriteJson` 写的 0600 明文 JSON，没有独立密钥。真正不能搬的是进程内 entries 表与
+env 投影（必须与 audit 共享同一份内存，且 `applyEnvOverlay` 在 spawn 路径上同步读）。
+
+### Rust 实现
+
+- `native/gateway/src/app/secrets_vault.rs`（405 行）：claim 按 Express 口径匹配
+  （区分大小写 `/api/` 前缀、一个尾斜杠、字面段大小写不敏感、`:name` 保留原大小写）；
+  四种路径形态 `/api/secrets`、`/:name`、`/:name/rename`、`/:name/value`。
+  `path_name` 用 `decode_uri_component`（失败回退原串）再 `js_trim`。校验：「新名字」用
+  `NAME_RE = ^[A-Za-z_][A-Za-z0-9_]{0,63}$`（400 `NAME_RULE` 原文），「查找名字」用
+  `LEGACY_NAME_RE = ^[A-Za-z0-9_.-]{1,64}$`；值必须是字符串、非空且 UTF-16 长度
+  ≤ 65536（`utf16_len`，对应 JS `value.length`），否则 400 原文
+  `value is required and cannot exceed 65536 characters`。宿主回答的映射：`full` → 409
+  `{"error":"vault is full"}`，`missing` → 404 `{"error":"entry not found"}`，`exists` →
+  409 `{"error":"target name already exists"}`，其余或不可达 → 503
+  `{"error":"secrets vault interface is not ready","code":"rust_backend_unavailable"}`。
+  create 按宿主 `created` 标志回 201/200 的 `{ok:true,entry}`，remove 回 `{ok:true}`，
+  reveal 回 `{ok:true,name,value}`（明文只出现在响应里，不写日志）。
+- 并发：Node 每个请求在单线程里一次跑完，rename 的旧/新名与容量检查都先读后写。前门为
+  `App.secrets_vault: tokio::sync::Mutex<()>`，每个 handler 持锁跨越整个宿主往返，保持
+  同样的请求级原子性。
+- `native/gateway/src/app/mod.rs`：`pub mod secrets_vault;`、9 个 `Route` 变体、claim 接线
+  与 4 个 handler arm；OPTIONS 四组分别答 `GET,HEAD,POST`、`DELETE`、`POST`、`GET,HEAD`
+  （Express 把同路径的注册方法合并）。单测 `secrets_vault_claims_keep_the_express_shape`
+  覆盖混合大小写字面段、`:name` 保留大小写、尾斜杠、`/API/` 拒绝、`//` 拒绝，以及
+  `rename` 作为普通 DELETE 名字仍按 `:name` 匹配。
+
+### 删除与宿主适配
+
+- `src/secrets-vault.js`：`mount()`（34 行）与 `module.exports` 里对应项删除，文件 260 →
+  225 行（保留 store、两个 NAME 正则、audited 导出、env 投影与测试钩子）。
+- `src/routes/secrets-vault-host.js`（103 行）：`POST /api/__host/secrets-vault`，
+  `if (!isLocal(req)) return res.status(404)`，五个 op（list/upsert/rename/remove/reveal）
+  全部走既有 audited 导出并保留 `source:'http'`；`metaOf` 复刻私有 `meta()` 的键序
+  `{name,description,source,createdAt,updatedAt,updatedBy?}` 并剔除值；`description` 与
+  `sessionId` 只在请求真的带该键时透传。未知 op 回 `{ok:false}`，抛错回 500
+  `{"error":"host operation failed"}`。
+- `server.js`：新增 require 一行、`secretsVault.mount(app)` 换成
+  `mountSecretsVaultHostRoute(app, { vault: secretsVault })`，行数 3067 → 3068，字节
+  164212 → 164328，行预算棘轮同步。
+- 测试面：`tests/test-secrets-vault.js` 改为纯模块 API 契约（13 条）；新增
+  `tests/test-secrets-vault-host.js`（10 条，含只有回环能调与 op 参数映射）；新增冻结
+  oracle `tests/helpers/legacy-secrets-vault-routes.js`（67 行，退役 `mount()` 与 `meta()`
+  逐字副本，仅供差分）；`tests/test-tiers.json` 878 条、`test:rust` 增加宿主端口测试、
+  `test-release-version-consistency` 复核集合 425/351/397/394 与 plan.entries 425。
+
+### 集成测试
+
+`native/gateway/tests/secrets_vault.rs`（719 行，16 个用例）：列表透传、create 的
+201/200、`NAME_RE` 与值校验的 400、容量 409、rename 的 400/404/409/200 矩阵、remove、
+reveal 只回明文、编码与带空白的名字、尾斜杠、OPTIONS/HEAD、宿主不可达整族 503、未认领
+路径仍转发 Node，以及宿主收到的 op/字段（含 `description`/`sessionId` 仅按存在透传）。
+共享 fixture `tests/fixtures/upstream.js` 新增 `POST /api/__host/secrets-vault` 脚本模式
+（记录 `secret-calls.jsonl`，用 `script.secret.*` 控制回答、`script.hostDown` 模拟不可达）。
+
+### 差分与验证
+
+- `docs/rust-migration/differential/secrets-vault.js`（572 行）：Node 侧用冻结 oracle
+  （`tests/helpers/legacy-secrets-vault-routes.js`）跑真实 Express 流水线（真实 auth
+  runtime、`express.json`、`safeErrorHandler`），Rust 侧是前门 + 按 PROXY v1 接线的桩，
+  两侧共用同一份宿主脚本与固定时钟（`2026-01-10T00:00:00.000Z`；oracle 用隔离的
+  `MULTICC_DATA_DIR`）。73 条请求：63 条逐字节一致，10 条预期差异单独校验——
+  1 条大写 `/API/secrets` 前缀（旧 Express 路由大小写不敏感返回 200，前门不 claim 大写前缀
+  故落回 Node 404），1 条 `sessionId: 42`（旧 audit 桥对非字符串 sessionId 抛错 →
+  `internal_error`，新路径为 503 家族），其余 8 条为宿主端口不可达 / `ok:false` 的失败路径。
+- 源码指纹 `2f848f81b538b26ea3bf15c8`：`multicc_core.node` 18,364,576 字节（SHA-256
+  `6294bdf9…5724`，与上一批同字节）、`multicc-gateway` 12,103,648 字节（SHA-256
+  `28d70a30…135c`）、`multicc-remote`（`d800dd59…979d`）、`multicc-cdpd`
+  （`63f2c749…363d`）；四个平台产物均已构建。
+- `cargo fmt --all --check` 退出 0；`cargo clippy --locked -p multicc-gateway --all-targets
+  -- -D warnings` 零告警；`cargo test --locked -p multicc-gateway` 全绿（11 个测试二进制，
+  合计 142 passed / 0 failed，其中 lib 44、secrets_vault 16）。
+- JS 门禁（`MULTICC_RUST_ADDON` 与 `MULTICC_RUST_PREBUILT_DIR` 指向本指纹根目录）：
+  `test:rust` 285/285、`test:native` 285/285、`test:architecture` 128/128、
+  `test:contracts` 148/148、`test:governance` 20/20（`check-test-tiers` 878 条），本组
+  相关 Node 测试 23/23。
+- 两份后端清单已重新生成：`docs/backend-route-inventory.md`（587 个后端文件、138,212 行、
+  487 个注册候选；删五条公开注册、新增一条宿主端口），`docs/backend-runtime-inventory.md`
+  （指纹 `2f848f81b538b26ea3bf15c8`，537 条路由注册、34 层中间件，较上一批 541 减 4）。
+- `docs/gateway.md` 新增 §34 与路由表一行；`docs/rust-migration/route-inventory.md`
+  增加宿主端口文件行、把 `src/secrets-vault.js` 标为 0 条路由 ✅、更新推荐顺序第 8 组，
+  并更正了原先「需要搬密钥」的错误结论。
+- 本组按用户指令完成：删除 Node 路由实现 34 行（`mount()`），`server.js` 净 +1 行（新增
+  require，挂载行替换），新增宿主端口 103 行。剩余的纯宿主垫片文件：
+  `src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
+  `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`。未重启服务，
+  路由由前门接管要等用户手动重启后才生效。

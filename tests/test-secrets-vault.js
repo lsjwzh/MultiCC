@@ -1,8 +1,12 @@
 'use strict';
 // Tests for src/secrets-vault.js — the local sensitive-value vault.
-// Store-level (upsert/list/reveal/remove/validation) plus route-level through
-// a fake express app, all against an isolated MULTICC_DATA_DIR so the real
-// secrets.json is never touched (paths.assertTestDir rules are honoured).
+//
+// The HTTP surface moved to the Rust front door + src/routes/secrets-vault-host.js,
+// so this file only exercises the module API directly: upsert/remove/rename/
+// reveal/list/has, naming rules, capacity, trimming, legacy names, metadata
+// projection, and the env overlay/digest. All of it runs against an isolated
+// MULTICC_DATA_DIR so the real secrets.json is never touched
+// (paths.assertTestDir rules are honoured).
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -16,33 +20,6 @@ const { assertTestDir } = require('../src/paths');
 assertTestDir(tmp);
 
 function reset() { vault._resetForTests(); }
-
-function fakeApp() {
-  const handlers = [];
-  return {
-    handlers,
-    get: (p, h) => handlers.push({ method: 'GET', p, h }),
-    post: (p, h) => handlers.push({ method: 'POST', p, h }),
-    delete: (p, h) => handlers.push({ method: 'DELETE', p, h }),
-  };
-}
-
-function findHandler(app, method, p) {
-  const hit = app.handlers.find(h => h.method === method && h.p === p);
-  assert.ok(hit, `handler ${method} ${p} mounted`);
-  return hit.h;
-}
-
-function invoke(handler, { body, params } = {}) {
-  const res = {
-    statusCode: 200,
-    body: undefined,
-    status(c) { this.statusCode = c; return this; },
-    json(v) { this.body = v; return this; },
-  };
-  handler({ body: body || {}, params: params || {} }, res);
-  return res;
-}
 
 test('upsert creates, lists metadata only, and updates keep createdAt', () => {
   reset();
@@ -81,6 +58,47 @@ test('create rejects names that cannot be injected as env vars', () => {
   assert.equal(vault.list().length, 1, 'rejected names never reach the store');
 });
 
+test('upsert trims name/description/source and slices the long fields', () => {
+  reset();
+  const result = vault.upsert({
+    name: '  TRIM_KEY  ',
+    value: 'v',
+    description: `  ${'d'.repeat(600)}  `,
+    source: `  ${'agent'.repeat(20)}  `,
+  });
+  assert.equal(result.entry.name, 'TRIM_KEY');
+  assert.equal(result.entry.description.length, 500);
+  assert.equal(result.entry.description, 'd'.repeat(500));
+  assert.equal(result.entry.source.length, 64);
+  assert.match(result.entry.source, /^agent/);
+  assert.equal(vault.has('  TRIM_KEY  '), true, 'lookups trim too');
+});
+
+test('list sorts by name and projects metadata without values', () => {
+  reset();
+  vault.upsert({ name: 'B_KEY', value: 'b' });
+  vault.upsert({ name: 'A_KEY', value: 'a', sessionId: 'chat-9' });
+  vault.upsert({ name: 'C_KEY', value: 'c' });
+  const list = vault.list();
+  assert.deepEqual(list.map(entry => entry.name), ['A_KEY', 'B_KEY', 'C_KEY']);
+  assert.deepEqual(Object.keys(list[0]), ['name', 'description', 'source', 'createdAt', 'updatedAt', 'updatedBy']);
+  assert.deepEqual(Object.keys(list[1]), ['name', 'description', 'source', 'createdAt', 'updatedAt']);
+  assert.ok(list.every(entry => !('value' in entry)), 'list must never expose values');
+});
+
+test('capacity: a new entry is refused at MAX_ENTRIES, existing updates still work', () => {
+  reset();
+  const seed = Array.from({ length: 500 }, (_, index) => ({ name: `K_${index}`, value: 'v' }));
+  fs.writeFileSync(vault.STORE, JSON.stringify(seed));
+  vault._loadForTests();
+  assert.equal(vault.list().length, 500);
+  const full = vault.upsert({ name: 'ONE_MORE', value: 'x' });
+  assert.equal(full.status, 409);
+  assert.equal(full.error, 'vault is full');
+  assert.equal(vault.upsert({ name: 'K_0', value: 'updated' }).created, false);
+  assert.equal(vault.reveal('K_0').entry.value, 'updated');
+});
+
 test('legacy illegal-name entries survive reload, stay deletable, and can be renamed', () => {
   reset();
   fs.writeFileSync(vault.STORE, JSON.stringify([
@@ -113,18 +131,13 @@ test('rename validates source, target and collisions', () => {
   assert.equal(vault.rename('A_KEY', 'B_KEY').status, 409);
   assert.equal(vault.reveal('A_KEY').entry.value, 'a', 'failed renames change nothing');
   assert.equal(vault.rename('A_KEY', 'A_KEY').unchanged, true);
-});
-
-test('rename route returns metadata only', () => {
-  reset();
+  // 成功改名只回元数据（值留在进程内，绝不随结果返回）。
   vault.upsert({ name: 'OLD_NAME', value: 'sk-route-secret' });
-  const app = fakeApp();
-  vault.mount(app);
-  const res = invoke(findHandler(app, 'POST', '/api/secrets/:name/rename'), { params: { name: 'OLD_NAME' }, body: { to: 'NEW_NAME' } });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.entry.name, 'NEW_NAME');
-  assert.ok(!JSON.stringify(res.body).includes('sk-route-secret'));
-  assert.equal(invoke(findHandler(app, 'POST', '/api/secrets/:name/rename'), { params: { name: 'NEW_NAME' }, body: { to: 'x-y' } }).statusCode, 400);
+  const moved = vault.rename('OLD_NAME', 'NEW_NAME');
+  assert.equal(moved.entry.name, 'NEW_NAME');
+  assert.equal(moved.entry.value, 'sk-route-secret', 'the entry itself keeps its value');
+  const projected = vault.list().find(entry => entry.name === 'NEW_NAME');
+  assert.ok(!JSON.stringify(projected).includes('sk-route-secret'), 'metadata projection strips values');
 });
 
 test('envDigest tracks added, changed and removed entries without exposing values', () => {
@@ -159,47 +172,7 @@ test('remove and reveal on missing entries', () => {
   assert.equal(vault.has('github_token'), false);
 });
 
-test('routes: POST/GET/DELETE/value without leaking values in lists', () => {
-  reset();
-  const app = fakeApp();
-  vault.mount(app);
-  const created = invoke(findHandler(app, 'POST', '/api/secrets'), {
-    body: { name: 'DS_KEY', value: 'sk-secret', description: 'deepseek' },
-  });
-  assert.equal(created.statusCode, 201);
-  assert.equal(created.body.ok, true);
-  assert.ok(!('value' in created.body.entry));
-
-  const listed = invoke(findHandler(app, 'GET', '/api/secrets'));
-  assert.equal(listed.statusCode, 200);
-  assert.equal(listed.body.length, 1);
-  assert.equal(listed.body[0].name, 'DS_KEY');
-  assert.ok(!('value' in listed.body[0]));
-
-  const revealed = invoke(findHandler(app, 'GET', '/api/secrets/:name/value'), {
-    params: { name: 'DS_KEY' },
-  });
-  assert.equal(revealed.statusCode, 200);
-  assert.equal(revealed.body.value, 'sk-secret');
-
-  const missing = invoke(findHandler(app, 'GET', '/api/secrets/:name/value'), {
-    params: { name: 'nope' },
-  });
-  assert.equal(missing.statusCode, 404);
-
-  const bad = invoke(findHandler(app, 'POST', '/api/secrets'), {
-    body: { name: '../etc/passwd', value: 'x' },
-  });
-  assert.equal(bad.statusCode, 400);
-
-  const removed = invoke(findHandler(app, 'DELETE', '/api/secrets/:name'), {
-    params: { name: 'DS_KEY' },
-  });
-  assert.equal(removed.statusCode, 200);
-  assert.equal(invoke(findHandler(app, 'GET', '/api/secrets')).body.length, 0);
-});
-
-test('agent-sourced posts are labelled and persistence round-trips', () => {
+test('agent-sourced writes are labelled and persistence round-trips', () => {
   reset();
   vault.upsert({ name: 'FROM_AGENT', value: 'v1', source: 'agent', sessionId: 'chat-1' });
   const list = vault.list();
