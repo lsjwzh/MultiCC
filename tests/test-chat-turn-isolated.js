@@ -17,6 +17,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
+const isolatedHostEnv = require('./helpers/isolated-host-env');
 
 const ROOT = path.join(__dirname, '..');
 const TOKEN = 'isolated-chat-turn-token';
@@ -34,9 +35,10 @@ function freePort() {
 }
 
 async function waitReady(base) {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${base}/readyz`);
+      const response = await fetch(`${base}/readyz`, { signal: AbortSignal.timeout(1000) });
       if (response.status === 200) return;
     } catch (_) {}
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -195,7 +197,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const child = spawn(gateway, ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...isolatedHostEnv(),
       NODE_ENV: 'test',
       HOST: '127.0.0.1',
       PORT: String(port),
@@ -210,6 +212,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       GIT_CONFIG_GLOBAL: gitConfig,
       GIT_CONFIG_SYSTEM: os.devNull,
       CLAUDE_CMD: fakeCli,
+      MULTICC_CLAUDE_BIN: fakeCli,
       CODEX_CMD: path.join(root, 'missing-codex'),
       OPENCODE_CMD: path.join(root, 'missing-opencode'),
       QODER_CMD: path.join(root, 'missing-qoder'),

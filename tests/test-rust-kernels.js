@@ -191,9 +191,7 @@ rustTest('打包后的 Rust 模块可加载，错误架构不能进入安装包'
       fs.mkdirSync(dir, { recursive: true }); fs.copyFileSync(source, path.join(dir, 'multicc_core.node'));
       fs.writeFileSync(path.join(dir, remoteName()), binaryHeader(process.platform, arch));
       fs.writeFileSync(path.join(dir, cdpdBinaryName(process.platform)), binaryHeader(process.platform, arch));
-      if (process.platform !== 'win32') {
-        fs.writeFileSync(path.join(dir, gatewayBinaryName(process.platform)), binaryHeader(process.platform, arch));
-      }
+      fs.writeFileSync(path.join(dir, gatewayBinaryName(process.platform)), binaryHeader(process.platform, arch));
       if (process.platform === 'win32') fs.writeFileSync(path.join(dir, 'multicc-desktop-agent.exe'), binaryHeader(process.platform, arch));
     }
     const options = { repoRoot: '.', out: path.join(root, 'app-server'), logger: { log() {} } };

@@ -21,11 +21,13 @@ COPY --from=rust-build /build/native/target/release/libmulticc_addon.so /tmp/mul
 # multicc-cdpd，「🖥 屏幕」和浏览器网关才有后端。
 COPY --from=rust-build /build/native/target/release/multicc-remote /tmp/multicc-remote
 COPY --from=rust-build /build/native/target/release/multicc-cdpd /tmp/multicc-cdpd
+COPY --from=rust-build /build/native/target/release/multicc-gateway /tmp/multicc-gateway
 RUN arch="$(uname -m)"; case "$arch" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac; \
     mkdir -p "native/prebuilt/linux-$arch" && mv /tmp/multicc-core.node "native/prebuilt/linux-$arch/multicc_core.node" && \
     cp /tmp/multicc-remote "native/prebuilt/linux-$arch/multicc-remote" && \
     cp /tmp/multicc-cdpd "native/prebuilt/linux-$arch/multicc-cdpd" && \
-    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd"
+    cp /tmp/multicc-gateway "native/prebuilt/linux-$arch/multicc-gateway" && \
+    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd" "native/prebuilt/linux-$arch/multicc-gateway"
 RUN chown -R node:node /candidate
 USER node
 ENV NODE_ENV=test ASR_LOCAL=off MULTICC_CHROME_BIN=/usr/bin/chromium
@@ -40,11 +42,13 @@ COPY . .
 COPY --from=rust-build /build/native/target/release/libmulticc_addon.so /tmp/multicc-core.node
 COPY --from=rust-build /build/native/target/release/multicc-remote /tmp/multicc-remote
 COPY --from=rust-build /build/native/target/release/multicc-cdpd /tmp/multicc-cdpd
+COPY --from=rust-build /build/native/target/release/multicc-gateway /tmp/multicc-gateway
 RUN arch="$(uname -m)"; case "$arch" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac; \
     mkdir -p "native/prebuilt/linux-$arch" && mv /tmp/multicc-core.node "native/prebuilt/linux-$arch/multicc_core.node" && \
     cp /tmp/multicc-remote "native/prebuilt/linux-$arch/multicc-remote" && \
     cp /tmp/multicc-cdpd "native/prebuilt/linux-$arch/multicc-cdpd" && \
-    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd"
+    cp /tmp/multicc-gateway "native/prebuilt/linux-$arch/multicc-gateway" && \
+    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd" "native/prebuilt/linux-$arch/multicc-gateway"
 RUN chmod +x docker/task-shell/fake-codex.js \
     && mkdir -p /var/lib/multicc \
     && chown -R node:node /opt/multicc /var/lib/multicc

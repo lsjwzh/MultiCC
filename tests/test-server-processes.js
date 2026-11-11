@@ -281,7 +281,9 @@ test('multicc status reports a process behind the front door', {
   const gateway = path.join(root, 'runtime', 'multicc-gateway');
   fs.copyFileSync('/usr/bin/yes', gateway);
   fs.chmodSync(gateway, 0o755);
-  const child = spawn(gateway, ['serve', '--cwd', root, '--node', process.execPath, 'server.js'],
+  // GNU yes parses options after operands too; -- keeps the gateway flags as
+  // literal text so the native fixture stays alive on Linux as well as macOS.
+  const child = spawn(gateway, ['--', 'serve', '--cwd', root, '--node', process.execPath, 'server.js'],
     { cwd: root, stdio: 'ignore' });
   t.after(async () => {
     try { child.kill('SIGKILL'); } catch (_) {}
