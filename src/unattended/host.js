@@ -41,6 +41,10 @@ function createUnattendedHost(options = {}) {
     appendMessage = null,
     hasQueuedDeliveries = null,
     isRunActive = () => false,
+    // Earliest epoch-ms the provider / Auto candidate pool could accept a turn
+    // again (rate-limit reset or parked candidate). Optional: without it the
+    // kernel still backs off on the fault streak alone.
+    getRetryNotBefore = () => null,
     // Restart reconciliation: the scheduler is the authority on whether a turn
     // is still live, and the persisted task state names the interrupted cause.
     getTaskState = () => ({}),
@@ -74,6 +78,10 @@ function createUnattendedHost(options = {}) {
   // unref'd). Cleared on every non-active write, stop/pause/resume and shutdown;
   // re-armed by the boot migration (src/unattended/runtime.js) and by resume.
   const timers = new Map();
+  // Exactly one durable retry timer per active session (setTimeout to retryAt,
+  // unref'd). The kernel decides the delay and persists `retryAt`; this host
+  // only runs the clock and injects the recovery instruction when it fires.
+  const retryTimers = new Map();
 
   let cachedTag = '';
   function tag() {
@@ -134,13 +142,69 @@ function createUnattendedHost(options = {}) {
     timers.set(sessionId, timer);
   }
 
-  // Re-arm once from the persisted record (boot migration); idempotent.
+  // Re-arm once from the persisted record (boot migration); idempotent. A
+  // persisted `retryAt` in the past fires promptly, which is exactly the
+  // recovery the user wanted across a restart.
   function rearmTimer(sessionId) {
-    syncTimer(sessionId, stateOf(sessionId));
+    const state = stateOf(sessionId);
+    syncTimer(sessionId, state);
+    syncRetryTimer(sessionId, state);
   }
 
   function shutdown() {
     for (const sessionId of [...timers.keys()]) clearTimer(sessionId);
+    for (const sessionId of [...retryTimers.keys()]) clearRetryTimer(sessionId);
+  }
+
+  // ── Durable fault retry timer ─────────────────────────────────────────────
+
+  function clearRetryTimer(sessionId) {
+    const timer = retryTimers.get(sessionId);
+    if (timer === undefined) return;
+    retryTimers.delete(sessionId);
+    try { clearTimeoutFn(timer); } catch (_) { /* already fired */ }
+  }
+
+  function syncRetryTimer(sessionId, state) {
+    clearRetryTimer(sessionId);
+    if (!state || state.status !== STATUS.ACTIVE) return;
+    const retryAt = Number(state.retryAt);
+    if (!Number.isFinite(retryAt) || retryAt <= 0) return;
+    const delay = Math.max(0, retryAt - now());
+    const timer = setTimeoutFn(() => {
+      if (retryTimers.get(sessionId) === timer) retryTimers.delete(sessionId);
+      fireRetry(sessionId);
+    }, delay);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    retryTimers.set(sessionId, timer);
+  }
+
+  // The retry timer fired: re-check every fact before injecting. Expiry wins
+  // first, and a turn started by any other path (FIFO, user, API-policy retry)
+  // makes the persisted retry obsolete — clear it instead of double-driving.
+  function fireRetry(sessionId) {
+    const at = now();
+    const state = stateOf(sessionId);
+    if (!state || state.status !== STATUS.ACTIVE) return;
+    if (expireIfDue(sessionId)) return;
+    const retryAt = Number(state.retryAt);
+    if (!Number.isFinite(retryAt) || retryAt <= 0) return;
+    if (at < retryAt) {
+      // Timers may fire a hair early; re-arm for the remainder.
+      syncRetryTimer(sessionId, state);
+      return;
+    }
+    let busy = false;
+    try { busy = isRunActive(sessionId) === true; } catch (_) { busy = false; }
+    // Clear the durable marker either way: it has been consumed.
+    if (!write(sessionId, { ...state, retryAt: null, retryCategory: null, updatedAt: at })) return;
+    if (busy) return;
+    const faults = Number(state.stall && state.stall.consecutiveFaults) || 1;
+    trace(sessionId, tagged(`故障后自动继续（第 ${faults} 次）`));
+    if (typeof inject !== 'function') return;
+    trackInjection(sessionId, inject(sessionId, tagged(kernel.faultInstruction()), {
+      unattendedRecovery: true,
+    }));
   }
 
   // Checked at the top of every evaluation/fault AND by the timer, so a late
@@ -171,6 +235,8 @@ function createUnattendedHost(options = {}) {
       status: STATUS.EXHAUSTED,
       evaluating: false,
       pausedBy: null,
+      retryAt: null,
+      retryCategory: null,
       lastVerdict: {
         verdict: 'needs_human',
         reason: '已达到最长值守时间',
@@ -207,6 +273,7 @@ function createUnattendedHost(options = {}) {
     // failed write means the pause did not happen.
     if (next && next.status !== STATUS.ACTIVE) withdrawPendingInjections(sessionId);
     syncTimer(sessionId, next);
+    syncRetryTimer(sessionId, next);
     try {
       broadcast(sessionId, { type: 'unattended_state', unattended: next });
     } catch (_) { /* a dead socket must not fail the state write */ }
@@ -228,6 +295,8 @@ function createUnattendedHost(options = {}) {
       lastVerdict: null,
       history: [],
       stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 0 },
+      retryAt: null,
+      retryCategory: null,
       evaluating: false,
       pausedBy: null,
     };
@@ -346,8 +415,12 @@ function createUnattendedHost(options = {}) {
   async function evaluationDeferred(sessionId) {
     let busy = false;
     try { busy = isRunActive(sessionId) === true; } catch (_) { busy = false; }
-    if (busy) return true;
-    return backlogPending(sessionId);
+    return kernel.deferEvaluation({
+      busy,
+      backlogPending: await backlogPending(sessionId),
+      classifyState: getTaskState(sessionId)?.classifyState,
+      pendingQuestion: getPendingQuestion(sessionId),
+    });
   }
 
   // Read-only question: has the session-work scheduler staged deliveries the
@@ -423,6 +496,8 @@ function createUnattendedHost(options = {}) {
       pausedBy: by,
       // An evaluation may be in flight; the spinner must not outlive the pause.
       evaluating: false,
+      retryAt: null,
+      retryCategory: null,
       updatedAt: now(),
     };
     if (!write(sessionId, next)) return null;
@@ -463,6 +538,8 @@ function createUnattendedHost(options = {}) {
       deadlineAt: armed.deadlineAt,
       rounds: current.status === STATUS.EXHAUSTED ? 0 : current.rounds,
       stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 0 },
+      retryAt: null,
+      retryCategory: null,
       updatedAt: at,
     };
     if (!write(sessionId, next)) return { ok: false, code: 'persist_failed', status: 500 };
@@ -510,6 +587,7 @@ function createUnattendedHost(options = {}) {
       recent,
       history: state.history,
       pendingQuestion,
+      classifyState: getTaskState(sessionId)?.classifyState,
       rounds: state.rounds,
       maxDurationMinutes: state.maxDurationMinutes,
     };
@@ -527,10 +605,7 @@ function createUnattendedHost(options = {}) {
     return '';
   }
 
-  // FIFO backlog evidence is deliberately absent: the scheduler already gates
-  // the FIFO behind a pending question (the answer runs first) and behind an E
-  // fault (a continuation runs first, the FIFO stays staged until D), then
-  // drains it on its own. See docs/unattended-mode.md → v2 item 2.
+  // FIFO 内容不进入判定提示词；队列顺序由调度器和 Rust 策略决定。
 
   function setEvaluating(sessionId, value) {
     const state = stateOf(sessionId);
@@ -580,6 +655,8 @@ function createUnattendedHost(options = {}) {
       auxError = error && error.message ? error.message : String(error || 'aux_failed');
     }
 
+    // Aux 等待期间消息可能入队或已经开始执行；交给 Rust 丢弃过时判定。
+    const workPending = queued.has(sessionId) || await evaluationDeferred(sessionId);
     const latest = stateOf(sessionId);
     if (!latest || latest.status !== STATUS.ACTIVE) {
       setEvaluating(sessionId, false);
@@ -592,6 +669,7 @@ function createUnattendedHost(options = {}) {
       verdict: verdict.ok ? verdict : undefined,
       parseError: verdict.ok ? undefined : (verdict.error || 'unparseable_verdict'),
       evaluation: collected,
+      workPending,
       now: now(),
     });
     // `lastSettleAt` is the restart-reconciliation watermark: a settle that was
@@ -679,6 +757,7 @@ function createUnattendedHost(options = {}) {
         const sent = await deliver(sessionId, tagged(decision.answer), {
           userInputRequestId: decision.pendingQuestionId,
           unattendedSystem: true,
+          unattendedRecovery: true,
           system: true,
         });
         rememberInjection(sessionId, sent);
@@ -686,7 +765,7 @@ function createUnattendedHost(options = {}) {
       }
       // The marker is added by code, never by the model; re-tagging also
       // normalises any marker the aux emitted itself.
-      if (typeof inject === 'function') trackInjection(sessionId, inject(sessionId, tagged(message)));
+      if (typeof inject === 'function') trackInjection(sessionId, inject(sessionId, tagged(message), { unattendedRecovery: decision.recovery === true }));
       return;
     }
     if (action === 'achieved') {
@@ -771,15 +850,65 @@ function createUnattendedHost(options = {}) {
     return { ...state, lastSettleAt: at };
   }
 
+  // Local HH:MM for traces and the one waiting notice. Formatting lives here
+  // because the kernel stays deterministic and timezone-free.
+  function formatClock(at) {
+    const date = new Date(Number(at));
+    if (!Number.isFinite(date.getTime())) return '';
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function faultTrace(decision) {
+    const faults = Number(decision.faults) || 1;
+    const at = Number(decision.retryAt);
+    if (decision.action === 'fault_wait' && Number.isFinite(at) && at > 0) {
+      const clock = formatClock(at);
+      if (decision.retryCategory === 'capacity') {
+        return `上游额度/线路暂不可用，将在 ${clock} 自动重试（第 ${faults} 次）`;
+      }
+      return `故障后将在 ${clock} 自动重试（第 ${faults} 次）`;
+    }
+    return `故障后自动继续（第 ${faults} 次）`;
+  }
+
+  // One waiting push/notice when the streak first reaches 3. The session stays
+  // active; the notice exists so a long outage is visible and the user knows a
+  // pause would take over immediately.
+  function maybeFaultNotice(sessionId, before, decision) {
+    const faults = Number(decision.faults) || 0;
+    const previous = Number(before && before.stall && before.stall.consecutiveFaults) || 0;
+    if (faults !== 3 || previous >= 3) return;
+    const at = Number(decision.retryAt);
+    const when = Number.isFinite(at) && at > 0
+      ? `下一次尝试预计在 ${formatClock(at)}`
+      : '下一次尝试即将开始';
+    const message = `无人值守仍在自动重试：连续第 ${faults} 次上游故障，${when}；你可以随时暂停并接管。`;
+    try { notify(sessionId, 'waiting', message, {}); } catch (_) { /* push is best-effort */ }
+    try { broadcast(sessionId, { type: 'notify', state: 'waiting', message }); } catch (_) {}
+  }
+
+  // Earliest epoch-ms the provider / Auto pool could accept work again. The
+  // port is optional; a broken read must never turn into a bogus restriction.
+  function retryNotBeforeOf(sessionId) {
+    if (typeof getRetryNotBefore !== 'function') return undefined;
+    try {
+      const value = Number(getRetryNotBefore(sessionId));
+      return Number.isFinite(value) && value > 0 ? value : undefined;
+    } catch (error) {
+      log(`[unattended] retryNotBefore read failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+      return undefined;
+    }
+  }
+
   // The ONE entry for every way a turn can end: D/W settle, E fault, user
   // cancel, host-side cancel (watchdog, stalled recovery, restart/shutdown,
   // provider reclaim) and a boot replay of a settle that happened before this
   // host was ready. The host only gathers facts — the classify letter, the
   // cancel attribution, whether the API policy scheduled a retry, whether the
   // scheduler still has staged backlog — and native/core/src/unattended.rs
-  // decides the single action (`evaluate | fault_continue | needs_human |
-  // pause | none`). Every no-action/decision-failure branch releases the held
-  // classic push, so a settle is never silent.
+  // decides the single action (`evaluate | fault_continue | fault_wait |
+  // needs_human | pause | none`). Every no-action/decision-failure branch
+  // releases the held classic push, so a settle is never silent.
   async function onTurnEnd(sessionId, facts = {}) {
     const {
       kind = 'settle',
@@ -788,6 +917,7 @@ function createUnattendedHost(options = {}) {
       cancelSource = '',
       killReason = '',
       retryScheduled,
+      faultCategory = '',
       assistantText = '',
       fallbackPush = null,
     } = facts;
@@ -800,8 +930,7 @@ function createUnattendedHost(options = {}) {
     // A late deadline must not let a stale settle buy another round. Expiry
     // produces its own notice, so the held push stays suppressed.
     if (expireIfDue(sessionId)) return null;
-    // Only a settle needs the backlog fact; the read is async and a user
-    // message may pause us meanwhile.
+    // 等待/异常优先恢复；只有正常完成时才因 FIFO 推迟判定。
     const backlog = kind === 'settle' ? await backlogPending(sessionId) : false;
     const latest = stateOf(sessionId);
     if (!latest || latest.status !== STATUS.ACTIVE) {
@@ -824,6 +953,8 @@ function createUnattendedHost(options = {}) {
         // silently coerced, which is how a scheduled retry used to double-inject.
         retryScheduled,
         backlogPending: backlog,
+        faultCategory,
+        retryNotBefore: retryNotBeforeOf(sessionId),
       });
     } catch (error) {
       log(`[unattended] turn-end decision failed for ${sessionId}: ${error && error.message ? error.message : error}`);
@@ -858,7 +989,7 @@ function createUnattendedHost(options = {}) {
       try { tracePaused(sessionId, by); } catch (_) {}
       return next;
     }
-    if (action === 'fault_continue' || action === 'needs_human') {
+    if (action === 'fault_continue' || action === 'fault_wait' || action === 'needs_human') {
       if (!decision.nextState) {
         firePush(push);
         return null;
@@ -868,8 +999,15 @@ function createUnattendedHost(options = {}) {
         return null;
       }
       if (action === 'fault_continue') {
-        trace(sessionId, tagged(`故障后自动继续（第 ${decision.faults || 1} 次）`));
-        if (typeof inject === 'function') trackInjection(sessionId, inject(sessionId, tagged(decision.message)));
+        trace(sessionId, tagged(faultTrace(decision)));
+        maybeFaultNotice(sessionId, latest, decision);
+        if (typeof inject === 'function') trackInjection(sessionId, inject(sessionId, tagged(decision.message), { unattendedRecovery: true }));
+        return decision;
+      }
+      if (action === 'fault_wait') {
+        // The kernel persisted `retryAt`; `write` armed the one retry timer.
+        trace(sessionId, tagged(faultTrace(decision)));
+        maybeFaultNotice(sessionId, latest, decision);
         return decision;
       }
       traceDecision(sessionId, decision);
@@ -965,7 +1103,7 @@ function createUnattendedHost(options = {}) {
   }
 
   function stats() {
-    return { inFlight: inFlight.size, queued: queued.size, heldPushes: heldPushes.size, timers: timers.size };
+    return { inFlight: inFlight.size, queued: queued.size, heldPushes: heldPushes.size, timers: timers.size, retryTimers: retryTimers.size };
   }
 
   return Object.freeze({

@@ -80,19 +80,28 @@ class UnattendedStall {
   final int sameInstruction;
   final int auxFailures;
 
-  const UnattendedStall({this.sameInstruction = 0, this.auxFailures = 0});
+  /// 连续故障恢复尝试次数（上游限流/线路故障都算）。重试横幅的「第 n 次」。
+  final int consecutiveFaults;
+
+  const UnattendedStall({
+    this.sameInstruction = 0,
+    this.auxFailures = 0,
+    this.consecutiveFaults = 0,
+  });
 
   static UnattendedStall? fromJson(dynamic raw) {
     if (raw is! Map) return null;
     return UnattendedStall(
       sameInstruction: (raw['sameInstruction'] as num?)?.toInt() ?? 0,
       auxFailures: (raw['auxFailures'] as num?)?.toInt() ?? 0,
+      consecutiveFaults: _intOf(raw['consecutiveFaults'], 0),
     );
   }
 
   Map<String, dynamic> toJson() => {
     'sameInstruction': sameInstruction,
     'auxFailures': auxFailures,
+    'consecutiveFaults': consecutiveFaults,
   };
 }
 
@@ -115,6 +124,13 @@ class UnattendedState {
   static const pausedByUser = 'user';
   static const pausedByInput = 'input';
   static const pausedByCancel = 'cancel';
+
+  /// 故障恢复等待中：上游额度/线路不可用（capacity）或普通故障（fault）。
+  static const retryCategoryCapacity = 'capacity';
+  static const retryCategoryFault = 'fault';
+
+  /// 「即将自动重试」的阈值：距离 retryAt 不到 60 秒就不再显示具体钟点。
+  static const retrySoonMs = 60 * 1000;
 
   static const maxCriteria = 12;
   static const maxGoalLength = 2000;
@@ -146,6 +162,13 @@ class UnattendedState {
   /// 暂停原因（user / input / cancel / null）。resume/start 后服务端清掉。
   final String? pausedBy;
 
+  /// 下一次自动故障恢复的发送时间，epoch ms；0 表示没有排期的重试。
+  /// 与 `status == active` 同时成立时才展示「HH:MM 自动重试」。
+  final int retryAt;
+
+  /// 重试类别：capacity（上游额度/线路不可用）或 fault（普通故障）；其余落 null。
+  final String? retryCategory;
+
   const UnattendedState({
     this.status = statusStopped,
     this.goal = '',
@@ -160,6 +183,8 @@ class UnattendedState {
     this.stall,
     this.evaluating = false,
     this.pausedBy,
+    this.retryAt = 0,
+    this.retryCategory,
   });
 
   bool get isActive => status == statusActive;
@@ -182,6 +207,18 @@ class UnattendedState {
     if (deadlineAt <= 0) return null;
     return Duration(milliseconds: deadlineAt - nowMs);
   }
+
+  /// 连续故障恢复尝试次数（横幅「第 n 次」）。
+  int get consecutiveFaults => stall?.consecutiveFaults ?? 0;
+
+  /// active 且还有一次排在未来（`retryAt > now`）的自动重试。
+  /// 服务端一到点会广播新的状态；到期后这里就不再算「等待中」。
+  bool retryPending(int nowMs) =>
+      isActive && retryAt > 0 && retryAt > nowMs;
+
+  /// 距自动重试不到 60 秒：不再显示钟点，改「即将自动重试」。
+  bool retrySoon(int nowMs) =>
+      retryPending(nowMs) && retryAt - nowMs <= retrySoonMs;
 
   static UnattendedState? fromJson(dynamic raw) {
     if (raw is! Map) return null;
@@ -213,7 +250,18 @@ class UnattendedState {
       stall: UnattendedStall.fromJson(map['stall']),
       evaluating: _truthy(map['evaluating']),
       pausedBy: _optionalText(map['pausedBy']),
+      retryAt: _intOf(map['retryAt'], 0),
+      retryCategory: _retryCategoryOf(map['retryCategory']),
     );
+  }
+
+  /// 只认契约里的两个取值；旧服务端/未知值一律当没有重试类别。
+  static String? _retryCategoryOf(dynamic raw) {
+    final text = _optionalText(raw);
+    if (text == retryCategoryCapacity || text == retryCategoryFault) {
+      return text;
+    }
+    return null;
   }
 
   /// 宽容解析：新老服务端/演示服务可能给 bool、数字或字符串。
@@ -241,6 +289,9 @@ class UnattendedState {
     if (stall != null) 'stall': stall!.toJson(),
     'evaluating': evaluating,
     'pausedBy': pausedBy,
+    // 契约里是 epoch ms | null；没有排期时明确给 null，不落 0。
+    'retryAt': retryAt > 0 ? retryAt : null,
+    'retryCategory': retryCategory,
   };
 }
 

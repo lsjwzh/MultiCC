@@ -431,9 +431,9 @@ function createClassifyStateMachine(rawDeps) {
       });
       // Unattended fault continuation: report the turn end either way and let
       // the kernel decide — when the centralized policy already scheduled its
-      // own bounded retry there is nothing to do; otherwise a fixed continue
-      // instruction goes out (no Aux call, counts as a round, 3 consecutive
-      // faults need a human).
+      // own bounded retry there is nothing to do; otherwise the kernel either
+      // continues immediately, arms a durable backoff retry, or stops for a
+      // human when the API-error category is one retrying cannot fix.
       try {
         getUnattendedHost()?.onTurnEnd?.(sessionName, {
           kind: 'fault',
@@ -441,6 +441,7 @@ function createClassifyStateMachine(rawDeps) {
           turnId,
           killReason: ctx.killReason || '',
           retryScheduled: cs?._lastApiErrorDecision?.action === 'retry',
+          faultCategory: cs?._lastApiErrorDecision?.category || '',
         });
       } catch (_) {}
     }
@@ -539,6 +540,10 @@ function createClassifyStateMachine(rawDeps) {
           turnId,
           cancelSource: cancel.source || 'manual_cancel',
           killReason: cancel.reason || '',
+          // A preparation failure is capacity-shaped: the kernel backs off and
+          // retries instead of treating it as a human-only fault.
+          faultCategory: cancel.source === 'preparation_failed'
+            || cancel.reason === 'preparation_failed' ? 'preparation_failed' : '',
         });
       } else if (isWaitForUserLetter(state)) {
         unattended?.onTurnEnd?.(sessionName, {

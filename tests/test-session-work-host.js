@@ -879,6 +879,7 @@ test('gateway recovery projects a durable ended P turn to D, but never invents a
   });
   assert.deepEqual(durable.host.recoveryState('s1'), {
     classifyState: 'D',
+    unattended: null,
     startedAt: 100,
     endedAt: 200,
     taskId: 'gateway-task',

@@ -2448,11 +2448,18 @@ const userInputSignalHost = createUserInputSignalHost(
 // ── Unattended mode supervisor (docs/unattended-mode.md; decisions in Rust) ──
 const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions: savePersistedSessionsBestEffort,
   loadHistory: loadChatHistory, setTaskState, userInputSignalHost, getAuxQueue: () => auxQueue, taskContextHost,
-  waitInjector, deliverInjection: (id, text) => sessionDelivery.deliverSystem(id, text),
+  waitInjector, deliverInjection: (id, text, options) => sessionDelivery.deliverSystem(id, text, { ...options, unattendedSystem: true }),
   withdrawQueued: (id, entryId) => (orchestrationRuntime
     ? orchestrationRuntime.sessionScheduler.cancelQueued(id, entryId, { actor: 'unattended', reason: 'paused' })
     : { ok: false, code: 'scheduler_unavailable' }),
   triggerPush, chatBroadcast, logger, appendMessage: appendChatMessage, isRunActive: id => sessionWorkHost?.isRunActive(id) === true, hasQueuedDeliveries: id => (sessionWorkHost ? sessionWorkHost.hasQueuedDeliveries(id) : false),
+  // Auto-pool unblock hint for fault backoff. chatTurnEngine is created below;
+  // the port is only read when a turn ends, so the late binding is safe.
+  getRetryNotBefore: id => {
+    const session = persistedSessions.get(id);
+    if (!session) return null;
+    try { return chatTurnEngine.autoProviderRuntime.retryNotBefore(session); } catch (_) { return null; }
+  },
   getTaskState: id => getTaskState(persistedSessions.get(id)), getSchedulerStatus: id => (orchestrationRuntime ? orchestrationRuntime.sessionScheduler.status(id) : null), listSessionIds: () => [...persistedSessions.keys()] });
 sessionWorkHost = createSessionWorkHost({
   runtime: () => orchestrationRuntime,

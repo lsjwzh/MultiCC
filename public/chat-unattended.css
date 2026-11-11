@@ -529,6 +529,30 @@
   color: #f0b45a;
 }
 
+/* active + 故障恢复退避：琥珀色，第三种「还在跑，但上游暂时不可用」的平静状态。
+   按钮仍是「暂停并接管」，所以配色只换色调，不换布局。 */
+.unat-banner-retry {
+  border-color: rgba(240, 164, 41, 0.45);
+  background: rgba(240, 164, 41, 0.1);
+  color: #f0b45a;
+}
+.unat-banner-retry .unat-banner-btn {
+  border-color: rgba(240, 164, 41, 0.5);
+  background: rgba(240, 164, 41, 0.16);
+  color: #f0b45a;
+}
+.unat-banner-retry .unat-banner-btn:hover:not(:disabled) { background: rgba(240, 164, 41, 0.26); }
+
+/* 面板状态块里的同一句重试说明。 */
+.unat-retry {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #f0b45a;
+  overflow-wrap: anywhere;
+}
+.unat-retry[hidden] { display: none; }
+
 /* 锁定态：灰掉输入区，placeholder 说明原因。取消键不受影响（Esc/Stop 仍可用）。 */
 #input-bar.unattended-locked textarea,
 #input-bar.unattended-locked #send-btn,
@@ -607,6 +631,9 @@
   .unat-banner-reason { color: #5b6878; }
   .unat-banner-paused { color: #5b6878; }
   .unat-banner-paused .unat-banner-text { color: #1d2733; }
+  .unat-banner-retry { color: #8a5a12; background: rgba(240, 164, 41, 0.12); }
+  .unat-banner-retry .unat-banner-btn { color: #8a5a12; }
+  .unat-retry { color: #8a5a12; }
   .unat-paused,
   .unat-banner-paused .unat-banner-btn { color: #8a5a12; }
   .msg.user.system-inject.unattended-mark { color: #1d2733; }

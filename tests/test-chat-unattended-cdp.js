@@ -483,12 +483,15 @@ routes['/unattended-fixture.html'] = {
       Date.now = () => fakeNow;
       window.__setNow = value => { fakeNow = value; };
       window.__locks = [];
+      // 重试帧的用例要单独验「到 retryAt 立刻重画」：?tickMs=60000 把 30 秒表调慢，
+      // 这样 2 秒内的翻转只可能来自按 retryAt 挂的那只一次性表。
+      const fixtureTickMs = Number(new URLSearchParams(location.search).get('tickMs')) || 25;
       window.__u = MultiCCChatUnattended.create({
         document, window, translate: t,
         getSessionId: () => '',
         request: async () => ({ ok: true, unattended: null }),
         applyInputLock: locked => window.__locks.push(locked),
-        tickMs: 25,
+        tickMs: fixtureTickMs,
       });
       window.__card = MultiCCChatUserInputCard.createController({
         document, translate: t,
@@ -728,5 +731,157 @@ test('marked unattended messages and trace lines render with a badge', async t =
     await page.evaluate(`window.__view.appendUnattendedTrace({ content: '[无人值守 Unattended] 已暂停（用户接管）' })`);
     await page.evaluate(`window.__view.appendUnattendedTrace({ content: '[无人值守 Unattended] 已暂停（用户接管）' })`);
     assert.equal(await page.evaluate(`document.querySelectorAll('.unattended-trace').length`), 2);
+  });
+});
+
+// ── 故障恢复退避：retryAt / retryCategory ─────────────────────────────────────
+// 上游额度或线路暂不可用时监督器不再 3 次即放弃，而是退避后自动重试。active 且
+// retryAt 在未来时，banner 与面板状态块要说清「何时、第几次重试」。字段缺失
+// （老服务端）时行为不变，所以这些用例只覆盖显式给出 retryAt 的帧。
+test('retry banner: capacity/fault copy, soon branch, panel line, and flip back', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes }, async page => {
+    await page.navigate('/unattended-fixture.html');
+    assert.ok(await page.waitFor(`window.__u`));
+    const base = await page.evaluate(`Date.now()`);
+    const deadlineAt = base + 90 * 60000;
+    const retryAt = base + 5 * 60000;
+    const remaining90 = await page.evaluate(`t('unattendedRemainingHourMinute', { hours: 1, minutes: 30 })`);
+    const clock = await page.evaluate(`(() => {
+      const d = new Date(${retryAt});
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    })()`);
+    const frame = (category, n, at) => `window.__u.applyState({
+      status: 'active', rounds: 1, maxDurationMinutes: 120, startedAt: ${base}, deadlineAt: ${deadlineAt},
+      evaluating: false, pausedBy: null, goal: 'x', retryAt: ${at}, retryCategory: ${JSON.stringify(category)},
+      stall: { consecutiveFaults: ${n} },
+    })`;
+
+    // capacity（额度/线路暂不可用）：banner + 面板状态块说同一句，锁继续生效。
+    await page.evaluate(frame('capacity', 2, retryAt));
+    const capacityText = await page.evaluate(`t('unattendedRetryCapacity', { time: ${JSON.stringify(clock)}, n: 2 })
+      + ' · ' + t('unattendedRemaining', { remaining: ${JSON.stringify(remaining90)} })`);
+    assert.deepEqual(await page.evaluate(`window.__locks`), [true], 'active 时输入保持锁定');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent`), capacityText);
+    assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-retry').hidden`), false);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-retry').textContent`), capacityText,
+      '面板状态块显示同一句重试说明');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-btn').dataset.action`), 'stop',
+      '重试期间仍可暂停并接管');
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-btn').textContent === t('unattendedPauseTakeover')`), true);
+
+    // fault（其它故障）：换成「故障恢复中」，第 n 次取自 stall.consecutiveFaults。
+    await page.evaluate(frame('fault', 3, retryAt));
+    const faultText = await page.evaluate(`t('unattendedRetryFault', { time: ${JSON.stringify(clock)}, n: 3 })
+      + ' · ' + t('unattendedRemaining', { remaining: ${JSON.stringify(remaining90)} })`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent`), faultText);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-retry').textContent`), faultText);
+    assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), true);
+
+    // 距 retryAt 不足 60 秒：不再报具体时刻，改说「即将自动重试」（不再重复动词）。
+    await page.evaluate(frame('capacity', 4, base + 30 * 1000));
+    const soonText = await page.evaluate(`(() => {
+      const soon = t('unattendedRetrySoon');
+      const line = t('unattendedRetryCapacity', { time: soon, n: 4 })
+        .split(soon + ' 自动重试').join(soon)
+        .split('retrying at ' + soon).join(soon);
+      return line + ' · ' + t('unattendedRemaining', { remaining: ${JSON.stringify(remaining90)} });
+    })()`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent`), soonText);
+    const soonPhrase = await page.evaluate(`t('unattendedRetrySoon')`);
+    assert.ok(soonText.includes(soonPhrase), soonText);
+    assert.ok(!soonText.includes(soonPhrase + ' 自动重试'), '不能说成「即将自动重试 自动重试」：' + soonText);
+    assert.ok(!soonText.includes('retrying at ' + soonPhrase), '英文不能出现 retrying at retrying shortly：' + soonText);
+
+    // retryAt 过去（伪时钟推进）：恢复成原来的「进行中 · 剩余」，琥珀色撤掉。
+    await page.evaluate(`window.__setNow(${base + 10 * 60000})`);
+    const remaining80 = await page.evaluate(`t('unattendedRemainingHourMinute', { hours: 1, minutes: 20 })`);
+    const normalText = await page.evaluate(`t('unattendedBannerActive', { remaining: ${JSON.stringify(remaining80)} })`);
+    assert.ok(await page.waitFor(
+      `document.querySelector('.unat-banner-text').textContent === ${JSON.stringify(normalText)}`));
+    assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), false);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-retry').hidden`), true);
+  });
+});
+
+test('retryAt timer repaints without waiting for the 30s tick', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes }, async page => {
+    // 30 秒表被调成 60 秒：2 秒内能翻转只可能来自按 retryAt 挂的一次性表。
+    await page.navigate('/unattended-fixture.html?tickMs=60000');
+    assert.ok(await page.waitFor(`window.__u`));
+    const base = await page.evaluate(`Date.now()`);
+    const deadlineAt = base + 90 * 60000;
+    await page.evaluate(`window.__u.applyState({
+      status: 'active', rounds: 1, maxDurationMinutes: 120, startedAt: ${base}, deadlineAt: ${deadlineAt},
+      evaluating: false, pausedBy: null, goal: 'x', retryAt: ${base + 400}, retryCategory: 'fault',
+      stall: { consecutiveFaults: 1 },
+    })`);
+    const soonText = await page.evaluate(`(() => {
+      const soon = t('unattendedRetrySoon');
+      const line = t('unattendedRetryFault', { time: soon, n: 1 })
+        .split(soon + ' 自动重试').join(soon)
+        .split('retrying at ' + soon).join(soon);
+      return line + ' · ' + t('unattendedRemaining', {
+        remaining: t('unattendedRemainingHourMinute', { hours: 1, minutes: 30 }),
+      });
+    })()`);
+    assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent`), soonText);
+    assert.ok(soonText.includes(await page.evaluate(`t('unattendedRetrySoon')`)));
+
+    // 拨过 retryAt 后不再动它：只有那只一次性表会把 banner 换回正常文案。
+    await page.evaluate(`window.__setNow(${base + 60000})`);
+    const remaining89 = await page.evaluate(`t('unattendedRemainingHourMinute', { hours: 1, minutes: 29 })`);
+    const normalText = await page.evaluate(`t('unattendedBannerActive', { remaining: ${JSON.stringify(remaining89)} })`);
+    assert.ok(await page.waitFor(
+      `document.querySelector('.unat-banner-text').textContent === ${JSON.stringify(normalText)}`,
+      { timeout: 3000 }), '到 retryAt 应立刻重画，不等 30 秒表');
+    assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), false);
+  });
+});
+
+test('retry state keeps the composer locked and pause-and-takeover works', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const now = Date.now();
+  unattendedPosts.length = 0;
+  prechecks.length = 0;
+  // 服务端状态直接带 retryAt：GET 校准就该画出琥珀色重试条。
+  unattended = {
+    status: 'active', goal: 'g', criteria: [], maxDurationMinutes: 120, rounds: 1,
+    startedAt: now, deadlineAt: now + 120 * 60000 + 30000, history: [],
+    evaluating: false, pausedBy: null, lastVerdict: null,
+    retryAt: now + 5 * 60000, retryCategory: 'capacity', stall: { consecutiveFaults: 2 },
+  };
+  await withCdpHarness({ routes }, async page => {
+    await page.navigate('/chat.html?session=s1');
+    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-active')`));
+    const clock = await page.evaluate(`(() => {
+      const d = new Date(${unattended.retryAt});
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    })()`);
+    const remaining = await page.evaluate(`t('unattendedRemainingHour', { hours: 2 })`);
+    const expected = await page.evaluate(`t('unattendedRetryCapacity', { time: ${JSON.stringify(clock)}, n: 2 })
+      + ' · ' + t('unattendedRemaining', { remaining: ${JSON.stringify(remaining)} })`);
+    const locked = await page.evaluate(INPUT_LOCK);
+    assert.equal(locked.bannerHidden, false);
+    assert.equal(locked.bannerText, expected);
+    assert.equal(locked.bannerAction, 'stop');
+    assert.equal(locked.bannerLabel, await page.evaluate(`t('unattendedPauseTakeover')`));
+    assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), true);
+    assert.equal(locked.attach, true, '重试期间附件入口仍锁定');
+    assert.equal(locked.mic, true, '重试期间语音入口仍锁定');
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), true);
+
+    // 「暂停并接管」照常工作：POST stop，立刻解锁、撤掉琥珀色。
+    await page.evaluate(`document.querySelector('.unat-banner-btn').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-stopped')`));
+    assert.equal(unattendedPosts.length, 1);
+    assert.equal(unattendedPosts[0].action, 'stop');
+    const unlocked = await page.evaluate(INPUT_LOCK);
+    assert.equal(unlocked.attach, false);
+    assert.equal(unlocked.mic, false);
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false);
+    assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), false, '暂停后不再是重试态');
   });
 });

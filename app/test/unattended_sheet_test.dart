@@ -567,4 +567,41 @@ void main() {
     await _closeSheet(tester);
     provider.dispose();
   });
+
+  testWidgets('重试等待中：状态块给出 HH:MM 自动重试（第 n 次）· 剩余', (tester) async {
+    final settings = await _settings();
+    final provider = _SheetProvider(settings: settings);
+    final now = 1000000;
+    provider.applyUnattendedEvent({
+      'status': 'active',
+      'rounds': 3,
+      'maxDurationMinutes': 60,
+      'deadlineAt': now + 30 * 60000,
+      'retryAt': now + 5 * 60000,
+      'retryCategory': 'capacity',
+      'stall': {'consecutiveFaults': 2},
+    });
+
+    await _openSheet(
+      tester,
+      provider,
+      client: _client(precheck: _precheckOk()),
+      now: () => now,
+    );
+
+    final at = DateTime.fromMillisecondsSinceEpoch(now + 5 * 60000);
+    final time =
+        '${at.hour.toString().padLeft(2, '0')}:'
+        '${at.minute.toString().padLeft(2, '0')}';
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('unattended-retry')))
+          .data,
+      '${t('unattendedRetryCapacity', {'time': time, 'n': '2'})}'
+      ' · ${t('unattendedRemaining', {'remaining': '30分'})}',
+    );
+
+    await _closeSheet(tester);
+    provider.dispose();
+  });
 }

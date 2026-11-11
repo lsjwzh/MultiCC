@@ -827,6 +827,15 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
       category = trustedTextCategory;
     }
   }
+  // A trusted CLI error line such as Codex's "exceeded retry limit, last
+  // status: 429 Too Many Requests" must not fall through to `unknown` just
+  // because the diagnosis carried no category signal: rate limits are the
+  // common cause and heal over time. Only the `unknown` bucket is refined;
+  // explicit categories and the replay-safety rules are untouched.
+  if (category === 'unknown' && TRUSTED_TEXT_SOURCES.has(source)) {
+    const fallback = textFallbackCategory(message);
+    if (fallback !== 'unknown') category = fallback;
+  }
   // The host's Rust proxy sees the upstream response itself and reports the
   // rejection structurally. A bare 429 cannot tell a transient limiter from an
   // exhausted window, a model-entitlement refusal or a billing fault, and each

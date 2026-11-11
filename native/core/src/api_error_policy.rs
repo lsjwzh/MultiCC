@@ -1806,6 +1806,17 @@ pub fn normalize_outcome(
             category = trusted_text_category.unwrap().to_string();
         }
     }
+    // A trusted CLI error line such as Codex's "exceeded retry limit, last
+    // status: 429 Too Many Requests" must not fall through to `unknown` just
+    // because the diagnosis carried no category signal: rate limits are the
+    // common cause and heal over time. Only the `unknown` bucket is refined;
+    // explicit categories and the replay-safety rules are untouched.
+    if category == "unknown" && trusted {
+        let fallback = text_fallback_category(&message);
+        if fallback != "unknown" {
+            category = fallback.to_string();
+        }
+    }
 
     let structured_rejection = deps.rejection.clone();
     let http_status_is_429 =

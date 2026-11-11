@@ -11,6 +11,7 @@ const {
   isOutcomeLetter,
 } = require('../classify/vocab');
 const { isUserTypedWork } = require('./user-input');
+const unattendedKernel = require('../unattended/kernel');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
@@ -349,6 +350,7 @@ function createSessionWorkScheduler({
   getClassifyState = null,
   getPendingUserInput = null,
   getTurnId = null,
+  getUnattendedState = null,
   log = () => {},
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
@@ -465,6 +467,25 @@ function createSessionWorkScheduler({
     const schedule = draft.sessionSchedules[items[0].sessionId];
     const priorityEntryId = schedule?.priorityEntryId || null;
     const pending = canonicalPendingUserInput(items[0].sessionId);
+    // Node 只收集调度事实；FIFO 对无人值守消息的优先级由 Rust 决定。
+    if (typeof getUnattendedState === 'function') {
+      const selection = unattendedKernel.selectQueued({
+        state: getUnattendedState(items[0].sessionId),
+        now: at,
+        hasActive: !!schedule?.active && schedule.state !== 'idle',
+        classifyState: canonicalClassifyState(items[0].sessionId, schedule),
+        pendingRequestId: pending?.requestId || null,
+        items: [...items].sort(compareQueued(priorityEntryId)).map(item => ({
+          id: item.id,
+          workKind: workKind(item),
+          requestId: item.payload?.requestId,
+          unattendedSystem: item.payload?.options?.unattendedSystem,
+          unattendedRecovery: item.payload?.options?.unattendedRecovery,
+          message: String(item.payload?.message || '').slice(0, 160),
+        })),
+      });
+      if (selection.handled) return items.find(item => item.id === selection.entryId) || null;
+    }
     const ordered = items.filter(item => {
       if (!pending || isActiveReplay(schedule, item)) return true;
       if (isUserInputAnswer(item) && item.payload.requestId === pending.requestId) return true;

@@ -60,6 +60,10 @@ function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-unattended-order-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let clock = 1_000;
+  // Fake clock for the supervisor's durable timers; the scheduler's own
+  // timestamps use the same `clock`.
+  const timers = new Map();
+  let timerSeq = 0;
   const store = createOrchestrationStore({
     file: path.join(dir, 'orchestration.json'),
     now: () => clock,
@@ -85,6 +89,7 @@ function fixture(t) {
     now: () => clock,
     getClassifyState: () => record.taskState.classifyState,
     getPendingUserInput: () => pending,
+    getUnattendedState: () => record.unattended,
   });
 
   let machine = null;
@@ -101,7 +106,7 @@ function fixture(t) {
     pendingUserInput: () => pending,
     getTurnLiveness: () => ({ state: 'inactive' }),
     recordUserInput: () => ({ ok: true }),
-    resolveUserInput: () => ({ ok: true }),
+    resolveUserInput: () => { pending = null; return { ok: true }; },
     broadcast: () => {},
     setTaskState: (id, patch) => { Object.assign(record.taskState, patch || {}); },
     onTaskBoardQueueEvent() {},
@@ -127,6 +132,7 @@ function fixture(t) {
   const calls = { decide: 0, enqueue: 0, turnEnds: [] };
   const kernel = {
     tag: () => nativeKernel.tag(),
+    deferEvaluation: input => nativeKernel.deferEvaluation(input),
     normalizeConfig: input => nativeKernel.normalizeConfig(input),
     clampDuration: input => nativeKernel.clampDuration(input),
     armDeadline: input => nativeKernel.armDeadline(input),
@@ -141,6 +147,7 @@ function fixture(t) {
       calls.turnEnds.push(input);
       return nativeKernel.decideTurnEnd(input);
     },
+    faultInstruction: () => nativeKernel.faultInstruction(),
   };
 
   const unattended = createUnattendedHost({
@@ -170,7 +177,7 @@ function fixture(t) {
     // Exactly how server.js wires the supervisor's `inject` port: the typed
     // session-delivery boundary, whose admission result tells the supervisor
     // whether its continuation is still queued.
-    inject: (id, text) => delivery.deliverSystem(id, text),
+    inject: (id, text, options) => delivery.deliverSystem(id, text, { ...options, unattendedSystem: true }),
     withdrawQueued: (id, entryId) => scheduler.cancelQueued(id, entryId, {
       actor: 'unattended', reason: 'paused',
     }),
@@ -183,6 +190,15 @@ function fixture(t) {
     getSchedulerStatus: id => scheduler.status(id),
     listSessionIds: () => [SESSION],
     now: () => clock,
+    setTimeout: (fn, delay) => {
+      const id = ++timerSeq;
+      timers.set(id, { fn, at: clock + Math.max(0, Number(delay) || 0) });
+      return { id, unref() {} };
+    },
+    clearTimeout: timer => {
+      const id = timer && timer.id;
+      if (id) timers.delete(id);
+    },
     kernel,
   });
 
@@ -278,6 +294,17 @@ function fixture(t) {
     setClassifyState(value) { record.taskState.classifyState = value; },
     now: () => clock,
     advance(ms = 1) { clock += ms; },
+    fireTimers() {
+      let fired = 0;
+      for (const [id, timer] of [...timers]) {
+        if (timer.at <= clock) {
+          timers.delete(id);
+          fired += 1;
+          timer.fn();
+        }
+      }
+      return fired;
+    },
     arm: () => unattended.start(SESSION, { goal: 'ship it', maxDurationMinutes: 90, evaluateNow: false }),
   };
 }
@@ -698,7 +725,7 @@ test('(h) a preparation failure settles through the one entry as a host fault', 
   // runner and no finalizer, so the turn engine cancels it with
   // `source:preparation_failed` instead of leaving a phantom P turn for the
   // watchdog. The kernel decides what that source means: a host interruption,
-  // so an armed supervisor continues under its fault cap.
+  // so an armed supervisor continues under its fault backoff.
   const h = fixture(t);
   await h.arm();
   await h.activeTurn('do work');
@@ -726,4 +753,98 @@ test('(h) a preparation failure settles through the one entry as a host fault', 
   const all = await h.outbox.list({ sessionId: SESSION });
   assert.equal(all.filter(item => String(item.payload?.message || '').includes(TAG)).length, 1,
     'a preparation failure produces exactly one supervisor injection');
+});
+
+for (const letter of ['W', 'E']) {
+  test(`${letter}：先恢复等待或异常，再按人工顺序发送 FIFO，最后普通接续`, async t => {
+    const h = fixture(t);
+    await h.arm();
+    await h.activeTurn('正在执行');
+    const auto = await h.sessionWorkHost.admit(SESSION, `${SYS_PREFIX}${TAG} 普通接续`, {
+      originContinue: true, unattendedSystem: true,
+    });
+    const first = await h.scheduler.admit({ sessionId: SESSION, text: '第一条', idempotencyKey: 'first' });
+    const second = await h.scheduler.admit({ sessionId: SESSION, text: '第二条', source: 'operation', idempotencyKey: 'second' });
+    assert.equal((await h.scheduler.reorderQueued(SESSION, second.entry.id, { toIndex: 0 })).ok, true);
+    if (letter === 'W') h.setPending({ requestId: 'q1', createdAt: 1002 });
+    h.setClassifyState(letter);
+    await h.scheduler.complete(SESSION, { classifyState: letter, awaitingRequestId: letter === 'W' ? 'q1' : null });
+    assert.equal(await h.claimOne(), null, '普通接续和 FIFO 均不能越过等待/异常');
+    await h.unattended.onTurnEnd(SESSION, {
+      kind: letter === 'W' ? 'settle' : 'fault', settle: letter, assistantText: '需要恢复', retryScheduled: false,
+    });
+    const recovery = await claimNext(h, '恢复消息');
+    assert.equal(recovery.payload.options.unattendedRecovery, true);
+    assert.ok(recovery.payload.message.includes(TAG));
+    if (letter === 'W') assert.equal(recovery.payload.workKind, 'answer');
+    await h.startClaim(recovery);
+    assert.equal(await h.claimOne(), null, '恢复执行中继续暂存 FIFO');
+    for (const expected of [second, first, auto]) {
+      h.setClassifyState('D');
+      await h.scheduler.complete(SESSION, { classifyState: 'D' });
+      const selected = await h.claimOne();
+      assert.equal(selected.id, expected.entry.id);
+      await h.startClaim(selected);
+    }
+    assert.deepEqual(await pendingIds(h), []);
+  });
+
+  test(`恢复无人值守时 ${letter} 有积压也会先处理等待或异常`, async t => {
+    const h = fixture(t);
+    await h.arm();
+    await h.activeTurn('正在执行');
+    const fifo = await h.scheduler.admit({ sessionId: SESSION, text: '人工补充要求', source: 'operation' });
+    h.unattended.stop(SESSION);
+    if (letter === 'W') h.setPending({ requestId: 'q1', createdAt: 1002 });
+    h.setClassifyState(letter);
+    await h.scheduler.complete(SESSION, { classifyState: letter, awaitingRequestId: letter === 'W' ? 'q1' : null });
+    const resumed = await h.unattended.resume(SESSION);
+    assert.equal(resumed.deferred, false, '不能因 FIFO 积压跳过恢复');
+    const recovery = await claimNext(h, '恢复后的恢复指令');
+    assert.equal(recovery.payload.options.unattendedRecovery, true);
+    assert.notEqual(recovery.id, fifo.entry.id);
+    await h.startClaim(recovery);
+    h.setClassifyState('D');
+    await h.scheduler.complete(SESSION, { classifyState: 'D' });
+    assert.equal((await h.claimOne()).id, fifo.entry.id);
+  });
+}
+
+test('(i) a delayed fault retry is selectable before a staged FIFO when its timer fires', async t => {
+  const h = fixture(t);
+  await h.arm();
+
+  await h.activeTurn('do work');
+  const backlog = await h.scheduler.admit({
+    sessionId: SESSION, text: 'staged human work', source: 'operation', idempotencyKey: 'staged',
+  });
+  assert.equal(backlog.queued, true);
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+
+  // First fault: immediate continuation (the (b) path).
+  const first = await h.unattended.onTurnEnd(SESSION, { kind: 'fault', retryScheduled: false });
+  assert.equal(first.action, 'fault_continue');
+  const immediate = await claimNext(h, 'immediate fault continuation');
+  await h.startClaim(immediate);
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+
+  // Second fault: the kernel backs off and persists retryAt; nothing is
+  // injected yet and the staged FIFO stays put.
+  const second = await h.unattended.onTurnEnd(SESSION, { kind: 'fault', retryScheduled: false });
+  assert.equal(second.action, 'fault_wait');
+  assert.ok(h.record.unattended.retryAt > h.now());
+  assert.equal(await h.claimOne(), null, 'nothing runs while the retry waits');
+
+  // The durable timer fires: the recovery injection outranks the FIFO.
+  h.advance(h.record.unattended.retryAt - h.now());
+  assert.equal(h.fireTimers(), 1);
+  assert.equal(h.record.unattended.retryAt, null, 'the consumed retry is cleared');
+  const recovery = await claimNext(h, 'delayed fault continuation');
+  assert.equal(recovery.payload.options.unattendedRecovery, true);
+  assert.ok(recovery.payload.message.includes(TAG));
+  assert.notEqual(recovery.id, backlog.entry.id);
+  await h.startClaim(recovery);
+  assert.equal(await h.claimOne(), null, 'the FIFO stays staged behind the recovery turn');
 });

@@ -132,6 +132,7 @@ test('real Claude and Codex samples converge on the same stable taxonomy', () =>
     'provider_transient',
     'unknown',
     'billing_quota',
+    'rate_limit',
   ]);
 });
 
@@ -913,6 +914,36 @@ test('whole-message error wordings beyond the API Error prefix are error-only', 
   // The same wordings ending a real answer are trailing envelopes, not prose.
   const trailing = detectErrorEnvelope('claude', '巡检已经跑完，结果见上。Response stalled mid-stream. The response above may be incomplete.');
   assert.equal(trailing, null, 'a strong phrase without the API Error prefix is not a trailing head');
+});
+
+test('a stale unknown diagnosis does not hide a trusted 429', () => {
+  // Incident shape: the CLI classifier left `category: unknown` while the
+  // stderr line still carried the real cause. Only the unknown bucket is
+  // refined from trusted text; the 429 must surface as rate_limit so the
+  // supervisor backs off instead of failing fast.
+  for (const message of [
+    'exceeded retry limit, last status: 429 Too Many Requests',
+    'exceeded retry limit, last status: 429',
+  ]) {
+    const out = normalizeApiError(
+      { source: 'codex_event', provider: 'codex', category: 'unknown', message },
+      { now: () => 1_000_000 },
+    );
+    assert.equal(out.category, 'rate_limit', message);
+    assert.equal(out.retryable, true, message);
+  }
+  // An explicit structured category still outranks the text fallback.
+  const explicit = normalizeApiError({
+    source: 'codex_event', provider: 'codex', category: 'invalid_request_model',
+    message: 'exceeded retry limit, last status: 429 Too Many Requests',
+  }, { now: () => 1_000_000 });
+  assert.equal(explicit.category, 'invalid_request_model');
+  // Assistant prose is never trusted, even with the same wording.
+  const untrusted = normalizeApiError({
+    source: 'assistant_text', provider: 'codex', category: 'unknown',
+    message: 'exceeded retry limit, last status: 429 Too Many Requests',
+  }, { now: () => 1_000_000 });
+  assert.equal(untrusted.category, 'unknown');
 });
 
 test('prose that discusses or quotes an error is never flagged', () => {

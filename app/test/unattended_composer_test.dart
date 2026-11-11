@@ -12,6 +12,7 @@ import 'package:multicc_app/services/chat_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/chat_runtime_panels.dart';
 import 'package:multicc_app/widgets/input_bar.dart';
+import 'package:multicc_app/widgets/unattended_sheet.dart';
 
 // v2 契约（docs/unattended-mode.md）：`active` 是唯一武装态，输入区整体锁住；
 // 横幅给出轮次/判定中/暂停原因，真人先「暂停并接管」再打字。
@@ -242,6 +243,137 @@ void main() {
     provider.applyUnattendedEvent(const {'status': 'achieved'});
     await tester.pump();
     expect(find.byKey(const ValueKey('unattended-banner')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    provider.dispose();
+    manager.dispose();
+  });
+
+  testWidgets('故障恢复重试：容量/故障/即将重试三种文案，到点回落普通横幅', (tester) async {
+    final settings = await _settings();
+    final manager = SessionManager(settings: settings);
+    final provider = _ComposerProvider(settings: settings);
+    var now = DateTime(2026, 11, 11, 10, 0).millisecondsSinceEpoch;
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<SessionManager>.value(value: manager),
+          ChangeNotifierProvider<ChatProvider>.value(value: provider),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: AnimatedBuilder(
+              animation: provider,
+              builder: (context, _) => UnattendedComposerBanner(
+                provider: provider,
+                now: () => now,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    String bannerText() => tester
+        .widget<Text>(find.byKey(const ValueKey('unattended-banner-text')))
+        .data!;
+
+    // 上游额度/线路暂不可用：HH:MM 自动重试（第 n 次）· 剩余 X。
+    provider.applyUnattendedEvent({
+      'status': 'active',
+      'maxDurationMinutes': 120,
+      'deadlineAt': now + 45 * 60000 + 6000,
+      'retryAt': now + 5 * 60000,
+      'retryCategory': 'capacity',
+      'stall': {'consecutiveFaults': 2},
+    });
+    await tester.pump();
+    expect(
+      bannerText(),
+      '${t('unattendedRetryCapacity', {'time': '10:05', 'n': '2'})}'
+      ' · ${t('unattendedRemaining', {'remaining': '45分'})}',
+    );
+    // 「暂停并接管」仍在（输入锁由 InputBar 层测试覆盖）。
+    expect(find.byKey(const ValueKey('unattended-pause')), findsOneWidget);
+
+    // 普通故障：换成「故障恢复中」。
+    provider.applyUnattendedEvent({
+      'status': 'active',
+      'maxDurationMinutes': 120,
+      'deadlineAt': now + 45 * 60000 + 6000,
+      'retryAt': now + 6 * 60000,
+      'retryCategory': 'fault',
+      'stall': {'consecutiveFaults': 4},
+    });
+    await tester.pump();
+    expect(
+      bannerText(),
+      '${t('unattendedRetryFault', {'time': '10:06', 'n': '4'})}'
+      ' · ${t('unattendedRemaining', {'remaining': '45分'})}',
+    );
+
+    // 60 秒内只给「即将自动重试」，不再报钟点。
+    provider.applyUnattendedEvent({
+      'status': 'active',
+      'maxDurationMinutes': 120,
+      'deadlineAt': now + 45 * 60000 + 6000,
+      'retryAt': now + 5000,
+      'retryCategory': 'capacity',
+      'stall': {'consecutiveFaults': 5},
+    });
+    await tester.pump();
+    expect(
+      bannerText(),
+      '${t('unattended')} · ${t('unattendedRetrySoon')}'
+      ' · ${t('unattendedRemaining', {'remaining': '45分'})}',
+    );
+
+    // 到点（注入时钟推进 + 一次性定时器触发）后回落普通 active 横幅。
+    now += 6000;
+    await tester.pump(const Duration(seconds: 6));
+    expect(
+      bannerText(),
+      t('unattendedBannerActive', {'remaining': '45分'}),
+    );
+    expect(find.byKey(const ValueKey('unattended-pause')), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    provider.dispose();
+    manager.dispose();
+  });
+
+  testWidgets('重试等待中：输入仍锁住，暂停并接管仍在', (tester) async {
+    final settings = await _settings();
+    final manager = SessionManager(settings: settings);
+    final provider = _ComposerProvider(settings: settings);
+    await tester.pumpWidget(_host(manager: manager, provider: provider));
+
+    final retryAt = DateTime.now().millisecondsSinceEpoch + 5 * 60000;
+    final at = DateTime.fromMillisecondsSinceEpoch(retryAt);
+    final time =
+        '${at.hour.toString().padLeft(2, '0')}:'
+        '${at.minute.toString().padLeft(2, '0')}';
+    provider.applyUnattendedEvent({
+      'status': 'active',
+      'retryAt': retryAt,
+      'retryCategory': 'capacity',
+      'stall': {'consecutiveFaults': 1},
+    });
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('unattended-banner-text')))
+          .data,
+      t('unattendedRetryCapacity', {'time': time, 'n': '1'}),
+    );
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('chat-message-input')),
+    );
+    expect(field.enabled, isFalse);
+    expect(field.decoration?.hintText, t('unattendedInputLocked'));
+    expect(find.byKey(const ValueKey('unattended-pause')), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     provider.dispose();

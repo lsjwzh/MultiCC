@@ -318,6 +318,8 @@
         "lastVerdict",
         "history",
         "stall",
+        "retryAt",
+        "retryCategory",
         "evaluating",
         "pausedBy"
       ],
@@ -456,6 +458,24 @@
               "minimum": 0
             }
           }
+        },
+        "retryAt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "retryCategory": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "capacity",
+            "fault",
+            null
+          ]
         },
         "evaluating": {
           "type": "boolean"

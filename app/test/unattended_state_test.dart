@@ -205,6 +205,84 @@ void main() {
     expect(again.toJson(), json);
   });
 
+  test('故障恢复重试：retryAt / retryCategory / consecutiveFaults 解析与往返', () {
+    final state = UnattendedState.fromJson(const {
+      'status': 'active',
+      'rounds': 2,
+      'retryAt': 1724000000000,
+      'retryCategory': 'capacity',
+      'stall': {'sameInstruction': 0, 'auxFailures': 0, 'consecutiveFaults': 3},
+    })!;
+    expect(state.retryAt, 1724000000000);
+    expect(state.retryCategory, UnattendedState.retryCategoryCapacity);
+    expect(state.stall!.consecutiveFaults, 3);
+    expect(state.consecutiveFaults, 3);
+
+    final json = state.toJson();
+    expect(json['retryAt'], 1724000000000);
+    expect(json['retryCategory'], 'capacity');
+    expect((json['stall'] as Map)['consecutiveFaults'], 3);
+    expect(UnattendedState.fromJson(json)!.toJson(), json);
+
+    // 字符串数字也收；fault 是另一个合法类别。
+    final fault = UnattendedState.fromJson(const {
+      'status': 'active',
+      'retryAt': '1724000000000',
+      'retryCategory': 'fault',
+      'stall': {'consecutiveFaults': '2'},
+    })!;
+    expect(fault.retryAt, 1724000000000);
+    expect(fault.retryCategory, UnattendedState.retryCategoryFault);
+    expect(fault.consecutiveFaults, 2);
+  });
+
+  test('重试字段缺省/未知值：retryAt=0、category=null、consecutiveFaults=0', () {
+    final state = UnattendedState.fromJson(const {'status': 'active'})!;
+    expect(state.retryAt, 0);
+    expect(state.retryCategory, isNull);
+    expect(state.consecutiveFaults, 0);
+    expect(state.retryPending(1), isFalse);
+    // 契约里是 epoch ms | null：没有排期时序列化成 null 而不是 0。
+    expect(state.toJson()['retryAt'], isNull);
+    expect(state.toJson()['retryCategory'], isNull);
+
+    for (final raw in const [null, '', '  ', 'weird', 'CAPACITY']) {
+      final parsed = UnattendedState.fromJson({
+        'status': 'active',
+        'retryCategory': raw,
+      })!;
+      expect(parsed.retryCategory, isNull, reason: '$raw');
+    }
+  });
+
+  test('retryPending / retrySoon：只认 active 且 retryAt 在未来', () {
+    const now = 1000000;
+    UnattendedState at(String status, int retryAt) =>
+        UnattendedState(status: status, retryAt: retryAt);
+
+    expect(at('active', now + 120000).retryPending(now), isTrue);
+    expect(at('active', now + 120000).retrySoon(now), isFalse);
+    // 60 秒及以内算「即将」。
+    expect(at('active', now + 60000).retrySoon(now), isTrue);
+    expect(at('active', now + 59999).retrySoon(now), isTrue);
+    expect(at('active', now + 60001).retrySoon(now), isFalse);
+    // 到点/过期：服务端会广播新状态，客户端不再算等待中。
+    expect(at('active', now).retryPending(now), isFalse);
+    expect(at('active', now - 1).retryPending(now), isFalse);
+    expect(at('active', 0).retryPending(now), isFalse);
+    // 非 active 一律不展示重试等待。
+    for (final status in const [
+      'stopped',
+      'needs_human',
+      'exhausted',
+      'error',
+      'achieved',
+    ]) {
+      expect(at(status, now + 120000).retryPending(now), isFalse, reason: status);
+      expect(at(status, now + 120000).retrySoon(now), isFalse, reason: status);
+    }
+  });
+
   test('limits：缺省 120/5/1440，非法值回退，颠倒的边界自动交换', () {
     final defaults = UnattendedLimits.fromJson(null);
     expect(defaults.maxDurationMinutesDefault, 120);

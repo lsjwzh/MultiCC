@@ -1,11 +1,28 @@
 use napi::Result;
 use napi_derive::napi;
 
+#[napi]
+pub fn unattended_defer_evaluation(input: String) -> Result<String> {
+    multicc_core::unattended::defer_evaluation(&input).map_err(napi::Error::from_reason)
+}
+
+#[napi]
+pub fn unattended_select_queued(input: String) -> Result<String> {
+    multicc_core::unattended::select_queued(&input).map_err(napi::Error::from_reason)
+}
+
 /// The one marker every supervisor-inserted message carries. Single source:
 /// `native/core/src/unattended.rs`; JS and both UIs read/reuse this literal.
 #[napi]
 pub fn unattended_tag() -> String {
     multicc_core::unattended::UNATTENDED_TAG.to_string()
+}
+
+/// The fixed fault-recovery instruction (without the marker prefix). Single
+/// source: `native/core/src/unattended.rs`.
+#[napi]
+pub fn unattended_fault_instruction() -> String {
+    multicc_core::unattended::fault_instruction()
 }
 
 /// Clamp `{goal, criteria, maxDurationMinutes}` → `{ok, config}` / `{ok:false, error}`.

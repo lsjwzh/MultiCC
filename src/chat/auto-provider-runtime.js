@@ -719,6 +719,58 @@ function createAutoProviderRuntime(options = {}) {
     return current ? Object.freeze({ ...current }) : null;
   }
 
+  // Earliest epoch-ms at which THIS session's Auto pool could accept a turn
+  // again, or null when some candidate is usable now / no reset is known.
+  // Read-only: it never mutates the session or the route, so the unattended
+  // supervisor can use it as a pure fact when parking after a fault. Mirrors the
+  // unblock fields `limit_state` reads: rejected parks (`blockedUntilMs`) and
+  // full quota windows (`usedPercent >= 100`, `resetMs` / `resetsAtMs`). A
+  // revoked credential has no self-recovery time and contributes nothing.
+  function retryNotBefore(session) {
+    const rawSelection = session && session.providerSelection;
+    if (!rawSelection || rawSelection.mode !== 'auto') return null;
+    let validated;
+    try {
+      validated = validateProviderSelection(rawSelection, {
+        cli: session.cli || 'claude', providers,
+      });
+    } catch (_) {
+      return null;
+    }
+    if (!validated.ok) return null;
+    const pool = catalogCandidates(session, validated.value);
+    const cli = session.cli || 'claude';
+    const local = pool.candidates.filter(candidate => candidate.cli === cli && candidate.enabled !== false);
+    if (!local.length) return null;
+    // An exhausted candidate is not a whole-pool outage: another line can run.
+    if (local.some(candidate => candidate.limitState !== 'exhausted')) return null;
+    const nowMs = Number(now());
+    let earliest = null;
+    const later = (at) => {
+      const value = Number(at);
+      if (!Number.isFinite(value) || value <= nowMs) return;
+      if (earliest == null || value < earliest) earliest = value;
+    };
+    for (const candidate of local) {
+      const provider = candidate.provider;
+      if (!limitCache || !provider) continue;
+      let entry = null;
+      try { entry = limitCache.get(provider.appType, provider.id); } catch (_) { entry = null; }
+      const summary = entry && entry.summary;
+      if (!summary || typeof summary !== 'object') continue;
+      if (summary.revoked === true) continue;
+      if (summary.kind === 'availability' && summary.status === 'rejected') {
+        later(summary.blockedUntilMs);
+      }
+      for (const window of Array.isArray(summary.windows) ? summary.windows : []) {
+        if (!window || Number(window.usedPercent) < 100) continue;
+        later(window.resetMs);
+      }
+      if (Number(summary.usedPercentage) >= 100) later(summary.resetsAtMs);
+    }
+    return earliest;
+  }
+
   function clearSession(sessionId) {
     stickyBySession.delete(sessionId);
     currentBySession.delete(sessionId);
@@ -742,7 +794,7 @@ function createAutoProviderRuntime(options = {}) {
     broadcast: emit,
   });
 
-  return Object.freeze({ beginTurn, clearSession, planTurn, prepareAdmission, prepareTurn, snapshot });
+  return Object.freeze({ beginTurn, clearSession, planTurn, prepareAdmission, prepareTurn, retryNotBefore, snapshot });
 }
 
 module.exports = {

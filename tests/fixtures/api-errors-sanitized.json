@@ -79,6 +79,13 @@
       "code": "UPSTREAM_HTTP_ERROR",
       "message": "Codex 出错：You have exceeded the 5-hour usage quota. It will reset at 2026-09-20 18:11:35 +0800 CST. We recommend upgrading your plan for more quota, or waiting for the reset. Request id: [ID]",
       "observedOccurrences": 1
+    },
+    {
+      "provider": "codex",
+      "source": "codex_event",
+      "category": "unknown",
+      "message": "exceeded retry limit, last status: 429 Too Many Requests",
+      "observedOccurrences": 1
     }
   ],
   "notObserved": [

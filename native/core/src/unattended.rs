@@ -42,8 +42,35 @@ pub const EXPIRY_CLAMP_MS: i64 = 60_000;
 pub const HISTORY_MAX: usize = 10;
 pub const STALL_LIMIT: u32 = 3;
 pub const AUX_FAILURE_LIMIT: u32 = 2;
-/// Consecutive fault-E continuations before the supervisor asks a human.
-pub const FAULT_LIMIT: u32 = 3;
+/// Backoff before the next automatic continuation after `n` consecutive faults
+/// (index `n - 1`; `n >= 6` uses the last entry). A fault streak never gives up
+/// on its own: only the wall-clock deadline (`deadlineAt`) bounds recovery.
+pub const FAULT_BACKOFF_MS: [i64; 6] = [0, 60_000, 120_000, 300_000, 600_000, 900_000];
+/// API-error categories a human must fix: retrying cannot help, so the
+/// supervisor stops immediately and names the cause instead of burning the
+/// deadline. Chosen conservatively from the categories in
+/// `api_error_policy.rs` (auth/credential, permission, billing/balance,
+/// invalid request/model, adapter/CLI configuration). Everything else —
+/// including rate limits, transient upstream errors, timeouts, context limits,
+/// tool protocol errors and `unknown` — is retried with backoff.
+pub const NON_RECOVERABLE_FAULT_CATEGORIES: [&str; 4] = [
+    "authentication_permission",
+    "billing_quota",
+    "invalid_request_model",
+    "adapter_configuration",
+];
+/// Fault categories driven by capacity (rate limits, transient upstream,
+/// network/timeouts, preparation failures). They set `retryCategory` to
+/// `capacity` so the UI can word the wait as a provider/quota outage; every
+/// other recoverable fault is `fault`.
+pub const CAPACITY_FAULT_CATEGORIES: [&str; 6] = [
+    "rate_limit",
+    "provider_transient",
+    "network",
+    "timeout",
+    "preparation_failed",
+    "candidate_pool_exhausted",
+];
 
 const MAX_REASON_CHARS: usize = 1000;
 const MAX_INSTRUCTION_CHARS: usize = 4000;
@@ -570,6 +597,10 @@ fn build_state(
     out.insert("lastVerdict".to_string(), last_verdict);
     out.insert("history".to_string(), Value::Array(history));
     out.insert("stall".to_string(), Value::Object(stall_state));
+    // Durable fault-retry bookkeeping. A rebuilt state (verdict, fault) starts
+    // with no pending retry; `fault_decision` fills these in for `fault_wait`.
+    out.insert("retryAt".to_string(), Value::Null);
+    out.insert("retryCategory".to_string(), Value::Null);
     // A decide() result is always applied — the evaluation spinner is over and
     // the state is either active (no pause) or terminal (pausedBy has no point).
     out.insert("evaluating".to_string(), json!(false));
@@ -615,6 +646,39 @@ fn unwrap_verdict(raw: Option<&Value>) -> Option<Value> {
 pub fn decide(input: &str) -> Result<String, String> {
     let value: Value = crate::json_lenient::from_str(input)
         .map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let mut result: Value =
+        serde_json::from_str(&decide_inner(input)?).map_err(|error| error.to_string())?;
+    if state_text(&result, "action") == "inject" {
+        result["recovery"] = json!(recovery_required(
+            field(&value, "evaluation").unwrap_or(&Value::Null)
+        ));
+    }
+    Ok(result.to_string())
+}
+
+fn recovery_required(value: &Value) -> bool {
+    matches!(state_text(value, "classifyState").as_str(), "W" | "E")
+        || field(value, "pendingQuestion")
+            .filter(|v| {
+                v.is_object()
+                    && field(v, "resolved").and_then(Value::as_bool) != Some(true)
+                    && !state_text(v, "requestId").is_empty()
+            })
+            .is_some()
+}
+
+/// 等待/异常先处理；只有正常推进才因 FIFO 积压推迟判定。
+pub fn defer_evaluation(input: &str) -> Result<String, String> {
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let busy = field(&value, "busy").and_then(Value::as_bool) == Some(true);
+    let backlog = field(&value, "backlogPending").and_then(Value::as_bool) == Some(true);
+    Ok(json!(busy || (backlog && !recovery_required(&value))).to_string())
+}
+
+fn decide_inner(input: &str) -> Result<String, String> {
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let state = field(&value, "state").cloned().unwrap_or_else(|| json!({}));
     let now = int_value(field(&value, "now")).unwrap_or(0);
     let parse_error = field(&value, "parseError")
@@ -635,6 +699,14 @@ pub fn decide(input: &str) -> Result<String, String> {
             "action": "none",
             "message": "",
         })
+        .to_string());
+    }
+    // 判定期间进入的 FIFO 或新回合优先；旧输出不能结束或继续新的工作。
+    if field(&value, "workPending").and_then(Value::as_bool) == Some(true) {
+        let mut next = state.clone();
+        next["evaluating"] = json!(false);
+        return Ok(json!({ "nextState": next, "action": "none", "message": "",
+            "reason": "backlog_pending" })
         .to_string());
     }
     let rounds = int_value(field(&state, "rounds")).unwrap_or(0).max(0);
@@ -818,7 +890,7 @@ const HOST_CANCEL_SOURCES: [&str; 9] = [
     "relocate",
     // The turn died between its P write and the provider spawn: no runner, no
     // finalizer, and nothing the user asked to stop. The host settles it through
-    // the same entry so an armed supervisor continues under its fault cap.
+    // the same entry so an armed supervisor continues under its fault backoff.
     "preparation_failed",
 ];
 
@@ -838,18 +910,24 @@ fn pause_state(state: &Value, by: &str, now: i64) -> Value {
     out.insert("status".to_string(), json!("stopped"));
     out.insert("pausedBy".to_string(), json!(by));
     out.insert("evaluating".to_string(), json!(false));
+    // A paused session has no pending automatic retry; boot must not re-arm one.
+    out.insert("retryAt".to_string(), Value::Null);
+    out.insert("retryCategory".to_string(), Value::Null);
     out.insert("updatedAt".to_string(), json!(now));
     Value::Object(out)
 }
 
-/// A clean D/W settle proves upstream recovered: clear `consecutiveFaults`.
-/// Returns the (possibly unchanged) state and whether a write is required.
+/// A clean D/W settle proves upstream recovered: clear `consecutiveFaults` and
+/// any pending durable retry (`retryAt` / `retryCategory`). Returns the
+/// (possibly unchanged) state and whether a write is required.
 fn settle_state(state: &Value) -> (Value, bool) {
     let mut out = state.as_object().cloned().unwrap_or_default();
     let streak = field(state, "stall")
         .and_then(|stall| field(stall, "consecutiveFaults"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let had_retry = field(state, "retryAt").map_or(false, |value| !value.is_null())
+        || field(state, "retryCategory").map_or(false, |value| !value.is_null());
     if streak != 0 {
         let mut stall = field(state, "stall")
             .and_then(Value::as_object)
@@ -858,7 +936,9 @@ fn settle_state(state: &Value) -> (Value, bool) {
         stall.insert("consecutiveFaults".to_string(), json!(0));
         out.insert("stall".to_string(), Value::Object(stall));
     }
-    (Value::Object(out), streak != 0)
+    out.insert("retryAt".to_string(), Value::Null);
+    out.insert("retryCategory".to_string(), Value::Null);
+    (Value::Object(out), streak != 0 || had_retry)
 }
 
 fn none_envelope(reason: &str) -> String {
@@ -917,7 +997,7 @@ fn user_pause_by(source: &str, kill_reason: &str) -> &'static str {
 /// The host passes facts only (`kind`, classify letter, cancel attribution, the
 /// API policy's retry verdict, whether the scheduler has staged backlog); this
 /// function owns the policy and returns one action:
-/// `evaluate | fault_continue | needs_human | pause | none`.
+/// `evaluate | fault_continue | fault_wait | needs_human | pause | none`.
 ///
 /// Source attribution is independent of `kind`: an E turn whose `killReason` is
 /// a user cancel is still a user cancel (`pause`, never inject). This is the
@@ -930,7 +1010,7 @@ fn user_pause_by(source: &str, kill_reason: &str) -> &'static str {
 /// still pauses (the user wins; nothing new is injected).
 ///
 /// End types:
-///   * `settle` D/W → `evaluate` (D defers while the scheduler has backlog);
+///   * `settle` D/W → `evaluate` (D defers to FIFO; W resolves the wait first);
 ///   * `fault` (E from the rules path) with a user source → `pause`;
 ///   * `fault` → `none` when the API policy scheduled its own retry, else the
 ///     fault continuation policy;
@@ -942,8 +1022,11 @@ fn user_pause_by(source: &str, kill_reason: &str) -> &'static str {
 ///   * `user_input` → `pause` as a takeover.
 ///
 /// Input: `{state, now, kind, turnId?, settle?, cancelSource?, killReason?,
-/// retryScheduled?, backlogPending?}`. Non-active states are a no-op;
-/// `retryScheduled` must be a boolean when present.
+/// retryScheduled?, backlogPending?, faultCategory?, retryNotBefore?}`.
+/// `faultCategory` is the API-error policy category (or `preparation_failed`);
+/// `retryNotBefore` is an epoch-ms earliest-unblock hint from the provider / Auto
+/// candidate pool. Non-active states are a no-op; `retryScheduled` must be a
+/// boolean when present.
 pub fn decide_turn_end(input: &str) -> Result<String, String> {
     let value: Value = crate::json_lenient::from_str(input)
         .map_err(|error| format!("unattended_invalid_input: {error}"))?;
@@ -965,6 +1048,8 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
     let turn_id = state_text(&value, "turnId");
     let source = state_text(&value, "cancelSource");
     let kill_reason = state_text(&value, "killReason");
+    let fault_category = state_text(&value, "faultCategory");
+    let retry_not_before = int_value(field(&value, "retryNotBefore"));
     if !turn_id.is_empty() && state_text(&state, "lastTurnEndId") == turn_id {
         // The user wins over an earlier host interruption, but only as a pause:
         // the first report already produced its (at most one) action.
@@ -992,9 +1077,7 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
                 .unwrap_or(false);
             let (next_state, reset_faults) = settle_state(&state);
             let next_state = with_turn_end_id(next_state, &turn_id);
-            // D with staged FIFO work is not judged yet: the scheduler will
-            // drain that queue and its own last D settle evaluates. W is judged
-            // even with backlog (its pending question is what Aux must answer).
+            // W 必须先解决等待；D 才让 FIFO 先执行。
             if settle == "D" && backlog {
                 return Ok(json!({
                     "action": "none",
@@ -1029,14 +1112,18 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
                     // the session with its input locked.
                     return Ok(none_envelope("policy_retry"));
                 }
-                return Ok(
-                    with_turn_end_decision(fault_decision(&state, now), &turn_id).to_string(),
-                );
+                return Ok(with_turn_end_decision(
+                    fault_decision(&state, now, &fault_category, retry_not_before),
+                    &turn_id,
+                )
+                .to_string());
             }
             if is_host_cancel(&source, &kill_reason) {
-                return Ok(
-                    with_turn_end_decision(fault_decision(&state, now), &turn_id).to_string(),
-                );
+                return Ok(with_turn_end_decision(
+                    fault_decision(&state, now, &fault_category, retry_not_before),
+                    &turn_id,
+                )
+                .to_string());
             }
             Ok(pause_decision(
                 &state,
@@ -1050,23 +1137,91 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
     }
 }
 
+/// 调度优先级：解决等待/异常 > FIFO > 普通自动接续。
+/// 等待/异常未解决时保持 FIFO 暂存，不抢占活动回合或后台等待。
+pub fn select_queued(input: &str) -> Result<String, String> {
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let state = field(&value, "state").cloned().unwrap_or(Value::Null);
+    let now = int_value(field(&value, "now")).unwrap_or(0);
+    let deadline = int_value(field(&state, "deadlineAt")).unwrap_or(0);
+    if state_text(&state, "status") != "active"
+        || (deadline > 0 && now >= deadline)
+        || field(&value, "hasActive").and_then(Value::as_bool) == Some(true)
+        || !matches!(
+            state_text(&value, "classifyState").as_str(),
+            "D" | "W" | "E"
+        )
+    {
+        return Ok(json!({ "handled": false }).to_string());
+    }
+    let items = field(&value, "items").and_then(Value::as_array);
+    let automatic = |item: &&Value| {
+        field(item, "unattendedSystem").and_then(Value::as_bool) == Some(true)
+            || state_text(item, "message").starts_with(&format!("🔇{UNATTENDED_TAG}"))
+    };
+    let pending_id = state_text(&value, "pendingRequestId");
+    let waiting = state_text(&value, "classifyState") != "D" || !pending_id.is_empty();
+    let selected = items.and_then(|items| {
+        items
+            .iter()
+            .find(|item| {
+                // 关联问题的回答和明确的恢复消息优先，不能被普通自动接续冒充。
+                (!pending_id.is_empty()
+                    && state_text(item, "workKind") == "answer"
+                    && state_text(item, "requestId") == pending_id)
+                    || field(item, "unattendedRecovery").and_then(Value::as_bool) == Some(true)
+                    || (automatic(item) && state_text(item, "workKind") == "answer")
+                    || state_text(item, "message").starts_with(&format!(
+                        "🔇{UNATTENDED_TAG} {}",
+                        FAULT_INSTRUCTION
+                            .split('.')
+                            .next()
+                            .unwrap_or(FAULT_INSTRUCTION)
+                    ))
+            })
+            .or_else(|| {
+                if waiting {
+                    None
+                } else {
+                    items
+                        .iter()
+                        .find(|item| !automatic(item))
+                        .or_else(|| items.first())
+                }
+            })
+    });
+    Ok(json!({ "handled": true,
+        "entryId": selected.and_then(|item| field(item, "id")).cloned().unwrap_or(Value::Null)
+    })
+    .to_string())
+}
+
 /// Immediate fault (E) continuation, without an Aux call.
 ///
 /// After the API-error policy has finished with an E — it either scheduled its
 /// own retry (the caller must then do nothing) or gave up — the supervisor keeps
 /// the goal moving with a fixed instruction. It increments the informational
 /// `rounds` counter (there is no round budget; expiry is wall-clock) and never
-/// replays side effects. Consecutive faults are capped at [`FAULT_LIMIT`]; after
-/// that a human is required so an unhealthy upstream can never loop forever.
-/// Non-active states are a no-op.
+/// replays side effects.
 ///
-/// Input: `{state, now}`. Returns `{nextState, action, message}` with action
-/// `fault_continue | needs_human | none`.
+/// A fault streak is **never** capped: recoverable faults back off
+/// (`FAULT_BACKOFF_MS`) and continue, bounded only by the wall-clock deadline.
+/// Categories a human must fix (`NON_RECOVERABLE_FAULT_CATEGORIES`) stop
+/// immediately with the cause in the message. A retry later than `deadlineAt`
+/// also stops (`retry_past_deadline`), because it could never run in time.
+///
+/// Input: `{state, now, faultCategory?, retryNotBefore?}`. Returns
+/// `{nextState, action, message, retryAt, retryCategory, faults, reason}` with
+/// action `fault_continue` (delay 0, inject now) | `fault_wait` (delay > 0,
+/// armed by the host timer) | `needs_human | none`.
 pub fn decide_fault(input: &str) -> Result<String, String> {
     let value: Value = crate::json_lenient::from_str(input)
         .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let state = field(&value, "state").cloned().unwrap_or_else(|| json!({}));
     let now = int_value(field(&value, "now")).unwrap_or(0);
+    let fault_category = state_text(&value, "faultCategory");
+    let retry_not_before = int_value(field(&value, "retryNotBefore"));
     if state_text(&state, "status") != "active" {
         return Ok(json!({
             "nextState": state,
@@ -1075,11 +1230,84 @@ pub fn decide_fault(input: &str) -> Result<String, String> {
         })
         .to_string());
     }
-    Ok(fault_decision(&state, now).to_string())
+    Ok(fault_decision(&state, now, &fault_category, retry_not_before).to_string())
+}
+
+/// The fixed recovery instruction. Exported so the host builds exactly the same
+/// message and can recognise it when picking the next queued item.
+pub fn fault_instruction() -> String {
+    FAULT_INSTRUCTION.to_string()
+}
+
+/// Delay before the next continuation after `faults` consecutive faults:
+/// `1 → 0`, `2 → 60s`, `3 → 120s`, `4 → 300s`, `5 → 600s`, `n >= 6 → 900s`.
+fn fault_backoff_ms(faults: u32) -> i64 {
+    if faults <= 1 {
+        return 0;
+    }
+    let index = (faults as usize - 1).min(FAULT_BACKOFF_MS.len() - 1);
+    FAULT_BACKOFF_MS[index]
+}
+
+fn fault_category_is(category: &str, table: &[&str]) -> bool {
+    table.iter().any(|item| *item == category)
+}
+
+fn non_recoverable_message(category: &str) -> String {
+    match category {
+        "authentication_permission" => {
+            "无人值守已停止自动续接：上游鉴权或权限错误，重试无法恢复。请更新账户/凭据后手动继续。"
+        }
+        "billing_quota" => {
+            "无人值守已停止自动续接：账户余额或额度不足。请充值或更换线路后手动继续。"
+        }
+        "invalid_request_model" => {
+            "无人值守已停止自动续接：请求或模型配置无效。请修正模型/参数后手动继续。"
+        }
+        "adapter_configuration" => {
+            "无人值守已停止自动续接：适配器或 CLI 配置有误。请修正配置后手动继续。"
+        }
+        _ => "无人值守已停止自动续接：遇到需要人工处理的上游错误。请检查后手动继续。",
+    }
+    .to_string()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fault_state(
+    state: &Value,
+    status: &str,
+    rounds: i64,
+    now: i64,
+    verdict: Option<&Value>,
+    history: Vec<Value>,
+    entry: Value,
+    stall: StallCounts,
+    retry: Option<(i64, &str)>,
+) -> Value {
+    let mut next = build_state(
+        state,
+        status,
+        rounds,
+        now,
+        verdict,
+        capped_history(history, entry),
+        stall,
+    );
+    if let (Some(object), Some((at, category))) = (next.as_object_mut(), retry) {
+        // Replacing an existing key keeps its canonical position in the map.
+        object.insert("retryAt".to_string(), json!(at));
+        object.insert("retryCategory".to_string(), json!(category));
+    }
+    next
 }
 
 /// The shared fault policy (callers have already checked `status == "active"`).
-fn fault_decision(state: &Value, now: i64) -> Value {
+fn fault_decision(
+    state: &Value,
+    now: i64,
+    fault_category: &str,
+    retry_not_before: Option<i64>,
+) -> Value {
     let rounds = int_value(field(state, "rounds")).unwrap_or(0).max(0);
     let stall = field(state, "stall").cloned().unwrap_or_else(|| json!({}));
     let same_instruction = u32_value(field(&stall, "sameInstruction"));
@@ -1087,51 +1315,128 @@ fn fault_decision(state: &Value, now: i64) -> Value {
     let faults = u32_value(field(&stall, "consecutiveFaults")).saturating_add(1);
     let history = copy_history(state);
     let previous = priority_verdict(state);
+    let counts = || StallCounts {
+        same_instruction,
+        aux_failures,
+        consecutive_faults: faults,
+    };
+    let deadline = int_value(field(state, "deadlineAt")).unwrap_or(0);
+    let category = js_trim(fault_category).to_lowercase();
+    let retry_category = if fault_category_is(&category, &CAPACITY_FAULT_CATEGORIES) {
+        "capacity"
+    } else {
+        "fault"
+    };
+    let entry = |verdict: &str, reason: &str| {
+        json!({ "at": now, "verdict": verdict, "reason": reason })
+    };
 
-    let (action, message, next_status, next_rounds) = if faults >= FAULT_LIMIT {
-        (
-            "needs_human",
-            format!(
-                "无人值守需要你介入：连续 {FAULT_LIMIT} 轮因上游故障中断，已停止自动续接。请检查提供方/网络后再继续。"
-            ),
+    // A human-only cause: stop now and say what must be fixed.
+    if fault_category_is(&category, &NON_RECOVERABLE_FAULT_CATEGORIES) {
+        let next_state = fault_state(
+            state,
             "needs_human",
             rounds,
-        )
-    } else {
-        (
-            "fault_continue",
-            format!("{UNATTENDED_TAG} {FAULT_INSTRUCTION}"),
+            now,
+            previous.as_ref(),
+            history,
+            entry("needs_human", "non_recoverable_fault"),
+            counts(),
+            None,
+        );
+        return json!({
+            "nextState": next_state,
+            "action": "needs_human",
+            "message": non_recoverable_message(&category),
+            "reason": "non_recoverable_fault",
+            "faults": faults,
+            "faultCategory": category,
+            "retryAt": Value::Null,
+            "retryCategory": Value::Null,
+        });
+    }
+
+    // Backoff on the streak, pushed out further by a known provider unblock time
+    // (rate-limit reset / parked Auto candidate). Never earlier than `now`.
+    let delay = fault_backoff_ms(faults);
+    let mut retry_at = now.saturating_add(delay);
+    if let Some(not_before) = retry_not_before {
+        if not_before > retry_at {
+            retry_at = not_before;
+        }
+    }
+    let delayed = retry_at > now;
+
+    // A retry at/after the deadline can never run inside the budget.
+    if delayed && deadline > 0 && retry_at >= deadline {
+        let next_state = fault_state(
+            state,
+            "needs_human",
+            rounds,
+            now,
+            previous.as_ref(),
+            history,
+            entry("needs_human", "retry_past_deadline"),
+            counts(),
+            None,
+        );
+        return json!({
+            "nextState": next_state,
+            "action": "needs_human",
+            "message": "无人值守已停止自动续接：上游预计恢复时间已晚于无人值守截止时间，重试已无法在期限内执行。请检查提供方/网络后手动继续。",
+            "reason": "retry_past_deadline",
+            "faults": faults,
+            "faultCategory": category,
+            "retryAt": retry_at,
+            "retryCategory": Value::Null,
+            "deadlineAt": deadline,
+        });
+    }
+
+    if delayed {
+        let next_state = fault_state(
+            state,
             "active",
             rounds + 1,
-        )
-    };
-    let entry = json!({
-        "at": now,
-        "verdict": if action == "needs_human" { "needs_human" } else { "continue" },
-        "reason": if action == "fault_continue" {
-            "fault_continue"
-        } else {
-            "repeated_faults"
-        },
-    });
-    let next_state = build_state(
+            now,
+            previous.as_ref(),
+            history,
+            entry("continue", "fault_wait"),
+            counts(),
+            Some((retry_at, retry_category)),
+        );
+        return json!({
+            "nextState": next_state,
+            "action": "fault_wait",
+            "message": "",
+            "reason": "fault_wait",
+            "faults": faults,
+            "faultCategory": category,
+            "retryAt": retry_at,
+            "retryCategory": retry_category,
+        });
+    }
+
+    let next_state = fault_state(
         state,
-        next_status,
-        next_rounds,
+        "active",
+        rounds + 1,
         now,
         previous.as_ref(),
-        capped_history(history, entry),
-        StallCounts {
-            same_instruction,
-            aux_failures,
-            consecutive_faults: faults,
-        },
+        history,
+        entry("continue", "fault_continue"),
+        counts(),
+        None,
     );
     json!({
         "nextState": next_state,
-        "action": action,
-        "message": message,
+        "action": "fault_continue",
+        "message": format!("{UNATTENDED_TAG} {FAULT_INSTRUCTION}"),
+        "reason": "fault_continue",
         "faults": faults,
+        "faultCategory": category,
+        "retryAt": Value::Null,
+        "retryCategory": Value::Null,
     })
 }
 
@@ -1639,6 +1944,8 @@ mod tests {
                 "lastVerdict",
                 "history",
                 "stall",
+                "retryAt",
+                "retryCategory",
                 "evaluating",
                 "pausedBy",
             ]
@@ -1715,14 +2022,129 @@ mod tests {
     }
 
     #[test]
-    fn three_consecutive_faults_need_a_human() {
+    fn recoverable_faults_back_off_and_never_give_up() {
+        // Streak after increment → delay. Fault recovery is bounded only by the
+        // wall-clock deadline (active_state's is 120 minutes out).
+        for (streak, delay) in [
+            (0u32, 0i64),
+            (1, 60_000),
+            (2, 120_000),
+            (3, 300_000),
+            (4, 600_000),
+            (5, 900_000),
+            (9, 900_000),
+        ] {
+            let mut state = active_state(1);
+            state["stall"] = json!({
+                "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": streak,
+            });
+            let out = fault_json(json!({ "state": state, "now": 1000 }));
+            let faults = streak + 1;
+            assert_eq!(out["faults"], json!(faults), "streak {streak}");
+            assert_eq!(out["nextState"]["status"], json!("active"), "streak {streak}");
+            assert_eq!(
+                out["nextState"]["stall"]["consecutiveFaults"],
+                json!(faults),
+                "streak {streak}"
+            );
+            if delay == 0 {
+                assert_eq!(out["action"], json!("fault_continue"));
+                assert!(out["message"].as_str().unwrap().starts_with(UNATTENDED_TAG));
+                assert_eq!(out["nextState"]["retryAt"], Value::Null);
+                assert_eq!(out["nextState"]["retryCategory"], Value::Null);
+            } else {
+                assert_eq!(out["action"], json!("fault_wait"), "streak {streak}");
+                assert_eq!(out["message"], json!(""), "streak {streak}");
+                assert_eq!(out["retryAt"], json!(1000 + delay), "streak {streak}");
+                assert_eq!(out["nextState"]["retryAt"], json!(1000 + delay));
+                assert_eq!(out["nextState"]["retryCategory"], json!("fault"));
+                assert_eq!(out["nextState"]["rounds"], json!(2));
+            }
+        }
+    }
+
+    #[test]
+    fn capacity_faults_are_labelled_for_the_ui() {
         let mut state = active_state(1);
-        state["stall"] = json!({ "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 2 });
-        let out = fault_json(json!({ "state": state, "now": 200 }));
+        state["stall"] = json!({
+            "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 1,
+        });
+        let out = fault_json(json!({
+            "state": state, "now": 1000, "faultCategory": "rate_limit",
+        }));
+        assert_eq!(out["action"], json!("fault_wait"));
+        assert_eq!(out["nextState"]["retryCategory"], json!("capacity"));
+        assert_eq!(out["nextState"]["retryAt"], json!(61_000));
+
+        let mut state = active_state(1);
+        state["stall"] = json!({
+            "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 1,
+        });
+        let out = fault_json(json!({
+            "state": state, "now": 1000, "faultCategory": "preparation_failed",
+        }));
+        assert_eq!(out["action"], json!("fault_wait"));
+        assert_eq!(out["nextState"]["retryCategory"], json!("capacity"));
+    }
+
+    #[test]
+    fn retry_not_before_pushes_the_next_attempt_out() {
+        // A known provider unblock time is honoured even when the backoff is 0.
+        let out = fault_json(json!({
+            "state": active_state(1), "now": 1000, "retryNotBefore": 9000,
+        }));
+        assert_eq!(out["action"], json!("fault_wait"));
+        assert_eq!(out["nextState"]["retryAt"], json!(9000));
+        // A stale hint in the past never delays an immediate retry.
+        let out = fault_json(json!({
+            "state": active_state(1), "now": 1000, "retryNotBefore": 500,
+        }));
+        assert_eq!(out["action"], json!("fault_continue"));
+        // The later of backoff and unblock wins.
+        let mut state = active_state(1);
+        state["stall"] = json!({
+            "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 1,
+        });
+        let out = fault_json(json!({
+            "state": state, "now": 1000, "retryNotBefore": 30_000,
+        }));
+        assert_eq!(out["nextState"]["retryAt"], json!(61_000));
+    }
+
+    #[test]
+    fn a_retry_past_the_deadline_needs_a_human() {
+        let mut state = active_state(1);
+        state["deadlineAt"] = json!(120_000);
+        state["stall"] = json!({
+            "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 2,
+        });
+        let out = fault_json(json!({ "state": state, "now": 1000 }));
+        // Faults=3 → 120s → retryAt 121000, at/after the deadline.
         assert_eq!(out["action"], json!("needs_human"));
+        assert_eq!(out["reason"], json!("retry_past_deadline"));
+        assert_eq!(out["retryAt"], json!(121_000));
         assert_eq!(out["nextState"]["status"], json!("needs_human"));
-        assert_eq!(out["nextState"]["stall"]["consecutiveFaults"], json!(3));
-        assert!(!out["message"].as_str().unwrap().starts_with(UNATTENDED_TAG));
+        assert_eq!(out["nextState"]["retryAt"], Value::Null);
+        assert!(out["message"].as_str().unwrap().contains("截止时间"));
+    }
+
+    #[test]
+    fn non_recoverable_fault_categories_stop_immediately() {
+        for category in NON_RECOVERABLE_FAULT_CATEGORIES {
+            let out = fault_json(json!({
+                "state": active_state(1), "now": 200, "faultCategory": category,
+            }));
+            assert_eq!(out["action"], json!("needs_human"), "{category}");
+            assert_eq!(out["reason"], json!("non_recoverable_fault"), "{category}");
+            assert_eq!(out["nextState"]["status"], json!("needs_human"), "{category}");
+            assert_eq!(out["nextState"]["retryAt"], Value::Null, "{category}");
+            let message = out["message"].as_str().unwrap();
+            assert!(message.contains("无人值守已停止自动续接"), "{category}");
+        }
+        let billing = fault_json(json!({
+            "state": active_state(1), "now": 200, "faultCategory": "billing_quota",
+        }));
+        assert!(billing["message"].as_str().unwrap().contains("额度"));
     }
 
     #[test]
@@ -1771,11 +2193,20 @@ mod tests {
         let w = turn_end_json(json!({
             "state": active_state(1), "now": 200, "kind": "settle", "settle": "W", "backlogPending": true,
         }));
-        assert_eq!(
-            w["action"],
-            json!("evaluate"),
-            "W is judged even with staged backlog"
-        );
+        assert_eq!(w["action"], json!("evaluate"), "W 必须先解决等待");
+    }
+
+    #[test]
+    fn a_clean_settle_clears_a_pending_retry() {
+        let mut state = active_state(2);
+        state["retryAt"] = json!(90_000);
+        state["retryCategory"] = json!("capacity");
+        let out =
+            turn_end_json(json!({ "state": state, "now": 200, "kind": "settle", "settle": "D" }));
+        assert_eq!(out["action"], json!("evaluate"));
+        assert_eq!(out["resetFaults"], json!(true));
+        assert_eq!(out["nextState"]["retryAt"], Value::Null);
+        assert_eq!(out["nextState"]["retryCategory"], Value::Null);
     }
 
     #[test]
@@ -1785,6 +2216,73 @@ mod tests {
         }));
         assert_eq!(out["action"], json!("none"));
         assert_eq!(out["reason"], json!("backlog_pending"));
+    }
+
+    #[test]
+    fn recovery_then_fifo_then_ordinary_continuation() {
+        let mut input = json!({
+            "state": active_state(1), "now": 200, "classifyState": "D",
+            "items": [
+                { "id": "auto", "unattendedSystem": true },
+                { "id": "legacy-auto", "message": format!("🔇{UNATTENDED_TAG} 继续") },
+                { "id": "fifo" }, { "id": "second" }
+            ]
+        });
+        let select = |input: &Value| -> Value {
+            serde_json::from_str(&select_queued(&input.to_string()).unwrap()).unwrap()
+        };
+        assert_eq!(select(&input)["entryId"], json!("fifo"));
+        for letter in ["W", "E"] {
+            input["classifyState"] = json!(letter);
+            assert_eq!(select(&input), json!({"handled": true, "entryId": null}));
+        }
+        input["items"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"recovery", "unattendedSystem":true, "unattendedRecovery":true}));
+        for letter in ["D", "W", "E"] {
+            input["classifyState"] = json!(letter);
+            assert_eq!(select(&input)["entryId"], json!("recovery"));
+        }
+        for letter in ["P", "B"] {
+            input["classifyState"] = json!(letter);
+            assert_eq!(select(&input)["handled"], json!(false));
+        }
+        input["classifyState"] = json!("D");
+        input["hasActive"] = json!(true);
+        assert_eq!(select(&input)["handled"], json!(false));
+        input["hasActive"] = json!(false);
+        for status in ["stopped", "needs_human", "achieved", "exhausted", "error"] {
+            input["state"]["status"] = json!(status);
+            assert_eq!(select(&input)["handled"], json!(false));
+        }
+        input["state"] = active_state(1);
+        input["state"]["deadlineAt"] = json!(200);
+        assert_eq!(select(&input)["handled"], json!(false));
+    }
+
+    #[test]
+    fn backlog_does_not_block_recovery_but_user_cancel_still_pauses() {
+        for kind in ["fault", "cancel"] {
+            let mut input = json!({ "state": active_state(1), "now": 200,
+                "kind": kind, "cancelSource": "process_watchdog",
+                "backlogPending": true, "turnId": "fifo-turn" });
+            let out = turn_end_json(input.clone());
+            assert_eq!(out["action"], json!("fault_continue"));
+            input["cancelSource"] = json!("manual_cancel");
+            assert_eq!(turn_end_json(input)["action"], json!("pause"));
+        }
+        for letter in ["D", "W", "E"] {
+            let input = json!({"classifyState":letter,"backlogPending":true});
+            assert_eq!(
+                defer_evaluation(&input.to_string()).unwrap(),
+                if letter == "D" { "true" } else { "false" }
+            );
+        }
+        assert_eq!(
+            defer_evaluation(&json!({"classifyState":"W","busy":true}).to_string()).unwrap(),
+            "true"
+        );
     }
 
     #[test]
@@ -1875,15 +2373,58 @@ mod tests {
     }
 
     #[test]
-    fn three_consecutive_host_cancels_need_a_human() {
+    fn a_third_host_cancel_backs_off_instead_of_needing_a_human() {
         let mut state = active_state(1);
         state["stall"] = json!({ "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 2 });
         let out = turn_end_json(json!({
             "state": state, "now": 200, "kind": "cancel", "cancelSource": "process_watchdog",
         }));
-        assert_eq!(out["action"], json!("needs_human"));
-        assert_eq!(out["nextState"]["status"], json!("needs_human"));
+        assert_eq!(out["action"], json!("fault_wait"));
+        assert_eq!(out["reason"], json!("fault_wait"));
+        assert_eq!(out["nextState"]["status"], json!("active"));
         assert_eq!(out["nextState"]["stall"]["consecutiveFaults"], json!(3));
+        assert_eq!(out["retryAt"], json!(200 + 120_000));
+        assert_eq!(out["nextState"]["retryAt"], json!(200 + 120_000));
+    }
+
+    #[test]
+    fn turn_end_uses_the_api_error_category() {
+        // A human-only category stops on the very first fault.
+        let out = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "fault",
+            "faultCategory": "authentication_permission",
+        }));
+        assert_eq!(out["action"], json!("needs_human"));
+        assert_eq!(out["reason"], json!("non_recoverable_fault"));
+
+        // A preparation failure is capacity-shaped and backs off.
+        let mut state = active_state(1);
+        state["stall"] = json!({
+            "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 1,
+        });
+        let out = turn_end_json(json!({
+            "state": state, "now": 200, "kind": "cancel",
+            "cancelSource": "preparation_failed", "faultCategory": "preparation_failed",
+        }));
+        assert_eq!(out["action"], json!("fault_wait"));
+        assert_eq!(out["nextState"]["retryCategory"], json!("capacity"));
+    }
+
+    #[test]
+    fn retry_not_before_is_a_turn_end_fact() {
+        let out = turn_end_json(json!({
+            "state": active_state(1), "now": 200, "kind": "cancel",
+            "cancelSource": "process_watchdog", "retryNotBefore": 9000,
+        }));
+        assert_eq!(out["action"], json!("fault_wait"));
+        assert_eq!(out["nextState"]["retryAt"], json!(9000));
+    }
+
+    #[test]
+    fn fault_instruction_is_exported() {
+        let text = fault_instruction();
+        assert!(text.contains("verify the current state"));
+        assert!(text.contains("Never redo writes"));
     }
 
     #[test]
