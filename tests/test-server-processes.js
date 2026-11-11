@@ -124,7 +124,12 @@ test('generated script survives its launcher exit and completes the real multicc
   await wait(() => !fs.existsSync(path.join(root, 'logs', 'restart.lock')), restartWait);
   await wait(() => !processTable().some(p => helperPids.includes(p.pid) && !/defunct/.test(p.command)), restartWait);
   helperPids = [];
-  assert.equal(processTable().filter(p => isServer(p, config)).length, 1);
+  const remainingServers = processTable().filter(p => isServer(p, config));
+  assert.equal(remainingServers.length, 1, JSON.stringify({
+    processes: remainingServers,
+    starts: fs.readFileSync(path.join(root, 'starts'), 'utf8'),
+    restartLog: fs.readFileSync(logPath, 'utf8'),
+  }));
   assert.match(fs.readFileSync(logPath, 'utf8'), /MultiCC started/);
   assert.equal(fs.readFileSync(path.join(root, 'starts'), 'utf8').trim().split('\n').length, 2);
 });

@@ -198,6 +198,7 @@ fn versions_dir_mtime_picks_newest_file_and_symlink_wins() {
     assert!(resolve_bundle(&empty.0).as_os_str().is_empty());
 }
 
+#[cfg(unix)]
 fn set_time(path: &Path, secs: i64, nanos: u32) {
     let when = std::time::UNIX_EPOCH + std::time::Duration::new(secs as u64, nanos);
     fs::File::options()
