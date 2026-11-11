@@ -7,7 +7,7 @@
 // public/manage-provider-relay.js (parseRelayShareCode).
 
 const CODE_PREFIX = 'mcrelay1.';
-const { CLAUDE_MODELS_FALLBACK } = require('../routes/claude-models');
+const { CLAUDE_MODELS_FALLBACK } = require('../claude-models');
 
 // Public model metadata only: the importer must start on a model the source
 // actually serves (Codex Official has no model in config.toml).

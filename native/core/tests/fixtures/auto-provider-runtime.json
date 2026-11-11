@@ -1,0 +1,5621 @@
+{
+  "comment": [
+    "Frozen behaviour of src/chat/auto-provider-runtime.js (2026-11-11).",
+    "Every scenario builds a pure in-memory runtime: injected providers catalog,",
+    "injected limit cache, injected clock, recording emit/logger, injected Jev",
+    "store and a fetch trap. Price-table pools use a stub table; every other pool",
+    "passes priceTable: null so the shared table is never loaded.",
+    "effects are the ordered emit/logger calls caused by the step."
+  ],
+  "scenarios": [
+    {
+      "name": "initial skips a fresh exhausted line",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial picks the second line",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "b",
+              "model": "b-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": [
+                    {
+                      "providerId": "a",
+                      "reason": "fresh_limit_exhausted"
+                    }
+                  ]
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot is the selected event",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s1"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s1",
+              "turnId": "t1",
+              "protocol": "anthropic",
+              "routePhase": "selected",
+              "providerId": "b",
+              "providerName": "B",
+              "model": "b-m",
+              "tier": null,
+              "trustDomain": "user-managed",
+              "fromTrustDomain": null,
+              "toTrustDomain": "user-managed",
+              "attemptNo": 1,
+              "maxAttempts": 3,
+              "preferredTier": null,
+              "routing": null,
+              "fromProviderId": null,
+              "fromProviderName": null,
+              "reasonCode": "auto_initial_selection",
+              "skipped": [
+                {
+                  "providerId": "a",
+                  "reason": "fresh_limit_exhausted"
+                }
+              ]
+            },
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "initial reports AUTO_PROVIDER_POOL_EXHAUSTED",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial throws",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "error": {
+                "name": "AutoProviderError",
+                "code": "AUTO_PROVIDER_POOL_EXHAUSTED",
+                "message": "Auto Provider has no eligible candidate"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "exhausted",
+                  "providerId": null,
+                  "providerName": null,
+                  "model": null,
+                  "tier": null,
+                  "trustDomain": null,
+                  "fromTrustDomain": null,
+                  "toTrustDomain": null,
+                  "attemptNo": 0,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "candidate_pool_exhausted",
+                  "skipped": [
+                    {
+                      "providerId": "a",
+                      "reason": "fresh_limit_exhausted"
+                    },
+                    {
+                      "providerId": "b",
+                      "reason": "fresh_limit_exhausted"
+                    },
+                    {
+                      "providerId": "c",
+                      "reason": "fresh_limit_exhausted"
+                    }
+                  ]
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "exhausted",
+                  "providerId": null,
+                  "fromProviderId": null,
+                  "trustDomain": null,
+                  "fromTrustDomain": null,
+                  "toTrustDomain": null,
+                  "reasonCode": "candidate_pool_exhausted",
+                  "attemptNo": 0
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot is the exhausted event",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s1"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s1",
+              "turnId": "t1",
+              "protocol": "anthropic",
+              "routePhase": "exhausted",
+              "providerId": null,
+              "providerName": null,
+              "model": null,
+              "tier": null,
+              "trustDomain": null,
+              "fromTrustDomain": null,
+              "toTrustDomain": null,
+              "attemptNo": 0,
+              "maxAttempts": 3,
+              "preferredTier": null,
+              "routing": null,
+              "reasonCode": "candidate_pool_exhausted",
+              "skipped": [
+                {
+                  "providerId": "a",
+                  "reason": "fresh_limit_exhausted"
+                },
+                {
+                  "providerId": "b",
+                  "reason": "fresh_limit_exhausted"
+                },
+                {
+                  "providerId": "c",
+                  "reason": "fresh_limit_exhausted"
+                }
+              ]
+            },
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "failover switches once and success marks the route",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "failover selects b",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "invocationOptions": {
+                "providerId": "b",
+                "model": "b-m",
+                "reasonCode": "failover_billing_quota"
+              },
+              "decision": {
+                "action": "retry",
+                "reason": "provider_failover",
+                "delayMs": 0,
+                "error": {
+                  "category": "billing_quota",
+                  "phase": "before_first_token",
+                  "partialOutput": false,
+                  "sideEffects": false
+                },
+                "retryAt": 1000000,
+                "attempt": 1,
+                "providerFailover": {
+                  "fromProviderId": "a",
+                  "toProviderId": "b",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "category": "billing_quota"
+                }
+              },
+              "fromProviderName": "A",
+              "toProviderName": "B"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "switched",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 2,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": "a",
+                  "fromProviderName": "A",
+                  "reasonCode": "failover_billing_quota",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "switched",
+                  "providerId": "b",
+                  "fromProviderId": "a",
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "failover_billing_quota",
+                  "attemptNo": 2
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "recordSuccess publishes succeeded",
+          "op": "recordSuccess",
+          "request": {
+            "attempt": {
+              "providerId": "b",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "$undefined": true
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "succeeded",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 2,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "turn_succeeded"
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "succeeded",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "turn_succeeded",
+                  "attemptNo": 2
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot is the succeeded event",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s1"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s1",
+              "turnId": "t1",
+              "protocol": "anthropic",
+              "routePhase": "succeeded",
+              "providerId": "b",
+              "providerName": "B",
+              "model": "b-m",
+              "tier": null,
+              "trustDomain": "user-managed",
+              "fromTrustDomain": null,
+              "toTrustDomain": "user-managed",
+              "attemptNo": 2,
+              "maxAttempts": 3,
+              "preferredTier": null,
+              "routing": null,
+              "reasonCode": "turn_succeeded"
+            },
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "failover exhausts a three-line pool",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1",
+            "maxAttempts": 2
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "failover selects b",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "invocationOptions": {
+                "providerId": "b",
+                "model": "b-m",
+                "reasonCode": "failover_billing_quota"
+              },
+              "decision": {
+                "action": "retry",
+                "reason": "provider_failover",
+                "delayMs": 0,
+                "error": {
+                  "category": "billing_quota",
+                  "phase": "before_first_token",
+                  "partialOutput": false,
+                  "sideEffects": false
+                },
+                "retryAt": 1000000,
+                "attempt": 1,
+                "providerFailover": {
+                  "fromProviderId": "a",
+                  "toProviderId": "b",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "category": "billing_quota"
+                }
+              },
+              "fromProviderName": "A",
+              "toProviderName": "B"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "switched",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 2,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": "a",
+                  "fromProviderName": "A",
+                  "reasonCode": "failover_billing_quota",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "switched",
+                  "providerId": "b",
+                  "fromProviderId": "a",
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "failover_billing_quota",
+                  "attemptNo": 2
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "failover selects c",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "b",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "invocationOptions": {
+                "providerId": "c",
+                "model": "c-m",
+                "reasonCode": "failover_billing_quota"
+              },
+              "decision": {
+                "action": "retry",
+                "reason": "provider_failover",
+                "delayMs": 0,
+                "error": {
+                  "category": "billing_quota",
+                  "phase": "before_first_token",
+                  "partialOutput": false,
+                  "sideEffects": false
+                },
+                "retryAt": 1000000,
+                "attempt": 2,
+                "providerFailover": {
+                  "fromProviderId": "b",
+                  "toProviderId": "c",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "category": "billing_quota"
+                }
+              },
+              "fromProviderName": "B",
+              "toProviderName": "C"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "switched",
+                  "providerId": "c",
+                  "providerName": "C",
+                  "model": "c-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 3,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": "b",
+                  "fromProviderName": "B",
+                  "reasonCode": "failover_billing_quota",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "switched",
+                  "providerId": "c",
+                  "fromProviderId": "b",
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "failover_billing_quota",
+                  "attemptNo": 3
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "fourth failover is terminal",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "c",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "invocationOptions": null,
+              "decision": {
+                "action": "fail_fast",
+                "reason": "auto_candidate_pool_exhausted",
+                "delayMs": 0,
+                "error": {
+                  "category": "billing_quota",
+                  "phase": "before_first_token",
+                  "partialOutput": false,
+                  "sideEffects": false
+                },
+                "retryAt": null
+              },
+              "terminal": true,
+              "reasonCode": "auto_candidate_pool_exhausted",
+              "fromProviderName": "C",
+              "toProviderName": null
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "exhausted",
+                  "providerId": "c",
+                  "providerName": "C",
+                  "model": "c-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 3,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "candidate_pool_exhausted"
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "exhausted",
+                  "providerId": "c",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "candidate_pool_exhausted",
+                  "attemptNo": 3
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "failover reports candidate pool exhaustion",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1",
+            "candidates": [
+              "a",
+              "b"
+            ]
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 2,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 2,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "failover selects b",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "invocationOptions": {
+                "providerId": "b",
+                "model": "b-m",
+                "reasonCode": "failover_billing_quota"
+              },
+              "decision": {
+                "action": "retry",
+                "reason": "provider_failover",
+                "delayMs": 0,
+                "error": {
+                  "category": "billing_quota",
+                  "phase": "before_first_token",
+                  "partialOutput": false,
+                  "sideEffects": false
+                },
+                "retryAt": 1000000,
+                "attempt": 1,
+                "providerFailover": {
+                  "fromProviderId": "a",
+                  "toProviderId": "b",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "category": "billing_quota"
+                }
+              },
+              "fromProviderName": "A",
+              "toProviderName": "B"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "switched",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 2,
+                  "maxAttempts": 2,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": "a",
+                  "fromProviderName": "A",
+                  "reasonCode": "failover_billing_quota",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "switched",
+                  "providerId": "b",
+                  "fromProviderId": "a",
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "failover_billing_quota",
+                  "attemptNo": 2
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "third failover is terminal",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "b",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "invocationOptions": null,
+              "decision": {
+                "action": "fail_fast",
+                "reason": "auto_candidate_pool_exhausted",
+                "delayMs": 0,
+                "error": {
+                  "category": "billing_quota",
+                  "phase": "before_first_token",
+                  "partialOutput": false,
+                  "sideEffects": false
+                },
+                "retryAt": null
+              },
+              "terminal": true,
+              "reasonCode": "auto_candidate_pool_exhausted",
+              "fromProviderName": "B",
+              "toProviderName": null
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "exhausted",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 2,
+                  "maxAttempts": 2,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "candidate_pool_exhausted"
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "exhausted",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "candidate_pool_exhausted",
+                  "attemptNo": 2
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "live background work blocks failover",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1",
+            "background": true
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "failover is blocked",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "invocationOptions": null,
+              "decision": {
+                "action": "fail_fast",
+                "reason": "auto_background_tasks_active",
+                "delayMs": 0,
+                "error": {
+                  "category": "billing_quota",
+                  "phase": "before_first_token",
+                  "partialOutput": false,
+                  "sideEffects": false
+                },
+                "retryAt": null
+              },
+              "terminal": true,
+              "reasonCode": "auto_background_tasks_active",
+              "fromProviderName": "A",
+              "toProviderName": null
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "blocked",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "background_tasks_active"
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "blocked",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "background_tasks_active",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unsafe replay reserves a handoff",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1",
+            "exhausted": [
+              "c"
+            ],
+            "sticky": false
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": false,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a and skips c",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": [
+                    {
+                      "providerId": "c",
+                      "reason": "fresh_limit_exhausted"
+                    }
+                  ]
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "unsafe failover is blocked",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "side_effect",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": true
+            }
+          },
+          "expect": {
+            "value": null,
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "blocked",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "provider_replay_fence_closed"
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "blocked",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "provider_replay_fence_closed",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "prepareHandoff reserves b and skips c",
+          "op": "prepareHandoff",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "side_effect",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": true
+            }
+          },
+          "expect": {
+            "value": {
+              "sessionId": "s1",
+              "originTurnId": "t1",
+              "fromProviderId": "a",
+              "fromProviderName": "A",
+              "providerId": "b",
+              "providerName": "B",
+              "model": "b-m",
+              "reasonCode": "provider_replay_fence_closed"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "handoff_pending",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": "a",
+                  "fromProviderName": "A",
+                  "reasonCode": "provider_replay_fence_closed",
+                  "skipped": [
+                    {
+                      "providerId": "c",
+                      "reason": "fresh_limit_exhausted"
+                    }
+                  ]
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "handoff_pending",
+                  "providerId": "b",
+                  "fromProviderId": "a",
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "provider_replay_fence_closed",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot is the handoff event",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s1"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s1",
+              "turnId": "t1",
+              "protocol": "anthropic",
+              "routePhase": "handoff_pending",
+              "providerId": "b",
+              "providerName": "B",
+              "model": "b-m",
+              "tier": null,
+              "trustDomain": "user-managed",
+              "fromTrustDomain": "user-managed",
+              "toTrustDomain": "user-managed",
+              "attemptNo": 1,
+              "maxAttempts": 3,
+              "preferredTier": null,
+              "routing": null,
+              "fromProviderId": "a",
+              "fromProviderName": "A",
+              "reasonCode": "provider_replay_fence_closed",
+              "skipped": [
+                {
+                  "providerId": "c",
+                  "reason": "fresh_limit_exhausted"
+                }
+              ]
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "the handoff turn starts on b",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t-handoff"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "a",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "b",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "c",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true
+                    }
+                  ],
+                  "maxAttempts": 3,
+                  "sticky": false,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "b",
+                "model": "b-m",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t-handoff",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": [
+                    {
+                      "providerId": "c",
+                      "reason": "fresh_limit_exhausted"
+                    }
+                  ]
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t-handoff",
+                  "phase": "selected",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "the reservation is one-shot",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t-later"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "a",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "b",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "c",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true
+                    }
+                  ],
+                  "maxAttempts": 3,
+                  "sticky": false,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "a",
+                "model": "a-m",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t-later",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": [
+                    {
+                      "providerId": "c",
+                      "reason": "fresh_limit_exhausted"
+                    }
+                  ]
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t-later",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "unsafe success publishes succeeded",
+          "op": "recordSuccess",
+          "request": {
+            "attempt": {
+              "providerId": "b",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "$undefined": true
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t-handoff",
+                  "protocol": "anthropic",
+                  "routePhase": "succeeded",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "turn_succeeded"
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t-handoff",
+                  "phase": "succeeded",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "turn_succeeded",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "safe failure returns no handoff",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "prepareHandoff returns null",
+          "op": "prepareHandoff",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "live background work blocks handoff",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1",
+            "background": true
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "prepareHandoff is blocked",
+          "op": "prepareHandoff",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "side_effect",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": true
+            }
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "handoff escapes a spent lane",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "claude-a",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true,
+                    "cli": "claude"
+                  },
+                  {
+                    "providerId": "claude-b",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true,
+                    "cli": "claude"
+                  },
+                  {
+                    "providerId": "codex-a",
+                    "model": null,
+                    "priority": 5,
+                    "enabled": true,
+                    "cli": "codex"
+                  },
+                  {
+                    "providerId": "codex-b",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true,
+                    "cli": "codex"
+                  }
+                ],
+                "maxAttempts": 4,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false,
+                "cliSwitch": "failover"
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects claude-a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "claude-a",
+              "model": "claude-a-model",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "claude-a",
+                  "providerName": "Claude A",
+                  "model": "claude-a-model",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 4,
+                  "preferredTier": null,
+                  "routing": null,
+                  "cli": "claude",
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "claude-a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "prepareHandoff reserves codex-b",
+          "op": "prepareHandoff",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "claude-a",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            },
+            "exhaustedLocal": [
+              "claude-a",
+              "claude-b"
+            ]
+          },
+          "expect": {
+            "value": {
+              "sessionId": "s-lanes",
+              "originTurnId": "t1",
+              "fromProviderId": "claude-a",
+              "fromProviderName": "Claude A",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "lane_pool_exhausted",
+              "cli": "codex",
+              "fromCli": "claude"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "protocol": "openai_responses",
+                  "routePhase": "handoff_pending",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 4,
+                  "preferredTier": null,
+                  "routing": null,
+                  "cli": "codex",
+                  "fromProviderId": "claude-a",
+                  "fromProviderName": "Claude A",
+                  "reasonCode": "lane_pool_exhausted",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "phase": "handoff_pending",
+                  "providerId": "codex-b",
+                  "fromProviderId": "claude-a",
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "lane_pool_exhausted",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot carries the cli field",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s-lanes"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s-lanes",
+              "turnId": "t1",
+              "protocol": "openai_responses",
+              "routePhase": "handoff_pending",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "tier": null,
+              "trustDomain": "user-managed",
+              "fromTrustDomain": "user-managed",
+              "toTrustDomain": "user-managed",
+              "attemptNo": 1,
+              "maxAttempts": 4,
+              "preferredTier": null,
+              "routing": null,
+              "cli": "codex",
+              "fromProviderId": "claude-a",
+              "fromProviderName": "Claude A",
+              "reasonCode": "lane_pool_exhausted",
+              "skipped": []
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "the switched turn selects codex-b",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s-lanes",
+            "cli": "codex",
+            "turnId": "t2"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "claude-a",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true,
+                      "cli": "claude"
+                    },
+                    {
+                      "providerId": "claude-b",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true,
+                      "cli": "claude"
+                    },
+                    {
+                      "providerId": "codex-a",
+                      "model": null,
+                      "priority": 5,
+                      "enabled": true,
+                      "cli": "codex"
+                    },
+                    {
+                      "providerId": "codex-b",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true,
+                      "cli": "codex"
+                    }
+                  ],
+                  "maxAttempts": 4,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false,
+                  "cliSwitch": "failover"
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "codex-b",
+                "model": "codex-b-model",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": "t2",
+                  "protocol": "openai_responses",
+                  "routePhase": "selected",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 4,
+                  "preferredTier": null,
+                  "routing": null,
+                  "cli": "codex",
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "turnId": "t2",
+                  "phase": "selected",
+                  "providerId": "codex-b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "hop budget blocks a cross-lane handoff",
+      "steps": [
+        {
+          "name": "planTurn hop 1",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 1
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "planTurn hop 2",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 2
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "planTurn hop 3",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 3
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "planTurn hop 4",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 4
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "beginTurn drops the stale reservation",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s-lanes",
+            "cli": "claude",
+            "turnId": "t1",
+            "note": "pending lane differs, so it is dropped; local lines recovered"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "claude-a",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true,
+                      "cli": "claude"
+                    },
+                    {
+                      "providerId": "claude-b",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true,
+                      "cli": "claude"
+                    },
+                    {
+                      "providerId": "codex-a",
+                      "model": null,
+                      "priority": 5,
+                      "enabled": true,
+                      "cli": "codex"
+                    },
+                    {
+                      "providerId": "codex-b",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true,
+                      "cli": "codex"
+                    }
+                  ],
+                  "maxAttempts": 4,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false,
+                  "cliSwitch": "failover"
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "claude-a",
+                "model": "claude-a-model",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "claude-a",
+                  "providerName": "Claude A",
+                  "model": "claude-a-model",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 4,
+                  "preferredTier": null,
+                  "routing": null,
+                  "cli": "claude",
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "claude-a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "prepareHandoff cannot leave the lane",
+          "op": "prepareHandoff",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "claude-a",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            },
+            "hops": 4,
+            "maxAttempts": 4
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "quota guard withdraws a line",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1",
+            "quotaGuard": "a=hard_stop"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects b and skips a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "b",
+              "model": "b-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": [
+                    {
+                      "providerId": "a",
+                      "reason": "quota_guard_hard_stop"
+                    }
+                  ]
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot carries the skipped reason",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s1"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s1",
+              "turnId": "t1",
+              "protocol": "anthropic",
+              "routePhase": "selected",
+              "providerId": "b",
+              "providerName": "B",
+              "model": "b-m",
+              "tier": null,
+              "trustDomain": "user-managed",
+              "fromTrustDomain": null,
+              "toTrustDomain": "user-managed",
+              "attemptNo": 1,
+              "maxAttempts": 3,
+              "preferredTier": null,
+              "routing": null,
+              "fromProviderId": null,
+              "fromProviderName": null,
+              "reasonCode": "auto_initial_selection",
+              "skipped": [
+                {
+                  "providerId": "a",
+                  "reason": "quota_guard_hard_stop"
+                }
+              ]
+            },
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "retryNotBefore truth table",
+      "steps": [
+        {
+          "name": "non-auto pool",
+          "op": "retryNotBefore",
+          "request": {
+            "sessionId": "s-manual",
+            "mode": "manual"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        },
+        {
+          "name": "a local line is usable",
+          "op": "retryNotBefore",
+          "request": {
+            "sessionId": "s-r",
+            "limits": "a=50%"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        },
+        {
+          "name": "earliest future reset wins",
+          "op": "retryNotBefore",
+          "request": {
+            "sessionId": "s-r",
+            "limits": "a=100% reset+2000/+5000; b=blocked+3000"
+          },
+          "expect": {
+            "value": 1002000,
+            "effects": []
+          }
+        },
+        {
+          "name": "revoked credentials contribute nothing",
+          "op": "retryNotBefore",
+          "request": {
+            "sessionId": "s-r",
+            "limits": "a=revoked; b=no-summary"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        },
+        {
+          "name": "past reset times are ignored",
+          "op": "retryNotBefore",
+          "request": {
+            "sessionId": "s-r",
+            "limits": "a=reset in the past"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        },
+        {
+          "name": "no reset known",
+          "op": "retryNotBefore",
+          "request": {
+            "sessionId": "s-r",
+            "limits": "both exhausted without summary"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "pool memory seeds a sticky line",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1",
+            "lastGoodRoute": "c"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": [
+              {
+                "kind": "info",
+                "name": "auto_provider_pool_memory_seed",
+                "fields": {
+                  "sessionId": "s1",
+                  "cli": "claude",
+                  "providerId": "c",
+                  "succeededAt": 999000
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "initial selects the remembered line",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "c",
+              "model": "c-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "c",
+                  "providerName": "C",
+                  "model": "c-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "c",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "recordSuccess keeps it sticky",
+          "op": "recordSuccess",
+          "request": {
+            "attempt": {
+              "providerId": "c",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "$undefined": true
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "succeeded",
+                  "providerId": "c",
+                  "providerName": "C",
+                  "model": "c-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "turn_succeeded"
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "succeeded",
+                  "providerId": "c",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "turn_succeeded",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "the next turn starts there again",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t2"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "a",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "b",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "c",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true
+                    }
+                  ],
+                  "maxAttempts": 3,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "c",
+                "model": "c-m",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t2",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "c",
+                  "providerName": "C",
+                  "model": "c-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t2",
+                  "phase": "selected",
+                  "providerId": "c",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "pool memory seeds a cross-lane move",
+      "steps": [
+        {
+          "name": "planTurn moves to the remembered lane",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "lastGoodRoute": "codex-a"
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-a",
+              "providerName": "Codex A",
+              "model": "codex-a-model",
+              "reasonCode": "auto_pool_memory"
+            },
+            "effects": [
+              {
+                "kind": "info",
+                "name": "auto_provider_pool_memory_seed",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "cli": "codex",
+                  "providerId": "codex-a",
+                  "succeededAt": 999000
+                }
+              },
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-a",
+                  "providerName": "Codex A",
+                  "model": "codex-a-model",
+                  "tier": null,
+                  "reasonCode": "auto_pool_memory",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-a",
+                  "reasonCode": "auto_pool_memory"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "the switched session starts there",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s-lanes",
+            "cli": "codex",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "claude-a",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true,
+                      "cli": "claude"
+                    },
+                    {
+                      "providerId": "claude-b",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true,
+                      "cli": "claude"
+                    },
+                    {
+                      "providerId": "codex-a",
+                      "model": null,
+                      "priority": 5,
+                      "enabled": true,
+                      "cli": "codex"
+                    },
+                    {
+                      "providerId": "codex-b",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true,
+                      "cli": "codex"
+                    }
+                  ],
+                  "maxAttempts": 4,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false,
+                  "cliSwitch": "failover"
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "codex-a",
+                "model": "codex-a-model",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "protocol": "openai_responses",
+                  "routePhase": "selected",
+                  "providerId": "codex-a",
+                  "providerName": "Codex A",
+                  "model": "codex-a-model",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 4,
+                  "preferredTier": null,
+                  "routing": null,
+                  "cli": "codex",
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "codex-a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot carries the cli field",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s-lanes"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s-lanes",
+              "turnId": "t1",
+              "protocol": "openai_responses",
+              "routePhase": "selected",
+              "providerId": "codex-a",
+              "providerName": "Codex A",
+              "model": "codex-a-model",
+              "tier": null,
+              "trustDomain": "user-managed",
+              "fromTrustDomain": null,
+              "toTrustDomain": "user-managed",
+              "attemptNo": 1,
+              "maxAttempts": 4,
+              "preferredTier": null,
+              "routing": null,
+              "cli": "codex",
+              "fromProviderId": null,
+              "fromProviderName": null,
+              "reasonCode": "auto_initial_selection",
+              "skipped": []
+            },
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "routing disables cross-lane pool memory seeding",
+      "steps": [
+        {
+          "name": "planTurn stays home",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "routing": true,
+            "lastGoodRoute": "codex-a"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "continuation stays on a usable lane",
+      "steps": [
+        {
+          "name": "continuation stays home",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "continue",
+            "turnOptions": {
+              "originContinue": true
+            }
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "continuation escapes a spent lane",
+      "steps": [
+        {
+          "name": "continuation plans the other lane",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "continue",
+            "turnOptions": {
+              "originContinue": true
+            },
+            "exhausted": [
+              "claude-a",
+              "claude-b"
+            ]
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "a direct user message escapes regardless",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-direct",
+            "text": "continue",
+            "turnOptions": {
+              "originContinue": true,
+              "directUserInput": true
+            },
+            "exhausted": [
+              "claude-a",
+              "claude-b"
+            ]
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-direct",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-direct",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-direct",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "the switched turn selects on the new lane",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s-lanes",
+            "cli": "codex",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "claude-a",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true,
+                      "cli": "claude"
+                    },
+                    {
+                      "providerId": "claude-b",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true,
+                      "cli": "claude"
+                    },
+                    {
+                      "providerId": "codex-a",
+                      "model": null,
+                      "priority": 5,
+                      "enabled": true,
+                      "cli": "codex"
+                    },
+                    {
+                      "providerId": "codex-b",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true,
+                      "cli": "codex"
+                    }
+                  ],
+                  "maxAttempts": 4,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false,
+                  "cliSwitch": "failover"
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "codex-b",
+                "model": "codex-b-model",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "protocol": "openai_responses",
+                  "routePhase": "selected",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 4,
+                  "preferredTier": null,
+                  "routing": null,
+                  "cli": "codex",
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "codex-b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "pending reservation is idempotent",
+      "steps": [
+        {
+          "name": "first planTurn",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello"
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "second planTurn returns the same reservation",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello"
+          },
+          "expect": {
+            "value": {
+              "plan": {
+                "cli": "codex",
+                "fromCli": "claude",
+                "providerId": "codex-b",
+                "providerName": "Codex B",
+                "model": "codex-b-model",
+                "reasonCode": "auto_cli_failover"
+              },
+              "same": true
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "pending reservation for a missing lane is dropped",
+      "steps": [
+        {
+          "name": "planTurn reserves codex",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello"
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "the missing lane voids the reservation",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "disabledCli": "codex"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "unreachable lane is never planned",
+      "steps": [
+        {
+          "name": "planTurn returns null",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "disabledCli": "codex"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "hop budget caps lane switches",
+      "steps": [
+        {
+          "name": "planTurn hop 1",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 1
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "planTurn hop 2",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 2
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "planTurn hop 3",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 3
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "planTurn hop 4",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 4
+          },
+          "expect": {
+            "value": {
+              "cli": "codex",
+              "fromCli": "claude",
+              "providerId": "codex-b",
+              "providerName": "Codex B",
+              "model": "codex-b-model",
+              "reasonCode": "auto_cli_failover"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-lanes",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-lanes",
+                  "turnId": null,
+                  "routePhase": "cli_switch_planned",
+                  "cli": "codex",
+                  "fromCli": "claude",
+                  "providerId": "codex-b",
+                  "providerName": "Codex B",
+                  "model": "codex-b-model",
+                  "tier": null,
+                  "reasonCode": "auto_cli_failover",
+                  "routing": null
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_cli_switch_planned",
+                "fields": {
+                  "sessionId": "s-lanes",
+                  "fromCli": "claude",
+                  "cli": "codex",
+                  "providerId": "codex-b",
+                  "reasonCode": "auto_cli_failover"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "planTurn hop 5",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "hello",
+            "hop": 5
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "background notifications stay on the lane",
+      "steps": [
+        {
+          "name": "bgTaskIds keeps the lane",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "done",
+            "turnOptions": {
+              "bgTaskIds": [
+                "bg-1"
+              ]
+            }
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        },
+        {
+          "name": "bgToolUseIds keeps the lane",
+          "op": "planTurn",
+          "request": {
+            "sessionId": "s-lanes",
+            "text": "done",
+            "turnOptions": {
+              "bgToolUseIds": [
+                "tool-1"
+              ]
+            }
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "restart restores a signed route",
+      "steps": [
+        {
+          "name": "initial restores b",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t-restored",
+            "lastRoute": "b",
+            "signed": true
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "a",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "b",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "c",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true
+                    }
+                  ],
+                  "maxAttempts": 3,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "b",
+                "model": "b-m",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t-restored",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t-restored",
+                  "phase": "selected",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "restart matches a legacy route by model",
+      "steps": [
+        {
+          "name": "matching model restores b",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s-match",
+            "model": "b-m"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "a",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "b",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "c",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true
+                    }
+                  ],
+                  "maxAttempts": 3,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "b",
+                "model": "b-m",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-match",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-match",
+                  "turnId": "t-match",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-match",
+                  "turnId": "t-match",
+                  "phase": "selected",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "mismatching model falls back to priority",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s-mismatch",
+            "model": "removed-model"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "a",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "b",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "c",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true
+                    }
+                  ],
+                  "maxAttempts": 3,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "a",
+                "model": "a-m",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-mismatch",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-mismatch",
+                  "turnId": "t-mismatch",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-mismatch",
+                  "turnId": "t-mismatch",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "selection clone keeps sticky, policy change resets",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "failover selects b",
+          "op": "failover",
+          "request": {
+            "decision": {
+              "action": "wait_reset",
+              "reason": "quota_reset_required",
+              "delayMs": 60000,
+              "error": {
+                "category": "billing_quota",
+                "phase": "before_first_token",
+                "partialOutput": false,
+                "sideEffects": false
+              }
+            },
+            "attempt": {
+              "providerId": "a",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "invocationOptions": {
+                "providerId": "b",
+                "model": "b-m",
+                "reasonCode": "failover_billing_quota"
+              },
+              "decision": {
+                "action": "retry",
+                "reason": "provider_failover",
+                "delayMs": 0,
+                "error": {
+                  "category": "billing_quota",
+                  "phase": "before_first_token",
+                  "partialOutput": false,
+                  "sideEffects": false
+                },
+                "retryAt": 1000000,
+                "attempt": 1,
+                "providerFailover": {
+                  "fromProviderId": "a",
+                  "toProviderId": "b",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "category": "billing_quota"
+                }
+              },
+              "fromProviderName": "A",
+              "toProviderName": "B"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "switched",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 2,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": "a",
+                  "fromProviderName": "A",
+                  "reasonCode": "failover_billing_quota",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "switched",
+                  "providerId": "b",
+                  "fromProviderId": "a",
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": "user-managed",
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "failover_billing_quota",
+                  "attemptNo": 2
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "success makes b sticky",
+          "op": "recordSuccess",
+          "request": {
+            "attempt": {
+              "providerId": "b",
+              "replayFence": "none",
+              "visibleOutputObserved": false,
+              "toolIntentObserved": false,
+              "sideEffectObserved": false
+            }
+          },
+          "expect": {
+            "value": {
+              "$undefined": true
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "succeeded",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 2,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "reasonCode": "turn_succeeded"
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "succeeded",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "turn_succeeded",
+                  "attemptNo": 2
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "a cloned selection keeps b",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t2",
+            "selection": "clone"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "a",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "b",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "c",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true
+                    }
+                  ],
+                  "maxAttempts": 3,
+                  "sticky": true,
+                  "preferMaxQuota": true,
+                  "allowCrossTrust": false
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "b",
+                "model": "b-m",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t2",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "b",
+                  "providerName": "B",
+                  "model": "b-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t2",
+                  "phase": "selected",
+                  "providerId": "b",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "a policy change resets to priority",
+          "op": "beginTurn+initial",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t3",
+            "selection": "preferMaxQuota=false"
+          },
+          "expect": {
+            "value": {
+              "turn": {
+                "enabled": true,
+                "selection": {
+                  "version": 1,
+                  "mode": "auto",
+                  "protocol": "anthropic",
+                  "candidates": [
+                    {
+                      "providerId": "a",
+                      "model": null,
+                      "priority": 1,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "b",
+                      "model": null,
+                      "priority": 2,
+                      "enabled": true
+                    },
+                    {
+                      "providerId": "c",
+                      "model": null,
+                      "priority": 3,
+                      "enabled": true
+                    }
+                  ],
+                  "maxAttempts": 3,
+                  "sticky": true,
+                  "preferMaxQuota": false,
+                  "allowCrossTrust": false
+                },
+                "routing": null
+              },
+              "initial": {
+                "providerId": "a",
+                "model": "a-m",
+                "reasonCode": "auto_initial_selection"
+              }
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t3",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t3",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "snapshot and clearSession",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s1",
+            "turnId": "t1"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "a",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "b",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "c",
+                    "model": null,
+                    "priority": 3,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 3,
+                "sticky": true,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false
+              },
+              "routing": null
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects a",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "a",
+              "model": "a-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s1",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "a",
+                  "providerName": "A",
+                  "model": "a-m",
+                  "tier": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 3,
+                  "preferredTier": null,
+                  "routing": null,
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s1",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "a",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot is set",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s1"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s1",
+              "turnId": "t1",
+              "protocol": "anthropic",
+              "routePhase": "selected",
+              "providerId": "a",
+              "providerName": "A",
+              "model": "a-m",
+              "tier": null,
+              "trustDomain": "user-managed",
+              "fromTrustDomain": null,
+              "toTrustDomain": "user-managed",
+              "attemptNo": 1,
+              "maxAttempts": 3,
+              "preferredTier": null,
+              "routing": null,
+              "fromProviderId": null,
+              "fromProviderName": null,
+              "reasonCode": "auto_initial_selection",
+              "skipped": []
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "clearSession empties it",
+          "op": "clearSession",
+          "request": {
+            "sessionId": "s1"
+          },
+          "expect": {
+            "value": null,
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "price-tiered event publishes price fields",
+      "steps": [
+        {
+          "name": "beginTurn",
+          "op": "beginTurn",
+          "request": {
+            "sessionId": "s-price",
+            "turnId": "t1",
+            "tiering": "price"
+          },
+          "expect": {
+            "value": {
+              "enabled": true,
+              "selection": {
+                "version": 1,
+                "mode": "auto",
+                "protocol": "anthropic",
+                "candidates": [
+                  {
+                    "providerId": "cheap",
+                    "model": null,
+                    "priority": 1,
+                    "enabled": true
+                  },
+                  {
+                    "providerId": "pricey",
+                    "model": null,
+                    "priority": 2,
+                    "enabled": true
+                  }
+                ],
+                "maxAttempts": 2,
+                "sticky": false,
+                "preferMaxQuota": true,
+                "allowCrossTrust": false,
+                "routing": {
+                  "version": 1,
+                  "provider": "jev",
+                  "gateway": "vercel",
+                  "model": "typesafe-ai/jev",
+                  "apiKeyName": "VERCEL_API_KEY",
+                  "timeoutMs": 2500,
+                  "onUnknown": "strong",
+                  "tiering": "price",
+                  "tiers": [],
+                  "escalation": {}
+                }
+              },
+              "routing": {
+                "tier": "p2",
+                "tierIndex": 1,
+                "tierCount": 2,
+                "onUnknown": "strong",
+                "source": "fallback",
+                "code": "jev_not_prepared",
+                "escalated": false,
+                "confidence": null,
+                "complexityScore": null,
+                "chosenTier": null,
+                "chosenProbability": null,
+                "latencyMs": null
+              }
+            },
+            "effects": []
+          }
+        },
+        {
+          "name": "initial selects the fallback strong tier",
+          "op": "initial",
+          "request": {},
+          "expect": {
+            "value": {
+              "providerId": "pricey",
+              "model": "pricey-m",
+              "reasonCode": "auto_initial_selection"
+            },
+            "effects": [
+              {
+                "kind": "emit",
+                "sessionId": "s-price",
+                "event": {
+                  "type": "provider_auto_route",
+                  "version": 1,
+                  "mode": "auto",
+                  "sessionId": "s-price",
+                  "turnId": "t1",
+                  "protocol": "anthropic",
+                  "routePhase": "selected",
+                  "providerId": "pricey",
+                  "providerName": "pricey",
+                  "model": "pricey-m",
+                  "tier": "p2",
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "attemptNo": 1,
+                  "maxAttempts": 2,
+                  "preferredTier": "p2",
+                  "routing": {
+                    "tier": "p2",
+                    "tierIndex": 1,
+                    "tierCount": 2,
+                    "onUnknown": "strong",
+                    "source": "fallback",
+                    "code": "jev_not_prepared",
+                    "escalated": false,
+                    "confidence": null,
+                    "complexityScore": null,
+                    "chosenTier": null,
+                    "chosenProbability": null,
+                    "latencyMs": null
+                  },
+                  "price": 10,
+                  "priceSource": "stub",
+                  "fromProviderId": null,
+                  "fromProviderName": null,
+                  "reasonCode": "auto_initial_selection",
+                  "skipped": []
+                }
+              },
+              {
+                "kind": "info",
+                "name": "auto_provider_route",
+                "fields": {
+                  "sessionId": "s-price",
+                  "turnId": "t1",
+                  "phase": "selected",
+                  "providerId": "pricey",
+                  "fromProviderId": null,
+                  "trustDomain": "user-managed",
+                  "fromTrustDomain": null,
+                  "toTrustDomain": "user-managed",
+                  "reasonCode": "auto_initial_selection",
+                  "attemptNo": 1
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "snapshot carries price and priceSource",
+          "op": "snapshot",
+          "request": {
+            "sessionId": "s-price"
+          },
+          "expect": {
+            "value": {
+              "type": "provider_auto_route",
+              "version": 1,
+              "mode": "auto",
+              "sessionId": "s-price",
+              "turnId": "t1",
+              "protocol": "anthropic",
+              "routePhase": "selected",
+              "providerId": "pricey",
+              "providerName": "pricey",
+              "model": "pricey-m",
+              "tier": "p2",
+              "trustDomain": "user-managed",
+              "fromTrustDomain": null,
+              "toTrustDomain": "user-managed",
+              "attemptNo": 1,
+              "maxAttempts": 2,
+              "preferredTier": "p2",
+              "routing": {
+                "tier": "p2",
+                "tierIndex": 1,
+                "tierCount": 2,
+                "onUnknown": "strong",
+                "source": "fallback",
+                "code": "jev_not_prepared",
+                "escalated": false,
+                "confidence": null,
+                "complexityScore": null,
+                "chosenTier": null,
+                "chosenProbability": null,
+                "latencyMs": null
+              },
+              "price": 10,
+              "priceSource": "stub",
+              "fromProviderId": null,
+              "fromProviderName": null,
+              "reasonCode": "auto_initial_selection",
+              "skipped": []
+            },
+            "effects": []
+          }
+        }
+      ]
+    }
+  ]
+}

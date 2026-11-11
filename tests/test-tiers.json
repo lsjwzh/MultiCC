@@ -1735,6 +1735,15 @@
       ]
     },
     {
+      "path": "tests/test-auto-provider-fixtures.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
       "path": "tests/test-auto-provider-handoff.js",
       "tier": "core",
       "lane": "deterministic",
@@ -2697,7 +2706,7 @@
       ]
     },
     {
-      "path": "tests/test-claude-models-route.js",
+      "path": "tests/test-claude-models-fallback.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:provider-router",
@@ -5210,6 +5219,15 @@
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:rust"
+    },
+    {
+      "path": "tests/test-rust-front-door-fixtures.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
     },
     {
       "path": "tests/test-rust-kernels.js",

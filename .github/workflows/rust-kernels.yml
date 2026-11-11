@@ -1,7 +1,7 @@
 name: Rust kernels
 on:
   pull_request:
-    paths: ['native/**', 'src/native/**', 'src/sqlite/**', 'src/providers/rust-cpr.js', 'src/providers/router-runtime.js', 'src/claude-auth/egress-agent.js', 'tests/test-sqlite*', 'src/token-global.js', 'src/task-board/**', 'src/routes/task-search.js', 'scripts/*rust*', 'tests/*rust*', 'tests/fixtures/rust-kernel-fixtures.js', '.github/workflows/rust-kernels.yml']
+    paths: ['native/**', 'src/native/**', 'src/sqlite/**', 'src/providers/rust-cpr.js', 'src/providers/router-runtime.js', 'src/claude-auth/egress-agent.js', 'tests/test-sqlite*', 'src/token-global.js', 'src/task-board/**', 'src/routes/task-search.js', 'scripts/*rust*', 'tests/*rust*', 'tests/fixtures/rust-kernel-fixtures.js', 'scripts/generate-outbound-proxy-corpus.js', 'scripts/generate-account-subscription-fixture.js', 'scripts/generate-provider-limit-history-fixture.js', 'scripts/generate-claude-models-fixture.js', 'scripts/generate-auto-provider-fixtures.js', 'tests/test-auto-provider-fixtures.js', 'src/network/proxy-policy.js', 'tests/helpers/legacy-*-route.js', 'tests/helpers/legacy-auto-provider-*.js', '.github/workflows/rust-kernels.yml']
   workflow_dispatch:
   workflow_call:
 permissions:
@@ -107,4 +107,6 @@ jobs:
             export PATH="$RUNNER_TEMP/zigbuild/bin:$PATH"
           fi
           node scripts/build-plugin-binaries.js
-          node --test tests/test-rust-cpr.js tests/test-rust-kernels.js tests/test-rust-sqlite.js tests/test-sqlite-driver.js tests/test-orchestration-sqlite-store.js tests/test-provider-limit-cache.js tests/test-task-shells.js tests/test-search-index.js tests/test-task-search.js tests/test-token-global.js
+          # test-rust-front-door-fixtures re-runs every frozen-oracle / proxy-corpus
+          # generator in verify mode, so a stale fixture cannot reach a release.
+          node --test tests/test-rust-cpr.js tests/test-rust-kernels.js tests/test-rust-sqlite.js tests/test-sqlite-driver.js tests/test-orchestration-sqlite-store.js tests/test-provider-limit-cache.js tests/test-task-shells.js tests/test-search-index.js tests/test-task-search.js tests/test-token-global.js tests/test-rust-front-door-fixtures.js

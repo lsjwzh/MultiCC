@@ -58,7 +58,7 @@ const { createCodexAdapter } = require('../src/cli-adapters/codex');
 const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
 const { settingsOverrideFor } = require('../src/providers/claude-settings-override');
 const { claudeSettingsExtra } = require('../src/chat/turn-engine');
-const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/routes/claude-models');
+const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/claude-models');
 
 _resetCacheForTest();
 const CLAUDE_FIRST = CLAUDE_MODELS_FALLBACK[0].model;

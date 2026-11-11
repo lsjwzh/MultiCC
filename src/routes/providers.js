@@ -17,7 +17,7 @@ const { reassignProviderSessions } = require('../provider-reassign');
 const { encodeRelayShareCode, relayModelsOf } = require('../providers/relay-share-code');
 const { parseCredential, relayRouteFromBaseUrl } = require('../providers/relay-share-store');
 const { nativeVendorOf } = require('../providers/native-vendor');
-const { CLAUDE_MODELS_FALLBACK } = require('./claude-models');
+const { CLAUDE_MODELS_FALLBACK } = require('../claude-models');
 
 // A borrowed Claude line carries no canonical ANTHROPIC_MODEL: its share code
 // only names a relay endpoint, so the provider summary is alias-only with an

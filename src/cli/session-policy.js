@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { isResidentSession } = require('./cli-capability');
 const { createModelDefaultResolver } = require('./model-default');
-const { CLAUDE_MODELS_FALLBACK, listClaudeModelsSync } = require('../routes/claude-models');
+const { CLAUDE_MODELS_FALLBACK, listClaudeModelsSync } = require('../claude-models');
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);

@@ -428,6 +428,17 @@ pub enum QueryValue {
     Object,
 }
 
+/// `String(req.query.x || '')`: falsy scalars become `''`, arrays join
+/// recursively with commas, objects become `[object Object]`.
+pub fn query_string(value: &QueryValue) -> String {
+    match value {
+        QueryValue::Missing => String::new(),
+        QueryValue::Text(text) => text.clone(),
+        QueryValue::List(items) => items.iter().map(query_string).collect::<Vec<_>>().join(","),
+        QueryValue::Object => "[object Object]".to_string(),
+    }
+}
+
 /// Express's qs options (`node_modules/express/lib/utils.js`).
 const QS_ARRAY_LIMIT: usize = 1000;
 /// qs' default `depth`; express does not override it.

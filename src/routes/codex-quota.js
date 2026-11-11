@@ -118,7 +118,7 @@ async function fetchCodexUsage(nowMs = Date.now(), options = {}) {
 
 function mountCodexQuotaRoutes(app, deps = {}) {
   if (!app || typeof app.get !== 'function') return;
-  require('./account-subscription').mountAccountSubscriptionRoute(app, 'codex', deps);
+  require('../quota/account-subscription-reader').registerAccountSubscriptionReader('codex', deps);
   app.get('/api/codex/quota', async (req, res) => {
     try {
       // ?account=<officialAccountId> reads that account's own auth.json

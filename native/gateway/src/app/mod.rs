@@ -7,7 +7,9 @@
 //! them and the few documented differences.
 
 pub mod accept;
+pub mod account_subscription;
 pub mod auth;
+pub mod claude_models;
 pub mod download;
 pub mod express;
 pub mod external_workspaces;
@@ -46,6 +48,12 @@ pub enum Route {
     QuotaGuardOptions,
     ProviderLimitHistoryGet,
     ProviderLimitHistoryOptions,
+    ClaudeModelsGet,
+    ClaudeModelsOptions,
+    ClaudeSubscriptionGet,
+    ClaudeSubscriptionOptions,
+    CodexSubscriptionGet,
+    CodexSubscriptionOptions,
     PresetsGet,
     PresetsPut,
     PresetsOptions,
@@ -88,6 +96,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         ("settings/quota-guard", "OPTIONS") => Some(Route::QuotaGuardOptions),
         ("providers/limit-history", "GET" | "HEAD") => Some(Route::ProviderLimitHistoryGet),
         ("providers/limit-history", "OPTIONS") => Some(Route::ProviderLimitHistoryOptions),
+        ("claude/models", "GET" | "HEAD") => Some(Route::ClaudeModelsGet),
+        ("claude/models", "OPTIONS") => Some(Route::ClaudeModelsOptions),
+        ("claude/subscription", "GET" | "HEAD") => Some(Route::ClaudeSubscriptionGet),
+        ("claude/subscription", "OPTIONS") => Some(Route::ClaudeSubscriptionOptions),
+        ("codex/subscription", "GET" | "HEAD") => Some(Route::CodexSubscriptionGet),
+        ("codex/subscription", "OPTIONS") => Some(Route::CodexSubscriptionOptions),
         ("run-config/presets", "GET" | "HEAD") => Some(Route::PresetsGet),
         ("run-config/presets", "PUT") => Some(Route::PresetsPut),
         ("run-config/presets", "OPTIONS") => Some(Route::PresetsOptions),
@@ -124,6 +138,14 @@ pub struct App {
     /// One quota-history handle per process, like the Node adapter: the first
     /// failed open is permanent (src/quota/provider-quota-history.js).
     pub provider_limit_history: provider_limit_history::Shared,
+    /// The extracted model list, kept for the process lifetime like the
+    /// retired Node module cache; src/claude-models.js reads the persisted
+    /// copy for spawn/list callers.
+    pub claude_models: claude_models::Shared,
+    /// The observation cache the retired Node route wrote, plus the
+    /// process-local single-flight table and the system-proxy slot. `Arc` lets
+    /// the leader query outlive the HTTP request that started it.
+    pub account_subscription: Arc<account_subscription::Shared>,
     /// `os.homedir()`: the official-account store lives under it.
     pub home_dir: PathBuf,
     /// The Node child's `process.cwd()` (physical path): what `path.resolve`
@@ -166,6 +188,7 @@ impl App {
         } else {
             package_root.join(raw_data)
         };
+        let subscriptions = Arc::new(account_subscription::Shared::new(&data_root));
         Self {
             public_dir: package_root.join("public"),
             data_root,
@@ -178,6 +201,8 @@ impl App {
             store_lock: Mutex::new(()),
             tickets: Mutex::new(DownloadTickets::new()),
             provider_limit_history: Mutex::new(provider_limit_history::State::default()),
+            claude_models: Mutex::new(claude_models::State::default()),
+            account_subscription: subscriptions,
             home_dir: std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_default(),
@@ -323,9 +348,12 @@ pub async fn handle(
     match route {
         Route::PresetsOptions | Route::QuotaGuardOptions => return options(&ctx, "GET,HEAD,PUT"),
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
-        Route::DownloadOptions | Route::UploadStatsOptions | Route::ProviderLimitHistoryOptions => {
-            return options(&ctx, "GET,HEAD")
-        }
+        Route::DownloadOptions
+        | Route::UploadStatsOptions
+        | Route::ProviderLimitHistoryOptions
+        | Route::ClaudeModelsOptions
+        | Route::ClaudeSubscriptionOptions
+        | Route::CodexSubscriptionOptions => return options(&ctx, "GET,HEAD"),
         Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
         Route::DownloadTicket => {
             let (status, value) = download::issue(&app, &body, now_ms());
@@ -337,6 +365,10 @@ pub async fn handle(
             return express::json(&ctx, status, &value, extra);
         }
         Route::Download => return download::download(&app, &ctx).await,
+        Route::ClaudeSubscriptionGet => {
+            return account_subscription::get(&app, "claude", &ctx).await
+        }
+        Route::CodexSubscriptionGet => return account_subscription::get(&app, "codex", &ctx).await,
         _ => {}
     }
     let worker = Arc::clone(&app);
@@ -356,6 +388,15 @@ pub async fn handle(
                 now_ms(),
                 &mut state,
             );
+            return (200, multicc_core::js::serde::js_json_stringify(&value));
+        }
+        if route == Route::ClaudeModelsGet {
+            let mut state = worker
+                .claude_models
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let value =
+                claude_models::get(root, &worker.home_dir, &original_url, now_ms, &mut state);
             return (200, multicc_core::js::serde::js_json_stringify(&value));
         }
         // Keep this route's saved JSON lossless: unknown fields can contain
@@ -435,6 +476,28 @@ mod tests {
         assert_eq!(claim(&Method::POST, "/api/providers/limit-history"), None);
         assert_eq!(claim(&Method::GET, "/api/providers/limit-history//"), None);
         assert_eq!(claim(&Method::GET, "/API/providers/limit-history"), None);
+        for (path, mixed, get, options) in [
+            (
+                "/api/claude/subscription",
+                "/api/Claude/Subscription/",
+                Route::ClaudeSubscriptionGet,
+                Route::ClaudeSubscriptionOptions,
+            ),
+            (
+                "/api/codex/subscription",
+                "/api/Codex/Subscription/",
+                Route::CodexSubscriptionGet,
+                Route::CodexSubscriptionOptions,
+            ),
+        ] {
+            assert_eq!(claim(&Method::GET, path), Some(get));
+            assert_eq!(claim(&Method::HEAD, mixed), Some(get));
+            assert_eq!(claim(&Method::OPTIONS, path), Some(options));
+            assert_eq!(claim(&Method::OPTIONS, &format!("{path}/")), Some(options));
+            assert_eq!(claim(&Method::POST, path), None);
+            assert_eq!(claim(&Method::GET, &format!("{path}//")), None);
+            assert_eq!(claim(&Method::GET, &path.replace("/api/", "/API/")), None);
+        }
         assert_eq!(
             claim(&Method::GET, "/api/run-config/presets"),
             Some(Route::PresetsGet)
@@ -472,5 +535,67 @@ mod tests {
         assert_eq!(claim(&Method::GET, "/api/uploads/cleanup"), None);
         assert_eq!(claim(&Method::GET, "/api/files"), None);
         assert_eq!(claim(&Method::POST, "/api/upload"), None);
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "multicc-gateway-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[tokio::test]
+    async fn subscription_panic_releases_the_single_flight_slot() {
+        let dir = scratch("subscription-panic");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Arc::new(account_subscription::Shared::new(&dir));
+        let first = shared
+            .run_with("claude\0panic".to_string(), || async {
+                panic!("injected query panic");
+            })
+            .await;
+        assert_eq!(first, serde_json::json!({"status":"unavailable"}));
+        // The guard removed the dead slot, so a fresh request runs a fresh
+        // query instead of waiting on the panicked sender forever.
+        let second = shared
+            .run_with("claude\0panic".to_string(), || async {
+                serde_json::json!({"status":"ok","value":1})
+            })
+            .await;
+        assert_eq!(second["status"], "ok");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn subscription_waiters_share_one_query_and_survive_a_dropped_waiter() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = scratch("subscription-abort");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Arc::new(account_subscription::Shared::new(&dir));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let attempt = |shared: Arc<account_subscription::Shared>, calls: Arc<AtomicUsize>| {
+            tokio::spawn(async move {
+                shared
+                    .run_with("codex\0abort".to_string(), move || async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                        serde_json::json!({"status":"ok","value":42})
+                    })
+                    .await
+            })
+        };
+        let first = attempt(shared.clone(), calls.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let second = attempt(shared.clone(), calls.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        first.abort();
+        let answer = second.await.unwrap();
+        assert_eq!(answer["value"], 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

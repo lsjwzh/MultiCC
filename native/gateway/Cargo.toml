@@ -26,6 +26,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["http1"
 hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
 multicc-core = { path = "../core" }
+multicc-cpr = { path = "../cpr" }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = "1"
 sha1 = "0.10"

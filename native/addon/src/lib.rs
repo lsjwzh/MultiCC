@@ -7,6 +7,9 @@ pub mod api_error_text;
 pub mod auth_security;
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
+pub mod auto_provider_pricing;
+pub mod auto_provider_routing;
+pub mod auto_provider_runtime;
 pub mod background_hold;
 
 pub mod background_tasks;

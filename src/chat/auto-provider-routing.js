@@ -23,21 +23,24 @@
 //     inherit a stale tier and a fresh message cannot inherit the previous
 //     one's. Verdicts are kept per message, not per session: a message queued
 //     behind a busy turn keeps its verdict when the next one is judged.
+//
+// The decisions (hash, unknown tier, tier resolution) and the verdict store
+// (TTL, oldest-first eviction, per-session clearing) live in
+// `native/core/src/auto_provider_routing.rs`. This file owns only what cannot
+// move: the Jev call itself, the single-flight promise map, and the host
+// wiring. Node is frozen — no decision may return here.
 
 const { jevTarget, validateProviderSelection } = require('../providers/auto-provider-config');
 const { createJevClient } = require('../providers/jev-client');
 const secretAudit = require('../secret-audit');
+const { getNative } = require('../native/runtime');
 
-const DEFAULT_TTL_MS = 10 * 60_000;
-const MAX_ENTRIES = 256;
+const DEFAULTS = JSON.parse(getNative().autoProviderRoutingDefaults());
+const DEFAULT_TTL_MS = DEFAULTS.defaultTtlMs;
+const MAX_ENTRIES = DEFAULTS.maxEntries;
 
 function textHash(text) {
-  const source = String(text == null ? '' : text);
-  let hash = 5381;
-  for (let index = 0; index < source.length; index += 1) {
-    hash = ((hash * 33) ^ source.charCodeAt(index)) >>> 0;
-  }
-  return `${source.length}:${hash.toString(36)}`;
+  return getNative().autoProviderTextHash(text == null ? null : text);
 }
 
 // Vault-backed default so the feature works from a session's config alone: the
@@ -49,23 +52,18 @@ function defaultApiKeyResolver(name) {
 }
 
 function unknownTier(routing, verdict) {
-  const tiers = routing && Array.isArray(routing.tiers) ? routing.tiers : [];
-  const code = verdict && verdict.code ? verdict.code : 'jev_not_prepared';
-  if (!tiers.length) return Object.freeze({ tier: null, source: 'unavailable', code });
-  const mode = routing.onUnknown || 'strong';
-  if (mode === 'priority') return Object.freeze({ tier: null, source: 'fallback', code });
-  return Object.freeze({
-    tier: mode === 'weak' ? tiers[0] : tiers[tiers.length - 1],
-    source: 'fallback',
-    code,
-  });
+  const answer = JSON.parse(getNative().autoProviderUnknownTier(routing ?? null, verdict ?? null));
+  return Object.freeze(answer);
 }
 
 function createAutoProviderRouting(options = {}) {
   const logger = options.logger || { info() {}, warn() {} };
   const now = typeof options.now === 'function' ? options.now : Date.now;
-  const ttlMs = Math.max(1_000, Number(options.ttlMs) || DEFAULT_TTL_MS);
-  const maxEntries = Math.max(8, Number(options.maxEntries) || MAX_ENTRIES);
+  const store = new (getNative().RustAutoProviderRouting)({
+    ttlMs: options.ttlMs,
+    maxEntries: options.maxEntries,
+  });
+  const maxEntries = store.maxEntries;
   const jev = options.jev || createJevClient({
     fetchImpl: options.fetchImpl,
     resolveApiKey: options.resolveApiKey || defaultApiKeyResolver,
@@ -74,14 +72,10 @@ function createAutoProviderRouting(options = {}) {
   // A price-tiered pool has no stored ladder: the owner (the runtime) derives it
   // from the price table, and both prepare and resolve must ask for the same one.
   const resolveLadder = typeof options.resolveLadder === 'function' ? options.resolveLadder : null;
-  const prepared = new Map(); // `${sessionId}\n${hash}` -> { sessionId, verdict, at }
   const inflight = new Map(); // sessionId -> { hash, promise }
 
   function remember(sessionId, hash, verdict) {
-    const key = `${sessionId}\n${hash}`;
-    prepared.delete(key); // re-insert so eviction stays oldest-first
-    prepared.set(key, { sessionId, verdict, at: Number(now()) });
-    while (prepared.size > maxEntries) prepared.delete(prepared.keys().next().value);
+    store.remember({ sessionId, hash, verdict, now: Number(now()) });
   }
 
   // Synchronous, cheap, and safe on a hot path: it validates the persisted
@@ -161,14 +155,8 @@ function createAutoProviderRouting(options = {}) {
   // Never destructive: a verdict is only reported for the message it was made
   // for, and expiry is the only thing that removes it.
   function consume({ sessionId, text } = {}) {
-    const key = `${sessionId}\n${textHash(text)}`;
-    const entry = prepared.get(key);
-    if (!entry) return null;
-    if (Number(now()) - entry.at > ttlMs) {
-      prepared.delete(key);
-      return null;
-    }
-    return entry.verdict;
+    const answer = JSON.parse(store.consume({ sessionId, text: text ?? null, now: Number(now()) }));
+    return answer == null ? null : answer;
   }
 
   // The tier a turn should use, together with where it came from. `source` is
@@ -178,55 +166,16 @@ function createAutoProviderRouting(options = {}) {
   // tier that ladder no longer has (the table refreshed in between) is treated
   // as no verdict at all.
   function resolveTier({ selection, verdict, tiers } = {}) {
-    const stored = selection && selection.routing;
-    if (!stored) return null;
-    const routing = Array.isArray(tiers) ? { ...stored, tiers } : stored;
-    if (stored.tiering === 'price' && routing.tiers.length < 2) {
-      verdict = Object.freeze({ ok: false, code: 'price_tiers_unavailable' });
-    } else if (Array.isArray(tiers) && verdict && verdict.ok && !tiers.includes(verdict.tier)) {
-      verdict = Object.freeze({ ok: false, code: 'price_ladder_changed', latencyMs: verdict.latencyMs });
-    }
-    // Where the tier sits on the ladder, so a chat note can say "simple" or
-    // "complex" without knowing the pool's tier keys.
-    const ladder = Array.isArray(routing.tiers) ? routing.tiers : [];
-    const position = (tier) => {
-      const at = tier == null ? -1 : ladder.indexOf(tier);
-      return { tierIndex: at >= 0 ? at : null, tierCount: ladder.length };
-    };
-    if (verdict && verdict.ok) {
-      return Object.freeze({
-        tier: verdict.tier,
-        ...position(verdict.tier),
-        source: 'jev',
-        code: verdict.reasonCode || 'jev_choice',
-        escalated: verdict.escalated === true,
-        confidence: verdict.confidence == null ? null : verdict.confidence,
-        complexityScore: verdict.complexityScore == null ? null : verdict.complexityScore,
-        chosenTier: verdict.chosenTier || null,
-        // The margin the choice was made with: the audit trail a pool needs to
-        // re-tune minConfidence/minTierProbability against its own traffic.
-        chosenProbability: verdict.chosenProbability == null ? null : verdict.chosenProbability,
-        latencyMs: verdict.latencyMs == null ? null : verdict.latencyMs,
-      });
-    }
-    const fallback = unknownTier(routing, verdict);
-    return Object.freeze({
-      tier: fallback.tier,
-      ...position(fallback.tier),
-      onUnknown: routing.onUnknown || 'strong',
-      source: fallback.source,
-      code: fallback.code,
-      escalated: false,
-      confidence: null,
-      complexityScore: null,
-      chosenTier: null,
-      chosenProbability: null,
-      latencyMs: verdict && verdict.latencyMs != null ? verdict.latencyMs : null,
-    });
+    const answer = JSON.parse(getNative().autoProviderResolveTier({
+      selection: selection ?? null,
+      verdict: verdict ?? null,
+      tiers: tiers ?? null,
+    }));
+    return answer == null ? null : Object.freeze(answer);
   }
 
   function clearSession(sessionId) {
-    for (const [key, entry] of prepared) if (entry.sessionId === sessionId) prepared.delete(key);
+    store.clearSession(sessionId);
     inflight.delete(sessionId);
   }
 
@@ -236,7 +185,7 @@ function createAutoProviderRouting(options = {}) {
     resolveTier,
     clearSession,
     jev,
-    size: () => prepared.size,
+    size: () => store.size,
   });
 }
 

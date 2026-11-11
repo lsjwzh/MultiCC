@@ -1,0 +1,1053 @@
+{
+  "comment": [
+    "Frozen behaviour of src/chat/auto-provider-routing.js (2026-11-11).",
+    "textHash, unknownTier and resolveTier are pure; the verdict store uses an",
+    "injected Jev fake, an injected clock and no network. Key order is part of",
+    "the fixture because the wire consumers read these objects directly."
+  ],
+  "cases": [
+    {
+      "name": "textHash: empty string",
+      "op": "textHash",
+      "request": {
+        "text": ""
+      },
+      "expect": {
+        "value": {
+          "hash": "0:45h",
+          "utf16Length": 0
+        }
+      }
+    },
+    {
+      "name": "textHash: null",
+      "op": "textHash",
+      "request": {
+        "text": null
+      },
+      "expect": {
+        "value": {
+          "hash": "0:45h",
+          "utf16Length": 0
+        }
+      }
+    },
+    {
+      "name": "textHash: undefined",
+      "op": "textHash",
+      "request": {
+        "text": "undefined"
+      },
+      "expect": {
+        "value": {
+          "hash": "0:45h",
+          "utf16Length": 0
+        }
+      }
+    },
+    {
+      "name": "textHash: ascii",
+      "op": "textHash",
+      "request": {
+        "text": "hello world"
+      },
+      "expect": {
+        "value": {
+          "hash": "11:1x0xvt1",
+          "utf16Length": 11
+        }
+      }
+    },
+    {
+      "name": "textHash: chinese",
+      "op": "textHash",
+      "request": {
+        "text": "你好，世界"
+      },
+      "expect": {
+        "value": {
+          "hash": "5:1igyw7i",
+          "utf16Length": 5
+        }
+      }
+    },
+    {
+      "name": "textHash: emoji",
+      "op": "textHash",
+      "request": {
+        "text": "😀"
+      },
+      "expect": {
+        "value": {
+          "hash": "2:35rq0",
+          "utf16Length": 2
+        }
+      }
+    },
+    {
+      "name": "textHash: emoji twice",
+      "op": "textHash",
+      "request": {
+        "text": "😀😀"
+      },
+      "expect": {
+        "value": {
+          "hash": "4:ojg85h",
+          "utf16Length": 4
+        }
+      }
+    },
+    {
+      "name": "textHash: astral music symbol",
+      "op": "textHash",
+      "request": {
+        "text": "𝄞"
+      },
+      "expect": {
+        "value": {
+          "hash": "2:35fvz",
+          "utf16Length": 2
+        }
+      }
+    },
+    {
+      "name": "textHash: mixed prose",
+      "op": "textHash",
+      "request": {
+        "text": "hello 你好 😀 𝄞"
+      },
+      "expect": {
+        "value": {
+          "hash": "14:4kyer1",
+          "utf16Length": 14
+        }
+      }
+    },
+    {
+      "name": "textHash: leading and trailing space",
+      "op": "textHash",
+      "request": {
+        "text": "  spaced  "
+      },
+      "expect": {
+        "value": {
+          "hash": "10:1frfj51",
+          "utf16Length": 10
+        }
+      }
+    },
+    {
+      "name": "unknownTier: no routing object",
+      "op": "unknownTier",
+      "request": {
+        "routing": null,
+        "verdict": null
+      },
+      "expect": {
+        "value": {
+          "tier": null,
+          "source": "unavailable",
+          "code": "jev_not_prepared"
+        }
+      }
+    },
+    {
+      "name": "unknownTier: no tiers keeps the verdict code",
+      "op": "unknownTier",
+      "request": {
+        "routing": {
+          "tiers": []
+        },
+        "verdict": {
+          "code": "jev_http_500"
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": null,
+          "source": "unavailable",
+          "code": "jev_http_500"
+        }
+      }
+    },
+    {
+      "name": "unknownTier: default strong",
+      "op": "unknownTier",
+      "request": {
+        "routing": {
+          "tiers": [
+            "weak",
+            "strong"
+          ]
+        },
+        "verdict": null
+      },
+      "expect": {
+        "value": {
+          "tier": "strong",
+          "source": "fallback",
+          "code": "jev_not_prepared"
+        }
+      }
+    },
+    {
+      "name": "unknownTier: weak",
+      "op": "unknownTier",
+      "request": {
+        "routing": {
+          "tiers": [
+            "weak",
+            "strong"
+          ],
+          "onUnknown": "weak"
+        },
+        "verdict": null
+      },
+      "expect": {
+        "value": {
+          "tier": "weak",
+          "source": "fallback",
+          "code": "jev_not_prepared"
+        }
+      }
+    },
+    {
+      "name": "unknownTier: explicit strong",
+      "op": "unknownTier",
+      "request": {
+        "routing": {
+          "tiers": [
+            "weak",
+            "strong"
+          ],
+          "onUnknown": "strong"
+        },
+        "verdict": {
+          "code": "jev_not_prepared"
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": "strong",
+          "source": "fallback",
+          "code": "jev_not_prepared"
+        }
+      }
+    },
+    {
+      "name": "unknownTier: priority says no tier",
+      "op": "unknownTier",
+      "request": {
+        "routing": {
+          "tiers": [
+            "weak",
+            "strong"
+          ],
+          "onUnknown": "priority"
+        },
+        "verdict": {
+          "code": "jev_timeout"
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": null,
+          "source": "fallback",
+          "code": "jev_timeout"
+        }
+      }
+    },
+    {
+      "name": "unknownTier: unknown mode falls back to strong",
+      "op": "unknownTier",
+      "request": {
+        "routing": {
+          "tiers": [
+            "weak",
+            "strong"
+          ],
+          "onUnknown": "banana"
+        },
+        "verdict": null
+      },
+      "expect": {
+        "value": {
+          "tier": "strong",
+          "source": "fallback",
+          "code": "jev_not_prepared"
+        }
+      }
+    },
+    {
+      "name": "unknownTier: one tier is both weak and strong",
+      "op": "unknownTier",
+      "request": {
+        "routing": {
+          "tiers": [
+            "only"
+          ],
+          "onUnknown": "weak"
+        },
+        "verdict": null
+      },
+      "expect": {
+        "value": {
+          "tier": "only",
+          "source": "fallback",
+          "code": "jev_not_prepared"
+        }
+      }
+    },
+    {
+      "name": "resolveTier: no stored routing",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "candidates": []
+        }
+      },
+      "expect": {
+        "value": null
+      }
+    },
+    {
+      "name": "resolveTier: jev verdict found on the ladder",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiers": [
+              "weak",
+              "strong"
+            ]
+          }
+        },
+        "verdict": {
+          "ok": true,
+          "tier": "weak",
+          "reasonCode": "jev_choice",
+          "escalated": false,
+          "confidence": 0.82,
+          "complexityScore": 0.2,
+          "chosenTier": "weak",
+          "chosenProbability": 0.9,
+          "latencyMs": 7
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": "weak",
+          "tierIndex": 0,
+          "tierCount": 2,
+          "source": "jev",
+          "code": "jev_choice",
+          "escalated": false,
+          "confidence": 0.82,
+          "complexityScore": 0.2,
+          "chosenTier": "weak",
+          "chosenProbability": 0.9,
+          "latencyMs": 7
+        }
+      }
+    },
+    {
+      "name": "resolveTier: verdict tier outside the stored ladder still resolves by position",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiers": [
+              "weak",
+              "strong"
+            ]
+          }
+        },
+        "verdict": {
+          "ok": true,
+          "tier": "not-on-ladder",
+          "reasonCode": "jev_choice"
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": "not-on-ladder",
+          "tierIndex": null,
+          "tierCount": 2,
+          "source": "jev",
+          "code": "jev_choice",
+          "escalated": false,
+          "confidence": null,
+          "complexityScore": null,
+          "chosenTier": null,
+          "chosenProbability": null,
+          "latencyMs": null
+        }
+      }
+    },
+    {
+      "name": "resolveTier: fallback strong with position and key order",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiers": [
+              "weak",
+              "strong"
+            ]
+          }
+        },
+        "verdict": null
+      },
+      "expect": {
+        "value": {
+          "tier": "strong",
+          "tierIndex": 1,
+          "tierCount": 2,
+          "onUnknown": "strong",
+          "source": "fallback",
+          "code": "jev_not_prepared",
+          "escalated": false,
+          "confidence": null,
+          "complexityScore": null,
+          "chosenTier": null,
+          "chosenProbability": null,
+          "latencyMs": null
+        }
+      }
+    },
+    {
+      "name": "resolveTier: fallback weak with position",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiers": [
+              "weak",
+              "strong"
+            ],
+            "onUnknown": "weak"
+          }
+        },
+        "verdict": null
+      },
+      "expect": {
+        "value": {
+          "tier": "weak",
+          "tierIndex": 0,
+          "tierCount": 2,
+          "onUnknown": "weak",
+          "source": "fallback",
+          "code": "jev_not_prepared",
+          "escalated": false,
+          "confidence": null,
+          "complexityScore": null,
+          "chosenTier": null,
+          "chosenProbability": null,
+          "latencyMs": null
+        }
+      }
+    },
+    {
+      "name": "resolveTier: fallback priority says no tier",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiers": [
+              "weak",
+              "strong"
+            ],
+            "onUnknown": "priority"
+          }
+        },
+        "verdict": null
+      },
+      "expect": {
+        "value": {
+          "tier": null,
+          "tierIndex": null,
+          "tierCount": 2,
+          "onUnknown": "priority",
+          "source": "fallback",
+          "code": "jev_not_prepared",
+          "escalated": false,
+          "confidence": null,
+          "complexityScore": null,
+          "chosenTier": null,
+          "chosenProbability": null,
+          "latencyMs": null
+        }
+      }
+    },
+    {
+      "name": "resolveTier: failed verdict keeps its code and latency",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiers": [
+              "weak",
+              "strong"
+            ]
+          }
+        },
+        "verdict": {
+          "ok": false,
+          "code": "jev_http_500",
+          "latencyMs": 12
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": "strong",
+          "tierIndex": 1,
+          "tierCount": 2,
+          "onUnknown": "strong",
+          "source": "fallback",
+          "code": "jev_http_500",
+          "escalated": false,
+          "confidence": null,
+          "complexityScore": null,
+          "chosenTier": null,
+          "chosenProbability": null,
+          "latencyMs": 12
+        }
+      }
+    },
+    {
+      "name": "resolveTier: zero-valued confidence and scores are kept",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiers": [
+              "weak",
+              "strong"
+            ]
+          }
+        },
+        "verdict": {
+          "ok": true,
+          "tier": "strong",
+          "confidence": 0,
+          "complexityScore": 0,
+          "chosenProbability": 0,
+          "chosenTier": "",
+          "latencyMs": 0
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": "strong",
+          "tierIndex": 1,
+          "tierCount": 2,
+          "source": "jev",
+          "code": "jev_choice",
+          "escalated": false,
+          "confidence": 0,
+          "complexityScore": 0,
+          "chosenTier": null,
+          "chosenProbability": 0,
+          "latencyMs": 0
+        }
+      }
+    },
+    {
+      "name": "resolveTier: price pool with fewer than two tiers is unavailable",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiering": "price"
+          }
+        },
+        "tiers": [
+          "p1"
+        ],
+        "verdict": {
+          "ok": true,
+          "tier": "p1",
+          "latencyMs": 3
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": "p1",
+          "tierIndex": 0,
+          "tierCount": 1,
+          "onUnknown": "strong",
+          "source": "fallback",
+          "code": "price_tiers_unavailable",
+          "escalated": false,
+          "confidence": null,
+          "complexityScore": null,
+          "chosenTier": null,
+          "chosenProbability": null,
+          "latencyMs": null
+        }
+      }
+    },
+    {
+      "name": "resolveTier: price pool verdict from a stale ladder is discarded",
+      "op": "resolveTier",
+      "request": {
+        "selection": {
+          "version": 1,
+          "mode": "auto",
+          "protocol": "anthropic",
+          "maxAttempts": 2,
+          "sticky": true,
+          "candidates": [
+            {
+              "providerId": "a",
+              "priority": 1,
+              "tier": "weak"
+            },
+            {
+              "providerId": "b",
+              "priority": 2,
+              "tier": "strong"
+            }
+          ],
+          "routing": {
+            "provider": "jev",
+            "tiering": "price"
+          }
+        },
+        "tiers": [
+          "p1",
+          "p2"
+        ],
+        "verdict": {
+          "ok": true,
+          "tier": "p3",
+          "latencyMs": 4
+        }
+      },
+      "expect": {
+        "value": {
+          "tier": "p2",
+          "tierIndex": 1,
+          "tierCount": 2,
+          "onUnknown": "strong",
+          "source": "fallback",
+          "code": "price_ladder_changed",
+          "escalated": false,
+          "confidence": null,
+          "complexityScore": null,
+          "chosenTier": null,
+          "chosenProbability": null,
+          "latencyMs": 4
+        }
+      }
+    },
+    {
+      "name": "store: consume is idempotent for the same text",
+      "op": "consume",
+      "request": {
+        "sessionId": "s1",
+        "text": "hello"
+      },
+      "expect": {
+        "value": {
+          "prepared": {
+            "ok": true,
+            "tier": "weak",
+            "reasonCode": "jev_choice"
+          },
+          "firstConsume": {
+            "ok": true,
+            "tier": "weak",
+            "reasonCode": "jev_choice"
+          },
+          "secondConsume": {
+            "ok": true,
+            "tier": "weak",
+            "reasonCode": "jev_choice"
+          },
+          "size": 1
+        }
+      }
+    },
+    {
+      "name": "store: a different text has no verdict",
+      "op": "consume",
+      "request": {
+        "sessionId": "s1",
+        "text": "other"
+      },
+      "expect": {
+        "value": {
+          "other": null,
+          "size": 1
+        }
+      }
+    },
+    {
+      "name": "store: a different session has no verdict",
+      "op": "consume",
+      "request": {
+        "sessionId": "s2",
+        "text": "hello"
+      },
+      "expect": {
+        "value": {
+          "otherSession": null,
+          "size": 1
+        }
+      }
+    },
+    {
+      "name": "store: an in-flight preparation is shared, not duplicated",
+      "op": "prepareTurn",
+      "request": {
+        "sessionId": "s-inflight",
+        "text": "x"
+      },
+      "expect": {
+        "value": {
+          "samePromise": true
+        }
+      }
+    },
+    {
+      "name": "store: the shared preparation leaves one verdict",
+      "op": "consume",
+      "request": {
+        "sessionId": "s-inflight",
+        "text": "x"
+      },
+      "expect": {
+        "value": {
+          "verdict": {
+            "ok": true,
+            "tier": "strong",
+            "reasonCode": "jev_choice"
+          },
+          "size": 1
+        }
+      }
+    },
+    {
+      "name": "store: TTL expiry drops the verdict",
+      "op": "consume",
+      "request": {
+        "sessionId": "s1",
+        "text": "hello",
+        "now": 1001001
+      },
+      "expect": {
+        "value": {
+          "expired": null,
+          "size": 0
+        }
+      }
+    },
+    {
+      "name": "store: maxEntries evicts the oldest verdict",
+      "op": "consume",
+      "request": {
+        "sessionId": "s-evict",
+        "texts": [
+          "a",
+          "i"
+        ]
+      },
+      "expect": {
+        "value": {
+          "oldest": null,
+          "newest": {
+            "ok": true,
+            "tier": "weak",
+            "reasonCode": "jev_choice"
+          },
+          "size": 8
+        }
+      }
+    },
+    {
+      "name": "store: re-inserting keeps oldest-first and evicts the next oldest",
+      "op": "consume",
+      "request": {
+        "sessionId": "s-evict",
+        "texts": [
+          "a",
+          "b",
+          "c",
+          "j"
+        ]
+      },
+      "expect": {
+        "value": {
+          "reinserted": {
+            "ok": true,
+            "tier": "weak",
+            "reasonCode": "jev_choice"
+          },
+          "evicted": null,
+          "alsoEvicted": null,
+          "newest": {
+            "ok": true,
+            "tier": "weak",
+            "reasonCode": "jev_choice"
+          },
+          "size": 8
+        }
+      }
+    },
+    {
+      "name": "store: clearSession drops that session only",
+      "op": "clearSession",
+      "request": {
+        "sessionId": "s-clear",
+        "text": "bye"
+      },
+      "expect": {
+        "value": {
+          "before": {
+            "size": 1,
+            "verdict": {
+              "ok": true,
+              "tier": "weak",
+              "reasonCode": "jev_choice"
+            }
+          },
+          "afterSize": 0,
+          "afterVerdict": null
+        }
+      }
+    },
+    {
+      "name": "store: non-Auto, no routing and empty text are no-ops",
+      "op": "prepareTurn",
+      "request": {
+        "cases": [
+          "manual",
+          "no-routing",
+          "empty-text"
+        ]
+      },
+      "expect": {
+        "value": {
+          "manual": null,
+          "noRouting": null,
+          "emptyText": null,
+          "size": 0
+        }
+      }
+    },
+    {
+      "name": "store: a throwing Jev client is remembered as jev_client_failed",
+      "op": "consume",
+      "request": {
+        "sessionId": "s-throw",
+        "text": "x"
+      },
+      "expect": {
+        "value": {
+          "prepared": {
+            "ok": false,
+            "code": "jev_client_failed",
+            "detail": "boom"
+          },
+          "consumed": {
+            "ok": false,
+            "code": "jev_client_failed",
+            "detail": "boom"
+          }
+        }
+      }
+    },
+    {
+      "name": "store: the Jev call carries the pool knobs",
+      "op": "prepareTurn",
+      "request": {
+        "sessionId": "s-args",
+        "text": "hello"
+      },
+      "expect": {
+        "value": {
+          "calls": [
+            {
+              "text": "hello",
+              "tiers": [
+                "weak",
+                "strong"
+              ],
+              "apiKeyName": "VERCEL_API_KEY",
+              "endpoint": "https://ai-gateway.vercel.sh/v1/evaluate",
+              "escalation": {},
+              "timeoutMs": 2500,
+              "model": "typesafe-ai/jev",
+              "context": {
+                "$undefined": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "store: a price pool with fewer than two tiers spends no Jev call",
+      "op": "prepareTurn",
+      "request": {
+        "sessionId": "s-price1",
+        "text": "hello",
+        "tiers": [
+          "p1"
+        ]
+      },
+      "expect": {
+        "value": {
+          "prepared": null,
+          "newJevCalls": 0,
+          "size": 0
+        }
+      }
+    }
+  ]
+}

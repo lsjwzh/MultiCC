@@ -243,6 +243,14 @@ function normalizeStoredProviderSelection(input) {
   return value == null ? null : deepFreeze(value);
 }
 
+// Session route identity: the normalized policy with its preset provenance
+// removed, so re-saving the same pool under another preset keeps the sticky
+// route. The derivation lives in the core; this only assembles the envelope.
+function selectionKey(input) {
+  const value = JSON.parse(native.autoProviderSelectionKey(request({ input: encode(input) })));
+  return value == null ? null : value;
+}
+
 function providerSelectionDto(input) {
   const value = JSON.parse(native.providerSelectionDto(request({ input: encode(input) })));
   if (!value) return null;
@@ -303,6 +311,7 @@ module.exports = {
   protocolOf,
   providerSelectionDto,
   selectionClis,
+  selectionKey,
   trustDomainOf,
   validateProviderSelection,
   validateRoutingTarget,

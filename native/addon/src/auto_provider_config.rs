@@ -27,6 +27,11 @@ pub fn normalize_stored_provider_selection(request: String) -> Result<String> {
 }
 
 #[napi]
+pub fn auto_provider_selection_key(request: String) -> Result<String> {
+    multicc_core::auto_provider_selection_key::selection_key(&request).map_err(reason)
+}
+
+#[napi]
 pub fn provider_selection_dto(request: String) -> Result<String> {
     multicc_core::auto_provider_config::provider_selection_dto(&request).map_err(reason)
 }

@@ -1,0 +1,399 @@
+{
+  "home": {
+    "files": [
+      {
+        "path": ".multicc/official-accounts/claude/aaaaaaaaaaaaaaaa.json",
+        "text": "{\"access_token\":\"claude-ok\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/cccccccccccccccc.json",
+        "text": "{\"access_token\":\"claude-cancelled\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/dddddddddddddddd.json",
+        "text": "{\"access_token\":\"claude-401\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/eeeeeeeeeeeeeeee.json",
+        "text": "{\"access_token\":\"claude-500\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/ffffffffffffffff.json",
+        "text": "{\"access_token\":\"claude-garbage\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/0123456789abcdef.json",
+        "text": "{\"access_token\":\"claude-redirect\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/fefefefefefefefe.json",
+        "text": "{\"access_token\":\"claude-empty\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/bbbbbbbbbbbbbbbb.json",
+        "text": "{\"access_token\":\"claude-ok\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2020-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/a1a1a1a1a1a1a1a1.json",
+        "text": "{\"access_token\":\"claude-slow\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/a2a2a2a2a2a2a2a2.json",
+        "text": "{\"access_token\":\"claude-slow2\",\"refresh_token\":\"fake-refresh\",\"expired\":\"2030-01-01T00:00:00Z\"}"
+      },
+      {
+        "path": ".multicc/official-accounts/claude/deadbeefdeadbeef.json",
+        "text": "{ not json"
+      },
+      {
+        "path": ".multicc/official-accounts/codex/1111111111111111/auth.json",
+        "text": "{\"tokens\":{\"access_token\":\"codex-ok\",\"account_id\":\"acct-1111111111111111\"}}"
+      },
+      {
+        "path": ".multicc/official-accounts/codex/2222222222222222/auth.json",
+        "text": "{\"tokens\":{\"access_token\":\"codex-401\",\"account_id\":\"acct-2222222222222222\"}}"
+      },
+      {
+        "path": ".multicc/official-accounts/codex/3333333333333333/auth.json",
+        "text": "{\"tokens\":{\"access_token\":\"codex-garbage\",\"account_id\":\"acct-3333333333333333\"}}"
+      },
+      {
+        "path": ".codex/auth.json",
+        "text": "{\"tokens\":{\"access_token\":\"codex-global\",\"account_id\":\"acct-global\"}}"
+      }
+    ]
+  },
+  "upstream": [
+    {
+      "token": "claude-ok",
+      "status": 200,
+      "body": "{\"account\":{\"email\":\"fake@example.invalid\",\"subscription\":{\"current_period_end\":\"2027-01-01T00:00:00.000Z\",\"next_payment_date\":\"2027-01-01T00:00:00.000Z\",\"auto_renew\":true}}}",
+      "headers": {}
+    },
+    {
+      "token": "claude-cancelled",
+      "status": 200,
+      "body": "{\"account\":{\"subscription\":{\"current_period_end\":\"2027-01-01T00:00:00.000Z\",\"auto_renew\":false,\"next_payment_date\":\"2027-01-01T00:00:00.000Z\"}}}",
+      "headers": {}
+    },
+    {
+      "token": "claude-401",
+      "status": 401,
+      "body": "{\"error\":\"unauthorized\"}",
+      "headers": {}
+    },
+    {
+      "token": "claude-500",
+      "status": 500,
+      "body": "{\"error\":\"boom\"}",
+      "headers": {}
+    },
+    {
+      "token": "claude-garbage",
+      "status": 200,
+      "body": "not json at all",
+      "headers": {}
+    },
+    {
+      "token": "claude-redirect",
+      "status": 302,
+      "body": "",
+      "headers": {
+        "Location": "https://evil.invalid/steal"
+      }
+    },
+    {
+      "token": "claude-empty",
+      "status": 200,
+      "body": "{}",
+      "headers": {}
+    },
+    {
+      "token": "codex-ok",
+      "status": 200,
+      "body": "{\"subscription\":{\"current_period_end\":\"2027-06-01T00:00:00.000Z\",\"next_payment_date\":\"2027-06-01T00:00:00.000Z\",\"auto_renew\":true}}",
+      "headers": {}
+    },
+    {
+      "token": "codex-401",
+      "status": 401,
+      "body": "{\"error\":\"unauthorized\"}",
+      "headers": {}
+    },
+    {
+      "token": "codex-garbage",
+      "status": 200,
+      "body": "not json at all",
+      "headers": {}
+    },
+    {
+      "token": "codex-global",
+      "status": 200,
+      "body": "{\"subscription\":{\"current_period_end\":\"2027-06-01T00:00:00.000Z\",\"next_payment_date\":\"2027-06-01T00:00:00.000Z\",\"auto_renew\":true}}",
+      "headers": {}
+    },
+    {
+      "token": "claude-slow",
+      "status": 200,
+      "body": "{\"account\":{\"email\":\"fake@example.invalid\",\"subscription\":{\"current_period_end\":\"2027-01-01T00:00:00.000Z\",\"next_payment_date\":\"2027-01-01T00:00:00.000Z\",\"auto_renew\":true}}}",
+      "headers": {},
+      "delayMs": 500
+    },
+    {
+      "token": "claude-slow2",
+      "status": 200,
+      "body": "{\"account\":{\"email\":\"fake@example.invalid\",\"subscription\":{\"current_period_end\":\"2027-01-01T00:00:00.000Z\",\"next_payment_date\":\"2027-01-01T00:00:00.000Z\",\"auto_renew\":true}}}",
+      "headers": {},
+      "delayMs": 500
+    }
+  ],
+  "tls": {
+    "caPem": "-----BEGIN CERTIFICATE-----\nMIIDJTCCAg2gAwIBAgIUGP2wj6ah5C8s/i522/LvGPlDC5kwDQYJKoZIhvcNAQEL\nBQAwGjEYMBYGA1UEAwwPTXVsdGlDQyBUZXN0IENBMB4XDTI2MTExMTAwNDIzM1oX\nDTM2MTEwODAwNDIzM1owGjEYMBYGA1UEAwwPTXVsdGlDQyBUZXN0IENBMIIBIjAN\nBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7G4HWo0hMkY1h9CpidoB9pp1IHqq\nu46ceVUzX+7SFACnqTQ0dVCigo3Qa1GcIRVGe4f4O8ezxJc3hgUF1J+bm0Ri2Amp\nbLQTklSy6f/tqCjl4NLva7eprpzdnnN4micpmSR2s5ZMfcEUq6N5UqRvZnf/9X1k\nZSRxr3rJC64eEBjNXvoZXw7/sNVvRAdNPR8I+IIPk8l9KByu+vn9Ryq2XL0YgOd0\nGQU7Igfw2y9XQckEePN+coP1mBW4pBGIQX0uWiwUM82MMuTnViS2/FXVADBGFrGD\n4euhCgQJpN/xyVo7JLfoMeMEx93zMVdr8XEqtNoQf5tFu8cVBS3KTOzDwwIDAQAB\no2MwYTAdBgNVHQ4EFgQULGE7S79JzWu47iaR+RHRfIf6wpkwHwYDVR0jBBgwFoAU\nLGE7S79JzWu47iaR+RHRfIf6wpkwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8E\nBAMCAQYwDQYJKoZIhvcNAQELBQADggEBAHX4WEysjPiR4VXRH5Jg5NIimsrBCCSC\nQDTXYLKG5LeHW9uBwWUhAJLzyrXQJm20GyTbFKtRPbCd3dWxTAWgs6EJxgYJqmXD\n/KVdc9F3m9H+E89Sk0TdX8FdJ1AzIBrnvNesCbiChX/sAdrwwk5oSfi4MKxEf662\nGDxEEpJrBxDtGAZaIQcpo2oxqhfk1B6Yo9EW3M826EsLa4vVxdPHxNquVPQNtgjC\n3AH1oEmp+4PdemuwG006l50nZfQIH1wpbYPsyUSZVd0EXHWy7Ij2DXAEmqWwynia\nNeaQCFULb5t5jtcx5AmYoH6ViXAot9RgkbBhz+g+cFMfjJMF5793sE0=\n-----END CERTIFICATE-----\n",
+    "certPem": "-----BEGIN CERTIFICATE-----\nMIIDYDCCAkigAwIBAgIULNk9agdVG7HDfPkS7FG6qI6imEgwDQYJKoZIhvcNAQEL\nBQAwGjEYMBYGA1UEAwwPTXVsdGlDQyBUZXN0IENBMB4XDTI2MTExMTAwNDIzM1oX\nDTM2MTEwODAwNDIzM1owHDEaMBgGA1UEAwwRYXBpLmFudGhyb3BpYy5jb20wggEi\nMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC6zbNIZ8DqzLUeQjqeMFut282S\n/eylAYTDf447pZ3TVi2rDbdEhJDfs4SbbqJxuWPzQxlvNjqkCDxIfLtew3wB7vBN\nA+Ao7/uRVMiTEgHtHEbuABIgl8iBuv4c8H9ZJcWmSf+iIUYULuplRO4DVEG0NVqo\nhmHSdlFq//bOaa5I9/8ePSE7BxyIqKMc2/wKg6K/2D+hl6yjsU+gvp8aP+oOpJsN\nbTmcZyOUu3JLRUjh8n71twZNPCt5st0SCaFWPKZwbYRQ9Pivuw9+GkAT+WYow1xO\nSzkpmxPMmCWihM0+dWYNBFc9QP27jnooG4hps2EjA7wo+TahSlXlMVUAHSZlAgMB\nAAGjgZswgZgwKQYDVR0RBCIwIIIRYXBpLmFudGhyb3BpYy5jb22CC2NoYXRncHQu\nY29tMAkGA1UdEwQCMAAwCwYDVR0PBAQDAgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMB\nMB0GA1UdDgQWBBS5hgCeYEijiOPdLbweZX/emP5OXDAfBgNVHSMEGDAWgBQsYTtL\nv0nNa7juJpH5EdF8h/rCmTANBgkqhkiG9w0BAQsFAAOCAQEABTXffylbn1z8FqH7\n0P3AWMdWQ26v2V2Z6a0KnrswL9JuK2wM89NFQvDdFMR0ubjbgwsvND/7JAmtHTvD\n+coJ52HuneHH52HCcR2FrmqQ/kIU8eF1NR4zJ6bKCvI7O+c8KqgsC393HrTZw6lb\ngspnd+TqlhVTndBdzK5d4107OZJBTy6gaRejxpqH3Bx3HjRtjlSBFiefd9oBlrIE\n/KmXbQbscW28yl2dbUypsHkFnMTgmc+igfFlW9/gDmyYApuXNjlXBONGoTkhrI18\nCy5iENkiYsr6jCNissWUL7r0CgefkHqxs1CRCZjrmTd4OpWZXzfuzjQ0yDzxS1H5\nzWrLVQ==\n-----END CERTIFICATE-----\n",
+    "keyPkcs8B64": "MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQC6zbNIZ8DqzLUeQjqeMFut282S/eylAYTDf447pZ3TVi2rDbdEhJDfs4SbbqJxuWPzQxlvNjqkCDxIfLtew3wB7vBNA+Ao7/uRVMiTEgHtHEbuABIgl8iBuv4c8H9ZJcWmSf+iIUYULuplRO4DVEG0NVqohmHSdlFq//bOaa5I9/8ePSE7BxyIqKMc2/wKg6K/2D+hl6yjsU+gvp8aP+oOpJsNbTmcZyOUu3JLRUjh8n71twZNPCt5st0SCaFWPKZwbYRQ9Pivuw9+GkAT+WYow1xOSzkpmxPMmCWihM0+dWYNBFc9QP27jnooG4hps2EjA7wo+TahSlXlMVUAHSZlAgMBAAECggEAAbT8IF404614j35cQThAuR9N7dModL7RIBOpFpEUubaFNAn9XWmCs2T4PGBHBgC9dKph+4Z+psZvN61xkFP7PlaNS61phnex1e/SK7+wyRaSSbgDoO/MUDRB6V+yIjYXjvQgD6dButDZTEsl0XT4PIzq/R1VnFH0Ag3jiyZR+suzhBAcSq4LKbHsLm+zQunKxr3SUkRLb+6VZMfaDosNSZPBHccoI/ph+RN1gn95CfYHJRK3ekEiaCjI1gUKWgp5qBMOlEjYKNAh+KDz0OUXwSEQsjAhEk7kGL/JlW7dif4gvdQ0J3Hf5mTbLPHJ4MPtMZrM8a17zJK4ylIVT5NKcQKBgQDuR779+VPo7xkgllJ6IHhQUrx3zdItvIinUbRjDess07zhDS92xRKqw9b2wVzu9VUOPnS8I1zG+k2Oss0YZESm5A4oPNJNOnPXpTCE0jY+9gDcNV0h5GZhtiMJQZp1IDDegN/npqAiFkmpf+yvzHJFRjZxN1svC8J08r5uGwCGnQKBgQDIsfeaZf1C1CWHdoS9eq7n82kqcHg6x3BfhVxNQBs4CRYaTiiJ6OKq6Bo67jJ2ur8gdmtiLEDsmds2wA3q0mjTa1icHMahgCavqX7sxf0XDbliZWgLOwpHuOPDO7U2i1a7rdvPoRvS4lPJLwJAMihuCotX6dZKooBl38CRlaKwaQKBgQCdjecl++SV0vMkbwEeK7YiNnLULM3a3Bzntci27o8gVuk/Tf6iY/DR5SiQhI60mpehEX8Sn7dLAlqiDmw6wqH6UDVkOcM8uXe7kUihqnWf7/3lnYt1S5a+6TYFetFsvNpTZZenjq+3mlEeuK2CGIc+cwywk8/BLd9ogNGV8FjKqQKBgQCuybhAIvUYX9Uzjjf7Ib70yhxcVsmPP6URu/7wVJWgDuHOFSXfPhEzEaPOkScoGmpcpmXNgYclyLWPkGJOkeOzxbjNdY5Ul1yZ/n9JTQGoM06ycGjV5xyD7HWI0hZ3o5DtMXTP9ptZ5b1c6PEH4ecuN0a2UTRNmgtDLkTzRiQDiQKBgQCltnCo7d1NK9xkzIc0KqMrHHan3/lrFXsGkfX63C4mDVHPhruCaOJ8VJ3Q6rVLJK8TUSVMfNUBIZeJaO3rk9lWU/9jXPdIAD+7dpvZuL131HxRmdPKySfVAezQk/8cTBp8ee9D8FYEnTkIf11oLTxfXqR3TGJEkdbF+bAoWCVkuA=="
+  },
+  "cases": [
+    {
+      "name": "GET claude ok",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=aaaaaaaaaaaaaaaa",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"ok\",\"subscription\":{\"nextBillingAt\":1798761600000,\"currentPeriodEnd\":1798761600000,\"autoRenew\":true,\"source\":\"profile\",\"observedAt\":\"<clock>\"}}"
+    },
+    {
+      "name": "GET claude cancelled",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=cccccccccccccccc",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"ok\",\"subscription\":{\"nextBillingAt\":null,\"currentPeriodEnd\":1798761600000,\"autoRenew\":false,\"source\":\"profile\",\"observedAt\":\"<clock>\"}}"
+    },
+    {
+      "name": "GET claude 401",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=dddddddddddddddd",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"no_auth\"}"
+    },
+    {
+      "name": "GET claude 500",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=eeeeeeeeeeeeeeee",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"unavailable\"}"
+    },
+    {
+      "name": "GET claude garbage",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=ffffffffffffffff",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"unavailable\"}"
+    },
+    {
+      "name": "GET claude redirect not followed",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=0123456789abcdef",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"unavailable\"}"
+    },
+    {
+      "name": "GET claude empty object",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=fefefefefefefefe",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"ok\",\"subscription\":null}"
+    },
+    {
+      "name": "GET claude expired peek",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=bbbbbbbbbbbbbbbb",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"no_auth\"}"
+    },
+    {
+      "name": "GET claude unreadable file",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=deadbeefdeadbeef",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"no_auth\"}"
+    },
+    {
+      "name": "GET claude unknown account",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=9999999999999999",
+      "status": 404,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": null,
+      "contentEncoding": null,
+      "body": "{\"status\":\"no_auth\"}"
+    },
+    {
+      "name": "GET codex ok",
+      "method": "GET",
+      "url": "/api/codex/subscription?account=1111111111111111",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"ok\",\"subscription\":{\"nextBillingAt\":1811808000000,\"currentPeriodEnd\":1811808000000,\"autoRenew\":true,\"source\":\"usage\",\"observedAt\":\"<clock>\"}}"
+    },
+    {
+      "name": "GET codex 401",
+      "method": "GET",
+      "url": "/api/codex/subscription?account=2222222222222222",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"no_auth\"}"
+    },
+    {
+      "name": "GET codex garbage",
+      "method": "GET",
+      "url": "/api/codex/subscription?account=3333333333333333",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"unavailable\",\"subscription\":null,\"stale\":true}"
+    },
+    {
+      "name": "GET codex missing file",
+      "method": "GET",
+      "url": "/api/codex/subscription?account=4444444444444444",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"no_auth\"}"
+    },
+    {
+      "name": "GET codex global",
+      "method": "GET",
+      "url": "/api/codex/subscription",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"ok\",\"subscription\":{\"nextBillingAt\":1811808000000,\"currentPeriodEnd\":1811808000000,\"autoRenew\":true,\"source\":\"usage\",\"observedAt\":\"<clock>\"}}"
+    },
+    {
+      "name": "GET invalid account",
+      "method": "GET",
+      "url": "/api/claude/subscription?account=nothex",
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": null,
+      "contentEncoding": null,
+      "body": "{\"status\":\"unavailable\",\"error\":\"invalid account\"}"
+    },
+    {
+      "name": "GET array account",
+      "method": "GET",
+      "url": "/api/claude/subscription?account[]=aaaaaaaaaaaaaaaa",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"ok\",\"subscription\":{\"nextBillingAt\":1798761600000,\"currentPeriodEnd\":1798761600000,\"autoRenew\":true,\"source\":\"profile\",\"observedAt\":\"<clock>\"}}"
+    },
+    {
+      "name": "GET object account",
+      "method": "GET",
+      "url": "/api/claude/subscription?account[a]=x",
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": null,
+      "contentEncoding": null,
+      "body": "{\"status\":\"unavailable\",\"error\":\"invalid account\"}"
+    },
+    {
+      "name": "HEAD claude",
+      "method": "HEAD",
+      "url": "/api/claude/subscription?account=aaaaaaaaaaaaaaaa",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": ""
+    },
+    {
+      "name": "OPTIONS claude",
+      "method": "OPTIONS",
+      "url": "/api/claude/subscription?account=aaaaaaaaaaaaaaaa",
+      "status": 200,
+      "contentType": "text/html; charset=utf-8",
+      "allow": "GET,HEAD",
+      "cacheControl": null,
+      "contentEncoding": null,
+      "body": "GET,HEAD"
+    },
+    {
+      "name": "OPTIONS codex",
+      "method": "OPTIONS",
+      "url": "/api/codex/subscription",
+      "status": 200,
+      "contentType": "text/html; charset=utf-8",
+      "allow": "GET,HEAD",
+      "cacheControl": null,
+      "contentEncoding": null,
+      "body": "GET,HEAD"
+    },
+    {
+      "name": "GET trailing slash",
+      "method": "GET",
+      "url": "/api/claude/subscription/?account=aaaaaaaaaaaaaaaa",
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "allow": null,
+      "cacheControl": "no-store",
+      "contentEncoding": null,
+      "body": "{\"status\":\"ok\",\"subscription\":{\"nextBillingAt\":1798761600000,\"currentPeriodEnd\":1798761600000,\"autoRenew\":true,\"source\":\"profile\",\"observedAt\":\"<clock>\"}}"
+    }
+  ]
+}
