@@ -21,6 +21,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const root = path.join(__dirname, '..');
 const target = path.join(root, 'native', 'gateway', 'tests', 'fixtures', 'provider-limit-history.json');
@@ -202,13 +203,13 @@ async function mountApp(dataRoot, historyFile, base) {
   return { server, port: server.address().port, history };
 }
 
-async function build() {
-  const work = path.join(os.tmpdir(), 'provider-limit-history-port', `fixture-${process.pid}`);
+async function buildDocument(work) {
   const data = path.join(work, 'data');
   const home = path.join(work, 'home');
   const unavailable = path.join(work, 'unavailable');
   for (const dir of [work, data, home, unavailable]) fs.mkdirSync(dir, { recursive: true });
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   process.env.TMPDIR = work;
 
   const base = Date.now();
@@ -249,7 +250,6 @@ async function build() {
     await new Promise((resolve) => offline.server.close(resolve));
   }
 
-  fs.rmSync(work, { recursive: true, force: true });
   return {
     comment: COMMENT,
     providers: PROVIDERS,
@@ -259,11 +259,27 @@ async function build() {
   };
 }
 
+async function build() {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-limit-history-port-'));
+  try {
+    // RustQuotaHistory owns SQLite until its native handle is finalized. The
+    // child must exit before its parent removes the files on Windows.
+    const child = spawnSync(process.execPath, [__filename, '--collect', work], {
+      encoding: 'utf8', timeout: 120_000,
+    });
+    if (child.error) throw child.error;
+    if (child.status !== 0) throw new Error(`history fixture collection failed: ${child.stderr}`);
+    return JSON.parse(child.stdout);
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const write = process.argv.includes('--write');
   const fixture = await build();
   const next = `${JSON.stringify(fixture, null, 2)}\n`;
-  const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
+  const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8').replace(/\r\n/g, '\n') : '';
   if (write) {
     if (current === next) {
       console.log('provider limit history fixture already current');
@@ -282,7 +298,11 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().catch((error) => {
+  const collect = process.argv[2] === '--collect';
+  const run = collect
+    ? buildDocument(process.argv[3]).then(fixture => process.stdout.write(JSON.stringify(fixture)))
+    : main();
+  run.catch((error) => {
     console.error(error);
     process.exit(1);
   });
