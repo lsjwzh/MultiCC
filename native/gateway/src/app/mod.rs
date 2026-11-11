@@ -27,6 +27,7 @@ pub mod source_workspaces;
 pub mod subagent_defaults;
 pub mod token_usage_by_role;
 pub mod token_usage_global;
+pub mod turn_ledger;
 pub mod uploads;
 
 use std::net::SocketAddr;
@@ -118,6 +119,8 @@ pub enum Route {
     FilesOptions,
     Upload,
     UploadOptions,
+    TurnLedger(turn_ledger::Route),
+    TurnLedgerOptions(turn_ledger::Route),
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -157,6 +160,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if let Some(route) = secrets_vault::claim(method, path) {
         return Some(route);
+    }
+    if let Some(claim) = turn_ledger::claim(method, path) {
+        return Some(match claim {
+            turn_ledger::Claim::Handle(route) => Route::TurnLedger(route),
+            turn_ledger::Claim::Options(route) => Route::TurnLedgerOptions(route),
+        });
     }
     if let Some(claim) = file_transfer::claim(method, path) {
         return Some(match claim {
@@ -505,6 +514,7 @@ pub async fn handle(
         | Route::TokenUsageGlobalOptions => return options(&ctx, "GET,HEAD"),
         Route::TokenUsageByRoleOptions => return options(&ctx, "GET,HEAD"),
         Route::HostReadOptions(route) => return options(&ctx, route.allow()),
+        Route::TurnLedgerOptions(route) => return options(&ctx, route.allow()),
         Route::FilesOptions => return options(&ctx, file_transfer::Route::Files.allow()),
         Route::UploadOptions => return options(&ctx, file_transfer::Route::Upload.allow()),
         Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
@@ -546,6 +556,7 @@ pub async fn handle(
         // needs in-process Node state asks it only through that one call.
         Route::TokenUsageByRoleGet => return token_usage_by_role::get(&ctx, host).await,
         Route::HostReadGet(route) => return host_read::handle(&ctx, route, host, &peer).await,
+        Route::TurnLedger(route) => return turn_ledger::handle(&ctx, route, host).await,
         Route::FilesGet => return file_transfer::files(&ctx, host).await,
         Route::SubagentDefaultsGet => return subagent_defaults::get(&app, &ctx, host).await,
         Route::SubagentDefaultsSync => {

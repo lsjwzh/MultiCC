@@ -154,6 +154,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/secrets-vault-host.js',
     'src/routes/subagent-defaults-host.js',
     'src/routes/token-usage-host.js',
+    'src/routes/turn-ledger-host.js',
     'src/ws/connection-router.js',
   ]);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);

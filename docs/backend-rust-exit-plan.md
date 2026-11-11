@@ -3779,3 +3779,97 @@ TypeError、完整上传（0600、命名模式、字节、日志行）、latin1 
   `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`、
   `src/routes/token-usage-host.js`、`src/routes/host-read-host.js`、
   `src/routes/file-transfer-host.js`。未重启服务，路由由前门接管要等用户手动重启后才生效。
+## 终端轮次账本诊断路由迁入 Rust 前门（2026-11-11）
+
+`GET|HEAD|OPTIONS /api/sessions/:id/turn-ledger`、`GET|HEAD
+/api/sessions/:id/turn-hooks/codex-trust`、`POST /api/sessions/:id/turn-hooks/codex-trust`
+原先由 `src/turn-ledger/runtime.js` 的 `mountRoutes` 与 `launchFor` 回答。三条的答案都来自
+Node 进程内状态（`launches` 表、TurnLedger 的每会话记录、hook 安装器的 JSON-RPC），因此
+路径匹配、解码后的 `:id`、`SID_RE` 闸门、409、快照 DTO 与错误映射进前门，只有原始材料经
+宿主端口回调。
+
+### Rust 实现
+
+- `native/gateway/src/app/turn_ledger.rs`（427 行，含 4 个单测）：`claim` 接受
+  `GET`/`HEAD`/`OPTIONS` 的 `/api/sessions/:id/turn-ledger` 与
+  `GET`/`HEAD`/`POST`/`OPTIONS` 的 `/api/sessions/:id/turn-hooks/codex-trust`
+  （`/api/` 前缀区分大小写、字面段大小写不敏感、允许一个尾斜杠、`:id` 只匹配一个非空段
+  并按 `decodeURIComponent` 解码、畸形转义保留字面量），`Allow` 分别是 `GET,HEAD` 与
+  `GET,HEAD,POST`。
+- 快照 DTO 按 `TurnLedger#snapshot` 的 `JSON.stringify` 键顺序重建：`sessionId, epoch,
+  cli, cliSessionId, cliPid, ownership, liveness, turnId, state, evidence, reason,
+  boundary, pendingUserInput, backgroundPending, stopPending, promptHead, needsReview,
+  lastEventAt, lastTransitionId`；`liveness = projectLiveness(ownership)`
+  （running/yielding/ended/其它 → active/inactive/inactive/unknown 及
+  `turn_ledger_*` 原因），`reason = state === 'E' ? (boundary || 'unknown-interruption')
+  : null`，`lastEventAt` 按 `|| null` 归一化，无记录 → `null`。
+- trust 两条：先向宿主取 launch，`^[A-Za-z0-9_.-]{1,128}$` 不通过或 `cli !== 'codex'`
+  → 409 `{"error":"not a launched codex terminal"}`（不合格会话零宿主调用），通过后把
+  已校验的 `codexHome`/`cwd` 随 trust 调用下发；安装器抛错 → 502
+  `{"error":<message>}`；宿主不可达或拒绝 → `safeErrorHandler` 500。
+- `native/gateway/src/app/mod.rs`（+11 行）：`TurnLedger(Route)` /
+  `TurnLedgerOptions(Route)`、claim 与 dispatch。
+
+### 删除与宿主适配
+
+- `src/turn-ledger/runtime.js` 199 → 191 行（`mountRoutes` 与 `launchFor` 共 −29 行，+21
+  行为 `launch`/`record`/`trust` 访问器与注释）。
+- `src/turn-ledger/ledger.js` 262 → 279 行（+18：`record(sessionId)` 返回扁平原始记录，
+  `stopPending: !!rec.stop`，不含 `liveness`/`reason` 投影）。
+- `src/routes/turn-ledger-host.js`（95 行）：`POST /api/__host/turn-ledger`，沿用
+  §31–§37 的回环约定；三个 op `ledger` / `launch` / `trust`，全部只回原料。
+- `server.js` 3,066 → 3,067 行（require 与挂载替换），行预算棘轮同步 `3,068` 行 /
+  `164,719` 字节。
+- 测试面：`tests/test-turn-ledger.js` 改为宿主端口契约（+2 条：原始
+  launch/record/trust 与回环判定）；`tests/test-request-locality.js` 白名单加入
+  `src/routes/turn-ledger-host.js`；`tests/helpers/legacy-turn-ledger-routes.js`
+  （45 行）保留退役 handler 的逐字副本，只供差分使用。
+
+### 集成测试
+
+`native/gateway/tests/turn_ledger.rs`（657 行，9 个用例）：ledger 信封与投影
+（逐字节）、未知会话/无记录的 `null`、三种 409（未知 / claude / 含 `/` 的 id 且零宿主
+调用）、脚本化 trust/grant 与逐字节宿主调用（
+`{"op":"trust","write":false,"codexHome":"/h/s1","cwd":"/w/s1"}`）、502 与宿主不可达
+500、`OPTIONS Allow`、`HEAD` 与 gzip、解码后的 id、未注册形状转发、认证闸门 403。
+`tests/fixtures/upstream.js` 新增 `POST /api/__host/turn-ledger` 脚本模式
+（`turn-ledger-calls.jsonl`，`script.turnLedger.{launches,records,trust,grant}` 控制回答、
+`hostDown` 模拟不可达）。
+
+### 差分与验证
+
+- `docs/rust-migration/differential/turn-ledger.js`（270 行）：Node 侧挂冻结 oracle 与
+  真实 `TurnLedger`（9 条 spool 事件覆盖进行中 / 有边界异常结束 / 无边界异常结束 /
+  已停止），Rust 侧是前门 + 按 PROXY v1 接线的宿主桩（桩里就是真实的
+  `createTurnLedgerHost` 与另一颗同种子 `TurnLedger`）。结果：32 条请求中 27 条逐字节
+  一致，5 条预期差异单独校验 5/5（`POST /turn-ledger`、`DELETE
+  /turn-hooks/codex-trust`、空 `:id`、多一段路径 —— oracle 404 / 前门转发；`/API/`
+  大写前缀 —— oracle 200 / 前门转发）。codex trust 两侧都不启动真实 CLI，RPC 由同一张
+  脚本表回答（含一个抛错项）。
+- 两份后端清单已重新生成：`docs/backend-route-inventory.md`（590 个后端文件、138,205
+  行、475 个注册候选），`docs/backend-runtime-inventory.md`（指纹
+  `238ead28d7e7971c773c744b`，525 条路由注册、34 层中间件）。
+- `cargo fmt --all -- --check` 通过；`cargo clippy -p multicc-gateway --all-targets --
+  -D warnings` 零告警；`cargo test -p multicc-gateway` 全绿（lib 62 条，各测试二进制
+  合计 207 passed，0 failed，其中 `turn_ledger` 9 条）。
+- JS 门禁（`MULTICC_RUST_ADDON` 指向本指纹的 `darwin-arm64/multicc_core.node`，
+  `MULTICC_RUST_PREBUILT_DIR` 指向指纹根目录）：`test:contracts` 148/148；
+  `test:architecture` 128/128；`test:security` 1,138 通过 / 0 失败；
+  `test:governance` 20/20 全绿（含 `governance:artifacts` 与
+  `governance:runtime-writes` 45 项）；`test:rust` 292/292；
+  `check-test-tiers` 通过；`check-source-line-budget` 通过（`server.js` 3,068 行 /
+  164,719 字节）；`test-turn-ledger` + `test-request-locality` 合计 26/26。
+
+### 最终产物与验证
+
+- 源码指纹 `238ead28d7e7971c773c744b`：`multicc_core.node` 18,364,576 字节
+  （SHA-256 `6294bdf9…`）、`multicc-gateway` 12,220,272 字节（SHA-256 `74d34812…`）、
+  `multicc-remote`（`d800dd59…`）、`multicc-cdpd`（`63f2c749…`）。
+- 本组 Node 变化：删除路由实现 29 行，新增宿主端口 95 行，`ledger.js` +18 行，
+  `server.js` +1 行，净 +85 行 —— 路由本身只有三条 handler，宿主端口的成本超过被删的
+  部分；收益在所有权（路径/`SID_RE`/409/DTO/502 都在前门）。至此剩余的纯宿主垫片文件：
+  `src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
+  `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`、
+  `src/routes/token-usage-host.js`、`src/routes/host-read-host.js`、
+  `src/routes/file-transfer-host.js`、`src/routes/turn-ledger-host.js`。未重启服务，
+  路由由前门接管要等用户手动重启后才生效。

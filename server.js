@@ -129,6 +129,7 @@ const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
 const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host');
+const { mountTurnLedgerHostRoute } = require('./src/routes/turn-ledger-host');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
@@ -2287,7 +2288,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
 });
 chatHistoryService = chatHistoryRuntime.service;
 chatHistoryRuntime.mountRoutes(app);
-createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app); turnLedgerRuntime.mountRoutes(app); require('./src/doctor/host').mountDoctor(app, { persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir: __dirname, dataDir: MULTICC_PATHS.root });
+createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app); mountTurnLedgerHostRoute(app, { launch: id => turnLedgerRuntime.launch(id), record: id => turnLedgerRuntime.record(id), trust: input => turnLedgerRuntime.trust(input) }); require('./src/doctor/host').mountDoctor(app, { persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir: __dirname, dataDir: MULTICC_PATHS.root });
 
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }
 // Read-only history view.

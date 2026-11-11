@@ -140,6 +140,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets/:name/rename`、`DELETE/OPTIONS /api/secrets/:name`、`GET/HEAD/OPTIONS /api/secrets/:name/value` | `src/secrets-vault.js` 只剩进程内 entries 表、0600 store、audit 与 env 投影；宿主端口为 `src/routes/secrets-vault-host.js` | `native/gateway/src/app/secrets_vault.rs`：路径（含 `:name` 解码与 trim）、`NAME_RE`/`LEGACY_NAME_RE`、65536 UTF-16 值上限、400/404/409/503 映射；存储读写经 `/api/__host/secrets-vault` 回调 | 63/63 请求逐字节一致 + 10/10 预期差异（见 §34） |
 | `GET/HEAD/OPTIONS /api/token-usage/by-role` | `src/routes/token-usage.js` 只剩用量累计/广播/账本导出；宿主端口为 `src/routes/token-usage-host.js` | `native/gateway/src/app/token_usage_by_role.rs`：查询语义（qs 数组/对象 → 空快照）、空快照形状、公开 500 文案与 OPTIONS/HEAD；`RoleTokenTracker.snapshot` 与 `readLedger` 经 `/api/__host/token-usage` 回调 | 见 §35 |
 | `GET/HEAD/OPTIONS /api/push/vapid-key`、`/api/push/health`、`/api/settings/notify`、`/api/settings/tunnel`、`/api/settings/access-token`、`/api/settings/power`、`/api/host/battery`；`GET/HEAD/POST/OPTIONS /api/tunnel/funnel`、`/api/tunnel/ipv6`、`/api/tunnel/sakurafrp`（POST 仍由 Node 写路径回答） | `src/routes/host-read.js`（已删）；push Map/配置、tunnel 客户端、macOS 电源服务与电量探针留在 Node，宿主端口为 `src/routes/host-read-host.js`；通知占位符 helper 在 `src/notify-settings.js` | `native/gateway/src/app/host_read.rs`：10 条路径与逐路由 OPTIONS `Allow`、推送健康 DTO（失败分类、`sha256:` 端点指纹）、notify origin 掩码、access-token 掩码、`canEdit` 本地性判定与 `safeErrorHandler` 映射；运行时事实经 `/api/__host/host-read` 回调 | 见 §36 |
+| `GET/HEAD/OPTIONS /api/sessions/:id/turn-ledger`、`GET/HEAD/POST/OPTIONS /api/sessions/:id/turn-hooks/codex-trust` | `src/turn-ledger/runtime.js` 的 `mountRoutes`/`launchFor`（已删，199 → 191 行）；`launches` 表、TurnLedger 记录与 hook 安装器留在 Node，宿主端口为 `src/routes/turn-ledger-host.js` | `native/gateway/src/app/turn_ledger.rs`：路径匹配（含解码后的 `:id`）、`SID_RE` 闸门、409、快照 DTO（字段顺序、`liveness` 投影、`reason` 回退、`lastEventAt \|\| null`）与 502 映射；原始记录与 codex trust/grant RPC 经 `/api/__host/turn-ledger` 回调 | 32 条请求：27 条逐字节一致，5 条预期差异单独校验 5/5（见 §38） |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -2122,4 +2123,90 @@ op 是 `files`，入参 `{op,path,session}`，只回原料 `{ok,dir,entries}`（
 - multipart 的 disposition 参数解析覆盖良构头（含引号、`filename*` 扩展值）；busboy 对
   畸形参数会整段跳过，这里按观测到的错误表对齐，未逐个复刻畸形参数的边界。
 - 与 §9 一样，前门只在内部端口上以回环身份被 Node 调用；`/api/__host/file-transfer`
+  不是公开 API。与前几批一致，大写 `/API/...` 前缀不再被 claim。
+
+## 38. 终端轮次账本诊断路由迁入 Rust（2026-11-11）
+
+`src/turn-ledger/runtime.js` 的 `mountRoutes` 最后三条路由 —— `GET|HEAD|OPTIONS
+/api/sessions/:id/turn-ledger`、`GET|HEAD /api/sessions/:id/turn-hooks/codex-trust`、
+`POST /api/sessions/:id/turn-hooks/codex-trust` —— 原先由该文件里的 `launchFor` 与
+内联 handler 回答。三条的答案都来自 Node 进程内状态：`launches` 表（终端的
+`codexHome`/`cwd`/`cli`）、TurnLedger 的每会话记录、以及 hook 安装器打到
+`codex app-server` 的 JSON-RPC。因此路由匹配、解码后的 `:id`、`SID_RE` 闸门、409、
+快照 DTO 与错误映射进前门（`native/gateway/src/app/turn_ledger.rs`），只有这三份原始
+材料经宿主端口回调。
+
+### 逐路由语义
+
+- `GET /api/sessions/:id/turn-ledger`：答 `{shadow:true, launch, snapshot}`，`launch`
+  是 `launches[id] || null`（不校验 `SID_RE`，与退役 handler 一致）；`snapshot` 由
+  `TurnLedger#snapshot` 的形状重建：`sessionId, epoch, cli, cliSessionId, cliPid,
+  ownership, liveness, turnId, state, evidence, reason, boundary, pendingUserInput,
+  backgroundPending, stopPending, promptHead, needsReview, lastEventAt,
+  lastTransitionId`（`JSON.stringify` 的键顺序）。无记录时 `snapshot` 为 `null`。
+- `liveness` 是 `projectLiveness(ownership)`：`running` → `{active,
+  turn_ledger_running}`，`yielding`/`ended` → `{inactive, turn_ledger_yielding|
+  turn_ledger_ended}`，其它 → `{unknown, turn_ledger_no_evidence}`。
+- `reason = state === 'E' ? (boundary || 'unknown-interruption') : null`；
+  `lastEventAt` 按 `rec.lastEventAt || null` 归一化（`0`、`null`、缺省都是 `null`）；
+  `stopPending = !!rec.stop`。
+- `GET|HEAD|POST /api/sessions/:id/turn-hooks/codex-trust`：先取 launch，`SID_RE`
+  （`^[A-Za-z0-9_.-]{1,128}$`）不通过或 `launch.cli !== 'codex'` → 409
+  `{"error":"not a launched codex terminal"}`（与退役 `launchFor` 相同，且不合格的
+  会话根本不会打到宿主端口）。通过后 `GET` 读信任态、`POST` 授予信任，installer 抛错
+  → 502 `{"error":<message>}`。
+- `HEAD` 由 GET 路由回答；`OPTIONS`：`/turn-ledger` 为 `GET,HEAD`，`/turn-hooks/
+  codex-trust` 为 `GET,HEAD,POST`（Express 按同路径注册顺序收集）。路径匹配同 Express：
+  不区分大小写、允许一个结尾 `/`、`:id` 只匹配一个非空段并按 `decodeURIComponent`
+  解码（畸形转义保留字面量）。
+
+### 宿主端口
+
+`src/routes/turn-ledger-host.js`（95 行）挂在 `POST /api/__host/turn-ledger`，沿用
+§31–§37 的回环约定（PROXY v1 回环行、`isLocalRequest`、非回环 404、超时、不重试）。
+三个 op，全部只回原料：
+
+| op | 入参 | 回答 |
+|---|---|---|
+| `ledger` | `{sessionId}` | `{ok:true, launch, record}`（`record` 是 TurnLedger 的原始字段，未投影） |
+| `launch` | `{sessionId}` | `{ok:true, launch}`（供 trust 路由自己判 409） |
+| `trust` | `{write, codexHome, cwd}` | `{ok:true, value}` 或 `{ok:false, message}` |
+
+`record` 是 `TurnLedger` 新增的唯一读取口（`src/turn-ledger/ledger.js`，+18 行）：
+返回 `stopPending: !!rec.stop` 的扁平记录，不含 `liveness`/`reason` 投影——那两项现在
+由 Rust 计算。trust 的两个调用不重新查表，前门把已校验的 `codexHome`/`cwd` 直接下发。
+
+### 差分与集成
+
+- `native/gateway/tests/turn_ledger.rs`（657 行，9 个用例）：ledger 信封与快照投影
+  （逐字节）、未知会话/无记录时的 `null`、三种 409（未知 / claude / 含 `/` 的 id 且
+  零宿主调用）、脚本化 trust/grant 与逐字节宿主调用、
+  `{"op":"trust","write":false,"codexHome":"/h/s1","cwd":"/w/s1"}` 的精确载荷、502 与
+  宿主不可达 500、`OPTIONS` 的 `Allow`、`HEAD` 与 gzip、解码后的 id、未注册形状转发、
+  认证闸门 403。
+- `docs/rust-migration/differential/turn-ledger.js`（270 行）：Node 侧挂冻结 oracle
+  （`tests/helpers/legacy-turn-ledger-routes.js`，45 行，退役 handler 的逐字副本）与
+  一颗真实 `TurnLedger`（9 条 spool 事件，覆盖进行中 / 有边界异常结束 / 无边界异常结束 /
+  已停止四态）；Rust 侧是前门 + 按 PROXY v1 接线的宿主桩，桩里挂真实的
+  `createTurnLedgerHost` 与另一颗同种子 `TurnLedger`。32 条请求：27 条逐字节一致，5 条
+  预期差异单独校验 5/5（`POST /turn-ledger`、`DELETE /turn-hooks/codex-trust`、
+  空 `:id`、多一段路径 —— oracle 404 / 前门转发；`/API/...` 大写前缀 —— oracle 200 /
+  前门转发）。codex trust 两侧都不启动真实 CLI，RPC 由同一张脚本表回答（含一个抛错
+  项）。
+
+### 删除面
+
+`src/turn-ledger/runtime.js` 的 `mountRoutes` 与 `launchFor` 共 −29 行（文件 199 → 191
+行，另 +21 行为 `launch`/`record`/`trust` 三个访问器与注释）；`src/turn-ledger/ledger.js`
++18 行（`record`）；新增宿主端口 95 行；`server.js` +1 行（require 与挂载替换）。
+净 Node +85 行 —— 这一组的路由本身只有三条 handler，宿主端口与 `record` 的代码量超过
+被删的部分，收益在所有权而不在行数：路径/`SID_RE`/409/DTO/502 都在前门。Rust：
+`app/turn_ledger.rs` 427 行（含 4 个单测）、`mod.rs` +11。
+
+### 已知边界
+
+- 快照是“重建”而不是“搬移”：`TurnLedger#snapshot` 仍留在 Node（其他宿主代码在读），
+  Rust 按同一份字段表重新组装；差分用冻结 oracle 的真实 `snapshot` 与“真实 `record`
+  → Rust 投影”逐字节比对，两个实现一旦漂移就会红。
+- 与 §9 一样，前门只在内部端口上以回环身份被 Node 调用；`/api/__host/turn-ledger`
   不是公开 API。与前几批一致，大写 `/API/...` 前缀不再被 claim。

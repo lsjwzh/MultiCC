@@ -438,6 +438,47 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the terminal turn-ledger diagnostics
+  // (src/routes/turn-ledger-host.js, native/gateway/src/app/turn_ledger.rs).
+  // The script carries the launch table, the raw ledger records and the two
+  // trust answers; every call is appended so the tests can assert the exact
+  // op and session the front door sent, and that a refusal never reached the
+  // trust op.
+  if (route === '/api/__host/turn-ledger' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'turn-ledger-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      const tl = script.turnLedger || {};
+      const launches = tl.launches || {};
+      const records = tl.records || {};
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (input.op === 'ledger') {
+        return send({
+          ok: true,
+          launch: launches[input.sessionId] || null,
+          record: Object.prototype.hasOwnProperty.call(records, input.sessionId) ? records[input.sessionId] : null,
+        });
+      }
+      if (input.op === 'launch') {
+        return send({ ok: true, launch: launches[input.sessionId] || null });
+      }
+      if (input.op === 'trust') {
+        const answer = input.write === true ? (tl.grant || { ok: false }) : (tl.trust || { ok: false });
+        return send(answer);
+      }
+      send({ ok: false });
+    });
+    return;
+  }
   if (route === '/echo' && req.method === 'POST') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
