@@ -42,6 +42,7 @@ async function setup(t) {
   const sessionId = randomUUID();
   let turn = 0;
   let background = false;
+  let acknowledgedAnswers = 0;
   // 模拟 turn-engine：每个回合重建 env，并叠加保险箱，再 ensure + send。
   const sendTurn = text => {
     const cfg = {
@@ -54,9 +55,14 @@ async function setup(t) {
     };
     turn += 1;
     runtime.ensure('sdk', cfg);
-    return runtime.send('sdk', text, () => {});
+    return runtime.send('sdk', text, event => {
+      // The test host accepts the answer-history boundary just like turn-engine.
+      // A held turn cannot release until its answer has been acknowledged.
+      if (event.acknowledge) { event.acknowledge(); acknowledgedAnswers += 1; }
+    });
   };
   return { ...fixture, runtime, spawns: () => laneLedger.rows(spawnFile), sendTurn,
+    acknowledgedAnswers: () => acknowledgedAnswers,
     setBackground: v => { background = v; } };
 }
 
@@ -121,6 +127,7 @@ test('live background work defers the vault restart instead of refusing the turn
   // 后台工作是回合的一部分：回答先被持有，进程保留（重启顺延到下一个回合边界）。
   const held = f.sendTurn('turn while background runs');
   await until(() => f.runtime.heldTurn('sdk')?.held === true, 'the answer was not held');
+  assert.equal(f.acknowledgedAnswers(), 1, 'the test host acknowledged the held answer');
   assert.equal(f.spawns().length, 1, 'background work keeps its process');
 
   f.setBackground(false);

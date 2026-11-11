@@ -127,9 +127,12 @@ mod tests {
 
     fn temp(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "multicc-presets-{tag}-{}-{:?}",
+            "multicc-presets-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir

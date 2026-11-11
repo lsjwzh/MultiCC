@@ -317,14 +317,18 @@ mod tests {
         std::fs::write(projects.join("a-project/ignored.txt"), "").unwrap();
         let mut files = Vec::new();
         collect_jsonl(&projects, &mut files);
-        let names: Vec<&str> = files
-            .iter()
-            .map(|file| file.rsplit('/').next().unwrap())
-            .collect();
+        let paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
         // "a-project" sorts before "b-project"; inside b-project "a.jsonl"
         // sorts before the directory "nested" ('a' < 'n'), so the nested file
         // follows it — the Node loop recurses at the name's sorted position.
-        assert_eq!(names, vec!["m.jsonl", "a.jsonl", "z.jsonl"]);
+        assert_eq!(
+            paths,
+            vec![
+                projects.join("a-project/m.jsonl"),
+                projects.join("b-project/a.jsonl"),
+                projects.join("b-project/nested/z.jsonl"),
+            ]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

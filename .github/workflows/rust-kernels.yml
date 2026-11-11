@@ -48,7 +48,7 @@ jobs:
       # Rust 前门（native/gateway）：三个平台的启动入口都经它启动 node，集成测试全平台跑。
       - name: 测试 Rust 前门
         shell: bash
-        run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-gateway
+        run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-gateway --no-fail-fast
       - name: Test desktop agent control and validation
         shell: bash
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-desktop-agent
