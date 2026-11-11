@@ -477,13 +477,16 @@ rustTest('Rust 传输的有效 SSE 帧续期空闲预算而无需 Node 再解析
 });
 
 rustTest('Rust 流计时器在首条有效帧前和进度后分别归因，并关闭上游', async t => {
+  // This budget includes admission and dialing. Leave startup room on shared
+  // runners so both cases reach the upstream whose stream teardown is tested.
+  const stallTimeoutMs = 1500;
   for (const progress of [false, true]) {
     let closed;
     const upstreamClosed = new Promise(resolve => { closed = resolve; });
     const frame = sse({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'x' } });
     const h = await harness(t, {
       authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 't1', routeAttemptId: 'r1',
-        connectTimeoutMs: 1000, stallTimeoutMs: 180, requestTimeoutMs: 3000 } }),
+        connectTimeoutMs: 1000, stallTimeoutMs, requestTimeoutMs: 8000 } }),
       upstream: (_req, res) => {
         res.once('close', closed);
         res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -496,7 +499,12 @@ rustTest('Rust 流计时器在首条有效帧前和进度后分别归因，并�
     // Either transport surface must preserve the same timeout and cleanup facts.
     const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody).catch(() => null);
     if (res) { assert.equal(res.status, 200); await res.text().catch(() => {}); }
-    await Promise.race([upstreamClosed, new Promise((_, reject) => setTimeout(() => reject(new Error('upstream not closed')), 2500))]);
+    let closeTimer;
+    try {
+      await Promise.race([upstreamClosed, new Promise((_, reject) => {
+        closeTimer = setTimeout(() => reject(new Error(`upstream not closed; progress=${progress}; requests=${h.requests.length}; outcomes=${JSON.stringify(h.outcomes.map(o => o.errorCode))}`)), 2500);
+      })]);
+    } finally { clearTimeout(closeTimer); }
     assert.equal(h.requests.length, 1);
     assert.equal(h.outcomes.length, 1);
     assert.equal(h.outcomes[0].errorCode, progress ? 'stream_idle_timeout' : 'response_stalled_before_response');
