@@ -105,6 +105,38 @@ String? unattendedRemainingLabel(UnattendedState? state, int nowMs) {
   return remaining == null ? null : unattendedRemainingText(remaining);
 }
 
+/// 自动重试的钟点（本地时区 HH:MM）；跨时区/夏令时都跟设备走。
+String unattendedRetryTimeText(int epochMs) {
+  final at = DateTime.fromMillisecondsSinceEpoch(epochMs);
+  String two(int value) => value.toString().padLeft(2, '0');
+  return '${two(at.hour)}:${two(at.minute)}';
+}
+
+/// active 且 retryAt 在未来时，重试那一句（不含剩余时间）；否则 null。
+///
+/// 不到 60 秒时只说「无人值守 · 即将自动重试」—— 钟点已经没信息量了。
+String? unattendedRetryText(UnattendedState? state, int nowMs) {
+  if (state == null || !state.retryPending(nowMs)) return null;
+  if (state.retrySoon(nowMs)) {
+    return '${t('unattended')} · ${t('unattendedRetrySoon')}';
+  }
+  final time = unattendedRetryTimeText(state.retryAt);
+  final n = '${state.consecutiveFaults}';
+  return state.retryCategory == UnattendedState.retryCategoryCapacity
+      ? t('unattendedRetryCapacity', {'time': time, 'n': n})
+      : t('unattendedRetryFault', {'time': time, 'n': n});
+}
+
+/// 横幅/面板共用的一整句：重试说明 + 「剩余 X」（有截止时间时）。
+String? unattendedRetryLine(UnattendedState? state, int nowMs) {
+  final retry = unattendedRetryText(state, nowMs);
+  if (retry == null) return null;
+  final remaining = unattendedRemainingLabel(state, nowMs);
+  return remaining == null
+      ? retry
+      : '$retry · ${t('unattendedRemaining', {'remaining': remaining})}';
+}
+
 /// 判断标准为空，或短到没有约束力（如「完成」「ok」）都算不够可验证。
 bool unattendedCriteriaInsufficient(List<String> criteria) {
   if (criteria.isEmpty) return true;
@@ -126,12 +158,18 @@ bool unattendedPrecheckPasses(
 
 /// 剩余时间每 30 秒刷新一次：只在 active 时挂一个 periodic timer，失活和
 /// dispose 时都取消。横幅、悬浮球、面板各持一个（生命周期与各自 widget 绑定）。
+///
+/// 自动重试另挂**一个** one-shot timer 到 retryAt：到点必须立刻重画一次
+/// （30 秒粒度会让「即将自动重试」多挂最多 30 秒）。换状态/换 retryAt/失活/
+/// dispose 都取消。
 mixin UnattendedRemainingTicker<T extends StatefulWidget> on State<T> {
   int get unattendedNowMs;
 
   Timer? _remainingTimer;
+  Timer? _retryTimer;
+  int? _retryAt;
 
-  void syncUnattendedRemainingTicker({required bool active}) {
+  void syncUnattendedRemainingTicker({required bool active, int retryAt = 0}) {
     if (active) {
       _remainingTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
         if (mounted) setState(() {});
@@ -140,12 +178,31 @@ mixin UnattendedRemainingTicker<T extends StatefulWidget> on State<T> {
       _remainingTimer?.cancel();
       _remainingTimer = null;
     }
+    _syncRetryTimer(active ? retryAt : 0);
+  }
+
+  void _syncRetryTimer(int retryAt) {
+    final target = retryAt > unattendedNowMs ? retryAt : null;
+    if (target == _retryAt) return;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _retryAt = target;
+    if (target == null) return;
+    _retryTimer = Timer(Duration(milliseconds: target - unattendedNowMs), () {
+      // 到点后清掉排期标记：下一次 build 若仍未来（注入时钟未推进）会重排，
+      // 真实时钟下 retryAt 已过期则自然不再挂。
+      _retryTimer = null;
+      _retryAt = null;
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _remainingTimer?.cancel();
     _remainingTimer = null;
+    _retryTimer?.cancel();
+    _retryTimer = null;
     super.dispose();
   }
 }
@@ -350,8 +407,11 @@ class _UnattendedComposerBannerState extends State<UnattendedComposerBanner>
   Widget build(BuildContext context) {
     final provider = widget.provider;
     final state = provider.unattended;
-    // 只在 active 时挂 30 秒刷新；失活/销毁由 mixin 取消。
-    syncUnattendedRemainingTicker(active: state?.isActive == true);
+    // 只在 active 时挂 30 秒刷新 + retryAt 的一次性定时器；失活/销毁由 mixin 取消。
+    syncUnattendedRemainingTicker(
+      active: state?.isActive == true,
+      retryAt: state?.retryAt ?? 0,
+    );
     if (state == null) return const SizedBox.shrink();
     final active = state.isActive;
     final resumable =
@@ -361,10 +421,18 @@ class _UnattendedComposerBannerState extends State<UnattendedComposerBanner>
     final busy = provider.unattendedBusy;
     final evaluating = state.evaluating;
     final remaining = unattendedRemainingLabel(state, unattendedNowMs);
+    final retryLine = unattendedRetryLine(state, unattendedNowMs);
+    // 故障恢复等待中换成克制的琥珀色（不报警），状态色其余时候不变。
+    final retrying = retryLine != null;
+    final tint = retrying ? AppColors.amber : style.color;
+    final tintBackground = retrying
+        ? const Color(0xFFfff8eb)
+        : style.background;
     final main = active
-        ? (remaining != null
-                  ? t('unattendedBannerActive', {'remaining': remaining})
-                  : t('unattendedStatusActive')) +
+        ? (retryLine ??
+                  (remaining != null
+                      ? t('unattendedBannerActive', {'remaining': remaining})
+                      : t('unattendedStatusActive'))) +
               (evaluating ? ' · ${t('unattendedJudging')}' : '')
         : t(style.labelKey);
     final reason = active ? '' : unattendedBannerReason(state);
@@ -374,13 +442,15 @@ class _UnattendedComposerBannerState extends State<UnattendedComposerBanner>
             height: 12,
             child: CircularProgressIndicator(
               strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(style.color),
+              valueColor: AlwaysStoppedAnimation<Color>(tint),
             ),
           )
         : Icon(
-            active ? Icons.smart_toy_rounded : style.icon,
+            retrying
+                ? Icons.schedule_rounded
+                : (active ? Icons.smart_toy_rounded : style.icon),
             size: active ? 15 : 14,
-            color: style.color,
+            color: tint,
           );
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -389,8 +459,8 @@ class _UnattendedComposerBannerState extends State<UnattendedComposerBanner>
         width: double.infinity,
         padding: EdgeInsets.fromLTRB(10, active ? 6 : 3, 6, active ? 6 : 3),
         decoration: BoxDecoration(
-          color: style.background,
-          border: Border.all(color: style.color.withValues(alpha: 0.35)),
+          color: tintBackground,
+          border: Border.all(color: tint.withValues(alpha: 0.35)),
           borderRadius: BorderRadius.circular(10),
         ),
         child: Row(
@@ -401,10 +471,11 @@ class _UnattendedComposerBannerState extends State<UnattendedComposerBanner>
               child: Text(
                 main,
                 key: const ValueKey('unattended-banner-text'),
-                maxLines: 1,
+                // 重试那一句比「剩余 X」长得多，窄屏给两行，别把第 n 次截掉。
+                maxLines: retrying ? 2 : 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: style.color,
+                  color: tint,
                   fontSize: active ? 12.5 : 11.5,
                   fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                 ),
@@ -841,7 +912,10 @@ class _UnattendedSheetState extends State<_UnattendedSheet>
         final busy = widget.provider.unattendedBusy;
         // 预检中所有输入与动作都禁用，第二次点「启动」直接忽略。
         final locked = busy || _checking;
-        syncUnattendedRemainingTicker(active: state?.isActive == true);
+        syncUnattendedRemainingTicker(
+          active: state?.isActive == true,
+          retryAt: state?.retryAt ?? 0,
+        );
         final error =
             _localError.isNotEmpty
             ? _localError
@@ -1367,6 +1441,7 @@ class _UnattendedSheetState extends State<_UnattendedSheet>
     final style = _statusStyle(state?.status);
     final verdict = state?.lastVerdict;
     final remaining = unattendedRemainingLabel(state, unattendedNowMs);
+    final retryLine = unattendedRetryLine(state, unattendedNowMs);
     final progress = state == null
         ? null
         : [
@@ -1409,6 +1484,33 @@ class _UnattendedSheetState extends State<_UnattendedSheet>
                 ),
             ],
           ),
+          // 故障恢复等待中：同样一句「HH:MM 自动重试（第 n 次）」，琥珀色。
+          if (retryLine != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.schedule_rounded,
+                    color: AppColors.amber,
+                    size: 14,
+                  ),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      retryLine,
+                      key: const ValueKey('unattended-retry'),
+                      style: const TextStyle(
+                        color: AppColors.amber,
+                        fontSize: 12,
+                        height: 1.35,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // v2：判定中（verdict 开始到落地）转圈；暂停原因（pausedBy）单列一行。
           if (state != null && state.evaluating)
             Padding(

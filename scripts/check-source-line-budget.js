@@ -208,10 +208,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 实测 3068/164925（名字短一字节），棘轮双向跟到实测值。
   // 2026-11-11 GET /api/providers/limit-history 迁到 Rust 前门：server.js 删掉
   // 该路由的 require 与挂载两行，实测回落到 3066/164657，按棘轮下调。
+  // 2026-11-11 无人值守故障退避：server.js 注入惰性 getRetryNotBefore 端口
+  // （从 Auto 候选/限流缓存读最早的解禁时刻），实测 3073/165078，按棘轮登记。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3066,
-    byteCeiling: 164657,
+    ceiling: 3073,
+    byteCeiling: 165078,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),
@@ -649,9 +651,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // countLines 口径实测 10358/671712，抬一格。
     // 线路出口选择：+3 双语键（airProviderEgressSelectLabel/SelectBody/OpenPlugin），
     // 实测 10364/672445，抬一格。
-    maxLines: 10364,
+    // 无人值守故障恢复退避：+3 双语键（unattendedRetryCapacity/Fault/Soon），中英各 3 行
+    // = +6 行；countLines 口径实测 10370/672985，抬一格。
+    maxLines: 10370,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 672445,
+    maxBytes: 672985,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

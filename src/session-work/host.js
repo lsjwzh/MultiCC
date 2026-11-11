@@ -531,6 +531,7 @@ function createSessionWorkHost(deps = {}) {
       : state.classifyState;
     return {
       classifyState: recoveredClassify,
+      unattended: record?.unattended || null,
       startedAt: state.startedAt,
       endedAt,
       taskId: deps.getChatSession(sessionId)?._currentTaskId || null,

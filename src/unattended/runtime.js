@@ -31,6 +31,8 @@ function createUnattendedRuntime({
   appendMessage = null,
   isRunActive = () => false,
   hasQueuedDeliveries = () => false,
+  // Earliest epoch-ms the provider / Auto pool could accept another turn.
+  getRetryNotBefore = () => null,
   // Boot reconciliation (see host.reconcileStartup): the scheduler says whether
   // an interrupted turn still owns a slot, the task state names the cause.
   getTaskState = () => ({}),
@@ -81,6 +83,33 @@ function createUnattendedRuntime({
         state.stall.consecutiveFaults = 0;
         migrated = true;
       }
+      // v3 durable fault retry: an active record may carry `retryAt`; anything
+      // else is cleared so a stale retry can never fire for a stopped session.
+      if (state.retryAt === undefined) { state.retryAt = null; migrated = true; }
+      if (state.retryCategory === undefined) { state.retryCategory = null; migrated = true; }
+      if (state.status !== 'active') {
+        if (state.retryAt !== null || state.retryCategory !== null) {
+          state.retryAt = null;
+          state.retryCategory = null;
+          migrated = true;
+        }
+      } else {
+        const retryAt = positive(state.retryAt);
+        if (retryAt === null && state.retryAt !== null) {
+          state.retryAt = null;
+          migrated = true;
+        }
+        if (retryAt !== null) {
+          state.retryAt = retryAt;
+          if (state.retryCategory !== 'capacity' && state.retryCategory !== 'fault') {
+            state.retryCategory = 'fault';
+            migrated = true;
+          }
+        } else if (state.retryCategory !== null) {
+          state.retryCategory = null;
+          migrated = true;
+        }
+      }
       if ('maxRounds' in state) {
         delete state.maxRounds;
         migrated = true;
@@ -128,22 +157,24 @@ function createUnattendedRuntime({
     getPendingQuestion: id => userInputSignalHost.pending(id),
     getAuxQueue,
     deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
-    inject: (id, text) => (typeof deliverInjection === 'function'
-      ? deliverInjection(id, text)
-      : waitInjector.injectSystemMsg(id, text, 0)),
+    inject: (id, text, options) => (typeof deliverInjection === 'function'
+      ? deliverInjection(id, text, options)
+      : waitInjector.injectSystemMsg(id, text, 0, { ...options, unattendedSystem: true })),
     withdrawQueued: typeof withdrawQueued === 'function' ? withdrawQueued : null,
     notify: (...args) => triggerPush(...args),
     broadcast: (...args) => chatBroadcast(...args),
     appendMessage: appendMessage ? (id, message) => appendMessage(id, message) : null,
     hasQueuedDeliveries: id => hasQueuedDeliveries(id),
     isRunActive: id => isRunActive(id) === true,
+    getRetryNotBefore: id => getRetryNotBefore(id),
     getTaskState: id => getTaskState(id),
     getSchedulerStatus: id => getSchedulerStatus(id),
     listSessionIds: () => listSessionIds(),
     log: message => logger.log?.(message) || console.log(message),
   });
-  // Re-arm one expiry timer per persisted active session. A restart must still
-  // expire a session whose deadline passes while no turn ever settles.
+  // Re-arm one expiry timer and one retry timer per persisted active session. A
+  // restart must still expire a session whose deadline passes while no turn
+  // settles, and must still retry one whose `retryAt` is due (or past).
   for (const [sessionId, record] of persistedSessions.entries()) {
     if (record && record.unattended && record.unattended.status === 'active') host.rearmTimer(sessionId);
   }

@@ -1111,7 +1111,7 @@ function createChatTurnEngine(deps) {
     // and the supervisor treats that phantom as a host fault. Settle it here
     // instead, through the same single entry a host cancel uses: the kernel owns
     // what `preparation_failed` means (a host-side interruption → the armed
-    // supervisor continues under its fault cap), Node only reports the fact.
+    // supervisor continues under its fault backoff), Node only reports the fact.
     const settlePreparationFailure = async () => {
       if (preparationSettled || !preparationStateActivated) return;
       preparationSettled = true;

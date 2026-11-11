@@ -25,6 +25,10 @@
   });
   // 剩余时间只按 30 秒刷新，且只在 active 时挂表：定时器不许在终态泄漏。
   const TICK_INTERVAL_MS = 30000;
+  // 距离下次自动重试不足一分钟就不报具体时刻，改说「即将自动重试」。
+  const RETRY_SOON_MS = 60000;
+  // setTimeout 的 32 位上限；退避最长 15 分钟，这里只是防御异常帧。
+  const MAX_TIMEOUT_MS = 2147483000;
   // 预检是一次真 Aux 推理，服务端 owns 等待预算（/api/settings/goal 的 precheckWaitMs）。
   // 这里只加一层兜底，别让客户端 15s 的通用预算先把预检掐死。
   const PRECHECK_FALLBACK_WAIT_MS = 180000;
@@ -83,6 +87,9 @@
     let busy = false;
     let precheckBusy = false;
     let tickTimer = null;
+    // 精确到 retryAt 的一次性重画：30 秒的剩余时间表可能还要等十几秒才跳，
+    // 重试那一行不能卡在「HH:MM 自动重试」上。终态/状态变化时立刻清掉。
+    let retryTimer = null;
     const tickMs = Number(opts.tickMs) > 0 ? Number(opts.tickMs) : TICK_INTERVAL_MS;
     // 服务端拥有预检的等待预算（/api/settings/goal 的 precheckWaitMs）。客户端只读
     // 它，再加一点余量，让服务端自己的 AUX_TIMEOUT 先到，而不是被通用 15s 预算掐死。
@@ -159,6 +166,9 @@
     // 是给需要对齐日程的人看的绝对时间。终态隐藏。
     const deadlineLine = el('p', 'unat-deadline');
     deadlineLine.hidden = true;
+    // 故障恢复退避期间，状态块和输入栏上方的 banner 说同一句话：何时、第几次自动重试。
+    const retryLine = el('p', 'unat-retry');
+    retryLine.hidden = true;
     const humanReason = el('p', 'unat-human');
     humanReason.hidden = true;
     // pausedBy（v2）：用户接管 / 输入触发 / 取消，三种暂停原因都落在状态块里。
@@ -166,7 +176,7 @@
     pausedLine.hidden = true;
     const verdictLine = el('p', 'unat-verdict');
     verdictLine.hidden = true;
-    statusCard.append(statusLine, deadlineLine, humanReason, pausedLine, verdictLine);
+    statusCard.append(statusLine, deadlineLine, retryLine, humanReason, pausedLine, verdictLine);
 
     const goalField = el('label', 'unat-field');
     goalField.append(el('span', 'unat-label', tr('unattendedGoal')));
@@ -331,7 +341,53 @@
       return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
     }
 
+    // ── 故障恢复自动重试 ────────────────────────────────────────────────────
+    // 上游限流 / 线路暂不可用 / 准备失败时，监督器不再「3 次即放弃」，而是退避后
+    // 自动重试。状态帧给出 retryAt（下次重试的 epoch ms）与 retryCategory
+    // （capacity = 额度/线路/预检失败，fault = 其它故障）。active 且 retryAt 仍在
+    // 未来时，banner 与状态块必须说明「何时、第几次重试」，否则用户只看到
+    // 「无人值守进行中」却什么都没发生。字段缺失（老服务端）时 retryAt=0，走老文案。
+    function retryAtMs() {
+      const raw = state && Number(state.retryAt);
+      return Number.isFinite(raw) && raw > 0 ? raw : 0;
+    }
+
+    function retryPending() {
+      return !!(state && state.status === 'active' && retryAtMs() > Date.now());
+    }
+
+    function retryCategoryKey() {
+      return state && state.retryCategory === 'capacity'
+        ? 'unattendedRetryCapacity'
+        : 'unattendedRetryFault';
+    }
+
+    // n = stall.consecutiveFaults；缺字段时按「第 1 次」说，别给用户看「第 0 次」。
+    function retryAttempt() {
+      const n = Number(state && state.stall && state.stall.consecutiveFaults);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+    }
+
+    function retryText() {
+      const at = retryAtMs();
+      const n = retryAttempt();
+      let line;
+      if (at - Date.now() <= RETRY_SOON_MS) {
+        // unattendedRetrySoon（即将自动重试 / retrying shortly）本身就是完整短语；
+        // 直接塞进句子的 {time} 会把动词说两遍，所以拼好后折掉重复的那一段。
+        const soon = tr('unattendedRetrySoon');
+        line = tr(retryCategoryKey(), { time: soon, n })
+          .split(soon + ' 自动重试').join(soon)
+          .split('retrying at ' + soon).join(soon);
+      } else {
+        line = tr(retryCategoryKey(), { time: clockText(at), n });
+      }
+      const remaining = remainingText();
+      return remaining ? line + ' · ' + tr('unattendedRemaining', { remaining }) : line;
+    }
+
     function activeBannerText() {
+      if (retryPending()) return retryText();
       const remaining = remainingText();
       return remaining
         ? tr('unattendedBannerActive', { remaining })
@@ -356,6 +412,11 @@
       const clock = active && deadlineMs() ? clockText(deadlineMs()) : '';
       deadlineLine.hidden = !clock;
       deadlineLine.textContent = clock ? tr('unattendedDeadline', { time: clock }) : '';
+      const retry = active && retryPending() ? retryText() : '';
+      retryLine.hidden = !retry;
+      retryLine.textContent = retry;
+      // 30 秒表也会跨过 retryAt：文本与琥珀色必须一起撤掉，不能只换字还在闪。
+      banner.classList.toggle('unat-banner-retry', active && retryPending());
       if (active) bannerText.textContent = activeBannerText();
       renderFab();
     }
@@ -368,6 +429,26 @@
         win.clearInterval(tickTimer);
         tickTimer = null;
       }
+    }
+
+    function clearRetryTimer() {
+      if (retryTimer) {
+        win.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    }
+
+    // retryAt 到了就立刻重画一次，把「HH:MM 自动重试 / 即将自动重试」换回正常文案；
+    // 只挂一个一次性表，状态每次变化都重算（终态/无 retryAt 直接清掉）。
+    function syncRetryTimer() {
+      clearRetryTimer();
+      if (!state || state.status !== 'active') return;
+      const delay = retryAtMs() - Date.now();
+      if (!(delay > 0)) return;
+      retryTimer = win.setTimeout(() => {
+        retryTimer = null;
+        render(false);
+      }, Math.min(delay + 20, MAX_TIMEOUT_MS));
     }
 
     function position() {
@@ -485,6 +566,9 @@
       syncInputLock(active);
       banner.classList.toggle('unat-banner-active', active);
       banner.classList.toggle('unat-banner-paused', !active && resumable);
+      // 退避重试期间换成琥珀色：仍然是「进行中」（绿色）之外的第三种平静状态，
+      // 不能让用户把它当成正常推进，也不能红得像报错。
+      banner.classList.toggle('unat-banner-retry', active && retryPending());
       bannerBtn.disabled = busy;
       if (active) {
         bannerText.textContent = activeBannerText();
@@ -519,6 +603,7 @@
       renderActions();
       renderBanner();
       syncTimer();
+      syncRetryTimer();
       position();
       if (syncForm) {
         goalInput.value = state && state.goal ? String(state.goal) : '';
@@ -1022,6 +1107,7 @@
           win.clearInterval(tickTimer);
           tickTimer = null;
         }
+        clearRetryTimer();
         try {
           fab.remove();
           root.remove();

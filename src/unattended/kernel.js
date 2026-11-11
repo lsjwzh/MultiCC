@@ -58,11 +58,25 @@ function tag() {
   return native().unattendedTag();
 }
 
+// The fixed fault-recovery instruction (without the marker prefix). The same
+// literal drives the injected message and the scheduler's recovery detection.
+function faultInstruction() {
+  return native().unattendedFaultInstruction();
+}
+
 // The one decision for every turn end (`evaluate | fault_continue |
 // needs_human | pause | none`). The fault policy is shared inside Rust
 // (`decide_fault`), so there is deliberately no second JS entry for it.
 function decideTurnEnd(input) {
   return JSON.parse(native().unattendedDecideTurnEnd(JSON.stringify(input || {})));
+}
+
+function selectQueued(input) {
+  return JSON.parse(native().unattendedSelectQueued(JSON.stringify(input || {})));
+}
+
+function deferEvaluation(input) {
+  return JSON.parse(native().unattendedDeferEvaluation(JSON.stringify(input || {})));
 }
 
 module.exports = {
@@ -73,8 +87,11 @@ module.exports = {
   deadlineExpired,
   decide,
   decideTurnEnd,
+  deferEvaluation,
+  faultInstruction,
   normalizeConfig,
   parseVerdict,
+  selectQueued,
   tag,
   // Convenience for callers that only need the literal.
   get TAG() { return tag(); },

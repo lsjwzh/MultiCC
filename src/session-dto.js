@@ -89,6 +89,10 @@ function unattendedDto(value) {
   const pausedBy = value.pausedBy === 'user' || value.pausedBy === 'input' || value.pausedBy === 'cancel'
     ? value.pausedBy
     : null;
+  const retryAt = Math.max(0, Number(value.retryAt) || 0) || null;
+  const retryCategory = value.retryCategory === 'capacity' || value.retryCategory === 'fault'
+    ? value.retryCategory
+    : null;
   return {
     status,
     goal: nullableString(value.goal, 2000) || '',
@@ -101,6 +105,8 @@ function unattendedDto(value) {
     lastVerdict,
     history,
     stall,
+    retryAt,
+    retryCategory,
     evaluating: value.evaluating === true,
     pausedBy,
   };

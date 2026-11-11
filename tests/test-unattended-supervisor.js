@@ -25,6 +25,7 @@ function recordingKernel() {
   const calls = { prompts: [], decisions: [], turnEnds: [] };
   const kernel = {
     tag: () => nativeKernel.tag(),
+    deferEvaluation: input => nativeKernel.deferEvaluation(input),
     normalizeConfig: input => nativeKernel.normalizeConfig(input),
     clampDuration: input => nativeKernel.clampDuration(input),
     armDeadline: input => nativeKernel.armDeadline(input),
@@ -42,6 +43,7 @@ function recordingKernel() {
       calls.turnEnds.push(input);
       return nativeKernel.decideTurnEnd(input);
     },
+    faultInstruction: () => nativeKernel.faultInstruction(),
   };
   return { kernel, calls };
 }
@@ -62,11 +64,12 @@ function harness({
   clock = 1234,
   injectResult = null,
   withdrawQueued = null,
+  getRetryNotBefore = () => null,
 } = {}) {
   const records = new Map([[record.id, record]]);
   for (const peer of peers) records.set(peer.id, { type: null, ...peer });
-  const calls = { persist: [], broadcast: [], notify: [], inject: [], deliver: [], taskState: [],
-    enqueue: [], append: [], fallback: [], withdraw: [] };
+  const calls = { persist: [], broadcast: [], notify: [], inject: [], injectOptions: [], deliver: [],
+    taskState: [], enqueue: [], append: [], fallback: [], withdraw: [] };
   const logs = [];
   const { kernel, calls: kernelCalls } = recordingKernel();
   const failures = { persist: false, inject: false, persistFor: new Set() };
@@ -99,9 +102,10 @@ function harness({
       },
     } : null),
     deliver: async (id, text, options) => calls.deliver.push({ id, text, options }),
-    inject: (id, text) => {
+    inject: (id, text, options) => {
       if (failures.inject) throw new Error('injector unavailable');
       calls.inject.push({ id, text });
+      calls.injectOptions.push({ id, text, options });
       return injectResult;
     },
     withdrawQueued: typeof withdrawQueued === 'function'
@@ -118,12 +122,13 @@ function harness({
       calls.append.push({ id, message: { ...message } });
       return true;
     },
-    hasQueuedDeliveries: async () => hasQueued,
-    isRunActive: () => busy,
+    hasQueuedDeliveries: async () => typeof hasQueued === 'function' ? hasQueued() : hasQueued,
+    isRunActive: () => (typeof busy === 'function' ? busy() : busy),
     getTaskState: id => (typeof taskState === 'function'
       ? taskState(id)
       : (taskState || records.get(id)?.taskState || {})),
     getSchedulerStatus: async id => (typeof schedulerStatus === 'function' ? schedulerStatus(id) : schedulerStatus),
+    getRetryNotBefore: id => (typeof getRetryNotBefore === 'function' ? getRetryNotBefore(id) : getRetryNotBefore),
     listSessionIds: () => [...records.keys()],
     now: () => currentClock,
     setTimeout: (fn, delay) => {
@@ -287,7 +292,8 @@ test('a pending question is answered immediately through the delivery path, tagg
   assert.equal(result.action, 'inject');
   assert.equal(f.calls.inject.length, 0);
   assert.deepEqual(f.calls.deliver, [{ id: 's1', text: `${TAG} B`,
-    options: { userInputRequestId: 'usrq-1', unattendedSystem: true, system: true } }]);
+    // Answering the pending wait is a recovery: it must outrank the FIFO backlog.
+    options: { userInputRequestId: 'usrq-1', unattendedSystem: true, unattendedRecovery: true, system: true } }]);
   assert.deepEqual(f.kernelCalls.prompts[0].pendingQuestion,
     { requestId: 'usrq-1', question: 'Pick one', options: ['A', 'B'] });
 });
@@ -401,7 +407,7 @@ test('resume clears pausedBy and evaluates when idle, defers when a turn is live
   assert.equal(queued.calls.enqueue.length, 0);
 });
 
-test('a D settle with staged FIFO defers and releases the held push; W still evaluates', async () => {
+test('D 有 FIFO 时推迟判定，W 必须先解决等待', async () => {
   const f = harness({ hasQueued: true });
   await f.arm();
   const pushes = [];
@@ -416,13 +422,31 @@ test('a D settle with staged FIFO defers and releases the held push; W still eva
   assert.deepEqual(pushes, ['fallback'], 'the held classic push is released');
   assert.equal(f.host.get('s1').rounds, 0);
 
-  // W is the pending-question settle: the aux has to answer it even with a
-  // backlog staged (that backlog is gated behind the answer by the scheduler).
-  const w = harness({ hasQueued: true });
+  // W 必须先解决等待，不因 FIFO 积压跳过判定。
+  const w = harness({ hasQueued: true, taskState: { classifyState: 'W' } });
   await w.arm();
   await w.host.onTurnEnd('s1', { kind: 'settle', assistantText: 'which?', settle: 'W' });
   await tick();
   assert.equal(w.calls.enqueue.length, 1);
+  assert.equal(w.calls.inject.length, 1);
+});
+
+test('辅助判定期间出现 FIFO 时丢弃过时的达成结论', async () => {
+  let queued = false;
+  const f = harness({
+    hasQueued: () => queued,
+    reply: async () => {
+      queued = true;
+      return '{"verdict":"achieved","reason":"旧目标完成"}';
+    },
+  });
+  await f.arm();
+  const result = await f.host.evaluate('s1', { assistantText: '旧回合完成' });
+  assert.equal(result.action, 'none');
+  assert.equal(f.host.get('s1').status, 'active');
+  assert.equal(f.host.get('s1').evaluating, false);
+  assert.equal(f.host.get('s1').rounds, 0);
+  assert.equal(f.calls.inject.length, 0);
 });
 
 test('shouldHoldPush only holds when the supervisor will really evaluate', async () => {
@@ -491,33 +515,200 @@ test('fault continuation injects the fixed resume instruction without an aux cal
   assert.match(lastTrace(f).message.content, /故障后自动继续（第 1 次）$/);
 });
 
-test('a fault that hits the limit notifies a human instead of injecting', async () => {
+test('a fault streak backs off 0/60/120/300/600/900s and never needs a human', async () => {
+  // The incident: mid-stream 429s used to stop after three faults. A rate
+  // limit heals, so a streak only ever backs off; the wall-clock deadline is
+  // the only bound.
   const f = harness();
-  await f.arm();
+  await f.arm({ maxDurationMinutes: 60 });
+  const delays = [0, 60_000, 120_000, 300_000, 600_000, 900_000, 900_000];
+  let injects = 0;
+  for (let index = 0; index < delays.length; index += 1) {
+    const faults = index + 1;
+    const at = f.clock();
+    const out = await f.host.onTurnEnd('s1', { kind: 'fault', retryScheduled: false });
+    const delay = delays[index];
+    assert.equal(out.faults, faults);
+    assert.equal(f.host.get('s1').stall.consecutiveFaults, faults);
+    assert.equal(f.host.get('s1').status, STATUS.ACTIVE, 'recovery outranks giving up');
+    if (delay === 0) {
+      assert.equal(out.action, 'fault_continue');
+      assert.equal(out.retryAt, null);
+      injects += 1;
+      assert.equal(f.calls.inject.length, injects);
+      assert.match(lastTrace(f).message.content,
+        new RegExp(`故障后自动继续（第 ${faults} 次）$`));
+    } else {
+      assert.equal(out.action, 'fault_wait');
+      assert.equal(out.retryAt, at + delay);
+      assert.equal(out.retryCategory, 'fault');
+      assert.equal(f.host.get('s1').retryAt, at + delay);
+      assert.equal(f.calls.inject.length, injects, 'a delayed retry waits for the timer');
+      assert.equal(f.host.stats().retryTimers, 1);
+      assert.match(lastTrace(f).message.content,
+        new RegExp(`故障后将在 \\d{2}:\\d{2} 自动重试（第 ${faults} 次）$`));
+      f.advance(delay);
+      assert.equal(f.fireDueTimers(), 1, 'the one retry timer fires');
+      injects += 1;
+      assert.equal(f.calls.inject.length, injects);
+      assert.equal(f.calls.injectOptions.at(-1).options.unattendedRecovery, true);
+      assert.equal(f.host.get('s1').retryAt, null, 'the consumed retry is cleared');
+      assert.equal(f.host.stats().retryTimers, 0);
+    }
+    const notices = f.calls.notify.filter(row => row.type === 'waiting');
+    assert.equal(notices.length, faults >= 3 ? 1 : 0, 'exactly one notice at the third fault');
+  }
+  assert.equal(f.calls.notify.length, 1);
+  assert.match(f.calls.notify[0].message, /连续第 3 次上游故障/);
+  assert.match(f.calls.notify[0].message, /下一次尝试预计在 \d{2}:\d{2}/);
+  assert.match(f.calls.notify[0].message, /你可以随时暂停并接管/);
+});
+
+test('a provider unblock hint pushes the retry past the bare backoff', async () => {
+  const notBefore = 1_600_000;
+  const f = harness({ clock: 1_000_000, getRetryNotBefore: () => notBefore });
+  await f.arm({ maxDurationMinutes: 60 });
+  const out = await f.host.onTurnEnd('s1', {
+    kind: 'fault', faultCategory: 'rate_limit', retryScheduled: false,
+  });
+  assert.equal(f.kernelCalls.turnEnds[0].retryNotBefore, notBefore, 'the host passes the fact');
+  assert.equal(out.action, 'fault_wait');
+  assert.equal(out.faults, 1);
+  assert.equal(out.retryAt, notBefore, 'the unblock time wins over now + 0');
+  assert.equal(out.retryCategory, 'capacity');
+  assert.ok(lastTrace(f).message.content.includes('上游额度/线路暂不可用'));
+  assert.equal(f.calls.inject.length, 0);
+  f.advance(notBefore - f.clock());
+  assert.equal(f.fireDueTimers(), 1);
+  assert.equal(f.calls.inject.length, 1);
+});
+
+test('a retry that lands after the deadline needs a human', async () => {
+  const f = harness();
+  await f.arm(); // 5 min
   f.records.get('s1').unattended = {
     ...f.host.get('s1'),
-    stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 2 },
+    stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 4 },
   };
   const out = await f.host.onTurnEnd('s1', { kind: 'fault', retryScheduled: false });
   assert.equal(out.action, 'needs_human');
+  assert.equal(out.reason, 'retry_past_deadline');
+  assert.equal(out.retryAt, f.clock() + 600_000);
   await tick();
+  assert.equal(f.host.get('s1').status, STATUS.NEEDS_HUMAN);
+  assert.equal(f.host.get('s1').retryAt, null);
   assert.equal(f.calls.inject.length, 0);
-  assert.equal(f.calls.notify[0].type, 'waiting');
-  assert.equal(f.calls.notify[0].options.classifyState, 'W');
-  assert.match(f.calls.notify[0].message, /连续 3 轮因上游故障中断/);
+  assert.equal(f.host.stats().retryTimers, 0);
 });
 
-test('a clean D/W settle resets the consecutive fault counter', async () => {
+test('a human-only fault category stops immediately with the cause in the message', async () => {
+  for (const category of ['authentication_permission', 'billing_quota',
+    'invalid_request_model', 'adapter_configuration']) {
+    const f = harness();
+    await f.arm();
+    const out = await f.host.onTurnEnd('s1', {
+      kind: 'fault', faultCategory: category, retryScheduled: false,
+    });
+    assert.equal(out.action, 'needs_human', category);
+    assert.equal(out.reason, 'non_recoverable_fault', category);
+    assert.match(out.message, /无人值守已停止自动续接/, category);
+    assert.equal(f.host.get('s1').status, STATUS.NEEDS_HUMAN, category);
+    assert.equal(f.calls.inject.length, 0, category);
+    assert.equal(f.host.stats().retryTimers, 0, category);
+  }
+});
+
+test('a clean D/W settle resets the fault streak and clears a pending retry', async () => {
   const f = harness();
-  await f.arm();
+  await f.arm({ maxDurationMinutes: 60 });
   f.records.get('s1').unattended = {
     ...f.host.get('s1'),
     status: STATUS.ACTIVE,
     stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 2 },
+    retryAt: f.clock() + 120_000,
+    retryCategory: 'fault',
   };
   await f.host.onTurnEnd('s1', { kind: 'settle', settle: 'D', assistantText: 'recovered' });
   assert.ok(f.calls.persist.some(row => row.state.stall && row.state.stall.consecutiveFaults === 0),
     'the settle proves the upstream recovered');
+  const settled = f.host.get('s1');
+  assert.equal(settled.retryAt, null, 'a real settle clears the armed retry');
+  assert.equal(settled.retryCategory, null);
+  assert.equal(f.host.stats().retryTimers, 0);
+});
+
+test('stop and a user takeover cancel the pending retry timer', async () => {
+  for (const how of ['stop', 'input']) {
+    const f = harness({ clock: 1_000_000 });
+    await f.arm({ maxDurationMinutes: 60 });
+    await f.host.onTurnEnd('s1', { kind: 'fault', retryScheduled: false });
+    const delayed = await f.host.onTurnEnd('s1', { kind: 'fault', retryScheduled: false });
+    assert.equal(delayed.action, 'fault_wait');
+    assert.equal(f.host.stats().retryTimers, 1);
+    if (how === 'stop') f.host.stop('s1');
+    else f.host.noteUserMessage('s1');
+    assert.equal(f.host.get('s1').retryAt, null, how);
+    assert.equal(f.host.get('s1').status, STATUS.STOPPED, how);
+    assert.equal(f.host.stats().retryTimers, 0, how);
+    const before = f.calls.inject.length;
+    f.advance(60_000);
+    f.fireDueTimers();
+    assert.equal(f.calls.inject.length, before, `${how}: a cancelled timer never injects`);
+  }
+});
+
+test('a turn already running when the retry timer fires wins and clears the marker', async () => {
+  let busy = false;
+  const f = harness({ clock: 1_000_000, busy: () => busy });
+  await f.arm({ maxDurationMinutes: 60 });
+  await f.host.onTurnEnd('s1', { kind: 'fault', retryScheduled: false });
+  const delayed = await f.host.onTurnEnd('s1', { kind: 'fault', retryScheduled: false });
+  assert.equal(delayed.action, 'fault_wait');
+  const before = f.calls.inject.length;
+  busy = true; // a new turn started before retryAt
+  f.advance(60_000);
+  assert.equal(f.fireDueTimers(), 1);
+  assert.equal(f.calls.inject.length, before, 'the running turn owns the conversation');
+  assert.equal(f.host.get('s1').retryAt, null, 'the obsolete retry is consumed');
+  assert.equal(f.host.get('s1').status, STATUS.ACTIVE);
+});
+
+test('boot re-arms a persisted retry and fires promptly when it is already due', async () => {
+  const f = harness({ clock: 2_000_000 });
+  await f.arm({ maxDurationMinutes: 60 });
+  f.records.get('s1').unattended = {
+    ...f.host.get('s1'),
+    stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 2 },
+    retryAt: 1_999_000, // already past
+    retryCategory: 'fault',
+  };
+  f.host.rearmTimer('s1');
+  assert.equal(f.host.stats().retryTimers, 1);
+  assert.equal(f.fireDueTimers(), 1, 'a past-due retry fires on the next boot tick');
+  assert.equal(f.calls.inject.length, 1);
+  assert.equal(f.calls.injectOptions[0].options.unattendedRecovery, true);
+  assert.equal(f.host.get('s1').retryAt, null);
+});
+
+test('resume resets the fault streak and drops the pending retry', async () => {
+  const f = harness({ clock: 1_000_000 });
+  await f.arm({ maxDurationMinutes: 60 });
+  f.records.get('s1').unattended = {
+    ...f.host.get('s1'),
+    status: STATUS.NEEDS_HUMAN,
+    stall: { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 4 },
+    retryAt: 1_060_000,
+    retryCategory: 'capacity',
+  };
+  const out = await f.host.resume('s1', {});
+  assert.equal(out.ok, true);
+  const resumed = f.host.get('s1');
+  assert.equal(resumed.status, STATUS.ACTIVE);
+  assert.deepEqual(resumed.stall, { sameInstruction: 0, auxFailures: 0, consecutiveFaults: 0 });
+  assert.equal(resumed.retryAt, null);
+  assert.equal(resumed.retryCategory, null);
+  assert.equal(f.host.stats().retryTimers, 0);
+  await tick();
 });
 
 test('a host-side cancel continues, a user cancel pauses — all through one entry', async () => {
@@ -946,7 +1137,9 @@ test('thirty-one-plus rounds keep inject instead of exhausting', async () => {
 });
 
 test('one in-flight evaluation coalesces a second settle', async () => {
-  const f = harness();
+  let replies = 0;
+  const f = harness({ reply: () => ++replies === 1
+    ? '{"verdict":"achieved","reason":"旧输出已完成"}' : CONTINUE });
   await f.arm();
   f.calls.enqueue.length = 0;
   const host = f.host;
@@ -956,11 +1149,12 @@ test('one in-flight evaluation coalesces a second settle', async () => {
   assert.deepEqual(secondResult, { ok: true, deferred: true });
   assert.equal(host.stats().inFlight, 1);
   assert.equal(host.stats().queued, 1);
-  await first;
+  assert.equal((await first).action, 'none', '后续回合已结束时也不能采用旧判定');
   await new Promise(done => setImmediate(done));
   assert.equal(host.stats().queued, 0);
   // The coalesced follow-up ran after the first finished.
   assert.ok(f.calls.enqueue.length >= 2);
+  assert.equal(host.get('s1').status, 'active');
 });
 
 test('boot migrates legacy records, clears a stale evaluating:true and re-arms active timers', () => {

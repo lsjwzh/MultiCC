@@ -46,6 +46,8 @@ A goal or criteria is mandatory (`goal` non-empty; criteria optional but recomme
   "lastVerdict": { "verdict": "achieved|continue|needs_human", "reason": "", "nextInstruction": "", "humanReason": "", "at": 0 },
   "history": [ { "at": 0, "verdict": "continue", "reason": "" } ],   // last 10
   "stall": { "sameInstruction": 0, "auxFailures": 0, "consecutiveFaults": 0 },
+  "retryAt": null,             // epoch ms of the armed fault retry, or null
+  "retryCategory": "capacity | fault | null",
   "evaluating": false,
   "pausedBy": "user | input | cancel | null"
 }
@@ -137,24 +139,28 @@ Product decisions (user, 2026-11-10):
    and is then delivered normally, so a stale client can never make human and supervisor fight.
    `stop` from the UI sets `pausedBy: 'user'`, a Cancel sets `pausedBy: 'cancel'`.
    `resume` while a turn is streaming/queued must NOT run `evaluateNow`; the turn-end settle does it.
-2. **No special FIFO handling: the scheduler already gates the FIFO behind a pending
-   question (answer runs first) and behind an E fault (continuation runs first, FIFO stays
-   staged until D); the supervisor only has to deliver its answer / fault-continue and the
-   FIFO continues by itself.** The supervisor therefore does not read the queued deliveries
-   into the verdict prompt, and it does not append its message to the FIFO tail: a
-   supervisor message is an "insert now" control (the delivery layer admits it as a
-   `continuation`, which the scheduler treats as `directRun`). On a D settle with staged
-   work the supervisor DEFERS (no verdict, no round burned) and releases the held classic
-   push; the last backlog turn's own D settle makes the verdict.
-3. **Waiting-on-user and faults are answered immediately.**
+2. **优先级：解决等待/异常 → FIFO → 普通自动接续。** 无人值守处于 `active`
+   时，W 等待和 E 异常保持 FIFO 暂存，先由无人值守回答问题或发送恢复指令。
+   恢复回合正常完成后，按用户重排后的顺序发送 FIFO；队列清空后才发送普通自动
+   接续。恢复消息使用 `unattendedRecovery` 标记，与普通 `unattendedSystem` 消息区分。
+   恢复无人值守时，有 FIFO 也不能跳过等待/异常处理；普通自动接续不能冒充恢复指令。
+   D 正常完成且 FIFO 尚未清空时推迟辅助判定，不新增普通鞭策消息。普通判定期间
+   若又有排队或运行中的工作，丢弃过时结果，等待新工作结束；等待/异常的恢复判定
+   不因 FIFO 积压而跳过。活动回合不受抢占，B 后台等待保留既有调度规则。
+   新业务规则均在 Rust 内核。现有 Node 宿主仅保留必要的状态、队列和消息元数据
+   桥接；后续 Rust 接管调度宿主接口时移除这些桥接。
+3. **等待与故障优先恢复。**
    - Turn ended on a pending user-input question: the aux picks the answer (`answer`) and it is
      delivered right away (resolves the request).
    - Turn ended in fault E (not a user Cancel): after the existing API-error policy has finished
-     with it (it either scheduled its own retry — then do nothing — or gave up), inject an
-     immediate `continue` instruction WITHOUT an aux call. Increments the informational `rounds`
-     counter; consecutive faults are capped at 3 then `needs_human` (reason: repeated faults), so
-     an unhealthy upstream never loops. Never replay side effects: the instruction only says to
-     resume from where it stopped and check state before redoing anything.
+     with it (it either scheduled its own retry — then do nothing — or gave up), continue
+     WITHOUT an aux call. The first fault continues immediately (`fault_continue`); later
+     consecutive faults back off 60 s / 120 s / 300 s / 600 s / 900 s and persist `retryAt`
+     (`fault_wait`), injected by the durable retry timer. A fault streak is never capped: the
+     wall-clock deadline is the only bound. Human-only categories (auth/permission, billing,
+     invalid request/model, adapter configuration) stop immediately and name the cause. Never
+     replay side effects: the instruction only says to resume from where it stopped and check
+     state before redoing anything.
 4. **Every message the supervisor inserts carries one fixed marker**, defined once in the Rust
    kernel (`UNATTENDED_TAG = "[无人值守 Unattended]"`, exported through the addon and read by JS;
    Web/Flutter hard-code the same literal for rendering). Final text seen by the model:
@@ -222,6 +228,14 @@ DTO and every `unattended_state` event) gains:
 - `rounds: integer` — informational count of verdicts/injections. **No cap.**
 - `lastVerdict`, `history`, `goal`, `criteria`, `status`, `stall.consecutiveFaults` keep
   their v2 meaning.
+- `retryAt: epoch ms | null` — the durable fault-retry deadline. Set only by
+  `fault_wait`; cleared by the host when the timer fires, by a clean D/W settle, `resume`,
+  `stop`/pause, expiry and boot migration (non-active records). Present on
+  `unattended_state`, GET/POST responses, the session DTO and the session schema.
+- `retryCategory: "capacity" | "fault" | null` — `capacity` for rate limits, transient
+  provider/network/timeout errors, `preparation_failed` and `candidate_pool_exhausted`
+  (the UI words these as a provider/quota outage); `fault` for every other recoverable
+  fault. See “Fault (E) continuation” below.
 
 The Air task-row compact projection (`/api/air` task rows) is
 `{ status, rounds, deadlineAt, evaluating }` (a copy, never the cached card object).
@@ -248,6 +262,13 @@ There is no `maxRounds` anywhere on the wire.
   no turn ever settles. Boot migration (`src/unattended/runtime.js`) re-arms it for every
   persisted active record. Every evaluation and `onFault` also checks expiry first, so a
   late timer can never allow another injection.
+- A second, independent `setTimeout` per active session runs the durable fault retry: armed
+  to `retryAt` and cleared/re-armed by the same `write()` path (so stop, pause, resume, user
+  takeover, expiry, shutdown and a new turn by any other path all clear it). On fire it
+  re-checks active, expiry first, `retryAt` due and no active turn, then clears `retryAt` and
+  injects the recovery instruction with `{ unattendedRecovery: true }` — the scheduler's
+  `select_queued` puts that above FIFO and ordinary continuations. Boot re-arms it for every
+  persisted active record; a `retryAt` in the past fires promptly.
 - Boot migration of legacy records: `maxRounds` is dropped. An active record with no
   `deadlineAt` gets `maxDurationMinutes = 120`, `startedAt = now`,
   `deadlineAt = now + 120 min`. Non-active records get `maxDurationMinutes = 120` (if
@@ -289,6 +310,8 @@ does the same.
 | error | `[无人值守 Unattended] 判定：出错 · <reason>` |
 | paused | `[无人值守 Unattended] 已暂停（<用户接管 / 用户输入 / 已取消>）` |
 | fault-continue | `[无人值守 Unattended] 故障后自动继续（第 <n> 次）` |
+| fault-wait | `[无人值守 Unattended] 故障后将在 HH:MM 自动重试（第 <n> 次）` |
+| fault-wait (capacity) | `[无人值守 Unattended] 上游额度/线路暂不可用，将在 HH:MM 自动重试（第 <n> 次）` |
 
 The trace is appended before the action is applied (so an inject's trace precedes the
 instruction bubble) and written even when the case ends in a push-only outcome.
@@ -326,30 +349,63 @@ fields. `POST` action semantics added by v2:
 
 ### Queue ordering
 
-There is no backlog-evidence input to `buildVerdictPrompt`. Ordering is entirely the
-session-work scheduler's job (`src/session-work/scheduler.js`):
+`buildVerdictPrompt` 不读取 FIFO 消息正文。调度器把队列摘要和无人值守状态交给
+`native/core/src/unattended.rs::select_queued`：
 
-- a pending `wait_for_user_answer` gates the FIFO (`blockedByUserInput`); the matching
-  answer is selectable first and the FIFO resumes after it;
-- an E fault leaves ordinary FIFO work staged; a direct continuation / control item is
-  immediately selectable, and the FIFO stays put until a D verdict or an explicit
-  `insert_queued`;
-- a D verdict drains the FIFO automatically.
+- `active` 且执行位置已释放时，关联问题的回答和明确的恢复指令优先。
+- W/E 尚未恢复时继续暂存 FIFO 和普通自动接续；恢复为 D 后按队列顺序处理 FIFO。
+- FIFO 清空后才发送普通自动接续；兼容旧版固定前缀和新版消息标记。
+- 暂停、人工接管、到期、活动回合与后台等待保留原有调度边界。
 
-Consequently the supervisor's auto-answer (W) and fault-continue (E) reach the scheduler
-as `continuation` work (`directRun`) and are selected before the staged backlog. When a D
-settle still has queued deliveries, the supervisor defers its verdict
-(`{ ok:false, code:'backlog_pending' }`, held push released) — `hasQueuedDeliveries` is the
-one read-only scheduler question it asks.
+`hasQueuedDeliveries` 只提供积压事实；是否推迟判定由 Rust 结合等待/异常状态决定。
 
-### Fault (E) continuation
+### Fault (E) continuation and backoff
 
 After the API-error policy has finished with an E (its own scheduled retry → do nothing),
-the supervisor injects `<marker> …故障后继续…` **without** an aux call. It increments the
-informational `rounds` counter; 3 consecutive faults → `needs_human` (reason: repeated
-faults). The text only asks the agent to resume from where it stopped and verify state
-before redoing side effects. A user Cancel is not a fault. A clean D/W settle resets the
-fault counter.
+the supervisor continues **without** an aux call. Fault recovery is never capped by a
+streak counter: the wall-clock deadline is the only bound. On the n-th consecutive fault
+(after increment) the kernel delays the next continuation by `FAULT_BACKOFF_MS`
+(`native/core/src/unattended.rs`):
+
+| n | delay before the next attempt |
+| --- | --- |
+| 1 | 0 → `fault_continue`, inject immediately |
+| 2 | 60 s |
+| 3 | 120 s |
+| 4 | 300 s |
+| 5 | 600 s |
+| ≥ 6 | 900 s |
+
+The retry time is `max(now + backoff, retryNotBefore)`, where `retryNotBefore` is the
+earliest known provider unblock hint: this session's Auto candidate pool reports the
+earliest parked candidate (`blockedUntilMs`) or full-quota-window reset
+(`resetMs`/`resetsAtMs`) when **no** candidate is usable. When no hint exists (for example
+a turn-scoped unsafe-failure-phase refusal, or a non-Auto session) the backoff alone
+applies. Delay 0 → `fault_continue` (host injects now); delay > 0 → `fault_wait` with
+persisted `retryAt`/`retryCategory`, and the durable retry timer performs the injection.
+The kernel persists a timezone-free decision; the host formats HH:MM in traces and notices.
+
+Faults a human must fix stop immediately (`needs_human`) with the cause named in Chinese:
+`authentication_permission`, `billing_quota`, `invalid_request_model`,
+`adapter_configuration`. These are the categories in
+`native/core/src/api_error_policy.rs` where retrying cannot help (credential/permission,
+balance/quota, invalid request/model, adapter/CLI configuration); everything else —
+including `rate_limit`, `provider_transient`, `network`, `timeout`, `context_token_limit`,
+`tool_protocol`, `cancel_shutdown` and `unknown` — is retried with backoff. A retry whose
+computed time is at/after `deadlineAt` also stops (`retry_past_deadline`): it could never
+run inside the budget.
+
+The text only asks the agent to resume from where it stopped and verify state before
+redoing side effects; the replay-safety rules are unchanged (an unsafe replay boundary
+still fails fast). A user Cancel is not a fault. A clean D/W settle resets
+`consecutiveFaults` and clears `retryAt`/`retryCategory`; `resume` resets the streak too.
+When the streak first reaches 3 the host sends exactly one waiting push/notice: the session
+stays active, and the notice names the next attempt time and says the user can pause to
+take over. There is no "3 rounds then give up" path anymore.
+
+**Priority:** fault recovery (immediate continuation or the fired retry timer) outranks
+staged FIFO, which outranks ordinary automatic continuation. `select_queued` recognises the
+recovery message and the `unattendedRecovery` marker before any FIFO item.
 
 ### Every turn end has exactly one supervisor result
 
@@ -379,13 +435,16 @@ second time).
 | D settle, staged backlog (`backlogPending`) | `none` / `backlog_pending` — defer; release held push |
 | W settle (`settle:'W'`, pending question) | `evaluate` — the Aux answers the question |
 | E fault, API policy scheduled its retry (`retryScheduled`) | `none` / `policy_retry` |
-| E fault (rules path) or host-interrupted turn | `fault_continue`; 3rd consecutive → `needs_human` |
+| E fault (rules path) or host-interrupted turn, recoverable category | `fault_continue` (delay 0) or `fault_wait` with persisted `retryAt`; never a streak cap |
+| E fault whose category is human-only (`authentication_permission`, `billing_quota`, `invalid_request_model`, `adapter_configuration`) | `needs_human` immediately, naming the cause |
+| Computed retry time at/after `deadlineAt` | `needs_human` / `retry_past_deadline` |
 | Any end whose attribution is a user source (checked before `kind`) | `pause` / `pausedBy:'cancel'` or `'input'` — user sources never inject |
 | Repeat report for an already handled turn (`lastTurnEndId === turnId`) | `none` / `duplicate_turn` |
 | Later report carrying user attribution for a handled turn | `pause` / `duplicate_user_takeover` |
 | User cancel: `manual_cancel`, `task-shell`, `user_cancel`, `cancel_repeat`, `dispatch_cancel` | `pause` / `pausedBy:'cancel'` |
 | User cancel that carries a message: `insert_queued`, `force_insert`, `new_user_message` | `pause` / `pausedBy:'input'` (takeover) |
-| Host-side cancel: `process_watchdog`, `stalled_recovery`, `*_log_watchdog` / `provider_log_error`, `restart_spawn`, `restart_recovery`, `shutdown`, `cli_switch`, `relocate`, `preparation_failed` | fault continuation (same 3-fault cap) |
+| Host-side cancel: `process_watchdog`, `stalled_recovery`, `*_log_watchdog` / `provider_log_error`, `restart_spawn`, `restart_recovery`, `shutdown`, `cli_switch`, `relocate`, `preparation_failed` | fault continuation with backoff (`preparation_failed` is `capacity`); no 3-fault cap |
+| Persisted `retryAt` reached (retry timer) | `fault_continue` injection with `unattendedRecovery` (recovery priority over FIFO) |
 | Cancel with unrecognized attribution | `pause` / `pausedBy:'cancel'` — fail safe: unlock input, never inject against a possible user stop |
 | Real user message (`noteUserMessage`) | `pause` / `pausedBy:'input'`, then delivery |
 | Wall-clock deadline (timer) | `exhausted` |
@@ -395,8 +454,9 @@ Why a host-side interruption is a fault: a watchdog/restart/stalled-recovery can
 statement about the **host or upstream**, not about the user's goal. Treating it as "turn
 finished" left the session `active` (input locked) with nothing running after the incident
 of 2026-11-10. Treating it as a user Cancel would silently abandon a goal the user never
-stopped. It therefore follows the same continuation policy as an API fault, and three
-consecutive host interruptions still ask for a human so a crash loop cannot spin forever.
+stopped. It therefore follows the same continuation policy as an API fault: back off on
+consecutive host interruptions and keep retrying; only the deadline (or a human-only error
+category) stops it.
 
 Turn identity: `turnId` is the dedupe key, so it must name the turn that really ended.
 `taskState.turnId` is written at turn **end** and therefore names the previous, already
@@ -411,7 +471,7 @@ and every classify settle clears it. A turn that fails between that write and th
 handoff (message composition, spawn guard, runtime start, rejected runner) has no finalizer
 of its own: the turn engine cancels it through the same entry with
 `cancelSource:preparation_failed` (a host-side source, so an armed supervisor continues
-under the fault cap) instead of leaving a phantom P turn for the watchdog.
+under the same backoff policy) instead of leaving a phantom P turn for the watchdog.
 
 A policy-scheduled retry does not claim the turn: an E fault with `retryScheduled:true`
 returns `none` / `policy_retry` and writes no next state, so neither `lastTurnEndId` nor
