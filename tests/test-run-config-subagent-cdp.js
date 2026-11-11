@@ -83,6 +83,78 @@ const openSession = (page, configuration) =>
 const text = (page, selector) => page.evaluate(`(document.querySelector(${JSON.stringify(inDialog(selector))})||{}).textContent||''`);
 const saveShot = (file, target) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.copyFileSync(file, target); return target; };
 
+for (const scenario of ['先选 CLI 再启用自动挑选', '首条线路换家族且旧 CLI 仍在池中', '同 CLI 保存', '切换失败']) {
+  test(`自动挑选保存：${scenario}`, async t => {
+    if (!findChromeBinary()) return t.skip('需要 Chrome');
+    const routes = buildRoutes();
+    const calls = [];
+    let sessionCli = scenario === '同 CLI 保存' ? 'codex-exp' : 'claude';
+    routes['POST /api/sessions/s1/switch-cli'] = ({ body }) => {
+      const input = JSON.parse(body);
+      calls.push({ kind: 'switch', body: input });
+      if (scenario === '切换失败') return json({ error: '暂时无法切换 CLI' }, 409);
+      sessionCli = input.cli;
+      return json({ ok: true, cli: sessionCli });
+    };
+    routes['PATCH /api/sessions/s1'] = ({ body }) => {
+      const input = JSON.parse(body);
+      calls.push({ kind: 'patch', body: input });
+      // 与服务端一样，具体 provider 必须属于会话当前 CLI 的目录。
+      const catalog = sessionCli === 'codex-exp' ? codexProviders : claudeProviders;
+      if (input.provider && !catalog.some(provider => provider.id === input.provider)) {
+        return json({ error: 'invalid provider' }, 400);
+      }
+      return json({ ok: true, cli: sessionCli });
+    };
+    await withCdpHarness({ routes, locale: 'zh-CN' }, async page => {
+      await page.navigate('/run-config-host.html');
+      const configuration = { cli: sessionCli, provider: sessionCli === 'codex-exp' ? 'x-main' : 'p-main' };
+      if (scenario === '首条线路换家族且旧 CLI 仍在池中') {
+        configuration.providerSelection = {
+          version: 1, mode: 'auto', cliSwitch: 'failover', maxAttempts: 2, sticky: true,
+          candidates: [
+            { cli: 'codex-exp', providerId: 'x-main', model: 'gpt-5.6', priority: 1, enabled: true },
+            { cli: 'claude', providerId: 'p-main', model: 'claude-opus', priority: 2, enabled: true },
+          ],
+        };
+      }
+      await openSession(page, configuration);
+      assert.ok(await page.waitFor(`document.querySelector('.rc-line option[value="${configuration.provider}"]')`));
+      if (!configuration.providerSelection) {
+        if (sessionCli !== 'codex-exp') {
+          await page.evaluate(`document.querySelector('.rc-cli-card[data-cli="codex-exp"]').click()`);
+          assert.ok(await page.waitFor(`document.querySelector('.rc-line option[value="x-main"]')`));
+        }
+        await page.evaluate(`document.querySelector('.rc-mode-auto').click()`);
+      }
+      assert.ok(await page.waitFor(`document.querySelector('.rc-sub-provider option[value="x-cheap"]')`));
+      await page.evaluate(`document.querySelector('.rc-sub-guide-dismiss').click();
+        document.querySelector('.air-config-dialog[open] form').requestSubmit()`);
+      assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]') || document.querySelector('.air-config-error')?.textContent`));
+      if (scenario === '切换失败') {
+        assert.deepEqual(calls.map(call => call.kind), ['switch']);
+        assert.equal(sessionCli, 'claude');
+        assert.match(await text(page, '.air-config-error'), /暂时无法切换 CLI/);
+        return;
+      }
+      assert.equal(await page.evaluate(`!!document.querySelector('.air-config-dialog[open]')`), false,
+        `保存失败：${await text(page, '.air-config-error')}`);
+      assert.deepEqual(calls.map(call => call.kind), scenario === '同 CLI 保存' ? ['patch'] : ['switch', 'patch']);
+      const patch = calls.at(-1).body;
+      assert.equal(sessionCli, 'codex-exp');
+      assert.equal(patch.provider, 'x-main');
+      assert.equal(patch.model, 'gpt-5.6');
+      assert.equal(patch.providerSelection.candidates.length, 2);
+      if (scenario === '先选 CLI 再启用自动挑选') {
+        assert.deepEqual(patch.subagent, { providerId: 'x-cheap', model: 'gpt-5-mini' });
+        assert.equal(patch.subagentInherited, true);
+      } else {
+        assert.equal(patch.subagent, null, '未单独设置时继续跟随主线路');
+      }
+    });
+  });
+}
+
 test('sub-agent section is a always-visible section with guide, and terminal drafts still hide it', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-subagent-cdp'), locale: 'zh-CN' }, async page => {

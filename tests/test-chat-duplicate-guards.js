@@ -42,6 +42,220 @@ function shellEvents(clientMsgId, receiptId, id) {
   };
 }
 
+function stageInput(rig, text, clientMsgId) {
+  const node = rig.historyView.createUserNode(text, clientMsgId);
+  rig.messagesEl.appendChild(node);
+  rig.state.lastUserBubble = node;
+  return node;
+}
+
+for (const event of ['queued', 'snapshot']) {
+  test(`FIFO ${event} moves only the optimistic input out of the transcript`, () => {
+    const rig = createRig();
+    const previous = stageInput(rig, '同文消息', 'previous');
+    previous.dataset.msgId = 'persisted';
+    stageInput(rig, '同文消息', 'pending');
+    const item = { entryId: 'q', clientMsgId: 'pending', text: '同文消息' };
+    rig.feed([{ type: 'session_queue', event, queued: true, items: [item] }]);
+    assert.deepEqual(rig.messagesEl.querySelectorAll('.msg.user'), [previous]);
+    assert.equal(rig.state.lastUserBubble, null, 'no detached optimistic anchor remains');
+    assert.equal(rig.queues.at(-1).items.length, 1);
+    // Late preparation progress must not put the queued input back in history.
+    rig.feed([{ type: 'message_admission_progress', clientMsgId: 'pending', message: '同文消息', state: 'waiting' }]);
+    assert.deepEqual(rig.messagesEl.querySelectorAll('.msg.user'), [previous]);
+    rig.feed([{ type: 'session_queue', event: 'claimed', items: [], active: item }]);
+    assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 2);
+    assert.equal(rig.queues.at(-1).items.length, 0);
+  });
+}
+
+test('queued edits and cancellation never leave a phantom transcript bubble', () => {
+  const rig = createRig();
+  stageInput(rig, '旧正文', 'pending');
+  const queue = { type: 'session_queue', items: [{ entryId: 'q', clientMsgId: 'pending', text: '旧正文' }] };
+  rig.feed([{ ...queue, event: 'queued', queued: true }]);
+  rig.feed([{ ...queue, event: 'queued_edited', items: [{ ...queue.items[0], text: '新正文' }] }]);
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 0);
+  assert.equal(rig.queues.at(-1).items[0].text, '新正文');
+  rig.feed([{ ...queue, event: 'queued_cancelled', items: [] }]);
+  assert.equal(rig.queues.at(-1).items.length, 0);
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 0);
+});
+
+test('a durable user commit retires a stale queue row without deleting history', () => {
+  const rig = createRig();
+  const item = { entryId: 'q', clientMsgId: 'client', text: '消息' };
+  const queue = { type: 'session_queue', event: 'snapshot', state: 'assessing', items: [item] };
+  stageInput(rig, item.text, item.clientMsgId);
+  rig.feed([queue, { type: 'chat_msg_meta', message: { id: 'stored', role: 'user', content: item.text, clientMsgId: item.clientMsgId } }]);
+  assert.equal(rig.queues.at(-1).items.length, 0, 'committed input is no longer pending');
+  rig.feed([queue]);
+  assert.equal(rig.queues.at(-1).items.length, 0, 'late snapshot cannot requeue committed input');
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1);
+  assert.equal(rig.historyView.findById('stored').dataset.clientMsgId, 'client');
+});
+
+for (const ackFirst of [true, false]) {
+  test(`shell FIFO maps nested receipt IDs and restores the claimed bubble (ACK first: ${ackFirst})`, () => {
+    const rig = shellRig();
+    const events = shellEvents('client', 'sr_receipt', 'stored');
+    rig.adapter.send({ type: 'user_message', text: 'same message', clientMsgId: 'client' });
+    stageInput(rig, 'same message', 'client');
+    if (ackFirst) rig.receive(events.ack);
+    const item = Object.freeze({ entryId: 'q', clientMsgId: 'sr_receipt', text: 'same message' });
+    rig.receive({ type: 'session_queue', event: 'snapshot', items: Object.freeze([item]) });
+    if (!ackFirst) rig.receive(events.ack);
+    assert.equal(rig.queues.at(-1).items[0].clientMsgId, 'client');
+    assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 0);
+    rig.receive({ type: 'session_queue', event: 'claimed', items: [], active: item });
+    assert.equal(rig.queues.at(-1).items.length, 0);
+    assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1);
+    assert.equal(rig.state.lastUserBubble.dataset.clientMsgId, 'client');
+    rig.receive(events.committed);
+    assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1);
+    assert.equal(rig.state.lastUserBubble.dataset.msgId, 'stored');
+    assert.equal(item.clientMsgId, 'sr_receipt', 'wire records remain immutable');
+  });
+}
+
+test('a late shell ACK cannot resurrect the FIFO snapshot preceding started', () => {
+  const rig = shellRig();
+  const events = shellEvents('client', 'sr_receipt', 'stored');
+  rig.adapter.send({ type: 'user_message', text: 'same message', clientMsgId: 'client' });
+  stageInput(rig, 'same message', 'client');
+  rig.receive({ type: 'session_queue', event: 'queued', queued: true, clientMsgId: 'sr_receipt',
+    items: [{ entryId: 'q', clientMsgId: 'sr_receipt', text: 'same message' }] });
+  rig.receive({ type: 'session_queue', event: 'started', state: 'running', items: [] });
+  rig.receive(events.ack);
+  assert.deepEqual(rig.queues.at(-1).items, []);
+  assert.equal(rig.queues.at(-1).metadata.state, 'running');
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1, 'started input stays visible');
+});
+
+test('replaying an immediate shell ACK never flashes its input in FIFO', () => {
+  const rig = shellRig();
+  const events = shellEvents('client', 'sr_receipt', 'stored');
+  rig.adapter.send({ type: 'user_message', text: 'same message', clientMsgId: 'client' });
+  stageInput(rig, 'same message', 'client');
+  rig.receive({ type: 'session_queue', event: 'queued', queued: false, entryId: 'q',
+    clientMsgId: 'sr_receipt', message: 'same message',
+    items: [{ entryId: 'q', clientMsgId: 'sr_receipt', text: 'same message' }] });
+  rig.receive(events.ack);
+  rig.receive(events.ack);
+  assert.ok(rig.queues.every(queue => queue.items.length === 0));
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1);
+});
+
+test('reconnect history retires queued input even when the live commit was missed', () => {
+  const rig = createRig();
+  const item = { entryId: 'q', clientMsgId: 'client', text: '消息' };
+  rig.feed([{ type: 'session_queue', event: 'snapshot', items: [item] }]);
+  rig.feed([{ type: 'chat_history', hasMore: false,
+    messages: [{ id: 'stored', role: 'user', content: item.text, clientMsgId: item.clientMsgId }] }]);
+  assert.equal(rig.queues.at(-1).items.length, 0);
+  assert.equal(rig.historyView.findById('stored').dataset.clientMsgId, 'client');
+});
+
+test('an immediate send keeps its optimistic bubble while sibling messages stay queued', () => {
+  const rig = createRig();
+  const immediate = stageInput(rig, '立即发送', 'now');
+  stageInput(rig, '排队消息', 'later');
+  rig.feed([{ type: 'session_queue', event: 'queued', queued: false, entryId: 'now',
+    message: '立即发送', clientMsgId: 'now', items: [
+      { entryId: 'now', clientMsgId: 'now', text: '立即发送' },
+      { entryId: 'later', clientMsgId: 'later', text: '排队消息' },
+    ] }]);
+  assert.deepEqual(rig.messagesEl.querySelectorAll('.msg.user'), [immediate]);
+  assert.deepEqual(rig.queues.at(-1).items.map(item => item.entryId), ['later']);
+});
+
+test('shell claimed input waits for its nested receipt identity, then restores one bubble', () => {
+  const rig = shellRig();
+  const events = shellEvents('client', 'sr_receipt', 'stored');
+  rig.adapter.send({ type: 'user_message', text: 'same message', clientMsgId: 'client' });
+  stageInput(rig, 'same message', 'client');
+  rig.receive({ type: 'session_queue', event: 'claimed', items: [],
+    active: { entryId: 'q', clientMsgId: 'sr_receipt', text: 'same message' } });
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1);
+  rig.receive(events.ack);
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1);
+  rig.receive(events.committed);
+  assert.equal(rig.state.lastUserBubble.dataset.msgId, 'stored');
+});
+
+test('a queued input in another window works without sender receipt mappings', () => {
+  const rig = shellRig();
+  const item = { entryId: 'q', clientMsgId: 'sr_other', text: '消息' };
+  rig.receive({ type: 'session_queue', event: 'snapshot', items: [item] });
+  assert.equal(rig.queues.at(-1).items.length, 1);
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 0);
+  rig.receive({ type: 'session_queue', event: 'claimed', items: [], active: item });
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, 1);
+  assert.equal(rig.state.lastUserBubble.dataset.clientMsgId, 'sr_other');
+});
+
+test('Chrome renders FIFO input once across admission, edit, claim and durable commit', async t => {
+  const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
+  if (!findChromeBinary()) return t.skip('需要 Chrome');
+  const fs = require('node:fs');
+  const modules = ['shared/format.js', 'status-presentation.js', 'chat-history-store.js',
+    'chat-history-view.js', 'chat-event-controller.js', 'chat-shell-entry.js', 'chat-session-queue.js'];
+  const routes = Object.fromEntries(modules.map(file => ['/' + file, {
+    headers: { 'content-type': 'text/javascript' },
+    body: fs.readFileSync(path.join(__dirname, '../public', file)),
+  }]));
+  routes['/'] = { headers: { 'content-type': 'text/html' }, body: `<!doctype html><meta charset="utf-8">
+    <div id="messages"></div><section id="session-queue-dock" hidden>
+    <span id="session-queue-count"></span><span id="session-queue-hint"></span><div id="session-queue-list"></div></section>
+    ${modules.map(file => `<script src="/${file}"></script>`).join('')}` };
+  await withCdpHarness({ routes }, async page => {
+    await page.navigate('/');
+    assert.ok(await page.waitFor('window.MultiCCChatSessionQueue && document.readyState === "complete"'));
+    const observed = await page.evaluate(`(() => {
+      const messages = document.getElementById('messages');
+      const state = { isStreaming: false, lastUserBubble: null };
+      const view = MultiCCChatHistoryView.createHistoryView({ document, messagesEl: messages });
+      const host = {
+        renderSessionQueue: MultiCCChatSessionQueue.render,
+        addUserMessage(text, id) {
+          const node = view.createUserNode(text, id); messages.appendChild(node); state.lastUserBubble = node;
+        },
+      };
+      const controller = MultiCCChatEventController.createEventController({ state, host, historyView: view,
+        historyStore: MultiCCChatHistoryStore.createHistoryStore(), liveUi: { hideThinking() {}, showThinking() {} } });
+      const generation = controller.beginGeneration();
+      const adapter = MultiCCChatShellEntry.createTransportAdapter({ send: () => true });
+      const feed = message => adapter.ingest(message).events.forEach(event => controller.handleEvent(event, generation));
+      const snapshot = () => ({ bubbles: messages.querySelectorAll('.msg.user').length,
+        queued: document.querySelectorAll('.session-queue-item').length,
+        hidden: document.getElementById('session-queue-dock').hidden });
+      feed({ type: 'system', subtype: 'init', taskShell: true, is_streaming: false });
+      adapter.send({ type: 'user_message', text: '旧正文', clientMsgId: 'client' });
+      host.addUserMessage('旧正文', 'client');
+      const item = { entryId: 'q', clientMsgId: 'sr_receipt', text: '旧正文' };
+      feed({ type: 'session_queue', event: 'queued', queued: true, clientMsgId: 'sr_receipt', items: [item] });
+      feed({ type: 'task_shell_routed', clientMsgId: 'client', receiptId: 'sr_receipt' });
+      const queued = snapshot();
+      item.text = '新正文';
+      feed({ type: 'session_queue', event: 'queued_edited', items: [item] });
+      const editedText = document.querySelector('.session-queue-text').textContent;
+      feed({ type: 'session_queue', event: 'claimed', active: item, items: [] });
+      const claimed = snapshot();
+      feed({ type: 'chat_msg_meta', message: { id: 'stored', role: 'user', content: '新正文', clientMsgId: 'sr_receipt' } });
+      feed({ type: 'session_queue', event: 'snapshot', state: 'assessing', items: [item] });
+      return { queued, claimed, committed: snapshot(), editedText,
+        stored: messages.querySelector('.msg.user').dataset.msgId,
+        text: messages.querySelector('.msg.user').textContent };
+    })()`);
+    assert.deepEqual(observed.queued, { bubbles: 0, queued: 1, hidden: false });
+    assert.deepEqual(observed.claimed, { bubbles: 1, queued: 0, hidden: true });
+    assert.deepEqual(observed.committed, observed.claimed);
+    assert.equal(observed.editedText, '新正文');
+    assert.equal(observed.stored, 'stored');
+    assert.match(observed.text, /新正文/);
+  });
+});
+
 // Run the actual shell adapter and chat renderer together: receipt identity
 // must reconcile the admission bubble with both live commits and reconnects.
 for (const source of ['committed', 'nested-only', 'history']) {

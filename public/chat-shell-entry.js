@@ -57,6 +57,7 @@
     // socket 报成断开、把刚清空的输入框又填回去。
     const awaiting = new Map();
     let buffered = [];
+    let latestQueue = null;
     const receiptClients = new Map();
 
     function text(value) { return value == null ? '' : String(value); }
@@ -72,7 +73,10 @@
       return [];
     }
 
-    function recordsOf(message) { return [message, ...historyRecords(message)]; }
+    function recordsOf(message) {
+      return [message, ...historyRecords(message), ...(message?.type === 'session_queue'
+        ? [...(message.items || []), message.active].filter(Boolean) : [])];
+    }
 
     // 一条事件只要带着还没认领的回执 id（服务端把 task-shell 的投递写成
     // clientMsgId = receipt.id），就不能现在放出去：不然它会先按回执 id 渲染
@@ -94,6 +98,10 @@
       if (message?.type === 'chat_history' && Array.isArray(message.messages)) {
         return { ...mapped, messages: message.messages.map(remapClient) };
       }
+      if (message?.type === 'session_queue') {
+        return { ...mapped, items: (message.items || []).map(remapClient),
+          ...(message.active ? { active: remapClient(message.active) } : {}) };
+      }
       return mapped;
     }
 
@@ -102,6 +110,7 @@
       if (message?.type === 'system' && message.subtype === 'init' && 'is_streaming' in message) {
         enabled = message.taskShell === true;
       }
+      if (message?.type === 'session_queue') latestQueue = message;
       if (awaiting.size && unmappedReceipt(message)) { buffered.push(message); return { events: [] }; }
       if (message?.type === 'task_shell_routed') {
         const receiptId = text(message.receiptId);
@@ -114,23 +123,31 @@
         // 先用回执 id 露面。
         const events = [];
         buffered = buffered.filter(event => {
-          if (unmappedReceipt(event)) return true;
+          if (event.type === 'session_queue' && event !== latestQueue && event.queued !== false) return false;
+          if (awaiting.size && unmappedReceipt(event)) return true;
           events.push(remap(event));
           return false;
         });
+        // Receipt mapping can release an older queue frame after a newer
+        // claimed/started frame. Finish with the latest snapshot, including
+        // nested identities, so an ACK never resurrects a departed FIFO row.
+        if (latestQueue && !(awaiting.size && unmappedReceipt(latestQueue))) {
+          events.push(remap({ ...latestQueue, event: 'snapshot' }));
+        }
         return { events, routeSessionId: message.sessionId ? String(message.sessionId) : '' };
       }
       if (message?.type === 'error' && message.notDelivered === true
           && awaiting.has(text(message.clientMsgId))) {
         const receiptId = text(message.receiptId);
         awaiting.delete(text(message.clientMsgId));
+        const failedReceipt = receiptId.startsWith('sr_') ? receiptId : `sr_${receiptId}`;
         // A reconnect page may contain older, unmapped receipts. A failed new
         // send must not discard those already committed messages.
         const events = [];
         buffered = buffered.filter(event => {
           const ids = recordsOf(event).map(record => text(record?.clientMsgId));
           // 这条没能投出去：它自己的回显（按回执 id 认）直接丢掉。
-          if (receiptId && ids.includes(`sr_${receiptId}`)) return false;
+          if (receiptId && ids.includes(failedReceipt)) return false;
           // 落库的权威历史照放行 —— 重连页里可能夹着更早、再也不会有回执的条目。
           if (['chat_msg_meta', 'chat_history'].includes(event.type)) { events.push(remap(event)); return false; }
           return true;
