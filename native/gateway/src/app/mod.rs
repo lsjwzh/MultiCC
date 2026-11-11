@@ -23,6 +23,7 @@ mod service_transport;
 pub mod services;
 pub mod source_workspaces;
 pub mod subagent_defaults;
+pub mod token_usage_by_role;
 pub mod token_usage_global;
 pub mod uploads;
 
@@ -74,6 +75,8 @@ pub enum Route {
     UploadCleanupOptions,
     TokenUsageGlobalGet,
     TokenUsageGlobalOptions,
+    TokenUsageByRoleGet,
+    TokenUsageByRoleOptions,
     SubagentDefaultsGet,
     SubagentDefaultsOptions,
     SubagentDefaultsSync,
@@ -176,6 +179,8 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         ("uploads/cleanup", "OPTIONS") => Some(Route::UploadCleanupOptions),
         ("token-usage/global", "GET" | "HEAD") => Some(Route::TokenUsageGlobalGet),
         ("token-usage/global", "OPTIONS") => Some(Route::TokenUsageGlobalOptions),
+        ("token-usage/by-role", "GET" | "HEAD") => Some(Route::TokenUsageByRoleGet),
+        ("token-usage/by-role", "OPTIONS") => Some(Route::TokenUsageByRoleOptions),
         ("subagent-defaults", "GET" | "HEAD") => Some(Route::SubagentDefaultsGet),
         ("subagent-defaults", "OPTIONS") => Some(Route::SubagentDefaultsOptions),
         ("subagent-defaults/sync", "POST") => Some(Route::SubagentDefaultsSync),
@@ -466,6 +471,7 @@ pub async fn handle(
         | Route::ClaudeSubscriptionOptions
         | Route::CodexSubscriptionOptions
         | Route::TokenUsageGlobalOptions => return options(&ctx, "GET,HEAD"),
+        Route::TokenUsageByRoleOptions => return options(&ctx, "GET,HEAD"),
         Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
         Route::DownloadTicket => {
             let (status, value) = download::issue(&app, &body, now_ms());
@@ -503,6 +509,7 @@ pub async fn handle(
         }
         // The host port is the Node child's internal listener; a route that
         // needs in-process Node state asks it only through that one call.
+        Route::TokenUsageByRoleGet => return token_usage_by_role::get(&ctx, host).await,
         Route::SubagentDefaultsGet => return subagent_defaults::get(&app, &ctx, host).await,
         Route::SubagentDefaultsSync => {
             return subagent_defaults::sync(&app, &ctx, &body, host).await
@@ -690,6 +697,22 @@ mod tests {
         assert_eq!(claim(&Method::POST, "/api/token-usage/global"), None);
         assert_eq!(claim(&Method::GET, "/api/token-usage/global//"), None);
         assert_eq!(claim(&Method::GET, "/API/token-usage/global"), None);
+        assert_eq!(
+            claim(&Method::GET, "/api/token-usage/by-role"),
+            Some(Route::TokenUsageByRoleGet)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/Token-Usage/By-Role/"),
+            Some(Route::TokenUsageByRoleGet)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/token-usage/by-role"),
+            Some(Route::TokenUsageByRoleOptions)
+        );
+        assert_eq!(claim(&Method::POST, "/api/token-usage/by-role"), None);
+        assert_eq!(claim(&Method::GET, "/API/token-usage/by-role"), None);
+        assert_eq!(claim(&Method::GET, "/api/token-usage/by-role/x"), None);
+        assert_eq!(claim(&Method::GET, "/api/token-usage"), None);
         assert_eq!(claim(&Method::GET, "/api/files"), None);
         assert_eq!(claim(&Method::POST, "/api/upload"), None);
     }

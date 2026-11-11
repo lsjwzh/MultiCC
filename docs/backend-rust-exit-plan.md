@@ -3492,3 +3492,83 @@ reveal 只回明文、编码与带空白的名字、尾斜杠、OPTIONS/HEAD、�
   `src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
   `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`。未重启服务，
   路由由前门接管要等用户手动重启后才生效。
+
+## Token 用量角色路由迁入 Rust 前门（2026-11-11）
+
+`GET /api/token-usage/by-role` 原先由 `src/routes/token-usage.js` 的 `mountRoutes` 回答。
+它读 Node 进程内的 `RoleTokenTracker`（内存快照）与持久 ledger 文件，因此不能整条留在
+Node：查询语义（`req.query.session` 的 qs 真值/数组/对象三态）、空快照形状、公开 500 文案
+与 OPTIONS/HEAD 进前门，两处读取经宿主端口回调。
+
+### Rust 实现
+
+- `native/gateway/src/app/token_usage_by_role.rs`（87 行）：`query_value(original_url,
+  "session")` 的结果分三路——非空 `Text` 走宿主 `snapshot`；`Missing` 或空 `Text` 走
+  `ledger`；`List`/`Object` 在 JS 里是 truthy 但 `Map#get(对象)` 永不匹配字符串键，答案
+  必为空快照，故由 Rust 直接答 `{"main":null,"sub":null,"subByProvider":[]}` 而不空跑
+  往返。宿主不可达、`ok:false` 或缺 `payload` 统一回 500
+  `{"error":"Token usage is temporarily unavailable"}`（退役 handler 的 catch 原文，
+  不是 503）。
+- `native/gateway/src/app/mod.rs`：两个 `Route` 变体、claim 接线、OPTIONS arm
+  （`GET,HEAD`）与 handler arm；单测补了混合大小写、尾斜杠、`/API/` 拒绝、多余段拒绝与
+  其他方法不 claim。
+
+### 删除与宿主适配
+
+- `src/routes/token-usage.js`：`mountRoutes`（21 行）连同 `mountTokenUsageRoutes` 包装与
+  相应导出共删 30 行，文件 539 → 509 行；`EMPTY_ROLE_SNAPSHOT`、`PUBLIC_USAGE_ERROR`
+  导出保留，`assertDependencies` 未动（`roleTokenTracker` 仍被 `reconcileCodexRoleUsage`
+  与 `resetRoleTokenUsage` 使用）。
+- `src/routes/token-usage-host.js`（64 行）：`POST /api/__host/token-usage`，回环
+  `isLocalRequest` 判定、非回环 404；两个 op（`snapshot` 空结果回落冻结空快照、`ledger`
+  透传），tracker 抛错记 `token_usage_role_read_failed` 后回 `{ok:false}`，错误文本不出
+  宿主；未知 op 回 `{ok:false}`。
+- `server.js` 净 +1 行（新增 require，原 `tokenUsageRuntime.mountRoutes(app)` 换成
+  `mountTokenUsageHostRoute(app, { tracker: roleTokenTracker, logFailure })`，仍在两段
+  Provider 路由之间），行数 3068 → 3069（脚本口径），字节 164328 → 164521，行预算棘轮
+  同步。`tests/test-provider-router-runtime.js` 的接线断言同步到新调用。
+- 测试面：`tests/test-token-usage-routes.js` 删掉 by-role 的 HTTP 用例（保留模块契约）；
+  新增 `tests/test-token-usage-host.js`（9 条）；新增冻结 oracle
+  `tests/helpers/legacy-token-usage-route.js`（43 行）；`tests/test-tiers.json` 879 条、
+  `test:rust` 增加宿主端口测试、`test-release-version-consistency` 复核集合
+  426/352/398/395。
+
+### 集成测试
+
+`native/gateway/tests/token_usage_by_role.rs`（579 行，11 个用例）：snapshot 命中逐字节
+字段顺序、未命中空快照、ledger 原样键序、空/缺省 session 都读 ledger、数组/对象形态 200
+且无宿主调用、百分号编码只解码一次、宿主不可达与 `ok:false` 同为公开 500、
+OPTIONS/HEAD、路径匹配、宿主收到的 op/session 精确有序。测试的 `free_port()` 在
+`EADDRINUSE` 时换端口重试（最多 6 次），`exchange` 保留零字节连接重置重放。
+`tests/fixtures/upstream.js` 新增 `POST /api/__host/token-usage` 脚本模式
+（`token-usage-calls.jsonl`，`script.tokenUsage.*` 控制回答、`hostDown` 模拟不可达）。
+
+### 差分与验证
+
+- `docs/rust-migration/differential/token-usage-by-role.js`（262 行）：Node 侧挂冻结
+  oracle 与脚本化 tracker，Rust 侧是前门 + 按 PROXY v1 接线的桩；tracker 对 `boom` 抛错、
+  桩对同一会话回 `ok:false`，两侧都走退役 catch 分支。23 条请求：20 条逐字节一致，3 条
+  预期差异单独校验（大写 `/API/` 前缀 Node 200 / 前门转发、`POST` 与多余路径段 Node 404 /
+  前门转发）。
+- 源码指纹 `82dab3fc43944a35c760ab74`：`multicc_core.node` 18,364,576 字节（SHA-256
+  `6294bdf9…5724`，与上一批同字节）、`multicc-gateway` 12,120,352 字节（SHA-256
+  `782720f5…7a50`）、`multicc-remote`（`d800dd59…2d36`）、`multicc-cdpd`
+  （`63f2c749…7522`）；四个平台产物均已构建。
+- `cargo fmt --all -- --check` 退出 0；`cargo clippy --locked -p multicc-gateway
+  --all-targets -- -D warnings` 零告警；`cargo test --locked -p multicc-gateway` 全绿
+  （11 个测试二进制，lib 45 + 集成 107 = 152 passed）。
+- JS 门禁（`MULTICC_RUST_ADDON` 指向本指纹的 `darwin-arm64/multicc_core.node`，
+  `MULTICC_RUST_PREBUILT_DIR` 指向指纹根目录）：`test:rust` 292/292、`test:native`
+  292/292、`test:architecture` 128/128、`test:contracts` 148/148、`test:governance`
+  20/20（`check-test-tiers` 879 条），本组相关 Node 测试 18/18。
+- 两份后端清单已重新生成：`docs/backend-route-inventory.md`（588 个后端文件、138,248 行、
+  487 个注册候选；删一条公开注册、新增一条宿主端口），`docs/backend-runtime-inventory.md`
+  （指纹 `82dab3fc43944a35c760ab74`，537 条路由注册、34 层中间件）。
+- `docs/gateway.md` 新增 §35 与路由表一行；`docs/rust-migration/route-inventory.md` 把
+  `src/routes/token-usage.js` 标为 0 条路由 ✅、新增宿主端口行、更新推荐顺序第 9 组，并把
+  「by-role 暂缓」的旧结论改成已迁与拆分方式。
+- 本组按用户指令完成：删除 Node 路由实现 30 行（21 行 `mountRoutes` + 5 行包装 + 导出），
+  `server.js` 净 +1 行，新增宿主端口 64 行。剩余的纯宿主垫片文件：
+  `src/routes/agent-resources-host.js`、`src/routes/model-catalogs-host.js`、
+  `src/routes/subagent-defaults-host.js`、`src/routes/secrets-vault-host.js`、
+  `src/routes/token-usage-host.js`。未重启服务，路由由前门接管要等用户手动重启后才生效。

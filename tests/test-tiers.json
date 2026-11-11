@@ -6320,6 +6320,15 @@
       ]
     },
     {
+      "path": "tests/test-token-usage-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-token-usage-routes.js",
       "tier": "other",
       "lane": "deterministic",

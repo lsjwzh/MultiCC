@@ -8,48 +8,11 @@ const test = require('node:test');
 
 const {
   MAX_EVENT_TOKENS,
-  PUBLIC_USAGE_ERROR,
   consumedInput,
   createTokenUsageRoutes,
   localDateKey,
   tokenCount,
 } = require('../src/routes/token-usage');
-
-function createApp() {
-  const handlers = new Map();
-  return {
-    handlers,
-    get(route, handler) {
-      handlers.set(`GET ${route}`, handler);
-    },
-  };
-}
-
-function createResponse() {
-  return {
-    statusCode: 200,
-    body: undefined,
-    jsonCalls: 0,
-    status(value) {
-      this.statusCode = value;
-      return this;
-    },
-    json(value) {
-      this.body = value;
-      this.jsonCalls += 1;
-      return this;
-    },
-  };
-}
-
-async function invoke(app, route, request = {}) {
-  const handler = app.handlers.get(`GET ${route}`);
-  assert.equal(typeof handler, 'function', `missing GET ${route}`);
-  const response = createResponse();
-  await handler({ query: {}, ...request }, response);
-  assert.equal(response.jsonCalls, 1);
-  return response;
-}
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-token-usage-routes-'));
@@ -136,42 +99,6 @@ function createHarness(root, overrides = {}) {
     tokenDailyFile,
   };
 }
-
-test('mounts legacy routes, preserves DTOs, and fixes public error text', async () => {
-  const root = tempDir();
-  try {
-    const tracker = createRoleTracker();
-    tracker.snapshots.set('session-a', {
-      main: { inputTokens: 3 }, sub: null, subByProvider: [],
-    });
-    const harness = createHarness(root, { roleTokenTracker: tracker });
-    const app = createApp();
-    harness.runtime.mountRoutes(app);
-
-    let response = await invoke(app, '/api/token-usage/by-role', { query: { session: 'session-a' } });
-    assert.deepEqual(response.body, {
-      main: { inputTokens: 3 }, sub: null, subByProvider: [],
-    });
-    response = await invoke(app, '/api/token-usage/by-role', { query: { session: 'missing' } });
-    assert.deepEqual(response.body, { main: null, sub: null, subByProvider: [] });
-    response = await invoke(app, '/api/token-usage/by-role');
-    assert.deepEqual(response.body, { '2026-07-19': { main: {} } });
-
-    const failingRole = createHarness(root, {
-      roleTokenTracker: createRoleTracker({
-        readLedger() { throw new Error('credential=top-secret /private/ledger.json'); },
-      }),
-    });
-    const failingRoleApp = createApp();
-    failingRole.runtime.mountRoutes(failingRoleApp);
-    response = await invoke(failingRoleApp, '/api/token-usage/by-role');
-    assert.equal(response.statusCode, 500);
-    assert.deepEqual(response.body, { error: PUBLIC_USAGE_ERROR });
-    assert.equal(JSON.stringify(failingRole.logs).includes('top-secret'), false);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
 
 test('cumulative commit counts consumed input before best-effort local-day indexing', () => {
   const root = tempDir();

@@ -356,6 +356,36 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the token-usage role snapshot and the persisted ledger
+  // (src/routes/token-usage-host.js). The script file carries the per-session
+  // snapshots and the ledger object; every call is appended so the tests can
+  // assert the exact op and session the front door sent.
+  if (route === '/api/__host/token-usage' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'token-usage-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      const usage = script.tokenUsage || {};
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (usage.down === true) return send({ ok: false });
+      if (input.op === 'snapshot') {
+        return send({ ok: true, payload: (usage.snapshots && usage.snapshots[input.session]) || { main: null, sub: null, subByProvider: [] } });
+      }
+      if (input.op === 'ledger') {
+        return send({ ok: true, payload: usage.ledger || {} });
+      }
+      send({ ok: false });
+    });
+    return;
+  }
   if (route === '/echo' && req.method === 'POST') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
