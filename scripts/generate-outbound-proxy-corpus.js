@@ -377,7 +377,7 @@ build().then((corpus) => {
     console.log(`wrote ${path.relative(root, target)} (${text.length} bytes)`);
     return;
   }
-  const current = fs.readFileSync(target, 'utf8');
+  const current = fs.readFileSync(target, 'utf8').replace(/\r\n/g, '\n');
   if (current !== text) {
     console.error(`${path.relative(root, target)} is stale; run with --write`);
     process.exit(1);

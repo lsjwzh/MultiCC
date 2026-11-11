@@ -492,10 +492,12 @@ rustTest('Rust 流计时器在首条有效帧前和进度后分别归因，并�
         else res.write(': keepalive\n\n');
       },
     });
-    const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
-    assert.equal(res.status, 200);
-    await res.text().catch(() => {});
+    // The timeout can close the downstream before fetch delivers its headers.
+    // Either transport surface must preserve the same timeout and cleanup facts.
+    const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody).catch(() => null);
+    if (res) { assert.equal(res.status, 200); await res.text().catch(() => {}); }
     await Promise.race([upstreamClosed, new Promise((_, reject) => setTimeout(() => reject(new Error('upstream not closed')), 2500))]);
+    assert.equal(h.requests.length, 1);
     assert.equal(h.outcomes.length, 1);
     assert.equal(h.outcomes[0].errorCode, progress ? 'stream_idle_timeout' : 'response_stalled_before_response');
     assert.equal(h.outcomes[0].proxyOutcome.termination, 'upstream_failure');

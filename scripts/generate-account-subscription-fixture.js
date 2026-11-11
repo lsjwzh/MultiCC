@@ -191,13 +191,14 @@ function ensureTls(existing) {
 
 async function collect(tls) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'account-subscription-fixture-'));
-  const saved = { HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TMPDIR: process.env.TMPDIR };
   for (const file of homeFiles()) {
     const full = path.join(home, file.path);
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, file.text);
   }
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   process.env.TMPDIR = path.join(BASE, 'tmp');
   fs.mkdirSync(process.env.TMPDIR, { recursive: true });
   try {
@@ -246,6 +247,7 @@ async function collect(tls) {
     return cases;
   } finally {
     if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME;
+    if (saved.USERPROFILE === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = saved.USERPROFILE;
     if (saved.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved.TMPDIR;
     fs.rmSync(home, { recursive: true, force: true });
   }

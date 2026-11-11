@@ -47,8 +47,10 @@ function isolatedEnv(work) {
   const env = {
     PATH: process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin',
     HOME: path.join(work, 'home'),
+    USERPROFILE: path.join(work, 'home'),
     TMPDIR: path.join(work, 'tmp'),
     TMP: path.join(work, 'tmp'),
+    TEMP: path.join(work, 'tmp'),
     MULTICC_DATA_DIR: path.join(work, 'data'),
     // The account-subscription generator keeps its TLS material here.
     AS_WORK: path.join(work, 'as-work'),
@@ -63,7 +65,7 @@ function isolatedEnv(work) {
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost',
   };
-  for (const key of ['MULTICC_RUST_ADDON', 'MULTICC_RUST_PREBUILT_DIR', 'OPENSSL_BIN']) {
+  for (const key of ['MULTICC_RUST_ADDON', 'MULTICC_RUST_PREBUILT_DIR', 'OPENSSL_BIN', 'SystemRoot', 'WINDIR']) {
     if (process.env[key]) env[key] = process.env[key];
   }
   for (const dir of ['home', 'tmp', 'data', 'as-work']) fs.mkdirSync(path.join(work, dir), { recursive: true });
@@ -89,7 +91,7 @@ function verify(script) {
 }
 
 test('the outbound proxy corpus matches the live proxy policy', () => {
-  assert.match(verify('scripts/generate-outbound-proxy-corpus.js'), /verified native\/core\/tests\/fixtures\/outbound-proxy-cases\.json/);
+  assert.match(verify('scripts/generate-outbound-proxy-corpus.js'), /verified native[\\/]core[\\/]tests[\\/]fixtures[\\/]outbound-proxy-cases\.json/);
 });
 
 test('the claude models fixture matches the frozen Node oracle', () => {

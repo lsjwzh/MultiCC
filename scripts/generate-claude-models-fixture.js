@@ -185,6 +185,7 @@ async function mountApp() {
 async function runScenario(home, cases) {
   require(ORACLE_PATH)._resetCacheForTest();
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   writeHome(home, HOME_FILES);
   const app = await mountApp();
   try {
@@ -199,6 +200,7 @@ async function runFallbackScenario(home, cases) {
   // so the first scenario's cli cache would leak into this one without a reset.
   require(ORACLE_PATH)._resetCacheForTest();
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(home, { recursive: true });
   const app = await mountApp();
@@ -216,6 +218,7 @@ async function build() {
   const data = path.join(work, 'data');
   for (const dir of [work, data]) fs.mkdirSync(dir, { recursive: true });
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   process.env.TMPDIR = work;
   process.env.MULTICC_DATA_DIR = data;
 
@@ -251,7 +254,7 @@ async function main() {
   const write = process.argv.includes('--write');
   const fixture = await build();
   const next = `${JSON.stringify(fixture, null, 2)}\n`;
-  const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
+  const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8').replace(/\r\n/g, '\n') : '';
   if (write) {
     if (current === next) {
       console.log('claude models fixture already current');

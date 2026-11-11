@@ -4,13 +4,16 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), os = requ
 const { spawn, execFileSync } = require('node:child_process');
 const { createPaths, assertTestDir } = require('../src/paths');
 const { writeJsonAtomic, readJson } = require('../src/state/store');
+const isolatedHostEnv = require('./helpers/isolated-host-env');
+const commitPolicy = require('../commit-policy.json');
 const accessToken = process.argv.includes('--no-token') ? '' : 'isolated-only';
 const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-first-isolated-')));
 const data = path.join(root, 'data'), home = path.join(root, 'home'), project = path.join(root, 'project');
 for (const dir of [data, home, project]) fs.mkdirSync(dir);
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 git(project, 'init', '-b', 'main'); fs.writeFileSync(path.join(project, 'README.md'), 'isolated task project');
-git(project, 'add', '.'); git(project, '-c', 'user.name=Test', '-c', 'user.email=test@local', 'commit', '-m', 'initial');
+git(project, 'add', '.'); git(project, '-c', `user.name=${commitPolicy.name}`, '-c', `user.email=${commitPolicy.email}`,
+  'commit', '-m', 'test(fixture): initialize isolated task project');
 const worktree = path.join(project, '.multicc-worktrees', 'legacy'); git(project, 'worktree', 'add', '-b', 'multicc/legacy', worktree);
 fs.writeFileSync(path.join(worktree, 'dirty.txt'), 'KEEP UNMERGED');
 const paths = createPaths({ dataDir: data });
@@ -36,7 +39,7 @@ async function wait(fn, label) {
   throw new Error(label);
 }
 async function api(route, body, status = 200, method) {
-  const response = await fetch(base + route, { method: method || (body === undefined ? 'GET' : 'POST'),
+  const response = await fetch(base + route, { signal: AbortSignal.timeout(10000), method: method || (body === undefined ? 'GET' : 'POST'),
     headers: { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const text = await response.text(); assert.equal(response.status, status, route + ': ' + text); return JSON.parse(text);
 }
@@ -47,12 +50,31 @@ async function api(route, body, status = 200, method) {
     await new Promise(r => listener.close(r)); base = `http://127.0.0.1:${port}`;
     const missing = path.join(root, 'missing'), commands = {};
     for (const name of ['CLAUDE_CMD','OPENCODE_CMD','ZCODE_CMD','ZCODE_ENGINE','QODER_CMD','QODERCN_CMD','KIMI_CMD','CODEBUDDY_CMD','WORKBUDDY_CMD','DSH_CMD']) commands[name] = missing;
-    server = spawn(process.execPath, ['server.js'], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, ...commands,
+    const repoRoot = path.resolve(__dirname, '..');
+    // Both entrypoints read .env beside their startup root. Run an unchanged
+    // copy of server.js with only code/assets linked, never the checkout .env.
+    const hostRoot = path.join(root, 'host'); fs.mkdirSync(hostRoot);
+    fs.copyFileSync(path.join(repoRoot, 'server.js'), path.join(hostRoot, 'server.js'));
+    for (const name of ['src', 'plugins', 'public', 'scripts', 'skills']) {
+      fs.symlinkSync(path.join(repoRoot, name), path.join(hostRoot, name), 'junction');
+    }
+    const modules = path.dirname(path.dirname(require.resolve('express/package.json')));
+    fs.symlinkSync(modules, path.join(hostRoot, 'node_modules'), 'junction');
+    for (const name of ['package.json', 'commit-policy.json']) fs.copyFileSync(path.join(repoRoot, name), path.join(hostRoot, name));
+    const addon = process.env.MULTICC_RUST_ADDON || path.join(
+      process.env.MULTICC_RUST_PREBUILT_DIR || path.join(repoRoot, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+    const gateway = path.join(path.dirname(addon), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+    server = spawn(gateway, ['serve', '--cwd', hostRoot, '--node', process.execPath, 'server.js'], { cwd: hostRoot, env: { ...isolatedHostEnv(), ...commands,
       NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: accessToken,
+      HOME: home, USERPROFILE: home, MULTICC_ENV_FILE: path.join(root, 'test.env'),
+      MULTICC_AGENT_AUTO_INSTALL: '0', MULTICC_CHROME_BIN: path.join(root, 'missing-chrome'),
+      CLAUDE_OAUTH_AUTO_REFRESH: '0', CODEX_OAUTH_AUTO_REFRESH: '0', ASR_LOCAL: 'off',
       NODE_OPTIONS: '--require ' + preload, MULTICC_DATA_DIR: data, MULTICC_MEMORY_ROOT: path.join(data, 'memories'), CODEX_CMD: fake,
       MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS: '0', MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100' }, stdio: ['ignore', 'pipe', 'pipe'] });
-    server.stdout.on('data', b => { logs = (logs + b).slice(-30000); }); server.stderr.on('data', b => { logs = (logs + b).slice(-30000); });
-    await wait(async () => { try { return (await fetch(base + '/readyz')).ok; } catch (_) { return false; } }, 'readiness');
+    const capture = b => { logs += b; if (logs.length > 60000) logs = logs.slice(0, 30000) + logs.slice(-30000); };
+    server.stdout.on('data', capture); server.stderr.on('data', capture);
+    await wait(async () => { try { return (await fetch(base + '/readyz', { signal: AbortSignal.timeout(1000) })).ok; } catch (_) { return false; } }, 'readiness');
     assert.equal((await api('/api/settings/access-token')).hasToken, !!accessToken);
     const air = await api('/api/air'); assert.equal(air.migration.ok, true); assert.equal(air.sessions.length, 0);
     const old = air.tasks.find(t => t.sessionId === 'legacy'); assert.ok(old); assert.equal(old.readOnly, false);
@@ -66,7 +88,9 @@ async function api(route, body, status = 200, method) {
     const planned = await api('/api/task-board/tasks', { dirId: 'd1', title: 'Planned board item' });
     const plannedId = planned.task?.id || planned.id; assert.ok(plannedId);
     const plannedEntry = await api('/api/air/tasks/' + plannedId);
-    assert.equal(plannedEntry.configuration.cli, 'codex', 'planned task selects an available runtime');
+    const availability = (await api('/api/sessions/legacy')).cliAvailability;
+    assert.equal(availability[plannedEntry.configuration.cli]?.available, true,
+      'planned task selects an available runtime, including the bundled Claude engine');
     assert.equal(plannedEntry.resource.residency, 'planned');
     const initialAir = await api('/api/air/sync');
     assert.ok(initialAir.cursor && initialAir.taskStats, '生产宿主挂载摘要同步接口');
