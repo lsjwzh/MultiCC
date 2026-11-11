@@ -19,6 +19,7 @@ pub mod run_config_presets;
 mod service_transport;
 pub mod services;
 pub mod source_workspaces;
+pub mod token_usage_global;
 pub mod uploads;
 
 use std::net::SocketAddr;
@@ -67,6 +68,8 @@ pub enum Route {
     UploadStatsOptions,
     UploadCleanup,
     UploadCleanupOptions,
+    TokenUsageGlobalGet,
+    TokenUsageGlobalOptions,
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -115,6 +118,8 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         ("uploads/stats", "OPTIONS") => Some(Route::UploadStatsOptions),
         ("uploads/cleanup", "DELETE") => Some(Route::UploadCleanup),
         ("uploads/cleanup", "OPTIONS") => Some(Route::UploadCleanupOptions),
+        ("token-usage/global", "GET" | "HEAD") => Some(Route::TokenUsageGlobalGet),
+        ("token-usage/global", "OPTIONS") => Some(Route::TokenUsageGlobalOptions),
         _ => None,
     }
 }
@@ -142,6 +147,8 @@ pub struct App {
     /// retired Node module cache; src/claude-models.js reads the persisted
     /// copy for spawn/list callers.
     pub claude_models: claude_models::Shared,
+    /// The global-usage aggregate and its 120s cache (was src/token-global.js).
+    pub token_usage_global: token_usage_global::Shared,
     /// The observation cache the retired Node route wrote, plus the
     /// process-local single-flight table and the system-proxy slot. `Arc` lets
     /// the leader query outlive the HTTP request that started it.
@@ -202,6 +209,7 @@ impl App {
             tickets: Mutex::new(DownloadTickets::new()),
             provider_limit_history: Mutex::new(provider_limit_history::State::default()),
             claude_models: Mutex::new(claude_models::State::default()),
+            token_usage_global: Mutex::new(token_usage_global::State::default()),
             account_subscription: subscriptions,
             home_dir: std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -353,7 +361,8 @@ pub async fn handle(
         | Route::ProviderLimitHistoryOptions
         | Route::ClaudeModelsOptions
         | Route::ClaudeSubscriptionOptions
-        | Route::CodexSubscriptionOptions => return options(&ctx, "GET,HEAD"),
+        | Route::CodexSubscriptionOptions
+        | Route::TokenUsageGlobalOptions => return options(&ctx, "GET,HEAD"),
         Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
         Route::DownloadTicket => {
             let (status, value) = download::issue(&app, &body, now_ms());
@@ -365,6 +374,30 @@ pub async fn handle(
             return express::json(&ctx, status, &value, extra);
         }
         Route::Download => return download::download(&app, &ctx).await,
+        // This route scans session transcripts; it must not hold the store
+        // lock other read-modify-write routes share.
+        Route::TokenUsageGlobalGet => {
+            let worker = Arc::clone(&app);
+            let original_url = ctx.original_url.clone();
+            let answered = tokio::task::spawn_blocking(move || {
+                let mut state = worker
+                    .token_usage_global
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                token_usage_global::answer(&worker.home_dir, &original_url, now_ms, &mut state)
+            })
+            .await;
+            return match answered {
+                Ok((status, text)) => express::send(
+                    &ctx,
+                    status,
+                    "application/json; charset=utf-8",
+                    text.into_bytes(),
+                    &[],
+                ),
+                Err(_) => express::error(&ctx, 500, "native route panicked"),
+            };
+        }
         Route::ClaudeSubscriptionGet => {
             return account_subscription::get(&app, "claude", &ctx).await
         }
@@ -533,6 +566,21 @@ mod tests {
             Some(Route::UploadCleanup)
         );
         assert_eq!(claim(&Method::GET, "/api/uploads/cleanup"), None);
+        assert_eq!(
+            claim(&Method::GET, "/api/token-usage/global"),
+            Some(Route::TokenUsageGlobalGet)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/Token-Usage/Global/"),
+            Some(Route::TokenUsageGlobalGet)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/token-usage/global"),
+            Some(Route::TokenUsageGlobalOptions)
+        );
+        assert_eq!(claim(&Method::POST, "/api/token-usage/global"), None);
+        assert_eq!(claim(&Method::GET, "/api/token-usage/global//"), None);
+        assert_eq!(claim(&Method::GET, "/API/token-usage/global"), None);
         assert_eq!(claim(&Method::GET, "/api/files"), None);
         assert_eq!(claim(&Method::POST, "/api/upload"), None);
     }

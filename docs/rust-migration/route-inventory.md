@@ -297,7 +297,7 @@
 | `src/routes/task-graph.js` | 1 | 302 | GET '/api/task-graph' @271 | b,d | T1 |
 | `src/routes/task-planning.js` | 5 | 196 | POST '/api/task-board/tasks' @180<br>POST '/api/task-board/tasks/:taskId/update' @181<br>POST '/api/task-board/tasks/:taskId/title' @183<br>POST '/api/task-board/tasks/:taskId/planning' @186<br>POST '/api/task-board/tasks/:taskId/move' @188 | b,d | T1 |
 | `src/routes/task-search.js` | 2 | 182 | GET '/api/task-board/search' @169<br>GET '/api/search/messages' @170 | b,d | T1 |
-| `src/routes/token-usage.js` | 2 | 553 | GET '/api/token-usage/global' @484<br>GET '/api/token-usage/by-role' @496 | b,d | T1 |
+| `src/routes/token-usage.js` | 1 | 540 | GET '/api/token-usage/by-role' @483 | b,d | T1（`global` 已于 2026-11-11 迁至前门并从本文件删除；`by-role` 留在 Node，读 Node 持有的会话/角色表） |
 | `src/routes/update-route.js` | 2 | 199 | GET '/api/update/status' @106<br>POST '/api/update' @110 | b,c | T2 |
 | `src/routes/voice-gateway-global.js` | 14 | 267 | GET '/api/voice-gateway' @243<br>GET '/api/v1/voice-gateway' @244<br>PUT '/api/voice-gateway' @245<br>PUT '/api/v1/voice-gateway' @246<br>DELETE '/api/voice-gateway' @247<br>DELETE '/api/v1/voice-gateway' @248<br>GET '/api/voice-gateway/runtime' @249<br>GET '/api/v1/voice-gateway/runtime' @250<br>POST '/api/voice-gateway/restart' @251<br>POST '/api/v1/voice-gateway/restart' @252<br>POST '/api/voice-gateway/launch' @253<br>POST '/api/v1/voice-gateway/launch' @254<br>GET '/api/voice-gateway/launch/:launchId' @255<br>GET '/api/v1/voice-gateway/launch/:launchId' @256 | a,b,c | T2 |
 | `src/routes/voice-gateway.js` | 8 | 162 | GET '/api/voice-gateways' @144<br>GET '/api/v1/voice-gateways' @145<br>GET '/api/directories/:id/voice-gateway' @146<br>GET '/api/v1/directories/:id/voice-gateway' @147<br>PUT '/api/directories/:id/voice-gateway' @148<br>PUT '/api/v1/directories/:id/voice-gateway' @149<br>DELETE '/api/directories/:id/voice-gateway' @150<br>DELETE '/api/v1/directories/:id/voice-gateway' @151 | a,b,c | T2 |
@@ -353,16 +353,24 @@
 |---|---|---|---|
 | 1 | ✅ `provider-limit-history`（1 条 / 91 行，T0；已迁至前门） | 数据已由 Rust `quota_history` 持有（`src/paths.js:158-161`），Node 只做 DTO 组装 | 网关集成测试 `native/gateway/tests/provider_limit_history.rs`（冻结 Node oracle 的 golden fixture） |
 | 2 | ✅ `run-config-presets`（3 条 / 125 行，T1，`d`；已迁至前门） | Rust `run_config_presets` 已是权威；Node 侧只是校验 + 文件读写 | `tests/test-run-config-presets.js`（`test:security`、`test:core`） |
-| 3 | `subagent-defaults`（2 条 / 257 行，T1，`d`） | Rust `subagent_defaults` 持有继承/清除逻辑；无 session 内存态 | `tests/test-subagent-defaults.js` |
+| 3 | `subagent-defaults`（2 条 / 257 行，T1，`d`）— **2026-11-11 复核：不可直接搬**。GET 读 Node 内存 `sessions` Map（`applySessionPatch` 后取 `subagentDefaults`），前门没有这份镜像，先要把该字段的权威状态迁进 Rust | `tests/test-subagent-defaults.js` |
 | 4 | ✅ `account-subscription`（1 条 / 50 行，T0，`d`；已迁至前门） | Rust `account_subscription` 内核 + 出站代理策略；两个 GET 端点、DTO 窄，凭据读取可注入 | `native/gateway/tests/account_subscription.rs`（冻结 Node oracle 的 golden fixture）；Node 侧读取器 `tests/test-account-subscription.js`（`test:provider-router`） |
 | 5 | `scan`（1 条 / 34 行，T0） | 只读扫描历史文件；无派生进程；单文件 | `tests/test-scan-route.js`（`test:core`） |
 | 6 | 模型目录 7 个文件（9 条 / 1,346 行，T1；`claude-models` 已迁至前门）<br>`codex-models`、`opencode-models`、`qoder-models`、`grok-models`、`commandcode-models`、`codebuddy-models`、`provider-models` | 只读 provider 配置 + 模型缓存；Rust `provider_store`/`codex_models` 已有；彼此同构，可一次性抽公共层 | `tests/test-claude-models-fallback.js`、`test-codex-models-route.js`、`test-opencode-models.js`、`test-qoder-models-route.js`、`test-commandcode-grok-models-route.js`、`test-codebuddy-models-route.js`、`test-provider-models-route.js`（`test:provider-router`）；`claude-models` 见网关集成测试 `native/gateway/tests/claude_models.rs` |
 | 7 | `agent-resources`（6 条 / 252 行，T1） | 只读 skills/presets/Claude session 列表；不碰 turn 内存态；删除面清晰 | `tests/test-agent-resources-routes.js`（`test:core`） |
 | 8 | `secrets-vault`（5 条 / 260 行，T1） | `secrets.json` 0600 + 审计 JSONL；接口小、语义独立 | `tests/test-secrets-vault.js`、`tests/test-secrets-entry-visibility.js` |
-| 9 | `token-usage`（2 条 / 553 行，T1，`d`） | 统计由 Rust `computeUsage` 内核产出；Node 只读 token_usage/token_daily/token_by_role | `tests/test-token-usage-routes.js` |
+| 9 | ✅ `token-usage` 的 `GET/HEAD/OPTIONS /api/token-usage/global`（1 条 / 110 行：`src/token-global.js` 95 行 + 路由 12 行 + 依赖断言 1 行 + `server.js` 接线 2 行；2026-11-11 已迁至前门） | `multicc_core::usage` 已产出统计；文件枚举、本地窗口、时区、120s 缓存与 JSON 组装整体搬进 Rust；`by-role` 依赖 Node 会话/角色表，仍留在 Node | 网关集成测试 `native/gateway/tests/token_usage_global.rs` + 差分 `docs/rust-migration/differential/token-usage-global.js`；`tests/test-token-global.js`（`test:provider-router`）、`tests/test-token-usage-routes.js`（`test:core`） |
 | 10 | `host-read`（10 条 / 281 行，T1） | 只读主机配置（notify/tunnel/power/battery/vapid）；无写路径 | `tests/test-host-read-routes.js`（`test:core`） |
 
 紧接着可做的 11-12 组（不在“前 10”里，但风险同样低）：`file-transfer`（5 条 / 184 行，T1；`tests/test-file-transfer-routes.js`）、`turn-ledger`（3 条 / 200 行，T1；`tests/test-turn-ledger.js`）。
+
+2026-11-11 的逐组复核结论（按“状态是否已在 Rust”重判，避免把 T1 当成可直搬）：
+
+- `agent-resources`：GET 里的 Claude session 列表来自 Node 内存 `sessions` Map 的 `sessions.json` 镜像与 `applySessionPatch`，且 `agent-presets` 写路径回调 Node；先决定 `sessions.json` 的权威侧，否则会把当前内存态冻结成一份过期快照。
+- `secrets-vault`：真正阻塞点不是文件（0600 JSON + 审计 JSONL 可搬），而是解密密钥与 Node 启动期的密钥派生生命周期；迁移前必须把 vault 密钥所有权一起搬。
+- `token-usage/by-role`：`?session=` 分支读 Node 内存会话表；只有不带参数的分支能独立搬，收益低于拆分成本，暂缓。
+- `file-transfer` 的 `/api/files`、`scan`、`turn-ledger`、`system.js`：分别依赖 Node 目录缓存、扫描环形缓冲、turn 运行时/hook 表、以及启动参数与运行中版本信息；这些状态未进 Rust 前不能 claim。
+- 模型目录 7 个文件：`codex-models`（含 `POST /sync`）与 `provider-models` 依赖 Node 的 provider store 写路径与 `summarize` 组装；`opencode/qoder/grok/commandcode/codebuddy` 需要一个跨进程模型缓存约定（不能只靠进程内 TTL），否则网关与 Node 会各扫一份、各有一个过期窗口。
 
 不建议先动的组：
 

@@ -117,7 +117,7 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | **A 主动轮询** | 供应商官方 API（GLM monitor / DeepSeek balance / Codex usage） | 服务端定时，按策略 TTL | `src/usage-limit-poller.js:208` |
 | **B 按需 HTTP** | 官方 API / 本地 CLI / 无头浏览器抓页 | 前端点击或切 provider 时拉 | 8 条 `/api/*/quota` 路由 |
-| **C 本地统计** | 扫本机 JSONL 会话文件累加 token | 前端请求，120s 缓存 | `src/token-global.js:301` |
+| **C 本地统计** | 扫本机 JSONL 会话文件累加 token | 前端请求，120s 缓存 | `native/gateway/src/app/token_usage_global.rs`（原 `src/token-global.js`，2026-11-11 已删） |
 
 A 的适配器表 `src/usage-limit-poller.js:200 ADAPTERS`：`pollGlmMonitor:77`、`pollDeepseekBalance:111`、
 `pollCodexUsage:153`；TTL 按策略 `:34`，超时 6s `:30`，key 只存 hash `:49`。
@@ -125,9 +125,11 @@ A 的适配器表 `src/usage-limit-poller.js:200 ADAPTERS`：`pollGlmMonitor:77`
 和 `usage_balance_event`（`:40`，预付余额），前端在
 `public/chat-rate-limit.js:275 consumeRateLimitEvent` / `:362 consumeBalanceEvent` 消费。
 
-C 走 `src/token-global.js`：扫 `~/.claude/projects`（`:21`）+ `~/.codex/sessions`（`:22`），
-缓存 120s（`:23`），codex rollout 分叉重放去重 `:207`；出口
-`src/routes/token-usage.js:475 /api/token-usage/global`、`:487 /api/token-usage/by-role`；
+C 的 `/api/token-usage/global` 自 2026-11-11 起由 Rust 前门应答：`native/gateway/src/app/token_usage_global.rs`
+扫 `$HOME/.claude/projects` + `$HOME/.codex/sessions`（原 `src/token-global.js:21-22`），120s 缓存
+（原 `:23`，TTL 未变），codex rollout 分叉重放去重仍由 `multicc_core::usage` 内核完成（原 `:207`）；
+原 Node 模块与路由已删，冻结实现对拍留在 `tests/helpers/legacy-token-usage-global-route.js`。
+`/api/token-usage/by-role` 仍由 Node 提供（读 Node 会话/角色表），
 按角色分摊 `src/role-token-tracker.js:73`，事件规范 `src/usage-observed.js:98`。
 
 ### 2.2 B 类六家的取数方式各不相同 —— 这是最大的口径差异点
@@ -183,8 +185,8 @@ flowchart TD
     end
 
     subgraph C["口径 C：本地 token 统计"]
-        TG["token-global.js:301 compute<br/>缓存 120s :23"]
-        TU["routes/token-usage.js:475 /global<br/>:487 /by-role"]
+        TG["gateway token_usage_global.rs<br/>Rust 扫描 + 缓存 120s"]
+        TU["routes/token-usage.js /by-role<br/>（global 已在前门）"]
         RT["role-token-tracker.js:73"]
     end
 
@@ -222,7 +224,7 @@ flowchart TD
   出错后 60s 内不再自动重拉；`refresh*(force=true)` 可穿透。
 - **在途去重**：每家一个 `*FetchInFlight` 标志，避免并发重复请求。
 - **本地缓存**：`localStorage` + `fetchedAt` 24 小时过期，页面加载先 `restore*()` 显示旧值再异步刷新。
-- **服务端缓存**：轮询侧按策略 TTL（`usage-limit-poller.js:34`）；token 统计 120s（`token-global.js:23`）；
+- **服务端缓存**：轮询侧按策略 TTL（`usage-limit-poller.js:34`）；token 统计 120s（前门 `token_usage_global.rs` 的 `CACHE_TTL_MS`），进程内、不再与 Node 共享；
   qoder cookie 7 天（`qoder-quota.js:44`）；ark 二进制路径解析结果只缓存成功值（`ark-quota.js:51`）。
 - **失败降级**：`needs_login` / `chrome_unavailable` 渲染成可点击的登录入口；其余失败退回上一次缓存值 +
   相对时间戳（`kimiCachedView :1458` 是这套的样板），彻底无数据时才显示错误文案。

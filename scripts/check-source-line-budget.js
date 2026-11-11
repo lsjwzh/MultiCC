@@ -212,10 +212,13 @@ const MIGRATION_DEBT = Object.freeze({
   // （从 Auto 候选/限流缓存读最早的解禁时刻），实测 3073/165078，按棘轮登记。
   // 同日 GET /api/claude/models 迁到 Rust 前门：挂载那一行改成说明注释（行数不变），
   // rebase 后 split(/\n/).length 量到 3073 行 / 165036 字节，按实测双向贴住。
+  // 2026-11-11 GET/HEAD/OPTIONS /api/token-usage/global 迁到 Rust 前门：server.js
+  // 删掉 src/token-global 的 require 与该路由读取端口的接线两行，实测
+  // 3071/164919，按棘轮双向调到实测值。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3073,
-    byteCeiling: 165036,
+    ceiling: 3071,
+    byteCeiling: 164919,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

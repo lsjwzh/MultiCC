@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process');
 const js = require('../src/task-board/search');
 const native = require('../src/native/runtime');
 const { buildIndex, searchIndex, createTaskSearchBackend } = require('../src/native/task-search');
-const usage = require('../src/token-global');
+const usage = require('./helpers/legacy-token-usage-global-route');
 const { taskBoard, usageFixture } = require('./fixtures/rust-kernel-fixtures');
 const available = (() => { try { return !!native.getNative(); } catch { return false; } })();
 const rustTest = (name, fn) => test(name, { skip: !available && '未构建可选 Rust 模块' }, fn);
@@ -152,7 +152,7 @@ rustTest('Token 日期窗口在 UTC、上海和纽约时区保持一致', () => 
     fs.writeFileSync(path.join(dateDir, '2026.jsonl'), JSON.stringify({
       timestamp: '2026-11-01', requestId: 'date', message: { id: 'date', model: 'tz', usage: { input_tokens: 5 } },
     }) + '\n');
-    const script = `const u=require('./src/token-global'),a=require('node:assert/strict');
+    const script = `const u=require('./tests/helpers/legacy-token-usage-global-route'),a=require('node:assert/strict');
       (async()=>{const base={projectsDir:process.argv[1],codexDir:process.argv[1]+'/absent',now:new Date('2026-11-01T17:00:00Z')};
       const r=await u._compute(base);a.equal(r.responses,7);a.equal(r.windows.all.tz.inputTokens,28);
       const d=await u._compute({...base,projectsDir:process.argv[3]});

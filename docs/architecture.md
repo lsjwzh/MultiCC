@@ -46,7 +46,8 @@ multicc/
 │   ├── memory/ , memory-store.js # Per-session + shared agent memory
 │   ├── skills.js , skill-sync/   # Claude/Codex skill discovery and conversion
 │   ├── triggers/                 # post-turn | file-change | schedule triggers
-│   ├── token-global.js           # Global token usage aggregation & stats
+│   ├── role-token-tracker.js     # Per-role token attribution (global usage now
+│   │                             #  lives in native/gateway token_usage_global.rs)
 │   ├── tunnel.js                 # Tailscale Funnel & 花生壳 DDNS monitor
 │   ├── paths.js                  # Canonical location of every state file
 │   ├── shutdown.js               # Graceful shutdown / restart

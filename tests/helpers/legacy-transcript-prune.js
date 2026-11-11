@@ -747,7 +747,8 @@ function pruneFile(file, {
   const lostSubstantiveTurns = substantiveStarts.filter((i) => i >= compactCut && !kept.has(i)).length;
   if (!dryRun) {
     // Cut rows move to <id>.pruned.jsonl so global token accounting (which walks
-    // ~/.claude/projects/**/*.jsonl — see src/token-global.js) still reads their
+    // ~/.claude/projects/**/*.jsonl — see the gateway's token_usage_global route)
+    // still reads their
     // usage, while --resume only loads the trimmed file. Rows we KEEP are never
     // copied there — neither elided ones nor the compact prologue — since their
     // usage stays in the live file and a second copy would double-count it.

@@ -69,7 +69,6 @@ const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs
 const providers = require('./src/providers/core');
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/codex/model-catalog').startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
-const tokenGlobal = require('./src/token-global');
 const { createRoleTokenTracker } = require('./src/role-token-tracker');
 const {
   createCodexUsageHost,
@@ -1290,7 +1289,6 @@ const tokenUsageRuntime = createTokenUsageRoutes({
   atomicWriteJson,
   tokenUsageFile: MULTICC_PATHS.tokenUsageFile,
   tokenDailyFile: MULTICC_PATHS.tokenDailyFile,
-  getGlobalUsage: options => tokenGlobal.getGlobalUsage(options),
   roleTokenTracker,
   persistedSessions,
   chatHistoryRepository,

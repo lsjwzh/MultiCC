@@ -5,7 +5,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { _compute } = require('../src/token-global');
+// The production module moved into the Rust front door; the frozen Node
+// implementation is the oracle that keeps the kernel parity covered.
+const { _compute } = require('./helpers/legacy-token-usage-global-route');
 
 const DAY = '2026-07-19';
 
