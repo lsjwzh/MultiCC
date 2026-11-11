@@ -202,6 +202,7 @@ pub(crate) fn windows_fallback(kind: io::ErrorKind) -> FsErrorInfo {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn raw(code: i32) -> io::Error {
         io::Error::from_raw_os_error(code)
     }
