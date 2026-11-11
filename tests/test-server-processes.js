@@ -83,6 +83,31 @@ test('generated script survives its launcher exit and completes the real multicc
   for (const name of ['launchctl', 'pm2']) {
     fs.writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 1\n', { mode: 0o700 });
   }
+  // Let one stale-lock contender enter recovery while the other is still
+  // checking the old owner, then hold the replacement identity unpublished.
+  // The recovery guard must survive this entire window.
+  const slowNode = path.join(bin, 'slow-owner-node');
+  const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+  fs.writeFileSync(slowNode, `#!/bin/sh
+case "$1:$2" in
+  */server-processes.js:lock-alive)
+    counter="$3/logs/probe-$PPID"
+    count=0
+    [ ! -f "$counter" ] || count=$(cat "$counter")
+    count=$((count + 1))
+    echo "$count" > "$counter"
+    if mkdir "$3/logs/first-owner" 2>/dev/null; then echo "$PPID" > "$3/logs/first-owner/pid"; fi
+    if [ "$count" -eq 2 ] && [ "$(cat "$3/logs/first-owner/pid")" != "$PPID" ]; then
+      for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        [ ! -f "$3/logs/owner-writing" ] || break
+        /bin/sleep 0.1
+      done
+    fi
+    ;;
+  */server-processes.js:owner) echo "$PPID" > "$3/logs/owner-writing"; /bin/sleep 1 ;;
+esac
+exec ${quote(process.execPath)} "$@"
+`, { mode: 0o700 });
   fs.writeFileSync(path.join(root, 'server.js'), `require('fs').appendFileSync('starts', process.pid+'\\n');
     process.on('SIGINT',()=>process.exit(0));setInterval(()=>{},1000);`);
   // ./multicc only starts through the front door. This stand-in turns into the
@@ -105,10 +130,10 @@ test('generated script survives its launcher exit and completes the real multicc
   fs.writeFileSync(path.join(staleLock, 'pid'), String(process.pid));
   fs.writeFileSync(path.join(staleLock, 'owner.json'), JSON.stringify({ pid: process.pid, born: 'old PID incarnation', command: 'old manager' }));
   const output = fs.openSync(logPath, 'a');
-  const launcherSource = `const cp=require('child_process');for(let i=0;i<2;i++){const c=cp.spawn('/bin/sh',[process.argv[1]],{detached:true,stdio:['ignore',3,3],env:{...process.env,MULTICC_NODE:process.execPath}});console.log(c.pid);c.unref();}`;
+  const launcherSource = `const cp=require('child_process');for(let i=0;i<2;i++){const c=cp.spawn('/bin/sh',[process.argv[1]],{detached:true,stdio:['ignore',3,3],env:process.env});console.log(c.pid);c.unref();}`;
   launcher = spawn(process.execPath, ['-e', launcherSource, scriptPath], { cwd: root,
     stdio: ['ignore', 'pipe', 'inherit', output],
-    env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PORT: '0',
+    env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PORT: '0', MULTICC_NODE: slowNode,
       MULTICC_RUST_ADDON: path.join(root, 'runtime', 'multicc_core.node') } });
   fs.closeSync(output);
   let stdout = ''; launcher.stdout.on('data', chunk => { stdout += chunk; });
@@ -124,6 +149,7 @@ test('generated script survives its launcher exit and completes the real multicc
   await wait(() => !fs.existsSync(path.join(root, 'logs', 'restart.lock')), restartWait);
   await wait(() => !processTable().some(p => helperPids.includes(p.pid) && !/defunct/.test(p.command)), restartWait);
   helperPids = [];
+  assert.equal(fs.existsSync(path.join(root, 'logs', 'owner-writing')), true);
   const remainingServers = processTable().filter(p => isServer(p, config));
   assert.equal(remainingServers.length, 1, JSON.stringify({
     processes: remainingServers,

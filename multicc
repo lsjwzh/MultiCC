@@ -252,12 +252,14 @@ do_restart() {
       rmdir "$lock/reclaim" 2>/dev/null
       return 0
     fi
-    rm -rf "$lock"
-    mkdir "$lock" 2>/dev/null || return 1
+    # Keep the recovery guard in place until our identity is published. Removing
+    # its parent here lets another stale-owner contender acquire a new guard
+    # before owner.json is written, so both managers can stop and start servers.
   fi
   echo $$ > "$lock/pid"
   trap 'rm -rf "$LOG_DIR/restart.lock"' EXIT
   "$NODE" "$SCRIPT_DIR/src/server-processes.js" owner "$SCRIPT_DIR" $$ > "$lock/owner.json" || return 1
+  rmdir "$lock/reclaim" 2>/dev/null || true
   do_stop || return 1
   sleep 1
   do_start
