@@ -159,7 +159,7 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-10 线路可用性归入已有模型目录模块；实测 3171 行 / 161847 字节。
   'public/run-config.js': Object.freeze({
     ceiling: 3171,
-    byteCeiling: 161847,
+    byteCeiling: 161844,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

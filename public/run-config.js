@@ -2826,11 +2826,11 @@
         return;
       }
       const base = `/api/sessions/${encodeURIComponent(entry.sessionId)}`;
-      if (!selection.candidates.some(candidate => candidate.cli === currentCli)) {
+      // 保存前按首条线路切换 CLI；弹窗中的选择尚未保存。
+      if (primary.cli !== config.cli) {
         await request(`${base}/switch-cli`, { cli: primary.cli });
       }
-      await request(base, { provider: primary.providerId, providerSelection: selection }, 'PATCH');
-      await request(base, { model: primary.model || null, subagent,
+      await request(base, { provider: primary.providerId, providerSelection: selection, model: primary.model || null, subagent,
         ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}) }, 'PATCH');
       await onSaved();
       await finishSubagentSync();
