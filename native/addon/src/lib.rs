@@ -198,6 +198,7 @@ pub mod cli_upstream_version;
 pub mod homebrew_takeover;
 mod js_host_value;
 pub mod limit_cache_recorder;
+pub mod provider_balance_target;
 pub mod quota_bar_view;
 pub mod request_locality;
 mod session_records;

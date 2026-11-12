@@ -40,6 +40,7 @@ const {
 } = require('../codex/resident-route');
 const { codexAccountAuthFilePath } = require('../official-accounts');
 const { relayRouteFromBaseUrl } = require('./relay-share-store');
+const { getNative } = require('../native/runtime');
 const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired: evaluateCodexProxyConfigRequired,
@@ -827,6 +828,7 @@ function getProviderSummary(appType, id) {
 //   strategy 'deepseek-balance' → api.deepseek.com prepaid money balance endpoint
 //   strategy 'kimi-balance'     → api.moonshot.cn prepaid money balance endpoint
 //   strategy 'relay-quota'      → 借道 provider：转发给出借方的 relay quota 端点
+//   strategy 'panel-auto'       → 第三方中转：网关用该 key 探测 new-api/sub2api 等面板余额接口
 //
 // host is the ORIGINAL upstream host (not our local proxy), so a session routed
 // through the responses-compat proxy still resolves to its real vendor.
@@ -890,15 +892,14 @@ function getProviderLimitTarget(appType, id) {
       relayUrl: relayRoute.url, apiKey, strategy: 'relay-quota',
     };
   }
-  let strategy = null;
-  if (host === 'api.deepseek.com') strategy = 'deepseek-balance';
-  else if (host === 'open.bigmodel.cn' || host === 'api.z.ai' || host.endsWith('.bigmodel.cn')) {
-    strategy = 'glm-monitor';
-  } else if (/(^|\.)(moonshot|kimi)\.(cn|com|ai)$/.test(host)) {
-    strategy = 'kimi-balance';
-  }
+  // Host → strategy lives in Rust (multicc_core::provider_balance_target):
+  // dedicated vendor adapters, or 'panel-auto' for third-party relays whose
+  // relay-panel balance API the gateway probes with this key.
+  const strategy = getNative().providerBalanceStrategy(baseUrl);
   if (!strategy) return null;
-  return { providerId: id, appType: provider.appType, host, apiKey, strategy };
+  const target = { providerId: id, appType: provider.appType, host, apiKey, strategy };
+  if (strategy === 'panel-auto') target.baseUrl = baseUrl;
+  return target;
 }
 
 // Compatibility wrapper used by the provider speed test.

@@ -119,6 +119,8 @@
   "quotaKimiBalanceTitle": "Kimi / Moonshot 预付余额（api.moonshot.cn/v1/users/me/balance）",
   "quotaBalanceInsufficient": " · 余额不足",
   "quotaDeepSeekBalanceTitle": "DeepSeek 预付费账户余额（来自 api.deepseek.com/user/balance，非窗口配额）",
+  "quotaRelayBalanceTitle": "中转站账户余额（自动识别的 new-api / sub2api 等面板接口，非窗口配额）",
+  "quotaRelayTokenBalanceTitle": "中转站令牌剩余额度（仅该 API 令牌的额度，不是账户余额）",
   "quotaClaudeWindowDetail": "{window}{from}: 已用 {pct}%{reset}",
   "quotaGlmWindowTitle": "GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）",
   "quotaOpenCodeWindowTitle": "OpenCode Go 订阅窗口用量（来自 opencode 日志中的 provider limit 错误）",

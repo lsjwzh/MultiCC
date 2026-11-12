@@ -114,6 +114,24 @@ test('loopback codex-proxy plumbing is NOT a relay; plain GLM provider keeps glm
         },
       },
     },
+    {
+      id: 'panel-1', appType: 'claude', name: 'Relay panel', source: 'local',
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: 'https://newapi.relay.example',
+          ANTHROPIC_AUTH_TOKEN: 'panel-key',
+        },
+      },
+    },
+    {
+      id: 'official-key', appType: 'claude', name: 'Anthropic key', source: 'local',
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+          ANTHROPIC_API_KEY: 'anthropic-key',
+        },
+      },
+    },
   ]);
   // 本机 CPR 包装（loopback）绝不会被当成借道，也没有可查的厂商 host → null。
   assert.equal(getProviderLimitTarget('codex', 'local-cx'), null);
@@ -121,6 +139,14 @@ test('loopback codex-proxy plumbing is NOT a relay; plain GLM provider keeps glm
   const glm = getProviderLimitTarget('claude', 'glm-1');
   assert.equal(glm.strategy, 'glm-monitor');
   assert.equal(glm.host, 'open.bigmodel.cn');
+  assert.equal(glm.baseUrl, undefined, 'dedicated vendor targets stay unchanged');
+  // 第三方中转：Rust 判定为 panel-auto，网关凭 baseUrl 探测面板余额接口。
+  assert.deepEqual(getProviderLimitTarget('claude', 'panel-1'), {
+    providerId: 'panel-1', appType: 'claude', host: 'newapi.relay.example',
+    apiKey: 'panel-key', strategy: 'panel-auto', baseUrl: 'https://newapi.relay.example',
+  });
+  // 官方厂商没有面板余额接口，不探测。
+  assert.equal(getProviderLimitTarget('claude', 'official-key'), null);
 });
 
 test('an unsupported lender exposes its reason instead of silently dropping quota', async () => {

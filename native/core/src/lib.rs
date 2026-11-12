@@ -117,6 +117,7 @@ pub mod cli_upstream_version;
 pub mod homebrew_takeover;
 pub mod limit_cache_recorder;
 pub mod local_cli_sync;
+pub mod provider_balance_target;
 pub mod quota_bar_view;
 pub mod workspace_queues;
 pub mod workspace_sockets;

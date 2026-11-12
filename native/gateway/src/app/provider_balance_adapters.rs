@@ -23,6 +23,7 @@ pub fn supported(strategy: &str) -> bool {
             | "relay-quota"
             | "codex-oauth-usage"
             | "claude-oauth-usage"
+            | "panel-auto"
     )
 }
 
@@ -62,12 +63,12 @@ fn nullable(value: &Value) -> Value {
     }
 }
 
-struct FetchError {
+pub(super) struct FetchError {
     status: Option<u16>,
-    detail: String,
+    pub(super) detail: String,
 }
 
-async fn read_json(
+pub(super) async fn read_json(
     app: &App,
     url: &str,
     method: Method,
@@ -112,7 +113,7 @@ async fn read_json(
     })
 }
 
-fn bearer(token: &str) -> Vec<(String, String)> {
+pub(super) fn bearer(token: &str) -> Vec<(String, String)> {
     vec![("Authorization".into(), format!("Bearer {token}"))]
 }
 
@@ -271,6 +272,7 @@ pub async fn poll(
             .map_err(|error| error.detail)?;
             Ok(claude_dto(&body))
         }
+        "panel-auto" => super::provider_balance_panels::poll(app, target, now_ms).await,
         _ => Ok(None),
     }
 }
