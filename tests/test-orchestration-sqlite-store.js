@@ -161,6 +161,44 @@ test('copy-on-write draft preserves aliases, nested operations and enumeration s
   await store.close();
 });
 
+test('assigning a spread of a draft record materialises nested proxies instead of leaking them', async t => {
+  const files = tempPaths(t);
+  const store = createOrchestrationSqliteStore({ file: files.sqlite, now: () => 100 });
+  await store.mutate(draft => {
+    draft.outbox['outbox-1'] = {
+      ...outboxRecord(),
+      payload: {
+        type: 'session.work',
+        message: 'old text',
+        options: { clientMsgId: 'c-1', attachments: [{ name: 'a.txt' }] },
+      },
+    };
+  });
+
+  // Editing a queued message rebuilds the payload by spreading the draft record:
+  // nested members arrive as draft proxies. Storing them used to wrap a proxy in
+  // another proxy, and the next read recursed until "Maximum call stack size
+  // exceeded" (the edit always failed while other queue actions still worked).
+  const result = await store.mutate(draft => {
+    const item = draft.outbox['outbox-1'];
+    const payload = { ...item.payload, message: 'new text' };
+    item.payload = payload;
+    return payload;
+  });
+  assert.equal(result.message, 'new text');
+
+  const snapshot = await store.snapshot();
+  assert.deepEqual(snapshot.outbox['outbox-1'].payload, {
+    type: 'session.work',
+    message: 'new text',
+    options: { clientMsgId: 'c-1', attachments: [{ name: 'a.txt' }] },
+  });
+  // A later mutation must be able to read and write the record again.
+  await store.mutate(draft => { draft.outbox['outbox-1'].payload.message = 'newer text'; });
+  assert.equal((await store.snapshot()).outbox['outbox-1'].payload.message, 'newer text');
+  await store.close();
+});
+
 test('graceful close refreshes a current JSON rollback snapshot outside the hot path', async t => {
   const files = tempPaths(t);
   const store = createOrchestrationSqliteStore({

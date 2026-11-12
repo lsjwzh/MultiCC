@@ -553,12 +553,25 @@ function createDraft(base) {
     if (!active) throw new TypeError('orchestration draft is no longer active');
   }
 
+  // A draft proxy may sit anywhere inside the value being assigned, not only at
+  // its top level: `{ ...record.payload, message }` copies nested proxies (e.g.
+  // payload.options) into a raw object, and committed state then holds proxies
+  // that wrap further proxies — the next read recurses until the stack dies
+  // ("Maximum call stack size exceeded"). Detect those descendants too.
+  function holdsDraftProxy(value, seen = new WeakSet()) {
+    if (!isObject(value)) return false;
+    if (ownedProxies.has(value)) return true;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return Object.values(value).some(child => holdsDraftProxy(child, seen));
+  }
+
   function assignedValue(value) {
     // Preserve ordinary raw-object aliasing inside one transaction: several
     // domain mutators insert a record and then continue editing that same raw
     // object. A draft proxy, however, must be materialised so no proxy becomes
     // part of committed state.
-    return isObject(value) && ownedProxies.has(value) ? cloneJson(value) : value;
+    return isObject(value) && holdsDraftProxy(value) ? cloneJson(value) : value;
   }
 
   function recordValue(collection, key) {
