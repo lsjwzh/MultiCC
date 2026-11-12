@@ -20,6 +20,7 @@ pub mod host_read;
 pub mod model_catalogs;
 pub mod provider_balance;
 mod provider_balance_adapters;
+mod provider_balance_panels;
 pub mod provider_limit_history;
 pub mod provider_relay;
 pub mod providers;

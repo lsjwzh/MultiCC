@@ -516,7 +516,14 @@ pub fn normalize_balance(info: &V) -> V {
     if total.is_none() && get(info, "available") != &V::Bool(false) {
         return V::Null;
     }
-    obj!("kind"=>"balance","provider"=>"deepseek","available"=>get(info,"available")!=&V::Bool(false),"currency"=>if matches!(get(info,"currency"),V::String(_)){field(info,"currency")}else{V::Null},"total"=>num(total))
+    // Relay-panel balances (gateway `panel-auto`) carry `source`; keep them
+    // apart from DeepSeek so the cached bar keeps the right tooltip.
+    let provider = match (get(info, "source"), get(info, "scope")) {
+        (V::String(_), scope) if scope == &V::from("token") => "relay-token",
+        (V::String(_), _) => "relay",
+        _ => "deepseek",
+    };
+    obj!("kind"=>"balance","provider"=>provider,"available"=>get(info,"available")!=&V::Bool(false),"currency"=>if matches!(get(info,"currency"),V::String(_)){field(info,"currency")}else{V::Null},"total"=>num(total))
 }
 pub fn balance_bar(value: &V) -> V {
     if !js::truthy(value) {
@@ -537,7 +544,19 @@ pub fn balance_bar(value: &V) -> V {
         set(&mut p, "j", V::from(""));
         text.push(p);
     }
-    view(text, c, vec![p("quotaDeepSeekBalanceTitle")], V::Null)
+    let title = match get(value, "provider") {
+        v if v == &V::from("relay") => "quotaRelayBalanceTitle",
+        v if v == &V::from("relay-token") => "quotaRelayTokenBalanceTitle",
+        _ if matches!(get(value, "source"), V::String(_)) => {
+            if get(value, "scope") == &V::from("token") {
+                "quotaRelayTokenBalanceTitle"
+            } else {
+                "quotaRelayBalanceTitle"
+            }
+        }
+        _ => "quotaDeepSeekBalanceTitle",
+    };
+    view(text, c, vec![p(title)], V::Null)
 }
 pub fn normalize_window(info: &V, now: f64) -> V {
     if !matches!(info, V::Object(_)) {

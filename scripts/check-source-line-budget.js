@@ -695,9 +695,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 供应商面板「同步到本地终端」：+6 双语键（SyncToTerminal/SyncToTerminalAccountHint/
     // SyncToTerminalConfirm/SyncToTerminalDone/SyncToTerminalFailed/LocalCliActive），
     // 中英各 6 行 = +12 行；同样只往生成物里补键、不重跑生成器，实测 10398/675592。
-    maxLines: 10398,
+    // +2 键 x2 语言（quotaRelayBalanceTitle / quotaRelayTokenBalanceTitle）：第三方中转余额条标题，实测 10402/676071。
+    maxLines: 10402,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 675592,
+    maxBytes: 676071,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

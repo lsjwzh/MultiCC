@@ -101,7 +101,7 @@ test('addon preflight rejects an exported audit function that cannot write', t =
   assert.equal(probeAddon(stale), false, 'a stale addon cannot boot asynchronous switch preparation');
   for (const name of ['cliSwitchRuntimeRequest', 'RustCliToolsRuntime', 'cliToolsOfficialSpecs',
     'homebrewTakeoverRequest', 'cliUpstreamVersionRequest', 'RustCliUpstreamFetch', 'cliUpstreamVersionFetch',
-    'quotaBarViewRequest', 'limitCacheRecorderRequestValue']) {
+    'quotaBarViewRequest', 'limitCacheRecorderRequestValue', 'providerBalanceStrategy']) {
     const staleRuntime = write(root, `stale-${name}.js`, `module.exports = {
       ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
     };`);

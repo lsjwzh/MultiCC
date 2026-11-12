@@ -4038,6 +4038,8 @@
   "quotaCreditsBalanceLine": "Credits balance: {balance}",
   "quotaDeepSeekBalancePrefix": "DeepSeek balance",
   "quotaDeepSeekBalanceTitle": "DeepSeek prepaid account balance (from api.deepseek.com/user/balance, not a window quota)",
+  "quotaRelayBalanceTitle": "Relay account balance (auto-detected new-api / sub2api panel API, not a window quota)",
+  "quotaRelayTokenBalanceTitle": "Relay token remaining quota (this API token only, not the account balance)",
   "quotaEstimatedNote": "Percentages marked ~ are estimates: the window reset after the last reading, so quota is assumed full until measured again. Use ⟳ to measure.",
   "quotaExpiryUnknown": "Expiry unknown (the API returned no nextResetAt / plan expiry date)",
   "quotaGlmWindowTitle": "GLM Coding Plan five-hour window usage (from the open.bigmodel.cn quota endpoint)",

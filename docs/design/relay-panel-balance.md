@@ -1,6 +1,6 @@
-# 第三方中转站余额查询（设计稿，待确认）
+# 第三方中转站余额查询
 
-状态：设计稿，尚未实现。参考 CC Switch 的「用量查询」，但默认自动识别、不要求用户先选模板。
+状态：第一期已实现（2026-11-12）；第二、三期未做。决策：access token 明文同 apiKey、自定义模板只做声明式 JSON、第三期暂不做。参考 CC Switch 的「用量查询」，但默认自动识别、不要求用户先选模板。
 
 ## 1. 目标与非目标
 
@@ -100,3 +100,12 @@ provider 编辑表单加「余额查询」折叠区：模式下拉（默认自�
 1. access token 与 apiKey 一样明文存在 `providers.json`，还是改存 MultiCC 保险箱只存引用？
 2. 自定义模板只做声明式 JSON，不支持 JS 脚本，是否可以接受？
 3. 第三阶段（Auto 选线按余额让位）要不要做？
+
+## 11. 第一期实现记录
+
+- 策略判定：`native/core/src/provider_balance_target.rs`（napi `providerBalanceStrategy`），`src/providers/core.js` 的 JS 域名表已删除；第三方公网中转判为 `panel-auto` 并在 target 上带 `baseUrl`；loopback/内网与官方厂商域名不探测。
+- 探测：`native/gateway/src/app/provider_balance_panels.rs`，顺序 `newapi-token` → `sub2api` → `newapi-billing` → `general`，单步 4s。
+- 与设计的差异：识别结果只缓存在网关进程内存（按 origin，命中 24h、未命中 1h、连续 3 次失败重探），不写 `providers.json`；网关重启后重新探测一次。
+- new-api 换算单位取 `/api/status` 的 `quota_per_unit`，取不到用 500000。
+- 余额条：`provider` 归一为 `relay` / `relay-token`，标题用 `quotaRelayBalanceTitle` / `quotaRelayTokenBalanceTitle`。
+- EronMind 实测：`/api/usage/token` 返回 `unlimited_quota:true` 且无 `user_quota`，因此该令牌查不到余额，余额条显示失败原因；要显示余额需在中转站后台给令牌设额度或开启账户额度查询，或等第二期 access token。

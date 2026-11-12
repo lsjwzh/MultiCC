@@ -368,7 +368,8 @@ function probeAddon(file, node = process.execPath) {
     const cliTools=new a.RustCliToolsRuntime({specs:{},supported:[],catalog:[],npmPackages:{}});
     if(cliTools.request('force',{query:{refresh:'1'}})!==true) process.exit(1);
     if(['homebrewTakeoverRequest','cliUpstreamVersionRequest','RustCliUpstreamFetch','cliUpstreamVersionFetch',
-      'quotaBarViewRequest','limitCacheRecorderRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'quotaBarViewRequest','limitCacheRecorderRequestValue','providerBalanceStrategy'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(a.providerBalanceStrategy('https://relay.example.com/v1')!=='panel-auto') process.exit(1);
     if(a.homebrewTakeoverRequest('npmGlobal',{command:'npm install -g cli'})!==true) process.exit(1);
     if(a.cliUpstreamVersionRequest('compareSemver',{left:'3.0.0',right:'1.0.0'})!==2) process.exit(1);
     if(a.quotaBarViewRequest('compactBarText',{text:'5h 20% {cd:1700000000000|5h} · ⟳ 刷新'})!=='5h 20%') process.exit(1);
