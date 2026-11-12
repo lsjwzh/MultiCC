@@ -275,6 +275,21 @@ test('an exhausted API failure publishes E from rules before best-effort Aux nam
   assert.match(notify.message, /未自动重试/);
 });
 
+test('a reserved provider handoff reaches the real supervisor with its turn identity', async () => {
+  const h = fixture({ realUnattended: {} });
+  h.unattendedHost.armFromRequest('s1', { goal: '定位 codex 冷启瓶颈', maxDurationMinutes: 30 },
+    { defaultGoal: '定位 codex 冷启瓶颈' });
+  h.machine.classifyTurnEnd(h.chatState, 's1', {
+    classification: 'api-error', turnId: 'turn-handoff', handoffPending: true,
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.record.taskState.classifyState, 'E');
+  assert.equal(h.observed.injected.length, 0);
+  assert.equal(h.unattendedHost.handoffAccepted('s1', 'turn-handoff'), true);
+  assert.equal(h.unattendedHost.get('s1').lastTurnEndId, 'turn-handoff');
+  h.unattendedHost.shutdown();
+});
+
 test('the same turn cancels this session queued and in-flight classify work', () => {
   const h = fixture();
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'api-error' });

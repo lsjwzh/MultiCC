@@ -8,7 +8,7 @@
 //! the temporary file on any failure.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -215,6 +215,119 @@ pub fn write_bytes_atomic_traced_before_rename(
     result
 }
 
+/// Replace a tail without rewriting its prefix when the filesystem supports
+/// copy-on-write clones. Unsupported filesystems return `Ok(false)`, leaving
+/// the original untouched so the caller can use a full atomic replacement.
+pub fn replace_tail_cow(
+    source: &fs::File,
+    target: &Path,
+    expected_bytes: u64,
+    keep_bytes: u64,
+    tail: &[u8],
+) -> Result<bool, WriteFailure> {
+    replace_tail_cow_before_rename(source, target, expected_bytes, keep_bytes, tail, || Ok(()))
+}
+
+fn replace_tail_cow_before_rename(
+    source: &fs::File,
+    target: &Path,
+    expected_bytes: u64,
+    keep_bytes: u64,
+    tail: &[u8],
+    before_rename: impl FnOnce() -> io::Result<()>,
+) -> Result<bool, WriteFailure> {
+    if keep_bytes > expected_bytes {
+        return Ok(false);
+    }
+    let mut name = target.as_os_str().to_os_string();
+    name.push(format!(
+        ".tmp.{}.{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let temp = PathBuf::from(name);
+    if !clone_to_new_file(source, &temp) {
+        return Ok(false);
+    }
+    let result = (|| {
+        set_mode(&temp, FILE_MODE)
+            .map_err(|error| WriteFailure::new(WriteStage::ChmodTarget, error, &temp))?;
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&temp)
+            .map_err(|error| WriteFailure::new(WriteStage::OpenTemporary, error, &temp))?;
+        let len = file
+            .metadata()
+            .map_err(|error| WriteFailure::new(WriteStage::OpenTemporary, error, &temp))?
+            .len();
+        if len != expected_bytes {
+            return Ok(false);
+        }
+        file.set_len(keep_bytes)
+            .and_then(|()| file.seek(SeekFrom::Start(keep_bytes)).map(|_| ()))
+            .and_then(|()| file.write_all(tail))
+            .map_err(|error| WriteFailure::new(WriteStage::Write, error, &temp))?;
+        if let Err(error) = file.sync_all() {
+            if !tolerated_fsync(&error) {
+                return Err(WriteFailure::new(WriteStage::Fsync, error, &temp));
+            }
+        }
+        drop(file);
+        before_rename()
+            .map_err(|error| WriteFailure::new(WriteStage::BeforeRename, error, target))?;
+        fs::rename(&temp, target).map_err(|error| WriteFailure {
+            stage: WriteStage::Rename,
+            error,
+            path: temp.clone(),
+            dest: Some(target.to_path_buf()),
+        })?;
+        let dir = target.parent().unwrap_or_else(|| Path::new("."));
+        fsync_dir(dir).map_err(|(stage, error)| WriteFailure::new(stage, error, dir))?;
+        Ok(true)
+    })();
+    // Safe after rename too: the temporary name no longer exists.
+    let _ = fs::remove_file(&temp);
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn clone_to_new_file(source: &fs::File, temp: &Path) -> bool {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = CString::new(temp.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // fclonefileat creates a new file or fails without modifying the source.
+    unsafe { libc::fclonefileat(source.as_raw_fd(), libc::AT_FDCWD, path.as_ptr(), 0) == 0 }
+}
+
+#[cfg(target_os = "linux")]
+fn clone_to_new_file(source: &fs::File, temp: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let Ok(file) = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(FILE_MODE)
+        .open(temp)
+    else {
+        return false;
+    };
+    // FICLONE copies extents by reference; it does not modify the source.
+    let cloned = unsafe { libc::ioctl(file.as_raw_fd(), libc::FICLONE, source.as_raw_fd()) == 0 };
+    if !cloned {
+        let _ = fs::remove_file(temp);
+    }
+    cloned
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn clone_to_new_file(_source: &fs::File, _temp: &Path) -> bool {
+    false
+}
+
 /// `atomicWriteJson(file, value)`: `JSON.stringify(value, null, 2)`, 0600 in
 /// a 0700 directory, no trailing newline.
 pub fn write_json_atomic(target: &Path, value: &Value) -> io::Result<()> {
@@ -267,6 +380,36 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
             .collect();
         assert!(leftovers.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cow_tail_replacement_keeps_original_on_failure_and_cleans_up() {
+        let dir = std::env::temp_dir().join(format!("multicc-cow-tail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("history");
+        fs::write(&target, b"old prefix\nold tail\n").unwrap();
+        let source = fs::File::open(&target).unwrap();
+        let failure =
+            replace_tail_cow_before_rename(&source, &target, 20, 11, b"new tail\n", || {
+                Err(io::Error::other("injected failure"))
+            });
+        match failure {
+            Ok(false) => {} // This filesystem does not support cloning.
+            Err(error) => assert_eq!(error.stage, WriteStage::BeforeRename),
+            other => panic!("unexpected result: {other:?}"),
+        }
+        assert_eq!(fs::read(&target).unwrap(), b"old prefix\nold tail\n");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        let result = replace_tail_cow(&source, &target, 20, 11, b"new tail\n").unwrap();
+        let expected: &[u8] = if result {
+            b"old prefix\nnew tail\n"
+        } else {
+            b"old prefix\nold tail\n"
+        };
+        assert_eq!(fs::read(&target).unwrap(), expected);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 }

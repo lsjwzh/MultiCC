@@ -51,6 +51,22 @@ class AutoProviderError extends Error {
   }
 }
 
+// Per-lane line counts for the exhausted-pool log: turn lane first, then the
+// other lanes in pool order. Usable = enabled and not marked exhausted.
+function laneCounts(lines, turnCli) {
+  const lanes = {};
+  for (const candidate of lines) {
+    const lane = candidate.cli || turnCli;
+    const enabled = candidate.enabled !== false;
+    const usable = enabled && candidate.limitState !== 'exhausted';
+    const entry = lanes[lane] || (lanes[lane] = { total: 0, enabled: 0, usable: 0 });
+    entry.total += 1;
+    if (enabled) entry.enabled += 1;
+    if (usable) entry.usable += 1;
+  }
+  return lanes;
+}
+
 function createAutoProviderRuntime(options = {}) {
   const providers = options.providers;
   if (!providers || typeof providers.listProviders !== 'function'
@@ -537,6 +553,14 @@ function createAutoProviderRuntime(options = {}) {
         trustDomain: event.trustDomain, fromTrustDomain: event.fromTrustDomain,
         toTrustDomain: event.toTrustDomain,
         reasonCode: event.reasonCode || null, attemptNo: physicalAttempt,
+        // Spec change (2026-11-12): an empty pool is only diagnosable with the
+        // per-line verdicts and the shape of every lane, including the ones
+        // this turn could not use; the UI event already carried `skipped`.
+        ...(phase === 'exhausted' ? {
+          skipped: event.skipped || [],
+          attempted: [...attempted],
+          lanes: laneCounts(candidates.concat(otherLanes), turnCli),
+        } : {}),
       });
       return event;
     }

@@ -2260,6 +2260,15 @@
       ]
     },
     {
+      "path": "tests/test-chat-history-tail-append.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
       "path": "tests/test-chat-history-view.js",
       "tier": "other",
       "lane": "deterministic",
@@ -3303,6 +3312,15 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "docker/task-shell/run-tests.js",
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-delivery-finalize-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:task-first",
+      "entrypoints": [
         "npm:test:task-first"
       ]
     },
@@ -6842,6 +6860,15 @@
       "path": "tests/test-worktree-sync-prompt.js",
       "tier": "core",
       "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-writer-launcher.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
     },
     {
       "path": "tests/test-ws-backpressure.js",

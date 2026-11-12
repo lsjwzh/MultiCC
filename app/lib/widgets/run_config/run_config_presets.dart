@@ -10,6 +10,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../models/message.dart';
+import '../../services/native_vendor_service.dart';
+import '../../services/opencode_models_service.dart';
 import '../../services/settings_service.dart';
 import 'run_config_wire.dart';
 
@@ -403,6 +405,66 @@ class RunConfigPreset {
 
   static int _int(Object? value, int fallback) =>
       value is int ? value : int.tryParse('$value') ?? fallback;
+}
+
+/// 预设（或当前池子）里引用了「已经被删掉的供应商」的一条线路。
+/// [label] 能直接摆进提示里：id 前 8 位 + 车道（如 `ff06af1b（claude-exp）`）。
+class RunPresetMissingLine {
+  const RunPresetMissingLine({
+    required this.providerId,
+    required this.lane,
+    required this.label,
+  });
+
+  final String providerId;
+  final String lane;
+  final String label;
+}
+
+/// 找出 [rows] 里供应商已经不在对应车道目录中的线路。同 Web
+/// `missingProviderLines`，三处共用：保存/更新预设、预设列表的失效标记、
+/// 套用被拦时的提示。
+///
+/// 两类行不算：
+///   · 原生线路（OpenCode 原生 / 厂商原生）没有 MultiCC 供应商记录，本来就不在
+///     目录里；
+///   · 车道目录没取到（[pools] 里没有这条车道，或值是 null）时跳过 —— 拿不到
+///     目录不等于线路被删，宁可漏报也别把整池标红。
+List<RunPresetMissingLine> missingPresetProviderLines(
+  Iterable<RunPoolRow> rows,
+  Map<String, List<Map<String, dynamic>>?> pools,
+) {
+  final out = <RunPresetMissingLine>[];
+  final seen = <String>{};
+  for (final row in rows) {
+    final providerId = row.providerId.trim();
+    final lane = row.lane.trim();
+    if (providerId.isEmpty || lane.isEmpty) continue;
+    if (isVendorNativeProvider(providerId) ||
+        isOpenCodeNativeProvider(providerId)) {
+      continue;
+    }
+    final pool = pools[lane];
+    if (pool == null) continue;
+    final found = pool.any((item) {
+      if ((item['id'] ?? '').toString() != providerId) return false;
+      final clis = item['compatibleClis'];
+      return clis is! List || clis.contains(lane);
+    });
+    if (found) continue;
+    if (!seen.add('$lane\n$providerId')) continue;
+    final short = providerId.length > 8
+        ? providerId.substring(0, 8)
+        : providerId;
+    out.add(
+      RunPresetMissingLine(
+        providerId: providerId,
+        lane: lane,
+        label: '$short（$lane）',
+      ),
+    );
+  }
+  return out;
 }
 
 class RunConfigPresetStore {

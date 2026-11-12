@@ -68,7 +68,14 @@ async function observeGitlink(cwd, relative, execGit, options) {
   return `${nested.head} ${nested.revision}`;
 }
 
+// The stopped-writer capture runs as ONE native worker job (git orchestration,
+// index parsing and file hashing included), so a release never queues a dozen
+// subprocesses on the event loop. observeCodeRevision above stays on the
+// injected execGit for merge hooks, where the repo actor must see every step.
 async function captureCodeRevision(cwd) {
-  return defaultRepoActor.run(cwd, 'code-revision', ({ execGit }) => observeCodeRevision(cwd, execGit));
+  return defaultRepoActor.run(cwd, 'code-revision', async () => {
+    const observation = await runNative(() => getNative().observeCodeRevision(cwd));
+    return { ...observation, observedAt: Date.now(), writersStopped: false };
+  });
 }
 module.exports = { observeCodeRevision, captureCodeRevision };

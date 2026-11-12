@@ -20,6 +20,7 @@ const { createAdapterCompletion, isCompleted } = require('../cli-adapters/comple
 const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
 const { getNative } = require('../native/runtime');
+const writerGroup = require('../workspace/writer-group');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -338,7 +339,7 @@ function createChatTurnEngine(deps) {
     getTaskState,
     setTaskState,
     // Unattended mode: read-only state for the connect replay.
-    getUnattendedState = () => null,
+    getUnattendedState = () => null, getUnattendedHost = () => null,
     buildGatewayPrompt,
     buildDispatchContextPrompt,
     buildPlanPrompt,
@@ -431,9 +432,7 @@ function createChatTurnEngine(deps) {
     });
   }
   const autoProviderHandoff = deps.autoProviderHandoff || createAutoProviderHandoff({
-    inject: (sessionId, text, delayMs, metadata) => (
-      waitInjector.injectSystemMsg(sessionId, text, delayMs, metadata)
-    ),
+    inject: (sessionId, text, _delayMs, metadata) => admitChatWork(sessionId, `🔇${text}`, metadata),
     hasLiveBackgroundTasks: sessionId => {
       try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
       catch (_) { return true; }
@@ -441,14 +440,19 @@ function createChatTurnEngine(deps) {
     logger,
   });
 
-  function scheduleAutoProviderHandoff(sessionName, turn, preparation) {
+  async function scheduleAutoProviderHandoff(sessionName, turn, preparation, supervised) {
     if (!preparation) return null;
-    const result = autoProviderHandoff.schedule({
+    const result = await autoProviderHandoff.schedule({
       sessionId: sessionName,
       turnId: turn.turnId,
       preparation,
       lineage: turn.lineage,
     });
+    if (supervised) {
+      const unattended = getUnattendedHost?.();
+      if (result.scheduled) unattended?.handoffAccepted?.(sessionName, turn.turnId);
+      else if (result.reason !== 'duplicate') unattended?.onTurnEnd?.(sessionName, { kind: 'fault', settle: 'E', turnId: turn.turnId, retryScheduled: false });
+    }
     if (result.scheduled) chatBroadcast(sessionName, {
       type: 'system', subtype: 'warning',
       message: `Auto Provider：${preparation.fromProviderName} 已中断，将由 ${preparation.providerName}${preparation.cli ? `（${preparation.cli} CLI）` : ''} 在新回合中安全接续。`,
@@ -1505,11 +1509,22 @@ function createChatTurnEngine(deps) {
         usageAttribution: prepared.usageAttribution,
       });
       runner.freshNativeSession = prepared.invocationEnvelope.historyHandle.isFirstTurn === true;
-      let proc;
+      let proc, writerLease;
+      const writerAdmission = getWorkspaceAdmission?.();
+      const finishWriterLease = () => writerAdmission?.finishProcessWriter?.(sessionName, writerLease);
+      // The lease outlives the direct child until its whole process group is
+      // gone: background descendants the CLI spawns itself never emit an event
+      // the host could see, so their registration rides the group lifetime.
+      const releaseWriterOnClose = child => {
+        if (!writerLease || typeof child?.once !== 'function') return;
+        child.once('close', () => writerGroup.whenGroupEmpty(child.pid, finishWriterLease));
+        if (child.pid) setImmediate(() => writerAdmission?.annotateWriterPid?.(sessionName, writerLease, child.pid));
+      };
       try {
-        getWorkspaceAdmission?.()?.starting(sessionName, opts, attempt.routeAttemptId);
+        writerAdmission?.starting(sessionName, opts, attempt.routeAttemptId);
+        writerLease = writerAdmission?.acquireProcessWriter?.(sessionName);
         proc = routerToolHost.spawnProcess({
-        cli: persisted.cli, spawn, command: physicalInvocation.cmd,
+        cli: persisted.cli, spawn: (...args) => { proc = spawn(...args); return proc; }, command: physicalInvocation.cmd,
         args: finalSpawnArgs, cwd: cs.cwd, env: childEnv,
         sessionId: sessionName, turnId: turn.turnId, originDispatchId,
         // Correlation key for post-admission receipts addressed to this turn.
@@ -1521,12 +1536,16 @@ function createChatTurnEngine(deps) {
         baseUrl: `http://127.0.0.1:${getPort()}`,
       });
       } catch (error) {
+        // If launch state is ambiguous, leave the durable writer lease pinned.
+        // A captured child can still report its actual exit after a setup error.
+        releaseWriterOnClose(proc);
         providers.releaseCodexProxyConfig(childEnv);
         finishProviderAttempt(runner, 'failed', {
           errorCategory: 'spawn_failed', reasonCode: 'process_spawn_failed',
         });
         throw error;
       }
+      releaseWriterOnClose(proc);
       runner.apiRetryAttempt = Math.max(0, Number(apiRetryAttempt) || 0);
       cs._activeTurn = turn;
       cs._activeRunner = runner;
@@ -1921,15 +1940,17 @@ function createChatTurnEngine(deps) {
           reasonCode: finalizePlan.action,
         });
         turnProgressHeartbeat.stop(sessionName, turn.turnId);
+        const supervisedHandoff = !!autoHandoffPreparation && getUnattendedState(sessionName)?.status === 'active';
         const finalization = await turnFinalizationExecutor.execute(finalizePlan, {
           runnerKind: 'process', sessionName, cs, persisted, turn, runner,
+          autoProviderHandoffPending: supervisedHandoff,
           code,
           signal,
           stderrTail: sanitizedStderrTail,
           pendingTransportError,
         });
         if (finalization && !finalization.terminalBlocked) {
-          scheduleAutoProviderHandoff(sessionName, turn, autoHandoffPreparation);
+          await scheduleAutoProviderHandoff(sessionName, turn, autoHandoffPreparation, supervisedHandoff);
         }
       }
 
@@ -2181,6 +2202,13 @@ function createChatTurnEngine(deps) {
           return { text: invocation.payload };
         }
       },
+      // Writer-lease lifecycle hooks every resident backend wires into its
+      // spawn/exit/park paths. Registration precedes the child launch and the
+      // release rides the process group, so the fence — not a host probe —
+      // owns writer-liveness from spawn to group exit.
+      acquireWriter: () => getWorkspaceAdmission?.()?.acquireProcessWriter?.(sessionName, 'stream') ?? null,
+      annotateWriter: (writer, pid) => getWorkspaceAdmission?.()?.annotateWriterPid?.(sessionName, writer, pid),
+      releaseWriter: (writer) => getWorkspaceAdmission?.()?.finishProcessWriter?.(sessionName, writer),
       beforeSpawn: ({ sessionId }) => {
         routerToolHost.refreshPersistentProcess(cs, childEnv,
           { sessionId: sessionName, baseUrl: `http://127.0.0.1:${getPort()}` });
@@ -2193,8 +2221,13 @@ function createChatTurnEngine(deps) {
         }
       },
       env: childEnv,
+      onWorkspaceActivity: () => getWorkspaceAdmission?.()?.recordWriterActivity?.(sessionName, 'stream'),
       onDispose: () => routerToolHost.releasePersistentProcess(cs),
-      monitorAdmission: true, onBackgroundEvent: (evt) => getBackgroundTaskRuntime().handleEvent(sessionName, cs, evt),
+      monitorAdmission: true, onBackgroundEvent: (evt) => {
+        try { getWorkspaceAdmission?.()?.recordWriterActivity?.(sessionName, 'background'); }
+        catch (error) { logger.warn('workspace_writer_fence_failed', { sessionId: sessionName, code: error.code }); }
+        return getBackgroundTaskRuntime().handleEvent(sessionName, cs, evt);
+      },
       isBackgroundActive: () => getBackgroundTaskRuntime().hasProcessBackgroundTasks(sessionName),
       onExit: () => {
         try {
@@ -2547,11 +2580,13 @@ function createChatTurnEngine(deps) {
       errorCategory: apiErrorDecision?.error?.category || null,
       reasonCode: plan.action,
     });
+    const supervisedHandoff = !!autoHandoffPreparation && getUnattendedState(sessionName)?.status === 'active';
     const finalization = await turnFinalizationExecutor.execute(plan, {
       runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
+      autoProviderHandoffPending: supervisedHandoff,
     });
     if (finalization && !finalization.terminalBlocked) {
-      scheduleAutoProviderHandoff(sessionName, turn, autoHandoffPreparation);
+      await scheduleAutoProviderHandoff(sessionName, turn, autoHandoffPreparation, supervisedHandoff);
     }
   }
 

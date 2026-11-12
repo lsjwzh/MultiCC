@@ -271,6 +271,14 @@ test('the boundary verdict reaches the classify port instead of being dropped', 
   assert.deepEqual(plain.calls.find(call => call[0] === 'classify'), ['classify', 'succeeded']);
 });
 
+test('a reserved provider handoff reaches the fault classifier', async () => {
+  const harness = createHarness();
+  const ctx = context({ autoProviderHandoffPending: true });
+  await harness.executor.execute(processPlan({ apiError: true }), ctx);
+  assert.equal(harness.classifyOptions.length, 1);
+  assert.equal(harness.classifyOptions[0].handoffPending, true);
+});
+
 test('finalize host fails closed when a required runtime port is absent', async () => {
   assert.throws(() => createTurnFinalizationExecutor({}), /finalize host port missing/);
 });

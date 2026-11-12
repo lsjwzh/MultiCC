@@ -40,6 +40,32 @@ test('parking blocks ensure and send, and only a matching claim resumes the chil
   assert.deepEqual(closes, []);
 });
 
+test('resident sends register writer activity before delivery and refuse a failed fence', async () => {
+  const { router, workspace, lane } = fixture();
+  const events = [];
+  let fail = false;
+  lane.send = async () => { events.push('send'); };
+  router.ensure('a', { cwd: workspace.path, onWorkspaceActivity: () => {
+    events.push('fence'); if (fail) throw new Error('fence_write_failed');
+  } });
+  await router.send('a', 'first');
+  assert.deepEqual(events, ['fence', 'send']);
+  assert.equal(router.parkWorkspace('a', workspace).parked, true);
+  await router.claimWorkspace('a', workspace);
+  fail = true;
+  await assert.rejects(router.send('a', 'second'), /fence_write_failed/);
+  assert.deepEqual(events, ['fence', 'send', 'fence']);
+});
+
+test('a parked resident refuses held-turn injections', async () => {
+  const { router, workspace, lane } = fixture();
+  let sends = 0;
+  lane.injectHeldTurn = () => { sends++; return true; };
+  assert.equal(router.parkWorkspace('a', workspace).parked, true);
+  assert.throws(() => router.injectHeldTurn('a', 'prompt', {}), { code: 'workspace_busy' });
+  assert.equal(sends, 0);
+});
+
 test('relocation and exclusive filesystem operations join the previous child', async () => {
   const { router, workspace, closes } = fixture();
   router.parkWorkspace('a', workspace);

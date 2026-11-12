@@ -21,17 +21,23 @@ function createWorkspaceResidency({ status, closeAndWait, pending }) {
   function assertSend(name) {
     if (entries.get(name)?.parked) throw busy();
   }
-  function track(name, cwd) {
+  function track(name, cwd, onActivity) {
     assertSend(name);
     const entry = entries.get(name);
     if (entry && entry.path !== location(cwd)) throw busy();
-    if (!entry) entries.set(name, { path: location(cwd), workspaceId: null, parked: false });
+    if (!entry) entries.set(name, { path: location(cwd), workspaceId: null, parked: false, onActivity });
+    else if (onActivity !== undefined) entry.onActivity = onActivity;
   }
+  function activity(name) { entries.get(name)?.onActivity?.(); }
   function park(name, workspace) {
     if (!workspace?.path || !idle(name)) return { parked: false };
+    // Live background work may still be writing the checkout, and parking
+    // releases the child's writer lease — so background work vetoes the park
+    // itself, the same way it already vetoes a claim and a recycle.
+    if (status(name)?.backgroundActive) return { parked: false };
     const entry = entries.get(name);
     if (entry && entry.path !== location(workspace.path)) return { parked: false };
-    entries.set(name, { path: location(workspace.path), workspaceId: workspace.id, parked: true });
+    entries.set(name, { path: location(workspace.path), workspaceId: workspace.id, parked: true, onActivity: entry?.onActivity });
     return { parked: true };
   }
   async function claim(name, workspace, { exclusive = false } = {}) {
@@ -47,10 +53,10 @@ function createWorkspaceResidency({ status, closeAndWait, pending }) {
       const result = await closeAndWait(id);
       if (result?.closed !== true) throw busy();
     }
-    entries.set(name, { path: target, workspaceId: workspace.id, parked: exclusive });
+    entries.set(name, { path: target, workspaceId: workspace.id, parked: exclusive, onActivity: entries.get(name)?.onActivity });
     return { claimed: true };
   }
-  return { track, park, claim, assertSend, forget: name => entries.delete(name) };
+  return { track, park, claim, assertSend, activity, forget: name => entries.delete(name) };
 }
 
 module.exports = { createWorkspaceResidency };

@@ -1041,6 +1041,7 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
             return Err("unattended_invalid_input: retryScheduled must be a boolean".to_string())
         }
     };
+    let handoff_pending = field(&value, "handoffPending").and_then(Value::as_bool) == Some(true);
     if state_text(&state, "status") != "active" {
         return Ok(none_envelope("not_active"));
     }
@@ -1050,7 +1051,10 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
     let kill_reason = state_text(&value, "killReason");
     let fault_category = state_text(&value, "faultCategory");
     let retry_not_before = int_value(field(&value, "retryNotBefore"));
-    if !turn_id.is_empty() && state_text(&state, "lastTurnEndId") == turn_id {
+    if kind != "handoff_accepted"
+        && !turn_id.is_empty()
+        && state_text(&state, "lastTurnEndId") == turn_id
+    {
         // The user wins over an earlier host interruption, but only as a pause:
         // the first report already produced its (at most one) action.
         if is_user_cancel(&source, &kill_reason) {
@@ -1067,6 +1071,17 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
     }
     match kind.as_str() {
         "user_input" => Ok(pause_decision(&state, "input", "user_input", now, &turn_id)),
+        "handoff_accepted" => {
+            let mut next = state.clone();
+            if let Some(object) = next.as_object_mut() {
+                object.insert("retryAt".into(), Value::Null);
+                object.insert("retryCategory".into(), Value::Null);
+                object.insert("updatedAt".into(), json!(now));
+            }
+            Ok(json!({"action": "none", "reason": "handoff_accepted",
+                "nextState": with_turn_end_id(next, &turn_id)})
+            .to_string())
+        }
         "settle" => {
             let settle = state_text(&value, "settle").to_uppercase();
             if settle != "D" && settle != "W" {
@@ -1104,6 +1119,12 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
                 return Ok(pause_decision(&state, by, "user_cancel", now, &turn_id));
             }
             if kind == "fault" {
+                if handoff_pending {
+                    // The reserved provider handoff owns this fault. If its
+                    // durable admission fails, the host reports the fault
+                    // again without this flag and the normal retry resumes.
+                    return Ok(none_envelope("handoff_pending"));
+                }
                 if retry_scheduled {
                     // The API policy owns the retry and reuses the SAME turn:
                     // the turn has not ended, so it must not be claimed as
@@ -1142,6 +1163,30 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
 pub fn select_queued(input: &str) -> Result<String, String> {
     let value: Value = crate::json_lenient::from_str(input)
         .map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    if field(&value, "handoffProbe").and_then(Value::as_bool) == Some(true) {
+        let items = field(&value, "items").and_then(Value::as_array);
+        let pending = items.is_some_and(|rows| {
+            rows.iter()
+                .any(|item| state_text(item, "taskSource") == "auto_provider_handoff")
+        });
+        let fault_prefix = format!(
+            "🔇{UNATTENDED_TAG} {}",
+            FAULT_INSTRUCTION
+                .split('.')
+                .next()
+                .unwrap_or(FAULT_INSTRUCTION)
+        );
+        let fault_ids: Vec<Value> = items
+            .into_iter()
+            .flatten()
+            .filter(|item| {
+                state_text(item, "taskSource") == "continuation"
+                    && state_text(item, "message").starts_with(&fault_prefix)
+            })
+            .filter_map(|item| field(item, "id").cloned())
+            .collect();
+        return Ok(json!({"handoffPending": pending, "faultEntryIds": fault_ids}).to_string());
+    }
     let state = field(&value, "state").cloned().unwrap_or(Value::Null);
     let now = int_value(field(&value, "now")).unwrap_or(0);
     let deadline = int_value(field(&state, "deadlineAt")).unwrap_or(0);
@@ -1163,6 +1208,18 @@ pub fn select_queued(input: &str) -> Result<String, String> {
     let pending_id = state_text(&value, "pendingRequestId");
     let waiting = state_text(&value, "classifyState") != "D" || !pending_id.is_empty();
     let selected = items.and_then(|items| {
+        // An already admitted provider handoff is this fault's recovery, not
+        // ordinary FIFO work. Never use it to answer an outstanding question.
+        let handoff = if pending_id.is_empty() && state_text(&value, "classifyState") == "E" {
+            items
+                .iter()
+                .find(|item| state_text(item, "taskSource") == "auto_provider_handoff")
+        } else {
+            None
+        };
+        if handoff.is_some() {
+            return handoff;
+        }
         items
             .iter()
             .find(|item| {
@@ -1253,7 +1310,7 @@ fn number_value(value: Option<&Value>) -> f64 {
 
 /// Whether a rejected delivery keeps its outbox retry budget.
 ///
-/// Request: `{ unattendedStatus, probe, startedAt }`. Answer:
+/// Request: `{ unattendedStatus, unattendedStatusAtStart, probe, startedAt }`. Answer:
 /// `{ retryable, reason }`.
 ///
 /// A rejected delivery is normally retried. When an unattended supervisor is
@@ -1270,8 +1327,11 @@ pub fn delivery_retry_decision(input: &str) -> Result<String, String> {
     let value: Value = crate::json_lenient::from_str(input)
         .map_err(|error| format!("unattended_invalid_input: {error}"))?;
     let retry = |reason: &str| json!({ "retryable": true, "reason": reason });
-    // `recovered.unattended?.status === 'active'`
-    if value_text(field(&value, "unattendedStatus")) != "active" {
+    // Ownership is fixed at admission, not only at the later rejection: the
+    // failed turn can itself change the supervisor to needs_human or paused.
+    if value_text(field(&value, "unattendedStatus")) != "active"
+        && value_text(field(&value, "unattendedStatusAtStart")) != "active"
+    {
         return Ok(retry("unattended_inactive").to_string());
     }
     // `!!probe`
@@ -2679,6 +2739,35 @@ mod tests {
                 "startedAt": 1000,
             })),
             json!({ "retryable": false, "reason": "preparation_failed_before_handoff" })
+        );
+    }
+
+    #[test]
+    fn an_attempt_owned_at_start_is_not_retried_after_unattended_stops() {
+        for status in ["needs_human", "paused", "stopped"] {
+            assert_eq!(
+                delivery_json(json!({
+                    "unattendedStatus": status,
+                    "unattendedStatusAtStart": "active",
+                    "probe": { "known": true, "handedOff": false, "at": 1000 },
+                    "startedAt": 1000,
+                })),
+                json!({ "retryable": false, "reason": "preparation_failed_before_handoff" })
+            );
+        }
+        assert_eq!(
+            delivery_json(json!({
+                "unattendedStatus": "paused", "unattendedStatusAtStart": "paused",
+                "probe": { "known": true, "handedOff": false, "at": 1000 }, "startedAt": 1000,
+            })),
+            json!({ "retryable": true, "reason": "unattended_inactive" })
+        );
+        assert_eq!(
+            delivery_json(json!({
+                "unattendedStatus": "needs_human", "unattendedStatusAtStart": "active",
+                "probe": { "known": true, "handedOff": false, "at": 999 }, "startedAt": 1000,
+            })),
+            json!({ "retryable": true, "reason": "probe_stale" })
         );
     }
 

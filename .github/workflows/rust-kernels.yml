@@ -1,7 +1,7 @@
 name: Rust kernels
 on:
   pull_request:
-    paths: ['native/**', 'src/native/**', 'src/sqlite/**', 'src/providers/rust-cpr.js', 'src/providers/router-runtime.js', 'src/claude-auth/egress-agent.js', 'tests/test-sqlite*', 'src/routes/token-usage.js', 'src/task-board/**', 'src/routes/task-search.js', 'scripts/*rust*', 'tests/*rust*', 'tests/fixtures/rust-kernel-fixtures.js', 'scripts/generate-outbound-proxy-corpus.js', 'scripts/generate-account-subscription-fixture.js', 'scripts/generate-provider-limit-history-fixture.js', 'scripts/generate-claude-models-fixture.js', 'scripts/generate-auto-provider-fixtures.js', 'tests/test-auto-provider-fixtures.js', 'src/network/proxy-policy.js', 'tests/helpers/legacy-*-route.js', 'tests/helpers/legacy-auto-provider-*.js', '.github/workflows/rust-kernels.yml']
+    paths: ['native/**', 'src/native/**', 'src/sqlite/**', 'src/providers/rust-cpr.js', 'src/providers/router-runtime.js', 'src/claude-auth/egress-agent.js', 'tests/test-sqlite*', 'src/routes/token-usage.js', 'src/task-board/**', 'src/routes/task-search.js', 'scripts/*rust*', 'tests/*rust*', 'tests/fixtures/rust-kernel-fixtures.js', 'scripts/generate-outbound-proxy-corpus.js', 'scripts/generate-account-subscription-fixture.js', 'scripts/generate-provider-limit-history-fixture.js', 'scripts/generate-claude-models-fixture.js', 'scripts/generate-auto-provider-fixtures.js', 'tests/test-auto-provider-fixtures.js', 'src/network/proxy-policy.js', 'tests/helpers/legacy-*-route.js', 'tests/helpers/legacy-auto-provider-*.js', 'docker/**', 'scripts/build-task-shell-image.js', '.github/workflows/rust-kernels.yml']
   workflow_dispatch:
   workflow_call:
 permissions:
@@ -49,6 +49,10 @@ jobs:
       - name: 测试 Rust 前门
         shell: bash
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-gateway --no-fail-fast
+      # 写者租约启动器（native/writer-launcher）：仓外 CLI 的 fail-closed 租约契约。
+      - name: 测试写者租约启动器
+        shell: bash
+        run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-writer-launcher
       - name: Test desktop agent control and validation
         shell: bash
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-desktop-agent
@@ -110,3 +114,37 @@ jobs:
           # test-rust-front-door-fixtures re-runs every frozen-oracle / proxy-corpus
           # generator in verify mode, so a stale fixture cannot reach a release.
           node --test tests/test-rust-cpr.js tests/test-rust-kernels.js tests/test-rust-sqlite.js tests/test-sqlite-driver.js tests/test-orchestration-sqlite-store.js tests/test-provider-limit-cache.js tests/test-task-shells.js tests/test-search-index.js tests/test-task-search.js tests/test-token-global.js tests/test-rust-front-door-fixtures.js
+
+  # Node-free runtime image: build the Rust-only stage and prove it runs without
+  # Node. This does not claim a Node-free server — the front door still spawns
+  # `node server.js` as its upstream (docs/backend-rust-exit-plan.md).
+  node-free-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the Node-free runtime stage from tracked sources
+        run: node scripts/build-task-shell-image.js --node-free
+      - name: Smoke-test the Node-free image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(docker run --rm multicc-node-free:local --version)"
+          echo "$version"
+          echo "$version" | grep -Eq '^multicc-gateway [0-9]+ [0-9]+\.[0-9]+\.[0-9]+$'
+          # No Node runtime may be reachable inside the image.
+          if docker run --rm --entrypoint sh multicc-node-free:local -c 'command -v node >/dev/null 2>&1'; then
+            echo "::error::the node-free runtime image contains node" >&2
+            exit 1
+          fi
+          # multicc-writer must run without Node; exit 64 is its documented usage error.
+          code=0
+          docker run --rm --entrypoint /usr/local/bin/multicc-writer multicc-node-free:local >/dev/null 2>&1 || code=$?
+          if [ "$code" -ne 64 ]; then
+            echo "::error::multicc-writer usage exit was $code, expected 64" >&2
+            exit 1
+          fi
+          docker run --rm --cap-drop=ALL --security-opt=no-new-privileges multicc-node-free:local --version
+

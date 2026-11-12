@@ -615,7 +615,7 @@ Key decisions: vendor transcripts are never translated; authoritative conversati
 
 ### Build and test the Rust workspace
 
-The native side — the gateway front door, the core kernels, the N-API addon, the CPR proxy, remote screen and the CDP daemon — is one Cargo workspace in `native/`. It needs a stable Rust toolchain (the version is not pinned; CI uses `stable`).
+The native side — the gateway front door, the writer-lease launcher, the core kernels, the N-API addon, the CPR proxy, remote screen and the CDP daemon — is one Cargo workspace in `native/`. It needs a stable Rust toolchain (the version is not pinned; CI uses `stable`).
 
 ```bash
 # Build and test every crate in the workspace
@@ -626,12 +626,46 @@ cargo test  --locked --manifest-path native/Cargo.toml --workspace
 cargo fmt --all --manifest-path native/Cargo.toml --check
 cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
 
+# Just the front door and the writer launcher, in release mode
+npm run build:gateway   # cargo build --locked --release -p multicc-gateway -p multicc-writer-launcher
+npm run test:gateway    # cargo test  --locked          -p multicc-gateway -p multicc-writer-launcher
+
+# Smoke the built binaries with an empty environment (no Node on PATH)
+env -i PATH=/usr/bin:/bin native/target/release/multicc-gateway --version
+
 # Rebuild the native module the server loads, then run the JavaScript-side native checks
 npm run build:rust
 npm run test:native
 ```
 
-This is not yet a Rust-only product. The Rust gateway owns the public port and supervises `node server.js`; most HTTP routes and the chat turn coordinator still run in Node, so the server needs Node.js and `npm start` is still the way to run it. There is no Node-free start command, Dockerfile or CI path yet. How much has moved, what remains and the acceptance criteria for removing Node are tracked in [docs/backend-rust-exit-plan.md](docs/backend-rust-exit-plan.md); the front door is described in [docs/gateway.md](docs/gateway.md).
+### Run behind the Rust front door
+
+Every entry point — the source-checkout `./multicc` script, the standalone launcher, the desktop shell and `npm start` — already starts `multicc-gateway serve --cwd <checkout> --node <node> server.js`; the front door owns the public port and supervises Node behind it. `scripts/start-gateway.js` is the foreground launcher behind `npm start`; it refreshes the native artifacts and then runs the gateway with `--stdin-lifeline`.
+
+```bash
+npm start
+# or, against an already-built binary:
+native/target/release/multicc-gateway serve --cwd "$PWD" --node "$(command -v node)" server.js
+```
+
+The front door reads `.env` from `--cwd` with the same rules `server.js` used, passes `MULTICC_GATEWAY_CHILD=1` and `MULTICC_GATEWAY_INTERNAL_PORT` to the child, and writes a PROXY v1 header on every upstream connection. `--version` prints the protocol and crate version; with no arguments it prints usage and exits 2. The full contract — arguments, supervision and environment variables — is in [docs/gateway.md](docs/gateway.md).
+
+The writer-lease launcher is the other shipped binary: `multicc-writer exec -- <command> [args…]` waits for `MULTICC_TASK_STORE`, `MULTICC_WRITER_FENCE` and `MULTICC_WRITER_KIND`, acquires the SQLite writer lease before spawning anything, and releases it only after the child's process group is empty. Its usage errors exit 64.
+
+### Node-free Docker image (Rust binaries only)
+
+`docker/task-shell/Dockerfile` has a `node-free-runtime` stage: `debian:bookworm-slim` with CA certificates plus the two Rust executables (`multicc-gateway`, `multicc-writer`). Its build asserts there is no `node` executable and smoke-runs both binaries (`--version`, `--help`, bare gateway exit 2, bare writer exit 64). The image is built from the same tracked-source context the lab uses — the repository's own `.dockerignore` is fail-closed, so build it through the exporter:
+
+```bash
+npm run docker:node-free   # docker build --target node-free-runtime, tag multicc-node-free:local
+docker run --rm multicc-node-free:local --version   # multicc-gateway <protocol> <crate version>
+```
+
+CI builds and re-runs the smoke checks for this stage in the `node-free-runtime` job of `.github/workflows/rust-kernels.yml`.
+
+### What the Rust front door does not cover yet
+
+This is not yet a Rust-only product, and the Node-free image is a build artifact, not a deployable server. The gateway owns the public port, request admission and the route groups listed in [docs/gateway.md §9](docs/gateway.md) (run-config presets, file transfer/upload/download, service routes, quota guard, subscription and limit history, token usage, model catalogs, agent resources, secrets vault, host routes, turn ledger, …). Everything else — most HTTP routes, the WebSocket hosts, static files and the chat turn coordinator — is still forwarded to the `node server.js` upstream the gateway spawns, so a running server needs Node.js and no Rust-only start command exists yet. How much has moved, what remains and the acceptance criteria for removing the Node upstream are tracked in [docs/backend-rust-exit-plan.md](docs/backend-rust-exit-plan.md); the front door itself is described in [docs/gateway.md](docs/gateway.md).
 
 **→ [Architecture](docs/architecture.md)**
 

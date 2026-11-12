@@ -512,7 +512,10 @@ test('原生默认模型缓存：线路 aliasOnly、official、wireDefault 改�
   request.kind = 'effective'; request.reportedModel = 'reported';
   assert.equal(resolve(request), 'a');
   request.provider.official = false;
-  assert.equal(resolve(request), 'reported');
+  // A route that declares no default runs on its own configuration: the
+  // session's reportedModel is not route-scoped (after a manual switch it names
+  // the previous route's model), so it must never become this route's default.
+  assert.equal(resolve(request), null);
 });
 
 test('原生默认模型缓存：全局线路标志与分隔符不能碰撞', () => {

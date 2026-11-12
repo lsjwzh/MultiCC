@@ -49,21 +49,7 @@ function createDeliveryEvidence(store, {
       else code = await capture(run.binding.workspacePath);
     }
     catch (error) { observationError = /^code_[a-z_]+$/.test(error.message) ? error.message : 'code_observation_failed'; }
-    return store.transaction(() => {
-      const current = get('run', turnId);
-      if (current.attemptId !== result.attemptId || get('latest', run.binding.sessionId)?.runId !== turnId) throw fail('final_attempt_mismatch');
-      const existing = facts.getFact('run-result', turnId); if (existing) return existing;
-      const outcome = result.outcome === 'succeeded' && result.resultDurable === true && result.usageDurable === true && result.pendingInput === false
-        ? 'succeeded' : ['failed', 'cancelled', 'waiting'].includes(result.outcome) ? result.outcome : 'unknown';
-      const fact = { id: turnId, ...run.binding, attemptId: current.attemptId, outcome, attemptOutcome: outcome,
-        finalized: true, evidencePersisted: true, superseded: false, pendingInput: result.pendingInput !== false,
-        endCodeRevision: code?.revision || null, endHead: code?.head || null, repoId: code?.repoId || null,
-        endDirty: code?.dirty ?? null, observationError, finishedAt: now() };
-      facts.appendFact('run-result', fact);
-      put('run', turnId, { ...current, state: 'finalized' });
-      put('attempt', key(turnId, current.attemptId), { runId: turnId, attemptId: current.attemptId, outcome });
-      correlate(fact); return fact;
-    });
+    return store.finalizeDelivery({ turnId, result, code, error: observationError, now: now() });
   }
   function correlate(run) {
     if (!run.endCodeRevision || !run.repoId) return null;

@@ -47,7 +47,7 @@ let srv, sessionId;
 
   // wait for ready
   for (let i = 0; i < 40; i++) {
-    try { await api('GET', '/api/server-info?token=' + TOKEN); break; } catch { await new Promise(r => setTimeout(r, 500)); }
+    try { await api('GET', '/api/directories?token=' + TOKEN); break; } catch { await new Promise(r => setTimeout(r, 500)); }
   }
   log('server up');
 

@@ -150,9 +150,12 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/model-catalogs-host.js',
     'src/routes/plugins.js',
     // Passes the dependency through to the provider runtime, does not decide.
+    'src/routes/providers-host.js',
     'src/routes/providers.js',
+    'src/routes/scan-history-host.js',
     'src/routes/secrets-vault-host.js',
     'src/routes/subagent-defaults-host.js',
+    'src/routes/system-host.js',
     'src/routes/token-usage-host.js',
     'src/routes/turn-ledger-host.js',
     'src/ws/connection-router.js',

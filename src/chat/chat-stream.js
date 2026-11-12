@@ -38,6 +38,7 @@ const { envDigest } = require('../secrets-vault');
 
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const writerGroup = require('../workspace/writer-group');
 
 // session name -> state
 //   { proc, sessionId, cwd, cmd, baseArgs,
@@ -92,6 +93,12 @@ function routeFingerprint(env) {
 function spawnProc(name, cfg) {
   const s = sessions.get(name);
   if (typeof s.beforeSpawn === 'function') s.beforeSpawn({ sessionId: s.sessionId });
+  // The writer lease precedes the child launch: any file this CLI — or a
+  // background descendant sharing its process group — ever writes happens
+  // while a registered lease is active. Failing to register fails the spawn
+  // (fail-closed); the workspace fence, not a host liveness probe, is the
+  // authority on writer activity from here on.
+  const writerToken = typeof s.acquireWriter === 'function' ? s.acquireWriter({ sessionId: s.sessionId }) : null;
   const resuming = s.started;
   const sessionArgs = resuming
     ? ['--resume', s.sessionId]
@@ -106,12 +113,35 @@ function spawnProc(name, cfg) {
   const childEnv = s.env
     ? s.env
     : { ...process.env, TERM: 'dumb', NO_COLOR: '1' };
-  const proc = spawn(s.cmd, args, {
-    cwd: s.cwd,
-    env: childEnv,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  let proc;
+  try {
+    proc = spawn(s.cmd, args, {
+      cwd: s.cwd,
+      env: childEnv,
+      // Group leader on POSIX: the lease is released only once the whole
+      // group is gone, so background children the CLI spawns itself stay
+      // registered without the host ever learning their pids.
+      ...writerGroup.detachedSpawn(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    if (writerToken) { try { s.releaseWriter?.(writerToken); } catch (_) {} }
+    throw error;
+  }
   s.proc = proc;
+  // The lease token rides on the proc itself: whichever lifecycle event
+  // fires — close, or a park that releases the still-warm child — releases
+  // the token that belongs to THIS process, never a successor's. The close
+  // handler is intentionally NOT guarded by s.proc staleness: a detached
+  // (resume-rotated) child's late close must still free its lease.
+  proc.writerLeaseToken = writerToken || null;
+  if (writerToken && proc.pid) setImmediate(() => { try { s.annotateWriter?.(writerToken, proc.pid); } catch (_) {} });
+  proc.once('close', () => {
+    const token = proc.writerLeaseToken;
+    proc.writerLeaseToken = null;
+    if (!token) return;
+    writerGroup.whenGroupEmpty(proc.pid, () => { try { s.releaseWriter?.(token); } catch (_) {} });
+  });
   s.lastSpawnWasResume = resuming;
   // Record the routing fingerprint this process was actually spawned with, so a
   // later provider/env switch (which updates s.env via ensure()) is detectable
@@ -532,6 +562,9 @@ function ensure(name, cfg) {
       sessionId: cfg.sessionId,
       baseArgs: cfg.baseArgs || [],
       beforeSpawn: cfg.beforeSpawn || null,
+      acquireWriter: cfg.acquireWriter || null,
+      releaseWriter: cfg.releaseWriter || null,
+      annotateWriter: cfg.annotateWriter || null,
       env: cfg.env || {},
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       isBackgroundActive: cfg.isBackgroundActive || null,
@@ -556,6 +589,9 @@ function ensure(name, cfg) {
     // Allow per-turn overrides (arguments/provider env can change between turns).
     if (cfg.baseArgs !== undefined) s.baseArgs = cfg.baseArgs;
     if (cfg.beforeSpawn !== undefined) s.beforeSpawn = cfg.beforeSpawn;
+    if (cfg.acquireWriter !== undefined) s.acquireWriter = cfg.acquireWriter;
+    if (cfg.releaseWriter !== undefined) s.releaseWriter = cfg.releaseWriter;
+    if (cfg.annotateWriter !== undefined) s.annotateWriter = cfg.annotateWriter;
     if (cfg.env !== undefined) s.env = cfg.env;
     if (cfg.onNewSessionId !== undefined) s.onNewSessionId = cfg.onNewSessionId;
     if (cfg.onResumeTargetMissing !== undefined) s.onResumeTargetMissing = cfg.onResumeTargetMissing;
@@ -731,9 +767,33 @@ function heldTurn(name) {
   };
 }
 
+// Park/claim hooks used by the stream router: parking releases the warm
+// child's lease directly (a parked process cannot receive input, and the park
+// gate guarantees no live background work), while claiming re-registers the
+// child BEFORE residency lets sends through again. Both no-op without a live
+// proc or without a configured lease hook.
+function releaseWriterLease(name) {
+  const s = sessions.get(name);
+  const proc = s?.proc;
+  const token = proc?.writerLeaseToken;
+  if (!proc || !token) return false;
+  proc.writerLeaseToken = null;
+  try { s.releaseWriter?.(token); } catch (_) {}
+  return true;
+}
+function acquireWriterLease(name) {
+  const s = sessions.get(name);
+  if (!s || !isAlive(name) || s.proc.writerLeaseToken) return false;
+  const token = typeof s.acquireWriter === 'function' ? s.acquireWriter({ sessionId: s.sessionId }) : null;
+  if (!token) return false;
+  s.proc.writerLeaseToken = token;
+  if (s.proc.pid) setImmediate(() => { try { s.annotateWriter?.(token, s.proc?.pid); } catch (_) {} });
+  return true;
+}
+
 module.exports = require('./stream-router').createStreamRouter(
   { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle, isClosing: closer.isClosing,
-    heldTurn,
+    heldTurn, releaseWriterLease, acquireWriterLease,
     waitForClose: (name, opts) => closer.wait(name, () => {}, opts) },
   require('./claude-sdk-stream').createSdkStream(),
   require('./codex-app-stream').createCodexAppStream(),

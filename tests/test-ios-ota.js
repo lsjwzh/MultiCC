@@ -176,7 +176,7 @@ test('wiring: manifest + IPA bypass auth, strangers’ binaries stay hidden, rou
 
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.ok(serverSource.includes("require('./src/ios-ota').createIosOta"));
-  assert.ok(serverSource.includes('apkDistribution, iosOta,'));
+  assert.ok(serverSource.includes('mountSystemRoutes(app, { apkDistribution, iosOta })'));
 });
 
 // 使用真实 HTTP 和 CMS 签名回传覆盖设备采集协议，不依赖真机或苹果账号。

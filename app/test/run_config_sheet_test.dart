@@ -17,6 +17,7 @@ import 'package:multicc_app/providers/chat_provider.dart';
 import 'package:multicc_app/providers/session_manager.dart';
 import 'package:multicc_app/services/quota_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
+import 'package:multicc_app/theme.dart';
 import 'package:multicc_app/widgets/run_config/run_chip.dart';
 import 'package:multicc_app/widgets/run_config/run_config_models.dart';
 import 'package:multicc_app/widgets/run_config/run_config_presets.dart';
@@ -1665,7 +1666,12 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('套用').last);
     await tester.pumpAndSettle();
-    expect(find.textContaining('已不可用，未套用'), findsOneWidget);
+    // 失效线路按「id 前 8 位 + 车道」列出来，而不是只说一个裸 id。
+    expect(
+      find.textContaining('预设中的这些线路已不可用：deleted-（claude）'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('未套用'), findsOneWidget);
     expect(find.byKey(const Key('run-pool-row-claude:strong')), findsOneWidget);
     expect(
       find.byKey(const Key('run-pool-row-claude:deleted-line')),
@@ -1682,6 +1688,236 @@ void main() {
     expect(find.byKey(const Key('run-pool-row-claude:strong')), findsOneWidget);
     expect(out.value, isNull);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('预设列表：含已删除线路的预设标出条数并用警示色', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    await RunConfigPresetStore().save(
+      RunConfigPreset(
+        id: 'stale-mark',
+        name: '丢了一条',
+        protocol: 'anthropic',
+        rows: [
+          RunPoolRow(lane: 'claude', providerId: 'cheap'),
+          RunPoolRow(lane: 'claude', providerId: 'deleted-line'),
+        ],
+        pickOrder: RunPickOrder.order,
+        tiering: RunTiering.jev,
+        maxAttempts: 2,
+        sticky: true,
+        savedAt: 1,
+      ),
+    );
+    final client = MockClient(
+      (request) async => _json(200, {'providers': poolProviders}),
+    );
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    await tester.tap(find.byKey(const Key('run-preset-choose')));
+    await tester.pumpAndSettle();
+    final subtitle = find.text('2 条线路 · 按顺序 · 1 条线路已删除');
+    expect(subtitle, findsOneWidget);
+    expect(tester.widget<Text>(subtitle).style?.color, AppColors.warning);
+  });
+
+  testWidgets('保存预设：池子里有已删除的供应商就拒绝并列出全部', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient(
+      (request) async => _json(200, {'providers': poolProviders}),
+    );
+    const stalePool = SessionProviderSelection(
+      protocol: 'anthropic',
+      candidates: [
+        SessionProviderCandidate(
+          providerId: 'cheap',
+          model: 'glm-4.5-flash',
+          priority: 1,
+          cli: 'claude',
+        ),
+        SessionProviderCandidate(
+          providerId: 'deadbeef01',
+          model: 'glm-5.2',
+          priority: 2,
+          cli: 'claude',
+        ),
+      ],
+      maxAttempts: 2,
+      sticky: false,
+    );
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: stalePool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    final savePreset = find.byKey(const Key('run-preset-save'));
+    await tester.ensureVisible(savePreset);
+    await tester.tap(savePreset);
+    await tester.pumpAndSettle();
+    // 拦在命名框之前：坏池子不该先让用户起名字。
+    expect(find.byKey(const Key('run-preset-name')), findsNothing);
+    expect(
+      find.textContaining('这些线路已被删除：deadbeef（claude）'),
+      findsOneWidget,
+    );
+    final raw = (await SharedPreferences.getInstance()).getString(
+      runConfigPresetKey,
+    );
+    expect(raw, isNull);
+  });
+
+  testWidgets('更新预设：池子里有已删除的供应商同样拒绝', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    await RunConfigPresetStore().save(
+      RunConfigPreset(
+        id: 'p-update-stale',
+        name: '待更新',
+        protocol: 'anthropic',
+        rows: [
+          RunPoolRow(lane: 'claude', providerId: 'cheap'),
+          RunPoolRow(lane: 'claude', providerId: 'deadbeef01'),
+        ],
+        pickOrder: RunPickOrder.order,
+        tiering: RunTiering.jev,
+        maxAttempts: 2,
+        sticky: true,
+        savedAt: 1,
+      ),
+    );
+    const stalePool = SessionProviderSelection(
+      protocol: 'anthropic',
+      candidates: [
+        SessionProviderCandidate(
+          providerId: 'cheap',
+          model: 'glm-4.5-flash',
+          priority: 1,
+          cli: 'claude',
+        ),
+        SessionProviderCandidate(
+          providerId: 'deadbeef01',
+          model: 'glm-5.2',
+          priority: 2,
+          cli: 'claude',
+        ),
+      ],
+      maxAttempts: 2,
+      sticky: false,
+    );
+    final client = MockClient(
+      (request) async => _json(200, {'providers': poolProviders}),
+    );
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: stalePool.withPreset('p-update-stale'),
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    final update = find.byKey(const Key('run-preset-update'));
+    await tester.ensureVisible(update);
+    await tester.tap(update);
+    await tester.pumpAndSettle();
+    // 连「更新预设？」的确认框都不弹。
+    expect(find.text('更新预设？'), findsNothing);
+    expect(
+      find.textContaining('这些线路已被删除：deadbeef（claude）'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('套用被拦：提示一次列出全部已删除线路', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    await RunConfigPresetStore().save(
+      RunConfigPreset(
+        id: 'stale-many',
+        name: '丢了两条',
+        protocol: 'anthropic',
+        rows: [
+          RunPoolRow(lane: 'claude', providerId: 'cheap'),
+          RunPoolRow(lane: 'claude', providerId: 'deadbeef01'),
+          RunPoolRow(lane: 'claude', providerId: 'cafebabe02'),
+        ],
+        pickOrder: RunPickOrder.order,
+        tiering: RunTiering.jev,
+        maxAttempts: 3,
+        sticky: true,
+        savedAt: 1,
+      ),
+    );
+    final client = MockClient(
+      (request) async => _json(200, {'providers': poolProviders}),
+    );
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    await tester.tap(find.byKey(const Key('run-preset-choose')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('2 条线路已删除'), findsOneWidget);
+    await tester.tap(find.text('丢了两条'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('套用').last);
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining(
+        '预设中的这些线路已不可用：deadbeef（claude）、cafebabe（claude）',
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('run-pool-row-claude:cheap')), findsOneWidget);
+    expect(
+      find.byKey(const Key('run-pool-row-claude:deadbeef01')),
+      findsNothing,
+    );
   });
 
   // ── 页头 chip ───────────────────────────────────────────────────────────

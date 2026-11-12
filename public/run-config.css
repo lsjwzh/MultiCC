@@ -257,6 +257,7 @@ dialog .air-config-field input { margin-top: 7px; }
 .rc-preset-chips { display:flex; flex:1 1 100%; flex-wrap:wrap; gap:6px; }
 .rc-preset-chip { display:inline-flex; align-items:center; gap:4px; max-width:100%; padding:2px 4px 2px 9px; border:1px solid #d8e4f0; border-radius:999px; background:#f5f9fd; color:#2c4a67; font-size:11px; }
 .rc-preset-chip > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rc-preset-chip > span.is-missing { color:#a85a25; }
 .rc-preset-chip-x { min-height:0; padding:0 6px; border:0; background:transparent; color:#7f90a2; font-size:11px; cursor:pointer; }
 .rc-preset-chip-x:hover { color:#c0392b; }
 

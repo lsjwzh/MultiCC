@@ -1,6 +1,8 @@
 'use strict';
 
-// Batch provider reassignment — POST /api/providers/:appType/:id/reassign-sessions.
+// Batch provider reassignment — the public route is served by the Rust front
+// door, which calls back into POST /api/__host/providers (reassignFacts /
+// reassignTarget / reassignExec).
 //
 // The contract under test:
 //   · a dry run lists the bound sessions and ONLY the targets those sessions can
@@ -348,40 +350,56 @@ function harness({ sessions = [], chatState = null, backgroundActive = false } =
     http: { request() { throw new Error('unexpected HTTP'); } },
     https: { request() { throw new Error('unexpected HTTP'); } },
     logger: { error() {} },
+    isLocalRequest: () => true,
   });
-  routes.mountCatalogRoutes(app);
   routes.mountManagementRoutes(app);
   return { app, persistedSessions, effects, sessions };
 }
 
-const ROUTE = 'POST /api/providers/:appType/:id/reassign-sessions';
+const HOST_ROUTE = 'POST /api/__host/providers';
 
-test('the route is mounted next to the other provider management routes', async () => {
+// The public reassign route belongs to the Rust front door now; Node answers the
+// reassign* host ops it calls before and after planning the move.
+function reassign(app, body) {
+  return invoke(app, HOST_ROUTE, { body: { op: 'reassignExec', ...body } });
+}
+
+test('the reassign host op is mounted alongside the other provider host ops', async () => {
   const { app } = harness();
-  assert.ok(app.routes.has(ROUTE));
+  assert.ok(app.routes.has(HOST_ROUTE));
+  assert.equal(app.routes.has('POST /api/providers/:appType/:id/reassign-sessions'), false);
 });
 
-test('route guards: unknown source/target, same target, missing target on apply', async () => {
+test('host guards: missing source, missing target, unavailable patch runtime', async () => {
   const { app } = harness({ sessions: [{ id: 'a', dirId: 'd1', cli: 'claude', provider: 'route-a' }] });
 
-  let response = await invoke(app, ROUTE, { params: { appType: 'qoder', id: 'route-a' } });
-  assert.equal(response.statusCode, 400);
+  let response = await reassign(app, { appType: 'qoder', id: 'route-a' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { ok: false, error: { message: 'provider not found' } });
 
-  response = await invoke(app, ROUTE, { params: { appType: 'claude', id: 'nope' } });
-  assert.equal(response.statusCode, 404);
+  response = await reassign(app, { appType: 'claude', id: 'nope' });
+  assert.deepEqual(response.body, { ok: false, error: { message: 'provider not found' } });
 
-  response = await invoke(app, ROUTE, {
-    params: { appType: 'claude', id: 'route-a' }, body: { targetProviderId: 'route-a' },
-  });
-  assert.equal(response.statusCode, 400);
+  response = await reassign(app, { appType: 'claude', id: 'route-a', targetProviderId: 'ghost' });
+  assert.deepEqual(response.body, { ok: false, error: { message: 'target provider not found' } });
+});
 
-  response = await invoke(app, ROUTE, { params: { appType: 'claude', id: 'route-a' }, body: {} });
-  assert.equal(response.statusCode, 400);
+test('reassignFacts reports the source record and whether the patch runtime is live', async () => {
+  const { app } = harness();
+  let response = await invoke(app, HOST_ROUTE, { body: { op: 'reassignFacts', appType: 'claude', id: 'route-a' } });
+  assert.deepEqual(response.body, { ok: true, sourceExists: true, patchRuntime: true });
+  response = await invoke(app, HOST_ROUTE, { body: { op: 'reassignFacts', appType: 'claude', id: 'ghost' } });
+  assert.deepEqual(response.body, { ok: true, sourceExists: false, patchRuntime: true });
+});
 
-  response = await invoke(app, ROUTE, {
-    params: { appType: 'claude', id: 'route-a' }, body: { targetProviderId: 'ghost' },
-  });
-  assert.equal(response.statusCode, 404);
+test('reassignTarget resolves the global target id or says there is none', async () => {
+  const { app } = harness();
+  let response = await invoke(app, HOST_ROUTE, { body: { op: 'reassignTarget', targetProviderId: 'route-b' } });
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.target.id, 'route-b');
+  assert.equal(response.body.target.name, 'Route B');
+  response = await invoke(app, HOST_ROUTE, { body: { op: 'reassignTarget', targetProviderId: '' } });
+  assert.deepEqual(response.body, { ok: true, target: null });
 });
 
 test('dry run switch previews the model reset and writes nothing', async () => {
@@ -391,14 +409,15 @@ test('dry run switch previews the model reset and writes nothing', async () => {
   };
   const { app, effects } = harness({ sessions: [session] });
 
-  const response = await invoke(app, ROUTE, {
-    params: { appType: 'claude', id: 'route-a' },
-    body: { targetProviderId: 'route-b', dryRun: true },
+  const response = await reassign(app, {
+    appType: 'claude', id: 'route-a', targetProviderId: 'route-b', dryRun: true,
   });
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.dryRun, true);
-  assert.equal(response.body.total, 1);
-  assert.deepEqual(response.body.results, [{
+  assert.equal(response.body.ok, true);
+  const result = response.body.result;
+  assert.equal(result.dryRun, true);
+  assert.equal(result.total, 1);
+  assert.deepEqual(result.results, [{
     sessionId: 'a', label: 'Alpha', cli: 'claude', status: 'switched', deferred: false,
     modelBefore: 'stale-relay-model', modelAfter: 'target-model', modelReset: true,
   }]);
@@ -415,12 +434,12 @@ test('apply moves the sessions and replaces the model the target does not serve'
   const zulu = { id: 'z', dirId: 'd1', cli: 'zcode', kind: 'chat', provider: 'route-a', model: 'gpt-target' };
   const { app, effects } = harness({ sessions: [alpha, zulu] });
 
-  const response = await invoke(app, ROUTE, {
-    params: { appType: 'claude', id: 'route-a' },
-    body: { targetProviderId: 'route-b' },
+  const response = await reassign(app, {
+    appType: 'claude', id: 'route-a', targetProviderId: 'route-b',
   });
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.switched, 2);
+  const result = response.body.result;
+  assert.equal(result.switched, 2);
   assert.equal(alpha.provider, 'route-b');
   assert.equal(alpha.model, 'target-model', 'the stale relay model is replaced, not carried over');
   assert.equal(zulu.provider, 'route-b');
@@ -437,12 +456,11 @@ test('a session on the other CLI is skipped and reported, not pointed at the tar
   const zulu = { id: 'z', dirId: 'd1', cli: 'zcode', provider: 'route-a', model: 'gpt-target' };
   const { app } = harness({ sessions: [alpha, zulu] });
 
-  const response = await invoke(app, ROUTE, {
-    params: { appType: 'claude', id: 'route-a' },
-    body: { targetProviderId: 'route-z' },
+  const response = await reassign(app, {
+    appType: 'claude', id: 'route-a', targetProviderId: 'route-z',
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.results.map(item => [item.sessionId, item.status, item.reason || null]), [
+  assert.deepEqual(response.body.result.results.map(item => [item.sessionId, item.status, item.reason || null]), [
     ['a', 'skipped', 'cli_incompatible'],
     ['z', 'switched', null],
   ]);
@@ -457,12 +475,11 @@ test('an Auto-selection session is left in Auto and reported as skipped', async 
   };
   const { app } = harness({ sessions: [session] });
 
-  const response = await invoke(app, ROUTE, {
-    params: { appType: 'claude', id: 'route-a' },
-    body: { targetProviderId: 'route-b' },
+  const response = await reassign(app, {
+    appType: 'claude', id: 'route-a', targetProviderId: 'route-b',
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual([response.body.results[0].status, response.body.results[0].reason],
+  assert.deepEqual([response.body.result.results[0].status, response.body.result.results[0].reason],
     ['skipped', 'auto_selection']);
   assert.equal(session.provider, 'route-a');
   assert.equal(session.providerSelection.mode, 'auto', 'Auto must survive a bulk move');
@@ -478,28 +495,28 @@ test('a busy session is deferred to its next turn, never interrupted', async () 
     chatState: { _activeRunner: { providerAttempt: { routeAttemptId: 'attempt-a' } } },
   });
 
-  const response = await invoke(app, ROUTE, {
-    params: { appType: 'claude', id: 'route-a' },
-    body: { targetProviderId: 'route-b' },
+  const response = await reassign(app, {
+    appType: 'claude', id: 'route-a', targetProviderId: 'route-b',
   });
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.switched, 1);
-  assert.equal(response.body.deferred, 1);
-  assert.equal(response.body.results[0].deferred, true);
+  assert.equal(response.body.result.switched, 1);
+  assert.equal(response.body.result.deferred, 1);
+  assert.equal(response.body.result.results[0].deferred, true);
   assert.equal(session.provider, 'route-a', 'the running turn keeps its route');
   assert.equal(session.pendingConfiguration.profile.provider, 'route-b');
 });
 
 test('listing mode is reachable without a target and reports zero sessions', async () => {
   const { app } = harness();
-  const response = await invoke(app, ROUTE, {
-    params: { appType: 'codex', id: 'route-z' }, body: { dryRun: true },
+  const response = await reassign(app, {
+    appType: 'codex', id: 'route-z', dryRun: true,
   });
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.dryRun, true);
-  assert.equal(response.body.total, 0);
-  assert.deepEqual(response.body.sessions, []);
-  assert.deepEqual(response.body.targets, []);
+  const result = response.body.result;
+  assert.equal(result.dryRun, true);
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.sessions, []);
+  assert.deepEqual(result.targets, []);
 });
 
 // ── Cross-end: the two dialogs are one contract ─────────────────────────────

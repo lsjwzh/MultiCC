@@ -2922,10 +2922,21 @@ This entry records two things: the Rust workspace was brought to a clean lint/fo
 
 - Remaining Node backend: 132,677 lines under `src/` plus 3,067 in `server.js`. The generated inventories still list Node HTTP registrations: `docs/backend-runtime-inventory.md` (570 captured routes at the time it was generated, 500 table rows after later batches) and `docs/backend-route-inventory.md` (519 static candidates). The two counts use different methods and are not a fresh measurement.
 - All four acceptance criteria in the table at the top remain Open; the Node production exit row says the gateway still supervises `server.js` and the Node path can be disabled only after the other three pass.
-- Consequences: a Rust-only start command, a Node-free Dockerfile or CI, and Rust integration tests for "the main HTTP endpoints" have no Rust server to run or test; there is no product Dockerfile today (only the task-shell and command-code containers under `docker/`), and 6 of the 9 workflows install or call Node. Deleting `server.js`, `src/` and the Node dependencies would remove the product without a replacement, so it was not done. The README now documents the Rust build/test/lint commands and says so explicitly.
+- Consequences: a Rust-only start command, and Rust integration tests for "the main HTTP endpoints", still have no Rust server to run or test; there is no product server image (the task-shell and command-code containers under `docker/` are labs), and 6 of the 9 workflows install or call Node. Deleting `server.js`, `src/` and the Node dependencies would remove the product without a replacement, so it was not done. The README documents the Rust build/test/lint commands and says so explicitly. A Node-free *runtime* image (Rust binaries only, smoke-tested) was added on 2026-11-12 — see the subsection below; it is a build artifact, not a server.
 - Next dependency is unchanged: keep moving route domains together with their state owners (6c), then chat orchestration (6d) and the remaining writers (6e), and only then disable the Node path (6f).
 
 No service was restarted and no live service or user data was written during this work.
+
+### Node-free build path added (2026-11-12)
+
+The repository now builds and smoke-tests a Node-free runtime image. No existing Docker stage changes behaviour and no acceptance criterion above changes state.
+
+- `docker/task-shell/Dockerfile` gains `node-free-runtime`: `debian:bookworm-slim` + CA certificates, `COPY --from=rust-build` of `multicc-gateway` and `multicc-writer`, no Node. The build asserts no `node` executable exists, `multicc-gateway --version` matches `multicc-gateway <protocol> <semver>`, `--help` prints usage, the bare gateway exits 2 (usage) and the bare `multicc-writer` exits 64 (its documented EX_USAGE). `ENTRYPOINT` is the gateway binary; the default command is `--help` because serving still needs a Node upstream.
+- `scripts/build-task-shell-image.js --node-free` (`npm run docker:node-free`) exports the tracked-source context and builds that target as `multicc-node-free:local`.
+- `.github/workflows/rust-kernels.yml` gains a `node-free-runtime` job that builds the stage and repeats the smoke checks inside the image: `--version` shape, no `node` on `PATH`, and the writer's usage exit 64.
+- `package.json` adds `build:gateway`, `start:gateway`, `test:gateway` and `docker:node-free`. `start:gateway` reuses `scripts/start-gateway.js`, so the default `npm start` semantics are unchanged.
+
+These steps prove the Rust binaries build and run on a host with no Node runtime. They do not advance the exit criteria: the front door still spawns `node server.js` as its upstream for every route not listed in [gateway.md §9](gateway.md), so a production server still requires Node.js and no Rust-only start command exists. A Node-free *server* can only be proven after 6c, 6d and 6e converge.
 
 ## Provider 余量历史读取端点迁入 Rust 前门（2026-11-11）
 

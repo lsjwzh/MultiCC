@@ -15,13 +15,13 @@ function preparation() {
   };
 }
 
-test('handoff injects one new continuation turn and preserves dispatch lineage', () => {
+test('handoff injects one new continuation turn and preserves dispatch lineage', async () => {
   const injected = [];
   const runtime = createAutoProviderHandoff({
-    inject: (...args) => injected.push(args),
+    inject: (...args) => { injected.push(args); return { ok: true }; },
     hasLiveBackgroundTasks: () => false,
   });
-  const first = runtime.schedule({
+  const first = await runtime.schedule({
     sessionId: 'session-1', turnId: 'turn-1', preparation: preparation(),
     lineage: { kind: 'dispatch', operationId: 'op-1' },
   });
@@ -38,45 +38,45 @@ test('handoff injects one new continuation turn and preserves dispatch lineage',
     taskSource: 'auto_provider_handoff',
     originDispatchId: 'op-1',
   });
-  assert.equal(runtime.schedule({
+  assert.equal((await runtime.schedule({
     sessionId: 'session-1', turnId: 'turn-1', preparation: preparation(),
-  }).reason, 'duplicate');
+  })).reason, 'duplicate');
   assert.equal(injected.length, 1);
 });
 
-test('handoff preserves trigger lineage and refuses missing candidates or live background work', () => {
+test('handoff preserves trigger lineage and refuses missing candidates or live background work', async () => {
   const injected = [];
   let background = false;
   const runtime = createAutoProviderHandoff({
-    inject: (...args) => injected.push(args),
+    inject: (...args) => { injected.push(args); return { ok: true }; },
     hasLiveBackgroundTasks: () => background,
   });
-  assert.equal(runtime.schedule({
+  assert.equal((await runtime.schedule({
     sessionId: 'session-1', turnId: 'missing', preparation: null,
-  }).reason, 'handoff_not_prepared');
+  })).reason, 'handoff_not_prepared');
   background = true;
-  assert.equal(runtime.schedule({
+  assert.equal((await runtime.schedule({
     sessionId: 'session-1', turnId: 'blocked', preparation: preparation(),
-  }).reason, 'background_tasks_active');
+  })).reason, 'background_tasks_active');
   background = false;
-  assert.equal(runtime.schedule({
+  assert.equal((await runtime.schedule({
     sessionId: 'session-1', turnId: 'triggered', preparation: preparation(),
     lineage: { kind: 'trigger' },
-  }).scheduled, true);
+  })).scheduled, true);
   assert.equal(injected[0][3].originTrigger, true);
 });
 
-test('injected handoff metadata survives turn-request normalization', () => {
+test('injected handoff metadata survives turn-request normalization', async () => {
   // The durable path is: inject → outbox session.work → deliveryOptions →
   // normalizeTurnRequest. A continuation label the normalizer rejects burned
   // all 20 outbox retries into dead-letter, so the reserved provider switch
   // never ran (multicc-claude-chat-27, 2026-09-08).
   const injected = [];
   const runtime = createAutoProviderHandoff({
-    inject: (...args) => injected.push(args),
+    inject: (...args) => { injected.push(args); return { ok: true }; },
     hasLiveBackgroundTasks: () => false,
   });
-  runtime.schedule({
+  await runtime.schedule({
     sessionId: 'session-1', turnId: 'turn-1', preparation: preparation(),
   });
   const [sessionId, , , metadata] = injected[0];
@@ -94,5 +94,15 @@ test('injected handoff metadata survives turn-request normalization', () => {
   assert.equal(request.task.start, false);
   assert.equal(request.task.source, 'auto_provider_handoff');
   assert.equal(request.launch.reason, 'continue');
+});
+
+test('a rejected durable admission is reported and can be retried', async () => {
+  let calls = 0;
+  const runtime = createAutoProviderHandoff({ inject: async () => (++calls === 1
+    ? { ok: false, code: 'scheduler_not_ready' } : { ok: true }) });
+  const input = { sessionId: 'session-1', turnId: 'turn-1', preparation: preparation() };
+  assert.equal((await runtime.schedule(input)).reason, 'inject_failed');
+  assert.equal((await runtime.schedule(input)).scheduled, true);
+  assert.equal(calls, 2);
 });
 

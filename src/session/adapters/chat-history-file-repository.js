@@ -46,9 +46,35 @@ function createChatHistoryFileRepository({
           }
           throw failure;
         }
+        // 字节回执（总字节+行尾偏移）交给 FIFO 驱动的 completeMutationStep，
+        // 历史服务据它登记增量账本，下一笔只写尾巴。full=true 表示整份重写，
+        // 回执的行尾覆盖全文，登记时直接替换窗口而不是并入。
+        return { bytes: result.bytes ?? null, ends: result.ends ?? null, full: true };
       } finally {
         // The worker may have changed the file even when result resolution
         // failed. A stale append ledger is unsafe either way.
+        try { owner.run(anchor, 'invalidateWrite', [id]); } catch (_) {}
+      }
+    },
+    // 尾部增量写：payload 是历史服务恒等前缀比较产出的
+    // { tail, keepBytes, expectedBytes }。appended=false 表示账本错位，或文件系统
+    // 不支持安全克隆尾部替换；驱动据此整份重发一次自愈。
+    appendAsync: async (sessionId, payload) => {
+      const id = String(sessionId);
+      try {
+        const result = await owner.appendAsync(id, String(payload.tail), payload.keepBytes, payload.expectedBytes);
+        if (result.error) {
+          const failure = asyncFailure(result.error);
+          if (result.error.operation) {
+            reportFailure(failure, {
+              operation: result.error.operation,
+              target: result.error.target || result.error.path || root,
+            });
+          }
+          throw failure;
+        }
+        return { appended: result.appended === true, bytes: result.bytes ?? null, ends: result.ends ?? null, full: false };
+      } finally {
         try { owner.run(anchor, 'invalidateWrite', [id]); } catch (_) {}
       }
     },

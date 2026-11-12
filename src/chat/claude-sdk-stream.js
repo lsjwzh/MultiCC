@@ -9,6 +9,7 @@ const { createMonitorAdmission, isMonitorHandoffResult } = require('./monitor-ad
 const { createBackgroundHold, processStale } = require('./background-hold');
 const { bundledClaudeCodeBinary } = require('../cli/claude-bundled-binary');
 const { getNative } = require('../native/runtime');
+const writerGroup = require('../workspace/writer-group');
 
 // Native lane events are pushed from a ThreadsafeFunction callback, i.e. on the
 // JS thread but outside the consume-loop microtask; the queue keeps the old
@@ -258,10 +259,19 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
   async function start(s) {
     if (s.disposed || s.current?.cancelled) throw cancelled();
     const cfg = s.cfg;
+    let writerToken = null;
     try {
       await cfg.beforeSpawn?.({ sessionId: cfg.sessionId });
+      // Fail-closed writer registration, same contract as the process
+      // backends: the lease exists before the lane does, and it is held until
+      // the lane's whole process group is gone so the CLI's own background
+      // children stay registered without any event reaching the host.
+      writerToken = typeof cfg.acquireWriter === 'function' ? cfg.acquireWriter({ sessionId: cfg.sessionId }) : null;
       if (s.disposed || s.current?.cancelled) throw cancelled();
-    } catch (error) { safe(cfg.onDispose); throw error; }
+    } catch (error) {
+      if (writerToken) { try { cfg.releaseWriter?.(writerToken); } catch (_) {} writerToken = null; }
+      safe(cfg.onDispose); throw error;
+    }
     const run = { events: laneEvents(), lane: null, relay: null, cancelledHooks: new Set() };
     run.initialized = new Promise(resolve => { run.ready = resolve; });
     s.run = run;
@@ -288,6 +298,16 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         event => s.cfg.onBackgroundEvent(event), prompt => s.current?.text === prompt,
       ) : null;
       run.exited = new Promise(resolve => { run.resolveExit = resolve; });
+      // The lease rides on the run and is released from THIS promise, not from
+      // any guarded event handler: spawn failure, natural exit and stop() all
+      // resolve it, and a park simply empties the slot beforehand.
+      run.writerLeaseToken = writerToken || null;
+      run.exited.then(() => {
+        const token = run.writerLeaseToken;
+        run.writerLeaseToken = null;
+        if (!token) return;
+        writerGroup.whenGroupEmpty(run.lane?.pid, () => { try { cfg.releaseWriter?.(token); } catch (_) {} });
+      });
       // napi delivers the ThreadsafeFunction tuple as one JS argument.
       run.lane = createLane(payload => dispatchLaneEvent(s, run, ...payload));
       acquireLaneKeepAlive();
@@ -296,6 +316,7 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         ...materialized.config, binary: command, binaryArgs,
       })));
       run.argv = started.argv;
+      if (writerToken && run.lane.pid) setImmediate(() => { try { cfg.annotateWriter?.(writerToken, run.lane.pid); } catch (_) {} });
       if (s.disposed || s.current?.cancelled) throw cancelled();
       // Consume continuously, including background events after a result.
       void consume(s, run);
@@ -541,8 +562,32 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     };
   }
 
+  // Park/claim hooks for the stream router, same contract as the process
+  // backends: park releases the warm lane's lease outright (a parked lane
+  // cannot receive input), claim re-registers it before residency lets sends
+  // through again.
+  function releaseWriterLease(name) {
+    const s = sessions.get(name);
+    const run = s?.run;
+    const token = run?.writerLeaseToken;
+    if (!run || !token) return false;
+    run.writerLeaseToken = null;
+    try { s.cfg.releaseWriter?.(token); } catch (_) {}
+    return true;
+  }
+  function acquireWriterLease(name) {
+    const s = sessions.get(name);
+    const run = s?.run;
+    if (!s || !alive(run) || run.writerLeaseToken) return false;
+    const token = typeof s.cfg.acquireWriter === 'function' ? s.cfg.acquireWriter({ sessionId: s.cfg.sessionId }) : null;
+    if (!token) return false;
+    run.writerLeaseToken = token;
+    if (run.lane.pid) setImmediate(() => { try { s.cfg.annotateWriter?.(token, run.lane?.pid); } catch (_) {} });
+    return true;
+  }
+
   return { ensure, send, inject: send, cancel, close, closeAndWait, waitForClose, status, recycle,
-    getTaskOutput, stopTask, injectHeldTurn, heldTurn,
+    getTaskOutput, stopTask, injectHeldTurn, heldTurn, releaseWriterLease, acquireWriterLease,
     isAlive: name => alive(sessions.get(name)?.run), isClosing: name => closing.has(name) };
 }
 

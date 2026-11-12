@@ -1,5 +1,11 @@
 'use strict';
 
+// The 16 public provider routes now belong to the Rust front door
+// (native/gateway/src/app/providers.rs). What Node still owns is the host port
+// the front door calls back on plus the streamed speed test. This file pins
+// that host contract op by op: the loopback gate, the unknown-op answer, and
+// the exact input/output shapes the front door was written against.
+
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
@@ -7,6 +13,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createProviderRoutes } = require('../src/routes/providers');
+const { HOST_PATH } = require('../src/routes/providers-host');
 
 function createApp() {
   const routes = [];
@@ -38,6 +45,10 @@ async function invoke(app, method, routePath, request = {}) {
   const response = createResponse();
   await handler({ body: {}, query: {}, params: {}, ...request }, response);
   return response;
+}
+
+function host(app, body) {
+  return invoke(app, 'POST', HOST_PATH, { body });
 }
 
 function idleHttp() {
@@ -112,7 +123,7 @@ function createHarness(overrides = {}) {
       return true;
     },
     getProvider(appType, id) {
-      return { id, appType, settingsConfig: { env: {} } };
+      return { id, appType, name: `${id} name`, settingsConfig: { env: {} } };
     },
     probeRelayModels: async (env, candidates, command) => ({
       tested: [{ model: candidates[0], ok: true, sample: 'probe ok' }],
@@ -200,281 +211,245 @@ function createHarness(overrides = {}) {
     getPort: () => 4321,
     getClaudeOfficialViaProxy: () => false,
     http: idleHttp(),
-    https: idleHttp(),
-    logger: { error(...args) { logs.push(args); } },
+    logger: { error(...args) { logs.push(args); }, warn() {} },
     now: () => 100,
+    // The host port is loopback-only; tests that care about the gate swap this.
+    isLocalRequest: () => true,
     ...dependencyOverrides,
   };
   const app = createApp();
   const runtime = createProviderRoutes(deps);
-  runtime.mountCatalogRoutes(app);
   runtime.mountManagementRoutes(app);
   return { app, runtime, deps, providers, writes, calls, deleted, relayShares, logs };
 }
 
-test('provider route extraction preserves the mounted surface and response DTOs', async () => {
+test('the Node surface is the provider host port plus the streamed speed test', () => {
   const harness = createHarness();
   assert.deepEqual(harness.app.routes, [
-    'GET /api/providers',
-    'GET /api/providers/stats',
+    'POST /api/__host/providers',
     'POST /api/__host/subagent-defaults',
-    'POST /api/providers/import',
-    'POST /api/providers',
-    'PATCH /api/providers/:appType/:id',
-    'DELETE /api/providers/:appType/:id',
-    'POST /api/providers/:appType/:id/probe',
     'POST /api/providers/:appType/:id/speedtest',
-    'POST /api/providers/:appType/:id/reassign-sessions',
-    'POST /api/providers/:appType/:id/relay-share',
-    'POST /api/providers/:appType/:id/relay-models/sync',
-    'GET /api/provider-relay-shares',
-    'DELETE /api/provider-relay-shares/:id',
-    'GET /api/provider-relay-shares/:id/code',
-    'GET /api/providers/:appType/:id/relay-import-code',
-    'GET /api/provider-defaults',
-    'PUT /api/provider-defaults',
     'POST /api/auto-provider/routing/test',
   ]);
+  // The 16 migrated routes are gone from Node, not merely shadowed.
+  for (const gone of ['GET /api/providers', 'GET /api/providers/stats', 'POST /api/providers/import',
+    'POST /api/providers', 'PATCH /api/providers/:appType/:id', 'DELETE /api/providers/:appType/:id',
+    'POST /api/providers/:appType/:id/probe', 'GET /api/provider-defaults', 'PUT /api/provider-defaults']) {
+    assert.equal(harness.app.handlers.has(gone), false, gone);
+  }
+});
 
-  let response = await invoke(harness.app, 'GET', '/api/providers', {
-    query: { appType: 'claude' },
-  });
-  assert.deepEqual(response.body, {
-    available: true,
-    ccSwitchAvailable: true,
-    ccSwitchStatus: { available: true, dbFound: true, dbPath: '/private/cc-switch.db' },
-    providers: [{ id: 'claude-one', appType: 'claude', name: 'One' }],
-    defaults: { claude: 'claude-one', codex: null },
-    stats: [{ providerId: 'claude-one', totalTokens: 3 }],
-    // The provider-limit cache is optional in this harness; a null value means
-    // no cache is wired (production always wires one).
-    limitCacheStaleMs: null,
-  });
+test('the host port only answers loopback requests and rejects unknown operations', async () => {
+  const harness = createHarness({ isLocalRequest: () => false });
+  for (const body of [
+    { op: 'catalog' },
+    { op: 'deleteExec', appType: 'claude', id: 'claude-one', references: [] },
+    { op: 'defaultsPersist', next: { claude: null } },
+  ]) {
+    const response = await host(harness.app, body);
+    assert.equal(response.statusCode, 404, JSON.stringify(body));
+    assert.deepEqual(response.body, { error: 'not found' });
+  }
+  assert.deepEqual(harness.deleted, []);
+  assert.deepEqual(harness.writes, []);
 
-  response = await invoke(harness.app, 'GET', '/api/providers/stats');
-  assert.deepEqual(response.body, {
-    stats: [{ providerId: 'claude-one', totalTokens: 3 }],
-    windows: {},
-  });
+  const open = createHarness();
+  const unknown = await host(open.app, { op: 'nope' });
+  assert.equal(unknown.statusCode, 400);
+  assert.deepEqual(unknown.body, { error: 'unknown host operation' });
+});
 
-  response = await invoke(harness.app, 'POST', '/api/providers/import');
-  assert.deepEqual(response.body, { ok: true, imported: 2, updated: 1, total: 3 });
-
-  response = await invoke(harness.app, 'POST', '/api/providers', {
-    body: {
-      appType: ' codex ',
-      name: 'Local Codex',
-      baseUrl: ' https://relay.test/v1 ',
-      authToken: ' test-token ',
-      model: ' gpt-test ',
-      models: ['gpt-test'],
-      aliasMap: { fast: 'gpt-test' },
+test('catalog assembles the provider facts the front door cannot compute', async () => {
+  const refreshes = [];
+  const harness = createHarness({
+    relayModelCatalogRuntime: {
+      async refreshDue(filter) { refreshes.push(filter); return { checked: 1 }; },
     },
   });
+  const response = await host(harness.app, { op: 'catalog', appType: 'claude', cli: 'opencode' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(refreshes, [{ appType: 'claude', cli: 'opencode' }]);
   assert.deepEqual(response.body, {
     ok: true,
-    id: 'created-id',
-    appType: 'codex',
-    name: 'Local Codex',
+    ccSwitchStatus: { available: true, dbFound: true, dbPath: '/private/cc-switch.db' },
+    providers: [{ id: 'claude-one', appType: 'claude', name: 'One' }],
+    stats: [{ providerId: 'claude-one', totalTokens: 3 }],
+    defaults: { claude: 'claude-one', codex: null },
+    limitCacheStaleMs: null,
   });
-  assert.deepEqual(harness.calls.at(-1).input, {
+});
+
+test('catalog refreshes official Codex account catalogs fire-and-forget unless poll=1', async () => {
+  const refreshed = [];
+  const providers = {
+    getCcSwitchStatus: () => ({ available: true }),
+    listProviders: () => [{ id: 'codex-official', appType: 'codex', isOfficial: true, name: 'Official' }],
+    providerSupportsCli: () => true,
+  };
+  const codexAccountModelCatalogRuntime = {
+    refreshProvider(id) { refreshed.push(id); return Promise.resolve(); },
+  };
+
+  let harness = createHarness({ providers, codexAccountModelCatalogRuntime });
+  await host(harness.app, { op: 'catalog', appType: 'codex' });
+  assert.deepEqual(refreshed, ['codex-official']);
+
+  refreshed.length = 0;
+  harness = createHarness({ providers, codexAccountModelCatalogRuntime });
+  await host(harness.app, { op: 'catalog', appType: 'codex', poll: '1' });
+  assert.deepEqual(refreshed, [], 'poll=1 reads the in-memory snapshot and never spawns a refresh');
+});
+
+test('catalog attaches the persisted limit summary, freshness and virtual status', async () => {
+  const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
+  const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-provider-host-'));
+  const cache = createProviderLimitCache({ file: path.join(dir, 'provider-limit-cache.db'), now: () => 1000 });
+  cache.record('claude', 'claude-one', {
+    kind: 'window',
+    summary: { kind: 'window', provider: 'glm', status: 'allowed', usedPercentage: 20, resetsAtMs: 3_601_000 },
+    summaryText: '5h 80%',
+    barText: '5h 80% {cd:123}',
+    fetchedAt: 900,
+  });
+  const recorder = createLimitRecorder({
+    cache,
+    persistedSessions: new Map([['s1', { cli: 'claude', provider: 'claude-one' }]]),
+    providers: {
+      appTypeForCli: () => 'claude',
+      listProviders() { return [{ id: 'claude-one', appType: 'claude', name: 'One' }]; },
+      getProviderLimitTarget: () => null,
+    },
+  });
+  const harness = createHarness({ providerLimitCache: cache, limitRecorder: recorder });
+  const response = await host(harness.app, { op: 'catalog', appType: 'claude' });
+  assert.equal(response.body.limitCacheStaleMs, 10 * 60 * 1000);
+  assert.equal(response.body.providers.length, 1);
+  const limit = response.body.providers[0].limit;
+  assert.equal(limit.kind, 'window');
+  assert.equal(limit.summaryText, '5h 80%');
+  assert.equal(limit.stale, false);
+  assert.equal(limit.summary.usedPercentage, 20);
+  assert.equal(limit.bar.text, '5h 80% {cd:3601000|5h} · 更新于 {ago:900}');
+  assert.equal(require('../public/quota-bar-view').resolveQuotaBar(limit.bar, { now: 1000 }).text,
+    '5h 80% 1h · 更新于 刚刚');
+  assert.equal(Object.hasOwn(limit, 'barText'), false);
+});
+
+test('catalog reports a virtual provider status or the Rust-module fallback', async () => {
+  const virtual = { id: 'pool', appType: 'claude', name: 'Pool', virtual: true };
+  const harness = createHarness({ providers: { listProviders: () => [virtual] } });
+  const response = await host(harness.app, { op: 'catalog' });
+  // The virtual status helper is a real module; assert only that the key exists
+  // and the provider still renders when the module answers.
+  assert.equal(response.body.providers[0].id, 'pool');
+  assert.ok(response.body.providers[0].virtualStatus);
+});
+
+test('usageStats, import, create and update pass their ok/error shapes through', async () => {
+  const harness = createHarness();
+  let response = await host(harness.app, { op: 'usageStats' });
+  assert.deepEqual(response.body, { ok: true, stats: { stats: [{ providerId: 'claude-one', totalTokens: 3 }], windows: {} } });
+
+  response = await host(harness.app, { op: 'import' });
+  assert.deepEqual(response.body, { ok: true, result: { imported: 2, updated: 1, total: 3 } });
+
+  // The front door owns request normalisation (trim, egress parsing); the host
+  // hands the already-normalised payload to createProvider verbatim.
+  const payload = {
     appType: 'codex',
     name: 'Local Codex',
     baseUrl: 'https://relay.test/v1',
     authToken: 'test-token',
     model: 'gpt-test',
     models: ['gpt-test'],
-    settingsConfig: undefined,
     aliasMap: { fast: 'gpt-test' },
-  });
-
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { candidates: ['claude-test'] },
-  });
-  assert.deepEqual(response.body, {
-    tested: [{ model: 'claude-test', ok: true, sample: 'probe ok' }],
-    accepted: ['claude-test'],
-    command: '/usr/local/bin/claude',
-    baseUrl: 'http://127.0.0.1:4321/claude-proxy/claude-one/probe',
-    envKeys: ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'],
-  });
-
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
-    params: { appType: 'codex', id: 'codex-one' },
-  });
-  assert.deepEqual(response.body, {
-    ok: false,
-    ms: 0,
-    error: 'OAuth provider cannot be tested',
-  });
-
-  response = await invoke(harness.app, 'PUT', '/api/provider-defaults', {
-    body: { claude: '', codex: 'codex-one' },
-  });
-  assert.deepEqual(response.body, {
-    ok: true,
-    defaults: { claude: null, codex: 'codex-one' },
-  });
-  assert.deepEqual(harness.writes, [{
-    file: '/runtime/provider-defaults.json',
-    value: { claude: null, codex: 'codex-one' },
-  }]);
-  assert.deepEqual(harness.runtime.validProviderId('zcode', ''), { ok: true, value: null });
-  assert.deepEqual(harness.runtime.validProviderId('zcode', 'claude-one'), { ok: true, value: 'claude-one' });
-  assert.deepEqual(harness.runtime.validProviderId('zcode', 'codex-one'), { ok: true, value: 'codex-one' });
-  assert.deepEqual(harness.runtime.validProviderId('qoder', 'claude-one'), { ok: false });
-});
-
-test('provider catalog refreshes due relay models for Web/App and exposes a forced sync seam', async () => {
-  const calls = [];
-  const relayModelCatalogRuntime = {
-    async refreshDue(filter) {
-      calls.push({ method: 'refreshDue', filter });
-      return { checked: 1, updated: 1, failed: 0 };
-    },
-    async syncProvider(appType, id, options) {
-      calls.push({ method: 'syncProvider', appType, id, options });
-      return {
-        ok: true, changed: true, appType, providerId: id,
-        model: 'gpt-6-astra', models: ['gpt-6.1-sol', 'gpt-6-astra'],
-      };
-    },
+    egressIpAllowlist: ['203.0.113.7'],
   };
-  const harness = createHarness({ relayModelCatalogRuntime });
-  const catalog = await invoke(harness.app, 'GET', '/api/providers', {
-    query: { appType: 'codex', cli: 'codex' },
-  });
-  assert.equal(catalog.statusCode, 200);
-  assert.deepEqual(calls[0], {
-    method: 'refreshDue', filter: { appType: 'codex', cli: 'codex' },
-  });
+  response = await host(harness.app, { op: 'create', body: payload });
+  assert.deepEqual(response.body, { ok: true, result: { id: 'created-id', appType: 'codex', name: 'Local Codex' } });
+  assert.deepEqual(harness.calls.at(-1).input, payload);
 
-  const synced = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-models/sync', {
-    params: { appType: 'codex', id: 'codex-one' },
+  // No duplicate validation on the host side: the front door already rejected
+  // malformed allowlists, so whatever reaches the host is passed through.
+  response = await host(harness.app, { op: 'create', body: { appType: ' codex ', egressIpAllowlist: 'not-an-array' } });
+  assert.equal(response.body.ok, true);
+  assert.deepEqual(harness.calls.at(-1).input, { appType: ' codex ', egressIpAllowlist: 'not-an-array' });
+
+  response = await host(harness.app, {
+    op: 'update',
+    appType: 'claude',
+    id: 'claude-one',
+    body: { name: 'Renamed', egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' } },
   });
-  assert.equal(synced.statusCode, 200);
-  assert.deepEqual(synced.body.models, ['gpt-6.1-sol', 'gpt-6-astra']);
-  assert.deepEqual(calls[1], {
-    method: 'syncProvider', appType: 'codex', id: 'codex-one', options: { force: true },
-  });
+  assert.deepEqual(response.body, { ok: true });
+  assert.equal(harness.calls.at(-1).method, 'updateProvider');
+  assert.equal(harness.calls.at(-1).appType, 'claude');
+  assert.deepEqual(harness.calls.at(-1).input.egressBinding,
+    { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' });
+  assert.equal('egressIpAllowlist' in harness.calls.at(-1).input, false,
+    'an absent allowlist stays absent, so the stored one is not cleared');
 });
 
-test('provider route public errors redact secrets and absolute paths without changing DTO fields', async () => {
+test('public errors redact secrets and absolute paths without changing the DTO fields', async () => {
   const secretError = new Error('/Users/alice/.config/providers.json Authorization: Bearer route-secret');
   secretError.code = 'CC_SWITCH_UNAVAILABLE';
   secretError.reason = 'database /Users/alice/.cc-switch/cc-switch.db token=route-secret';
   const harness = createHarness({
     providers: {
-      getCcSwitchStatus: () => ({ available: false }),
-      listProviders: () => [],
       getProviderUsageStats() { throw secretError; },
       importFromCcSwitch() { throw secretError; },
       createProvider() { throw secretError; },
-      getProvider: () => ({
-        settingsConfig: { env: { ANTHROPIC_BASE_URL: 'https://relay.test' } },
-      }),
-      probeRelayModels: async () => ({
-        tested: [{
-          model: 'safe-model',
-          ok: false,
-          reason: 'token=probe-secret',
-          sample: '/Users/alice/private/probe.log',
-        }],
-        accepted: [],
-        error: 'Authorization: Bearer probe-secret',
-      }),
-      resolveCodexDirectHttp: () => ({
-        canDirect: true,
-        url: 'not a url token=codex-secret /Users/alice/private',
-        apiKey: 'codex-secret',
-        model: 'gpt-test',
-      }),
-      claudeProbeRouteEnv: () => ({
-        ANTHROPIC_BASE_URL: 'http://127.0.0.1:4321/claude-proxy/relay/probe',
-        ANTHROPIC_AUTH_TOKEN: 'cpr-probe',
-      }),
+      updateProvider() { throw secretError; },
     },
-    // The codex speed test no longer parses that url or dials it: it posts to
-    // the loopback hop, so the secret-laden vendor url is never read.
-    http: okHttp(),
-    https: okHttp(),
   });
 
-  let response = await invoke(harness.app, 'GET', '/api/providers/stats');
-  assert.deepEqual(response.body, { error: 'provider stats failed' });
+  let response = await host(harness.app, { op: 'usageStats' });
+  assert.deepEqual(response.body, { ok: false, error: { message: 'provider stats failed' } });
 
-  response = await invoke(harness.app, 'POST', '/api/providers/import');
+  response = await host(harness.app, { op: 'import' });
   assert.deepEqual(response.body, {
-    error: 'provider import failed',
-    code: 'CC_SWITCH_UNAVAILABLE',
-    reason: 'provider import failed',
+    ok: false,
+    error: {
+      message: 'provider import failed',
+      code: 'CC_SWITCH_UNAVAILABLE',
+      reason: 'provider import failed',
+    },
   });
 
-  response = await invoke(harness.app, 'POST', '/api/providers', {
-    body: { appType: 'claude' },
-  });
-  assert.deepEqual(response.body, { error: 'provider create failed' });
+  response = await host(harness.app, { op: 'create', body: { appType: 'claude' } });
+  assert.deepEqual(response.body, { ok: false, error: { message: 'provider create failed' } });
 
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
-    params: { appType: 'claude', id: 'relay' },
-    body: { candidates: ['safe-model'] },
-  });
-  assert.deepEqual(response.body, {
-    tested: [{
-      model: 'safe-model',
-      ok: false,
-      reason: 'provider probe failed',
-      sample: 'provider probe output hidden',
-    }],
-    accepted: [],
-    error: 'provider probe failed',
-  });
+  response = await host(harness.app, { op: 'update', appType: 'claude', id: 'x', body: {} });
+  assert.deepEqual(response.body, { ok: false, error: { message: 'provider update failed' } });
 
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
-    params: { appType: 'codex', id: 'relay' },
-  });
-  assert.deepEqual(response.body, { ok: true, ms: 0, status: 200, model: 'gpt-test' });
-
-  const serialized = JSON.stringify([
-    response.body,
-    ...(await Promise.all([
-      invoke(harness.app, 'GET', '/api/providers/stats'),
-      invoke(harness.app, 'POST', '/api/providers/import'),
-    ])).map(item => item.body),
-  ]);
-  assert.doesNotMatch(serialized, /route-secret|probe-secret|codex-secret|\/Users\/alice/);
+  assert.doesNotMatch(JSON.stringify([response.body]), /route-secret|\/Users\/alice/);
 });
 
-test('provider deletion retains the exact reference-protection 409 contract', async () => {
+test('deleteFacts enumerates references and whether force deletion is possible', async () => {
   const references = [
     { kind: 'main', sessionId: 'session-one', sessionName: 'One' },
     { kind: 'default', cli: 'claude' },
   ];
   let referenceInput;
   const harness = createHarness({
-    findProviderReferences(input) {
-      referenceInput = input;
-      return references;
-    },
+    findProviderReferences(input) { referenceInput = input; return references; },
+    applySessionPatch: () => ({ status: 200, body: {} }),
+    clearAuxProvider: () => true,
   });
-  const response = await invoke(harness.app, 'DELETE', '/api/providers/:appType/:id', {
-    params: { appType: 'claude', id: 'claude-one' },
-  });
-  assert.equal(response.statusCode, 409);
-  assert.deepEqual(response.body, {
-    error: 'provider is still referenced',
-    code: 'PROVIDER_IN_USE',
-    references,
-    forceable: false,
-  });
-  assert.deepEqual(harness.deleted, []);
+  const response = await host(harness.app, { op: 'deleteFacts', appType: 'claude', id: 'claude-one' });
+  assert.deepEqual(response.body, { ok: true, references, forceable: true });
   assert.equal(referenceInput.sessions, harness.deps.persistedSessions);
   assert.deepEqual(referenceInput.defaults, { claude: 'claude-one', codex: null });
   assert.deepEqual(referenceInput.aux, { protocol: 'anthropic', providerId: null });
+
+  const noRuntime = createHarness({ findProviderReferences: () => [] });
+  const plain = await host(noRuntime.app, { op: 'deleteFacts', appType: 'claude', id: 'claude-one' });
+  assert.deepEqual(plain.body, { ok: true, references: [], forceable: false });
 });
 
-test('force deletion unwires every reference through the session PATCH path, then deletes', async () => {
+test('deleteExec unwires every reference through the session PATCH path, then deletes', async () => {
   const sessions = new Map([
     ['s-main', { id: 's-main', label: 'Main', cli: 'claude', provider: 'claude-one' }],
     ['s-auto', { id: 's-auto', label: 'Auto', cli: 'claude', provider: 'claude-one', providerSelection: {
@@ -489,32 +464,31 @@ test('force deletion unwires every reference through the session PATCH path, the
   ]);
   const patches = [];
   const auxCleared = [];
+  const references = [
+    { kind: 'main', sessionId: 's-main', sessionName: 'Main' },
+    { kind: 'main', sessionId: 's-auto', sessionName: 'Auto' },
+    { kind: 'auto_candidate', sessionId: 's-auto', sessionName: 'Auto' },
+    { kind: 'subagent', sessionId: 's-sub', sessionName: 'Sub' },
+    { kind: 'default', cli: 'claude' },
+    { kind: 'aux', protocol: 'anthropic' },
+  ];
   const harness = createHarness({
     persistedSessions: sessions,
-    findProviderReferences: () => [
-      { kind: 'main', sessionId: 's-main', sessionName: 'Main' },
-      { kind: 'main', sessionId: 's-auto', sessionName: 'Auto' },
-      { kind: 'auto_candidate', sessionId: 's-auto', sessionName: 'Auto' },
-      { kind: 'subagent', sessionId: 's-sub', sessionName: 'Sub' },
-      { kind: 'default', cli: 'claude' },
-      { kind: 'aux', protocol: 'anthropic' },
-    ],
+    findProviderReferences: () => references,
     applySessionPatch(sessionId, body) {
       patches.push({ sessionId, body });
       return { status: 200, body: sessionId === 's-main' ? { deferred: true } : {} };
     },
     clearAuxProvider(id) { auxCleared.push(id); return true; },
-    logger: { error() {}, warn() {} },
   });
-  const response = await invoke(harness.app, 'DELETE', '/api/providers/:appType/:id', {
-    params: { appType: 'claude', id: 'claude-one' },
-    query: { force: '1' },
+  const response = await host(harness.app, {
+    op: 'deleteExec', appType: 'claude', id: 'claude-one', references,
   });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.ok, true);
-  assert.equal(response.body.forced, true);
+  assert.deepEqual(response.body.ok, true);
+  assert.equal(response.body.deleteOk, true);
   assert.equal(response.body.detached.length, 5);
   assert.equal(response.body.detached.filter(item => item.deferred).length, 1);
+  assert.deepEqual(response.body.failed, []);
   assert.deepEqual(patches.map(item => item.sessionId), ['s-main', 's-auto', 's-sub']);
   assert.deepEqual(patches[0].body, { provider: null });
   assert.deepEqual(patches[1].body.providerSelection.candidates.map(item => item.providerId), ['claude-two', 'claude-three']);
@@ -525,47 +499,28 @@ test('force deletion unwires every reference through the session PATCH path, the
   assert.deepEqual(harness.deleted, [{ appType: 'claude', id: 'claude-one' }]);
 });
 
-test('force deletion keeps the provider when a reference cannot be detached', async () => {
+test('deleteExec keeps the provider when a reference cannot be detached', async () => {
   const harness = createHarness({
     persistedSessions: new Map([['s1', { id: 's1', label: 'One', cli: 'claude', provider: 'claude-one' }]]),
-    findProviderReferences: () => [{ kind: 'main', sessionId: 's1', sessionName: 'One' }],
     applySessionPatch: () => ({ status: 400, body: { error: 'invalid provider' } }),
     clearAuxProvider: () => false,
   });
-  const response = await invoke(harness.app, 'DELETE', '/api/providers/:appType/:id', {
-    params: { appType: 'claude', id: 'claude-one' },
-    query: { force: 'true' },
+  const response = await host(harness.app, {
+    op: 'deleteExec',
+    appType: 'claude',
+    id: 'claude-one',
+    references: [{ kind: 'main', sessionId: 's1', sessionName: 'One' }],
   });
-  assert.equal(response.statusCode, 409);
-  assert.equal(response.body.code, 'PROVIDER_DETACH_FAILED');
-  assert.deepEqual(response.body.references, [{ kind: 'session', sessionId: 's1', sessionName: 'One', error: 'invalid provider' }]);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.deleteOk, false);
+  assert.deepEqual(response.body.failed, [{ kind: 'session', sessionId: 's1', sessionName: 'One', error: 'invalid provider' }]);
   assert.deepEqual(harness.deleted, []);
 });
 
-test('force detach plan falls back to manual when the trimmed Auto pool no longer validates', () => {
-  const { sessionDetachPlan } = require('../src/providers/force-detach');
-  const twoCandidates = sessionDetachPlan({ provider: 'a', providerSelection: {
-    mode: 'auto', candidates: [{ providerId: 'a', enabled: true }, { providerId: 'b', enabled: true }],
-  } }, 'a');
-  assert.deepEqual(twoCandidates, { body: { providerSelection: null, provider: 'b' }, fallback: null });
-  const threeCandidates = sessionDetachPlan({ provider: 'b', providerSelection: {
-    mode: 'auto', maxAttempts: 3, candidates: [
-      { providerId: 'a', enabled: true }, { providerId: 'b', enabled: true }, { providerId: 'c', enabled: true },
-    ],
-  }, subagent: { providerId: 'a', model: 'x' } }, 'a');
-  assert.equal(threeCandidates.body.subagent, null);
-  assert.deepEqual(threeCandidates.fallback, { providerSelection: null, provider: 'b' });
-  // A staged (next-turn) edit is the state being detached, not the live one.
-  const staged = sessionDetachPlan({ provider: 'a', pendingConfiguration: { cli: 'claude', profile: { provider: 'z' } } }, 'a');
-  assert.deepEqual(staged.body, {});
-});
-
-test('provider deletion revokes all credentials scoped to that provider', async () => {
+test('deleteExec revokes all relay credentials scoped to the deleted provider', async () => {
   const harness = createHarness({ findProviderReferences: () => [] });
-  const response = await invoke(harness.app, 'DELETE', '/api/providers/:appType/:id', {
-    params: { appType: 'claude', id: 'claude-one' },
-  });
-  assert.deepEqual(response.body, { ok: true });
+  const response = await host(harness.app, { op: 'deleteExec', appType: 'claude', id: 'claude-one', references: [] });
+  assert.deepEqual(response.body, { ok: true, deleteOk: true, detached: [], failed: [] });
   assert.deepEqual(harness.deleted, [{ appType: 'claude', id: 'claude-one' }]);
   assert.deepEqual(harness.calls.at(-1), {
     method: 'revokeRelayProvider',
@@ -574,17 +529,289 @@ test('provider deletion revokes all credentials scoped to that provider', async 
   });
 });
 
-test('provider defaults keep best-effort persistence while redacting write failures', async () => {
+test('probeFacts answers whether the provider record exists', async () => {
+  let harness = createHarness();
+  let response = await host(harness.app, { op: 'probeFacts', appType: 'claude', id: 'claude-one' });
+  assert.deepEqual(response.body, { ok: true, exists: true });
+
+  harness = createHarness({ providers: { getProvider: () => null } });
+  response = await host(harness.app, { op: 'probeFacts', appType: 'claude', id: 'ghost' });
+  assert.deepEqual(response.body, { ok: true, exists: false });
+});
+
+test('probeExec runs the loopback route and sanitizes the probe output', async () => {
+  const asked = [];
+  const harness = createHarness({
+    providers: {
+      claudeProbeRouteEnv(appType, id, port) {
+        asked.push({ appType, id, port });
+        return {
+          ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/claude-proxy/${id}/probe`,
+          ANTHROPIC_AUTH_TOKEN: 'cpr-probe',
+          ANTHROPIC_MODEL: 'relay-model',
+        };
+      },
+    },
+  });
+  const response = await host(harness.app, {
+    op: 'probeExec', appType: 'claude', id: 'claude-one', candidates: ['claude-opus-5'],
+  });
+  assert.deepEqual(asked, [{ appType: 'claude', id: 'claude-one', port: 4321 }]);
+  assert.deepEqual(response.body, {
+    ok: true,
+    result: {
+      tested: [{ model: 'claude-opus-5', ok: true, sample: 'probe ok' }],
+      accepted: ['claude-opus-5'],
+      command: '/usr/local/bin/claude',
+      baseUrl: 'http://127.0.0.1:4321/claude-proxy/claude-one/probe',
+      envKeys: ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL'],
+    },
+  });
+
+  const secret = createHarness({
+    providers: {
+      probeRelayModels: async () => ({
+        tested: [{
+          model: 'safe-model',
+          ok: false,
+          reason: 'token=probe-secret',
+          sample: '/Users/alice/private/probe.log',
+        }],
+        accepted: [],
+        error: 'Authorization: Bearer probe-secret',
+      }),
+    },
+  });
+  const sanitized = await host(secret.app, {
+    op: 'probeExec', appType: 'claude', id: 'relay', candidates: ['safe-model'],
+  });
+  assert.deepEqual(sanitized.body.result, {
+    tested: [{
+      model: 'safe-model',
+      ok: false,
+      reason: 'provider probe failed',
+      sample: 'provider probe output hidden',
+    }],
+    accepted: [],
+    error: 'provider probe failed',
+  });
+  assert.doesNotMatch(JSON.stringify(sanitized.body), /probe-secret|\/Users\/alice/);
+});
+
+test('probeExec reports the no-base-url shape without spawning the CLI', async () => {
+  let probeCalls = 0;
+  const harness = createHarness({
+    providers: {
+      claudeProbeRouteEnv: () => null,
+      probeRelayModels: async () => { probeCalls += 1; return { tested: [], accepted: [] }; },
+    },
+  });
+  const response = await host(harness.app, {
+    op: 'probeExec', appType: 'claude', id: 'claude-official', candidates: ['claude-opus-5'],
+  });
+  assert.deepEqual(response.body, { ok: true, result: { tested: [], accepted: [], error: 'no base url' } });
+  assert.equal(probeCalls, 0);
+});
+
+test('probeExec without a provider record answers an error instead of probing nothing', async () => {
+  const harness = createHarness({ providers: { getProvider: () => null } });
+  const response = await host(harness.app, { op: 'probeExec', appType: 'claude', id: 'ghost' });
+  assert.deepEqual(response.body, { ok: false, error: { message: 'provider not found' } });
+});
+
+test('reassignFacts and reassignTarget answer the front door before it plans a move', async () => {
+  const harness = createHarness({ applySessionPatch: () => ({ status: 200, body: {} }) });
+  let response = await host(harness.app, { op: 'reassignFacts', appType: 'claude', id: 'claude-one' });
+  assert.deepEqual(response.body, { ok: true, sourceExists: true, patchRuntime: true });
+
+  response = await host(harness.app, { op: 'reassignFacts', appType: 'claude', id: 'ghost' });
+  assert.deepEqual(response.body, { ok: true, sourceExists: true, patchRuntime: true });
+  const missingSource = createHarness({
+    providers: { getProvider: () => null },
+    applySessionPatch: () => ({ status: 200, body: {} }),
+  });
+  response = await host(missingSource.app, { op: 'reassignFacts', appType: 'claude', id: 'ghost' });
+  assert.deepEqual(response.body, { ok: true, sourceExists: false, patchRuntime: true });
+
+  const withoutPatch = createHarness();
+  response = await host(withoutPatch.app, { op: 'reassignFacts', appType: 'claude', id: 'claude-one' });
+  assert.deepEqual(response.body, { ok: true, sourceExists: true, patchRuntime: false });
+
+  response = await host(harness.app, { op: 'reassignTarget', targetProviderId: 'codex-one' });
+  assert.deepEqual(response.body, {
+    ok: true,
+    target: { id: 'codex-one', appType: undefined, name: 'codex-one name', settingsConfig: { env: {} } },
+  });
+  response = await host(harness.app, { op: 'reassignTarget', targetProviderId: '' });
+  assert.deepEqual(response.body, { ok: true, target: null });
+});
+
+test('relay-share facts expose the provider name and router summary', async () => {
+  const harness = createHarness();
+  const response = await host(harness.app, { op: 'relayShareFacts', appType: 'claude', id: 'claude-one' });
+  assert.deepEqual(response.body, {
+    ok: true,
+    provider: { name: 'claude-one name' },
+    summary: { id: 'claude-one', appType: 'claude', name: 'Claude One' },
+  });
+
+  const missing = createHarness({ providers: { getProvider: () => null } });
+  const ghost = await host(missing.app, { op: 'relayShareFacts', appType: 'claude', id: 'ghost' });
+  assert.deepEqual(ghost.body.provider, null);
+});
+
+test('relayShareCreate mints a provider-scoped credential or reports RELAY_TOKEN_INVALID', async () => {
+  const harness = createHarness();
+  let response = await host(harness.app, {
+    op: 'relayShareCreate',
+    appType: 'claude',
+    id: 'claude-one',
+    providerName: 'Claude One',
+    publicBaseUrl: 'https://relay.example',
+    relayBaseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
+  });
+  assert.deepEqual(response.body, {
+    ok: false,
+    code: 'RELAY_TOKEN_INVALID',
+    error: { message: '共享凭据必须为 8–128 位无空格 ASCII 字符' },
+  });
+
+  response = await host(harness.app, {
+    op: 'relayShareCreate',
+    appType: 'claude',
+    id: 'claude-one',
+    providerName: 'Claude One',
+    publicBaseUrl: 'https://relay.example',
+    relayBaseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
+    token: 'manual-secret',
+    label: 'office mac',
+  });
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.credential, 'mcr1.abcdefghijklmnop.manual-secret');
+  assert.equal(response.body.share.label, 'office mac');
+  assert.equal(JSON.stringify(response.body.share).includes('manual-secret'), false);
+  assert.deepEqual(harness.calls.at(-1).input, {
+    appType: 'claude',
+    providerId: 'claude-one',
+    providerName: 'Claude One',
+    publicBaseUrl: 'https://relay.example',
+    relayBaseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
+    token: 'manual-secret',
+    label: 'office mac',
+  });
+});
+
+test('relayModelsSync distinguishes a missing provider from an unavailable runtime', async () => {
+  const calls = [];
+  const runtime = {
+    async syncProvider(appType, id, options) {
+      calls.push({ appType, id, options });
+      return { ok: true, changed: true, appType, providerId: id, models: ['gpt-6.1-sol', 'gpt-6-astra'] };
+    },
+  };
+  let harness = createHarness({ relayModelCatalogRuntime: runtime });
+  let response = await host(harness.app, { op: 'relayModelsSync', appType: 'codex', id: 'codex-one' });
+  assert.equal(response.body.found, true);
+  assert.equal(response.body.available, true);
+  assert.deepEqual(response.body.result.models, ['gpt-6.1-sol', 'gpt-6-astra']);
+  assert.deepEqual(calls, [{ appType: 'codex', id: 'codex-one', options: { force: true } }]);
+
+  harness = createHarness({ providers: { getProvider: () => null }, relayModelCatalogRuntime: runtime });
+  response = await host(harness.app, { op: 'relayModelsSync', appType: 'codex', id: 'ghost' });
+  assert.deepEqual(response.body, { ok: true, found: false, available: true, result: null });
+
+  harness = createHarness();
+  response = await host(harness.app, { op: 'relayModelsSync', appType: 'codex', id: 'codex-one' });
+  assert.deepEqual(response.body, { ok: true, found: true, available: false, result: null });
+});
+
+test('relay shares list, revoke and re-copy their sealed credential', async () => {
+  const harness = createHarness();
+  await host(harness.app, {
+    op: 'relayShareCreate',
+    appType: 'claude',
+    id: 'claude-one',
+    providerName: 'Claude One',
+    publicBaseUrl: 'https://relay.example',
+    relayBaseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
+    token: 'manual-secret',
+  });
+
+  let response = await host(harness.app, { op: 'relaySharesList', appType: 'claude', providerId: 'claude-one' });
+  assert.equal(response.body.shares.length, 1);
+  assert.equal(response.body.shares[0].status, 'active');
+  assert.equal(JSON.stringify(response.body).includes('manual-secret'), false);
+
+  response = await host(harness.app, { op: 'relayShareCodeFacts', id: 'abcdefghijklmnop' });
+  assert.equal(response.body.found.ok, true);
+  assert.equal(response.body.found.credential, 'mcr1.abcdefghijklmnop.manual-secret');
+  assert.deepEqual(response.body.provider, { name: 'claude-one name' });
+  assert.deepEqual(response.body.summary, { id: 'claude-one', appType: 'claude', name: 'Claude One' });
+
+  response = await host(harness.app, { op: 'relayShareCodeFacts', id: 'missing' });
+  assert.deepEqual(response.body, { ok: true, found: { ok: false, code: 'not_found' } });
+
+  response = await host(harness.app, { op: 'relayShareRevoke', id: 'abcdefghijklmnop' });
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.share.status, 'revoked');
+  response = await host(harness.app, { op: 'relayShareRevoke', id: 'missing' });
+  assert.deepEqual(response.body, { ok: true, share: null });
+});
+
+test('relayImportFacts returns the provider, summary and stored import token', async () => {
+  const harness = createHarness({
+    providers: { getRelayImportToken: () => 'mcr1.fkcxUoqLAyIIVHvF.secret-value' },
+    providerRouterRuntime: {
+      getProviderSummary: () => ({
+        id: 'imp', appType: 'claude', name: 'Claude 账号 · x · 远程共享', model: 'm1', modelOptions: ['m1', 'm2'],
+        baseUrl: 'https://lender.example:3000/claude-proxy/claude-official-6dae/remote/v1',
+      }),
+    },
+  });
+  const response = await host(harness.app, { op: 'relayImportFacts', appType: 'claude', id: 'imp' });
+  assert.deepEqual(response.body, {
+    ok: true,
+    provider: { name: 'imp name' },
+    summary: {
+      id: 'imp', appType: 'claude', name: 'Claude 账号 · x · 远程共享', model: 'm1', modelOptions: ['m1', 'm2'],
+      baseUrl: 'https://lender.example:3000/claude-proxy/claude-official-6dae/remote/v1',
+    },
+    token: 'mcr1.fkcxUoqLAyIIVHvF.secret-value',
+  });
+});
+
+test('defaultsGet, defaultsValidate and defaultsPersist keep the live object identity', async () => {
+  const harness = createHarness();
+  const live = harness.runtime.providerDefaults;
+
+  let response = await host(harness.app, { op: 'defaultsGet' });
+  assert.deepEqual(response.body, { ok: true, defaults: { claude: 'claude-one', codex: null } });
+
+  response = await host(harness.app, { op: 'defaultsValidate', cli: 'zcode', id: '' });
+  assert.deepEqual(response.body, { ok: true, valid: true, value: null });
+  response = await host(harness.app, { op: 'defaultsValidate', cli: 'zcode', id: 'codex-one' });
+  assert.deepEqual(response.body, { ok: true, valid: true, value: 'codex-one' });
+  response = await host(harness.app, { op: 'defaultsValidate', cli: 'qoder', id: 'claude-one' });
+  assert.deepEqual(response.body, { ok: true, valid: false, value: null });
+
+  response = await host(harness.app, { op: 'defaultsPersist', next: { claude: null, codex: 'codex-one' } });
+  assert.deepEqual(response.body, { ok: true, defaults: { claude: null, codex: 'codex-one' } });
+  assert.equal(harness.runtime.providerDefaults, live, 'the same object other routes already hold is updated');
+  assert.deepEqual(harness.writes, [{
+    file: '/runtime/provider-defaults.json',
+    value: { claude: null, codex: 'codex-one' },
+  }]);
+});
+
+test('defaultsPersist keeps best-effort persistence while redacting write failures', async () => {
   const logs = [];
   const harness = createHarness({
     atomicWriteJson() {
       throw new Error('/Users/alice/private/provider-defaults.json token=defaults-secret');
     },
-    logger: { error(...args) { logs.push(args); } },
+    logger: { error(...args) { logs.push(args); }, warn() {} },
   });
-  const response = await invoke(harness.app, 'PUT', '/api/provider-defaults', {
-    body: { codex: 'codex-one' },
-  });
+  const response = await host(harness.app, { op: 'defaultsPersist', next: { codex: 'codex-one' } });
   assert.deepEqual(response.body, {
     ok: true,
     defaults: { claude: 'claude-one', codex: 'codex-one' },
@@ -593,6 +820,8 @@ test('provider defaults keep best-effort persistence while redacting write failu
   assert.equal(logs[0].at(-1), 'save failed');
   assert.doesNotMatch(JSON.stringify(logs), /defaults-secret|\/Users\/alice/);
 });
+
+// ── The speed test stays on Node ────────────────────────────────────────────
 
 test('provider speedtest timeout settles once when destroy also emits an error', async () => {
   function timeoutClient() {
@@ -615,7 +844,6 @@ test('provider speedtest timeout settles once when destroy also emits an error',
     const client = timeoutClient();
     const harness = createHarness({
       http: client,
-      https: client,
       providers: {
         getProvider: () => ({
           settingsConfig: {
@@ -685,88 +913,10 @@ test('provider speedtest bounds an oversized streaming response', async () => {
   });
 });
 
-test('provider probe validates bounded model candidates before spawning the CLI', async () => {
-  let probeCalls = 0;
-  const harness = createHarness({
-    providers: {
-      probeRelayModels: async (env, candidates) => {
-        probeCalls++;
-        return { tested: [], accepted: candidates || [] };
-      },
-    },
-  });
-  let response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { candidates: Array.from({ length: 21 }, (_, index) => `model-${index}`) },
-  });
-  assert.equal(response.statusCode, 413);
-  assert.deepEqual(response.body, { error: 'too many probe candidates' });
-  assert.equal(probeCalls, 0);
-
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { candidates: ['x'.repeat(201)] },
-  });
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.body, { error: 'invalid probe candidate' });
-  assert.equal(probeCalls, 0);
-
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { candidates: [' model-a ', 'model-a', 'model-b'] },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.accepted, ['model-a', 'model-b']);
-  assert.equal(probeCalls, 1);
-});
-
-test('the model probe runs on the loopback route, not the provider endpoint', async () => {
-  const asked = [];
-  const harness = createHarness({
-    providers: {
-      claudeProbeRouteEnv(appType, id, port) {
-        asked.push({ appType, id, port });
-        return {
-          ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}/claude-proxy/${id}/probe`,
-          ANTHROPIC_AUTH_TOKEN: 'cpr-probe',
-          ANTHROPIC_MODEL: 'relay-model',
-        };
-      },
-    },
-  });
-  const summary = harness.deps.providerRouterRuntime.getProviderSummary('claude', 'claude-one');
-  const response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { candidates: ['claude-opus-5'] },
-  });
-  assert.deepEqual(asked, [{ appType: 'claude', id: 'claude-one', port: 4321 }]);
-  assert.equal(response.body.baseUrl, 'http://127.0.0.1:4321/claude-proxy/claude-one/probe');
-  assert.match(response.body.baseUrl, /^http:\/\/127\.0\.0\.1:/, 'the CLI child is pointed at the hop');
-  assert.deepEqual(response.body.accepted, ['claude-opus-5']);
-});
-
-test('a probe with no upstream to forward to reports no base url without spawning', async () => {
-  let probeCalls = 0;
-  const harness = createHarness({
-    providers: {
-      claudeProbeRouteEnv: () => null,
-      probeRelayModels: async () => { probeCalls += 1; return { tested: [], accepted: [] }; },
-    },
-  });
-  const response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/probe', {
-    params: { appType: 'claude', id: 'claude-official' },
-    body: { candidates: ['claude-opus-5'] },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, { tested: [], accepted: [], error: 'no base url' });
-  assert.equal(probeCalls, 0);
-});
-
 test('a third-party codex speed test dials the loopback hop, never the vendor', async () => {
   const requests = [];
   const harness = createHarness({
     http: okHttp(requests),
-    https: okHttp(requests),
     providers: {
       getProvider: () => ({ settingsConfig: { env: {} } }),
       resolveCodexDirectHttp: () => ({
@@ -798,11 +948,8 @@ test('a borrowed Claude speed test probes a model the lender serves, not the ret
     },
   };
 
-  // Empty catalog (an older bridge / not yet synced): the fallback must be a
-  // current CLI-known model, not WIRE_DEFAULT_MODEL.
   let harness = createHarness({
     http: okHttp(requests),
-    https: okHttp(requests),
     providers: { getProvider: () => relayProvider },
     providerRouterRuntime: {
       getProviderSummary: () => ({
@@ -819,12 +966,9 @@ test('a borrowed Claude speed test probes a model the lender serves, not the ret
   assert.equal(firstBody.model, 'claude-haiku-4-5');
   assert.notEqual(firstBody.model, 'claude-wire-default');
 
-  // Once the relay catalog sync lands, its models win; a cheap entry is used
-  // and the CLI-only `[1m]` suffix never reaches the wire.
   requests.length = 0;
   harness = createHarness({
     http: okHttp(requests),
-    https: okHttp(requests),
     providers: { getProvider: () => relayProvider },
     providerRouterRuntime: {
       getProviderSummary: () => ({
@@ -842,18 +986,7 @@ test('a borrowed Claude speed test probes a model the lender serves, not the ret
   assert.equal(syncedBody.model, 'claude-haiku-4-5');
 });
 
-test('provider defaults validate the full request before changing live state', async () => {
-  const harness = createHarness();
-  const response = await invoke(harness.app, 'PUT', '/api/provider-defaults', {
-    body: { claude: '', codex: 'missing-provider' },
-  });
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.body, { error: 'invalid codex provider id' });
-  assert.deepEqual(harness.runtime.providerDefaults, { claude: 'claude-one', codex: null });
-  assert.deepEqual(harness.writes, []);
-});
-
-test('provider route composition cannot reach CPR lifecycle or CC-Switch write APIs', async () => {
+test('the host port and the speed test cannot reach CPR lifecycle or CC-Switch write APIs', () => {
   let forbiddenRuntimeRead = false;
   const runtime = new Proxy({
     getProviderSummary: () => ({ id: 'claude-one', appType: 'claude' }),
@@ -864,300 +997,15 @@ test('provider route composition cannot reach CPR lifecycle or CC-Switch write A
     },
   });
   const harness = createHarness({ providerRouterRuntime: runtime });
-  const response = await invoke(harness.app, 'PUT', '/api/provider-defaults', {
-    body: { claude: 'claude-one' },
-  });
-  assert.equal(response.body.ok, true);
-  assert.equal(forbiddenRuntimeRead, false);
+  return host(harness.app, { op: 'defaultsGet' }).then(() => {
+    assert.equal(forbiddenRuntimeRead, false);
 
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'providers.js'), 'utf8');
-  assert.match(source, /providers\.importFromCcSwitch\(\)/);
-  assert.doesNotMatch(source, /providerRouterRuntime\.[A-Za-z]*(?:takeover|restore)/i);
-  assert.doesNotMatch(source, /\/api\/providers\/(?:takeover|restore)/i);
-  assert.doesNotMatch(source, /(?:open|write|update|delete).*cc.?switch/i);
-});
-
-test('GET /api/providers attaches the persisted limit summary and freshness', async () => {
-  const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
-  const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
-  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'multicc-provider-routes-'));
-  const cacheFile = path.join(dir, 'provider-limit-cache.db');
-  const cache = createProviderLimitCache({ file: cacheFile, now: () => 1000 });
-  // Seed one provider's last-known-good summary.
-  cache.record('claude', 'claude-one', {
-    kind: 'window',
-    summary: { kind: 'window', provider: 'glm', status: 'allowed', usedPercentage: 20, resetsAtMs: 3_601_000 },
-    summaryText: '5h 80%',
-    barText: '5h 80% {cd:123}',
-    fetchedAt: 900,
+    const providerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'providers.js'), 'utf8');
+    const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'providers-host.js'), 'utf8');
+    assert.match(hostSource, /providers\.importFromCcSwitch\(\)/);
+    for (const source of [providerSource, hostSource]) {
+      assert.doesNotMatch(source, /providerRouterRuntime\.[A-Za-z]*(?:takeover|restore)/i);
+      assert.doesNotMatch(source, /(?:open|write|update|delete).*cc.?switch/i);
+    }
   });
-  const recorder = createLimitRecorder({
-    cache,
-    persistedSessions: new Map([['s1', { cli: 'claude', provider: 'claude-one' }]]),
-    providers: {
-      appTypeForCli: () => 'claude',
-      listProviders() { return [{ id: 'claude-one', appType: 'claude', name: 'One' }]; },
-      getProviderLimitTarget: () => null,
-    },
-  });
-  const harness = createHarness({ providerLimitCache: cache, limitRecorder: recorder });
-  const response = await invoke(harness.app, 'GET', '/api/providers', { query: { appType: 'claude' } });
-  assert.equal(response.body.limitCacheStaleMs, 10 * 60 * 1000);
-  assert.equal(response.body.providers.length, 1);
-  const limit = response.body.providers[0].limit;
-  assert.equal(limit.kind, 'window');
-  assert.equal(limit.summaryText, '5h 80%');
-  assert.equal(limit.stale, false); // fetchedAt 900, now 1000, window 600s
-  assert.equal(limit.summary.usedPercentage, 20);
-  // Countdown tokens travel in the canonical display DTO, not raw cache text.
-  assert.equal(limit.bar.text, '5h 80% {cd:3601000|5h} · 更新于 {ago:900}');
-  assert.equal(require('../public/quota-bar-view').resolveQuotaBar(limit.bar, { now: 1000 }).text,
-    '5h 80% 1h · 更新于 刚刚');
-  assert.equal(Object.hasOwn(limit, 'barText'), false);
-  // Deleting the provider prunes the orphan on the next catalog read.
-  assert.equal(cache.get('claude', 'claude-one') !== null, true);
-});
-
-test('relay-share issues a recorded provider-scoped credential from a supplied per-link token', async () => {
-  let harness = createHarness();
-  let response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { publicBaseUrl: 'https://relay.example' },
-  });
-  assert.equal(response.statusCode, 400);
-  assert.equal(response.body.code, 'RELAY_TOKEN_INVALID');
-
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: {
-      publicBaseUrl: 'https://relay.example/some/path',
-      token: 'manual-secret',
-      label: 'office mac',
-    },
-  });
-  assert.equal(response.statusCode, 200);
-  // The public base URL is normalized to its origin.
-  assert.equal(response.body.baseUrl, 'https://relay.example/claude-proxy/claude-one/remote');
-  const payload = JSON.parse(Buffer.from(response.body.code.slice('mcrelay1.'.length), 'base64url').toString('utf8'));
-  assert.deepEqual(payload, {
-    v: 2,
-    kind: 'multicc-relay',
-    // The harness provider stub has no name; the share falls back to the id.
-    name: 'claude-one · 远程共享',
-    appType: 'claude',
-    baseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
-    relayShareId: 'abcdefghijklmnop',
-    authToken: 'mcr1.abcdefghijklmnop.manual-secret',
-  });
-  assert.equal(response.body.share.label, 'office mac');
-  assert.equal(JSON.stringify(response.body.share).includes('manual-secret'), false);
-  assert.equal(harness.calls.at(-1).method, 'createRelayShare');
-
-  // Codex providers relay through the codex mount without the session segment.
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'codex', id: 'codex-one' },
-    body: { publicBaseUrl: 'https://relay.example/', token: 'codex-secret' },
-  });
-  assert.equal(response.body.baseUrl, 'https://relay.example/codex-proxy/codex-one');
-
-  // Official OAuth has no config.toml model; its public cached catalog must
-  // cross the share boundary so the importer does not invent gpt-4o-mini.
-  harness = createHarness({
-    providers: {
-      getProvider: (appType, id) => ({
-        id, appType, name: 'OpenAI Official',
-        settingsConfig: { auth: { auth_mode: 'chatgpt' } },
-      }),
-    },
-    providerRouterRuntime: {
-      getProviderSummary: () => ({
-        id: 'official', appType: 'codex', model: '',
-        modelOptions: ['gpt-5.6-sol', 'gpt-5.6-terra'],
-      }),
-    },
-  });
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'codex', id: 'official' },
-    body: { publicBaseUrl: 'https://relay.example/', token: 'official-secret' },
-  });
-  const officialPayload = JSON.parse(
-    Buffer.from(response.body.code.slice('mcrelay1.'.length), 'base64url').toString('utf8'),
-  );
-  assert.equal(officialPayload.model, 'gpt-5.6-sol');
-  assert.deepEqual(officialPayload.models, ['gpt-5.6-sol', 'gpt-5.6-terra']);
-
-  // A Claude official account stores no canonical model id either. Its share
-  // code must still carry the CLI-known set, or the importer falls back to a
-  // hardcoded id that may already be retired upstream.
-  harness = createHarness({
-    providers: {
-      getProvider: (appType, id) => ({ id, appType, name: 'Claude Official', settingsConfig: { env: {} } }),
-    },
-    providerRouterRuntime: {
-      getProviderSummary: () => ({
-        id: 'claude-official-aaaaaaaaaaaaaaaa', appType: 'claude', isOfficial: true,
-        model: '', modelOptions: [],
-      }),
-    },
-  });
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'claude', id: 'claude-official-aaaaaaaaaaaaaaaa' },
-    body: { publicBaseUrl: 'https://relay.example/', token: 'official-claude-secret' },
-  });
-  const claudeOfficialPayload = JSON.parse(
-    Buffer.from(response.body.code.slice('mcrelay1.'.length), 'base64url').toString('utf8'),
-  );
-  assert.ok(claudeOfficialPayload.models.includes('claude-haiku-4-5'));
-  assert.ok(claudeOfficialPayload.models.includes('claude-sonnet-5'));
-
-  // A missing/invalid public base URL is rejected.
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { publicBaseUrl: 'not a url', token: 'manual-secret' },
-  });
-  assert.equal(response.statusCode, 400);
-
-  // Unknown providers cannot be shared.
-  harness = createHarness({ providers: { getProvider: () => null } });
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'claude', id: 'ghost' },
-    body: { publicBaseUrl: 'https://relay.example' },
-  });
-  assert.equal(response.statusCode, 404);
-});
-
-test('relay-share inventory lists and revokes durable records without returning credentials', async () => {
-  const harness = createHarness();
-  await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { publicBaseUrl: 'https://relay.example', token: 'manual-secret' },
-  });
-  let response = await invoke(harness.app, 'GET', '/api/provider-relay-shares', {
-    query: { appType: 'claude', providerId: 'claude-one' },
-  });
-  assert.equal(response.body.shares.length, 1);
-  assert.equal(response.body.shares[0].status, 'active');
-  assert.equal(JSON.stringify(response.body).includes('manual-secret'), false);
-
-  response = await invoke(harness.app, 'DELETE', '/api/provider-relay-shares/:id', {
-    params: { id: 'abcdefghijklmnop' },
-  });
-  assert.equal(response.body.ok, true);
-  assert.equal(response.body.share.status, 'revoked');
-  response = await invoke(harness.app, 'DELETE', '/api/provider-relay-shares/:id', {
-    params: { id: 'missing-relay-share' },
-  });
-  assert.equal(response.statusCode, 404);
-});
-
-test('relay shares can be copied again and imported lines re-export their original share code', async () => {
-  const decode = code => JSON.parse(Buffer.from(code.slice('mcrelay1.'.length), 'base64url').toString('utf8'));
-  const harness = createHarness();
-  await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
-    params: { appType: 'claude', id: 'claude-one' },
-    body: { publicBaseUrl: 'https://relay.example', token: 'manual-secret' },
-  });
-  let response = await invoke(harness.app, 'GET', '/api/provider-relay-shares/:id/code', {
-    params: { id: 'abcdefghijklmnop' },
-  });
-  assert.equal(response.body.ok, true);
-  const payload = decode(response.body.code);
-  assert.equal(payload.kind, 'multicc-relay');
-  assert.equal(payload.relayShareId, 'abcdefghijklmnop');
-  assert.equal(payload.authToken, 'mcr1.abcdefghijklmnop.manual-secret');
-  assert.equal(payload.baseUrl, 'https://relay.example/claude-proxy/claude-one/remote');
-
-  harness.relayShares[0].legacy = true;
-  response = await invoke(harness.app, 'GET', '/api/provider-relay-shares/:id/code', { params: { id: 'abcdefghijklmnop' } });
-  assert.equal(response.statusCode, 409);
-  assert.equal(response.body.code, 'not_recoverable');
-  assert.equal(JSON.stringify(response.body).includes('manual-secret'), false);
-  response = await invoke(harness.app, 'GET', '/api/provider-relay-shares/:id/code', { params: { id: 'missing' } });
-  assert.equal(response.statusCode, 404);
-  harness.relayShares[0].legacy = false;
-  harness.relayShares[0].status = 'revoked';
-  response = await invoke(harness.app, 'GET', '/api/provider-relay-shares/:id/code', { params: { id: 'abcdefghijklmnop' } });
-  assert.equal(response.statusCode, 410);
-
-  // Imported relay line: the original import info is rebuilt from the stored credential.
-  const imported = createHarness({
-    providers: { getRelayImportToken: () => 'mcr1.fkcxUoqLAyIIVHvF.secret-value' },
-    providerRouterRuntime: {
-      getProviderSummary: () => ({
-        id: 'imp', appType: 'claude', name: 'Claude 账号 · x · 远程共享', model: 'm1', modelOptions: ['m1', 'm2'],
-        baseUrl: 'https://lender.example:3000/claude-proxy/claude-official-6dae/remote/v1',
-      }),
-    },
-  });
-  response = await invoke(imported.app, 'GET', '/api/providers/:appType/:id/relay-import-code', {
-    params: { appType: 'claude', id: 'imp' },
-  });
-  assert.equal(response.body.ok, true);
-  const importedPayload = decode(response.body.code);
-  assert.equal(importedPayload.relayShareId, 'fkcxUoqLAyIIVHvF');
-  assert.equal(importedPayload.authToken, 'mcr1.fkcxUoqLAyIIVHvF.secret-value');
-  assert.equal(importedPayload.baseUrl, 'https://lender.example:3000/claude-proxy/claude-official-6dae/remote');
-  assert.deepEqual(importedPayload.models, ['m1', 'm2']);
-
-  // A normal API-key provider (or a loopback CPR line) is not an import.
-  for (const baseUrl of ['https://api.deepseek.com/anthropic', 'http://127.0.0.1:3000/claude-proxy/x/remote']) {
-    const plain = createHarness({
-      providers: { getRelayImportToken: () => 'sk-plain-key' },
-      providerRouterRuntime: { getProviderSummary: () => ({ id: 'p', appType: 'claude', baseUrl }) },
-    });
-    response = await invoke(plain.app, 'GET', '/api/providers/:appType/:id/relay-import-code', {
-      params: { appType: 'claude', id: 'p' },
-    });
-    assert.equal(response.statusCode, 400, baseUrl);
-    assert.equal(JSON.stringify(response.body).includes('sk-plain-key'), false);
-  }
-});
-
-// A dedicated-egress binding is official-account-only and rides the same PATCH
-// as the allowlist. Three things matter at this layer: the object is passed
-// through verbatim, an absent key means "don't touch", and a malformed value is
-// a 400 instead of a stored half-binding.
-test('dedicated-egress bindings are validated and forwarded only when present', async () => {
-  const harness = createHarness();
-  const params = { appType: 'claude', id: 'claude-official-aaaaaaaaaaaaaaaa' };
-
-  let response = await invoke(harness.app, 'PATCH', '/api/providers/:appType/:id', {
-    params,
-    body: { egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' } },
-  });
-  assert.equal(response.body.ok, true);
-  assert.deepEqual(harness.calls.at(-1).input.egressBinding,
-    { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' });
-  assert.equal('egressIpAllowlist' in harness.calls.at(-1).input, false,
-    'an absent allowlist stays absent, so the stored one is not cleared');
-
-  // Clear: null is meaningful and must reach the store layer.
-  await invoke(harness.app, 'PATCH', '/api/providers/:appType/:id', {
-    params, body: { egressBinding: null },
-  });
-  assert.equal(harness.calls.at(-1).input.egressBinding, null);
-
-  // Absent: the key must not appear at all (undefined would be dropped by
-  // destructuring anyway, but a stray key would flip "unchanged" into "clear").
-  await invoke(harness.app, 'PATCH', '/api/providers/:appType/:id', {
-    params, body: { name: undefined },
-  });
-  assert.equal('egressBinding' in harness.calls.at(-1).input, false);
-
-  const before = harness.calls.length;
-  response = await invoke(harness.app, 'PATCH', '/api/providers/:appType/:id', {
-    params, body: { egressBinding: 'chrome-proxy-launcher:us-home' },
-  });
-  assert.equal(response.statusCode, 400);
-  assert.equal(harness.calls.length, before, 'a malformed binding never reaches the store');
-
-  const created = await invoke(harness.app, 'POST', '/api/providers', {
-    body: {
-      appType: 'claude', name: 'New relay', baseUrl: 'https://relay.test',
-      egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' },
-    },
-  });
-  assert.equal(created.statusCode, 200);
-  assert.deepEqual(harness.calls.at(-1).input.egressBinding,
-    { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' });
 });

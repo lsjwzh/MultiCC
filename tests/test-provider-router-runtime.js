@@ -703,6 +703,10 @@ test('server is a thin runtime consumer and keeps CC-Switch import read-only', (
     path.join(__dirname, '..', 'src', 'routes', 'providers.js'),
     'utf8',
   );
+  const providersHost = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'routes', 'providers-host.js'),
+    'utf8',
+  );
   assert.equal(/require\(['"]cli-provider-router['"]\)/.test(server), false);
   assert.match(server, /providerRouterRuntime\.mountProtocolProxies/);
   assert.match(server, /onShadowDiff:\s*recordProviderRouterShadowComparison/);
@@ -717,17 +721,20 @@ test('server is a thin runtime consumer and keeps CC-Switch import read-only', (
   assert.equal(server.includes('installProviderFetchPolicy'), false);
   assert.match(server, /logger\.info\('provider_router_runtime'/);
   assert.match(server, /createProviderRoutes\(/);
-  assert.match(server, /providerRoutes\.mountCatalogRoutes\(app\)/);
+  // The provider CRUD/probe/reassign/relay routes are owned by the Rust front
+  // door; Node mounts only the host port plus the streamed speed test.
+  assert.equal(/mountCatalogRoutes/.test(server), false);
   assert.match(server, /mountTokenUsageHostRoute\(app, \{ tracker: roleTokenTracker/);
   assert.match(server, /providerRoutes\.mountManagementRoutes\(app\)/);
-  assert.ok(server.indexOf('providerRoutes.mountCatalogRoutes(app)')
-    < server.indexOf('mountTokenUsageHostRoute(app, {'));
   assert.ok(server.indexOf('mountTokenUsageHostRoute(app, {')
     < server.indexOf('providerRoutes.mountManagementRoutes(app)'));
-  assert.match(providerRoutes, /providers\.importFromCcSwitch\(\)/);
-  assert.match(providerRoutes, /res\.status\(409\).*PROVIDER_IN_USE/s);
-  assert.equal(/providerRouterRuntime\.[A-Za-z]*(?:takeover|restore)/i.test(server), false);
-  assert.equal(/providerRouterRuntime\.[A-Za-z]*(?:takeover|restore)/i.test(providerRoutes), false);
+  assert.match(providersHost, /providers\.importFromCcSwitch\(\)/);
+  assert.match(providersHost, /detachProviderReferences\(/);
+  assert.match(providersHost, /deleteProvider\(appType, providerId\)/);
+  assert.equal(/res\.status\(409\)/.test(providerRoutes), false);
+  for (const source of [server, providerRoutes, providersHost]) {
+    assert.equal(/providerRouterRuntime\.[A-Za-z]*(?:takeover|restore)/i.test(source), false);
+  }
 });
 
 

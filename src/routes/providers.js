@@ -1,21 +1,13 @@
 'use strict';
 
-const { safeCode, sanitizePublicText } = require('../http/public-safety');
-const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
-const { providerLimitBar } = require('../quota/quota-bar-view');
+const { sanitizePublicText } = require('../http/public-safety');
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
-const MAX_PROBE_CANDIDATES = 20;
-const MAX_PROBE_CANDIDATE_LENGTH = 200;
 const { runSpeedtestRequest } = require('../providers/speedtest-request');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
 const { officialAccountIdFromProvider } = require('../official-accounts');
 const { createRoutingTest } = require('./auto-provider-routing-test');
-const { detachProviderReferences } = require('../providers/force-detach');
-const { isValidIp } = require('../providers/egress-ip');
-const { reassignProviderSessions } = require('../provider-reassign');
-const { encodeRelayShareCode, relayModelsOf } = require('../providers/relay-share-code');
-const { parseCredential, relayRouteFromBaseUrl } = require('../providers/relay-share-store');
+const { relayRouteFromBaseUrl } = require('../providers/relay-share-store');
 const { nativeVendorOf } = require('../providers/native-vendor');
 const { CLAUDE_MODELS_FALLBACK } = require('../claude-models');
 
@@ -59,34 +51,6 @@ function claudeSpeedtestModel(env, summary) {
   return '';
 }
 
-// req.body.egressIpAllowlist arrives as an array (or is absent — leave the
-// stored value untouched on PATCH, that's the `undefined` case) or `null`/`[]`
-// to clear it. Anything containing a non-IP string is a config mistake, not a
-// provider mismatch, so it is rejected here rather than silently dropped.
-function parseEgressIpAllowlist(body) {
-  const value = body.egressIpAllowlist;
-  if (value === undefined) return undefined;
-  if (value === null) return [];
-  if (!Array.isArray(value)) throw new Error('egressIpAllowlist must be an array of IP addresses');
-  const list = value.map(v => String(v).trim()).filter(Boolean);
-  const invalid = list.find(ip => !isValidIp(ip));
-  if (invalid) throw new Error(`egressIpAllowlist contains an invalid IP address: ${invalid}`);
-  return list;
-}
-
-// Dedicated egress binding (official accounts only): `{pluginId, profileId}`.
-// Absent leaves the stored binding untouched (PATCH), `null` clears it. Shape
-// validation lives in providers/core.js — the last stop before disk — so this
-// only normalizes the JSON envelope.
-function parseEgressBinding(body) {
-  const value = body.egressBinding;
-  if (value === undefined || value === null) return value;
-  if (typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('egressBinding must be an object with pluginId and profileId');
-  }
-  return { pluginId: value.pluginId, profileId: value.profileId };
-}
-
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
 }
@@ -95,67 +59,12 @@ function publicText(value, fallback) {
   return sanitizePublicText(typeof value === 'string' ? value : '', fallback);
 }
 
-function importErrorDto(error) {
-  const dto = { error: publicError(error, 'provider import failed') };
-  if (error && error.code) dto.code = safeCode(String(error.code), 'PROVIDER_IMPORT_FAILED');
-  if (error && error.reason) dto.reason = publicText(error.reason, 'provider import failed');
-  return dto;
-}
-
-function sanitizeProbeResult(result) {
-  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
-  const safe = { ...result };
-  if (Object.prototype.hasOwnProperty.call(safe, 'error')) {
-    safe.error = publicText(safe.error, 'provider probe failed');
-  }
-  if (Array.isArray(safe.tested)) {
-    safe.tested = safe.tested.map((entry) => {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
-      const item = { ...entry };
-      if (Object.prototype.hasOwnProperty.call(item, 'error')) {
-        item.error = publicText(item.error, 'provider probe failed');
-      }
-      if (Object.prototype.hasOwnProperty.call(item, 'reason')) {
-        item.reason = publicText(item.reason, 'provider probe failed');
-      }
-      if (Object.prototype.hasOwnProperty.call(item, 'sample')) {
-        item.sample = publicText(item.sample, 'provider probe output hidden');
-      }
-      return item;
-    });
-  }
-  return safe;
-}
-
-function normalizeProbeCandidates(value) {
-  if (value === undefined || value === null) return { ok: true, value: undefined };
-  if (!Array.isArray(value)) {
-    return { ok: false, status: 400, error: 'probe candidates must be an array' };
-  }
-  if (value.length > MAX_PROBE_CANDIDATES) {
-    return { ok: false, status: 413, error: 'too many probe candidates' };
-  }
-  const candidates = [];
-  for (const item of value) {
-    if (typeof item !== 'string') {
-      return { ok: false, status: 400, error: 'invalid probe candidate' };
-    }
-    const candidate = item.trim();
-    if (!candidate || candidate.length > MAX_PROBE_CANDIDATE_LENGTH) {
-      return { ok: false, status: 400, error: 'invalid probe candidate' };
-    }
-    if (!candidates.includes(candidate)) candidates.push(candidate);
-  }
-  return { ok: true, value: candidates };
-}
-
 function assertProviderRouteDeps(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('provider route dependencies are required');
   const requiredFunctions = [
     'atomicWriteJson',
     'findProviderReferences',
     'getAuxConfig',
-    'getClaudeOfficialViaProxy',
     'getPort',
   ];
   for (const name of requiredFunctions) {
@@ -173,8 +82,7 @@ function assertProviderRouteDeps(deps) {
       || typeof deps.providerRelayShares.revokeProvider !== 'function') {
     throw new TypeError('provider route runtime dependencies are required');
   }
-  if (!deps.http || typeof deps.http.request !== 'function'
-      || !deps.https || typeof deps.https.request !== 'function') {
+  if (!deps.http || typeof deps.http.request !== 'function') {
     throw new TypeError('provider route HTTP dependencies are required');
   }
   if (!deps.providerDefaultsFile || !deps.claudeCmd) {
@@ -192,7 +100,6 @@ function assertAppMethod(app, method) {
 function createProviderRoutes(rawDeps) {
   const deps = assertProviderRouteDeps(rawDeps);
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
-  const URLCtor = deps.URL || URL;
   const setTimeoutFn = deps.setTimeout || setTimeout;
   const clearTimeoutFn = deps.clearTimeout || clearTimeout;
   const log = deps.logger || console;
@@ -273,103 +180,36 @@ function createProviderRoutes(rawDeps) {
     return { ok: true, value: String(id) };
   }
 
-  function mountCatalogRoutes(app) {
-    assertAppMethod(app, 'get');
-
-    // MultiCC owns this store. CC-Switch is consulted only as a read-only
-    // import source by the explicit import endpoint mounted below.
-    app.get('/api/providers', async (req, res) => {
-      const appType = (req.query.appType || '').trim();
-      const cli = (req.query.cli || '').trim();
-      // Model pickers on both Web and App already read this endpoint.  Make
-      // that existing read the automatic refresh trigger for imported relay
-      // catalogs; the runtime is TTL-bound/in-flight-deduped, and any remote
-      // failure keeps the durable last-known-good snapshot intact.
-      if (deps.relayModelCatalogRuntime
-          && typeof deps.relayModelCatalogRuntime.refreshDue === 'function') {
-        try {
-          await deps.relayModelCatalogRuntime.refreshDue({ appType, cli });
-        } catch (_) { /* a catalog refresh must never hide the Provider list */ }
-      }
-      const ccSwitchStatus = deps.providers.getCcSwitchStatus();
-      const subscriptions = require('../quota/account-subscription-cache');
-      await subscriptions.ready().catch(() => {});
-      const providers = subscriptions.project(deps.providers.listProviders(
-        appType === 'claude' || appType === 'codex' ? appType : undefined,
-      )).filter(provider => !cli || deps.providers.providerSupportsCli(provider, cli));
-      // 选择器先返回内存快照；后台刷新由 Rust 按账号应用一天 TTL/CLI 版本。
-      if (deps.codexAccountModelCatalogRuntime && req.query.poll !== '1') {
-        for (const provider of providers.filter(p => p.appType === 'codex' && p.isOfficial)) {
-          try {
-            Promise.resolve(deps.codexAccountModelCatalogRuntime.refreshProvider(provider.id)).catch(() => {});
-          } catch (_) { /* 刷新不能阻塞列表 */ }
-        }
-      }
-      const nowMs = now();
-      const staleAfterMs = deps.limitCacheStaleMs || STALE_MS_DEFAULT;
-      // Attach the persistent last-known-good limit summary (if any) to each
-      // provider, and prune entries whose provider identity vanished (deleted /
-      // renamed). `limit` is a safe projection — the cache never stores
-      // credentials, and only summary/format fields are exposed here.
-      let limits = null;
-      const cache = deps.providerLimitCache;
-      const recorder = deps.limitRecorder;
-      if (cache) {
-        try {
-          if (recorder) cache.prune(recorder.liveKeys());
-          limits = {};
-          for (const provider of providers) {
-            const entry = cache.get(provider.appType, provider.id);
-            limits[`${provider.appType}:${provider.id}`] = entry ? {
-              kind: entry.kind,
-              status: entry.status,
-              summary: entry.summary,
-              // Keep the legacy summary for older clients; current clients
-              // resolve the canonical bar's time tokens just like chat does.
-              summaryText: entry.summaryText,
-              bar: providerLimitBar({ ...entry,
-                stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs) }, nowMs),
-              fetchedAt: entry.fetchedAt,
-              updatedAt: entry.updatedAt,
-              lastError: entry.lastError,
-              lastErrorAt: entry.lastErrorAt,
-              stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs),
-            } : null;
-          }
-        } catch (_) { /* cache must never break the catalog */ }
-      }
-      const providersWithLimits = limits
-        ? providers.map(provider => ({ ...provider, limit: limits[`${provider.appType}:${provider.id}`] || null }))
-        : providers;
-      res.json({
-        available: true,
-        ccSwitchAvailable: ccSwitchStatus.available,
-        ccSwitchStatus,
-        providers: providersWithLimits.map(provider => {
-          if (!provider.virtual) return provider;
-          try { return { ...provider, virtualStatus: require('../providers/virtual-provider').status(provider, deps.providers.listProviders()) }; }
-          catch (_) { return { ...provider, virtualStatus: { availableCount: 0, error: '请更新 Rust 模块并手动重启服务' } }; }
-        }),
-        defaults: providerDefaults,
-        stats: deps.providers.getProviderUsageStats().stats,
-        // Old clients ignore extra top-level fields; new clients use this to
-        // decide whether a provider's `limit` counts as fresh without duplicating
-        // the staleness constant in two codebases.
-        limitCacheStaleMs: cache ? staleAfterMs : null,
-      });
-    });
-
-    app.get('/api/providers/stats', (req, res) => {
-      try {
-        res.json(deps.providers.getProviderUsageStats());
-      } catch (error) {
-        res.status(500).json({ error: publicError(error, 'provider stats failed') });
-      }
-    });
-  }
-
   function mountManagementRoutes(app) {
     for (const method of ['get', 'post', 'patch', 'delete', 'put']) assertAppMethod(app, method);
+    // 16 条 provider 路由（目录、增删改、探测、批量迁移、借道、默认值）已由 Rust 前门
+    // 独占（native/gateway/src/app/providers.rs）。这里只剩前门回调的宿主端口：
+    // provider store 事实、会话引用、落盘与逐会话 PATCH。
+    require('./providers-host').mountProvidersHostRoute(app, {
+      providerDefaults,
+      saveProviderDefaults,
+      validProviderId,
+      providers: deps.providers,
+      providerRouterRuntime: deps.providerRouterRuntime,
+      findProviderReferences: deps.findProviderReferences,
+      getAuxConfig: deps.getAuxConfig,
+      persistedSessions: deps.persistedSessions,
+      applySessionPatch: deps.applySessionPatch,
+      previewSessionPatch: deps.previewSessionPatch,
+      clearAuxProvider: deps.clearAuxProvider,
+      providerRelayShares: deps.providerRelayShares,
+      getPort: deps.getPort,
+      claudeCmd: deps.claudeCmd,
+      relayModelCatalogRuntime: deps.relayModelCatalogRuntime,
+      codexAccountModelCatalogRuntime: deps.codexAccountModelCatalogRuntime,
+      providerLimitCache: deps.providerLimitCache,
+      limitRecorder: deps.limitRecorder,
+      limitCacheStaleMs: deps.limitCacheStaleMs,
+      now,
+      logger: log,
+      ...(typeof deps.isLocalRequest === 'function' ? { isLocal: deps.isLocalRequest } : {}),
+    });
+
     // 子任务默认线路 + 一键同步：公开路由由 Rust 前门独占（native/gateway/），这里只剩
     // 前门回调的宿主端口：会话表/provider 事实、默认值落盘与逐会话 PATCH。
     require('./subagent-defaults-host').mountSubagentDefaultsHostRoute(app, {
@@ -383,136 +223,7 @@ function createProviderRoutes(rawDeps) {
       ...(typeof deps.isLocalRequest === 'function' ? { isLocal: deps.isLocalRequest } : {}),
     });
 
-    app.post('/api/providers/import', (req, res) => {
-      try {
-        res.json({ ok: true, ...deps.providers.importFromCcSwitch() });
-      } catch (error) {
-        res.status(400).json(importErrorDto(error));
-      }
-    });
-
-    app.post('/api/providers', (req, res) => {
-      try {
-        const egressIpAllowlist = parseEgressIpAllowlist(req.body);
-        const egressBinding = parseEgressBinding(req.body);
-        const result = deps.providers.createProvider({
-          appType: (req.body.appType || '').trim(),
-          name: req.body.name,
-          baseUrl: (req.body.baseUrl || '').trim(),
-          authToken: (req.body.authToken || '').trim(),
-          model: (req.body.model || '').trim(),
-          models: req.body.models,
-          ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
-          settingsConfig: req.body.settingsConfig,
-          ...(req.body.virtual !== undefined ? { virtual: req.body.virtual } : {}),
-          aliasMap: req.body.aliasMap,
-          ...(egressIpAllowlist !== undefined ? { egressIpAllowlist } : {}),
-          ...(egressBinding !== undefined ? { egressBinding } : {}),
-        });
-        res.json({ ok: true, ...result });
-      } catch (error) {
-        res.status(400).json({ error: publicError(error, 'provider create failed') });
-      }
-    });
-
-    app.patch('/api/providers/:appType/:id', (req, res) => {
-      try {
-        const egressIpAllowlist = parseEgressIpAllowlist(req.body);
-        const egressBinding = parseEgressBinding(req.body);
-        deps.providers.updateProvider(req.params.appType, req.params.id, {
-          name: req.body.name,
-          baseUrl: req.body.baseUrl,
-          authToken: req.body.authToken,
-          model: req.body.model,
-          models: req.body.models,
-          ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
-          settingsConfig: req.body.settingsConfig,
-          ...(req.body.virtual !== undefined ? { virtual: req.body.virtual } : {}),
-          aliasMap: req.body.aliasMap,
-          ...(egressIpAllowlist !== undefined ? { egressIpAllowlist } : {}),
-          ...(egressBinding !== undefined ? { egressBinding } : {}),
-        });
-        res.json({ ok: true });
-      } catch (error) {
-        res.status(400).json({ error: publicError(error, 'provider update failed') });
-      }
-    });
-
-    app.delete('/api/providers/:appType/:id', async (req, res, next) => {
-      try {
-        const references = deps.findProviderReferences({
-          appType: req.params.appType,
-          providerId: req.params.id,
-          sessions: deps.persistedSessions,
-          defaults: providerDefaults,
-          aux: deps.getAuxConfig(),
-        });
-        const force = ['1', 'true'].includes(String(req.query.force || '').toLowerCase());
-        const forceable = typeof deps.applySessionPatch === 'function' && typeof deps.clearAuxProvider === 'function';
-        if (references.length && !(force && forceable)) {
-          return res.status(409).json({
-            error: 'provider is still referenced',
-            code: 'PROVIDER_IN_USE',
-            references,
-            forceable,
-          });
-        }
-        let detached = [];
-        if (references.length) {
-          const result = detachProviderReferences({
-            providerId: req.params.id,
-            references,
-            sessions: deps.persistedSessions,
-            applySessionPatch: deps.applySessionPatch,
-            clearDefault: (cli) => { if (providerDefaults[cli] === req.params.id) { providerDefaults[cli] = null; saveProviderDefaults(); } },
-            clearAuxProvider: deps.clearAuxProvider,
-          });
-          if (result.failed.length) {
-            return res.status(409).json({
-              error: 'provider references could not all be detached',
-              code: 'PROVIDER_DETACH_FAILED',
-              references: result.failed,
-              detached: result.detached,
-              forceable: false,
-            });
-          }
-          detached = result.detached;
-          log.warn?.(`[multicc] force-deleting provider ${req.params.appType}/${req.params.id}: detached ${detached.length} reference(s)`);
-        }
-        const ok = deps.providers.deleteProvider(req.params.appType, req.params.id);
-        if (ok) await deps.providerRelayShares.revokeProvider(req.params.appType, req.params.id);
-        res.json(references.length ? { ok, forced: true, detached } : { ok });
-      } catch (error) {
-        res.status(400).json({ error: publicError(error, 'provider delete failed') });
-      }
-    });
-
-    app.post('/api/providers/:appType/:id/probe', async (req, res) => {
-      try {
-        const provider = deps.providers.getProvider(req.params.appType, req.params.id);
-        if (!provider) return res.status(404).json({ error: 'provider not found' });
-        const candidates = normalizeProbeCandidates(req.body && req.body.candidates);
-        if (!candidates.ok) return res.status(candidates.status).json({ error: candidates.error });
-        // The probe used to spawn the CLI with the provider's raw env — i.e.
-        // straight at the vendor endpoint, with the vendor credential in a
-        // throwaway child process, measuring a path production traffic never
-        // takes. Materialize the same loopback route a real turn gets; the
-        // probe then measures the hop multicc actually uses (null = nothing to
-        // probe, the entry has no upstream base URL).
-        const routeEnv = deps.providers.claudeProbeRouteEnv(
-          req.params.appType,
-          req.params.id,
-          deps.getPort(),
-        );
-        const result = routeEnv
-          ? await deps.providers.probeRelayModels(routeEnv, candidates.value, deps.claudeCmd)
-          : { tested: [], accepted: [], error: 'no base url' };
-        res.json(sanitizeProbeResult(result));
-      } catch (error) {
-        res.status(400).json({ error: publicError(error, 'provider probe failed') });
-      }
-    });
-
+    // 测速留在 Node：它边测边把 SSE 帧写回 res，不是一条可以交给前门转发的 JSON 路由。
     app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
       const startedAt = now();
       const elapsed = () => now() - startedAt;
@@ -632,223 +343,6 @@ function createProviderRoutes(rawDeps) {
       }
     });
 
-    // Batch reassignment of every session bound to this provider
-    // (「批量迁移会话…」). Listing/planning/simulation live in
-    // src/provider-reassign.js; this route only resolves the two provider
-    // records and hands the per-session move to the ordinary session PATCH, so
-    // a bulk move behaves exactly like N manual switches in the AI dialog.
-    // Body: { targetProviderId?, dryRun? }. Omit targetProviderId (dry-run only)
-    // to get the bound-session list plus the compatible targets for the UI.
-    app.post('/api/providers/:appType/:id/reassign-sessions', (req, res) => {
-      const appType = String(req.params.appType || '').trim();
-      if (appType !== 'claude' && appType !== 'codex') {
-        return res.status(400).json({ error: 'invalid app type' });
-      }
-      const sourceProvider = deps.providers.getProvider(appType, req.params.id);
-      if (!sourceProvider) return res.status(404).json({ error: 'provider not found' });
-      const body = (req.body && typeof req.body === 'object') ? req.body : {};
-      const rawTarget = body.targetProviderId;
-      const targetProviderId = rawTarget == null || rawTarget === '' ? null : String(rawTarget).trim();
-      const dryRun = body.dryRun === true || body.dryRun === '1' || body.dryRun === 'true';
-      if (targetProviderId === req.params.id) {
-        return res.status(400).json({ error: 'target provider must differ from the source' });
-      }
-      if (!targetProviderId && !dryRun) {
-        return res.status(400).json({ error: 'targetProviderId is required' });
-      }
-      let targetProvider = null;
-      if (targetProviderId) {
-        // Provider ids are globally unique, so the target may live in the other
-        // pool (an OpenCode/ZCode session can move across pools).
-        targetProvider = deps.providers.getProvider(undefined, targetProviderId);
-        if (!targetProvider) return res.status(404).json({ error: 'target provider not found' });
-      }
-      if (typeof deps.applySessionPatch !== 'function') {
-        return res.status(409).json({ error: 'session patch runtime unavailable' });
-      }
-      try {
-        res.json(reassignProviderSessions({
-          appType,
-          providerId: req.params.id,
-          sourceProvider,
-          targetProviderId,
-          targetProvider,
-          dryRun,
-          sessions: deps.persistedSessions,
-          references: deps.findProviderReferences({
-            appType,
-            providerId: req.params.id,
-            sessions: deps.persistedSessions,
-            defaults: providerDefaults,
-            aux: deps.getAuxConfig(),
-          }),
-          listProviders: () => deps.providers.listProviders(),
-          validProviderId,
-          applySessionPatch: deps.applySessionPatch,
-          previewSessionPatch: deps.previewSessionPatch,
-        }));
-      } catch (error) {
-        res.status(400).json({ error: publicError(error, 'provider reassignment failed') });
-      }
-    });
-
-    // Each exported relay receives its own provider-scoped credential. The
-    // share code discloses it once; durable inventory stores only its hash and
-    // usage counters. No server-wide credential can open provider relays.
-    app.post('/api/providers/:appType/:id/relay-share', async (req, res, next) => {
-      const provider = deps.providers.getProvider(req.params.appType, req.params.id);
-      if (!provider) return res.status(404).json({ error: 'provider not found' });
-      let parsed = null;
-      try { parsed = new URLCtor(String((req.body && req.body.publicBaseUrl) || '').trim()); } catch (_) {}
-      if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
-        return res.status(400).json({ error: 'publicBaseUrl must be an http(s) URL' });
-      }
-      const base = parsed.origin;
-      const relayBaseUrl = req.params.appType === 'codex'
-        ? `${base}/codex-proxy/${encodeURIComponent(req.params.id)}`
-        : `${base}/claude-proxy/${encodeURIComponent(req.params.id)}/remote`;
-      const summary = deps.providerRouterRuntime.getProviderSummary(
-        req.params.appType,
-        req.params.id,
-      ) || {};
-      const relayModels = relayModelsOf(summary);
-      const relayName = `${provider.name || req.params.id} · 远程共享`;
-      try {
-        const created = await deps.providerRelayShares.create({
-          appType: req.params.appType,
-          providerId: req.params.id,
-          providerName: provider.name || req.params.id,
-          publicBaseUrl: base,
-          relayBaseUrl,
-          token: req.body && req.body.token,
-          label: req.body && req.body.label,
-        });
-        const code = encodeRelayShareCode({
-          name: relayName,
-          appType: req.params.appType,
-          baseUrl: relayBaseUrl,
-          models: relayModels,
-          relayShareId: created.share.id,
-          authToken: created.credential,
-        });
-        res.json({ ok: true, code, baseUrl: relayBaseUrl, share: created.share });
-      } catch (error) {
-        if (error && error.code === 'RELAY_TOKEN_INVALID') {
-          return res.status(400).json({
-            error: '共享凭据必须为 8–128 位无空格 ASCII 字符',
-            code: 'RELAY_TOKEN_INVALID',
-          });
-        }
-        return res.status(400).json({ error: publicError(error, 'relay share create failed') });
-      }
-    });
-
-    // Explicit refresh seam for diagnostics/administration.  Normal clients do
-    // not need to call it: GET /api/providers performs the same sync when due.
-    app.post('/api/providers/:appType/:id/relay-models/sync', async (req, res) => {
-      if (!deps.providers.getProvider(req.params.appType, req.params.id)) {
-        return res.status(404).json({ ok: false, reason: 'not_found' });
-      }
-      const runtime = deps.relayModelCatalogRuntime;
-      if (!runtime || typeof runtime.syncProvider !== 'function') {
-        return res.status(503).json({ ok: false, reason: 'relay_model_sync_unavailable' });
-      }
-      const result = await runtime.syncProvider(req.params.appType, req.params.id, { force: true });
-      if (!result.ok && result.reason === 'not_relay') return res.status(400).json(result);
-      if (!result.ok) return res.status(502).json(result);
-      return res.json(result);
-    });
-
-    app.get('/api/provider-relay-shares', async (req, res, next) => {
-      try { res.json({
-        shares: await deps.providerRelayShares.list({
-          appType: req.query.appType,
-          providerId: req.query.providerId,
-        }),
-      }); } catch (error) { next(error); }
-    });
-
-    app.delete('/api/provider-relay-shares/:id', async (req, res, next) => {
-      try {
-        const share = await deps.providerRelayShares.revoke(req.params.id);
-        if (!share) return res.status(404).json({ error: 'relay share not found' });
-        return res.json({ ok: true, share });
-      } catch (error) {
-        return res.status(500).json({ error: publicError(error, 'relay share revoke failed') });
-      }
-    });
-
-    // Re-copy a recorded share. The credential comes back from the sealed copy
-    // kept at creation time, so the owner never has to mint a new code (and
-    // re-distribute it) just to hand the same link to one more person. Revoked
-    // shares and ones created before sealing existed answer 410 / 409.
-    app.get('/api/provider-relay-shares/:id/code', async (req, res, next) => {
-      try {
-        const found = await deps.providerRelayShares.getCredential(req.params.id);
-        if (!found.ok) {
-          if (found.code === 'not_found') return res.status(404).json({ error: 'relay share not found', code: found.code });
-          if (found.code === 'revoked') return res.status(410).json({ error: '这条分享已撤销，无法再复制', code: found.code });
-          return res.status(409).json({ error: '这条分享创建于旧版本，凭据未留存，无法再复制；请新建一条', code: found.code });
-        }
-        const { share } = found;
-        const provider = deps.providers.getProvider(share.appType, share.providerId);
-        if (!provider) return res.status(404).json({ error: 'provider not found' });
-        const summary = deps.providerRouterRuntime.getProviderSummary(share.appType, share.providerId) || {};
-        const code = encodeRelayShareCode({
-          name: `${provider.name || share.providerId} · 远程共享`,
-          appType: share.appType,
-          baseUrl: share.relayBaseUrl,
-          models: relayModelsOf(summary),
-          relayShareId: share.id,
-          authToken: found.credential,
-        });
-        return res.json({ ok: true, code, baseUrl: share.relayBaseUrl, share });
-      } catch (error) {
-        return res.status(500).json({ error: publicError(error, 'relay share copy failed') });
-      }
-    });
-
-    // Re-copy the original import info of a provider that was itself imported
-    // through a share code (its base URL points at another instance's relay
-    // endpoint). Works for any provider that holds a relay credential, so an
-    // importer can pass the same line on without going back to the lender.
-    app.get('/api/providers/:appType/:id/relay-import-code', (req, res) => {
-      const provider = deps.providers.getProvider(req.params.appType, req.params.id);
-      if (!provider) return res.status(404).json({ error: 'provider not found' });
-      const summary = deps.providerRouterRuntime.getProviderSummary(req.params.appType, req.params.id) || {};
-      const route = relayRouteFromBaseUrl(summary.baseUrl);
-      const token = typeof deps.providers.getRelayImportToken === 'function'
-        ? deps.providers.getRelayImportToken(req.params.appType, req.params.id) : '';
-      const credential = parseCredential(token);
-      if (!route || route.appType !== req.params.appType || !credential) {
-        return res.status(400).json({ error: '这不是通过分享码导入的借道线路', code: 'not_relay_import' });
-      }
-      const code = encodeRelayShareCode({
-        name: provider.name || summary.name || req.params.id,
-        appType: req.params.appType,
-        baseUrl: route.url,
-        models: relayModelsOf(summary),
-        relayShareId: credential.id,
-        authToken: token,
-      });
-      return res.json({ ok: true, code, baseUrl: route.url });
-    });
-
-    app.get('/api/provider-defaults', (req, res) => res.json(providerDefaults));
-    app.put('/api/provider-defaults', (req, res) => {
-      const nextDefaults = { ...providerDefaults };
-      for (const cli of ['claude', 'codex']) {
-        if (req.body[cli] !== undefined) {
-          const value = validProviderId(cli, req.body[cli]);
-          if (!value.ok) return res.status(400).json({ error: `invalid ${cli} provider id` });
-          nextDefaults[cli] = value.value;
-        }
-      }
-      Object.assign(providerDefaults, nextDefaults);
-      saveProviderDefaults();
-      res.json({ ok: true, defaults: providerDefaults });
-    });
-
     // Lives here rather than in server.js (at its line budget): the Auto
     // Provider editor's "测试一下" for difficulty routing.
     (deps.autoProviderRoutingTest || createRoutingTest()).mount(app);
@@ -857,14 +351,12 @@ function createProviderRoutes(rawDeps) {
   return Object.freeze({
     providerDefaults,
     validProviderId,
-    mountCatalogRoutes,
     mountManagementRoutes,
   });
 }
 
 function mountProviderRoutes(app, deps) {
   const routes = createProviderRoutes(deps);
-  routes.mountCatalogRoutes(app);
   routes.mountManagementRoutes(app);
   return routes;
 }
@@ -873,8 +365,6 @@ module.exports = {
   DEFAULT_PROVIDER_IDS,
   assertProviderRouteDeps,
   createProviderRoutes,
-  importErrorDto,
   mountProviderRoutes,
   publicError,
-  sanitizeProbeResult,
 };

@@ -925,17 +925,17 @@ function createOrchestrationRuntime({
   // handoff probe); the decision itself, including the freshness window that
   // keeps a PREVIOUS attempt's probe from proving this one failed before
   // handoff, lives in native/core/src/unattended.rs (`delivery_retry_decision`).
-  async function rejectedDeliveryRetry(item, recovered, startedAt) {
+  async function rejectedDeliveryRetry(item, recovered, startedAt, unattendedStatusAtStart) {
     const unattendedStatus = recovered.unattended?.status ?? null;
     // The rule reads the probe only while a supervisor is active; without one
     // the probe cannot change the answer, so it is not even asked for.
     let probe = null;
-    if (unattendedStatus === 'active' && typeof runnerDeliveryProbe === 'function') {
+    if ((unattendedStatus === 'active' || unattendedStatusAtStart === 'active') && typeof runnerDeliveryProbe === 'function') {
       try {
         probe = await Promise.resolve(runnerDeliveryProbe(item.sessionId, deliveryProbeIdentity(item)));
       } catch (_) { probe = null; }
     }
-    return deliveryRetryDecision({ unattendedStatus, probe, startedAt });
+    return deliveryRetryDecision({ unattendedStatus, unattendedStatusAtStart, probe, startedAt });
   }
 
   async function deliver(item) {
@@ -1017,6 +1017,9 @@ function createOrchestrationRuntime({
         opts: deliveryOptions(item),
         taskId: itemTaskId(item),
       };
+      // A failed preparation may change unattended to needs_human before it
+      // returns. Preserve who owned this attempt before that transition.
+      const unattendedStatusAtStart = getSessionRecoveryState(item.sessionId)?.unattended?.status ?? null;
       deliveryGuard = await Promise.resolve(beforeDeliver(descriptor));
       // Wall clock, not the injected `now`: the probe timestamp is stamped by
       // Date.now() in the turn engine, and the two must be comparable here.
@@ -1031,17 +1034,17 @@ function createOrchestrationRuntime({
         // transport lease first (retry budget), then release the claim so the
         // 'claim_released' broadcast carries the post-rollback FIFO snapshot.
         const recovered = getSessionRecoveryState(item.sessionId) || {};
-        const rejection = await rejectedDeliveryRetry(item, recovered, deliveryStartedAt);
+        const rejection = await rejectedDeliveryRetry(item, recovered, deliveryStartedAt, unattendedStatusAtStart);
         if (!rejection.retryable) {
           // The supervisor's fault retry is the one driver from here; a durable
           // outbox retry would race it and re-execute the same persisted turn.
           log(`[orchestration] delivery ${item.id} aborted before runner handoff;`
-            + ' dead-lettering it and leaving the retry to the unattended supervisor');
+            + ' dead-lettering it; unattended state controls any continuation');
         }
         const failed = await outbox.fail(item.id, item.leaseToken,
           rejection.retryable
             ? 'runChatTurn rejected delivery'
-            : 'turn preparation failed before runner handoff; unattended supervisor owns the retry',
+            : 'turn preparation failed before runner handoff; unattended state controls continuation',
           { retryable: rejection.retryable });
         await sessionScheduler.releaseClaim(item, 'delivery_deferred');
         return failed;

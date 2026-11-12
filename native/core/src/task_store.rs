@@ -2,11 +2,12 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 mod context;
+mod delivery;
 mod rules;
 type Result<T> = std::result::Result<T, String>;
 /// v2：引用列 task_ref/receipt_ref（仓储写入时维护）+ 台账独立成类 + 上下文记录分层。
@@ -60,6 +61,7 @@ pub struct TaskStore {
     frames: Vec<String>,
     migration: Value,
     access: Option<AccessMaps>,
+    fence_failures: HashSet<String>,
     progress: Option<Progress>,
 }
 // 迁移进度写在库旁的 <库>.migration.json（先写临时文件再改名），供启动期的「正在升级」
@@ -155,6 +157,7 @@ impl TaskStore {
             frames: vec![],
             migration: Value::Null,
             access: None,
+            fence_failures: HashSet::new(),
             progress: None,
         };
         if version < SCHEMA_VERSION {
@@ -654,6 +657,16 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
         let kind = text(&v["kind"]);
         let id = text(&v["id"]);
         let out = match op {
+            "writerFenceActivity" => self.writer_fence_activity(&v)?,
+            "writerFenceSnapshot" => self.writer_fence_snapshot(&v)?,
+            "writerFenceRelease" => self.writer_fence_release(&v)?,
+            "writerLeaseAcquire" => self.writer_lease_acquire(&v)?,
+            "writerLeaseRelease" => self.writer_lease_release(&v)?,
+            "writerLeaseAnnotatePid" => self.writer_lease_annotate_pid(&v)?,
+            "writerLeaseList" => self.writer_lease_list(&v)?,
+            "writerLeaseAssertEmpty" => self.writer_lease_assert_empty(&v)?,
+            "finalizeStoppedDelivery" => self.finalize_stopped_delivery(&v)?,
+            "finalizeDelivery" => self.finalize_delivery(&v)?,
             "rule" => self.rule(&v)?,
             "get" => self.get(kind, id)?,
             "list" => json!(self

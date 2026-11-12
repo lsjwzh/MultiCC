@@ -2,9 +2,12 @@
 //! Every capture reads fresh bytes; no timestamp cache can mint a stale revision.
 use ring::digest::{digest, Context, SHA256};
 use std::{
+    collections::{HashMap, HashSet},
     fs::{self, Metadata, OpenOptions},
     io::{self, Read},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
+    time::{Duration, Instant},
 };
 
 pub struct FileDigest {
@@ -162,4 +165,377 @@ pub fn observe_files(
         hash.update(b"\n");
     }
     Ok(FileDigest { hash })
+}
+
+// Whole-repository observation: the git orchestration the host used to drive
+// through one subprocess per step runs here as a single worker job. Every
+// behavior (error codes, -z parsing, UTF-16 sort order, marker checks,
+// re-verification) mirrors the frozen Node implementation byte for byte.
+pub const DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
+pub const DEFAULT_MAX_FILES: usize = 50000;
+const GIT_TIMEOUT: Duration = Duration::from_secs(30);
+const GIT_MAX_BUFFER: usize = 32 * 1024 * 1024;
+const OPERATION_MARKERS: [&str; 8] = [
+    "MERGE_HEAD",
+    "REBASE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "sequencer",
+    "index.lock",
+];
+
+pub struct RevisionObservation {
+    pub repo_id: String,
+    pub head: String,
+    pub revision: String,
+    pub dirty: bool,
+}
+
+fn observation_failed<T>(_: T) -> String {
+    "code_observation_failed".into()
+}
+
+// The host spawns git with the same non-interactive environment, a 30s
+// SIGKILL timeout and a 32MB stdout cap. stderr only ever decorated the
+// error message and was never classified, so it is discarded here.
+fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "/usr/bin/false")
+        .env("SSH_ASKPASS", "/usr/bin/false")
+        .env(
+            "GIT_SSH_COMMAND",
+            "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new -oConnectTimeout=10",
+        )
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(observation_failed)?;
+    let mut stdout = child.stdout.take().ok_or("code_observation_failed")?;
+    let reader = std::thread::spawn(move || {
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut overflow = false;
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => {
+                    if buffer.len() + count > GIT_MAX_BUFFER {
+                        // Keep draining so the child can exit instead of
+                        // blocking on a full pipe until the timeout kills it.
+                        overflow = true;
+                    } else if !overflow {
+                        buffer.extend_from_slice(&chunk[..count]);
+                    }
+                }
+                Err(_) => {
+                    overflow = true;
+                    break;
+                }
+            }
+        }
+        (!overflow).then_some(buffer)
+    });
+    let deadline = Instant::now() + GIT_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err("code_observation_failed".into());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(io_error(error));
+            }
+        }
+    };
+    let output = reader
+        .join()
+        .map_err(observation_failed)?
+        .ok_or("code_observation_failed")?;
+    if !status.success() {
+        return Err("code_observation_failed".into());
+    }
+    Ok(String::from_utf8_lossy(&output).into_owned())
+}
+
+fn git_raw(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    run_git(cwd, args)
+}
+
+fn git_trimmed(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    Ok(run_git(cwd, args)?.trim().to_string())
+}
+
+// Node sorts strings by UTF-16 code unit; Rust's default string order is by
+// UTF-8 bytes. They diverge exactly for astral characters (😀 sorts before
+//  in Node, after it bytewise), and the digest contract froze the Node order.
+fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
+}
+
+// /^(\d+) ([a-f0-9]+) (\d)\t([\s\S]+)$/ on one NUL-separated ls-files line.
+fn parse_stage_line(line: &str) -> Option<(&str, &str, &str, &str)> {
+    let (meta, name) = line.split_once('\t')?;
+    if name.is_empty() {
+        return None;
+    }
+    let mut parts = meta.split(' ');
+    let mode = parts.next()?;
+    let oid = parts.next()?;
+    let stage = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if mode.is_empty() || !mode.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if oid.is_empty()
+        || !oid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    if stage.len() != 1 || !stage.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((mode, oid, stage, name))
+}
+
+// path.resolve(cwd, relative): a lexical join that collapses `.`/`..` without
+// touching the filesystem, so the containment check below cannot be escaped.
+fn resolve_lexical(cwd: &Path, relative: &str) -> PathBuf {
+    let mut resolved = cwd.to_path_buf();
+    for component in Path::new(relative).components() {
+        match component {
+            Component::Normal(part) => resolved.push(part),
+            Component::CurDir => {}
+            // PathBuf::pop at the root is a no-op, matching path.resolve('/','..').
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::RootDir => resolved = PathBuf::from(component.as_os_str()),
+            Component::Prefix(prefix) => resolved = PathBuf::from(prefix.as_os_str()),
+        }
+    }
+    resolved
+}
+
+fn observe_gitlink(
+    cwd: &Path,
+    relative: &str,
+    max_bytes: u64,
+    max_files: usize,
+    depth: u32,
+) -> Result<String, String> {
+    let absolute = resolve_lexical(cwd, relative);
+    let inside = absolute
+        .strip_prefix(cwd)
+        .map(|rest| rest.components().next().is_some())
+        .unwrap_or(false);
+    if !inside {
+        return Err("code_path_unsupported".into());
+    }
+    let stat = match fs::symlink_metadata(&absolute) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok("absent".into()),
+        Err(error) => return Err(io_error(error)),
+    };
+    if !stat.is_dir() {
+        return Err("code_file_unsupported".into());
+    }
+    if fs::canonicalize(&absolute).map_err(io_error)? != absolute {
+        return Err("code_parent_unsupported".into());
+    }
+    let mut any = false;
+    let mut dot_git = false;
+    for entry in fs::read_dir(&absolute).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        any = true;
+        if entry.file_name() == std::ffi::OsStr::new(".git") {
+            dot_git = true;
+        }
+    }
+    if !any {
+        return Ok("uninitialized".into());
+    }
+    if !dot_git || depth >= 4 {
+        return Err("code_index_unsupported".into());
+    }
+    let toplevel = git_trimmed(&absolute, &["rev-parse", "--show-toplevel"])?;
+    if fs::canonicalize(Path::new(&toplevel)).map_err(io_error)? != absolute {
+        return Err("code_index_unsupported".into());
+    }
+    let nested = observe_revision(&absolute, max_bytes, max_files, depth + 1)?;
+    Ok(format!("{} {}", nested.head, nested.revision))
+}
+
+pub fn observe_revision(
+    cwd: &Path,
+    max_bytes: u64,
+    max_files: usize,
+    depth: u32,
+) -> Result<RevisionObservation, String> {
+    let cwd = fs::canonicalize(cwd).map_err(io_error)?;
+    let common_dir = git_trimmed(&cwd, &["rev-parse", "--git-common-dir"])?;
+    let common_dir = fs::canonicalize(cwd.join(&common_dir)).map_err(io_error)?;
+    let head = git_trimmed(&cwd, &["rev-parse", "HEAD"])?;
+    let status = git_raw(
+        &cwd,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    let git_dir = resolve_lexical(&cwd, &git_trimmed(&cwd, &["rev-parse", "--git-dir"])?);
+    for marker in OPERATION_MARKERS {
+        match fs::symlink_metadata(git_dir.join(marker)) {
+            Ok(_) => return Err("code_git_operation".into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    let entries = git_raw(&cwd, &["ls-files", "--stage", "-z"])?;
+    let flags = git_raw(&cwd, &["ls-files", "-v", "-z"])?;
+    for line in flags.split('\0').filter(|line| !line.is_empty()) {
+        let first = line.as_bytes()[0];
+        if first == b'S' || first.is_ascii_lowercase() {
+            return Err("code_index_unsupported".into());
+        }
+    }
+    let mut tracked: HashMap<String, String> = HashMap::new();
+    let mut gitlinks: HashMap<String, String> = HashMap::new();
+    for line in entries.split('\0').filter(|line| !line.is_empty()) {
+        let (mode, oid, stage, name) = parse_stage_line(line).ok_or("code_index_unsupported")?;
+        if stage != "0" {
+            return Err("code_index_unsupported".into());
+        }
+        // Submodules / nested repositories are observed separately, never read as files.
+        if mode == "160000" {
+            gitlinks.insert(name.to_string(), oid.to_string());
+        } else {
+            tracked.insert(name.to_string(), mode.to_string());
+        }
+    }
+    let untracked = git_raw(&cwd, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut unique: HashSet<String> = tracked.keys().cloned().collect();
+    for name in untracked.split('\0').filter(|line| !line.is_empty()) {
+        unique.insert(name.to_string());
+    }
+    let mut files: Vec<String> = unique.into_iter().collect();
+    files.sort_by(|a, b| utf16_cmp(a, b));
+    if files.len() > max_files {
+        return Err("code_observation_limit".into());
+    }
+    let honor_file_mode = match git_trimmed(&cwd, &["config", "--bool", "core.filemode"]) {
+        Ok(value) => value != "false",
+        Err(_) => true,
+    };
+    let modes: Vec<String> = files
+        .iter()
+        .map(|file| tracked.get(file).cloned().unwrap_or_default())
+        .collect();
+    let hash = observe_files(&cwd, &files, &modes, honor_file_mode, max_bytes)?;
+    let mut gitlink_list: Vec<(String, String)> = gitlinks.into_iter().collect();
+    gitlink_list.sort_by(|a, b| utf16_cmp(&a.0, &b.0));
+    let mut gitlink_lines = String::new();
+    // Appended after files so repositories without gitlinks keep their existing revisions.
+    for (relative, oid) in gitlink_list {
+        let state = observe_gitlink(&cwd, &relative, max_bytes, max_files, depth)?;
+        let line = serde_json::to_string(&(relative, "160000", oid, state))
+            .map_err(|_| "code_path_unsupported")?;
+        gitlink_lines.push_str(&line);
+        gitlink_lines.push('\n');
+    }
+    if head != git_trimmed(&cwd, &["rev-parse", "HEAD"])?
+        || status
+            != git_raw(
+                &cwd,
+                &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            )?
+    {
+        return Err("code_changed_during_observation".into());
+    }
+    let repo_hash = digest(&SHA256, common_dir.to_string_lossy().as_bytes());
+    let repo_id = format!("repo_{}", &hex(repo_hash.as_ref())[..32]);
+    Ok(RevisionObservation {
+        repo_id,
+        head,
+        revision: format!("code_{}", hash.finish(&gitlink_lines)),
+        dirty: !status.is_empty(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_line_parsing_matches_the_frozen_regex() {
+        assert_eq!(
+            parse_stage_line("100644 ce013625030ba8dba906f756967f9e9ca394464a 0\tsrc/main.rs"),
+            Some((
+                "100644",
+                "ce013625030ba8dba906f756967f9e9ca394464a",
+                "0",
+                "src/main.rs"
+            ))
+        );
+        // Names may contain spaces, tabs, newlines and non-ASCII bytes.
+        assert_eq!(
+            parse_stage_line("100755 abcdef0 0\ta b\tc\nd中e"),
+            Some(("100755", "abcdef0", "0", "a b\tc\nd中e"))
+        );
+        for rejected in [
+            "",
+            "100644 abcdef0 0",        // no tab
+            "100644 abcdef0 0\t",      // empty name
+            "x00644 abcdef0 0\tname",  // non-digit mode
+            "100644 ABCDEF0 0\tname",  // uppercase oid
+            "100644 abcdef0 00\tname", // two-digit stage
+            "100644  abcdef0 0\tname", // double space
+            "100644 abcdef0 0 extra\tname",
+        ] {
+            assert_eq!(parse_stage_line(rejected), None, "{rejected:?}");
+        }
+    }
+
+    #[test]
+    fn utf16_order_matches_node_string_sort() {
+        // Astral characters sort BEFORE U+E000 in Node (lead surrogate 0xD83D
+        // < 0xE000) but AFTER it in UTF-8 byte order (0xF0 > 0xEE).
+        let astral = "\u{1F600}";
+        let bmp = "\u{E000}";
+        assert_eq!(utf16_cmp(astral, bmp), std::cmp::Ordering::Less);
+        assert!(astral.as_bytes() > bmp.as_bytes());
+        let mut names = vec![bmp.to_string(), astral.to_string(), "plain".to_string()];
+        names.sort_by(|a, b| utf16_cmp(a, b));
+        // Node: "plain"(0x70) < "😀"(0xD83D..) < "\u{E000}"; bytewise "plain" < "\u{E000}" < "😀".
+        assert_eq!(names, vec!["plain", astral, bmp]);
+        let mut bytewise = names.clone();
+        bytewise.sort();
+        assert_eq!(bytewise, vec!["plain", bmp, astral]);
+    }
+
+    #[test]
+    fn lexical_resolution_collapses_dot_segments_without_io() {
+        let cwd = Path::new(if cfg!(windows) {
+            "C:\\work\\tree"
+        } else {
+            "/work/tree"
+        });
+        assert_eq!(resolve_lexical(cwd, "nested"), cwd.join("nested"));
+        assert_eq!(resolve_lexical(cwd, "a/../nested"), cwd.join("nested"));
+        assert_eq!(resolve_lexical(cwd, "./nested"), cwd.join("nested"));
+    }
 }

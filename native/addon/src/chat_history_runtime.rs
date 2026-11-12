@@ -1157,7 +1157,7 @@ impl<'a> Runtime<'a> {
                     ));
                 }
                 job.op = Some(self.capture(prepared.get(c"operationId")?)?);
-                job.payload = Some(self.capture(prepared.get(c"messagesJson")?)?);
+                job.payload = Some(self.capture(prepared.get(c"payload")?)?);
                 job.result = Some(self.capture(boolean(self.anchor, true)?)?);
                 job.phase = Phase::Transcript;
                 Ok(NextOutcome::Write(self.mutation_write_step(
@@ -1195,7 +1195,7 @@ impl<'a> Runtime<'a> {
                             return Ok(NextOutcome::Done(self.mutation_done(job.id, result)?));
                         }
                         job.op = Some(self.capture(prepared.get(c"operationId")?)?);
-                        job.payload = Some(self.capture(prepared.get(c"messagesJson")?)?);
+                        job.payload = Some(self.capture(prepared.get(c"payload")?)?);
                         job.result = Some(self.capture(result)?);
                         job.phase = Phase::Transcript;
                         Ok(NextOutcome::Write(self.mutation_write_step(
@@ -1414,7 +1414,7 @@ impl<'a> Runtime<'a> {
         match prepared {
             Ok(prepared) => {
                 job.op = Some(self.capture(prepared.get(c"operationId")?)?);
-                job.payload = Some(self.capture(prepared.get(c"messagesJson")?)?);
+                job.payload = Some(self.capture(prepared.get(c"payload")?)?);
                 job.result = Some(self.capture(plan.get(c"changed")?)?);
                 job.emit = Some(self.capture(plan.get(c"event")?)?);
                 job.phase = Phase::Transcript;
@@ -1559,7 +1559,7 @@ impl<'a> Runtime<'a> {
         let persist = self.persist_plan(session)?;
         if persist.get(c"write")?.truthy()? {
             job.op = Some(self.capture(persist.get(c"operationId")?)?);
-            job.payload = Some(self.capture(persist.get(c"messagesJson")?)?);
+            job.payload = Some(self.capture(persist.get(c"payload")?)?);
             job.phase = Phase::Transcript;
             return Ok(NextOutcome::Write(self.mutation_write_step(
                 session,
@@ -1584,12 +1584,14 @@ impl<'a> Runtime<'a> {
         job.phase = Phase::Visibility;
         Ok(())
     }
-    fn commit_pending(&self, job: &Mutation) -> Result<()> {
+    fn commit_pending(&self, job: &Mutation, meta: L<'a>) -> Result<()> {
         let op = match &job.op {
             Some(value) => self.read(value)?,
             None => self.undefined()?,
         };
-        self.service("commitAppend", &[op])?;
+        // 写字节的回执（bytes/行尾偏移）随 commit 交给历史服务登记账本；
+        // 非 transcript 写（visibility 等）没有回执，账本保守失效。
+        self.service("commitAppend", &[op, meta])?;
         Ok(())
     }
     fn discard_pending(&self, job: &Mutation) -> Result<()> {
@@ -1605,6 +1607,7 @@ impl<'a> Runtime<'a> {
         operation_id: L<'a>,
         ok: L<'a>,
         error: L<'a>,
+        write_meta: L<'a>,
     ) -> Result<L<'a>> {
         let session = string(session)?;
         let cache_key = key(session)?;
@@ -1626,7 +1629,7 @@ impl<'a> Runtime<'a> {
         if ok.truthy()? {
             match job.phase {
                 Phase::Transcript => {
-                    let committed = self.commit_pending(&job);
+                    let committed = self.commit_pending(&job, write_meta);
                     match committed {
                         Ok(()) => match job.kind {
                             MutationKind::Append | MutationKind::Interim => {
@@ -2217,6 +2220,10 @@ impl<'a> Runtime<'a> {
     fn commit_append_message(&self, operation_id: L<'a>) -> Result<L<'a>> {
         self.service("commitAppend", &[operation_id])
     }
+    /// 尾部增量写被 worker 拒收（账本与文件错位）时，宿主经这里拿整份快照重写。
+    fn resend_pending_write(&self, operation_id: L<'a>) -> Result<L<'a>> {
+        self.service("resendPending", &[operation_id])
+    }
     fn discard_append_message(
         &self,
         session: L<'a>,
@@ -2524,10 +2531,15 @@ impl<'a> Runtime<'a> {
             }
             "enqueueMutation" => self.enqueue_mutation(first, second, args.element(2)?),
             "nextMutationStep" => self.next_mutation_step(first),
-            "completeMutationStep" => {
-                self.complete_mutation_step(first, second, args.element(2)?, args.element(3)?)
-            }
+            "completeMutationStep" => self.complete_mutation_step(
+                first,
+                second,
+                args.element(2)?,
+                args.element(3)?,
+                args.element(4)?,
+            ),
             "hasPendingMutations" => self.has_pending_mutations(),
+            "resendPendingWrite" => self.resend_pending_write(first),
             "pendingMutationSessions" => self.pending_mutation_sessions(),
             "registerSession" => self.register_session(first),
             "canDeleteSession" => self.can_delete_session(first),

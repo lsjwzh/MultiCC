@@ -1524,6 +1524,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "multicc-writer-launcher"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "libc",
+ "multicc-core",
+ "serde_json",
+]
+
+[[package]]
 name = "munge"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

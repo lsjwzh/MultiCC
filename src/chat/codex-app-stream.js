@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { releaseResidentRoute, retainResidentRoute } = require('../codex/resident-route');
 const { envDigest } = require('../secrets-vault');
+const writerGroup = require('../workspace/writer-group');
 
 // ── Resident codex app-server process per chat session ──
 //
@@ -152,14 +153,36 @@ const protocolOf = (backend) => (backend === 'zcode-app-server' ? 'zcode' : 'cod
 
 function spawnProc(name, s) {
   s.beforeSpawn?.({ sessionId: s.threadId });
+  // Register the writer before the child exists (fail-closed), and hold its
+  // lease until the child's whole process group is gone — background
+  // descendants the app-server spawns itself never reach the host's event
+  // stream, so their registration rides the leader's group lifetime.
+  const writerToken = typeof s.acquireWriter === 'function' ? s.acquireWriter({ sessionId: s.threadId }) : null;
   const protocol = PROTOCOLS[s.protocol];
   const args = protocol.resumeArgs(s.baseArgs, s.threadId);
-  const proc = spawn(s.cmd, args, {
-    cwd: s.cwd,
-    env: s.env && Object.keys(s.env).length ? s.env : { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  let proc;
+  try {
+    proc = spawn(s.cmd, args, {
+      cwd: s.cwd,
+      env: s.env && Object.keys(s.env).length ? s.env : { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
+      ...writerGroup.detachedSpawn(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    if (writerToken) { try { s.releaseWriter?.(writerToken); } catch (_) {} }
+    throw error;
+  }
   s.proc = proc;
+  // Unguarded close handler with the token on the proc: a replaced child's
+  // late close still frees exactly its own lease.
+  proc.writerLeaseToken = writerToken || null;
+  if (writerToken && proc.pid) setImmediate(() => { try { s.annotateWriter?.(writerToken, proc.pid); } catch (_) {} });
+  proc.once('close', () => {
+    const token = proc.writerLeaseToken;
+    proc.writerLeaseToken = null;
+    if (!token) return;
+    writerGroup.whenGroupEmpty(proc.pid, () => { try { s.releaseWriter?.(token); } catch (_) {} });
+  });
   if (protocol.retainsHome) proc.once('close', retainResidentRoute(s.env?.CODEX_HOME));
   s.spawnedFingerprint = protocol.fingerprint(s.env);
   s.spawnedVault = envDigest(s.env);
@@ -428,6 +451,9 @@ function ensure(name, cfg) {
       onExit: cfg.onExit || null,
       onDispose: cfg.onDispose || null,
       beforeSpawn: cfg.beforeSpawn || null,
+      acquireWriter: cfg.acquireWriter || null,
+      releaseWriter: cfg.releaseWriter || null,
+      annotateWriter: cfg.annotateWriter || null,
       onBackgroundEvent: cfg.onBackgroundEvent || null,
       protocol: protocolOf(cfg.streamBackend),
       proc: null, started: !!cfg.sessionId, busy: false, backgroundActive: 0,
@@ -450,6 +476,9 @@ function ensure(name, cfg) {
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
     if (cfg.beforeSpawn !== undefined) s.beforeSpawn = cfg.beforeSpawn;
+    if (cfg.acquireWriter !== undefined) s.acquireWriter = cfg.acquireWriter;
+    if (cfg.releaseWriter !== undefined) s.releaseWriter = cfg.releaseWriter;
+    if (cfg.annotateWriter !== undefined) s.annotateWriter = cfg.annotateWriter;
     if (cfg.onBackgroundEvent !== undefined) s.onBackgroundEvent = cfg.onBackgroundEvent;
     if (s.protocol === 'codex' && cfg.sessionId === null && s.threadId) {
       // 宿主确认历史缺失或已归档后，不能继续沿用常驻进程里的旧线程。
@@ -576,9 +605,32 @@ function status(name) {
   };
 }
 
+// Park/claim hooks for the stream router — same contract as chat-stream:
+// park releases the warm child's lease outright (no input can reach a parked
+// child), claim re-registers before residency lets sends through again.
+function releaseWriterLease(name) {
+  const s = sessions.get(name);
+  const proc = s?.proc;
+  const token = proc?.writerLeaseToken;
+  if (!proc || !token) return false;
+  proc.writerLeaseToken = null;
+  try { s.releaseWriter?.(token); } catch (_) {}
+  return true;
+}
+function acquireWriterLease(name) {
+  const s = sessions.get(name);
+  if (!s || !isAlive(name) || s.proc.writerLeaseToken) return false;
+  const token = typeof s.acquireWriter === 'function' ? s.acquireWriter({ sessionId: s.threadId }) : null;
+  if (!token) return false;
+  s.proc.writerLeaseToken = token;
+  if (s.proc.pid) setImmediate(() => { try { s.annotateWriter?.(token, s.proc?.pid); } catch (_) {} });
+  return true;
+}
+
 module.exports = {
   createCodexAppStream: () => ({
     ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle, isClosing: closer.isClosing,
+    releaseWriterLease, acquireWriterLease,
     waitForClose: (name, opts) => closer.wait(name, () => {}, opts),
   }),
 };

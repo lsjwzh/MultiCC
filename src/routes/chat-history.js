@@ -267,9 +267,19 @@ function createChatHistoryRuntime(rawDeps) {
     }
     return firstFailure;
   }
-  function performStep(step) {
+  async function performStep(step) {
     if (step.method === 'transcript') {
-      return deps.history.writeAsync(step.sessionId, step.payload);
+      // 字符串=整份快照；对象=尾部增量（尾巴 JSON + 字节账本）。
+      if (typeof step.payload === 'string') {
+        return deps.history.writeAsync(step.sessionId, step.payload);
+      }
+      const appended = await deps.history.appendAsync(step.sessionId, step.payload);
+      if (appended && appended.appended === false) {
+        // 账本错位或文件系统不支持写时复制：整份重发，原子重写自愈。
+        const resend = run('resendPendingWrite', step.operationId);
+        return deps.history.writeAsync(step.sessionId, resend.messagesJson);
+      }
+      return appended;
     }
     if (step.method === 'visibility') {
       return deps.history.writeVisibilityAsync(step.sessionId, step.payload);
@@ -304,13 +314,14 @@ function createChatHistoryRuntime(rawDeps) {
           }
           let ok = true;
           let failure = null;
+          let writeMeta = null;
           try {
-            await performStep(step);
+            writeMeta = await performStep(step);
           } catch (error) {
             ok = false;
             failure = error;
           }
-          const after = run('completeMutationStep', sessionId, step.operationId, ok, failure);
+          const after = run('completeMutationStep', sessionId, step.operationId, ok, failure, writeMeta);
           const effectFailure = applyEffects(sessionId, after.effects);
           if (after.finished === true) {
             settleWaiter(sessionId, step.operationId, waiter => {

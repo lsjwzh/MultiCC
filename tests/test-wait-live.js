@@ -22,7 +22,7 @@ async function mkSession(extra) { const dir = await api('POST', '/api/directorie
 (async () => {
   srv = spawn('node', ['server.js'], { cwd: __dirname, env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] });
   srv.stdout.on('data', d => { const s = d.toString(); if (/wait\]|auto-continue|inject|classify/i.test(s)) process.stdout.write('  SRV| ' + s.split('\n').filter(Boolean).join('\n  SRV| ') + '\n'); });
-  for (let i = 0; i < 40; i++) { try { await api('GET', '/api/server-info?token=' + TOKEN); break; } catch { await sleep(500); } }
+  for (let i = 0; i < 40; i++) { try { await api('GET', '/api/directories?token=' + TOKEN); break; } catch { await sleep(500); } }
   log('server up');
 
   // ── A: callback ──

@@ -1062,12 +1062,54 @@ test('the hop budget caps lane switches and a successful turn resets it', () => 
   assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
 });
 
-test('a background notification never plans a lane switch', () => {
+test('a background notification never moves to an unrelated CLI', () => {
   const { runtime, session, events } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
-  // A background report belongs to the lane whose tools it reports on.
+  // A background report belongs to the CLI whose tools it reports on: an
+  // empty claude lane does not send it to codex.
   assert.equal(runtime.planTurn({ session, text: '任务完成', turnOptions: { bgTaskIds: ['bg-1'] } }), null);
   assert.equal(runtime.planTurn({ session, text: '任务完成', turnOptions: { bgToolUseIds: ['tool-1'] } }), null);
   assert.deepEqual(events, []);
+});
+
+test('a background notification falls back to the sibling adapter when its lane is empty', () => {
+  const candidates = [
+    { providerId: 'codex-b', priority: 1, cli: 'codex' },
+    { providerId: 'claude-a', priority: 2, cli: 'claude' },
+    { providerId: 'claude-b', priority: 3, cli: 'claude-exp' },
+  ];
+  const fixture = crossFixture({ candidates });
+  fixture.providers.listProviders('claude').find(item => item.id === 'claude-b').compatibleClis.push('claude-exp');
+  // The lane still has a usable line: the notification stays home.
+  assert.equal(fixture.runtime.planTurn({
+    session: fixture.session, text: '任务完成', turnOptions: { bgTaskIds: ['bg-1'] },
+  }), null);
+  assert.deepEqual(fixture.events, []);
+  // The incident: the only claude-lane line is out of quota. Without a
+  // fallback every redelivery of the notification found an empty pool.
+  exhaust(fixture.limits, ['claude-a']);
+  const planned = fixture.runtime.planTurn({
+    session: fixture.session, text: '任务完成', turnOptions: { bgTaskIds: ['bg-1'] },
+  });
+  assert.equal(planned.cli, 'claude-exp');
+  assert.equal(planned.providerId, 'claude-b');
+  assert.equal(planned.reasonCode, 'auto_cli_background_fallback');
+  assert.equal(fixture.events[0].routePhase, 'cli_switch_planned');
+});
+
+test('a background notification does not consume the next message\'s routing verdict', async () => {
+  const { runtime, session, providers } = crossFixture({
+    cliSwitch: 'routing',
+    candidates: TIERED_CANDIDATES,
+    selectionRouting: { provider: 'jev', tiers: ['weak', 'strong'] },
+    routingStore: weakVerdictStore(),
+  });
+  await runtime.prepareTurn({ session, text: '简单的问题', providers });
+  assert.equal(runtime.planTurn({
+    session, text: '简单的问题', turnOptions: { bgTaskIds: ['bg-1'] },
+  }), null);
+  const planned = runtime.planTurn({ session, text: '简单的问题' });
+  assert.equal(planned.cli, 'codex');
+  assert.equal(planned.reasonCode, 'auto_cli_routing');
 });
 
 test('a continuation stays on its lane while that lane still has a usable line', () => {

@@ -174,11 +174,15 @@ fn resolve_effective(input: &Request, history: &[History]) -> Option<String> {
                     return Some(model);
                 }
             }
-            if input.app_type.as_deref() == Some("codex") {
-                return None;
-            }
         }
-        return input.reported_model.clone();
+        // A route that declares no default model has none to offer, so the CLI
+        // must run on the route's own configuration (no `--model`). The session's
+        // `reportedModel` is not route-scoped: after a manual switch with the
+        // picker left on "line default" it still names the previous route's
+        // model, and handing it over as the default sent e.g. Kimi's
+        // `kimi-k2.7-code` to a relayed Claude account. Codex already followed
+        // this rule; it now holds for every app type.
+        return None;
     }
     if input.global_provider_cli {
         return input.reported_model.clone();
@@ -313,7 +317,17 @@ mod tests {
         let (req, history) = facts(&value);
         let actual = resolve(&req, &history);
         let expected: Value = serde_json::from_str(&legacy::resolve(input).unwrap()).unwrap();
-        assert_eq!(actual, text(expected.get("model")));
+        let expected = text(expected.get("model"));
+        if req.kind == Kind::Effective && req.provider_id.is_some() && actual.is_none() {
+            // The one intended deviation from the frozen rule: a route without
+            // a declared default no longer borrows the unscoped reportedModel.
+            assert!(
+                expected.is_none() || expected == req.reported_model,
+                "only the reportedModel fallback may differ: {expected:?}"
+            );
+        } else {
+            assert_eq!(actual, expected);
+        }
         actual
     }
 
@@ -452,6 +466,60 @@ mod tests {
             }),
         );
         assert_eq!(model(&input), None);
+    }
+
+    #[test]
+    fn route_without_declared_default_ignores_previous_routes_reported_model() {
+        // Kimi reported `kimi-k2.7-code`; the user then picked a relayed Claude
+        // account (no model, no options, not official) and left the model on
+        // "line default". The route's own configuration must decide.
+        for app_type in ["claude", "codex"] {
+            let input = request(
+                "effective",
+                json!({
+                    "cli": app_type,
+                    "appType": app_type,
+                    "providerId": "359daa1b-relay",
+                    "provider": { "model": null, "modelOptions": [], "official": false },
+                    "models": ["claude-opus-5-5", "claude-sonnet-5"],
+                    "reportedModel": "kimi-k2.7-code",
+                    "history": [],
+                }),
+            );
+            let value: Value = serde_json::from_str(&input).unwrap();
+            let (req, history) = facts(&value);
+            assert_eq!(resolve(&req, &history), None, "{app_type}");
+        }
+        // A provider id whose summary is gone (deleted route) behaves the same.
+        let dangling = request(
+            "effective",
+            json!({ "providerId": "gone", "reportedModel": "kimi-k2.7-code" }),
+        );
+        let value: Value = serde_json::from_str(&dangling).unwrap();
+        let (req, history) = facts(&value);
+        assert_eq!(resolve(&req, &history), None);
+        // Declared defaults still win, and provider-less lanes keep their
+        // reported runtime model when the lane has no list of its own.
+        assert_eq!(
+            model(&request(
+                "effective",
+                json!({
+                    "providerId": "kimi",
+                    "provider": { "model": "kimi-k2.7-code" },
+                    "reportedModel": "claude-opus-5-5",
+                }),
+            ))
+            .as_deref(),
+            Some("kimi-k2.7-code")
+        );
+        assert_eq!(
+            model(&request(
+                "effective",
+                json!({ "appType": "claude", "models": [], "reportedModel": "runtime" }),
+            ))
+            .as_deref(),
+            Some("runtime")
+        );
     }
 
     #[test]

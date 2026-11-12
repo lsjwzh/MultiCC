@@ -481,6 +481,7 @@ function createSessionWorkScheduler({
           requestId: item.payload?.requestId,
           unattendedSystem: item.payload?.options?.unattendedSystem,
           unattendedRecovery: item.payload?.options?.unattendedRecovery,
+          taskSource: item.payload?.options?.taskSource || item.payload?.source,
           message: String(item.payload?.message || '').slice(0, 160),
         })),
       });

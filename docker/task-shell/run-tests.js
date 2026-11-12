@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 
 const suites = [
-  ['--test', 'tests/test-docker-task-shell.js', 'tests/test-task-shell-lab-service.js'],
+  ['--test', 'tests/test-docker-task-shell.js', 'tests/test-task-shell-lab-service.js', 'tests/test-writer-launcher.js'],
   ['scripts/check-runtime-deps.js'],
   ['--test', 'tests/test-task-attribution-eligibility.js', 'tests/test-task-attribution-facts.js',
     'tests/test-delivery-evidence.js', 'tests/test-task-role-bindings.js', 'tests/test-workspace-inventory.js', 'tests/test-workspace-admission.js', 'tests/test-air-tasks.js'],

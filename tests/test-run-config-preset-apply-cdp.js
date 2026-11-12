@@ -120,3 +120,90 @@ test('预设带 OpenCode 原生线路：冷缓存不拦，热缓存里查不到�
     assert.equal(warmGone.includes('已不可用'), true, `热缓存里没有 opencode-go 应判不可用，实际：${JSON.stringify(warmGone)}`);
   });
 });
+
+// ── 悬空供应商：保存拒绝 / 列表标记 / 套用提示列全 ──────────────────────────
+const DEAD_PRESET = {
+  id: 'pdead0001', name: 'CC-Claudes · 4 条', protocol: 'anthropic', pick: 'order', tiering: 'manual',
+  maxAttempts: 4, sticky: true, recent: false, savedAt: 1793768221159,
+  candidates: [
+    { providerId: 'deadbeef01', cli: 'claude-exp', model: 'claude-opus', priority: 1 },
+    { providerId: 'p-claude-1', cli: 'claude-exp', model: 'claude-opus', priority: 2 },
+    { providerId: 'cafebabe02', cli: 'claude-exp', model: 'claude-opus', priority: 3 },
+  ],
+};
+
+async function openPanel(page, preset, configuration = {}) {
+  await page.evaluate(`window.__saved=[]`);
+  await page.evaluate(`localStorage.setItem('multicc.autoProvider.presets.v1', JSON.stringify(${JSON.stringify(preset ? [preset] : [])}))`);
+  await page.evaluate(`window.MultiCCRunConfig.open({ configuration: ${JSON.stringify({
+    cli: 'claude', provider: 'p-claude-1', model: 'claude-opus', ...configuration,
+  })} }, ${JSON.stringify(CLIENT_CLIS)}, value => { window.__saved.push(value) })`);
+  await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-preset'))})`);
+}
+
+test('预设列表：含已删除线路的预设带「N 条线路已删除」标记', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-preset-apply-cdp'), locale: 'zh-CN' }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"');
+    await openPanel(page, DEAD_PRESET);
+    // 目录（claude-exp）取回之后才判得出失效线路：等标记自己出现。
+    const marked = await page.waitFor(
+      `[...document.querySelectorAll(${JSON.stringify(inDialog('.rc-preset option'))})]
+        .some(o => o.textContent.includes('2 条线路已删除'))`, { timeoutMs: 8000 });
+    assert.ok(marked, '预设下拉应标出 2 条已删除线路');
+    const options = await page.evaluate(
+      `[...document.querySelectorAll(${JSON.stringify(inDialog('.rc-preset option'))})].map(o => o.textContent)`);
+    assert.ok(options.some(text => text.includes('CC-Claudes · 4 条') && text.includes('2 条线路已删除')),
+      `下拉选项文字应带标记，实际：${JSON.stringify(options)}`);
+  });
+});
+
+test('套用预设被拦：提示一次列出全部已删除线路', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-preset-apply-cdp'), locale: 'zh-CN' }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"');
+    const status = await applyPreset(page, DEAD_PRESET, null);
+    assert.ok(status.includes('未套用'), `应拦下套用，实际：${JSON.stringify(status)}`);
+    assert.ok(status.includes('deadbeef（claude-exp）'), `提示应列出 deadbeef，实际：${JSON.stringify(status)}`);
+    assert.ok(status.includes('cafebabe（claude-exp）'), `提示应列出 cafebabe，实际：${JSON.stringify(status)}`);
+  });
+});
+
+test('保存预设：池子里有已删除的供应商就拒绝，并列出所有失效线路', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-preset-apply-cdp'), locale: 'zh-CN' }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"');
+    // 会话池子里有一条供应商已经没了的线路（打开面板时就是这份草稿）。
+    await openPanel(page, null, {
+      providerSelection: {
+        mode: 'auto', maxAttempts: 2, sticky: true, cliSwitch: 'failover',
+        candidates: [
+          { providerId: 'deadbeef01', cli: 'claude-exp', model: 'claude-opus', priority: 1 },
+          { providerId: 'p-claude-1', cli: 'claude-exp', model: 'claude-opus', priority: 2 },
+        ],
+      },
+    });
+    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-preset-open'))}).click()`);
+    await sleep(100);
+    await page.evaluate(`(() => {
+      const input = document.querySelector(${JSON.stringify(inDialog('.rc-preset-name'))});
+      input.value = '悬空池子';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector(${JSON.stringify(inDialog('.rc-preset-save'))}).click();
+    })()`);
+    await sleep(800);
+    const status = await page.evaluate(
+      `(document.querySelector(${JSON.stringify(inDialog('.rc-preset-status'))})||{}).textContent||''`);
+    assert.ok(status.includes('已被删除'), `应拒绝保存并说明被删，实际：${JSON.stringify(status)}`);
+    assert.ok(status.includes('deadbeef（claude-exp）'), `提示应列出 deadbeef，实际：${JSON.stringify(status)}`);
+    const stored = await page.evaluate(
+      `localStorage.getItem('multicc.autoProvider.presets.v1') || ''`);
+    assert.equal(stored.includes('悬空池子'), false, '被拒的池子不能落进预设');
+  });
+});
