@@ -271,7 +271,29 @@
                   "fromTrustDomain": null,
                   "toTrustDomain": null,
                   "reasonCode": "candidate_pool_exhausted",
-                  "attemptNo": 0
+                  "attemptNo": 0,
+                  "skipped": [
+                    {
+                      "providerId": "a",
+                      "reason": "fresh_limit_exhausted"
+                    },
+                    {
+                      "providerId": "b",
+                      "reason": "fresh_limit_exhausted"
+                    },
+                    {
+                      "providerId": "c",
+                      "reason": "fresh_limit_exhausted"
+                    }
+                  ],
+                  "attempted": [],
+                  "lanes": {
+                    "claude": {
+                      "total": 3,
+                      "enabled": 3,
+                      "usable": 0
+                    }
+                  }
                 }
               }
             ]
@@ -1014,7 +1036,20 @@
                   "fromTrustDomain": null,
                   "toTrustDomain": "user-managed",
                   "reasonCode": "candidate_pool_exhausted",
-                  "attemptNo": 3
+                  "attemptNo": 3,
+                  "skipped": [],
+                  "attempted": [
+                    "a",
+                    "b",
+                    "c"
+                  ],
+                  "lanes": {
+                    "claude": {
+                      "total": 3,
+                      "enabled": 3,
+                      "usable": 3
+                    }
+                  }
                 }
               }
             ]
@@ -1308,7 +1343,19 @@
                   "fromTrustDomain": null,
                   "toTrustDomain": "user-managed",
                   "reasonCode": "candidate_pool_exhausted",
-                  "attemptNo": 2
+                  "attemptNo": 2,
+                  "skipped": [],
+                  "attempted": [
+                    "a",
+                    "b"
+                  ],
+                  "lanes": {
+                    "claude": {
+                      "total": 2,
+                      "enabled": 2,
+                      "usable": 2
+                    }
+                  }
                 }
               }
             ]
