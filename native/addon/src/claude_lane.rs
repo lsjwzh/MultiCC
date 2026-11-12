@@ -394,6 +394,13 @@ impl RustClaudeLane {
         {
             command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
+        #[cfg(unix)]
+        {
+            // Group leader: the host holds this lane's writer lease until the
+            // whole process group is gone, so background children the CLI
+            // spawns itself stay registered under the same lease.
+            command.process_group(0);
+        }
         let mut child = command
             .spawn()
             .map_err(|spawn| error(format!("failed to spawn Claude Code: {spawn}")))?;

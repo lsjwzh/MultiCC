@@ -277,23 +277,20 @@ impl<'a> Host<'a> {
                         || source.is_string("commander")?
                         || source.is_string("code-reference")?;
                 }
-                self.port(
-                    c"classifyTurnEnd",
+                let options = object(
+                    context,
                     &[
-                        cs,
-                        session,
-                        object(
-                            context,
-                            &[
-                                (c"classification", or(entry.get(c"classification")?, null)?),
-                                (c"killReason", or(entry.get(c"killReason")?, null)?),
-                                (c"turnId", or(turn.optional(c"turnId")?, null)?),
-                                (c"taskId", or(task_id, null)?),
-                                (c"identityLocked", boolean(context, locked)?),
-                            ],
-                        )?,
+                        (c"classification", or(entry.get(c"classification")?, null)?),
+                        (c"killReason", or(entry.get(c"killReason")?, null)?),
+                        (c"turnId", or(turn.optional(c"turnId")?, null)?),
+                        (c"taskId", or(task_id, null)?),
+                        (c"identityLocked", boolean(context, locked)?),
                     ],
                 )?;
+                if context.optional(c"autoProviderHandoffPending")?.is_true()? {
+                    options.assign(c"handoffPending", boolean(context, true)?)?;
+                }
+                self.port(c"classifyTurnEnd", &[cs, session, options])?;
             }
             "complete-session-turn" => {
                 self.runtime(c"completeSessionTurn", &[session])?;

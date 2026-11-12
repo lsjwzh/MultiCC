@@ -479,6 +479,107 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the system routes retired from src/routes/system.js
+  // (src/routes/system-host.js, native/gateway/src/app/system.rs). The script
+  // carries the process facts under `system.serverInfo`, the ls-remote answer
+  // under `system.lsRemote` and the raw trace ring (oldest first) under
+  // `system.traceEntries`. The trace branch repeats the host route's own
+  // defensive cap and the proxy-trace snapshot semantics (slice(-n), reverse,
+  // startedAt stripped) so the front door sees exactly what the real host
+  // would have sent.
+  if (route === '/api/__host/system' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'system-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      const sys = script.system || {};
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (input.op === 'server-info') {
+        return send(sys.serverInfo || {});
+      }
+      if (input.op === 'ls-remote') {
+        return send(sys.lsRemote || { ok: false });
+      }
+      if (input.op === 'trace') {
+        const limit = Number.isSafeInteger(input.limit) && input.limit > 0 ? Math.min(input.limit, 200) : 100;
+        const ring = Array.isArray(sys.traceEntries) ? sys.traceEntries : [];
+        return send({ entries: ring.slice(-limit).reverse().map(({ startedAt, ...rest }) => rest) });
+      }
+      const text = JSON.stringify({ error: 'unknown host operation' });
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the scan history route retired from src/routes/scan.js
+  // (src/routes/scan-history-host.js, native/gateway/src/app/scan.rs). The
+  // script carries `scan.seq`, `scan.passes` and `scan.maxPasses`; the
+  // Math.min cap and the slice — including its negative-argument semantics —
+  // stay in JS verbatim, exactly like the real host route.
+  if (route === '/api/__host/scan-history' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'scan-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      if (script.hostDown === true) { req.socket.destroy(); return; }
+      const scan = script.scan || {};
+      const passes = Array.isArray(scan.passes) ? scan.passes : [];
+      const maxPasses = Number.isInteger(scan.maxPasses) && scan.maxPasses > 0 ? scan.maxPasses : 100;
+      const requested = typeof input.limit === 'number' && Number.isFinite(input.limit) ? input.limit : 20;
+      const limit = Math.min(requested, maxPasses);
+      const text = JSON.stringify({ seq: scan.seq || 0, kept: passes.length, passes: passes.slice(0, limit) });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the provider routes retired from src/routes/providers.js
+  // (src/routes/providers-host.js, native/gateway/src/app/providers.rs). The
+  // script's `providers.answers` maps `<op>` (or `<op>:<id>`) to the value the
+  // real host would have answered; the fixture does not implement any of the
+  // rules, only the wire.
+  if (route === '/api/__host/providers' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'provider-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const providers = script.providers || {};
+      if (script.hostDown === true || providers.hostDown === true) { req.socket.destroy(); return; }
+      const send = (status, value) => {
+        const text = JSON.stringify(value);
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      const answers = providers.answers || {};
+      const keys = [
+        `${input.op}:${input.id || ''}`,
+        `${input.op}:${input.cli || ''}`,
+        `${input.op}:${input.targetProviderId || ''}`,
+        input.op,
+      ];
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(answers, key)) return send(200, answers[key]);
+      }
+      if (input.op === 'defaultsValidate') return send(200, { ok: true, valid: true, value: input.id });
+      if (input.op === 'defaultsPersist') return send(200, { ok: true, defaults: input.next });
+      return send(400, { error: 'unknown host operation' });
+    });
+    return;
+  }
   if (route === '/echo' && req.method === 'POST') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));

@@ -420,4 +420,60 @@ void main() {
     await refreshRunConfigPresetCatalog(settings: settings, httpClient: client);
     expect(runConfigPresetNameFor(selectionOf(['cheap', 'strong'])), '离线');
   });
+
+  test('missingPresetProviderLines：只报目录里确实没了的托管线路', () {
+    final pools = <String, List<Map<String, dynamic>>>{
+      'claude-exp': [
+        {'id': 'alive'},
+        // 供应商还在，但不给 claude-exp 用：跟被删了一样套不上。
+        {
+          'id': 'other',
+          'compatibleClis': ['claude'],
+        },
+      ],
+      'claude': [
+        {'id': 'other'},
+      ],
+    };
+    final missing = missingPresetProviderLines(
+      [
+        RunPoolRow(lane: 'claude-exp', providerId: 'alive'),
+        RunPoolRow(lane: 'claude-exp', providerId: 'deadbeef01'),
+        RunPoolRow(lane: 'claude-exp', providerId: 'cafebabe02'),
+        RunPoolRow(lane: 'claude-exp', providerId: 'deadbeef01'),
+        RunPoolRow(lane: 'claude-exp', providerId: 'other'),
+        RunPoolRow(lane: 'claude', providerId: 'other'),
+        // 原生线路没有供应商记录，不算失效。
+        RunPoolRow(
+          lane: 'opencode',
+          providerId: 'opencode-native:opencode-go',
+        ),
+        RunPoolRow(
+          lane: 'codebuddy',
+          providerId: 'codebuddy-native:codebuddy',
+        ),
+        // 这条车道的目录没取到：未知，不报。
+        RunPoolRow(lane: 'zcode', providerId: 'not-loaded'),
+      ],
+      pools,
+    );
+    expect(
+      missing.map((line) => line.providerId),
+      ['deadbeef01', 'cafebabe02', 'other'],
+    );
+    expect(
+      missing.map((line) => line.label),
+      ['deadbeef（claude-exp）', 'cafebabe（claude-exp）', 'other（claude-exp）'],
+    );
+    // 每条只报一次（同样 id 出现两次）。
+    expect(missing, hasLength(3));
+
+    expect(
+      missingPresetProviderLines(
+        [RunPoolRow(lane: 'zcode', providerId: 'x')],
+        const {},
+      ),
+      isEmpty,
+    );
+  });
 }

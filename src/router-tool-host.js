@@ -4,6 +4,7 @@ const path = require('path');
 const { createRouterToolRuntime } = require('./router-tool-runtime');
 const { applyRouterMcpEnv } = require('./cli-adapters/router-mcp');
 const secretsVault = require('./secrets-vault');
+const writerGroup = require('./workspace/writer-group');
 
 function createRouterToolHost({
   express,
@@ -277,7 +278,10 @@ function createRouterToolHost({
     secretsVault.applyEnvOverlay(env, { source: 'cli_spawn', sessionId, turnId, taskId });
     let proc;
     try {
-      proc = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      // Group leader on POSIX: the writer lease taken before this spawn is
+      // released only once the child's whole process group is gone, covering
+      // background descendants the CLI spawns without telling the host.
+      proc = spawn(command, args, { cwd, env, ...writerGroup.detachedSpawn(), stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
       processCapability?.revoke();
       throw error;

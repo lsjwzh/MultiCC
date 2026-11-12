@@ -18,13 +18,16 @@ pub mod file_transfer;
 pub mod host_read;
 pub mod model_catalogs;
 pub mod provider_limit_history;
+pub mod providers;
 pub mod quota_guard;
 pub mod run_config_presets;
+pub mod scan;
 pub mod secrets_vault;
 mod service_transport;
 pub mod services;
 pub mod source_workspaces;
 pub mod subagent_defaults;
+pub mod system;
 pub mod token_usage_by_role;
 pub mod token_usage_global;
 pub mod turn_ledger;
@@ -84,6 +87,14 @@ pub enum Route {
     SubagentDefaultsOptions,
     SubagentDefaultsSync,
     SubagentDefaultsSyncOptions,
+    ServerInfoGet,
+    ServerInfoOptions,
+    VersionCheckGet,
+    VersionCheckOptions,
+    CodexProxyTraceGet,
+    CodexProxyTraceOptions,
+    ScanHistoryGet,
+    ScanHistoryOptions,
     ModelCatalogGet(model_catalogs::Catalog),
     ModelCatalogOptions(model_catalogs::Catalog),
     ProviderModelsGet,
@@ -121,6 +132,7 @@ pub enum Route {
     UploadOptions,
     TurnLedger(turn_ledger::Route),
     TurnLedgerOptions(turn_ledger::Route),
+    Providers(providers::Route),
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -166,6 +178,9 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
             turn_ledger::Claim::Handle(route) => Route::TurnLedger(route),
             turn_ledger::Claim::Options(route) => Route::TurnLedgerOptions(route),
         });
+    }
+    if let Some(route) = providers::claim(method, path) {
+        return Some(Route::Providers(route));
     }
     if let Some(claim) = file_transfer::claim(method, path) {
         return Some(match claim {
@@ -220,6 +235,14 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         ("subagent-defaults", "OPTIONS") => Some(Route::SubagentDefaultsOptions),
         ("subagent-defaults/sync", "POST") => Some(Route::SubagentDefaultsSync),
         ("subagent-defaults/sync", "OPTIONS") => Some(Route::SubagentDefaultsSyncOptions),
+        ("server-info", "GET" | "HEAD") => Some(Route::ServerInfoGet),
+        ("server-info", "OPTIONS") => Some(Route::ServerInfoOptions),
+        ("version-check", "GET" | "HEAD") => Some(Route::VersionCheckGet),
+        ("version-check", "OPTIONS") => Some(Route::VersionCheckOptions),
+        ("debug/codex-proxy-trace", "GET" | "HEAD") => Some(Route::CodexProxyTraceGet),
+        ("debug/codex-proxy-trace", "OPTIONS") => Some(Route::CodexProxyTraceOptions),
+        ("scan/history", "GET" | "HEAD") => Some(Route::ScanHistoryGet),
+        ("scan/history", "OPTIONS") => Some(Route::ScanHistoryOptions),
         _ => None,
     }
 }
@@ -255,10 +278,16 @@ pub struct App {
     /// The vault answered each request to completion on one thread in Node;
     /// every route here awaits one host round trip, so serialize them.
     pub secrets_vault: tokio::sync::Mutex<()>,
+    /// `src/routes/providers.js` ran each write handler to completion on the
+    /// event loop; these routes await host round trips instead.
+    pub providers_write: tokio::sync::Mutex<()>,
     /// The observation cache the retired Node route wrote, plus the
     /// process-local single-flight table and the system-proxy slot. `Arc` lets
     /// the leader query outlive the HTTP request that started it.
     pub account_subscription: Arc<account_subscription::Shared>,
+    /// The Node package root (the directory of the script we run): the
+    /// version-check route reads package.json and .multicc_channel from it.
+    pub package_root: PathBuf,
     /// `os.homedir()`: the official-account store lives under it.
     pub home_dir: PathBuf,
     /// The Node child's `process.cwd()` (physical path): what `path.resolve`
@@ -318,7 +347,9 @@ impl App {
             token_usage_global: Mutex::new(token_usage_global::State::default()),
             subagent_defaults: tokio::sync::Mutex::new(()),
             secrets_vault: tokio::sync::Mutex::new(()),
+            providers_write: tokio::sync::Mutex::new(()),
             account_subscription: subscriptions,
+            package_root,
             home_dir: std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_default(),
@@ -505,6 +536,14 @@ pub async fn handle(
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
         Route::SubagentDefaultsOptions => return options(&ctx, "GET,HEAD"),
         Route::SubagentDefaultsSyncOptions => return options(&ctx, "POST"),
+        Route::ServerInfoGet => return system::server_info(&ctx, host).await,
+        Route::VersionCheckGet => return system::version_check(&app, &ctx, host).await,
+        Route::CodexProxyTraceGet => return system::codex_proxy_trace(&ctx, host).await,
+        Route::ScanHistoryGet => return scan::history(&ctx, host).await,
+        Route::ServerInfoOptions
+        | Route::VersionCheckOptions
+        | Route::CodexProxyTraceOptions
+        | Route::ScanHistoryOptions => return options(&ctx, "GET,HEAD"),
         Route::DownloadOptions
         | Route::UploadStatsOptions
         | Route::ProviderLimitHistoryOptions
@@ -562,6 +601,7 @@ pub async fn handle(
         Route::SubagentDefaultsSync => {
             return subagent_defaults::sync(&app, &ctx, &body, host).await
         }
+        Route::Providers(route) => return providers::handle(&app, route, &ctx, &body, host).await,
         Route::ClaudeSubscriptionGet => {
             return account_subscription::get(&app, "claude", &ctx).await
         }
@@ -776,6 +816,43 @@ mod tests {
         );
         assert_eq!(claim(&Method::GET, "/api/upload"), None);
         assert_eq!(claim(&Method::HEAD, "/api/upload"), None);
+        for (path, mixed, get) in [
+            (
+                "/api/server-info",
+                "/api/Server-Info/",
+                Route::ServerInfoGet,
+            ),
+            (
+                "/api/version-check",
+                "/api/Version-Check/",
+                Route::VersionCheckGet,
+            ),
+            (
+                "/api/debug/codex-proxy-trace",
+                "/api/Debug/Codex-Proxy-Trace/",
+                Route::CodexProxyTraceGet,
+            ),
+            (
+                "/api/scan/history",
+                "/api/Scan/History/",
+                Route::ScanHistoryGet,
+            ),
+        ] {
+            assert_eq!(claim(&Method::GET, path), Some(get));
+            assert_eq!(claim(&Method::HEAD, mixed), Some(get));
+            assert!(matches!(
+                claim(&Method::OPTIONS, path),
+                Some(Route::ServerInfoOptions)
+                    | Some(Route::VersionCheckOptions)
+                    | Some(Route::CodexProxyTraceOptions)
+                    | Some(Route::ScanHistoryOptions)
+            ));
+            assert_eq!(claim(&Method::POST, path), None);
+            assert_eq!(claim(&Method::GET, &format!("{path}//")), None);
+            assert_eq!(claim(&Method::GET, &path.replace("/api/", "/API/")), None);
+        }
+        assert_eq!(claim(&Method::GET, "/api/debug"), None);
+        assert_eq!(claim(&Method::GET, "/api/scan"), None);
     }
 
     #[test]

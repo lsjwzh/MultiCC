@@ -1293,6 +1293,35 @@ test('the same rejection stays retryable without an unattended supervisor', asyn
   await h.runtime.stop();
 });
 
+for (const stoppedStatus of ['needs_human', 'paused']) {
+  test(`a pre-handoff failure does not retry when unattended becomes ${stoppedStatus}`, async t => {
+    let status = 'active', injects = 0;
+    const h = fixture(t, {
+      getSessionRecoveryState: () => ({ unattended: { status } }),
+      runnerDeliveryProbe: () => ({ known: true, handedOff: false, at: Date.now() }),
+      runChatTurn: async (sessionId, _text, opts) => {
+        injects += 1;
+        const ids = h.history.get(sessionId) || new Set();
+        ids.add(opts.deliveryId);
+        h.history.set(sessionId, ids);
+        status = stoppedStatus;
+        return false;
+      },
+    });
+    const admitted = await h.runtime.admitSessionWork({
+      sessionId: 'paused-during-preparation', text: 'saved notification',
+      idempotencyKey: `prep-${stoppedStatus}`, options: {},
+    });
+    await withTimeout(h.runtime.tick(), 2000, 'the rejected delivery did not settle');
+    assert.equal((await h.runtime.outbox.get(admitted.entry.id)).state, 'dead-letter');
+    assert.equal(h.history.get('paused-during-preparation').has(admitted.entry.id), true);
+    h.clock.value += 10_000;
+    await h.runtime.tick();
+    assert.equal(injects, 1, 'the persisted notification is not retried after unattended stops');
+    await h.runtime.stop();
+  });
+}
+
 // Regression: one session whose delivery never comes back used to hold the whole
 // worker tick (and every session behind it) for the entire watchdog window.
 test('a hung delivery for one session does not delay another session', async t => {

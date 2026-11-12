@@ -157,9 +157,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-10 Fold picker aliases and remove unreachable purpose warnings;
   // measured 3171 lines / 161873 bytes.
   // 2026-11-10 线路可用性归入已有模型目录模块；实测 3171 行 / 161847 字节。
+  // 2026-11-12 预设里的悬空供应商：保存拒绝、下拉标记、套用提示列出全部失效
+  // 线路，共用一个 missingProviderLines 纯函数，另加打开面板时的目录预热；
+  // 实测 3323 行 / 168986 字节，按棘轮上调；模型字段那一族的拆分条件不变。
   'public/run-config.js': Object.freeze({
-    ceiling: 3171,
-    byteCeiling: 161844,
+    ceiling: 3323,
+    byteCeiling: 168986,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
@@ -227,10 +230,14 @@ const MIGRATION_DEBT = Object.freeze({
   // 换成宿主端口挂载并删掉聊天上传接线，实测 3067/164505，按棘轮双向调到实测值。
   // 2026-11-11 终端轮次账本三条路由迁到 Rust 前门：turnLedgerRuntime.mountRoutes
   // 换成宿主端口挂载并多一行 require，实测 3068/164719，按棘轮双向调到实测值。
+  // System and scan routes moved to the front door: 3065/164601.
+  // 2026-11-12 provider 的 16 条路由迁到 Rust 前门：server.js 删掉
+  // mountCatalogRoutes 那一行、说明并进模型目录注释，实测回落到
+  // 3064/164534，按棘轮双向调到实测值（测速仍留在 Node）。
   // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   'server.js': Object.freeze({
-    ceiling: 3068,
-    byteCeiling: 164719,
+    ceiling: 3064,
+    byteCeiling: 164534,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),
@@ -672,9 +679,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // = +6 行；countLines 口径实测 10370/672985，抬一格。
     // 无人值守「结束并清除」：+2 双语键（unattendedClear/ClearHint），中英各 2 行
     // = +4 行；countLines 口径实测 10374/673236，抬一格。
-    maxLines: 10374,
+    // 预设悬空供应商：+4 双语键（runConfigPresetLinesGone/LinesUnavailable/
+    // MissingBadge/MissingHint），中英各 4 行 = +8 行；countLines 口径实测
+    // 10382/674121，抬一格。
+    maxLines: 10382,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 673236,
+    maxBytes: 674121,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

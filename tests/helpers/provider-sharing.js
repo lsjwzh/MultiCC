@@ -14,7 +14,7 @@ const { assertTestDir } = require('../../src/paths');
 const { isLocalRequest, isPrivateRequestPeer } = require('../../src/request-locality');
 const { createProviderRouterRuntime } = require('../../src/providers/router-runtime');
 const { createAuthRuntime } = require('../../src/routes/auth');
-const { createProviderRoutes } = require('../../src/routes/providers');
+const { mountProviderRoutes } = require('./legacy-provider-routes');
 const { createProviderRelayShareStore } = require('../../src/providers/relay-share-store');
 
 const RELAY_UI_FILE = path.join(__dirname, '..', '..', 'public', 'manage-provider-relay.js');
@@ -172,8 +172,10 @@ function createInstance({ providers, providerRelayShares, defaultsFile, activity
   });
   app.use(express.json({ limit: '64kb' }));
   mountAuth(app, metrics, providerRelayShares);
-  createProviderRoutes(providerRouteDeps(providers, providerRelayShares, defaultsFile))
-    .mountManagementRoutes(app);
+  // The public provider routes are served by the Rust front door in production;
+  // these two-IP integration tests mount the frozen Node oracle so they can
+  // still exercise the proxy path without spawning the gateway.
+  mountProviderRoutes(app, providerRouteDeps(providers, providerRelayShares, defaultsFile));
   const root = path.dirname(defaultsFile);
   const runtime = createProviderRouterRuntime({ providers, mode: 'legacy',
     dataRoot: root, codexHomesDir: path.join(root, 'codex-homes') });

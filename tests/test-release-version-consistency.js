@@ -580,13 +580,21 @@ test('core runner covers every selected path and expands declared variants', () 
   // Native code-revision differential coverage uses temporary Git fixtures and
   // a frozen Node oracle; it reads no user checkout and contacts no service.
   // Re-audited: 427 entries, 353 deterministic, 399 commands (396 Node entries).
-  assert.equal(core.length, 427, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 427);
+  // The writer-ownership tranche registers three more deterministic Node
+  // entries: tests/test-chat-history-tail-append.js (tail-append ledger over a
+  // temp repo + FIFO runtime, no port or account), tests/test-delivery-finalize-native.js
+  // (Rust delivery-finalize transaction against a temp task-shell store, still
+  // differential-only) and tests/test-writer-launcher.js (the fail-closed
+  // multicc-writer binary spawning temp-dir fixture children, no port, service
+  // or account). All three are hermetic: 427 + 3 = 430 entries, 353 + 3 = 356
+  // deterministic, 399 + 3 = 402 commands (399 Node entries).
+  assert.equal(core.length, 430, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 430);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 353);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 356);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -596,8 +604,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 399,
-    '396 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 402,
+    '399 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

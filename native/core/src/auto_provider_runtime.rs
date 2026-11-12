@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::auto_provider_policy::{choose_candidate, failover_safety};
 use crate::js::serde::{js_string, js_to_number, truthy, truthy_opt};
@@ -151,6 +151,12 @@ fn cli_switch(selection: &Value) -> Option<String> {
 
 fn routing_configured(selection: &Value) -> bool {
     truthy_opt(field(Some(selection), "routing"))
+}
+
+/// The CLI a lane runs: `claude-exp` is the Claude CLI behind another adapter,
+/// `codex-exp` likewise for Codex.
+fn lane_family(lane: &str) -> &str {
+    lane.strip_suffix("-exp").unwrap_or(lane)
 }
 
 fn emit_effect(session_id: &str, event: Value) -> Value {
@@ -556,6 +562,9 @@ impl Runtime {
         let direct_input = field(Some(request), "directUserInput")
             .map(truthy)
             .unwrap_or(false);
+        let background = field(Some(request), "backgroundNotification")
+            .map(truthy)
+            .unwrap_or(false);
         let available = |lane: &str| -> bool {
             field(Some(request), "availability")
                 .and_then(|map| field(Some(map), lane))
@@ -568,6 +577,70 @@ impl Runtime {
             return envelope(Value::Null, Vec::new());
         }
         let pending = self.pending.get(&session_id).cloned();
+        let reachable: Vec<Value> = candidates
+            .iter()
+            .filter(|candidate| {
+                lane_of(candidate, &cli) == cli || available(&lane_of(candidate, &cli))
+            })
+            .cloned()
+            .collect();
+        let preferred_tier = or_null(field(Some(&decision), "tier"));
+        let sticky = if sticky_enabled(&selection) {
+            self.sticky
+                .get(&session_id)
+                .map(|id| Value::String(id.clone()))
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        let choose_list = |list: Vec<Value>| -> Option<Value> {
+            let knobs = Choose {
+                attempted: Vec::new(),
+                preferred_tier: preferred_tier.clone(),
+                ladder: ladder.clone(),
+                pinned: None,
+                sticky_provider_id: sticky.clone(),
+                prefer_cli: Value::String(cli.clone()),
+                by_price,
+                by_quota: prefers_max_quota(&selection),
+            };
+            choose(&list, &knobs).0
+        };
+        let lane_list = |keep: &dyn Fn(&str) -> bool| -> Vec<Value> {
+            reachable
+                .iter()
+                .filter(|candidate| keep(&lane_of(candidate, &cli)))
+                .cloned()
+                .collect()
+        };
+        if background {
+            // A background notification reports on tools of this lane's
+            // session, so it stays while the lane still has a usable line.
+            // Once the lane is out of lines nothing else would wake an
+            // unattended run, so it may move to a sibling adapter of the same
+            // CLI (claude <-> claude-exp, codex <-> codex-exp), never to an
+            // unrelated CLI. A reservation or a remembered lane belongs to the
+            // next ordinary turn and is left untouched.
+            if pending.is_some() || choose_list(lane_list(&|lane| lane == cli)).is_some() {
+                return envelope(Value::Null, Vec::new());
+            }
+            let family = lane_family(&cli).to_string();
+            let siblings = lane_list(&|lane| lane != cli && lane_family(lane) == family);
+            let Some(picked) = choose_list(siblings) else {
+                return envelope(Value::Null, Vec::new());
+            };
+            let mut effects = Vec::new();
+            let value = self.reserve(
+                &session_id,
+                &cli,
+                &picked,
+                "auto_cli_background_fallback",
+                &Value::Null,
+                false,
+                &mut effects,
+            );
+            return envelope(value, effects);
+        }
         if let Some(pending) = &pending {
             if let Some(pending_cli) = field(Some(pending), "cli").filter(|value| truthy(value)) {
                 if js_string(pending_cli) != cli {
@@ -650,52 +723,13 @@ impl Runtime {
                 }
             }
         }
-        let reachable: Vec<Value> = candidates
-            .iter()
-            .filter(|candidate| {
-                lane_of(candidate, &cli) == cli || available(&lane_of(candidate, &cli))
-            })
-            .cloned()
-            .collect();
-        let preferred_tier = or_null(field(Some(&decision), "tier"));
-        let sticky = if sticky_enabled(&selection) {
-            self.sticky
-                .get(&session_id)
-                .map(|id| Value::String(id.clone()))
-                .unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        };
-        let choose_list = |list: Vec<Value>| -> Option<Value> {
-            let knobs = Choose {
-                attempted: Vec::new(),
-                preferred_tier: preferred_tier.clone(),
-                ladder: ladder.clone(),
-                pinned: None,
-                sticky_provider_id: sticky.clone(),
-                prefer_cli: Value::String(cli.clone()),
-                by_price,
-                by_quota: prefers_max_quota(&selection),
-            };
-            choose(&list, &knobs).0
-        };
         let picked = match cli_switch(&selection).as_deref() {
-            Some("routing") => choose_list(reachable),
+            Some("routing") => choose_list(reachable.clone()),
             _ => {
-                let home: Vec<Value> = reachable
-                    .iter()
-                    .filter(|candidate| lane_of(candidate, &cli) == cli)
-                    .cloned()
-                    .collect();
-                if choose_list(home).is_some() {
+                if choose_list(lane_list(&|lane| lane == cli)).is_some() {
                     return envelope(Value::Null, Vec::new());
                 }
-                let other: Vec<Value> = reachable
-                    .iter()
-                    .filter(|candidate| lane_of(candidate, &cli) != cli)
-                    .cloned()
-                    .collect();
-                choose_list(other)
+                choose_list(lane_list(&|lane| lane != cli))
             }
         };
         let Some(picked) = picked else {
@@ -709,34 +743,55 @@ impl Runtime {
         } else {
             "auto_cli_failover"
         };
-        let reservation = record(vec![
-            ("sessionId", Value::String(session_id.clone())),
-            ("originTurnId", Value::Null),
-            ("fromCli", Value::String(cli.clone())),
-            ("cli", Value::String(lane_of(&picked, &cli))),
-            ("fromProviderId", Value::Null),
-            ("fromProviderName", Value::Null),
-            ("providerId", provider_id_of(&picked)),
-            (
-                "providerName",
-                or_null(field(Some(&picked), "providerName")),
-            ),
-            ("model", or_null(field(Some(&picked), "model"))),
-            ("reasonCode", text(reason_code)),
-            ("planned", Value::Bool(true)),
-        ]);
-        self.pending.insert(session_id.clone(), reservation.clone());
         let mut effects = Vec::new();
-        let value = self.plan(
+        let value = self.reserve(
             &session_id,
             &cli,
-            &reservation,
-            Some(&picked),
+            &picked,
+            reason_code,
             &decision,
             price_tiered,
             &mut effects,
         );
         envelope(value, effects)
+    }
+
+    /// Reserve `picked`'s lane for the next turn, then narrate the switch.
+    #[allow(clippy::too_many_arguments)]
+    fn reserve(
+        &mut self,
+        session_id: &str,
+        cli: &str,
+        picked: &Value,
+        reason_code: &str,
+        decision: &Value,
+        price_tiered: bool,
+        effects: &mut Vec<Value>,
+    ) -> Value {
+        let reservation = record(vec![
+            ("sessionId", Value::String(session_id.to_string())),
+            ("originTurnId", Value::Null),
+            ("fromCli", Value::String(cli.to_string())),
+            ("cli", Value::String(lane_of(picked, cli))),
+            ("fromProviderId", Value::Null),
+            ("fromProviderName", Value::Null),
+            ("providerId", provider_id_of(picked)),
+            ("providerName", or_null(field(Some(picked), "providerName"))),
+            ("model", or_null(field(Some(picked), "model"))),
+            ("reasonCode", text(reason_code)),
+            ("planned", Value::Bool(true)),
+        ]);
+        self.pending
+            .insert(session_id.to_string(), reservation.clone());
+        self.plan(
+            session_id,
+            cli,
+            &reservation,
+            Some(picked),
+            decision,
+            price_tiered,
+            effects,
+        )
     }
 
     /// `plan(...)`: reserve the lane, narrate it, and hand back the switch.
@@ -1684,8 +1739,50 @@ impl Runtime {
             ("reasonCode", or_null(field(Some(&event), "reasonCode"))),
             ("attemptNo", Value::from(turn.physical_attempt)),
         ]);
+        let mut fields = fields;
+        if phase == "exhausted" {
+            // An empty pool is only diagnosable with the per-line verdicts and
+            // the shape of every lane, including the ones this turn could not
+            // use; the UI event already carries `skipped`, the log did not.
+            if let Some(object) = fields.as_object_mut() {
+                object.insert(
+                    "skipped".into(),
+                    field(Some(&event), "skipped")
+                        .cloned()
+                        .unwrap_or_else(|| Value::Array(Vec::new())),
+                );
+                object.insert("attempted".into(), Value::Array(turn.attempted.clone()));
+                object.insert("lanes".into(), lane_counts(turn));
+            }
+        }
         effects.push(info_effect("auto_provider_route", fields));
     }
+}
+
+/// `{ <lane>: { total, enabled, usable } }` over the whole pool: the turn's
+/// own lane and every other lane it set aside. `usable` = enabled and not
+/// exhausted by its limit state.
+fn lane_counts(turn: &Turn) -> Value {
+    let mut lanes: Map<String, Value> = Map::new();
+    for candidate in turn.candidates.iter().chain(turn.other_lanes.iter()) {
+        let lane = lane_of(candidate, &turn.cli);
+        let enabled = field(Some(candidate), "enabled") != Some(&Value::Bool(false));
+        let usable = enabled && !is_exhausted(candidate);
+        if !lanes.contains_key(&lane) {
+            lanes.insert(
+                lane.clone(),
+                json!({ "total": 0, "enabled": 0, "usable": 0 }),
+            );
+        }
+        let entry = lanes.get_mut(&lane).expect("inserted above");
+        for (key, counts) in [("total", true), ("enabled", enabled), ("usable", usable)] {
+            if counts {
+                let next = entry[key].as_u64().unwrap_or(0) + 1;
+                entry[key] = Value::from(next);
+            }
+        }
+    }
+    Value::Object(lanes)
 }
 
 /// `value[key]` where `value` is an object; a non-object has no properties.
@@ -2077,6 +2174,168 @@ mod tests {
         let again = runtime.plan_turn(&request);
         assert_eq!(again["value"]["cli"], json!("codex"));
         assert_eq!(runtime.hops.get("s"), Some(&2));
+    }
+
+    fn background_request(candidates: &Value) -> Value {
+        json!({
+            "sessionId": "bg", "cli": "claude",
+            "selection": selection(candidates.clone(), true, Some("failover")),
+            "candidates": candidates, "ladder": null, "byPrice": false,
+            "priceTiered": false, "routingDecision": null,
+            "originContinue": false, "directUserInput": false,
+            "backgroundNotification": true,
+            "availability": { "claude-exp": true, "codex": true },
+        })
+    }
+
+    #[test]
+    fn background_notification_stays_while_its_lane_has_a_usable_line() {
+        let candidates = json!([
+            line("kimi", "claude", 2, "ok"),
+            line("account", "claude-exp", 1, "ok"),
+        ]);
+        let mut runtime = Runtime::default();
+        let envelope = runtime.plan_turn(&background_request(&candidates));
+        assert_eq!(envelope["value"], Value::Null);
+        assert!(runtime.pending.is_empty());
+        assert!(runtime.hops.is_empty());
+    }
+
+    #[test]
+    fn background_notification_falls_back_to_a_sibling_adapter_only() {
+        // The incident: Kimi (the only claude-lane line) is out of quota; the
+        // Claude accounts sit on claude-exp; an unrelated codex line ranks first.
+        let candidates = json!([
+            line("codex-official", "codex", 1, "ok"),
+            line("kimi", "claude", 2, "exhausted"),
+            line("account", "claude-exp", 3, "ok"),
+        ]);
+        let mut runtime = Runtime::default();
+        let envelope = runtime.plan_turn(&background_request(&candidates));
+        assert_eq!(envelope["value"]["cli"], json!("claude-exp"));
+        assert_eq!(envelope["value"]["providerId"], json!("account"));
+        assert_eq!(
+            envelope["value"]["reasonCode"],
+            json!("auto_cli_background_fallback")
+        );
+        assert_eq!(
+            envelope["effects"][1]["name"],
+            json!("auto_provider_cli_switch_planned")
+        );
+        assert!(runtime.pending.contains_key("bg"));
+
+        // codex <-> codex-exp is the same family; claude -> codex is not.
+        let unrelated = json!([
+            line("kimi", "claude", 1, "exhausted"),
+            line("codex-official", "codex", 2, "ok"),
+        ]);
+        let mut runtime = Runtime::default();
+        assert_eq!(
+            runtime.plan_turn(&background_request(&unrelated))["value"],
+            Value::Null
+        );
+        assert!(runtime.pending.is_empty());
+        let mut request = background_request(&json!([
+            line("relay", "codex-exp", 1, "exhausted"),
+            line("official", "codex", 2, "ok"),
+        ]));
+        request["cli"] = json!("codex-exp");
+        request["availability"] = json!({ "codex": true });
+        let mut runtime = Runtime::default();
+        assert_eq!(runtime.plan_turn(&request)["value"]["cli"], json!("codex"));
+    }
+
+    #[test]
+    fn background_notification_respects_lane_availability_and_reservations() {
+        let candidates = json!([
+            line("kimi", "claude", 1, "exhausted"),
+            line("account", "claude-exp", 2, "ok"),
+        ]);
+        // A sibling whose CLI is not installed is not a fallback.
+        let mut request = background_request(&candidates);
+        request["availability"] = json!({ "claude-exp": false });
+        let mut runtime = Runtime::default();
+        assert_eq!(runtime.plan_turn(&request)["value"], Value::Null);
+        // An existing reservation belongs to the next ordinary turn.
+        let mut runtime = Runtime::default();
+        let reserved = json!({ "cli": "codex", "providerId": "x" });
+        runtime.pending.insert("bg".into(), reserved.clone());
+        assert_eq!(
+            runtime.plan_turn(&background_request(&candidates))["value"],
+            Value::Null
+        );
+        assert_eq!(runtime.pending.get("bg"), Some(&reserved));
+        // Without the flag the same pool keeps the ordinary failover rule.
+        let mut request = background_request(&candidates);
+        request["backgroundNotification"] = json!(false);
+        let mut runtime = Runtime::default();
+        assert_eq!(
+            runtime.plan_turn(&request)["value"]["reasonCode"],
+            json!("auto_cli_failover")
+        );
+    }
+
+    #[test]
+    fn an_empty_pool_logs_every_verdict_and_every_lane() {
+        let mut kimi = line("kimi", "claude", 1, "exhausted");
+        kimi["limitReason"] = json!("quota_7d");
+        let mut off = line("off", "claude", 2, "ok");
+        off["enabled"] = json!(false);
+        let candidates = json!([
+            kimi,
+            off,
+            line("account-a", "claude-exp", 3, "ok"),
+            line("account-b", "claude-exp", 4, "exhausted"),
+            line("codex-official", "codex", 5, "ok"),
+        ]);
+        let mut runtime = Runtime::default();
+        let begun = runtime.begin_turn(&json!({
+            "sessionId": "s", "turnId": "t1", "cli": "claude",
+            "selection": selection(candidates.clone(), true, Some("failover")),
+            "candidates": candidates, "ladder": null, "byPrice": false,
+            "priceTiered": false, "routingDecision": null,
+        }));
+        let handle = begun["value"]["handle"].as_u64().expect("handle");
+        let initial = runtime.turn_initial(handle);
+        let log = initial["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|effect| effect["kind"] == json!("info"))
+            .expect("log effect")
+            .clone();
+        assert_eq!(log["name"], json!("auto_provider_route"));
+        let fields = &log["fields"];
+        assert_eq!(fields["phase"], json!("exhausted"));
+        assert_eq!(fields["reasonCode"], json!("candidate_pool_exhausted"));
+        let skipped = fields["skipped"].as_array().expect("skipped");
+        assert!(
+            skipped
+                .iter()
+                .any(|row| row["providerId"] == json!("kimi") && !row["reason"].is_null()),
+            "{fields}"
+        );
+        assert_eq!(fields["attempted"], json!([]));
+        assert_eq!(
+            fields["lanes"],
+            json!({
+                "claude": { "total": 2, "enabled": 1, "usable": 0 },
+                "claude-exp": { "total": 2, "enabled": 2, "usable": 1 },
+                "codex": { "total": 1, "enabled": 1, "usable": 1 },
+            })
+        );
+        // A successful pick keeps the log line as small as before.
+        let ok = json!([line("a", "claude", 1, "ok")]);
+        let mut runtime = Runtime::default();
+        let begun = runtime.begin_turn(&json!({
+            "sessionId": "s2", "turnId": "t2", "cli": "claude",
+            "selection": selection(ok.clone(), true, None), "candidates": ok,
+            "ladder": null, "byPrice": false, "priceTiered": false, "routingDecision": null,
+        }));
+        let initial = runtime.turn_initial(begun["value"]["handle"].as_u64().unwrap());
+        let fields = &initial["effects"][1]["fields"];
+        assert_eq!(fields["phase"], json!("selected"));
+        assert!(fields.get("lanes").is_none() && fields.get("skipped").is_none());
     }
 
     #[test]

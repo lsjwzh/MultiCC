@@ -42,7 +42,7 @@ async function api(method, route, body) {
 
 async function waitForServer() {
   for (let i = 0; i < 60; i += 1) {
-    try { await api('GET', '/api/server-info'); return; } catch (_) {}
+    try { await api('GET', '/api/directories'); return; } catch (_) {}
     await new Promise(resolve => setTimeout(resolve, 200));
   }
   throw new Error('isolated server did not start');

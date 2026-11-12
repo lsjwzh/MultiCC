@@ -53,8 +53,11 @@ async function main() {
     console.log('Exported source:', exportSources(path.resolve(__dirname, '..'), context));
     const cleanInstall = process.argv.includes('--clean-install');
     const commandCode = process.argv.includes('--command-code');
-    const child = spawn('docker', ['build', '--progress=plain', '--target', commandCode ? 'command-code' : cleanInstall ? 'clean-install' : 'regression',
-      '-t', commandCode ? 'multicc-command-code:local' : cleanInstall ? 'multicc-clean-install-test:local' : 'multicc-task-shell-test:local',
+    // Rust-only runtime image: no Node inside, smoke-tested by the Dockerfile itself.
+    const nodeFree = process.argv.includes('--node-free');
+    const target = nodeFree ? 'node-free-runtime' : commandCode ? 'command-code' : cleanInstall ? 'clean-install' : 'regression';
+    const tag = nodeFree ? 'multicc-node-free:local' : commandCode ? 'multicc-command-code:local' : cleanInstall ? 'multicc-clean-install-test:local' : 'multicc-task-shell-test:local';
+    const child = spawn('docker', ['build', '--progress=plain', '--target', target, '-t', tag,
       '-f', path.join(context, 'docker/task-shell/Dockerfile'), context], { stdio: 'inherit' });
     const stop = () => child.kill('SIGTERM');
     process.once('SIGINT', stop); process.once('SIGTERM', stop);

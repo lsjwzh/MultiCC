@@ -298,16 +298,16 @@ function createAutoProviderRuntime(options = {}) {
   function planTurn({ session, text, turnOptions = {} } = {}) {
     const rawSelection = session && session.providerSelection;
     if (!rawSelection || rawSelection.mode !== 'auto') return null;
-    // Background notifications belong to the lane whose tools they report on.
-    if (turnOptions.bgTaskIds?.length || turnOptions.bgToolUseIds?.length) return null;
     const cli = session.cli || 'claude';
     const validated = validateProviderSelection(rawSelection, { cli, providers });
     if (!validated.ok || !validated.value.cliSwitch) return null;
     const selection = validated.value;
     syncSelection(session, rawSelection, selection);
     const { candidates, ladder } = catalogCandidates(session, selection);
-    // A difficulty router owns the lane choice itself.
-    const decision = selection.routing ? routing.resolveTier({
+    const backgroundNotification = !!(turnOptions.bgTaskIds?.length || turnOptions.bgToolUseIds?.length);
+    // A difficulty router owns the lane choice itself. A background
+    // notification is not a user message: it must not consume the verdict.
+    const decision = selection.routing && !backgroundNotification ? routing.resolveTier({
       selection,
       verdict: routing.consume({ sessionId: session.id, text }),
       tiers: ladder.tiers || undefined,
@@ -323,6 +323,9 @@ function createAutoProviderRuntime(options = {}) {
       routingDecision: decision,
       originContinue: !!turnOptions.originContinue,
       directUserInput: !!turnOptions.directUserInput,
+      // Whether a background notification may leave its lane is decided in
+      // Rust (plan_turn): only a sibling adapter, only when this lane is empty.
+      backgroundNotification,
       availability: availabilityMap(candidates, cli),
     });
   }

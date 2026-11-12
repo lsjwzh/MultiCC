@@ -74,6 +74,7 @@ function createUnattendedHost(options = {}) {
   // round after the pause. Only ids the scheduler says are still pending are
   // removed; a claimed/running entry is owned by the normal cancel path.
   const pendingInjections = new Map();
+  const faultWithdrawalEpoch = new Map();
   // Exactly one expiry timer per active session (setTimeout to deadlineAt,
   // unref'd). Cleared on every non-active write, stop/pause/resume and shutdown;
   // re-armed by the boot migration (src/unattended/runtime.js) and by resume.
@@ -182,7 +183,7 @@ function createUnattendedHost(options = {}) {
   // The retry timer fired: re-check every fact before injecting. Expiry wins
   // first, and a turn started by any other path (FIFO, user, API-policy retry)
   // makes the persisted retry obsolete — clear it instead of double-driving.
-  function fireRetry(sessionId) {
+  async function fireRetry(sessionId) {
     const at = now();
     const state = stateOf(sessionId);
     if (!state || state.status !== STATUS.ACTIVE) return;
@@ -194,17 +195,49 @@ function createUnattendedHost(options = {}) {
       syncRetryTimer(sessionId, state);
       return;
     }
+    // A crash can occur after the handoff was admitted but before the retry
+    // marker was cleared. While that durable entry waits, do not create a
+    // second recovery; check again if it is removed before starting.
+    const defer = () => {
+      clearRetryTimer(sessionId);
+      const timer = setTimeoutFn(() => {
+        if (retryTimers.get(sessionId) === timer) retryTimers.delete(sessionId);
+        void fireRetry(sessionId);
+      }, 1000);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+      retryTimers.set(sessionId, timer);
+    };
+    let status;
+    try { status = await getSchedulerStatus(sessionId); }
+    catch (error) {
+      log(`[unattended] retry queue check failed for ${sessionId}: ${error.message}`);
+      if (Number(stateOf(sessionId)?.retryAt) === retryAt) defer();
+      return;
+    }
+    const current = stateOf(sessionId);
+    if (!current || current.status !== STATUS.ACTIVE || Number(current.retryAt) !== retryAt) return;
+    if (expireIfDue(sessionId)) return;
+    if (status && typeof kernel.selectQueued === 'function') {
+      let probe;
+      try { probe = probeHandoffQueue(status); }
+      catch (error) { log(`[unattended] retry selection failed for ${sessionId}: ${error.message}`); defer(); return; }
+      if (probe.handoffPending === true) {
+        withdrawFaultEntries(sessionId, probe.faultEntryIds);
+        defer();
+        return;
+      }
+    }
     let busy = false;
     try { busy = isRunActive(sessionId) === true; } catch (_) { busy = false; }
     // Clear the durable marker either way: it has been consumed.
-    if (!write(sessionId, { ...state, retryAt: null, retryCategory: null, updatedAt: at })) return;
+    if (!write(sessionId, { ...current, retryAt: null, retryCategory: null, updatedAt: now() })) return;
     if (busy) return;
     const faults = Number(state.stall && state.stall.consecutiveFaults) || 1;
     trace(sessionId, tagged(`故障后自动继续（第 ${faults} 次）`));
     if (typeof inject !== 'function') return;
     trackInjection(sessionId, inject(sessionId, tagged(kernel.faultInstruction()), {
       unattendedRecovery: true,
-    }));
+    }), 'fault');
   }
 
   // Checked at the top of every evaluation/fault AND by the timer, so a late
@@ -848,37 +881,62 @@ function createUnattendedHost(options = {}) {
   }
 
   // The delivery boundary resolves to the scheduler admission result
-  // `{ ok, entry: { id }, queued }`. Remember only entries that are still
-  // waiting; an admitted-and-selected continuation is already a live turn.
-  function rememberInjection(sessionId, result) {
+  // `{ ok, entry: { id }, queued }`. Even queued=false may still be pending
+  // before the scheduler claims it; cancellation itself checks the lease.
+  function rememberInjection(sessionId, result, kind = 'other') {
     if (!withdrawQueued || !result || result.ok === false || result.duplicate === true) return;
-    if (result.queued !== true) return;
+    if (result.queued !== true && kind !== 'fault') return;
     const entryId = result.entry && result.entry.id;
     if (!entryId) return;
-    const set = pendingInjections.get(sessionId) || new Set();
-    set.add(entryId);
-    pendingInjections.set(sessionId, set);
+    const entries = pendingInjections.get(sessionId) || new Map();
+    entries.set(entryId, kind);
+    pendingInjections.set(sessionId, entries);
   }
 
-  function trackInjection(sessionId, sent) {
+  function trackInjection(sessionId, sent, kind = 'other') {
     if (!withdrawQueued || !sent) return;
-    if (typeof sent.then !== 'function') { rememberInjection(sessionId, sent); return; }
-    sent.then(result => rememberInjection(sessionId, result)).catch(error => {
+    if (typeof sent.then !== 'function') { rememberInjection(sessionId, sent, kind); return; }
+    const epoch = faultWithdrawalEpoch.get(sessionId) || 0;
+    sent.then(result => {
+      rememberInjection(sessionId, result, kind);
+      if (kind === 'fault' && (faultWithdrawalEpoch.get(sessionId) || 0) !== epoch) {
+        withdrawPendingInjections(sessionId, 'fault');
+      }
+    }).catch(error => {
       log(`[unattended] continuation admission failed for ${sessionId}: ${error && error.message ? error.message : error}`);
     });
   }
 
-  function withdrawPendingInjections(sessionId) {
-    const set = pendingInjections.get(sessionId);
-    pendingInjections.delete(sessionId);
-    if (!set || !set.size || !withdrawQueued) return;
-    for (const entryId of set) {
+  function withdrawPendingInjections(sessionId, onlyKind = null) {
+    const entries = pendingInjections.get(sessionId);
+    if (!entries || !entries.size || !withdrawQueued) return;
+    for (const [entryId, kind] of entries) {
+      if (onlyKind && kind !== onlyKind) continue;
+      entries.delete(entryId);
       try {
         Promise.resolve(withdrawQueued(sessionId, entryId)).catch(error => {
           log(`[unattended] queued continuation withdraw failed for ${sessionId}/${entryId}: ${error && error.message ? error.message : error}`);
         });
       } catch (error) {
         log(`[unattended] queued continuation withdraw failed for ${sessionId}/${entryId}: ${error && error.message ? error.message : error}`);
+      }
+    }
+    if (!entries.size) pendingInjections.delete(sessionId);
+  }
+
+  function probeHandoffQueue(status) {
+    return kernel.selectQueued({ handoffProbe: true, items: (status.queued || []).map(item => ({
+      id: item.entryId, taskSource: item.source, message: item.text,
+    })) });
+  }
+
+  function withdrawFaultEntries(sessionId, ids) {
+    if (!withdrawQueued || !Array.isArray(ids)) return;
+    for (const id of ids) {
+      try { Promise.resolve(withdrawQueued(sessionId, id)).catch(error => {
+        log(`[unattended] queued fault withdraw failed for ${sessionId}/${id}: ${error.message}`);
+      }); } catch (error) {
+        log(`[unattended] queued fault withdraw failed for ${sessionId}/${id}: ${error.message}`);
       }
     }
   }
@@ -954,6 +1012,7 @@ function createUnattendedHost(options = {}) {
       cancelSource = '',
       killReason = '',
       retryScheduled,
+      handoffPending = false,
       faultCategory = '',
       assistantText = '',
       fallbackPush = null,
@@ -989,6 +1048,7 @@ function createUnattendedHost(options = {}) {
         // absent). A non-boolean is rejected by the kernel instead of being
         // silently coerced, which is how a scheduled retry used to double-inject.
         retryScheduled,
+        handoffPending,
         backlogPending: backlog,
         faultCategory,
         retryNotBefore: retryNotBeforeOf(sessionId),
@@ -1038,7 +1098,7 @@ function createUnattendedHost(options = {}) {
       if (action === 'fault_continue') {
         trace(sessionId, tagged(faultTrace(decision)));
         maybeFaultNotice(sessionId, latest, decision);
-        if (typeof inject === 'function') trackInjection(sessionId, inject(sessionId, tagged(decision.message), { unattendedRecovery: true }));
+        if (typeof inject === 'function') trackInjection(sessionId, inject(sessionId, tagged(decision.message), { unattendedRecovery: true }), 'fault');
         return decision;
       }
       if (action === 'fault_wait') {
@@ -1072,6 +1132,27 @@ function createUnattendedHost(options = {}) {
     const state = stateOf(sessionId);
     if (!state || state.status !== STATUS.ACTIVE) return null;
     return pause(sessionId, 'input');
+  }
+
+  // Called only after the replacement handoff was durably admitted. Clear the
+  // old retry timer and withdraw any supervisor continuation still queued.
+  function handoffAccepted(sessionId, turnId) {
+    const state = stateOf(sessionId);
+    if (!state || state.status !== STATUS.ACTIVE) return false;
+    const decision = kernel.decideTurnEnd({ state, now: now(), kind: 'handoff_accepted', turnId });
+    if (!decision?.nextState || !write(sessionId, markSettle(decision.nextState, now()))) return false;
+    faultWithdrawalEpoch.set(sessionId, (faultWithdrawalEpoch.get(sessionId) || 0) + 1);
+    withdrawPendingInjections(sessionId, 'fault');
+    // The in-memory tracker is lost on restart; inspect the durable queue too.
+    // Only the Rust-recognized fault instruction is withdrawn, and a later
+    // turn's state invalidates this asynchronous cleanup.
+    if (typeof kernel.selectQueued === 'function') {
+      Promise.resolve().then(() => getSchedulerStatus(sessionId)).then(status => {
+        if (!status || stateOf(sessionId)?.lastTurnEndId !== turnId) return;
+        withdrawFaultEntries(sessionId, probeHandoffQueue(status).faultEntryIds);
+      }).catch(error => log(`[unattended] queued fault lookup failed for ${sessionId}: ${error.message}`));
+    }
+    return true;
   }
 
   // A restart can settle a turn before this host is ready: the processing
@@ -1148,6 +1229,7 @@ function createUnattendedHost(options = {}) {
     clear,
     evaluate,
     get,
+    handoffAccepted,
     noteUserMessage,
     onTurnEnd,
     reconcileStartup,

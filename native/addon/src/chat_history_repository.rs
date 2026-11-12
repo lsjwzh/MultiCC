@@ -24,7 +24,7 @@ use std::{
     collections::HashMap,
     ffi::CStr,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -264,6 +264,19 @@ pub struct HistoryWriteError {
 #[napi(object)]
 pub struct HistoryWriteResult {
     pub error: Option<HistoryWriteError>,
+    /// 写完后文件总字节数与最后 64 行的绝对行尾偏移：宿主据此登记增量账本，
+    /// 下一笔只写尾巴。错误时为 None。
+    pub bytes: Option<f64>,
+    pub ends: Option<Vec<f64>>,
+}
+
+#[napi(object)]
+pub struct HistoryAppendResult {
+    pub error: Option<HistoryWriteError>,
+    /// false = 文件与账本错位（或文件不存在于非零起点），调用方整份重发。
+    pub appended: bool,
+    pub bytes: Option<f64>,
+    pub ends: Option<Vec<f64>>,
 }
 
 fn safe_stem(session_id: &str) -> String {
@@ -376,24 +389,29 @@ impl Task for VisibilityWriteJob {
     type JsValue = HistoryWriteResult;
 
     fn compute(&mut self) -> Result<HistoryWriteResult> {
+        let failure = |error| -> Result<HistoryWriteResult> {
+            Ok(HistoryWriteResult {
+                error: Some(error),
+                bytes: None,
+                ends: None,
+            })
+        };
         let target = visibility_path(&self.root, &self.session_id);
         let Some(parent) = target.parent() else {
-            return Ok(HistoryWriteResult {
-                error: Some(
-                    write_error(
-                        "Error",
-                        "history visibility file has no parent".to_string(),
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                    .reported("atomic_write", &target),
-                ),
-            });
+            return failure(
+                write_error(
+                    "Error",
+                    "history visibility file has no parent".to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .reported("atomic_write", &target),
+            );
         };
         if let Err(error) = ensure_private_dir_io(parent) {
-            return Ok(HistoryWriteResult { error: Some(error) });
+            return failure(error);
         }
         match state_file::write_bytes_atomic_traced(
             &target,
@@ -401,10 +419,12 @@ impl Task for VisibilityWriteJob {
             state_file::FILE_MODE,
             state_file::DIR_MODE,
         ) {
-            Ok(()) => Ok(HistoryWriteResult { error: None }),
-            Err(failure) => Ok(HistoryWriteResult {
-                error: Some(atomic_failure_error(failure, &target)),
+            Ok(()) => Ok(HistoryWriteResult {
+                error: None,
+                bytes: None,
+                ends: None,
             }),
+            Err(failure_error) => failure(atomic_failure_error(failure_error, &target)),
         }
     }
 
@@ -456,7 +476,9 @@ fn io_write_error(
 }
 
 #[allow(clippy::result_large_err)]
-fn transcript_bytes(messages_json: &str) -> std::result::Result<Vec<u8>, HistoryWriteError> {
+fn transcript_bytes(
+    messages_json: &str,
+) -> std::result::Result<(Vec<u8>, Vec<u64>), HistoryWriteError> {
     let parsed = json_parse(messages_json).map_err(|error| {
         write_error(
             "SyntaxError",
@@ -478,11 +500,14 @@ fn transcript_bytes(messages_json: &str) -> std::result::Result<Vec<u8>, History
         ));
     };
     let mut out = Vec::new();
+    // 每行的绝对（相对本份字节）行尾偏移：增量账本据此定位截断点。
+    let mut ends = Vec::new();
     for message in &messages {
         out.extend_from_slice(json_stringify_or_undefined(message).as_bytes());
         out.push(b'\n');
+        ends.push(out.len() as u64);
     }
-    Ok(out)
+    Ok((out, ends))
 }
 
 pub struct HistoryWriteJob {
@@ -497,33 +522,45 @@ impl Task for HistoryWriteJob {
     type JsValue = HistoryWriteResult;
 
     fn compute(&mut self) -> Result<HistoryWriteResult> {
+        let failure = |error| -> Result<HistoryWriteResult> {
+            Ok(HistoryWriteResult {
+                error: Some(error),
+                bytes: None,
+                ends: None,
+            })
+        };
         let target = history_path(&self.root, &self.session_id);
-        let bytes = match transcript_bytes(&self.messages_json) {
-            Ok(bytes) => bytes,
-            Err(error) => return Ok(HistoryWriteResult { error: Some(error) }),
+        let (bytes, ends) = match transcript_bytes(&self.messages_json) {
+            Ok(parsed) => parsed,
+            Err(error) => return failure(error),
         };
         let (existing, target_exists) = match File::open(&target) {
             Ok(mut file) => {
                 let mut value = Vec::new();
                 if let Err(error) = file.read_to_end(&mut value) {
-                    return Ok(HistoryWriteResult {
-                        error: Some(
-                            io_write_error(error, "read", None, None)
-                                .reported("atomic_write", &target),
-                        ),
-                    });
+                    return failure(
+                        io_write_error(error, "read", None, None).reported("atomic_write", &target),
+                    );
                 }
                 (value, true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), false),
             Err(error) => {
-                return Ok(HistoryWriteResult {
-                    error: Some(
-                        io_write_error(error, "open", Some(&target), None)
-                            .reported("atomic_write", &target),
-                    ),
-                })
+                return failure(
+                    io_write_error(error, "open", Some(&target), None)
+                        .reported("atomic_write", &target),
+                )
             }
+        };
+        let written = || HistoryWriteResult {
+            error: None,
+            bytes: Some(bytes.len() as f64),
+            ends: Some(
+                ends[ends.len().saturating_sub(64)..]
+                    .iter()
+                    .map(|end| *end as f64)
+                    .collect(),
+            ),
         };
         // A new or empty target has no shared durable prefix. Appending there
         // could expose a partially-created transcript, so use the atomic rewrite.
@@ -540,33 +577,26 @@ impl Task for HistoryWriteJob {
             let mut file = match options.open(&target) {
                 Ok(file) => file,
                 Err(error) => {
-                    return Ok(HistoryWriteResult {
-                        error: Some(
-                            io_write_error(error, "open", Some(&target), None)
-                                .reported("atomic_write", &target),
-                        ),
-                    })
+                    return failure(
+                        io_write_error(error, "open", Some(&target), None)
+                            .reported("atomic_write", &target),
+                    )
                 }
             };
             if !suffix.is_empty() {
                 if let Err(error) = file.write_all(suffix) {
-                    return Ok(HistoryWriteResult {
-                        error: Some(
-                            io_write_error(error, "write", None, None)
-                                .reported("atomic_write", &target),
-                        ),
-                    });
+                    return failure(
+                        io_write_error(error, "write", None, None)
+                            .reported("atomic_write", &target),
+                    );
                 }
             }
             if let Err(error) = file.sync_all() {
-                return Ok(HistoryWriteResult {
-                    error: Some(
-                        io_write_error(error, "fsync", None, None)
-                            .reported("atomic_write", &target),
-                    ),
-                });
+                return failure(
+                    io_write_error(error, "fsync", None, None).reported("atomic_write", &target),
+                );
             }
-            return Ok(HistoryWriteResult { error: None });
+            return Ok(written());
         }
         match state_file::write_bytes_atomic_traced(
             &target,
@@ -574,14 +604,144 @@ impl Task for HistoryWriteJob {
             state_file::FILE_MODE,
             state_file::DIR_MODE,
         ) {
-            Ok(()) => Ok(HistoryWriteResult { error: None }),
-            Err(failure) => Ok(HistoryWriteResult {
-                error: Some(atomic_failure_error(failure, &target)),
-            }),
+            Ok(()) => Ok(written()),
+            Err(failure_error) => failure(atomic_failure_error(failure_error, &target)),
         }
     }
 
     fn resolve(&mut self, _: Env, output: HistoryWriteResult) -> Result<HistoryWriteResult> {
+        Ok(output)
+    }
+}
+
+/// 尾部增量写：宿主已用恒等前缀比较算出共享前缀，这里只做字节级复核
+/// （expected_bytes 必须等于文件现状）后追加尾巴；替换现有尾部时回退原子写。
+/// 复核失败不报错——回 appended=false 让宿主整份重发，一次自愈。
+pub struct HistoryAppendJob {
+    root: PathBuf,
+    session_id: String,
+    tail_json: String,
+    keep_bytes: u64,
+    expected_bytes: u64,
+}
+
+impl Task for HistoryAppendJob {
+    type Output = HistoryAppendResult;
+    type JsValue = HistoryAppendResult;
+
+    fn compute(&mut self) -> Result<HistoryAppendResult> {
+        let failure = |error| -> Result<HistoryAppendResult> {
+            Ok(HistoryAppendResult {
+                error: Some(error),
+                appended: false,
+                bytes: None,
+                ends: None,
+            })
+        };
+        let refused = || -> Result<HistoryAppendResult> {
+            Ok(HistoryAppendResult {
+                error: None,
+                appended: false,
+                bytes: None,
+                ends: None,
+            })
+        };
+        let target = history_path(&self.root, &self.session_id);
+        let (tail, ends) = match transcript_bytes(&self.tail_json) {
+            Ok(parsed) => parsed,
+            Err(error) => return failure(error),
+        };
+        let appended = |bytes: u64, ends: Vec<u64>| -> Result<HistoryAppendResult> {
+            Ok(HistoryAppendResult {
+                error: None,
+                appended: true,
+                bytes: Some(bytes as f64),
+                ends: Some(ends.iter().map(|end| *end as f64).collect()),
+            })
+        };
+        let absolute_ends: Vec<u64> = ends.iter().map(|end| self.keep_bytes + end).collect();
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(state_file::FILE_MODE);
+        }
+        let mut file = match options.open(&target) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // 还没有转写文件：只有零起点的尾部可以按原子写新建，
+                // 与整份写对新文件的策略一致。
+                if self.expected_bytes != 0 || self.keep_bytes != 0 {
+                    return refused();
+                }
+                return match state_file::write_bytes_atomic_traced(
+                    &target,
+                    &tail,
+                    state_file::FILE_MODE,
+                    state_file::DIR_MODE,
+                ) {
+                    Ok(()) => appended(tail.len() as u64, absolute_ends),
+                    Err(failure_error) => failure(atomic_failure_error(failure_error, &target)),
+                };
+            }
+            Err(error) => {
+                return failure(
+                    io_write_error(error, "open", Some(&target), None)
+                        .reported("atomic_write", &target),
+                )
+            }
+        };
+        let len = match file.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                return failure(
+                    io_write_error(error, "stat", Some(&target), None)
+                        .reported("atomic_write", &target),
+                )
+            }
+        };
+        if len != self.expected_bytes || self.keep_bytes > len {
+            return refused();
+        }
+        if self.keep_bytes < len {
+            // Clone extents and replace the tail in the private sibling, then
+            // publish by rename. A filesystem without clone support falls
+            // back to the existing full atomic snapshot.
+            return match state_file::replace_tail_cow(
+                &file,
+                &target,
+                self.expected_bytes,
+                self.keep_bytes,
+                &tail,
+            ) {
+                Ok(true) => appended(self.keep_bytes + tail.len() as u64, absolute_ends),
+                Ok(false) => refused(),
+                Err(error) => failure(atomic_failure_error(error, &target)),
+            };
+        }
+        if let Err(error) = file.seek(SeekFrom::Start(self.keep_bytes)) {
+            return failure(
+                io_write_error(error, "seek", Some(&target), None)
+                    .reported("atomic_write", &target),
+            );
+        }
+        if !tail.is_empty() {
+            if let Err(error) = file.write_all(&tail) {
+                return failure(
+                    io_write_error(error, "write", None, None).reported("atomic_write", &target),
+                );
+            }
+        }
+        if let Err(error) = file.sync_all() {
+            return failure(
+                io_write_error(error, "fsync", None, None).reported("atomic_write", &target),
+            );
+        }
+        appended(self.keep_bytes + tail.len() as u64, absolute_ends)
+    }
+
+    fn resolve(&mut self, _: Env, output: HistoryAppendResult) -> Result<HistoryAppendResult> {
         Ok(output)
     }
 }
@@ -1306,6 +1466,25 @@ impl RustChatHistoryRepository {
             session_id,
             messages_json,
             can_append: self.can_append,
+        })
+    }
+
+    /// 尾部增量写：宿主把恒等前缀比较的结果（尾巴 JSON + 字节账本）交给
+    /// worker 一次完成 复核→截断→追加→fsync；错位回 appended=false。
+    #[napi]
+    pub fn append_async(
+        &self,
+        session_id: String,
+        tail_json: String,
+        keep_bytes: f64,
+        expected_bytes: f64,
+    ) -> AsyncTask<HistoryAppendJob> {
+        AsyncTask::new(HistoryAppendJob {
+            root: self.root.clone(),
+            session_id,
+            tail_json,
+            keep_bytes: keep_bytes as u64,
+            expected_bytes: expected_bytes as u64,
         })
     }
 

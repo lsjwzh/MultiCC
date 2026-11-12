@@ -8,14 +8,15 @@
 //   1. 宿主端口（src/routes/subagent-defaults-host.js）：前门回调时读到的会话表投影、
 //      provider 事实、默认值落盘（含进程内对象身份）与逐会话 PATCH 预览/执行。
 //      规则、校验、计数与错误映射都不在这里，改由 Rust 集成测试覆盖。
-//   2. providers.js 接线：provider-defaults.json 的落盘、GET /api/providers 的
-//      defaults.subagent、PUT /api/provider-defaults 保留该键、加载时归一化。
+//   2. providers.js 接线：provider-defaults.json 的落盘、catalog 事实里的
+//      defaults.subagent、defaultsPersist 保留该键、加载时归一化。
 //   3. createSessionRecord 的缺省应用：省略 → 默认；显式 null/''/{} → 不要；
 //      默认失效（provider 被删、codex 没有主线）→ 静默无子任务，绝不阻断创建。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { mountSubagentDefaultsHostRoute, HOST_PATH } = require('../src/routes/subagent-defaults-host');
+const { HOST_PATH: PROVIDERS_HOST_PATH } = require('../src/routes/providers-host');
 const { createProviderRoutes } = require('../src/routes/providers');
 const { createSessionRecordFactory } = require('../src/session/create-record');
 const { isResidentSession } = require('../src/cli/cli-capability');
@@ -287,6 +288,8 @@ function providerHarness(options = {}) {
     createProvider: () => ({}),
     updateProvider: () => {},
     deleteProvider: () => true,
+    probeRelayModels: async () => ({ tested: [], accepted: [] }),
+    claudeProbeRouteEnv: () => null,
   };
   const providerRouterRuntime = {
     getProviderSummary: (appType, id) => (id ? { id, appType: appType || 'claude', name: id } : null),
@@ -325,7 +328,6 @@ function providerHarness(options = {}) {
     isLocalRequest: () => true,
   });
   const app = createApp();
-  routes.mountCatalogRoutes(app);
   routes.mountManagementRoutes(app);
   return { app, routes, providerDefaults: routes.providerDefaults, writes, applied, sessions };
 }
@@ -336,7 +338,7 @@ test('a never-used feature keeps the exact legacy defaults shape; persisting add
     sessions: [claudeSession('a')],
   });
   // No key yet: response shapes stay exactly as before this feature.
-  let response = await invoke(harness.app, 'GET', '/api/providers');
+  let response = await invoke(harness.app, 'POST', PROVIDERS_HOST_PATH, { body: { op: 'catalog' } });
   assert.deepEqual(response.body.defaults, { claude: 'claude-one', codex: null });
   assert.equal(Object.prototype.hasOwnProperty.call(response.body.defaults, 'subagent'), false);
 
@@ -350,9 +352,9 @@ test('a never-used feature keeps the exact legacy defaults shape; persisting add
     value: { claude: 'claude-one', codex: null, subagent: { claude: CLAUDE_ROUTE, codex: null } },
   }]);
 
-  response = await invoke(harness.app, 'GET', '/api/provider-defaults');
-  assert.deepEqual(response.body, { claude: 'claude-one', codex: null, subagent: { claude: CLAUDE_ROUTE, codex: null } });
-  response = await invoke(harness.app, 'GET', '/api/providers');
+  response = await invoke(harness.app, 'POST', PROVIDERS_HOST_PATH, { body: { op: 'defaultsGet' } });
+  assert.deepEqual(response.body, { ok: true, defaults: { claude: 'claude-one', codex: null, subagent: { claude: CLAUDE_ROUTE, codex: null } } });
+  response = await invoke(harness.app, 'POST', PROVIDERS_HOST_PATH, { body: { op: 'catalog' } });
   assert.deepEqual(response.body.defaults.subagent, { claude: CLAUDE_ROUTE, codex: null });
   response = await invoke(harness.app, 'POST', HOST_PATH, { body: { op: 'state' } });
   assert.deepEqual(response.body.subagent, { claude: CLAUDE_ROUTE, codex: null });
@@ -364,8 +366,11 @@ test('a never-used feature keeps the exact legacy defaults shape; persisting add
   assert.deepEqual(response.body, { ok: true, status: 200, deferred: false });
   assert.deepEqual(harness.applied, [{ sessionId: 'a', body: { subagent: CLAUDE_ROUTE, subagentInherited: true } }]);
 
-  // PUT /api/provider-defaults keeps the key intact.
-  response = await invoke(harness.app, 'PUT', '/api/provider-defaults', { body: { claude: '' } });
+  // Persisting the main defaults keeps the subagent key intact. The front door
+  // normalizes the values before it calls `defaultsPersist`; Node only assigns.
+  response = await invoke(harness.app, 'POST', PROVIDERS_HOST_PATH, {
+    body: { op: 'defaultsPersist', next: { claude: null } },
+  });
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body.defaults, { claude: null, codex: null, subagent: { claude: CLAUDE_ROUTE, codex: null } });
   assert.deepEqual(harness.writes.at(-1).value.subagent, { claude: CLAUDE_ROUTE, codex: null });

@@ -238,13 +238,33 @@ struct PendingAppend {
     messages: Value,
     event: Value,
     after: Value,
+    /// 队首写步骤与已提交数组的共享前缀（store_pending 时由恒等比较得出）；
+    /// None 表示该笔需要整份重写。
+    base: Option<PendingBase>,
 }
+#[derive(Clone, Copy)]
+struct PendingBase {
+    keep: usize,
+    keep_bytes: u64,
+}
+/// 已提交转写的字节账本：消息条数、文件总字节、最后 64 行的绝对行尾偏移。
+/// 只由 commit_append（写盘确认后）更新；任何旁路写/失效都把它清掉，
+/// 下一次写退化为整份重写后自愈。
+#[derive(Clone)]
+struct CommittedState {
+    len: usize,
+    bytes: u64,
+    ends: Vec<u64>,
+}
+/// 尾部增量账本窗口：截断重写永远发生在末尾的 interim/dedup 区。
+const COMMITTED_TAIL_WINDOW: usize = 64;
 #[napi]
 pub struct RustChatHistory {
     values: Values,
     cache: RefCell<HashMap<JsString, Value>>,
     missing_ids: RefCell<HashSet<JsString>>,
     pending_appends: RefCell<HashMap<u64, PendingAppend>>,
+    committed: RefCell<HashMap<JsString, CommittedState>>,
     next_append_id: Cell<u64>,
 }
 struct History<'a> {
@@ -378,6 +398,8 @@ impl<'a> History<'a> {
         let snapshot = slice(messages)?;
         self.repository(c"write", &[session, snapshot])?;
         self.owner.missing_ids.borrow_mut().remove(&id);
+        // 同步写不产字节回执：账本失效，下一笔异步写整份重写后重建。
+        self.owner.committed.borrow_mut().remove(&id);
         self.set_cache(id, snapshot)?;
         let payload = object(self.anchor, &[(c"sessionId", session)])?;
         payload.spread_from(event)?;
@@ -502,6 +524,65 @@ impl<'a> History<'a> {
         self.persist(session, messages, event, after)?;
         Ok(result)
     }
+    /// 与已提交数组做恒等前缀比较，只把尾巴留给写步骤序列化。
+    /// 返回 (尾部 JSON 数组文本, base, expected_bytes)；账本缺失、窗口覆盖
+    /// 不到截断点、或没有尾巴时都返回 None（调用方退化为整份快照）。
+    fn tail_plan(
+        &self,
+        session_key: &JsString,
+        messages: L<'a>,
+    ) -> Result<Option<(L<'a>, PendingBase, u64)>> {
+        let state = self.owner.committed.borrow().get(session_key).cloned();
+        let Some(state) = state else {
+            return Ok(None);
+        };
+        let cached = self.owner.cache.borrow().get(session_key).cloned();
+        let Some(cached) = cached else {
+            return Ok(None);
+        };
+        let committed = self.owner.values.read(self.env, self.anchor, &cached)?;
+        let committed_len = length(committed)?;
+        if committed_len != state.len || state.ends.len() > state.len {
+            return Ok(None);
+        }
+        let total = length(messages)?;
+        let mut keep = 0usize;
+        let limit = committed_len.min(total);
+        while keep < limit
+            && committed
+                .element(keep as u32)?
+                .equals(messages.element(keep as u32)?)?
+        {
+            keep += 1;
+        }
+        if keep == total {
+            return Ok(None);
+        }
+        // 第 keep 行（0-indexed）的起始字节：keep=0 是整份重写，其余必须在
+        // 账本窗口内，否则字节偏移无从谈起。
+        let keep_bytes = if keep == 0 {
+            0
+        } else {
+            let start = state.len - state.ends.len();
+            if keep > state.len || keep - 1 < start {
+                return Ok(None);
+            }
+            state.ends[keep - 1 - start]
+        };
+        let tail = array(self.anchor)?;
+        for index in keep..total {
+            push(tail, messages.element(index as u32)?)?;
+        }
+        let tail_json = stringify(tail)?
+            .string()?
+            .ok_or_else(|| Error::from_reason("history tail serialization is not a string"))?
+            .to_string_lossy();
+        Ok(Some((
+            text(self.anchor, &tail_json)?,
+            PendingBase { keep, keep_bytes },
+            state.bytes,
+        )))
+    }
     fn store_pending(
         &self,
         session: L<'a>,
@@ -509,11 +590,38 @@ impl<'a> History<'a> {
         event: L<'a>,
         after: L<'a>,
     ) -> Result<L<'a>> {
-        let messages_json = stringify(messages)?
-            .string()?
-            .ok_or_else(|| Error::from_reason("history snapshot serialization is not a string"))?
-            .to_string_lossy();
         let session = string(session)?;
+        let session_key = key(session)?;
+        let tail = self.tail_plan(&session_key, messages)?;
+        let (write_payload, base) = match &tail {
+            Some((tail_json, base, expected_bytes)) => (
+                object(
+                    self.anchor,
+                    &[
+                        (c"tail", *tail_json),
+                        (c"keepBytes", number(self.anchor, base.keep_bytes as f64)?),
+                        (
+                            c"expectedBytes",
+                            number(self.anchor, *expected_bytes as f64)?,
+                        ),
+                        (c"keepLines", number(self.anchor, base.keep as f64)?),
+                    ],
+                )?,
+                Some(*base),
+            ),
+            None => (
+                text(
+                    self.anchor,
+                    &stringify(messages)?
+                        .string()?
+                        .ok_or_else(|| {
+                            Error::from_reason("history snapshot serialization is not a string")
+                        })?
+                        .to_string_lossy(),
+                )?,
+                None,
+            ),
+        };
         let payload = object(self.anchor, &[(c"sessionId", session)])?;
         payload.spread_from(event)?;
         let event = payload;
@@ -531,21 +639,20 @@ impl<'a> History<'a> {
                 messages: self.owner.values.capture(self.env, messages)?,
                 event: self.owner.values.capture(self.env, event)?,
                 after: self.owner.values.capture(self.env, after)?,
+                base,
             },
         );
         object(
             self.anchor,
             &[
                 (c"operationId", number(self.anchor, next as f64)?),
-                (c"messagesJson", text(self.anchor, &messages_json)?),
+                (c"payload", write_payload),
             ],
         )
     }
     fn prepare_append(&self, session: L<'a>, value: L<'a>, after: L<'a>) -> Result<L<'a>> {
         let (messages, _result, event) = self.append_values(session, value)?;
-        let prepared = self.store_pending(session, messages, event, after)?;
-        prepared.set(c"messages", clone_json(messages)?)?;
-        Ok(prepared)
+        self.store_pending(session, messages, event, after)
     }
     /// `ensurePersistedIds` split: the caller writes `messagesJson` durably and
     /// then commits, so the write keeps the queue's order.
@@ -588,7 +695,81 @@ impl<'a> History<'a> {
         prepared.set(c"result", result)?;
         Ok(prepared)
     }
-    fn commit_append(&self, operation_id: L<'a>) -> Result<L<'a>> {
+    /// 写盘确认后登记字节账本：base 前缀行的旧偏移 + 新行偏移合并，窗口之外
+    /// 的丢弃。meta 缺失/畸形时保守失效——下一次写退化为整份重写后自愈。
+    fn record_committed(
+        &self,
+        session_key: &JsString,
+        messages: L<'a>,
+        base: Option<PendingBase>,
+        meta: L<'a>,
+    ) {
+        let recorded = (|| -> Result<Option<CommittedState>> {
+            if meta.kind()? != sys::ValueType::napi_object {
+                return Ok(None);
+            }
+            let bytes = meta.optional(c"bytes")?.explicit_number()?;
+            let ends_value = meta.optional(c"ends")?;
+            if !(bytes.is_finite() && bytes >= 0.0) || !ends_value.is_array()? {
+                return Ok(None);
+            }
+            let mut ends: Vec<u64> = Vec::new();
+            for index in 0..length(ends_value)? {
+                let end = ends_value.element(index as u32)?.number()?;
+                if !(end.is_finite() && end >= 0.0) {
+                    return Ok(None);
+                }
+                ends.push(end as u64);
+            }
+            let len = length(messages)?;
+            // full=true（整份重写，含 needsFull 触发的整份重发）：回执的行尾
+            // 覆盖全文，直接替换窗口。full=false（尾部增量）：回执只有新行的
+            // 偏移，与旧窗口里 base 前缀行的偏移拼接，保住截断点历史。
+            let full = meta.optional(c"full")?.truthy().unwrap_or(false);
+            let mut merged = match base {
+                Some(base) if !full => {
+                    let mut kept: Vec<u64> = Vec::new();
+                    let old = self.owner.committed.borrow().get(session_key).cloned();
+                    if let Some(old) = old {
+                        let start = old.len - old.ends.len();
+                        for (index, end) in old.ends.iter().enumerate() {
+                            if start + index < base.keep {
+                                kept.push(*end);
+                            }
+                        }
+                    }
+                    kept.extend(ends);
+                    kept
+                }
+                // 整份重写（或无 base 的整份写）：回执行尾覆盖全文，直接替换。
+                _ => ends,
+            };
+            if merged.len() > COMMITTED_TAIL_WINDOW {
+                merged.drain(..merged.len() - COMMITTED_TAIL_WINDOW);
+            }
+            // 窗口不可能比行数多；畸形回执宁可让账本失效，也不能留错位状态。
+            if merged.len() > len {
+                return Ok(None);
+            }
+            Ok(Some(CommittedState {
+                len,
+                bytes: bytes as u64,
+                ends: merged,
+            }))
+        })();
+        match recorded {
+            Ok(Some(state)) => {
+                self.owner
+                    .committed
+                    .borrow_mut()
+                    .insert(session_key.clone(), state);
+            }
+            _ => {
+                self.owner.committed.borrow_mut().remove(session_key);
+            }
+        }
+    }
+    fn commit_append(&self, operation_id: L<'a>, meta: L<'a>) -> Result<L<'a>> {
         let id = operation_id.number()? as u64;
         let pending = self.owner.pending_appends.borrow_mut().remove(&id);
         let Some(pending) = pending else {
@@ -622,15 +803,37 @@ impl<'a> History<'a> {
             }
         };
         self.owner.missing_ids.borrow_mut().remove(&session_key);
-        if let Err(error) = self.set_cache(session_key, messages) {
+        if let Err(error) = self.set_cache(session_key.clone(), messages) {
             self.owner.pending_appends.borrow_mut().insert(id, pending);
             return Err(error);
         }
+        self.record_committed(&session_key, messages, pending.base, meta);
         // The durable write and cache publication are already complete. A
         // notification adapter failure must not turn a committed append into a
         // false verdict that makes the caller write the same row again.
         let _ = self.emit(event, after);
         boolean(self.anchor, true)
+    }
+    /// needsFull 回退：尾部写的 expected_bytes 与文件对不上时，宿主拿整份
+    /// 快照重写一次；pending 条目保持暂存，仍由 commitAppend/discardAppend 结清。
+    fn resend_pending(&self, operation_id: L<'a>) -> Result<L<'a>> {
+        let id = operation_id.number()? as u64;
+        let pending = self.owner.pending_appends.borrow().get(&id).cloned();
+        let Some(pending) = pending else {
+            return Err(Error::from_reason("history append is no longer pending"));
+        };
+        let messages = self
+            .owner
+            .values
+            .read(self.env, self.anchor, &pending.messages)?;
+        let messages_json = stringify(messages)?
+            .string()?
+            .ok_or_else(|| Error::from_reason("history snapshot serialization is not a string"))?
+            .to_string_lossy();
+        object(
+            self.anchor,
+            &[(c"messagesJson", text(self.anchor, &messages_json)?)],
+        )
     }
     fn discard_append(&self, operation_id: L<'a>) -> Result<()> {
         let id = operation_id.number()? as u64;
@@ -927,6 +1130,7 @@ impl<'a> History<'a> {
             "invalidate" => {
                 let cache_key = key(session)?;
                 self.owner.cache.borrow_mut().remove(&cache_key);
+                self.owner.committed.borrow_mut().remove(&cache_key);
                 let missing_key = key(session)?;
                 self.owner.missing_ids.borrow_mut().remove(&missing_key);
                 Ok(undefined)
@@ -939,6 +1143,7 @@ impl<'a> History<'a> {
                 if missing {
                     self.repository(c"write", &[session, messages])?;
                     self.owner.missing_ids.borrow_mut().remove(&id);
+                    self.owner.committed.borrow_mut().remove(&id);
                 }
                 Ok(undefined)
             }
@@ -958,6 +1163,7 @@ impl<'a> History<'a> {
                 let deleted = self.repository(c"deleteSession", &[session])?;
                 let cache_key = key(session)?;
                 self.owner.cache.borrow_mut().remove(&cache_key);
+                self.owner.committed.borrow_mut().remove(&cache_key);
                 self.emit(
                     object(
                         self.anchor,
@@ -1037,7 +1243,8 @@ impl<'a> History<'a> {
                 };
                 self.prepare_append(session, value, after)
             }
-            "commitAppend" => self.commit_append(session),
+            "commitAppend" => self.commit_append(session, value),
+            "resendPending" => self.resend_pending(session),
             "preparePersist" => self.prepare_persist(session),
             "prepareInterim" => {
                 let opts = args.element(2)?;
@@ -1090,6 +1297,7 @@ impl RustChatHistory {
             cache: RefCell::default(),
             missing_ids: RefCell::default(),
             pending_appends: RefCell::default(),
+            committed: RefCell::default(),
             next_append_id: Cell::new(0),
         })
     }

@@ -362,6 +362,43 @@
     return { code: verdict.code, reason: `${verdict.reason} —— 换个 CLI 或移除这一行` };
   }
 
+  // 池子 / 预设里引用了「已经被删掉的供应商」的那些行。三处共用：保存预设、
+  // 预设列表的失效标记、套用被拦时的提示。
+  //
+  // 两类行不算：
+  //   · 原生线路（OpenCode 原生 / 厂商原生）没有 MultiCC 供应商记录，本来就不在
+  //     目录里，删除线上一行「供应商」是没意义的；
+  //   · 车道目录还没取到（或取失败）时不判 —— 拿不到目录不等于线路被删，宁可
+  //     漏报也别把整池标红。目录取回来之后调用方重画一次即可。
+  // 返回值每项 { providerId, cli, label }，label 能直接摆进提示里：行上存过
+  // 名字就用名字，否则用 id 前 8 位 + 车道（如 `ff06af1b（claude-exp）`）。
+  function missingProviderLines(rows, catalogs) {
+    const out = [];
+    const seen = new Set();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (!row) continue;
+      const providerId = clean(row.providerId);
+      const cli = clean(row.cli);
+      if (!providerId || !cli || isNativeLine(providerId)) continue;
+      const catalog = catalogs && typeof catalogs.get === 'function' ? catalogs.get(cli) : null;
+      if (!catalog) continue;
+      const providers = Array.isArray(catalog)
+        ? catalog : (Array.isArray(catalog.providers) ? catalog.providers : []);
+      const found = providers.some(item => item && String(item.id) === providerId
+        && (!Array.isArray(item.compatibleClis) || item.compatibleClis.includes(cli)));
+      if (found) continue;
+      const key = `${cli}\n${providerId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const name = clean(row.name);
+      out.push(Object.freeze({
+        providerId, cli,
+        label: name ? `${name}（${cli}）` : `${providerId.slice(0, 8)}（${cli}）`,
+      }));
+    }
+    return out;
+  }
+
   // 能把某条线路跑起来的所有 CLI，附「能不能跑」和一句短理由 —— 行上那颗 CLI
   // 下拉置灰不兼容的选项，当前不可用的 CLI 仍保留并说明原因。
   function cliChoicesForLine(line, label, clis) {
@@ -2422,11 +2459,26 @@
       renderPresets();
     }
 
+    // 「这份预设里有几条线路的供应商已经不见了」。目录没取到的车道不判（见
+    // missingProviderLines），所以这里只是读缓存、不发请求 —— 渲染不能反过来
+    // 触发加载（同 refreshPicker 的规矩），加载由 warmPresetCatalogs 在打开面板
+    // 和预设同步回来之后做。
+    function presetMissingCount(item) {
+      return missingProviderLines(item && item.candidates, catalogs).length;
+    }
+
+    function presetMissingSuffix(count) {
+      return count > 0
+        ? tt('runConfigPresetMissingBadge', '（{count} 条线路已删除）', { count })
+        : '';
+    }
+
     function renderPresets() {
       const presets = readPresets();
       presetSelect.replaceChildren(option(doc, '', presets.length
         ? tt('autoEditorPresetPlaceholder', '套用预设…') : tt('autoEditorPresetEmpty', '还没有预设')),
-      ...presets.map(item => option(doc, item.id, item.name || tt('runConfigPresetRecent', '最近用过'))));
+      ...presets.map(item => option(doc, item.id,
+        (item.name || tt('runConfigPresetRecent', '最近用过')) + presetMissingSuffix(presetMissingCount(item)))));
       if (!presets.some(item => item.id === activePresetId)) activePresetId = '';
       presetSelect.value = activePresetId;
       presetSelect.disabled = !presets.length;
@@ -2434,14 +2486,41 @@
       presetChips.replaceChildren(...presets.map(item => {
         const chip = el(doc, 'span', 'rc-preset-chip');
         const label = item.name || tt('runConfigPresetRecent', '最近用过');
+        const gone = presetMissingCount(item);
         const remove = el(doc, 'button', 'rc-preset-chip-x', '✕');
         remove.type = 'button';
         remove.title = remove.ariaLabel = `${tt('autoEditorPresetDelete', '删除预设')}：${label}`;
         remove.onclick = () => deletePreset(item.id);
-        chip.append(el(doc, 'span', null, label), remove);
+        const text = el(doc, 'span', null, label + presetMissingSuffix(gone));
+        if (gone > 0) {
+          text.classList.add('is-missing');
+          text.title = tt('runConfigPresetMissingHint', '这份预设里有线路的供应商已被删除；套用会被拦下，先移除这些线路再存一次。');
+        }
+        chip.append(text, remove);
         return chip;
       }));
       show(presetChips, presets.length > 0);
+    }
+
+    // 预设里涉及的车道目录：打开面板 / 预设同步回来之后各补一次，补到就重画
+    // 预设列表（失效标记需要目录）。加载本身有 pending 去重；renderPresets 不
+    // 会回来调这里，所以不会转成「渲染 → 加载 → 渲染」的环。
+    function warmPresetCatalogs() {
+      const lanes = new Set();
+      for (const preset of readPresets()) {
+        for (const candidate of preset && Array.isArray(preset.candidates) ? preset.candidates : []) {
+          if (!candidate) continue;
+          const providerId = clean(candidate.providerId);
+          const cli = clean(candidate.cli) || nativeLineCli(providerId);
+          if (!cli || !providerId || isNativeLine(providerId)) continue;
+          if (catalogs.has(cli) || catalogErrors.has(cli)) continue;
+          lanes.add(cli);
+        }
+      }
+      if (!lanes.size || closed) return;
+      Promise.all([...lanes].map(cli => loadCatalog(cli).catch(() => null))).then(() => {
+        if (!closed) renderPresets();
+      });
     }
 
     function deletePreset(id) {
@@ -2485,6 +2564,8 @@
         const remote = Array.isArray(result && result.presets) ? result.presets : null;
         if (!remote || !writePresets(remote)) return;
         renderPresets();
+        // 服务端那份可能带着本机没见过的预设/车道：目录补齐后重画标记。
+        warmPresetCatalogs();
       }, () => { /* 老服务端/离线：退回本机缓存 */ });
     }
 
@@ -2502,10 +2583,44 @@
       if (open) presetName.focus();
     }
 
-    function savePreset() {
+    // 保存 / 套用前先把涉及车道的目录取回来：目录没到就没法判断某条线路是不是
+    // 已被删除。取失败就静默跳过（missingProviderLines 把「没有目录」当未知）。
+    async function warmPoolCatalogs(list) {
+      const lanes = new Set();
+      for (const row of Array.isArray(list) ? list : []) {
+        if (!row) continue;
+        const providerId = clean(row.providerId);
+        if (!providerId || isNativeLine(providerId)) continue;
+        const cli = clean(row.cli);
+        if (cli) lanes.add(cli);
+      }
+      await Promise.all([...lanes].map(cli => loadCatalog(cli).catch(() => null)));
+    }
+
+    function missingLinesText(list) {
+      return list.map(item => item.label).join('、');
+    }
+
+    let savingPreset = false;
+    async function savePreset() {
+      if (savingPreset) return;
       const built = buildAutoSelection({ rows, pick, tiering, routing: jev ? jev.read() : null,
         providers: allProviders(), maxAttempts, sticky });
       if (!built.ok) { presetStatus.textContent = built.error; return; }
+      // 悬空供应商的池子存下去就是又一份坏预设：先把线路目录补齐，拒绝保存并
+      // 一次列出所有被删的线路（原生线路不算，目录拿不到不算）。
+      savingPreset = true;
+      try {
+        const pooled = rows.filter(row => row && row.enabled !== false);
+        await warmPoolCatalogs(pooled);
+        if (closed) return;
+        const gone = missingProviderLines(pooled, catalogs);
+        if (gone.length) {
+          presetStatus.textContent = tt('runConfigPresetLinesGone',
+            '这些线路已被删除：{lines}。先从列表里移除再存为预设。', { lines: missingLinesText(gone) });
+          return;
+        }
+      } finally { savingPreset = false; }
       const name = presetName.value.trim();
       if (!name) { presetStatus.textContent = tt('runConfigPresetNameRequired', '请先填写预设名称。'); presetName.focus(); return; }
       const current = readPresets();
@@ -2699,14 +2814,48 @@
         name: '', enabled: true,
       }));
       const available = new Set(availableClis().filter(item => item.ok).map(item => item.cli));
-      for (const cli of new Set(nextRows.map(row => row.cli))) {
-        if (!available.has(canonicalChoiceCli(cli))) { presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。'); presetSelect.value = activePresetId; return; }
-        if (nextRows.some(row => row.cli === cli && !isNativeLine(row.providerId))) {
-          try { await loadCatalog(cli); } catch (_) { presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。'); presetSelect.value = activePresetId; return; }
+      // 一次列出所有失效线路，而不是碰到第一条就说一句笼统的「不可用」：车道没装
+      // 的整条车道算一个，托管线路看它那条车道的目录里还有没有这个供应商，原生
+      // 线路看它自己的目录还认不认。
+      const gone = [];
+      const seenGone = new Set();
+      const addGone = entry => {
+        const key = `${entry.cli}\n${entry.providerId || ''}`;
+        if (seenGone.has(key)) return;
+        seenGone.add(key);
+        gone.push(entry);
+      };
+      const wantedClis = new Set();
+      for (const row of nextRows) {
+        const cli = row.cli;
+        if (!available.has(canonicalChoiceCli(cli))) {
+          addGone({ providerId: row.providerId, cli, label: `${cli}（CLI）` });
+          continue;
+        }
+        if (!isNativeLine(row.providerId)) wantedClis.add(cli);
+      }
+      for (const cli of wantedClis) {
+        try { await loadCatalog(cli); } catch (_) {
+          // 目录取不到只是「不知道」，别据此报线路被删；保持原来的笼统拦法。
+          presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。');
+          presetSelect.value = activePresetId;
+          return;
         }
       }
+      for (const entry of missingProviderLines(nextRows, catalogs)) addGone(entry);
+      for (const row of nextRows) {
+        if (isNativeLine(row.providerId) && !nativeLineAvailable(row.providerId)) {
+          addGone({ providerId: row.providerId, cli: row.cli, label: `${nativeLabelOf(row.providerId)}（${row.cli}）` });
+        }
+      }
+      if (gone.length) {
+        presetStatus.textContent = tt('runConfigPresetLinesUnavailable',
+          '预设里的这些线路已不可用：{lines}。未套用。', { lines: missingLinesText(gone) });
+        presetSelect.value = activePresetId;
+        return;
+      }
       if (nextRows.some(row => isNativeLine(row.providerId)
-        ? !nativeLineAvailable(row.providerId)
+        ? false
         : !!rowIssue(row, rowLine(row), cliLabel))) {
         presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。');
         presetSelect.value = activePresetId;
@@ -3089,6 +3238,8 @@
       // 草稿没带子 agent：这一族有默认就预填一次（用户动过下拉则不碰）。
       if (seedDraftSubagent()) renderSub(true);
       renderAuto();
+      // 预设列表的「N 条线路已删除」标记要对应车道的线路目录：补一轮再重画。
+      warmPresetCatalogs();
       renderFooter();
       warmOtherClis();
       // 自持账号 CLI（qoder/codebuddy）与 OpenCode 原生线路的模型目录是异步缓存；
@@ -3150,6 +3301,7 @@
     isNativeLine,
     lineShape,
     markGuideSeen,
+    missingProviderLines,
     nativeLineId,
     nativeLineValue,
     normalizeSubagentRoute,

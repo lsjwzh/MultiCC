@@ -147,6 +147,7 @@ function fixture(t) {
       calls.turnEnds.push(input);
       return nativeKernel.decideTurnEnd(input);
     },
+    selectQueued: input => nativeKernel.selectQueued(input),
     faultInstruction: () => nativeKernel.faultInstruction(),
   };
 
@@ -840,6 +841,7 @@ test('(i) a delayed fault retry is selectable before a staged FIFO when its time
   // The durable timer fires: the recovery injection outranks the FIFO.
   h.advance(h.record.unattended.retryAt - h.now());
   assert.equal(h.fireTimers(), 1);
+  await flush();
   assert.equal(h.record.unattended.retryAt, null, 'the consumed retry is cleared');
   const recovery = await claimNext(h, 'delayed fault continuation');
   assert.equal(recovery.payload.options.unattendedRecovery, true);
@@ -847,4 +849,125 @@ test('(i) a delayed fault retry is selectable before a staged FIFO when its time
   assert.notEqual(recovery.id, backlog.entry.id);
   await h.startClaim(recovery);
   assert.equal(await h.claimOne(), null, 'the FIFO stays staged behind the recovery turn');
+});
+
+test('provider handoff is the single fault recovery and clears an existing retry', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await h.activeTurn('previous work');
+  const ordinary = await h.scheduler.admit({ sessionId: SESSION, text: 'human backlog', source: 'operation' });
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+  h.record.unattended.retryAt = h.now() + 5000;
+  h.record.unattended.retryCategory = 'capacity';
+  h.unattended.rearmTimer(SESSION);
+  const deferred = await h.unattended.onTurnEnd(SESSION, {
+    kind: 'fault', turnId: 'provider-fault', handoffPending: true, retryScheduled: false,
+  });
+  assert.equal(deferred.code, 'handoff_pending');
+  assert.deepEqual(await pendingIds(h), [ordinary.entry.id]);
+  const handoff = await h.sessionWorkHost.admit(SESSION, '🔇switch provider and continue', {
+    taskSource: 'auto_provider_handoff', originContinue: true, idempotencyKey: 'provider-fault',
+  });
+  assert.equal(handoff.ok, true);
+  assert.equal(h.unattended.handoffAccepted(SESSION, 'provider-fault'), true);
+  assert.equal(h.record.unattended.retryAt, null);
+  const selected = await h.claimOne();
+  assert.equal(selected.id, handoff.entry.id);
+  await h.startClaim(selected);
+  h.advance(5000);
+  h.fireTimers();
+  assert.deepEqual(await pendingIds(h), [ordinary.entry.id]);
+});
+
+test('failed provider handoff admission leaves the ordinary fault recovery available', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await h.activeTurn('previous work');
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+  const deferred = await h.unattended.onTurnEnd(SESSION, {
+    kind: 'fault', turnId: 'provider-fault', handoffPending: true, retryScheduled: false,
+  });
+  assert.equal(deferred.code, 'handoff_pending');
+  const fallback = await h.unattended.onTurnEnd(SESSION, {
+    kind: 'fault', turnId: 'provider-fault', retryScheduled: false,
+  });
+  assert.equal(fallback.action, 'fault_continue');
+  const recovery = await claimNext(h, 'fault fallback after rejected handoff');
+  assert.equal(recovery.payload.options.unattendedRecovery, true);
+});
+
+test('accepted provider handoff withdraws a still-queued fault continuation', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await h.activeTurn('previous work');
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+  await h.unattended.onTurnEnd(SESSION, { kind: 'fault', turnId: 'same-fault', retryScheduled: false });
+  const old = await until(async () => {
+    const items = await h.outbox.list({ sessionId: SESSION, states: 'pending' });
+    return items.find(item => item.payload?.options?.unattendedRecovery === true) || null;
+  }, 'queued fault continuation');
+  await flush();
+  const handoff = await h.sessionWorkHost.admit(SESSION, '🔇switch provider', {
+    taskSource: 'auto_provider_handoff', originContinue: true, idempotencyKey: 'handoff-same-fault',
+  });
+  assert.equal(h.unattended.handoffAccepted(SESSION, 'same-fault'), true);
+  await until(async () => !(await pendingIds(h)).includes(old.id), 'withdraw duplicate recovery');
+  assert.deepEqual(await pendingIds(h), [handoff.entry.id]);
+});
+
+test('a provider handoff never bypasses an outstanding user question', () => {
+  const choice = nativeKernel.selectQueued({
+    state: { status: 'active', deadlineAt: 10000 }, now: 1000, hasActive: false,
+    classifyState: 'E', pendingRequestId: 'question-1',
+    items: [
+      { id: 'handoff', taskSource: 'auto_provider_handoff', workKind: 'continuation' },
+      { id: 'answer', workKind: 'answer', requestId: 'question-1' },
+    ],
+  });
+  assert.equal(choice.entryId, 'answer');
+});
+
+test('a retry after restart waits for an already persisted provider handoff', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await h.activeTurn('previous work');
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+  const handoff = await h.sessionWorkHost.admit(SESSION, '🔇switch provider', {
+    taskSource: 'auto_provider_handoff', originContinue: true, idempotencyKey: 'restart-handoff',
+  });
+  // Crash window: the queue entry landed, but the retry marker did not clear.
+  h.record.unattended.retryAt = h.now() + 10;
+  h.record.unattended.retryCategory = 'fault';
+  h.unattended.rearmTimer(SESSION);
+  h.advance(10);
+  assert.equal(h.fireTimers(), 1);
+  await flush();
+  assert.deepEqual(await pendingIds(h), [handoff.entry.id], 'no duplicate recovery is enqueued');
+  assert.equal(h.unattended.handoffAccepted(SESSION, 'restart-fault'), true);
+  assert.equal(h.record.unattended.retryAt, null);
+  assert.equal((await h.claimOne()).id, handoff.entry.id);
+});
+
+test('restart cleanup withdraws only the persisted fault continuation', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await h.activeTurn('previous work');
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+  const old = await h.sessionWorkHost.admit(SESSION, `🔇${TAG} ${nativeKernel.faultInstruction()}`, {
+    unattendedSystem: true, unattendedRecovery: true, originContinue: true,
+  });
+  const other = await h.sessionWorkHost.admit(SESSION, '🔇unrelated system result', { originContinue: true });
+  const handoff = await h.sessionWorkHost.admit(SESSION, '🔇switch provider', {
+    taskSource: 'auto_provider_handoff', originContinue: true,
+  });
+  // Entries were persisted by a previous process, so none are in the host's
+  // in-memory injection tracker.
+  assert.equal(h.unattended.handoffAccepted(SESSION, 'old-fault'), true);
+  await until(async () => !(await pendingIds(h)).includes(old.entry.id), 'withdraw persisted fault');
+  assert.deepEqual(await pendingIds(h), [other.entry.id, handoff.entry.id].sort());
 });

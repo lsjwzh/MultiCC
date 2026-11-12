@@ -119,8 +119,9 @@ const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
 const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
-const { mountScanRoutes } = require('./src/routes/scan');
+const { mountScanHistoryHostRoute } = require('./src/routes/scan-history-host');
 const { mountSystemRoutes } = require('./src/routes/system');
+const { mountSystemHostRoute } = require('./src/routes/system-host');
 const { createApkDistribution } = require('./src/apk-distribution');
 const { mountHostReadHostRoute } = require('./src/routes/host-read-host');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
@@ -1916,18 +1917,16 @@ fleetSharingRuntime = createFleetSharing({ sharesFile: MULTICC_PATHS.fleetShares
   authSecurity,
 });
 
-// Host/install metadata and APK selection share this boundary; live network
-// values are read lazily because development may select a fallback port.
-mountSystemRoutes(app, {
+// Rust info routes use Node process facts.
+mountSystemRoutes(app, { apkDistribution, iosOta });
+mountSystemHostRoute(app, {
   fs,
   path,
-  https,
   rootDir: __dirname,
   networkInterfaces: () => os.networkInterfaces(),
   getPort: () => PORT, getBindHost: () => BIND_HOST,
   authRequired: () => authSecurity.accessToken(),
   gitRun,
-  apkDistribution, iosOta,
 });
 
 // Host port for the read-only host plane: the Rust front door owns those routes.
@@ -2183,11 +2182,10 @@ const providerRoutes = createProviderRoutes({
   limitCacheStaleMs: Number(process.env.MULTICC_LIMIT_CACHE_STALE_MS) || undefined,
 });
 const { providerDefaults, validProviderId } = providerRoutes;
-providerRoutes.mountCatalogRoutes(app);
-// The model catalogs (/api/{opencode,qoder,grok,commandcode,codebuddy}/models,
-// /api/providers/:id/models, /api/codex/models[/sync]) are served by the Rust
-// front door (native/gateway/src/app/model_catalogs.rs). Node only keeps the
-// CLI spawns, provider-store facts and in-process caches behind this host port.
+// The provider CRUD/probe/reassign/relay routes (providers.rs) and model
+// catalogs (/api/{opencode,qoder,grok,commandcode,codebuddy}/models,
+// /api/providers/:id/models, /api/codex/models[/sync], model_catalogs.rs) are
+// served by the Rust front door; Node keeps only the CLI spawns and caches.
 mountModelCatalogsHostRoute(app);
 require('./src/routes/cli-key-accounts').mountCliKeyAccountRoutes(app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence });
 require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(app, {
@@ -2503,10 +2501,8 @@ sessionWorkHost = createSessionWorkHost({
   log: logger,
 });
 
-// GET /api/scan/history — debug: recent periodic-scan passes, newest first, each
-// with its per-session enqueue/skip decisions + reasons. In-memory ring only.
-//   ?limit=N   (default 20, capped at SCAN_HISTORY_MAX_PASSES)
-mountScanRoutes(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
+// Rust reads the scan ring via this host.
+mountScanHistoryHostRoute(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
 
 // ── Turn state + task attribution ───────────────────────────────────────────
 // Structured finalization facts are the sole source of chat turn state. Aux is
@@ -2644,7 +2640,7 @@ const chatTurnEngine = createChatTurnEngine({
   emitTurnOutcome,
   ensureCurrentTask,
   getTaskState,
-  setTaskState, getUnattendedState: id => unattendedHost.get(id),
+  setTaskState, getUnattendedState: id => unattendedHost.get(id), getUnattendedHost: () => unattendedHost,
   buildGatewayPrompt,
   buildDispatchContextPrompt,
   // Per-turn plan/progress layer (kind 'turn-plan'; aux/gateway excluded in the composer).

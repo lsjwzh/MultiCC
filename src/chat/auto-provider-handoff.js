@@ -21,7 +21,7 @@ function createAutoProviderHandoff(options = {}) {
     if (scheduled.size > MAX_HANDOFF_KEYS) scheduled.delete(scheduled.keys().next().value);
   }
 
-  function schedule({ sessionId, turnId, preparation, lineage } = {}) {
+  async function schedule({ sessionId, turnId, preparation, lineage } = {}) {
     const cleanSessionId = clean(sessionId);
     const cleanTurnId = clean(turnId);
     if (!cleanSessionId || !cleanTurnId || !preparation?.providerId) {
@@ -53,7 +53,10 @@ function createAutoProviderHandoff(options = {}) {
       ...(lineage?.kind === 'trigger' ? { originTrigger: true } : {}),
     };
     try {
-      inject(cleanSessionId, text, 0, metadata);
+      const admitted = await inject(cleanSessionId, text, 0, metadata);
+      if (admitted === false || admitted?.ok === false || admitted == null) {
+        throw Object.assign(new Error('handoff admission failed'), { code: admitted?.code || 'inject_failed' });
+      }
       logger.info?.('auto_provider_handoff_scheduled', {
         sessionId: cleanSessionId,
         turnId: cleanTurnId,

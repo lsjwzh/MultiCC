@@ -25,6 +25,9 @@ async function compare(root, options) {
   const observe = implementation => defaultRepoActor.run(root, 'revision-differential',
     ({ execGit }) => implementation.observeCodeRevision(root, execGit, options));
   assert.deepEqual(stable(await observe(current)), stable(await observe(legacy)));
+  // The stopped-writer capture is a single native job; prove it byte-identical
+  // against the frozen multi-step Node orchestration.
+  assert.deepEqual(stable(await current.captureCodeRevision(root)), stable(await legacy.captureCodeRevision(root)));
 }
 
 test('native observations match frozen Node across clean, staged, binary and Unicode inputs', async t => {

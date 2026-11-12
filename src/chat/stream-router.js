@@ -62,7 +62,7 @@ function createStreamRouter(legacy, sdk, appServer) {
   }
   const api = {
     ensure(name, cfg) {
-      residency.track(name, cfg.cwd);
+      residency.track(name, cfg.cwd, cfg.onWorkspaceActivity);
       const mode = cfg.streamBackend === 'app-server' || cfg.streamBackend === 'zcode-app-server' ? 'app-server'
         : cfg.sdkOptions ? 'sdk' : 'legacy';
       if (modes.has(name) && modes.get(name) !== mode) {
@@ -79,6 +79,7 @@ function createStreamRouter(legacy, sdk, appServer) {
       try {
         if (barriers.has(name)) await join(name);
         residency.assertSend(name);
+        residency.activity(name);
         used.set(name, Date.now());
         return await backend(name).send(name, ...args);
       } finally {
@@ -99,10 +100,31 @@ function createStreamRouter(legacy, sdk, appServer) {
     settle(name) {
       return join(name);
     },
-    parkWorkspace: (name, workspace) => residency.park(name, workspace),
+    parkWorkspace: (name, workspace) => {
+      const result = residency.park(name, workspace);
+      // A parked child cannot receive input and residency refused the park
+      // while background work was live, so its writer lease can go now
+      // instead of pinning the workspace for the whole hibernation. The
+      // child keeps riding group-lifetime release when it eventually exits.
+      if (result.parked === true) {
+        // The backends swallow release errors into the permit's pending
+        // release set; a failed durable release never unwinds the park.
+        try { backend(name).releaseWriterLease?.(name); } catch (_) {}
+      }
+      return result;
+    },
     claimWorkspace: async (name, workspace, opts) => {
       await join(name);
-      return residency.claim(name, workspace, opts);
+      // Re-register the writer BEFORE residency lets sends through again —
+      // a claim that cannot register its writer fails closed. An exclusive
+      // claim keeps the child parked, so no lease is taken.
+      if (opts?.exclusive !== true) backend(name).acquireWriterLease?.(name);
+      try {
+        return await residency.claim(name, workspace, opts);
+      } catch (error) {
+        try { backend(name).releaseWriterLease?.(name); } catch (_) {}
+        throw error;
+      }
     },
     // Every warm resident child this host currently holds — the pool's input.
     // Each entry is a child the backend still reports, so a name whose child was
@@ -141,6 +163,7 @@ function createStreamRouter(legacy, sdk, appServer) {
   // everywhere else the delivery stays on the normal waiting path.
   api.injectHeldTurn = (name, text, identity) => {
     const impl = backend(name).injectHeldTurn;
+    if (typeof impl === 'function') { residency.assertSend(name); residency.activity(name); }
     return typeof impl === 'function' ? impl(name, text, identity) : Promise.resolve(false);
   };
   api.heldTurn = (name, identity) => {

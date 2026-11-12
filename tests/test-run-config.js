@@ -141,6 +141,41 @@ test('rowIssue：池子里失效的老组合要留下并把原因说出来', () 
   assert.match(cred.reason, /ZCode 需要 API key/);
 });
 
+test('missingProviderLines：只报目录里确实没了的托管线路，原生线路与没取到目录的车道不算', () => {
+  const catalogs = new Map([
+    ['claude-exp', {
+      providers: [
+        { id: 'alive', compatibleClis: ['claude-exp'] },
+        // 供应商还在，但不给 claude-exp 用：跟被删了一样套不上。
+        { id: '0c33339a4b5c', compatibleClis: ['claude'] },
+      ],
+    }],
+  ]);
+  const rows = [
+    { providerId: 'alive', cli: 'claude-exp', name: '活着' },
+    { providerId: 'ff06af1b9d2e', cli: 'claude-exp' },
+    { providerId: '0c33339a4b5c', cli: 'claude-exp' },
+    { providerId: 'ff06af1b9d2e', cli: 'claude-exp' },
+    { providerId: 'opencode-native:opencode-go', cli: 'opencode' },
+    { providerId: 'grok-native:default', cli: 'grok' },
+    { providerId: 'not-loaded', cli: 'zcode' },
+  ];
+  const missing = run.missingProviderLines(rows, catalogs);
+  assert.deepEqual(missing.map(item => item.providerId), ['ff06af1b9d2e', '0c33339a4b5c']);
+  assert.deepEqual(missing.map(item => item.label),
+    ['ff06af1b（claude-exp）', '0c33339a（claude-exp）']);
+
+  // 池子行上存过名字就优先说名字；纯预设候选没有名字，退回 id 前 8 位 + 车道。
+  assert.deepEqual(
+    run.missingProviderLines([{ providerId: 'gone123456', cli: 'claude', name: '已删的线路' }],
+      new Map([['claude', { providers: [] }]])).map(item => item.label),
+    ['已删的线路（claude）'],
+  );
+  // 目录缺失（没加载/加载失败）与坏输入都不报，不能把整池误标成失效。
+  assert.deepEqual(run.missingProviderLines([{ providerId: 'x', cli: 'zcode' }], new Map()), []);
+  assert.deepEqual(run.missingProviderLines(null, catalogs), []);
+});
+
 // ── 固定一条 → PATCH ─────────────────────────────────────────────────────────
 test('buildFixedPatch：普通线路写 provider，providerSelection 归 null', () => {
   const result = run.buildFixedPatch({ cli: 'codex', providerId: 'codex-official', model: 'gpt-5.5', effort: 'high' });

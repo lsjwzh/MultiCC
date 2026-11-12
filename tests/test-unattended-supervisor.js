@@ -383,6 +383,18 @@ test('a queued supervisor continuation is withdrawn on user takeover, a started 
   }
 });
 
+test('handoff withdrawal catches a fault admission that resolves later', async () => {
+  let resolveAdmission;
+  const pending = new Promise(resolve => { resolveAdmission = resolve; });
+  const f = harness({ injectResult: pending, withdrawQueued: () => ({ ok: true }) });
+  await f.arm();
+  await f.host.onTurnEnd('s1', { kind: 'fault', turnId: 'fault-1', retryScheduled: false });
+  assert.equal(f.host.handoffAccepted('s1', 'fault-1'), true);
+  resolveAdmission({ ok: true, queued: false, entry: { id: 'late-fault' } });
+  await tick();
+  assert.deepEqual(f.calls.withdraw, [{ id: 's1', entryId: 'late-fault' }]);
+});
+
 test('resume clears pausedBy and evaluates when idle, defers when a turn is live or queued', async () => {
   const idle = harness();
   await idle.arm();
@@ -550,6 +562,7 @@ test('a fault streak backs off 0/60/120/300/600/900s and never needs a human', a
         new RegExp(`故障后将在 \\d{2}:\\d{2} 自动重试（第 ${faults} 次）$`));
       f.advance(delay);
       assert.equal(f.fireDueTimers(), 1, 'the one retry timer fires');
+      await tick();
       injects += 1;
       assert.equal(f.calls.inject.length, injects);
       assert.equal(f.calls.injectOptions.at(-1).options.unattendedRecovery, true);
@@ -581,6 +594,7 @@ test('a provider unblock hint pushes the retry past the bare backoff', async () 
   assert.equal(f.calls.inject.length, 0);
   f.advance(notBefore - f.clock());
   assert.equal(f.fireDueTimers(), 1);
+  await tick();
   assert.equal(f.calls.inject.length, 1);
 });
 
@@ -669,6 +683,7 @@ test('a turn already running when the retry timer fires wins and clears the mark
   busy = true; // a new turn started before retryAt
   f.advance(60_000);
   assert.equal(f.fireDueTimers(), 1);
+  await tick();
   assert.equal(f.calls.inject.length, before, 'the running turn owns the conversation');
   assert.equal(f.host.get('s1').retryAt, null, 'the obsolete retry is consumed');
   assert.equal(f.host.get('s1').status, STATUS.ACTIVE);
@@ -686,6 +701,7 @@ test('boot re-arms a persisted retry and fires promptly when it is already due',
   f.host.rearmTimer('s1');
   assert.equal(f.host.stats().retryTimers, 1);
   assert.equal(f.fireDueTimers(), 1, 'a past-due retry fires on the next boot tick');
+  await tick();
   assert.equal(f.calls.inject.length, 1);
   assert.equal(f.calls.injectOptions[0].options.unattendedRecovery, true);
   assert.equal(f.host.get('s1').retryAt, null);

@@ -3,6 +3,35 @@ WORKDIR /build
 COPY native ./native
 RUN cargo build --locked --release --manifest-path native/Cargo.toml
 
+# Node-free runtime: only the two Rust executables and the system CA store (rustls
+# reads it for outbound TLS). Nothing in this image provides Node; the build
+# asserts that and smoke-runs both binaries. It is a build artifact, not a
+# deployable server: multicc-gateway still spawns `node server.js` as its upstream
+# for the routes that have not moved into Rust yet (docs/gateway.md §9).
+FROM debian:bookworm-slim AS node-free-runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --home-dir /var/lib/multicc --shell /bin/false multicc
+COPY --from=rust-build /build/native/target/release/multicc-gateway /usr/local/bin/multicc-gateway
+COPY --from=rust-build /build/native/target/release/multicc-writer /usr/local/bin/multicc-writer
+# Exit codes are the binaries' own documented contract: gateway with no
+# arguments prints usage and exits 2; writer with no arguments exits 64 (EX_USAGE).
+RUN set -eu; \
+    if command -v node >/dev/null 2>&1; then echo "node-free runtime must not contain node" >&2; exit 1; fi; \
+    if [ -e /usr/bin/node ] || [ -e /usr/local/bin/node ]; then echo "node-free runtime must not contain node" >&2; exit 1; fi; \
+    multicc-gateway --version | grep -Eq '^multicc-gateway [0-9]+ [0-9]+\.[0-9]+\.[0-9]+$'; \
+    multicc-gateway --help | grep -q 'multicc-gateway serve --cwd'; \
+    code=0; multicc-gateway >/dev/null 2>&1 || code=$?; [ "$code" -eq 2 ]; \
+    code=0; multicc-writer >/dev/null 2>&1 || code=$?; [ "$code" -eq 64 ]; \
+    echo "node-free runtime smoke passed"; \
+    multicc-gateway --version
+WORKDIR /srv/multicc
+USER multicc
+# `docker run <image> --version` runs the front door; the default command only
+# prints usage because serving still needs a Node upstream (see above).
+ENTRYPOINT ["/usr/local/bin/multicc-gateway"]
+CMD ["--help"]
+
 FROM node:22-bookworm-slim AS tools
 
 # curl + tar + unzip are the only tools install.sh is allowed to need: it
@@ -43,12 +72,14 @@ COPY --from=rust-build /build/native/target/release/libmulticc_addon.so /tmp/mul
 COPY --from=rust-build /build/native/target/release/multicc-remote /tmp/multicc-remote
 COPY --from=rust-build /build/native/target/release/multicc-cdpd /tmp/multicc-cdpd
 COPY --from=rust-build /build/native/target/release/multicc-gateway /tmp/multicc-gateway
+COPY --from=rust-build /build/native/target/release/multicc-writer /tmp/multicc-writer
 RUN arch="$(uname -m)"; case "$arch" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac; \
     mkdir -p "native/prebuilt/linux-$arch" && mv /tmp/multicc-core.node "native/prebuilt/linux-$arch/multicc_core.node" && \
     cp /tmp/multicc-remote "native/prebuilt/linux-$arch/multicc-remote" && \
     cp /tmp/multicc-cdpd "native/prebuilt/linux-$arch/multicc-cdpd" && \
     cp /tmp/multicc-gateway "native/prebuilt/linux-$arch/multicc-gateway" && \
-    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd" "native/prebuilt/linux-$arch/multicc-gateway"
+    cp /tmp/multicc-writer "native/prebuilt/linux-$arch/multicc-writer" && \
+    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd" "native/prebuilt/linux-$arch/multicc-gateway" "native/prebuilt/linux-$arch/multicc-writer"
 RUN chmod +x docker/task-shell/fake-codex.js \
     && mkdir -p /var/lib/multicc \
     && chown -R node:node /opt/multicc /var/lib/multicc

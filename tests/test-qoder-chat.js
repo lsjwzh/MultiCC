@@ -121,7 +121,7 @@ async function api(method, route, body) {
 
 async function waitForServer() {
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    try { await api('GET', '/api/server-info'); return; } catch (_) {}
+    try { await api('GET', '/api/directories'); return; } catch (_) {}
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error('isolated Qoder server did not start');

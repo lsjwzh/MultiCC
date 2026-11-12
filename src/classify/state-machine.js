@@ -441,6 +441,7 @@ function createClassifyStateMachine(rawDeps) {
           turnId,
           killReason: ctx.killReason || '',
           retryScheduled: cs?._lastApiErrorDecision?.action === 'retry',
+          handoffPending: ctx.handoffPending === true,
           faultCategory: cs?._lastApiErrorDecision?.category || '',
         });
       } catch (_) {}
@@ -664,6 +665,7 @@ function createClassifyStateMachine(rawDeps) {
       // Only a turn-end verdict carries a host-side stop reason; scan-driven
       // reclassifications leave it null and fall back to the transcript.
       killReason: options.killReason || null,
+      handoffPending: options.handoffPending === true,
     };
     if (Object.prototype.hasOwnProperty.call(options, 'taskId')) {
       actionContext.taskId = options.taskId;
@@ -1516,7 +1518,8 @@ function createClassifyStateMachine(rawDeps) {
         && !!userInputHost.pending(sessionName),
       backgroundPending,
     });
-    const applyOptions = { cwd: cs?.cwd, source: 'multicc/turn-rules', killReason };
+    const applyOptions = { cwd: cs?.cwd, source: 'multicc/turn-rules', killReason, handoffPending: options.handoffPending === true };
+    if (options.handoffPending === true) applyOptions.turnId = turnId;
     // The scheduler verdict belongs to the task admitted for this turn, not to
     // the mutable task pointer that Aux may update later. An explicit null is
     // still meaningful: session-work-host then correlates against its own

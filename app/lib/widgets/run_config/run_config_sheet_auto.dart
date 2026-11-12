@@ -168,10 +168,62 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         false;
   }
 
+  /// 保存 / 套用预设前先把相关车道的线路目录取回来：目录没到就没法判断某条
+  /// 线路是不是已被删掉。取失败（forCli 返回 null）不写缓存，
+  /// [missingPresetProviderLines] 会把这条车道当「未知」跳过，不误报。
+  Future<void> _warmPresetPools(Iterable<String> lanes) async {
+    for (final lane in lanes) {
+      if (lane.trim().isEmpty || _pool.cached(lane) != null) continue;
+      await _pool.forCli(lane);
+    }
+  }
+
+  Iterable<String> _presetLanes(Iterable<RunPoolRow> rows) sync* {
+    final seen = <String>{};
+    for (final row in rows) {
+      if (seen.add(row.lane)) yield row.lane;
+    }
+  }
+
+  /// 车道 → 已取到的目录。同一家族（claude / claude-exp）退回调用方给的那份
+  /// providers，和 [_poolFor] 同一条规则；其余车道没取到就是 null（未知）。
+  Map<String, List<Map<String, dynamic>>?> _presetPools(
+    Iterable<String> lanes,
+  ) => {
+    for (final lane in lanes)
+      lane:
+          _pool.cached(lane) ??
+          (cliFamilyOf(lane) == cliFamilyOf(widget.cli.name)
+              ? widget.providers
+              : null),
+  };
+
+  Future<List<RunPresetMissingLine>> _missingPresetLines(
+    Iterable<RunPoolRow> rows,
+  ) async {
+    final lanes = _presetLanes(rows).toList();
+    await _warmPresetPools(lanes);
+    return missingPresetProviderLines(rows, _presetPools(lanes));
+  }
+
+  String _missingLineLabels(Iterable<RunPresetMissingLine> lines) =>
+      lines.map((line) => line.label).join('、');
+
   Future<void> _savePreset() async {
     final result = _autoSelectionResult();
     if (!result.ok) {
       _presetMessage(result.error ?? '先配置至少两条可用线路', error: true);
+      return;
+    }
+    // 悬空供应商的池子存下去就是又一份坏预设：先把目录补齐，拒绝保存并一次
+    // 列出所有被删的线路（原生线路不算，目录拿不到不算）。
+    final missing = await _missingPresetLines(_rows);
+    if (!mounted) return;
+    if (missing.isNotEmpty) {
+      _presetMessage(
+        '这些线路已被删除：${_missingLineLabels(missing)}。先从列表里移除再存为预设。',
+        error: true,
+      );
       return;
     }
     var typedName = '';
@@ -242,6 +294,15 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       _presetMessage(result.error ?? '先配置至少两条可用线路', error: true);
       return;
     }
+    final missing = await _missingPresetLines(_rows);
+    if (!mounted) return;
+    if (missing.isNotEmpty) {
+      _presetMessage(
+        '这些线路已被删除：${_missingLineLabels(missing)}。先从列表里移除再存为预设。',
+        error: true,
+      );
+      return;
+    }
     if (!await _confirmPreset(
       '更新预设？',
       '“$_activePresetName”会保存成当前的线路组合，旧组合不再保留。',
@@ -310,6 +371,18 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
   }
 
   Future<void> _choosePreset() async {
+    // 选之前把预设涉及的车道目录都取回来：列表里要标「N 条线路已删除」，
+    // 套用也要按同一份目录判定。拿不到目录的车道保持未知，不误标。
+    final lanes = _presetLanes(
+      _presets.expand((preset) => preset.rows),
+    ).toList();
+    await _warmPresetPools(lanes);
+    if (!mounted) return;
+    final pools = _presetPools(lanes);
+    final missingByPreset = {
+      for (final preset in _presets)
+        preset.id: missingPresetProviderLines(preset.rows, pools).length,
+    };
     final action = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
@@ -328,7 +401,11 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
                   key: Key('run-preset-${preset.id}'),
                   title: Text(preset.name),
                   subtitle: Text(
-                    '${preset.rows.length} 条线路 · ${preset.pickOrder == RunPickOrder.difficulty ? '按难度' : '按顺序'}',
+                    '${preset.rows.length} 条线路 · ${preset.pickOrder == RunPickOrder.difficulty ? '按难度' : '按顺序'}'
+                    '${(missingByPreset[preset.id] ?? 0) > 0 ? ' · ${missingByPreset[preset.id]} 条线路已删除' : ''}',
+                    style: (missingByPreset[preset.id] ?? 0) > 0
+                        ? const TextStyle(color: AppColors.warning)
+                        : null,
                   ),
                   onTap: () => Navigator.pop(sheetContext, preset.id),
                   trailing: IconButton(
@@ -385,25 +462,55 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
     if (!mounted) return;
     setState(() => _presetBusy = true);
     try {
+      // 一次列出所有失效线路，而不是碰到第一条就只说一个裸 id：车道没装的、
+      // 供应商已被删的、协议对不上的都收进来（同 Web applyPreset）。
+      final issues = <String>[];
+      final seenIssues = <String>{};
+      void addIssue(String label) {
+        if (label.isEmpty || !seenIssues.add(label)) return;
+        issues.add(label);
+      }
+
+      final missing = missingPresetProviderLines(preset.rows, pools);
+      for (final line in missing) {
+        addIssue(line.label);
+      }
       for (final row in preset.rows) {
         final cli = tryParseCli(row.lane);
         if (cli == null || !_available(cli)) {
-          _presetMessage('预设中的 ${row.lane} 车道当前不可用，未套用。', error: true);
-          return;
+          addIssue('${row.lane}（CLI）');
+          continue;
         }
-        final pool = await _pool.forCli(row.lane);
-        final matching = pool
-            ?.where((item) => item['id'] == row.providerId)
-            .firstOrNull;
         // 旧会话仍可能用 claude/codex 车道；它们不在“新建线路”的现代车道菜单里，
         // 但协议兼容时可以继续套用既有预设。
-        final native = isVendorNativeProvider(row.providerId);
-        if (!native &&
-            (matching == null ||
-                !laneServesProtocol(row.lane, providerProtocolOf(matching)))) {
-          _presetMessage('预设中的 ${row.providerId} 线路已不可用，未套用。', error: true);
-          return;
+        if (isVendorNativeProvider(row.providerId)) continue;
+        if (missing.any(
+          (line) => line.lane == row.lane && line.providerId == row.providerId,
+        )) {
+          continue;
         }
+        final matching = pools[row.lane]
+            ?.where((item) => item['id'] == row.providerId)
+            .firstOrNull;
+        if (matching == null) {
+          // 目录没取到（null）或确实没这条：都算不可用，但文案只说「不可用」，
+          // 不把它说成「已删除」—— 拿不到目录不等于线路被删。
+          final short = row.providerId.length > 8
+              ? row.providerId.substring(0, 8)
+              : row.providerId;
+          addIssue('$short（${row.lane}）');
+          continue;
+        }
+        if (!laneServesProtocol(row.lane, providerProtocolOf(matching))) {
+          addIssue('${matching['name'] ?? row.providerId}（${row.lane}）');
+        }
+      }
+      if (issues.isNotEmpty) {
+        _presetMessage(
+          '预设中的这些线路已不可用：${issues.join('、')}。未套用。',
+          error: true,
+        );
+        return;
       }
       if (!mounted) return;
       setState(() {

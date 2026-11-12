@@ -1,0 +1,17 @@
+[package]
+name = "multicc-writer-launcher"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "multicc-writer"
+path = "src/main.rs"
+
+[dependencies]
+multicc-core = { path = "../core" }
+serde_json = { version = "1", features = ["preserve_order"] }
+getrandom = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

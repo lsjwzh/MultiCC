@@ -34,6 +34,18 @@ function createTaskShellStore(file) {
   return {
     backend: 'rust',
     rule,
+    // Migration bridge: persist the stopped turn and its writer barrier in
+    // one native transaction. The admission host still owns liveness checks.
+    finalizeStoppedDelivery: input => run({ ...input, op: 'finalizeStoppedDelivery' }),
+    finalizeDelivery: input => run({ ...input, op: 'finalizeDelivery' }),
+    writerFenceActivity: input => run({ ...input, op: 'writerFenceActivity' }),
+    writerFenceSnapshot: input => run({ ...input, op: 'writerFenceSnapshot' }),
+    writerFenceRelease: input => run({ ...input, op: 'writerFenceRelease' }),
+    writerLeaseAcquire: input => run({ ...input, op: 'writerLeaseAcquire' }),
+    writerLeaseRelease: input => run({ ...input, op: 'writerLeaseRelease' }),
+    writerLeaseAnnotatePid: input => run({ ...input, op: 'writerLeaseAnnotatePid' }),
+    writerLeaseList: workspaceId => run({ op: 'writerLeaseList', workspaceId }),
+    writerLeaseAssertEmpty: workspaceId => run({ op: 'writerLeaseAssertEmpty', workspaceId }),
     get: (kind, id) => run({ op: 'get', kind, id }),
     list: kind => run({ op: 'list', kind }),
     entries: kind => run({ op: 'entries', kind }),

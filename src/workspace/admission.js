@@ -1,12 +1,14 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const exec = promisify(execFile);
 const { createTaskShellStore } = require('../task-shell/store');
 const { createWorkspaceRegistry } = require('./registry');
 const { createWriterEscalation } = require('./writer-escalation');
+const writerGroup = require('./writer-group');
 const { WORKTREE_SUBDIR } = require('../git/service');
 const { captureCodeRevision } = require('../task-routing/code-revision');
 const { isChatStateBusy } = require('../session/runtime-busy');
@@ -52,6 +54,13 @@ function createWorkspaceAdmission(deps) {
     onIntegrationPublished: deps.onIntegrationPublished,
   });
   const permits = new WeakSet(), active = new Map();
+  // The code revision each workspace's last release committed, keyed by
+  // workspace id. With every writer on the Rust fence, an undisturbed
+  // checkout between deliveries is guaranteed by the fence itself, so the
+  // previous stop-time observation IS the next delivery's start observation —
+  // no per-round rescan. Empty after a host restart; a null startCode is a
+  // supported evidence shape (first observed delivery of a workspace).
+  const lastReleasedCode = new Map();
   // Armed by a delivery the host refused, disarmed by the delivery that finally
   // gets through. The lease alone says a writer exists, not that anyone is
   // waiting on it, so this is the only evidence escalation reacts to.
@@ -259,8 +268,10 @@ function createWorkspaceAdmission(deps) {
       await deps.claimPersistent?.(descriptor.sessionId, workspace);
       await materialize(descriptor.sessionId, lease);
       materialized = true;
-      try { permit.startCode = await capture(workspace.path); }
-      catch (error) { permit.startObservationError = /^code_[a-z_]+$/.test(error.message) ? error.message : 'code_observation_failed'; }
+      // No ordinary-round rescan: the writer fence makes the last released
+      // observation this delivery's exact starting point (thin store lookup,
+      // not a filesystem scan).
+      permit.startCode = lastReleasedCode.get(workspace.id) || null;
       await require('../task-shell/role-bindings').prepareRoleContext(store, descriptor, deps);
       // This delivery got through, so nothing is blocked behind the workspace any
       // more: the next refusal arms a fresh window.
@@ -298,9 +309,64 @@ function createWorkspaceAdmission(deps) {
     const lease = registry.lease(permit.lease.workspaceId);
     if (!['reserved', 'starting', 'running'].includes(lease.state)) throw failure('workspace_lease_unavailable');
   }
+  function fenceIdentity(permit) {
+    return { sessionId: permit.sessionId, workspaceId: permit.lease.workspaceId, leaseId: permit.lease.id,
+      epoch: permit.lease.epoch, generation: permit.lease.generation };
+  }
+  function recordWriterActivity(id, writerKind) {
+    const permit = active.get(id);
+    if (!permit) {
+      if (applicable(deps.records.get(id))) throw failure('workspace_admission_required');
+      return;
+    }
+    // If the write fails, the next drain must persist the invalidation before
+    // taking another snapshot; an event callback may swallow its exception.
+    permit.fenceNeedsBump = writerKind;
+    const version = store.writerFenceActivity({ ...fenceIdentity(permit), writerKind });
+    permit.fenceNeedsBump = null;
+    return version;
+  }
+  function acquireProcessWriter(id, writerKind = 'session') {
+    const permit = active.get(id);
+    if (!permit) {
+      if (applicable(deps.records.get(id))) throw failure('workspace_admission_required');
+      return null;
+    }
+    const writer = { ...fenceIdentity(permit), writerId: randomUUID(), writerKind };
+    store.writerLeaseAcquire(writer);
+    return writer;
+  }
+  // Fill in the spawned child's pid after the fact so a later host crash can
+  // prove this writer dead. Bookkeeping only: the lease already fences the
+  // child, and a lost race against the child's own release is unremarkable.
+  function annotateWriterPid(id, writer, pid) {
+    if (!writer || !Number.isInteger(pid) || pid <= 0) return;
+    try {
+      store.writerLeaseAnnotatePid({ ...writer, pid });
+    } catch (error) {
+      if (error.code !== 'writer_lease_stale') deps.log('workspace_writer_pid_annotate_failed', { sessionId: id, code: error.code });
+    }
+  }
+  function finishProcessWriter(id, writer) {
+    if (!writer) return;
+    const permit = active.get(id);
+    try {
+      store.writerLeaseRelease(writer);
+      permit?.pendingWriterReleases?.delete(writer.writerId);
+    } catch (error) {
+      // The process has exited, but a failed durable release must pin the
+      // workspace until the same token can be retried successfully.
+      if (permit && permit.lease.id === writer.leaseId) {
+        permit.pendingWriterReleases ||= new Map();
+        permit.pendingWriterReleases.set(writer.writerId, writer);
+      }
+      deps.log('workspace_writer_lease_release_failed', { sessionId: id, code: error.code });
+    }
+  }
   function starting(id, opts, attemptId) {
     assertPermit(id, opts); const permit = active.get(id);
     if (permit) {
+      recordWriterActivity(id, 'session');
       if (attemptId && permit.evidenceBound) evidence.attempt(permit.turnId, attemptId);
       permit.attemptId = attemptId || null;
       registry.transition(permit.lease, 'starting');
@@ -342,6 +408,14 @@ function createWorkspaceAdmission(deps) {
   }
   async function drain(id, permit) {
     if (permit.draining) return permit.drainPromise || null;
+    // Two distinct domains guard this release. Process liveness is the Rust
+    // fence's own verdict: every writer (session child, resident stream, or a
+    // background descendant sharing its process group) holds a writer lease
+    // from before its first possible write until its whole group is gone, so
+    // the release transaction below aborts by itself on any writer that is
+    // still — or newly — active. Host workload claims are NOT process
+    // liveness: a registered background task or a busy stream pump vetoes the
+    // release even with no writer process left, and only the host knows.
     if (closed || active.get(id) !== permit || !permit.terminal || permit.evidencePending || isLive(id)) return null;
     permit.draining = true;
     const startedAt = Date.now();
@@ -359,27 +433,41 @@ function createWorkspaceAdmission(deps) {
         const stopped = parked ? null : await deps.closePersistent?.(id);
         if (closed || (!parked && stopped?.closed !== true) || active.get(id) !== permit || isLive(id)) return;
         const stoppedAt = Date.now();
+        for (const writer of permit.pendingWriterReleases?.values() || []) {
+          store.writerLeaseRelease(writer);
+          permit.pendingWriterReleases.delete(writer.writerId);
+        }
+        if (permit.fenceNeedsBump) recordWriterActivity(id, permit.fenceNeedsBump);
+        const writerFenceVersion = store.writerFenceSnapshot(fenceIdentity(permit));
         // A missing finalizer cannot pin a verified-stopped writer forever.
         // Leave its delivery evidence absent, just as before this batching.
-        if (permit.evidenceBound && (permit.releaseEvidence.result() || evidence.deliveryFinalized(permit.turnId))) {
-          let code = null, error = null;
+        const hasEvidence = permit.evidenceBound && (permit.releaseEvidence.result() || evidence.deliveryFinalized(permit.turnId));
+        let code = null, error = null;
+        if (hasEvidence) {
           try { code = await capture(workspace.path); }
           catch (cause) { error = /^code_[a-z_]+$/.test(cause.message) ? cause.message : 'code_observation_failed'; }
           observation = require('../repo-actor').defaultRepoActor.status(code?.operationId);
-          if (closed || active.get(id) !== permit || isLive(id)) return;
-          const result = permit.releaseEvidence.result();
-          if (result) {
-            permit.evidencePending = evidence.finalize(permit.turnId, result, { code, error });
-            try { await permit.evidencePending; }
-            finally { permit.evidencePending = null; }
-          }
-          try {
-            evidence.recordWriterBarrier({ sessionId: id, turnId: permit.turnId, workspaceId: permit.lease.workspaceId,
-              leaseId: permit.lease.id, generation: permit.lease.generation, code });
-          } catch (error) { deps.log('writer_barrier_not_recorded', { sessionId: id, code: error.code || error.message }); }
+          if (closed || active.get(id) !== permit || permit.fenceNeedsBump || isLive(id)) return;
         }
-        if (closed || active.get(id) !== permit || isLive(id)) return;
-        registry.release(permit.lease, { stopped: true, reason: permit.terminal.status || 'stopped' });
+        // Result, barrier, fence check and lease release commit together.
+        // An active or newly acquired writer lease aborts this transaction
+        // from inside SQLite; the host workload veto is rechecked alongside.
+        const committed = store.transaction(() => {
+          const result = hasEvidence ? store.finalizeStoppedDelivery({ turnId: permit.turnId, sessionId: id,
+            workspaceId: permit.lease.workspaceId, leaseId: permit.lease.id, epoch: permit.lease.epoch,
+            generation: permit.lease.generation, writerFenceVersion,
+            result: permit.releaseEvidence.result(), code, error, now: Date.now() }) : null;
+          if (closed || active.get(id) !== permit || permit.fenceNeedsBump || isLive(id)) throw failure('writer_reactivated');
+          store.writerFenceRelease({ ...fenceIdentity(permit), writerFenceVersion,
+            reason: permit.terminal.status || 'stopped', now: Date.now() });
+          return result;
+        });
+        if (committed?.barrierError) deps.log('writer_barrier_not_recorded', { sessionId: id, code: committed.barrierError });
+        // The fence guarantees nothing wrote after this observation, so it is
+        // the next delivery's startCode without a rescan. An unobserved
+        // release is an honest unknown, not a stale reuse.
+        if (code?.revision) lastReleasedCode.set(workspace.id, { revision: code.revision, head: code.head ?? null, dirty: code.dirty ?? null });
+        else lastReleasedCode.delete(workspace.id);
         active.delete(id);
         deps.log('workspace_release_completed', { sessionId: id, turnId: permit.turnId,
           terminalWaitMs: startedAt - permit.terminalAt, stopMs: stoppedAt - startedAt,
@@ -428,10 +516,38 @@ function createWorkspaceAdmission(deps) {
     const value = Number(deps.budgets?.staleUncertainMs);
     return Number.isFinite(value) && value >= 0 ? value : DEFAULT_STALE_UNCERTAIN_MS;
   }
+  // A host crash can strand registered writers whose processes died with it.
+  // Their leases would wedge the workspace forever (every release path asserts
+  // the writer table empty), so a writer whose pid AND process group are both
+  // provably gone is released here. A null pid, a live pid, or a live group
+  // keeps the pin. The uncertain-window age bound covers pid reuse — after it
+  // an "alive" answer is no longer trusted — which is exactly the fallback the
+  // uncertain lease reaper below already accepts for the workspace lease.
+  function reapDeadWriterLeases(lease, at) {
+    let record;
+    try { record = store.writerLeaseList(lease.workspaceId); }
+    catch (error) { deps.log('workspace_writer_lease_list_failed', { workspaceId: lease.workspaceId, code: error.code }); return; }
+    if (!record || record.leaseId !== lease.id) return;
+    const writers = record.writers && typeof record.writers === 'object' ? record.writers : {};
+    const age = at - Number(lease.updatedAt || lease.acquiredAt || 0);
+    for (const [writerId, writer] of Object.entries(writers)) {
+      if (writer?.state !== 'active') continue;
+      const dead = writerPidAlive(writer.pid) === false && !writerGroup.groupAlive(writer.pid);
+      if (!dead && age < staleUncertainLimit()) continue;
+      try {
+        store.writerLeaseRelease({ leaseId: lease.id, epoch: lease.epoch, generation: lease.generation,
+          sessionId: lease.sessionId, workspaceId: lease.workspaceId, writerId, writerKind: writer.kind });
+        deps.log('workspace_writer_lease_reaped', { workspaceId: lease.workspaceId, writerId, kind: writer.kind, pid: writer.pid ?? null, ageMs: age });
+      } catch (error) {
+        deps.log('workspace_writer_lease_reap_failed', { workspaceId: lease.workspaceId, writerId, code: error.code });
+      }
+    }
+  }
   function reapStaleUncertainLeases() {
     if (closed) return;
     const at = Date.now();
     for (const lease of registry.snapshot().leases) {
+      reapDeadWriterLeases(lease, at);
       if (lease.state !== 'uncertain') continue;
       const workspace = registry.workspace(lease.workspaceId);
       if (!workspace) continue;
@@ -617,7 +733,7 @@ function createWorkspaceAdmission(deps) {
       }
     }
   }
-  return { identify, occupied, hasActiveLease, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, finalized, optionsForTurn, initialize,
+  return { identify, occupied, hasActiveLease, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, finalized, optionsForTurn, initialize, recordWriterActivity, acquireProcessWriter, finishProcessWriter, annotateWriterPid,
     noteBlockedDelivery, escalate, noticeStuckBlocked, stuckHint,
     mergeHooks: id => evidence.hooks(id), recoverEvidence: id => evidence.recover(id),
     deliveryEvidence: (id, turnId) => evidence.summary(id, turnId), verifyBaseline: (receipt, cwd) => evidence.verifyBaseline(receipt, cwd),

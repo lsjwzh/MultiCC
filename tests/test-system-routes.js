@@ -1,5 +1,15 @@
 'use strict';
 
+// 系统面测试。三层分工：
+//   1. Node 侧剩下的系统路由：APK/iOS OTA 发布资产与四组宿主修复面板
+//      （src/routes/system.js）。
+//   2. 宿主端口（src/routes/system-host.js）：/api/server-info、
+//      /api/version-check、/api/debug/codex-proxy-trace 已由 Rust 前门独占
+//      （native/gateway/src/app/system.rs；网卡排序、semver、tag 选择、DTO
+//      形状的逐字节对比在 docs/rust-migration/differential/system-scan.js），
+//      Node 只剩进程事实、git ls-remote 回退与 proxy-trace 环形缓冲。
+//   3. 挂载清单逐条列出：新增一条有权限/开面板含义的路由不应悄悄混进来。
+
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { EventEmitter } = require('node:events');
@@ -8,46 +18,12 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
-  APP_CONNECTION_PROTOCOL,
-  compareSemver,
-  ipv4Priority,
-  reachableLanAddresses,
-  selectLanAddresses,
-  selectLanAddress,
-  latestTagFromRemote,
-  resolveVersionInfo,
-  createServerInfoHandler,
   createApkInfoHandler,
   createIosOtaInfoHandler,
   mountSystemRoutes,
 } = require('../src/routes/system');
+const { mountSystemHostRoute, HOST_PATH } = require('../src/routes/system-host');
 const { createApkDistribution } = require('../src/apk-distribution');
-
-function fakeHttps(payload, failure = null) {
-  return {
-    get(url, options, callback) {
-      const request = new EventEmitter();
-      request.destroy = () => {};
-      queueMicrotask(() => {
-        if (failure) {
-          request.emit('error', failure);
-          return;
-        }
-        const response = new EventEmitter();
-        callback(response);
-        response.emit('data', JSON.stringify(payload));
-        response.emit('end');
-      });
-      return request;
-    },
-  };
-}
-
-function capture(handler, req = {}) {
-  let body;
-  handler(req, { json(value) { body = value; } });
-  return body;
-}
 
 function captureResponse(handler, req = {}) {
   let status = 200;
@@ -147,175 +123,153 @@ function captureDownload() {
   };
 }
 
-test('semver and remote tag selection preserve legacy stable-tag semantics', () => {
-  assert.equal(compareSemver('1.9.0', '1.10.0') < 0, true);
-  assert.equal(compareSemver('2.0', '2.0.0'), 0);
-  assert.equal(compareSemver('2.0.1', '2.0.0') > 0, true);
-  assert.equal(latestTagFromRemote([
-    'aaa refs/tags/v1.9.0',
-    'bbb refs/tags/v2.0.0',
-    'ccc refs/tags/v1.10.0',
-    'ddd refs/tags/not-semver',
-  ].join('\n')), 'v2.0.0');
-});
+// ── 宿主端口（system-host.js）─────────────────────────────────────────────
 
-test('server info prefers physical private LAN addresses and reads the live bind', () => {
-  let port = 3000;
-  const handler = createServerInfoHandler({
-    networkInterfaces: () => ({
-      lo0: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }],
-      utun4: [{ family: 'IPv4', internal: false, address: '100.118.172.84' }],
-      docker0: [{ family: 'IPv4', internal: false, address: '172.17.0.1' }],
-      en0: [{ family: 'IPv6', internal: false, address: '::1' }, { family: 'IPv4', internal: false, address: '192.168.1.8' }],
-      en1: [{ family: 4, internal: false, address: '10.0.0.4' }],
-    }),
-    getPort: () => port,
+function createHostApp() {
+  const routes = new Map();
+  return {
+    routes,
+    post(routePath, handler) { routes.set(`POST ${routePath}`, handler); },
+    get(routePath, handler) { routes.set(`GET ${routePath}`, handler); },
+  };
+}
+
+function mountHost(overrides = {}) {
+  const app = createHostApp();
+  const gitCalls = [];
+  const options = {
+    fs,
+    path,
+    rootDir: process.cwd(),
+    networkInterfaces: () => ({}),
+    getPort: () => 45123,
     getBindHost: () => '0.0.0.0',
-    authRequired: () => true,
-    now: () => Date.parse('2026-07-27T05:32:00.000Z'),
-    uptimeSeconds: () => 8100,
-  });
-  assert.deepEqual(capture(handler), {
-    product: 'multicc', appProtocolVersion: APP_CONNECTION_PROTOCOL,
-    ip: '192.168.1.8', port: 3000, proto: 'http', url: 'http://192.168.1.8:3000', authRequired: true,
-    bindHost: '0.0.0.0', lanAvailable: true,
-    lanAddresses: ['192.168.1.8', '10.0.0.4'],
-    lanUrls: ['http://192.168.1.8:3000', 'http://10.0.0.4:3000'],
-    startedAt: '2026-07-27T03:17:00.000Z', uptimeMs: 8100000,
-  });
-  port = 3012;
-  assert.equal(capture(handler).port, 3012);
-  assert.equal(selectLanAddress({ lo0: null }), '127.0.0.1');
-});
+    authRequired: () => null,
+    gitRun: async (...args) => { gitCalls.push(args); return ''; },
+    isLocal: req => req.isLocal === true,
+    ...overrides,
+  };
+  mountSystemHostRoute(app, options);
+  const handler = app.routes.get(`POST ${HOST_PATH}`);
+  assert.equal(typeof handler, 'function');
+  return { handler, gitCalls, app };
+}
 
-test('server info identifies MultiCC and publishes its local version without a remote lookup', () => {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-server-info-'));
+async function hostCall(handler, body, local = true) {
+  const res = {
+    statusCode: 200,
+    body: undefined,
+    status(code) { this.statusCode = code; return this; },
+    json(value) { this.body = value; return this; },
+  };
+  await handler({ body, isLocal: local }, res);
+  return res;
+}
+
+test('host server-info facts carry process truth and the mount-time version', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-system-host-'));
   try {
     fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({ version: '1.7.3' }));
-    const body = capture(createServerInfoHandler({
-      fs,
-      path,
+    const interfaces = { en0: [{ family: 'IPv4', internal: false, address: '192.168.1.8' }] };
+    const { handler } = mountHost({
       rootDir,
-      networkInterfaces: () => ({}),
-      getPort: () => 3000,
-      authRequired: () => false,
-      now: () => 1000,
-      uptimeSeconds: () => 0,
-    }));
-    assert.equal(body.product, 'multicc');
-    assert.equal(body.appProtocolVersion, APP_CONNECTION_PROTOCOL);
-    assert.equal(body.version, '1.7.3');
+      networkInterfaces: () => interfaces,
+      authRequired: () => 'token-secret',
+      now: () => Date.parse('2026-07-27T05:32:00.000Z'),
+      uptimeSeconds: () => 8100,
+    });
+    const res = await hostCall(handler, { op: 'server-info' });
+    assert.deepEqual(res.body, {
+      interfaces,
+      bindHost: '0.0.0.0',
+      port: 45123,
+      authRequired: true,
+      version: '1.7.3',
+      startedAt: '2026-07-27T03:17:00.000Z',
+      uptimeMs: 8100000,
+    });
   } finally {
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
 });
 
-test('LAN address selection rejects virtual and unroutable adapters and honors loopback binds', () => {
-  const interfaces = {
-    docker0: [{ family: 'IPv4', internal: false, address: '172.17.0.1' }],
-    tailscale0: [{ family: 'IPv4', internal: false, address: '100.100.10.5' }],
-    en0: [{ family: 'IPv4', internal: false, address: '169.254.8.2' }],
-    Ethernet: [{ family: 'IPv4', internal: false, address: '192.168.22.220' }],
-    en2: [{ family: 'IPv4', internal: false, address: '203.0.113.8' }],
-  };
-  assert.deepEqual(selectLanAddresses(interfaces), ['192.168.22.220']);
-  assert.equal(selectLanAddress(interfaces), '192.168.22.220');
-  assert.deepEqual(reachableLanAddresses(interfaces, '127.0.0.1'), []);
-  assert.deepEqual(reachableLanAddresses(interfaces, '0.0.0.0'), ['192.168.22.220']);
-  assert.deepEqual(reachableLanAddresses(interfaces, '192.168.22.220'), ['192.168.22.220']);
-  assert.equal(ipv4Priority('10.2.3.4') > ipv4Priority('8.8.8.8'), true);
-  assert.equal(ipv4Priority('169.254.1.2'), -1);
+test('host server-info omits the version when the install metadata is unreadable', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-system-host-'));
+  try {
+    // package.json deliberately absent: version is helpful metadata, not a
+    // health dependency — the retired handler answered everything else.
+    const { handler } = mountHost({ rootDir, now: () => 1000, uptimeSeconds: () => -5 });
+    const res = await hostCall(handler, { op: 'server-info' });
+    assert.equal(res.body.version, null);
+    assert.equal(res.body.authRequired, false);
+    // Negative uptime is clamped before startedAt is derived.
+    assert.equal(res.body.uptimeMs, 0);
+    assert.equal(res.body.startedAt, new Date(1000).toISOString());
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
 });
 
-test('server info reports the running process start, not a value captured at require time', () => {
-  // The sidebar read-out is only trustworthy if a restart moves it. Deriving
-  // startedAt from live uptime is what guarantees that: a module-level
-  // `bootTime` would keep answering with the previous run until someone
-  // remembered to reassign it.
-  let clock = Date.parse('2026-07-27T05:32:00.000Z');
-  let uptime = 8100;
-  const deps = {
-    networkInterfaces: () => ({}),
-    getPort: () => 3000,
-    authRequired: () => false,
-    now: () => clock,
-    uptimeSeconds: () => uptime,
-  };
-  const handler = createServerInfoHandler(deps);
-  const before = capture(handler);
-
-  // Time passes with the same process running: the start instant holds still.
-  clock += 600000;
-  uptime += 600;
-  assert.equal(capture(handler).startedAt, before.startedAt);
-  assert.equal(capture(handler).uptimeMs, 8700000);
-
-  // A restart: same wall clock, a process that has only just begun.
-  uptime = 3;
-  const after = capture(handler);
-  assert.equal(after.startedAt, '2026-07-27T05:41:57.000Z');
-  assert.ok(Date.parse(after.startedAt) > Date.parse(before.startedAt), 'a restart must move the read-out forward');
-
-  // Uptime is read per request, not frozen when the handler was built.
-  assert.equal(capture(handler).uptimeMs, 3000);
-});
-
-test('server info falls back to the real process clock and never reports a future start', () => {
-  const handler = createServerInfoHandler({
-    networkInterfaces: () => ({}),
-    getPort: () => 3000,
-    authRequired: () => false,
+test('host ls-remote keeps repo-actor semantics and fails soft', async () => {
+  const calls = [];
+  const { handler, gitCalls } = mountHost({
+    rootDir: '/repo/root',
+    gitRun: async (...args) => { calls.push(args); return 'aaa refs/tags/v1.0.0\nbbb refs/tags/v2.0.0\n'; },
   });
-  const body = capture(handler);
-  assert.ok(body.uptimeMs >= 0 && body.uptimeMs < 24 * 3600 * 1000, 'defaults to this process uptime');
-  assert.ok(Date.parse(body.startedAt) <= Date.now(), 'startedAt is in the past');
+  const ok = await hostCall(handler, { op: 'ls-remote' });
+  assert.deepEqual(ok.body, { ok: true, output: 'aaa refs/tags/v1.0.0\nbbb refs/tags/v2.0.0\n' });
+  assert.equal(gitCalls.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], '/repo/root');
+  assert.deepEqual(calls[0][1], ['ls-remote', '--tags', 'https://github.com/lsjwzh/MultiCC.git', 'refs/tags/v*']);
+  assert.equal(calls[0][2].timeout, 15000);
+  assert.equal(calls[0][2].kind, 'version-check');
 
-  const negative = capture(createServerInfoHandler({
-    networkInterfaces: () => ({}),
-    getPort: () => 3000,
-    authRequired: () => false,
-    now: () => 1000,
-    uptimeSeconds: () => -5,
-  }));
-  assert.equal(negative.uptimeMs, 0);
-  assert.equal(negative.startedAt, new Date(1000).toISOString());
+  const failing = mountHost({ gitRun: async () => { throw new Error('offline'); } });
+  const miss = await hostCall(failing.handler, { op: 'ls-remote' });
+  assert.deepEqual(miss.body, { ok: false });
 });
 
-test('version info prefers GitHub release metadata and keeps install channel', async () => {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-system-route-'));
-  fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({ version: '1.4.0' }));
-  fs.writeFileSync(path.join(rootDir, '.multicc_channel'), '# channel: stable\n');
-  let gitCalls = 0;
-  const result = await resolveVersionInfo({
-    fs,
-    path,
-    rootDir,
-    https: fakeHttps({ tag_name: 'v1.5.0' }),
-    gitRun: async () => { gitCalls += 1; return ''; },
-    timeoutMs: 25,
-  });
-  assert.deepEqual(result, {
-    current: '1.4.0', channel: 'stable', latest: 'v1.5.0', latestVersion: '1.5.0', updateAvailable: true, apiError: false,
-  });
-  assert.equal(gitCalls, 0);
+test('host trace snapshots the shared codex proxy trace ring', async () => {
+  const proxyTrace = require('../src/codex/proxy-trace');
+  const trace = proxyTrace.createCodexProxyTrace();
+  proxyTrace.setSharedCodexProxyTrace(trace);
+  try {
+    const next = () => {};
+    trace.middleware({ method: 'get', originalUrl: '/codex-proxy/p1/v1/messages' }, null, next);
+    trace.middleware({ method: 'post', originalUrl: '/codex-proxy/p2/v1/messages?x=1' }, null, next);
+    const { handler } = mountHost({});
+    const res = await hostCall(handler, { op: 'trace', limit: 5 });
+    assert.equal(res.body.entries.length, 2);
+    // Newest first, and `startedAt` stays internal to the ring.
+    assert.equal(res.body.entries[0].providerId, 'p2');
+    assert.equal(res.body.entries[1].providerId, 'p1');
+    assert.equal(Object.prototype.hasOwnProperty.call(res.body.entries[0], 'startedAt'), false);
+  } finally {
+    proxyTrace.setSharedCodexProxyTrace(proxyTrace.createCodexProxyTrace());
+  }
 });
 
-test('version info falls back to git tags without hiding the API failure', async () => {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-system-route-'));
-  fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({ version: '2.0.0' }));
-  const result = await resolveVersionInfo({
-    fs,
-    path,
-    rootDir,
-    https: fakeHttps(null, new Error('offline')),
-    gitRun: async () => 'aaa refs/tags/v1.0.0\nbbb refs/tags/v2.0.0\n',
-    timeoutMs: 25,
-  });
-  assert.equal(result.latest, 'v2.0.0');
-  assert.equal(result.updateAvailable, false);
-  assert.equal(result.apiError, true);
-  assert.equal(result.channel, 'dev');
+test('host port refuses non-loopback callers and unknown operations', async () => {
+  const { handler } = mountHost({});
+  const remote = await hostCall(handler, { op: 'server-info' }, false);
+  assert.equal(remote.statusCode, 404);
+  assert.deepEqual(remote.body, { error: 'not found' });
+  const unknown = await hostCall(handler, { op: 'nope' });
+  assert.equal(unknown.statusCode, 400);
+  assert.deepEqual(unknown.body, { error: 'unknown host operation' });
 });
+
+test('host mount validates the dependencies the front door relies on', () => {
+  assert.throws(() => mountSystemHostRoute(createHostApp(), {}), /fs, path and rootDir/);
+  assert.throws(
+    () => mountSystemHostRoute(createHostApp(), { fs, path, rootDir: '/x', networkInterfaces: null }),
+    /networkInterfaces/,
+  );
+  assert.throws(() => mountSystemHostRoute(null, {}), /Express/);
+});
+
+// ── APK / iOS OTA 发布资产（仍由 Node 拥有）───────────────────────────────
 
 test('APK distribution prefers a non-empty local regular file without touching GitHub', async () => {
   const rootDir = apkRoot();
@@ -473,9 +427,8 @@ test('zero-byte, directory, malformed manifest, and invalid package versions fai
   }
 });
 
-test('system route mount owns the app-binary metadata and canonical download routes', async () => {
+test('system route mount owns only the app-binary and host-repair routes left in Node', async () => {
   const paths = [];
-  const handlers = new Map();
   const apkDistribution = {
     async info() { return { exists: false, localExists: false, source: null }; },
     async downloadHandler() {},
@@ -485,23 +438,10 @@ test('system route mount owns the app-binary metadata and canonical download rou
     manifestHandler() {},
   };
   mountSystemRoutes({
-    get(route, handler) { paths.push(['GET', route, typeof handler]); handlers.set(route, handler); },
+    get(route, handler) { paths.push(['GET', route, typeof handler]); },
     post(route, handler) { paths.push(['POST', route, typeof handler]); },
-  }, {
-    fs,
-    path,
-    https: fakeHttps({}),
-    rootDir: process.cwd(),
-    networkInterfaces: () => ({}),
-    getPort: () => 3000,
-    authRequired: () => false,
-    gitRun: async () => '',
-    apkDistribution,
-    iosOta,
-  });
+  }, { apkDistribution, iosOta });
   assert.deepEqual(paths, [
-    ['GET', '/api/server-info', 'function'],
-    ['GET', '/api/version-check', 'function'],
     ['GET', '/api/apk-info', 'function'],
     ['GET', '/multicc.apk', 'function'],
     ['GET', '/api/ios-ota-info', 'function'],
@@ -540,20 +480,9 @@ test('system route mount owns the app-binary metadata and canonical download rou
     ['GET', '/api/system/ops-run', 'function'],
     ['POST', '/api/system/ops-run', 'function'],
     ['POST', '/api/system/ops-run/stop', 'function'],
-    // Read-only diagnostics: the last /codex-proxy requests this process
-    // actually served, so a CLI-reported 404 can be matched to a stage or
-    // shown to have never reached the host (src/codex/proxy-trace.js).
-    ['GET', '/api/debug/codex-proxy-trace', 'function'],
+    // /api/server-info、/api/version-check、/api/debug/codex-proxy-trace 已由
+    // Rust 前门独占（docs/gateway.md §9），不再出现在这张表里。
   ]);
-
-  // The trace route is the readable surface for a CLI-reported prefix 404: it
-  // answers with whatever this process actually served, and an empty window is
-  // itself the finding (nothing here answered that request).
-  require('../src/codex/proxy-trace').setSharedCodexProxyTrace(
-    require('../src/codex/proxy-trace').createCodexProxyTrace());
-  const traceResponse = { json(value) { this.body = value; } };
-  handlers.get('/api/debug/codex-proxy-trace')({ query: { limit: '5' } }, traceResponse);
-  assert.deepEqual(traceResponse.body, { entries: [] });
 
   const response = { json(value) { this.body = value; } };
   await createApkInfoHandler({ apkDistribution })({}, response, error => { throw error; });

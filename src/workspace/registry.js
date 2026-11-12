@@ -70,6 +70,8 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
   function available(workspaceId) {
     const workspace = get('record', workspaceId);
     if (!workspace) return 'workspace_not_found';
+    try { store.writerLeaseAssertEmpty(workspaceId); }
+    catch (error) { if (error.code === 'workspace_writer_active') return 'workspace_busy'; throw error; }
     if (get('lease', workspaceId) && ACTIVE.has(get('lease', workspaceId).state)) return 'workspace_busy';
     const activeLeases = leases();
     if (activeLeases.length >= executionLimit) return 'workspace_execution_capacity';
@@ -109,6 +111,7 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
       const current = get('lease', lease.workspaceId);
       if (!current || current.id !== lease.id || current.epoch !== epoch) throw fail('workspace_lease_stale');
       if (!ACTIVE.has(current.state)) throw fail('workspace_lease_released');
+      if (state === 'released') store.writerLeaseAssertEmpty(lease.workspaceId);
       const next = { ...current, ...fields, state, updatedAt: now() };
       put('lease', lease.workspaceId, next); put('operation', next.operationId, next);
       return next;
@@ -141,7 +144,11 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
     return store.transaction(() => {
       for (const lease of leases()) {
         if (lease.epoch === epoch) continue;
-        const stopped = observe(lease) === 'stopped';
+        let stopped = observe(lease) === 'stopped';
+        if (stopped) {
+          try { store.writerLeaseAssertEmpty(lease.workspaceId); }
+          catch (_) { stopped = false; }
+        }
         const next = { ...lease, epoch, state: stopped ? 'released' : 'uncertain',
           materializing: stopped ? false : lease.materializing, reason: stopped ? 'recovered_stopped' : 'launch_state_unknown' };
         put('lease', lease.workspaceId, next); put('operation', lease.operationId, next);
