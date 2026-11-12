@@ -93,11 +93,7 @@ pub struct Paths {
 
 /// `CLAUDE_CONFIG_DIR` replaces `~/.claude` and `CODEX_HOME` replaces
 /// `~/.codex`, exactly like the CLIs themselves. Empty values fall back.
-pub fn paths(
-    home: &Path,
-    claude_config_dir: Option<&Path>,
-    codex_home: Option<&Path>,
-) -> Paths {
+pub fn paths(home: &Path, claude_config_dir: Option<&Path>, codex_home: Option<&Path>) -> Paths {
     let claude_dir = claude_config_dir
         .filter(|path| !path.as_os_str().is_empty())
         .map(Path::to_path_buf)
@@ -264,7 +260,10 @@ fn parse_settings(text: &str) -> Result<Map<String, Value>, SyncError> {
 
 /// Strip the routing keys, then add the provider's own env. All other
 /// top-level keys and non-routing env keys are preserved.
-fn merge_claude_settings(existing: Option<&str>, target: &ClaudeTarget) -> Result<String, SyncError> {
+fn merge_claude_settings(
+    existing: Option<&str>,
+    target: &ClaudeTarget,
+) -> Result<String, SyncError> {
     let mut root = match existing {
         Some(text) if !text.trim().is_empty() => parse_settings(text)?,
         _ => Map::new(),
@@ -438,10 +437,7 @@ fn restore_previous(doc: &mut DocumentMut, entry: &Map<String, Value>) {
 }
 
 fn remove_our_table(doc: &mut DocumentMut) {
-    if let Some(providers) = doc
-        .get_mut("model_providers")
-        .and_then(Item::as_table_mut)
-    {
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
         providers.remove(CODEX_TABLE);
     }
 }
@@ -507,10 +503,7 @@ fn apply_codex_provider(
     if doc.get("model_providers").is_none() {
         doc["model_providers"] = Item::Table(Table::new());
     }
-    if let Some(providers) = doc
-        .get_mut("model_providers")
-        .and_then(Item::as_table_mut)
-    {
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
         providers.set_implicit(true);
     }
     let mut copied = table;
@@ -523,10 +516,7 @@ fn apply_codex_provider(
             copied_table["experimental_bearer_token"] = toml_edit::value(api_key);
         }
     }
-    if let Some(providers) = doc
-        .get_mut("model_providers")
-        .and_then(Item::as_table_mut)
-    {
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
         providers.insert(CODEX_TABLE, copied);
     }
 
@@ -694,10 +684,12 @@ fn codex_status(path: &Path, records: &[Value]) -> Value {
             .get("base_url")
             .and_then(Item::as_str)
             .unwrap_or_default();
-        if provider_base.is_empty() || !credentials_match(
-            (base.as_str(), token.as_str()),
-            (provider_base, api_key.as_str()),
-        ) {
+        if provider_base.is_empty()
+            || !credentials_match(
+                (base.as_str(), token.as_str()),
+                (provider_base, api_key.as_str()),
+            )
+        {
             return None;
         }
         Some(record_id(record).to_string())
@@ -806,7 +798,8 @@ fn create_backup(
             copy_private(file, &candidate.join(&name))
                 .map_err(|error| SyncError::io("备份本地配置", &error))?;
         }
-        manifest.push(json!({ "path": file.to_string_lossy(), "existed": existed, "backup": name }));
+        manifest
+            .push(json!({ "path": file.to_string_lossy(), "existed": existed, "backup": name }));
     }
     let text = serde_json::to_string_pretty(&Value::Array(manifest))
         .map_err(|_| SyncError::new(500, "LOCAL_CLI_SYNC_FAILED", "生成备份清单失败"))?;
@@ -1115,9 +1108,8 @@ mod tests {
     fn codex_invalid_toml_is_refused() {
         let target = CodexTarget::Official;
         let dir = temp("bad-toml");
-        let error =
-            merge_codex_config(Some("[not closed"), "codex-official", &target, &dir, &dir)
-                .unwrap_err();
+        let error = merge_codex_config(Some("[not closed"), "codex-official", &target, &dir, &dir)
+            .unwrap_err();
         assert_eq!(error.status, 409);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1130,12 +1122,7 @@ mod tests {
         let file = dir.join("settings.json");
         fs::write(&file, "{}").unwrap();
         for index in 0..25 {
-            let dir = create_backup(
-                &data,
-                "claude",
-                &[file.clone()],
-            )
-            .unwrap();
+            let dir = create_backup(&data, "claude", &[file.clone()]).unwrap();
             assert!(dir.join("settings.json").is_file());
             if index == 0 {
                 #[cfg(unix)]
@@ -1166,7 +1153,11 @@ mod tests {
             r#"{"env":{"ANTHROPIC_BASE_URL":"https://relay/","ANTHROPIC_AUTH_TOKEN":"tok"}}"#,
         );
         let records = vec![claude_record("p1", "https://relay", "tok")];
-        let paths = paths(&home, Some(&home.join("claude-config")), Some(&home.join("codex-home")));
+        let paths = paths(
+            &home,
+            Some(&home.join("claude-config")),
+            Some(&home.join("codex-home")),
+        );
         let state = claude_status(&paths.claude, &records);
         assert_eq!(state["state"], "provider");
         assert_eq!(state["providerId"], "p1");
@@ -1269,10 +1260,16 @@ mod tests {
             Some(Path::new("/cfg/claude")),
             Some(Path::new("/cfg/codex")),
         );
-        assert_eq!(overridden.claude, PathBuf::from("/cfg/claude/settings.json"));
+        assert_eq!(
+            overridden.claude,
+            PathBuf::from("/cfg/claude/settings.json")
+        );
         assert_eq!(overridden.codex, PathBuf::from("/cfg/codex/config.toml"));
         let defaults = paths(home, None, None);
-        assert_eq!(defaults.claude, PathBuf::from("/home/u/.claude/settings.json"));
+        assert_eq!(
+            defaults.claude,
+            PathBuf::from("/home/u/.claude/settings.json")
+        );
         assert_eq!(defaults.codex, PathBuf::from("/home/u/.codex/config.toml"));
     }
 }

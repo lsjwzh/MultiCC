@@ -2,6 +2,18 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.21.0 — Relay balances, terminal provider sync, and resilient presets (2026-11-13)
+
+- Discover balance APIs on supported third-party relay panels, including new-api, sub2api, legacy billing endpoints, and the common user-balance endpoint. Cache the detected panel and distinguish account balances from token balances. Unlimited-token markers and HTML error pages are not reported as usable balances.
+- Add a provider-card action to sync a selected Claude or Codex line to the local terminal configuration. Back up the existing files before replacing them, preserve unrelated settings, and show which line the terminal currently uses. OAuth account lines cannot be copied through this action.
+- Apply the available lines of a run configuration preset on web and mobile, list every skipped line, and reject the preset only when no usable line remains. Mark references to deleted providers and prevent saving those references back into a preset; applying a preset leaves its stored definition unchanged.
+- Default Claude lanes to a one-hour prompt-cache lifetime while preserving explicit prompt-cache settings.
+- Add a clear-all action to the expanded notification deck. Refresh background activity by querying only the displayed task IDs in bounded batches.
+- Keep background continuations moving through an available lane in the same CLI family when the current lane is exhausted. Preserve exhausted-pool diagnostics and stop unattended retries when the run requires human input.
+- Read orchestration state through indexed SQLite queries with terminal receipts and bounded retention, while keeping full record bodies available for detail views and rollback exports. Append chat history tails and observe code revisions in Rust, and use cross-process writer leases to prevent workspace release, snapshots, or finalization while a writer still owns the workspace.
+- Move provider management, CLI switching and version checks, quota rules, and system and history-scan routes into Rust. These migrations retain necessary Node adapters for existing SDK, process, filesystem, and streaming operations until equivalent Rust lifecycle behavior is verified. Other unmigrated host routes remain in Node. The new Node-free runtime image validates the Rust binaries in CI; the complete server still requires the remaining Node host.
+- Update the mobile app to 2.44.0 (build 192), including the preset availability and partial-application improvements.
+
 ## v2.20.2 — Unattended tasks, resilient routing, and Rust request handling (2026-11-11)
 
 The v2.20.0 and v2.20.1 candidates did not reach a published Release. Both tags are preserved. The v2.20.1 release checks exposed timing assumptions in regression fixtures; this candidate corrects those checks and retains the feature updates below.
