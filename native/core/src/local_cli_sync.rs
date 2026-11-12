@@ -305,7 +305,7 @@ fn codex_target(records: &[Value], provider_id: &str) -> Result<CodexTarget, Syn
     let toml = config
         .get("config")
         .filter(|value| value.is_string())
-        .map(|value| js_string(value))
+        .map(js_string)
         .unwrap_or_default();
     let auth = object_of(config.get("auth"));
     let api_key = auth
@@ -1122,7 +1122,7 @@ mod tests {
         let file = dir.join("settings.json");
         fs::write(&file, "{}").unwrap();
         for index in 0..25 {
-            let dir = create_backup(&data, "claude", &[file.clone()]).unwrap();
+            let dir = create_backup(&data, "claude", std::slice::from_ref(&file)).unwrap();
             assert!(dir.join("settings.json").is_file());
             if index == 0 {
                 #[cfg(unix)]
