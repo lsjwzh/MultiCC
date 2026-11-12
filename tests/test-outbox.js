@@ -189,3 +189,54 @@ test('one claim admits one member per workspace and independent workspaces concu
   await outbox.ack('a', first[0].leaseToken);
   assert.deepEqual((await outbox.claim(options)).map(i => i.id), ['b']);
 });
+
+test('delivery-state projection does not read payload and full reads remain complete and isolated', async t => {
+  const { store, outbox } = fixture(t);
+  const body = 'retained-payload:'.repeat(4096);
+  await outbox.enqueue({ id: 'item', sessionId: 'session', payload: { body, detail: { value: 1 } } });
+  assert.deepEqual(await outbox.getDeliveryState('item'), { id: 'item', sessionId: 'session', state: 'pending' });
+  assert.equal(await outbox.getDeliveryState('absent'), null);
+  const item = await outbox.get('item');
+  assert.equal(item.payload.body, body);
+  assert.equal('leaseTokenHash' in item, false);
+  item.payload.detail.value = 2;
+  const [listed] = await outbox.list({ sessionId: 'session' });
+  assert.equal(listed.payload.detail.value, 1);
+  listed.payload.body = 'changed';
+  assert.equal((await outbox.get('item')).payload.body, body);
+  const nativeOutbox = createOutbox({ store: {
+    read() { throw new Error('loaded payload through full read'); }, mutate: store.mutate,
+    async select(collection, { where, fields, limit }) {
+      assert.equal(collection, 'outbox');
+      assert.deepEqual(where, { id: 'item' });
+      assert.deepEqual(fields, ['id', 'sessionId', 'state']);
+      assert.equal(limit, 1);
+      return [{ id: 'item', sessionId: 'session', state: 'delivered' }];
+    },
+  } });
+  assert.equal((await nativeOutbox.getDeliveryState('item')).state, 'delivered');
+});
+
+test('indexed claim preserves unknown-state FIFO blockers without scanning terminal history', async () => {
+  const rows = [
+    { id: 'unknown', state: 'legacy-unknown', sessionId: 'blocked', sequence: 1 },
+    { id: 'behind', state: 'pending', sessionId: 'blocked', sequence: 2, availableAt: 1, attempts: 0 },
+    { id: 'ready', state: 'pending', sessionId: 'independent', sequence: 3, availableAt: 1, attempts: 0 },
+    { id: 'expired', state: 'leased', sessionId: 'expired-session', sequence: 4, leasedUntil: 1, attempts: 1 },
+  ];
+  const draft = { outbox: new Proxy({}, { ownKeys() { throw new Error('scanned terminal outbox'); } }),
+    select(collection, { where }) {
+      assert.equal(collection, 'outbox');
+      if (where.state === 'leased') return rows.filter(row => row.state === 'leased');
+      assert.deepEqual(where.state.$nin, ['delivered', 'dead-letter', 'cancelled']);
+      return rows;
+    } };
+  const outbox = createOutbox({ now: () => 100, backoff: () => 0, store: {
+    read: async fn => fn(draft), mutate: async fn => fn(draft),
+  } });
+  const claims = await outbox.claim({ workerId: 'worker', limit: 10 });
+  assert.deepEqual(claims.map(row => row.id), ['ready', 'expired']);
+  assert.equal(rows[1].state, 'pending');
+  assert.equal(rows[3].attempts, 2);
+  assert.equal(rows[3].lastError, 'delivery lease expired');
+});

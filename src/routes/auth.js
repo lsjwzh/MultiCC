@@ -97,6 +97,29 @@ function createAuthRuntime(rawDeps) {
 
   const route = stage => (req, res) => getNative().httpAuthRoute(stage, req, res, entryPort);
 
+  // Private gateway adapter: execute the same Rust admission owner against the
+  // original wire request. Only Express effects are converted to a DTO here;
+  // relay persistence, scoped grants and metrics keep their existing owners.
+  function admitGatewayRequest(req) {
+    return new Promise((resolve, reject) => {
+      const headers = {};
+      let status = 200;
+      const res = {
+        destroyed: false,
+        status(value) { status = value; return this; },
+        setHeader(name, value) { headers[name] = String(value); return this; },
+        json(body) { resolve({ allowed: false, status, body, headers }); return this; },
+        redirect(location) { resolve({ allowed: false, status: 302, location, headers }); return this; },
+      };
+      const admitted = error => error ? reject(error) : resolve({ allowed: true, headers });
+      const authenticate = error => {
+        if (error) return reject(error);
+        return gate('auth')(req, res, admitted);
+      };
+      Promise.resolve().then(() => gate('peer')(req, res, authenticate)).catch(reject);
+    });
+  }
+
   function mountRoutes(app) {
     app.use('/api', gate('shutdown'));
     app.use(gate('peer'));
@@ -114,7 +137,7 @@ function createAuthRuntime(rawDeps) {
 
   }
 
-  return { mountRoutes, isAuthenticated, authCookieHeader };
+  return { mountRoutes, isAuthenticated, authCookieHeader, admitGatewayRequest };
 }
 
 module.exports = { createAuthRuntime };

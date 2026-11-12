@@ -873,6 +873,7 @@ function testNativeRejectionBoundaries() {
     'a shorter account park does not override the model deadline');
 }
 
+require('./helpers/limit-cache-recorder-differential')(ok);
 testSharedSnapshots();
 testBareRateLimitKeepsStrongerPark();
 testNativeRejectionBoundaries();

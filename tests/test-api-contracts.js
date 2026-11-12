@@ -327,7 +327,9 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // Unattended mode owns the per-session goal loop; its routes are mounted with
   // the other session-admin routes (docs/unattended-mode.md).
   assert.ok(sessionAdmin.includes("mountUnattendedRoutes(app, deps)"));
-  assert.ok(source.includes("app.get('/api/v1/providers'"));
+  // /api/v1/providers is owned by the Rust front door (providers.rs); Node must
+  // not register the same path a second time.
+  assert.doesNotMatch(source, /app\.get\(['"]\/api\/v1\/providers['"]/);
   assert.ok(sessionAdmin.includes("app.get('/api/v1/directories/:id/workspace'"));
   assert.ok(orchestrationRoutes.includes("app.get('/api/v1/sessions/:id/waits'"));
   // The auth surface (shutdown gate, login/logout, gate middleware, exchange,

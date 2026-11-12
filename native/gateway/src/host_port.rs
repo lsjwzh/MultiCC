@@ -14,15 +14,121 @@
 //! (a persisted default or a patched session must not happen twice).
 
 use std::io;
+use std::net::SocketAddr;
 use std::time::Duration;
 
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::client::conn::http1::Builder as ClientBuilder;
+use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use crate::proxy_header::format_proxy_header;
+
 /// How long a host operation may take. Session patches stage configuration and
 /// broadcast frames, so this is deliberately generous.
 const TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One non-host-port exchange with the Node child (the streamed speed probe):
+/// an arbitrary method/path/headers/body, answered as status plus a bounded
+/// body. Node's proxy routes are ordinary HTTP; only the PROXY v1 preamble and
+/// the internal port differ from a request that reached the public port.
+pub struct UpstreamReply {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+pub enum UpstreamFailure {
+    Network(String),
+    Timeout,
+    TooLarge(u16),
+}
+
+/// POST `path` to the Node child on `port`, collecting at most `limit` body
+/// bytes. The whole exchange shares one deadline (Node's speed test used a
+/// 15s socket timeout plus a 15s deadline timer).
+pub async fn request(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+    timeout: Duration,
+    limit: usize,
+) -> Result<UpstreamReply, UpstreamFailure> {
+    match tokio::time::timeout(
+        timeout,
+        request_inner(port, method, path, headers, body, limit),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(UpstreamFailure::Timeout),
+    }
+}
+
+async fn request_inner(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+    limit: usize,
+) -> Result<UpstreamReply, UpstreamFailure> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|error| UpstreamFailure::Network(error.to_string()))?;
+    let _ = stream.set_nodelay(true);
+    let local = stream
+        .local_addr()
+        .map_err(|error| UpstreamFailure::Network(error.to_string()))?;
+    let proxy = format_proxy_header(local, SocketAddr::from(([127, 0, 0, 1], port)));
+    stream
+        .write_all(proxy.as_bytes())
+        .await
+        .map_err(|error| UpstreamFailure::Network(error.to_string()))?;
+    let (mut sender, connection) = ClientBuilder::new()
+        .preserve_header_case(true)
+        .handshake::<_, Full<Bytes>>(TokioIo::new(stream))
+        .await
+        .map_err(|error| UpstreamFailure::Network(error.to_string()))?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let mut builder = hyper::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("Host", format!("127.0.0.1:{port}"));
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder
+        .body(Full::new(Bytes::from(body)))
+        .map_err(|error| UpstreamFailure::Network(error.to_string()))?;
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|error| UpstreamFailure::Network(error.to_string()))?;
+    let status = response.status().as_u16();
+    let mut incoming = response.into_body();
+    let mut collected = Vec::new();
+    while let Some(frame) = incoming.frame().await {
+        let frame = frame.map_err(|error| UpstreamFailure::Network(error.to_string()))?;
+        if let Ok(data) = frame.into_data() {
+            if collected.len() + data.len() > limit {
+                return Err(UpstreamFailure::TooLarge(status));
+            }
+            collected.extend_from_slice(&data);
+        }
+    }
+    Ok(UpstreamReply {
+        status,
+        body: collected,
+    })
+}
 
 /// One JSON request/response exchange with the Node child on `port`.
 pub async fn call(port: u16, path: &str, payload: &Value) -> io::Result<Value> {

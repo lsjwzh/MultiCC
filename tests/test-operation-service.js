@@ -272,3 +272,74 @@ test('schema v1 wait/outbox state migrates without losing existing records', asy
   assert.equal(disk.schemaVersion, 3);
   assert.equal(disk.outbox.old.id, 'old');
 });
+
+test('recovery references omit message and result bodies while public operation reads remain isolated', async t => {
+  const { service } = fixture(t);
+  const message = 'large-dispatch-body:'.repeat(4096);
+  const operation = await service.admitDispatch({ ownerSessionId: 'parent', idempotencyKey: 'private-key',
+    spec: { chatId: 'child', targetId: 'target', taskId: 'task', message, resultMode: 'sync', oneWay: true } });
+  await service.completeDispatch(operation.id, { status: 'completed', text: message, detail: { value: 7 } });
+  const [reference] = await service.listReferences({ kind: 'dispatch', ownerSessionId: 'parent' });
+  assert.equal(reference.id, operation.id);
+  assert.deepEqual(reference.spec, { chatId: 'child', targetId: 'target', taskId: 'task', resultMode: 'sync', oneWay: true });
+  assert.equal('result' in reference, false);
+  assert.equal('idempotencyKeyHash' in reference, false);
+  assert.equal(typeof reference.completedAt, 'number');
+  assert.equal(typeof reference.updatedAt, 'number');
+  assert.deepEqual(await service.listReferences({ statuses: ['completed'], excludeTerminal: true }), []);
+  const full = await service.get(operation.id);
+  assert.equal(full.spec.message, message);
+  assert.equal(full.result.text, message);
+  assert.equal('requestHash' in full, false);
+  full.spec.message = 'changed by reader';
+  full.result.detail.value = 8;
+  const [listed] = await service.list({ ownerSessionId: 'parent' });
+  assert.equal(listed.spec.message, message);
+  assert.equal(listed.result.detail.value, 7);
+  listed.result.detail.value = 9;
+  assert.equal((await service.get(operation.id)).result.detail.value, 7);
+});
+
+test('native recovery references never access heavy bodies and still exclude requested terminal states', async () => {
+  const body = { chatId: 'child', targetId: 'target', taskId: 'task', resultMode: 'sync', oneWay: false };
+  Object.defineProperty(body, 'message', { enumerable: true, get() { throw new Error('read dispatch body'); } });
+  const rows = [
+    { id: 'active', kind: 'dispatch', ownerSessionId: 'parent', status: 'running', createdAt: 2, spec: body },
+    { id: 'finished', kind: 'dispatch', ownerSessionId: 'parent', status: 'completed', createdAt: 1, spec: body },
+  ];
+  for (const row of rows) Object.defineProperty(row, 'result', { enumerable: true, get() { throw new Error('read result body'); } });
+  const service = createOperationService({ store: {
+    mutate() { throw new Error('unexpected write'); }, read() { throw new Error('full collection read'); },
+    async select(collection, { fields }) {
+      assert.equal(collection, 'operations');
+      return rows.map(row => {
+        const result = {};
+        for (const field of fields) {
+          const [root, child] = field.split('.');
+          if (child) (result[root] ||= {})[child] = row[root]?.[child];
+          else result[root] = row[root];
+        }
+        return result;
+      });
+    },
+  } });
+  assert.deepEqual((await service.listReferences({ statuses: ['running', 'completed'], excludeTerminal: true }))
+    .map(row => row.id), ['active']);
+});
+
+test('startup task interruption uses indexed active rows without enumerating terminal history', async () => {
+  const active = { id: 'live', taskId: 'cli-task', parentSessionId: 'parent', status: 'running' };
+  const history = new Proxy({}, { ownKeys() { throw new Error('enumerated historical tasks'); } });
+  const draft = { tasks: history, outbox: {}, nextOutboxSequence: 1,
+    select(collection, { where }) {
+      assert.equal(collection, 'tasks');
+      assert.deepEqual(where.status.$nin, ['completed', 'failed', 'interrupted', 'cancelled']);
+      return [active];
+    } };
+  const service = createOperationService({ now: () => 100, store: {
+    mutate: async fn => fn(draft), read: async fn => fn(draft),
+  } });
+  assert.equal((await service.interruptActiveTasks())[0].status, 'interrupted');
+  assert.equal(draft.outbox['task:live:interrupted'].payload.taskId, 'cli-task');
+  assert.equal(active.completedAt, 100);
+});

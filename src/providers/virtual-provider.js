@@ -48,4 +48,4 @@ function outcome(provider, statusCode, headersSent, resetMs, request) {
   return result.retry;
 }
 function observe(provider, dto) { recordDto?.(provider.appType, provider.id, dto); }
-module.exports = { configure, setRefresher, refresh, validate, status, resolve, outcome, observe };
+module.exports = { snapshot, configure, setRefresher, refresh, validate, status, resolve, outcome, observe };

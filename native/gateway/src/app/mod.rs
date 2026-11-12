@@ -10,6 +10,7 @@ pub mod accept;
 pub mod account_subscription;
 pub mod agent_resources;
 pub mod auth;
+pub mod auto_provider_routing;
 pub mod claude_models;
 pub mod download;
 pub mod express;
@@ -17,7 +18,10 @@ pub mod external_workspaces;
 pub mod file_transfer;
 pub mod host_read;
 pub mod model_catalogs;
+pub mod provider_balance;
+mod provider_balance_adapters;
 pub mod provider_limit_history;
+pub mod provider_relay;
 pub mod providers;
 pub mod quota_guard;
 pub mod run_config_presets;
@@ -133,6 +137,9 @@ pub enum Route {
     TurnLedger(turn_ledger::Route),
     TurnLedgerOptions(turn_ledger::Route),
     Providers(providers::Route),
+    ProviderBalance(provider_balance::Route),
+    ProviderRelay(provider_relay::Route),
+    AutoProviderRouting(auto_provider_routing::Route),
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -179,8 +186,17 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
             turn_ledger::Claim::Options(route) => Route::TurnLedgerOptions(route),
         });
     }
+    if let Some(route) = provider_balance::claim(method, path) {
+        return Some(Route::ProviderBalance(route));
+    }
+    if let Some(route) = provider_relay::claim(method, path) {
+        return Some(Route::ProviderRelay(route));
+    }
     if let Some(route) = providers::claim(method, path) {
         return Some(Route::Providers(route));
+    }
+    if let Some(route) = auto_provider_routing::claim(method, path) {
+        return Some(Route::AutoProviderRouting(route));
     }
     if let Some(claim) = file_transfer::claim(method, path) {
         return Some(match claim {
@@ -285,6 +301,9 @@ pub struct App {
     /// process-local single-flight table and the system-proxy slot. `Arc` lets
     /// the leader query outlive the HTTP request that started it.
     pub account_subscription: Arc<account_subscription::Shared>,
+    /// The front door's single outbound HTTP exit: proxy discovery, NO_PROXY
+    /// and loopback rules are the Node runtime's (`src/network/outbound.js`).
+    pub outbound: crate::outbound::Outbound,
     /// The Node package root (the directory of the script we run): the
     /// version-check route reads package.json and .multicc_channel from it.
     pub package_root: PathBuf,
@@ -349,6 +368,7 @@ impl App {
             secrets_vault: tokio::sync::Mutex::new(()),
             providers_write: tokio::sync::Mutex::new(()),
             account_subscription: subscriptions,
+            outbound: crate::outbound::Outbound::from_process(),
             package_root,
             home_dir: std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -454,6 +474,28 @@ pub async fn handle(
     // src/gateway-child.js hands Node the PROXY line's address text, which is
     // this Display form (IPv4-mapped IPv6 included).
     let peer = client.ip().to_string();
+    // Relay reads use the same scoped grant owner as inference. Preserve the
+    // original peer when the live host validates mcr1/fleet credentials.
+    if matches!(route, Route::ProviderRelay(_))
+        || matches!(route, Route::ProviderBalance(route) if provider_balance::is_relay(route))
+    {
+        let headers = match provider_relay::admission(&ctx, &peer, host).await {
+            Ok(headers) => headers,
+            Err(response) => return *response,
+        };
+        // These read routes were mounted before express.json; even POST quota
+        // ignores its body. Parsing here would reject formerly accepted reads.
+        drop(body);
+        let mut response = match route {
+            Route::ProviderRelay(route) => provider_relay::handle(route, &ctx, host).await,
+            Route::ProviderBalance(route) => {
+                provider_balance::handle(&app, route, &ctx, host).await
+            }
+            _ => unreachable!(),
+        };
+        provider_relay::append_headers(&mut response, &headers);
+        return response;
+    }
     let snapshot = match app.auth.snapshot().await {
         Ok(snapshot) => snapshot,
         Err(_) => return express::error(&ctx, 503, "authentication runtime unavailable"),
@@ -602,6 +644,12 @@ pub async fn handle(
             return subagent_defaults::sync(&app, &ctx, &body, host).await
         }
         Route::Providers(route) => return providers::handle(&app, route, &ctx, &body, host).await,
+        Route::ProviderBalance(route) => {
+            return provider_balance::handle(&app, route, &ctx, host).await
+        }
+        Route::AutoProviderRouting(route) => {
+            return auto_provider_routing::handle(&app, route, &ctx, &body, host).await
+        }
         Route::ClaudeSubscriptionGet => {
             return account_subscription::get(&app, "claude", &ctx).await
         }

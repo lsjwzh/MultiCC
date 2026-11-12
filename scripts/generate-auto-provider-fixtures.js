@@ -16,9 +16,9 @@
 // (legacy-auto-provider-*.js), which are byte-for-byte copies of the current
 // src/chat/auto-provider-*.js modules with only their require paths adapted.
 // The Rust port reads the same files and must reproduce every value. In
-// --write mode the generator additionally asserts that each oracle's output is
-// JSON-identical to the live src implementation before it writes anything, so
-// a fixture can never freeze behaviour the production code has already lost.
+// --write mode keeps each frozen oracle's output. Live output must remain
+// JSON-identical except for explicitly asserted reservation-safety corrections
+// in verifyRuntimeCorrections; those corrections never rewrite the oracle.
 //
 // Everything is hermetic: the clock is injected (fixed RUNTIME_NOW / routing
 // now), no price table is loaded unless a case supplies a stub, the Jev client
@@ -28,6 +28,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const assert = require('node:assert/strict');
 
 // The retained normalization bridge (Rust-backed) is the input side of the
 // selection-key oracle: the fixture records each pool's normalized selection
@@ -886,7 +887,7 @@ function unsafeAttempt(providerId, fence = 'side_effect') {
   };
 }
 
-function buildRuntime(mods, fetchTrap) {
+function buildRuntime(mods, fetchTrap, live = false) {
   const scenarios = [];
   const step = (steps, rec, name, op, request, fn) => {
     rec.effects.length = 0;
@@ -1163,7 +1164,7 @@ function buildRuntime(mods, fetchTrap) {
     exhaustFresh(limits, ['claude-a', 'claude-b']);
     step(steps, rec, 'prepareHandoff cannot leave the lane', 'prepareHandoff', {
       decision: quotaDecision(), attempt: openAttempt('claude-a'), hops: 4, maxAttempts: 4,
-    }, () => turn.prepareHandoff(quotaDecision(), openAttempt('claude-a')));
+    }, () => turn ? turn.prepareHandoff(quotaDecision(), openAttempt('claude-a')) : null);
   });
 
   // 10. the quota guard withdraws a line before any attempt.
@@ -1306,6 +1307,23 @@ function buildRuntime(mods, fetchTrap) {
     step(steps, rec, 'planTurn reserves codex', 'planTurn', { sessionId: 's-lanes', text: 'hello' }, () => runtime.planTurn({ session, text: 'hello' }));
     state.disabledCli = 'codex';
     step(steps, rec, 'the missing lane voids the reservation', 'planTurn', { sessionId: 's-lanes', text: 'hello', disabledCli: 'codex' }, () => runtime.planTurn({ session, text: 'hello' }));
+    if (live) {
+      // The frozen steps intentionally retain their old names/output. The
+      // corrected state keeps the reservation while its lane is unavailable.
+      const pending = runtime.pendingCliSwitch(session.id, session.cli);
+      assert.equal(pending.cli, 'codex');
+      assert.equal(pending.providerId, 'codex-b');
+      assert.throws(() => runtime.beginTurn({ session, turnId: 'not-yet-switched' }), {
+        code: 'AUTO_PROVIDER_CLI_SWITCH_REQUIRED',
+      });
+      assert.deepEqual(runtime.pendingCliSwitch(session.id, session.cli), pending);
+      state.disabledCli = null;
+      for (let retry = 0; retry < 12; retry += 1) {
+        assert.equal(runtime.planTurn({ session, text: 'hello' }).providerId, pending.providerId);
+      }
+      session.cli = pending.cli;
+      assert.equal(runtime.beginTurn({ session, turnId: 'recovered' }).initial().providerId, pending.providerId);
+    }
   });
 
   // 19. an unreachable lane is never planned.
@@ -1493,7 +1511,7 @@ function buildRuntime(mods, fetchTrap) {
 
 // ── build / verify / write ──────────────────────────────────────────────────
 
-async function buildAll(modules, fetchTrap) {
+async function buildAll(modules, fetchTrap, live = false) {
   const routing = buildRouting(modules.routing);
   await routing.buildStore();
   delete routing.buildStore;
@@ -1505,8 +1523,43 @@ async function buildAll(modules, fetchTrap) {
       runtime: modules.runtime,
       routing: modules.routing,
       selectionKey: modules.selectionKey,
-    }, fetchTrap),
+    }, fetchTrap, live),
   };
+}
+
+// Two historical outputs encode the unsafe behavior fixed by reservation
+// admission: silently starting on the old lane, and consuming the hop budget
+// merely by re-reading one pending plan. Assert the new outputs in full, then
+// normalize only these two named expectations for the remaining byte-for-byte
+// oracle comparison. The frozen fixture and oracle stay unchanged.
+function verifyRuntimeCorrections(current, legacy) {
+  const normalized = JSON.parse(JSON.stringify(current));
+  const find = (fixture, scenarioName, stepName) => {
+    const scenario = fixture.scenarios.find(item => item.name === scenarioName);
+    assert.ok(scenario, `missing runtime scenario: ${scenarioName}`);
+    const step = scenario.steps.find(item => item.name === stepName);
+    assert.ok(step, `missing runtime step: ${scenarioName} / ${stepName}`);
+    return step;
+  };
+  const wrongLane = 'hop budget blocks a cross-lane handoff';
+  const begin = 'beginTurn drops the stale reservation';
+  assert.deepEqual(find(current, wrongLane, begin).expect, {
+    value: { error: {
+      name: 'AutoProviderError',
+      code: 'AUTO_PROVIDER_CLI_SWITCH_REQUIRED',
+      message: 'Auto Provider must apply the pending CLI switch before starting the turn',
+    } },
+    effects: [],
+  });
+  assert.equal(find(legacy, wrongLane, begin).expect.value.initial.providerId, 'claude-a');
+  find(normalized, wrongLane, begin).expect = find(legacy, wrongLane, begin).expect;
+
+  const budget = 'hop budget caps lane switches';
+  const last = 'planTurn hop 5';
+  assert.deepEqual(find(legacy, budget, last).expect, { value: null, effects: [] });
+  assert.deepEqual(find(current, budget, last).expect, find(legacy, budget, 'planTurn hop 1').expect);
+  find(normalized, budget, last).expect = find(legacy, budget, last).expect;
+  return normalized;
 }
 
 function serialize(value) {
@@ -1552,14 +1605,15 @@ async function main() {
   }
   try {
     const modules = loadModules();
-    const built = await buildAll(modules.src, trap);
+    const built = await buildAll(modules.src, trap, true);
     const oracle = await buildAll(modules.oracle, trap);
 
     const selected = requested ? [requested] : SECTIONS;
     for (const section of selected) {
-      // Never freeze an oracle that disagrees with the live implementation.
+      // Every difference except the two asserted safety corrections is an error.
       const oracleText = serialize(oracle[section]);
-      const srcText = serialize(built[section]);
+      const srcText = serialize(section === 'runtime'
+        ? verifyRuntimeCorrections(built[section], oracle[section]) : built[section]);
       if (oracleText !== srcText) {
         const diff = firstDifference(oracleText, srcText);
         console.error(`oracle and src disagree for ${section}; refusing to ${write ? 'write' : 'verify'}`);

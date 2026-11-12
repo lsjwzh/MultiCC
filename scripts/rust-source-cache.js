@@ -7,6 +7,9 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
+// include_str! inputs are executable source dependencies, not test fixtures.
+const COMPILED_ASSETS = new Set(['native/core/src/quota_bar_view/messages.json']);
+
 function cacheRoot(repoRoot) {
   const result = spawnSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain', '-z'],
     { encoding: 'utf8', timeout: 10_000 });
@@ -24,7 +27,8 @@ function sourceFingerprint(repoRoot, env = process.env) {
       .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const rel = path.join(relative, entry.name);
       if (entry.isDirectory() && !['target', 'prebuilt'].includes(entry.name)) walk(rel);
-      else if (entry.isFile() && (/\.rs$/.test(entry.name) || ['Cargo.toml', 'Cargo.lock', 'config.toml'].includes(entry.name))) {
+      else if (entry.isFile() && (/\.rs$/.test(entry.name) || ['Cargo.toml', 'Cargo.lock', 'config.toml'].includes(entry.name)
+        || COMPILED_ASSETS.has(rel.split(path.sep).join('/')))) {
         const body = fs.readFileSync(path.join(repoRoot, rel));
         hash.update(rel.split(path.sep).join('/') + '\0' + body.length + '\0').update(body);
       }
@@ -357,7 +361,32 @@ function probeAddon(file, node = process.execPath) {
       if(a.turnProgressSanitizePhase('constructor')!=='running' || a.turnProgressSanitizeToolKind('')!==null) process.exit(1);
       if(!a.turnProgressShouldReexecute(true,true,{known:true,handedOff:false})) process.exit(1);
     }
-    if(['cliSwitchCatalog','cliSwitchRequest','prepareCliSwitchRoute','turnRequestCatalog','turnRequestRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['cliSwitchCatalog','cliSwitchRequest','cliSwitchRuntimeRequest','prepareCliSwitchRoute',
+      'RustCliToolsRuntime','cliToolsOfficialSpecs','turnRequestCatalog','turnRequestRequestValue']
+      .some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(JSON.parse(a.cliSwitchRuntimeRequest('currentAllowed',JSON.stringify({reservation:true})))!==false) process.exit(1);
+    const cliTools=new a.RustCliToolsRuntime({specs:{},supported:[],catalog:[],npmPackages:{}});
+    if(cliTools.request('force',{query:{refresh:'1'}})!==true) process.exit(1);
+    if(['homebrewTakeoverRequest','cliUpstreamVersionRequest','RustCliUpstreamFetch','cliUpstreamVersionFetch',
+      'quotaBarViewRequest','limitCacheRecorderRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(a.homebrewTakeoverRequest('npmGlobal',{command:'npm install -g cli'})!==true) process.exit(1);
+    if(a.cliUpstreamVersionRequest('compareSemver',{left:'3.0.0',right:'1.0.0'})!==2) process.exit(1);
+    if(a.quotaBarViewRequest('compactBarText',{text:'5h 20% {cd:1700000000000|5h} · ⟳ 刷新'})!=='5h 20%') process.exit(1);
+    if(a.limitCacheRecorderRequestValue('isRevokedCategory',{category:'authentication_permission'})!==true) process.exit(1);
+    if(a.orchestrationStoreProtocol?.()!==2 || typeof a.RustOrchestrationStore!=='function'
+      || typeof a.orchestrationStoreExport!=='function') process.exit(1);
+    {
+      const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+      const dir=fs.mkdtempSync(path.join(os.tmpdir(),'multicc-orchestration-probe-'));
+      let store;
+      try {
+        store=new a.RustOrchestrationStore(path.join(dir,'state.sqlite'),null,1,{});
+        if(typeof store.requestAsync!=='function' || store.request('info',{}).state.revision!==0
+          || store.request('count',{collection:'tasks',options:{where:{}}})!==0) throw Error('orchestration_protocol_mismatch');
+      } finally {
+        try { if(store) store.request('close',{}); } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+      }
+    }
     (async()=>{ const model=new a.RustTaskReadModel();
       const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);
       await run({op:'open',epoch:'preflight'});

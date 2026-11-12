@@ -17,14 +17,18 @@
 //! The Node process here is only the protocol fixture (PROXY v1 + auth
 //! control): it answers `POST /api/__host/providers` from
 //! `FIXTURE_HOST_SCRIPT` and appends every payload to
-//! `provider-calls.jsonl`. `POST /api/providers/:appType/:id/speedtest` is not
-//! claimed, so a test proves it still reaches the fixture.
+//! `provider-calls.jsonl`. The speed test's loopback hop and the routing test's
+//! Jev call are scripted by the same fixture file (`speedtest`, `jev` keys) and
+//! logged to `speedtest-calls.jsonl` / `jev-calls.jsonl`.
 
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -64,7 +68,12 @@ impl Response {
             .map(|(_, value)| value.as_str())
     }
     fn json(&self) -> Value {
-        serde_json::from_str(&self.body).expect("JSON response")
+        serde_json::from_str(&self.body).unwrap_or_else(|error| {
+            panic!(
+                "JSON response: {error}; status {} body {:?}",
+                self.status, self.body
+            )
+        })
     }
 }
 
@@ -77,9 +86,13 @@ struct Gateway {
 
 impl Gateway {
     fn start(tag: &str, script: Value) -> Self {
+        Self::start_with_env(tag, script, &[])
+    }
+
+    fn start_with_env(tag: &str, script: Value, envs: &[(&str, String)]) -> Self {
         let mut last_log = String::new();
         for attempt in 0..6 {
-            match Self::start_once(&format!("{tag}-{attempt}"), &script) {
+            match Self::start_once(&format!("{tag}-{attempt}"), &script, envs) {
                 Ok(gateway) => return gateway,
                 Err((log, retryable)) => {
                     last_log = log;
@@ -93,7 +106,11 @@ impl Gateway {
         panic!("gateway never became ready\n{last_log}");
     }
 
-    fn start_once(tag: &str, script: &Value) -> Result<Self, (String, bool)> {
+    fn start_once(
+        tag: &str,
+        script: &Value,
+        envs: &[(&str, String)],
+    ) -> Result<Self, (String, bool)> {
         let dir = unique(tag);
         let data = dir.join("data");
         let home = dir.join("home");
@@ -131,6 +148,9 @@ impl Gateway {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log));
+        for (name, value) in envs {
+            command.env(name, value);
+        }
         for key in [
             "TMPDIR",
             "SystemRoot",
@@ -323,7 +343,7 @@ fn catalog_keeps_the_legacy_body_order_and_query() {
     let facts = json!({
         "ok": true,
         "ccSwitchStatus": { "available": true, "note": "x" },
-        "providers": [{ "appType": "claude", "id": "p1" }],
+        "providers": [{ "appType": "claude", "id": "p1", "compatibleClis": ["claude"] }],
         "stats": { "requests": 3 },
         "defaults": { "claude": "p1", "codex": null },
         "limitCacheStaleMs": 5000
@@ -390,7 +410,7 @@ fn catalog_omits_cc_switch_available_when_the_host_has_none() {
 fn catalog_query_shapes_and_poll_follow_express() {
     let facts = json!({
         "ok": true,
-        "providers": [],
+        "providers": [{ "appType": "codex", "id": "account", "isOfficial": true }],
         "stats": {},
         "defaults": {},
         "limitCacheStaleMs": null
@@ -426,10 +446,13 @@ fn catalog_query_shapes_and_poll_follow_express() {
     assert_eq!(
         gateway.provider_calls(),
         vec![
-            json!({ "op": "catalog", "appType": "", "cli": "", "poll": "1" }),
-            json!({ "op": "catalog", "appType": "", "cli": "", "poll": "2" }),
-            json!({ "op": "catalog", "appType": "", "cli": "", "poll": ["1", "2"] }),
-            json!({ "op": "catalog", "appType": "", "cli": "", "poll": {} }),
+            json!({ "op": "catalog", "appType": "", "cli": "" }),
+            json!({ "op": "catalog", "appType": "", "cli": "" }),
+            json!({ "op": "catalogRefresh", "providerIds": ["account"] }),
+            json!({ "op": "catalog", "appType": "", "cli": "" }),
+            json!({ "op": "catalogRefresh", "providerIds": ["account"] }),
+            json!({ "op": "catalog", "appType": "", "cli": "" }),
+            json!({ "op": "catalogRefresh", "providerIds": ["account"] }),
         ]
     );
 }
@@ -1217,7 +1240,7 @@ fn host_down_is_a_503_and_options_never_touches_the_host() {
 }
 
 #[test]
-fn head_matches_get_and_speedtest_stays_with_node() {
+fn head_matches_get_and_post_only_paths_forward() {
     let gateway = Gateway::start(
         "head-speedtest",
         json!({ "providers": { "answers": { "catalog": {
@@ -1239,17 +1262,6 @@ fn head_matches_get_and_speedtest_stays_with_node() {
     let response = gateway.head("/api/providers/import");
     assert_eq!(response.status, 200);
     assert!(gateway.forwarded("HEAD", "/api/providers/import"));
-
-    // speedtest keeps streaming into Node.
-    let response = gateway.exchange(
-        "POST",
-        "/api/providers/claude/p1/speedtest",
-        Some("{}"),
-        &[],
-    );
-    assert_eq!(response.status, 200, "{}", response.body);
-    assert_eq!(response.body, "ok");
-    assert!(gateway.forwarded("POST", "/api/providers/claude/p1/speedtest"));
 }
 
 #[test]
@@ -1279,4 +1291,654 @@ fn malformed_params_answer_the_safe_error_dto() {
             ],
         );
     }
+}
+
+// ── speed test (POST /api/providers/:appType/:id/speedtest) ─────────────────
+
+#[test]
+fn speedtest_official_codex_measures_the_loopback_hop() {
+    let gateway = Gateway::start(
+        "speed-official-codex",
+        json!({
+            "providers": { "answers": { "speedtestFacts": {
+                "ok": true, "found": true, "kind": "codex", "official": true,
+                "summary": { "model": "gpt-5-codex" }
+            } } },
+            "speedtest": { "status": 200, "body": "{}" }
+        }),
+    );
+    let response = gateway.send(
+        "POST",
+        "/api/providers/codex/codex-one/speedtest",
+        &json!({}),
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], json!(true));
+    assert!(body["ms"].is_number());
+    assert_eq!(body["status"], json!(200));
+    assert_eq!(body["model"], json!("gpt-5-codex"));
+    let calls = gateway.calls("speedtest-calls.jsonl");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["url"], json!("/codex-proxy/codex-one/responses"));
+    assert_eq!(calls[0]["headers"]["accept"], json!("text/event-stream"));
+    let sent: Value = serde_json::from_str(calls[0]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(sent["model"], json!("gpt-5-codex"));
+    assert_eq!(sent["stream"], json!(true));
+}
+
+#[test]
+fn speedtest_third_party_codex_without_http_credentials_reports_the_host_reason() {
+    let gateway = Gateway::start(
+        "speed-official-oauth",
+        json!({
+            "providers": { "answers": { "speedtestFacts": {
+                "ok": true, "found": true, "kind": "codex", "official": false,
+                "canDirect": false, "reason": "OAuth 订阅型 provider 不支持测速"
+            } } }
+        }),
+    );
+    let response = gateway.send(
+        "POST",
+        "/api/providers/codex/oauth-one/speedtest",
+        &json!({}),
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], json!(false));
+    assert_eq!(body["error"], json!("OAuth 订阅型 provider 不支持测速"));
+    assert!(gateway.calls("speedtest-calls.jsonl").is_empty());
+}
+
+#[test]
+fn speedtest_claude_needs_a_key_or_a_base_url() {
+    let gateway = Gateway::start(
+        "speed-no-key",
+        json!({
+            "providers": { "answers": { "speedtestFacts": {
+                "ok": true, "found": true, "kind": "claude", "official": false,
+                "hasKey": false, "env": {}, "summary": {},
+                "fallbackModels": [], "wireDefaultModel": "claude-sonnet-4-5"
+            } } }
+        }),
+    );
+    let response = gateway.send("POST", "/api/providers/claude/p1/speedtest", &json!({}));
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(response.json()["ok"], json!(false));
+    assert_eq!(response.json()["error"], json!("缺少 API Key 或 Base URL"));
+    assert!(gateway.calls("speedtest-calls.jsonl").is_empty());
+}
+
+#[test]
+fn speedtest_claude_prefers_the_host_summary_model_and_caps_the_body() {
+    let gateway = Gateway::start(
+        "speed-claude-model",
+        json!({
+            "providers": { "answers": { "speedtestFacts": {
+                "ok": true, "found": true, "kind": "claude", "official": true,
+                "hasKey": true,
+                "env": { "ANTHROPIC_BASE_URL": "https://relay.test" },
+                "summary": { "model": "", "modelOptions": ["claude-opus-5[1m]", "claude-haiku-4-5"] },
+                "fallbackModels": [],
+                "wireDefaultModel": "claude-sonnet-4-5"
+            } } },
+            "speedtest": { "status": 502, "body": "x" }
+        }),
+    );
+    // A 70 KB body is past the 64 KB cap, so the probe answers "too large"
+    // without buffering the whole upstream reply.
+    let script = json!({
+        "providers": { "answers": { "speedtestFacts": {
+            "ok": true, "found": true, "kind": "claude", "official": true,
+            "hasKey": false,
+            "env": { "ANTHROPIC_BASE_URL": "https://relay.test" },
+            "summary": { "model": "", "modelOptions": ["claude-opus-5[1m]", "claude-haiku-4-5"] },
+            "fallbackModels": [],
+            "wireDefaultModel": "claude-sonnet-4-5"
+        } } },
+        "speedtest": { "status": 502, "body": "x".repeat(70 * 1024) }
+    });
+    drop(gateway);
+    let gateway = Gateway::start("speed-claude-model-large", script);
+    let response = gateway.send("POST", "/api/providers/claude/p1/speedtest", &json!({}));
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], json!(false));
+    assert_eq!(body["status"], json!(502));
+    assert_eq!(body["model"], json!("claude-haiku-4-5"));
+    assert_eq!(body["error"], json!("response too large"));
+    let calls = gateway.calls("speedtest-calls.jsonl");
+    assert_eq!(
+        calls[0]["url"],
+        json!("/claude-proxy/p1/speedtest/v1/messages?beta=true")
+    );
+    assert_eq!(
+        calls[0]["headers"]["authorization"],
+        json!("multicc-speedtest")
+    );
+    assert_eq!(calls[0]["headers"]["x-api-key"], json!("multicc-speedtest"));
+    assert_eq!(calls[0]["headers"]["x-app"], json!("cli"));
+    let sent: Value = serde_json::from_str(calls[0]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(sent["model"], json!("claude-haiku-4-5"));
+    assert_eq!(sent["max_tokens"], json!(1));
+    assert!(sent["system"].is_array());
+}
+
+#[test]
+fn speedtest_unknown_provider_is_a_404_and_options_lists_post() {
+    let gateway = Gateway::start(
+        "speed-missing",
+        json!({ "providers": { "answers": { "speedtestFacts": { "ok": true, "found": false } } } }),
+    );
+    let response = gateway.send("POST", "/api/providers/claude/nope/speedtest", &json!({}));
+    assert_eq!(response.status, 404, "{}", response.body);
+    assert_eq!(response.json()["error"], json!("provider not found"));
+
+    let options = gateway.options("/api/providers/claude/nope/speedtest");
+    assert_eq!(options.status, 200);
+    assert_eq!(options.header("allow"), Some("POST"));
+}
+
+// ── GET /api/v1/providers ───────────────────────────────────────────────────
+
+#[test]
+fn v1_providers_maps_the_host_list_through_the_dto_and_meta_envelope() {
+    let gateway = Gateway::start(
+        "v1-providers",
+        json!({ "providers": { "answers": { "v1Providers": {
+            "ok": true,
+            "providers": [
+                {
+                    "id": "p1", "appType": "claude", "name": "Claude One",
+                    "model": "claude-haiku-4-5", "modelOptions": ["claude-haiku-4-5", "claude-haiku-4-5"],
+                    "compatibleClis": ["claude", "codex"], "hasToken": true,
+                    "source": "ccswitch", "isOfficial": true
+                }
+            ]
+        } } } }),
+    );
+    let response = gateway.exchange(
+        "GET",
+        "/api/v1/providers?appType=%20claude%20",
+        None,
+        &[("x-request-id", "req-v1")],
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(
+        gateway.provider_calls(),
+        vec![json!({ "op": "v1Providers", "appType": "claude" })]
+    );
+    let body = response.json();
+    assert_eq!(body["count"], json!(1));
+    assert_eq!(body["apiVersion"], json!("v1"));
+    assert_eq!(body["requestId"], json!("req-v1"));
+    assert_key_order(
+        &response.body,
+        &[
+            "providers",
+            "count",
+            "apiVersion",
+            "requestId",
+            "correlationId",
+        ],
+    );
+    let dto = &body["providers"][0];
+    assert_eq!(dto["id"], json!("p1"));
+    assert_eq!(dto["protocol"], json!("anthropic"));
+    assert_eq!(dto["wireApi"], json!(null));
+    assert_eq!(dto["modelOptions"], json!(["claude-haiku-4-5"]));
+    assert_eq!(dto["source"], json!("ccswitch"));
+    assert_eq!(dto["hasCredentials"], json!(true));
+    assert_eq!(dto["isOfficial"], json!(true));
+    assert_key_order(
+        &serde_json::to_string(dto).unwrap(),
+        &[
+            "id",
+            "appType",
+            "protocol",
+            "apiFormat",
+            "wireApi",
+            "name",
+            "source",
+            "model",
+            "modelOptions",
+            "aliasOnly",
+            "compatibleClis",
+            "hasCredentials",
+            "isOfficial",
+        ],
+    );
+
+    // HEAD answers the same headers with an empty body (same supplied id, so
+    // the envelope and therefore the ETag are identical).
+    let head = gateway.exchange(
+        "HEAD",
+        "/api/v1/providers?appType=%20claude%20",
+        None,
+        &[("x-request-id", "req-v1")],
+    );
+    assert_eq!(head.status, 200);
+    assert!(head.body.is_empty());
+    assert_eq!(head.header("etag"), response.header("etag"));
+
+    let options = gateway.options("/api/v1/providers");
+    assert_eq!(options.status, 200);
+    assert_eq!(options.header("allow"), Some("GET,HEAD"));
+}
+
+#[test]
+fn v1_providers_only_forwards_the_two_known_app_types() {
+    let gateway = Gateway::start(
+        "v1-providers-filter",
+        json!({ "providers": { "answers": { "v1Providers": { "ok": true, "providers": [] } } } }),
+    );
+    let response = gateway.get("/api/v1/providers?appType=opencode");
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(
+        gateway.provider_calls(),
+        vec![json!({ "op": "v1Providers" })]
+    );
+    assert_eq!(response.json()["providers"], json!([]));
+    assert_eq!(response.json()["count"], json!(0));
+}
+
+#[test]
+fn v1_providers_host_failure_is_the_safe_500() {
+    let gateway = Gateway::start(
+        "v1-providers-fail",
+        json!({ "providers": { "answers": { "v1Providers": {
+            "ok": false, "error": { "message": "provider list failed <script>" }
+        } } } }),
+    );
+    let response = gateway.get("/api/v1/providers");
+    assert_eq!(response.status, 500, "{}", response.body);
+    // safeErrorHandler hides the thrown message, exactly like Node.
+    assert_eq!(response.json()["error"], json!("internal_error"));
+}
+
+// ── POST /api/auto-provider/routing/test ────────────────────────────────────
+
+struct JevStub {
+    port: u16,
+    requests: Arc<std::sync::Mutex<Vec<Value>>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl JevStub {
+    fn start(responses: Vec<(u16, String)>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&requests);
+        let flag = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            let mut queue = responses.into_iter();
+            while !flag.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut socket, _)) => {
+                        // The listener is non-blocking so `accept` can poll
+                        // `stop`; macOS may hand the flag to the accepted
+                        // socket, which would make the first `read` return
+                        // WouldBlock before the request arrives.
+                        socket.set_nonblocking(false).ok();
+                        socket.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                        let mut raw = Vec::new();
+                        let mut buffer = [0u8; 4096];
+                        while !raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                            match socket.read(&mut buffer) {
+                                Ok(0) => break,
+                                Ok(n) => raw.extend_from_slice(&buffer[..n]),
+                                Err(_) => break,
+                            }
+                        }
+                        let split = raw
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .unwrap_or(raw.len());
+                        let head = String::from_utf8_lossy(&raw[..split]).to_string();
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        let mut body = raw.get(split + 4..).unwrap_or(&[]).to_vec();
+                        while body.len() < length {
+                            match socket.read(&mut buffer) {
+                                Ok(0) => break,
+                                Ok(n) => body.extend_from_slice(&buffer[..n]),
+                                Err(_) => break,
+                            }
+                        }
+                        let headers: serde_json::Map<String, Value> = head
+                            .lines()
+                            .skip(1)
+                            .filter_map(|line| line.split_once(':'))
+                            .map(|(name, value)| {
+                                (
+                                    name.trim().to_ascii_lowercase(),
+                                    Value::String(value.trim().to_string()),
+                                )
+                            })
+                            .collect();
+                        seen.lock().unwrap().push(json!({
+                            "head": head.lines().next().unwrap_or_default(),
+                            "headers": headers,
+                            "body": String::from_utf8_lossy(&body),
+                        }));
+                        let (status, text) = queue.next().unwrap_or_else(|| {
+                            (
+                                500,
+                                "{\"error\":{\"message\":\"stub exhausted\"}}".to_string(),
+                            )
+                        });
+                        let reason = if status == 200 { "OK" } else { "Error" };
+                        let reply = format!(
+                            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                            text.len()
+                        );
+                        let _ = socket.write_all(reply.as_bytes());
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Self {
+            port,
+            requests,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}/jev", self.port)
+    }
+
+    fn requests(&self) -> Vec<Value> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl Drop for JevStub {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn routing_script(verdict: Value) -> Value {
+    json!({
+        "secret": { "reveal": { "ok": true, "name": "VERCEL_API_KEY", "value": "vck_route_test" } },
+        "jev": { "status": 200, "body": verdict.to_string() }
+    })
+}
+
+fn simple_verdict() -> Value {
+    json!({
+        "answers": {
+            "tier": { "type": "choice", "choice": "t1", "probabilities": { "t1": 0.9, "t2": 0.1 } },
+            "complexity": { "type": "score", "score": 0, "probabilities": [0.9, 0.1] }
+        },
+        "providerMetadata": { "typesafe": { "confidence": { "tier": 0.9, "complexity": 0.9 } } }
+    })
+}
+
+#[test]
+fn routing_test_reads_the_vault_names_the_source_and_returns_the_tier() {
+    let jev = JevStub::start(vec![(200, simple_verdict().to_string())]);
+    let gateway = Gateway::start_with_env(
+        "routing-ok",
+        routing_script(simple_verdict()),
+        &[("MULTICC_ROUTING_TEST_URL", jev.url())],
+    );
+    let response = gateway.send("POST", "/api/auto-provider/routing/test", &json!({}));
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], json!(true));
+    assert_eq!(body["tier"], json!("t1"));
+    assert!(body["latencyMs"].is_number());
+    assert_key_order(&response.body, &["ok", "tier", "latencyMs"]);
+
+    let secrets = gateway.calls("secret-calls.jsonl");
+    assert_eq!(
+        secrets,
+        vec![json!({ "op": "reveal", "name": "VERCEL_API_KEY", "source": "routing_test" })]
+    );
+    let calls = jev.requests();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0]["headers"]["authorization"],
+        json!("Bearer vck_route_test")
+    );
+    let sent: Value = serde_json::from_str(calls[0]["body"].as_str().unwrap()).unwrap();
+    assert!(sent["state"]
+        .to_string()
+        .contains("把 README 里的一个错别字改掉"));
+    assert!(!calls[0]["body"]
+        .as_str()
+        .unwrap()
+        .contains("vck_route_test"));
+}
+
+#[test]
+fn routing_test_rejects_an_unusable_target_before_reading_the_vault() {
+    let jev = JevStub::start(vec![]);
+    let gateway = Gateway::start_with_env(
+        "routing-400",
+        routing_script(simple_verdict()),
+        &[("MULTICC_ROUTING_TEST_URL", jev.url())],
+    );
+    for body in [
+        json!({ "apiKeyName": "../etc/passwd" }),
+        json!({ "gateway": "anthropic" }),
+        json!({ "gateway": "custom", "endpoint": "http://jev.example/v1" }),
+    ] {
+        let response = gateway.send("POST", "/api/auto-provider/routing/test", &body);
+        assert_eq!(response.status, 400, "{body}: {}", response.body);
+        let json = response.json();
+        assert_eq!(json["code"], json!("invalid_routing_target"));
+        assert!(json["detail"].is_string());
+        assert!(!response.body.contains("../etc/passwd"));
+    }
+    assert!(gateway.calls("secret-calls.jsonl").is_empty());
+    assert!(jev.requests().is_empty());
+}
+
+#[test]
+fn routing_test_reports_a_gateway_rejection_with_its_scrubbed_detail() {
+    let jev = JevStub::start(vec![(
+        401,
+        "{\"error\":{\"message\":\"Invalid API key <script>\"}}".to_string(),
+    )]);
+    let gateway = Gateway::start_with_env(
+        "routing-401",
+        routing_script(simple_verdict()),
+        &[("MULTICC_ROUTING_TEST_URL", jev.url())],
+    );
+    let response = gateway.send("POST", "/api/auto-provider/routing/test", &json!({}));
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], json!(false));
+    assert_eq!(body["code"], json!("jev_http_401"));
+    assert_eq!(body["status"], json!(401));
+    assert_eq!(body["detail"], json!("Invalid API key <script>"));
+}
+
+#[test]
+fn routing_test_without_a_vault_entry_is_jev_key_missing() {
+    let jev = JevStub::start(vec![]);
+    let gateway = Gateway::start_with_env(
+        "routing-missing-key",
+        json!({ "secret": { "reveal": { "ok": false, "reason": "missing" } } }),
+        &[("MULTICC_ROUTING_TEST_URL", jev.url())],
+    );
+    let response = gateway.send("POST", "/api/auto-provider/routing/test", &json!({}));
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], json!(false));
+    assert_eq!(body["code"], json!("jev_key_missing"));
+    assert!(jev.requests().is_empty());
+
+    let options = gateway.options("/api/auto-provider/routing/test");
+    assert_eq!(options.status, 200);
+    assert_eq!(options.header("allow"), Some("POST"));
+}
+
+// 余额业务在真实 Rust 前门执行，Node 夹具只回答运行时事实。
+#[test]
+fn balances_cached_unknown_unsupported_and_virtual_members_keep_their_contracts() {
+    let gateway = Gateway::start(
+        "balances-contracts",
+        json!({ "providerBalance": { "answers": {
+            "facts:missing": { "ok":true, "found":false },
+            "facts:plain": { "ok":true, "found":true, "provider":{"appType":"claude","id":"plain"}, "target":null },
+            "facts:pool": { "ok":true, "found":true, "provider":{"appType":"claude","id":"pool","virtual":true} },
+            "virtualMember:pool": { "ok":true, "member":null },
+            "cached:plain": { "ok":true, "found":true, "entry":null, "snapshot":{"ok":true,"type":"provider_limit_updated","dto":{"kind":"window"},"bar":{"text":"cached"}} },
+            "list": { "ok":true, "providers":[{"appType":"claude","id":"plain","name":"Plain"},{"appType":"claude","id":"missing","name":"Missing"}] }
+        }}}),
+    );
+    let missing = gateway.get("/api/providers/claude/missing/balance");
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.json(), json!({"ok":false,"reason":"not_found"}));
+    let plain = gateway.get("/api/providers/claude/plain/balance");
+    assert_eq!(
+        plain.json(),
+        json!({"ok":false,"reason":"unsupported","providerId":"plain","appType":"claude"})
+    );
+    let pool = gateway.get("/api/providers/claude/pool/balance");
+    assert_eq!(
+        pool.json(),
+        json!({"ok":false,"reason":"no_available_member","providerId":"pool","appType":"claude","virtual":true})
+    );
+    let count = gateway.calls("balance-calls.jsonl").len();
+    let cached = gateway.get("/api/providers/claude/plain/balance?cached=1");
+    assert_eq!(cached.json()["cached"], true);
+    let calls = gateway.calls("balance-calls.jsonl");
+    assert_eq!(calls.len(), count + 1);
+    assert_eq!(calls.last().unwrap()["op"], "cached");
+    let all = gateway.get("/api/providers/balances").json();
+    assert_eq!(all["results"][0]["name"], "Plain");
+    assert_eq!(all["results"][0]["reason"], "unsupported");
+    assert_eq!(all["results"][1]["name"], "Missing");
+    assert_eq!(all["results"][1]["reason"], "not_found");
+    assert!(!gateway.forwarded("GET", "/api/providers/balances"));
+}
+
+#[test]
+fn balance_live_success_renders_in_core_without_a_host_render_call() {
+    let upstream = JevStub::start(vec![(
+        200,
+        json!({"ok":true,"dto":{"kind":"balance","available":true,"total":25,"currency":"USD"}})
+            .to_string(),
+    )]);
+    let gateway = Gateway::start(
+        "balances-native-render",
+        json!({ "providerBalance": { "answers": {
+            "facts": { "ok":true, "found":true, "provider":{"appType":"claude","id":"work"},
+                "target":{"strategy":"relay-quota","relayUrl":upstream.url(),"apiKey":"fixture-key"},
+                "egress":{"allowed":true} },
+            "record": { "ok":true }
+        }}}),
+    );
+    let response = gateway.get("/api/providers/claude/work/balance");
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["bar"]["text"], "$25.00");
+    assert_eq!(body["bar"]["color"], "#58a6ff");
+    let calls = gateway.calls("balance-calls.jsonl");
+    assert!(calls.iter().all(|call| call["op"] != "render"));
+    assert_eq!(calls.last().unwrap()["op"], "record");
+    assert_eq!(calls.last().unwrap()["result"]["bar"], body["bar"]);
+    assert_eq!(upstream.requests().len(), 1);
+}
+
+#[test]
+fn balance_live_failure_records_failure_and_only_management_returns_stale() {
+    let gateway = Gateway::start(
+        "balances-stale",
+        json!({ "providerBalance": { "answers": {
+            "facts": { "ok":true, "found":true, "provider":{"appType":"claude","id":"work"},
+                "target":{"strategy":"deepseek-balance"}, "egress":{"allowed":false,"detail":"restricted egress"} },
+            "record": { "ok":true },
+            "cached": { "ok":true, "found":true, "entry":{"summary":{"kind":"balance","total":12.5},"barText":"余额 12.5","fetchedAt":1700000000000_i64} }
+        }}}),
+    );
+    let stale = gateway.get("/api/providers/claude/work/balance").json();
+    assert_eq!(stale["ok"], true);
+    assert_eq!(stale["stale"], true);
+    assert_eq!(stale["dto"]["kind"], "balance");
+    assert_eq!(stale["bar"]["color"], "#8b949e");
+    assert!(stale["bar"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("{ago:1700000000000}"));
+    let before = gateway.calls("balance-calls.jsonl").len();
+    let relay = gateway.get("/claude-proxy/work/remote/quota");
+    assert_eq!(relay.header("cache-control"), Some("no-store"));
+    assert_eq!(relay.json()["reason"], "fetch_failed");
+    assert!(relay.json().get("stale").is_none());
+    let calls = gateway.calls("balance-calls.jsonl");
+    assert!(!calls[before..].iter().any(|row| row["op"] == "cached"));
+    for row in calls.iter().filter(|row| row["op"] == "record") {
+        assert_eq!(row["result"]["ok"], false);
+    }
+    let admission = gateway.calls("relay-calls.jsonl");
+    assert_eq!(admission.len(), 1);
+    assert_eq!(admission[0]["op"], "admission");
+    assert_eq!(
+        admission[0]["request"]["path"],
+        "/claude-proxy/work/remote/quota"
+    );
+}
+
+#[test]
+fn balance_concurrent_requests_share_one_query_but_later_calls_refresh() {
+    let gateway = Gateway::start(
+        "balances-dedupe",
+        json!({ "providerBalance": { "delayMs":100, "answers": {
+            "facts": {"ok":true,"found":true,"provider":{"appType":"claude","id":"plain"},"target":null}
+        }}}),
+    );
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| gateway.get("/api/providers/claude/plain/balance"));
+        let second = scope.spawn(|| gateway.get("/api/providers/claude/plain/balance"));
+        assert_eq!(first.join().unwrap().json()["reason"], "unsupported");
+        assert_eq!(second.join().unwrap().json()["reason"], "unsupported");
+    });
+    assert_eq!(gateway.calls("balance-calls.jsonl").len(), 1);
+    assert_eq!(
+        gateway.get("/api/providers/claude/plain/balance").status,
+        200
+    );
+    assert_eq!(gateway.calls("balance-calls.jsonl").len(), 2);
+}
+
+#[test]
+fn relay_balance_denial_precedes_provider_and_credentials_lookup() {
+    let gateway = Gateway::start(
+        "balances-denied",
+        json!({ "providerRelay": { "answers": {
+            "admission": {"allowed":false,"status":403,"body":{"error":"share revoked"},"headers":{}}
+        }}}),
+    );
+    let denied = gateway.send("POST", "/codex-proxy/work/quota", &json!({}));
+    assert_eq!(denied.status, 403);
+    assert_eq!(denied.json()["error"], "share revoked");
+    assert!(gateway.calls("balance-calls.jsonl").is_empty());
 }

@@ -345,11 +345,34 @@ test('every key the renderer can emit exists in both catalogs', () => {
   // The static half: a key reachable from a branch no input below exercises still
   // has to be in the shared dictionary, because the app ships the same file and
   // generate-i18n.js keeps the two aligned by key set.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'quota', 'quota-bar-view.js'), 'utf8');
-  const keys = new Set([...source.matchAll(/\bpart\(\s*'([A-Za-z0-9_]+)'/g)].map((m) => m[1]));
+  const rustRoot = path.join(__dirname, '..', 'native', 'core', 'src');
+  const renderer = path.join(rustRoot, 'quota_bar_view.rs');
+  const directory = path.join(rustRoot, 'quota_bar_view');
+  const source = fs.readFileSync(renderer, 'utf8');
+  assert.match(source, /include_str!\(\s*"quota_bar_view\/messages\.json"\s*\)/,
+    'the vocabulary must be the catalog actually compiled into the renderer');
+  const messages = JSON.parse(fs.readFileSync(path.join(directory, 'messages.json'), 'utf8'));
+  const keys = new Set(Object.keys(messages));
+  const rustFiles = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const file = path.join(dir, entry.name);
+    return entry.isDirectory() ? rustFiles(file) : entry.isFile() && entry.name.endsWith('.rs') ? [file] : [];
+  });
+  const files = [renderer, ...rustFiles(directory)];
+  assert.ok(files.includes(path.join(directory, 'claude.rs')) && files.includes(path.join(directory, 'vendors.rs')),
+    'vocabulary coverage must include all renderer submodules');
+  const referenced = new Set(files.flatMap(file => {
+    const text = fs.readFileSync(file, 'utf8');
+    return [...text.matchAll(/"(quota[A-Z][A-Za-z0-9_]*)"/g),
+      ...text.matchAll(/\b(?:part|p)\(\s*"([A-Za-z0-9_]+)"/g)].map(match => match[1]);
+  }));
+  assert.ok(referenced.size > 120, `expected Rust branch coverage, got ${referenced.size} key(s)`);
+  assert.deepEqual([...referenced].filter(key => !keys.has(key)), [], 'Rust keys missing from the native catalog');
   assert.ok(keys.size > 120, `expected the whole bar vocabulary, got ${keys.size} key(s)`);
   assert.deepEqual([...keys].filter((k) => !(k in zhCatalog)), [], 'keys missing from zh.json');
   assert.deepEqual([...keys].filter((k) => !(k in enCatalog)), [], 'keys missing from en.json');
+  for (const [key, template] of Object.entries(messages)) {
+    assert.equal(template, zhCatalog[key], `${key}: the native fallback and shared zh catalog must agree`);
+  }
   // Two literals live on the client side of the bar (public/chat-rate-limit.js),
   // so the renderer never mentions them; they are still the same dictionary.
   for (const key of ['quotaRolledWindow', 'quotaArkInstallFailed']) {
@@ -452,5 +475,125 @@ test('a rolled-over window and an unknown key both degrade safely in English', (
   } finally {
     if (previous.getLang === undefined) delete global.getLang; else global.getLang = previous.getLang;
     if (previous.I18N === undefined) delete global.I18N; else global.I18N = previous.I18N;
+  }
+});
+
+// Frozen pre-migration renderer, including its nested i18n parts. Do not
+// regenerate this oracle from the native implementation when fixing parity.
+test('Rust quota rendering matches the frozen renderer across vendors, reset boundaries and malformed readings', () => {
+  const legacy = require('./helpers/legacy-quota-bar-view');
+  const now = 1_700_000_000_000;
+  const opts = { nowMs: now, baseUrl: 'https://ark.cn/api/coding/v3' };
+  const cases = [];
+  for (const kind of ['opencode', 'qoder', 'codex', 'ark', 'zhipu', 'kimi', 'claude']) {
+    for (const value of [null, {}, { status: 'needs_login' }, { status: 'chrome_unavailable' },
+      { status: 'no_auth' }, { status: 'not_configured' }, { status: 'needs_auth' },
+      { status: 'needs_install' }, { status: 'error', error: '网络错误' }]) cases.push([kind, value, opts]);
+  }
+  for (const at of [now - 1, now, now + 1, null]) {
+    const fetchedAt = now - 100;
+    cases.push(['opencode', { status: 'ok', fetchedAt, source: 'zen-api', usage: {
+      rolling: { usagePercent: 72.5, resetInSec: at == null ? null : (at - fetchedAt) / 1000, status: 'rate-limited' },
+      weekly: { usagePercent: 33, resetInSec: 100 }, useBalance: true } }, opts]);
+    cases.push(['qoder', { status: 'ok', fetchedAt, quota: { nextResetAt: at,
+      total_quota: { quota_summary: { used_value: 80, limit_value: 100, remaining_value: 20 } },
+      plan_quota: { quota_summary: { used_value: 50, limit_value: 60 } },
+      resource_package_quota: { quota_summary: { used_value: 30, limit_value: 40, remaining_value: 10 } } },
+      plan: { plan_tier: 'PLAN_TIER_PRO' } }, opts]);
+    cases.push(['codex', { status: 'ok', fetchedAt, planType: 'plus', windows: [
+      { window: '1wk', usedPercent: 35, resetsAt: at && at / 1000 },
+      { window: '5h', usedPercent: 90, resetsAt: at && at / 1000 }],
+      additional: [{ name: 'review', usedPercent: 40 }], credits: { hasCredits: true, balance: '12.5' } }, opts]);
+    cases.push(['ark', { status: 'ok', fetchedAt, viewer: { user_name: '用户', auth_method: 'sso' }, items: [
+      { product: 'agent-plan-team', subscribed: true, tier: 'pro', periods: [{ label: 'weekly', percent: 10, resetAt: at }] },
+      { product: 'coding-plan', subscribed: true, periods: [{ label: 'session', percent: 90, used: 90, total: 100, resetAt: at }] }] }, opts]);
+    cases.push(['zhipu', { status: 'ok', fetchedAt, sites: [{ ok: true, site: 'GLM', host: 'z.ai', usedPercent: 90,
+      resetsAt: at, weeklyUsedPercent: 35, weeklyResetsAt: at, tier: 'pro' }] }, opts]);
+    cases.push(['kimi', { status: 'ok', source: 'subscription-page', fetchedAt,
+      summary: [{ window: '1wk', usedPercent: 35, resetMs: at }, { window: '5h', usedPercent: 90, resetMs: at }] }, opts]);
+    cases.push(['claude', { status: 'ok', fetchedAt, summary: [
+      { window: '1wk', label: 'All models', usedPercent: 35, resetMs: at },
+      { window: '1wk', label: 'Fable (premium)', usedPercent: 50, resetMs: at }] },
+      { ...opts, live: { status: 'allowed_warning', usedPercentage: 90, resetsAtMs: at, observedAtMs: fetchedAt } }]);
+  }
+  cases.push(['kimi', { status: 'ok', fetchedAt: now - 100, sites: [
+    { ok: true, site: 'moonshot', host: 'api.moonshot.cn', available: 1.005, currency: 'CNY', voucher: 0.125, cash: 1 }] }, opts]);
+  cases.push(['kimi', { status: 'error', sites: [{ reason: 'auth_rejected' }] }, { ...opts,
+    cached: { status: 'ok', fetchedAt: now - 100, sites: [{ ok: true, available: 23.55, currency: 'CNY' }] } }]);
+  cases.push(['kimi', { status: 'ok', source: 'subscription-page', text: 'a'.repeat(299) + '😀' }, opts]);
+  for (const [kind, value, options] of cases) {
+    assert.deepEqual(Renderer.renderQuotaBar(kind, value, options), legacy.renderQuotaBar(kind, value, options),
+      `quota renderer parity: ${kind} ${JSON.stringify(value)}`);
+  }
+  for (const total of [undefined, null, '', false, ' 12.5 ', [], [3], NaN, Infinity, -0, 1.005, 1.125, 1e21]) {
+    const value = { kind: 'balance', total, currency: 'CNY' };
+    assert.deepEqual(Renderer.normalizeBalance(value), legacy.normalizeBalance(value));
+    assert.deepEqual(Renderer.balanceBar(value), legacy.balanceBar(value));
+  }
+  const entry = { kind: 'claude', fetchedAt: now - 100, summary: { windows: [
+    { window: '7d', label: 'All models', usedPercent: 50, resetMs: now + 1000 },
+    { window: 'session', usedPercent: 99, resetMs: now - 1 }] }, lastError: '失败', stale: true };
+  assert.deepEqual(Renderer.providerLimitBar(entry, now), legacy.providerLimitBar(entry, now));
+  for (const text of ['5h 80% {cd:1700000000000|5h} · {ago:1} ⟳ 刷新', '', null, 'a · · b']) {
+    assert.equal(Renderer.compactBarText(text), legacy.compactBarText(text));
+  }
+});
+
+test('Rust quota bridge preserves explicit times, UTF-16 labels, strict enums and freeze boundaries', () => {
+  const legacy = require('./helpers/legacy-quota-bar-view');
+  const now = 1_700_000_000_000;
+  const info = { provider: 'codex', status: 'allowed', kind: 'weekly', usedPercentage: 90,
+    resetsAtMs: now - 100, observedAtMs: now - 200 };
+  const usage = { status: 'ok', fetchedAt: now - 200, summary: [
+    { window: '1wk', label: '123456789😀', usedPercent: 45, resetMs: now - 100 },
+    { window: '1wk', label: 'all中文', usedPercent: 65, resetMs: now + 100 }] };
+  const entry = { kind: 'claude', fetchedAt: usage.fetchedAt, summary: { windows: usage.summary } };
+  for (const at of [null, false, '', NaN, Infinity, -Infinity, now]) {
+    assert.deepEqual(Renderer.windowEventBar(info, at), legacy.windowEventBar(info, at));
+    assert.deepEqual(Renderer.claudeBar(usage, null, at), legacy.claudeBar(usage, null, at));
+    assert.deepEqual(Renderer.providerLimitBar(entry, at), legacy.providerLimitBar(entry, at));
+  }
+  for (const text of ['x\ud800 · {ago:1} ⟳ 刷新', 'x\udfff\ufeff⟳ 刷新', 'x\u0085⟳ 刷新',
+    'x {cd:١|5h}', 'x ⟳ 刷新\n', 'x ⟳ 刷新\r', 'x ⟳ 刷新\r\n',
+    'x ⟳ 刷新\u2028', 'x ⟳ 刷新\u2029', 'x ⟳ 刷新\n\n']) {
+    assert.equal(Renderer.compactBarText(text), legacy.compactBarText(text), `compactBarText ${JSON.stringify(text)}`);
+  }
+  for (const info of [
+    { provider: 'codex', rateLimitType: ['weekly'], status: 'allowed', utilization: 0.5 },
+    { provider: ['codex'], rateLimitType: 'weekly', status: 'allowed', utilization: 0.5 },
+    { provider: 'codex', rateLimitType: 'weekly', status: ['allowed'], utilization: 0.5 },
+    { provider: 'codex', rateLimitType: 'weekly', status: 'allowed', utilization: 0.5,
+      windows: [{ window: ['5h'], usedPercent: 40 }, { window: '1wk', usedPercent: 60 }] },
+  ]) assert.deepEqual(Renderer.normalizeWindowEvent(info, now), legacy.normalizeWindowEvent(info, now));
+  for (const kind of ['zhipu', 'kimi']) {
+    const value = { status: 'ok', sites: [{ ok: true, site: null, usedPercent: 25, available: 5, currency: 'CNY' }] };
+    assert.deepEqual(Renderer.renderQuotaBar(kind, value, { nowMs: now }), legacy.renderQuotaBar(kind, value, { nowMs: now }));
+  }
+  const oldIdle = legacy.idleQuotaBars(), newIdle = Renderer.idleQuotaBars();
+  assert.equal(Object.isFrozen(newIdle), Object.isFrozen(oldIdle));
+  for (const kind of Object.keys(oldIdle)) {
+    assert.equal(Object.isFrozen(newIdle[kind]), Object.isFrozen(oldIdle[kind]));
+    assert.equal(Object.isFrozen(newIdle[kind].textParts), Object.isFrozen(oldIdle[kind].textParts));
+  }
+  const event = { provider: 'codex', rateLimitType: 'weekly', status: 'allowed', utilization: 0.5,
+    windows: [{ window: '1wk', usedPercent: 50 }] };
+  const normalized = Renderer.normalizeWindowEvent(event, now);
+  assert.ok(Object.isFrozen(normalized) && Object.isFrozen(normalized.windows) && Object.isFrozen(normalized.windows[0]));
+});
+
+test('window values preserve each event and vendor normalization contract', () => {
+  const legacy = require('./helpers/legacy-quota-bar-view');
+  const now = 1_700_000_000_000;
+  for (const window of [['5h'], ['1wk'], ['1m'], [['5h']], {}, null, true, 5, '5h', '1wk', '1m', '5h-ALL']) {
+    const windows = [{ window, usedPercent: 40 }, { window: '1wk', usedPercent: 60 }];
+    const event = { provider: 'codex', rateLimitType: 'weekly', status: 'allowed', utilization: 0.5, windows };
+    assert.deepEqual(Renderer.normalizeWindowEvent(event, now), legacy.normalizeWindowEvent(event, now),
+      `normalized enum ${JSON.stringify(window)}`);
+    const codex = { status: 'ok', windows };
+    assert.deepEqual(Renderer.renderQuotaBar('codex', codex, { nowMs: now }),
+      legacy.renderQuotaBar('codex', codex, { nowMs: now }), `Codex enum ${JSON.stringify(window)}`);
+    const claude = { status: 'ok', summary: windows };
+    assert.deepEqual(Renderer.claudeBar(claude, null, now), legacy.claudeBar(claude, null, now),
+      `Claude enum ${JSON.stringify(window)}`);
   }
 });

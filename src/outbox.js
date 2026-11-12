@@ -1,5 +1,12 @@
 'use strict';
 
+// SQLite supplies indexed candidates inside this read/write snapshot. The JSON
+// compatibility store keeps the old scan; callers retain their exact predicates.
+function candidateRows(draft, collection, where) {
+  return typeof draft.select === 'function'
+    ? draft.select(collection, { where }) : Object.values(draft[collection]);
+}
+
 const crypto = require('crypto');
 
 const TERMINAL_STATES = new Set(['delivered', 'dead-letter', 'cancelled']);
@@ -195,7 +202,7 @@ function createOutbox({
   function recoverExpiredDraft(draft, at) {
     let recovered = 0;
     let deadLettered = 0;
-    const ordered = Object.values(draft.outbox).sort((a, b) => a.sequence - b.sequence);
+    const ordered = candidateRows(draft, 'outbox', { state: 'leased' }).sort((a, b) => a.sequence - b.sequence);
     for (const item of ordered) {
       if (item.state !== 'leased' || item.leasedUntil > at) continue;
       item.lastError = 'delivery lease expired';
@@ -215,7 +222,7 @@ function createOutbox({
   }
 
   function hasExpiredLease(draft, at) {
-    return Object.values(draft.outbox).some(item => (
+    return candidateRows(draft, 'outbox', { state: 'leased' }).some(item => (
       // Mirror recoverExpiredDraft exactly. Legacy/corrupt-but-loadable leased
       // records without a timestamp were previously recoverable, not immortal.
       item.state === 'leased' && !(item.leasedUntil > at)
@@ -227,7 +234,7 @@ function createOutbox({
     // leased item or a retry in backoff blocks later items in that session,
     // while another session remains independently claimable.
     const itemsBySession = new Map();
-    const ordered = Object.values(draft.outbox).sort((a, b) => a.sequence - b.sequence);
+    const ordered = candidateRows(draft, 'outbox', { state: { $nin: [...TERMINAL_STATES] } }).sort((a, b) => a.sequence - b.sequence);
     for (const item of ordered) {
       if (TERMINAL_STATES.has(item.state)) continue;
       if (!itemsBySession.has(item.sessionId)) itemsBySession.set(item.sessionId, []);
@@ -388,19 +395,39 @@ function createOutbox({
     return store.mutate(draft => recoverExpiredDraft(draft, Number(now())));
   }
 
+  function itemProjection(item) {
+    if (!item) return null;
+    const copy = { ...item };
+    delete copy.leaseTokenHash;
+    return copy;
+  }
+
   async function list({ sessionId, states } = {}) {
     const wanted = states === undefined
       ? null
       : new Set(Array.isArray(states) ? states : [states]);
-    return store.read(draft => Object.values(draft.outbox)
+    return store.read(draft => candidateRows(draft, 'outbox', {
+      ...(sessionId ? { sessionId } : {}), ...(wanted ? { state: [...wanted] } : {}),
+    })
       .filter(item => !sessionId || item.sessionId === sessionId)
       .filter(item => !wanted || wanted.has(item.state))
       .sort((a, b) => a.sequence - b.sequence)
-      .map(publicItem));
+      .map(itemProjection));
   }
 
   async function get(id) {
-    return store.read(draft => draft.outbox[id] ? publicItem(draft.outbox[id]) : null);
+    return store.read(draft => itemProjection(draft.outbox[id]));
+  }
+
+  async function getDeliveryState(id) {
+    if (typeof store.select === 'function') {
+      const rows = await store.select('outbox', { where: { id }, fields: ['id', 'sessionId', 'state'], limit: 1 });
+      return rows[0] || null;
+    }
+    return store.read(draft => {
+      const item = draft.outbox[id];
+      return item ? { id: item.id, sessionId: item.sessionId, state: item.state } : null;
+    });
   }
 
   return Object.freeze({
@@ -411,6 +438,7 @@ function createOutbox({
     fail,
     defer,
     recoverExpired,
+    getDeliveryState,
     list,
     get,
   });

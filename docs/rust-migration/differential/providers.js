@@ -78,9 +78,10 @@
 // Routing-seam cases (marked expectedDifference, not corpus differences): the
 // gateway claims only the exact lower-case `/api/` prefix and only the methods
 // listed above, matching how Node's auth/gzip also key on `startsWith('/api/')`.
-// `/API/...`, an undeclared method and `/speedtest` (kept in Node because it
-// streams SSE) leave the Rust front door through forward() and show up as the
-// stub's 599 marker; the Node side shows what the front door forwards TO.
+// `/API/...` and an undeclared method leave the Rust front door through
+// forward() and show up as the stub's 599 marker; the Node side shows what the
+// front door forwards TO. `/speedtest` is no longer one of them: this batch
+// claims it, so the two ordinary cases below compare the answers directly.
 const fs = require('fs');
 const path = require('path');
 const { main } = require('./lib');
@@ -100,6 +101,8 @@ const SEAM_CASES = new Set();
 // only fetches on some branches. Their value is fully visible in the response
 // body, so the byte comparison already covers them.
 const EAGER_READS = new Set(['summary', 'relayImportToken']);
+// 目录宿主先抓快照，Rust 再过滤；缓存读取不是写入副作用，公开额度仍逐字节比较。
+const CATALOG_READS = new Set(['limitGet']);
 
 // ── the shared scenario world ───────────────────────────────────────────────
 // Written to work/providers-world.js and required by both processes. It uses
@@ -163,7 +166,13 @@ function createWorld(options) {
   }
 
   function providersList() {
-    return Array.isArray(scenario.providers) ? scenario.providers : [];
+    const list = Array.isArray(scenario.providers) ? scenario.providers : [];
+    // mock providerSupportsCli 的历史规则保持不变；补上真实 summary 已有的能力字段。
+    const clis = ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'dsh', 'grok'];
+    return list.map(function (provider) {
+      const blocked = Array.isArray(provider.unsupportedClis) ? provider.unsupportedClis : [];
+      return Object.assign({}, provider, { compatibleClis: clis.filter(function (cli) { return blocked.indexOf(cli) < 0; }) });
+    });
   }
 
   function providerSummary(appType, id) {
@@ -456,7 +465,11 @@ function createWorld(options) {
   }
 
   reset(scenario);
-  return { deps: deps, reset: reset, attach: attach, resetFromFile: resetFromFile };
+  return { deps: deps, reset: reset, attach: attach, resetFromFile: resetFromFile,
+    recordHostCall: function (body) {
+      if (body && body.op === 'catalogRefresh') trace({ op: 'catalogRefresh', providerIds: clone(body.providerIds),
+        enabled: scenario.codexCatalog !== false });
+    } };
 }
 
 module.exports = { createWorld: createWorld };
@@ -491,7 +504,7 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 // Each host operation answers from the scenario the case wrote; ops inside one
 // request (facts then exec) accumulate on top of that same starting state.
-app.use((req, res, next) => { world.resetFromFile(); next(); });
+app.use((req, res, next) => { world.resetFromFile(); world.recordHostCall(req.body); next(); });
 mountProvidersHostRoute(app, world.deps);
 // Anything the front door forwards (a path outside what it claims) lands here
 // and is marked, so the corpus can see the routing seam instead of a 404.
@@ -613,8 +626,15 @@ function comparableTrace(map) {
   const out = new Map();
   for (const [name, list] of map) {
     if (SEAM_CASES.has(name)) continue;
-    const kept = list.filter(record => !EAGER_READS.has(record.op));
-    if (kept.length) out.set(name, kept);
+    const catalog = name.startsWith('catalog ');
+    const kept = list.filter(record => !EAGER_READS.has(record.op)
+      && record.op !== 'catalogRefresh'
+      && !(catalog && CATALOG_READS.has(record.op)));
+    // 刷新与只读快照之间的次序不再构成契约；刷新 ID、次数及相互次序仍严格比较。
+    const ordered = catalog
+      ? kept.filter(record => record.op !== 'refreshProvider').concat(kept.filter(record => record.op === 'refreshProvider'))
+      : kept;
+    if (ordered.length) out.set(name, ordered);
   }
   return out;
 }
@@ -1129,18 +1149,8 @@ main({
         rust: isForwarded('POST', '/api/providers/claude/claude-1'),
       },
     });
-    add('speedtest stays in Node', sc(), post('/api/providers/claude/ghost/speedtest', {}), {
-      expectedDifference: {
-        node: (view) => view.status === 404,
-        rust: isForwarded('POST', '/api/providers/claude/ghost/speedtest'),
-      },
-    });
-    add('speedtest OPTIONS stays in Node', sc(), options('/api/providers/claude/claude-1/speedtest'), {
-      expectedDifference: {
-        node: (view) => view.status === 200 && view.headers.allow === 'POST',
-        rust: isForwarded('OPTIONS', '/api/providers/claude/claude-1/speedtest'),
-      },
-    });
+    add('speedtest missing provider', sc(), post('/api/providers/claude/ghost/speedtest', {}));
+    add('speedtest OPTIONS', sc(), options('/api/providers/claude/claude-1/speedtest'));
 
     return cases;
   },
@@ -1148,7 +1158,8 @@ main({
   // order, same arguments, grouped by case name.
   finalize({ work }) {
     const node = comparableTrace(readTrace(nodeTraceFile));
-    const rust = comparableTrace(readTrace(rustTraceFile));
+    const rawRust = readTrace(rustTraceFile);
+    const rust = comparableTrace(rawRust);
     const names = new Set();
     for (const name of node.keys()) names.add(name);
     for (const name of rust.keys()) names.add(name);
@@ -1162,7 +1173,20 @@ main({
         mismatches.push({ case: name, node: left, rust: right });
       }
     }
+    // 独立刷新端口的输入必须与实际执行的刷新完全一致；poll=1 不得调度。
+    for (const [name, list] of rawRust) {
+      const requests = list.filter(record => record.op === 'catalogRefresh');
+      if (name === 'catalog poll=1' && requests.length) {
+        mismatches.push({ case: name, unexpectedCatalogRefresh: requests });
+      }
+      const requested = requests.filter(record => record.enabled).flatMap(record => record.providerIds || []);
+      const executed = list.filter(record => record.op === 'refreshProvider').map(record => record.id);
+      if (JSON.stringify(requested) !== JSON.stringify(executed)) {
+        mismatches.push({ case: name, catalogRefreshRequested: requested, catalogRefreshExecuted: executed });
+      }
+    }
     const summary = {
+      catalogRefreshCalls: [...rawRust.values()].flat().filter(record => record.op === 'catalogRefresh').length,
       casesWithCalls: names.size,
       nodeCalls: [...node.values()].reduce((total, list) => total + list.length, 0),
       rustCalls: [...rust.values()].reduce((total, list) => total + list.length, 0),

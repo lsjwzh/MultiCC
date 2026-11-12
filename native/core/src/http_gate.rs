@@ -1035,6 +1035,17 @@ mod tests {
     }
 
     #[test]
+    fn query_string_coerces_like_js_string() {
+        let s = |url: &str| query_string(&query_value(url, "appType"));
+        assert_eq!(s("/x"), "");
+        assert_eq!(s("/x?appType=claude"), "claude");
+        assert_eq!(s("/x?appType=claude&appType=codex"), "claude,codex");
+        // `String(['claude'])` keeps the single element.
+        assert_eq!(s("/x?appType[]=claude"), "claude");
+        assert_eq!(s("/x?appType[x]=1"), "[object Object]");
+    }
+
+    #[test]
     fn query_param_follows_qs() {
         let p = |url: &str| query_param(url, "path");
         assert_eq!(p("/d?path=%2Fa%20b+c"), QueryParam::Text("/a b c".into()));

@@ -1,5 +1,12 @@
 'use strict';
 
+// SQLite supplies indexed candidates inside this read/write snapshot. The JSON
+// compatibility store keeps the old scan; callers retain their exact predicates.
+function candidateRows(draft, collection, where) {
+  return typeof draft.select === 'function'
+    ? draft.select(collection, { where }) : Object.values(draft[collection]);
+}
+
 // Composition layer for the durable orchestration primitives.  The store,
 // wait service and outbox deliberately know nothing about MultiCC chat.  This
 // module owns the lifecycle and the one-way bridge from a durable outbox item
@@ -224,6 +231,7 @@ function createOrchestrationRuntime({
   let stopped = false;
   let tickTail = Promise.resolve();
   let admissionWakeup = null;
+  let retentionWork = null;
 
   function addPending(sessionId, id) {
     const ids = pendingBySession.get(sessionId) || new Set();
@@ -427,7 +435,7 @@ function createOrchestrationRuntime({
   }
 
   async function cancelForSession(sessionId) {
-    const targetDispatches = await operations.list({ kind: 'dispatch' });
+    const targetDispatches = await operations.listReferences({ kind: 'dispatch', excludeTerminal: true });
     for (const operation of targetDispatches) {
       if (TERMINAL_OPERATION_STATES.has(operation.status)) continue;
       if (operation.ownerSessionId === sessionId) continue;
@@ -445,19 +453,16 @@ function createOrchestrationRuntime({
       let cancelledOperations = 0;
       let cancelledTasks = 0;
       const detachedExternalIds = [];
-      const ownedOperationIds = new Set(Object.values(draft.operations)
-        .filter(operation => operation.ownerSessionId === sessionId)
-        .map(operation => operation.id));
-      for (const wait of Object.values(draft.waits)) {
+      for (const wait of candidateRows(draft, 'waits', { sessionId, status: 'pending' })) {
         if (wait.sessionId !== sessionId || wait.status !== 'pending') continue;
         wait.status = 'cancelled';
         wait.cancelledAt = at;
         wait.updatedAt = at;
         cancelled++;
       }
-      for (const item of Object.values(draft.outbox)) {
+      for (const item of candidateRows(draft, 'outbox', { state: ['pending', 'leased'] })) {
         const belongsToOwnedOperation = item.source?.type === 'operation'
-          && ownedOperationIds.has(item.source.operationId);
+          && draft.operations[item.source.operationId]?.ownerSessionId === sessionId;
         if ((item.sessionId !== sessionId && !belongsToOwnedOperation)
             || !['pending', 'leased'].includes(item.state)) continue;
         item.state = 'cancelled';
@@ -468,7 +473,7 @@ function createOrchestrationRuntime({
         item.leaseTokenHash = null;
         cancelledDeliveries++;
       }
-      for (const operation of Object.values(draft.operations)) {
+      for (const operation of candidateRows(draft, 'operations', { ownerSessionId: sessionId, status: { $nin: [...TERMINAL_OPERATION_STATES] } })) {
         if (operation.ownerSessionId !== sessionId || TERMINAL_OPERATION_STATES.has(operation.status)) continue;
         operation.status = 'cancelled';
         operation.cancelledAt = at;
@@ -478,7 +483,7 @@ function createOrchestrationRuntime({
         }
         cancelledOperations++;
       }
-      for (const task of Object.values(draft.tasks)) {
+      for (const task of candidateRows(draft, 'tasks', { parentSessionId: sessionId, status: { $nin: [...TERMINAL_TASK_STATES] } })) {
         if (task.parentSessionId !== sessionId || TERMINAL_TASK_STATES.has(task.status)) continue;
         task.status = 'cancelled';
         task.completedAt = at;
@@ -515,6 +520,13 @@ function createOrchestrationRuntime({
 
   async function stats() {
     return store.read(snapshot => {
+      if (typeof snapshot.count === 'function') return {
+        backend: store.backend || 'json',
+        waits: snapshot.count('waits', { status: 'pending' }),
+        resolvedWaits: snapshot.count('waits', { status: 'resolved' }),
+        pendingDeliveries: snapshot.count('outbox', { state: ['pending', 'leased'] }),
+        deadLetters: snapshot.count('outbox', { state: 'dead-letter' }),
+      };
       const allWaits = Object.values(snapshot.waits);
       const allOutbox = Object.values(snapshot.outbox);
       return {
@@ -538,12 +550,12 @@ function createOrchestrationRuntime({
     const cutoff = staleMs > 0 ? Number(now()) - staleMs : null;
     const fresh = row => cutoff == null || Number(row?.updatedAt || row?.createdAt || 0) >= cutoff;
     return store.read((draft) => {
-      if (Object.values(draft.waits).some(wait => wait.sessionId === id && wait.status === 'pending' && fresh(wait))) return true;
-      if (Object.values(draft.outbox).some(item => item.sessionId === id && ['pending', 'leased'].includes(item.state) && fresh(item))) return true;
-      if (Object.values(draft.operations).some(operation => !TERMINAL_OPERATION_STATES.has(operation.status)
+      if (candidateRows(draft, 'waits', { sessionId: id, status: 'pending' }).some(wait => wait.sessionId === id && wait.status === 'pending' && fresh(wait))) return true;
+      if (candidateRows(draft, 'outbox', { sessionId: id, state: ['pending', 'leased'] }).some(item => item.sessionId === id && ['pending', 'leased'].includes(item.state) && fresh(item))) return true;
+      if (candidateRows(draft, 'operations', { status: { $nin: [...TERMINAL_OPERATION_STATES] } }).some(operation => !TERMINAL_OPERATION_STATES.has(operation.status)
           && fresh(operation)
           && (operation.ownerSessionId === id || operation.spec?.chatId === id || operation.spec?.targetId === id))) return true;
-      if (Object.values(draft.tasks).some(task => task.parentSessionId === id && !TERMINAL_TASK_STATES.has(task.status) && fresh(task))) return true;
+      if (candidateRows(draft, 'tasks', { parentSessionId: id, status: { $nin: [...TERMINAL_TASK_STATES] } }).some(task => task.parentSessionId === id && !TERMINAL_TASK_STATES.has(task.status) && fresh(task))) return true;
       const schedule = draft.sessionSchedules[id];
       const waitingOnly = schedule?.active && (isWaitForUserLetter(schedule.classifyState)
         || ['awaiting_user_input', 'classify_waiting'].includes(schedule.freezeReason));
@@ -561,7 +573,7 @@ function createOrchestrationRuntime({
   }
 
   function hasDueWaitWork(draft, at) {
-    return Object.values(draft.waits).some(wait => {
+    return candidateRows(draft, 'waits', { status: 'pending' }).some(wait => {
       if (wait.status !== 'pending') return false;
       const metadata = wait.metadata || {};
       if (wait.mode === 'callback') {
@@ -584,7 +596,7 @@ function createOrchestrationRuntime({
     const at = Number(now());
     const claims = [];
     const expired = [];
-    for (const wait of Object.values(draft.waits)) {
+    for (const wait of candidateRows(draft, 'waits', { status: 'pending' })) {
       if (wait.status !== 'pending') continue;
       const metadata = wait.metadata || {};
       if (wait.mode === 'callback') {
@@ -779,7 +791,7 @@ function createOrchestrationRuntime({
     if (item?.payload?.type !== 'session.work' || itemOriginDispatchId(item)) return item;
     const taskId = itemTaskId(item);
     if (!taskId) return item;
-    const live = await operations.list({ kind: 'dispatch', statuses: ['running'] });
+    const live = await operations.listReferences({ kind: 'dispatch', statuses: ['running'] });
     const matches = live.filter(operation => (
       operation.spec?.chatId === item.sessionId
       && operation.spec?.taskId === taskId
@@ -1363,24 +1375,26 @@ function createOrchestrationRuntime({
 
   async function reconcileDetached() {
     if (!detachedAdapter) return;
-    const active = await operations.list({
+    const active = await operations.listReferences({
       kind: 'detached',
       statuses: ['admitted', 'running'],
     });
-    for (const operation of active) {
+    for (const reference of active) {
+      const operation = await operations.get(reference.id);
+      if (!operation || !['admitted', 'running'].includes(operation.status)) continue;
       try { await ensureDetachedOperation(operation); }
       catch (error) { log(`[orchestration] detached ${operation.id} reconcile failed: ${error.message}`); }
     }
   }
 
   async function reconcileDispatchesOnStartup() {
-    const active = await operations.list({
+    const active = await operations.listReferences({
       kind: 'dispatch',
       statuses: ['admitted', 'running'],
     });
-    for (const operation of active) {
-      const request = operation.requestOutboxId
-        ? await outbox.get(operation.requestOutboxId)
+    for (const reference of active) {
+      const request = reference.requestOutboxId
+        ? await outbox.getDeliveryState(reference.requestOutboxId)
         : null;
       // A crash may occur after runChatTurn durably saved the dispatch user
       // message but before the request lease was acknowledged. Treat that as
@@ -1392,13 +1406,15 @@ function createOrchestrationRuntime({
         : false;
       if (request && ['pending', 'leased'].includes(request.state) && !requestPersisted) continue;
       if (request && request.state === 'dead-letter') {
-        await operations.completeDispatch(operation.id, {
+        await operations.completeDispatch(reference.id, {
           status: 'interrupted',
           error: 'dispatch request delivery exhausted retries',
         });
         continue;
       }
       if ((!request || request.state !== 'delivered') && !requestPersisted) continue;
+      const operation = await operations.get(reference.id);
+      if (!operation || !['admitted', 'running'].includes(operation.status)) continue;
       let recovered = null;
       try { recovered = await recoverDispatchResult(operation); }
       catch (error) { log(`[orchestration] dispatch ${operation.id} history recovery failed: ${error.message}`); }
@@ -1524,10 +1540,21 @@ function createOrchestrationRuntime({
     return operations.observeTask(observation);
   }
 
+  function scheduleRetention() {
+    if (stopped || retentionWork || typeof store.pruneRetained !== 'function') return;
+    // Rust owns due-time policy and the bounded batch. The current tick does
+    // not await maintenance; the store still serializes it with other writes.
+    retentionWork = Promise.resolve().then(() => store.pruneRetained({ now: Number(now()) }))
+      .catch(error => { log(`[orchestration] retained-record maintenance failed: ${error.message}`); })
+      .finally(() => { retentionWork = null; });
+  }
+
   async function runTick() {
-    await reconcileDetached();
-    await processPolls();
-    return processOutbox();
+    try {
+      await reconcileDetached();
+      await processPolls();
+      return await processOutbox();
+    } finally { scheduleRetention(); }
   }
 
   function tick() {
@@ -1608,6 +1635,7 @@ function createOrchestrationRuntime({
     // A delivery released by the tick grace may still be finishing; the store
     // must not close under it.
     if (pendingDeliveries.size) await Promise.allSettled([...pendingDeliveries]);
+    if (retentionWork) await retentionWork;
     await store.flush();
     if (typeof store.exportLegacy === 'function') await store.exportLegacy();
   }

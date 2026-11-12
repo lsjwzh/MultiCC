@@ -47,12 +47,24 @@ function fixture(options = {}) {
     operations: {
       async list(query) {
         calls.push({ type: 'operations.list', query });
+        if (options.referencesOnly) throw new Error('historical payloads must not be loaded');
         return options.operations || [];
       },
+      ...(options.referencesOnly ? {
+        async listReferences(query) {
+          calls.push({ type: 'operations.listReferences', query });
+          return options.operations || [];
+        },
+      } : {}),
       async listTasks(query) {
         calls.push({ type: 'operations.listTasks', query });
         if (options.listTasksError) throw options.listTasksError;
         return options.tasks || [];
+      },
+      async taskActivity(query) {
+        calls.push({ type: 'operations.taskActivity', query });
+        if (options.taskActivityError) throw options.taskActivityError;
+        return options.taskActivity || [];
       },
     },
     async register(input) {
@@ -224,6 +236,38 @@ test('dependency and mount boundaries own the orchestration routes', () => {
     'POST /api/wait/:wid/resolve',
   ]);
   assert.throws(() => current.routes.mountRoutes(current.app), /already mounted/);
+});
+
+test('dispatch and detached status views only load operation references', async () => {
+  const reference = {
+    id: 'op-ref', externalId: 'task-ref', kind: 'dispatch', ownerSessionId: 's1',
+    status: 'completed', createdAt: 1, startedAt: 2, completedAt: 4, updatedAt: 5,
+    spec: { targetId: 'worker', chatId: 'worker', taskId: 'task-ref', resultMode: 'async' },
+  };
+  const current = fixture({
+    referencesOnly: true, operations: [reference],
+    detachedStates: { 'task-ref': { pid: 7, done: true } },
+  });
+  const dispatches = await invoke(current.app, 'GET', '/api/sessions/:id/dispatches', {
+    params: { id: 's1' }, query: { activeOnly: 'false', recentTerminalLimit: '1' },
+  });
+  assert.equal(dispatches.response.statusCode, 200);
+  const item = dispatches.response.body.dispatches[0];
+  assert.equal(item.operationId, 'op-ref');
+  assert.equal(item.mode, 'async');
+  assert.equal(item.startedAt, 2);
+  assert.equal(item.completedAt, 4);
+  assert.equal(item.updatedAt, 5);
+  const detached = await invoke(current.app, 'GET', '/api/sessions/:id/detached', {
+    params: { id: 's1' },
+  });
+  assert.equal(detached.response.body.tasks[0].operationId, 'op-ref');
+  const exact = await invoke(current.app, 'GET', '/api/detached/:taskId', {
+    params: { taskId: 'task-ref' },
+  });
+  assert.equal(exact.response.body.operationId, 'op-ref');
+  assert.equal(current.calls.filter(call => call.type === 'operations.listReferences').length, 3);
+  assert.equal(current.calls.some(call => call.type === 'operations.list'), false);
 });
 
 test('scheduled message routes scope durable create, list and cancellation to the session', async () => {
@@ -782,6 +826,24 @@ test('detached and task query routes preserve filtering and status enrichment', 
     params: { taskId: 'unknown' },
   });
   assert.equal(missing.response.statusCode, 404);
+});
+
+test('task activity query forwards IDs to the native projection and preserves terminal status', async () => {
+  const current = fixture({ taskActivity: [{ taskId: 't1', status: 'completed', createdAt: 1, updatedAt: 2 }] });
+  const taskIds = JSON.stringify(['t1', 't2']);
+  const response = await invoke(current.app, 'GET', '/api/sessions/:id/tasks', {
+    params: { id: 's1' }, query: { taskIds },
+  });
+  assert.deepEqual(current.calls, [{ type: 'operations.taskActivity', query: { sessionId: 's1', taskIds } }]);
+  assert.deepEqual(response.response.body, {
+    tasks: [{ taskId: 't1', status: 'completed', createdAt: 1, updatedAt: 2 }], count: 1,
+  });
+  const invalid = fixture({ taskActivityError: Object.assign(new Error('taskIds 每次最多查询 100 项'), { statusCode: 400 }) });
+  const rejected = await invoke(invalid.app, 'GET', '/api/sessions/:id/tasks', {
+    params: { id: 's1' }, query: { taskIds: ['invalid-input'] },
+  });
+  assert.equal(rejected.response.statusCode, 400);
+  assert.deepEqual(invalid.calls[0].query.taskIds, ['invalid-input']);
 });
 
 test('session dispatch query joins durable operations with authoritative FIFO state', async () => {

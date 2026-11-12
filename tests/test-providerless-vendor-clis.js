@@ -79,12 +79,60 @@ test('stale vendor provider ids cannot silently fall through to another account'
   );
 });
 
-test('host spawn paths route proxies by explicit provider capability', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-assert.match(source, /appType === 'claude'/);
-assert.match(source, /appType === 'codex'/);
-  assert.doesNotMatch(source, /persisted\.cli !== 'qoder'\)\s*providers\.applyClaudeProxyEnv/);
-  assert.doesNotMatch(source, /persisted\.cli !== 'codex' && persisted\.cli !== 'qoder'/);
+test('host spawn paths apply CLI-specific proxies only after resolving the provider route', () => {
+  const root = path.join(__dirname, '..');
+  const terminalSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  const chatSource = fs.readFileSync(path.join(root, 'src/chat/turn-engine.js'), 'utf8');
+  assert.match(terminalSource, /providerRouterRuntime\.resolveSpawnEnv\(persisted\)/);
+  assert.match(chatSource, /providerRouterRuntime\.buildChildEnv\(process\.env, persisted,/);
+
+  // Execute the actual host adaptation boundaries with inert provider ports.
+  // Sharing a provider pool does not make DSH/OpenCode a Claude executable:
+  // their generic route materializers must not receive Claude-specific env.
+  function boundary(source, begin, end) {
+    const first = source.indexOf(begin);
+    const last = source.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, 'host proxy boundary must remain covered');
+    return source.slice(first, last);
+  }
+  const terminalProxy = new Function('persisted', 'providers', 'termEnv', 'routeSession',
+    'PORT', 'CLAUDE_OFFICIAL_VIA_PROXY', boundary(terminalSource,
+      "if (persisted.cli === 'claude') {", '// Claude: pre-allocate'));
+  const chatProxy = new Function('persisted', 'providers', 'childEnv', 'binding',
+    'proxySessionId', 'getPort', 'getClaudeOfficialViaProxy', 'prepared', 'sessionName',
+    boundary(chatSource, "if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') providers.applyClaudeProxyEnv",
+      '} catch (error) {\n        providers.releaseCodexProxyConfig'));
+
+  for (const cli of ['claude', 'codex', 'claude-exp', 'codex-exp', 'qoder', 'kimi',
+    'codebuddy', 'commandcode', 'gemini', 'pi', 'dsh', 'opencode', 'grok', 'zcode']) {
+    for (const kind of ['terminal', 'chat']) {
+      const calls = [];
+      const port = {
+        CLAUDE_ROUTING_KEYS: [],
+        applyClaudeProxyEnv(_env, options) { calls.push({ protocol: 'claude', ...options }); return true; },
+        applyCodexProxyConfig(_env, options) { calls.push({ protocol: 'codex', ...options }); return true; },
+        codexProxyConfigRequired() { return true; },
+        assertCodexProxyConfigApplied({ required, applied }) { assert.equal(required && applied, true); },
+      };
+      const session = { cli, provider: 'managed-provider', cliSessionId: 'native-session' };
+      const route = 'session-capability';
+      if (kind === 'terminal') terminalProxy(session, port, {}, route, 3100, true);
+      else chatProxy(session, port, {}, { providerId: 'attempt-provider' }, route,
+        () => 3100, () => true,
+        { invocationEnvelope: { spawnOpts: {}, historyHandle: { isFirstTurn: false } } }, 'logical-session');
+      const protocol = cli === 'claude' || (kind === 'chat' && cli === 'claude-exp') ? 'claude'
+        : cli === 'codex' || (kind === 'chat' && cli === 'codex-exp') ? 'codex' : null;
+      assert.deepEqual(calls.map(call => call.protocol), protocol ? [protocol] : [], `${kind}:${cli}`);
+      if (protocol) {
+        assert.equal(calls[0].sessionId, route, 'proxy keeps the session capability rather than a bare id');
+        assert.equal(calls[0].providerId, kind === 'terminal' ? session.provider : 'attempt-provider');
+      }
+    }
+  }
+  for (const source of [terminalSource, chatSource]) {
+    assert.doesNotMatch(source, /persisted\.cli !== 'qoder'\)\s*providers\.applyClaudeProxyEnv/);
+    assert.doesNotMatch(source, /persisted\.cli !== 'codex' && persisted\.cli !== 'qoder'/);
+  }
 });
 
 test('vendor login flows map each vendor-auth CLI to a whitelisted login terminal spec', () => {

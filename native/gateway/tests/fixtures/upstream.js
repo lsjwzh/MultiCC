@@ -233,6 +233,32 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Rust balance/relay routes: script the host facts, never a public Node route.
+  if ((route === '/api/__host/provider-balance' || route === '/api/__host/provider-relay') && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      const balance = route.endsWith('provider-balance');
+      fs.appendFileSync(path.join(stateDir, balance ? 'balance-calls.jsonl' : 'relay-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const config = (balance ? script.providerBalance : script.providerRelay) || {};
+      if (script.hostDown || config.hostDown) { req.socket.destroy(); return; }
+      const answers = config.answers || {};
+      const key = `${input.op}:${input.id || ''}`;
+      const value = Object.prototype.hasOwnProperty.call(answers, key) ? answers[key]
+        : Object.prototype.hasOwnProperty.call(answers, input.op) ? answers[input.op]
+          : input.op === 'admission' ? { allowed: true, headers: {} } : { ok: true };
+      const text = JSON.stringify(value);
+      const send = () => {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (config.delayMs) setTimeout(send, config.delayMs); else send();
+    });
+    return;
+  }
   // Host port for the model catalog routes (docs/gateway.md §32). The script
   // file describes each Node-side answer: CLI catalogs, the live provider
   // fetch and the official Codex catalog runtime.
@@ -580,6 +606,58 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // The retired speed test measured a loopback proxy hop. The front door now
+  // writes the same request to this internal listener; the script's
+  // `speedtest` object picks the answer and every call is logged.
+  const speedRoute = /^\/(?:claude|codex)-proxy\/[^/]+\/(?:responses|speedtest\/v1\/messages)$/.test(route);
+  if (speedRoute && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      fs.appendFileSync(path.join(stateDir, 'speedtest-calls.jsonl'), `${JSON.stringify({
+        method: req.method, url: req.url, headers: req.headers,
+        body: Buffer.concat(chunks).toString('utf8'),
+      })}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const answer = script.speedtest || {};
+      const body = typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body || {});
+      const send = () => {
+        res.writeHead(answer.status || 200, {
+          'Content-Type': answer.contentType || 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        });
+        res.end(body);
+      };
+      if (answer.delayMs) setTimeout(send, answer.delayMs);
+      else send();
+    });
+    return;
+  }
+
+  // Fake Jev gateway for the routing test (MULTICC_ROUTING_TEST_URL). The
+  // script's `jev` object is the whole answer.
+  if (route === '/jev' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      fs.appendFileSync(path.join(stateDir, 'jev-calls.jsonl'), `${JSON.stringify({
+        method: req.method, url: req.url, headers: req.headers,
+        body: Buffer.concat(chunks).toString('utf8'),
+      })}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const answer = script.jev || {};
+      const body = typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body || {});
+      res.writeHead(answer.status || 200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(body);
+    });
+    return;
+  }
+
   if (route === '/echo' && req.method === 'POST') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));

@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
+const { spawnSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 const { createOperationService } = require('../src/operation-service');
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
@@ -79,6 +80,7 @@ test('migrates legacy JSON exactly into normalized private SQLite tables', async
   });
   assert.equal(store.backend, 'sqlite');
   assert.equal(store.migration.migrated, true);
+  assert.equal(store.migration.legacyDigest, require('./helpers/orchestration-sqlite-oracle')._stateDigest(before));
   assert.deepEqual(await store.snapshot(), before);
   // Windows exposes synthetic POSIX mode bits; owner-only mode is a POSIX contract.
   if (process.platform !== 'win32') assert.equal(fs.statSync(files.sqlite).mode & 0o777, 0o600);
@@ -473,26 +475,30 @@ test('the outbox sequence uniqueness index is part of the validated schema contr
   );
 });
 
-test('private file permissions fail closed instead of being silently ignored', async t => {
+test('native store rejects injected JavaScript database and filesystem ports', t => {
   const files = tempPaths(t);
-  const store = createOrchestrationSqliteStore({ file: files.sqlite });
-  await store.close();
-  const fsImpl = new Proxy(fs, {
-    get(target, property) {
-      if (property === 'chmodSync') {
-        return file => {
-          const error = new Error(`permission denied: ${file}`);
-          error.code = 'EACCES';
-          throw error;
-        };
-      }
-      return Reflect.get(target, property);
-    },
-  });
-  assert.throws(
-    () => createOrchestrationSqliteStore({ file: files.sqlite, fsImpl }),
-    error => error instanceof OrchestrationSqliteError && /permission denied/.test(error.message),
-  );
+  for (const [name, value] of [['Database', Database], ['fsImpl', fs], ['pathImpl', path]]) {
+    assert.throws(
+      () => createOrchestrationSqliteStore({ file: files.sqlite, [name]: value }),
+      error => error instanceof TypeError && error.message.includes(name)
+        && /unsupported by the Rust store/.test(error.message),
+    );
+  }
+  assert.equal(fs.existsSync(files.sqlite), false);
+});
+
+test('native database creation fails closed when its directory is not writable', {
+  skip: process.platform === 'win32' || process.getuid?.() === 0,
+}, t => {
+  const files = tempPaths(t);
+  fs.chmodSync(files.dir, 0o500);
+  try {
+    assert.throws(
+      () => createOrchestrationSqliteStore({ file: files.sqlite }),
+      error => error instanceof OrchestrationSqliteError && /permission denied/i.test(error.message),
+    );
+    assert.equal(fs.existsSync(files.sqlite), false);
+  } finally { fs.chmodSync(files.dir, 0o700); }
 });
 
 test('storage uses the Rust driver; the npm addon remains a development oracle', () => {
@@ -514,7 +520,7 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     // task-shell 仓储迁移后不再经 JS 打开 SQLite：整个 store 由原生
     // RustTaskStore 承载，同属“只用 Rust、绝不碰 npm addon”的边界。
-    assert.match(source, /sqlite\/driver|RustTaskStore/, `${file} must use the shared driver or the native Rust store`);
+    assert.match(source, /sqlite\/driver|RustTaskStore|RustOrchestrationStore/, `${file} must use the shared driver or the native Rust store`);
     assert.doesNotMatch(source, /require\('better-sqlite3'\)/, `${file} must not require the addon`);
   }
 
@@ -534,4 +540,179 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   assert.match(manager, /SQLite/, 'the manager must explain what its runtime check failed on');
   const sqliteCheck = fs.readFileSync(path.join(root, 'scripts/check-sqlite-runtime.js'), 'utf8');
   assert.match(sqliteCheck, /new Database\(':memory:'\)/);
+});
+
+test('native selectors preserve missing/null and numeric types, projection and read-your-writes', async t => {
+  const files = tempPaths(t);
+  const store = createOrchestrationSqliteStore({ file: files.sqlite });
+  await store.mutate(draft => {
+    draft.tasks.a = { id: 'a', status: 'running', n: 0, spec: { chatId: 's', message: 'not projected' } };
+    draft.tasks.b = { id: 'b', status: null, n: '0' };
+    draft.tasks.c = { id: 'c' };
+    draft.tasks.done = { id: 'done', status: 'completed' };
+  });
+  assert.deepEqual(await store.select('tasks', { where: { status: null }, fields: ['id'] }), [{ id: 'b' }]);
+  assert.deepEqual(await store.select('tasks', { where: { status: { $nin: [null, 'completed'] } }, fields: ['id'] }), [{ id: 'a' }, { id: 'c' }]);
+  assert.deepEqual(await store.select('tasks', { where: { n: { $lte: 0 } }, fields: ['id', 'spec.chatId'] }), [{ id: 'a', spec: { chatId: 's' } }]);
+  assert.equal(await store.read(state => Object.getOwnPropertyDescriptor(state.tasks.a, 'status').value), 'running');
+  let leaked;
+  await store.mutate(draft => {
+    assert.equal(Object.keys(draft).includes('select'), false);
+    assert.equal(Object.keys(draft).includes('count'), false);
+    const [row] = draft.select('tasks', { where: { status: 'running' } });
+    leaked = row;
+    row.status = 'completed';
+    draft.tasks.new = { id: 'new', status: 'running' };
+    delete draft.tasks.c;
+    assert.equal(draft.count('tasks', { status: 'running' }), 1);
+    assert.deepEqual(draft.select('tasks', { where: { status: 'running' } }).map(task => task.id), ['new']);
+    assert.equal(draft.count('tasks', { status: 'completed' }), 2);
+  });
+  assert.throws(() => leaked.status, /no longer active/);
+  assert.throws(() => Object.keys(leaked), /no longer active/);
+  const snapshot = await store.snapshot();
+  assert.equal(Object.hasOwn(snapshot, 'select'), false);
+  assert.equal(Object.hasOwn(snapshot, 'count'), false);
+  await store.close();
+});
+
+test('streaming native rollback export preserves metadata and refuses live database targets', async t => {
+  const files = tempPaths(t);
+  const store = createOrchestrationSqliteStore({ file: files.sqlite });
+  await store.mutate(draft => {
+    draft.tasks['10'] = { id: '10', status: 'completed', result: 'preserved result body', nested: { z: 2, a: 1 } };
+    draft.tasks['2'] = { id: '2', status: 'running' };
+    draft.extra = { '10': true, '2': false, z: 'last', a: ['first'] };
+  });
+  const before = await store.snapshot();
+  await assert.rejects(store.exportLegacy(files.sqlite), /export target/);
+  await assert.rejects(store.exportLegacy(`${files.sqlite}-wal`), /export target/);
+  if (process.platform !== 'win32') {
+    const link = path.join(files.dir, 'database-alias.json');
+    fs.linkSync(files.sqlite, link);
+    await assert.rejects(store.exportLegacy(link), /export target/);
+    fs.unlinkSync(link);
+  }
+  const report = require('../scripts/export-orchestration-sqlite').exportSnapshot({
+    databaseFile: files.sqlite, targetFile: files.json,
+  });
+  assert.equal(report.databaseFile, files.sqlite);
+  assert.equal(report.targetFile, files.json);
+  assert.equal(report.revision, before.revision);
+  assert.equal(report.digest, require('./helpers/orchestration-sqlite-oracle')._stateDigest(before));
+  assert.deepEqual(JSON.parse(fs.readFileSync(files.json, 'utf8')), before);
+  const oracle = new Database(files.sqlite, { readonly: true });
+  try {
+    assert.deepEqual(require('./helpers/orchestration-sqlite-oracle')._loadDatabaseState(oracle, files.sqlite), before);
+  } finally { oracle.close(); }
+  await store.close();
+});
+
+test('large terminal history opens and selects active candidates under a bounded Node heap', async t => {
+  const files = tempPaths(t);
+  const empty = createOrchestrationSqliteStore({ file: files.sqlite });
+  await empty.close();
+  // Seed outside the child process. No real database is read or modified.
+  const seed = new Database(files.sqlite);
+  const insert = seed.prepare('INSERT INTO orchestration_tasks(id,data_json,parent_session_id,status,updated_at) VALUES (?,?,?,?,?)');
+  const payload = 'historical output '.repeat(1400);
+  seed.transaction(() => {
+    for (let i = 0; i < 6000; i++) {
+      const id = `history-${i}`;
+      insert.run(id, JSON.stringify({ id, status: 'completed', result: payload, updatedAt: 1 }), null, 'completed', 1);
+    }
+    insert.run('active', JSON.stringify({ id: 'active', status: 'running', updatedAt: 1 }), null, 'running', 1);
+  })();
+  seed.close();
+  const script = String.raw`
+    const assert = require('node:assert/strict');
+    const { createOrchestrationSqliteStore } = require('./src/orchestration/sqlite-store');
+    (async () => {
+      const store = createOrchestrationSqliteStore({ file: process.argv[1] });
+      assert.equal(await store.count('tasks', {}), 6001);
+      assert.deepEqual(await store.select('tasks', {
+        where: { status: { $nin: ['completed', 'failed', 'cancelled'] } }, fields: ['id', 'status'],
+      }), [{ id: 'active', status: 'running' }]);
+      await store.mutate(draft => {
+        const [row] = draft.select('tasks', { where: { status: 'running' } });
+        row.status = 'completed';
+      });
+      assert.equal(await store.read(state => state.tasks.active.status), 'completed');
+      assert.ok(store.metrics().multicc_orchestration_sqlite_materialized_bytes_total < 512 * 1024);
+      await store.close();
+      process.stdout.write('bounded-history-ok');
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `;
+  const child = spawnSync(process.execPath, ['--max-old-space-size=80', '-e', script, files.sqlite], {
+    cwd: path.join(__dirname, '..'), encoding: 'utf8', timeout: 90_000,
+    env: { ...process.env }, maxBuffer: 1024 * 1024,
+  });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+  assert.match(child.stdout, /bounded-history-ok/);
+});
+
+
+test('native JSON boundaries preserve sliced UTF-16 strings and nested property names', async t => {
+  const files = tempPaths(t);
+  const legacy = createOrchestrationStore({ file: files.json, now: () => 10 });
+  const high = '😀'.slice(0, 1);
+  const low = '😀'.slice(1);
+  const record = { id: 'utf16', status: 'running', lastLine: high,
+    nested: { [low]: [high, low, '完整😀'], 'quoted"key': low, '10': high, '2': low } };
+  await legacy.mutate(draft => { draft.tasks.utf16 = record; draft.extra = { [high]: low }; });
+  const before = await legacy.snapshot();
+  const store = createOrchestrationSqliteStore({ file: files.sqlite, legacyFile: files.json });
+  assert.deepEqual(await store.snapshot(), before);
+  assert.equal(store.migration.legacyDigest, require('./helpers/orchestration-sqlite-oracle')._stateDigest(before));
+  assert.equal(await store.read(state => state.tasks.utf16.nested[low][0]), high);
+  assert.equal(await store.read(state => state.tasks.utf16.nested['quoted"key']), low);
+  assert.deepEqual(await store.select('tasks', { fields: ['id', 'status', 'lastLine', 'nested'] }), [record]);
+  assert.equal(await store.count('tasks', { lastLine: high }), 1);
+  assert.equal(await store.count('tasks', { lastLine: '�' }), 0);
+  await store.mutate(draft => {
+    draft.tasks.utf16.lastLine = low;
+    draft.tasks.utf16.nested[low].push(high);
+    assert.equal(draft.count('tasks', { lastLine: low }), 1);
+    assert.equal(draft.select('tasks', { fields: ['lastLine'] })[0].lastLine, low);
+  });
+  const expected = await store.snapshot();
+  const exported = await store.exportLegacy(files.json);
+  assert.equal(exported.digest, require('./helpers/orchestration-sqlite-oracle')._stateDigest(expected));
+  assert.deepEqual(JSON.parse(fs.readFileSync(files.json, 'utf8')), expected);
+  await store.close({ exportRollback: false });
+  const reopened = createOrchestrationSqliteStore({ file: files.sqlite });
+  assert.deepEqual(await reopened.snapshot(), expected);
+  await reopened.close();
+});
+
+
+test('capacity maintenance runs early but preserves recent receipts until the retention horizon', async t => {
+  const files = tempPaths(t);
+  let clock = 1_800_000_000_000;
+  const store = createOrchestrationSqliteStore({ file: files.sqlite, now: () => clock,
+    retention: { maxRecords: 2 } });
+  await store.mutate(draft => {
+    for (const id of ['a', 'b']) draft.tasks[id] = { id, status: 'completed',
+      completedAt: clock - 1, updatedAt: clock - 1 };
+  });
+  const first = await store.pruneRetained();
+  assert.equal(first.deletedTasks, 0);
+  assert.equal(first.capacityTriggered, false);
+  clock += 1;
+  await store.mutate(draft => { draft.tasks.newest = { id: 'newest', status: 'completed',
+    completedAt: clock, updatedAt: clock }; });
+  clock += 60_000; // Still well before the one-hour expiry interval.
+  const capacity = await store.pruneRetained();
+  assert.equal(capacity.capacityTriggered, true);
+  assert.equal(capacity.deletedTasks, 0);
+  assert.equal(await store.count('tasks'), 3);
+  assert.equal(await store.read(state => state.tasks.newest.id), 'newest');
+  clock += 1;
+  await store.mutate(draft => { draft.tasks.newest.lastLine = 'revision refreshed after maintenance'; });
+  clock += 31 * 24 * 60 * 60 * 1000;
+  const expired = await store.pruneRetained();
+  assert.equal(expired.capacityTriggered, true);
+  assert.equal(expired.deletedTasks, 3, 'expiry cleanup is not limited to the one-row capacity excess');
+  assert.equal(await store.count('tasks'), 0);
+  await store.close();
 });

@@ -245,7 +245,9 @@ test('tasks poll calibrates startedAt and surfaces the latest output line', asyn
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal(harness.state.fetchUrl, '/api/sessions/sess-1/tasks');
+  const requested = new URL(harness.state.fetchUrl, 'http://localhost');
+  assert.equal(requested.pathname, '/api/sessions/sess-1/tasks');
+  assert.deepEqual(JSON.parse(requested.searchParams.get('taskIds')), ['t1']);
   assert.match(mainText(harness), /5m/, '时长应采用服务端 createdAt');
   assert.match(tailText(harness), /↳ 最近输出 · RUN 42\/100 ok/);
   harness.controller.dispose();
@@ -263,6 +265,27 @@ test('poll settles a task the WS done event never delivered', async () => {
   await Promise.resolve();
   await Promise.resolve();
   assert.equal(stripOf(harness.messagesEl), null, '台账 terminal 应回收行');
+  harness.controller.dispose();
+});
+
+test('activity polling batches only displayed IDs and keeps completed receipts in the result', async () => {
+  const requested = [];
+  const ids = Array.from({ length: 205 }, (_, index) => `visible-${index}`);
+  ids[0] = 'comma,quote"emoji😀';
+  const harness = makeHarness({
+    fetchJson: async url => {
+      const parsed = new URL(url, 'http://localhost');
+      assert.equal(parsed.pathname, '/api/sessions/sess-1/tasks');
+      const taskIds = JSON.parse(parsed.searchParams.get('taskIds'));
+      requested.push(taskIds);
+      return { tasks: taskIds.map(taskId => ({ taskId, status: taskId === ids[204] ? 'completed' : 'running' })) };
+    },
+  });
+  harness.controller.onEvent({ type: 'background_tasks', tasks: ids.map(task_id => ({ task_id, background: true })) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requested.map(batch => batch.length), [100, 100, 5]);
+  assert.deepEqual(requested.flat(), ids);
+  assert.equal(harness.controller.runningCount(), 204, 'a lost WS completion is repaired by its requested receipt');
   harness.controller.dispose();
 });
 

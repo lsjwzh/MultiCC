@@ -5,15 +5,8 @@ let testFetch = async () => { throw new Error('unexpected outbound request'); };
 require('node:test').mock.method(require('../src/network/outbound'), 'outboundFetch',
   (...args) => testFetch(...args));
 
-// 借道余量透传（relay-quota）端到端契约：
-//   1. 导入方识别 —— core.getProviderLimitTarget 把 baseUrl 指向另一台 multicc
-//      中转端点的 provider 解析成 strategy 'relay-quota'（识别来自
-//      relay-share-store 的 relayRouteFromBaseUrl）；
-//   2. 透传链路 —— usage-limit-poller 的 pollRelayQuota POST 出借方的
-//      mountProviderRelayQuotaRoutes 端点，出借方收到后触发真实厂商查询并把
-//      最新 DTO 传回，导入方原样透传。
-// 这里用 stub 的 testFetch 把两端在进程内桥接起来，等价于一次真实 HTTP
-// 往返（URL / method / Authorization / 响应体全部走真实代码路径）。
+// 保留 provider target 解析与后台 poller 的借道错误契约。公开出借方路由与
+// 厂商查询已迁 Rust；本文件不再用旧 Node 端点模拟新前门。
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -28,8 +21,6 @@ process.env.MULTICC_DATA_DIR = dataDir;
 const runtimePaths = createPaths({ dataDir });
 const { getProviderLimitTarget } = require('../src/providers/core');
 const poller = require('../src/usage-limit-poller');
-const { mountProviderRelayQuotaRoutes, pollClaudeUsage, createProviderBalanceRuntime } = require('../src/routes/provider-balance');
-const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
 
 const RELAY_CREDENTIAL = 'mcr1.abcdefghijklmnop.secret-token-1';
 
@@ -130,137 +121,6 @@ test('loopback codex-proxy plumbing is NOT a relay; plain GLM provider keeps glm
   const glm = getProviderLimitTarget('claude', 'glm-1');
   assert.equal(glm.strategy, 'glm-monitor');
   assert.equal(glm.host, 'open.bigmodel.cn');
-});
-
-test('end-to-end: borrower detection → relay adapter → lender endpoint → fresh DTO pass-through', async () => {
-  writeProviders([
-    {
-      id: 'relay-glm', appType: 'claude', name: 'GLM · 借道', source: 'local',
-      settingsConfig: {
-        env: {
-          ANTHROPIC_BASE_URL: 'https://relay.example:3000/claude-proxy/glm/remote',
-          ANTHROPIC_AUTH_TOKEN: RELAY_CREDENTIAL,
-        },
-      },
-    },
-  ]);
-  const target = getProviderLimitTarget('claude', 'relay-glm');
-
-  // ── 出借方（A 机）：真实厂商查询在此触发，慢查询模拟 inflight 去重窗口 ──
-  const lenderRoutes = {};
-  const lenderApp = {
-    get: (p, h) => { lenderRoutes[`GET ${p}`] = h; },
-    post: (p, h) => { lenderRoutes[`POST ${p}`] = h; },
-  };
-  let vendorRuns = 0;
-  mountProviderRelayQuotaRoutes(lenderApp, {
-    getProvider: (appType, id) => ({ id, appType, name: 'GLM' }),
-    listProviders: () => [],
-    getProviderLimitTarget: (appType, id) => ({
-      providerId: id, appType, host: 'open.bigmodel.cn', apiKey: 'vendor-key', strategy: 'glm-monitor',
-    }),
-    adapters: {
-      'glm-monitor': () => new Promise(resolve => {
-        vendorRuns += 1;
-        setTimeout(() => resolve({
-          kind: 'window', provider: 'glm', rateLimitType: 'five_hour',
-          status: 'allowed', utilization: 0.42, resetsAt: null,
-        }), 25);
-      }),
-    },
-  });
-
-  // ── 桥接层：把 B 端适配器的 fetch 直接投递给 A 端已注册的路由处理器 ──
-  const seenRequests = [];
-  const origFetch = testFetch;
-  testFetch = async (url, opts) => {
-    seenRequests.push({ url, opts });
-    const u = new URL(url);
-    assert.equal(opts.method, 'POST', 'relay adapter always POSTs');
-    assert.equal(u.pathname, '/claude-proxy/glm/remote/quota');
-    const res = {
-      statusCode: 200, body: null,
-      set() { return this; },
-      status(code) { this.statusCode = code; return this; },
-      json(body) { this.body = body; return this; },
-    };
-    await lenderRoutes['POST /claude-proxy/:id/remote/quota']({ params: { id: 'glm' } }, res);
-    return {
-      ok: res.statusCode >= 200 && res.statusCode < 300,
-      status: res.statusCode,
-      json: async () => res.body,
-    };
-  };
-  try {
-    // 并发两次透传查询 → 共享一次出借方真实查询（inflight 去重）。
-    const [a, b] = await Promise.all([
-      poller.pollRelayQuota(target, 0),
-      poller.pollRelayQuota(target, 0),
-    ]);
-    assert.equal(vendorRuns, 1, 'concurrent borrower queries share one real vendor fetch');
-    assert.equal(a.utilization, 0.42);
-    assert.equal(b.utilization, 0.42);
-    assert.equal(seenRequests.length, 2, 'both borrower requests reached the lender endpoint');
-    assert.equal(seenRequests[0].opts.headers.Authorization, `Bearer ${RELAY_CREDENTIAL}`);
-
-    // 串行的下一场查询（前一次已结束）→ 出借方再次触发真实查询：
-    // 端点没有 TTL 缓存，语义就是「接到请求 → 触发真实查询 → 返回最新结果」。
-    const again = await poller.pollRelayQuota(target, 0);
-    assert.equal(again.utilization, 0.42);
-    assert.equal(vendorRuns, 2, 'each settled request triggers a fresh real query (no TTL cache)');
-  } finally {
-    testFetch = origFetch;
-  }
-});
-
-test('official Claude quota survives lender → borrower → durable snapshot without switching accounts', async () => {
-  const routes = {};
-  mountProviderRelayQuotaRoutes({ get() {}, post: (p, fn) => { routes[p] = fn; } }, {
-    getProvider: () => ({ appType: 'claude' }), listProviders: () => [],
-    getProviderLimitTarget: () => ({ strategy: 'claude-oauth-usage', officialAccountId: 'account-a' }),
-    adapters: { 'claude-oauth-usage': target => pollClaudeUsage(target, 0, undefined, {
-      credentials: { peekAccountToken: id => {
-        assert.equal(id, 'account-a');
-        return { token: 'private-test-token' };
-      } },
-      fetchUsage: async () => ({ five_hour: { utilization: 20 }, seven_day: { utilization: 60 },
-        seven_day_sonnet: { utilization: 90 } }),
-    }) },
-  });
-  let stored = null;
-  const recorder = createLimitRecorder({ persistedSessions: new Map(), providers: {},
-    cache: { get: () => stored, record: (appType, providerId, data) => {
-      stored = { ...data, appType, providerId }; return stored;
-    } },
-  });
-  const originalFetch = testFetch;
-  testFetch = async () => {
-    let result;
-    const res = { set() { return this; }, json(body) { result = body; return this; } };
-    await routes['/claude-proxy/:id/remote/quota']({ params: { id: 'lender-provider' } }, res);
-    assert.ok(!JSON.stringify(result).includes('private-test-token'));
-    return { ok: true, json: async () => result };
-  };
-  try {
-    const borrower = createProviderBalanceRuntime({
-      getProvider: () => ({ appType: 'claude' }), listProviders: () => [],
-      getProviderLimitTarget: () => ({ strategy: 'relay-quota',
-        relayUrl: 'https://lender.example/claude-proxy/lender-provider/remote', apiKey: RELAY_CREDENTIAL }),
-      onResult: recorder.recordProvider,
-    });
-    const result = await borrower.queryOne('claude', 'borrower-provider');
-    assert.equal(result.ok, true);
-    assert.equal(stored.providerId, 'borrower-provider');
-    assert.deepEqual(stored.summary.windows.map(w => w.usedPercent), [20, 60, 90]);
-    assert.match(result.snapshot.bar.text, /5h 80%/);
-    assert.match(result.snapshot.bar.text, /1wk-ALL 40%/);
-    assert.match(result.snapshot.bar.text, /1wk-Sonnet 10%/);
-    // Weekly-only plans must also persist; they are not passive 5h events.
-    const weekly = { ...result.dto, rateLimitType: 'weekly', windows: result.dto.windows.slice(1) };
-    recorder.recordProvider('claude', 'weekly-provider', { ok: true, dto: weekly });
-    assert.equal(stored.summary.window, '1wk');
-    assert.equal(stored.summary.windows.length, 2);
-  } finally { testFetch = originalFetch; }
 });
 
 test('an unsupported lender exposes its reason instead of silently dropping quota', async () => {

@@ -572,11 +572,38 @@ impl Runtime {
                 .unwrap_or(true)
         };
 
+        let pending = self.pending.get(&session_id).cloned();
+        if let Some(pending) = &pending {
+            // Re-admission is completing an already reserved switch, not
+            // choosing another lane. It must neither spend another hop nor
+            // discard the destination while the host temporarily cannot use it.
+            if background {
+                return envelope(Value::Null, Vec::new());
+            }
+            if let Some(pending_cli) = field(Some(pending), "cli").filter(|value| truthy(value)) {
+                if js_string(pending_cli) != cli {
+                    if !available(&js_string(pending_cli)) {
+                        return envelope(Value::Null, Vec::new());
+                    }
+                    let mut effects = Vec::new();
+                    let value = self.plan(
+                        &session_id,
+                        &cli,
+                        pending,
+                        None,
+                        &Value::Null,
+                        false,
+                        &mut effects,
+                    );
+                    return envelope(value, effects);
+                }
+            }
+            return envelope(Value::Null, Vec::new());
+        }
         let hops = self.hops.get(&session_id).copied().unwrap_or(0);
         if (hops as f64) >= max_attempts(&selection) {
             return envelope(Value::Null, Vec::new());
         }
-        let pending = self.pending.get(&session_id).cloned();
         let reachable: Vec<Value> = candidates
             .iter()
             .filter(|candidate| {
@@ -641,29 +668,6 @@ impl Runtime {
             );
             return envelope(value, effects);
         }
-        if let Some(pending) = &pending {
-            if let Some(pending_cli) = field(Some(pending), "cli").filter(|value| truthy(value)) {
-                if js_string(pending_cli) != cli {
-                    if !available(&js_string(pending_cli)) {
-                        self.pending.remove(&session_id);
-                        return envelope(Value::Null, Vec::new());
-                    }
-                    let mut effects = Vec::new();
-                    let value = self.plan(
-                        &session_id,
-                        &cli,
-                        pending,
-                        None,
-                        &Value::Null,
-                        false,
-                        &mut effects,
-                    );
-                    return envelope(value, effects);
-                }
-                return envelope(Value::Null, Vec::new());
-            }
-            return envelope(Value::Null, Vec::new());
-        }
         // A continuation stays on its lane unless a handoff reserved another
         // one, or that lane is already out of usable lines.
         if origin_continue && !direct_input {
@@ -709,6 +713,7 @@ impl Runtime {
                         ("planned", Value::Bool(true)),
                     ]);
                     self.pending.insert(session_id.clone(), reservation.clone());
+                    self.hops.insert(session_id.clone(), hops + 1);
                     let mut effects = Vec::new();
                     let value = self.plan(
                         &session_id,
@@ -783,6 +788,8 @@ impl Runtime {
         ]);
         self.pending
             .insert(session_id.to_string(), reservation.clone());
+        let hops = self.hops.get(session_id).copied().unwrap_or(0);
+        self.hops.insert(session_id.to_string(), hops + 1);
         self.plan(
             session_id,
             cli,
@@ -794,7 +801,7 @@ impl Runtime {
         )
     }
 
-    /// `plan(...)`: reserve the lane, narrate it, and hand back the switch.
+    /// `plan(...)`: narrate an existing reservation and hand back the switch.
     #[allow(clippy::too_many_arguments)]
     fn plan(
         &mut self,
@@ -806,8 +813,6 @@ impl Runtime {
         price_tiered: bool,
         effects: &mut Vec<Value>,
     ) -> Value {
-        let hops = self.hops.get(session_id).copied().unwrap_or(0);
-        self.hops.insert(session_id.to_string(), hops + 1);
         let mut event = map();
         put(&mut event, "type", text("provider_auto_route"));
         put(&mut event, "version", Value::from(1));
@@ -943,16 +948,18 @@ impl Runtime {
             .into_iter()
             .partition(|candidate| lane_of(candidate, &cli) == cli);
         let preferred_tier = or_null(field(Some(&routing), "tier"));
-        let mut pending = self.pending.get(&session_id).cloned();
-        if let Some(reservation) = &pending {
-            if let Some(pending_cli) = field(Some(reservation), "cli").filter(|value| truthy(value))
-            {
-                if js_string(pending_cli) != cli {
-                    self.pending.remove(&session_id);
-                    pending = None;
-                }
-            }
+        if !self.pending_cli_switch(&session_id, &cli).is_null() {
+            // Configuration admission must apply the reserved lane before a
+            // turn can select a provider. Keeping the reservation lets a busy
+            // or interrupted switch resume without falling back to the spent
+            // lane and misreporting an exhausted provider pool.
+            return envelope_error(
+                "Auto Provider must apply the pending CLI switch before starting the turn",
+                "AUTO_PROVIDER_CLI_SWITCH_REQUIRED",
+                Vec::new(),
+            );
         }
+        let pending = self.pending.get(&session_id).cloned();
         let mut attempted = Vec::new();
         if let Some(reservation) = &pending {
             if let Some(from) =
@@ -1315,6 +1322,8 @@ impl Runtime {
                     Value::String(lane_of(&picked, &turn.cli)),
                 );
                 put(&mut reservation, "fromCli", Value::String(turn.cli.clone()));
+                let hops = runtime.hops.get(&turn.session_id).copied().unwrap_or(0);
+                runtime.hops.insert(turn.session_id.clone(), hops + 1);
             }
             let reservation = object(reservation);
             runtime
@@ -1401,6 +1410,21 @@ impl Runtime {
                 Vec::new(),
             )
         })
+    }
+
+    /// `pendingCliSwitch(sessionId, cli)` — a reservation which still needs
+    /// its lane applied. This query never consumes a hop or narrates a plan.
+    pub fn pending_cli_switch(&self, session_id: &str, cli: &str) -> Value {
+        self.pending
+            .get(session_id)
+            .filter(|reservation| {
+                field(Some(reservation), "cli")
+                    .filter(|value| truthy(value))
+                    .map(|pending_cli| js_string(pending_cli) != cli)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .unwrap_or(Value::Null)
     }
 
     /// `snapshot(sessionId)` — the last route event of that session.
@@ -2170,10 +2194,121 @@ mod tests {
         assert_eq!(runtime.hops.get("s"), Some(&1));
         assert!(runtime.pending.contains_key("s"));
 
-        // The reservation survives; asking again replays it and burns another hop.
-        let again = runtime.plan_turn(&request);
-        assert_eq!(again["value"]["cli"], json!("codex"));
+        // Repeated configuration admission completes the same reservation;
+        // retries never spend the budget for future actual lane changes.
+        for _ in 0..8 {
+            let again = runtime.plan_turn(&request);
+            assert_eq!(again["value"]["cli"], json!("codex"));
+            assert_eq!(runtime.hops.get("s"), Some(&1));
+        }
+
+        let reserved = runtime.pending_cli_switch("s", "claude");
+        let mut unavailable = request.clone();
+        unavailable["availability"]["codex"] = json!(false);
+        assert_eq!(runtime.plan_turn(&unavailable)["value"], Value::Null);
+        assert_eq!(runtime.pending_cli_switch("s", "claude"), reserved);
+        // Even the last allowed reservation must still be applicable.
+        runtime.hops.insert("s".into(), 2);
+        assert_eq!(runtime.plan_turn(&request)["value"]["cli"], json!("codex"));
         assert_eq!(runtime.hops.get("s"), Some(&2));
+    }
+
+    #[test]
+    fn pending_cli_switch_is_read_only_and_only_reports_an_unapplied_lane() {
+        let mut runtime = Runtime::default();
+        assert_eq!(runtime.pending_cli_switch("missing", "claude"), Value::Null);
+        let reserved = json!({ "cli": "codex", "providerId": "b", "fromCli": "claude" });
+        runtime.pending.insert("s".into(), reserved.clone());
+        runtime.hops.insert("s".into(), 2);
+        assert_eq!(runtime.pending_cli_switch("s", "codex"), Value::Null);
+        assert_eq!(runtime.pending_cli_switch("s", "claude"), reserved);
+        assert_eq!(runtime.pending_cli_switch("s", "claude"), reserved);
+        assert_eq!(runtime.pending.get("s"), Some(&reserved));
+        assert_eq!(runtime.hops.get("s"), Some(&2));
+        assert!(runtime.current.is_empty());
+
+        runtime
+            .pending
+            .insert("legacy".into(), json!({ "providerId": "a" }));
+        assert_eq!(runtime.pending_cli_switch("legacy", "claude"), Value::Null);
+        runtime.clear_session("s");
+        assert_eq!(runtime.pending_cli_switch("s", "claude"), Value::Null);
+    }
+
+    #[test]
+    fn begin_turn_preserves_an_unapplied_switch_instead_of_exhausting_the_old_lane() {
+        let candidates = json!([
+            line("a", "claude", 1, "exhausted"),
+            line("b", "codex", 1, "ok"),
+        ]);
+        let mut request = json!({
+            "sessionId": "s", "turnId": "next", "cli": "claude",
+            "selection": selection(candidates.clone(), true, Some("failover")),
+            "candidates": candidates, "availability": { "codex": true },
+        });
+        let mut runtime = Runtime::default();
+        assert_eq!(runtime.plan_turn(&request)["value"]["cli"], json!("codex"));
+        let reserved = runtime.pending_cli_switch("s", "claude");
+        let current = runtime.snapshot("s");
+        for _ in 0..2 {
+            let rejected = runtime.begin_turn(&request);
+            assert_eq!(
+                rejected["error"]["code"],
+                json!("AUTO_PROVIDER_CLI_SWITCH_REQUIRED")
+            );
+            assert_eq!(rejected["effects"], json!([]));
+            assert_eq!(runtime.pending_cli_switch("s", "claude"), reserved);
+            assert_eq!(runtime.snapshot("s"), current);
+            assert_eq!(runtime.hops.get("s"), Some(&1));
+            assert!(runtime.turns.is_empty());
+            assert_eq!(runtime.next_turn, 0);
+        }
+
+        request["cli"] = json!("codex");
+        let started = runtime.begin_turn(&request);
+        let handle = started["value"]["handle"].as_u64().unwrap();
+        assert_eq!(
+            runtime.turn_initial(handle)["value"]["providerId"],
+            json!("b")
+        );
+        assert_eq!(runtime.pending_cli_switch("s", "claude"), Value::Null);
+    }
+
+    #[test]
+    fn a_handoff_reservation_spends_one_hop_and_its_replay_spends_none() {
+        let candidates = json!([line("a", "claude", 1, "ok"), line("b", "codex", 1, "ok")]);
+        let mut request = json!({
+            "sessionId": "s", "turnId": "source", "cli": "claude",
+            "selection": selection(candidates.clone(), true, Some("failover")),
+            "candidates": candidates, "availability": { "codex": true },
+        });
+        let mut runtime = Runtime::default();
+        let begun = runtime.begin_turn(&request);
+        let handle = begun["value"]["handle"].as_u64().unwrap();
+        assert_eq!(
+            runtime.turn_initial(handle)["value"]["providerId"],
+            json!("a")
+        );
+        let reserved = runtime.turn_prepare_handoff(&json!({
+            "handle": handle, "decision": quota_decision(), "attempt": open_attempt("a"),
+            "backgroundActive": false, "availability": { "codex": true },
+        }));
+        assert_eq!(reserved["value"]["cli"], json!("codex"));
+        assert_eq!(runtime.hops.get("s"), Some(&1));
+        for _ in 0..8 {
+            assert_eq!(runtime.plan_turn(&request)["value"]["cli"], json!("codex"));
+            assert_eq!(runtime.hops.get("s"), Some(&1));
+        }
+        request["cli"] = json!("codex");
+        request["turnId"] = json!("target");
+        let begun = runtime.begin_turn(&request);
+        let handle = begun["value"]["handle"].as_u64().unwrap();
+        assert_eq!(
+            runtime.turn_initial(handle)["value"]["providerId"],
+            json!("b")
+        );
+        assert_eq!(runtime.hops.get("s"), Some(&1));
+        assert_eq!(runtime.pending_cli_switch("s", "claude"), Value::Null);
     }
 
     fn background_request(candidates: &Value) -> Value {

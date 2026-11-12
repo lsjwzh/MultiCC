@@ -14,6 +14,34 @@ const {
 } = require('../src/session-work/scheduler');
 const { runStateForClassify } = require('../src/classify/vocab');
 
+test('native queue views and recovery never enumerate historical outbox rows', async () => {
+  const item = { id: 'queued-live', sessionId: 's1', state: 'pending', sequence: 1,
+    createdAt: 10, payload: { type: 'session.work', workKind: 'task', message: 'keep this message' } };
+  const queries = [];
+  const draft = {
+    outbox: new Proxy({ [item.id]: item }, {
+      ownKeys() { throw new Error('historical outbox must stay in SQLite'); },
+    }),
+    sessionSchedules: { s1: { sessionId: 's1', state: 'idle', active: null,
+      classifyState: 'D', updatedAt: 10 } },
+    select(collection, query) {
+      assert.equal(collection, 'outbox');
+      assert.deepEqual(query.where.state, ['pending', 'leased']);
+      queries.push(query);
+      return [item];
+    },
+  };
+  const scheduler = createSessionWorkScheduler({
+    store: { read: async fn => fn(draft), mutate: async fn => fn(draft) }, now: () => 100,
+  });
+  assert.deepEqual((await scheduler.status('s1')).queued.map(row => row.text), ['keep this message']);
+  assert.equal((await scheduler.queueSummaries())[0].depth, 1);
+  assert.equal((await scheduler.recover()).ok, true);
+  assert.equal(draft.outbox[item.id].payload.message, 'keep this message');
+  assert.ok(queries.some(query => query.where.sessionId === 's1'));
+  assert.ok(queries.some(query => query.where.sessionId === undefined));
+});
+
 test('runStateForFreezeReason maps each freeze reason to a truthful runState', () => {
   // User hand-off → waiting (the only reason that means "act now").
   assert.equal(runStateForFreezeReason('awaiting_user_input'), 'waiting');

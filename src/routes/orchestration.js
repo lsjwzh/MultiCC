@@ -37,6 +37,12 @@ function createOrchestrationRoutes(rawDeps) {
     'completed', 'failed', 'interrupted', 'cancelled',
   ]);
 
+  function listOperationReferences(query) {
+    const operations = deps.runtime.operations;
+    return typeof operations.listReferences === 'function'
+      ? operations.listReferences(query) : operations.list(query);
+  }
+
   function projectDispatch(operation, sessionId, schedule) {
     const entryId = operation.requestOutboxId || `operation:${operation.id}:request`;
     const queued = (schedule?.queued || []).find(item => item.entryId === entryId);
@@ -316,7 +322,7 @@ function createOrchestrationRoutes(rawDeps) {
     app.get('/api/sessions/:id/detached', async (req, res) => {
       const session = deps.records.get(req.params.id);
       if (!session) return res.status(404).json({ error: 'session not found' });
-      const operations = await deps.runtime.operations.list({
+      const operations = await listOperationReferences({
         kind: 'detached',
         ownerSessionId: session.id,
       });
@@ -332,10 +338,12 @@ function createOrchestrationRoutes(rawDeps) {
       const session = deps.records.get(req.params.id);
       if (!session) return res.status(404).json({ error: 'session not found' });
       try {
-        const tasks = await deps.runtime.operations.listTasks({ sessionId: session.id });
+        const tasks = req.query.taskIds === undefined
+          ? await deps.runtime.operations.listTasks({ sessionId: session.id })
+          : await deps.runtime.operations.taskActivity({ sessionId: session.id, taskIds: req.query.taskIds });
         res.json({ tasks, count: tasks.length });
       } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(error.statusCode || 500).json({ error: error.message });
       }
     });
 
@@ -364,7 +372,7 @@ function createOrchestrationRoutes(rawDeps) {
             return res.status(400).json({ error: 'recentTerminalLimit must be an integer between 0 and 20' });
           }
         }
-        const related = (await deps.runtime.operations.list({ kind: 'dispatch' }))
+        const related = (await listOperationReferences({ kind: 'dispatch' }))
           .filter(operation => {
             const owner = operation.ownerSessionId === session.id;
             const target = operation.spec?.chatId === session.id
@@ -631,7 +639,7 @@ function createOrchestrationRoutes(rawDeps) {
     app.get('/api/detached/:taskId', async (req, res) => {
       const state = deps.detached.status(req.params.taskId);
       if (!state) return res.status(404).json({ error: 'task not found' });
-      const operations = await deps.runtime.operations.list({ kind: 'detached' });
+      const operations = await listOperationReferences({ kind: 'detached' });
       const operation = operations.find(entry => entry.externalId === req.params.taskId);
       res.json(operation ? { ...state, operationId: operation.id, status: operation.status } : state);
     });

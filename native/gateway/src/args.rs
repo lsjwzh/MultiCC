@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 /// `multicc-gateway serve --cwd <目录> --node <node 可执行文件>
-/// [--stdin-lifeline] [--] <脚本> [参数…]`, 脚本缺省为 `server.js`.
+/// [--stdin-lifeline] [--ephemeral-loopback] [--] <脚本> [参数…]`, 脚本缺省为 `server.js`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServeOptions {
     pub cwd: PathBuf,
@@ -12,12 +12,15 @@ pub struct ServeOptions {
     /// parent that holds the write end may ask for it (`nohup` hands a
     /// terminal-less process an stdin that reads EOF at once).
     pub stdin_lifeline: bool,
+    /// Isolated local launches bind 127.0.0.1:0 and report the chosen port.
+    pub ephemeral_loopback: bool,
 }
 
 pub fn parse(raw: &[String]) -> Result<ServeOptions, String> {
     let mut cwd = None;
     let mut node = None;
     let mut stdin_lifeline = false;
+    let mut ephemeral_loopback = false;
     let mut rest: Vec<String> = Vec::new();
     let mut index = 0;
     while index < raw.len() {
@@ -43,6 +46,11 @@ pub fn parse(raw: &[String]) -> Result<ServeOptions, String> {
             index += 1;
             continue;
         }
+        if arg == "--ephemeral-loopback" {
+            ephemeral_loopback = true;
+            index += 1;
+            continue;
+        }
         if arg.starts_with("--") {
             return Err(format!("unknown option: {arg}"));
         }
@@ -63,6 +71,7 @@ pub fn parse(raw: &[String]) -> Result<ServeOptions, String> {
         script,
         script_args,
         stdin_lifeline,
+        ephemeral_loopback,
     })
 }
 
@@ -122,6 +131,34 @@ mod tests {
         .unwrap();
         assert!(!passed.stdin_lifeline);
         assert_eq!(passed.script_args, args(&["--stdin-lifeline"]));
+    }
+
+    #[test]
+    fn ephemeral_loopback_is_opt_in_and_stops_at_the_script() {
+        let plain = parse(&args(&["--cwd", "c", "--node", "n"])).unwrap();
+        assert!(!plain.ephemeral_loopback);
+        let local = parse(&args(&[
+            "--cwd",
+            "c",
+            "--node",
+            "n",
+            "--ephemeral-loopback",
+            "s.js",
+        ]))
+        .unwrap();
+        assert!(local.ephemeral_loopback);
+        assert_eq!(local.script, "s.js");
+        let passed = parse(&args(&[
+            "--cwd",
+            "c",
+            "--node",
+            "n",
+            "s.js",
+            "--ephemeral-loopback",
+        ]))
+        .unwrap();
+        assert!(!passed.ephemeral_loopback);
+        assert_eq!(passed.script_args, args(&["--ephemeral-loopback"]));
     }
 
     #[test]

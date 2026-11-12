@@ -1,598 +1,94 @@
 'use strict';
 
-// Explicit provider balance queries (manage page): one provider at a time and
-// all at once. These pin the contract the UI renders from — "no balance API"
-// is a normal ok:false answer, a dead adapter is fetch_failed rather than a
-// thrown 500, and the bulk endpoint reports one row per provider.
-
+// Node 仅验证宿主事实/副作用与反向桥接；余额业务由 Rust 测试覆盖。
 const assert = require('node:assert/strict');
 const test = require('node:test');
+let fetchImpl = async () => { throw new Error('unexpected outbound'); };
+test.mock.method(require('../src/network/outbound'), 'outboundFetch', (...args) => fetchImpl(...args));
+const { createProviderBalanceRuntime, mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes } = require('../src/routes/provider-balance');
+const { HOST_PATH } = require('../src/routes/provider-balance-host');
 
-const {
-  createProviderBalanceRuntime,
-  mountProviderBalanceRoutes,
-  mountProviderRelayQuotaRoutes,
-  pollKimiBalance,
-  pollClaudeUsage,
-  DEFAULT_ADAPTERS,
-} = require('../src/routes/provider-balance');
+function hostHarness(extra = {}) {
+  const routes = [];
+  const app = { post: (path, handler) => routes.push({ path, handler }) };
+  const providers = [{ id: 'work', appType: 'claude', name: 'Work', private: 'not a catalog field' }];
+  const deps = { isLocal: () => true, getPort: () => 43210,
+    listProviders: () => providers,
+    getProvider: (appType, id) => providers.find(p => p.appType === appType && p.id === id),
+    getProviderLimitTarget: () => ({ strategy: 'deepseek-balance', host: 'api.deepseek.com', apiKey: 'fixture-key' }),
+    ...extra };
+  const runtime = mountProviderBalanceRoutes(app, deps);
+  const call = async body => {
+    const response = { statusCode: 200, body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(value) { this.body = value; return this; } };
+    await routes[0].handler({ body }, response);
+    return response;
+  };
+  return { app, deps, routes, runtime, call };
+}
 
-const PROVIDERS = [
-  { id: 'ds-1', appType: 'claude', name: 'DeepSeek' },
-  { id: 'glm-1', appType: 'claude', name: 'GLM' },
-  { id: 'codex-glm', appType: 'codex', name: 'GLM via Codex' },
-  { id: 'plain-1', appType: 'claude', name: 'NoQuota' },
-  { id: 'codex-official', appType: 'codex', name: 'OpenAI Official' },
-];
+test('余额与借道挂载点只注册一个内部宿主端口', () => {
+  const h = hostHarness();
+  mountProviderRelayQuotaRoutes(h.app, h.deps);
+  assert.deepEqual(h.routes.map(r => r.path), [HOST_PATH]);
+});
 
-const TARGETS = {
-  'ds-1': { providerId: 'ds-1', appType: 'claude', host: 'api.deepseek.com', apiKey: 'k', strategy: 'deepseek-balance' },
-  'glm-1': { providerId: 'glm-1', appType: 'claude', host: 'open.bigmodel.cn', apiKey: 'k', strategy: 'glm-monitor' },
-  'codex-glm': { providerId: 'codex-glm', appType: 'codex', host: 'open.bigmodel.cn', apiKey: 'k', strategy: 'glm-monitor' },
-  'codex-official': { providerId: 'codex-official', appType: 'codex', host: 'chatgpt.com', apiKey: null, keyHashSeed: 'codex-oauth', strategy: 'codex-oauth-usage' },
-};
+test('宿主拒绝非本地调用', async () => {
+  const h = hostHarness({ isLocal: () => false });
+  assert.equal((await h.call({ op: 'list' })).statusCode, 404);
+});
 
-// `cached` stands in for provider-limit-cache: keys are `<appType>:<id>` (the
-// same composite identity the real cache uses). Every runtime here is wired
-// with a lookupCached, like the server's mountProviderBalanceRoutes is.
-function harness({ adapters, fail = [], throwOn = [], cached = {}, lookupThrows = false, now = null } = {}) {
-  const seen = [];
+test('宿主目录仅返回身份与名称，并区分未知线路', async () => {
+  const h = hostHarness();
+  assert.deepEqual((await h.call({ op: 'list' })).body, { ok: true, providers: [{ appType: 'claude', id: 'work', name: 'Work' }] });
+  assert.deepEqual((await h.call({ op: 'facts', appType: 'claude', id: 'missing' })).body, { ok: true, found: false });
+});
+
+test('查询事实只读取 target 与出站限制，不执行厂商请求', async () => {
+  const h = hostHarness();
+  const answer = (await h.call({ op: 'facts', appType: 'claude', id: 'work' })).body;
+  assert.equal(answer.ok, true);
+  assert.equal(answer.provider.id, 'work');
+  assert.equal(answer.target.strategy, 'deepseek-balance');
+  assert.equal(answer.egress.allowed, true);
+});
+
+test('缓存读取与结果记录由现有缓存和 recorder 承担', async () => {
   const recorded = [];
-  const runtime = createProviderBalanceRuntime({
-    ...(now ? { now } : {}),
-    lookupCached: (appType, id) => {
-      if (lookupThrows) throw new Error('cache exploded');
-      return cached[`${appType}:${id}`] || null;
-    },
-    onResult: (appType, id, result) => { recorded.push({ appType, id, result }); },
-    getProvider: (appType, id) => PROVIDERS.find(p => p.id === id && (!appType || p.appType === appType)) || null,
-    listProviders: () => PROVIDERS,
-    getProviderLimitTarget: (appType, id) => TARGETS[id] || null,
-    adapters: adapters || {
-      'deepseek-balance': async (target) => {
-        seen.push(target.providerId);
-        if (throwOn.includes(target.providerId)) throw new Error('boom');
-        if (fail.includes(target.providerId)) return null;
-        return { kind: 'balance', available: true, currency: 'CNY', total: 12.5, granted: 0, toppedUp: 12.5 };
-      },
-      'glm-monitor': async (target) => {
-        seen.push(target.providerId);
-        if (throwOn.includes(target.providerId)) throw new Error('boom');
-        if (fail.includes(target.providerId)) return null;
-        return { kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.42, resetsAt: null, weeklyUtilization: 0.1 };
-      },
-      'codex-oauth-usage': async () => ({ kind: 'window', rateLimitType: 'weekly', status: 'allowed', utilization: 0.77, resetsAt: 1_700_003_600, tier: 'pro' }),
-    },
-  });
-  return { runtime, seen, recorded };
-}
-
-// A last-known-good entry as provider-limit-cache stores one: the structured
-// summary the clients dispatch on plus the bar text with its {cd:} tokens.
-const CACHED_WINDOW = {
-  'claude:glm-1': {
-    appType: 'claude', providerId: 'glm-1', kind: 'window', status: 'ok',
-    summary: { kind: 'window', provider: 'glm', status: 'allowed', usedPercentage: 58, resetsAtMs: 1_700_003_600_000, observedAtMs: 1_700_000_000_000 },
-    summaryText: '5h 58%', barText: '5h 58% {cd:1700003600000} ⟳',
-    fetchedAt: 1_700_000_000_000, lastError: null,
-  },
-  'claude:ds-1': {
-    appType: 'claude', providerId: 'ds-1', kind: 'balance', status: 'ok',
-    summary: { kind: 'balance', provider: 'deepseek', available: 87.69, total: 100, currency: 'CNY' },
-    summaryText: '¥87.69', barText: 'DeepSeek 余额 · ¥87.69 · {ago:1700000000000}',
-    fetchedAt: 1_700_000_000_000, lastError: null,
-  },
-};
-
-test('queryOne resolves a pollable provider to its adapter DTO', async () => {
-  const h = harness();
-  const result = await h.runtime.queryOne('claude', 'ds-1');
-  assert.equal(result.ok, true);
-  assert.equal(result.strategy, 'deepseek-balance');
-  assert.equal(result.dto.kind, 'balance');
-  assert.equal(result.dto.total, 12.5);
+  const h = hostHarness({ lookupCached: () => null, onResult: (...args) => { recorded.push(args); return null; } });
+  assert.deepEqual((await h.call({ op: 'cached', appType: 'claude', id: 'work', now: 1000 })).body,
+    { ok: true, found: true, entry: null, snapshot: null });
+  const result = { ok: false, reason: 'fetch_failed' };
+  assert.deepEqual((await h.call({ op: 'record', appType: 'claude', id: 'work', result, now: 1000 })).body,
+    { ok: true, snapshot: null });
+  assert.deepEqual(recorded, [['claude', 'work', result]]);
 });
 
-test('只读共享缓存不触发上游查询，响应携带规范快照', async () => {
-  // Read at the fixture's own time: the cached 5h window resets an hour later,
-  // so it is still a measurement rather than an inferred post-reset reading.
-  const h = harness({ cached: CACHED_WINDOW, now: () => 1_700_000_000_000 });
-  const result = h.runtime.readCached('claude', 'glm-1');
-  assert.equal(result.type, 'provider_limit_updated');
-  assert.equal(result.providerId, 'glm-1');
-  assert.equal(result.cached, true);
-  assert.match(result.bar.text, /5h 42%/);
-  assert.deepEqual(h.seen, []);
-  assert.equal(h.runtime.readCached('codex', 'glm-1').reason, 'not_found');
-  assert.equal(h.runtime.readCached('claude', 'plain-1').reason, 'no_cached_limit');
-});
-
-test('普通查询与重查共享同一个进行中请求，并返回已持久化的快照', async () => {
-  const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
-  const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
-  const dir = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'provider-balance-'));
-  const cache = createProviderLimitCache({ file: require('path').join(dir, 'limits.db'), now: () => 1_700_000_000_000 });
-  const recorder = createLimitRecorder({ cache, persistedSessions: new Map(), providers: {} });
-  let queries = 0;
-  let release;
-  const runtime = createProviderBalanceRuntime({
-    listProviders: () => PROVIDERS,
-    getProvider: (_type, id) => PROVIDERS.find(p => p.id === id),
-    getProviderLimitTarget: (_type, id) => TARGETS[id],
-    onResult: recorder.recordProvider,
-    lookupCached: cache.get,
-    now: () => 1_700_000_000_000,
-    adapters: { 'glm-monitor': () => { queries++; return new Promise(resolve => { release = resolve; }); } },
-  });
-  try {
-    const first = runtime.queryOne('claude', 'glm-1');
-    const second = runtime.refreshOne('claude', 'glm-1');
-    release({ kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.25, resetsAt: 1_700_003_600 });
-    const [a, b] = await Promise.all([first, second]);
-    assert.equal(queries, 1);
-    assert.equal(a, b);
-    assert.equal(a.snapshot.updatedAt, cache.get('claude', 'glm-1').updatedAt);
-    assert.equal(a.dto.fetchedAt, a.snapshot.fetchedAt);
-    assert.deepEqual(a.snapshot.bar, runtime.readCached('claude', 'glm-1').bar);
-  } finally { cache.close(); require('fs').rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('Codex-compatible GLM provider renders GLM windows, not the host Codex account', async () => {
-  const result = await harness().runtime.queryOne('codex', 'codex-glm');
-  assert.equal(result.ok, true);
-  assert.equal(result.dto.provider, 'glm');
-  assert.match(result.bar.text, /^5h 58%/);
-  assert.doesNotMatch(result.bar.text, /^1wk /);
-});
-
-test('queryOne on an unknown provider reports not_found', async () => {
-  const h = harness();
-  const result = await h.runtime.queryOne('claude', 'missing');
-  assert.deepEqual(result, { ok: false, reason: 'not_found' });
-});
-
-test('a provider without a pollable surface is unsupported, not an error', async () => {
-  const h = harness();
-  const result = await h.runtime.queryOne('claude', 'plain-1');
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'unsupported');
-});
-
-test('an adapter returning null reads as fetch_failed', async () => {
-  const h = harness({ fail: ['ds-1'] });
-  const result = await h.runtime.queryOne('claude', 'ds-1');
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'fetch_failed');
-  assert.equal(result.strategy, 'deepseek-balance');
-});
-
-test('a throwing adapter never escapes as a 500, and its cause is surfaced', async () => {
-  const h = harness({ throwOn: ['ds-1'] });
-  const result = await h.runtime.queryOne('claude', 'ds-1');
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'fetch_failed');
-  // The generic Error('boom') has no .detail, but its message must survive.
-  assert.equal(result.detail, 'boom');
-  // A limit_fetch_failed from the poller layer carries the layered root cause.
-  const h2 = harness({ adapters: {
-    'deepseek-balance': async () => {
-      const error = new Error('limit fetch failed: HTTP 401 denied');
-      error.kind = 'limit_fetch_failed';
-      error.detail = 'HTTP 401 denied';
-      throw error;
-    },
-  } });
-  const result2 = await h2.runtime.queryOne('claude', 'ds-1');
-  assert.equal(result2.reason, 'fetch_failed');
-  assert.equal(result2.detail, 'HTTP 401 denied');
-});
-
-// ── last-known-good fallback (transient failures only) ──────────────────────
-//
-// A borrowed (借道) provider's live query crosses the network to the lender on
-// every request, so it fails far more often than a local vendor API. The cache
-// keeps the last bar that DID answer; serving it — clearly marked stale — is
-// what keeps the bar on a freshly loaded page instead of vanishing.
-
-test('a transient failure answers with the last-known-good bar, marked stale', async () => {
-  const h = harness({ fail: ['glm-1'], cached: CACHED_WINDOW });
-  const result = await h.runtime.queryOne('claude', 'glm-1');
-  assert.equal(result.ok, true);
-  assert.equal(result.cached, true);
-  assert.equal(result.stale, true);
-  assert.equal(result.detail, undefined);
-  // The species survives: clients dispatch on dto.kind (window bar vs chip).
-  assert.equal(result.dto.kind, 'window');
-  assert.equal(result.dto.usedPercentage, 58);
-  assert.equal(result.fetchedAt, 1_700_000_000_000);
-  // The stored text keeps its own deadline token; the sync stamp is added
-  // because this render has none.
-  assert.equal(result.bar.text, '5h 58% {cd:1700003600000} ⟳ · 上次同步 {ago:1700000000000}');
-  assert.equal(result.bar.color, '#8b949e');
-  assert.match(result.bar.title, /实时查询失败/);
-  assert.equal(result.bar.action, null);
-});
-
-test('a stale balance chip comes back as a balance dto, not a window', async () => {
-  const h = harness({ fail: ['ds-1'], cached: CACHED_WINDOW });
-  const result = await h.runtime.queryOne('claude', 'ds-1');
-  assert.equal(result.ok, true);
-  assert.equal(result.cached, true);
-  assert.equal(result.dto.kind, 'balance');
-  // This stored render already carries its own sync time — never two of them.
-  assert.equal(result.bar.text, 'DeepSeek 余额 · ¥87.69 · {ago:1700000000000}');
-});
-
-test('a stale fallback still records the FAILURE, never a fresh success', async () => {
-  const h = harness({ fail: ['glm-1'], cached: CACHED_WINDOW });
-  await h.runtime.queryOne('claude', 'glm-1');
-  assert.equal(h.recorded.length, 1);
-  const { appType, id, result } = h.recorded[0];
-  assert.equal(appType, 'claude');
-  assert.equal(id, 'glm-1');
-  // ok:false is the contract that makes the recorder stamp lastError only —
-  // passing the fallback (ok:true + dto) would re-date the cached data and make
-  // a stale window look freshly fetched, and would defeat the cache's
-  // never-overwrite-on-failure guarantee.
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'fetch_failed');
-});
-
-test('the failure detail is carried into the stale title', async () => {
-  const h = harness({
-    cached: CACHED_WINDOW,
-    adapters: {
-      'glm-monitor': async () => {
-        const error = new Error('limit fetch failed: Connect Timeout');
-        error.kind = 'limit_fetch_failed';
-        error.detail = 'Connect Timeout';
-        throw error;
-      },
-    },
-  });
-  const result = await h.runtime.queryOne('claude', 'glm-1');
-  assert.equal(result.ok, true);
-  assert.equal(result.cached, true);
-  assert.equal(result.detail, 'Connect Timeout');
-  assert.match(result.bar.title, /Connect Timeout/);
-});
-
-test('unsupported and never-answered providers get no fallback', async () => {
-  // 'unsupported' is a permanent answer, not a transient one: a provider with no
-  // quota surface must not resurrect an unrelated cached bar. (plain-1 has no
-  // entry either, and neither does the failing ds-1 below.)
-  const noSurface = await harness({ cached: { 'claude:plain-1': CACHED_WINDOW['claude:glm-1'] } })
-    .runtime.queryOne('claude', 'plain-1');
-  assert.equal(noSurface.ok, false);
-  assert.equal(noSurface.reason, 'unsupported');
-
-  const neverAnswered = await harness({ fail: ['ds-1'] }).runtime.queryOne('claude', 'ds-1');
-  assert.equal(neverAnswered.ok, false);
-  assert.equal(neverAnswered.reason, 'fetch_failed');
-});
-
-test('a cache lookup that throws leaves the plain failure intact', async () => {
-  const h = harness({ fail: ['glm-1'], cached: CACHED_WINDOW, lookupThrows: true });
-  const result = await h.runtime.queryOne('claude', 'glm-1');
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'fetch_failed');
-});
-
-test('only window / balance entries are served as fallbacks', async () => {
-  // 'claude' (usage scrape) and 'availability' (cooldown) entries are other
-  // producers' business — they carry no dto the balance clients could use.
-  for (const kind of ['claude', 'availability', 'quota']) {
-    const h = harness({
-      fail: ['glm-1'],
-      cached: { 'claude:glm-1': { ...CACHED_WINDOW['claude:glm-1'], kind, summary: { kind, status: 'ok' } } },
-    });
-    const result = await h.runtime.queryOne('claude', 'glm-1');
-    assert.equal(result.ok, false, kind);
-    assert.equal(result.reason, 'fetch_failed', kind);
-  }
-});
-
-test('queryAll carries the stale fallback into its per-provider rows', async () => {
-  const h = harness({ fail: ['glm-1'], cached: CACHED_WINDOW });
-  const all = await h.runtime.queryAll();
-  const row = all.results.find(r => r.providerId === 'glm-1');
-  assert.equal(row.ok, true);
-  assert.equal(row.cached, true);
-  assert.equal(row.name, 'GLM');
-});
-
-test('queryAll reports one row per provider, including unpollable ones', async () => {
-  const h = harness();
-  const all = await h.runtime.queryAll();
-  assert.equal(all.ok, true);
-  assert.equal(all.results.length, PROVIDERS.length);
-  const byId = Object.fromEntries(all.results.map(r => [r.providerId, r]));
-  assert.equal(byId['ds-1'].ok, true);
-  assert.equal(byId['ds-1'].name, 'DeepSeek');
-  assert.equal(byId['glm-1'].dto.utilization, 0.42);
-  assert.equal(byId['codex-official'].dto.rateLimitType, 'weekly');
-  // The deadline also names its window (`|1wk`) so a client can roll a passed
-  // deadline to the next reset; the assertion is about the number, not the tag.
-  assert.match(byId['codex-official'].bar.text, /\{cd:1700003600000\|1wk\}/,
-    'epoch seconds are converted to milliseconds exactly once');
-  assert.match(byId['codex-official'].bar.title, /套餐: pro/);
-  assert.match(byId['codex-official'].bar.title, /周: 已用 77%/, 'one tooltip line per window');
-  assert.equal(byId['plain-1'].ok, false);
-  assert.equal(byId['plain-1'].reason, 'unsupported');
-});
-
-test('queryAll runs providers in parallel, not serially', async () => {
-  let active = 0;
-  let maxActive = 0;
-  const adapters = {
-    'deepseek-balance': async () => new Promise(resolve => {
-      active += 1; maxActive = Math.max(maxActive, active);
-      setTimeout(() => { active -= 1; resolve({ kind: 'balance', total: 1 }); }, 20);
-    }),
-    'glm-monitor': async () => ({ kind: 'window', utilization: 0 }),
-    'codex-oauth-usage': async () => ({ kind: 'window', utilization: 0 }),
-  };
-  const h = harness({ adapters });
-  await h.runtime.queryAll();
-  assert.ok(maxActive >= 1, 'at least the pollable adapters ran');
-});
-
-test('pollKimiBalance normalizes the kimi shape into a balance DTO', async () => {
-  const fakeFetch = async () => ({ available: 3.21, voucher: 1, cash: 2.21, currency: 'CNY' });
-  const dto = await pollKimiBalance({ host: 'api.moonshot.cn', apiKey: 'k' }, Date.now(), 1000, fakeFetch);
-  assert.deepEqual(dto, { kind: 'balance', available: 3.21, voucher: 1, cash: 2.21, currency: 'CNY' });
-
-  // Fetcher failure now throws a limit_fetch_failed carrying the kimi reason,
-  // so the route layer can surface the root cause instead of bare fetch_failed.
-  await assert.rejects(
-    pollKimiBalance({}, Date.now(), 1000, async () => ({ error: true, httpStatus: 401, reason: 'auth_rejected' })),
-    (error) => error.kind === 'limit_fetch_failed' && /auth_rejected/.test(error.detail) && /HTTP 401/.test(error.detail),
-  );
-  const noMoney = await pollKimiBalance({}, Date.now(), 1000, async () => ({ voucher: 1 }));
-  assert.equal(noMoney, null);
-});
-
-test('the default adapter table covers every strategy getProviderLimitTarget can emit', () => {
-  assert.deepEqual(Object.keys(DEFAULT_ADAPTERS).sort(),
-    ['claude-oauth-usage', 'codex-oauth-usage', 'deepseek-balance', 'glm-monitor', 'kimi-balance', 'relay-quota']);
-});
-
-test('Claude quota reads only the shared account and preserves every window without credentials', async () => {
-  const seen = [];
-  const dto = await pollClaudeUsage({ officialAccountId: 'account-a' }, 0, undefined, {
-    credentials: { peekAccountToken: id => { seen.push(id); return { token: 'test-account-token' }; } },
-    readCliCredentials: () => { throw new Error('must not fall back to CLI'); },
-    fetchUsage: async (fetchImpl, token) => {
-      assert.equal(token, 'test-account-token');
-      return { five_hour: { utilization: 10, resets_at: '2030-01-01T00:00:00Z' },
-        seven_day: { utilization: 100, resets_at: '2030-01-07T00:00:00Z' } };
-    },
-  });
-  assert.deepEqual(seen, ['account-a']);
-  assert.equal(dto.provider, 'claude');
-  assert.equal(dto.utilization, 0.1);
-  assert.equal(dto.status, 'rejected', 'exhausted week overrides a usable 5h window');
-  assert.deepEqual(dto.windows.map(w => w.usedPercent), [10, 100]);
-  assert.ok(!JSON.stringify(dto).includes('test-account-token'));
-  await assert.rejects(pollClaudeUsage({ officialAccountId: 'account-a' }, 0, undefined, {
-    credentials: { peekAccountToken: () => ({ token: null, reason: 'access_token_expired' }) },
-    readCliCredentials: () => { throw new Error('wrong account fallback'); },
-    fetchUsage: () => { throw new Error('must not fetch'); },
-  }), /access_token_expired/);
-});
-
-test('Claude terminal quota uses the CLI credential and reports upstream failures', async () => {
-  const dto = await pollClaudeUsage({}, 0, undefined, {
-    readCliCredentials: async () => ({ ok: true, accessToken: 'test-cli-token' }),
-    fetchUsage: async (fetchImpl, token) => {
-      assert.equal(token, 'test-cli-token');
-      return { five_hour: { utilization: 25 } };
-    },
-  });
-  assert.equal(dto.utilization, 0.25);
-  await assert.rejects(pollClaudeUsage({}, 0, undefined, {
-    readCliCredentials: async () => ({ ok: true, accessToken: 'test-cli-token' }),
-    fetchUsage: async () => { throw new Error('usage HTTP 429'); },
-  }), /usage HTTP 429/);
-});
-
-test('borrowed Claude and Codex bars keep both cycles with the correct reset timestamps', async () => {
-  for (const provider of ['claude', 'codex']) {
-    const runtime = createProviderBalanceRuntime({
-      getProvider: () => ({ appType: 'claude' }), listProviders: () => [],
-      getProviderLimitTarget: () => ({ strategy: 'relay-quota' }),
-      adapters: { 'relay-quota': async () => ({ kind: 'window', provider, utilization: 0.1,
-        status: 'allowed_warning', rateLimitType: 'five_hour', resetsAt: 1_900_000_000,
-        windows: [{ window: '5h', usedPercent: 10, resetMs: 1_900_000_000_000 },
-          { window: '1wk', usedPercent: 90, resetMs: 1_900_600_000_000 }] }) },
-    });
-    const result = await runtime.queryOne('claude', 'borrowed');
-    assert.match(result.bar.text, /5h 90%/);
-    assert.match(result.bar.text, /1wk 10%/);
-    assert.match(result.bar.text, /1900000000000/);
-    assert.match(result.bar.text, /1900600000000/);
-  }
-});
-
-test('the mounted routes answer the two endpoints', async () => {
-  const routes = {};
-  const app = { get: (path, handler) => { routes[path] = handler; } };
-  const h = harness();
-  mountProviderBalanceRoutes(app, { runtime: h.runtime });
-  assert.ok(routes['/api/providers/balances']);
-  assert.ok(routes['/api/providers/:appType/:id/balance']);
-
-  let payload = null;
-  let status = 200;
-  const res = {
-    json: (body) => { payload = body; },
-    status: (code) => { status = code; return { json: (body) => { payload = body; } }; },
-  };
-
-  await routes['/api/providers/balances']({}, res);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.results.length, PROVIDERS.length);
-
-  await routes['/api/providers/:appType/:id/balance']({ params: { appType: 'claude', id: 'ds-1' } }, res);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.dto.total, 12.5);
-
-  await routes['/api/providers/:appType/:id/balance']({ params: { appType: 'claude', id: 'missing' } }, res);
-  assert.equal(status, 404);
-  assert.equal(payload.reason, 'not_found');
-});
-
-// ── 借道余量查询端点（出借方）：mountProviderRelayQuotaRoutes ────────────────
-
-function relayHarness() {
-  const routes = {};
-  const app = {
-    get: (path, handler) => { routes[`GET ${path}`] = handler; },
-    post: (path, handler) => { routes[`POST ${path}`] = handler; },
-  };
-  const runtime = mountProviderRelayQuotaRoutes(app, {
-    getProvider: (appType, id) => (id === 'glm' ? { id: 'glm', appType, name: 'GLM' } : null),
-    listProviders: () => [],
-    getProviderLimitTarget: (appType, id) => (id === 'glm'
-      ? { providerId: id, appType, host: 'open.bigmodel.cn', apiKey: 'k', strategy: 'glm-monitor' }
-      : null),
-    adapters: {
-      'glm-monitor': async () => ({ kind: 'window', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.3, resetsAt: null }),
-    },
-  });
-  const res = () => {
-    const out = { statusCode: 200, headers: {}, body: null };
-    out.set = (k, v) => { out.headers[k] = v; return out; };
-    out.status = (code) => { out.statusCode = code; return out; };
-    out.json = (body) => { out.body = body; return out; };
-    return out;
-  };
-  return { routes, runtime, res };
-}
-
-test('relay quota routes answer both protocols with the fresh DTO', async () => {
-  const h = relayHarness();
-  for (const key of ['GET /claude-proxy/:id/remote/quota', 'POST /codex-proxy/:id/quota']) {
-    assert.ok(h.routes[key], `${key} registered`);
-    const r = h.res();
-    await h.routes[key]({ params: { id: 'glm' } }, r);
-    assert.equal(r.statusCode, 200, key);
-    assert.equal(r.headers['Cache-Control'], 'no-store', key);
-    assert.equal(r.body.ok, true, key);
-    assert.equal(r.body.strategy, 'glm-monitor', key);
-    assert.equal(r.body.dto.utilization, 0.3, key);
-  }
-});
-
-test('relay quota: unknown provider 404, unpollable provider ok:false', async () => {
-  const h = relayHarness();
-  const missing = h.res();
-  await h.routes['POST /claude-proxy/:id/remote/quota']({ params: { id: 'nope' } }, missing);
-  assert.equal(missing.statusCode, 404);
-  assert.equal(missing.body.reason, 'not_found');
-
-  // Provider exists but has no pollable surface → normal ok:false, not an error.
-  const routes2 = {};
-  const app2 = { get: (p, hdl) => { routes2[p] = hdl; }, post: (p, hdl) => { routes2[p] = hdl; } };
-  mountProviderRelayQuotaRoutes(app2, {
-    getProvider: () => ({ id: 'plain', appType: 'claude', name: 'Plain' }),
-    listProviders: () => [],
-    getProviderLimitTarget: () => null,
-  });
-  const unpollable = { statusCode: 200, headers: {}, body: null };
-  unpollable.set = (k, v) => { unpollable.headers[k] = v; return unpollable; };
-  unpollable.status = (code) => { unpollable.statusCode = code; return unpollable; };
-  unpollable.json = (body) => { unpollable.body = body; return unpollable; };
-  await routes2['/claude-proxy/:id/remote/quota']({ params: { id: 'plain' } }, unpollable);
-  assert.equal(unpollable.statusCode, 200);
-  assert.deepEqual(unpollable.body, { ok: false, reason: 'unsupported', providerId: 'plain', appType: 'claude' });
-});
-
-test('relay quota never serves the last-known-good cache, even if handed one', async () => {
-  // The lender side is the one place a cached value must never appear: a
-  // borrower asking "what does this account have left" has to receive the
-  // result of a REAL query, or an explicit ok:false — never this host's stash.
-  const routes = {};
-  const app = { get: (p, hdl) => { routes[p] = hdl; }, post: (p, hdl) => { routes[p] = hdl; } };
-  mountProviderRelayQuotaRoutes(app, {
-    getProvider: (appType, id) => ({ id, appType, name: 'GLM' }),
-    listProviders: () => [],
-    getProviderLimitTarget: (appType, id) => ({ providerId: id, appType, strategy: 'glm-monitor' }),
-    adapters: { 'glm-monitor': async () => null },
-    lookupCached: () => CACHED_WINDOW['claude:glm-1'],
-  });
-  const r = { statusCode: 200, body: null };
-  r.set = () => r; r.status = c => { r.statusCode = c; return r; }; r.json = b => { r.body = b; return r; };
-  await routes['/claude-proxy/:id/remote/quota']({ params: { id: 'glm' } }, r);
-  assert.equal(r.statusCode, 200);
-  assert.equal(r.body.ok, false);
-  assert.equal(r.body.reason, 'fetch_failed');
-  assert.equal(r.body.cached, undefined);
-});
-
-test('relay quota dedups concurrent queries for the same provider', async () => {
-  const order = [];
-  const routes = {};
-  const app = { get: (p, hdl) => { routes[p] = hdl; }, post: (p, hdl) => { routes[p] = hdl; } };
-  mountProviderRelayQuotaRoutes(app, {
-    getProvider: (appType, id) => ({ id, appType, name: 'GLM' }),
-    listProviders: () => [],
-    getProviderLimitTarget: (appType, id) => ({ providerId: id, appType, strategy: 'glm-monitor' }),
-    adapters: {
-      'glm-monitor': () => new Promise(resolve => {
-        order.push('start');
-        setTimeout(() => { order.push('end'); resolve({ kind: 'window', utilization: 0.1 }); }, 30);
-      }),
-    },
-  });
-  const mk = () => {
-    const r = { statusCode: 200, body: null };
-    r.set = () => r; r.status = c => { r.statusCode = c; return r; }; r.json = b => { r.body = b; return r; };
-    return r;
-  };
-  const [a, b] = await Promise.all([
-    routes['/claude-proxy/:id/remote/quota']({ params: { id: 'glm' } }, mk()),
-    routes['/codex-proxy/:id/quota']({ params: { id: 'claude' } }, mk()),
+test('反向桥接编码线路参数并透传 Rust 的缓存与失败 DTO', async () => {
+  const requests = [];
+  const dto = { ok: false, reason: 'unsupported' };
+  fetchImpl = async (url, options) => { requests.push({ url, options }); return { json: async () => dto }; };
+  const runtime = createProviderBalanceRuntime({ getPort: () => 43210 });
+  assert.deepEqual(await runtime.queryOne('claude', 'a/b'), dto);
+  await runtime.readCached('claude', 'a/b');
+  await runtime.queryAll();
+  assert.deepEqual(requests.map(r => r.url), [
+    'http://127.0.0.1:43210/api/providers/claude/a%2Fb/balance',
+    'http://127.0.0.1:43210/api/providers/claude/a%2Fb/balance?cached=1',
+    'http://127.0.0.1:43210/api/providers/balances',
   ]);
-  // Different provider ids → two separate real queries (claude vs glm key).
-  assert.equal(a.body.ok, true);
-  assert.equal(b.body.ok, true);
-  assert.deepEqual(order, ['start', 'start', 'end', 'end']);
-
-  // Same provider twice concurrently → exactly one adapter run.
-  let runs = 0;
-  const routes3 = {};
-  const app3 = { get: (p, hdl) => { routes3[p] = hdl; }, post: (p, hdl) => { routes3[p] = hdl; } };
-  mountProviderRelayQuotaRoutes(app3, {
-    getProvider: (appType, id) => ({ id, appType, name: 'GLM' }),
-    listProviders: () => [],
-    getProviderLimitTarget: (appType, id) => ({ providerId: id, appType, strategy: 'glm-monitor' }),
-    adapters: {
-      'glm-monitor': () => new Promise(resolve => {
-        runs += 1;
-        setTimeout(() => resolve({ kind: 'window', utilization: 0.2 }), 30);
-      }),
-    },
-  });
-  const [c, d] = await Promise.all([
-    routes3['/claude-proxy/:id/remote/quota']({ params: { id: 'glm' } }, mk()),
-    routes3['/claude-proxy/:id/remote/quota']({ params: { id: 'glm' } }, mk()),
-  ]);
-  assert.equal(runs, 1, 'one shared real query for the same provider');
-  assert.equal(c.body.ok, true);
-  assert.equal(d.body.ok, true);
+  assert.ok(requests.every(r => r.options.signal instanceof AbortSignal));
 });
 
-test('a burst of 429 re-reads shares one real quota query per provider', async () => {
-  const { runtime, seen, recorded } = harness();
-  const [a, b] = await Promise.all([runtime.refreshOne('claude', 'glm-1'), runtime.refreshOne('claude', 'glm-1')]);
-  assert.equal(seen.filter(id => id === 'glm-1').length, 1);
-  assert.equal(a, b);
-  assert.equal(a.ok, true);
-  assert.equal(recorded.length, 1);
-  // Once settled, the next rejection re-reads again.
-  await runtime.refreshOne('claude', 'glm-1');
-  assert.equal(seen.filter(id => id === 'glm-1').length, 2);
-  // A provider without a quota surface answers, it never throws.
-  assert.equal((await runtime.refreshOne('claude', 'plain-1')).reason, 'unsupported');
+test('反向刷新失败保留旧回调的 null 契约', async () => {
+  fetchImpl = async () => { throw new Error('offline'); };
+  const runtime = createProviderBalanceRuntime({ getPort: () => 43210 });
+  assert.equal(await runtime.refreshOne('claude', 'work'), null);
+  await assert.rejects(runtime.queryAll(), /offline/);
+});
+
+test('缺少前门端口不回退到硬编码服务器', async () => {
+  const runtime = createProviderBalanceRuntime();
+  await assert.rejects(runtime.queryAll(), /gateway port unavailable/);
 });

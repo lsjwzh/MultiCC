@@ -66,6 +66,12 @@ test('source cache lives in the primary worktree and fingerprints source/config 
   write(root, 'native/target/ignored.rs', '// compiler output');
   assert.equal(sourceFingerprint(root, env), initial.fingerprint);
   assert.notEqual(sourceFingerprint(root, { ...env, RUSTFLAGS: '-C opt-level=2' }), initial.fingerprint);
+  const messages = 'native/core/src/quota_bar_view/messages.json';
+  write(root, messages, '{"quotaLoading":"Loading"}');
+  const withMessages = sourceFingerprint(root, env);
+  assert.notEqual(withMessages, initial.fingerprint, 'compiled quota messages must invalidate the addon cache');
+  write(root, messages, '{"quotaLoading":"Checking"}');
+  assert.notEqual(sourceFingerprint(root, env), withMessages, 'message edits must rebuild native code');
   const worktree = path.join(root, 'sibling');
   assert.equal(spawnSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
     'commit', '--allow-empty', '-qm', 'fixture']).status, 0);
@@ -85,10 +91,22 @@ test('addon preflight rejects an exported audit function that cannot write', t =
   };`);
   assert.equal(probeAddon(addon), true, 'the real addon must pass the durable audit probe');
   assert.equal(probeAddon(wrapper), false, 'an exported function alone cannot pass preflight');
+  const oldOrchestration = write(root, 'old-orchestration.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), orchestrationStoreProtocol: () => 1
+  };`);
+  assert.equal(probeAddon(oldOrchestration), false, '旧编排模块不能绕过终态正文分离');
   const stale = write(root, 'stale-switch.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), prepareCliSwitchRoute: undefined
   };`);
   assert.equal(probeAddon(stale), false, 'a stale addon cannot boot asynchronous switch preparation');
+  for (const name of ['cliSwitchRuntimeRequest', 'RustCliToolsRuntime', 'cliToolsOfficialSpecs',
+    'homebrewTakeoverRequest', 'cliUpstreamVersionRequest', 'RustCliUpstreamFetch', 'cliUpstreamVersionFetch',
+    'quotaBarViewRequest', 'limitCacheRecorderRequestValue']) {
+    const staleRuntime = write(root, `stale-${name}.js`, `module.exports = {
+      ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
+    };`);
+    assert.equal(probeAddon(staleRuntime), false, `旧原生模块缺少 ${name} 时必须拒绝启动`);
+  }
   const staleQuota = write(root, 'stale-quota.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), RustQuotaGuard: undefined
   };`);

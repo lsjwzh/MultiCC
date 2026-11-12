@@ -634,13 +634,23 @@ function createRouterToolRuntime({
 
     const statuses = activeOnly
       ? ['admitted', 'queued', 'running', 'pending'] : undefined;
-    let owned = await operations.list({
+    const useReferences = typeof operations.listReferences === 'function';
+    const query = {
       kind: 'dispatch', ownerSessionId: context.sessionId, statuses,
-    });
+    };
+    let owned = await (useReferences
+      ? operations.listReferences(query) : operations.list(query));
     if (targetId) owned = owned.filter(operation => operation.spec?.targetId === targetId);
     owned = owned.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
       .slice(0, limit);
-    const dispatches = await Promise.all(owned.map(dispatchOperationSummary));
+    const dispatches = [];
+    for (const reference of owned) {
+      // Materialize only the bounded response, not every historical result.
+      const operation = useReferences ? await operations.get(reference.id) : reference;
+      if (!operation || operation.kind !== 'dispatch'
+          || operation.ownerSessionId !== context.sessionId) continue;
+      dispatches.push(await dispatchOperationSummary(operation));
+    }
     return {
       ok: true,
       active_only: activeOnly,

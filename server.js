@@ -143,8 +143,8 @@ const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
 const { mountKimiQuotaRoutes } = require('./src/routes/kimi-quota');
 const { mountClaudeUsageQuotaRoutes } = require('./src/routes/claude-usage-quota');
 const { mountAliyunQuotaRoutes } = require('./src/routes/aliyun-quota');
-const { mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes } = require('./src/routes/provider-balance');
-const { createProviderRelayModelCatalogRuntime, mountProviderRelayModelCatalogRoutes } = require('./src/providers/relay-model-catalog');
+const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance');
+const { createProviderRelayModelCatalogRuntime } = require('./src/providers/relay-model-catalog');
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRuntime } = require('./src/routes/agent-resources');
@@ -247,7 +247,6 @@ const {
   createErrorDto,
   createWsEnvelope,
   requestContext,
-  toProviderDto,
   toWaitDto,
   withApiMeta,
 } = require('./src/api-contract');
@@ -427,23 +426,11 @@ const authRuntime = createAuthRuntime({
   allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
 authRuntime.mountRoutes(app);
-// Borrowed providers keep their bootstrap model snapshot, then refresh through
-// this provider-scoped catalog surface.  Mount before protocol proxies so the
-// exact /models routes cannot be swallowed by their prefix handlers.
+// 借道模型与配额公开入口由 Rust 前门接管；Node 装配授权、目录与额度宿主事实。
 const providerRelayModelCatalogRuntime = createProviderRelayModelCatalogRuntime({
   providers,
   codexModelsRuntime: codexCatalog,
   logger,
-});
-mountProviderRelayModelCatalogRoutes(app, providerRelayModelCatalogRuntime);
-// 借道余量查询端点（出借方）：/claude-proxy/:id/remote/quota 与
-// /codex-proxy/:id/quota。鉴权复用 auth 中间件的借道凭据（mcr1.*）。
-// 必须在下方 mountProtocolProxies 之前注册——协议代理同样挂在这两个路径
-// 前缀下，后注册的精确路由会被遮蔽。每次请求触发真实余量查询（异步等待，
-// 不走 TTL 缓存），结果同时喂 provider-limit 缓存（limitRecorder 后定义，惰性引用）。
-mountProviderRelayQuotaRoutes(app, {
-  ...providers,
-  onResult: (appType, id, result) => limitRecorder.recordProvider(appType, id, result),
 });
 
 let serviceReady = false;
@@ -1551,14 +1538,6 @@ function v1Error(req, res, status, message, code) {
   return res.status(status).json(createErrorDto({ ...requestContext(req, res), message, code }));
 }
 
-app.get('/api/v1/providers', (req, res) => {
-  const appType = String(req.query.appType || '').trim();
-  const list = providers
-    .listProviders(appType === 'claude' || appType === 'codex' ? appType : undefined)
-    .map(toProviderDto);
-  res.json(withApiMeta({ providers: list, count: list.length }, requestContext(req, res)));
-});
-
 // Agent presets, installed skills and Claude history share one read/cleanup boundary.
 mountAgentResourcesHostRoute(app, { runtime: agentResources });
 
@@ -1635,6 +1614,8 @@ const cliSwitchRuntime = createCliSwitchRuntime({
   cwdForSession,
   getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
   cancelClassify, planAutoCliSwitch: args => chatTurnEngine.autoProviderRuntime.planTurn(args),
+  pendingAutoCliSwitch: (id, cli) => chatTurnEngine.autoProviderRuntime.pendingCliSwitch(id, cli),
+  clearAutoProviderSession: id => chatTurnEngine.autoProviderRuntime.clearSession(id),
   assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   appendMessage: appendChatMessage,
   appendEvent,
@@ -2173,8 +2154,6 @@ const providerRoutes = createProviderRoutes({
   claudeCmd: CLAUDE_CMD,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
-  http,
-  https,
   logger: console,
   relayModelCatalogRuntime: providerRelayModelCatalogRuntime, codexAccountModelCatalogRuntime: codexCatalog,
   providerLimitCache,
@@ -2187,6 +2166,7 @@ const { providerDefaults, validProviderId } = providerRoutes;
 // /api/providers/:id/models, /api/codex/models[/sync], model_catalogs.rs) are
 // served by the Rust front door; Node keeps only the CLI spawns and caches.
 mountModelCatalogsHostRoute(app);
+require('./src/routes/provider-relay-host').mountProviderRelayHostRoute(app, { authRuntime, modelCatalogRuntime: providerRelayModelCatalogRuntime });
 require('./src/routes/cli-key-accounts').mountCliKeyAccountRoutes(app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence });
 require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(app, {
   directories, createSessionRecord, disposeLoginTerminal,
@@ -2230,7 +2210,7 @@ providerRoutes.mountManagementRoutes(app);
 // the usage-limit poller's adapters. Outcomes mirror into the provider-limit cache
 // (onResult); lookupCached reads it back so a transient failure answers last-known-
 // good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
-require('./src/quota/quota-self-heal').wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
+require('./src/quota/quota-self-heal').wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes, getPort: () => PORT }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.

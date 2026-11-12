@@ -13,8 +13,9 @@
 // Precedents: tests/test-status-presentation.js and tests/test-cli-display-parity.js
 // do the same for status words and CLI names.
 //
-// Values are NOT compared here — tests/fixtures/format-cases.json is run through
-// both implementations (tests/test-format.js, app/test/format_test.dart).
+// Formatted values are covered by tests/fixtures/format-cases.json in both
+// implementations (tests/test-format.js, app/test/format_test.dart). The native
+// quota renderer below also checks live colours across the shared cut points.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -24,7 +25,7 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const FMT = require('../public/shared/format.js');
 const DART = fs.readFileSync(path.join(ROOT, 'app/lib/utils/format.dart'), 'utf8');
-const JAIL = fs.readFileSync(path.join(ROOT, 'src/quota/quota-bar-view.js'), 'utf8');
+const QUOTA = require('../src/quota/quota-bar-view.js');
 const ZHS = require('../app/assets/i18n/zh.json');
 const ENS = require('../app/assets/i18n/en.json');
 
@@ -187,30 +188,40 @@ test('usage threshold tables match — this is the one table both ends colour wi
   }
 });
 
-test('the server quota renderer is the same cut, stated from the other end', () => {
-  // src/quota/quota-bar-view.js renders the bar in the browser payload; the web
-  // and app readouts colour the same window. It predates this module and states
-  // the rule in terms of REMAINING percent, so its cut must be the complement of
-  // the canonical USED cut — 100 - 90 = 10, 100 - 70 = 30 — with the same hexes.
-  const used = FMT.USAGE_THRESHOLDS.quota.map(entry => entry.min);
-  const redHex = FMT.USAGE_COLORS.danger;
-  const amberHex = FMT.USAGE_COLORS.warning;
+test('the Rust quota renderer keeps the canonical colours and complementary remaining/used cuts', () => {
+  assert.equal(QUOTA.COLOR.red, FMT.USAGE_COLORS.danger, 'native red is canonical danger');
+  assert.equal(QUOTA.COLOR.yellow, FMT.USAGE_COLORS.warning, 'native amber is canonical warning');
+  assert.equal(QUOTA.COLOR.blue, FMT.USAGE_COLORS.calm, 'native blue is canonical calm');
 
-  const hex = Object.fromEntries([...JAIL.matchAll(/^\s*(\w+):\s*'(#[0-9a-f]{6})'/gm)].map(m => [m[1], m[2]]));
-  assert.equal(hex.red, redHex, 'the server red is the canonical danger hex');
-  assert.equal(hex.yellow, amberHex, 'the server amber is the canonical warning hex');
-  assert.equal(hex.blue, FMT.USAGE_COLORS.calm, 'and the calm hex matches too');
-
-  const remaining = /function unifiedColorFromRemaining\(rem\)\s*\{([\s\S]*?)\n\}/.exec(JAIL);
-  assert.ok(remaining, 'unifiedColorFromRemaining is still where the remaining cut lives');
-  const cuts = [...remaining[1].matchAll(/rem\s*<=\s*(\d+)/g)].map(m => Number(m[1]));
-  assert.equal(cuts.length, 2, 'a red band and an amber band');
-  assert.deepEqual(cuts, [100 - used[0], 100 - used[1]],
-    `remaining cut ${cuts} must be the complement of used cut ${used}`);
-
-  // And the same rule states USED percent directly for the max-percentage path.
-  const usedCuts = [...JAIL.matchAll(/maxPct\s*>=\s*(\d+)/g)].map(m => Number(m[1]));
-  assert.deepEqual(usedCuts, [used[0], used[1]], 'the used-percent path agrees with the shared table');
+  // Codex uses the remaining-percent path; OpenCode uses the greatest USED
+  // percent directly. Exercise the exported renderer, including every integer
+  // on both sides of the canonical 70/90 boundaries, rather than parsing JS
+  // constants that no longer own this Rust behavior.
+  const now = 1_700_000_000_000;
+  for (let used = 0; used <= 100; used += 1) {
+    const expected = FMT.usageColor(used, 'quota');
+    const remaining = QUOTA.renderQuotaBar('codex', {
+      status: 'ok', fetchedAt: now,
+      windows: [{ window: '5h', usedPercent: used, remainingPercent: 100 - used, resetsAt: (now + 3_600_000) / 1000 }],
+    }, { nowMs: now });
+    assert.equal(remaining.color, expected, `remaining ${100 - used}% / used ${used}%`);
+    const maximum = QUOTA.renderQuotaBar('opencode', {
+      status: 'ok', fetchedAt: now, source: 'zen-api',
+      usage: { rolling: { usagePercent: 0 }, weekly: { usagePercent: used } },
+    }, { nowMs: now });
+    assert.equal(maximum.color, expected, `maximum used ${used}%`);
+  }
+  for (const used of [69.99, 70, 70.01, 89.99, 90, 90.01]) {
+    const maximum = QUOTA.renderQuotaBar('opencode', {
+      status: 'ok', fetchedAt: now,
+      usage: { rolling: { usagePercent: used }, weekly: { usagePercent: 0 } },
+    }, { nowMs: now });
+    assert.equal(maximum.color, FMT.usageColor(used, 'quota'), `fractional maximum used ${used}%`);
+  }
+  const host = fs.readFileSync(path.join(ROOT, 'src/quota/quota-bar-view.js'), 'utf8');
+  const addon = fs.readFileSync(path.join(ROOT, 'native/addon/src/quota_bar_view.rs'), 'utf8');
+  assert.match(host, /getNative\(\)\.quotaBarViewRequest/, 'the host delegates presentation to Rust');
+  assert.match(addon, /multicc_core::quota_bar_view::request/, 'the addon invokes the canonical core renderer');
 });
 
 test('the files this test pins are the ones the product loads', () => {

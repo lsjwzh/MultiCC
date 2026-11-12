@@ -16,6 +16,7 @@
 
   const TICK_MS = 1000;   // 时长走字频率
   const POLL_MS = 5000;   // lastOutput / createdAt 校准轮询，只在行可见时才有意义
+  const POLL_BATCH_SIZE = 100; // 只查当前显示的任务，超过服务端单批上限时分批请求。
   // 快照对账的宽限：快照只列服务端确认的后台任务，分类缺口会让真在跑的任务
   // 短暂缺席；有心跳/进度证据的任务在宽限内不收行，免得活动行一闪一闪。
   const SNAPSHOT_GRACE_MS = 90000;
@@ -191,15 +192,23 @@
       const sessionId = getSessionId();
       if (!sessionId) return;
       pollInFlight = true;
-      let payload = null;
+      let tasks = null;
       try {
-        payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/tasks`);
+        const ids = [...running.keys()];
+        const records = [];
+        for (let offset = 0; offset < ids.length; offset += POLL_BATCH_SIZE) {
+          const taskIds = encodeURIComponent(JSON.stringify(ids.slice(offset, offset + POLL_BATCH_SIZE)));
+          const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/tasks?taskIds=${taskIds}`);
+          if (sessionId !== getSessionId()) return;
+          if (!payload || !Array.isArray(payload.tasks)) throw new Error('invalid tasks response');
+          records.push(...payload.tasks);
+        }
+        tasks = records;
       } catch (error) {
         debug('bg-activity', 'tasks poll failed');
       } finally {
         pollInFlight = false;
       }
-      const tasks = payload && Array.isArray(payload.tasks) ? payload.tasks : null;
       if (!tasks) return;
       const byId = new Map();
       for (const record of tasks) {

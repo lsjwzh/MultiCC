@@ -10,7 +10,6 @@
 
 const crypto = require('node:crypto');
 const { outboundFetch } = require('../network/outbound');
-const { relayModelsOf } = require('./relay-share-code');
 
 const MAX_MODELS = 100;
 const MAX_MODEL_LENGTH = 160;
@@ -125,48 +124,24 @@ function createProviderRelayModelCatalogRuntime(options = {}) {
   const attempts = new Map();
   const inflight = new Map();
 
-  async function sourceCatalog(appType, id) {
-    let summary = providers.getProviderSummary(appType, id);
-    if (!summary) return { ok: false, reason: 'not_found', appType, providerId: id };
-
-    // 借道目录只读账号自己的快照，不在分享/导入路径额外触发发现。
-    let discovered = [];
-    let catalogFetchedAt = null;
+  // The gateway owns the public catalog DTO. This bridge exposes only the
+  // live provider projection and the account runtime's last-known snapshot.
+  async function sourceCatalogFacts(appType, id) {
+    const summary = providers.getProviderSummary(appType, id);
+    if (!summary) return { summary: null, catalog: null };
+    let catalog = null;
     if (appType === 'codex' && summary.isOfficial === true && codexModelsRuntime) {
       try {
         const record = typeof providers.getProvider === 'function'
           ? providers.getProvider(appType, id) : summary;
         const managed = !!(record && (record.activeAccountId && record.activeAccountId !== 'global'
           || require('../official-accounts').officialAccountIdFromProvider(record)));
-        const result = typeof codexModelsRuntime.peekProvider === 'function'
+        catalog = typeof codexModelsRuntime.peekProvider === 'function'
           ? codexModelsRuntime.peekProvider(record)
           : !managed && typeof codexModelsRuntime.peek === 'function' ? codexModelsRuntime.peek() : null;
-        discovered = (result && Array.isArray(result.models) ? result.models : [])
-          .map(item => item && item.model);
-        catalogFetchedAt = result && (result.fetchedAt || result.catalogFetchedAt) || null;
-      } catch (_) { /* 读取失败仍保留账号自己的最后一份目录 */ }
+      } catch (_) { /* Preserve the account's own last-known model metadata. */ }
     }
-
-    const models = normalizeModels([
-      ...relayModelsOf(summary),
-      ...discovered,
-    ]);
-    if (!models.length) {
-      return { ok: false, reason: 'catalog_empty', appType, providerId: id };
-    }
-    const preferredModel = models.includes(String(summary.model || '').trim())
-      ? String(summary.model).trim() : models[0];
-    return {
-      ok: true,
-      version: 1,
-      appType,
-      providerId: id,
-      preferredModel,
-      models,
-      revision: catalogRevision(preferredModel, models),
-      generatedAt: now(),
-      catalogFetchedAt,
-    };
+    return { summary, catalog };
   }
 
   function isDue(key, force, targetIdentity) {
@@ -296,28 +271,9 @@ function createProviderRelayModelCatalogRuntime(options = {}) {
     };
   }
 
-  return Object.freeze({ sourceCatalog, syncProvider, refreshDue });
+  return Object.freeze({ sourceCatalogFacts, syncProvider, refreshDue });
 }
 
-// Mounted before the protocol proxies: their prefix routes would otherwise
-// consume these exact relay paths.  Authentication is owned by routes/auth.js;
-// the same mcr1 credential that can invoke a provider can read only that
-// provider's catalog, and revocation immediately closes both surfaces.
-function mountProviderRelayModelCatalogRoutes(app, runtime) {
-  if (!app || typeof app.get !== 'function' || !runtime) return;
-  for (const { appType, path } of RELAY_MODEL_ROUTES) {
-    app.get(path, async (req, res) => {
-      res.set('Cache-Control', 'no-store');
-      try {
-        const result = await runtime.sourceCatalog(appType, req.params.id);
-        if (!result.ok && result.reason === 'not_found') return res.status(404).json(result);
-        return res.json(result);
-      } catch (_) {
-        return res.status(500).json({ ok: false, reason: 'catalog_unavailable' });
-      }
-    });
-  }
-}
 
 module.exports = {
   DEFAULT_RETRY_INTERVAL_MS,
@@ -327,6 +283,5 @@ module.exports = {
   RELAY_MODEL_ROUTES,
   catalogRevision,
   createProviderRelayModelCatalogRuntime,
-  mountProviderRelayModelCatalogRoutes,
   normalizeModels,
 };

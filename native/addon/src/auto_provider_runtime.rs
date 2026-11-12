@@ -139,6 +139,12 @@ impl RustAutoProviderRuntime {
         answer(self.state.borrow_mut().turn_record_success(&request))
     }
 
+    /// `pendingCliSwitch(sessionId, cli)` — read-only reservation lookup.
+    #[napi]
+    pub fn pending_cli_switch(&self, session_id: String, cli: String) -> Result<String> {
+        answer(self.state.borrow().pending_cli_switch(&session_id, &cli))
+    }
+
     /// `snapshot(sessionId)`.
     #[napi]
     pub fn snapshot(&self, session_id: String) -> Result<String> {

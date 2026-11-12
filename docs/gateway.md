@@ -137,7 +137,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | `GET/HEAD/OPTIONS /api/token-usage/global` | `src/token-global.js`（已删）与 `src/routes/token-usage.js` 的 global 路由（已删）；`by-role` 路由留在 Node | `native/gateway/src/app/token_usage_global.rs`：自己枚举 `$HOME/.claude/projects` 与 `$HOME/.codex/sessions` 下的 `*.jsonl`、解析时区、做两分钟缓存，行聚合仍用 `multicc_core::usage::compute` | | 68 个请求：65 条逐字节一致 — default 42/42、trees 8/8、rows 11/11、empty 4/4；另有 3 条预期差异单独校验 3/3（大写 `/API` 前缀、网关 TZ 不可用、两侧同为 `TZ=GMT` 时前门 200 而 Node 公开 500） |
 | `GET/HEAD/OPTIONS /api/claude/models` | `src/routes/claude-models.js`（已删）；静态兜底清单与跨进程同步读取器保留在 `src/claude-models.js` | `native/gateway/src/app/claude_models.rs` + `multicc_core::claude_models`，扫描 `$HOME/.local/bin/claude` 真身或 `$HOME/.local/share/claude/versions` 下最新文件，成功后写 `<data>/claude-models-cache.json`（0600） | 1,300 个对拍用例逐字节一致：default 46/46、fallback 14/14、window 8/8、semantics 17/17、fuzz 1,200/1,200、concurrent 1/1（8 并发请求 1 次 cli + 7 次 cache）、edge 8/8、relative-data-dir 4/4、真实 bundle 2/2（首扫单次计时：node 1,131ms / rust 486ms；另一次独立运行为 1,166ms / 497ms，随运行波动，不作性能结论）；另有 2 条 `refresh[toString]` 预期差异单独校验 2/2；缓存文件 `{at,bundleKey,models}` 0600，Node 读取器读到同一组 id |
 | `GET/HEAD/OPTIONS /api/subagent-defaults`、`POST/OPTIONS /api/subagent-defaults/sync` | `src/routes/subagent-defaults.js`（已删）；`src/routes/subagent-defaults-host.js` 只剩前门回调的宿主端口 | `native/gateway/src/app/subagent_defaults.rs` + `multicc_core::subagent_defaults`；宿主事实与副作用经 `native/gateway/src/host_port.rs` 调 Node 的内部端点 `/api/__host/subagent-defaults` | 28/28 请求逐字节一致（GET/HEAD/OPTIONS、dry run 全部分支、校验失败、一次真实应用） |
-| `GET/HEAD/POST/OPTIONS /api/providers`、`GET/HEAD/OPTIONS /api/providers/stats`、`POST/OPTIONS /api/providers/import`、`PATCH/DELETE/OPTIONS /api/providers/:appType/:id`、`POST/OPTIONS /api/providers/:appType/:id/{probe,reassign-sessions,relay-share,relay-models/sync}`、`GET/HEAD/OPTIONS /api/providers/:appType/:id/relay-import-code`、`GET/HEAD/OPTIONS /api/provider-relay-shares`、`DELETE/OPTIONS /api/provider-relay-shares/:id`、`GET/HEAD/OPTIONS /api/provider-relay-shares/:id/code`、`GET/HEAD/PUT/OPTIONS /api/provider-defaults` | `src/routes/providers.js` 的 16 条路由与只服务它们的 helper（已删，880→371 行，只剩 speedtest 与 provider-defaults 状态）；`src/routes/providers-host.js` 只剩前门回调的宿主端口 | `native/gateway/src/app/providers.rs` + `multicc_core::provider_registry`（出口 IP/绑定校验、probe 候选、删除决策、reassign 校验顺序、relay 分享码编解码、defaults 合并、目录 DTO 键序）+ `multicc_core::public_safety`；宿主事实与副作用经 `/api/__host/providers` 的 22 个 op | 196/196 请求逐字节一致，6 条路由接缝按预期转发，副作用调用序列 420 次一致，见 §35 |
+| `GET/HEAD/POST/OPTIONS /api/providers`、`GET/HEAD/OPTIONS /api/providers/stats`、`POST/OPTIONS /api/providers/import`、`PATCH/DELETE/OPTIONS /api/providers/:appType/:id`、`POST/OPTIONS /api/providers/:appType/:id/{probe,reassign-sessions,relay-share,relay-models/sync,speedtest}`、`GET/HEAD/OPTIONS /api/providers/:appType/:id/relay-import-code`、`GET/HEAD/OPTIONS /api/provider-relay-shares`、`DELETE/OPTIONS /api/provider-relay-shares/:id`、`GET/HEAD/OPTIONS /api/provider-relay-shares/:id/code`、`GET/HEAD/PUT/OPTIONS /api/provider-defaults`、`GET/HEAD/OPTIONS /api/v1/providers`、`POST/OPTIONS /api/auto-provider/routing/test` | `src/routes/providers.js` 的 17 条路由、`server.js` 的 v1 列表与 `src/routes/auto-provider-routing-test.js`（已删）；`providers.js` 880→196 行，只剩宿主端口接线；`src/providers/speedtest-request.js`（116 行）已删；`src/routes/providers-host.js` 只剩前门回调的宿主端口 | `native/gateway/src/app/providers.rs` + `auto_provider_routing.rs` + `multicc_core::provider_registry` / `provider_misc`（出口 IP/绑定校验、probe 候选、删除决策、reassign 校验顺序、relay 分享码编解码、defaults 合并、目录 DTO 键序、测速 15s/64KB/SSE 信封、v1 过滤与 DTO、Jev 提问与升级策略）+ `multicc_core::public_safety`；宿主事实与副作用经 `/api/__host/providers` 的 24 个 op，路由测试的 key 经 `/api/__host/secrets-vault`（`source:'routing_test'`） | 旧批 198/198 请求逐字节一致 + 4 条路由接缝按预期转发 + 副作用调用序列 420 次一致；本批 84/84 逐字节一致 + 3/3 预期差异，见 §35 |
 | `GET/HEAD/OPTIONS /api/{opencode,qoder,grok,commandcode,codebuddy}/models`、`GET/HEAD/OPTIONS /api/providers/:id/models`、`GET/HEAD/OPTIONS /api/codex/models`、`POST/OPTIONS /api/codex/models/sync` | `src/routes/codex-models.js`（已删）；五个 CLI 目录模块与 `src/routes/provider-models.js` 只剩列表/解析/缓存；宿主端口为 `src/routes/model-catalogs-host.js` | `native/gateway/src/app/model_catalogs.rs`：路径（含 `:id` 解码）、查询语义、状态码、字段顺序、`Cache-Control` 与错误映射；CLI spawn、provider 抓取与官方 Codex 目录运行时经 `/api/__host/model-catalogs` 回调 | 见 §32 |
 | `GET/HEAD/OPTIONS /api/agent-resources/skills`、`GET/HEAD/OPTIONS /api/agent-presets`、`GET/HEAD/OPTIONS /api/agent-presets/:id`、`GET/HEAD/OPTIONS/DELETE /api/agent-resources/claude-sessions`、`DELETE/OPTIONS /api/agent-resources/claude-sessions/:project/:id` | `src/routes/agent-resources.js` 只剩 presets 文件缓存/commander 覆盖/provider 富化与 Claude 历史读写；宿主端口为 `src/routes/agent-resources-host.js` | `native/gateway/src/app/agent_resources.rs`：路径（含两段解码参数）、`olderThanDays` 校验、purge 过滤循环、计数/求和、409/404/400/500 映射；磁盘扫描与文件读删经 `/api/__host/agent-resources` 回调 | 53/53 请求逐字节一致 + 9/9 预期差异（见 §33） |
 | `GET/HEAD/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets`、`POST/OPTIONS /api/secrets/:name/rename`、`DELETE/OPTIONS /api/secrets/:name`、`GET/HEAD/OPTIONS /api/secrets/:name/value` | `src/secrets-vault.js` 只剩进程内 entries 表、0600 store、audit 与 env 投影；宿主端口为 `src/routes/secrets-vault-host.js` | `native/gateway/src/app/secrets_vault.rs`：路径（含 `:name` 解码与 trim）、`NAME_RE`/`LEGACY_NAME_RE`、65536 UTF-16 值上限、400/404/409/503 映射；存储读写经 `/api/__host/secrets-vault` 回调 | 63/63 请求逐字节一致 + 10/10 预期差异（见 §34） |
@@ -178,7 +178,17 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - `claude/codex subscription` 的单飞表（`pending` Map）是进程内的：同一账号的并发 HTTP 请求合并成一次上游查询，不同账号并行；Node 读取器的刷新查询有自己的一张表，两者互不知情。Node 侧是 `pending` promise，客户端断开不会取消它；Rust 同样把「查询 + 结果映射 + record + 槽位清理」整体放进 `tokio::spawn` 的 leader 任务，槽位只保存 `watch` 广播的接收端，所有请求者（包括第一个）都只是订阅者。因此客户端断开只是丢一个接收端：查询照常完成、缓存照常写入，仍在等待的第二个请求拿到同一结果；leader panic 时由 `Drop` 守卫清理槽位（`Arc::ptr_eq` 保证只删自己的槽），订阅者在通道关闭后映射为 `{"status":"unavailable"}`，不会挂起。跨进程合并需要新的协调层，暂不做。
 - 共享缓存的跨进程投影是最终一致：网关写入 `<data>/provider-limit-cache.db` 后，Node 的同步 `project()` 通过比较主库与 `-wal`/`-shm` 的 mtime/size 发现变化并异步重读；发现变化的当次仍用旧快照，下一次 `project()` 起生效。`record()` 完成后主动把指纹置空，因此每次记录后最多多一次廉价重读，绝不会把「record 返回之后才落库的并发写」永久吞进指纹（取 record 之后的 stamp 会吞掉这段窗口）。`src/quota/account-subscription-cache.js` 用串行队列保证重读不会越过先前的写入，SQLite `busy_timeout` 5 秒；测试覆盖网关并发写与 Node 记录并存（不丢写、不报 BUSY）、确定性的「record 期间外部写」复现，以及随机多写者的最终可见性。
 - `GET /api/claude/subscription`（不带 `?account=`）的 CLI 共享登录**不在差分里**：macOS 上它读 Keychain 的 `Claude Code-credentials`（经绝对路径 `/usr/bin/security`），既无法拦截也无法在不接触真实凭据的前提下伪造。该分支的规则（`ok` 且未过期 → token，否则 `no_auth`）由 Rust 单测以注入的凭据文档覆盖；Codex 的全局登录在 `$HOME/.codex/auth.json`，差分在隔离 HOME 下正常覆盖。
-- 代理发现语义只在单测/语料层对拍：差分和集成测试始终显式设置 `HTTPS_PROXY`，并且要求 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` 全部指向 loopback 才开始（缺一个就抛错退出，不是跳过），因此两边都不会执行 `scutil --proxy`；新增任何差分或探针都必须自己固定代理变量，否则会落回系统代理——曾经有一次探针漏设 `HTTPS_PROXY`，走到用户 Clash，4 个假 token 请求打到了 api.anthropic.com。直连、`NO_PROXY` 后缀/CIDR/`<local>`、PAC/SOCKS 拒绝分别由 `native/core/tests/fixtures/outbound-proxy-cases.json`（由 `scripts/generate-outbound-proxy-corpus.js` 从真实 `proxy-policy.js` 生成）逐层验证。端到端不测试「绕过代理直连真实账号域名」，因为那会真的打到上游，违反本次迁移的红线。
+- 代理发现语义只在单测/语料层对拍：subscription 的差分和集成测试始终显式设置
+  `HTTPS_PROXY`，并且要求 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` 全部指向 loopback
+  才开始（缺一个就抛错退出，不是跳过），因此两边都不会执行 `scutil --proxy`；新增任何
+  差分或探针都必须自己固定代理变量，否则会落回系统代理——曾经有一次探针漏设
+  `HTTPS_PROXY`，走到用户 Clash，4 个假 token 请求打到了 api.anthropic.com。直连、
+  `NO_PROXY` 后缀/CIDR/`<local>`、PAC/SOCKS 拒绝分别由
+  `native/core/tests/fixtures/outbound-proxy-cases.json`（由
+  `scripts/generate-outbound-proxy-corpus.js` 从真实 `proxy-policy.js` 生成）逐层验证。
+  端到端不测试「绕过代理直连真实账号域名」，因为那会真的打到上游，违反本次迁移的红线。
+  出站客户端的代理路径另由 `native/gateway/tests/outbound.rs` 的假代理端到端覆盖
+  （注入环境与 Linux 平台，不触发 `scutil`）。
 - subscription 与其它已迁路由一样，大写 `/API/claude/subscription`、`/API/codex/subscription` 不再被前门 claim；Node 路由删除后该变体在真实服务中落回 Node 404（旧 Express 大小写不敏感时会命中）。差分把这一条按预期差异单独校验：Node 侧 200，Rust 侧转发给桩。
 - 官方账号目录与 `claude/models` 的 bundle 定位都只用 `HOME` 拼接；`HOME` 缺失时前门得到空路径（相对 cwd），Node 的 `os.homedir()` 会回退到系统账户数据库。Windows/Linux 上 `os.homedir()` 另有回退（如 `USERPROFILE`），前门只读 `HOME`，因此这些平台的行为是推断，没有实测。
 - `token-usage/global` 的并发语义变了：旧 Node `getGlobalUsage` 用模块级 `inFlight` promise 让同进程并发请求共享一次扫描，Rust 前门用本模块的互斥量把它们**串行化**——第二个请求等第一个扫完后再扫一次（`?refresh=1` 与普通请求都一样），不共享结果。单请求的结果、两分钟 TTL、「成功才写缓存、失败不写」都不变；并发时前门的扫描次数（和 CPU）比 Node 多，这是为不引入进程内 promise 表付出的代价。
@@ -1697,7 +1707,7 @@ Node 侧合计删除 556 行、新增 27 行（净 −529）：`src/routes/codex
 
 ### 已知边界
 
-- `src/providers/relay-model-catalog.js` 的两条 relay 目录路由
+- `src/providers/relay-model-catalog.js` 的两条 relay 目录路由随后已迁入 Rust，见 §36；借道目录刷新运行时仍在 Node
   （`/claude-proxy/:id/remote/models`、`/codex-proxy/:id/models`）不在本批：它们与协议代理的
   挂载顺序耦合，随代理组另批迁移。
 - 与前面几批一致：大写 `/API/...` 前缀不再被 claim，路由删除后该变体落回 Express 404。
@@ -2222,9 +2232,11 @@ LAN address ranking, version selection and response shaping live in
 `multicc_core::system_info`. The Node child retains only its process-local
 network/uptime facts and diagnostic rings, plus the existing `repo-actor` Git
 fallback; two loopback-only host ports provide those facts to the front door.
-The APK and iOS OTA routes remain in Node. The version check uses direct TLS;
-its Rust deadline applies separately to the response headers and body rather
-than the old Node socket inactivity timeout.
+The APK and iOS OTA routes remain in Node. The version check uses the front
+door's shared outbound client, so it follows the same proxy policy as the Node
+runtime (loopback and `NO_PROXY` direct, HTTP(S) proxy otherwise); its Rust
+deadline covers the whole request (connect, headers and body) rather than the
+old Node socket inactivity timeout.
 
 Known differences against the retired Node handlers:
 
@@ -2235,9 +2247,9 @@ Known differences against the retired Node handlers:
   never 503s: unreadable install metadata yields the frozen
   `DEFAULT_VERSION_RESULT` DTO, and a failed tag discovery is data
   (`apiError: true`), not an outage.
-- The GitHub fetch's 15s deadline covers the whole request (headers and body
-  are timed separately), where Node's `{ timeout: 15000 }` was socket
-  inactivity — a slow-but-progressing body no longer resets the clock.
+- The GitHub fetch's 15s deadline covers the whole request (connect, headers
+  and body), where Node's `{ timeout: 15000 }` was socket inactivity — a
+  slow-but-progressing body no longer resets the clock.
 - The git fallback still runs through `repo-actor` (it owns the
   runtime-patched PATH, the non-interactive env and the per-repo queue) via the
   host port; only the concurrency observed by `version-check` callers changes:
@@ -2253,12 +2265,32 @@ process facts. Run it with the repository, gateway binary, and native addon
 paths as arguments. The test also covers the Git fallback and malformed release
 response without contacting GitHub.
 
-## 35. Provider 管理路由迁入 Rust（2026-11-12）
+## 35. Provider 路由迁入 Rust（2026-11-12）
 
-`src/routes/providers.js` 的 17 条路由中 16 条由前门独占（清单见 §9 表）。
-`POST /api/providers/:appType/:id/speedtest` 留在 Node：它边收上游边以 SSE
-增量写回响应，而宿主端口是请求/响应式，搬过去要么缓冲整个流、要么新造一条流式
-宿主通道，两者都改变时序语义；与 `system.js` 留下的发布资产路由同理，后续单独一批。
+`src/routes/providers.js` 的 17 条路由、`server.js` 的 `GET /api/v1/providers`
+与 `src/routes/auto-provider-routing-test.js` 的 `POST /api/auto-provider/routing/test`
+现在都由前门独占（清单见 §9 表）。第一批迁完 16 条管理路由后，这一批补上了
+之前留下的三条：
+
+- `POST /api/providers/:appType/:id/speedtest` 从来不是 SSE：
+  `src/providers/speedtest-request.js` 先把上游体收进一个字符串，再调用一次
+  `res.json`。前门因此可以直接缓冲：15s 期限、64KB 上限、SSE 信封错误识别都
+  在 Rust（`multicc_core::provider_misc` 与 `host_port::request`）。
+- `GET /api/v1/providers`：过滤规则、DTO 键序与 `{providers,count,apiVersion,
+  requestId,correlationId}` 信封在 Rust；`listProviders` 仍经宿主端口。
+- `POST /api/auto-provider/routing/test`：Jev 的线协议、提问、升级策略与状态码在
+  `multicc_core::provider_misc`；key 经 secrets-vault 宿主端口读取，`source` 记为
+  `routing_test`。`src/providers/jev-client.js` 仍服务聊天运行时。
+
+测速的回环端点是前门自己的内部 Node 端口（PROXY v1 + 真回环地址），比旧实现
+少一跳（旧实现 `getPort()` 指公开端口，由前门再转发回来）；没有任何 proxy 路由读
+`socket.localPort`，所以观察到的上游请求逐字节相同。路由测试的 Jev 调用与
+`system.js` 的版本检查都走前门的共享出站客户端（`native/gateway/src/outbound.rs`）：
+回环与 `NO_PROXY` 命中直连，其余按环境变量或 macOS `scutil --proxy` 选 HTTP(S)
+代理，HTTPS 目标经 CONNECT 隧道、HTTP 目标用 absolute-form，证书仍是原生根 +
+`NODE_EXTRA_CA_CERTS`。纯规则（含 SOCKS/PAC-only 拒绝、CIDR/后缀/端口匹配、30s
+TTL 与失败保留上次策略）在 `multicc_core::outbound_proxy`。`MULTICC_ROUTING_TEST_URL`
+与 `MULTICC_VERSION_CHECK_RELEASES_URL` 仍是测试钩子。
 
 ### 宿主端口
 
@@ -2266,10 +2298,12 @@ response without contacting GitHub.
 `{error:'not found'}`，未知 op 400 `{error:'unknown host operation'}`）。Node 只提供
 它独有的运行时事实与副作用，规则判断全部在 Rust：
 
-- 事实：`catalog`（ccSwitch 状态、带额度/订阅/虚拟线路状态的 provider DTO、用量、
-  live defaults、限额缓存陈旧阈值）、`usageStats`、`deleteFacts`、`probeFacts`、
+- 事实：`catalog`（ccSwitch 状态、provider 目录、订阅缓存、额度缓存和虚拟线路输入快照、用量、
+  live defaults、限额缓存陈旧阈值；公开投影由 `provider_catalog_view.rs` 组装）、`usageStats`、`deleteFacts`、`probeFacts`、
   `reassignFacts`、`reassignTarget`、`relayShareFacts`、`relayShareCodeFacts`、
-  `relayImportFacts`、`relaySharesList`、`defaultsGet`、`defaultsValidate`。
+  `relayImportFacts`、`relaySharesList`、`defaultsGet`、`defaultsValidate`、
+  `speedtestFacts`（codex 官方/第三方或 claude 的 base URL、模型、key、回环端口）、
+  `v1Providers`（`listProviders(filter)` 的完整 DTO 源）。
 - 副作用：`import`、`create`、`update`、`deleteExec`、`probeExec`、`reassignExec`、
   `relayShareCreate`、`relayShareRevoke`、`relayModelsSync`、`defaultsPersist`。
 - `create`/`update` 收到的是前门已归一化的参数（trim、出口 IP 白名单与绑定校验都在
@@ -2280,16 +2314,27 @@ response without contacting GitHub.
 
 ### 差分与集成
 
-- `docs/rust-migration/differential/providers.js`：Node 侧用冻结 oracle
+- `docs/rust-migration/differential/providers.js`：第一批的 Node 侧用冻结 oracle
   （`tests/helpers/legacy-provider-routes.js`，即迁移前原文）跑真实 Express 流水线，
-  Rust 侧是 release 网关 + 真宿主端口，双方喂同一组可复位的确定性假依赖。196 条请求
+  Rust 侧是 release 网关 + 真宿主端口，双方喂同一组可复位的确定性假依赖。198 条请求
   （全部成功/错误分支、OPTIONS/HEAD、尾斜杠与大小写、非法 URL 编码、重复/嵌套查询参数、
   非对象 JSON 体、敏感错误文本脱敏、probe 候选 0/20/21 个与 200/201 长度、force/dryRun
   各写法、relay 分享码 not_found/revoked/旧版本）逐字节一致；另外比对两侧对假依赖的
-  调用序列（参数与顺序）共 420 次，零差异。
+  当前提交前复测的调用序列（参数与顺序）共 321 次，覆盖 124 个有调用场景，零差异；
+  21 次目录刷新请求与执行一致，4 条转发接缝按预期差异单独校验 4/4。
   运行：`node docs/rust-migration/differential/providers.js <repo> <gateway> <addon>`。
-- `native/gateway/tests/providers.rs`：真实网关 + 可编程宿主夹具，18 条。
-- `tests/test-provider-routes.js`：改为宿主端口契约（含「只有回环能调」与参数原样转交），29 条。
+- `docs/rust-migration/differential/provider-misc.js`：本批三条路由的 Node 侧是冻结
+  oracle（`tests/helpers/legacy-provider-misc-routes.js`，即删除前原文），Rust 侧是
+  release 网关 + 真 `providers-host`/`secrets-vault-host` 与脚本化回环/Jev。
+  `ms`/`latencyMs` 按两侧各自的原始字节校验 ETag 与 Content-Length 后归一化，其余
+  84/84 逐字节一致；另有 3 条转发接缝（speedtest GET/HEAD、routing GET）按预期差异
+  单独校验 3/3。同时按用例比对测速出站请求、vault reveal 的 `source`、v1 过滤值与
+  Jev 提问体。
+  运行：`node docs/rust-migration/differential/provider-misc.js <repo> <gateway> <addon>`。
+- `native/gateway/tests/providers.rs`：真实网关 + 可编程宿主夹具，30 条（本批新增
+  10 条：测速各分支、v1 过滤/HEAD/OPTIONS/宿主失败、routing 成功/400/Jev 401/缺 key）。
+- `tests/test-provider-routes.js`：改为宿主端口契约（含「只有回环能调」与参数原样转交），
+  25 条；旧的测速与 routing-test 单测已随路由删除，由差分覆盖。
 
 ### 已知边界
 
@@ -2299,6 +2344,173 @@ response without contacting GitHub.
   未处理的 rejection（请求挂起），新行为更确定。
 - probe/reassign 在 Facts 与 Exec 两次宿主调用之间 provider 被删的竞态：Exec 的
   `provider not found` 映射为 400，原实现在单次同步调用里是 404。
-- 大写 `/API/...` 前缀、未注册方法（如 `GET /api/providers/import`、
-  `POST /api/provider-defaults`）与 speedtest 不被 claim，原样转发给 Node，由 Node 的
+- 大写 `/API/...` 前缀与未注册方法（如 `GET /api/providers/import`、
+  `POST /api/provider-defaults`、`GET /api/providers/:id/speedtest`、
+  `GET /api/auto-provider/routing/test`）不被 claim，原样转发给 Node，由 Node 的
   404/自动 OPTIONS 应答，与前几批一致。
+- 测速宿主端口不可达/形状不对时回 `503 rust_backend_unavailable`；旧路由在进程内
+  取数，没有这个失败面。路由测试与版本检查共用出站客户端，代理语义与 Node 运行时
+  一致；重定向会逐跳重选出口（`fetch` 的行为），但版本检查保持旧 `https.get` 的
+  不跟随重定向。`native/gateway/tests/outbound.rs` 用假代理覆盖 HTTPS_PROXY →
+  CONNECT（记录目标）、HTTP_PROXY → absolute-form、`NO_PROXY` 命中直连、回环直连、
+  SOCKS/PAC-only 拒绝。
+
+
+## 36. 余额、借道读取与目录投影迁移（已集中验证）
+
+本批实现已通过提交前集中验证；本轮 Rust、Node 与隔离对拍结果见 §40。
+下述范围与保留宿主边界不等于生产服务已经切换。
+
+新增 `provider_balance.rs` 和 `provider_relay.rs` 接管 8 个路由注册（不重复计算 HEAD/OPTIONS）：
+
+- `GET /api/providers/balances` 与 `GET /api/providers/:appType/:id/balance`；
+- `GET/POST /claude-proxy/:id/remote/quota` 与 `GET/POST /codex-proxy/:id/quota`；
+- `GET /claude-proxy/:id/remote/models` 与 `GET /codex-proxy/:id/models`。
+
+`provider_balance_adapters.rs` 实现 GLM、DeepSeek、Kimi、Codex OAuth、Claude OAuth
+和借道配额的 HTTP 查询及结果归一化，统一使用前门出站客户端。Rust 负责查询并发合并、
+管理端缓存读取与临时失败回退；借道配额禁用陈旧缓存回退。Codex 的 401/403 只尝试一次
+凭据刷新，Claude 只读取指定账号或 CLI 的凭据。模型目录的过滤、去重、首选项和版本摘要
+在 Rust 生成。`provider_catalog_view.rs` 负责目录的 CLI 筛选、订阅投影、额度公开字段和
+虚拟线路状态。
+
+借道接口保留原始 peer、headers、URL，通过 `/api/__host/provider-relay` 调用现有 Rust
+HTTP 授权内核及宿主中的共享凭据存储，保留撤销、访问计数、机器授权和 Cookie 行为。
+这些路由不套用普通管理 API 的授权规则，并保持旧借道读取接口忽略请求体的行为。两个新内部接口在全局 JSON 解析器之后注册，
+只接受回环请求。后台额度刷新通过最小 Node 适配器回调 Rust 前门。
+
+已知停机边界：内部接口位于 `/api/__host/...`，会经过现有 shutdown gate；因此服务
+进入停机阶段后，借道读面会比旧的非 `/api` 路由更早返回不可用，正常授权范围不扩大。
+
+Node 例外范围及后续迁移条件：
+
+- `provider-balance-host.js` 保留现有 provider/凭据/缓存事实及记录通知；余额展示已直接调用 Rust 共享内核；
+  `provider-relay-host.js` 适配现有 HTTP 授权效果与账号模型快照。这些依赖仍属于运行中的
+  Node 会话、CLI 与缓存对象，迁移它们的所有者后即可删除桥接。
+- 共享额度展示及额度记录规则已迁移，见 §38。出口 IP 监测、借道目录刷新、
+  `provider-limit-cache.js` 的 SQLite 生命周期和 `usage-limit-poller.js` 的后台轮询
+  仍未整体迁走，不能称为 providers 后端全部清空。
+- providers store 写入、会话 PATCH、借道签发/撤销和推理流式数据面仍通过原宿主运行时。
+
+旧 Node 测试调用点随接口修改；Rust 的 DTO、路径和边界断言补入对应模块。
+格式、编译、严格 Clippy、Rust/Node 回归及隔离对拍已通过；运行时路由清单单独记录捕获来源。
+
+## 37. CLI 切换运行时重写（已集中验证）
+
+`src/cli/switch-runtime.js` 原先同时承载会话切换与 CLI 安装、版本管理。本批把两个子域
+的业务规则分别落入 `native/core/src/cli_switch_runtime.rs` 和 `cli_tools_runtime.rs`，
+经 addon 接到现有宿主。这里的七条 HTTP 路由仍由 Node 注册，不计为新增前门接管路由；
+不能用 JavaScript 文件缩短量代替整个调用链已脱离 Node 的结论。
+
+- 切换内核负责手动、暂存及自动配置门禁、切换前后字段计划、交接摘要、交接消费和
+  响应/事件 DTO。已有 `cli_switch.rs` 继续拥有各 CLI 的原生会话状态与上下文检查点规则。
+- 安装内核负责安装任务状态、同一安装目标的互斥、日志尾部、失败分类和结果 DTO；
+  本地版本、上游版本及内置基线的缓存和升级判断也归 Rust。安装任务和缓存保留在
+  Rust 运行时对象内，日志经过共享 UTF-16 值桥传递。
+- 自动切换预约由 `auto_provider_runtime.rs` 保有。旧车道不得消费尚未落实的跨 CLI
+  预约；读取或等待同一预约不消耗新的跳转次数。已持久化但执行器未接手的重投仍需
+  经过配置门，配置等待走现有队列背压，不作为上游额度失败消耗重试次数。
+- 用户明确应用手动配置时取消旧自动预约；自动接续可完成已有预约，同时保留尚未
+  应用的用户配置供后续直接输入使用。
+
+Node 例外范围及删除条件：`switch-runtime.js` 保留现有会话对象身份、持久化事务端口、
+异步路由准备、进程句柄和事件发布；`tools-host.js` 保留可注入的进程执行、环境发现、
+文件原子写、定时器及上游版本读取接口。它们适配仍由 Node 持有的宿主生命周期，
+不再拥有上述切换规则、安装任务表或版本缓存。待会话/进程宿主与环境发现接口迁入 Rust，
+即可继续删除这两层桥接。相邻上游版本检查与 Homebrew 规则已继续迁入共享 Rust 内核，
+保留的宿主接口和生产传输边界见 §38。
+
+本批同时明确修正三个旧行为：安装历史容量淘汰不再移除仍在运行的任务，以免丢失
+互斥所有权；原生 CLI 自升级命令对动态可执行文件路径做 POSIX 单引号转义，防止
+路径中的 `$()` 或反引号被 shell 展开；手动切换的关闭进程与事件发布移到持久化
+事务成功返回后执行。这些是有意的安全差异，不以旧实现结果覆盖新行为。
+
+现有测试调用契约保留，新增安装超时后迟到退出、UTF-16 日志边界、取消路径固定时
+写入失败等回归源码。原生模块启动预检增加新接口检查，拒绝旧 addon 静默绕过重写逻辑。
+上述用例已纳入提交前 Rust/Node 验证并通过；服务未切换或重启。
+
+
+## 38. CLI 上游与共享额度规则收口（已集中验证）
+
+以下为已通过集中验证的代码归属与兼容约定，具体门禁结果见 §40。
+
+### CLI 上游与 Homebrew
+
+`native/core/src/cli_upstream_version.rs` 接管 npm registry 优先级、npmrc 读取、兜底源、
+版本比较、重定向预算、响应解析和 UTF-16 长度上限。生产 HTTPS 请求在 Rust 后台任务中执行；
+Node 保留 CLI capability 目录、平台 home 路径、Node 已加载的公开 CA 以及显式注入的
+`httpsImpl` 事件适配。注入路径与生产路径共用 Rust 请求状态机，不各自实现源选择与响应规则。
+不会把整个 `process.env` 或凭据对象送入原生模块。
+
+上游请求沿用旧 `https.get` 的无自动代理、无自动解压及 HTTPS 限制，使用 Node 默认信任根，
+避免迁移时悄悄改变证书或出站行为。已知有意差异：DNS/TCP/TLS 建连也受超时上限约束；
+无效重定向安全返回未知版本；生产 Rust 传输不跟随对 `https.globalAgent`/`https.get` 的
+隐式运行时改写，显式 `httpsImpl` 注入继续支持。冻结基线差分与隔离 TLS 用例已通过，
+包含合法 CA 签发的服务端证书和不受信 CA 的拒绝路径。
+
+`homebrew_takeover.rs` 接管安全名称检查、Node/npm 运行时保护、npm 安装识别及接管命令。
+Node 只保留平台路径搜索和可注入的 realpath 文件端口。`cli_tools_runtime.rs` 已直接复用
+上游版本比较及 Homebrew 规则，删掉自己的重复实现。未执行真实安装、卸载或配置修改。
+
+### 共享额度展示与记录
+
+`native/core/src/quota_bar_view.rs` 及子模块统一生成各厂商额度条、国际化片段、颜色、
+倒计时锚点、窗口重置推断及缓存展示。Node 的 `quota-bar-view.js` 只保留调用接口和冻结契约。
+`messages.json` 是编译期文案输入，已纳入原生源码指纹；修改文案必须使旧 addon 缓存失效。
+
+原 CPR `claude_quota.rs` 下沉到 core，CPR 保留重导出，展示与记录在 Rust 内复用同一内核。
+余额查询不再通过宿主的 `render` 操作再回到 addon，而是由 gateway 直接调用 core。
+公开 HTTP 路由数量不因本次内部调用收口而变化。
+
+`limit_cache_recorder.rs` 接管厂商观察值归一化、身份匹配、窗口合并、封禁/解封及写入计划，
+在 core 内直接调用展示和拒绝规则。Node 仍拥有注入式 cache/providers/session 端口、时钟、
+刷新回调及原缓存结果对象的身份；SQLite 缓存文件、历史 JSON 迁移和数据库生命周期仍归
+`provider-limit-cache.js`。待这些存储和会话宿主迁移后再删除剩余桥接，本批没有宣称额度簇
+或 providers 簇已经完全脱离 Node。
+
+### 接线与验证
+
+core/addon 模块和原生启动预检均已接线。既有测试套件加入冻结 JS 基线差分、缺失字段、
+多窗口合并、调用次序、封禁保留、UTF-16、隔离 HTTPS 及直接原生展示回归，均已执行通过。
+修正了行终止符处理以及窗口类型契约：事件和 Codex 严格接受字符串枚举，Claude
+沿用旧对象属性查找的键转换；冻结 oracle 与期望未放宽。没有据此声称性能倍数。
+
+
+## 39. 编排 OOM 与终态保留（已集中验证）
+
+本机只读统计发现 61,361 条编排任务中 61,357 条已经终态，outbox 中另有 15,373 条已投递
+记录。旧 SQLite 后端仍全库常驻 Node，并在读取/恢复/导出时复制或重载，故改成 SQLite
+本身没有消除 OOM 风险。另一现场的 11 万条任务数字不混作本机证据。
+
+新增 `orchestration_store` 内核按记录/字段读取并提交脏行，`orchestration_retention`
+负责超期或容量超额且无恢复引用记录的有界删除；`native-store-host.js` 保留 Node 回调对象代理。
+恢复、计数、FIFO、outbox 和 wait 热路径改为筛选候选；摘要列表不再预读所有历史结果。
+公开路由仍由原宿主注册，不增加前门接管数量，也不把必要回调桥计作已删除。
+
+默认保留 30 天，数量只计 tasks 终态和 outbox 的 delivered/cancelled，合计超过
+5,000 条提前安排维护；每批最多回收 500 条过期且无引用记录。容量探测不受小时到期
+检查间隔限制，但不会缩短保留期或绕过引用保护。活动、死信、operations 和 waits 保留，
+容量目标不是硬删上限；独立 outbox ID 的去重窗口至少受配置保留期保护。
+数据库 schema 2 已实现轻量回执与完整正文分离，通过 body_ref 标记正文是否存在；
+缺失正文显式报错，旧库异步分批瘦身，详情与导出按需还原未知字段及 UTF-16 内容。
+没有可靠聊天定位的原件仍独立保存，未宣称已经复用聊天正文或立即降低磁盘占用。
+另提供默认只读报告、先备份再清理的 Rust 离线工具，在线不压缩数据库。
+
+编排聚焦回归 223 项通过，包含 80 MiB Node 堆限制下读取并更新 6,001 条记录。
+没有进行生产 OOM 复现或同等优化 Node 基线的性能对比，没有整理生产数据或重启服务。
+详细契约、环境变量、离线条件及 schema 回退要求见 [编排 SQLite 说明](orchestration-sqlite.md)。
+
+## 40. 本批提交前验证（2026-11-12）
+
+最终源码与原生产物指纹为 `0f34d8b1fc2268a51f84d3e9`。本轮重新运行格式、严格
+Clippy、workspace 构建及串行完整 Rust 测试：47 组、1,310 项通过，0 失败。
+Node 针对当前全部 34 个修改或新增测试文件，以及 contracts、architecture、governance、
+rust 四个完整门禁，共 1,184 项通过，0 失败、0 跳过、0 待办；另有缓存脚本 183 项
+断言和四次隔离 HTTP/派发场景通过，所有串联命令的后续步骤均已执行。
+providers 的 198 条和 provider-misc 的 84 条响应对拍全部一致，七项已声明的接缝差异
+也逐项验证；副作用调用与目录刷新核验无差异。此前完整 npm 15 分组的两项环境跳过
+和一项既有待办仍作为完整套件的限制保留，不能被本轮针对性测试的零跳过覆盖。
+
+验证使用隔离数据与本地假上游，不修改生产配置或重启服务。结果位于主仓
+`data/rust-source/validation/task-88a969353c0b716636b714b302483a39/precommit-*.log`，
+汇总为 `precommit-rust-summary.json` 与 `precommit-node-summary.json`。

@@ -1,5 +1,12 @@
 'use strict';
 
+// SQLite supplies indexed candidates inside this read/write snapshot. The JSON
+// compatibility store keeps the old scan; callers retain their exact predicates.
+function candidateRows(draft, collection, where) {
+  return typeof draft.select === 'function'
+    ? draft.select(collection, { where }) : Object.values(draft[collection]);
+}
+
 const crypto = require('crypto');
 const {
   admitOutboxItem,
@@ -236,7 +243,7 @@ function createWaitService({
     return store.mutate(draft => {
       const at = Number(now());
       let cancelled = 0;
-      for (const wait of Object.values(draft.waits)) {
+      for (const wait of candidateRows(draft, 'waits', { sessionId, status: 'pending' })) {
         if (wait.sessionId !== sessionId || wait.status !== 'pending') continue;
         wait.status = 'cancelled';
         wait.cancelledAt = at;
@@ -247,16 +254,26 @@ function createWaitService({
     });
   }
 
+  function waitProjection(wait) {
+    if (!wait) return null;
+    const copy = { ...wait };
+    delete copy.callbackTokenHash;
+    delete copy.resolutionPayloadHash;
+    return copy;
+  }
+
   async function get(id) {
-    return store.read(draft => draft.waits[id] ? publicWait(draft.waits[id]) : null);
+    return store.read(draft => waitProjection(draft.waits[id]));
   }
 
   async function list({ sessionId, status } = {}) {
-    return store.read(draft => Object.values(draft.waits)
+    return store.read(draft => candidateRows(draft, 'waits', {
+      ...(sessionId ? { sessionId } : {}), ...(status ? { status } : {}),
+    })
       .filter(wait => !sessionId || wait.sessionId === sessionId)
       .filter(wait => !status || wait.status === status)
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-      .map(publicWait));
+      .map(waitProjection));
   }
 
   return Object.freeze({

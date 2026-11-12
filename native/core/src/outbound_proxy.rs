@@ -60,6 +60,50 @@ pub fn has_proxy_env(env: &Env) -> bool {
     .any(|key| env.contains_key(*key))
 }
 
+/// `mergeLoopbackNoProxy`: append the always-direct hosts to both spellings
+/// of `no_proxy` and keep every other key untouched. Used by the Node side
+/// when a child process inherits a proxied environment (`src/tmux.js`,
+/// `src/providers/router-runtime.js`); the Rust port exists so the rule has
+/// one implementation.
+pub fn merge_loopback_no_proxy(env: &Env) -> Env {
+    let mut entries: Vec<String> = Vec::new();
+    for key in ["no_proxy", "NO_PROXY"] {
+        if let Some(value) = env.get(key) {
+            for entry in
+                value.split(|character: char| is_js_whitespace_char(character) || character == ',')
+            {
+                if !entry.is_empty() {
+                    entries.push(entry.to_string());
+                }
+            }
+        }
+    }
+    let mut merged: Vec<String> = Vec::new();
+    for entry in entries
+        .into_iter()
+        .chain(DIRECT_HOSTS.iter().map(|host| host.to_string()))
+    {
+        if !merged.contains(&entry) {
+            merged.push(entry);
+        }
+    }
+    let merged = merged.join(",");
+    let mut out = env.clone();
+    out.insert("no_proxy".to_string(), merged.clone());
+    out.insert("NO_PROXY".to_string(), merged);
+    out
+}
+
+/// `ensureLoopbackNoProxyEnv`: only environments that carry proxy variables
+/// are rewritten; a clean environment is returned unchanged.
+pub fn ensure_loopback_no_proxy_env(env: &Env) -> Env {
+    if !has_proxy_env(env) {
+        env.clone()
+    } else {
+        merge_loopback_no_proxy(env)
+    }
+}
+
 /// The shape `parseMacSystemProxy` returns.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -440,6 +484,12 @@ impl Default for Cache {
 }
 
 impl Cache {
+    /// `invalidate()`: forget the last read so the next `configuration()`
+    /// consults the system again.
+    pub fn invalidate(&mut self) {
+        self.slot.checked_at = None;
+    }
+
     /// Apply one discovery outcome. A read error keeps the last known policy;
     /// before any value it propagates (never a silent direct fallback).
     pub fn accept(

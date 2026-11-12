@@ -409,6 +409,11 @@ function createAutoProviderRuntime(options = {}) {
     });
   }
 
+  function pendingCliSwitch(sessionId, cli) {
+    const pending = native('pendingCliSwitch', sessionId, cli || 'claude');
+    return pending ? Object.freeze(pending) : null;
+  }
+
   function snapshot(sessionId) {
     const current = native('snapshot', sessionId);
     return current ? Object.freeze({ ...current }) : null;
@@ -467,7 +472,7 @@ function createAutoProviderRuntime(options = {}) {
     broadcast: emit,
   });
 
-  return Object.freeze({ beginTurn, clearSession, planTurn, prepareAdmission, prepareTurn, retryNotBefore, snapshot });
+  return Object.freeze({ beginTurn, clearSession, pendingCliSwitch, planTurn, prepareAdmission, prepareTurn, retryNotBefore, snapshot });
 }
 
 module.exports = {

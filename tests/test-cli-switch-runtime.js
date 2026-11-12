@@ -87,6 +87,8 @@ function createHarness(overrides = {}) {
     hasLiveBackgroundTasks: () => overrides.backgroundActive === true,
     cancelClassify: () => effects.push('cancel-classify'),
     planAutoCliSwitch: overrides.planAutoCliSwitch,
+    pendingAutoCliSwitch: overrides.pendingAutoCliSwitch,
+    clearAutoProviderSession: overrides.clearAutoProviderSession,
     assignKillReason: (_runner, reason) => effects.push(`kill-reason:${reason}`),
     finishProviderAttempt: (attempt, facts) => {
       effects.push(`attempt-finish:${attempt.routeAttemptId}:${facts.reasonCode}`);
@@ -417,6 +419,37 @@ function codexTask(subagent = null) {
   };
 }
 
+test('手动切换落库失败时不关闭进程、不发布交接，也不清除自动预约', async () => {
+  const { createSessionPersistence } = require('../src/session/persistence');
+  const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', cliSessionId: 'original' };
+  const records = recordsOf([['s1', session]]);
+  let fail = true, cleared = 0;
+  // mutate 先调用变更函数，再由 store.save 抛错并回滚；覆盖提交前已执行
+  // performCliSwitch、但还不能发出宿主副作用的真实事务边界。
+  const persistence = createSessionPersistence({ records, store: {
+    save() { if (fail) throw new Error('disk-full'); },
+  } });
+  const h = createHarness({ session, records, sessionPersistence: persistence,
+    clearAutoProviderSession: () => { cleared++; } });
+  try {
+    await assert.rejects(h.invoke({ body: { cli: 'codex' } }), /could not be persisted/);
+    assert.equal(records.get('s1').cli, 'claude');
+    assert.equal(records.get('s1').pendingCliHandoff, undefined);
+    assert.equal(h.chat.cli, 'claude');
+    assert.equal(cleared, 0);
+    assert.deepEqual(h.effects.filter(effect => /^(stream-close|message|event|chat|workspace):/.test(effect)), []);
+
+    fail = false;
+    const retried = await h.invoke({ body: { cli: 'codex' } });
+    assert.equal(retried.statusCode, 200);
+    assert.equal(records.get('s1').cli, 'codex');
+    assert.equal(cleared, 1);
+    assert.equal(h.effects.filter(effect => effect === 'message:handoff_fixed').length, 1);
+  } finally {
+    persistence.stop();
+  }
+});
+
 test('a lane switch puts a never-set sub-agent route on the destination family default', async () => {
   const h = subagentDefaultsHarness(codexTask(), { claude: { providerId: 'p-ds', model: 'opus' }, codex: null });
   const res = await h.invoke({ body: { cli: 'claude-exp' } });
@@ -671,6 +704,70 @@ test('install exit non-zero marks the job as error', async () => {
   assert.equal(res.body.job.status, 'error');
   assert.equal(res.body.job.exitCode, 1);
   assert.match(res.body.job.error, /退出码|失败/);
+});
+
+test('安装超时后迟到的成功退出和错误事件不能覆盖终态', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const signals = [];
+  child.kill = signal => { signals.push(signal); };
+  let available = false, discoveries = 0;
+  const h = createHarness({
+    spawnProcess: () => child,
+    cliAvailabilitySummary: () => ({ codex: { available } }),
+    refreshCliEnvironment: async () => { discoveries++; },
+  });
+  const started = await h.invokeInstall('codex');
+  assert.equal(started.statusCode, 202);
+  t.mock.timers.tick(15 * 60 * 1000);
+  const expired = (await h.invokeStatus(started.body.jobId)).body.job;
+  assert.deepEqual(signals, ['SIGKILL']);
+  assert.equal(expired.status, 'error');
+  assert.equal(expired.error, '安装超时');
+  assert.equal(expired.exitCode, null);
+
+  available = true;
+  child.emit('exit', 0, null);
+  child.emit('error', new Error('迟到的进程错误'));
+  await new Promise(resolve => setImmediate(resolve));
+  const after = (await h.invokeStatus(started.body.jobId)).body.job;
+  assert.deepEqual(after, expired, '后续事件必须保留第一次超时终态');
+  assert.equal(discoveries, 0, '超时任务不能再次进入成功安装的环境刷新流程');
+});
+
+test('安装日志合并标准输出与错误输出并按 UTF-16 代码单元保留尾部', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  const h = createHarness({
+    spawnProcess: () => child,
+    availability: { codex: { available: false } },
+  });
+  const started = await h.invokeInstall('codex');
+  assert.equal(started.statusCode, 202);
+  try {
+    // 第二块超过环形缓冲收缩阈值；尾部刻意从 emoji 的低代理项开始，
+    // 因此按 UTF-8 字节、Unicode 字符或有损 UTF-16 解码都会改变结果。
+    const prefix = '旧日志🙂\n';
+    const output = '😀中'.repeat(9000) + '尾';
+    child.stdout.emit('data', Buffer.from(prefix, 'utf8'));
+    child.stderr.emit('data', Buffer.from(output, 'utf8'));
+    const expected = (prefix + output).slice(-(12 * 1024));
+    const first = (await h.invokeStatus(started.body.jobId)).body.job.logTail;
+    assert.equal(first, expected);
+    assert.equal(first.length, 12 * 1024);
+    assert.equal(first.charCodeAt(0), 0xDE00, '截断边界保留原有 JavaScript 代理项语义');
+
+    const suffix = '\n完成✅';
+    child.stdout.emit('data', Buffer.from(suffix, 'utf8'));
+    const second = (await h.invokeStatus(started.body.jobId)).body.job.logTail;
+    assert.equal(second, (expected + suffix).slice(-(12 * 1024)));
+  } finally {
+    child.emit('exit', 1, null);
+  }
 });
 
 test('install returns 409 while a job for the same cli is still running', async () => {
@@ -979,8 +1076,8 @@ function autoPool(extra = {}) {
     version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 3, sticky: true,
     allowCrossTrust: false, cliSwitch: 'failover',
     candidates: [
-      { providerId: 'claude-provider', cli: 'claude', enabled: true, priority: 0 },
-      { providerId: 'codex-line', cli: 'codex', enabled: true, priority: 1 },
+      { providerId: 'claude-provider', cli: 'claude', enabled: true, priority: 1 },
+      { providerId: 'codex-line', cli: 'codex', enabled: true, priority: 2 },
     ],
     ...extra,
   };
@@ -1185,28 +1282,251 @@ test('a manual switch cannot overwrite a newer choice while Rust preparation is 
 
 test('the lane switch stays out of the way: staged choices, legacy pools, unavailable lanes, planner faults', async () => {
   const base = () => ({ cli: 'codex', providerId: 'codex-line' });
-  let h = createHarness({ planAutoCliSwitch: base });
+  const noReservation = { pendingAutoCliSwitch: () => null };
+  let h = createHarness({ ...noReservation, planAutoCliSwitch: base });
   h.session.providerSelection = autoPool({ cliSwitch: undefined });
   await h.runtime.applyPendingConfiguration('s1', {}, 'x');
   assert.equal(h.session.cli, 'claude', 'a single-lane pool never leaves its CLI');
 
-  h = createHarness({ planAutoCliSwitch: base, availability: { claude: { available: true } } });
+  h = createHarness({ ...noReservation, planAutoCliSwitch: base, availability: { claude: { available: true } } });
   h.session.providerSelection = autoPool();
   assert.equal(await h.runtime.applyPendingConfiguration('s1', {}, 'x'), true);
   assert.equal(h.session.cli, 'claude', 'an uninstalled target lane is not entered');
 
-  h = createHarness({ planAutoCliSwitch: () => { throw new Error('planner down'); } });
+  h = createHarness({ ...noReservation, planAutoCliSwitch: () => { throw new Error('planner down'); } });
   h.session.providerSelection = autoPool();
   assert.equal(await h.runtime.applyPendingConfiguration('s1', {}, 'x'), true, 'a planner fault never blocks the turn');
   assert.equal(h.session.cli, 'claude');
 
   let called = 0;
-  h = createHarness({ planAutoCliSwitch: () => { called += 1; return base(); } });
+  h = createHarness({ ...noReservation, planAutoCliSwitch: () => { called += 1; return base(); } });
   h.session.providerSelection = autoPool();
   h.chat.isStreaming = true;
   await h.runtime.applyPendingConfiguration('s1', {}, 'x');
   assert.equal(called, 0, 'a busy session is not re-planned mid-turn');
   assert.equal(h.session.cli, 'claude');
+  h.chat.isStreaming = false;
+  h.session.pendingConfiguration = { cli: 'opencode', fresh: false, profile: {} };
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true }), true);
+  assert.equal(called, 0, 'without a reservation, a continuation keeps its lane and staged user choice');
+  assert.equal(h.session.pendingConfiguration.cli, 'opencode');
+});
+
+function pendingCodexSwitch(_sessionId, cli) {
+  return cli === 'codex' ? null : { cli: 'codex', providerId: 'codex-line' };
+}
+
+test('a reserved CLI handoff defers while busy and resumes only after the target lane is active', async () => {
+  let planned = 0;
+  const observedClis = [];
+  const h = createHarness({
+    pendingAutoCliSwitch: (id, cli) => { observedClis.push(cli); return pendingCodexSwitch(id, cli); },
+    planAutoCliSwitch: () => { planned += 1; return { cli: 'codex', providerId: 'codex-line' }; },
+  });
+  h.session.providerSelection = autoPool();
+  h.chat.isStreaming = true;
+  const before = JSON.stringify(h.session);
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true }, 'resume'), false);
+  assert.equal(planned, 0, 'the active CLI must not be switched underneath its running turn');
+  assert.equal(JSON.stringify(h.session), before);
+  assert.equal(h.effects.includes('stream-settle:s1'), false);
+  h.chat.isStreaming = false;
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true }, 'resume'), true);
+  assert.equal(planned, 1);
+  assert.equal(h.session.cli, 'codex');
+  assert.equal(h.chat.cli, 'codex');
+  assert.equal(h.session.provider, 'codex-line');
+  assert.equal(observedClis.at(-1), 'codex', 'the reservation is checked against the committed target lane');
+  assert.equal(h.effects.filter(e => e === 'message:handoff_fixed').length, 1);
+});
+
+test('an unresolved reservation blocks absent plans, planner faults and unavailable targets', async () => {
+  for (const overrides of [
+    {},
+    { planAutoCliSwitch: () => null },
+    { planAutoCliSwitch: () => ({ cli: 'claude', providerId: 'claude-provider' }) },
+    { planAutoCliSwitch: () => { throw new Error('planner down'); } },
+    { planAutoCliSwitch: () => ({ cli: 'codex', providerId: 'codex-line' }),
+      availability: { claude: { available: true }, codex: { available: false } } },
+  ]) {
+    const h = createHarness({ pendingAutoCliSwitch: pendingCodexSwitch, ...overrides });
+    h.session.providerSelection = autoPool();
+    const before = JSON.stringify(h.session);
+    assert.equal(await h.runtime.applyPendingConfiguration('s1', {}, 'resume'), false);
+    assert.equal(JSON.stringify(h.session), before);
+    assert.equal(h.effects.some(e => e.startsWith('message:') || e.startsWith('mutate:')), false);
+  }
+});
+
+test('a reservation created during planning cannot fall through to the exhausted original lane', async () => {
+  for (const fail of [false, true]) {
+    let pending = null;
+    const h = createHarness({
+      pendingAutoCliSwitch: () => pending,
+      planAutoCliSwitch: () => {
+        pending = { cli: 'codex', providerId: 'codex-line' };
+        if (fail) throw new Error('planner failed after reserving the handoff');
+        return null;
+      },
+    });
+    h.session.providerSelection = autoPool();
+    assert.equal(await h.runtime.applyPendingConfiguration('s1', {}, 'resume'), false);
+    assert.equal(h.session.cli, 'claude');
+    assert.ok(pending, 'the host must leave the Rust-owned reservation intact');
+  }
+});
+
+test('a reserved handoff retains its source state when Rust preparation fails', async () => {
+  const h = createHarness({
+    pendingAutoCliSwitch: pendingCodexSwitch,
+    planAutoCliSwitch: () => ({ cli: 'codex', providerId: 'codex-line' }),
+    prepareCliSwitchRoute: async () => { throw new Error('CODEX_SESSION_ROLLOUT_AMBIGUOUS'); },
+  });
+  h.session.providerSelection = autoPool();
+  const before = JSON.stringify(h.session);
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', {}, 'resume'), false);
+  assert.equal(JSON.stringify(h.session), before);
+  assert.equal(h.effects.some(e => e.startsWith('message:') || e.startsWith('mutate:')), false);
+});
+
+test('a reserved handoff defers if its prepared configuration changes or the source becomes busy', async () => {
+  for (const invalidation of ['configuration', 'busy', 'record']) {
+    let release, entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const h = createHarness({
+      pendingAutoCliSwitch: pendingCodexSwitch,
+      planAutoCliSwitch: () => ({ cli: 'codex', providerId: 'codex-line' }),
+      prepareCliSwitchRoute: () => new Promise(resolve => { release = resolve; entered(); }),
+    });
+    h.session.providerSelection = autoPool();
+    const first = h.runtime.applyPendingConfiguration('s1', {}, 'resume');
+    await started;
+    if (invalidation === 'configuration') h.session.label = 'new configuration';
+    if (invalidation === 'busy') h.chat.isStreaming = true;
+    if (invalidation === 'record') h.records.set('s1', { ...h.session });
+    release({ probeHandled: true, nativeSessionExists: false });
+    assert.equal(await first, false, invalidation);
+    assert.equal(h.records.get('s1').cli, 'claude');
+    assert.equal(h.effects.some(e => e.startsWith('message:') || e.startsWith('mutate:')), false);
+  }
+});
+
+test('a continuation fulfills its reserved handoff while preserving the user choice for the next direct input', async () => {
+  const h = reservedRuntimeHarness();
+  const pending = { cli: 'opencode', fresh: false,
+    profile: { providerSelection: null, provider: 'chosen-manually' } };
+  h.session.pendingConfiguration = pending;
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true }), true);
+  assert.equal(h.session.cli, 'codex');
+  assert.equal(h.session.pendingConfiguration, pending);
+  assert.equal(h.autoRuntime.beginTurn({ session: h.session, turnId: 'continuation' }).initial().providerId, 'codex-line');
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { directUserInput: true }), true);
+  assert.equal(h.session.cli, 'opencode');
+  assert.equal(h.session.provider, 'chosen-manually');
+  assert.equal(h.session.providerSelection, null);
+  assert.equal(h.session.pendingConfiguration, undefined);
+});
+
+test('an unreadable automatic handoff reservation defers instead of assuming the current CLI is safe', async () => {
+  const h = createHarness({ pendingAutoCliSwitch: () => { throw new Error('runtime unavailable'); } });
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), false);
+  assert.equal(h.session.cli, 'claude');
+});
+
+function reservedRuntimeHarness() {
+  const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
+  const catalog = [
+    { id: 'claude-provider', name: 'Claude', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'] },
+    { id: 'codex-line', name: 'Codex', appType: 'codex', apiFormat: 'openai_responses', compatibleClis: ['codex'] },
+    { id: 'claude-backup', name: 'Claude backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'] },
+  ];
+  const state = { targetAvailable: true, preparationFails: false };
+  const autoRuntime = createAutoProviderRuntime({
+    providers: {
+      appTypeForCli: cli => cli,
+      appTypesForCli: cli => [cli],
+      listProviders: appType => catalog.filter(provider => provider.appType === appType),
+      providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
+    },
+    priceTable: null,
+    now: () => 1_000_000,
+    isCliAvailable: cli => cli !== 'codex' || state.targetAvailable,
+  });
+  const h = createHarness({
+    planAutoCliSwitch: args => autoRuntime.planTurn(args),
+    pendingAutoCliSwitch: (id, cli) => autoRuntime.pendingCliSwitch(id, cli),
+    clearAutoProviderSession: id => autoRuntime.clearSession(id),
+    prepareCliSwitchRoute: async () => {
+      if (state.preparationFails) throw new Error('temporary preparation failure');
+      return { probeHandled: true, nativeSessionExists: null };
+    },
+  });
+  h.session.providerSelection = autoPool();
+  const source = autoRuntime.beginTurn({ session: h.session, turnId: 'source' });
+  assert.equal(source.initial().providerId, 'claude-provider');
+  const reservation = source.prepareHandoff({
+    action: 'wait_reset', reason: 'quota_reset_required', delayMs: 60_000,
+    error: { category: 'billing_quota', phase: 'before_first_token', partialOutput: false, sideEffects: false },
+  }, { providerId: 'claude-provider', replayFence: 'none', visibleOutputObserved: false,
+    toolIntentObserved: false, sideEffectObserved: false });
+  assert.equal(reservation.cli, 'codex');
+  return { ...h, autoRuntime, state, reservation };
+}
+
+test('real Rust reservations survive repeated preparation failures and unavailable targets before one successful handoff', async () => {
+  const h = reservedRuntimeHarness();
+  h.state.preparationFails = true;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true }, 'resume'), false);
+    assert.deepEqual(h.autoRuntime.pendingCliSwitch('s1', 'claude'), h.reservation);
+    assert.equal(h.session.cli, 'claude');
+  }
+  h.state.preparationFails = false;
+  h.state.targetAvailable = false;
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true }, 'resume'), false);
+  assert.deepEqual(h.autoRuntime.pendingCliSwitch('s1', 'claude'), h.reservation);
+  h.state.targetAvailable = true;
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true }, 'resume'), true);
+  assert.equal(h.session.cli, 'codex');
+  const target = h.autoRuntime.beginTurn({ session: h.session, turnId: 'target' });
+  assert.equal(target.initial().providerId, 'codex-line');
+  assert.equal(h.autoRuntime.pendingCliSwitch('s1', 'claude'), null, 'the target turn consumes the reservation once');
+  assert.equal(h.effects.filter(e => e === 'message:handoff_fixed').length, 1);
+});
+
+test('explicit user configuration cancels an old Rust reservation before the next turn gate', async () => {
+  for (const action of ['disable-auto', 'disable-cli-switch', 'apply-staged', 'switch-cli', 'keep-cli']) {
+    const h = reservedRuntimeHarness();
+    if (action === 'disable-auto') {
+      h.session.providerSelection = null;
+      h.session.provider = 'chosen-manually';
+      assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
+    } else if (action === 'disable-cli-switch') {
+      h.session.providerSelection = autoPool({ cliSwitch: undefined,
+        candidates: [
+          { providerId: 'claude-provider', priority: 1 },
+          { providerId: 'claude-backup', priority: 2 },
+        ] });
+      assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
+    } else if (action === 'apply-staged') {
+      h.session.pendingConfiguration = { cli: 'claude', fresh: false,
+        profile: { providerSelection: null, provider: 'chosen-manually' } };
+      assert.equal(await h.runtime.applyPendingConfiguration('s1', { directUserInput: true }), true);
+      assert.equal(h.session.provider, 'chosen-manually');
+    } else {
+      const result = await h.invoke({ body: { cli: action === 'switch-cli' ? 'opencode' : 'claude' } });
+      assert.equal(result.statusCode, 200);
+      assert.equal(h.session.cli, action === 'switch-cli' ? 'opencode' : 'claude');
+    }
+    assert.equal(h.autoRuntime.pendingCliSwitch('s1', 'claude'), null, action);
+    assert.equal(h.autoRuntime.snapshot('s1'), null, action);
+    if (action === 'disable-cli-switch') {
+      h.autoRuntime.beginTurn({ session: h.session, turnId: 'single-lane' }).initial();
+      const selected = h.autoRuntime.snapshot('s1');
+      assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
+      assert.deepEqual(h.autoRuntime.snapshot('s1'), selected, 'a single-lane pool keeps its selected route');
+    }
+  }
 });
 
 // ── 上游最新版比对 + 一键升级 ─────────────────────────────────────────────
@@ -1374,10 +1694,35 @@ test('upgrade of a native-installer claude runs its own updater, not npm', async
   });
   const res = await harness.invokeUpgrade('claude');
   assert.equal(res.statusCode, 202);
-  assert.equal(res.body.command, `"${shim}" update`);
+  assert.equal(res.body.command, `'${shim}' update`);
   assert.equal(brewProbed, false, 'native 安装不归 Homebrew 管, 不该探测 brew 归属');
   assert.ok(proc, '升级必须真的起了安装进程');
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('原生升级命令把路径中的空格、单引号和 shell 展开符保留为字面量', async () => {
+  // 有意修正旧双引号拼接：动态路径必须使用 POSIX 单引号转义。
+  // spawn 完全注入，不执行安装命令，也不触碰该路径或真实用户目录。
+  const cmd = "/fixture/space ' $(ignored) `ignored`/.local/bin/claude";
+  const command = "'/fixture/space '\\'' $(ignored) `ignored`/.local/bin/claude' update";
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  const calls = [];
+  const h = createHarness({
+    cliCommands: { claude: cmd },
+    availability: { claude: { available: true } },
+    spawnProcess: (file, args) => { calls.push({ file, args }); return child; },
+  });
+  try {
+    const result = await h.invokeUpgrade('claude');
+    assert.equal(result.statusCode, 202);
+    assert.equal(result.body.command, command);
+    assert.deepEqual(calls, [{ file: 'bash', args: ['-c', command] }]);
+  } finally {
+    child.emit('exit', 1, null);
+  }
 });
 
 test('upgrade treats legacy ~/.claude/local and dangling shim as native installs', async () => {
@@ -1401,7 +1746,7 @@ test('upgrade treats legacy ~/.claude/local and dangling shim as native installs
     });
     const res = await harness.invokeUpgrade('claude');
     assert.equal(res.statusCode, 202);
-    assert.equal(res.body.command, `"${cmd}" update`);
+    assert.equal(res.body.command, `'${cmd}' update`);
   }
   fs.rmSync(home, { recursive: true, force: true });
 });
@@ -1434,7 +1779,7 @@ test('upgrade of the official ~/.opencode/bin install runs the binary itself, no
   });
   const res = await harness.invokeUpgrade('opencode');
   assert.equal(res.statusCode, 202);
-  assert.equal(res.body.command, `"${stub}" upgrade`);
+  assert.equal(res.body.command, `'${stub}' upgrade`);
   assert.equal(brewProbed, false, '官方安装不归 Homebrew 管, 不该探测 brew 归属');
   assert.ok(proc, '升级必须真的起了安装进程');
   fs.rmSync(home, { recursive: true, force: true });
@@ -1771,6 +2116,29 @@ test('homebrew owner detection follows the real path and refuses unsafe names', 
     'curl -fsSL https://qoder.cn/install | bash');
 });
 
+test('homebrew takeover keeps the runtime protected even behind an unrelated formula', () => {
+  const { homebrewOwnerOf } = require('../src/cli/homebrew-takeover');
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/node', {
+    realpath: () => '/opt/homebrew/Cellar/custom-cli/1/bin/node',
+  }), null);
+  let calls = 0;
+  const realpath = () => { calls += 1; throw new Error('unexpected read'); };
+  assert.equal(homebrewOwnerOf('./cli', { realpath }), null);
+  assert.equal(homebrewOwnerOf('', { realpath }), null);
+  assert.equal(calls, 0);
+});
+
+test('homebrew command bridging preserves UTF-16 and leaves unsupported commands untouched', () => {
+  const { takeoverCommand, isNpmGlobalInstall } = require('../src/cli/homebrew-takeover');
+  const owner = { kind: 'formula', name: 'cli' };
+  const command = '\ufeffnpm\tinstall -g cli \ud800';
+  assert.equal(takeoverCommand(owner, command), `brew uninstall --formula cli && ${command}`);
+  assert.equal(isNpmGlobalInstall('npm install -g'), false);
+  assert.equal(isNpmGlobalInstall('\u0085npm install -g cli'), false);
+  const untouched = { toString: () => 'curl install' };
+  assert.equal(takeoverCommand(owner, untouched), untouched);
+});
+
 // ── *_CMD 钉住派生路径: 归因 + 预检 + 「改用新版」────────────────────────────
 function pinHarness(extra = {}) {
   const os = require('node:os');
@@ -1852,6 +2220,40 @@ test('unpin refuses when the pin does not live in the .env file, and rejects unk
   assert.equal(res.statusCode, 409);
   assert.equal(res.body.code, 'pin_not_in_env_file');
   assert.equal((await harness.invokeUnpin('nope')).statusCode, 400);
+});
+
+test('取消路径固定写入失败时保留原文件和内存环境，随后可以重试', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cli-unpin-failure-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const envFile = path.join(dir, 'isolated.env');
+  const original = 'FOO=1\r\nCODEX_CMD=/fixture/codex\r\nBAR=2\r\n';
+  fs.writeFileSync(envFile, original);
+  const env = { CODEX_CMD: '/fixture/codex' };
+  const h = createHarness({ env, envFile });
+  const rename = fs.renameSync;
+  let rejected = false;
+  const mockedRename = t.mock.method(fs, 'renameSync', function (source, destination) {
+    if (destination === envFile) {
+      rejected = true;
+      throw Object.assign(new Error('隔离测试拒绝原子替换'), { code: 'EACCES' });
+    }
+    return rename.call(this, source, destination);
+  });
+  try {
+    const failed = await h.invokeUnpin('codex');
+    assert.equal(rejected, true, '故障发生在目标文件的原子替换边界');
+    assert.equal(failed.statusCode, 500);
+    assert.equal(failed.body.code, 'env_write_failed');
+    assert.equal(fs.readFileSync(envFile, 'utf8'), original);
+    assert.equal(env.CODEX_CMD, '/fixture/codex');
+    assert.deepEqual(fs.readdirSync(dir), ['isolated.env'], '失败后的临时文件已清理');
+  } finally {
+    mockedRename.mock.restore();
+  }
+  const retried = await h.invokeUnpin('codex');
+  assert.equal(retried.statusCode, 200);
+  assert.equal(env.CODEX_CMD, undefined);
+  assert.match(fs.readFileSync(envFile, 'utf8'), /^FOO=1\r\n# CODEX_CMD=\/fixture\/codex/);
 });
 
 test('安装等待统一代理并将代理传给实际子进程', async () => {

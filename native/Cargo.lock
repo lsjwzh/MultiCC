@@ -1493,6 +1493,7 @@ dependencies = [
  "multicc-core",
  "multicc-cpr",
  "regex",
+ "reqwest",
  "rustls",
  "rustls-native-certs",
  "serde",
