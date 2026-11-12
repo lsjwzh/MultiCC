@@ -1,5 +1,12 @@
 'use strict';
 
+// SQLite supplies indexed candidates inside this read/write snapshot. The JSON
+// compatibility store keeps the old scan; callers retain their exact predicates.
+function candidateRows(draft, collection, where) {
+  return typeof draft.select === 'function'
+    ? draft.select(collection, { where }) : Object.values(draft[collection]);
+}
+
 const crypto = require('crypto');
 const {
   admitOutboxItem,
@@ -62,7 +69,7 @@ function createOperationService({
 
   function findIdempotent(draft, { kind, ownerSessionId, idempotencyKeyHash }) {
     if (!idempotencyKeyHash) return null;
-    return Object.values(draft.operations).find(operation => (
+    return candidateRows(draft, 'operations', { kind, ownerSessionId, idempotencyKeyHash }).find(operation => (
       operation.kind === kind
       && operation.ownerSessionId === ownerSessionId
       && operation.idempotencyKeyHash === idempotencyKeyHash
@@ -389,7 +396,7 @@ function createOperationService({
     return store.mutate(draft => {
       const at = Number(now());
       const interrupted = [];
-      for (const task of Object.values(draft.tasks)) {
+      for (const task of candidateRows(draft, 'tasks', { status: { $nin: [...TERMINAL_TASK_STATES] } })) {
         if (TERMINAL_TASK_STATES.has(task.status)) continue;
         task.status = 'interrupted';
         task.error = 'MultiCC restarted; the CLI-owned task cannot be proven alive or resumed';
@@ -452,27 +459,79 @@ function createOperationService({
     });
   }
 
+  // Read selectors return a projection; the store owns the single isolation
+  // copy. Mutation return values keep publicOperation's detached-copy contract.
+  function operationProjection(operation) {
+    if (!operation) return null;
+    const copy = { ...operation };
+    delete copy.idempotencyKeyHash;
+    delete copy.requestHash;
+    delete copy.resultHash;
+    return copy;
+  }
+
   async function get(id) {
-    return store.read(draft => publicOperation(draft.operations[id]));
+    return store.read(draft => operationProjection(draft.operations[id]));
   }
 
   async function list({ kind, ownerSessionId, statuses } = {}) {
     const wanted = statuses == null ? null : new Set(Array.isArray(statuses) ? statuses : [statuses]);
-    return store.read(draft => Object.values(draft.operations)
+    return store.read(draft => candidateRows(draft, 'operations', {
+      ...(kind ? { kind } : {}), ...(ownerSessionId ? { ownerSessionId } : {}),
+      ...(wanted ? { status: [...wanted] } : {}),
+    })
       .filter(operation => !kind || operation.kind === kind)
       .filter(operation => !ownerSessionId || operation.ownerSessionId === ownerSessionId)
       .filter(operation => !wanted || wanted.has(operation.status))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-      .map(publicOperation));
+      .map(operationProjection));
   }
 
   async function listTasks({ sessionId, statuses } = {}) {
     const wanted = statuses == null ? null : new Set(Array.isArray(statuses) ? statuses : [statuses]);
-    return store.read(draft => Object.values(draft.tasks)
+    return store.read(draft => candidateRows(draft, 'tasks', {
+      ...(sessionId ? { parentSessionId: sessionId } : {}), ...(wanted ? { status: [...wanted] } : {}),
+    })
       .filter(task => !sessionId || task.parentSessionId === sessionId)
       .filter(task => !wanted || wanted.has(task.status))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)));
+  }
+
+  // The native activity read validates IDs, looks up bounded primary keys and
+  // projects only the status/tail needed by a client with visible tasks.
+  async function taskActivity(input) {
+    return store.taskActivity(input);
+  }
+
+  // Internal recovery/lineage callers need identities, never every task result
+  // or dispatch message at once. Public list/get retain complete DTOs.
+  async function listReferences({ kind, ownerSessionId, statuses, excludeTerminal = false } = {}) {
+    const wanted = statuses == null ? null : new Set(Array.isArray(statuses) ? statuses : [statuses]);
+    const fields = ['id', 'kind', 'ownerSessionId', 'status', 'createdAt', 'updatedAt', 'startedAt', 'completedAt',
+      'externalId', 'requestOutboxId', 'spec.chatId', 'spec.targetId', 'spec.taskId', 'spec.resultMode', 'spec.oneWay'];
+    if (typeof store.select === 'function') {
+      const rows = await store.select('operations', { where: {
+        ...(kind ? { kind } : {}), ...(ownerSessionId ? { ownerSessionId } : {}),
+        ...(wanted ? { status: [...wanted] } : excludeTerminal ? { status: { $nin: [...TERMINAL_OPERATION_STATES] } } : {}),
+      }, fields });
+      return rows.filter(operation => (!kind || operation.kind === kind)
+        && (!ownerSessionId || operation.ownerSessionId === ownerSessionId)
+        && (!wanted || wanted.has(operation.status))
+        && (!excludeTerminal || !TERMINAL_OPERATION_STATES.has(operation.status)))
+        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    }
+    return store.read(draft => Object.values(draft.operations)
+      .filter(operation => (!kind || operation.kind === kind)
+        && (!ownerSessionId || operation.ownerSessionId === ownerSessionId)
+        && (!wanted || wanted.has(operation.status))
+        && (!excludeTerminal || !TERMINAL_OPERATION_STATES.has(operation.status)))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-      .map(publicTask));
+      .map(operation => ({ id: operation.id, kind: operation.kind, ownerSessionId: operation.ownerSessionId,
+        status: operation.status, createdAt: operation.createdAt, updatedAt: operation.updatedAt,
+        startedAt: operation.startedAt, completedAt: operation.completedAt, externalId: operation.externalId,
+        requestOutboxId: operation.requestOutboxId,
+        spec: operation.spec ? { chatId: operation.spec.chatId, targetId: operation.spec.targetId,
+          taskId: operation.spec.taskId, resultMode: operation.spec.resultMode, oneWay: operation.spec.oneWay } : undefined })));
   }
 
   return Object.freeze({
@@ -486,7 +545,9 @@ function createOperationService({
     interruptActiveTasks,
     get,
     list,
+    listReferences,
     listTasks,
+    taskActivity,
   });
 }
 

@@ -1551,7 +1551,7 @@ test('Rust turn mutations keep strict setters, reads, partial writes and reentry
   }
 });
 
-test('a redelivered persisted message is never refused by the configuration step', () => {
+test('已执行或未知的重复投递跳过配置，未启动的持久化投递重新过配置门', async () => {
   const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
   const start = source.indexOf('    function afterDeliveryProbe(replay) {');
   const end = source.indexOf('    function finishConfiguration(replay)', start);
@@ -1559,17 +1559,59 @@ test('a redelivered persisted message is never refused by the configuration step
   // Run the real post-probe step with stubbed collaborators: refusal comes back
   // as { blocked: true }, admission as the finishConfiguration() marker.
   const step = new Function('replay', 'deps', 'sessionName', 'opts', 'text', 'finishConfiguration',
+    'delivery', 'runnerDeliveryHandoff', 'shouldReexecutePersistedDelivery',
     source.slice(start, end) + '    return afterDeliveryProbe(replay);');
+  const { shouldReexecutePersistedDelivery } = require('../src/chat/turn-progress');
   const admitted = () => 'admitted';
-  for (const verdict of [true, false, undefined]) {
-    let called = 0;
-    const deps = { applyPendingConfiguration: () => { called++; return verdict; } };
-    assert.equal(step(true, deps, 's', {}, 't', admitted), 'admitted', `replay with verdict ${verdict}`);
-    assert.equal(called, 0, 'a redelivery does not apply configuration again');
+  const invoke = (replay, deps, probe, finish = admitted) => step(replay, deps, 's', {}, 't', finish,
+    'delivery-1', (session, identity) => {
+      assert.equal(session, 's');
+      assert.equal(identity, 'delivery-1');
+      return probe;
+    }, shouldReexecutePersistedDelivery);
+  const blocked = { blocked: true, code: 'turn_configuration_pending' };
+  for (const probe of [null, { known: false }, { known: true, handedOff: true }]) {
+    for (const verdict of [true, false, undefined]) {
+      let called = 0;
+      const deps = { applyPendingConfiguration: () => { called++; return verdict; } };
+      assert.equal(invoke(true, deps, probe), 'admitted');
+      assert.equal(called, 0, '已执行或无法确认的重复不能消耗新配置');
+    }
   }
-  assert.deepEqual(step(false, { applyPendingConfiguration: () => false }, 's', {}, 't', admitted), { blocked: true });
-  assert.equal(step(false, { applyPendingConfiguration: () => true }, 's', {}, 't', admitted), 'admitted');
-  assert.equal(step(false, {}, 's', {}, 't', admitted), 'admitted');
+  assert.deepEqual(invoke(false, { applyPendingConfiguration: () => false }, null), blocked);
+  assert.equal(invoke(false, { applyPendingConfiguration: () => true }, null), 'admitted');
+  assert.equal(invoke(false, {}, null), 'admitted');
+
+  const preHandoff = { known: true, handedOff: false, turnId: 'failed-preparation' };
+  let attempts = 0, starts = 0;
+  const deps = { applyPendingConfiguration: async () => ++attempts > 1 };
+  const finish = persisted => { assert.equal(persisted, true); starts++; return 'target-cli'; };
+  assert.deepEqual(await invoke(true, deps, preHandoff, finish), blocked);
+  assert.equal(starts, 0, '切换未落实时不能启动旧车道');
+  assert.equal(await invoke(true, deps, preHandoff, finish), 'target-cli');
+  assert.equal(attempts, 2);
+  assert.equal(starts, 1);
+  const failure = Error('配置准备失败');
+  await assert.rejects(invoke(true, { applyPendingConfiguration: async () => { throw failure; } },
+    preHandoff), error => error === failure);
+});
+
+test('配置等待使用投递背压，其他拒绝保持原有处理', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
+  const start = source.indexOf('  async function runAdmittedChatTurn(');
+  const end = source.indexOf("    if ('delegated' in admissionGate)", start);
+  assert.ok(start > 0 && end > start);
+  const run = new Function('getWorkspaceAdmission', 'logger',
+    source.slice(start, end) + '\n  }\n return runAdmittedChatTurn;')(
+    () => null, { warn() {} });
+  await assert.rejects(run('s', 'text', { deliveryId: 'delivery-1' },
+    { blocked: true, code: 'turn_configuration_pending' }),
+  error => error.code === 'turn_configuration_pending' && error.backpressure === true);
+  assert.equal(await run('s', 'text', {}, { blocked: true, code: 'turn_configuration_pending' }), false);
+  assert.equal(await run('s', 'text', { deliveryId: 'delivery-1' }, { blocked: true }), false);
+  await assert.rejects(run('s', 'text', { deliveryId: 'delivery-1' },
+    { blocked: true, code: 'task_archived' }),
+  error => error.code === 'task_archived' && error.retryable === false);
 });
 
 test('a preparation failure after turn start settles through the one host entry', () => {

@@ -6,51 +6,18 @@
 // The runtime also performs this export once during graceful shutdown; this
 // command covers crash recovery before intentionally starting an older build.
 
-const fs = require('fs');
 const path = require('path');
-const { databaseConstructor } = require('../src/sqlite/driver');
 const paths = require('../src/paths');
-const { _writeAtomic } = require('../src/orchestration/store');
-const { _loadDatabaseState, _stateDigest } = require('../src/orchestration/sqlite-store');
 
-// Resolved on first use, so merely requiring this module (tests do) never loads
-// the SQLite engine or prints its experimental warning.
-let defaultDatabase = null;
-
-function exportSnapshot({
-  databaseFile,
-  targetFile,
-  DatabaseImpl = null,
-  fsImpl = fs,
-  now = Date.now,
-} = {}) {
+// Rust streams one consistent read transaction directly into the atomic file.
+// No snapshot or database driver crosses the JavaScript boundary.
+function exportSnapshot({ databaseFile, targetFile, ...options } = {}) {
   if (!databaseFile || !targetFile) throw new TypeError('databaseFile and targetFile are required');
-  if (!fsImpl.existsSync(databaseFile)) throw new Error(`orchestration database not found: ${databaseFile}`);
-  if (!DatabaseImpl) {
-    if (!defaultDatabase) defaultDatabase = databaseConstructor();
-    DatabaseImpl = defaultDatabase;
+  if (Object.keys(options).length) {
+    throw new TypeError('orchestration export does not support injected JavaScript ports');
   }
-  const db = new DatabaseImpl(databaseFile, { readonly: true, fileMustExist: true });
-  let state;
-  try {
-    db.exec('BEGIN');
-    state = _loadDatabaseState(db, databaseFile);
-    db.exec('COMMIT');
-  } catch (error) {
-    try { db.exec('ROLLBACK'); } catch (_) { /* best effort */ }
-    throw error;
-  } finally {
-    db.close();
-  }
-  _writeAtomic({
-    fsImpl,
-    pathImpl: path,
-    file: targetFile,
-    state,
-    now,
-    hooks: {},
-  });
-  return { databaseFile, targetFile, revision: state.revision, digest: _stateDigest(state) };
+  const { getNative } = require('../src/native/runtime');
+  return getNative().orchestrationStoreExport(databaseFile, targetFile);
 }
 
 function main(argv = process.argv.slice(2)) {

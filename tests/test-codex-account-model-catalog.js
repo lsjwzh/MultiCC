@@ -91,7 +91,9 @@ test('旧全局运行时不能给受管账号的借道目录补入其他账号�
       getProvider: () => record, listProviders: () => [], getProviderLimitTarget() {}, updateProviderRelayModelCatalog() {} },
     codexModelsRuntime: { peek: () => ({ models: [{ model: 'global-model' }] }) },
   });
-  assert.deepEqual((await runtime.sourceCatalog('codex', record.id)).models, ['account-model']);
+  const facts = await runtime.sourceCatalogFacts('codex', record.id);
+  assert.deepEqual(facts.summary.modelOptions, ['account-model']);
+  assert.equal(facts.catalog, null, '不得把旧全局目录当成受管账号快照');
 });
 
 test('登录强制刷新排在已运行的普通刷新后，不被旧账号快照吞掉', async () => {

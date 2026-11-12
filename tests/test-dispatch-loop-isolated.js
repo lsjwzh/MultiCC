@@ -15,7 +15,7 @@ const Database = require('better-sqlite3');
 const WebSocket = require('ws');
 const { randomUUID } = require('node:crypto');
 const { assertTestDir } = require('../src/paths');
-const { _loadDatabaseState } = require('../src/orchestration/sqlite-store');
+const { _loadDatabaseState } = require('./helpers/orchestration-sqlite-oracle');
 
 const ROOT = path.join(__dirname, '..');
 const TOKEN = 'dispatch-loop-isolated';

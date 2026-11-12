@@ -14,7 +14,8 @@ const { fetchKimiBalance } = require('../src/routes/kimi-quota');
 const { fetchWithCookies } = require('../src/routes/qoder-quota');
 const { fetchCliUsage } = require('../src/quota/claude-cli-oauth');
 const { fetchZenGoUsage } = require('../src/quota/opencode-zen');
-const { pollClaudeUsage } = require('../src/routes/provider-balance');
+const { createProviderBalanceRuntime } = require('../src/routes/provider-balance');
+const { mountProviderBalanceHost } = require('../src/routes/provider-balance-host');
 const { createCliLoginDetector } = require('../src/official-accounts-cli-login');
 
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers });
@@ -105,7 +106,7 @@ test('Kimi 与 OpenCode 默认查询使用统一请求入口', async () => {
   assert.equal(calls.length, 2);
 });
 
-test('Claude CLI 余量、供应商余量和账号信息默认使用统一请求入口', async () => {
+test('Claude CLI 余量和账号信息默认使用统一请求入口', async () => {
   const calls = [];
   handler = async (url) => {
     calls.push(url);
@@ -114,11 +115,50 @@ test('Claude CLI 余量、供应商余量和账号信息默认使用统一请求
   };
   const readCredentials = async () => ({ ok: true, accessToken: 'test-token' });
   assert.equal((await fetchCliUsage({ readCredentials })).usage.five_hour.utilization, 20);
-  assert.equal((await pollClaudeUsage({}, 0, 1000, { readCliCredentials: readCredentials })).utilization, 0.2);
   const detector = createCliLoginDetector({ accounts: { listClaudeAccounts: () => [] }, readClaudeCli: readCredentials });
   await detector.detect();
   assert.equal(detector.status('claude').email, 'test@example.invalid');
-  assert.deepEqual(calls.map(url => new URL(url).pathname), ['/api/oauth/usage', '/api/oauth/usage', '/api/oauth/profile']);
+  assert.deepEqual(calls.map(url => new URL(url).pathname), ['/api/oauth/usage', '/api/oauth/profile']);
+});
+
+test('供应商余额兼容层只调用 Rust 前门，编码线路参数并携带请求截止时间', async () => {
+  const calls = [];
+  handler = async (url, init) => {
+    calls.push({ url, init });
+    return json({ ok: true, kind: 'window', utilization: 0.2 });
+  };
+  const runtime = createProviderBalanceRuntime({ getPort: () => 43210 });
+  assert.equal((await runtime.queryOne('claude', 'a/b')).utilization, 0.2);
+  await runtime.readCached('codex', 'account id');
+  await runtime.queryAll();
+  assert.deepEqual(calls.map(call => call.url), [
+    'http://127.0.0.1:43210/api/providers/claude/a%2Fb/balance',
+    'http://127.0.0.1:43210/api/providers/codex/account%20id/balance?cached=1',
+    'http://127.0.0.1:43210/api/providers/balances',
+  ]);
+  assert.ok(calls.every(call => call.init.signal instanceof AbortSignal));
+});
+
+test('余额凭据宿主只提供既有凭据，不执行厂商网络查询且拒绝远端调用', async t => {
+  let credentialReads = 0;
+  t.mock.method(require('../src/quota/claude-cli-oauth'), 'readCliCredentials', async () => {
+    credentialReads++;
+    return { ok: true, accessToken: 'fixture-credential', expiresAt: Date.now() + 60000 };
+  });
+  handler = async () => { throw new Error('凭据宿主不应发起网络请求'); };
+  let callback;
+  let local = false;
+  mountProviderBalanceHost({ post(_path, value) { callback = value; } }, { isLocal: () => local });
+  const invoke = async () => {
+    const response = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+    await callback({ body: { op: 'credentials', target: { strategy: 'claude-oauth-usage' } } }, response);
+    return response;
+  };
+  assert.equal((await invoke()).statusCode, 404);
+  assert.equal(credentialReads, 0);
+  local = true;
+  assert.deepEqual((await invoke()).body, { ok: true, auth: { accessToken: 'fixture-credential' } });
+  assert.equal(credentialReads, 1);
 });
 
 test('Qoder 代理请求保留手动重定向和登录失效语义', async () => {

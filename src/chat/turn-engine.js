@@ -859,11 +859,20 @@ function createChatTurnEngine(deps) {
     }
     return afterDeliveryProbe(false);
     function afterDeliveryProbe(replay) {
-      const configuration = replay ? undefined : deps.applyPendingConfiguration?.(sessionName, opts, text); // a redelivery skips, never refuses
+      // A persisted message whose runner never started still needs the same
+      // configuration boundary as a first delivery. Rust's delivery probe
+      // distinguishes it from an already-executed duplicate without replaying
+      // a successful turn or consuming a newer manual configuration.
+      const retryBeforeRunner = replay === true && shouldReexecutePersistedDelivery(
+        replay, replay, runnerDeliveryHandoff(sessionName, delivery),
+      );
+      const configuration = replay && !retryBeforeRunner
+        ? undefined : deps.applyPendingConfiguration?.(sessionName, opts, text);
       if (configuration && typeof configuration.then === 'function') {
-        return configuration.then(allowed => allowed === false ? { blocked: true } : finishConfiguration(replay === true));
+        return configuration.then(allowed => allowed === false
+          ? { blocked: true, code: 'turn_configuration_pending' } : finishConfiguration(replay === true));
       }
-      if (configuration === false) return { blocked: true };
+      if (configuration === false) return { blocked: true, code: 'turn_configuration_pending' };
       return finishConfiguration(replay === true);
     }
     function finishConfiguration(replay) {
@@ -969,6 +978,14 @@ function createChatTurnEngine(deps) {
         code: admissionGate.code || null,
         deliveryClass: opts.deliveryClass || null,
       });
+      if (opts.deliveryId && admissionGate.code === 'turn_configuration_pending') {
+        // Configuration is not an upstream failure. Use the outbox's existing
+        // backpressure path so waiting for a lane to settle preserves both the
+        // delivery and its failure budget.
+        throw Object.assign(new Error(admissionGate.code), {
+          code: admissionGate.code, backpressure: true,
+        });
+      }
       if (opts.deliveryId && ['task_identity_mismatch', 'task_shell_route_required',
         'task_deleted', 'task_archived', 'task_board_read_only'].includes(admissionGate.code)) {
         throw Object.assign(new Error(admissionGate.code), { code: admissionGate.code, retryable: false });

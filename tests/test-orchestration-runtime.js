@@ -873,6 +873,47 @@ test('busy and rejected delivery defer transport without changing the classify g
   assert.equal((await runtime.outbox.get(`wait:${registered.id}`)).state, 'delivered');
 });
 
+test('自动切线等待保留同一投递且不耗失败次数，目标就绪后仅执行一次', async t => {
+  let ready = false, starts = 0;
+  const history = new Map();
+  const h = fixture(t, {
+    history,
+    outboxOptions: { maxAttempts: 2, backoff: () => 0 },
+    runChatTurn: async (sessionId, text, opts) => {
+      if (!ready) throw Object.assign(new Error('turn_configuration_pending'), {
+        code: 'turn_configuration_pending', backpressure: true,
+      });
+      starts++;
+      history.set(sessionId, new Set([opts.deliveryId]));
+      return true;
+    },
+  });
+  try {
+    const admitted = await h.runtime.admitSessionWork({
+      sessionId: 'switching', text: '继续执行', source: 'auto_provider_handoff',
+      idempotencyKey: 'reserved-lane', options: { originContinue: true },
+    });
+    assert.equal(admitted.ok, true);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await h.runtime.tick();
+      const pending = await h.runtime.outbox.get(admitted.entry.id);
+      assert.equal(pending.state, 'pending');
+      assert.equal(pending.attempts, 0, '切换准备不消耗上游失败重试次数');
+      assert.equal((await h.runtime.sessionScheduler.status('switching')).active, null);
+      h.clock.value += 1001;
+    }
+    assert.equal(starts, 0);
+    ready = true;
+    await h.runtime.tick();
+    assert.equal((await h.runtime.outbox.get(admitted.entry.id)).state, 'delivered');
+    assert.equal(starts, 1);
+    await h.runtime.tick();
+    assert.equal(starts, 1);
+  } finally {
+    await h.runtime.stop();
+  }
+});
+
 test('a user shell continuation supersedes the old question; automatic continuations preserve it', async t => {
   const { createUserInputSignalHost } = require('../src/classify/user-input-host');
   for (const source of ['task-shell', 'continuation']) {
@@ -1512,4 +1553,94 @@ test('permanent dispatch identity failures settle once and return a durable fail
   const schedule = await f.runtime.sessionScheduler.status('worker');
   assert.equal(schedule.active, null);
   assert.equal(schedule.queued.length, 0);
+});
+
+// Load one runtime with a wrapped store factory without changing the ordinary
+// fixture or the shared module instance. Module replacement is synchronous and
+// restored before any asynchronous work begins.
+function runtimeWithStoreFactory(factory) {
+  const runtimePath = require.resolve('../src/orchestration/runtime');
+  const storePath = require.resolve('../src/orchestration/store');
+  const savedRuntime = require.cache[runtimePath];
+  const savedStore = require.cache[storePath];
+  try {
+    require.cache[storePath] = { ...savedStore, exports: { ...savedStore.exports, createOrchestrationStore: factory } };
+    delete require.cache[runtimePath];
+    return require(runtimePath).createOrchestrationRuntime;
+  } finally {
+    require.cache[runtimePath] = savedRuntime;
+    require.cache[storePath] = savedStore;
+  }
+}
+
+test('保留维护不占住当前投递轮次，重复轮次不重入且关闭等待维护结束', async t => {
+  const { createOrchestrationStore } = require('../src/orchestration/store');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-retention-lifecycle-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let release;
+  let maintenanceCalls = 0;
+  const events = [];
+  const gate = new Promise(resolve => { release = resolve; });
+  const makeRuntime = runtimeWithStoreFactory(options => {
+    const store = createOrchestrationStore(options);
+    return { ...store,
+      pruneRetained: async () => { maintenanceCalls++; await gate; events.push('pruned'); },
+      flush: async () => { events.push('flushed'); return store.flush(); },
+    };
+  });
+  const runtime = makeRuntime({ file: path.join(dir, 'orchestration.json'), runChatTurn: async () => true });
+  try {
+    await withTimeout(runtime.tick(), 1000, 'maintenance blocked the delivery tick');
+    await withTimeout(runtime.tick(), 1000, 'in-flight maintenance blocked another tick');
+    assert.equal(maintenanceCalls, 1);
+    let stopped = false;
+    const stopping = runtime.stop().then(() => { stopped = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stopped, false);
+    assert.deepEqual(events, []);
+    release();
+    await withTimeout(stopping, 1000, 'stop did not finish after maintenance');
+    assert.deepEqual(events, ['pruned', 'flushed']);
+    await runtime.tick();
+    assert.equal(maintenanceCalls, 1);
+  } finally { release(); await runtime.stop(); }
+});
+
+test('编排统计用数据库计数，不读取终态记录或正文', async t => {
+  const { createOrchestrationStore } = require('../src/orchestration/store');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-bounded-stats-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const makeRuntime = runtimeWithStoreFactory(options => {
+    const store = createOrchestrationStore(options);
+    return { ...store, backend: 'sqlite', read: async selector => selector({
+      get waits() { throw new Error('loaded wait history'); },
+      get outbox() { throw new Error('loaded outbox history'); },
+      count(collection, where) {
+        if (collection === 'waits') return where.status === 'pending' ? 2 : 105154;
+        return Array.isArray(where.state) ? 3 : 1;
+      },
+    }) };
+  });
+  const runtime = makeRuntime({ file: path.join(dir, 'orchestration.json'), runChatTurn: async () => true });
+  assert.deepEqual(await runtime.stats(), {
+    backend: 'sqlite', waits: 2, resolvedWaits: 105154, pendingDeliveries: 3, deadLetters: 1,
+  });
+  await runtime.stop();
+});
+
+test('删除会话仍取消已完成操作发往其他会话的待投递回执', async t => {
+  const { runtime } = fixture(t);
+  const operation = await runtime.operations.admitDispatch({
+    ownerSessionId: 'departing', resultSessionId: 'recipient',
+    spec: { chatId: 'target', targetId: 'target', message: 'work' },
+  });
+  await runtime.operations.completeDispatch(operation.id, { status: 'completed', text: 'finished' });
+  await runtime.outbox.enqueue({ id: 'unrelated', sessionId: 'independent', payload: { message: 'keep me' } });
+  const result = await runtime.cancelForSession('departing');
+  assert.equal(result.cancelledDeliveries, 2);
+  assert.equal(result.cancelledOperations, 0);
+  assert.equal((await runtime.outbox.get(`operation:${operation.id}:result`)).state, 'cancelled');
+  assert.equal((await runtime.outbox.get('unrelated')).state, 'pending');
+  assert.equal((await runtime.operations.get(operation.id)).status, 'completed');
+  await runtime.stop();
 });

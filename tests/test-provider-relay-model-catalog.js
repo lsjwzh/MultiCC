@@ -6,9 +6,9 @@ const test = require('node:test');
 const {
   catalogRevision,
   createProviderRelayModelCatalogRuntime,
-  mountProviderRelayModelCatalogRoutes,
   normalizeModels,
 } = require('../src/providers/relay-model-catalog');
+const { mountProviderRelayHostRoute, HOST_PATH } = require('../src/routes/provider-relay-host');
 const { applyProviderRelayModelCatalog, summarize } = require('../src/providers/core');
 
 function response(body, status = 200) {
@@ -71,74 +71,64 @@ test('relay model normalization is bounded, ordered and accepts current model-id
   ]), ['gpt-6.1-sol', 'glm-5.2[1M]', 'vendor/model:v2']);
 });
 
-test('a Claude official account exposes the CLI fallback catalog instead of an empty one', async () => {
-  const { providers } = providerRuntime({
-    getProviderSummary: (appType, id) => ({
-      id, appType, name: 'Claude Official', isOfficial: true, model: '', modelOptions: [],
-    }),
-  });
-  const runtime = createProviderRelayModelCatalogRuntime({
-    providers,
-    now: () => 5000,
-    fetch: async () => { throw new Error('unused'); },
-  });
-  const catalog = await runtime.sourceCatalog('claude', 'claude-official-aaaaaaaaaaaaaaaa');
-  assert.equal(catalog.ok, true);
-  assert.ok(catalog.models.includes('claude-haiku-4-5'));
-  assert.ok(catalog.models.includes('claude-sonnet-5'));
-  assert.equal(catalog.preferredModel, catalog.models[0]);
-});
-
-test('lender catalog reads cached Codex models without refreshing and mounts both scoped paths', async () => {
+test('lender host exposes account snapshots without refreshing or constructing public catalogs', async () => {
   const { providers } = providerRuntime({
     getProviderSummary: (appType, id) => id === 'missing' ? null : ({
       id, appType, name: 'Official', isOfficial: appType === 'codex',
-      model: '', modelOptions: appType === 'codex'
-        ? ['gpt-6.1-sol', 'gpt-6-astra'] : ['claude-opus-5'],
+      model: '', modelOptions: ['gpt-6.1-sol', 'gpt-6-astra'],
     }),
   });
   let nudges = 0;
+  const snapshot = {
+    models: [{ model: 'gpt-6.1-sol' }, { model: 'gpt-6-astra' }],
+    catalogFetchedAt: 4900,
+  };
   const runtime = createProviderRelayModelCatalogRuntime({
     providers,
-    now: () => 5000,
     codexModelsRuntime: {
       syncIfDue: () => { nudges += 1; },
-      peek: () => ({
-        models: [{ model: 'gpt-6.1-sol' }, { model: 'gpt-6-astra' }],
-        catalogFetchedAt: 4900,
-      }),
+      peek: () => snapshot,
     },
     fetch: async () => { throw new Error('unused'); },
   });
-  const catalog = await runtime.sourceCatalog('codex', 'official');
-  assert.equal(catalog.ok, true);
-  assert.deepEqual(catalog.models, ['gpt-6.1-sol', 'gpt-6-astra']);
-  assert.equal(catalog.preferredModel, 'gpt-6.1-sol');
-  assert.equal(catalog.catalogFetchedAt, 4900);
+  const facts = await runtime.sourceCatalogFacts('codex', 'official');
+  assert.equal(facts.summary.id, 'official');
+  assert.equal(facts.catalog, snapshot);
   assert.equal(nudges, 0, '借道读取不额外触发模型刷新');
-  assert.equal(catalog.revision, catalogRevision('gpt-6.1-sol', catalog.models));
+  assert.deepEqual(await runtime.sourceCatalogFacts('codex', 'missing'), { summary: null, catalog: null });
 
-  const routes = {};
-  mountProviderRelayModelCatalogRoutes({
-    get: (path, handler) => { routes[path] = handler; },
-  }, runtime);
-  assert.equal(typeof routes['/claude-proxy/:id/remote/models'], 'function');
-  assert.equal(typeof routes['/codex-proxy/:id/models'], 'function');
-  const res = {
-    statusCode: 200, headers: {}, body: null,
-    set(key, value) { this.headers[key] = value; return this; },
+  let handler;
+  mountProviderRelayHostRoute({
+    post(path, value) { assert.equal(path, HOST_PATH); handler = value; },
+    get() { return text => ({ token: text.split('=')[1] }); },
+  }, {
+    modelCatalogRuntime: runtime,
+    isLocal: req => req.local === true,
+    authRuntime: { admitGatewayRequest: async req => {
+      assert.equal(req.socket.remoteAddress, '192.0.2.40');
+      assert.equal(req.path, '/codex-proxy/official/models');
+      assert.equal(req.query.token, 'bootstrap');
+      assert.equal(req.headers.authorization, 'Bearer scoped');
+      return { allowed: true, headers: { 'Set-Cookie': 'fixture-cookie' } };
+    } },
+  });
+  const res = () => ({ statusCode: 200, body: null,
     status(code) { this.statusCode = code; return this; },
     json(body) { this.body = body; return this; },
-  };
-  await routes['/codex-proxy/:id/models']({ params: { id: 'official' } }, res);
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.headers['Cache-Control'], 'no-store');
-  assert.ok(res.body.models.includes('gpt-6.1-sol'));
-
-  const missing = { ...res, statusCode: 200, body: null, headers: {} };
-  await routes['/codex-proxy/:id/models']({ params: { id: 'missing' } }, missing);
-  assert.equal(missing.statusCode, 404);
-  assert.equal(missing.body.reason, 'not_found');
+  });
+  const denied = res();
+  await handler({ local: false, body: { op: 'catalogFacts' } }, denied);
+  assert.equal(denied.statusCode, 404);
+  const catalog = res();
+  await handler({ local: true, body: { op: 'catalogFacts', appType: 'codex', id: 'official' } }, catalog);
+  assert.deepEqual(catalog.body, facts);
+  const admitted = res();
+  await handler({ local: true, body: { op: 'admission', request: {
+    method: 'GET', peer: '192.0.2.40', path: '/codex-proxy/official/models',
+    originalUrl: '/codex-proxy/official/models?token=bootstrap',
+    headers: { authorization: 'Bearer scoped' }, id: 'r', correlationId: 'c',
+  } } }, admitted);
+  assert.deepEqual(admitted.body, { allowed: true, headers: { 'Set-Cookie': 'fixture-cookie' } });
 });
 
 test('borrower automatically persists new models, dedupes by TTL, and never exposes the relay secret', async () => {

@@ -5,13 +5,15 @@
 fn usage() {
     println!(
         "usage:
-  multicc-gateway serve --cwd <dir> --node <node executable> [--stdin-lifeline] [--] <script> [args...]
+  multicc-gateway serve --cwd <dir> --node <node executable> [--stdin-lifeline] [--ephemeral-loopback] [--] <script> [args...]
   multicc-gateway --version
 
 The script defaults to server.js. The front door reads .env from --cwd, binds
 the port its bind policy selects, then starts Node on 127.0.0.1 with
 MULTICC_GATEWAY_CHILD=1 and MULTICC_GATEWAY_INTERNAL_PORT set. With
---stdin-lifeline, EOF on stdin stops it the way SIGINT does."
+--stdin-lifeline, EOF on stdin stops it the way SIGINT does.
+--ephemeral-loopback binds 127.0.0.1 on an OS-assigned port for isolated local
+launches; the listening log and the child's PORT report the actual port."
     );
 }
 

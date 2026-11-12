@@ -66,7 +66,11 @@ function createSecretsVaultHost(vault) {
       return { ok: true };
     },
     reveal: body => {
-      const result = vault.reveal(body.name, { source: 'http' });
+      // The Claude/Codex routing test reads a key to prove it works; the audit
+      // trail should name that feature rather than a generic HTTP read. Any
+      // other value keeps the original source.
+      const source = body.source === 'routing_test' ? 'routing_test' : 'http';
+      const result = vault.reveal(body.name, { source });
       if (result && result.error) {
         return { ok: false, reason: result.error === 'entry not found' ? 'missing' : 'error' };
       }

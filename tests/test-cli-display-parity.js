@@ -730,26 +730,30 @@ test('no page file defines its own CLI id → label map', () => {
   const idAlt = ids.map(id => id.replace(/-/g, '\\-')).join('|');
   const entry = new RegExp(`['"]?(?:${idAlt})['"]?\\s*:\\s*(?:\\{[^}\\n]*\\b(?:displayName|label|name)\\s*:\\s*)?['"](?:${nameAlt})['"](?=\\s*[,}])`, 'g');
   const allow = new Set(['public/provider-catalog.js', 'src/cli/cli-capability.js', 'public/i18n-catalog.js']);
-  // quota's VENDOR_LABEL is a different axis that happens to key on the same
-  // words: it names the *provider behind a quota bar*, so it also has non-CLI
-  // keys (ark / zhipu), and it spells `opencode: 'OpenCode Go'` — the OpenCode
-  // subscription, not the CLI. It is exempt only as long as that stays true: if
-  // someone trims it down to a pure CLI id → name map, the assertion below takes
-  // the exemption away again.
-  const exempt = new Map([['src/quota/quota-bar-view.js', /ark\s*:\s*['"]/]]);
+  // Quota labels now live in Rust; no JavaScript consumer needs an exemption.
   const offenders = [];
   for (const dir of ['public', 'src']) {
     for (const rel of walk(dir)) {
       if (allow.has(rel) || /\.min\.js$/.test(rel)) continue;
       const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-      const reason = exempt.get(rel);
-      if (reason && reason.test(src)) continue;
-      if (reason && !reason.test(src)) offenders.push(`${rel} (exemption no longer justified)`);
       const hits = [...src.matchAll(entry)];
       if (hits.length >= 3) offenders.push(`${rel} (${hits.length})`);
     }
   }
   assert.deepEqual(offenders, [], 'these files carry their own CLI id → label map');
+});
+
+test('native quota labels name the provider subscription rather than a CLI display map', () => {
+  const quota = require('../src/quota/quota-bar-view');
+  assert.match(read('src/quota/quota-bar-view.js'), /getNative\(\)\.quotaBarViewRequest/);
+  assert.match(read('native/addon/src/quota_bar_view.rs'), /multicc_core::quota_bar_view::request/);
+  assert.equal(SERVER.ark, undefined, 'Ark is a quota vendor, not a CLI');
+  assert.equal(SERVER.zhipu, undefined, 'Zhipu is a quota vendor, not a CLI');
+  for (const [kind, label] of [['ark', '火山方舟'], ['zhipu', 'Zhipu'], ['opencode', 'OpenCode Go']]) {
+    const bar = quota.renderQuotaBar(kind, null, { nowMs: 1_700_000_000_000 });
+    assert.ok(bar.states.loading.text.includes(label), `${kind} loading label`);
+    assert.ok(bar.states.unreachable.text.includes(label), `${kind} failure label`);
+  }
 });
 
 /** Relative POSIX-ish paths of every .js/.html under dir (files only). */

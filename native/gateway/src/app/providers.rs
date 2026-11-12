@@ -11,9 +11,11 @@
 //! * `GET|HEAD /api/providers/:appType/:id/relay-import-code`
 //! * `GET|HEAD /api/provider-relay-shares`, `DELETE .../:id`, `GET .../:id/code`
 //! * `GET|HEAD|PUT /api/provider-defaults`
-//!
-//! `POST /api/providers/:appType/:id/speedtest` is deliberately not claimed: it
-//! streams SSE frames into `res`, so the connection has to stay in Node.
+//! * `POST /api/providers/:appType/:id/speedtest` (one buffered JSON answer,
+//!   never SSE: `src/providers/speedtest-request.js` collected the whole body
+//!   and called `res.json` once)
+//! * `GET|HEAD /api/v1/providers` (the same provider summaries, projected
+//!   through `toProviderDto` and wrapped in the API metadata envelope)
 //!
 //! Path matching (`:appType`/`:id` decoded with `decodeURIComponent`), query
 //! parsing, validation, status codes, field order and error mapping live here
@@ -31,21 +33,27 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Method, Response};
-use multicc_core::http_gate::{query_param, query_string, query_value, QueryParam, QueryValue};
+use multicc_core::http_gate::{
+    encode_uri_component, query_param, query_string, query_value, QueryParam, QueryValue,
+};
 use multicc_core::js::serde::{js_string, truthy, value_or_empty};
 use multicc_core::js::string::js_trim;
+use multicc_core::provider_misc::{self, api_meta, to_provider_dto};
 use multicc_core::provider_registry::{
-    self, catalog_body, create_payload, defaults_updates, delete_response, detach_failed_response,
+    self, create_payload, defaults_updates, delete_response, detach_failed_response,
     encode_relay_share_code, import_error_dto, invalid_defaults_error, normalize_probe_candidates,
     plan_delete, provider_in_use_response, reassign_dry_run, reassign_precheck, reassign_target_id,
     relay_models_of, relay_route_from_base_url, relay_share_urls, update_payload, DeletePlan,
 };
-use multicc_core::public_safety::{public_error, sanitize_public_text};
+use multicc_core::public_safety::{public_error, public_text, sanitize_public_text};
 use serde_json::{json, Map, Value};
 
 use crate::app::express::{self, RequestCtx};
 use crate::app::App;
 use crate::host_port;
+
+#[path = "provider_catalog_view.rs"]
+mod catalog_view;
 
 /// The host port the Node child serves (`src/routes/providers-host.js`).
 const HOST_PATH: &str = "/api/__host/providers";
@@ -81,6 +89,10 @@ pub enum Route {
     DefaultsGet,
     DefaultsPut,
     DefaultsOptions,
+    SpeedtestPost,
+    SpeedtestOptions,
+    V1ProvidersGet,
+    V1ProvidersOptions,
 }
 
 fn get_like(method: &Method) -> bool {
@@ -111,6 +123,16 @@ fn tail(parts: &[&str], name: &str) -> bool {
 
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
     let parts = segments(path)?;
+    if parts.len() == 2
+        && parts[0].eq_ignore_ascii_case("v1")
+        && parts[1].eq_ignore_ascii_case("providers")
+    {
+        return match method.as_str() {
+            "GET" | "HEAD" => Some(Route::V1ProvidersGet),
+            "OPTIONS" => Some(Route::V1ProvidersOptions),
+            _ => None,
+        };
+    }
     if parts[0].eq_ignore_ascii_case("providers") {
         return match parts.len() {
             1 => match method.as_str() {
@@ -159,6 +181,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
                     match method.as_str() {
                         "POST" => Some(Route::RelaySharePost),
                         "OPTIONS" => Some(Route::RelayShareOptions),
+                        _ => None,
+                    }
+                } else if parts[3].eq_ignore_ascii_case("speedtest") {
+                    match method.as_str() {
+                        "POST" => Some(Route::SpeedtestPost),
+                        "OPTIONS" => Some(Route::SpeedtestOptions),
                         _ => None,
                     }
                 } else if parts[3].eq_ignore_ascii_case("relay-import-code") && get_like(method) {
@@ -315,18 +343,25 @@ async fn catalog(ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
     payload.insert("op".into(), json!("catalog"));
     payload.insert("appType".into(), json!(app_type));
     payload.insert("cli".into(), json!(cli));
-    // The host skips the background Codex catalog refresh only for `poll=1`
-    // (`body.poll !== '1'`); forward the qs shape so every other value agrees.
-    if let Some(poll) = query_json(&query_value(&ctx.original_url, "poll")) {
-        payload.insert("poll".into(), poll);
-    }
     let Some(answer) = host(host_port_num, Value::Object(payload)).await else {
         return unavailable(ctx);
     };
     if !succeeded(&answer) {
         return unavailable(ctx);
     }
-    express::json(ctx, 200, &catalog_body(&answer), &[])
+    let catalog = catalog_view::project(&answer, &cli);
+    if !matches!(query_param(&ctx.original_url, "poll"), QueryParam::Text(value) if value == "1") {
+        let ids = catalog_view::refresh_ids(&catalog);
+        if !ids.is_empty() {
+            // 只调度内存运行时的刷新；它立即返回，查询失败不影响目录。
+            let _ = host(
+                host_port_num,
+                json!({"op": "catalogRefresh", "providerIds": ids}),
+            )
+            .await;
+        }
+    }
+    express::json(ctx, 200, &catalog, &[])
 }
 
 /// `GET|HEAD /api/providers/stats`.
@@ -1128,6 +1163,233 @@ async fn defaults_put(
     express::json(ctx, 200, &json!({ "ok": true, "defaults": defaults }), &[])
 }
 
+fn elapsed_ms(started: std::time::Instant) -> i64 {
+    i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)
+}
+
+/// `POST /api/providers/:appType/:id/speedtest`.
+///
+/// The retired handler made a loopback HTTP request to `getPort()` (the public
+/// port) with the path below; the front door forwarded it to Node because it
+/// claimed no proxy route. This handler talks to the same Node listener
+/// directly, with the same PROXY v1 preamble, so Node's proxy routes see the
+/// identical method/path/headers/body. Everything Node knows about the line
+/// (store record, summary, official/codex capability, the fallback lists)
+/// arrives through one `speedtestFacts` host operation; the model choice and
+/// the answer mapping are [`multicc_core::provider_misc`] rules.
+async fn speedtest(ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+    const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+    let (app_type, id) = match provider_params(&ctx.path) {
+        Some(params) => params,
+        None => return bad_param(ctx),
+    };
+    let started = std::time::Instant::now();
+    let ms = || elapsed_ms(started);
+    let Some(answer) = host(
+        host_port_num,
+        json!({ "op": "speedtestFacts", "appType": app_type, "id": id }),
+    )
+    .await
+    else {
+        return unavailable(ctx);
+    };
+    if !succeeded(&answer) {
+        // The retired handler caught every facts failure and answered 200 with
+        // the scrubbed message; the host op does the scrubbing.
+        let message = host_message(&answer);
+        return express::json(
+            ctx,
+            200,
+            &json!({
+                "ok": false,
+                "ms": ms(),
+                "error": if message.is_empty() { "provider speedtest failed" } else { &message },
+            }),
+            &[],
+        );
+    }
+    if answer.get("found") != Some(&Value::Bool(true)) {
+        return express::json(
+            ctx,
+            404,
+            &json!({ "ok": false, "ms": ms(), "error": "provider not found" }),
+            &[],
+        );
+    }
+    let kind = answer
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let model: Value;
+    let (path, headers, body): (String, Vec<(String, String)>, Value) = if kind == "codex" {
+        if answer.get("official") == Some(&Value::Bool(true)) {
+            let summary = answer.get("summary").cloned().unwrap_or_else(|| json!({}));
+            let Some(official_model) = provider_misc::official_codex_model(&summary) else {
+                return express::json(
+                    ctx,
+                    200,
+                    &json!({
+                        "ok": false,
+                        "ms": ms(),
+                        "error": "官方模型目录为空，请先登录 Codex 并刷新模型列表",
+                    }),
+                    &[],
+                );
+            };
+            model = official_model;
+        } else {
+            if answer.get("canDirect") != Some(&Value::Bool(true)) {
+                return express::json(
+                    ctx,
+                    200,
+                    &json!({
+                        "ok": false,
+                        "ms": ms(),
+                        "error": public_text(
+                            answer.get("reason"),
+                            "OAuth 订阅型 provider 不支持测速",
+                        ),
+                    }),
+                    &[],
+                );
+            }
+            // Capability pre-check only: the hop owns the target's url/key.
+            model = provider_misc::codex_speedtest_model(&answer);
+        }
+        (
+            format!("/codex-proxy/{}/responses", encode_uri_component(&id)),
+            vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("Accept".into(), "text/event-stream".into()),
+            ],
+            provider_misc::codex_speedtest_body(&model),
+        )
+    } else {
+        let env = answer.get("env").cloned().unwrap_or_else(|| json!({}));
+        let summary = answer.get("summary").cloned().unwrap_or_else(|| json!({}));
+        let has_key = answer.get("hasKey") == Some(&Value::Bool(true));
+        let official = answer.get("official") == Some(&Value::Bool(true));
+        let has_base_url = env.get("ANTHROPIC_BASE_URL").is_some_and(truthy);
+        if !((has_base_url && has_key) || official) {
+            return express::json(
+                ctx,
+                200,
+                &json!({ "ok": false, "ms": ms(), "error": "缺少 API Key 或 Base URL" }),
+                &[],
+            );
+        }
+        let resolved =
+            provider_misc::claude_speedtest_model(&env, &summary, answer.get("fallbackModels"));
+        let wire_default = answer
+            .get("wireDefaultModel")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("claude-sonnet-4-5")
+            .to_string();
+        model = Value::String(if resolved.is_empty() {
+            wire_default
+        } else {
+            resolved
+        });
+        let official_oauth = official && !has_key;
+        let mut headers = vec![
+            ("Content-Type".into(), "application/json".into()),
+            ("Authorization".into(), "multicc-speedtest".into()),
+            ("anthropic-version".into(), "2023-06-01".into()),
+            ("x-api-key".into(), "multicc-speedtest".into()),
+        ];
+        if official_oauth {
+            headers.push(("x-app".into(), "cli".into()));
+        }
+        (
+            format!(
+                "/claude-proxy/{}/speedtest/v1/messages?beta=true",
+                encode_uri_component(&id)
+            ),
+            headers,
+            provider_misc::claude_speedtest_body(&model, official_oauth),
+        )
+    };
+    let body = serde_json::to_vec(&body).unwrap_or_default();
+    let borrowed: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    let payload = match host_port::request(
+        host_port_num,
+        "POST",
+        &path,
+        &borrowed,
+        body,
+        DEADLINE,
+        MAX_RESPONSE_BYTES,
+    )
+    .await
+    {
+        Ok(reply) => {
+            let text = String::from_utf8_lossy(&reply.body);
+            provider_misc::speedtest_result(reply.status, &text, &model, ms())
+        }
+        Err(host_port::UpstreamFailure::Timeout) => {
+            provider_misc::speedtest_failure(ms(), "timeout")
+        }
+        Err(host_port::UpstreamFailure::TooLarge(status)) => {
+            provider_misc::speedtest_too_large(status, &model, ms())
+        }
+        Err(host_port::UpstreamFailure::Network(message)) => {
+            provider_misc::speedtest_error(Some(&message), ms())
+        }
+    };
+    express::json(ctx, 200, &payload, &[])
+}
+
+/// `GET|HEAD /api/v1/providers`: Node's `listProviders` filter through one host
+/// operation, [`to_provider_dto`] and the API metadata envelope here.
+async fn v1_providers(ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
+    // The retired route was `String(req.query.appType || '').trim()`: a repeated
+    // pair stringifies as `claude,codex`, and `appType[]=claude` as `claude`.
+    let app_type = js_trim(&query_text(ctx, "appType")).to_string();
+    let mut payload = json!({ "op": "v1Providers" });
+    if app_type == "claude" || app_type == "codex" {
+        payload["appType"] = Value::String(app_type);
+    }
+    let Some(answer) = host(host_port_num, payload).await else {
+        return unavailable(ctx);
+    };
+    if !succeeded(&answer) {
+        // `listProviders` throwing used to reach safeErrorHandler as a 500.
+        let message = host_message(&answer);
+        return express::error(
+            ctx,
+            500,
+            &if message.is_empty() {
+                "provider list failed".to_string()
+            } else {
+                message
+            },
+        );
+    }
+    let empty = Vec::new();
+    let items = answer
+        .get("providers")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let mut list = Vec::with_capacity(items.len());
+    for item in items {
+        match to_provider_dto(item) {
+            Ok(dto) => list.push(dto),
+            Err(detail) => return express::error(ctx, 500, &detail),
+        }
+    }
+    let count = list.len();
+    let mut body = Map::new();
+    body.insert("providers".into(), Value::Array(list));
+    body.insert("count".into(), Value::from(count));
+    let meta = api_meta(body, &ctx.ids.0, &ctx.ids.1);
+    express::json(ctx, 200, &meta, &[])
+}
+
 /// Answers one claimed route.
 pub async fn handle(
     app: &Arc<App>,
@@ -1149,6 +1411,8 @@ pub async fn handle(
         Route::RelaySharesOptions | Route::RelayShareCodeOptions => super::options(ctx, "GET,HEAD"),
         Route::RelayShareDeleteOptions => super::options(ctx, "DELETE"),
         Route::DefaultsOptions => super::options(ctx, "GET,HEAD,PUT"),
+        Route::SpeedtestOptions => super::options(ctx, "POST"),
+        Route::V1ProvidersOptions => super::options(ctx, "GET,HEAD"),
         Route::CatalogGet => catalog(ctx, host_port_num).await,
         Route::StatsGet => stats(ctx, host_port_num).await,
         Route::ImportPost => import(app, ctx, host_port_num).await,
@@ -1165,6 +1429,8 @@ pub async fn handle(
         Route::RelayShareCodeGet => relay_share_code(ctx, host_port_num).await,
         Route::DefaultsGet => defaults_get(ctx, host_port_num).await,
         Route::DefaultsPut => defaults_put(app, ctx, body, host_port_num).await,
+        Route::SpeedtestPost => speedtest(ctx, host_port_num).await,
+        Route::V1ProvidersGet => v1_providers(ctx, host_port_num).await,
     }
 }
 
@@ -1217,8 +1483,16 @@ mod tests {
             claim(&Method::POST, "/api/providers/claude/work-1/probe"),
             Some(Route::ProbePost)
         );
-        // speedtest keeps streaming into Node.
-        for method in ["POST", "GET", "OPTIONS", "HEAD"] {
+        // speedtest buffers one JSON answer; it is claimed for POST/OPTIONS.
+        assert_eq!(
+            claim(&Method::POST, "/api/providers/claude/work-1/speedtest"),
+            Some(Route::SpeedtestPost)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/providers/claude/work-1/speedtest"),
+            Some(Route::SpeedtestOptions)
+        );
+        for method in ["GET", "HEAD"] {
             let method = Method::from_bytes(method.as_bytes()).unwrap();
             assert_eq!(
                 claim(&method, "/api/providers/claude/work-1/speedtest"),

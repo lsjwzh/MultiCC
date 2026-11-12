@@ -39,14 +39,17 @@ pub async fn serve(options: ServeOptions) -> i32 {
         return 1;
     }
     let dotenv_keys = load_dotenv(Path::new("."));
-    let policy = match resolve_network_policy(&current_env()) {
+    let mut policy = match resolve_network_policy(&current_env()) {
         Ok(policy) => policy,
         Err(message) => {
             log(&message);
             return 1;
         }
     };
-    let port = if policy.development {
+    let port = if options.ephemeral_loopback {
+        policy.host = "127.0.0.1".to_string();
+        0
+    } else if policy.development {
         match find_available_port(i64::from(policy.port), &policy.host, 100) {
             Ok(port) => port,
             Err(message) => {
@@ -74,6 +77,14 @@ pub async fn serve(options: ServeOptions) -> i32 {
             return 1;
         }
     };
+    let port = match listener.local_addr() {
+        Ok(address) => address.port(),
+        Err(error) => {
+            log(&format!("cannot read bound address: {error}"));
+            return 1;
+        }
+    };
+    policy.port = port;
     log(&format!(
         "listening on {}:{port}{}",
         policy.host,

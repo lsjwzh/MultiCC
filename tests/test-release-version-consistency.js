@@ -588,6 +588,11 @@ test('core runner covers every selected path and expands declared variants', () 
   // multicc-writer binary spawning temp-dir fixture children, no port, service
   // or account). All three are hermetic: 427 + 3 = 430 entries, 353 + 3 = 356
   // deterministic, 399 + 3 = 402 commands (399 Node entries).
+  // Retiring the Node routing-test handler removes its unit suite; the frozen
+  // behaviour now lives in the Rust front-door differential (provider-misc.js,
+  // outside the release tier): 430 - 1 = 429 entries, 356 - 1 = 355
+  // deterministic, 402 - 1 = 401 commands (398 Node entries).
+  // 回执隔离回归只使用临时数据库，无外部服务；新增一个确定性核心用例文件。
   assert.equal(core.length, 430, 'the reviewed core set changed; re-audit the release tier');
   assert.equal(plan.entries.length, 430);
   assert.deepEqual(

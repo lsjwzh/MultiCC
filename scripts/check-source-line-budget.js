@@ -235,11 +235,14 @@ const MIGRATION_DEBT = Object.freeze({
   // System and scan routes moved to the front door: 3065/164601.
   // 2026-11-12 provider 的 16 条路由迁到 Rust 前门：server.js 删掉
   // mountCatalogRoutes 那一行、说明并进模型目录注释，实测回落到
-  // 3064/164534，按棘轮双向调到实测值（测速仍留在 Node）。
-  // 该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
+  // 3064/164534，按棘轮双向调到实测值。
+  // 2026-11-12 测速、routing-test 与 GET /api/v1/providers 迁到 Rust 前门：
+  // 删掉三条接线与仅测速使用的依赖，实测回落到 3053/164164，按棘轮双向调到
+  // 实测值。该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
+  // 余额/借道路由及 CLI 工具宿主迁移后，按实测继续收紧到 3044/163628。
   'server.js': Object.freeze({
-    ceiling: 3064,
-    byteCeiling: 164534,
+    ceiling: 3044,
+    byteCeiling: 163628,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

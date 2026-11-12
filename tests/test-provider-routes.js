@@ -1,13 +1,11 @@
 'use strict';
 
-// The 16 public provider routes now belong to the Rust front door
-// (native/gateway/src/app/providers.rs). What Node still owns is the host port
-// the front door calls back on plus the streamed speed test. This file pins
+// 公开 provider 路由现由 Rust 前门独占。Node 仅保留宿主事实与副作用端口。
+// 本文件约束宿主调用契约：
 // that host contract op by op: the loopback gate, the unknown-op answer, and
 // the exact input/output shapes the front door was written against.
 
 const assert = require('node:assert/strict');
-const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -49,35 +47,6 @@ async function invoke(app, method, routePath, request = {}) {
 
 function host(app, body) {
   return invoke(app, 'POST', HOST_PATH, { body });
-}
-
-function idleHttp() {
-  return {
-    request() {
-      throw new Error('unexpected HTTP request');
-    },
-  };
-}
-
-// Loopback client for the host-owned speed test routes: records the request and
-// answers 200 with no body (the DTO only reports the status).
-function okHttp(requests = []) {
-  return {
-    request(options, onResponse) {
-      requests.push(options);
-      const request = new EventEmitter();
-      request.write = (chunk) => { options.body = `${options.body || ''}${chunk}`; };
-      request.setTimeout = () => {};
-      request.destroy = () => {};
-      request.end = () => queueMicrotask(() => {
-        const response = new EventEmitter();
-        response.statusCode = 200;
-        onResponse(response);
-        response.emit('end');
-      });
-      return request;
-    },
-  };
 }
 
 function createHarness(overrides = {}) {
@@ -210,7 +179,6 @@ function createHarness(overrides = {}) {
     claudeCmd: '/usr/local/bin/claude',
     getPort: () => 4321,
     getClaudeOfficialViaProxy: () => false,
-    http: idleHttp(),
     logger: { error(...args) { logs.push(args); }, warn() {} },
     now: () => 100,
     // The host port is loopback-only; tests that care about the gate swap this.
@@ -223,13 +191,11 @@ function createHarness(overrides = {}) {
   return { app, runtime, deps, providers, writes, calls, deleted, relayShares, logs };
 }
 
-test('the Node surface is the provider host port plus the streamed speed test', () => {
+test('the Node surface is only the provider/subagent host ports', () => {
   const harness = createHarness();
   assert.deepEqual(harness.app.routes, [
     'POST /api/__host/providers',
     'POST /api/__host/subagent-defaults',
-    'POST /api/providers/:appType/:id/speedtest',
-    'POST /api/auto-provider/routing/test',
   ]);
   // The 16 migrated routes are gone from Node, not merely shadowed.
   for (const gone of ['GET /api/providers', 'GET /api/providers/stats', 'POST /api/providers/import',
@@ -259,7 +225,7 @@ test('the host port only answers loopback requests and rejects unknown operation
   assert.deepEqual(unknown.body, { error: 'unknown host operation' });
 });
 
-test('catalog assembles the provider facts the front door cannot compute', async () => {
+test('目录宿主只提供事实，公开筛选和投影由 Rust 完成', async () => {
   const refreshes = [];
   const harness = createHarness({
     relayModelCatalogRuntime: {
@@ -273,34 +239,26 @@ test('catalog assembles the provider facts the front door cannot compute', async
     ok: true,
     ccSwitchStatus: { available: true, dbFound: true, dbPath: '/private/cc-switch.db' },
     providers: [{ id: 'claude-one', appType: 'claude', name: 'One' }],
+    subscriptions: {}, limits: null, limitBars: {}, virtualInputs: {}, nowMs: 100,
     stats: [{ providerId: 'claude-one', totalTokens: 3 }],
     defaults: { claude: 'claude-one', codex: null },
     limitCacheStaleMs: null,
   });
 });
 
-test('catalog refreshes official Codex account catalogs fire-and-forget unless poll=1', async () => {
+test('目录读取不自行刷新，宿主只执行 Rust 选定的账号刷新', async () => {
   const refreshed = [];
-  const providers = {
-    getCcSwitchStatus: () => ({ available: true }),
-    listProviders: () => [{ id: 'codex-official', appType: 'codex', isOfficial: true, name: 'Official' }],
-    providerSupportsCli: () => true,
-  };
-  const codexAccountModelCatalogRuntime = {
-    refreshProvider(id) { refreshed.push(id); return Promise.resolve(); },
-  };
-
-  let harness = createHarness({ providers, codexAccountModelCatalogRuntime });
+  const harness = createHarness({
+    providers: { listProviders: () => [{ id: 'codex-official', appType: 'codex', isOfficial: true }] },
+    codexAccountModelCatalogRuntime: { refreshProvider(id) { refreshed.push(id); return Promise.resolve(); } },
+  });
   await host(harness.app, { op: 'catalog', appType: 'codex' });
+  assert.deepEqual(refreshed, []);
+  await host(harness.app, { op: 'catalogRefresh', providerIds: ['codex-official', null, 42] });
   assert.deepEqual(refreshed, ['codex-official']);
-
-  refreshed.length = 0;
-  harness = createHarness({ providers, codexAccountModelCatalogRuntime });
-  await host(harness.app, { op: 'catalog', appType: 'codex', poll: '1' });
-  assert.deepEqual(refreshed, [], 'poll=1 reads the in-memory snapshot and never spawns a refresh');
 });
 
-test('catalog attaches the persisted limit summary, freshness and virtual status', async () => {
+test('目录宿主提供原始额度快照与共享展示器结果', async () => {
   const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
   const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
   const os = require('node:os');
@@ -326,25 +284,29 @@ test('catalog attaches the persisted limit summary, freshness and virtual status
   const response = await host(harness.app, { op: 'catalog', appType: 'claude' });
   assert.equal(response.body.limitCacheStaleMs, 10 * 60 * 1000);
   assert.equal(response.body.providers.length, 1);
-  const limit = response.body.providers[0].limit;
+  assert.equal(response.body.providers[0].limit, undefined);
+  const limit = response.body.limits['claude:claude-one'];
+  const bar = response.body.limitBars['claude:claude-one'];
   assert.equal(limit.kind, 'window');
   assert.equal(limit.summaryText, '5h 80%');
-  assert.equal(limit.stale, false);
   assert.equal(limit.summary.usedPercentage, 20);
-  assert.equal(limit.bar.text, '5h 80% {cd:3601000|5h} · 更新于 {ago:900}');
-  assert.equal(require('../public/quota-bar-view').resolveQuotaBar(limit.bar, { now: 1000 }).text,
+  assert.equal(bar.text, '5h 80% {cd:3601000|5h} · 更新于 {ago:900}');
+  assert.equal(require('../public/quota-bar-view').resolveQuotaBar(bar, { now: 1000 }).text,
     '5h 80% 1h · 更新于 刚刚');
-  assert.equal(Object.hasOwn(limit, 'barText'), false);
+  assert.equal(limit.barText, '5h 80% {cd:123}', '宿主返回存储事实；Rust 决定公开字段');
+  cache.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('catalog reports a virtual provider status or the Rust-module fallback', async () => {
+test('目录宿主只返回虚拟线路输入，不计算最终状态', async () => {
   const virtual = { id: 'pool', appType: 'claude', name: 'Pool', virtual: true };
   const harness = createHarness({ providers: { listProviders: () => [virtual] } });
   const response = await host(harness.app, { op: 'catalog' });
-  // The virtual status helper is a real module; assert only that the key exists
-  // and the provider still renders when the module answers.
   assert.equal(response.body.providers[0].id, 'pool');
-  assert.ok(response.body.providers[0].virtualStatus);
+  assert.equal(response.body.providers[0].virtualStatus, undefined);
+  assert.equal(response.body.virtualInputs['claude:pool'].providerId, 'pool');
+  assert.equal(response.body.virtualInputs['claude:pool'].appType, 'claude');
+  assert.ok(Array.isArray(response.body.virtualInputs['claude:pool'].providers));
 });
 
 test('usageStats, import, create and update pass their ok/error shapes through', async () => {
@@ -821,172 +783,7 @@ test('defaultsPersist keeps best-effort persistence while redacting write failur
   assert.doesNotMatch(JSON.stringify(logs), /defaults-secret|\/Users\/alice/);
 });
 
-// ── The speed test stays on Node ────────────────────────────────────────────
-
-test('provider speedtest timeout settles once when destroy also emits an error', async () => {
-  function timeoutClient() {
-    return {
-      request() {
-        const request = new EventEmitter();
-        request.write = () => {};
-        request.setTimeout = (delay, callback) => {
-          assert.equal(delay, 15000);
-          request.timeoutCallback = callback;
-        };
-        request.destroy = () => request.emit('error', new Error('socket destroyed'));
-        request.end = () => queueMicrotask(() => request.timeoutCallback());
-        return request;
-      },
-    };
-  }
-
-  for (const appType of ['codex', 'claude']) {
-    const client = timeoutClient();
-    const harness = createHarness({
-      http: client,
-      providers: {
-        getProvider: () => ({
-          settingsConfig: {
-            env: {
-              ANTHROPIC_BASE_URL: 'https://relay.test',
-              ANTHROPIC_API_KEY: 'test-key',
-            },
-          },
-        }),
-        resolveCodexDirectHttp: () => ({
-          canDirect: true,
-          url: 'https://relay.test/v1/chat/completions',
-          apiKey: 'test-key',
-          model: 'gpt-test',
-          wireApi: 'chat-completions',
-        }),
-      },
-    });
-    const response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
-      params: { appType, id: `${appType}-one` },
-    });
-    assert.equal(response.jsonCalls, 1, `${appType} timeout must send exactly one response`);
-    assert.deepEqual(response.body, { ok: false, ms: 0, error: 'timeout' });
-  }
-});
-
-test('provider speedtest bounds an oversized streaming response', async () => {
-  const client = {
-    request(options, onResponse) {
-      const request = new EventEmitter();
-      request.write = () => {};
-      request.setTimeout = () => {};
-      request.destroy = () => request.emit('error', new Error('destroyed after limit'));
-      request.end = () => queueMicrotask(() => {
-        const response = new EventEmitter();
-        response.statusCode = 502;
-        onResponse(response);
-        response.emit('data', Buffer.alloc((64 * 1024) + 1, 65));
-        response.emit('end');
-      });
-      return request;
-    },
-  };
-  const harness = createHarness({
-    http: client,
-    providers: {
-      getProvider: () => ({
-        settingsConfig: {
-          env: {
-            ANTHROPIC_BASE_URL: 'https://relay.test',
-            ANTHROPIC_API_KEY: 'test-key',
-          },
-        },
-      }),
-    },
-  });
-  const response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
-    params: { appType: 'claude', id: 'claude-one' },
-  });
-  assert.equal(response.jsonCalls, 1);
-  assert.deepEqual(response.body, {
-    ok: false,
-    ms: 0,
-    status: 502,
-    model: 'claude-wire-default',
-    error: 'response too large',
-  });
-});
-
-test('a third-party codex speed test dials the loopback hop, never the vendor', async () => {
-  const requests = [];
-  const harness = createHarness({
-    http: okHttp(requests),
-    providers: {
-      getProvider: () => ({ settingsConfig: { env: {} } }),
-      resolveCodexDirectHttp: () => ({
-        canDirect: true,
-        url: 'https://vendor.example/v1',
-        apiKey: 'codex-vendor-secret',
-        model: 'gpt-test',
-      }),
-    },
-  });
-  const response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
-    params: { appType: 'codex', id: 'codex-one' },
-  });
-  assert.equal(requests.length, 1, 'exactly one request, to the local hop');
-  assert.equal(requests[0].hostname, '127.0.0.1');
-  assert.equal(requests[0].port, 4321);
-  assert.equal(requests[0].path, '/codex-proxy/codex-one/responses');
-  assert.equal(requests[0].headers.Authorization, undefined, 'the vendor key stays host-side');
-  assert.deepEqual(response.body, { ok: true, ms: 0, status: 200, model: 'gpt-test' });
-});
-
-test('a borrowed Claude speed test probes a model the lender serves, not the retired wire default', async () => {
-  const requests = [];
-  const relayBase = 'https://lender.example:3000/claude-proxy/claude-official-abc/remote';
-  const relayProvider = {
-    id: 'relay', appType: 'claude', name: 'Claude 账号 · x · 远程共享',
-    settingsConfig: {
-      env: { ANTHROPIC_BASE_URL: relayBase, ANTHROPIC_AUTH_TOKEN: 'mcr1.abcdefghijklmnop.secret' },
-    },
-  };
-
-  let harness = createHarness({
-    http: okHttp(requests),
-    providers: { getProvider: () => relayProvider },
-    providerRouterRuntime: {
-      getProviderSummary: () => ({
-        id: 'relay', appType: 'claude', name: relayProvider.name, isOfficial: false,
-        model: '', modelOptions: [], baseUrl: relayBase,
-      }),
-    },
-  });
-  let response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
-    params: { appType: 'claude', id: 'relay' },
-  });
-  assert.equal(response.body.ok, true);
-  const firstBody = JSON.parse(requests.at(-1).body);
-  assert.equal(firstBody.model, 'claude-haiku-4-5');
-  assert.notEqual(firstBody.model, 'claude-wire-default');
-
-  requests.length = 0;
-  harness = createHarness({
-    http: okHttp(requests),
-    providers: { getProvider: () => relayProvider },
-    providerRouterRuntime: {
-      getProviderSummary: () => ({
-        id: 'relay', appType: 'claude', name: relayProvider.name, isOfficial: false,
-        model: '', modelOptions: ['claude-opus-5[1m]', 'claude-sonnet-5', 'claude-haiku-4-5'],
-        baseUrl: relayBase,
-      }),
-    },
-  });
-  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
-    params: { appType: 'claude', id: 'relay' },
-  });
-  assert.equal(response.body.ok, true);
-  const syncedBody = JSON.parse(requests.at(-1).body);
-  assert.equal(syncedBody.model, 'claude-haiku-4-5');
-});
-
-test('the host port and the speed test cannot reach CPR lifecycle or CC-Switch write APIs', () => {
+test('the host port cannot reach CPR lifecycle or CC-Switch write APIs', () => {
   let forbiddenRuntimeRead = false;
   const runtime = new Proxy({
     getProviderSummary: () => ({ id: 'claude-one', appType: 'claude' }),

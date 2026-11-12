@@ -81,8 +81,16 @@ test('virtual provider CRUD, durable quota failover and scoped sharing use real 
       const expiredStart = requests.length;
       assert.equal((await postJson(url, body, { 'x-access-token': ACCESS_TOKEN })).response.status, 503);
       assert.equal(requests.length, expiredStart, 'expired pools must not dial a member or the placeholder');
-      const balance = require('../src/routes/provider-balance').createProviderBalanceRuntime(core);
-      assert.deepEqual(await balance.queryOne(appType, id), { ok: false, reason: 'no_available_member', providerId: id, appType, virtual: true });
+      let memberHandler;
+      require('../src/routes/provider-balance-host').mountProviderBalanceHost({
+        post(_path, handler) { memberHandler = handler; },
+      }, { getProvider: core.getProvider, isLocal: () => true });
+      let memberReply;
+      await memberHandler({ body: { op: 'virtualMember', appType, id } }, {
+        json(value) { memberReply = value; }, status() { return this; },
+      });
+      assert.deepEqual(memberReply, { ok: true, member: null });
+      assert.equal(requests.length, expiredStart, '虚拟成员宿主端口不能给过期池选出可用成员或拨号');
       const ambiguous = core.createProvider({ appType, name: 'Ambiguous', baseUrl: `${base}/ambiguous`, authToken: 'fixture-ambiguous', model: 'shared-model' });
       core.updateProvider(appType, id, { virtual: { strategy: 'ordered', members: [{ id: ambiguous.id }, { id: second.id }] } });
       const ambiguousStart = requests.length;

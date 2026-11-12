@@ -61,9 +61,11 @@ function wireQuotaSelfHeal({
   codexAccountRefresh,
   officialAccounts,
   mountProviderBalanceRoutes,
+  getPort,
 }) {
   const refreshOne = mountProviderBalanceRoutes(app, {
     ...providers,
+    getPort,
     onResult: limitRecorder.recordProvider,
     lookupCached: (appType, id) => providerLimitCache.get(appType, id),
   })?.refreshOne || null;

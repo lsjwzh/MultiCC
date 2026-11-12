@@ -893,7 +893,13 @@ test('cloning a cross-CLI selection preserves a pending handoff reservation', ()
   const pending = turn.prepareHandoff(quotaDecision(), openAttempt('claude-b'));
   assert.equal(pending.cli, 'codex');
   session.providerSelection = JSON.parse(JSON.stringify(session.providerSelection));
-  assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+  assert.throws(() => runtime.beginTurn({ session, turnId: 'handoff-before-switch' }), {
+    code: 'AUTO_PROVIDER_CLI_SWITCH_REQUIRED',
+  });
+  assert.deepEqual(runtime.pendingCliSwitch(session.id, session.cli), pending);
+  for (let retry = 0; retry < 12; retry += 1) {
+    assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+  }
   session.cli = 'codex';
   session.providerSelection = JSON.parse(JSON.stringify(session.providerSelection));
   const next = runtime.beginTurn({ session, turnId: 'target' });
@@ -965,6 +971,34 @@ test('a failover pool switches lanes once its own lane is spent', () => {
   assert.deepEqual(runtime.planTurn({ session, text: '继续' }), planned);
 });
 
+test('an unapplied CLI switch rejects the old lane and preserves the reservation for recovery', () => {
+  const { runtime, session, events } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
+  assert.equal(runtime.pendingCliSwitch(session.id, session.cli), null);
+  const planned = runtime.planTurn({ session, text: '继续' });
+  const pending = runtime.pendingCliSwitch(session.id, session.cli);
+  assert.equal(pending.cli, planned.cli);
+  assert.equal(pending.providerId, planned.providerId);
+  assert.equal(Object.isFrozen(pending), true);
+  assert.equal(runtime.pendingCliSwitch(session.id, planned.cli), null);
+  assert.equal(runtime.pendingCliSwitch('unknown-session', session.cli), null);
+  const before = runtime.snapshot(session.id);
+  const eventCount = events.length;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    assert.throws(() => runtime.beginTurn({ session, turnId: 'wrong-lane' }), {
+      name: 'AutoProviderError', code: 'AUTO_PROVIDER_CLI_SWITCH_REQUIRED',
+    });
+    assert.deepEqual(runtime.pendingCliSwitch(session.id, session.cli), pending);
+    assert.deepEqual(runtime.snapshot(session.id), before);
+    assert.equal(events.length, eventCount, 'a deferred switch must not narrate pool exhaustion');
+  }
+
+  session.cli = planned.cli;
+  const recovered = runtime.beginTurn({ session, turnId: 'recovered' });
+  assert.equal(recovered.initial().providerId, planned.providerId);
+  assert.equal(runtime.pendingCliSwitch(session.id, 'claude'), null, 'selection consumes the reservation');
+});
+
 const TIERED_CANDIDATES = [
   { providerId: 'claude-a', priority: 1, tier: 'strong', cli: 'claude' },
   { providerId: 'claude-b', priority: 2, tier: 'strong', cli: 'claude' },
@@ -1026,32 +1060,55 @@ test('a tie under routing policy stays on the lane the session already runs on',
   assert.deepEqual(events, []);
 });
 
-test('a lane that cannot be switched to is never planned, and a stale plan for it is dropped', () => {
+test('an unavailable lane is not newly planned and an existing reservation survives until recovery', () => {
   const { runtime, session, events, state } = crossFixture({
     exhausted: ['claude-a', 'claude-b'],
   });
   state.disabledCli = 'codex';
   assert.equal(runtime.planTurn({ session, text: '继续' }), null);
   assert.deepEqual(events, []);
-  // The lane was up when the plan was made; by the next call it is gone, and
-  // the session must stay where it actually is.
+  // The lane was up when the plan was made; temporary unavailability must
+  // defer configuration admission without dropping its destination.
   state.disabledCli = null;
   assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
   state.disabledCli = 'codex';
   assert.equal(runtime.planTurn({ session, text: '继续' }), null);
+  assert.equal(runtime.pendingCliSwitch(session.id, session.cli).cli, 'codex');
+  assert.throws(() => runtime.beginTurn({ session, turnId: 'unapplied' }), {
+    code: 'AUTO_PROVIDER_CLI_SWITCH_REQUIRED',
+  });
+  state.disabledCli = null;
+  for (let retry = 0; retry < 12; retry += 1) {
+    assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+  }
+  session.cli = 'codex';
+  const recovered = runtime.beginTurn({ session, turnId: 'recovered' });
+  assert.equal(recovered.initial().providerId, 'codex-b');
+  assert.equal(runtime.pendingCliSwitch(session.id, 'claude'), null);
 });
 
 test('the hop budget caps lane switches and a successful turn resets it', () => {
-  // The cross lane pool has four lines, so it allows four lane switches — the
-  // legacy maxAttempts: 2 no longer caps them.
+  // Count actual new reservations, not repeated reads while a switch is busy.
+  // The four-line pool allows four lane switches without a successful turn.
   const { runtime, session, limits } = crossFixture({
     exhausted: ['claude-a', 'claude-b'], maxAttempts: 2,
   });
   for (let hop = 0; hop < 4; hop += 1) {
-    assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+    limits.clear();
+    exhaust(limits, session.cli === 'claude' ? ['claude-a', 'claude-b'] : ['codex-a', 'codex-b']);
+    const planned = runtime.planTurn({ session, text: '继续' });
+    assert.equal(planned.cli, session.cli === 'claude' ? 'codex' : 'claude');
+    for (let retry = 0; retry < 6; retry += 1) {
+      assert.deepEqual(runtime.planTurn({ session, text: '继续' }), planned);
+    }
+    session.cli = planned.cli;
+    const switched = runtime.beginTurn({ session, turnId: `hop-${hop}` });
+    assert.equal(switched.initial().providerId, planned.providerId);
   }
   // Four switches is the whole pool: a pool with every lane failing would
   // otherwise hand the session back and forth forever.
+  limits.clear();
+  exhaust(limits, ['claude-a', 'claude-b']);
   assert.equal(runtime.planTurn({ session, text: '继续' }), null);
 
   limits.clear();

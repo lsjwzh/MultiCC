@@ -752,6 +752,36 @@ test('dispatch_status recovers ambiguous receipts from durable operation and FIF
   assert.equal(terminal.dispatch.result, 'finished safely');
 });
 
+test('dispatch_status reads full results only after filtering and limiting references', async t => {
+  const reads = [];
+  const references = Array.from({ length: 500 }, (_, index) => ({
+    id: `op_history_${index}`, kind: 'dispatch', ownerSessionId: 'caller',
+    status: 'completed', createdAt: index,
+    spec: { targetId: index % 2 ? 'worker-b' : 'worker-a' },
+  }));
+  const { runtime } = fixture(t, {
+    operations: {
+      async list() { throw new Error('full historical payload scan'); },
+      async listReferences(query) {
+        assert.equal(query.ownerSessionId, 'caller');
+        assert.equal(query.kind, 'dispatch');
+        return references;
+      },
+      async get(id) {
+        reads.push(id);
+        return { ...references.find(row => row.id === id), result: { text: `result ${id}` } };
+      },
+    },
+  });
+  const context = runtime.issueContext({ sessionId: 'caller', turnId: 'bounded-status' });
+  const result = await runtime.execute(context, 'dispatch_status', {
+    active_only: false, target_session_id: 'worker-a', limit: 2,
+  });
+  assert.deepEqual(reads, ['op_history_498', 'op_history_496']);
+  assert.equal(result.count, 2);
+  assert.equal(result.dispatches[0].result, 'result op_history_498');
+});
+
 test('target and slave lineage validation fail closed', async t => {
   const { operations, runtime } = fixture(t);
   const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-guard' });

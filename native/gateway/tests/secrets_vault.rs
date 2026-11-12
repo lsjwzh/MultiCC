@@ -15,7 +15,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -38,11 +38,6 @@ fn unique(tag: &str) -> PathBuf {
         "multicc-gateway-secrets-vault-{}-{tag}-{nanos}",
         std::process::id()
     ))
-}
-
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
 }
 
 struct Response {
@@ -82,7 +77,6 @@ impl Gateway {
         let script_path = dir.join("host-script.json");
         fs::write(&script_path, script.to_string()).unwrap();
         fs::write(dir.join("server.js"), FIXTURE_JS).unwrap();
-        let port = free_port();
         let log = fs::File::create(dir.join("gateway.log")).unwrap();
         let mut command = Command::new(GATEWAY_BIN);
         command
@@ -91,13 +85,13 @@ impl Gateway {
             .arg(&dir)
             .arg("--node")
             .arg(std::env::var("MULTICC_TEST_NODE").unwrap_or_else(|_| "node".to_string()))
+            .arg("--ephemeral-loopback")
             .arg("server.js")
             .env_clear()
             .env(
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
             )
-            .env("PORT", port.to_string())
             .env("ACCESS_TOKEN", TOKEN)
             .env("HOME", &home)
             .env("MULTICC_DATA_DIR", &data)
@@ -122,10 +116,10 @@ impl Gateway {
             }
         }
         let child = command.spawn().expect("spawn multicc-gateway");
-        let gateway = Self {
+        let mut gateway = Self {
             dir,
             state,
-            port,
+            port: 0,
             child,
         };
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -137,6 +131,14 @@ impl Gateway {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        gateway.port = gateway
+            .log()
+            .lines()
+            .find_map(|line| line.strip_prefix("[multicc-gateway] listening on 127.0.0.1:"))
+            .and_then(|port| port.split_whitespace().next())
+            .and_then(|port| port.parse::<u16>().ok())
+            .filter(|port| *port != 0)
+            .expect("gateway reported its actual loopback port");
         gateway
     }
 
@@ -166,35 +168,13 @@ impl Gateway {
         }
         request.push_str("\r\n");
         request.push_str(&payload);
-        // The gateway's port is probed and released before it binds, so a
-        // parallel run can briefly steer a fresh connection at another
-        // listener that resets it. Replay only when nothing was read: a reset
-        // after any byte arrived means the response really was cut short.
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect gateway");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
         let mut raw = Vec::new();
-        for attempt in 0..4 {
-            let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect gateway");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(30)))
-                .unwrap();
-            stream.write_all(request.as_bytes()).unwrap();
-            raw.clear();
-            match stream.read_to_end(&mut raw) {
-                Ok(_) => break,
-                Err(error)
-                    if raw.is_empty()
-                        && attempt < 3
-                        && matches!(
-                            error.kind(),
-                            std::io::ErrorKind::ConnectionReset
-                                | std::io::ErrorKind::ConnectionAborted
-                                | std::io::ErrorKind::BrokenPipe
-                        ) =>
-                {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(error) => panic!("gateway exchange failed: {error:?}"),
-            }
-        }
+        stream.read_to_end(&mut raw).expect("gateway response");
         let split = raw
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
@@ -265,6 +245,14 @@ fn meta(name: &str, description: &str, source: &str, created: &str, updated: &st
         "createdAt": created,
         "updatedAt": updated,
     })
+}
+
+#[test]
+fn ephemeral_loopback_reports_and_forwards_the_bound_port() {
+    let gateway = Gateway::start("ephemeral-port", json!({}));
+    let response = gateway.get("/env");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.json()["PORT"], gateway.port.to_string());
 }
 
 #[test]

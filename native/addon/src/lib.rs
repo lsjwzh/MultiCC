@@ -29,6 +29,8 @@ pub mod claude_lane;
 pub mod cli_capability;
 pub mod cli_completion;
 pub mod cli_switch;
+pub mod cli_switch_runtime;
+pub mod cli_tools_runtime;
 pub mod cpr;
 pub mod events;
 pub mod exact_secret;
@@ -45,6 +47,7 @@ pub mod network_policy;
 pub mod node_fs_error;
 pub mod opencode_context;
 pub mod opencode_error;
+pub mod orchestration_store;
 pub mod provider_attempt_identity;
 pub mod provider_attempt_lifecycle;
 pub mod provider_authorization;
@@ -191,7 +194,11 @@ pub mod auth_routes;
 
 pub mod relay_shares;
 
+pub mod cli_upstream_version;
+pub mod homebrew_takeover;
 mod js_host_value;
+pub mod limit_cache_recorder;
+pub mod quota_bar_view;
 pub mod request_locality;
 mod session_records;
 mod session_state;

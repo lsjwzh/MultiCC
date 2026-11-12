@@ -24,6 +24,7 @@ orchestration.json
 orchestration.sqlite
 orchestration.sqlite-wal
 orchestration.sqlite-shm
+orchestration.sqlite.maintenance.lock
 task-runs.sqlite
 task-runs.sqlite-wal
 task-runs.sqlite-shm

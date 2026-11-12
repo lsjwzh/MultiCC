@@ -149,6 +149,8 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/host-write.js',
     'src/routes/model-catalogs-host.js',
     'src/routes/plugins.js',
+    'src/routes/provider-balance-host.js',
+    'src/routes/provider-relay-host.js',
     // Passes the dependency through to the provider runtime, does not decide.
     'src/routes/providers-host.js',
     'src/routes/providers.js',

@@ -1,13 +1,11 @@
 'use strict';
 
-// 宿主端口（host port）：`/api/providers` 那 17 条路由里的 16 条已经由 Rust 前门
-// （multicc-gateway，native/gateway/src/app/providers.rs）独占。路径匹配、参数解码、
-// 查询串、状态码与错误映射都在 Rust；只有 POST /api/providers/:appType/:id/speedtest
-// 留在 Node（SSE 式地往 res 里流式写，Rust 侧不接管这条连接）。
+// 宿主端口：公开 providers 路由已由 Rust 前门独占。
+// 路径、校验、目录投影和响应组装见 native/gateway/src/app/providers.rs。
 //
 // 这里只剩 Node 独有的运行时事实与副作用：
 //
-//   catalog            provider 目录（额度缓存、订阅投影、virtual 状态、usage stats）
+//   catalog            provider / 额度 / 订阅的内存快照与尚未迁移的 bar 渲染
 //   usageStats         usage 统计读内存表
 //   import             只读导入 CC-Switch
 //   create/update      provider store 写盘
@@ -88,7 +86,7 @@ function assertDependencies(deps) {
     throw new TypeError('[providers-host] providers is required');
   }
   for (const name of [
-    'getCcSwitchStatus', 'listProviders', 'providerSupportsCli', 'getProviderUsageStats',
+    'getCcSwitchStatus', 'listProviders', 'getProviderUsageStats',
     'importFromCcSwitch', 'createProvider', 'updateProvider', 'deleteProvider',
     'getProvider', 'probeRelayModels', 'claudeProbeRouteEnv',
   ]) {
@@ -140,66 +138,51 @@ function mountProvidersHostRoute(app, options = {}) {
     const ccSwitchStatus = deps.providers.getCcSwitchStatus();
     const subscriptions = require('../quota/account-subscription-cache');
     await subscriptions.ready().catch(() => {});
-    const providers = subscriptions.project(deps.providers.listProviders(
+    // 这里只读宿主快照；筛选、订阅投影、公开限额字段和虚拟线路选择由前门组装。
+    const providers = deps.providers.listProviders(
       appType === 'claude' || appType === 'codex' ? appType : undefined,
-    )).filter(provider => !cli || deps.providers.providerSupportsCli(provider, cli));
-    // 选择器先返回内存快照；后台刷新由 Rust 按账号应用一天 TTL/CLI 版本。
-    if (deps.codexAccountModelCatalogRuntime && body.poll !== '1') {
-      for (const provider of providers.filter(p => p.appType === 'codex' && p.isOfficial)) {
-        try {
-          Promise.resolve(deps.codexAccountModelCatalogRuntime.refreshProvider(provider.id)).catch(() => {});
-        } catch (_) { /* 刷新不能阻塞列表 */ }
-      }
-    }
+    );
+    // 保留共享订阅缓存的跨进程重新加载触发，不在 Node 侧投影目录。
+    subscriptions.project([]);
     const nowMs = now();
     const staleAfterMs = deps.limitCacheStaleMs || STALE_MS_DEFAULT;
-    // Attach the persistent last-known-good limit summary (if any) to each
-    // provider, and prune entries whose provider identity vanished (deleted /
-    // renamed). `limit` is a safe projection — the cache never stores
-    // credentials, and only summary/format fields are exposed here.
-    let limits = null;
     const cache = deps.providerLimitCache;
-    const recorder = deps.limitRecorder;
+    let limits = null;
+    const limitBars = {};
     if (cache) {
       try {
-        if (recorder) cache.prune(recorder.liveKeys());
+        if (deps.limitRecorder) cache.prune(deps.limitRecorder.liveKeys());
         limits = {};
         for (const provider of providers) {
+          const key = provider.appType + ':' + provider.id;
           const entry = cache.get(provider.appType, provider.id);
-          limits[`${provider.appType}:${provider.id}`] = entry ? {
-            kind: entry.kind,
-            status: entry.status,
-            summary: entry.summary,
-            // Keep the legacy summary for older clients; current clients
-            // resolve the canonical bar's time tokens just like chat does.
-            summaryText: entry.summaryText,
-            bar: providerLimitBar({ ...entry,
-              stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs) }, nowMs),
-            fetchedAt: entry.fetchedAt,
-            updatedAt: entry.updatedAt,
-            lastError: entry.lastError,
-            lastErrorAt: entry.lastErrorAt,
-            stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs),
-          } : null;
+          // 此共享渲染器仍服务其他 Node quota 调用者；迁移它时删除这个最后的展示端口。
+          const bar = entry ? providerLimitBar({ ...entry,
+            stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs) }, nowMs) : null;
+          limits[key] = entry || null;
+          limitBars[key] = bar;
         }
       } catch (_) { /* cache must never break the catalog */ }
     }
-    const providersWithLimits = limits
-      ? providers.map(provider => ({ ...provider, limit: limits[`${provider.appType}:${provider.id}`] || null }))
-      : providers;
+    const virtualInputs = {};
+    for (const provider of providers) {
+      if (!provider.virtual) continue;
+      const key = provider.appType + ':' + provider.id;
+      try {
+        virtualInputs[key] = require('../providers/virtual-provider').snapshot(provider, deps.providers.listProviders());
+      } catch (_) { virtualInputs[key] = null; }
+    }
     return {
       ok: true,
       ccSwitchStatus,
-      providers: providersWithLimits.map(provider => {
-        if (!provider.virtual) return provider;
-        try { return { ...provider, virtualStatus: require('../providers/virtual-provider').status(provider, deps.providers.listProviders()) }; }
-        catch (_) { return { ...provider, virtualStatus: { availableCount: 0, error: '请更新 Rust 模块并手动重启服务' } }; }
-      }),
+      providers,
+      subscriptions: subscriptions.snapshot(),
+      limits,
+      limitBars,
+      virtualInputs,
+      nowMs,
       stats: deps.providers.getProviderUsageStats().stats,
       defaults: deps.providerDefaults,
-      // Old clients ignore extra top-level fields; new clients use this to
-      // decide whether a provider's `limit` counts as fresh without duplicating
-      // the staleness constant in two codebases.
       limitCacheStaleMs: cache ? staleAfterMs : null,
     };
   }
@@ -210,6 +193,18 @@ function mountProvidersHostRoute(app, options = {}) {
 
   async function handle(body) {
     if (body.op === 'catalog') return catalogFacts(body);
+
+    if (body.op === 'catalogRefresh') {
+      const runtime = deps.codexAccountModelCatalogRuntime;
+      if (runtime && Array.isArray(body.providerIds)) {
+        for (const id of body.providerIds) {
+          if (typeof id !== 'string') continue;
+          try { Promise.resolve(runtime.refreshProvider(id)).catch(() => {}); }
+          catch (_) { /* refresh must never block the catalog */ }
+        }
+      }
+      return { ok: true };
+    }
 
     if (body.op === 'usageStats') {
       try {
@@ -482,6 +477,76 @@ function mountProvidersHostRoute(app, options = {}) {
         token: typeof deps.providers.getRelayImportToken === 'function'
           ? deps.providers.getRelayImportToken(appType, providerId) : '',
       };
+    }
+
+    if (body.op === 'speedtestFacts') {
+      const appType = text(body.appType);
+      const id = text(body.id);
+      try {
+        const provider = deps.providers.getProvider(appType, id);
+        if (!provider) return { ok: true, found: false };
+        const config = typeof provider.settingsConfig === 'string'
+          ? JSON.parse(provider.settingsConfig)
+          : (provider.settingsConfig || {});
+        const env = (config && config.env) || {};
+        const officialCodex = deps.providers.isOfficialCodexOAuthProvider(provider);
+        if (appType === 'codex' && officialCodex) {
+          return {
+            ok: true,
+            found: true,
+            kind: 'codex',
+            official: true,
+            summary: deps.providerRouterRuntime.getProviderSummary('codex', id) || {},
+          };
+        }
+        if (appType === 'codex') {
+          // Capability pre-check only: the hop owns the target's url/apiKey.
+          const target = deps.providers.resolveCodexDirectHttp(id);
+          return {
+            ok: true,
+            found: true,
+            kind: 'codex',
+            official: false,
+            canDirect: !!target.canDirect,
+            reason: target.reason,
+            modelOptions: target.modelOptions,
+            model: target.model,
+          };
+        }
+        return {
+          ok: true,
+          found: true,
+          kind: 'claude',
+          official: id === 'claude-official'
+            || !!require('../official-accounts').officialAccountIdFromProvider(provider),
+          hasKey: !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN),
+          env: {
+            ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
+            ANTHROPIC_MODEL: env.ANTHROPIC_MODEL,
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+            ANTHROPIC_DEFAULT_SONNET_MODEL: env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+          },
+          summary: deps.providerRouterRuntime.getProviderSummary('claude', id) || {},
+          fallbackModels: require('../claude-models').CLAUDE_MODELS_FALLBACK.map(entry => entry.model),
+          wireDefaultModel: deps.providers.WIRE_DEFAULT_MODEL,
+        };
+      } catch (error) {
+        return { ok: false, error: { message: publicError(error, 'provider speedtest failed') } };
+      }
+    }
+
+    if (body.op === 'v1Providers') {
+      const appType = text(body.appType);
+      try {
+        return {
+          ok: true,
+          providers: deps.providers.listProviders(
+            appType === 'claude' || appType === 'codex' ? appType : undefined,
+          ),
+        };
+      } catch (error) {
+        return { ok: false, error: { message: publicError(error, 'provider list failed') } };
+      }
     }
 
     if (body.op === 'defaultsGet') {

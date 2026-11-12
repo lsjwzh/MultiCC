@@ -389,7 +389,10 @@ function createSessionWorkScheduler({
     const schedule = draft.sessionSchedules[sessionId];
     const activeDeliveryId = schedule?.active?.deliveryId || schedule?.active?.entryId || null;
     const priorityEntryId = schedule?.priorityEntryId || null;
-    return Object.values(draft.outbox)
+    const candidates = typeof draft.select === 'function'
+      ? draft.select('outbox', { where: { sessionId, state: ['pending', 'leased'] } })
+      : Object.values(draft.outbox);
+    return candidates
       .filter(item => item.sessionId === sessionId)
       .filter(item => item.state === 'pending' || item.state === 'leased')
       .filter(item => !activeDeliveryId || item.id !== activeDeliveryId)
@@ -938,7 +941,10 @@ function createSessionWorkScheduler({
       // kind does not authorize them to bypass an unanswered question.
       const pending = canonicalPendingUserInput(sessionId);
       if (isWaitForUserLetter(schedule.classifyState) && pending) {
-        for (const item of Object.values(draft.outbox || {})) {
+        const pendingItems = typeof draft.select === 'function'
+          ? draft.select('outbox', { where: { sessionId, state: 'pending' } })
+          : Object.values(draft.outbox || {});
+        for (const item of pendingItems) {
           if (item && item.sessionId === sessionId && item.state === 'pending'
               && !(isUserInputAnswer(item) && item.payload.requestId === pending.requestId)
               && item.userInputOverrideId !== pending.requestId) {
@@ -1499,7 +1505,9 @@ function createSessionWorkScheduler({
     return store.read(draft => {
       const ids = requested || [...new Set([
         ...Object.keys(draft.sessionSchedules),
-        ...Object.values(draft.outbox)
+        ...(typeof draft.select === 'function'
+          ? draft.select('outbox', { where: { state: ['pending', 'leased'] } })
+          : Object.values(draft.outbox))
           .filter(item => item.state === 'pending' || item.state === 'leased')
           .map(item => item.sessionId),
       ])].sort();
@@ -1522,7 +1530,9 @@ function createSessionWorkScheduler({
       const changes = [];
       const sessionIds = new Set([
         ...Object.keys(draft.sessionSchedules),
-        ...Object.values(draft.outbox)
+        ...(typeof draft.select === 'function'
+          ? draft.select('outbox', { where: { state: ['pending', 'leased'] } })
+          : Object.values(draft.outbox))
           .filter(item => item.state === 'pending' || item.state === 'leased')
           .map(item => item.sessionId),
       ]);

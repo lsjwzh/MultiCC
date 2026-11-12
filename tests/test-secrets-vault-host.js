@@ -104,7 +104,7 @@ test('the host port only answers loopback requests and never touches the vault o
   assert.deepEqual(calls, []);
 });
 
-test('each op calls the audited vault export with the http context', () => {
+test('each op calls the audited vault export with the http context', async () => {
   const { vault, calls } = fakeVault();
   const handle = createSecretsVaultHost(vault);
 
@@ -135,6 +135,12 @@ test('each op calls the audited vault export with the http context', () => {
   assert.deepEqual(handle({ op: 'reveal', name: 'A_KEY' }),
     { ok: true, name: 'A_KEY', value: 'sk-secret-value' });
   assert.deepEqual(calls[4], ['reveal', 'A_KEY', { source: 'http' }]);
+
+  // The routing-test reveal is the one caller that names its feature.
+  await handle({ op: 'reveal', name: 'A_KEY', source: 'routing_test' });
+  assert.deepEqual(calls[5], ['reveal', 'A_KEY', { source: 'routing_test' }]);
+  await handle({ op: 'reveal', name: 'A_KEY', source: 'something-else' });
+  assert.deepEqual(calls[6], ['reveal', 'A_KEY', { source: 'http' }]);
 });
 
 test('upsert only forwards description/sessionId when the request carries those keys', () => {

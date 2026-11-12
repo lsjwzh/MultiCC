@@ -33,9 +33,10 @@ chrono-tz = "0.10"
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = "1"
 regex = "1.13.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
 sha1 = "0.10"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal", "fs", "process"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
 

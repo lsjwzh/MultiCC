@@ -279,3 +279,139 @@ test('classifyUpdate keeps "unknown" apart from "up to date"', () => {
   assert.deepEqual(upstream.classifyUpdate('2.1.251', 'garbage'),
     { latest: null, updateAvailable: false });
 });
+
+test('native pure rules match the frozen upstream oracle across coercion and unicode edges', () => {
+  const oracle = require('./helpers/legacy-cli-upstream-version');
+  const versions = [undefined, null, false, 0, '', '1.2.3', 'v1.2.3', '\ufeffv1.2.3\ufeff',
+    '1.2.3+build', '1.2.3-beta.2', '  v1.2.3  ', '١.2.3', '1.2.3\n',
+    '9'.repeat(400) + '.2.3', [], ['1.2.3'], { version: '1.2.3' }];
+  for (const value of versions) assert.deepEqual(upstream.parseSemver(value), oracle.parseSemver(value));
+  for (const left of versions) for (const right of versions) {
+    assert.deepEqual(upstream.compareSemver(left, right), oracle.compareSemver(left, right));
+    assert.deepEqual(upstream.classifyUpdate(left, right), oracle.classifyUpdate(left, right));
+  }
+  for (const value of [null, undefined, '', 'HTTPS://mirror.example', '\ufeffhttp://x\ufeff',
+    'https://x/\ud800', 'http://', 'file://x', ['https://mirror.example']]) {
+    assert.deepEqual(upstream.normalizeRegistry(value), oracle.normalizeRegistry(value));
+  }
+  for (const pkg of ['@a/b/c', undefined, '\ud800/pkg', ['@x/y']]) {
+    assert.equal(upstream.latestUrl(pkg, 'https://x/'), oracle.latestUrl(pkg, 'https://x/'));
+  }
+});
+
+test('injected transport retains UTF-16 budget and relative redirect state', async () => {
+  const requests = [];
+  const transport = fakeHttps((req, url) => {
+    requests.push(url);
+    if (requests.length === 1) return fakeResponse(302, null, { location: '/different/latest' });
+    return fakeResponse(200, JSON.stringify({ version: 'v1.2.3', padding: '中'.repeat(100_000) }));
+  });
+  assert.deepEqual(await upstream.fetchLatestVersionWithSource('x', {
+    registryBase: 'https://mirror.example/', httpsImpl: transport,
+  }), { version: '1.2.3', registry: 'https://mirror.example/' });
+  assert.equal(requests[1], 'https://mirror.example/different/latest');
+  assert.equal(transport.requests[0].options.timeout, upstream.FETCH_TIMEOUT_MS);
+  assert.equal(transport.requests[0].options.headers['User-Agent'], 'multicc-cli-version-check/1.0');
+});
+
+test('an invalid redirect is an unknown version and late errors do not consume the next source', async () => {
+  const invalid = fakeHttps(() => fakeResponse(302, null, { location: 'https://[' }));
+  assert.deepEqual(await upstream.fetchLatestVersionWithSource('x', {
+    registryBase: 'https://mirror.example/', httpsImpl: invalid,
+  }), { version: null, registry: null });
+  const transport = fakeHttps((req, url) => {
+    if (url.startsWith('https://primary.example/')) {
+      process.nextTick(() => { req.emit('timeout'); req.emit('error', new Error('late')); });
+      return null;
+    }
+    return fakeResponse(200, '{"version":"2.0.0"}');
+  });
+  assert.deepEqual(await upstream.fetchLatestVersionWithSource('x', {
+    env: { npm_config_registry: 'https://primary.example/', MULTICC_CLI_REGISTRY_FALLBACKS: 'https://mirror.example/' },
+    httpsImpl: transport,
+  }), { version: '2.0.0', registry: 'https://mirror.example/' });
+  assert.equal(transport.requests.length, 2);
+});
+
+test('explicit registry and missing package do not consult host home-directory facts', async () => {
+  const original = os.homedir;
+  os.homedir = () => { throw new Error('must remain lazy'); };
+  try {
+    assert.equal(upstream.resolveRegistryBase({ npm_config_registry: 'https://mirror.example/' }), 'https://mirror.example/');
+    assert.deepEqual(await upstream.fetchLatestVersionWithSource('', { httpsImpl: fakeHttps(() => { throw new Error('no request'); }) }), { version: null, registry: null });
+    assert.equal(await upstream.fetchLatestVersion('x', {
+      registryBase: 'https://mirror.example/', httpsImpl: fakeHttps(fakeResponse(200, '{"version":"1.0.0"}')),
+    }), '1.0.0');
+  } finally { os.homedir = original; }
+});
+
+test('production Rust transport uses Node trust roots, ignores proxy env and rejects compressed or non-HTTPS replies', { timeout: 20_000 }, async () => {
+  const { execFile, spawnSync } = require('node:child_process');
+  const { promisify } = require('node:util');
+  const https = require('node:https');
+  const zlib = require('node:zlib');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-upstream-tls-'));
+  let server;
+  try {
+    const key = path.join(dir, 'key.pem');
+    const cert = path.join(dir, 'cert.pem');
+    const caKey = path.join(dir, 'ca-key.pem');
+    const ca = path.join(dir, 'ca.pem');
+    const csr = path.join(dir, 'server.csr');
+    const extensions = path.join(dir, 'server.ext');
+    const generate = args => {
+      const generated = spawnSync('openssl', args, { encoding: 'utf8', timeout: 5_000 });
+      assert.equal(generated.status, 0, 'local TLS fixture must be generated');
+    };
+    // A CA is a trust anchor, not a server leaf: WebPKI correctly rejects the
+    // CA:TRUE certificate produced by a bare `openssl req -x509` as a server.
+    generate(['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', caKey, '-out', ca, '-days', '1', '-subj', '/CN=Local test root',
+      '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign']);
+    generate(['req', '-new', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', key, '-out', csr, '-subj', '/CN=localhost']);
+    fs.writeFileSync(extensions, 'basicConstraints=critical,CA:FALSE\n'
+      + 'keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n'
+      + 'subjectAltName=DNS:localhost,IP:127.0.0.1\n');
+    generate(['x509', '-req', '-in', csr, '-CA', ca, '-CAkey', caKey, '-CAcreateserial',
+      '-out', cert, '-days', '1', '-extfile', extensions]);
+    assert.equal(new (require('node:crypto').X509Certificate)(fs.readFileSync(cert)).ca, false);
+    server = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (req, res) => {
+      if (req.url.startsWith('/redirect/')) { res.writeHead(302, { location: '/good/latest' }); res.end(); return; }
+      if (req.url.startsWith('/http/')) { res.writeHead(302, { location: 'http://127.0.0.1:1/' }); res.end(); return; }
+      if (req.url.startsWith('/gzip/')) {
+        res.writeHead(200, { 'content-encoding': 'gzip' });
+        res.end(zlib.gzipSync('{"version":"9.9.9"}')); return;
+      }
+      if (req.url.startsWith('/loop/')) { res.writeHead(302, { location: req.url }); res.end(); return; }
+      const bytes = Buffer.from('{"version":"3.2.1","note":"中文😀"}');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const split = bytes.indexOf(Buffer.from('中')) + 1;
+      res.write(bytes.subarray(0, split));
+      setImmediate(() => res.end(bytes.subarray(split)));
+    });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    const base = `https://127.0.0.1:${server.address().port}`;
+    const script = `const u=require(process.argv[1]);(async()=>{const out=[];for(const route of ['redirect','gzip','http','loop'])out.push(await u.fetchLatestVersionWithSource('x',{registryBase:process.argv[2]+'/'+route+'/',timeoutMs:1500}));process.stdout.write(JSON.stringify(out));})().catch(()=>process.exit(1));`;
+    const transportEnv = { ...process.env, NODE_EXTRA_CA_CERTS: ca,
+      HTTP_PROXY: 'http://127.0.0.1:1', HTTPS_PROXY: 'http://127.0.0.1:1', ALL_PROXY: 'http://127.0.0.1:1',
+      http_proxy: 'http://127.0.0.1:1', https_proxy: 'http://127.0.0.1:1', all_proxy: 'http://127.0.0.1:1', NO_PROXY: '', no_proxy: '' };
+    const childArgs = ['-e', script, require.resolve('../src/cli/cli-upstream-version'), base];
+    const { stdout } = await promisify(execFile)(process.execPath, childArgs, {
+      env: transportEnv,
+      timeout: 15_000,
+    });
+    assert.deepEqual(JSON.parse(stdout), [
+      { version: '3.2.1', registry: `${base}/redirect/` },
+      { version: null, registry: null }, { version: null, registry: null }, { version: null, registry: null },
+    ]);
+    const { stdout: untrusted } = await promisify(execFile)(process.execPath, childArgs, {
+      env: { ...transportEnv, NODE_EXTRA_CA_CERTS: '' }, timeout: 15_000,
+    });
+    assert.deepEqual(JSON.parse(untrusted), Array.from({ length: 4 }, () => ({ version: null, registry: null })),
+      'a server signed by an untrusted CA must still be rejected');
+  } finally {
+    if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

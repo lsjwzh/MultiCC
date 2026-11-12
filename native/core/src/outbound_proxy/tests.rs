@@ -138,6 +138,48 @@ fn proxy_choice_matches_the_javascript() {
     }
 }
 
+#[test]
+fn loopback_no_proxy_merging_matches_the_javascript() {
+    let mut env = Env::new();
+    env.insert("no_proxy".into(), "example.com\tsvc.local".into());
+    env.insert("OTHER".into(), "1".into());
+    let merged = merge_loopback_no_proxy(&env);
+    let entries: Vec<&str> = merged["no_proxy"].split(',').collect();
+    assert_eq!(
+        entries,
+        vec![
+            "example.com",
+            "svc.local",
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "[::1]"
+        ]
+    );
+    assert_eq!(merged["no_proxy"], merged["NO_PROXY"]);
+    assert_eq!(merged["OTHER"], "1");
+
+    // `ensureLoopbackNoProxyEnv` leaves a clean environment alone and rewrites
+    // a proxied one in place.
+    let clean = ensure_loopback_no_proxy_env(&env);
+    assert_eq!(clean, env);
+    let mut proxied = Env::new();
+    proxied.insert("HTTP_PROXY".into(), "http://p:1".into());
+    let rewritten = ensure_loopback_no_proxy_env(&proxied);
+    assert_eq!(rewritten["HTTP_PROXY"], "http://p:1");
+    assert!(rewritten["no_proxy"].contains("127.0.0.1"));
+    assert_eq!(rewritten["no_proxy"], rewritten["NO_PROXY"]);
+}
+
+#[test]
+fn invalidate_forces_the_next_system_read() {
+    let mut cache = Cache::default();
+    cache.slot.store(SystemProxy::default(), 1_000);
+    assert!(!cache.slot.due(1_001, 30_000));
+    cache.invalidate();
+    assert!(cache.slot.due(1_001, 30_000));
+}
+
 fn read_scripted(reads: &mut usize, systems: &[Value]) -> Result<SystemProxy, ProxyError> {
     let scripted = systems.get(*reads);
     *reads += 1;

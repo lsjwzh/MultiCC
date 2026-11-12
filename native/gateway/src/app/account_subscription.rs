@@ -23,7 +23,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::Response;
@@ -40,9 +39,8 @@ use super::App;
 /// routers already write this file, so the schema is shared, not new.
 pub const FILE_NAME: &str = "provider-limit-cache.db";
 
-/// `execFile('/usr/sbin/scutil', ['--proxy'], { timeout: 2000, maxBuffer: 32768 })`.
-const SCUTIL_TIMEOUT: Duration = Duration::from_secs(2);
-const SCUTIL_MAX_OUTPUT: usize = 32768;
+/// `execFile('/usr/sbin/scutil', ['--proxy'], { timeout: 2000, maxBuffer: 32768 })`
+/// lives in `crate::outbound::read_mac_system_proxy`.
 /// `createProxyPolicy`'s default `refreshMs`.
 const SYSTEM_REFRESH_MS: i64 = 30_000;
 
@@ -308,25 +306,10 @@ fn platform_name() -> &'static str {
     }
 }
 
-/// `readMacSystemProxy`: a 2s deadline and a 32KiB ceiling, failures as an
-/// error (the caller preserves the last known policy).
+/// `readMacSystemProxy`: shared with the front door's outbound client, so the
+/// 2s deadline and 32KiB ceiling have one implementation.
 async fn read_mac_system_proxy() -> Result<SystemProxy, ProxyError> {
-    let output = tokio::time::timeout(
-        SCUTIL_TIMEOUT,
-        tokio::process::Command::new("/usr/sbin/scutil")
-            .arg("--proxy")
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
-    match output {
-        Ok(Ok(output)) if output.status.success() && output.stdout.len() <= SCUTIL_MAX_OUTPUT => {
-            Ok(outbound_proxy::parse_mac_system_proxy(
-                &String::from_utf8_lossy(&output.stdout),
-            ))
-        }
-        _ => Err(ProxyError("system proxy discovery failed")),
-    }
+    crate::outbound::read_mac_system_proxy().await
 }
 
 /// Answers the route. The id checks sit in front of the whole query, so a 400

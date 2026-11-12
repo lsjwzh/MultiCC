@@ -266,3 +266,36 @@ test('a scheduled user delay atomically becomes ordinary task work', async t => 
     activeEntryId: null,
   });
 });
+
+test('wait read projections preserve metadata isolation and hide private hashes', async t => {
+  const { waits } = serviceFixture(t);
+  const registered = await waits.register({ id: 'isolated', sessionId: 'session', metadata: { nested: { value: 1 } } });
+  await waits.resolveCallback(registered.id, registered.token, { result: 'done' });
+  const full = await waits.get(registered.id);
+  assert.equal('callbackTokenHash' in full, false);
+  assert.equal('resolutionPayloadHash' in full, false);
+  full.metadata.nested.value = 2;
+  const [listed] = await waits.list({ sessionId: 'session', status: 'resolved' });
+  assert.equal(listed.metadata.nested.value, 1);
+  assert.equal('callbackTokenHash' in listed, false);
+  assert.equal('resolutionPayloadHash' in listed, false);
+  listed.metadata.nested.value = 3;
+  assert.equal((await waits.get(registered.id)).metadata.nested.value, 1);
+  assert.equal(await waits.get('absent'), null);
+});
+
+test('session wait cancellation selects only pending candidates and leaves history unread', async () => {
+  const active = { id: 'active', sessionId: 'session', status: 'pending' };
+  const draft = { waits: new Proxy({}, { ownKeys() { throw new Error('scanned resolved wait history'); } }),
+    select(collection, { where }) {
+      assert.equal(collection, 'waits');
+      assert.deepEqual(where, { sessionId: 'session', status: 'pending' });
+      return [active];
+    } };
+  const waits = createWaitService({ now: () => 100, store: {
+    read: async fn => fn(draft), mutate: async fn => fn(draft),
+  } });
+  assert.deepEqual(await waits.cancelForSession('session'), { ok: true, cancelled: 1 });
+  assert.equal(active.status, 'cancelled');
+  assert.equal(active.cancelledAt, 100);
+});
