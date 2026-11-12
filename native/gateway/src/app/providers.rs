@@ -38,6 +38,7 @@ use multicc_core::http_gate::{
 };
 use multicc_core::js::serde::{js_string, truthy, value_or_empty};
 use multicc_core::js::string::js_trim;
+use multicc_core::local_cli_sync;
 use multicc_core::provider_misc::{self, api_meta, to_provider_dto};
 use multicc_core::provider_registry::{
     self, create_payload, defaults_updates, delete_response, detach_failed_response,
@@ -89,6 +90,10 @@ pub enum Route {
     DefaultsGet,
     DefaultsPut,
     DefaultsOptions,
+    LocalCliGet,
+    LocalCliOptions,
+    SyncLocalPost,
+    SyncLocalOptions,
     SpeedtestPost,
     SpeedtestOptions,
     V1ProvidersGet,
@@ -156,6 +161,13 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
                         _ => None,
                     };
                 }
+                if parts[1].eq_ignore_ascii_case("local-cli") {
+                    return match method.as_str() {
+                        "GET" | "HEAD" => Some(Route::LocalCliGet),
+                        "OPTIONS" => Some(Route::LocalCliOptions),
+                        _ => None,
+                    };
+                }
                 None
             }
             3 => match method.as_str() {
@@ -187,6 +199,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
                     match method.as_str() {
                         "POST" => Some(Route::SpeedtestPost),
                         "OPTIONS" => Some(Route::SpeedtestOptions),
+                        _ => None,
+                    }
+                } else if parts[3].eq_ignore_ascii_case("sync-local") {
+                    match method.as_str() {
+                        "POST" => Some(Route::SyncLocalPost),
+                        "OPTIONS" => Some(Route::SyncLocalOptions),
                         _ => None,
                     }
                 } else if parts[3].eq_ignore_ascii_case("relay-import-code") && get_like(method) {
@@ -1391,6 +1409,96 @@ async fn v1_providers(ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
 }
 
 /// Answers one claimed route.
+/// `GET|HEAD /api/providers/local-cli`: which provider the user's own
+/// terminal currently points at. Never returns credentials.
+async fn local_cli(app: &Arc<App>, ctx: &RequestCtx) -> Response<Body> {
+    let root = app.data_root.clone();
+    let home = app.home_dir.clone();
+    let answered = tokio::task::spawn_blocking(move || {
+        let store = multicc_core::provider_store::read(&root.join("providers.json"))
+            .ok()
+            .flatten();
+        let records = local_cli_sync::records_from_store(store.as_ref());
+        let paths = local_cli_sync::paths_from_env(&home);
+        local_cli_sync::local_state(&paths, &records)
+    })
+    .await;
+    match answered {
+        Ok(value) => express::json(ctx, 200, &value, &[]),
+        Err(_) => express::error(ctx, 500, "native route panicked"),
+    }
+}
+
+/// `POST /api/providers/:appType/:id/sync-local`: merge one provider into the
+/// user's own `~/.claude/settings.json` / `~/.codex/config.toml`.
+async fn sync_local(app: &Arc<App>, ctx: &RequestCtx) -> Response<Body> {
+    let Some((app_type, id)) = provider_params(&ctx.path) else {
+        return bad_param(ctx);
+    };
+    if !matches!(app_type.as_str(), "claude" | "codex") {
+        return express::json(
+            ctx,
+            404,
+            &json!({ "error": "供应商不存在", "code": "PROVIDER_NOT_FOUND" }),
+            &[],
+        );
+    }
+    let _serialized = app.providers_write.lock().await;
+    let root = app.data_root.clone();
+    let home = app.home_dir.clone();
+    let task_type = app_type.clone();
+    let task_id = id.clone();
+    let answered = tokio::task::spawn_blocking(move || {
+        let store = multicc_core::provider_store::read(&root.join("providers.json")).map_err(
+            |_| {
+                local_cli_sync::SyncError::new(
+                    500,
+                    "PROVIDERS_READ_FAILED",
+                    "读取供应商存储失败",
+                )
+            },
+        )?;
+        let records = local_cli_sync::records_from_store(store.as_ref());
+        let paths = local_cli_sync::paths_from_env(&home);
+        local_cli_sync::sync(&local_cli_sync::SyncRequest {
+            data_root: &root,
+            paths: &paths,
+            records: &records,
+            app_type: &task_type,
+            provider_id: &task_id,
+        })
+    })
+    .await;
+    match answered {
+        Ok(Ok(report)) => express::json(
+            ctx,
+            200,
+            &json!({
+                "ok": true,
+                "appType": app_type,
+                "providerId": id,
+                "files": report
+                    .files
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<String>>(),
+                "backupDir": report
+                    .backup_dir
+                    .map(|path| path.to_string_lossy().into_owned()),
+                "changed": report.changed,
+            }),
+            &[],
+        ),
+        Ok(Err(error)) => express::json(
+            ctx,
+            error.status,
+            &json!({ "error": error.message, "code": error.code }),
+            &[],
+        ),
+        Err(_) => express::error(ctx, 500, "native route panicked"),
+    }
+}
+
 pub async fn handle(
     app: &Arc<App>,
     route: Route,
@@ -1427,6 +1535,10 @@ pub async fn handle(
         Route::RelaySharesGet => relay_shares(ctx, host_port_num).await,
         Route::RelayShareDelete => relay_share_delete(app, ctx, host_port_num).await,
         Route::RelayShareCodeGet => relay_share_code(ctx, host_port_num).await,
+        Route::LocalCliOptions => super::options(ctx, "GET,HEAD"),
+        Route::SyncLocalOptions => super::options(ctx, "POST"),
+        Route::LocalCliGet => local_cli(app, ctx).await,
+        Route::SyncLocalPost => sync_local(app, ctx).await,
         Route::DefaultsGet => defaults_get(ctx, host_port_num).await,
         Route::DefaultsPut => defaults_put(app, ctx, body, host_port_num).await,
         Route::SpeedtestPost => speedtest(ctx, host_port_num).await,
@@ -1484,6 +1596,34 @@ mod tests {
             Some(Route::ProbePost)
         );
         // speedtest buffers one JSON answer; it is claimed for POST/OPTIONS.
+        assert_eq!(
+            claim(&Method::GET, "/api/providers/local-cli"),
+            Some(Route::LocalCliGet)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/Providers/local-cli"),
+            Some(Route::LocalCliGet)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/providers/local-cli"),
+            Some(Route::LocalCliOptions)
+        );
+        assert_eq!(claim(&Method::POST, "/api/providers/local-cli"), None);
+        assert_eq!(
+            claim(&Method::POST, "/api/providers/claude/work-1/sync-local"),
+            Some(Route::SyncLocalPost)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/providers/claude/work-1/sync-local"),
+            Some(Route::SyncLocalOptions)
+        );
+        for method in ["GET", "HEAD", "PATCH", "DELETE"] {
+            let method = Method::from_bytes(method.as_bytes()).unwrap();
+            assert_eq!(
+                claim(&method, "/api/providers/claude/work-1/sync-local"),
+                None
+            );
+        }
         assert_eq!(
             claim(&Method::POST, "/api/providers/claude/work-1/speedtest"),
             Some(Route::SpeedtestPost)

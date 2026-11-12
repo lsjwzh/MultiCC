@@ -54,6 +54,9 @@
   // 余量走势（GET /api/providers/limit-history，Map<appType:id, entry>）。
   // 它是可选增强：接口不可用时保持 null，卡片照常渲染，只是不画曲线。
   let trend = null;
+  // 「同步到本地终端」：GET /api/providers/local-cli 的结果，用来在卡片上标出
+  // 终端当前在用的线路；接口不可用（旧服务端）时保持 null，卡片照常渲染。
+  let localCli = null;
   let activeProtocol = 'all';
   // 官方账号的「专用出口」来自这个插件里的身份（每个身份一套隔离的代理出口）。
   const EGRESS_PLUGIN_ID = 'chrome-proxy-launcher';
@@ -590,6 +593,12 @@
     if (terminal) tags.append(make('span', t('airProviderTerminalTag')));
     else if (account) tags.append(make('span', t('airProviderAccountTag')));
     if (provider.hasToken) tags.append(make('span', t('airProviderKeyConfigured')));
+    // 终端在用：本地 ~/.claude/settings.json / ~/.codex/config.toml 指向这条线路。
+    const terminalInUse = localCli && localCli[provider.appType];
+    const inUse = terminalInUse && (
+      (terminalInUse.state === 'official' && terminal)
+      || (terminalInUse.state === 'provider' && terminalInUse.providerId === provider.id));
+    if (inUse) tags.append(make('span', t('airProviderLocalCliActive'), 'local-cli'));
     if (provider.virtual) tags.append(make('span', '虚拟组合'));
     // 专用出口：卡片上标出来，免得要逐个点开编辑框才知道这个账号从哪个 IP 出去。
     if (provider.egressBinding && provider.egressBinding.profileId) {
@@ -645,6 +654,18 @@
     }
     const speed = button(latency.has(provider.id) ? latency.get(provider.id) : t('airProviderSpeedTest'), () => speedTest(provider, speed));
     actions.append(speed);
+    // 同步到本地终端：把这条线路写进用户自己的 ~/.claude/settings.json /
+    // ~/.codex/config.toml，普通终端里新开的 CLI 就会走它。账号类 OAuth 线路
+    // 不能复制（刷新令牌会互相作废），禁用而不是隐藏，免得用户以为是功能缺失。
+    if (!provider.virtual) {
+      const accountLine = !terminal && !provider.baseUrl && !provider.hasToken;
+      const sync = button(t('airProviderSyncToTerminal'), () => syncToTerminal(provider));
+      if (accountLine) {
+        sync.disabled = true;
+        sync.title = t('airProviderSyncToTerminalAccountHint');
+      }
+      actions.append(sync);
+    }
     // 批量迁移：把「主线路绑在这条线路上的所有会话」一次搬到另一条兼容线路上。
     // 每个会话走的仍是 AI 配置弹窗那条 PATCH（src/provider-reassign.js），所以
     // 模型替换 / Auto 会话跳过 / 忙会话下一轮生效这些口径都一致。
@@ -1007,6 +1028,47 @@
       });
   }
 
+  // ── 同步到本地终端 ────────────────────────────────────────────────────────
+  //
+  // POST /api/providers/:appType/:id/sync-local：服务端在写入前把目标文件备份到
+  // 数据目录的 local-cli-sync-backups/ 下，再原子替换。这里只负责确认、提示和
+  // 刷新卡片上的「终端在用」标记。
+  async function loadLocalCli() {
+    try {
+      localCli = await context.api('/api/providers/local-cli');
+    } catch (_) {
+      localCli = null;
+    }
+    if (data) renderCards();
+  }
+
+  function localCliPath(appType) {
+    const state = localCli && localCli[appType];
+    return (state && state.configPath) || (appType === 'codex' ? '~/.codex/config.toml' : '~/.claude/settings.json');
+  }
+
+  async function syncToTerminal(provider) {
+    const path = localCliPath(provider.appType);
+    if (!confirm(t('airProviderSyncToTerminalConfirm', {
+      name: displayName(provider),
+      cli: cliName(provider.appType),
+      path,
+    }))) return;
+    try {
+      const result = await context.api(
+        `/api/providers/${encodeURIComponent(provider.appType)}/${encodeURIComponent(provider.id)}/sync-local`,
+        {},
+        'POST',
+      );
+      const written = result && Array.isArray(result.files) && result.files.length
+        ? result.files[0] : path;
+      context.notice(t('airProviderSyncToTerminalDone', { path: written }));
+    } catch (error) {
+      context.notice(t('airProviderSyncToTerminalFailed', { message: error.message }));
+    }
+    await load();
+  }
+
   async function importProviders() {
     const control = el('air-provider-import');
     control.disabled = true;
@@ -1171,6 +1233,7 @@
       data = catalogApi.normalizeCatalog(await context.api('/api/providers'));
       root._providerData = data; // manage-provider-relay.js 的 shareRelayProvider 只认这个裸全局
       renderDefaults(); renderCards();
+      void loadLocalCli();
       void loadTrend();
       const control = el('air-provider-import');
       if (control) {

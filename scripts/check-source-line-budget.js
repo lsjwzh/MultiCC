@@ -692,9 +692,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +1 双语键（deckClearAll）：右下角提醒牌堆散开后的「全部消除」，消息特别多时
     // 一次清空整摞。源词典已补；生成物按当前真实文件登记（生成器源仍缺 20 个
     // unattended 键，重跑会丢键，故不重新生成），实测 10386/674467，抬一格。
-    maxLines: 10386,
+    // 供应商面板「同步到本地终端」：+6 双语键（SyncToTerminal/SyncToTerminalAccountHint/
+    // SyncToTerminalConfirm/SyncToTerminalDone/SyncToTerminalFailed/LocalCliActive），
+    // 中英各 6 行 = +12 行；同样只往生成物里补键、不重跑生成器，实测 10398/675592。
+    maxLines: 10398,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 674467,
+    maxBytes: 675592,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
