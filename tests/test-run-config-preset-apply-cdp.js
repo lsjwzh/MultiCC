@@ -115,9 +115,11 @@ test('预设带 OpenCode 原生线路：冷缓存不拦，热缓存里查不到�
     const warmAlias = await applyPreset(page, CN_MODELS, [{ provider: 'opencodego', model: 'deepseek-v4.1-flash' }]);
     assert.equal(warmAlias.includes('已不可用'), false, `旧别名 opencodego 应等同 opencode-go，实际：${JSON.stringify(warmAlias)}`);
 
-    // 热缓存里只有 Zen（opencode-go 确实没了）→ 判不可用。
+    // 热缓存里只有 Zen（opencode-go 确实没了）→ 只跳过这一条，其余线路照常套用。
     const warmGone = await applyPreset(page, CN_MODELS, [{ provider: 'opencode', model: 'deepseek-v4.1-flash' }]);
-    assert.equal(warmGone.includes('已不可用'), true, `热缓存里没有 opencode-go 应判不可用，实际：${JSON.stringify(warmGone)}`);
+    assert.ok(warmGone.includes('跳过已失效的'), `热缓存里没有 opencode-go 应跳过它，实际：${JSON.stringify(warmGone)}`);
+    assert.ok(warmGone.includes('opencode'), `跳过清单应点名 opencode 线路，实际：${JSON.stringify(warmGone)}`);
+    assert.equal(warmGone.includes('未套用'), false, `其余有效线路应照常套用，实际：${JSON.stringify(warmGone)}`);
   });
 });
 
@@ -160,16 +162,35 @@ test('预设列表：含已删除线路的预设带「N 条线路已删除」标
   });
 });
 
-test('套用预设被拦：提示一次列出全部已删除线路', async t => {
+test('套用含已删除线路的预设：跳过失效线路，有效线路照常套用', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-preset-apply-cdp'), locale: 'zh-CN' }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/run-config-host.html');
     await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"');
     const status = await applyPreset(page, DEAD_PRESET, null);
-    assert.ok(status.includes('未套用'), `应拦下套用，实际：${JSON.stringify(status)}`);
-    assert.ok(status.includes('deadbeef（claude-exp）'), `提示应列出 deadbeef，实际：${JSON.stringify(status)}`);
-    assert.ok(status.includes('cafebabe（claude-exp）'), `提示应列出 cafebabe，实际：${JSON.stringify(status)}`);
+    assert.equal(status.includes('未套用'), false, `有一条有效线路就应套用，实际：${JSON.stringify(status)}`);
+    assert.ok(status.includes('已套用 1 条有效线路'), `应只套用 1 条有效线路，实际：${JSON.stringify(status)}`);
+    assert.ok(status.includes('deadbeef（claude-exp）'), `提示应列出跳过的 deadbeef，实际：${JSON.stringify(status)}`);
+    assert.ok(status.includes('cafebabe（claude-exp）'), `提示应列出跳过的 cafebabe，实际：${JSON.stringify(status)}`);
+    // 底部摘要反映的是套用后的池子：只剩那条有效线路。
+    const foot = await page.evaluate(`(document.querySelector(${JSON.stringify(inDialog('.air-config-footer p'))})||{}).textContent||''`);
+    assert.ok(foot.includes('1 条线路'), `池子应只剩 1 条线路，实际：${JSON.stringify(foot)}`);
+  });
+});
+
+test('套用全部线路都已删除的预设：不套用并列出全部失效线路', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-preset-apply-cdp'), locale: 'zh-CN' }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"');
+    const allDead = { ...DEAD_PRESET, id: 'palldead01', name: '全失效',
+      candidates: DEAD_PRESET.candidates.filter(item => item.providerId !== 'p-claude-1') };
+    const status = await applyPreset(page, allDead, null);
+    assert.ok(status.includes('未套用'), `一条有效线路都没有应不套用，实际：${JSON.stringify(status)}`);
+    assert.ok(status.includes('deadbeef（claude-exp）') && status.includes('cafebabe（claude-exp）'),
+      `提示应列出全部失效线路，实际：${JSON.stringify(status)}`);
   });
 });
 
