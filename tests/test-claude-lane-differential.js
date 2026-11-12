@@ -135,6 +135,9 @@ test('native lane is byte-identical to the frozen SDK transport', { timeout: 900
     FAKE_CLAUDE_SCENARIO: 'basic',
     CLAUDE_AGENT_SDK_CLIENT_APP: 'multicc-claude-exp/1.0',
     CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1',
+    // The native kernel defaults the 1-hour prompt-cache TTL (claude_lane.rs
+    // default_prompt_cache_ttl) and leaves an explicit value alone.
+    ENABLE_PROMPT_CACHING_1H: '1',
   };
   t.after(() => {
     for (const file of [oracleLog, nativeLog]) {
