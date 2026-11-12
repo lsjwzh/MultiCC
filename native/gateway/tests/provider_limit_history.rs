@@ -11,7 +11,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -41,11 +41,6 @@ fn unique(tag: &str) -> PathBuf {
         "multicc-gateway-plh-{}-{tag}-{nanos}",
         std::process::id()
     ))
-}
-
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
 }
 
 fn golden() -> Value {
@@ -126,7 +121,6 @@ impl Gateway {
         } else {
             seed_history(&data, &golden, base);
         }
-        let port = free_port();
         let log = fs::File::create(dir.join("gateway.log")).unwrap();
         let mut command = Command::new(GATEWAY_BIN);
         command
@@ -135,13 +129,13 @@ impl Gateway {
             .arg(&dir)
             .arg("--node")
             .arg(std::env::var("MULTICC_TEST_NODE").unwrap_or_else(|_| "node".to_string()))
+            .arg("--ephemeral-loopback")
             .arg("server.js")
             .env_clear()
             .env(
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
             )
-            .env("PORT", port.to_string())
             .env("ACCESS_TOKEN", TOKEN)
             .env("HOME", &home)
             .env("MULTICC_DATA_DIR", &data)
@@ -165,11 +159,11 @@ impl Gateway {
             }
         }
         let child = command.spawn().expect("spawn multicc-gateway");
-        let gateway = Self {
+        let mut gateway = Self {
             dir,
             #[cfg(unix)]
             data,
-            port,
+            port: 0,
             child,
         };
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -181,6 +175,15 @@ impl Gateway {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        // Read the port the gateway already owns; never probe and release it.
+        gateway.port = gateway
+            .log()
+            .lines()
+            .find_map(|line| line.strip_prefix("[multicc-gateway] listening on 127.0.0.1:"))
+            .and_then(|port| port.split_whitespace().next())
+            .and_then(|port| port.parse::<u16>().ok())
+            .filter(|port| *port != 0)
+            .expect("gateway reported its actual loopback port");
         (gateway, base)
     }
 
@@ -201,10 +204,8 @@ impl Gateway {
             request.push_str(&format!("{name}: {value}\r\n"));
         }
         request.push_str("\r\n");
-        // The gateway's port is probed and released before it binds, so a
-        // parallel run can briefly steer a fresh connection at another
-        // listener that resets it. Replay only when nothing was read: a reset
-        // after any byte arrived means the response really was cut short.
+        // Replay a transport reset only when nothing was read: a reset after
+        // any byte arrived means the response really was cut short.
         let mut raw = Vec::new();
         for attempt in 0..4 {
             let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect gateway");
