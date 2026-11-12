@@ -160,9 +160,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-12 预设里的悬空供应商：保存拒绝、下拉标记、套用提示列出全部失效
   // 线路，共用一个 missingProviderLines 纯函数，另加打开面板时的目录预热；
   // 实测 3323 行 / 168986 字节，按棘轮上调；模型字段那一族的拆分条件不变。
+  // 同日套用预设改为跳过失效线路、只套用有效线路（全失效才拦），实测 3322 行 /
+  // 169362 字节：行数回落一行、字节因跳过逻辑多 376，按实测重登记。
   'public/run-config.js': Object.freeze({
-    ceiling: 3323,
-    byteCeiling: 168986,
+    ceiling: 3322,
+    byteCeiling: 169362,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
@@ -682,9 +684,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 预设悬空供应商：+4 双语键（runConfigPresetLinesGone/LinesUnavailable/
     // MissingBadge/MissingHint），中英各 4 行 = +8 行；countLines 口径实测
     // 10382/674121，抬一格。
-    maxLines: 10382,
+    // 预设套用跳过失效线路：+1 双语键（runConfigPresetAppliedSkipped）并改写
+    // MissingHint，中英各 1 行 = +2 行；countLines 口径实测 10384/674398，抬一格。
+    maxLines: 10384,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 674121,
+    maxBytes: 674398,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

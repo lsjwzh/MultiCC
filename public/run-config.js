@@ -2814,54 +2814,50 @@
         name: '', enabled: true,
       }));
       const available = new Set(availableClis().filter(item => item.ok).map(item => item.cli));
-      // 一次列出所有失效线路，而不是碰到第一条就说一句笼统的「不可用」：车道没装
-      // 的整条车道算一个，托管线路看它那条车道的目录里还有没有这个供应商，原生
-      // 线路看它自己的目录还认不认。
+      // 失效线路只跳过、不连累整份预设：车道没装、目录取不到、供应商已删、原生
+      // 线路查不到、线路和 CLI 不兼容的行各自剔掉，其余有效线路照常套用，并在
+      // 状态里一次列出跳过了哪些。只有一条有效线路都不剩才不套用。
       const gone = [];
       const seenGone = new Set();
-      const addGone = entry => {
-        const key = `${entry.cli}\n${entry.providerId || ''}`;
+      const skipRows = new Set();
+      const addGone = (row, label) => {
+        skipRows.add(row);
+        const key = `${row.cli}\n${row.providerId || ''}`;
         if (seenGone.has(key)) return;
         seenGone.add(key);
-        gone.push(entry);
+        gone.push({ providerId: row.providerId, cli: row.cli, label });
       };
+      const shortId = id => String(id || '').slice(0, 8);
       const wantedClis = new Set();
       for (const row of nextRows) {
-        const cli = row.cli;
-        if (!available.has(canonicalChoiceCli(cli))) {
-          addGone({ providerId: row.providerId, cli, label: `${cli}（CLI）` });
+        if (!available.has(canonicalChoiceCli(row.cli))) addGone(row, `${row.cli}（CLI）`);
+        else if (!isNativeLine(row.providerId)) wantedClis.add(row.cli);
+      }
+      const unreadable = new Set();
+      await Promise.all([...wantedClis].map(cli => loadCatalog(cli).catch(() => { unreadable.add(cli); })));
+      if (closed) return;
+      const missing = new Map(missingProviderLines(nextRows, catalogs)
+        .map(entry => [`${entry.cli}\n${entry.providerId}`, entry.label]));
+      for (const row of nextRows) {
+        if (skipRows.has(row)) continue;
+        if (isNativeLine(row.providerId)) {
+          if (!nativeLineAvailable(row.providerId)) addGone(row, `${nativeLabelOf(row.providerId)}（${row.cli}）`);
           continue;
         }
-        if (!isNativeLine(row.providerId)) wantedClis.add(cli);
+        // 目录取不到 = 不知道这条线路还在不在，也就没法校验和运行，先跳过。
+        if (unreadable.has(row.cli)) { addGone(row, `${shortId(row.providerId)}（${row.cli}）`); continue; }
+        const deleted = missing.get(`${row.cli}\n${row.providerId}`);
+        if (deleted) { addGone(row, deleted); continue; }
+        if (rowIssue(row, rowLine(row), cliLabel)) addGone(row, `${shortId(row.providerId)}（${row.cli}）`);
       }
-      for (const cli of wantedClis) {
-        try { await loadCatalog(cli); } catch (_) {
-          // 目录取不到只是「不知道」，别据此报线路被删；保持原来的笼统拦法。
-          presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。');
-          presetSelect.value = activePresetId;
-          return;
-        }
-      }
-      for (const entry of missingProviderLines(nextRows, catalogs)) addGone(entry);
-      for (const row of nextRows) {
-        if (isNativeLine(row.providerId) && !nativeLineAvailable(row.providerId)) {
-          addGone({ providerId: row.providerId, cli: row.cli, label: `${nativeLabelOf(row.providerId)}（${row.cli}）` });
-        }
-      }
-      if (gone.length) {
+      const kept = nextRows.filter(row => !skipRows.has(row));
+      if (!kept.length) {
         presetStatus.textContent = tt('runConfigPresetLinesUnavailable',
           '预设里的这些线路已不可用：{lines}。未套用。', { lines: missingLinesText(gone) });
         presetSelect.value = activePresetId;
         return;
       }
-      if (nextRows.some(row => isNativeLine(row.providerId)
-        ? false
-        : !!rowIssue(row, rowLine(row), cliLabel))) {
-        presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。');
-        presetSelect.value = activePresetId;
-        return;
-      }
-      rows = nextRows;
+      rows = kept;
       if (preset.pick === PICK_ORDER || preset.pick === PICK_DIFFICULTY) pick = preset.pick;
       if (preset.tiering === PRICE_TIERING || preset.tiering === DEFAULT_TIERING) tiering = preset.tiering;
       if (preset.maxAttempts) maxAttempts = Number(preset.maxAttempts);
@@ -2876,7 +2872,10 @@
       renderAuto();
       renderSub(true);
       renderFooter();
-      presetStatus.textContent = tt('runConfigPresetAppliedDraft', '已套用草稿；检查线路后点击底部“保存”。');
+      presetStatus.textContent = gone.length
+        ? tt('runConfigPresetAppliedSkipped', '已套用 {count} 条有效线路，跳过已失效的：{lines}。检查后点击底部“保存”。',
+          { count: kept.length, lines: missingLinesText(gone) })
+        : tt('runConfigPresetAppliedDraft', '已套用草稿；检查线路后点击底部“保存”。');
     }
 
     // ── 页脚 / 忙闲 / 子任务 ────────────────────────────────────────────────
