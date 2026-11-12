@@ -111,6 +111,31 @@ fn sdk_debug_enabled(value: Option<&str>) -> bool {
     }
 }
 
+/// The CLI's prompt-cache switches. Any of them already present in the
+/// environment is an explicit choice and is left alone.
+const PROMPT_CACHE_SWITCHES: [&str; 3] = [
+    "ENABLE_PROMPT_CACHING_1H",
+    "FORCE_PROMPT_CACHING_5M",
+    "DISABLE_PROMPT_CACHING",
+];
+
+/// Default every chat lane to the 1-hour prompt-cache TTL.
+///
+/// With the CLI's 5-minute default, a turn that starts after more than five
+/// idle minutes rewrites the whole cached context. Measured over seven days of
+/// local sessions (2026-11-12), half of all turns started after such a gap and
+/// those rewrites were about 30% of spend, most of them within the hour. A
+/// 1-hour write costs 2x input instead of 1.25x, so the net estimate is roughly
+/// 13% less. GLM, DeepSeek V4 Pro and DeepSeek Flash were checked live: they
+/// accept the `ttl: "1h"` cache-control field and return 200.
+/// To opt out, set `FORCE_PROMPT_CACHING_5M=1` (or any switch above).
+fn default_prompt_cache_ttl(env: &mut Vec<(String, String)>) {
+    if PROMPT_CACHE_SWITCHES.iter().any(|key| has_var(env, key)) {
+        return;
+    }
+    set_var(env, "ENABLE_PROMPT_CACHING_1H", "1");
+}
+
 /// Reproduce `processOptions()` + the SDK transport's env mutation.
 pub fn launch(input: &LaunchInput) -> Launch {
     // 1. The environment MultiCC hands to the SDK.
@@ -121,6 +146,7 @@ pub fn launch(input: &LaunchInput) -> Launch {
         .collect();
     set_var(&mut env, "CLAUDE_AGENT_SDK_CLIENT_APP", CLIENT_APP);
     set_var(&mut env, "CLAUDE_CODE_STARTUP_FAILURE_RESULTS", "1");
+    default_prompt_cache_ttl(&mut env);
 
     // 2. Settings file content. Credentials travel through this private file,
     // not argv, so they never show up in `ps`.
@@ -729,6 +755,28 @@ mod tests {
             "DEBUG is dropped without DEBUG_CLAUDE_AGENT_SDK"
         );
         assert_eq!(env.get("ANTHROPIC_AUTH_TOKEN").unwrap(), "secret-token");
+    }
+
+    #[test]
+    fn prompt_cache_defaults_to_one_hour_ttl() {
+        let env: HashMap<String, String> = launch(&launch_input()).env.into_iter().collect();
+        assert_eq!(env.get("ENABLE_PROMPT_CACHING_1H").unwrap(), "1");
+    }
+
+    #[test]
+    fn an_explicit_prompt_cache_switch_is_left_alone() {
+        for key in PROMPT_CACHE_SWITCHES {
+            let mut input = launch_input();
+            input.env.insert(key.into(), json!("0"));
+            let env: HashMap<String, String> = launch(&input).env.into_iter().collect();
+            assert_eq!(env.get(key).unwrap(), "0", "{key} keeps its value");
+            if key != "ENABLE_PROMPT_CACHING_1H" {
+                assert!(
+                    !env.contains_key("ENABLE_PROMPT_CACHING_1H"),
+                    "{key} opts out of the 1h default"
+                );
+            }
+        }
     }
 
     #[test]

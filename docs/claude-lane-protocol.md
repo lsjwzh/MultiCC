@@ -198,6 +198,7 @@ transport 再删两个：`NODE_OPTIONS` 一律删除；`DEBUG` 删除，除非
 |---|---|---|
 | `CLAUDE_AGENT_SDK_CLIENT_APP` | `multicc-claude-exp/1.0` | `claude-sdk-config.js` |
 | `CLAUDE_CODE_STARTUP_FAILURE_RESULTS` | `1` | 同上 |
+| `ENABLE_PROMPT_CACHING_1H` | `1`，仅当环境里 `ENABLE_PROMPT_CACHING_1H` / `FORCE_PROMPT_CACHING_5M` / `DISABLE_PROMPT_CACHING` 都未设置时追加（想退回 5 分钟缓存就设 `FORCE_PROMPT_CACHING_5M=1`）。它不以 `ANTHROPIC_`/`CLAUDE_CODE_` 开头，所以不写进 settings 文件 | `claude_lane.rs` `default_prompt_cache_ttl` |
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` | 每轮 attempt 的值；受管路由时被本地 relay 的 `http://127.0.0.1:<port>` + 随机令牌覆盖 | cfg.env / relay env |
 
 ### 4.3 settings 文件（`--settings <path>`）
