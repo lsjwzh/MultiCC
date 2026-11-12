@@ -81,7 +81,13 @@ test('a still-pending mark keeps its card across a reload: the deck mirrors the 
     const spread = await page.evaluate(`[...document.querySelectorAll('.task-notify-card')]
       .map(el => { const r = el.getBoundingClientRect(); return [Math.round(r.x), Math.round(r.y)]; })`);
     assert.equal(new Set(spread.map(point => point.join(','))).size, 3, 'each card has its own place on the arc');
+    await new Promise(resolve => setTimeout(resolve, 700));   // let the fan-out transition settle
     await page.screenshot('fanned-out.png');
+
+    // 消息多时的批量出口：散开后一次点掉整摞，不必逐张 ✕ / 打开。
+    await page.evaluate(`document.querySelector('.task-notify-clear').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.task-notify-deck').hidden === true`,
+      { timeoutMs: 3000, intervalMs: 100 }), 'clear-all takes the whole deck off in one click');
 
     // 重载：标记还在（没人打开过它），右下角就不该空着。
     await page.navigate('/air?dir=d1');

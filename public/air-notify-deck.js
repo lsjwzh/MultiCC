@@ -11,6 +11,8 @@
 //                    [收起] fold it back; a card that leaves flies away and the
 //                    rest re-lay out. Narrow screens get a column instead of
 //                    an arc (an arc wider than the phone is useless).
+//   fanned out, many → [全部消除] above [收起] takes the whole pile off at once —
+//                    forty reminders should not need forty clicks or forty opens.
 //
 // This module only draws. Which tasks are on the deck is decided by the
 // notifier: it calls upsert() when a task needs attention and remove() when
@@ -45,6 +47,7 @@
     let deck = null;
     let scrim = null;
     let hub = null;
+    let clearBtn = null;
     let badge = null;
     let hint = null;
     let more = null;
@@ -68,10 +71,14 @@
       hub = el('button', 'task-notify-hub', t('deckCollapse'));
       hub.type = 'button';
       hub.onclick = event => { event?.stopPropagation?.(); setOpen(false); };
+      // 一次清空整摞（消息多时不必逐张点 ✕）；只在散开状态下出现。
+      clearBtn = el('button', 'task-notify-clear', t('deckClearAll'));
+      clearBtn.type = 'button';
+      clearBtn.onclick = event => { event?.stopPropagation?.(); clear(); };
       badge = el('div', 'task-notify-badge');
       hint = el('div', 'task-notify-hint');
       more = el('div', 'task-notify-more');
-      deck.append(hub, badge, hint, more);
+      deck.append(hub, clearBtn, badge, hint, more);
       doc.body.append(scrim, deck);
       doc.addEventListener?.('keydown', event => { if (event.key === 'Escape' && open) setOpen(false); });
       win.addEventListener?.('resize', () => { if (open) render(); });

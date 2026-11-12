@@ -150,6 +150,22 @@ test('✕ takes only that card off; the deck folds when one card is left', () =>
   assert.equal(dom.deckEl().hidden, true);
 });
 
+test('全部消除 takes the whole deck off in one click', () => {
+  const dom = fakeDom();
+  const deck = makeDeck(dom);
+  for (let i = 0; i < 12; i++) deck.upsert({ id: 't' + i, title: 't' + i }, 'completed');
+  deck.setOpen(true);
+  const clearBtn = dom.deckEl().find(dom.has('task-notify-clear'));
+  assert.ok(clearBtn, 'the fanned-out deck renders a clear-all action');
+  assert.equal(deck.ids().length, 12);
+  clearBtn.onclick({ stopPropagation() {} });
+  assert.deepEqual(deck.ids(), [], 'one click empties the whole pile');
+  assert.equal(deck.isOpen(), false);
+  assert.equal(dom.deckEl().hidden, true);
+  dom.runTimers();
+  assert.equal(dom.cards().length, 0);
+});
+
 test('打开 opens that task and removes only its card', () => {
   const dom = fakeDom();
   const opened = [];
@@ -232,5 +248,35 @@ test('notifier: a batch lands on the deck; opening or answering removes the card
   ctrl.onSnapshot(tasks, '');
   assert.deepEqual(ctrl.deckIds(), ['a']);
   ctrl.onSnapshot(tasks, 'a');           // now on screen
+  assert.deepEqual(ctrl.deckIds(), []);
+});
+
+test('notifier: 全部消除 is remembered, the same pending marks do not come back', () => {
+  const dom = fakeDom();
+  const store = new Map();
+  dom.win.localStorage = {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  };
+  dom.win.speechSynthesis = null;
+  loadDeck(dom);
+  new Function('window', 'document', NOTIFY_SRC)(dom.win, dom.doc);
+  const ctrl = dom.win.MultiCCTaskNotify.create({
+    window: dom.win, document: dom.doc, presence: null, now,
+    setTimeout: dom.win.setTimeout, clearTimeout: dom.win.clearTimeout,
+    openTask() {},
+  });
+  const tasks = ['a', 'b', 'c'].map((id, i) => ({
+    id, title: id.toUpperCase(), status: 'done',
+    attention: { kind: 'completed', at: 100 + i },
+  }));
+  ctrl.onSnapshot(tasks, '');
+  assert.deepEqual(ctrl.deckIds(), ['c', 'b', 'a']);
+  dom.deckEl().find(dom.has('task-notify-clear')).onclick({ stopPropagation() {} });
+  assert.deepEqual(ctrl.deckIds(), []);
+  // Marks are still pending on the server (nobody opened the tasks): the page
+  // keeps the dismissal, exactly like a per-card ✕.
+  ctrl.onSnapshot(tasks, '');
   assert.deepEqual(ctrl.deckIds(), []);
 });
