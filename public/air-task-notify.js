@@ -96,6 +96,7 @@
     deckLabel: { zh: '任务提醒', en: 'Task reminders' },
     deckHint: { zh: '共 {n} 条 · 点击展开', en: '{n} reminders · click to expand' },
     deckCollapse: { zh: '收起 ✕', en: 'Collapse ✕' },
+    deckClearAll: { zh: '全部消除', en: 'Clear all' },
     deckMore: { zh: '还有 {n} 条较早的', en: '{n} older' },
     // 语音播报那一句：比弹窗标题多一个任务名，所以另开三条而不是复用 completed/errored/waiting。
     spokenCompleted: { zh: '任务「{title}」已完成', en: 'Task "{title}" done' },

@@ -689,9 +689,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 10382/674121，抬一格。
     // 预设套用跳过失效线路：+1 双语键（runConfigPresetAppliedSkipped）并改写
     // MissingHint，中英各 1 行 = +2 行；countLines 口径实测 10384/674398，抬一格。
-    maxLines: 10384,
+    // +1 双语键（deckClearAll）：右下角提醒牌堆散开后的「全部消除」，消息特别多时
+    // 一次清空整摞。源词典已补；生成物按当前真实文件登记（生成器源仍缺 20 个
+    // unattended 键，重跑会丢键，故不重新生成），实测 10386/674467，抬一格。
+    maxLines: 10386,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 674398,
+    maxBytes: 674467,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

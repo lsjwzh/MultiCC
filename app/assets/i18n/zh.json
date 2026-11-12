@@ -3970,6 +3970,7 @@
   "deckLabel": "任务提醒",
   "deckHint": "共 {n} 条 · 点击展开",
   "deckCollapse": "收起 ✕",
+  "deckClearAll": "全部消除",
   "deckMore": "还有 {n} 条较早的",
   "floatOpen": "打开",
   "floatClose": "✕",

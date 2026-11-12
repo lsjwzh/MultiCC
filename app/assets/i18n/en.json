@@ -3970,6 +3970,7 @@
   "deckLabel": "Task reminders",
   "deckHint": "{n} reminders · click to expand",
   "deckCollapse": "Collapse ✕",
+  "deckClearAll": "Clear all",
   "deckMore": "{n} older",
   "floatOpen": "Open",
   "floatClose": "✕",

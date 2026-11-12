@@ -2458,9 +2458,34 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   transition: transform .35s cubic-bezier(.34, 1.6, .5, 1), opacity .2s;
 }
 .task-notify-deck.is-open .task-notify-hub { transform: scale(1); opacity: 1; pointer-events: auto; }
-.task-notify-deck.is-narrow.is-open .task-notify-more { right: 0; bottom: 44px; }
+/* 批量消除：散开时叠在「收起」上方，一次清空整摞（消息特别多时的唯一省事入口）。 */
+.task-notify-clear {
+  position: absolute;
+  right: 0;
+  bottom: 44px;
+  z-index: 70;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 18px;
+  border: 1px solid #e7c3bf;
+  background: #fff;
+  color: var(--danger, #b64e43);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(18, 52, 96, .18);
+  transform: scale(0);
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: 100% 100%;
+  transition: transform .35s cubic-bezier(.34, 1.6, .5, 1), opacity .2s;
+}
+.task-notify-clear:hover { background: #fdf1f0; }
+.task-notify-deck.is-open .task-notify-clear { transform: scale(1); opacity: 1; pointer-events: auto; }
+.task-notify-deck.is-narrow.is-open .task-notify-more { right: 0; bottom: 88px; }
 @media (prefers-reduced-motion: reduce) {
-  .task-notify-card, .task-notify-hub, .task-notify-badge, .task-notify-scrim { transition-duration: .01ms !important; }
+  .task-notify-card, .task-notify-hub, .task-notify-clear, .task-notify-badge, .task-notify-scrim { transition-duration: .01ms !important; }
 }
 
 /* 目录拖拽排序 + 左上角目录卡的 hover 侧拉（air-directory-nav.js）。 */
