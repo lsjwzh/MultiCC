@@ -2017,7 +2017,9 @@ fn local_cli_sync_writes_both_configs_with_backups_and_never_leaks_secrets() {
         body["claude"]["configPath"].as_str().unwrap(),
         gateway
             .dir
-            .join("home/.claude/settings.json")
+            .join("home")
+            .join(".claude")
+            .join("settings.json")
             .to_string_lossy()
     );
 
