@@ -1449,15 +1449,10 @@ async fn sync_local(app: &Arc<App>, ctx: &RequestCtx) -> Response<Body> {
     let task_type = app_type.clone();
     let task_id = id.clone();
     let answered = tokio::task::spawn_blocking(move || {
-        let store = multicc_core::provider_store::read(&root.join("providers.json")).map_err(
-            |_| {
-                local_cli_sync::SyncError::new(
-                    500,
-                    "PROVIDERS_READ_FAILED",
-                    "读取供应商存储失败",
-                )
-            },
-        )?;
+        let store =
+            multicc_core::provider_store::read(&root.join("providers.json")).map_err(|_| {
+                local_cli_sync::SyncError::new(500, "PROVIDERS_READ_FAILED", "读取供应商存储失败")
+            })?;
         let records = local_cli_sync::records_from_store(store.as_ref());
         let paths = local_cli_sync::paths_from_env(&home);
         local_cli_sync::sync(&local_cli_sync::SyncRequest {

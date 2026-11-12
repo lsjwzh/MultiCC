@@ -2041,7 +2041,10 @@ fn local_cli_sync_writes_both_configs_with_backups_and_never_leaks_secrets() {
     let written: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(written["theme"], "dark");
     assert_eq!(written["env"]["KEEP"], "1");
-    assert_eq!(written["env"]["ANTHROPIC_BASE_URL"], "https://relay.example/api");
+    assert_eq!(
+        written["env"]["ANTHROPIC_BASE_URL"],
+        "https://relay.example/api"
+    );
     assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-claude-secret");
 
     let after = gateway.get("/api/providers/local-cli").json();
@@ -2096,8 +2099,7 @@ fn local_cli_sync_writes_both_configs_with_backups_and_never_leaks_secrets() {
         &json!({}),
     );
     assert_eq!(back.status, 200, "{}", back.body);
-    let stripped: Value =
-        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let stripped: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(stripped["theme"], "dark");
     assert_eq!(stripped["env"]["KEEP"], "1");
     assert!(stripped["env"].get("ANTHROPIC_BASE_URL").is_none());
@@ -2121,11 +2123,7 @@ fn local_cli_sync_rejects_oauth_lines_unknown_ids_and_bad_json() {
     assert_eq!(oauth.json()["code"], "PROVIDER_UNSUPPORTED");
     assert!(oauth.json()["error"].as_str().unwrap().contains("OAuth"));
 
-    let unknown = gateway.send(
-        "POST",
-        "/api/providers/claude/nope/sync-local",
-        &json!({}),
-    );
+    let unknown = gateway.send("POST", "/api/providers/claude/nope/sync-local", &json!({}));
     assert_eq!(unknown.status, 404, "{}", unknown.body);
     assert_eq!(unknown.json()["code"], "PROVIDER_NOT_FOUND");
 
@@ -2136,11 +2134,7 @@ fn local_cli_sync_rejects_oauth_lines_unknown_ids_and_bad_json() {
     );
     assert_eq!(wrong_type.status, 404, "{}", wrong_type.body);
 
-    fs::write(
-        gateway.dir.join("home/.claude/settings.json"),
-        "{broken",
-    )
-    .unwrap();
+    fs::write(gateway.dir.join("home/.claude/settings.json"), "{broken").unwrap();
     let invalid = gateway.send(
         "POST",
         "/api/providers/claude/claude-work/sync-local",
