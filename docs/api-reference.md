@@ -47,6 +47,8 @@
 | `GET` | `/api/providers?appType=claude\|codex` | List providers with secrets masked, plus defaults |
 | `GET` | `/api/providers/limit-history?range=24h\|7d\|30d&points=2..240&appType=&id=` | Downsampled remaining-quota series that drive the provider-card trend charts; answers `available:false` when the Rust history kernel is missing |
 | `POST` | `/api/providers/import` | Import / refresh providers from `cc-switch` |
+| `GET` | `/api/providers/local-cli` | Which provider the user's own terminal currently uses (`{ claude: { configPath, providerId, state, baseUrl? }, codex: {...} }`, `state` is `official`/`provider`/`unknown`; never returns secrets) |
+| `POST` | `/api/providers/:appType/:id/sync-local` | Write that provider into `~/.claude/settings.json` or `~/.codex/config.toml` (`CLAUDE_CONFIG_DIR`/`CODEX_HOME` honoured) so a plain CLI uses it. Backs up the target to `<data>/local-cli-sync-backups/` and writes atomically; `claude-official`/`codex-official` restore the terminal's own login. OAuth account lines are rejected with 422 |
 | `POST` | `/api/providers` | Create a local provider (`{ appType, name, baseUrl?, authToken?, model?, modelOptions?, settingsConfig? }`) |
 | `PATCH` | `/api/providers/:appType/:id` | Update provider metadata or settings |
 | `DELETE` | `/api/providers/:appType/:id` | Delete a local provider and clear matching defaults |

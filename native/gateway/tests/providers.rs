@@ -1942,3 +1942,222 @@ fn relay_balance_denial_precedes_provider_and_credentials_lookup() {
     assert_eq!(denied.json()["error"], "share revoked");
     assert!(gateway.calls("balance-calls.jsonl").is_empty());
 }
+
+// ── local terminal sync ─────────────────────────────────────────────────────
+
+fn write_local_sync_fixture(gateway: &Gateway, claude_settings: &str, codex_config: &str) {
+    let data = gateway.dir.join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(
+        data.join("providers.json"),
+        json!([
+            {
+                "id": "claude-work",
+                "appType": "claude",
+                "name": "Work",
+                "source": "local",
+                "apiFormat": "anthropic",
+                "settingsConfig": { "env": {
+                    "ANTHROPIC_BASE_URL": "https://relay.example/api",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-claude-secret",
+                    "ANTHROPIC_MODEL": "claude-sonnet-5"
+                }}
+            },
+            {
+                "id": "claude-account",
+                "appType": "claude",
+                "name": "Claude 账号 · me",
+                "source": "local",
+                "settingsConfig": { "env": {} }
+            },
+            {
+                "id": "codex-work",
+                "appType": "codex",
+                "name": "Codex Work",
+                "apiFormat": "openai_responses",
+                "settingsConfig": {
+                    "auth": { "OPENAI_API_KEY": "sk-codex-secret" },
+                    "config": "model_provider = \"custom\"\nmodel = \"deepseek-v4-pro\"\n\n[model_providers.custom]\nname = \"DeepSeek\"\nbase_url = \"https://api.deepseek.com\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+                }
+            }
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let home = gateway.dir.join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    fs::write(home.join(".claude").join("settings.json"), claude_settings).unwrap();
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::write(home.join(".codex").join("config.toml"), codex_config).unwrap();
+    fs::write(
+        home.join(".codex").join("auth.json"),
+        r#"{"tokens":{"access_token":"chatgpt-oauth"}}"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn local_cli_sync_writes_both_configs_with_backups_and_never_leaks_secrets() {
+    let gateway = Gateway::start("local-cli", json!({}));
+    write_local_sync_fixture(
+        &gateway,
+        r#"{"theme":"dark","env":{"ANTHROPIC_BASE_URL":"https://unmatched.example","KEEP":"1"}}"#,
+        "# user comment\nmodel = \"user-model\"\n\n[projects.\"/work\"]\ntrust_level = \"trusted\"\n",
+    );
+
+    let before = gateway.get("/api/providers/local-cli");
+    assert_eq!(before.status, 200, "{}", before.body);
+    let body = before.json();
+    assert_eq!(body["claude"]["state"], "unknown");
+    assert!(body["claude"]["providerId"].is_null());
+    assert_eq!(body["codex"]["state"], "official");
+    assert_eq!(body["codex"]["providerId"], "codex-official");
+    assert!(!before.body.contains("secret"), "{}", before.body);
+    assert_eq!(
+        body["claude"]["configPath"].as_str().unwrap(),
+        gateway
+            .dir
+            .join("home/.claude/settings.json")
+            .to_string_lossy()
+    );
+
+    let synced = gateway.send(
+        "POST",
+        "/api/providers/claude/claude-work/sync-local",
+        &json!({}),
+    );
+    assert_eq!(synced.status, 200, "{}", synced.body);
+    let result = synced.json();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["appType"], "claude");
+    assert_eq!(result["providerId"], "claude-work");
+    assert_eq!(result["changed"], true);
+    let file = PathBuf::from(result["files"][0].as_str().unwrap());
+    assert_eq!(file, gateway.dir.join("home/.claude/settings.json"));
+    let backup = PathBuf::from(result["backupDir"].as_str().unwrap());
+    assert!(backup.is_dir());
+    assert!(backup.join("settings.json").is_file());
+    assert!(backup.join("manifest.json").is_file());
+    let written: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(written["theme"], "dark");
+    assert_eq!(written["env"]["KEEP"], "1");
+    assert_eq!(written["env"]["ANTHROPIC_BASE_URL"], "https://relay.example/api");
+    assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-claude-secret");
+
+    let after = gateway.get("/api/providers/local-cli").json();
+    assert_eq!(after["claude"]["state"], "provider");
+    assert_eq!(after["claude"]["providerId"], "claude-work");
+    assert_eq!(after["claude"]["baseUrl"], "https://relay.example/api");
+    assert!(!after.to_string().contains("sk-claude-secret"));
+
+    // Codex: our table is added, the user's projects stay, auth.json is
+    // untouched, and going back to the built-in official provider restores
+    // the user's model.
+    let codex = gateway.send(
+        "POST",
+        "/api/providers/codex/codex-work/sync-local",
+        &json!({}),
+    );
+    assert_eq!(codex.status, 200, "{}", codex.body);
+    let codex_file = gateway.dir.join("home/.codex/config.toml");
+    let text = fs::read_to_string(&codex_file).unwrap();
+    assert!(text.contains("# user comment"));
+    assert!(text.contains("[projects.\"/work\"]"));
+    assert!(text.contains("model_provider = \"multicc_sync\""));
+    assert!(text.contains("[model_providers.multicc_sync]"));
+    assert!(text.contains("requires_openai_auth = false"));
+    assert!(text.contains("experimental_bearer_token = \"sk-codex-secret\""));
+    assert_eq!(
+        fs::read_to_string(gateway.dir.join("home/.codex/auth.json")).unwrap(),
+        r#"{"tokens":{"access_token":"chatgpt-oauth"}}"#
+    );
+    let codex_state = gateway.get("/api/providers/local-cli").json();
+    assert_eq!(codex_state["codex"]["state"], "provider");
+    assert_eq!(codex_state["codex"]["providerId"], "codex-work");
+
+    let official = gateway.send(
+        "POST",
+        "/api/providers/codex/codex-official/sync-local",
+        &json!({}),
+    );
+    assert_eq!(official.status, 200, "{}", official.body);
+    let restored = fs::read_to_string(&codex_file).unwrap();
+    assert!(restored.contains("# user comment"));
+    assert!(!restored.contains("multicc_sync"));
+    assert!(restored.contains("model = \"user-model\""));
+    assert_eq!(
+        gateway.get("/api/providers/local-cli").json()["codex"]["state"],
+        "official"
+    );
+
+    let back = gateway.send(
+        "POST",
+        "/api/providers/claude/claude-official/sync-local",
+        &json!({}),
+    );
+    assert_eq!(back.status, 200, "{}", back.body);
+    let stripped: Value =
+        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(stripped["theme"], "dark");
+    assert_eq!(stripped["env"]["KEEP"], "1");
+    assert!(stripped["env"].get("ANTHROPIC_BASE_URL").is_none());
+    assert!(stripped["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+
+    // Nothing on this path is answered by the Node child.
+    assert!(!gateway.forwarded("GET", "/api/providers/local-cli"));
+}
+
+#[test]
+fn local_cli_sync_rejects_oauth_lines_unknown_ids_and_bad_json() {
+    let gateway = Gateway::start("local-cli-errors", json!({}));
+    write_local_sync_fixture(&gateway, "{}", "");
+
+    let oauth = gateway.send(
+        "POST",
+        "/api/providers/claude/claude-account/sync-local",
+        &json!({}),
+    );
+    assert_eq!(oauth.status, 422, "{}", oauth.body);
+    assert_eq!(oauth.json()["code"], "PROVIDER_UNSUPPORTED");
+    assert!(oauth.json()["error"].as_str().unwrap().contains("OAuth"));
+
+    let unknown = gateway.send(
+        "POST",
+        "/api/providers/claude/nope/sync-local",
+        &json!({}),
+    );
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+    assert_eq!(unknown.json()["code"], "PROVIDER_NOT_FOUND");
+
+    let wrong_type = gateway.send(
+        "POST",
+        "/api/providers/opencode/claude-work/sync-local",
+        &json!({}),
+    );
+    assert_eq!(wrong_type.status, 404, "{}", wrong_type.body);
+
+    fs::write(
+        gateway.dir.join("home/.claude/settings.json"),
+        "{broken",
+    )
+    .unwrap();
+    let invalid = gateway.send(
+        "POST",
+        "/api/providers/claude/claude-work/sync-local",
+        &json!({}),
+    );
+    assert_eq!(invalid.status, 409, "{}", invalid.body);
+    assert_eq!(invalid.json()["code"], "LOCAL_CONFIG_INVALID");
+    // The unparsable file is left exactly as it was.
+    assert_eq!(
+        fs::read_to_string(gateway.dir.join("home/.claude/settings.json")).unwrap(),
+        "{broken"
+    );
+
+    let options = gateway.options("/api/providers/claude/claude-work/sync-local");
+    assert_eq!(options.status, 200);
+    assert_eq!(options.header("allow"), Some("POST"));
+    let options = gateway.options("/api/providers/local-cli");
+    assert_eq!(options.status, 200);
+    assert_eq!(options.header("allow"), Some("GET,HEAD"));
+}
