@@ -123,6 +123,12 @@ jobs:
           # test-rust-front-door-fixtures re-runs every frozen-oracle / proxy-corpus
           # generator in verify mode, so a stale fixture cannot reach a release.
           node --test tests/test-rust-cpr.js tests/test-rust-kernels.js tests/test-source-rust.js tests/test-plugin-binaries.js tests/test-rust-sqlite.js tests/test-sqlite-driver.js tests/test-orchestration-sqlite-store.js tests/test-provider-limit-cache.js tests/test-task-shells.js tests/test-search-index.js tests/test-task-search.js tests/test-token-global.js tests/test-rust-front-door-fixtures.js
+          # Exercise the isolated owner candidate explicitly: its three tests
+          # otherwise skip when the binary is absent. This is evidence for the
+          # experimental implementation, not a switch of the production store.
+          [ -n "${gateway:-}" ] && [ -f "$gateway" ] || { echo '::error::missing orchestration owner binary'; exit 1; }
+          export MULTICC_TEST_ORCHESTRATION_OWNER="$gateway"
+          node --test --test-name-pattern='experimental (isolated owner|owner shares)|owner death' tests/test-orchestration-sqlite-mixed-driver-race.js
 
       - name: 验证无 AVX 和无 AVX2 的 Linux CPU
         if: runner.os == 'Linux'

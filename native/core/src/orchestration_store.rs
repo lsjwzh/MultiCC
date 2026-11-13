@@ -8,6 +8,7 @@ mod outbox_recover;
 mod query;
 mod receipts;
 mod record;
+mod schedule_metadata;
 mod schedule_settle;
 mod schema;
 mod wait_cancel;
@@ -371,6 +372,7 @@ pub struct Store {
     guard: Option<MaintenanceGuard>,
     active: bool,
     snapshot_data_version: Option<i64>,
+    schedule_metadata_scan: Option<schedule_metadata::Scan>,
     pending: bool,
     redacted: bool,
     policy: RetentionPolicy,
@@ -438,6 +440,7 @@ impl Store {
             guard: Some(guard),
             active: false,
             snapshot_data_version: None,
+            schedule_metadata_scan: None,
             pending: false,
             redacted: false,
             policy,
@@ -467,6 +470,9 @@ impl Store {
         self.metrics.insert(key, json!(old + amount));
     }
     pub fn end(&mut self) -> Result<()> {
+        // Invalidate before rollback: even a failed rollback must not leave a
+        // previously issued read-model token usable.
+        self.schedule_metadata_scan = None;
         if self.active || self.pending {
             self.conn()?.execute_batch("ROLLBACK").map_err(err)?;
         }
@@ -648,6 +654,38 @@ impl Store {
                 self.snapshot_data_version = Some(data_version);
                 header(self.conn()?)
             }
+            "scheduleMetadataBegin" => {
+                let mut random = [0_u8; 16];
+                getrandom::fill(&mut random).map_err(err)?;
+                let token = random
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                let mut scan = schedule_metadata::Scan::new(token.clone(), input)?;
+                let state = self.request("begin", &json!({}))?;
+                let schedule = match schedule_metadata::schedule(self.conn()?, scan.session()) {
+                    Ok(schedule) => schedule,
+                    Err(error) => {
+                        let _ = self.end();
+                        return Err(error);
+                    }
+                };
+                scan.bind_revision(&state)?;
+                self.schedule_metadata_scan = Some(scan);
+                Ok(json!({"token": token, "state": state, "schedule":schedule}))
+            }
+            "scheduleMetadataPage" => {
+                if !self.active {
+                    return Err(err("scheduler metadata snapshot is not active"));
+                }
+                let mut scan = self
+                    .schedule_metadata_scan
+                    .clone()
+                    .ok_or_else(|| err("scheduler metadata snapshot is not active"))?;
+                let result = scan.next(self.conn()?, input)?;
+                self.schedule_metadata_scan = Some(scan);
+                Ok(result)
+            }
             "end" => {
                 self.end()?;
                 Ok(Value::Null)
@@ -713,6 +751,25 @@ impl Store {
                 Ok(result)
             }
             "prepare" => {
+                if self.schedule_metadata_scan.is_some() {
+                    return Err(err(
+                        "scheduler metadata requires its bound prepare operation",
+                    ));
+                }
+                let result = self.prepare(input);
+                if result.is_err() {
+                    let _ = self.end();
+                }
+                result
+            }
+            "scheduleMetadataPrepare" => {
+                if !self.active {
+                    return Err(err("scheduler metadata snapshot is not active"));
+                }
+                self.schedule_metadata_scan
+                    .as_ref()
+                    .ok_or_else(|| err("scheduler metadata snapshot is not active"))?
+                    .validate_prepare(input)?;
                 let result = self.prepare(input);
                 if result.is_err() {
                     let _ = self.end();

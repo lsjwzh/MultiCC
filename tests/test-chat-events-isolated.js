@@ -121,6 +121,26 @@ const turnSettled = (frames, marker, admissionFrames = frames) => {
   return !!entry?.entryId && frames.some(frame => frame?.type === 'session_queue'
     && frame.event === 'completed' && frame.entryId === entry.entryId);
 };
+// Keep the queue correlation visible when a tool turn times out. The ordinary
+// timeout contains only the end of a potentially long frame list, which can
+// omit both the admission and the result. Never include prompt or tool output.
+const turnCompletionEvidence = (frames, marker) => {
+  const admitted = frames.filter(frame => frame?.type === 'session_queue'
+    && frame.event === 'queued' && frame.message?.includes(marker));
+  const entryIds = new Set(admitted.map(frame => frame.entryId).filter(Boolean));
+  const turnId = messageTurnId(frames, marker);
+  return {
+    admissions: admitted.length,
+    turnId,
+    queue: frames.filter(frame => frame?.type === 'session_queue' && entryIds.has(frame.entryId))
+      .map(frame => ({ event: frame.event, entryId: frame.entryId, state: frame.state,
+        reason: frame.reason, classifyState: frame.classifyState })).slice(-40),
+    output: frames.filter(frame => frame?.turnId === turnId && turnId
+      && ['assistant', 'result', 'stream_end', 'api_error'].includes(frame.type))
+      .map(frame => ({ type: frame.type, subtype: frame.subtype, is_error: frame.is_error,
+        reasonCode: frame.reasonCode, routeAttemptId: frame.routeAttemptId })).slice(-40),
+  };
+};
 
 (async () => {
   const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-chat-events-')));
@@ -235,7 +255,13 @@ const turnSettled = (frames, marker, admissionFrames = frames) => {
       && frame.message.content.some(block => block.type === 'tool_result'
         && JSON.stringify(block.content).includes('patched'))), 'normalized tool_result frame');
     await socket.until(frames => hasText(frames.slice(beforeTool), 'TOOL_DONE'), 'tool turn text');
-    await socket.until(frames => turnSettled(frames, 'EVT_TOOL_USE_ONE'), 'tool turn completion');
+    try {
+      await socket.until(frames => turnSettled(frames, 'EVT_TOOL_USE_ONE'), 'tool turn completion');
+    } catch (error) {
+      console.error('TOOL TURN COMPLETION EVIDENCE:',
+        JSON.stringify(turnCompletionEvidence(socket.frames, 'EVT_TOOL_USE_ONE')));
+      throw error;
+    }
     const toolHistory = await history(session);
     assert.match(toolHistory, /TOOL_DONE/, 'tool turn text persisted');
     assert.match(toolHistory, /toolu_evt_1/, 'tool call persisted with the assistant message');
