@@ -160,6 +160,7 @@ provider-relay-shares.json.tmp.*
 provider-limit-cache.db
 provider-limit-cache.db-shm
 provider-limit-cache.db-wal
+provider-limit-cache.db.migration.lock
 provider-quota-history.db
 provider-quota-history.db-shm
 provider-quota-history.db-wal
