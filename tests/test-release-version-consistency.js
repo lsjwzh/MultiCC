@@ -593,13 +593,19 @@ test('core runner covers every selected path and expands declared variants', () 
   // outside the release tier): 430 - 1 = 429 entries, 356 - 1 = 355
   // deterministic, 402 - 1 = 401 commands (398 Node entries).
   // 回执隔离回归只使用临时数据库，无外部服务；新增一个确定性核心用例文件。
-  assert.equal(core.length, 430, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 430);
+  // 超长历史会话的 OOM 回归（tests/test-chat-history-oversize-session.js）在临时
+  // 目录里合成 transcript，再用受限堆的子进程整份读一遍，断言读取放大倍数与
+  // 「服务一页不改落盘文件」；无端口、无账号、无外部服务，子进程属临时夹具，
+  // 与 tests/test-writer-launcher.js 同类。复审为确定性核心：
+  // 430 + 1 = 431 entries, 356 + 1 = 357 deterministic, 402 + 1 = 403 commands
+  // (400 Node entries)。
+  assert.equal(core.length, 431, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 431);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 356);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 357);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -609,8 +615,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 402,
-    '399 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 403,
+    '400 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
