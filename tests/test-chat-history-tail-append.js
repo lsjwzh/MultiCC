@@ -3,7 +3,7 @@
 // 尾部增量写的端到端验证：真仓库 + 真 FIFO runtime，不是假端口。
 // 差分套件（test-chat-history-runtime-differential.js）的假仓库不产字节
 // 回执，账本永不建立、恒走整份——所以 tail 路径的正确性由这里独立证明：
-// 首笔全量、后续只写尾巴、interim 原子替换、账本错位整份自愈、文件消失
+// 首笔全量、后续只写尾巴、interim 原子替换、账本错位拒绝覆盖、文件消失
 // 重建、同步 replace 后回退全量。
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -153,25 +153,26 @@ test('tail replacement publishes the full new record or safely refuses', async t
   }
 });
 
-test('a ledger mismatch falls back to one full rewrite and self-heals', async t => {
+test('a ledger mismatch preserves the external write and reloads before retry', async t => {
   const f = fixture(t);
   await f.runtime.appendMessage('s1', { id: 'a', role: 'user', content: 'one' });
   assert.equal(f.counts.writeAsync, 1);
 
   // 外部改写：账本里的 expected_bytes 与文件现状对不上。
   fs.appendFileSync(f.fileFor('s1'), '{"id":"rogue","role":"user","content":"external"}\n');
-  await f.runtime.appendMessage('s1', { id: 'b', role: 'assistant', content: 'two' });
+  assert.equal(await f.runtime.appendMessage('s1', { id: 'b', role: 'assistant', content: 'two' }), false);
   assert.equal(f.counts.appendAsync, 1, 'the tail write was attempted and refused');
-  assert.equal(f.counts.writeAsync, 2, 'the driver resent the full snapshot once');
+  assert.equal(f.counts.writeAsync, 1, 'the stale full snapshot must not overwrite the other writer');
 
   const lines = f.readLines('s1');
-  assert.deepEqual(lines.map(m => m.id), ['a', 'b'], 'the rogue line is gone after the atomic rewrite');
+  assert.deepEqual(lines.map(m => m.id), ['a', 'rogue'], 'the external committed record remains intact');
 
-  // 自愈后账本由整份写的回执重建，下一笔恢复 tail。
+  // Retry reloads the committed external record before producing a snapshot.
+  assert.equal(await f.runtime.appendMessage('s1', { id: 'b', role: 'assistant', content: 'two' }), true);
   await f.runtime.appendMessage('s1', { id: 'c', role: 'user', content: 'three' });
   assert.equal(f.counts.appendAsync, 2);
   assert.equal(f.counts.writeAsync, 2);
-  assert.deepEqual(f.readLines('s1').map(m => m.id), ['a', 'b', 'c']);
+  assert.deepEqual(f.readLines('s1').map(m => m.id), ['a', 'rogue', 'b', 'c']);
 });
 
 test('a vanished transcript rebuilds from the full snapshot', async t => {

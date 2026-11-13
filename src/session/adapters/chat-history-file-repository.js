@@ -20,7 +20,8 @@ function createChatHistoryFileRepository({
     if (error.errorType === 'SyntaxError' && typeof error.jsonSource === 'string') {
       JSON.parse(error.jsonSource);
     }
-    const Constructor = error.errorType === 'TypeError' ? TypeError : Error;
+    const Constructor = error.errorType === 'TypeError' ? TypeError
+      : error.errorType === 'SyntaxError' ? SyntaxError : Error;
     const failure = new Constructor(error.message);
     if (error.code) failure.code = error.code;
     if (error.errno != null) failure.errno = error.errno;
@@ -31,6 +32,9 @@ function createChatHistoryFileRepository({
   }
   return Object.freeze({ root, ...Object.fromEntries(methods.map(method =>
     [method, (...args) => owner.run(anchor, method, args)])),
+    // A fresh per-record JSON round trip owned solely by the history service;
+    // the round trip preserves its historical normalization semantics.
+    readOwned: sessionId => owner.run(anchor, 'readOwned', [sessionId]),
     readStrict: (sessionId, { allowEmpty = false } = {}) => owner.run(anchor, 'readStrict', [sessionId, allowEmpty]),
     writeAsync: async (sessionId, messagesJson) => {
       const id = String(sessionId);
@@ -57,8 +61,8 @@ function createChatHistoryFileRepository({
       }
     },
     // 尾部增量写：payload 是历史服务恒等前缀比较产出的
-    // { tail, keepBytes, expectedBytes }。appended=false 表示账本错位，或文件系统
-    // 不支持安全克隆尾部替换；驱动据此整份重发一次自愈。
+    // { tail, keepBytes, expectedBytes }。现存文件不匹配时返回 conflict，
+    // 调用方必须丢弃旧缓存，不能把旧快照写回覆盖其他写入者。
     appendAsync: async (sessionId, payload) => {
       const id = String(sessionId);
       try {
@@ -73,7 +77,8 @@ function createChatHistoryFileRepository({
           }
           throw failure;
         }
-        return { appended: result.appended === true, bytes: result.bytes ?? null, ends: result.ends ?? null, full: false };
+        return { appended: result.appended === true, conflict: result.conflict === true,
+          bytes: result.bytes ?? null, ends: result.ends ?? null, full: false };
       } finally {
         try { owner.run(anchor, 'invalidateWrite', [id]); } catch (_) {}
       }
@@ -105,6 +110,12 @@ function createChatHistoryFileRepository({
       const result = await owner.hasPersistedDeliveryAsync(String(sessionId), identity);
       if (result.error) throw asyncFailure(result.error);
       return result.found === true;
+    },
+    // UTF-8-decoded physical lines only; callers must not treat these as the normalized,
+    // visible transcript or seed the mutation cache from a partial page.
+    readPhysicalRangeAsync: async (sessionId, start, end, byteBudget) => {
+      const page = await owner.readPhysicalRangeAsync(String(sessionId), start, end, byteBudget);
+      return { ...page, ledger: page.ledger ?? null };
     },
   });
 }

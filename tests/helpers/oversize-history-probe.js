@@ -14,21 +14,40 @@ const v8 = require('node:v8');
 
 const { createChatHistoryFileRepository } = require('../../src/session/adapters/chat-history-file-repository');
 
-const [dataDir, sessionId] = process.argv.slice(2);
+const [dataDir, sessionId, mode] = process.argv.slice(2);
 if (!dataDir || !sessionId) {
   console.error('usage: oversize-history-probe.js <dataDir> <sessionId>');
   process.exit(2);
 }
 
 const repository = createChatHistoryFileRepository({ dataDir });
-const messages = repository.readStrict(sessionId);
-// 只留尾部几条，模拟连接时的一页；整份数组在这之后才可回收。
-const tail = messages.slice(-5);
+if (mode === 'delivery') {
+  const beforeKB = process.resourceUsage().maxRSS;
+  repository.hasPersistedDeliveryAsync(sessionId, 'proof-early').then(found => {
+    process.stdout.write(JSON.stringify({ found, beforeKB, afterKB: process.resourceUsage().maxRSS }));
+  }).catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+} else if (mode === 'physical') {
+  const beforeKB = process.resourceUsage().maxRSS;
+  repository.readPhysicalRangeAsync(sessionId, 127, 129, 2 * 1024 * 1024).then(page => {
+    process.stdout.write(JSON.stringify({ total: page.total, count: page.records.length,
+      beforeKB, afterKB: process.resourceUsage().maxRSS }));
+  }).catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+} else {
+  const messages = repository.readStrict(sessionId);
+  // 只留尾部几条，模拟连接时的一页；整份数组在这之后才可回收。
+  const tail = messages.slice(-5);
 
-process.stdout.write(JSON.stringify({
-  messages: messages.length,
-  tail: tail.length,
-  tailHasTools: tail.every(message => message.role !== 'assistant' || Array.isArray(message.tools)),
-  heapLimitMB: Math.round(v8.getHeapStatistics().heap_size_limit / 1048576),
-  heapUsedMB: Math.round(process.memoryUsage().heapUsed / 1048576),
-}));
+  process.stdout.write(JSON.stringify({
+    messages: messages.length,
+    tail: tail.length,
+    tailHasTools: tail.every(message => message.role !== 'assistant' || Array.isArray(message.tools)),
+    heapLimitMB: Math.round(v8.getHeapStatistics().heap_size_limit / 1048576),
+    heapUsedMB: Math.round(process.memoryUsage().heapUsed / 1048576),
+  }));
+}

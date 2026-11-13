@@ -290,6 +290,14 @@ impl<'a> History<'a> {
             .truthy()
     }
     fn normalize(&self, source: L<'a>, session: L<'a>) -> Result<L<'a>> {
+        self.normalize_with_ownership(source, session, false)
+    }
+    fn normalize_with_ownership(
+        &self,
+        source: L<'a>,
+        session: L<'a>,
+        owned: bool,
+    ) -> Result<L<'a>> {
         let out = array(self.anchor)?;
         if !source.is_array()? {
             return Ok(out);
@@ -307,7 +315,12 @@ impl<'a> History<'a> {
             &[L::new(self.env, filter.into_unknown(self.env)?)],
         )?;
         selected.for_each(|entry| {
-            let message = drop_thinking_copies(clean_thinking(self.env, clone_json(entry)?)?)?;
+            // Repository-owned reads are fresh JSON objects that have not been
+            // exposed to any other caller. Normalizing those in place avoids a
+            // second full object graph; generic ports and replace inputs keep
+            // the old isolated-clone contract.
+            let message = if owned { entry } else { clone_json(entry)? };
+            let message = drop_thinking_copies(clean_thinking(self.env, message)?)?;
             if message.get(c"role")?.truthy()? && !message.get(c"id")?.truthy()? {
                 message.assign(c"id", string(self.port(c"idFactory", &[])?)?)?;
             }
@@ -364,7 +377,14 @@ impl<'a> History<'a> {
         if let Some(value) = cached {
             return self.owner.values.read(self.env, self.anchor, &value);
         }
-        let source = self.repository(c"read", &[session])?;
+        let history = self.ports.get(c"history")?;
+        let read_owned = history.get(c"readOwned")?;
+        let owned = read_owned.kind()? == sys::ValueType::napi_function;
+        let source = if owned {
+            read_owned.call(history, &[session])?
+        } else {
+            self.repository(c"read", &[session])?
+        };
         if source.is_array()? {
             for i in 0..length(source)? {
                 let message = source.element(i as u32)?;
@@ -374,7 +394,7 @@ impl<'a> History<'a> {
                 }
             }
         }
-        let normalized = self.normalize(source, session)?;
+        let normalized = self.normalize_with_ownership(source, session, owned)?;
         self.set_cache(id, normalized)?;
         Ok(normalized)
     }

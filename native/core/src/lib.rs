@@ -12,6 +12,7 @@ pub mod chat_context_rotation;
 pub mod chat_events;
 pub mod chat_finalize;
 pub mod chat_finalize_execution;
+pub mod chat_history_index;
 pub mod chat_runtime;
 pub mod chat_turn_lifecycle;
 pub mod classify_vocab;

@@ -274,8 +274,13 @@ function createChatHistoryRuntime(rawDeps) {
         return deps.history.writeAsync(step.sessionId, step.payload);
       }
       const appended = await deps.history.appendAsync(step.sessionId, step.payload);
+      if (appended && appended.conflict === true) {
+        throw Object.assign(new Error('chat history changed during append'), {
+          code: 'CHAT_HISTORY_CONCURRENT_MODIFICATION',
+        });
+      }
       if (appended && appended.appended === false) {
-        // 账本错位或文件系统不支持写时复制：整份重发，原子重写自愈。
+        // 文件消失或文件系统不支持写时复制：沿用完整快照回退。
         const resend = run('resendPendingWrite', step.operationId);
         return deps.history.writeAsync(step.sessionId, resend.messagesJson);
       }
@@ -322,6 +327,11 @@ function createChatHistoryRuntime(rawDeps) {
             failure = error;
           }
           const after = run('completeMutationStep', sessionId, step.operationId, ok, failure, writeMeta);
+          if (failure?.code === 'CHAT_HISTORY_CONCURRENT_MODIFICATION') {
+            // The failed snapshot was never published. Drop its stale base so
+            // the next queue head reloads the external writer's committed data.
+            service.invalidate(sessionId);
+          }
           const effectFailure = applyEffects(sessionId, after.effects);
           if (after.finished === true) {
             settleWaiter(sessionId, step.operationId, waiter => {

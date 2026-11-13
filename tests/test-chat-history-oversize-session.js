@@ -101,6 +101,71 @@ function runtimeFor(t, { repository, sessionId }) {
   return runtime;
 }
 
+test('异步投递证明逐行扫描大历史且不加载整份文件', t => {
+  const dataDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-proof-')));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const repository = createChatHistoryFileRepository({ dataDir });
+  const sessionId = 'task-proof';
+  const file = repository.fileFor(sessionId);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const fd = fs.openSync(file, 'w');
+  try {
+    fs.writeSync(fd, '{"deliveryId":"proof-early"}\n');
+    const line = `${JSON.stringify({ role: 'assistant', content: filler(512 * 1024) })}\n`;
+    for (let index = 0; index < 128; index += 1) fs.writeSync(fd, line);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const fileBytes = fs.statSync(file).size;
+  assert.ok(fileBytes > 64 * 1024 * 1024);
+  const report = JSON.parse(execFileSync(process.execPath, [PROBE, dataDir, sessionId, 'delivery'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000,
+  }));
+  assert.equal(report.found, true);
+  assert.ok((report.afterKB - report.beforeKB) * 1024 < fileBytes * 0.75,
+    `投递证明峰值内存增长过大：${report.afterKB - report.beforeKB} KiB，文件 ${fileBytes} 字节`);
+  const physical = JSON.parse(execFileSync(process.execPath, [PROBE, dataDir, sessionId, 'physical'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000,
+  }));
+  assert.equal(physical.total, 129);
+  assert.equal(physical.count, 2);
+  assert.ok((physical.afterKB - physical.beforeKB) * 1024 < fileBytes * 0.75,
+    `物理分页峰值内存增长过大：${physical.afterKB - physical.beforeKB} KiB，文件 ${fileBytes} 字节`);
+  assert.equal(fs.statSync(file).size, fileBytes, '读取不得更改历史文件');
+  // Legacy array files used to require one whole-file read just to check an
+  // outbox receipt. Keep their contents untouched and prove the same bound.
+  const legacyFd = fs.openSync(file, 'w');
+  try {
+    fs.writeSync(legacyFd, '[{"deliveryId":"proof-early"}');
+    const entry = `,${JSON.stringify({ role: 'assistant', content: filler(512 * 1024) })}`;
+    for (let index = 0; index < 128; index += 1) fs.writeSync(legacyFd, entry);
+    fs.writeSync(legacyFd, ']');
+  } finally {
+    fs.closeSync(legacyFd);
+  }
+  const legacyBytes = fs.statSync(file).size;
+  const legacy = JSON.parse(execFileSync(process.execPath, [PROBE, dataDir, sessionId, 'delivery'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000,
+  }));
+  assert.equal(legacy.found, true);
+  assert.ok((legacy.afterKB - legacy.beforeKB) * 1024 < legacyBytes * 0.75,
+    `旧数组投递证明峰值内存增长过大：${legacy.afterKB - legacy.beforeKB} KiB，文件 ${legacyBytes} 字节`);
+  assert.equal(fs.statSync(file).size, legacyBytes);
+});
+
+test('物理索引扫描在工作线程执行，按预算读取部分原文', async t => {
+  const planted = plant(t, { turns: 40, toolBytes: 140 * 1024 });
+  let eventLoopAdvanced = false;
+  const nextTick = new Promise(resolve => setImmediate(() => { eventLoopAdvanced = true; resolve(); }));
+  const pending = planted.repository.readPhysicalRangeAsync(planted.sessionId, 78, 80, 512 * 1024);
+  const page = await pending;
+  assert.equal(eventLoopAdvanced, true);
+  await nextTick;
+  assert.equal(page.total, 80);
+  assert.deepEqual(page.records.map(line => JSON.parse(line).id), ['u39', 'a39']);
+  assert.equal(JSON.parse(page.records[1]).tools[0].output, planted.planted.at(-1).tools[0].output);
+});
+
 test('整份读一个工具密集的超长历史必须留在有界堆内', t => {
   // 100 轮 × 140KB 工具输出 ≈ 15MB，assistant 平均 150KB，与事故实测的
   // 154KB/条同量级。标定（2026-11-13，macOS/Node 26）：读完 heapUsed 稳定在
