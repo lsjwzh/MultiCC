@@ -22,7 +22,9 @@ checkout for this policy to be discovered, including plugin builds and Docker
 build contexts. The source-cache fingerprint includes this configuration and
 compiler environment changes so previously built modules are not reused.
 
-The Linux x64 parity, desktop and standalone builds pin `ubuntu-22.04`.
+The Linux x64 parity, desktop and standalone builds pin `ubuntu-24.04`.
+This supplies glibc 2.39, which the legacy v2.20.2 addon explicitly requires
+in its ELF version-needs table; Ubuntu 22.04's glibc 2.35 cannot load it.
 The floating `ubuntu-latest` label moved to Ubuntu 26.04 with `amd64v3`
 packages; the first CPU run failed before the baseline probe reported any
 features. QEMU user-mode also executes the host loader and libc, so compiler
@@ -43,6 +45,14 @@ emulation with two CPU models:
 
 - `Nehalem`: no AVX or AVX2.
 - `IvyBridge`: AVX and F16C, no AVX2, matching the relevant VM constraint.
+
+Ubuntu 22.04's QEMU 6.2 cannot emulate AVX/F16C and therefore fails the
+IvyBridge feature assertion. `setup-linux-cpu-emulator.sh` extracts static
+QEMU 9.2.2 from the digest-pinned `tonistiigi/binfmt` Linux x64 image without
+running its installer or changing host binfmt handlers. Both workflows pass
+that executable explicitly with `--qemu`; the reports record its version,
+binary digest and image reference. The current and legacy checks use the same
+emulator and Ubuntu 24.04 loader/libc, with all feature assertions retained.
 
 The baseline Rust probe checks exposed CPU features and deliberately executes
 an AVX2 instruction as a negative control. That control must receive SIGILL;
