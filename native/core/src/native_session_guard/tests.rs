@@ -103,18 +103,45 @@ fn node_path_normalization_matches_posix_path_join() {
 
 #[test]
 fn dirname_and_basename_match_posix() {
-    assert_eq!(path_dirname("/a/b/c"), "/a/b");
-    assert_eq!(path_dirname("/a/b/"), "/a");
-    assert_eq!(path_dirname("/a"), "/");
-    assert_eq!(path_dirname("a"), ".");
-    assert_eq!(path_dirname(""), ".");
-    assert_eq!(path_dirname("//a"), "//");
-    assert_eq!(path_dirname("/"), "/");
+    assert_eq!(path_dirname_posix("/a/b/c"), "/a/b");
+    assert_eq!(path_dirname_posix("/a/b/"), "/a");
+    assert_eq!(path_dirname_posix("/a"), "/");
+    assert_eq!(path_dirname_posix("a"), ".");
+    assert_eq!(path_dirname_posix(""), ".");
+    assert_eq!(path_dirname_posix("//a"), "//");
+    assert_eq!(path_dirname_posix("/"), "/");
     assert_eq!(path_basename("/a/b/c"), "c");
     assert_eq!(path_basename("/a/b/"), "b");
     assert_eq!(path_basename("/"), "");
     assert_eq!(path_basename("a"), "a");
     assert_eq!(path_basename(""), "");
+}
+
+#[test]
+fn windows_dirname_preserves_drive_and_unc_roots() {
+    // Expected strings are checked against Node path.win32.dirname; this
+    // pure lexical regression runs on every CI platform, not only Windows.
+    for (input, expected) in [
+        (r"C:\Users\runner\sessions", r"C:\Users\runner"),
+        (r"C:\sessions", r"C:\"),
+        (r"C:\", r"C:\"),
+        (r"C:", r"C:"),
+        (r"C:sessions", r"C:"),
+        (r"C:home\sessions", r"C:home"),
+        (r"C:/home\sessions/", r"C:/home"),
+        (r"\\server\share\sessions", r"\\server\share\"),
+        (r"\\server\share", r"\\server\share"),
+        (r"\\?\C:\sessions", r"\\?\C:\"),
+        (r"//server/share/sessions", r"//server/share/"),
+        (r"\sessions", r"\"),
+        (r"home\sessions", r"home"),
+        (r"sessions", r"."),
+        (r"", r"."),
+    ] {
+        assert_eq!(windows_path::dirname(input), expected, "{input}");
+        #[cfg(windows)]
+        assert_eq!(path_dirname(input), expected, "{input}");
+    }
 }
 
 #[test]
@@ -209,11 +236,17 @@ fn codex_enforce_archives_only_oversized_files() {
     let record = record(text("codex"), text("sid"), undefined(), text("t"));
     let prepared = object(vec![("sessionsDir", text(&sessions))]);
     let outcome = guard.enforce(&record, false, &prepared, 0.0);
-    assert_eq!(action(&outcome), "archived");
+    assert_eq!(action(&outcome), "archived", "{outcome:?}");
     let Some(JsValue::Array(archived)) = outcome.value.get("archived") else {
         panic!("archived")
     };
     assert_eq!(archived.len(), 1);
+    let Some(JsValue::String(target)) = archived[0].get("archivedTo") else {
+        panic!("missing archive target: {outcome:?}")
+    };
+    let expected = tree.0.join(CODEX_ARCHIVE_DIRNAME).join("sid-big.jsonl");
+    assert_eq!(Path::new(&target.to_string_lossy()), expected.as_path());
+    assert_eq!(fs::read_to_string(&expected).unwrap(), "yyyy");
     assert!(Path::new(&sessions).join("sid-small.jsonl").exists());
     assert!(!Path::new(&sessions).join("sid-big.jsonl").exists());
 }
@@ -262,10 +295,15 @@ fn codex_sweep_is_throttled_then_deletes_stale_files_only() {
     let first = guard.sweep(false, now);
     assert_eq!(first.logs.len(), 1);
     assert_eq!(first.logs[0].name, "codex_rollout_archive_cleanup");
-    assert_eq!(
-        first.value.get("deleted"),
-        Some(&JsValue::Array(vec![text(&stale)]))
-    );
+    let Some(JsValue::Array(deleted)) = first.value.get("deleted") else {
+        panic!("missing deleted array: {first:?}")
+    };
+    let [JsValue::String(deleted)] = deleted.as_slice() else {
+        panic!("expected exactly one deleted path: {first:?}")
+    };
+    // PathBuf::join and the guard can spell separators differently on
+    // Windows; keep exact file identity rather than requiring slash bytes.
+    assert_eq!(Path::new(&deleted.to_string_lossy()), Path::new(&stale));
     assert_eq!(first.value.get("freedBytes"), Some(&num(5.0)));
     assert!(Path::new(&fresh).exists());
     assert!(!Path::new(&stale).exists());

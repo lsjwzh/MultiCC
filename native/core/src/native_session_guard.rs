@@ -31,6 +31,10 @@ use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(any(windows, test))]
+#[path = "native_session_guard/windows_path.rs"]
+mod windows_path;
+
 pub const CODEX_DEFAULT_MAX_BYTES: f64 = 10.0 * 1024.0 * 1024.0;
 pub const NATIVE_DEFAULT_MAX_BYTES: f64 = 10.0 * 1024.0 * 1024.0;
 pub const CODEX_ARCHIVE_DIRNAME: &str = "multicc-archived-rollouts";
@@ -316,7 +320,18 @@ fn node_join(parts: &[&str]) -> String {
     normalize_posix(&present.join("/"))
 }
 
+#[cfg(windows)]
 fn path_dirname(path: &str) -> String {
+    windows_path::dirname(path)
+}
+
+#[cfg(not(windows))]
+fn path_dirname(path: &str) -> String {
+    path_dirname_posix(path)
+}
+
+#[cfg(any(not(windows), test))]
+fn path_dirname_posix(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
     }
