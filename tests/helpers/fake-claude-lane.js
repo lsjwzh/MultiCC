@@ -115,7 +115,8 @@ function handleUser(message) {
     // reducer must dedupe it. This emits it twice on purpose.
     emit(error); emit(error);
     if (text.includes('SUCCESS_RESULT')) {
-      // A non-retryable turn so the test observes exactly one attempt.
+      // Protocol success alone does not recover the synthetic API error.
+      // Without a real answer, the host may still retry this error-only turn.
       result('synthetic-error-answer', { usage: { input_tokens: 1, output_tokens: 1 }, total_cost_usd: 0 });
       return;
     }

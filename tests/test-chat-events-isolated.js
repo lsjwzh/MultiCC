@@ -258,13 +258,22 @@ const turnSettled = (frames, marker, admissionFrames = frames) => {
     const errorFrames = socket.frames
       .filter(frame => frame?.type === 'assistant' && frame.turnId === messageTurnId(socket.frames,
         'EVT_API_ERROR_EMPTY_ONE') && JSON.stringify(frame).includes('upstream exploded'));
-    // The CLI emits the same synthetic message twice per process with one uuid;
-    // the reducer must dedupe each pair to exactly one forwarded frame.
-    const perUuid = new Map();
-    for (const frame of errorFrames) perUuid.set(String(frame.uuid), (perUuid.get(frame.uuid) || 0) + 1);
-    assert.ok(perUuid.size >= 1, 'the synthetic error must reach clients at least once');
-    for (const [uuid, count] of perUuid) {
-      assert.equal(count, 1, `the repeated synthetic error ${uuid} must be forwarded once, got ${count}`);
+    // The resident fake CLI reuses its UUID across provider retries. Each
+    // attempt emits two copies, and must forward exactly one of that pair.
+    const perAttemptUuid = new Map();
+    for (const frame of errorFrames) {
+      assert.ok(frame.routeAttemptId, 'the error must retain its provider attempt identity');
+      assert.ok(frame.uuid, 'the fixture error must retain its message identity');
+      const key = `${frame.routeAttemptId}:${frame.uuid}`;
+      perAttemptUuid.set(key, (perAttemptUuid.get(key) || 0) + 1);
+    }
+    const sentAttempts = fs.readFileSync(fakeLog, 'utf8').trim().split('\n').map(JSON.parse)
+      .filter(row => row.type === 'user' && row.message?.content?.some(block =>
+        block.type === 'text' && block.text.includes('EVT_API_ERROR_EMPTY_ONE')));
+    assert.ok(sentAttempts.length >= 1, 'the fake CLI must receive the error-only prompt');
+    assert.equal(perAttemptUuid.size, sentAttempts.length, 'every actual attempt must forward its error once');
+    for (const [key, count] of perAttemptUuid) {
+      assert.equal(count, 1, `the repeated synthetic error ${key} must be forwarded once, got ${count}`);
     }
 
     // ── 5. API error message: suppress when the turn already has output ──
