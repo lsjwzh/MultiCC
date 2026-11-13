@@ -8,6 +8,84 @@ const path = require('path');
 const test = require('node:test');
 const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createWaitService } = require('../src/wait/service');
+const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const Database = require('better-sqlite3');
+
+test('SQLite wait cancellation matches the legacy state machine and preserves record data', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-wait-cancel-'));
+  const now = () => 1234;
+  const stores = [createOrchestrationStore({ file: path.join(dir, 'legacy.json'), now }),
+    createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now })];
+  t.after(async () => { await stores[1].close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const outcomes = [];
+  for (const store of stores) {
+    await store.mutate(draft => {
+      draft.waits['42'] = { id: '42', status: 'pending', extension: { text: '\ud83d' } };
+      draft.waits.absentStatus = { id: 'absentStatus' };
+      draft.waits.invalidStatus = { id: 'invalidStatus', status: '\ude00' };
+      draft.waits.undefined = { id: 'undefined', status: 'pending' };
+    });
+    const waits = createWaitService({ store, now });
+    outcomes.push([
+      await waits.cancel('missing'), await waits.cancel('absentStatus'),
+      await waits.cancel('invalidStatus'), await waits.cancel(Symbol('id')),
+      await waits.cancel(42), await waits.cancel('42'), await waits.cancel(undefined),
+      await store.snapshot(),
+    ]);
+  }
+  assert.deepEqual(outcomes[1], outcomes[0]);
+  assert.equal(outcomes[1][7].waits['42'].extension.text, '\ud83d');
+});
+
+test('SQLite cancellation rolls back on write failure, clock error and stale revision', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-wait-cancel-atomic-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file, now: () => 2000 });
+  const second = createOrchestrationSqliteStore({ file, now: () => 2000 });
+  t.after(async () => { await store.close({ exportRollback: false }); await second.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => { draft.waits.w = { id: 'w', status: 'pending' }; });
+  const before = await store.snapshot();
+  const waits = createWaitService({ store, now: () => 1000 });
+  await assert.rejects(createWaitService({ store, now: () => { throw new Error('clock failed'); } }).cancel('w'), /clock failed/);
+  assert.deepEqual(await store.snapshot(), before);
+  const db = new Database(file);
+  t.after(() => db.close());
+  db.exec("CREATE TRIGGER fail_wait_cancel BEFORE UPDATE ON orchestration_waits BEGIN SELECT RAISE(ABORT, 'blocked update'); END");
+  await assert.rejects(waits.cancel('w'), /blocked update/);
+  assert.deepEqual(await store.snapshot(), before);
+  db.exec('DROP TRIGGER fail_wait_cancel');
+  await assert.rejects(createWaitService({ store: second, now: () => 1000 }).cancel('w'),
+    error => error.code === 'ORCHESTRATION_SQLITE_CONFLICT');
+  assert.deepEqual(await store.snapshot(), before);
+  assert.deepEqual(await waits.cancel('w'), { ok: true, idempotent: false });
+  const after = await store.snapshot();
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.waits.w.cancelledAt, 1000);
+  assert.equal(after.updatedAt, 2000);
+});
+
+test('SQLite wait cancellation preserves JavaScript property-key behavior for compatibility inputs', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-wait-key-'));
+  const stores = [false, true].map(oracle => createOrchestrationSqliteStore({
+    file: path.join(dir, `${oracle}.sqlite`), now: () => 1000,
+    ...(oracle ? { hooks: { beforeCommit() {} } } : {}),
+  }));
+  t.after(async () => { for (const store of stores) await store.close({ exportRollback: false });
+    fs.rmSync(dir, { recursive: true, force: true }); });
+  const outcomes = [];
+  for (const store of stores) {
+    const service = createWaitService({ store, now: () => 1000 });
+    let coercions = 0;
+    const id = { [Symbol.toPrimitive]() { coercions++; return Symbol.iterator; } };
+    const result = [];
+    for (const key of ['toString', '__proto__', 'constructor', Symbol.iterator, id]) {
+      result.push(await service.cancel(key));
+    }
+    outcomes.push({ result, coercions });
+  }
+  assert.deepEqual(outcomes[0], outcomes[1]);
+  assert.equal(outcomes[0].coercions, 1);
+});
 
 function tempFile(t, name = 'orchestration.json') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-wait-service-'));

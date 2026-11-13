@@ -151,11 +151,11 @@ function mountProvidersHostRoute(app, options = {}) {
     const limitBars = {};
     if (cache) {
       try {
-        if (deps.limitRecorder) cache.prune(deps.limitRecorder.liveKeys());
+        if (deps.limitRecorder) await cache.prune(deps.limitRecorder.liveKeys());
         limits = {};
         for (const provider of providers) {
           const key = provider.appType + ':' + provider.id;
-          const entry = cache.get(provider.appType, provider.id);
+          const entry = await cache.get(provider.appType, provider.id);
           // 此共享渲染器仍服务其他 Node quota 调用者；迁移它时删除这个最后的展示端口。
           const bar = entry ? providerLimitBar({ ...entry,
             stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs) }, nowMs) : null;
@@ -169,7 +169,10 @@ function mountProvidersHostRoute(app, options = {}) {
       if (!provider.virtual) continue;
       const key = provider.appType + ':' + provider.id;
       try {
-        virtualInputs[key] = require('../providers/virtual-provider').snapshot(provider, deps.providers.listProviders());
+        const virtual = require('../providers/virtual-provider');
+        virtualInputs[key] = cache?.isAsync
+          ? await virtual.snapshotAsync(provider, deps.providers.listProviders())
+          : virtual.snapshot(provider, deps.providers.listProviders());
       } catch (_) { virtualInputs[key] = null; }
     }
     return {

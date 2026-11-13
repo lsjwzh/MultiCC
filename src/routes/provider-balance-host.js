@@ -40,20 +40,21 @@ function mountProviderBalanceHost(app, options) {
     if (body.op === 'credentials') return { ok: true, auth: await credentials(body.target || {}) };
     if (body.op === 'refreshCodexAuth') return { ok: true, refreshed: await require('../usage-limit-poller').runCodexAuthRefresh({ authFile: body.target?.authFile || null }) };
     if (body.op === 'record') {
-      const entry = deps.onResult?.(appType, id, body.result);
+      const entry = await deps.onResult?.(appType, id, body.result);
       return { ok: true, snapshot: providerLimitSnapshot(entry, body.now) };
     }
     const provider = deps.getProvider(appType, id);
     if (!provider) return { ok: true, found: false };
     if (body.op === 'cached') {
-      const entry = deps.lookupCached?.(provider.appType, id) || null;
+      const entry = await deps.lookupCached?.(provider.appType, id) || null;
       return { ok: true, found: true, entry, snapshot: providerLimitSnapshot(entry, body.now) };
     }
     if (body.op === 'virtualMember') {
       const virtual = require('../providers/virtual-provider');
-      await virtual.refresh(provider);
+      const asyncCache = deps.lookupCached && deps.asyncLimitCache === true;
+      await (asyncCache ? virtual.refreshAsync(provider) : virtual.refresh(provider));
       try {
-        const member = virtual.resolve(provider);
+        const member = asyncCache ? await virtual.resolveAsync(provider) : virtual.resolve(provider);
         return { ok: true, member: { appType: member.appType, id: member.id } };
       } catch (error) {
         if (error.code !== 'VIRTUAL_NO_AVAILABLE_MEMBER') throw error;

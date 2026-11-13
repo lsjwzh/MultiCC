@@ -427,7 +427,8 @@ function createChatTurnEngine(deps) {
   function prepareAutoProviderAdmission(sessionId, text, clientMsgId) {
     const session = persistedSessions.get(sessionId);
     if (!session) return null;
-    return autoProviderRuntime.prepareAdmission({
+    const prepare = providerLimitCache?.isAsync ? autoProviderRuntime.prepareAdmissionAsync : autoProviderRuntime.prepareAdmission;
+    return prepare({
       session, text, providers, sessionId, clientMsgId,
     });
   }
@@ -1393,7 +1394,12 @@ function createChatTurnEngine(deps) {
     const invocationFactory = createProviderInvocationFactory({
       providerRouterRuntime, providerAttemptRuntime: attemptRuntime, effectiveSessionModel,
     });
-    const autoTurn = autoProviderRuntime.beginTurn({ session: persisted, turnId: turn.turnId, promptText: text });
+    const autoTurn = providerLimitCache?.isAsync
+      ? await autoProviderRuntime.beginTurnAsync({ session: persisted, turnId: turn.turnId, promptText: text })
+      : autoProviderRuntime.beginTurn({ session: persisted, turnId: turn.turnId, promptText: text });
+    if (persistedSessions.get(sessionName) !== persisted || chatSessions.get(sessionName) !== cs) {
+      throw new Error('session changed while resolving provider quota');
+    }
     let providerAttemptNo = 0;
     const prepareInvocation = (attemptOptions = {}) => invocationFactory.prepare({
       request: turnRequest, turn, session: persisted, provider, envelope,

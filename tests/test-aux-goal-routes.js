@@ -809,7 +809,7 @@ test('GET /api/aux/config attaches the persisted limit summary + freshness from 
   const fs = require('node:fs');
   const path = require('node:path');
   const os = require('node:os');
-  const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
+  const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-aux-limit-'));
   const cache = createProviderLimitCache({ file: path.join(dir, 'provider-limit-cache.db'), now: () => 1000 });
   // Seed two different providers with different summaries + freshness.

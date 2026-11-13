@@ -11,7 +11,7 @@ const {
   isOutcomeLetter,
 } = require('../classify/vocab');
 const { isUserTypedWork } = require('./user-input');
-const unattendedKernel = require('../unattended/kernel');
+const { getNative } = require('../native/runtime');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
@@ -93,6 +93,7 @@ function compactJson(value) {
   }
   return normalizeJson(out);
 }
+
 
 function workKind(item) {
   const transferredKind = item?.turnLineage?.workKind;
@@ -217,31 +218,6 @@ function classifyStateForReason(reason) {
   return Object.prototype.hasOwnProperty.call(FREEZE_REASON_CLASSIFY, key)
     ? FREEZE_REASON_CLASSIFY[key]
     : null;
-}
-
-// Which control kinds may start a fresh native turn in each at-rest letter. The
-// letters' meaning is vocab's; this table only says what kind of user move each
-// parked/ended turn still accepts. Everything not listed (P mid-turn, and the
-// retired C) accepts nothing here.
-const CONTROL_KINDS_BY_CLASSIFY = Object.freeze({
-  W: Object.freeze(['answer', 'approval', 'continuation']),
-  B: Object.freeze(['callback', 'continuation']),
-  E: Object.freeze(['retry', 'resume']),
-});
-
-function controlAllowedByClassify(item, classifyState) {
-  const kind = workKind(item);
-  // Every session.work payload is ultimately one native conversation message.
-  // Classify P is the only staging gate; W/B/E/D may start a fresh CLI turn
-  // even when the previous -p process and its physical active slot are gone.
-  // E is an outcome label for that prior turn, never a queue gate.
-  if (item?.payload?.type === 'session.work') return !isProcessingLetter(classifyState);
-  // An async dispatch result is a new conversation message, not a background
-  // wait state. It must never interrupt an active P turn, but once that turn
-  // ends it wakes the Master from D/W/E just like direct chat input. No B state
-  // is required (or manufactured) for this path.
-  if (item?.payload?.type === 'dispatch.result') return !isProcessingLetter(classifyState);
-  return (CONTROL_KINDS_BY_CLASSIFY[classifyState] || []).includes(kind);
 }
 
 function recoveredSuccessProven(schedule, recoveredState = {}) {
@@ -431,29 +407,6 @@ function createSessionWorkScheduler({
     }
   }
 
-  function relatedControl(schedule, item) {
-    if (!schedule?.active || !isControlItem(item)) return false;
-    const payload = item.payload || {};
-    // User/control input is a self-contained conversation message. Correlation
-    // metadata helps preserve task lineage but must never make input impossible.
-    if (payload.type === 'session.work') return true;
-    if (payload.activeEntryId && payload.activeEntryId !== schedule.active.entryId) return false;
-    // task.interrupted.taskId names the child Task/Agent, not the parent
-    // session task. Its durable same-session origin is the correlation proof.
-    if (payload.type !== 'task.interrupted' && payload.type !== 'dispatch.result'
-        && payload.taskId && activeTaskId(schedule)
-        && payload.taskId !== activeTaskId(schedule)) return false;
-    if (workKind(item) === 'answer' && schedule.awaitingRequestId
-        && payload.requestId !== schedule.awaitingRequestId) return false;
-    return true;
-  }
-
-  function isActiveReplay(schedule, item) {
-    if (!schedule?.active || !item) return false;
-    const activeDeliveryId = schedule.active.deliveryId || schedule.active.entryId;
-    return !!activeDeliveryId && item.id === activeDeliveryId;
-  }
-
   // A control entry's lineage is already fixed at admission/claim time (see the
   // turnLineage written by admit/claim/insertQueued). The delivery selector
   // still asks for a projection, so this stays a pass-through rather than
@@ -468,70 +421,10 @@ function createSessionWorkScheduler({
   function selectSessionItem(items, draft, at) {
     if (!items.length) return null;
     const schedule = draft.sessionSchedules[items[0].sessionId];
-    const priorityEntryId = schedule?.priorityEntryId || null;
+    const priority = schedule?.priorityEntryId || null;
     const pending = canonicalPendingUserInput(items[0].sessionId);
-    // Node 只收集调度事实；FIFO 对无人值守消息的优先级由 Rust 决定。
-    if (typeof getUnattendedState === 'function') {
-      const selection = unattendedKernel.selectQueued({
-        state: getUnattendedState(items[0].sessionId),
-        now: at,
-        hasActive: !!schedule?.active && schedule.state !== 'idle',
-        classifyState: canonicalClassifyState(items[0].sessionId, schedule),
-        pendingRequestId: pending?.requestId || null,
-        items: [...items].sort(compareQueued(priorityEntryId)).map(item => ({
-          id: item.id,
-          workKind: workKind(item),
-          requestId: item.payload?.requestId,
-          unattendedSystem: item.payload?.options?.unattendedSystem,
-          unattendedRecovery: item.payload?.options?.unattendedRecovery,
-          taskSource: item.payload?.options?.taskSource || item.payload?.source,
-          message: String(item.payload?.message || '').slice(0, 160),
-        })),
-      });
-      if (selection.handled) return items.find(item => item.id === selection.entryId) || null;
-    }
-    const ordered = items.filter(item => {
-      if (!pending || isActiveReplay(schedule, item)) return true;
-      if (isUserInputAnswer(item) && item.payload.requestId === pending.requestId) return true;
-      // Explicitly promoting an entry is a new user decision about this wait.
-      if (item.userInputOverrideId === pending.requestId) return true;
-      if (item.blockedByUserInput === pending.requestId) return false;
-      if (schedule?.active && ['starting', 'running', 'assessing'].includes(schedule.state)) return false;
-      // Also cover recovery and the gap between publishing W and complete().
-      // A continuation queued before the question is not an answer to it.
-      return !pending.createdAt || Number(item.createdAt) > pending.createdAt;
-    }).sort(compareQueued(priorityEntryId));
-    if (!schedule || !schedule.active || schedule.state === 'idle') {
-      const cls = schedule
-        ? (canonicalClassifyState(schedule.sessionId, schedule)
-          || classifyStateForSchedule(schedule))
-        : 'D';
-      // P is the sole input staging state. Once classify leaves P, a typed or
-      // control message may start a fresh native turn even if it was admitted
-      // before the previous process exited. E describes the previous turn's
-      // outcome only: it never gates this typed/control request, but ordinary
-      // FIFO work stays staged behind it until a D verdict or an explicit
-      // insert_queued/retry/resume releases it.
-      if (!isProcessingLetter(cls)) {
-        const direct = ordered.find(it => it.directRun);
-        if (direct) return direct;
-        const control = ordered.find(item => isControlItem(item)
-          && controlAllowedByClassify(item, cls));
-        if (control) return control;
-      }
-      // Only D drains the FIFO automatically: the queue advances on a turn that
-      // finished successfully. W/B are real waits, P still has an owned turn,
-      // and E is the previous request's fault — releasing the queue behind it
-      // would auto-start work the user staged behind a turn that never succeeded.
-      if (!isTerminalLetter(cls)) return null;
-      return ordered[0];
-    }
-    const replay = ordered.find(item => isActiveReplay(schedule, item));
-    if (replay) return replay;
-    const classifyState = canonicalClassifyState(schedule.sessionId, schedule);
-    const control = ordered.find(item => relatedControl(schedule, item)
-      && controlAllowedByClassify(item, classifyState)) || null;
-    return control;
+    return getNative().sessionWorkSelect({ items, schedule, priority, pending, now: at,
+      classify: id => canonicalClassifyState(id, schedule), unattended: getUnattendedState });
   }
 
   function stableEntryId(sessionId, key, payload) {
@@ -544,6 +437,7 @@ function createSessionWorkScheduler({
       .slice(0, 40);
     return `session-work:${suffix}`;
   }
+
 
   async function admit({
     sessionId,
@@ -722,46 +616,8 @@ function createSessionWorkScheduler({
   }
 
   async function claim(item) {
-    const result = await store.mutate(draft => {
-      const current = draft.outbox[item.id];
-      if (!current || current.state !== 'leased') return { ok: false, code: 'delivery_not_leased' };
-      const at = Number(now());
-      const schedule = ensure(draft, item.sessionId, at);
-      if (!schedule.active || schedule.state === 'idle') {
-        schedule.active = {
-          entryId: item.id,
-          deliveryId: item.id,
-          taskId: taskIdForItem(item),
-          originDispatchId: originDispatchIdForItem(item),
-          source: item.payload?.source || item.source?.type || 'legacy',
-          workKind: workKind(item),
-          admittedAt: item.createdAt,
-          // Starting admission is the earliest trustworthy boundary for this
-          // work. A recovered D must be newer than this timestamp, so a stale
-          // success from the previous task cannot advance the queue.
-          claimedAt: at,
-          startedAt: null,
-          attempt: item.attempts,
-        };
-        if (schedule.priorityEntryId === item.id) schedule.priorityEntryId = null;
-      } else if (isActiveReplay(schedule, item) || relatedControl(schedule, item)) {
-        schedule.active.deliveryId = item.id;
-        schedule.active.workKind = workKind(item);
-        schedule.active.attempt = item.attempts;
-        if (!schedule.active.taskId && taskIdForItem(item)) {
-          schedule.active.taskId = taskIdForItem(item);
-        }
-        if (!schedule.active.originDispatchId && originDispatchIdForItem(item)) {
-          schedule.active.originDispatchId = originDispatchIdForItem(item);
-        }
-      } else {
-        return { ok: false, code: 'session_gate_closed' };
-      }
-      schedule.state = 'starting';
-      schedule.freezeReason = null;
-      schedule.updatedAt = at;
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft) };
-    });
+    const result = await store.mutate(draft => getNative().scheduleClaimLive(
+      draft, item, now, schedule => publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft)));
     if (result.ok) emit('claimed', {
       sessionId: item.sessionId,
       entryId: item.id,
@@ -774,21 +630,8 @@ function createSessionWorkScheduler({
   }
 
   async function started(item) {
-    const result = await store.mutate(draft => {
-      const schedule = draft.sessionSchedules[item.sessionId];
-      if (!schedule?.active || schedule.active.deliveryId !== item.id) {
-        return { ok: false, code: 'active_delivery_mismatch' };
-      }
-      const at = Number(now());
-      schedule.state = 'running';
-      schedule.freezeReason = null;
-      schedule.awaitingRequestId = null;
-      schedule.classifyState = 'P';
-      schedule.active.startedAt = schedule.active.startedAt || at;
-      schedule.active.attempt = item.attempts;
-      schedule.updatedAt = at;
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft) };
-    });
+    const result = await store.mutate(draft => getNative().scheduleLifecycleLive(
+      draft, 'started', item, now, schedule => publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft)));
     if (result.ok) emit('started', {
       sessionId: item.sessionId,
       entryId: result.schedule.active?.entryId,
@@ -802,31 +645,8 @@ function createSessionWorkScheduler({
   }
 
   async function releaseClaim(item, reason = 'prelaunch_deferred') {
-    const result = await store.mutate(draft => {
-      const schedule = draft.sessionSchedules[item.sessionId];
-      if (!schedule?.active || schedule.active.deliveryId !== item.id) {
-        return { ok: false, code: 'active_delivery_mismatch' };
-      }
-      const at = Number(now());
-      if (schedule.active.entryId === item.id && !schedule.active.startedAt) {
-        schedule.active = null;
-        schedule.state = 'idle';
-        schedule.freezeReason = null;
-        schedule.awaitingRequestId = null;
-        schedule.classifyState = schedule.classifyState || 'D';
-        if (schedule.priorityEntryId === item.id) schedule.priorityEntryId = null;
-      } else {
-        schedule.active.deliveryId = schedule.active.entryId;
-        schedule.active.workKind = 'task';
-        schedule.state = 'frozen';
-        // Delivery-protection freeze (the active delivery was released mid-flight),
-        // NOT a classify freeze — classify no longer freezes the queue. The
-        // scheduler drives this forward, so it reads as 'running' to the UI.
-        schedule.freezeReason = 'incomplete_requires_resume';
-      }
-      schedule.updatedAt = at;
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft) };
-    });
+    const result = await store.mutate(draft => getNative().scheduleLifecycleLive(
+      draft, 'releaseClaim', item, now, schedule => publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft)));
     if (result.ok) emit('claim_released', {
       sessionId: item.sessionId,
       entryId: item.id,
@@ -845,19 +665,8 @@ function createSessionWorkScheduler({
   }
 
   async function turnEnded(sessionId) {
-    const result = await store.mutate(draft => {
-      const schedule = draft.sessionSchedules[sessionId];
-      if (!schedule?.active || !ACTIVE_STATES.has(schedule.state)) return { ok: false, code: 'no_active_task' };
-      schedule.state = 'assessing';
-      // P is classify's non-terminal "still processing / awaiting verdict"
-      // state. Resetting a stale recovered D here prevents display or recovery
-      // from treating an uncorrelated prior success as the current verdict.
-      schedule.classifyState = 'P';
-      schedule.freezeReason = null;
-      schedule.awaitingRequestId = null;
-      schedule.updatedAt = Number(now());
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft) };
-    });
+    const result = await store.mutate(draft => getNative().scheduleLifecycleLive(
+      draft, 'turnEnded', sessionId, now, schedule => publicSchedule(schedule, queueForDraft(draft, sessionId), draft)));
     if (result.ok) emit('assessing', {
       sessionId,
       entryId: result.schedule.active?.entryId || null,
@@ -875,25 +684,9 @@ function createSessionWorkScheduler({
     expectedTaskId = null,
     classifyState = null,
   } = {}) {
-    const result = await store.mutate(draft => {
-      const schedule = draft.sessionSchedules[sessionId];
-      if (!schedule?.active) return { ok: false, code: 'no_active_task' };
-      if (expectedTaskId && activeTaskId(schedule) && expectedTaskId !== activeTaskId(schedule)) {
-        return { ok: false, code: 'active_task_mismatch' };
-      }
-      const at = Number(now());
-      schedule.state = 'frozen';
-      schedule.freezeReason = String(reason || 'unknown_interruption').slice(0, 160);
-      schedule.awaitingRequestId = requestId || null;
-      const classified = CLASSIFY_STATES.has(classifyState)
-        ? classifyState : classifyStateForReason(reason);
-      if (classified) {
-        schedule.classifyState = classified;
-        schedule.classifyStateAt = at;
-      }
-      schedule.updatedAt = at;
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft) };
-    });
+    const result = await store.mutate(draft => getNative().scheduleFreezeLive(
+      draft, sessionId, reason, requestId, expectedTaskId, classifyState, now,
+      schedule => publicSchedule(schedule, queueForDraft(draft, sessionId), draft)));
     if (result.ok) emit('frozen', {
       sessionId,
       entryId: result.schedule.active?.entryId,
@@ -1047,35 +840,9 @@ function createSessionWorkScheduler({
       });
     }
     if (!RESOLUTION_ACTIONS.has(action)) throw new TypeError(`invalid resolution action: ${action}`);
-    const result = await store.mutate(draft => {
-      const schedule = draft.sessionSchedules[sessionId];
-      if (!schedule?.active) return { ok: false, code: 'no_active_task' };
-      if (action !== 'cancel' && schedule.state !== 'frozen') {
-        return { ok: false, code: 'active_task_not_frozen' };
-      }
-      const at = Number(now());
-      const resolved = clone(schedule.active);
-      schedule.active = null;
-      schedule.state = 'idle';
-      schedule.freezeReason = null;
-      schedule.awaitingRequestId = null;
-      schedule.classifyState = 'D';
-      schedule.lastDecision = {
-        action,
-        reason: String(reason || '').slice(0, 500),
-        actor: String(actor || 'user').slice(0, 80),
-        entryId: resolved.entryId,
-        taskId: resolved.taskId || null,
-        originDispatchId: resolved.originDispatchId || null,
-        at,
-      };
-      schedule.updatedAt = at;
-      return {
-        ok: true,
-        resolved,
-        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft),
-      };
-    });
+    const result = await store.mutate(draft => getNative().scheduleResolveLive(
+      draft, sessionId, action, reason, actor, now,
+      schedule => publicSchedule(schedule, queueForDraft(draft, sessionId), draft)));
     // taskId was missing here, so every resolution event reached the task board
     // as `task_not_found` and left the card on its previous run state.
     if (result.ok) emit(action === 'cancel' ? 'cancelled' : 'skipped', {
@@ -1094,22 +861,11 @@ function createSessionWorkScheduler({
   // Bookkeeping for an explicitly dismissed question after W released the slot.
   // The classify host owns the D verdict; this never admits or runs new work.
   async function settleUserInput(sessionId, requestId) {
-    return store.mutate(draft => {
-      const schedule = draft.sessionSchedules[sessionId];
-      if (!schedule) return { ok: true };
-      if (schedule.active) return { ok: false, code: 'stale_classification' };
-      if (schedule.awaitingRequestId && schedule.awaitingRequestId !== requestId) {
-        return { ok: false, code: 'request_id_mismatch' };
-      }
-      schedule.awaitingRequestId = null;
-      schedule.classifyState = 'D';
-      schedule.state = 'idle';
-      schedule.freezeReason = null;
-      schedule.lastDecision = { ...schedule.lastDecision, action: 'dismiss_user_input',
-        requestId, actor: 'user', at: Number(now()) };
-      schedule.updatedAt = Number(now());
-      return { ok: true };
-    });
+    const mutate = draft => getNative().scheduleSettleLive(draft, sessionId, requestId, now);
+    if (typeof store.settleScheduleInput === 'function') {
+      return store.settleScheduleInput(sessionId, requestId, now, mutate);
+    }
+    return store.mutate(mutate);
   }
 
   async function status(sessionId) {
@@ -1128,39 +884,9 @@ function createSessionWorkScheduler({
   } = {}) {
     const cleanEntryId = String(entryId || '').trim();
     if (!cleanEntryId) throw new TypeError('queued cancellation requires entryId');
-    const result = await store.mutate(draft => {
-      const item = draft.outbox[cleanEntryId];
-      if (!item || item.sessionId !== sessionId) {
-        return { ok: false, code: 'queued_entry_not_found' };
-      }
-      const schedule = ensure(draft, sessionId, Number(now()));
-      const activeIds = new Set([
-        schedule.active?.entryId,
-        schedule.active?.deliveryId,
-      ].filter(Boolean));
-      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
-        return { ok: false, code: 'queued_entry_already_claimed' };
-      }
-      if (item.state !== 'pending') {
-        return { ok: false, code: 'queued_entry_not_pending' };
-      }
-      const at = Number(now());
-      item.state = 'cancelled';
-      item.cancelledAt = at;
-      item.updatedAt = at;
-      item.lastError = String(reason || 'cancelled before start').slice(0, 500);
-      if (schedule.priorityEntryId === cleanEntryId) schedule.priorityEntryId = null;
-      schedule.updatedAt = at;
-      return {
-        ok: true,
-        cancelled: {
-          entryId: cleanEntryId,
-          actor: String(actor || 'user').slice(0, 80),
-          at,
-        },
-        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft),
-      };
-    });
+    const result = await store.mutate(draft => getNative().scheduleCancelQueuedLive(
+      draft, sessionId, cleanEntryId, actor, reason, now,
+      schedule => publicSchedule(schedule, queueForDraft(draft, sessionId), draft)));
     if (result.ok) emit('queued_cancelled', {
       sessionId,
       entryId: result.cancelled.entryId,
@@ -1177,93 +903,9 @@ function createSessionWorkScheduler({
   async function insertQueued(sessionId, entryId, { actor = 'user' } = {}) {
     const cleanEntryId = String(entryId || '').trim();
     if (!cleanEntryId) throw new TypeError('queued insertion requires entryId');
-    const result = await store.mutate(draft => {
-      const item = draft.outbox[cleanEntryId];
-      if (!item || item.sessionId !== sessionId) {
-        return { ok: false, code: 'queued_entry_not_found' };
-      }
-      const schedule = ensure(draft, sessionId, Number(now()));
-      if (schedule.active?.supersededByEntryId
-          && schedule.active.supersededByEntryId !== cleanEntryId) {
-        return {
-          ok: false,
-          code: 'active_supersession_in_progress',
-          supersededByEntryId: schedule.active.supersededByEntryId,
-        };
-      }
-      const activeIds = new Set([
-        schedule.active?.entryId,
-        schedule.active?.deliveryId,
-      ].filter(Boolean));
-      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
-        return { ok: false, code: 'queued_entry_already_claimed' };
-      }
-      if (item.state !== 'pending') {
-        return { ok: false, code: 'queued_entry_not_pending' };
-      }
-      // "Insert now" is an entry-scoped scheduling override. It does not alter
-      // API-error state or create a cross-request recovery policy.
-      const at = Number(now());
-      const active = schedule.active;
-      // "Insert now" replaces the currently running attempt with this exact
-      // user message.  The durable dispatch belongs to the logical task, not to
-      // one provider process, so a replacement of the same task must retain the
-      // complete lineage.  Keep this metadata outside payload/payloadHash: the
-      // original client idempotency key must continue to compare against the
-      // body that was admitted, while turnLineage records the later scheduling
-      // decision that promoted it.
-      const payloadTaskId = item.payload?.taskId || null;
-      const explicitTaskStart = item.payload?.options?.taskStart === true
-        || item.payload?.taskStart === true;
-      const existingOriginDispatchId = originDispatchIdForItem(item);
-      const sameTask = !!active
-        && item.payload?.type === 'session.work'
-        && !explicitTaskStart
-        && (!payloadTaskId || (!!active.taskId && payloadTaskId === active.taskId))
-        && (!existingOriginDispatchId
-          || !active.originDispatchId
-          || existingOriginDispatchId === active.originDispatchId);
-      if (sameTask) {
-        item.turnLineage = compactJson({
-          ...(item.turnLineage || {}),
-          taskId: payloadTaskId || active.taskId || null,
-          originDispatchId: existingOriginDispatchId || active.originDispatchId || null,
-          workKind: 'continuation',
-          activeEntryId: active.entryId,
-          inheritedBy: 'insert_queued',
-          inheritedAt: at,
-        });
-      }
-      if (active) {
-        active.supersededByEntryId = cleanEntryId;
-        active.supersededAt = at;
-        active.supersededLineageTransferred = sameTask;
-        active.supersededOriginTransferred = !!(
-          sameTask
-          && active.originDispatchId
-          && originDispatchIdForItem(item) === active.originDispatchId
-        );
-      }
-      // A user-selected "insert now" item is not merely FIFO priority. Once
-      // the route cancels/releases the active slot, directRun makes this exact
-      // pending entry immediately selectable.
-      item.directRun = true;
-      item.userInputOverrideId = canonicalPendingUserInput(sessionId)?.requestId || null;
-      schedule.priorityEntryId = cleanEntryId;
-      schedule.updatedAt = at;
-      return {
-        ok: true,
-        inserted: {
-          entryId: cleanEntryId,
-          actor: String(actor || 'user').slice(0, 80),
-          taskId: taskIdForItem(item),
-          originDispatchId: originDispatchIdForItem(item),
-          inheritedLineage: sameTask,
-          at,
-        },
-        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft),
-      };
-    });
+    const result = await store.mutate(draft => getNative().scheduleInsertQueuedLive(
+      draft, sessionId, cleanEntryId, actor, now, () => canonicalPendingUserInput(sessionId),
+      schedule => publicSchedule(schedule, queueForDraft(draft, sessionId), draft)));
     if (result.ok) emit('queued_inserted', {
       sessionId,
       entryId: result.inserted.entryId,
@@ -1386,58 +1028,9 @@ function createSessionWorkScheduler({
     if (!cleanEntryId) throw new TypeError('queued edit requires entryId');
     const cleanText = String(text || '').trim();
     if (!cleanText) return { ok: false, code: 'queued_entry_text_required' };
-    const result = await store.mutate(draft => {
-      const item = draft.outbox[cleanEntryId];
-      if (!item || item.sessionId !== sessionId) {
-        return { ok: false, code: 'queued_entry_not_found' };
-      }
-      const schedule = ensure(draft, sessionId, Number(now()));
-      const activeIds = new Set([
-        schedule.active?.entryId,
-        schedule.active?.deliveryId,
-      ].filter(Boolean));
-      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
-        return { ok: false, code: 'queued_entry_already_claimed' };
-      }
-      if (item.state !== 'pending') {
-        return { ok: false, code: 'queued_entry_not_pending' };
-      }
-      // The cap anchors on the stored body, not the displayed one: queuedText()
-      // truncates at MAX_PUBLIC_MESSAGE_LENGTH for the dock, so an entry stored
-      // longer than the cap can never be edited under an absolute limit — the
-      // dialog only ever shows the truncated copy, and re-saving it compares
-      // against the cap, not the original. Reject only edits that GROW the body
-      // past the cap; shortening an over-long entry back toward it must pass.
-      const previousFull = String(item.payload?.message
-        ?? item.payload?.taskText
-        ?? item.payload?.deliveryText
-        ?? '');
-      if (cleanText.length > MAX_PUBLIC_MESSAGE_LENGTH
-          && cleanText.length > previousFull.length) {
-        return {
-          ok: false,
-          code: 'queued_entry_text_too_long',
-          limit: MAX_PUBLIC_MESSAGE_LENGTH,
-        };
-      }
-      const at = Number(now());
-      const previous = queuedText(item);
-      item.payload = { ...(item.payload || {}), message: cleanText };
-      item.updatedAt = at;
-      schedule.updatedAt = at;
-      const queue = queueForDraft(draft, sessionId);
-      return {
-        ok: true,
-        edited: {
-          entryId: cleanEntryId,
-          previous,
-          text: cleanText,
-          actor: String(actor || 'user').slice(0, 80),
-          at,
-        },
-        schedule: publicSchedule(schedule, queue, draft),
-      };
-    });
+    const result = await store.mutate(draft => getNative().scheduleEditQueuedLive(
+      draft, sessionId, cleanEntryId, cleanText, actor, now,
+      () => queueForDraft(draft, sessionId), (schedule, queue) => publicSchedule(schedule, queue, draft)));
     if (result.ok) {
       emit('queued_edited', {
         sessionId,
@@ -1454,21 +1047,10 @@ function createSessionWorkScheduler({
   }
 
   async function noteQueued(entryId) {
-    const info = await store.mutate(draft => {
-      const item = draft.outbox[entryId];
-      if (!item) return null;
-      const at = Number(now());
-      const schedule = ensure(draft, item.sessionId, at);
-      const queue = queueForDraft(draft, item.sessionId);
-      const selected = selectSessionItem(queue, draft, at);
-      return {
-        item: clone(item),
-        position: queue.findIndex(candidate => candidate.id === item.id) + 1,
-        queued: selected?.id !== item.id,
-        schedulerState: schedule.state,
-        schedule: publicSchedule(schedule, queue, draft),
-      };
-    });
+    const info = await store.mutate(draft => getNative().scheduleNoteQueuedLive(
+      draft, entryId, now, session => queueForDraft(draft, session),
+      (queue, at) => selectSessionItem(queue, draft, at),
+      (schedule, queue) => publicSchedule(schedule, queue, draft)));
     if (!info) return { ok: false, code: 'entry_not_found' };
     emit('queued', {
       sessionId: info.item.sessionId,

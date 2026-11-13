@@ -598,6 +598,13 @@ fn url_parts(v: &JsValue) -> Option<(String, String)> {
 /// read a provider store, cache or clock that the previous implementation skipped.
 pub fn request(op: &str, input: &JsValue) -> JsValue {
     match op {
+        "cachePolicyVersion" => 1.0.into(),
+        "cacheSuccess" => crate::provider_limit_policy::success(input),
+        "cacheFailure" => crate::provider_limit_policy::failure(input),
+        "cacheIsLate" => crate::provider_limit_policy::is_late(input).into(),
+        "pollGlm" => crate::usage_limit_poll::glm(prop(input, "body")),
+        "pollDeepseek" => crate::usage_limit_poll::deepseek(prop(input, "body")),
+        "pollRelay" => crate::usage_limit_poll::relay(prop(input, "body")),
         "isRevokedCategory" => revoked(prop(input, "category")).into(),
         "constants" => object(vec![
             (

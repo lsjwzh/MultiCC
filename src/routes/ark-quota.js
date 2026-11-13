@@ -229,13 +229,13 @@ function mountArkQuotaRoutes(app, recordVendor) {
       // caller passes it in rather than re-picking the plan itself.
       const baseUrl = typeof req.query?.baseUrl === 'string' ? req.query.baseUrl : '';
       if (record) {
-        try { record({ kind: 'ark', result, baseUrl }); } catch (_) {}
+        try { await record({ kind: 'ark', result, baseUrl }); } catch (_) {}
       }
       res.status(httpStatus).json({ ...result, bar: renderQuotaBar('ark', result, { baseUrl }) });
     } catch (_) {
       const result = { status: 'unavailable', error: 'ark quota fetch failed' };
       if (record) {
-        try { record({ kind: 'ark', result, baseUrl: req.query?.baseUrl || '' }); } catch (_) {}
+        try { await record({ kind: 'ark', result, baseUrl: req.query?.baseUrl || '' }); } catch (_) {}
       }
       res.status(500).json({ ...result, bar: renderQuotaBar('ark', result) });
     }

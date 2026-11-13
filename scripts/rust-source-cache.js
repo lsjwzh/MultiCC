@@ -101,7 +101,12 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.windowsToolsDiscover!=='function' || typeof a.cliCatalog!=='function'
       || ['autoProviderLimitState','autoProviderChooseCandidate','autoProviderFailoverSafety','autoProviderPolicyFacts','providerErrorFacts','autoProviderFacts'].some(key=>typeof a[key]!=='function')
     || ['networkPolicyResolve','networkPolicyEnvEnabled','networkPolicyIsLoopbackHost','networkPolicyFindAvailablePort'].some(key=>typeof a[key]!=='function')
-    || ['classifyVocabCatalog','parseClassifyResult','classifyVocabRequest'].some(key=>typeof a[key]!=='function')
+    || ['classifyVocabCatalog','parseClassifyResult','classifyVocabRequest','sessionWorkSelect',
+      'scheduleSettleLive','scheduleLifecycleLive','scheduleFreezeLive','scheduleResolveLive',
+      'scheduleCancelQueuedLive','scheduleEditQueuedLive','scheduleClaimLive',
+      'scheduleInsertQueuedLive','scheduleNoteQueuedLive','operationAdmitLive',
+      'waitCancelLive','waitResolveLive','outboxClaimLive',
+      'orchestrationCanonicalize'].some(key=>typeof a[key]!=='function')
     || ['unattendedTag','unattendedNormalizeConfig','unattendedVerdictPrompt','unattendedParseVerdict','unattendedDecide','unattendedDecideFault','unattendedDecideClear','unattendedDeliveryRetryDecision','unattendedDecideTurnEnd','unattendedSelectQueued','unattendedDeferEvaluation','unattendedFaultInstruction'].some(key=>typeof a[key]!=='function')
     || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
@@ -381,8 +386,15 @@ function probeAddon(file, node = process.execPath) {
     if(a.homebrewTakeoverRequest('npmGlobal',{command:'npm install -g cli'})!==true) process.exit(1);
     if(a.cliUpstreamVersionRequest('compareSemver',{left:'3.0.0',right:'1.0.0'})!==2) process.exit(1);
     if(a.quotaBarViewRequest('compactBarText',{text:'5h 20% {cd:1700000000000|5h} · ⟳ 刷新'})!=='5h 20%') process.exit(1);
-    if(a.limitCacheRecorderRequestValue('isRevokedCategory',{category:'authentication_permission'})!==true) process.exit(1);
-    if(a.orchestrationStoreProtocol?.()!==2 || typeof a.RustOrchestrationStore!=='function'
+    if(a.limitCacheRecorderRequestValue('isRevokedCategory',{category:'authentication_permission'})!==true
+      || a.limitCacheRecorderRequestValue('cachePolicyVersion',{})!==1
+      || typeof a.RustProviderLimitStore!=='function' || typeof a.RustUsageLimitPoller!=='function') process.exit(1);
+    if(a.orchestrationStoreProtocol?.()!==10 || typeof a.RustOrchestrationStore!=='function'
+      || typeof a.RustIsolatedOrchestrationStore!=='function'
+      || typeof a.RustIsolatedOrchestrationStore.prototype.request!=='function'
+      || typeof a.RustIsolatedOrchestrationStore.prototype.requestAsync!=='function'
+      || typeof a.RustIsolatedOrchestrationStore.prototype.requestAdmissionAsync!=='function'
+      || typeof a.RustOrchestrationStore.prototype.requestAdmissionAsync!=='function'
       || typeof a.orchestrationStoreExport!=='function') process.exit(1);
     {
       const fs=require('node:fs'),path=require('node:path'),os=require('node:os');

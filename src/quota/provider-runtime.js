@@ -1,7 +1,7 @@
 'use strict';
 
 // Host composition for the durable quota stores and virtual-provider bridge.
-const { createProviderLimitCache } = require('./provider-limit-cache');
+const { createNativeProviderLimitCache } = require('./provider-limit-cache-native-host');
 const { createProviderQuotaHistory } = require('./provider-quota-history');
 const { createLimitRecorder } = require('./limit-cache-recorder');
 const { createQuotaBarCache } = require('./quota-bar-cache');
@@ -10,7 +10,7 @@ const { connectProviderLimitSync } = require('./provider-limit-sync');
 
 function createProviderQuotaRuntime({ paths, persistedSessions, providers, broadcast, logger }) {
   const providerQuotaHistory = createProviderQuotaHistory({ file: paths.providerQuotaHistoryDbFile });
-  const providerLimitCache = createProviderLimitCache({ file: paths.providerLimitDbFile,
+  const providerLimitCache = createNativeProviderLimitCache({ file: paths.providerLimitDbFile,
     legacyJsonFile: paths.providerLimitCacheFile, onRecord: entry => providerQuotaHistory.recordEntry(entry) });
   const limitRecorder = createLimitRecorder({ cache: providerLimitCache, persistedSessions, providers });
   connectProviderLimitSync({ cache: providerLimitCache, persistedSessions, providers, broadcast });

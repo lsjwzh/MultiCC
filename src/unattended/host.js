@@ -984,10 +984,10 @@ function createUnattendedHost(options = {}) {
 
   // Earliest epoch-ms the provider / Auto pool could accept work again. The
   // port is optional; a broken read must never turn into a bogus restriction.
-  function retryNotBeforeOf(sessionId) {
+  async function retryNotBeforeOf(sessionId) {
     if (typeof getRetryNotBefore !== 'function') return undefined;
     try {
-      const value = Number(getRetryNotBefore(sessionId));
+      const value = Number(await getRetryNotBefore(sessionId));
       return Number.isFinite(value) && value > 0 ? value : undefined;
     } catch (error) {
       log(`[unattended] retryNotBefore read failed for ${sessionId}: ${error && error.message ? error.message : error}`);
@@ -1028,6 +1028,7 @@ function createUnattendedHost(options = {}) {
     if (expireIfDue(sessionId)) return null;
     // 等待/异常优先恢复；只有正常完成时才因 FIFO 推迟判定。
     const backlog = kind === 'settle' ? await backlogPending(sessionId) : false;
+    const retryNotBefore = await retryNotBeforeOf(sessionId);
     const latest = stateOf(sessionId);
     if (!latest || latest.status !== STATUS.ACTIVE) {
       releaseHeldPushes(sessionId);
@@ -1051,7 +1052,7 @@ function createUnattendedHost(options = {}) {
         handoffPending,
         backlogPending: backlog,
         faultCategory,
-        retryNotBefore: retryNotBeforeOf(sessionId),
+        retryNotBefore,
       });
     } catch (error) {
       log(`[unattended] turn-end decision failed for ${sessionId}: ${error && error.message ? error.message : error}`);

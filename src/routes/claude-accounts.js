@@ -273,7 +273,7 @@ function mountClaudeAccountRoutes(app, deps) {
       const usage = await fetchUsage(fetchImpl, cred.token);
       // Feed Auto's per-account steering too (see quota/official-account-usage).
       if (typeof deps.recordUsage === 'function') {
-        try { deps.recordUsage(accountProviderId('claude', accountId), usage); } catch (_) {}
+        try { await deps.recordUsage(accountProviderId('claude', accountId), usage); } catch (_) {}
       }
       res.json({ status: 'ok', fetchedAt: Date.now(), usage });
     } catch (error) {

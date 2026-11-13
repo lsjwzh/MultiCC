@@ -161,7 +161,7 @@ function mountAuth(app, metrics, providerRelayShares) {
 }
 
 function createInstance({ providers, providerRelayShares, defaultsFile, activity,
-  authorizeProxyRequest = () => ({ ok: false, code: 'no-active-attempt' }) }) {
+  authorizeProxyRequest = () => ({ ok: false, code: 'no-active-attempt' }), authorizeProxyRequestAsync = null }) {
   const app = express();
   const metrics = [];
   app.disable('x-powered-by');
@@ -183,6 +183,7 @@ function createInstance({ providers, providerRelayShares, defaultsFile, activity
   const mounted = runtime.mountProtocolProxies(app, {
     protocols: ['claude', 'codex'], codexProxyTrace: false,
     authorizeProxyRequest,
+    ...(authorizeProxyRequestAsync ? { authorizeProxyRequestAsync } : {}),
     onActivity: event => activity.push(event),
     onUsageObserved: event => usage.push(event),
     onRateLimit: event => rates.push(event),

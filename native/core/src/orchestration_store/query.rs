@@ -362,9 +362,9 @@ pub(super) fn select(connection: &Connection, input: &Value, operation: &str) ->
         .unwrap_or_else(|| format!("json_quote({key_column})"));
     let descending = options["descending"] == true;
     let mut selections = vec![key_column.to_string(), order_json];
-    if fallback || (operation == "select" && fields.is_none()) {
+    if fallback || (matches!(operation, "select" | "selectKeyed") && fields.is_none()) {
         selections.push(receipts::json_source(collection, None)?);
-    } else if operation == "select" {
+    } else if matches!(operation, "select" | "selectKeyed") {
         for field in fields.unwrap() {
             let field = field
                 .as_str()
@@ -462,6 +462,15 @@ pub(super) fn select(connection: &Connection, input: &Value, operation: &str) ->
             .into_iter()
             .map(|(key, _, _)| key)
             .collect::<Vec<_>>()));
+    }
+    if operation == "selectKeyed" {
+        let mut keys = Vec::with_capacity(output.len());
+        let mut rows = Vec::with_capacity(output.len());
+        for (key, _, value) in output {
+            keys.push(key);
+            rows.push(record::encode(&value)?);
+        }
+        return Ok(json!({"keys":keys,"rowsJson":rows}));
     }
     Ok(
         json!({"rowsJson": output.into_iter().map(|(_, _, value)| record::encode(&value)).collect::<Result<Vec<_>>>()?}),

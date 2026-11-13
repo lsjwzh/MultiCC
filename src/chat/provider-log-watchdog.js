@@ -248,7 +248,7 @@ function createProviderLogWatchdog(deps = {}) {
     const limitInfo = record.cli === 'opencode' ? opencodeRateLimitInfoFromError(hit.text, at) : null;
     if (limitInfo) {
       if (recordLimit) {
-        try { recordLimit(sessionId, limitInfo); } catch (_) {}
+        try { Promise.resolve(recordLimit(sessionId, limitInfo)).catch(() => {}); } catch (_) {}
       }
       const bar = windowEventBar(normalizeWindowEvent(limitInfo, at), at);
       const limitEvt = { type: 'rate_limit_event', sessionId, rate_limit_info: limitInfo, bar };

@@ -228,7 +228,7 @@ function createOfficialAccountStore(options = {}) {
     // metadata-only write (createClaudeAccount's label/createdAt) says nothing
     // about the grant and must not be read as a recovery.
     if (onCredentialWritten && typeof merged.access_token === 'string' && merged.access_token.trim()) {
-      try { onCredentialWritten(id, merged); } catch (_) { /* bookkeeping must never fail the write */ }
+      try { Promise.resolve(onCredentialWritten(id, merged)).catch(() => {}); } catch (_) { /* bookkeeping must never fail the write */ }
     }
     return merged;
   }

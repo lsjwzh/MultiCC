@@ -540,7 +540,7 @@ function mountClaudeUsageQuotaRoutes(app, recordClaude) {
       // account, and writing that as a failure would park a perfectly healthy
       // provider in the shared cache (see recordClaude in limit-cache-recorder).
       if (entry && recordClaude) {
-        try { recordClaude(session, result, bar && bar.text); } catch (_) {}
+        try { await recordClaude(session, result, bar && bar.text); } catch (_) {}
       }
       const status = (result && result.status) || 'idle';
       res.status(quotaHttpStatus(status)).json({ ...(result || {}), status, bar });

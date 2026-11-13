@@ -77,7 +77,7 @@ function createUsageLimitWiring({ persistedSessions, providers, chatBroadcast, c
       // routes to, so a routed provider's window says whose it is.
       const routed = (persistedSessions.get(sessionName) || {}).cli === 'opencode';
       if (recordLimit) {
-        try { recordLimit(sessionName, dto); } catch (e) { /* cache write must not break chat */ }
+        try { Promise.resolve(recordLimit(sessionName, dto)).catch(() => {}); } catch (e) { /* cache write must not break chat */ }
       }
       if (dto.kind === 'window') {
         const info = {

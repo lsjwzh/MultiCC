@@ -4196,6 +4196,15 @@
       ]
     },
     {
+      "path": "tests/test-migrated-command-ownership.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-model-catalogs-host.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4355,6 +4364,24 @@
       ]
     },
     {
+      "path": "tests/test-orchestration-canonical-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-orchestration-native-sync-bridge.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-orchestration-receipts.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4382,6 +4409,15 @@
       ]
     },
     {
+      "path": "tests/test-orchestration-sqlite-mixed-driver-race.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-orchestration-sqlite-store.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4392,6 +4428,15 @@
     },
     {
       "path": "tests/test-orchestration-store.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-orchestration-wal-cross-library.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",
@@ -4934,6 +4979,13 @@
       ]
     },
     {
+      "path": "tests/test-quota-native-production.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:provider-router",
+      "entrypoints": ["npm:test:provider-router"]
+    },
+    {
       "path": "tests/test-quota-outbound-requests.js",
       "tier": "core",
       "lane": "deterministic"
@@ -5297,9 +5349,81 @@
       ]
     },
     {
+      "path": "tests/test-schedule-admit.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-schedule-claim-live.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-scheduled-messages.js",
       "tier": "flow",
       "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-scheduler-admit-rust-required.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-scheduler-complete-order.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-scheduler-complete-rust-required.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-scheduler-insert-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-scheduler-note-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-scheduler-worker-order.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
     },
     {
       "path": "tests/test-search-index.js",
@@ -6736,6 +6860,24 @@
       "path": "tests/test-wait-live.js",
       "tier": "other",
       "lane": "live"
+    },
+    {
+      "path": "tests/test-wait-resolution-order.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-wait-resolve-live.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
     },
     {
       "path": "tests/test-wait-service.js",

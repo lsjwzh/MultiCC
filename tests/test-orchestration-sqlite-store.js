@@ -516,13 +516,37 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   assert.match(driver, /RustDatabase/);
   assert.doesNotMatch(driver, /require\('node:sqlite'\)/);
   for (const file of ['src/task-shell/store.js',
-    'src/orchestration/sqlite-store.js', 'src/quota/provider-limit-cache.js', 'src/sqlite-runtime.js']) {
+    'src/orchestration/sqlite-store.js', 'src/sqlite-runtime.js']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     // task-shell 仓储迁移后不再经 JS 打开 SQLite：整个 store 由原生
     // RustTaskStore 承载，同属“只用 Rust、绝不碰 npm addon”的边界。
     assert.match(source, /sqlite\/driver|RustTaskStore|RustOrchestrationStore/, `${file} must use the shared driver or the native Rust store`);
     assert.doesNotMatch(source, /require\('better-sqlite3'\)/, `${file} must not require the addon`);
   }
+
+  // The quota compatibility facade delegates to a Node lifecycle adapter, but
+  // the adapter must submit storage operations to the Rust-owned store. Keep
+  // both dependency boundaries explicit so a Node SQLite fallback cannot hide
+  // behind either module.
+  const quotaFacade = fs.readFileSync(path.join(root, 'src/quota/provider-limit-cache.js'), 'utf8');
+  const quotaHost = fs.readFileSync(path.join(root, 'src/quota/provider-limit-cache-native-host.js'), 'utf8');
+  const dependencies = source => [...source.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)]
+    .map(match => match[1]);
+  assert.deepEqual(dependencies(quotaFacade), ['./provider-limit-cache-native-host']);
+  assert.deepEqual(dependencies(quotaHost), ['../native/runtime']);
+  assert.equal(require('../src/quota/provider-limit-cache').createProviderLimitCache,
+    require('../src/quota/provider-limit-cache-native-host').createNativeProviderLimitCache);
+  assert.match(quotaHost, /new\s+addon\.RustProviderLimitStore\s*\(/);
+  assert.match(quotaHost, /handle\.requestAsync\s*\(\s*op\s*,\s*input\s*\)/);
+  for (const source of [quotaFacade, quotaHost]) {
+    assert.doesNotMatch(source, /(?:node:sqlite|better-sqlite3|sqlite\/driver)/,
+      'quota facade and host must not use a Node SQLite driver');
+  }
+  const quotaAddon = fs.readFileSync(path.join(root, 'native/addon/src/provider_limit_store.rs'), 'utf8');
+  const quotaCore = fs.readFileSync(path.join(root, 'native/core/src/provider_limit_store.rs'), 'utf8');
+  assert.match(quotaAddon, /provider_limit_store::Store/);
+  assert.match(quotaAddon, /Store::open\s*\(/);
+  assert.match(quotaCore, /use\s+rusqlite::/);
 
   // install.sh and the ./multicc manager used to carry a "rebuild the native
   // binding" hatch. Nothing is compiled any more, so that repair path would

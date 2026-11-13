@@ -599,14 +599,18 @@ test('core runner covers every selected path and expands declared variants', () 
   // 与 tests/test-writer-launcher.js 同类。复审为确定性核心：
   // 430 + 1 = 431 entries, 356 + 1 = 357 deterministic, 402 + 1 = 403 commands
   // (400 Node entries)。
-  assert.equal(core.length, 431, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 431);
+  // The migration adds 15 deterministic native command, scheduler, and SQLite
+  // regression suites with temporary fixtures, plus one isolated quota wiring
+  // suite using a temporary database. They require no external accounts.
+  // Re-audited: 447 entries, 372 deterministic, 44 isolated, 419 commands.
+  assert.equal(core.length, 447, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 447);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 357);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 43);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 372);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 44);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
@@ -615,8 +619,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 403,
-    '400 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 419,
+    '416 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

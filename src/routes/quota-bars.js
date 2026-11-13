@@ -111,13 +111,13 @@ function createQuotaBarRuntime(options = {}) {
       result = await deps.fetchArkUsage();
       opts = { baseUrl: selector.baseUrl };
       if (typeof deps.recordVendor === 'function') {
-        try { deps.recordVendor({ kind: 'ark', result, baseUrl: selector.baseUrl }); } catch (_) {}
+        try { await deps.recordVendor({ kind: 'ark', result, baseUrl: selector.baseUrl }); } catch (_) {}
       }
       bar = renderQuotaBar('ark', result, opts);
     } else if (kind === 'kimi') {
       result = await deps.fetchKimiUsage(selector.host);
       if (typeof deps.recordVendor === 'function') {
-        try { deps.recordVendor({ kind: 'kimi', result, host: selector.host }); } catch (_) {}
+        try { await deps.recordVendor({ kind: 'kimi', result, host: selector.host }); } catch (_) {}
       }
       bar = renderQuotaBar('kimi', result);
     } else if (kind === 'claude') {
@@ -131,7 +131,7 @@ function createQuotaBarRuntime(options = {}) {
       result = entry ? entry.result : { status: 'idle' };
       bar = renderClaudeBar(selector.session);
       if (entry && typeof deps.recordClaude === 'function') {
-        try { deps.recordClaude(selector.session, result, bar && bar.text); } catch (_) {}
+        try { await deps.recordClaude(selector.session, result, bar && bar.text); } catch (_) {}
       }
     }
     if (cache && bar && !missing) cache.record(kind, result, bar, selector);

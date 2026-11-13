@@ -8,7 +8,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-test-virtual-provide
 process.env.MULTICC_DATA_DIR = root;
 const core = require('../src/providers/core');
 const virtual = require('../src/providers/virtual-provider');
-const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
+const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
+const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
 const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
 const { createProviderRelayShareStore } = require('../src/providers/relay-share-store');
 const { createInstance, listen, listenHttp, closeServer, serverOrigin, postJson, ACCESS_TOKEN } = require('./helpers/provider-sharing');
@@ -30,12 +31,14 @@ test('virtual provider CRUD, durable quota failover and scoped sharing use real 
       content: [{ type: 'text', text: 'ok' }], output: [], usage: { input_tokens: 2, output_tokens: 1 } }));
   }, '127.0.0.1');
   t.after(() => closeServer(upstream));
-  const cache = createProviderLimitCache({ file: path.join(root, 'limits.db') });
+  const cache = createNativeProviderLimitCache({ file: path.join(root, 'limits.db') });
+  await cache.ready();
   const recorder = createLimitRecorder({ cache, persistedSessions: new Map(), providers: core });
   virtual.configure({ cache, recordDto: recorder.recordDto });
-  t.after(() => cache.close());
+  t.after(async () => cache.close());
   const shares = createProviderRelayShareStore({ file: path.join(root, 'shares.json') });
-  const host = createInstance({ providers: core, providerRelayShares: shares, defaultsFile: path.join(root, 'defaults.json'), activity: [], backend: 'rust' });
+  const host = createInstance({ providers: core, providerRelayShares: shares, defaultsFile: path.join(root, 'defaults.json'), activity: [], backend: 'rust',
+    authorizeProxyRequestAsync: async () => ({ ok: false, code: 'no-active-attempt' }) });
   const server = await listen(host.app, '127.0.0.1');
   t.after(async () => { await host.close(); await closeServer(server); });
   const origin = serverOrigin(server), base = serverOrigin(upstream);
@@ -66,9 +69,10 @@ test('virtual provider CRUD, durable quota failover and scoped sharing use real 
       assert.equal(requests.length - before, 2);
       assert.match(requests[before].url, /^\/empty/); assert.match(requests[before+1].url, /^\/usable/);
       assert.equal(requests[before+1].headers.authorization || requests[before+1].headers['x-api-key'], appType === 'claude' ? 'Bearer fixture-usable' : 'Bearer fixture-usable');
-      assert.equal(cache.get(appType, first.id).summary.status, 'rejected');
-      const restored = createProviderLimitCache({ file: path.join(root, 'limits.db') });
-      assert.equal(restored.get(appType, first.id).summary.status, 'rejected'); restored.close();
+      assert.equal((await cache.get(appType, first.id)).summary.status, 'rejected');
+      const restored = createNativeProviderLimitCache({ file: path.join(root, 'limits.db') });
+      await restored.ready();
+      assert.equal((await restored.get(appType, first.id)).summary.status, 'rejected'); await restored.close();
       const secondCall = requests.length;
       assert.equal((await postJson(url, body, { authorization: `Bearer ${payload.authToken}`, 'x-forwarded-for': '198.51.100.2' })).response.status, 200);
       assert.equal(requests.length - secondCall, 1, 'the empty member stays parked');
@@ -77,14 +81,14 @@ test('virtual provider CRUD, durable quota failover and scoped sharing use real 
       await shares.revoke(shared.body.share.id);
       assert.equal((await postJson(url, body, { authorization: `Bearer ${payload.authToken}`, 'x-forwarded-for': '198.51.100.2' })).response.status, 403);
       core.updateProvider(appType, id, { virtual: { strategy: 'ordered', members: [{ id: second.id, expiresAt: Date.now()-1000 }] } });
-      assert.equal(virtual.status(core.getProvider(appType, id), core.listProviders()).availableCount, 0);
+      assert.equal((await virtual.statusAsync(core.getProvider(appType, id), core.listProviders())).availableCount, 0);
       const expiredStart = requests.length;
       assert.equal((await postJson(url, body, { 'x-access-token': ACCESS_TOKEN })).response.status, 503);
       assert.equal(requests.length, expiredStart, 'expired pools must not dial a member or the placeholder');
       let memberHandler;
       require('../src/routes/provider-balance-host').mountProviderBalanceHost({
         post(_path, handler) { memberHandler = handler; },
-      }, { getProvider: core.getProvider, isLocal: () => true });
+      }, { getProvider: core.getProvider, isLocal: () => true, lookupCached: cache.get, asyncLimitCache: true });
       let memberReply;
       await memberHandler({ body: { op: 'virtualMember', appType, id } }, {
         json(value) { memberReply = value; }, status() { return this; },
@@ -97,7 +101,7 @@ test('virtual provider CRUD, durable quota failover and scoped sharing use real 
       assert.equal((await postJson(url, body, { 'x-access-token': ACCESS_TOKEN })).response.status, 500);
       assert.equal(requests.length - ambiguousStart, 1, 'ambiguous failures must not replay generation');
       core.updateProvider(appType, id, { virtual: { strategy: 'ordered', members: [{ id: ambiguous.id }, { id: second.id }] } });
-      recorder.recordDto(appType, ambiguous.id, { kind: 'balance', available: true, total: 0, currency: 'CNY' });
+      await recorder.recordDto(appType, ambiguous.id, { kind: 'balance', available: true, total: 0, currency: 'CNY' });
       const depletedStart = requests.length;
       assert.equal((await postJson(url, body, { 'x-access-token': ACCESS_TOKEN })).response.status, 200);
       assert.equal(requests.length - depletedStart, 1, '生产缓存中的零余额成员必须在拨号前跳过');

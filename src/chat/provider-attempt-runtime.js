@@ -582,6 +582,17 @@ function createProviderAttemptRuntime(options = {}) {
     return getNative().providerAuthorizeProxyRequest(input, proxyContext(input), proxyPort);
   }
 
+  async function authorizeProxyRequestAsync(input = {}) {
+    const method = clean(input.method).toUpperCase();
+    if (!quotaGuard || (method && method !== 'POST')) return authorizeProxyRequest(input);
+    if (typeof quotaGuard.checkAsync !== 'function') return authorizeProxyRequest(input);
+    const verdict = await quotaGuard.checkAsync({ providerId: clean(input.providerId) });
+    // Re-read the attempt after awaiting the database. A turn may have ended
+    // or switched routes while the quota request was in flight.
+    const port = { ...proxyPort, quotaGuard: { check: () => verdict } };
+    return getNative().providerAuthorizeProxyRequest(input, proxyContext(input), port);
+  }
+
   function forceReleaseProducers(sessionId, reason = 'force_release') {
     return getNative().providerForceReleaseProducers(sessionId, reason, proxyPort);
   }
@@ -638,7 +649,7 @@ function createProviderAttemptRuntime(options = {}) {
     observeProxyDelta,
     scrubAttemptStructure,
     scrubAttemptEvent,
-    authorizeProxyRequest,
+    authorizeProxyRequest, authorizeProxyRequestAsync,
     onProxyActivity,
     attributeProxyUsage,
     observeProxyOutcome,

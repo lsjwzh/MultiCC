@@ -24,6 +24,82 @@ function okJson(obj) {
   return { ok: true, status: 200, json: async () => obj };
 }
 
+test('native quota response normalization matches the previous JavaScript rules', () => {
+  const request = require('../src/native/runtime').getNative().limitCacheRecorderRequestValue;
+  const finite = value => { const n = Number(value); return Number.isFinite(n) ? n : null; };
+  const legacyGlm = body => {
+    const limits = body && body.data && Array.isArray(body.data.limits) ? body.data.limits : null;
+    if (!limits) return null;
+    const rows = limits.filter(row => row && row.type === 'TOKENS_LIMIT' && finite(row.percentage) !== null);
+    if (!rows.length) return null;
+    const pct = finite(rows[0].percentage), reset = finite(rows[0].nextResetTime);
+    const weekly = rows[1] ? finite(rows[1].percentage) : null;
+    const weeklyReset = rows[1] ? finite(rows[1].nextResetTime) : null;
+    return { kind: 'window', provider: 'glm', rateLimitType: 'five_hour',
+      status: pct >= 100 ? 'rejected' : (pct >= 80 ? 'allowed_warning' : 'allowed'),
+      utilization: Math.max(0, Math.min(1, pct / 100)), resetsAt: reset !== null ? reset : null,
+      weeklyUtilization: weekly !== null ? Math.max(0, Math.min(1, weekly / 100)) : null,
+      weeklyResetsAt: weeklyReset !== null ? weeklyReset : null, tier: (body.data && body.data.level) || null };
+  };
+  const legacyDeepseek = body => {
+    if (!body || typeof body !== 'object' || !Array.isArray(body.balance_infos)) return null;
+    const info = body.balance_infos[0] || null;
+    if (!info) return { kind: 'balance', available: body.is_available === true,
+      currency: null, total: null, granted: null, toppedUp: null };
+    return { kind: 'balance', available: body.is_available === true, currency: info.currency || null,
+      total: finite(info.total_balance), granted: finite(info.granted_balance), toppedUp: finite(info.topped_up_balance) };
+  };
+  for (const body of [null, {}, { data: { limits: [] } }, { data: { level: 'pro', limits: [
+    { type: 'TIME_LIMIT', percentage: 99 }, { type: 'TOKENS_LIMIT', percentage: '80', nextResetTime: null },
+    { type: 'TOKENS_LIMIT', percentage: 120, nextResetTime: '123' },
+  ] } }, { data: { limits: [{ type: 'TOKENS_LIMIT', percentage: null }] } }]) {
+    assert.deepStrictEqual(request('pollGlm', { body }), legacyGlm(body));
+  }
+  for (const body of [null, {}, { balance_infos: [] }, { is_available: true, balance_infos: [
+    { currency: 'CNY', total_balance: null, granted_balance: '2.5', topped_up_balance: 'invalid' },
+  ] }, { balance_infos: [false] }]) {
+    assert.deepStrictEqual(request('pollDeepseek', { body }), legacyDeepseek(body));
+  }
+  for (const [body, expected] of [
+    [null, { dto: null, error: null }],
+    [{ ok: false, reason: '失败😀'.repeat(60) }, { dto: null, error: `lender: ${'失败😀'.repeat(60).slice(0, 100)}` }],
+    [{ ok: true, dto: { kind: 'window', utilization: '0.5' } }, { dto: null, error: null }],
+    [{ ok: true, dto: { kind: 'balance', available: 0 } }, { dto: { kind: 'balance', available: 0 }, error: null }],
+  ]) assert.deepStrictEqual(request('pollRelay', { body }), expected);
+});
+
+test('native polling admission shares a request, retains null failures and releases aborted work', async () => {
+  const state = new (require('../src/native/runtime').getNative().RustUsageLimitPoller)();
+  const begin = (now, hasAdapter) => state.request('begin', {
+    key: 'provider:hash', strategy: 'glm-monitor', now, ...(hasAdapter === undefined ? {} : { hasAdapter }),
+  });
+  assert.equal(begin(0).action, 'needAdapter');
+  assert.equal(begin(0, true).action, 'start');
+  assert.equal(begin(0).action, 'join');
+  state.request('finish', { key: 'provider:hash', at: 0, dto: null, error: 'offline' });
+  assert.deepEqual(begin(59_999), { action: 'cached', dto: null });
+  assert.equal(begin(60_000).action, 'needAdapter');
+  assert.equal(begin(60_000, true).action, 'start');
+  state.request('abort', { key: 'provider:hash' });
+  assert.equal(begin(60_000, true).action, 'start');
+});
+
+test('a synchronous provider lookup error does not strand the polling key', async t => {
+  const providers = require('../src/providers/core');
+  let lookups = 0, attempts = 0;
+  t.mock.method(providers, 'getProvider', () => {
+    if (++lookups === 1) throw new Error('temporary lookup failure');
+    return null;
+  });
+  const p = poller.createUsageLimitPoller({ resolveTarget: () => null, broadcast: () => {}, now: () => 0,
+    adapters: { custom: async () => { attempts++; return { kind: 'balance', total: 1 }; } } });
+  const target = { providerId: 'p', appType: 'claude', strategy: 'custom', apiKey: 'fixture' };
+  await assert.rejects(p._refresh(target, 0), /temporary lookup failure/);
+  const value = await p._refresh(target, 0);
+  assert.equal(value.total, 1);
+  assert.equal(attempts, 1);
+});
+
 test('GLM adapter maps first TOKENS_LIMIT to five_hour window utilization', async () => {
   await withFetch(
     (url, opts) => {

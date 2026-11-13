@@ -28,6 +28,18 @@ fn main() {
         return;
     }
     match args.first().map(String::as_str) {
+        // Experimental private stdin/stdout protocol. The host does not use
+        // this path until lifecycle, packaging and compatibility are verified.
+        Some("orchestration-owner") if args.len() == 1 => {
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            if multicc_core::orchestration_owner::serve(stdin.lock(), stdout.lock(), u64::MAX)
+                .is_err()
+            {
+                eprintln!("[orchestration-owner] transport failed");
+                std::process::exit(1);
+            }
+        }
         Some("serve") => {
             let options = match multicc_gateway::args::parse(&args[1..]) {
                 Ok(options) => options,
