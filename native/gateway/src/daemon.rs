@@ -94,6 +94,11 @@ pub async fn serve(options: ServeOptions) -> i32 {
             ""
         }
     ));
+    if !options.node_enabled() {
+        // docs/gateway.md §8.1: the exact wording the no-node smoke test and
+        // operators look for.
+        log("node runtime disabled (--no-node): routes not owned by Rust answer 503 node_runtime_absent");
+    }
 
     let upstream_wait = upstream_wait();
     // One router for every client connection; the per-connection upstream
@@ -124,15 +129,21 @@ pub async fn serve(options: ServeOptions) -> i32 {
         }
     }
     let router = native_routes(Arc::clone(&app));
-    let mut supervisor = Supervisor::new(
-        &options,
-        port,
-        RestartPolicy::new(backoff_scale()),
-        dotenv_keys,
-        Arc::clone(&app.auth),
-        Arc::clone(&app.source_workspaces),
-    );
-    supervisor.start();
+    // `--no-node`: no child is ever constructed, polled or restarted. The
+    // supervisor is `None` and each connection gets a fail-closed upstream.
+    let mut supervisor = options.node_enabled().then(|| {
+        Supervisor::new(
+            &options,
+            port,
+            RestartPolicy::new(backoff_scale()),
+            dotenv_keys,
+            Arc::clone(&app.auth),
+            Arc::clone(&app.source_workspaces),
+        )
+    });
+    if let Some(supervisor) = supervisor.as_mut() {
+        supervisor.start();
+    }
     let mut signals = match Signals::new() {
         Ok(signals) => signals,
         Err(error) => {
@@ -150,8 +161,17 @@ pub async fn serve(options: ServeOptions) -> i32 {
                 match accepted {
                     Ok((stream, peer)) => {
                         let local = stream.local_addr().unwrap_or(peer);
-                        let upstream =
-                            UpstreamHandle::new(supervisor.upstream_port(), upstream_wait, peer, local);
+                        let upstream = match supervisor.as_mut() {
+                            Some(supervisor) => UpstreamHandle::new(
+                                supervisor.upstream_port(),
+                                upstream_wait,
+                                peer,
+                                local,
+                            ),
+                            // No child exists at all: the fallback answers 503
+                            // `node_runtime_absent` without waiting.
+                            None => UpstreamHandle::absent(peer, local),
+                        };
                         let router = router.clone();
                         tokio::spawn(async move {
                             let _ = stream.set_nodelay(true);
@@ -170,10 +190,18 @@ pub async fn serve(options: ServeOptions) -> i32 {
                     GatewaySignal::Interrupt | GatewaySignal::Terminate => {
                         if !shutting_down {
                             shutting_down = true;
-                            log("stop signal received; forwarding it to node and no longer accepting");
+                            if supervisor.is_some() {
+                                log("stop signal received; forwarding it to node and no longer accepting");
+                            } else {
+                                log("stop signal received; no node to stop, no longer accepting");
+                            }
                         }
-                        if !supervisor.request_stop(signal) {
-                            // Nothing left to wait for.
+                        // `request_stop` is false when there is no Node to
+                        // wait for: with `--no-node` we are done immediately.
+                        if !supervisor
+                            .as_mut()
+                            .is_some_and(|supervisor| supervisor.request_stop(signal))
+                        {
                             exit_code = Some(0);
                         }
                     }
@@ -183,36 +211,45 @@ pub async fn serve(options: ServeOptions) -> i32 {
                 parent_lifeline = None;
                 if !shutting_down {
                     shutting_down = true;
-                    log("stdin closed by our parent; stopping node and no longer accepting");
+                    if supervisor.is_some() {
+                        log("stdin closed by our parent; stopping node and no longer accepting");
+                    } else {
+                        log("stdin closed by our parent; no node to stop, no longer accepting");
+                    }
                 }
-                if !supervisor.request_stop(GatewaySignal::Interrupt) {
+                if !supervisor
+                    .as_mut()
+                    .is_some_and(|supervisor| supervisor.request_stop(GatewaySignal::Interrupt))
+                {
                     exit_code = Some(0);
                 }
             }
             _ = tokio::time::sleep(TICK) => {}
         }
 
-        if let Some((code, ran_for)) = supervisor.poll() {
-            if shutting_down {
-                log(&format!("node exited with {code}"));
-                exit_code = Some(code);
-            } else if code == 0 {
-                // §7: Node only exits 0 on its own when it was asked to stop
-                // for good (/api/desktop-shutdown) or to be restarted by
-                // whoever started us (/api/restart in desktop mode). Either
-                // way the decision is our parent's, exactly as it was before a
-                // front door stood in between.
-                log("node exited with 0 on its own; stopping");
-                exit_code = Some(0);
-            } else {
-                log(&format!("node exited with {code}; scheduling a restart"));
-                supervisor.schedule_restart(code, ran_for);
+        if let Some(supervisor) = supervisor.as_mut() {
+            if let Some((code, ran_for)) = supervisor.poll() {
+                if shutting_down {
+                    log(&format!("node exited with {code}"));
+                    exit_code = Some(code);
+                } else if code == 0 {
+                    // §7: Node only exits 0 on its own when it was asked to stop
+                    // for good (/api/desktop-shutdown) or to be restarted by
+                    // whoever started us (/api/restart in desktop mode). Either
+                    // way the decision is our parent's, exactly as it was before a
+                    // front door stood in between.
+                    log("node exited with 0 on its own; stopping");
+                    exit_code = Some(0);
+                } else {
+                    log(&format!("node exited with {code}; scheduling a restart"));
+                    supervisor.schedule_restart(code, ran_for);
+                }
             }
-        }
-        // A restart that falls due in the same tick as a stop signal must not
-        // spawn a Node we are about to abandon.
-        if !shutting_down {
-            supervisor.start_if_due();
+            // A restart that falls due in the same tick as a stop signal must not
+            // spawn a Node we are about to abandon.
+            if !shutting_down {
+                supervisor.start_if_due();
+            }
         }
         if exit_code.is_some() {
             break;
@@ -435,7 +472,10 @@ impl<'a> Supervisor<'a> {
                 self.restart_at = None;
             }
             Err(error) => {
-                log(&format!("cannot start {}: {error}", self.options.node));
+                log(&format!(
+                    "cannot start {}: {error}",
+                    self.options.node.as_deref().unwrap_or("node")
+                ));
                 self.restart_at =
                     Some(Instant::now() + self.policy.next_delay(Some(1), Duration::ZERO));
             }
@@ -499,7 +539,10 @@ fn spawn_node(
     auth: &crate::auth_control::Registration,
     source: &crate::auth_control::Registration,
 ) -> io::Result<Child> {
-    let mut command = Command::new(&options.node);
+    let Some(node) = options.node.as_deref() else {
+        return Err(io::Error::other("node runtime disabled (--no-node)"));
+    };
+    let mut command = Command::new(node);
     for key in dotenv_keys {
         command.env_remove(key);
     }

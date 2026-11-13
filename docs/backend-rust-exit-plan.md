@@ -9,7 +9,7 @@ Continue the existing plan: steps 1–5 are complete; step 6 is the backend migr
 | HTTP, middleware, authentication, errors, WS and SSE | Inventory reconciled with runtime mounts; equivalent response/event contracts; isolated integration tests; no remaining Express handler in production | Open. Axum owns the public listener and selected routes; the remainder is forwarded to Node |
 | Chat orchestration | Rust owns admission, turn/attempt state, provider selection, CLI supervision, streaming, cancellation, background work, completion and recovery; unchanged client contracts | Open. Several Rust kernels and Claude process supervision exist; the turn coordinator and other host lifecycles remain in Node |
 | Persistence | Rust owns schemas/migrations, reads/writes/transactions and history; old-format import and recovery fixtures pass; isolated migration checks prove record/order/relationship consistency | Open. Rust owns SQLite operations and several stores; many domain writes and history/delivery effects still use Node |
-| Node production exit | Full project/contract/integration checks pass; standalone Rust startup has no backend Node child; packaging, deployment and rollback instructions tested | Open. Gateway still supervises Node; disable that path only after the preceding criteria pass |
+| Node production exit | Full project/contract/integration checks pass; standalone Rust startup has no backend Node child; packaging, deployment and rollback instructions tested | Open. `serve --no-node` now starts the front door with no Node child at all (only routes needing no Node state answer; forwarded routes and auth-gated native routes fail closed with 503 `node_runtime_absent`, [gateway.md §8.1](gateway.md)) and a Node-free Docker stage plus CI smoke exercise it; the complete product still needs `--node` until the preceding criteria pass |
 
 Use the existing Axum/Tokio gateway, rusqlite/SQLite databases and established JSON/JSONL formats. Do not change databases or client APIs as a shortcut. Build/test tooling, frontend JavaScript and the Electron client are outside backend replacement; any Node helper needed to serve backend requests remains an open dependency. External user-selected CLI executables retain their existing protocol contracts.
 
@@ -24,9 +24,36 @@ No production restart, configuration switch, live-data migration, commit, merge 
 | 6c. Replace remaining HTTP and stream hosts | Each inventory entry has a Rust route and fixture; static files, uploads/downloads, WS/SSE, provider relays, administration, tools and integration hosts covered | Open; batch existing coherent domains with their state owners |
 | 6d. Replace chat orchestration | Complete turn/attempt state machine and CLI lanes; abort/retry/background/reconnect/finalization invariants tested against recorded events | In progress. The live chat-session table and the per-session turn runtime store now have one native owner beside the session-record owner; CLI supervision, streaming, finalize effects and the remaining turn/attempt transitions stay in Node. Existing Rust kernels are reused, not rewritten |
 | 6e. Finish domain persistence | Versioned schema and old-format readers, transaction boundaries, recovery and restart consistency; isolated data validation manifests | Open; migrate stores alongside their consuming domains, then reconcile all remaining writers |
-| 6f. Disable Node backend and verify delivery | Rust-only production startup/package, full tests, contract inventory has no Node fallback, verified deployment/rollback documentation | Open; cannot mark complete while gateway supervisor still needs server.js |
+| 6f. Disable Node backend and verify delivery | Rust-only production startup/package, full tests, contract inventory has no Node fallback, verified deployment/rollback documentation | Open; the Node-free start path (gateway `--no-node`, `scripts/start-rust-only.sh`, the `node-free-runtime` image and the CI smoke) exists and spawns no `server.js`, but it only serves what needs no Node state: auth-gated native routes and all forwarded routes fail closed, so the supervisor path cannot be disabled until the auth runtime and 6c/6d cover the inventory (see “What deleting the Node process still needs”) |
 
 6b–6e can advance by coherent domain, but this ledger is one plan. Every batch records deleted Node code, retained bridges, tests, format differences and next dependency. Existing evidence is in [gateway.md](gateway.md) and [request-lifecycle-rust.md](request-lifecycle-rust.md).
+
+## Node-free startup and what deleting the Node process still needs (2026-11-14)
+
+The front door now has an explicit Rust-only mode. `multicc-gateway serve --cwd <dir> --no-node` never spawns a child: it binds the public port and loads `.env`; everything it cannot serve without Node — forwarded routes, WebSocket upgrades, and every native route that needs the authentication snapshot — answers 503 `node_runtime_absent` immediately, with an auth-specific error text for the last group (contract: [gateway.md §8.1](gateway.md)). `--node` keeps its previous behaviour unchanged, and exactly one of the two flags is mandatory: neither, both, or `--no-node` with a script argument exits 2 with the documented text. This changes the entry state, not the Goal criteria.
+
+| Entry point | Runtime today | Node-free? |
+|---|---|---|
+| `./multicc start` / `restart` and the launchd login service (`multicc install`/`update`) | `multicc-gateway serve --cwd <checkout> --node <node> server.js` | No — full product |
+| `npm start` / `scripts/start-gateway.js` | same, plus `--stdin-lifeline` | No — full product |
+| Standalone launcher and desktop shell supervisor (`desktop/lib/desktop-env.js` `gatewayLaunch`) | same, plus `--stdin-lifeline` | No — full product |
+| `scripts/start-rust-only.sh` | `serve --cwd <checkout> --no-node` | Yes — whatever needs no Node state |
+| `node-free-runtime` Docker stage | default CMD `serve --cwd /srv/multicc --no-node` | Yes — whatever needs no Node state |
+| CI `rust-kernels.yml` | gateway integration tests on all three OSes, plus the `--no-node` smoke on macOS/Linux | Mixed — Windows runs the integration tests only (no SIGTERM/exit-0 semantics) |
+
+### What deleting the Node process still needs
+
+This is the structure of the remaining work. Counts must be re-measured from [backend-route-inventory.md](backend-route-inventory.md) and [backend-runtime-inventory.md](backend-runtime-inventory.md) when the list is acted on; do not copy numbers from an older batch, and put the final figures here when the main inventory is re-run.
+
+1. **Authentication runtime ownership.** Access token, HMAC session cookies, WS tickets and the shutdown flag are still held by the Node child; the gateway reads a snapshot over the authenticated control stream. This is the first blocker for deleting Node, and the reason every auth-gated native route fails closed under `--no-node`: the snapshot owner, not just the route, has to move to Rust (6b).
+2. **Unmigrated HTTP route domains.** The remainder of the inventory (chat/session/task control routes, administration and settings, plugin hosts, the static `public/` files Express still serves, …). Each domain moves together with its state owner, fixtures and the deleted Node handler (6c, 6e).
+3. **WebSocket hosts and upgrades.** Every `/ws/*` endpoint that is still forwarded needs a Rust host with the same ticket/snapshot/replay contract before the forwarding fallback can be dropped (6b, 6c).
+4. **Chat control plane and turn/worker lifecycle.** Admission, turn/attempt transitions, CLI supervision, streaming, cancellation, background work, completion and recovery still run in Node (6d). Reuse the existing native kernels; do not rewrite them.
+5. **Multipart and media routes still in Node.** `/api/voice/stt` (multer upload plus local ASR with the Whisper fallback) is the remaining voice REST route in Node at the time of writing. The chat upload half of multer (`POST /api/upload`) is already Rust-owned (gateway.md §37), so removing shared middleware must not regress it.
+6. **Streamed responses and host-port callbacks.** The provider speed probe and similar streamed exchanges still go through `host_port`; with no Node child they return 503 `rust_backend_unavailable`, so the Node facts behind them (session tables, provider stores, plugin/adapter host ports) must move to Rust first (6b, 6c, 6e).
+7. **Node-only plugin and adapter hosting.** Provider/CLI adapters, browser/CDP and channel integrations whose interfaces are hosted by Node need protocol or native equivalents before the supervisor can be removed.
+
+Exit for this item: every entry point in the table above starts with `--no-node`, the full test/contract/packaging matrix passes without a Node child, and the `host_port` fallback, the auth-runtime refusal and the forwarding `node_runtime_absent` branch can all be deleted rather than merely exercised.
 
 ## Ownership snapshot at Goal start
 

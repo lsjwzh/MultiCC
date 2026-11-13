@@ -690,6 +690,93 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the voice REST routes retired from src/routes/voice.js
+  // (src/routes/voice-host.js, native/gateway/src/app/voice_routes.rs).
+  // `voice.answers` maps `<op>` (or `<op>:<aux type|target|term>`) to the value
+  // the real host would have answered, so a test can script every success,
+  // failure and thrown shape; the defaults below are one healthy hop. Every
+  // call is appended so the tests can assert the exact host payload.
+  if (route === '/api/__host/voice' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'voice-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const voice = script.voice || {};
+      if (script.hostDown === true || voice.hostDown === true) { req.socket.destroy(); return; }
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      const answers = voice.answers || {};
+      const key = `${input.op}:${input.type || input.target || input.term || ''}`;
+      if (Object.prototype.hasOwnProperty.call(answers, key)) return send(answers[key]);
+      if (Object.prototype.hasOwnProperty.call(answers, input.op)) return send(answers[input.op]);
+      switch (input.op) {
+        case 'examples':
+          return send({ ok: true, examples: voice.examples || [] });
+        case 'auxEnqueue':
+          return send({ ok: true, text: voice.text === undefined ? '' : voice.text });
+        case 'feedbackApply':
+          return send({ ok: true });
+        case 'vocabGet':
+          return send({ ok: true, vocab: voice.vocab || [] });
+        case 'vocabDelete':
+          return send({ ok: true, remaining: voice.remaining === undefined ? 0 : voice.remaining });
+        case 'hotwords':
+          return send({
+            ok: true,
+            present: voice.present === true,
+            enabled: voice.enabled === true,
+            snapshot: voice.present === true
+              ? (voice.snapshot === undefined ? {} : voice.snapshot)
+              : null,
+          });
+        case 'hotwordsReject':
+          return send({
+            ok: true,
+            present: voice.present !== false,
+            accepted: voice.accepted !== false,
+          });
+        case 'readinessFacts':
+          return send({
+            ok: true,
+            localAvailable: voice.localAvailable === true,
+            download: voice.download === undefined ? null : voice.download,
+            cloudKeys: voice.cloudKeys || { whisper: false, openrouter: false },
+            streaming: voice.streaming === undefined ? null : voice.streaming,
+          });
+        case 'settingsFacts':
+          return send({
+            ok: true,
+            env: voice.env || {},
+            runtime: voice.runtime || {},
+            asrStatus: voice.asrStatus === undefined ? { local: { available: false } } : voice.asrStatus,
+            ttsStatus: voice.ttsStatus === undefined ? { provider: 'edge' } : voice.ttsStatus,
+            qwenRuntime: voice.qwenRuntime === undefined ? null : voice.qwenRuntime,
+          });
+        case 'settingsApply':
+          return send({ ok: true });
+        case 'asrModelCancel':
+          return send({
+            ok: true,
+            cancelled: voice.cancelled === true,
+            status: voice.status === undefined ? { state: 'idle' } : voice.status,
+          });
+        case 'asrModelStart':
+          return send({
+            ok: true,
+            status: voice.status === undefined ? { state: 'downloading' } : voice.status,
+          });
+        default:
+          return send({ ok: false, error: { message: 'unknown host operation' } });
+      }
+    });
+    return;
+  }
   // Host port for the provider routes retired from src/routes/providers.js
   // (src/routes/providers-host.js, native/gateway/src/app/providers.rs). The
   // script's `providers.answers` maps `<op>` (or `<op>:<id>`) to the value the

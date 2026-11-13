@@ -31,6 +31,17 @@ use crate::proxy_header::format_proxy_header;
 /// broadcast frames, so this is deliberately generous.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// docs/gateway.md §8.1: with `--no-node` there is no child to ask. A port of
+/// 0 means exactly that, and the call must fail at once instead of entering the
+/// 60s budget (or a connect that OS behavior could make slow). Every caller
+/// maps this to its existing 503 `rust_backend_unavailable` shape.
+fn runtime_absent() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::ConnectionRefused,
+        "node runtime absent (--no-node)",
+    )
+}
+
 /// One non-host-port exchange with the Node child (the streamed speed probe):
 /// an arbitrary method/path/headers/body, answered as status plus a bounded
 /// body. Node's proxy routes are ordinary HTTP; only the PROXY v1 preamble and
@@ -77,6 +88,9 @@ async fn request_inner(
     body: Vec<u8>,
     limit: usize,
 ) -> Result<UpstreamReply, UpstreamFailure> {
+    if port == 0 {
+        return Err(UpstreamFailure::Network(runtime_absent().to_string()));
+    }
     let mut stream = TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|error| UpstreamFailure::Network(error.to_string()))?;
@@ -150,6 +164,9 @@ pub async fn call_with(
 }
 
 async fn exchange(port: u16, path: &str, payload: &Value) -> io::Result<Value> {
+    if port == 0 {
+        return Err(runtime_absent());
+    }
     let body = serde_json::to_vec(payload).map_err(io::Error::other)?;
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
     stream.set_nodelay(true).ok();
@@ -203,4 +220,39 @@ async fn exchange(port: u16, path: &str, payload: &Value) -> io::Result<Value> {
             format!("host port: invalid JSON: {error}"),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn a_zero_port_fails_at_once_instead_of_waiting_for_the_budget() {
+        let started = Instant::now();
+        let error = call(
+            0,
+            "/api/__host/probe",
+            &serde_json::json!({ "op": "probe" }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a --no-node host-port call must not enter the retry/timeout budget"
+        );
+        let streamed = request(
+            0,
+            "GET",
+            "/api/__host/probe",
+            &[],
+            Vec::new(),
+            Duration::from_secs(60),
+            1024,
+        )
+        .await;
+        assert!(matches!(streamed, Err(UpstreamFailure::Network(_))));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 }

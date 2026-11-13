@@ -78,6 +78,7 @@ pub mod unattended;
 pub mod usage;
 pub mod virtual_provider;
 pub mod voice_gateway_routes;
+pub mod voice_routes;
 pub mod voice_runtime_routes;
 pub mod windows_tools;
 pub mod workspace_release;

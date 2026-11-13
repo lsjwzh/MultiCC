@@ -5,18 +5,23 @@ COPY native ./native
 RUN cargo build --locked --release --manifest-path native/Cargo.toml
 
 # Node-free runtime: only the two Rust executables and the system CA store (rustls
-# reads it for outbound TLS). Nothing in this image provides Node; the build
-# asserts that and smoke-runs both binaries. It is a build artifact, not a
-# deployable server: multicc-gateway still spawns `node server.js` as its upstream
-# for the routes that have not moved into Rust yet (docs/gateway.md §9).
+# reads it for outbound TLS). Nothing in this image provides Node, and the front
+# door runs with `serve --no-node`: it never spawns a child. Whatever it cannot
+# serve without Node answers 503 `node_runtime_absent` — every forwarded route,
+# and every native route that needs the authentication snapshot Node still owns
+# (docs/gateway.md §8.1). The full feature set still needs `--node`, which only a
+# Node-carrying image can offer.
 FROM debian:bookworm-slim AS node-free-runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /var/lib/multicc --shell /bin/false multicc
 COPY --from=rust-build /build/native/target/release/multicc-gateway /usr/local/bin/multicc-gateway
 COPY --from=rust-build /build/native/target/release/multicc-writer /usr/local/bin/multicc-writer
+COPY scripts/smoke-no-node-gateway.sh /usr/local/lib/multicc/smoke-no-node-gateway.sh
 # Exit codes are the binaries' own documented contract: gateway with no
 # arguments prints usage and exits 2; writer with no arguments exits 64 (EX_USAGE).
+# curl exists only for the smoke probe's HTTP checks and is purged again in the
+# same layer, so the shipped image still has no HTTP client beyond the front door.
 RUN set -eu; \
     if command -v node >/dev/null 2>&1; then echo "node-free runtime must not contain node" >&2; exit 1; fi; \
     if [ -e /usr/bin/node ] || [ -e /usr/local/bin/node ]; then echo "node-free runtime must not contain node" >&2; exit 1; fi; \
@@ -24,14 +29,24 @@ RUN set -eu; \
     multicc-gateway --help | grep -q 'multicc-gateway serve --cwd'; \
     code=0; multicc-gateway >/dev/null 2>&1 || code=$?; [ "$code" -eq 2 ]; \
     code=0; multicc-writer >/dev/null 2>&1 || code=$?; [ "$code" -eq 64 ]; \
+    apt-get update && apt-get install -y --no-install-recommends curl; \
+    sh /usr/local/lib/multicc/smoke-no-node-gateway.sh /usr/local/bin/multicc-gateway; \
+    apt-get purge -y --auto-remove curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    if command -v curl >/dev/null 2>&1; then echo "curl must not ship in the node-free runtime" >&2; exit 1; fi; \
     echo "node-free runtime smoke passed"; \
     multicc-gateway --version
 WORKDIR /srv/multicc
+# The service routes need a writable data root; the front door must not try to
+# write next to its (root-owned) working directory when it runs as `multicc`.
+ENV MULTICC_DATA_DIR=/var/lib/multicc/data
+RUN mkdir -p /var/lib/multicc/data && chown -R multicc /var/lib/multicc
 USER multicc
-# `docker run <image> --version` runs the front door; the default command only
-# prints usage because serving still needs a Node upstream (see above).
+# Default command: serve with no Node child at all. `docker run <image>
+# --version` still runs the front door; a full-featured start passes
+# `serve --cwd ... --node <node>` from an image that carries Node.
 ENTRYPOINT ["/usr/local/bin/multicc-gateway"]
-CMD ["--help"]
+CMD ["serve", "--cwd", "/srv/multicc", "--no-node"]
 
 FROM node:22-bookworm-slim AS tools
 

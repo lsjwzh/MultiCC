@@ -5,15 +5,19 @@
 fn usage() {
     println!(
         "usage:
+  multicc-gateway serve --cwd <dir> --no-node [--stdin-lifeline] [--ephemeral-loopback]
   multicc-gateway serve --cwd <dir> --node <node executable> [--stdin-lifeline] [--ephemeral-loopback] [--] <script> [args...]
   multicc-gateway --version
 
-The script defaults to server.js. The front door reads .env from --cwd, binds
-the port its bind policy selects, then starts Node on 127.0.0.1 with
-MULTICC_GATEWAY_CHILD=1 and MULTICC_GATEWAY_INTERNAL_PORT set. With
---stdin-lifeline, EOF on stdin stops it the way SIGINT does.
+Exactly one runtime mode is required. With --node the front door spawns the
+script (default server.js) on 127.0.0.1 with MULTICC_GATEWAY_CHILD=1 and
+MULTICC_GATEWAY_INTERNAL_PORT set, and forwards to it. With --no-node no child
+is spawned: routes it would have forwarded, and native routes that need the
+authentication snapshot Node owns, answer 503 node_runtime_absent. Both
+modes read .env from --cwd and bind the port their bind policy selects.
+--stdin-lifeline makes EOF on stdin stop the front door the way SIGINT does.
 --ephemeral-loopback binds 127.0.0.1 on an OS-assigned port for isolated local
-launches; the listening log and the child's PORT report the actual port."
+launches; the listening log reports the actual port."
     );
 }
 

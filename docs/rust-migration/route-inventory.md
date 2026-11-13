@@ -192,7 +192,7 @@
 
 | 端点 | 文件:行 | 说明 |
 |---|---|---|
-| `GET /api/voice/test-sse` | `src/routes/voice.js:622-640` | `text/event-stream`，每 500ms 一条 chunk，3 条后 `[DONE]`；`X-Accel-Buffering: no`；客户端断开清 timer |
+| `GET /api/voice/test-sse` | 已迁入前门（`native/gateway/src/app/voice_routes.rs`；旧实现 `tests/helpers/legacy-voice-routes.js:622-640`） | `text/event-stream`，每 500ms 一条 chunk，3 条后 `[DONE]`；`X-Accel-Buffering: no`；客户端断开清 timer |
 | `GET /api/machines/:machineId/proxy`（`Accept: text/event-stream`） | `src/machines.js:53-66` | 通过 Rust `machineEventStream` 把远端事件边读边写；`Cache-Control: no-store`；写压 >1MiB 时暂停 |
 | `POST /api/internal/router-tools/:tool`（`dispatch_master` + `mode=sync`） | `src/router-tool-host.js:139-158` | `application/x-ndjson`，先 `progress` 帧后 `result` 帧 |
 | `/claude-proxy/*`、`/codex-proxy/*` 的上游响应 | `src/providers/*`、`src/codex/official-relay.js:196-208` | 透传上游 `text/event-stream`；不算本服务的业务端点 |
@@ -311,7 +311,8 @@
 | `src/routes/voice-gateway.js` | 0 | 0 | 2026-11-14 整文件删除：`GET /api/voice-gateways` 与 `GET/PUT/DELETE /api/directories/:id/voice-gateway`（含 `/api/v1` 变体，共 8 条注册）已由前门独占（`native/gateway/src/app/voice_gateway.rs` + `multicc_core::voice_gateway_routes`，见 docs/gateway.md §41）；错误码→状态码、legacy/v1 信封、`acp` 块组装与 `autoInstall` 预检进 Rust，会话记录读写与子进程 reconcile/stop 留在宿主端口 | - | ✅ 已迁 |
 | `src/routes/voice-gateway-host.js` | 1 | 143 | POST `HOST_PATH`（`/api/__host/voice-gateway`）@88：只给前门回调的宿主端口（list/inspect/ensure/remove），按回环判定，非公开 API；`service` 与 `publicBaseUrl` 交给 `voice-runtime-host.js` 复用 | a,b,d | 宿主端口 |
 | `src/routes/voice-runtime-host.js` | 1 | 236 | POST `HOST_PATH`（`/api/__host/voice-runtime`）：只给前门回调的宿主端口（globalGet/globalPut/globalRemove/globalRuntime/globalRestart/launchBegin/launchEnd/launchResolve/runtimeGet/runtimeInstall/fleetRuntime/fleetRestart），按回环判定，非公开 API | a,b,d | 宿主端口 |
-| `src/routes/voice.js` | 14 | 648 | POST '/api/voice/refine' @157<br>POST '/api/voice/feedback' @197<br>POST '/api/voice/confirm' @212<br>POST '/api/voice/progress-summary' @264<br>GET '/api/voice/vocab' @302<br>GET '/api/voice/readiness' @313<br>GET '/api/voice/hotwords' @317<br>POST '/api/voice/hotwords/reject' @322<br>DELETE '/api/voice/vocab/:term' @328<br>POST '/api/voice/stt' @335<br>GET '/api/settings/voice' @403<br>POST '/api/settings/voice/asr-model' @472<br>POST '/api/settings/voice' @486<br>GET '/api/voice/test-sse' @622 | a,c | T2 |
+| `src/routes/voice.js` | 1 | 133 | POST '/api/voice/stt' @59（multer 内存上传，字节喂进程内 sherpa-onnx ASR，受上传准入闸约束，留在 Node）。2026-11-14 其余 13 条（`refine`/`feedback`/`confirm`/`progress-summary`/`vocab` GET+DELETE/`readiness`/`hotwords` GET+`reject`/`/api/settings/voice` GET+POST/`asr-model`/`test-sse`）由前门独占（`native/gateway/src/app/voice_routes.rs`，规则内核 `multicc_core::voice_routes`，见 docs/gateway.md §43）；旧实现冻结在 `tests/helpers/legacy-voice-routes.js` | a,c | T2（仅余 stt） |
+| `src/routes/voice-host.js` | 1 | 389 | POST `HOST_PATH`（`/api/__host/voice`）：只给前门回调的宿主端口（examples/auxEnqueue/feedbackApply/vocabGet/vocabDelete/hotwords/hotwordsReject/readinessFacts/settingsFacts/settingsApply/asrModelCancel/asrModelStart），按回环判定，非公开 API | a,b,d | 宿主端口 |
 | `src/routes/workspaces.js` | 2 | 82 | GET '/api/workspaces/overview' @77<br>POST '/api/workspaces/sweep' @78 | a,c | T2 |
 | `src/routes/zcode-auth.js` | 5 | 181 | GET '/api/zcode/auth' @41<br>POST '/api/zcode/auth/sync' @60<br>PUT '/api/zcode/auth' @78<br>POST '/api/zcode/auth/login' @94<br>GET '/api/zcode/auth/check' @156 | b,c | T2 |
 | `src/routes/secrets-vault-host.js` | 1 | 103 | POST `HOST_PATH`（`/api/__host/secrets-vault`）：只给前门回调的宿主端口（进程内 entries 表、0600 store 读写、secret audit、env overlay/digest），按回环判定，非公开 API | a,d | 宿主端口 |
@@ -353,7 +354,7 @@
 
 读法注意：
 
-- T2 的 382 条里，`src/task-shell/routes.js` 42 条、`src/routes/providers.js` 17 条、`src/routes/session-git.js` 16 条、`src/routes/orchestration.js` 16 条、`voice-gateway-global` 14 条、`voice` 14 条、`fleet-sharing` 13 条、`session-admin` 13 条，是“大头”而不是零散小路由。
+- T2 的 382 条里，`src/task-shell/routes.js` 42 条、`src/routes/providers.js` 17 条、`src/routes/session-git.js` 16 条、`src/routes/orchestration.js` 16 条、`voice-gateway-global` 14 条（已于 2026-11-14 迁出）、`voice` 14 条（2026-11-14 迁出 13 条，仅余 `stt`）、`fleet-sharing` 13 条、`session-admin` 13 条，是“大头”而不是零散小路由。
 - T1 的 13,469 行里有很大一部分是查询/校验/登录辅助代码，不是 handler 本身；行数用于估算删除收益，不用来估算迁移工作量。
 - `server.js` 的 2,990 行是组合根；随着路由组迁走，它会同步缩小，但不应把 2,990 行计入任何单组。
 
