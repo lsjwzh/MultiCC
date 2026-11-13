@@ -37,6 +37,8 @@ pub mod token_usage_by_role;
 pub mod token_usage_global;
 pub mod turn_ledger;
 pub mod uploads;
+pub mod voice_gateway;
+pub mod voice_runtime;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -141,6 +143,8 @@ pub enum Route {
     ProviderBalance(provider_balance::Route),
     ProviderRelay(provider_relay::Route),
     AutoProviderRouting(auto_provider_routing::Route),
+    VoiceGateway(voice_gateway::Route),
+    VoiceRuntime(voice_runtime::Route),
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -198,6 +202,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if let Some(route) = auto_provider_routing::claim(method, path) {
         return Some(Route::AutoProviderRouting(route));
+    }
+    if let Some(route) = voice_gateway::claim(method, path) {
+        return Some(Route::VoiceGateway(route));
+    }
+    if let Some(route) = voice_runtime::claim(method, path) {
+        return Some(Route::VoiceRuntime(route));
     }
     if let Some(claim) = file_transfer::claim(method, path) {
         return Some(match claim {
@@ -298,6 +308,13 @@ pub struct App {
     /// `src/routes/providers.js` ran each write handler to completion on the
     /// event loop; these routes await host round trips instead.
     pub providers_write: tokio::sync::Mutex<()>,
+    /// `src/routes/voice-gateway.js` ran each write handler synchronously; the
+    /// ensure/remove routes here await one host round trip instead.
+    pub voice_gateway_write: tokio::sync::Mutex<()>,
+    /// `src/routes/voice-gateway-global.js` also ran the whole launch flow and
+    /// every write to completion on the event loop; these routes await several
+    /// host round trips each.
+    pub voice_runtime_write: tokio::sync::Mutex<()>,
     /// The observation cache the retired Node route wrote, plus the
     /// process-local single-flight table and the system-proxy slot. `Arc` lets
     /// the leader query outlive the HTTP request that started it.
@@ -368,6 +385,8 @@ impl App {
             subagent_defaults: tokio::sync::Mutex::new(()),
             secrets_vault: tokio::sync::Mutex::new(()),
             providers_write: tokio::sync::Mutex::new(()),
+            voice_gateway_write: tokio::sync::Mutex::new(()),
+            voice_runtime_write: tokio::sync::Mutex::new(()),
             account_subscription: subscriptions,
             outbound: crate::outbound::Outbound::from_process(),
             package_root,
@@ -650,6 +669,12 @@ pub async fn handle(
         }
         Route::AutoProviderRouting(route) => {
             return auto_provider_routing::handle(&app, route, &ctx, &body, host).await
+        }
+        Route::VoiceGateway(route) => {
+            return voice_gateway::handle(&app, route, &ctx, &body, host).await
+        }
+        Route::VoiceRuntime(route) => {
+            return voice_runtime::handle(&app, route, &ctx, &body, host).await
         }
         Route::ClaudeSubscriptionGet => {
             return account_subscription::get(&app, "claude", &ctx).await

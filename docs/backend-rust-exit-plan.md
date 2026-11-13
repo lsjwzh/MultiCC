@@ -3884,3 +3884,40 @@ Node 进程内状态（`launches` 表、TurnLedger 的每会话记录、hook 安
   `src/routes/token-usage-host.js`、`src/routes/host-read-host.js`、
   `src/routes/file-transfer-host.js`、`src/routes/turn-ledger-host.js`。未重启服务，
   路由由前门接管要等用户手动重启后才生效。
+
+## 语音域路由迁入 Rust 前门（2026-11-14，两批）
+
+**第一批**：`src/routes/voice-gateway.js`（Fleet 级，4 个逻辑端点，8 条注册）整文件删除，前门独占
+（`native/gateway/src/app/voice_gateway.rs`，内核 `multicc_core::voice_gateway_routes`，宿主端口
+`src/routes/voice-gateway-host.js`）。**第二批**：`src/routes/voice-gateway-global.js`（14 条）与
+`src/routes/qwen-audio-runtime.js`（8 条）整文件删除（`voice_runtime.rs`，内核
+`multicc_core::voice_runtime_routes`，宿主端口 `src/routes/voice-runtime-host.js`）。细节、已知差异与
+验证见 [gateway.md](gateway.md) §41、§42。
+
+**删除的 Node 代码**：三个路由文件；响应整形（状态码映射、legacy/v1 信封、`acp` 块、`loopbackOnly`、
+runtime 脱敏、Fleet 投影）全部进 Rust。**保留的桥接**：两个宿主端口。会话记录读写、launch 票据注册表、
+router 提供器、supervisor 与安装器是 Node 进程内状态，留在宿主端口，属于 6e 之后才能收口的所有者。
+**格式差异**：与前几批相同的大写 `/API/` 前缀与未声明方法，以及新的 503 失败面；`voice_launch_expired`
+（410）经真实票据注册表不可达，映射保留并由单元与集成测试覆盖。**下一个依赖**：`voice-gateway-proxy.js`
+的 `/voice-gateway/web` HTTP/WS 反代与 `voice.js` 的 14 条路由仍在 Node，前者牵涉 upgrade 分发，
+要与 6c 的 WS 宿主一起迁。
+
+### 前门启动路径距离「完全不拉起 `node server.js`」还差什么（2026-11-14 实测）
+
+`multicc-gateway serve --cwd <dir> --node <node 可执行文件> [脚本]` 里 `--node` 与脚本是必需参数，
+`daemon.rs` 在 Node 退出码非零时带退避重启它，并用 stdin 生命线绑定生命周期。Node 子进程里实际
+承担的职责，按 6c–6f 的口径拆开如下，路由条数只是其中一项：
+
+| 阶段 | 阻塞项 | 实测依据（本日重新捕获） |
+|---|---|---|
+| 6c 剩余 HTTP（核心域） | 401 行注册来自 `server.js` 与 `src/`（按「Methods」列统计：POST 193、GET 167、DELETE 24、PUT 12、PATCH 5，一行可能列出多个方法）；最大的文件是 `src/task-shell/routes.js` 42、`session-git` 16、`orchestration` 16、`air-routes` 15、`voice` 14、`session-admin` 13、`plugins` 11 …… | `docs/backend-runtime-inventory.md` 重捕获：路由表共 471 行 |
+| 6c 剩余 HTTP（内置插件） | 另外 70 行注册来自 `plugins/` 下的内置插件，由插件系统挂载，不属于核心域：`wechat-ilink` 15、`telegram-bridge`/`slack-bridge`/`feishu-bridge`/`discord-bridge` 各 12、`cron-tasks` 7（合计 70）。它们要么迁成 Rust 插件宿主，要么随插件系统一并保留为可选 Node 组件，需要单独决策 | 同上，来源列不以 `src/` 或 `server.js` 开头的行 |
+| 6c WebSocket | 9 类 WS 路径（`/ws/chat`、`/ws/voice`、`/ws/tts`、`/ws/workspace`、`/ws/meta`、`/ws/aux`、`/ws/remote-screen`、`/ws/machines/:id`、终端 PTY）在 Node 的 `wss`（`server.js:464`）终止，由 `wireUpgrade` 统一分发 | route-inventory §4.1 |
+| 6c 静态与监听 | `express.static` 挂载 `public/`（含 APK 下载），HTTP 监听本身由 Node 完成（`server.js:2985`），前门是反向代理 | `server.js:2226`、`2985` |
+| 6d 聊天编排 | `src/chat/` 67 个文件、约 14.3k 行：轮次状态机、各 CLI 适配器、重试与后台任务 | `wc -l src/chat/*.js` |
+| 6d/6e 子进程与终端 | 57 个 `src/` 文件使用 `child_process`（CLI、tmux、辅助进程），`src/state/store.js` 用 `node-pty` | `grep -l child_process src` |
+| 6e 持久化 | 会话记录、launch 票据等进程内状态的单一所有者；跨宿主尚未收口 | 见 6e 各节 |
+| 6f 发布 | `serve` 去掉 `--node` 与脚本参数；Docker `node-free-runtime` 阶段从「构建产物」变成可部署服务，并在其中跑通完整行为套件；回退说明 | 本文 Node-free 一节 |
+
+当前最诚实的状态：Rust 二进制可以在没有 Node 的主机上构建、运行并通过冒烟（`node-free-runtime`
+镜像），但它只是前门，任何未被认领的请求都会被转发给 `node server.js`，所以生产服务仍需要 Node。

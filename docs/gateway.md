@@ -2514,3 +2514,141 @@ providers 的 198 条和 provider-misc 的 84 条响应对拍全部一致，七�
 验证使用隔离数据与本地假上游，不修改生产配置或重启服务。结果位于主仓
 `data/rust-source/validation/task-88a969353c0b716636b714b302483a39/precommit-*.log`，
 汇总为 `precommit-rust-summary.json` 与 `precommit-node-summary.json`。
+
+## 41. 语音网关（Fleet 级）路由迁入 Rust（2026-11-14）
+
+`src/routes/voice-gateway.js` 整文件删除。`GET /api/voice-gateways` 与
+`GET/PUT/DELETE /api/directories/:id/voice-gateway`（含各自的 `/api/v1` 变体，共 8 条
+注册）由前门独占：`native/gateway/src/app/voice_gateway.rs`，规则内核
+`multicc_core::voice_gateway_routes`。
+
+**Rust 一侧**：错误码到状态码的映射（`directory_not_found`/`voice_gateway_not_found` → 404；
+`directory_required`、`commander_binding_is_host_owned`、`voice_gateway_provider_invalid`、
+`voice_gateway_enabled_invalid`、`voice_gateway_auto_install_invalid` → 400；其余 409）、
+legacy 与 v1 两种失败体（v1 走 `api_contract::error_dto`，成功体走 `api_meta`）、`gatewayIds`
+只在 legacy 失败体里出现、`acp` 启动说明块的组装（追加在 gateway 对象末尾）、PUT 的
+`autoInstall` 非布尔预检（不触及宿主）、只携带请求体里**存在**的 `enabled`/`provider`/
+`commanderSessionId`（缺键与 JSON `null` 要区分）、`Cache-Control: no-store` 只给 list/get/put
+成功。`:id` 按 Express 语义 `decodeURIComponent`，失败回 400 `Failed to decode param` 且不调用宿主。
+
+**宿主端口** `POST /api/__host/voice-gateway`（`src/routes/voice-gateway-host.js`，仅回环）：
+`list` / `inspect` / `ensure` / `remove` 四个 op。会话记录表的读写（`service`）、
+`runtime.reconcile` / `runtime.stop` 副作用、`process.execPath`、ACP 脚本路径与
+`publicBaseUrl(getBaseUrl())` 都是 Node 独有事实，留在宿主端口并同步完成（service 调用与
+reconcile 之间没有 `await`，与旧单线程路由逐请求等价）。`service` 仍导出，因为
+全局网关的宿主端口（§42 的 `voice-runtime-host.js`）共用同一个 service；`publicBaseUrl` 也由它复用，没有在 Rust
+再写一份。
+
+**串行化**：旧路由在事件循环上同步跑完 ensure/remove；前门现在要等一次宿主往返，并发请求
+会交错。新增 `App::voice_gateway_write` 互斥量恢复串行（与 `providers_write` 同法）。
+
+**未迁**：`/api/directories/:id/voice-gateway/runtime`、`/restart`、`voice-gateway-global.js`
+与 `qwen-audio-runtime.js` 的全部路由仍在 Node。claim 按精确段数匹配，不会吞掉这些更深的
+路径（集成测试覆盖）。
+
+**已知差异（均已由差分逐条校验，不属于未发现的偏差）**
+- 大写 `/API/...` 前缀：Express 大小写不敏感，旧 Node 路由能命中；前门只 claim 区分大小写的
+  `/api/` 前缀（与「约定（前门 ⇄ Node）」一节里 providers、subscription、token-usage 的同类说明一致），路由删除后该变体在真实服务里落回 Express 404。
+- 路由从未支持的方法（如 `POST /api/voice-gateways`、`PATCH …/voice-gateway`）：前门不认领，
+  转发给上游；真实上游已无这些路由，回 Express 的 `Cannot POST …` 404，与旧行为一致。差分里
+  oracle 仍带着路由，所以这两侧在夹具中不同，按预期差异分别钉死各自形状。
+- 宿主不可用或应答形状不合法：503 `{"error":"语音网关接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`，
+  这是新的失败面（旧路径没有跨进程调用）。
+
+**验证记录**（源码指纹 `e28b9380fda55b55b6d55eb6`，隔离数据，未改生产配置、未重启服务）
+- Rust：`cargo fmt --check`、`cargo build --workspace` 退出 0；串行
+  `cargo test --workspace --no-fail-fast` 49 套件 1,398 项通过、0 失败；`cargo clippy
+  --workspace --all-targets -D warnings` 零警告。新增 `voice_gateway_routes` 内核单测 10 项、
+  网关集成测试 `native/gateway/tests/voice_gateway.rs` 16 项。
+- 差分 `docs/rust-migration/differential/voice-gateway.js`（冻结的旧路由
+  `tests/helpers/legacy-voice-gateway-routes.js` 对真网关 + 真宿主端口）：144/144 逐字节一致，
+  16/16 预期差异各自钉死形状；覆盖断言要求 list 非空、get 命中、创建 201、更新 200、删除、
+  `reconcile`、`stop` 都被真实走到（实测 10/8/44/16/16/4/2），否则整次运行失败。变异验证：
+  把 oracle 的一个状态码 404 改成 410，差分立即变红（111/144），随后已还原。
+- 对拍的两个教训：第一版种子把记录的 `type`/`gatewayKind` 写成 DTO 里的取值，记录对服务层不可见，
+  所有「网关存在」用例其实都在测不存在分支，144 条一致却没有覆盖，是覆盖断言发现的；另外原生模块
+  必须与当前源码指纹一致，否则远控 e2e 会在 205 秒后超时。
+- Node：`test:architecture` 143、`test:security` 1,155、`test:rust` 300、`test:provider-router`
+  1,197、`test:contracts` 152 项全部通过；`test:core` 352 项通过、1 项失败，失败项是
+  `differential: real captured Claude traces`（需要 `/tmp` 里的真实轨迹采集文件，缺失即失败，
+  与本批无关）。`tests/test-voice-gateway.js` 18/18，`tests/test-request-locality.js` 11/11，
+  `tests/test-release-version-consistency.js` 5/5。
+- 路由重捕获：492 条路由、34 层中间件（上一次 499；−8 退役、+1 宿主端口）。同时修复
+  `scripts/capture-backend-routes.js` 每次重生成都会抹掉盘点文档手写段落的问题，重跑已字节幂等。
+
+## 42. 全局语音网关与 Qwen 运行时路由迁入 Rust（2026-11-14）
+
+`src/routes/voice-gateway-global.js`（14 条）与 `src/routes/qwen-audio-runtime.js`（8 条）整文件删除，
+22 条注册由前门独占：`native/gateway/src/app/voice_runtime.rs`，规则内核
+`multicc_core::voice_runtime_routes`。
+
+**路由**：`GET/PUT/DELETE /api/voice-gateway`，`GET …/runtime`，`POST …/restart`，
+`POST …/launch`，`GET …/launch/:launchId`，`GET /api/voice-runtime`，
+`POST /api/voice-runtime/install`，`GET /api/directories/:id/voice-gateway/runtime`，
+`POST /api/directories/:id/voice-gateway/restart`，各带 `/api/v1` 变体。claim 按精确段数匹配，且排在
+§41 的 Fleet 级路由之后：四段的 `/api/directories/:id/voice-gateway` 仍归 §41，五段的 `/runtime`
+与 `/restart` 归本节，集成测试同时配置两批夹具来证明互不吞路径。
+
+**Rust 一侧**：失败码到状态码（404：`voice_gateway_not_found`、`voice_launch_source_not_found`、
+`voice_launch_unknown`；400：`commander_binding_is_host_owned`、`voice_gateway_provider_invalid`、
+`voice_gateway_enabled_invalid`、`voice_gateway_auto_install_invalid`、`voice_launch_required`、
+`voice_launch_scope_invalid`、`voice_launch_source_required`、`voice_launch_source_not_addressable`、
+`voice_launch_source_not_chat`；410：`voice_launch_expired`；其余 409）；legacy 与 v1 两种信封
+（全局路由的失败体**不带** `gatewayIds`）；`runtime` 脱敏（删除 `url` 键，其余键序不变）；Fleet 级
+runtime 在全局网关存在时投影为全局状态并追加 `projectedFrom`、`requestedDirectoryId`；
+launch 的代理 URL 构造（`/voice-gateway/web/?session=<encodeURIComponent(id)>`）；`transport.loopbackOnly`
+由请求 `Host` 头判定；`Cache-Control: no-store` 的适用面（DELETE 不设）。
+
+**宿主端口** `POST /api/__host/voice-runtime`（`src/routes/voice-runtime-host.js`，仅回环），12 个 op：
+`globalGet` / `globalPut` / `globalRemove` / `globalRuntime` / `globalRestart` / `launchBegin` /
+`launchEnd` / `launchResolve` / `runtimeGet` / `runtimeInstall` / `fleetRuntime` / `fleetRestart`。
+launch 被拆成两步：`launchBegin` 在 Node 里完成签发与按需启动，Rust 据返回的状态算 URL；
+没有可用 URL 时回调 `launchEnd{revoke:true}` 撤销票据，有 URL 时回调 `launchEnd{revoke:false}`
+让宿主记 `launch issued` 日志。票据注册表、router 提供器、supervisor 与安装器都是 Node 独有的
+进程内状态，留在宿主端口。
+
+**串行化**：新增 `App::voice_runtime_write`，`PUT/DELETE/restart/launch/install` 与 Fleet 级
+restart 共用一把锁。旧路由本身在 `await startGlobal()` 处就会让出事件循环，所以这不是在恢复一个
+单线程保证，而是比旧行为更严格：并发的 launch 不会再交错签发与启动。
+
+**已知差异（均由差分逐条校验）**
+- 大写 `/API/...` 前缀与路由从未支持的方法：与 §41 相同，前门不认领，真实上游已无这些路由，回 Express 404。
+- `voice_launch_expired`（410）无法经真实票据注册表触发：`resolve` 先 `sweep()`，已过期的票据在被判为
+  过期之前就被清掉，调用方看到的是 404 `voice_launch_unknown`。410 的映射仍按源码保留，由内核单测与
+  网关集成测试（宿主夹具直接返回该码）覆盖，差分里用「时钟前移后 resolve 得 404」固定这一事实。
+- 宿主不可用或应答形状不合法：503 `{"error":"语音运行时接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`，
+  与 §41 相同，是新的失败面。
+
+**测试**：`tests/test-voice-global-gateway.js`、`tests/test-qwen-audio-runtime.js` 改写为测宿主端口；
+被删的两条 Node 断言（非回环调用方的 `loopbackOnly` 标记、runtime 不泄露子进程回环 URL）已转移到
+Rust：内核单测 `loopback_only_follows_the_host_header`，网关集成测试
+`launch_marks_a_non_loopback_caller_and_wraps_v1`、`global_runtime_strips_the_raw_url`，以及差分。
+
+**验证记录**（源码指纹 `6b3a551450c4a40b493251ff`，隔离数据，未改生产配置、未重启服务）
+- Rust：`cargo fmt --check`、`cargo build --workspace` 退出 0；串行 `cargo test --workspace
+  --no-fail-fast` 50 套件 1,437 项通过、0 失败（上一节 49 套件 1,398）；`cargo clippy --workspace
+  --all-targets -D warnings` 零警告。
+- 差分 `docs/rust-migration/differential/voice-runtime.js`（冻结的旧路由
+  `tests/helpers/legacy-voice-gateway-global-routes.js`、`legacy-qwen-audio-runtime-routes.js` 对真网关 +
+  真宿主端口）：266/266 逐字节一致，18/18 预期差异各自钉死形状。时钟与 launch id 来源可注入，所以
+  票据 id 与 `expiresAt` 逐字节对拍，没有抹值。覆盖断言要求 launch 成功/无 URL/各失败码、资源 404、
+  撤销后不可再 resolve、201/200、DELETE、runtime 脱敏、restart 抛错、安装 200/202、Fleet 投影与非投影、
+  `loopbackOnly` 的 true 与 false、`startGlobal` 被调用、`launch issued` 日志、`installIfNeeded` 都被真实走到。
+  变异验证：分别改坏旧实现的 launch URL 前缀、安装状态码、投影标记，差分依次掉到 220/266、260/266、
+  250/266 并退出非零，随后均已还原。
+- 对拍的三个教训：（1）`Cookie` 必须写成 `multicc_auth=<值>`，`createCookie()` 只返回裸值；上一节脚本里
+  控制端点的错误写法一直没被发现，因为它们走回环免认证，已一并修正并重跑上一节差分（仍 144/144、16/16）。
+  （2）非回环的 `Host` 在没有凭据时被两侧鉴权闸门同样拒绝为 403，一致却没有覆盖，覆盖断言才暴露出
+  `loopbackOnly:false` 从未被观察到。（3）原生模块指纹随新增 Rust 文件而变，必须用
+  `ensureSourceRust` 取当前指纹的产物。
+- Node：`test:architecture` 143/143、`test:security` 1,155/1,155、`test:rust` 300/300、`test:contracts`
+  152/152、`test:provider-router` 1,197/1,197（首次运行有 1 项失败，见下）、`test:core` 352/353。
+  `tests/test-voice-gateway.js` 27/27，`tests/test-voice-global-gateway.js` 19/19，
+  `tests/test-qwen-audio-runtime.js` 10/10。
+- 两项非本批问题：`test:core` 的 `differential: real captured Claude traces` 需要 `/tmp` 里的真实轨迹采集
+  文件，缺失即失败，上一节起一直如此。`test:provider-router` 首次运行时
+  `tests/test-account-subscription.js` 的「多写者、record 与 project 交错」用例失败，同一文件在低负载下
+  连跑三次 11/11，完整套件重跑 1,197/1,197；该套件由三段 `&&` 串联，第一段失败使后两段被短路，
+  所以首次只统计到 1,078 项。失败发生时同机还在跑变异差分，原因判断为负载下的时序抖动，没有在
+  HEAD 上单独复现，因此不断言它在 HEAD 上也会抖。
+- 路由重捕获：471 条注册、34 层中间件（上一节 492；−22 退役、+1 宿主端口）。

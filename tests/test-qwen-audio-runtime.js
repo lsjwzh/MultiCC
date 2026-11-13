@@ -25,7 +25,7 @@ const {
   fleetRuntimeKey,
   redactLogLine,
 } = require('../src/voice/qwen-audio-supervisor');
-const { createQwenAudioRuntimeRoutes } = require('../src/routes/qwen-audio-runtime');
+const { createVoiceRuntimeHost, HOST_PATH } = require('../src/routes/voice-runtime-host');
 
 function tempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -282,30 +282,64 @@ test('runtime log redaction removes injected credentials and bearer tokens', () 
 
 function createApp() {
   const routes = new Map();
-  const add = method => (routePath, handler) => routes.set(`${method} ${routePath}`, handler);
-  return { routes, get: add('GET'), post: add('POST') };
+  return {
+    routes,
+    post(routePath, handler) { routes.set(`POST ${routePath}`, handler); },
+  };
 }
 
 function response() {
   return {
     statusCode: 200,
     body: null,
-    headers: {},
     status(code) { this.statusCode = code; return this; },
     json(body) { this.body = body; return this; },
-    set(name, value) { this.headers[name] = value; return this; },
   };
 }
 
-async function invoke(app, method, routePath, req = {}) {
-  const handler = app.routes.get(`${method} ${routePath}`);
-  assert.ok(handler, `${method} ${routePath} mounted`);
+function localRequest(body) {
+  return {
+    body,
+    ip: '127.0.0.1',
+    headers: { host: '127.0.0.1:3456' },
+    socket: { remoteAddress: '127.0.0.1' },
+    connection: { remoteAddress: '127.0.0.1' },
+  };
+}
+
+// The public /api/voice-runtime* and per-Fleet runtime routes are owned by the
+// Rust front door; this host port is the Node runtime facts it calls back for.
+function mountRuntimeHost(installer, supervisor) {
+  const app = createApp();
+  createVoiceRuntimeHost({
+    service: {
+      inspectGlobal: () => ({ ok: true, gateway: { configured: false, enabled: false }, legacy: [] }),
+      ensureGlobal: () => ({ ok: true }),
+      removeGlobal: () => ({ ok: true }),
+    },
+    launchRegistry: {
+      issue: () => ({ ok: true }),
+      resolve: () => ({ ok: false }),
+      revoke: () => {},
+    },
+    runtime: null,
+    getBaseUrl: () => 'http://127.0.0.1:3456',
+    log: { error() {} },
+    installer,
+    supervisor,
+  }).mountRoutes(app);
+  const handler = app.routes.get(`POST ${HOST_PATH}`);
+  assert.equal(typeof handler, 'function');
+  return handler;
+}
+
+async function invoke(handler, body) {
   const res = response();
-  await handler({ body: {}, params: {}, ...req }, res, error => { throw error; });
+  await handler(localRequest(body), res);
   return res;
 }
 
-test('runtime routes expose path-free status and start one asynchronous install', async () => {
+test('runtime host ops expose path-free status and start one asynchronous install', async () => {
   let installs = 0;
   let reconciles = 0;
   const installer = {
@@ -318,24 +352,22 @@ test('runtime routes expose path-free status and start one asynchronous install'
     reconcileAll() { reconciles++; },
     restart: async directoryId => ({ directoryId, state: 'running' }),
   };
-  const app = createApp();
-  createQwenAudioRuntimeRoutes({ installer, supervisor, log: { error() {} } }).mountRoutes(app);
+  const handler = mountRuntimeHost(installer, supervisor);
 
-  let res = await invoke(app, 'POST', '/api/v1/voice-runtime/install', {
-    id: 'req-qwen', correlationId: 'corr-qwen',
-  });
-  assert.equal(res.statusCode, 202);
-  assert.equal(res.body.apiVersion, 'v1');
-  assert.equal(res.body.runtime.state, 'installing');
+  let res = await invoke(handler, { op: 'runtimeInstall' });
+  assert.deepEqual(res.body, { installed: false, runtime: { state: 'installing', installed: false } });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(installs, 1);
   assert.equal(reconciles, 1);
 
-  res = await invoke(app, 'GET', '/api/v1/directories/:id/voice-gateway/runtime', {
-    params: { id: 'dir-1' }, id: 'req-qwen', correlationId: 'corr-qwen',
+  res = await invoke(handler, { op: 'runtimeGet' });
+  assert.deepEqual(res.body, { runtime: { state: 'installing', installed: false } });
+
+  res = await invoke(handler, { op: 'fleetRuntime', id: 'dir-1' });
+  assert.deepEqual(res.body, {
+    projectsGlobal: false,
+    status: { directoryId: 'dir-1', state: 'stopped', desired: true },
   });
-  assert.equal(res.body.runtime.directoryId, 'dir-1');
-  assert.equal(res.headers['Cache-Control'], 'no-store');
 });
 
 test('安装环境保留统一入口生成的大小写代理但剔除凭证', () => {

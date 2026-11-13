@@ -2,11 +2,10 @@
 
 const path = require('path');
 const { mountVoiceRoutes } = require('../routes/voice');
-const { createVoiceGatewayRoutes } = require('../routes/voice-gateway');
-const { createGlobalVoiceGatewayRoutes } = require('../routes/voice-gateway-global');
+const { createVoiceGatewayHost } = require('../routes/voice-gateway-host');
+const { createVoiceRuntimeHost } = require('../routes/voice-runtime-host');
 const { createVoiceGatewayWebProxy, wireUpgrade } = require('../routes/voice-gateway-proxy');
 const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('./gateway');
-const { createQwenAudioRuntimeRoutes } = require('../routes/qwen-audio-runtime');
 const { createQwenAudioInstaller } = require('./qwen-audio-installer');
 const { createQwenAudioSupervisor } = require('./qwen-audio-supervisor');
 const { createVoiceLaunchRegistry } = require('./launch');
@@ -91,7 +90,7 @@ function createVoiceHost({
     getQwenAudioRuntimeStatus: () => installer.status(),
     onQwenAudioConfigChanged: () => supervisor.restartAll(),
   });
-  const gatewayRoutes = createVoiceGatewayRoutes({
+  const gatewayRoutes = createVoiceGatewayHost({
     records,
     directories,
     sessionPersistence,
@@ -109,15 +108,18 @@ function createVoiceHost({
     mutate: (source, operation) => sessionPersistence.mutate(source, operation),
     runtimeRoot,
   });
-  createGlobalVoiceGatewayRoutes({
+  // The Rust front door owns the public voice HTTP surface; this host port is
+  // the Node-only runtime facts and side effects it calls back for.
+  createVoiceRuntimeHost({
     service: gatewayRoutes.service,
     launchRegistry,
     voiceRouter,
     runtime: supervisor,
     getBaseUrl,
     log,
+    installer,
+    supervisor,
   }).mountRoutes(app);
-  createQwenAudioRuntimeRoutes({ installer, supervisor, log }).mountRoutes(app);
 
   // The Qwen child binds loopback; proxy its page/API/WebSocket through this
   // server so phones reach it via the same base URL they use for chat. The
