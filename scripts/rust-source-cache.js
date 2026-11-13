@@ -35,10 +35,18 @@ function sourceFingerprint(repoRoot, env = process.env) {
     }
   }
   walk('native');
+  const cargoConfig = path.join(repoRoot, '.cargo/config.toml');
+  hash.update('.cargo/config.toml\0');
+  if (fs.existsSync(cargoConfig)) hash.update(fs.readFileSync(cargoConfig));
   for (const name of ['build-rust-kernels.js', 'rust-source-cache.js']) {
     hash.update(name + '\0').update(fs.readFileSync(path.join(repoRoot, 'scripts', name)));
   }
-  for (const key of ['RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'MACOSX_DEPLOYMENT_TARGET', 'CC', 'CFLAGS']) {
+  const compilerEnv = new Set(['RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'MACOSX_DEPLOYMENT_TARGET',
+    'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'HOST_CFLAGS', 'HOST_CXXFLAGS', 'TARGET_CFLAGS', 'TARGET_CXXFLAGS']);
+  for (const key of Object.keys(env)) {
+    if (/^(?:CC|CXX|CFLAGS|CXXFLAGS)_/.test(key) || /^CARGO_TARGET_.*_(?:RUSTFLAGS|LINKER)$/.test(key)) compilerEnv.add(key);
+  }
+  for (const key of [...compilerEnv].sort()) {
     hash.update(key + '\0' + (env[key] || '') + '\0');
   }
   return hash.digest('hex').slice(0, 24);

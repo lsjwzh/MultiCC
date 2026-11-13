@@ -121,7 +121,9 @@ function buildPluginBinary(plugin, { platform, arch, host, targetDir, run = spaw
   const cargoTarget = path.resolve(targetDir || process.env.CARGO_TARGET_DIR || path.join(plugin.dir, 'target'));
   const args = [...cargoCommand({ target, host }), '--locked', '--release',
     '--manifest-path', path.join(plugin.dir, 'Cargo.toml'), '--target', target];
-  const result = run('cargo', args, { stdio: 'inherit', env: { ...process.env, CARGO_TARGET_DIR: cargoTarget } });
+  // Cargo discovers .cargo/config.toml from cwd, not --manifest-path.
+  const result = run('cargo', args, { cwd: plugin.dir, stdio: 'inherit',
+    env: { ...process.env, CARGO_TARGET_DIR: cargoTarget } });
   if (result.error || result.status !== 0) {
     const hint = args[0] === 'zigbuild' ? '（交叉编译 Linux 需要 cargo-zigbuild：pip install cargo-zigbuild）' : '';
     throw new Error(`插件 ${plugin.id} 编译失败：${target}${hint}`);

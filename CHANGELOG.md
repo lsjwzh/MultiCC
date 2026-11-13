@@ -2,6 +2,10 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## Unreleased
+
+- Pin the Linux x64 CPU baseline for Rust and bundled C/C++ dependencies, including SQLite, to prevent startup crashes on CPUs without AVX2. Add CI execution checks on emulated CPUs without AVX/AVX2 and validate the final standalone archive before publication.
+
 ## v2.21.0 — Relay balances, terminal provider sync, and resilient presets (2026-11-13)
 
 - Discover balance APIs on supported third-party relay panels, including new-api, sub2api, legacy billing endpoints, and the common user-balance endpoint. Cache the detected panel and distinguish account balances from token balances. Unlimited-token markers and HTML error pages are not reported as usable balances.
