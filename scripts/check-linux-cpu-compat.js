@@ -46,8 +46,8 @@ function main(argv) {
       libc: run('getconf', ['GNU_LIBC_VERSION']),
       emulator: run(opts.qemu, ['--version']),
       emulatorSha256: createHash('sha256').update(fs.readFileSync(opts.qemu)).digest('hex'),
-      emulatorImage: fs.existsSync(`${opts.qemu}.image`)
-        ? fs.readFileSync(`${opts.qemu}.image`, 'utf8').trim() : null,
+      emulatorSource: fs.existsSync(`${opts.qemu}.source.json`)
+        ? JSON.parse(fs.readFileSync(`${opts.qemu}.source.json`, 'utf8')) : null,
     };
     report.nodeSha256 = createHash('sha256').update(fs.readFileSync(opts.node)).digest('hex');
     report.addonSha256 = createHash('sha256').update(fs.readFileSync(opts.addon)).digest('hex');
