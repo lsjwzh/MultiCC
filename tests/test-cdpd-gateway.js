@@ -139,7 +139,7 @@ function connect(url, env, options = {}) {
 async function until(predicate, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) return true;
+    if (await predicate()) return true;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   return false;
@@ -250,16 +250,34 @@ test('a denied approval is not retried into a dialog storm, and never falls back
 test('the gateway is started on demand, then outlives its caller', { skip }, async () => {
   const chrome = await fakeChrome();
   const env = gatewayEnv();
+  let releaseCaller;
+  const delayedCloseNet = {
+    createConnection(options) {
+      const socket = net.createConnection(options);
+      const destroy = socket.destroy.bind(socket);
+      // Hold delivery of the disconnect until the independent status socket
+      // has observed it still pending, reproducing the CI ordering reliably.
+      socket.destroy = (...args) => { releaseCaller = () => destroy(...args); return socket; };
+      return socket;
+    },
+  };
   try {
     assert.equal(await cdpd.request({ op: 'ping' }, { env }), null);
-    const a = connect(chrome.url, env);
+    const a = connect(chrome.url, env, { netModule: delayedCloseNet });
     await a.opened;
     assert.equal(a.socket.transport, 'gateway');
     a.socket.close();
-    const status = await cdpd.request({ op: 'status' }, { env });
+    let status = await cdpd.request({ op: 'status' }, { env });
+    assert.equal(status.upstreams[0].clients, 1, 'the disconnect has not reached the daemon yet');
+    releaseCaller();
+    assert.ok(await until(async () => {
+      status = await cdpd.request({ op: 'status' }, { env });
+      return status?.upstreams?.length === 1 && status.upstreams[0].clients === 0;
+    }), `daemon did not release the caller: ${JSON.stringify(status)}`);
     assert.equal(status.upstreams.length, 1, 'the approved connection stays after the caller left');
     assert.equal(status.upstreams[0].clients, 0);
   } finally {
+    releaseCaller?.();
     await stopDaemon(env);
     await chrome.close();
   }
