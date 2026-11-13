@@ -353,13 +353,13 @@ function mountKimiQuotaRoutes(app, options = {}) {
       // string rather than each formatting this JSON their own way.
       const cached = rememberKimiBalance(result);
       if (recordVendor) {
-        try { recordVendor({ kind: 'kimi', result, host: preferHost, opts: { cached } }); } catch (_) {}
+        try { await recordVendor({ kind: 'kimi', result, host: preferHost, opts: { cached } }); } catch (_) {}
       }
       res.status(httpStatus).json({ ...result, bar: renderQuotaBar('kimi', result, { cached }) });
     } catch (_) {
       const result = { status: 'unavailable', error: 'kimi quota fetch failed' };
       if (recordVendor) {
-        try { recordVendor({ kind: 'kimi', result, host: req.query?.host || '' }); } catch (_) {}
+        try { await recordVendor({ kind: 'kimi', result, host: req.query?.host || '' }); } catch (_) {}
       }
       res.status(500).json({ ...result, bar: renderQuotaBar('kimi', result, { cached: lastKimiWithBalance }) });
     }

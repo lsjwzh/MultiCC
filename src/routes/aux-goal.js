@@ -654,7 +654,7 @@ function mountAuxGoalRoutes(app, dependencies) {
     },
   };
 
-  function listAuxProviders(protocol) {
+  function listAuxProviders(protocol, limits = {}) {
     const normalized = normalizeAuxProtocol(protocol);
     const appType = normalized === 'openai' ? 'codex' : 'claude';
     const nowMs = now();
@@ -676,7 +676,7 @@ function mountAuxGoalRoutes(app, dependencies) {
       let limit = null;
       if (providerLimitCache) {
         try {
-          const entry = providerLimitCache.get(provider.appType, provider.id);
+          const entry = limits[`${provider.appType}:${provider.id}`];
           if (entry) {
             limit = {
               kind: entry.kind,
@@ -769,7 +769,10 @@ function mountAuxGoalRoutes(app, dependencies) {
     return res.json({ ok: true });
   });
 
-  app.get('/api/aux/config', (req, res) => {
+  app.get('/api/aux/config', async (req, res) => {
+    let limits = {};
+    try { if (providerLimitCache) limits = (await providerLimitCache.snapshot()).entries || {}; }
+    catch (_) { /* quota is an optional catalog projection */ }
     const availability = typeof getCliAvailability === 'function' ? getCliAvailability() : null;
     res.json({
       protocol: auxConfig.protocol,
@@ -784,8 +787,8 @@ function mountAuxGoalRoutes(app, dependencies) {
         { id: 'openai', name: 'OpenAI Responses / Chat Completions' },
       ],
       providersByProtocol: {
-        anthropic: listAuxProviders('anthropic'),
-        openai: listAuxProviders('openai'),
+        anthropic: listAuxProviders('anthropic', limits),
+        openai: listAuxProviders('openai', limits),
       },
     });
   });

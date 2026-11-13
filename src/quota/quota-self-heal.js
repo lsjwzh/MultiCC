@@ -67,6 +67,7 @@ function wireQuotaSelfHeal({
     ...providers,
     getPort,
     onResult: limitRecorder.recordProvider,
+    asyncLimitCache: providerLimitCache.isAsync === true,
     lookupCached: (appType, id) => providerLimitCache.get(appType, id),
   })?.refreshOne || null;
   // The shared quota refresh port: a route rejection re-reads the provider's

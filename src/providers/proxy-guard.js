@@ -114,32 +114,30 @@ function createProviderProxyGuard(options = {}) {
     if (route.scope !== 'attempt') {
       return typeof next === 'function' ? next() : undefined;
     }
-    let decision;
-    try {
-      decision = authorize({
-        protocol, providerId: route.providerId, sessionId: route.sessionId,
-        role: route.role, method: clean(req && req.method).toUpperCase(),
-      });
-    } catch (_) {
-      decision = null;
-    }
     const method = clean(req && req.method).toUpperCase();
-    if (!decision || decision.ok !== true) {
-      reportRejection(options, { protocol, stage: 'http_guard', method,
-        providerId: route.providerId, sessionId: route.sessionId, role: route.role,
-        reason: clean(decision && decision.code) || 'attempt_not_active' });
-      return reject(res, clean(decision && decision.code));
+    const finish = decision => {
+      if (!decision || decision.ok !== true) {
+        reportRejection(options, { protocol, stage: 'http_guard', method,
+          providerId: route.providerId, sessionId: route.sessionId, role: route.role,
+          reason: clean(decision && decision.code) || 'attempt_not_active' });
+        return reject(res, clean(decision && decision.code));
+      }
+      // Connectivity probes remain local after attempt authorization.
+      const apiPath = segments.slice(2).join('/');
+      if (protocol === 'claude' && method === 'HEAD'
+          && (apiPath === '' || apiPath === 'api/hello')) {
+        res.statusCode = 200;
+        return res.end();
+      }
+      return typeof next === 'function' ? next() : undefined;
+    };
+    const input = { protocol, providerId: route.providerId, sessionId: route.sessionId, role: route.role, method };
+    if (typeof options.authorizeProxyRequestAsync === 'function') {
+      return Promise.resolve().then(() => options.authorizeProxyRequestAsync(input)).catch(() => null).then(finish);
     }
-    // Claude probes connectivity with HEAD /api/hello (older versions use /).
-    // This checks the local proxy, not model inference. Keep it behind attempt
-    // authorization and out of CPR's upstream usage/error/activity callbacks.
-    const apiPath = segments.slice(2).join('/');
-    if (protocol === 'claude' && method === 'HEAD'
-        && (apiPath === '' || apiPath === 'api/hello')) {
-      res.statusCode = 200;
-      return res.end();
-    }
-    return typeof next === 'function' ? next() : undefined;
+    let decision;
+    try { decision = authorize(input); } catch (_) { decision = null; }
+    return finish(decision);
   };
 }
 
@@ -345,6 +343,18 @@ function createProviderProxyAdmission(options = {}) {
       },
     });
 
+  function applyAdmission(context, providerId, role, decision) {
+    if (!decision || decision.ok !== true) throw new ProviderProxyAdmissionError({
+      providerId: clean(providerId), sessionId: context.sessionId, role,
+      reason: clean(decision && decision.code) || 'attempt_not_active',
+    });
+    context.attempt = decision.attempt;
+    context.providerId = clean(providerId);
+    context.role = role;
+    context.stall?.arm(role === 'main' ? decision.attempt : { ...decision.attempt, requestDeadlineAt: null });
+    if (role !== 'main') context.stall?.isolateRetryBudget();
+  }
+
   function guardedGetProvider(appType, providerId) {
     const context = requestContext.getStore();
     if (context?.attemptScoped) {
@@ -358,23 +368,29 @@ function createProviderProxyAdmission(options = {}) {
       } catch (_) {
         decision = null;
       }
-      if (!decision || decision.ok !== true) throw new ProviderProxyAdmissionError({
-        providerId: clean(providerId), sessionId: context.sessionId, role,
-        reason: clean(decision && decision.code) || 'attempt_not_active',
-      });
-      context.attempt = decision.attempt;
-      context.providerId = clean(providerId);
-      context.role = role;
       // The attempt is resolved immediately before the adapter dials upstream,
       // which is the moment the idle budget starts running: it covers "no first
       // byte at all" as well as "mid-stream silence".
-      context.stall?.arm(role === 'main' ? decision.attempt : { ...decision.attempt, requestDeadlineAt: null });
-      if (role !== 'main') context.stall?.isolateRetryBudget();
+      applyAdmission(context, providerId, role, decision);
     }
     return getProvider(appType, providerId);
   }
 
-  return Object.freeze({ app, getProvider: guardedGetProvider, onActivity, onUsageEvent, onDelta,
+  async function guardedGetProviderAsync(appType, providerId) {
+    const context = requestContext.getStore();
+    if (context?.attemptScoped) {
+      const role = protocol === 'claude' && clean(providerId) !== context.mainProviderId ? 'sub' : context.role;
+      let decision;
+      try {
+        const asyncAuthorize = options.authorizeProxyRequestAsync || authorize;
+        decision = await asyncAuthorize({ protocol, sessionId: context.sessionId, providerId: clean(providerId), role });
+      } catch (_) { decision = null; }
+      applyAdmission(context, providerId, role, decision);
+    }
+    return getProvider(appType, providerId);
+  }
+
+  return Object.freeze({ app, getProvider: guardedGetProvider, getProviderAsync: guardedGetProviderAsync, onActivity, onUsageEvent, onDelta,
     nativeConnectTimeoutMs, nativeConnectTimedOut, nativeStreamStarted, nativeStreamProgress, nativeStreamTimedOut });
 }
 

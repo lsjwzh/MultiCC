@@ -52,6 +52,7 @@ async function harness(t, options = {}) {
   const mounted = runtime.mountProtocolProxies(app, { protocols: [protocol], ...callbacks,
     onProxyOutcome: e => outcomes.push(e),
     ...(options.authorize ? { authorizeProxyRequest: options.authorize } : {}),
+    ...(options.authorizeAsync ? { authorizeProxyRequestAsync: options.authorizeAsync } : {}),
     codexProxyTrace: false,
     ...(protocol === 'claude' ? { claudeProxy: { captureEnabled: false, ...options.proxy?.(upstreamUrl) } }
       : { codexProxy: { ...options.proxy?.(upstreamUrl) } }) });
@@ -172,6 +173,27 @@ rustTest('Rust 仍经过宿主授权；失效路由和跨供应商子路由都�
   assert.equal(res.status, 409); await res.text();
   res = await h.post('/claude-proxy/main/fixture/v1/messages', { ...claudeBody, model: 'cpr:other:sonnet' });
   assert.equal(res.status, 409); await res.text(); assert.equal(h.requests.length, 0);
+});
+
+rustTest('异步额度在最终拨号前再次检查，Claude 与 Codex 均不会拨出被封禁线路', async t => {
+  for (const protocol of ['claude', 'codex']) {
+    let calls = 0;
+    const h = await harness(t, { protocol, authorize: () => ({ ok: true }),
+      authorizeAsync: async () => ++calls === 1 ? { ok: true } : { ok: false, code: 'quota_guard:5h:99pct' } });
+    const res = await h.post(protocol === 'claude' ? '/claude-proxy/main/fixture/v1/messages'
+      : '/codex-proxy/codex/fixture/main/responses', protocol === 'claude' ? claudeBody : { model: 'fixture', input: [] });
+    assert.equal(res.status, 409);
+    await res.text();
+    assert.equal(calls, 2);
+    assert.equal(h.requests.length, 0);
+    const allowed = await harness(t, { protocol, authorize: () => ({ ok: true }),
+      authorizeAsync: async () => ({ ok: true, attempt: {} }) });
+    const ok = await allowed.post(protocol === 'claude' ? '/claude-proxy/main/fixture/v1/messages'
+      : '/codex-proxy/codex/fixture/main/responses', protocol === 'claude' ? claudeBody : { model: 'fixture', input: [] });
+    assert.equal(ok.status, 200);
+    await ok.text();
+    assert.equal(allowed.requests.length, 1);
+  }
 });
 
 rustTest('官方 OAuth 更换凭据后只重拨一次，逻辑用量和结束事件各一次', async t => {

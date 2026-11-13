@@ -7,6 +7,407 @@ const path = require('path');
 const test = require('node:test');
 const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createOutbox } = require('../src/outbox');
+const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const Database = require('better-sqlite3');
+const crypto = require('node:crypto');
+
+test('SQLite claim selects twice without running a queued microtask between passes', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-synchronous-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const outbox = createOutbox({ store });
+  await outbox.enqueue({ id: 'a', sessionId: 's', payload: 'message' });
+  const events = [];
+  let passes = 0;
+  const claimed = await outbox.claim({ workerId: 'worker', selectSessionItem(items) {
+    events.push(`select-${++passes}`);
+    if (passes === 1) queueMicrotask(() => events.push('microtask'));
+    return items[0];
+  }, sessionGroup(id) { events.push(`group-${passes}`); return id; } });
+  assert.deepEqual(claimed.map(item => item.id), ['a']);
+  assert.deepEqual(events, ['select-1', 'group-1', 'select-2', 'group-2', 'microtask']);
+});
+
+// Acceptance regression: the legacy claim awaits its mutator before commit,
+// so this remains red until a nonblocking Rust claim commits in the same turn.
+test('SQLite claim commits before a microtask queued by its second selection', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-commit-order-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file });
+  const db = new Database(file);
+  t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const outbox = createOutbox({ store });
+  await outbox.enqueue({ id: 'a', sessionId: 's', payload: 'message' });
+  let passes = 0;
+  let persistedAtMicrotask;
+  const result = await outbox.claim({ workerId: 'worker', selectSessionItem(items) {
+    if (++passes === 2) queueMicrotask(() => {
+      persistedAtMicrotask = db.prepare('SELECT state FROM orchestration_outbox WHERE id=?').get('a').state;
+    });
+    return items[0];
+  } });
+  assert.equal(result[0].id, 'a');
+  assert.equal(persistedAtMicrotask, 'leased');
+});
+
+test('SQLite claim captures host facts before a later microtask can make the host busy', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-before-first-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const outbox = createOutbox({ store });
+  await outbox.enqueue({ id: 'a', sessionId: 's', payload: 'message' });
+  let busy = false;
+  const promise = outbox.claim({ workerId: 'worker',
+    selectSessionItem: items => busy ? null : items[0] });
+  queueMicrotask(() => { busy = true; });
+  assert.deepEqual((await promise).map(item => item.id), ['a']);
+});
+
+test('SQLite claim preserves detached selector records after the transaction and supports structuredClone', async t => {
+  const { legacyClaimPreview } = require('./helpers/legacy-outbox-claim-preview');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-selector-record-'));
+  const stores = [];
+  t.after(async () => {
+    for (const store of stores) await store.close({ exportRollback: false });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  async function observe(legacy) {
+    const store = createOrchestrationSqliteStore({ file: path.join(dir, `${legacy}.sqlite`) });
+    stores.push(store);
+    const outbox = createOutbox({ store });
+    await outbox.enqueue({ id: 'a', sessionId: 's', payload: { message: 'original' } });
+    let escaped;
+    let cloned;
+    const select = items => {
+      escaped = items[0];
+      cloned = structuredClone(escaped);
+      escaped.payload.message = 'local change';
+      return null;
+    };
+    const result = legacy ? await legacyClaimPreview(store, select, Date.now())
+      : await outbox.claim({ workerId: 'worker', selectSessionItem: select });
+    return { result, cloned: cloned.payload.message, escaped: escaped.payload.message,
+      persisted: (await store.snapshot()).outbox.a.payload.message };
+  }
+  const expected = await observe(true);
+  assert.deepEqual(expected, { result: [], cloned: 'original', escaped: 'local change', persisted: 'original' });
+  assert.deepEqual(await observe(false), expected);
+});
+
+test('SQLite claim sees expired lease recovery during selection and rolls the whole batch back on failure', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-recovery-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file });
+  const db = new Database(file);
+  t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => {
+    draft.nextOutboxSequence = 2;
+    draft.outbox.a = { id: 'a', sessionId: 's', sequence: 1, state: 'leased',
+      attempts: 1, leasedUntil: 1, leaseTokenHash: 'old', payload: 'message' };
+  });
+  const outbox = createOutbox({ store, baseBackoffMs: 0, maxBackoffMs: 0 });
+  const before = await store.snapshot();
+  const observed = [];
+  const options = { workerId: 'worker', selectSessionItem(items) {
+    observed.push([items[0].state, items[0].leaseTokenHash, items[0].lastError]);
+    return items[0];
+  } };
+  db.exec("CREATE TRIGGER fail_claim BEFORE UPDATE ON orchestration_outbox WHEN OLD.id='a' BEGIN SELECT RAISE(ABORT, 'blocked claim'); END");
+  await assert.rejects(outbox.claim(options), /blocked claim/);
+  assert.deepEqual(await store.snapshot(), before);
+  assert.deepEqual(observed, [['pending', null, 'delivery lease expired']]);
+  db.exec('DROP TRIGGER fail_claim');
+  observed.length = 0;
+  const [claimed] = await outbox.claim(options);
+  assert.equal(claimed.id, 'a');
+  assert.equal(claimed.attempts, 2);
+  assert.deepEqual(observed, [['pending', null, 'delivery lease expired']]);
+});
+
+test('SQLite claim rejects a concurrent writer without persisting its lease', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-revision-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file });
+  const db = new Database(file);
+  t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const outbox = createOutbox({ store });
+  await outbox.enqueue({ id: 'a', sessionId: 's', payload: 'message' });
+  let changed = false;
+  await assert.rejects(outbox.claim({ workerId: 'worker', selectSessionItem(items) {
+    if (!changed) {
+      changed = true;
+      db.prepare("UPDATE orchestration_meta SET value_json = CAST(value_json AS INTEGER) + 1 WHERE key='revision'").run();
+    }
+    return items[0];
+  } }), error => error.code === 'ORCHESTRATION_SQLITE_CONFLICT');
+  assert.equal((await store.snapshot()).outbox.a.state, 'pending');
+});
+
+test('SQLite claim sees external data changes that do not increment the revision', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-external-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file });
+  const db = new Database(file);
+  t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const outbox = createOutbox({ store });
+  await outbox.enqueue({ id: 'a', sessionId: 'old', payload: 'message' });
+  assert.deepEqual(await outbox.claim({ workerId: 'worker', selectSessionItem: () => null }), []);
+  const revision = db.prepare("SELECT value_json FROM orchestration_meta WHERE key='revision'").get().value_json;
+  db.prepare("UPDATE orchestration_outbox SET session_id='new', data_json=json_set(data_json, '$.sessionId', 'new') WHERE id='a'").run();
+  assert.equal(db.prepare("SELECT value_json FROM orchestration_meta WHERE key='revision'").get().value_json, revision);
+  const sessions = [];
+  const claimed = await outbox.claim({ workerId: 'worker', selectSessionItem(items) {
+    sessions.push(items[0].sessionId);
+    return items[0];
+  } });
+  assert.deepEqual(sessions, ['new', 'new']);
+  assert.equal(claimed[0].sessionId, 'new');
+});
+
+test('SQLite claim does not overwrite an external write without a revision change during selection', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-external-race-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file });
+  const db = new Database(file);
+  t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const outbox = createOutbox({ store });
+  await outbox.enqueue({ id: 'a', sessionId: 'old', payload: 'message' });
+  let changed = false;
+  await assert.rejects(outbox.claim({ workerId: 'worker', selectSessionItem(items) {
+    if (!changed) {
+      changed = true;
+      db.prepare("UPDATE orchestration_outbox SET session_id='new', data_json=json_set(data_json, '$.sessionId', 'new') WHERE id='a'").run();
+    }
+    return items[0];
+  } }));
+  const row = db.prepare('SELECT state, session_id FROM orchestration_outbox WHERE id=?').get('a');
+  assert.deepEqual(row, { state: 'pending', session_id: 'new' });
+});
+
+test('SQLite claim uses the second clock reading to recover leases before its second selection', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-clock-'));
+  let clock = 100;
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => clock });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => {
+    draft.nextOutboxSequence = 3;
+    draft.outbox.a = { id: 'a', sessionId: 'a', sequence: 1, state: 'pending', attempts: 0, availableAt: 0 };
+    draft.outbox.b = { id: 'b', sessionId: 'b', sequence: 2, state: 'leased', attempts: 1,
+      leasedUntil: 150, leaseTokenHash: 'old' };
+  });
+  const observations = [];
+  const outbox = createOutbox({ store, now: () => clock, baseBackoffMs: 0, maxBackoffMs: 0 });
+  const claimed = await outbox.claim({ workerId: 'worker', limit: 2, selectSessionItem(items, _draft, at) {
+    observations.push([items[0].id, items[0].state, at]);
+    if (observations.length === 1) clock = 200;
+    return items[0];
+  } });
+  assert.deepEqual(observations, [
+    ['a', 'pending', 100], ['b', 'leased', 100],
+    ['a', 'pending', 200], ['b', 'pending', 200],
+  ]);
+  assert.deepEqual(claimed.map(item => item.id), ['a', 'b']);
+});
+
+test('SQLite claim exposes recovered state through draft and preserves callback exceptions', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-view-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => {
+    draft.nextOutboxSequence = 2;
+    draft.outbox.a = { id: 'a', sessionId: 's', sequence: 1, state: 'leased', attempts: 1,
+      leasedUntil: 1, leaseTokenHash: 'old', payload: { text: 'hello\ud83d' } };
+  });
+  const outbox = createOutbox({ store, baseBackoffMs: 0, maxBackoffMs: 0 });
+  const sentinel = new Error('selector failed');
+  await assert.rejects(outbox.claim({ workerId: 'worker',
+    selectSessionItem(items, draft) {
+      assert.equal(items[0].state, 'pending');
+      assert.equal(draft.outbox.a.state, 'pending');
+      assert.equal(draft.outbox.a.payload.text, 'hello\ud83d');
+      throw sentinel;
+    } }), error => error === sentinel);
+  assert.equal((await store.snapshot()).outbox.a.state, 'leased');
+});
+
+test('SQLite claim works with the production session scheduler and preserves payloads', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-scheduler-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const scheduler = require('../src/session-work/scheduler').createSessionWorkScheduler({ store });
+  const outbox = createOutbox({ store });
+  const message = 'message-data-'.repeat(8192) + '\ud83d';
+  await outbox.enqueue({ id: 'a', sessionId: 's', payload: { type: 'session.work', workKind: 'task', message } });
+  const [claimed] = await outbox.claim({ workerId: 'worker',
+    selectSessionItem: (items, draft, at) => scheduler.selectSessionItem(items, draft, at) });
+  assert.equal(claimed.id, 'a');
+  assert.equal(claimed.payload.message, message);
+  assert.equal((await outbox.get('a')).payload.message, message);
+});
+
+test('Rust SQLite acknowledgement, failure and defer match the Node transaction', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-settle-'));
+  const originalNow = Date.now;
+  Date.now = () => 1000;
+  const stores = [];
+  t.after(async () => { Date.now = originalNow; for (const store of stores) await store.close({ exportRollback: false });
+    fs.rmSync(dir, { recursive: true, force: true }); });
+  const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+  const scenarios = [
+    ['ack', 'target', 'token', null, true], ['ack', 'target', 'wrong', null, true],
+    ['ack', 'expired', 'token', null, true], ['ack', 'missing', 'token', null, true],
+    ['fail', 'target', 'token', 'fail😀\ud83d', true], ['fail', 'target', 'token', '', false],
+    ['defer', 'target', 'token', 'busy😀\ud83d', true],
+  ];
+  for (const [action, id, token, reason, retryable] of scenarios) {
+    const results = [];
+    for (const oracle of [false, true]) {
+      const store = createOrchestrationSqliteStore({ file: path.join(dir, `${stores.length}.sqlite`), now: Date.now,
+        ...(oracle ? { hooks: { beforeCommit() {} } } : {}) });
+      stores.push(store);
+      await store.mutate(draft => {
+        draft.nextOutboxSequence = 3;
+        draft.outbox.expired = { id: 'expired', sessionId: 's', sequence: 1, state: 'leased',
+          leasedUntil: 999, leasedAt: 1, leaseOwner: 'w', leaseTokenHash: hash('token'), attempts: 1,
+          payload: { body: '\ud83d' } };
+        draft.outbox.target = { id: 'target', sessionId: 's', sequence: 2, state: 'leased',
+          leasedUntil: 2000, leasedAt: 1, leaseOwner: 'w', leaseTokenHash: hash('token'), attempts: 1,
+          payload: { body: '\ude00' } };
+      });
+      const outbox = createOutbox({ store, now: Date.now, maxAttempts: 3, baseBackoffMs: 10, maxBackoffMs: 100 });
+      const result = action === 'ack' ? await outbox.ack(id, token)
+        : action === 'fail' ? await outbox.fail(id, token, reason, { retryable })
+          : await outbox.defer(id, token, reason, { delayMs: 25 });
+      results.push([result, await store.snapshot()]);
+    }
+    assert.deepEqual(results[0], results[1], `${action} ${id} ${token}`);
+  }
+});
+
+test('Rust SQLite settlement rolls back recovery when the target write fails', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-settle-atomic-'));
+  const originalNow = Date.now;
+  Date.now = () => 1000;
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file, now: Date.now });
+  const db = new Database(file);
+  t.after(async () => { Date.now = originalNow; db.close(); await store.close({ exportRollback: false });
+    fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => {
+    draft.nextOutboxSequence = 3;
+    for (const [id, sequence, leasedUntil] of [['expired', 1, 1], ['target', 2, 2000]]) {
+      draft.outbox[id] = { id, sessionId: 's', sequence, state: 'leased', attempts: 1, leasedUntil,
+        leaseTokenHash: crypto.createHash('sha256').update('token').digest('hex') };
+    }
+  });
+  const before = await store.snapshot();
+  db.exec("CREATE TRIGGER fail_settle BEFORE UPDATE ON orchestration_outbox WHEN OLD.id='target' BEGIN SELECT RAISE(ABORT, 'blocked settlement'); END");
+  await assert.rejects(createOutbox({ store, now: Date.now }).ack('target', 'token'), /blocked settlement/);
+  assert.deepEqual(await store.snapshot(), before);
+});
+
+test('Rust SQLite settlement treats falsy legacy records as absent', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-legacy-'));
+  const originalNow = Date.now;
+  Date.now = () => 1000;
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: Date.now });
+  t.after(async () => { Date.now = originalNow; await store.close({ exportRollback: false });
+    fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => {
+    draft.outbox.nullRecord = null; draft.outbox.falseRecord = false;
+    draft.outbox.zeroRecord = 0; draft.outbox.emptyRecord = '';
+  });
+  const outbox = createOutbox({ store, now: Date.now });
+  for (const id of ['nullRecord', 'falseRecord', 'zeroRecord', 'emptyRecord']) {
+    assert.deepEqual(await outbox.ack(id, 'token'), { ok: false, code: 'not_found' });
+    assert.deepEqual(await outbox.fail(id, 'token', 'error'), { ok: false, code: 'not_found' });
+    assert.deepEqual(await outbox.defer(id, 'token', 'defer'), { ok: false, code: 'not_found' });
+  }
+});
+
+test('Rust SQLite failure reads Error.message only after lease authentication', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-error-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => {
+    draft.nextOutboxSequence = 2;
+    draft.outbox.a = { id: 'a', sessionId: 's', sequence: 1, state: 'leased', attempts: 1,
+      leasedUntil: Date.now() + 60_000, leaseTokenHash: crypto.createHash('sha256').update('token').digest('hex') };
+  });
+  let reads = 0;
+  const error = new Error();
+  Object.defineProperty(error, 'message', { get() { reads++; return 'error detail'; } });
+  const outbox = createOutbox({ store });
+  assert.equal((await outbox.fail('a', 'wrong', error)).code, 'lease_lost');
+  assert.equal(reads, 0);
+  assert.equal((await outbox.fail('a', 'token', error)).item.lastError, 'error detail');
+  assert.equal(reads, 1);
+});
+
+test('Rust SQLite lease recovery matches Node including no-op and custom-backoff compatibility', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-recover-'));
+  const originalNow = Date.now;
+  let clock = 1000;
+  Date.now = () => clock;
+  const stores = [];
+  t.after(async () => { Date.now = originalNow; for (const store of stores) await store.close({ exportRollback: false });
+    fs.rmSync(dir, { recursive: true, force: true }); });
+  const outcomes = [];
+  for (const oracle of [false, true]) {
+    const store = createOrchestrationSqliteStore({ file: path.join(dir, `${oracle}.sqlite`), now: Date.now,
+      ...(oracle ? { hooks: { beforeCommit() {} } } : {}) });
+    stores.push(store);
+    await store.mutate(draft => {
+      draft.nextOutboxSequence = 4;
+      draft.outbox.a = { id: 'a', sessionId: 's', state: 'leased', sequence: 1, attempts: 1,
+        leasedUntil: 900, leaseTokenHash: 'secret', payload: { text: '\ud83d' } };
+      draft.outbox.b = { id: 'b', sessionId: 's', state: 'leased', sequence: 2, attempts: 2,
+        leasedUntil: null, leaseTokenHash: 'secret', payload: { text: 'body' } };
+      draft.outbox.c = { id: 'c', sessionId: 's', state: 'leased', sequence: 3, attempts: 1,
+        leasedUntil: 2000, leaseTokenHash: 'secret' };
+    });
+    const outbox = createOutbox({ store, now: Date.now, maxAttempts: 2, baseBackoffMs: 100, maxBackoffMs: 500 });
+    outcomes.push([await outbox.recoverExpired(), await outbox.recoverExpired(), await store.snapshot()]);
+  }
+  assert.deepEqual(outcomes[0], outcomes[1]);
+  assert.deepEqual(outcomes[0][0], { recovered: 1, deadLettered: 1 });
+  assert.deepEqual(outcomes[0][1], { recovered: 0, deadLettered: 0 });
+  clock = 3000;
+  let calls = 0;
+  const custom = createOutbox({ store: stores[0], now: Date.now, backoff: () => { calls++; return 7; } });
+  assert.deepEqual(await custom.recoverExpired(), { recovered: 1, deadLettered: 0 });
+  assert.equal(calls, 1);
+  assert.equal((await stores[0].snapshot()).outbox.c.availableAt, 3007);
+});
+
+test('Rust SQLite lease recovery is atomic and rejects stale revisions', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-recover-atomic-'));
+  const originalNow = Date.now;
+  Date.now = () => 1000;
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file, now: Date.now });
+  const stale = createOrchestrationSqliteStore({ file, now: Date.now });
+  const db = new Database(file);
+  t.after(async () => { Date.now = originalNow; db.close(); await store.close({ exportRollback: false });
+    await stale.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => {
+    draft.nextOutboxSequence = 3;
+    for (const [id, sequence] of [['a', 1], ['b', 2]]) {
+      draft.outbox[id] = { id, sessionId: 's', state: 'leased', sequence, attempts: 1, leasedUntil: 1 };
+    }
+  });
+  const before = await store.snapshot();
+  const outbox = createOutbox({ store, now: Date.now });
+  db.exec("CREATE TRIGGER fail_recovery BEFORE UPDATE ON orchestration_outbox WHEN OLD.id='b' BEGIN SELECT RAISE(ABORT, 'blocked recovery'); END");
+  await assert.rejects(outbox.recoverExpired(), /blocked recovery/);
+  assert.deepEqual(await store.snapshot(), before);
+  db.exec('DROP TRIGGER fail_recovery');
+  await assert.rejects(createOutbox({ store: stale, now: Date.now }).recoverExpired(),
+    error => error.code === 'ORCHESTRATION_SQLITE_CONFLICT');
+  assert.deepEqual(await store.snapshot(), before);
+  assert.deepEqual(await outbox.recoverExpired(), { recovered: 2, deadLettered: 0 });
+  assert.equal((await store.snapshot()).revision, before.revision + 1);
+});
 
 function fixture(t, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-'));

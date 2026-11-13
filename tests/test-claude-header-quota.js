@@ -11,7 +11,7 @@ const Queue = require('../src/quota/claude-usage-queue');
 const State = require('../src/quota/claude-bar-state');
 const Renderer = require('../src/quota/quota-bar-view');
 const { resolveQuotaBar } = require('../public/quota-bar-view');
-const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
+const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
 const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
 const { limitState } = require('../src/chat/auto-provider-policy');
 

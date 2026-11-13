@@ -74,9 +74,13 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
         let refreshed = false;
         candidate: for (;;) {
           if (gone || closed) { request.cancel(); return; }
-          let provider = options.getProvider(protocol, route.providerId);
+          let provider = options.getProviderAsync
+            ? await options.getProviderAsync(protocol, route.providerId)
+            : options.getProvider(protocol, route.providerId);
           if (!provider && protocol === 'claude' && route.role === 'sub' && route.providerId !== route.mainProviderId) {
-            provider = options.getProvider(protocol, route.mainProviderId);
+            provider = options.getProviderAsync
+              ? await options.getProviderAsync(protocol, route.mainProviderId)
+              : options.getProvider(protocol, route.mainProviderId);
             if (provider) {
               safeCall(options.onRoutingEvent, { type: 'provider-routing-fallback', status: 'default-fallback', reason: 'unknown-sub-provider',
                 cli: 'claude', sessionId: route.sessionId, providerId: route.providerId, fallbackProviderId: route.mainProviderId });
@@ -86,8 +90,10 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
           const virtual = provider?.virtual ? provider : null;
           const virtualRuntime = options.virtualProviders || require('./virtual-provider');
           if (virtual) {
-            if (!refreshed) { await virtualRuntime.refresh(virtual); refreshed = true; }
-            provider = virtualRuntime.resolve(virtual, { model: route.model, request });
+            if (!refreshed) { await (options.getProviderAsync ? virtualRuntime.refreshAsync(virtual) : virtualRuntime.refresh(virtual)); refreshed = true; }
+            provider = options.getProviderAsync
+              ? await virtualRuntime.resolveAsync(virtual, { model: route.model, request })
+              : virtualRuntime.resolve(virtual, { model: route.model, request });
           }
           const input = { route: virtual ? { ...route, providerId: provider.id } : route, provider, body, method: req.method, headers: req.headers,
             officialViaProxy: env.CLAUDE_OFFICIAL_VIA_PROXY === '1', officialProviderId: options.officialProviderId,
@@ -163,10 +169,14 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
               if (error?.message === 'MODEL_CONNECT_TIMEOUT') options.nativeConnectTimedOut?.();
               throw error;
             }
-            if (virtual && head.rateLimit) safeCall(virtualRuntime.observe, provider, head.rateLimit);
+            if (virtual && head.rateLimit) {
+              try { await virtualRuntime.observe(provider, head.rateLimit); } catch (_) { /* observation is best effort */ }
+            }
             context.isStream = head.isStream;
             if (head.status < 200 || head.status >= 300) {
-              if (virtual && virtualRuntime.outcome(provider, head.status, res.headersSent, undefined, request)) {
+              if (virtual && (options.getProviderAsync
+                ? await virtualRuntime.outcomeAsync(provider, head.status, res.headersSent, undefined, request)
+                : virtualRuntime.outcome(provider, head.status, res.headersSent, undefined, request))) {
                 // No response bytes have left the host. Close the rejected
                 // exchange before resolving another member; never replay a stream.
                 await exchange.close(); exchanges.delete(exchange); exchange = null;

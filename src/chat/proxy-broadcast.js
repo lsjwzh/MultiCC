@@ -127,7 +127,7 @@ function createProxyBroadcasters(chatBroadcast, {
         providerId = attributed.providerId || providerId;
       }
       if (recordLimit) {
-        try { recordLimit(sessionId, info.rateLimitInfo, providerId); } catch (_) {}
+        try { Promise.resolve(recordLimit(sessionId, info.rateLimitInfo, providerId)).catch(() => {}); } catch (_) {}
       }
       if (role !== 'main' && attemptRuntime) return;
       // The event carries the rendered bar alongside the raw DTO. Rust merges

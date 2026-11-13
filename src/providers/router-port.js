@@ -423,6 +423,11 @@ function createProviderRouterPort(options = {}) {
       : null;
     const authorizeProxyRequest = typeof mountOptions.authorizeProxyRequest === 'function'
       ? mountOptions.authorizeProxyRequest : null;
+    const authorizeProxyRequestAsync = typeof mountOptions.authorizeProxyRequestAsync === 'function'
+      ? mountOptions.authorizeProxyRequestAsync : null;
+    if (authorizeProxyRequestAsync && typeof router.CAPABILITIES?.rustProtocolProxy !== 'string') {
+      throw new ProviderRouterPortError('async quota admission requires the Rust proxy', 'ASYNC_QUOTA_PROXY_UNSUPPORTED');
+    }
     // Host-owned diagnostic port for attempt rejections. The 409 itself is
     // unchanged; this is what makes it visible in the log with an identity.
     const onRejected = typeof mountOptions.onRejected === 'function'
@@ -470,16 +475,16 @@ function createProviderRouterPort(options = {}) {
     const mounted = {};
     if (protocols.includes('claude')) {
       const admission = authorizeProxyRequest ? createProviderProxyAdmission({
-        protocol: 'claude', app, getProvider, authorizeProxyRequest,
+        protocol: 'claude', app, getProvider, authorizeProxyRequest, authorizeProxyRequestAsync,
         onActivity: mountOptions.onActivity, onUsageEvent: common.onUsageEvent, onDelta: common.onDelta, onOutcome: mountOptions.onProxyOutcome,
         ...(onRejected ? { onRejected } : {}),
       }) : null;
       if (authorizeProxyRequest) app.use(
         `/${String(mountOptions.claudeProxyPath || '/claude-proxy').replace(/^\/+|\/+$/g, '')}`,
-        createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest, ...(onRejected ? { onRejected } : {}) }),
+        createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest, authorizeProxyRequestAsync, ...(onRejected ? { onRejected } : {}) }),
       );
       const quota = createClaudeQuotaBridge(admission ? admission.app : app,
-        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta, nativeConnectTimeoutMs: admission.nativeConnectTimeoutMs, nativeConnectTimedOut: admission.nativeConnectTimedOut, nativeStreamStarted: admission.nativeStreamStarted, nativeStreamProgress: admission.nativeStreamProgress, nativeStreamTimedOut: admission.nativeStreamTimedOut } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}), ...(mountOptions.claudeProxy || {}) });
+        { ...common, ...(admission ? { getProvider: admission.getProvider, ...(authorizeProxyRequestAsync ? { getProviderAsync: admission.getProviderAsync } : {}), onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta, nativeConnectTimeoutMs: admission.nativeConnectTimeoutMs, nativeConnectTimedOut: admission.nativeConnectTimedOut, nativeStreamStarted: admission.nativeStreamStarted, nativeStreamProgress: admission.nativeStreamProgress, nativeStreamTimedOut: admission.nativeStreamTimedOut } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}), ...(mountOptions.claudeProxy || {}) });
       const recovery = createClaudeOAuthProxyRecovery(quota.app, quota.options);
       mounted.claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(recovery.app, recovery.options);
     }
@@ -496,13 +501,13 @@ function createProviderRouterPort(options = {}) {
         app.use(codexPrefix, trace.middleware);
       }
       const admission = authorizeProxyRequest ? createProviderProxyAdmission({
-        protocol: 'codex', app, getProvider, authorizeProxyRequest,
+        protocol: 'codex', app, getProvider, authorizeProxyRequest, authorizeProxyRequestAsync,
         onActivity: mountOptions.onActivity, onUsageEvent: common.onUsageEvent, onDelta: common.onDelta, onOutcome: mountOptions.onProxyOutcome,
         ...(onRejected ? { onRejected } : {}),
       }) : null;
       if (authorizeProxyRequest) app.use(
         codexPrefix,
-        createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest, ...(onRejected ? { onRejected } : {}) }),
+        createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest, authorizeProxyRequestAsync, ...(onRejected ? { onRejected } : {}) }),
       );
       // MultiCC's cross-upstream history correction runs INSIDE the router, at
       // the dial point, instead of before the proxy: this is where the upstream
@@ -511,6 +516,7 @@ function createProviderRouterPort(options = {}) {
       // hop. Only the router's requestHooks capability is assumed — a router
       // without it keeps the relay's pre-proxy normalization below.
       const nativeOfficial = typeof router.CAPABILITIES?.rustOfficialProxy === 'string' && !mountOptions.codexOfficialRelay?.fetch;
+      if (authorizeProxyRequestAsync && !nativeOfficial) throw new ProviderRouterPortError('async quota admission requires the Rust official relay', 'ASYNC_QUOTA_RELAY_UNSUPPORTED');
       const historyHooks = (mode === 'cpr' || nativeOfficial) && typeof router.CAPABILITIES?.requestHooks === 'string'
         ? createCodexHistoryHooks({ logger })
         : null;
@@ -532,7 +538,7 @@ function createProviderRouterPort(options = {}) {
       });
       mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
         admission ? admission.app : app,
-        { ...common, codexOfficialRelay: mountOptions.codexOfficialRelay, ...(historyHooks || {}), ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta, nativeConnectTimeoutMs: admission.nativeConnectTimeoutMs, nativeConnectTimedOut: admission.nativeConnectTimedOut, nativeStreamStarted: admission.nativeStreamStarted, nativeStreamProgress: admission.nativeStreamProgress, nativeStreamTimedOut: admission.nativeStreamTimedOut } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}), ...(mountOptions.codexProxy || {}) },
+        { ...common, codexOfficialRelay: mountOptions.codexOfficialRelay, ...(historyHooks || {}), ...(admission ? { getProvider: admission.getProvider, ...(authorizeProxyRequestAsync ? { getProviderAsync: admission.getProviderAsync } : {}), onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta, nativeConnectTimeoutMs: admission.nativeConnectTimeoutMs, nativeConnectTimedOut: admission.nativeConnectTimedOut, nativeStreamStarted: admission.nativeStreamStarted, nativeStreamProgress: admission.nativeStreamProgress, nativeStreamTimedOut: admission.nativeStreamTimedOut } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}), ...(mountOptions.codexProxy || {}) },
       );
       if (trace && !app[CODEX_TRACE_EXIT]) {
         app[CODEX_TRACE_EXIT] = true;

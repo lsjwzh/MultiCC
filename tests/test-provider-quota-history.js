@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createProviderQuotaHistory } = require('../src/quota/provider-quota-history');
-const { createProviderLimitCache } = require('../src/quota/provider-limit-cache');
+const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
 const { getNative, runNative } = require('../src/native/runtime');
 
 const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;

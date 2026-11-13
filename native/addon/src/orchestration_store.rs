@@ -7,14 +7,14 @@ use multicc_core::{
     orchestration_store::Store,
 };
 use napi::{
-    bindgen_prelude::{AsyncTask, JsValue as _, Unknown},
+    bindgen_prelude::{AsyncTask, Buffer, JsValue as _, Unknown},
     sys, Env, Result, ScopedTask,
 };
 use napi_derive::napi;
 use serde_json::Value;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-fn read(env: Env, value: Unknown<'_>, op: &str) -> Result<Value> {
+pub(crate) fn read(env: Env, value: Unknown<'_>, op: &str) -> Result<Value> {
     let mut value =
         unsafe { crate::js_bridge::read_value(env.raw(), value.raw(), 0, &mut Vec::new()) }?;
     fn pack(
@@ -96,7 +96,7 @@ fn read(env: Env, value: Unknown<'_>, op: &str) -> Result<Value> {
     Ok(to_serde(&value))
 }
 
-fn write(env: Env, value: &Value) -> Result<sys::napi_value> {
+pub(crate) fn write(env: Env, value: &Value) -> Result<sys::napi_value> {
     unsafe { crate::js_bridge::write_value(env.raw(), &from_serde(value)) }
 }
 fn lock(inner: &Mutex<Store>) -> MutexGuard<'_, Store> {
@@ -175,6 +175,98 @@ impl RustOrchestrationStore {
             input,
         }))
     }
+
+    /// A byte transport for large, already JSON-encoded admission specs. Only
+    /// the bounded copy happens on the event loop; UTF-8 validation and JSON
+    /// parsing happen on the worker. Existing accepted sizes are not reduced.
+    #[napi]
+    pub fn request_admission_async(
+        &self,
+        env: Env,
+        op: String,
+        input: Unknown<'_>,
+        spec: Buffer,
+    ) -> Result<AsyncTask<AdmissionRequest>> {
+        if op != "operationAdmitPlan" && op != "operationAdmit" {
+            return Err(napi::Error::from_reason(
+                "ORCHESTRATION_SQLITE_ERROR:invalid admission operation",
+            ));
+        }
+        if spec.len() > isize::MAX as usize {
+            return Err(napi::Error::from_reason(
+                "ORCHESTRATION_SQLITE_ERROR:admission spec exceeds platform limits",
+            ));
+        }
+        let input = read(env, input, &op)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(spec.len()).map_err(|_| {
+            napi::Error::from_reason("ORCHESTRATION_SQLITE_ERROR:unable to allocate admission spec")
+        })?;
+        bytes.extend_from_slice(&spec);
+        Ok(AsyncTask::new(AdmissionRequest {
+            inner: Arc::clone(&self.inner),
+            op,
+            input,
+            spec: Some(bytes),
+        }))
+    }
+}
+
+pub struct AdmissionRequest {
+    inner: Arc<Mutex<Store>>,
+    op: String,
+    input: Value,
+    spec: Option<Vec<u8>>,
+}
+impl<'task> ScopedTask<'task> for AdmissionRequest {
+    type Output = Value;
+    type JsValue = Unknown<'task>;
+    fn compute(&mut self) -> Result<Value> {
+        guard("ORCHESTRATION_STORE_PANIC", || {
+            let bytes = self.spec.take().ok_or_else(|| {
+                napi::Error::from_reason(
+                    "ORCHESTRATION_SQLITE_ERROR:admission spec already consumed",
+                )
+            })?;
+            let spec = match String::from_utf8(bytes) {
+                Ok(spec) => spec,
+                Err(_) => {
+                    let _ = lock(&self.inner).end();
+                    return Err(napi::Error::from_reason(
+                        "ORCHESTRATION_SQLITE_ERROR:invalid admission spec UTF-8",
+                    ));
+                }
+            };
+            self.input["specJson"] = Value::String(spec);
+            lock(&self.inner)
+                .request(&self.op, &self.input)
+                .map_err(napi::Error::from_reason)
+        })
+    }
+    fn resolve(&mut self, env: &'task Env, mut value: Value) -> Result<Unknown<'task>> {
+        // Avoid rebuilding a large UTF-16 Rust string on the event loop. The
+        // JSON body was encoded on the worker and is returned as UTF-8 bytes.
+        let body = value
+            .as_object_mut()
+            .and_then(|object| object.remove("resultJson"));
+        let raw = unsafe { crate::js_bridge::write_value(env.raw(), &from_serde(&value)) }?;
+        if let Some(Value::String(body)) = body {
+            let mut buffer = std::ptr::null_mut();
+            napi::check_status!(unsafe {
+                sys::napi_create_buffer_copy(
+                    env.raw(),
+                    body.len(),
+                    body.as_ptr().cast(),
+                    std::ptr::null_mut(),
+                    &mut buffer,
+                )
+            })?;
+            napi::check_status!(unsafe {
+                sys::napi_set_named_property(env.raw(), raw, c"resultBuffer".as_ptr(), buffer)
+            })?;
+        }
+        Ok(unsafe { Unknown::from_raw_unchecked(env.raw(), raw) })
+    }
 }
 
 pub struct StoreRequest {
@@ -182,6 +274,7 @@ pub struct StoreRequest {
     op: String,
     input: Value,
 }
+
 impl<'task> ScopedTask<'task> for StoreRequest {
     type Output = Value;
     type JsValue = Unknown<'task>;
@@ -216,5 +309,5 @@ pub fn orchestration_store_export(
 
 #[napi]
 pub fn orchestration_store_protocol() -> u32 {
-    2
+    10
 }

@@ -86,7 +86,7 @@ function createOfficialAccountUsageSweeper({
     const dto = await pollCodex({ authFile: path.join(accounts.codexDir(account.id), 'auth.json') }, now());
     const windows = codexDtoWindows(dto);
     if (!windows.length) return false;
-    recorder.recordOfficialWindows('codex', accountProviderId('codex', account.id), { windows, fetchedAt: now() });
+    await recorder.recordOfficialWindows('codex', accountProviderId('codex', account.id), { windows, fetchedAt: now() });
     return true;
   }
 

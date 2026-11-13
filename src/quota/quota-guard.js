@@ -25,15 +25,17 @@ function createQuotaGuard({
   const config = () => Object.freeze(native.config(env, now()));
   const appliesTo = providerId => request('appliesTo', { providerId, config: config() });
 
-  function check({ appType, providerId } = {}) {
+  function prepare({ appType, providerId } = {}) {
     const id = clean(providerId);
-    if (!appliesTo(id)) return Object.freeze({ blocked: false, reason: 'scope_mismatch' });
+    if (!appliesTo(id)) return { verdict: Object.freeze({ blocked: false, reason: 'scope_mismatch' }) };
     const settings = config();
-    if (!settings.enabled) return Object.freeze({ blocked: false, reason: 'guard_disabled' });
-    if (!cache || typeof cache.get !== 'function') return Object.freeze({ blocked: false, reason: 'no_cache' });
+    if (!settings.enabled) return { verdict: Object.freeze({ blocked: false, reason: 'guard_disabled' }) };
+    if (!cache || typeof cache.get !== 'function') return { verdict: Object.freeze({ blocked: false, reason: 'no_cache' }) };
     const type = clean(appType) || id.split('-')[0] || 'claude';
-    let entry = null;
-    try { entry = cache.get(type, id); } catch (_) { entry = null; }
+    return { id, type, settings };
+  }
+
+  function finish({ id, type, settings }, entry) {
     const verdict = guardVerdict(entry, { config: settings, now: now() });
     if (verdict.blocked && logger && typeof logger.warn === 'function') {
       logger.warn('quota_guard_hold', {
@@ -63,11 +65,37 @@ function createQuotaGuard({
     return verdict;
   }
 
+  function check(input) {
+    const context = prepare(input);
+    if (context.verdict) return context.verdict;
+    let entry = null;
+    try { entry = cache.get(context.type, context.id); } catch (_) { entry = null; }
+    if (entry && typeof entry.then === 'function') {
+      Promise.resolve(entry).catch(() => {});
+      return Object.freeze({ blocked: true, reason: 'async_cache_read_required', window: 'unavailable', usedPercent: 0 });
+    }
+    return finish(context, entry);
+  }
+
+  async function checkAsync(input) {
+    const context = prepare(input);
+    if (context.verdict) return context.verdict;
+    let entry = null;
+    try { entry = await cache.get(context.type, context.id); }
+    catch (_) { return Object.freeze({ blocked: true, reason: 'cache_read_failed', window: 'unavailable', usedPercent: 0 }); }
+    return finish(context, entry);
+  }
+
+  function checkEntry(input, entry) {
+    const context = prepare(input);
+    return context.verdict || finish(context, entry);
+  }
+
   function setStaleRefresher(fn) {
     staleRefresher = typeof fn === 'function' ? fn : null;
   }
 
-  return Object.freeze({ check, config, appliesTo, setStaleRefresher });
+  return Object.freeze({ check, checkAsync, checkEntry, config, appliesTo, setStaleRefresher });
 }
 
 

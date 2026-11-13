@@ -191,6 +191,25 @@ test('final admission rechecks after async Claude body parsing and blocks upstre
   assert.equal(state.status, 409);
 });
 
+test('async final admission waits for the quota decision before provider lookup', async () => {
+  let mounted, resolveDecision, reads = 0;
+  const app = { use(_pathname, handler) { mounted = handler; } };
+  const admission = createProviderProxyAdmission({
+    protocol: 'claude', app,
+    authorizeProxyRequest: () => ({ ok: true }),
+    authorizeProxyRequestAsync: () => new Promise(resolve => { resolveDecision = resolve; }),
+    getProvider: () => { reads += 1; return { id: 'provider-a' }; },
+  });
+  admission.app.use('/claude-proxy', async () => admission.getProviderAsync('claude', 'provider-a'));
+  const { state, res } = responseHarness();
+  const pending = mounted({ method: 'POST', url: '/provider-a/pr1.session.token/v1/messages' }, res, error => { throw error; });
+  assert.equal(reads, 0);
+  resolveDecision({ ok: false, code: 'quota_guard:5h:99pct' });
+  await pending;
+  assert.equal(reads, 0);
+  assert.equal(state.status, 409);
+});
+
 test('final admission authorizes the Provider decoded from a Claude sub route', async () => {
   let mounted;
   const decisions = [];

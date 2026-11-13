@@ -6,6 +6,7 @@ const {
   SCHEMA_VERSION, OrchestrationStoreCorruptError,
   _cloneJson: cloneJson, _deepFreeze: deepFreeze, _validateState: validateState,
 } = require('./store');
+const { types: { isProxy } } = require('node:util');
 
 const COLLECTIONS = Object.freeze([
   'waits',
@@ -273,6 +274,17 @@ function createDraft(base, native) {
   }
 
   const methods = {
+    // The store preloads these keys from the same SQLite read snapshot. The
+    // Rust claim kernel still owns filtering/decisions; this is only a proxy
+    // materialization shortcut and keeps each collection proxy's identity.
+    claimSelect(leased) {
+      assertActive();
+      if (!native.claimMetadata) return null;
+      const keys = leased ? native.claimMetadata.leasedKeys : native.claimMetadata.keys;
+      const result = [];
+      for (let index = 0; index < keys.length; index++) result[result.length] = collectionProxy('outbox')[keys[index]];
+      return result;
+    },
     select(collection, options = {}) {
       assertActive();
       const overrides = [...recordChanges[collection]].map(([key, value]) => ({ key, ...value }));
@@ -337,6 +349,30 @@ function createDraft(base, native) {
     return Object.values(value).some(child => containsOwnedProxy(child, seen));
   }
 
+  // A synchronous native result must not run user accessors merely to decide
+  // whether it refers to a draft. In particular, touching `then` here could
+  // execute user code before the transaction commits. Allow that accessor in
+  // the enveloped result; reject other accessor/proxy results because they
+  // might hide a transaction-local draft that will be revoked after commit.
+  function containsOwnedProxySafely(value, seen = new WeakSet()) {
+    if (!isObject(value)) return false;
+    if (ownedProxies.has(value)) return true;
+    if (isProxy(value)) throw new TypeError('synchronous Rust command returned an opaque proxy');
+    if (seen.has(value)) return false;
+    seen.add(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable) continue;
+      if (!Object.hasOwn(descriptor, 'value')) {
+        if (key === 'then') continue;
+        throw new TypeError('synchronous Rust command returned an accessor');
+      }
+      if (containsOwnedProxySafely(descriptor.value, seen)) return true;
+    }
+    return false;
+  }
+
   function finish({ now }) {
     const next = { schemaVersion: base.schemaVersion, revision: base.revision,
       updatedAt: base.updatedAt, nextOutboxSequence: base.nextOutboxSequence };
@@ -397,7 +433,7 @@ function createDraft(base, native) {
     extraChanges.clear(); topChanges.clear(); collectionProxies.clear();
     pathProxies.clear(); extraPathProxies.clear();
   }
-  return { draft, finish, containsOwnedProxy, revoke };
+  return { draft, finish, containsOwnedProxy, containsOwnedProxySafely, revoke };
 }
 
 module.exports = { createDraft, COLLECTIONS };

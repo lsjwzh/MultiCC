@@ -105,6 +105,36 @@ const sources = [
   [{ id: 'think', role: 'assistant', content: [{ type: 'thinking', thinking: '\uFEFF ' }, { type: 'text', text: '正文' }],
     tools: [{ name: 'Thinking', input: { text: '推理' }, result: '推理' }] }],
 ];
+test('独占读取只复用新解析对象，普通端口和替换输入仍保持隔离', () => {
+  for (const initial of sources) {
+    const disk = clone(initial);
+    let ownedRows;
+    const ownedHistory = {
+      read() { throw new Error('owned read expected'); },
+      readOwned() { ownedRows = clone(disk); return ownedRows; },
+      write() {}, deleteSession() { return true; }, hasPersistedDelivery() { return false; },
+    };
+    const genericHistory = {
+      read() { return disk; }, write() {}, deleteSession() { return true; },
+      hasPersistedDelivery() { return false; },
+    };
+    let ownedId = 0;
+    let genericId = 0;
+    const owned = native.createChatHistoryService({ history: ownedHistory, idFactory: () => `id-${++ownedId}` });
+    const generic = native.createChatHistoryService({ history: genericHistory, idFactory: () => `id-${++genericId}` });
+    const original = clone(disk);
+    assert.deepEqual(view(owned.view('s')), view(generic.view('s')));
+    assert.deepEqual(disk, original, 'generic port data must never be normalized in place');
+    const first = owned.view('s')[0];
+    if (first) assert.ok(ownedRows.includes(first), 'owned records may be reused without deep copying');
+  }
+  const history = { read: () => [], write() {}, deleteSession() { return true; }, hasPersistedDelivery() { return false; } };
+  const service = native.createChatHistoryService({ history, idFactory: () => 'id' });
+  const replacement = [{ id: 'new', role: 'assistant', content: [{ type: 'thinking', thinking: ' ' }] }];
+  const snapshot = clone(replacement);
+  service.replace('s', replacement);
+  assert.deepEqual(replacement, snapshot, 'caller-owned replacement must remain isolated');
+});
 test('历史迁移：规范化、UUID 隔离、分页和写入回调与冻结旧实现一致', () => {
   for (const initial of sources) {
     const p = pair(initial);

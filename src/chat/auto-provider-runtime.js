@@ -85,7 +85,7 @@ function createAutoProviderRuntime(options = {}) {
     fetchImpl: options.fetchImpl,
     resolveApiKey: options.resolveApiKey,
     ttlMs: options.routingTtlMs,
-    resolveLadder: ({ session, selection }) => catalogCandidates(session, selection).ladder.tiers,
+    resolveLadder: ({ session, selection, limitEntries }) => catalogCandidates(session, selection, limitEntries).ladder.tiers,
   });
 
   // The route state and turn closures live in Rust; one instance per runtime,
@@ -174,7 +174,7 @@ function createAutoProviderRuntime(options = {}) {
 
   // Every line of the pool, on every lane, with its limit state and — for a
   // price-tiered pool — its price and this turn's price tier.
-  function catalogCandidates(session, selection) {
+  function catalogCandidates(session, selection, limitEntries = null) {
     const home = session.cli || 'claude';
     const lanes = new Map();
     const nativeIds = new Map();
@@ -194,7 +194,8 @@ function createAutoProviderRuntime(options = {}) {
       const provider = lane(cli).get(candidate.providerId);
       let entry = null;
       if (limitCache && provider) {
-        try { entry = limitCache.get(provider.appType, provider.id); } catch (_) { entry = null; }
+        if (limitEntries !== null) entry = limitEntries[`${provider.appType}:${provider.id}`] || null;
+        else try { entry = limitCache.get(provider.appType, provider.id); } catch (_) { entry = null; }
       }
       // The model this candidate would actually request: a model-scoped park
       // only binds that model, so the candidate's own model must decide.
@@ -202,7 +203,12 @@ function createAutoProviderRuntime(options = {}) {
       const limit = limitState(entry, { now: Number(now()), staleAfterMs, model });
       let guard = null;
       if (quotaGuard && provider) {
-        try { guard = quotaGuard.check({ appType: provider.appType, providerId: provider.id }); }
+        try {
+          if (limitEntries !== null) {
+            if (typeof quotaGuard.checkEntry !== 'function') throw new Error('quota guard cannot evaluate a committed snapshot');
+            guard = quotaGuard.checkEntry({ appType: provider.appType, providerId: provider.id }, entry);
+          } else guard = quotaGuard.check({ appType: provider.appType, providerId: provider.id });
+        }
         catch (_) { guard = null; }
       }
       const guarded = !!(guard && guard.blocked);
@@ -295,7 +301,7 @@ function createAutoProviderRuntime(options = {}) {
   // Before a turn starts, decide whether it should run on another CLI lane.
   // Returns null to stay, or the lane (and the line reserved on it) to switch
   // to; the reservation is what beginTurn then picks on the new lane.
-  function planTurn({ session, text, turnOptions = {} } = {}) {
+  function planTurn({ session, text, turnOptions = {}, limitEntries = null } = {}) {
     const rawSelection = session && session.providerSelection;
     if (!rawSelection || rawSelection.mode !== 'auto') return null;
     const cli = session.cli || 'claude';
@@ -303,7 +309,7 @@ function createAutoProviderRuntime(options = {}) {
     if (!validated.ok || !validated.value.cliSwitch) return null;
     const selection = validated.value;
     syncSelection(session, rawSelection, selection);
-    const { candidates, ladder } = catalogCandidates(session, selection);
+    const { candidates, ladder } = catalogCandidates(session, selection, limitEntries);
     const backgroundNotification = !!(turnOptions.bgTaskIds?.length || turnOptions.bgToolUseIds?.length);
     // A difficulty router owns the lane choice itself. A background
     // notification is not a user message: it must not consume the verdict.
@@ -330,7 +336,7 @@ function createAutoProviderRuntime(options = {}) {
     });
   }
 
-  function beginTurn({ session, turnId, promptText }) {
+  function beginTurn({ session, turnId, promptText, limitEntries = null }) {
     const rawSelection = session && session.providerSelection;
     if (!rawSelection || rawSelection.mode !== 'auto') {
       if (session && session.id) clearSession(session.id);
@@ -352,7 +358,7 @@ function createAutoProviderRuntime(options = {}) {
     const selection = validated.value;
     syncSelection(session, rawSelection, selection);
     const turnCli = session.cli || 'claude';
-    const { candidates, ladder } = catalogCandidates(session, selection);
+    const { candidates, ladder } = catalogCandidates(session, selection, limitEntries);
     // Difficulty routing: one verdict per USER MESSAGE, pinned for the whole
     // turn — failover included.
     const routingDecision = selection.routing ? routing.resolveTier({
@@ -423,7 +429,7 @@ function createAutoProviderRuntime(options = {}) {
   // again, or null when some candidate is usable now / no reset is known.
   // Read-only: the decision lives in `auto_provider_runtime.rs`; this side only
   // has the limit cache and hands each line's summary across.
-  function retryNotBefore(session) {
+  function retryNotBefore(session, limitEntries = null) {
     const rawSelection = session && session.providerSelection;
     if (!rawSelection || rawSelection.mode !== 'auto') return null;
     let validated;
@@ -436,12 +442,13 @@ function createAutoProviderRuntime(options = {}) {
     }
     if (!validated.ok) return null;
     const cli = session.cli || 'claude';
-    const pool = catalogCandidates(session, validated.value);
+    const pool = catalogCandidates(session, validated.value, limitEntries);
     const candidates = pool.candidates.map(candidate => {
       const provider = candidate.provider;
       let entry = null;
       if (limitCache && provider) {
-        try { entry = limitCache.get(provider.appType, provider.id); } catch (_) { entry = null; }
+        if (limitEntries !== null) entry = limitEntries[`${provider.appType}:${provider.id}`] || null;
+        else try { entry = limitCache.get(provider.appType, provider.id); } catch (_) { entry = null; }
       }
       return {
         cli: candidate.cli,
@@ -467,12 +474,39 @@ function createAutoProviderRuntime(options = {}) {
     return routing.prepareTurn(args);
   }
 
+  async function loadLimitEntries() {
+    if (!limitCache) return null;
+    if (typeof limitCache.snapshot !== 'function') throw new Error('provider limit snapshot unavailable');
+    const snapshot = await limitCache.snapshot();
+    if (!snapshot || !snapshot.entries) throw new Error('provider limit snapshot unavailable');
+    if (quotaGuard && typeof quotaGuard.checkEntry !== 'function') throw new Error('quota guard cannot evaluate a committed snapshot');
+    return snapshot.entries;
+  }
+  async function withCurrentSnapshot(args, calculate) {
+    const signature = JSON.stringify(args.session);
+    const limitEntries = await loadLimitEntries();
+    if (JSON.stringify(args.session) !== signature) throw new Error('provider selection changed while reading quota');
+    return calculate({ ...args, limitEntries });
+  }
+  async function planTurnAsync(args) { return withCurrentSnapshot(args, planTurn); }
+  async function beginTurnAsync(args) { return withCurrentSnapshot(args, beginTurn); }
+  async function retryNotBeforeAsync(session) { return retryNotBefore(session, await loadLimitEntries()); }
+
   const prepareAdmission = createRoutingAdmissionPhase({
     prepareTurn: routing.prepareTurn,
     broadcast: emit,
   });
 
-  return Object.freeze({ beginTurn, clearSession, pendingCliSwitch, planTurn, prepareAdmission, prepareTurn, retryNotBefore, snapshot });
+  const prepareAdmissionWithSnapshot = createRoutingAdmissionPhase({
+    prepareTurn: async args => routing.prepareTurn({ ...args, limitEntries: await loadLimitEntries() }),
+    broadcast: emit,
+  });
+  function prepareAdmissionAsync(args) {
+    if (!args?.session?.providerSelection?.routing || !String(args.text == null ? '' : args.text).trim()) return null;
+    return prepareAdmissionWithSnapshot(args);
+  }
+
+  return Object.freeze({ beginTurn, beginTurnAsync, clearSession, pendingCliSwitch, planTurn, planTurnAsync, prepareAdmission, prepareAdmissionAsync, prepareTurn, retryNotBefore, retryNotBeforeAsync, snapshot });
 }
 
 module.exports = {

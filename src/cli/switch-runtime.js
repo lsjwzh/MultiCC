@@ -269,7 +269,10 @@ function createCliSwitchRuntime(options) {
     if (gate.action === 'allow') return true;
     if (gate.action !== 'plan') return canContinueOnCurrentCli(sessionId);
     const availability = options.cliAvailabilitySummary() || {};
-    const plan = options.planAutoCliSwitch({ session, text, turnOptions });
+    const pendingPlan = options.planAutoCliSwitch({ session, text, turnOptions });
+    const signatureBeforePlan = JSON.stringify(session);
+    const plan = pendingPlan && typeof pendingPlan.then === 'function' ? await pendingPlan : pendingPlan;
+    if (records.get(sessionId) !== session || JSON.stringify(session) !== signatureBeforePlan) return false;
     const fromCli = session.cli || 'claude';
     if (!call('autoPlanGate', { plan, cli: fromCli, available: !!availability[plan?.cli]?.available }).prepare) return canContinueOnCurrentCli(sessionId);
     const signature = JSON.stringify(session);

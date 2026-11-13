@@ -171,14 +171,14 @@ function createApiErrorHost(options = {}) {
     const model = runner?.providerAttempt && typeof runner.providerAttempt === 'object'
       ? cleanIdentity(runner.providerAttempt.model) : '';
     try {
-      recordProviderFailure({
+      Promise.resolve(recordProviderFailure({
         sessionId: sessionName,
         providerId,
         category: error.category,
         httpStatus: 429,
         ...(error.rejection ? { rejection: error.rejection } : {}),
         ...(model ? { model } : {}),
-      });
+      })).catch(() => {});
     } catch (_) { /* bookkeeping must never mask the turn failure it observes */ }
   }
 
@@ -201,7 +201,7 @@ function createApiErrorHost(options = {}) {
     // generic 401 is never mistaken for a revocation.
     if (!looksLikeRevokedOAuth(error.rootCause || error.sanitizedMessage)) return;
     try {
-      recordProviderFailure({ providerId, category: 'authentication_permission' });
+      Promise.resolve(recordProviderFailure({ providerId, category: 'authentication_permission' })).catch(() => {});
     } catch (_) { /* bookkeeping must never mask the turn failure it observes */ }
   }
 

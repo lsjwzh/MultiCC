@@ -1215,6 +1215,21 @@ test('proxy preflight rejects a live provider revision change before upstream I/
   assert.ok(audit.some(item => item.event.operation === 'proxy_delta'));
 });
 
+test('async quota admission rechecks the attempt after the database read', async () => {
+  let resume;
+  let sequence = 0;
+  const runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'async-quota', nextId: prefix => `${prefix}-${++sequence}`,
+    quotaGuard: { check: () => ({ blocked: false }), checkAsync: () => new Promise(resolve => { resume = resolve; }) },
+  });
+  const attempt = runtime.beginAttempt(route());
+  const pending = runtime.authorizeProxyRequestAsync(proxy(runtime, attempt));
+  runtime.finishAttempt(attempt, { outcome: 'failed' });
+  resume({ blocked: false });
+  const decision = await pending;
+  assert.equal(decision.ok, false);
+});
+
 test('a late physical request capability cannot bind to the next provider attempt', () => {
   const { runtime, audit } = harness();
   const first = runtime.beginAttempt(route());

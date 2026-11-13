@@ -11,9 +11,10 @@ const crypto = require('crypto');
 const {
   admitOutboxItem,
   hashPayload,
-  hashSecret,
   normalizeJson,
+  OutboxConflictError,
 } = require('./outbox');
+const { getNative } = require('./native/runtime');
 
 const TERMINAL_OPERATION_STATES = new Set([
   'completed', 'failed', 'interrupted', 'cancelled',
@@ -67,67 +68,6 @@ function createOperationService({
     throw new TypeError('[operation-service] orchestration store is required');
   }
 
-  function findIdempotent(draft, { kind, ownerSessionId, idempotencyKeyHash }) {
-    if (!idempotencyKeyHash) return null;
-    return candidateRows(draft, 'operations', { kind, ownerSessionId, idempotencyKeyHash }).find(operation => (
-      operation.kind === kind
-      && operation.ownerSessionId === ownerSessionId
-      && operation.idempotencyKeyHash === idempotencyKeyHash
-    )) || null;
-  }
-
-  function admitBase(draft, {
-    id,
-    kind,
-    ownerSessionId,
-    resultSessionId,
-    idempotencyKey,
-    spec,
-    externalId = null,
-  }) {
-    const normalizedSpec = normalizeJson(spec);
-    const requestHash = hashPayload(normalizedSpec, cryptoImpl);
-    const idempotencyKeyHash = idempotencyKey
-      ? hashSecret(idempotencyKey, cryptoImpl)
-      : null;
-    const existing = findIdempotent(draft, { kind, ownerSessionId, idempotencyKeyHash });
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        throw new OperationConflictError(
-          `${kind} idempotency key was already used with different content`,
-          existing.id,
-        );
-      }
-      return { operation: existing, idempotent: true };
-    }
-    if (draft.operations[id]) {
-      throw new OperationConflictError(`operation ${id} already exists`, id);
-    }
-    const at = Number(now());
-    const operation = {
-      id,
-      kind,
-      ownerSessionId,
-      resultSessionId: resultSessionId || ownerSessionId,
-      status: 'admitted',
-      idempotencyKeyHash,
-      requestHash,
-      resultHash: null,
-      spec: normalizedSpec,
-      externalId,
-      requestOutboxId: null,
-      resultOutboxId: null,
-      createdAt: at,
-      updatedAt: at,
-      startedAt: null,
-      completedAt: null,
-      cancelledAt: null,
-      lastError: null,
-    };
-    draft.operations[id] = operation;
-    return { operation, idempotent: false };
-  }
-
   async function admitDetached({
     operationId = idFactory(),
     sessionId,
@@ -135,19 +75,19 @@ function createOperationService({
     spec,
   } = {}) {
     if (!sessionId) throw new TypeError('detached operation requires sessionId');
-    return store.mutate(draft => {
-      const externalId = `d_${operationId.replace(/^op_/, '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48)}`;
-      const admitted = admitBase(draft, {
-        id: operationId,
-        kind: 'detached',
-        ownerSessionId: sessionId,
-        resultSessionId: sessionId,
-        idempotencyKey,
-        spec,
-        externalId,
-      });
-      return { ...publicOperation(admitted.operation), idempotent: admitted.idempotent };
-    });
+    const mutate = draft => getNative().operationAdmitLive(draft, 'detached',
+      { operationId, sessionId, idempotencyKey, spec }, now, cryptoImpl, crypto, OperationConflictError, OutboxConflictError);
+    if (typeof store.executeOperationAdmit === 'function') {
+      const result = await store.executeOperationAdmit({ id: operationId, kind: 'detached',
+        ownerSessionId: sessionId, resultSessionId: sessionId, idempotencyKey, spec,
+        now, customCrypto: cryptoImpl !== crypto }, mutate);
+      if (result.legacy) return result.value;
+      if (result.errorKind === 'type') throw new TypeError(result.message);
+      if (result.errorKind === 'operation') throw new OperationConflictError(result.message, JSON.parse(result.idJson));
+      if (result.errorKind === 'outbox') throw new OutboxConflictError(JSON.parse(result.idJson));
+      return result.resultJson ? JSON.parse(result.resultJson) : result;
+    }
+    return store.mutate(mutate);
   }
 
   async function admitDispatch({
@@ -160,48 +100,23 @@ function createOperationService({
     if (!ownerSessionId || !spec || !spec.chatId || !spec.targetId || !spec.message) {
       throw new TypeError('dispatch operation requires owner, target chat and message');
     }
-    return store.mutate(draft => {
-      const admitted = admitBase(draft, {
-        id: operationId,
-        kind: 'dispatch',
-        ownerSessionId,
-        resultSessionId: resultSessionId || ownerSessionId,
-        idempotencyKey,
-        spec,
-      });
-      const operation = admitted.operation;
-      if (!operation.requestOutboxId) {
-        const outboxId = `operation:${operation.id}:request`;
-        const outbox = admitOutboxItem(draft, {
-          id: outboxId,
-          sessionId: operation.spec.chatId,
-          payload: {
-            type: 'dispatch.request',
-            operationId: operation.id,
-            targetId: operation.spec.targetId,
-            message: operation.spec.message,
-            taskId: operation.spec.taskId || null,
-            taskStart: operation.spec.taskStart === true,
-            taskSource: operation.spec.taskSource || null,
-            taskText: operation.spec.taskText || null,
-            ...(operation.spec.taskShellReceiptId ? {
-              taskShellReceiptId: operation.spec.taskShellReceiptId,
-              clientMsgId: operation.spec.clientMsgId,
-              receivedAt: operation.spec.receivedAt,
-            } : {}),
-          },
-          source: { type: 'operation', kind: 'dispatch', operationId: operation.id },
-          now: Number(now()),
-        });
-        operation.requestOutboxId = outbox.item.id;
-        operation.updatedAt = Number(now());
-      }
-      return { ...publicOperation(operation), idempotent: admitted.idempotent };
-    });
+    const mutate = draft => getNative().operationAdmitLive(draft, 'dispatch',
+      { operationId, ownerSessionId, resultSessionId, idempotencyKey, spec }, now, cryptoImpl, crypto, OperationConflictError, OutboxConflictError);
+    if (typeof store.executeOperationAdmit === 'function') {
+      const result = await store.executeOperationAdmit({ id: operationId, kind: 'dispatch',
+        ownerSessionId, resultSessionId: resultSessionId || ownerSessionId, idempotencyKey, spec,
+        now, customCrypto: cryptoImpl !== crypto }, mutate);
+      if (result.legacy) return result.value;
+      if (result.errorKind === 'type') throw new TypeError(result.message);
+      if (result.errorKind === 'operation') throw new OperationConflictError(result.message, JSON.parse(result.idJson));
+      if (result.errorKind === 'outbox') throw new OutboxConflictError(JSON.parse(result.idJson));
+      return result.resultJson ? JSON.parse(result.resultJson) : result;
+    }
+    return store.mutate(mutate);
   }
 
   async function markRunning(id, patch = {}) {
-    return store.mutate(draft => {
+    const mutate = draft => {
       const operation = draft.operations[id];
       if (!operation) return { ok: false, code: 'not_found' };
       if (TERMINAL_OPERATION_STATES.has(operation.status)) {
@@ -222,7 +137,11 @@ function createOperationService({
       if (patch.externalId) operation.externalId = String(patch.externalId);
       if (nextPid != null) operation.pid = nextPid;
       return { ok: true, idempotent: false, operation: publicOperation(operation) };
-    });
+    };
+    if (typeof store.markRunningOperation === 'function') {
+      return store.markRunningOperation(id, patch, now, mutate);
+    }
+    return store.mutate(mutate);
   }
 
   function completeOperationDraft(draft, operation, result, {

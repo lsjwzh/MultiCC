@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createOutbox } = require('../src/outbox');
 const {
   FREEZE_REASON_CLASSIFY,
@@ -13,6 +14,181 @@ const {
   runStateForFreezeReason,
 } = require('../src/session-work/scheduler');
 const { runStateForClassify } = require('../src/classify/vocab');
+const { createSessionWorkScheduler: legacyScheduler } = require('./helpers/legacy-session-work-selection');
+
+test('SQLite input dismissal matches the legacy transition and rejects stale classifications', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-settle-'));
+  const now = () => 1700;
+  const legacy = createOrchestrationStore({ file: path.join(dir, 'state.json'), now });
+  const native = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now });
+  t.after(async () => { await native.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const results = [];
+  for (const store of [legacy, native]) {
+    await store.mutate(draft => {
+      draft.sessionSchedules.s = { sessionId: 's', active: null, state: 'frozen',
+        awaitingRequestId: 'q', freezeReason: 'waiting', classifyState: 'W',
+        lastDecision: { old: '保留', action: 'prior' }, updatedAt: 1200 };
+      draft.sessionSchedules.active = { sessionId: 'active', active: { entryId: 'e' }, state: 'running' };
+    });
+    const scheduler = createSessionWorkScheduler({ store, now });
+    results.push([
+      await scheduler.settleUserInput('missing', 'q'),
+      await scheduler.settleUserInput('active', 'q'),
+      await scheduler.settleUserInput('s', 'wrong'),
+      await scheduler.settleUserInput('s', 'q'),
+      await store.snapshot(),
+    ]);
+  }
+  assert.deepEqual(results[1], results[0]);
+  assert.equal(results[1][4].sessionSchedules.s.lastDecision.old, '保留');
+});
+
+test('SQLite input dismissal rolls back writes and rejects an outdated revision', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-settle-atomic-'));
+  const file = path.join(dir, 'state.sqlite');
+  const now = () => 1700;
+  const store = createOrchestrationSqliteStore({ file, now });
+  const stale = createOrchestrationSqliteStore({ file, now });
+  t.after(async () => { await store.close({ exportRollback: false }); await stale.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => { draft.sessionSchedules.s = { sessionId: 's', active: null, state: 'frozen', awaitingRequestId: 'q' }; });
+  const before = await store.snapshot();
+  const db = new (require('better-sqlite3'))(file);
+  t.after(() => db.close());
+  db.exec("CREATE TRIGGER fail_settlement BEFORE UPDATE ON orchestration_session_schedules BEGIN SELECT RAISE(ABORT, 'blocked settlement'); END");
+  await assert.rejects(createSessionWorkScheduler({ store, now }).settleUserInput('s', 'q'), /blocked settlement/);
+  assert.deepEqual(await store.snapshot(), before);
+  db.exec('DROP TRIGGER fail_settlement');
+  await assert.rejects(createSessionWorkScheduler({ store: stale, now }).settleUserInput('s', 'q'),
+    error => error.code === 'ORCHESTRATION_SQLITE_CONFLICT');
+  assert.deepEqual(await store.snapshot(), before);
+});
+
+test('Rust lifecycle transitions preserve active ownership and queue projection', async () => {
+  for (const action of ['started', 'releaseClaim', 'turnEnded']) {
+    for (const started of [null, 950]) {
+      const draft = { outbox: {}, sessionSchedules: { s: { sessionId: 's', state: 'starting',
+        active: { entryId: 'entry', deliveryId: 'entry', taskId: 'task', startedAt: started },
+        classifyState: 'W', freezeReason: 'waiting', awaitingRequestId: 'q', priorityEntryId: 'entry' } } };
+      const store = { mutate: async fn => fn(draft), read: async fn => fn(draft) };
+      const scheduler = createSessionWorkScheduler({ store, now: () => 1000 });
+      const item = { id: 'entry', sessionId: 's', attempts: 2 };
+      const result = action === 'turnEnded' ? await scheduler.turnEnded('s') : await scheduler[action](item);
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.schedule.queued, []);
+      const schedule = draft.sessionSchedules.s;
+      if (action === 'started') {
+        assert.equal(schedule.state, 'running');
+        assert.equal(schedule.active.startedAt, started || 1000);
+        assert.equal(schedule.active.attempt, 2);
+      } else if (action === 'releaseClaim' && !started) {
+        assert.equal(schedule.state, 'idle');
+        assert.equal(schedule.active, null);
+        assert.equal(schedule.priorityEntryId, null);
+      } else if (action === 'releaseClaim') {
+        assert.equal(schedule.state, 'frozen');
+        assert.equal(schedule.freezeReason, 'incomplete_requires_resume');
+      } else {
+        assert.equal(schedule.state, 'assessing');
+        assert.equal(schedule.classifyState, 'P');
+      }
+    }
+  }
+});
+
+test('Rust lifecycle transitions persist through SQLite draft proxies', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-lifecycle-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => 1000 });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'starting', active: { entryId: 'e', deliveryId: 'e', taskId: 't', startedAt: null }, classifyState: 'D' };
+    draft.outbox.q = { id: 'q', sessionId: 's', state: 'pending', sequence: 1, payload: { type: 'session.work', message: 'queued' } };
+    draft.outbox.q2 = { id: 'q2', sessionId: 's', state: 'pending', sequence: 2, payload: { type: 'session.work', message: 'old' } };
+  });
+  const scheduler = createSessionWorkScheduler({ store, now: () => 1000 });
+  assert.equal((await scheduler.started({ id: 'e', sessionId: 's', attempts: 2 })).schedule.state, 'running');
+  assert.equal((await store.snapshot()).sessionSchedules.s.active.startedAt, 1000);
+  assert.equal((await scheduler.turnEnded('s')).schedule.state, 'assessing');
+  assert.equal((await scheduler.freeze('s', 'awaiting_user_input', { requestId: 'q1' })).schedule.classifyState, 'W');
+  assert.equal((await scheduler.resolve('s', { action: 'skip' })).ok, true);
+  assert.equal((await store.snapshot()).sessionSchedules.s.active, null);
+  assert.equal((await scheduler.cancelQueued('s', 'q')).ok, true);
+  assert.equal((await scheduler.editQueued('s', 'q2', { text: 'new' })).edited.previous, 'old');
+  const final = await store.snapshot();
+  assert.equal(final.outbox.q.state, 'cancelled');
+  assert.equal(final.outbox.q2.payload.message, 'new');
+  assert.equal(final.sessionSchedules.s.lastDecision.action, 'skip');
+});
+
+test('Rust selection matches legacy decisions and lazy host fact reads', () => {
+  const states = ['D', 'W', 'B', 'E', 'P', null];
+  for (const classify of states) for (const active of [false, true]) {
+    for (const unattended of [false, true]) for (const hasPending of [false, true]) {
+      for (let variant = 0; variant < 12; variant++) {
+        const items = [
+          { id: 'first', sessionId: 's', sequence: 1, createdAt: 20, queueOrder: variant % 3 === 0 ? 4 : undefined,
+            directRun: variant % 4 === 0, blockedByUserInput: variant % 5 === 0 ? 'question' : undefined,
+            payload: { type: 'session.work', workKind: 'task', message: 'queued' } },
+          { id: 'second', sessionId: 's', sequence: 2, createdAt: 40,
+            userInputOverrideId: variant % 5 === 1 ? 'question' : undefined,
+            payload: { type: variant % 3 === 1 ? 'dispatch.result' : 'session.work',
+              workKind: variant % 3 === 0 ? 'answer' : 'continuation', requestId: 'question',
+              message: variant % 4 === 0 ? '🔇【无人值守】auto' : 'answer',
+              options: { unattendedRecovery: variant % 6 === 0 } } },
+          { id: 'third', sessionId: 's', sequence: 3, createdAt: 60,
+            payload: { type: 'wait.resolved', activeEntryId: variant % 2 ? 'active' : 'other' } },
+        ];
+        const schedule = { sessionId: 's', state: active ? 'running' : 'idle',
+          active: active ? { entryId: 'active', deliveryId: variant % 4 === 0 ? 'first' : 'other', taskId: 'task' } : null,
+          classifyState: 'D', priorityEntryId: variant % 5 === 2 ? 'third' : null,
+          awaitingRequestId: 'question' };
+        const draft = { sessionSchedules: { s: schedule } };
+        const results = [];
+        for (const factory of [legacyScheduler, createSessionWorkScheduler]) {
+          const calls = [];
+          const scheduler = factory({ store: { read() {}, mutate() {} },
+            getClassifyState: () => { calls.push('classify'); return classify; },
+            getPendingUserInput: () => { calls.push('pending'); return hasPending
+              ? { requestId: 'question', createdAt: 30 } : null; },
+            ...(unattended ? { getUnattendedState: () => { calls.push('unattended');
+              return { status: 'active', deadlineAt: 5000 }; } } : {}),
+          });
+          const selected = scheduler.selectSessionItem(items, draft, 1000);
+          results.push({ id: selected?.id ?? null, calls });
+        }
+        assert.deepEqual(results[1], results[0], JSON.stringify({ classify, active, unattended, hasPending, variant }));
+      }
+    }
+  }
+});
+
+test('Rust selection preserves lazy payload access and classify-time queue changes', () => {
+  const draft = { sessionSchedules: { s: { sessionId: 's', state: 'idle', active: null } } };
+  for (const factory of [legacyScheduler, createSessionWorkScheduler]) {
+    const payload = { type: 'session.work', workKind: 'task' };
+    Object.defineProperty(payload, 'options', { get() { throw Error('options accessed'); } });
+    const direct = { id: 'a', sessionId: 's', sequence: 1, directRun: true, payload };
+    const scheduler = factory({ store: { read() {}, mutate() {} }, getClassifyState: () => 'D' });
+    assert.equal(scheduler.selectSessionItem([direct], draft, 1), direct);
+
+    const first = { id: 'a', sessionId: 's', sequence: 1, payload: { type: 'session.work', workKind: 'task' } };
+    const second = { id: 'b', sessionId: 's', sequence: 2, payload: { type: 'session.work', workKind: 'task' } };
+    const changed = factory({ store: { read() {}, mutate() {} },
+      getClassifyState: () => { second.directRun = true; return 'W'; } });
+    assert.equal(changed.selectSessionItem([first, second], draft, 1), second);
+  }
+});
+
+test('Rust selection propagates the original exception from the sort comparator', () => {
+  const expected = new Error('id getter failed');
+  const a = { sessionId: 's', sequence: 1 };
+  const b = { sessionId: 's', sequence: 2 };
+  Object.defineProperty(a, 'id', { get() { throw expected; } });
+  const draft = { sessionSchedules: { s: { sessionId: 's', state: 'idle', active: null } } };
+  for (const factory of [legacyScheduler, createSessionWorkScheduler]) {
+    const scheduler = factory({ store: { read() {}, mutate() {} }, getClassifyState: () => 'D' });
+    assert.throws(() => scheduler.selectSessionItem([a, b], draft, 1), error => error === expected);
+  }
+});
 
 test('native queue views and recovery never enumerate historical outbox rows', async () => {
   const item = { id: 'queued-live', sessionId: 's1', state: 'pending', sequence: 1,

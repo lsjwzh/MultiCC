@@ -1347,12 +1347,12 @@ function handleProxyOutcome(event) {
   const outcome = providerAttemptRuntime.observeProxyOutcome(event);
   recoverModelTimeout({ event, outcome, chatSessions, chatStream });
   if (outcome.accepted && outcome.failure?.httpStatus === 429) {
-    limitRecorder.recordProviderFailure({
+    Promise.resolve(limitRecorder.recordProviderFailure({
       sessionId: event.sessionId,
       providerId: outcome.failure.providerId,
       category: 'rate_limit',
       httpStatus: 429, rejection: outcome.failure.rejection,
-    });
+    })).catch(() => {});
   }
 }
 const { createProxyBroadcasters } = require('./src/chat/proxy-broadcast');
@@ -1364,7 +1364,7 @@ const claudeEgressSupported = providerRouterRuntime.routerSupports('upstreamAgen
 if (!claudeEgressSupported) logger.error('claude_egress_router_outdated', { need: 'cli-provider-router >= 0.5.2 (CAPABILITIES.upstreamAgent)' });
 const claudeEgressResolver = claudeEgress.createClaudeEgressAgentResolver({ logger });
 providerRouterRuntime.mountProtocolProxies(app, {
-  protocols: ['claude'], authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, claudeProxy: { readOfficialCredential: claudeEgress.guardCredentialReader(arg => claudeAccountCredentials.readOfficialCredential(arg), { supported: claudeEgressSupported }), recoverOfficialCredential: (arg, token) => claudeAccountCredentials.recoverOfficialCredential(arg, token), resolveUpstreamAgent: claudeEgressResolver.resolveUpstreamAgent },
+  protocols: ['claude'], authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, authorizeProxyRequestAsync: providerAttemptRuntime.authorizeProxyRequestAsync, claudeProxy: { readOfficialCredential: claudeEgress.guardCredentialReader(arg => claudeAccountCredentials.readOfficialCredential(arg), { supported: claudeEgressSupported }), recoverOfficialCredential: (arg, token) => claudeAccountCredentials.recoverOfficialCredential(arg, token), resolveUpstreamAgent: claudeEgressResolver.resolveUpstreamAgent },
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
   onRejected: event => logger.warn('provider_proxy_route_rejected', event),
@@ -1379,7 +1379,7 @@ const codexProxyMounts = providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
   // 同一条线路级出口：Codex 上游拨号也要能从插件身份出去（键线路同样有 IP 被污染的风险）。
   codexProxy: { resolveUpstreamAgent: claudeEgressResolver.resolveUpstreamAgent },
-  getPort: () => PORT, authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, codexOfficialRelay: { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) }, // multi-account: providers marked settingsConfig.officialAccount resolve the account's own auth.json
+  getPort: () => PORT, authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, authorizeProxyRequestAsync: providerAttemptRuntime.authorizeProxyRequestAsync, codexOfficialRelay: { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) }, // per-account credentials
   onTransportRotate: event => { metrics.inc('multicc_provider_dispatcher_rotations_total'); logger.warn('provider_dispatcher_rotated', event); },
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
@@ -1613,7 +1613,7 @@ const cliSwitchRuntime = createCliSwitchRuntime({
   gitWorktreeSnapshot,
   cwdForSession,
   getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
-  cancelClassify, planAutoCliSwitch: args => chatTurnEngine.autoProviderRuntime.planTurn(args),
+  cancelClassify, planAutoCliSwitch: args => chatTurnEngine.autoProviderRuntime.planTurnAsync(args),
   pendingAutoCliSwitch: (id, cli) => chatTurnEngine.autoProviderRuntime.pendingCliSwitch(id, cli),
   clearAutoProviderSession: id => chatTurnEngine.autoProviderRuntime.clearSession(id),
   assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
@@ -2426,12 +2426,11 @@ const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions
     ? orchestrationRuntime.sessionScheduler.cancelQueued(id, entryId, { actor: 'unattended', reason: 'paused' })
     : { ok: false, code: 'scheduler_unavailable' }),
   triggerPush, chatBroadcast, logger, appendMessage: appendChatMessage, isRunActive: id => sessionWorkHost?.isRunActive(id) === true, hasQueuedDeliveries: id => (sessionWorkHost ? sessionWorkHost.hasQueuedDeliveries(id) : false),
-  // Auto-pool unblock hint for fault backoff. chatTurnEngine is created below;
-  // the port is only read when a turn ends, so the late binding is safe.
-  getRetryNotBefore: id => {
+  // Auto-pool unblock hint; chatTurnEngine is read after initialization.
+  getRetryNotBefore: async id => {
     const session = persistedSessions.get(id);
     if (!session) return null;
-    try { return chatTurnEngine.autoProviderRuntime.retryNotBefore(session); } catch (_) { return null; }
+    try { return await chatTurnEngine.autoProviderRuntime.retryNotBeforeAsync(session); } catch (_) { return null; }
   },
   getTaskState: id => getTaskState(persistedSessions.get(id)), getSchedulerStatus: id => (orchestrationRuntime ? orchestrationRuntime.sessionScheduler.status(id) : null), listSessionIds: () => [...persistedSessions.keys()] });
 sessionWorkHost = createSessionWorkHost({
@@ -2939,15 +2938,14 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   qwenAudioSupervisor,
   sessionHibernationRuntime,
 });
-shutdownCoordinator.onClose(async () => { await workspaceRuntime.close(); taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.()); shutdownCoordinator.onClose(() => providerQuotaHistory.close()); shutdownCoordinator.onClose(() => unattendedHost.shutdown());
+shutdownCoordinator.onClose(async () => { await workspaceRuntime.close(); taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.()); shutdownCoordinator.onClose(async () => { await providerLimitCache.close(); providerQuotaHistory.close(); }); shutdownCoordinator.onClose(() => unattendedHost.shutdown());
 // Terminal error handler: redacts next(err)/asyncHandler failures so clients cannot
 // fingerprint the filesystem. Registered LAST so everything falls here.
 app.use(safeErrorHandler(logger));
 
 (async () => {
-  // Do not accept API/WS traffic until legacy worktrees are migrated and tmux
-  // recovery has completed. The work itself is asynchronous, so this gates
-  // readiness without blocking timers or other event-loop work.
+  // Gate readiness on quota initialization and repository recovery.
+  await providerLimitCache.ready();
   await startupRepoReady;
   workspaceAdmission.initialize();
   await orchestrationRuntime.start();

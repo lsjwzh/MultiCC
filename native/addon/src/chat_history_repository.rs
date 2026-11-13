@@ -8,6 +8,7 @@ use crate::{
     node_fs_error,
 };
 use multicc_core::{
+    chat_history_index::{HistoryIndex, IndexError},
     js::{
         is_js_whitespace_char, json_parse, json_stringify_or_undefined, JsValue as J,
         JsValue as SemanticValue,
@@ -24,7 +25,7 @@ use std::{
     collections::HashMap,
     ffi::CStr,
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -195,6 +196,105 @@ pub struct DeliveryProbeJob {
     delivery_id: String,
 }
 
+/// Physical access only. The history service still owns normalization,
+/// visibility, projection and all mutations; this must not replace its cache.
+pub struct HistoryPhysicalPageJob {
+    root: PathBuf,
+    session_id: String,
+    start: u32,
+    end: u32,
+    byte_budget: u32,
+}
+
+#[napi(object)]
+pub struct HistoryPhysicalLedger {
+    pub len: u32,
+    pub bytes: f64,
+    pub ends: Vec<f64>,
+}
+
+#[napi(object)]
+pub struct HistoryPhysicalPage {
+    pub total: u32,
+    pub records: Vec<String>,
+    pub ledger: Option<HistoryPhysicalLedger>,
+}
+
+fn physical_index_error(error: IndexError) -> Error {
+    let code = match error {
+        IndexError::Io(_) => "HISTORY_INDEX_IO",
+        IndexError::Empty => "HISTORY_INDEX_EMPTY",
+        IndexError::LegacyArray => "HISTORY_INDEX_LEGACY_ARRAY",
+        IndexError::Corrupt(_) => "HISTORY_INDEX_CORRUPT",
+        IndexError::Changed => "HISTORY_INDEX_CHANGED",
+        IndexError::InvalidRange => "HISTORY_INDEX_INVALID_RANGE",
+        IndexError::ByteBudget => "HISTORY_INDEX_BYTE_BUDGET",
+    };
+    Error::from_reason(code)
+}
+
+impl Task for HistoryPhysicalPageJob {
+    type Output = HistoryPhysicalPage;
+    type JsValue = HistoryPhysicalPage;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        if self.end < self.start
+            || self.end - self.start > 100
+            || self.byte_budget > 16 * 1024 * 1024
+        {
+            return Err(Error::from_reason("HISTORY_INDEX_INVALID_RANGE"));
+        }
+        let path = probe_path(&self.root, &self.session_id);
+        let mut file =
+            File::open(&path).map_err(|error| physical_index_error(IndexError::Io(error)))?;
+        let index = {
+            let mut reader = BufReader::new(&mut file);
+            HistoryIndex::build(&mut reader).map_err(physical_index_error)?
+        };
+        let records = index
+            .read_range(
+                &mut file,
+                self.start as usize,
+                self.end as usize,
+                u64::from(self.byte_budget),
+            )
+            .map_err(physical_index_error)?;
+        let ledger = index
+            .tail_ledger(&mut file, 64)
+            .map_err(physical_index_error)?
+            .map(|ledger| -> Result<HistoryPhysicalLedger> {
+                if ledger.bytes > 9_007_199_254_740_991 {
+                    return Err(Error::from_reason("HISTORY_INDEX_TOO_LARGE"));
+                }
+                Ok(HistoryPhysicalLedger {
+                    len: u32::try_from(ledger.len)
+                        .map_err(|_| Error::from_reason("HISTORY_INDEX_TOO_LARGE"))?,
+                    bytes: ledger.bytes as f64,
+                    ends: ledger.ends.into_iter().map(|end| end as f64).collect(),
+                })
+            })
+            .transpose()?;
+        // A same-size atomic replacement may leave the opened descriptor on an
+        // old inode. Verify the current pathname too, before returning bytes.
+        let mut current =
+            File::open(&path).map_err(|_| physical_index_error(IndexError::Changed))?;
+        index.verify(&mut current).map_err(physical_index_error)?;
+        Ok(HistoryPhysicalPage {
+            total: u32::try_from(index.len())
+                .map_err(|_| Error::from_reason("HISTORY_INDEX_TOO_LARGE"))?,
+            records: records
+                .into_iter()
+                .map(|line| String::from_utf8_lossy(&line).into_owned())
+                .collect(),
+            ledger,
+        })
+    }
+
+    fn resolve(&mut self, _: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 fn probe_path(root: &Path, session_id: &str) -> PathBuf {
     let safe: String = session_id
         .encode_utf16()
@@ -273,8 +373,11 @@ pub struct HistoryWriteResult {
 #[napi(object)]
 pub struct HistoryAppendResult {
     pub error: Option<HistoryWriteError>,
-    /// false = 文件与账本错位（或文件不存在于非零起点），调用方整份重发。
+    /// false = 未写入；conflict 标记现有文件与账本不一致。
     pub appended: bool,
+    /// The file exists but no longer has the size of the committed snapshot.
+    /// A stale snapshot must never be resent over that file.
+    pub conflict: bool,
     pub bytes: Option<f64>,
     pub ends: Option<Vec<f64>>,
 }
@@ -517,6 +620,32 @@ pub struct HistoryWriteJob {
     can_append: bool,
 }
 
+// A full-snapshot write must compare the existing prefix, but keeping a second
+// whole-file copy can double native peak memory on long transcripts. Continue
+// reading after a mismatch so later I/O errors retain their existing behavior.
+fn matches_existing_prefix(file: &mut File, snapshot: &[u8]) -> std::io::Result<(u64, bool)> {
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut bytes = 0_u64;
+    let mut matches = true;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            return Ok((bytes, matches));
+        }
+        let start = bytes;
+        bytes = bytes.checked_add(count as u64).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "history file too large")
+        })?;
+        if matches {
+            matches = usize::try_from(start)
+                .ok()
+                .zip(usize::try_from(bytes).ok())
+                .and_then(|(start, end)| snapshot.get(start..end))
+                .is_some_and(|expected| expected == &buffer[..count]);
+        }
+    }
+}
+
 impl Task for HistoryWriteJob {
     type Output = HistoryWriteResult;
     type JsValue = HistoryWriteResult;
@@ -534,17 +663,16 @@ impl Task for HistoryWriteJob {
             Ok(parsed) => parsed,
             Err(error) => return failure(error),
         };
-        let (existing, target_exists) = match File::open(&target) {
-            Ok(mut file) => {
-                let mut value = Vec::new();
-                if let Err(error) = file.read_to_end(&mut value) {
+        let (existing_bytes, prefix_matches, target_exists) = match File::open(&target) {
+            Ok(mut file) => match matches_existing_prefix(&mut file, &bytes) {
+                Ok((length, matches)) => (length, matches, true),
+                Err(error) => {
                     return failure(
                         io_write_error(error, "read", None, None).reported("atomic_write", &target),
-                    );
+                    )
                 }
-                (value, true)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), false),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, false, false),
             Err(error) => {
                 return failure(
                     io_write_error(error, "open", Some(&target), None)
@@ -564,9 +692,8 @@ impl Task for HistoryWriteJob {
         };
         // A new or empty target has no shared durable prefix. Appending there
         // could expose a partially-created transcript, so use the atomic rewrite.
-        if self.can_append && target_exists && !existing.is_empty() && bytes.starts_with(&existing)
-        {
-            let suffix = &bytes[existing.len()..];
+        if self.can_append && target_exists && existing_bytes > 0 && prefix_matches {
+            let suffix = &bytes[existing_bytes as usize..];
             let mut options = OpenOptions::new();
             options.append(true).write(true);
             #[cfg(unix)]
@@ -616,7 +743,7 @@ impl Task for HistoryWriteJob {
 
 /// 尾部增量写：宿主已用恒等前缀比较算出共享前缀，这里只做字节级复核
 /// （expected_bytes 必须等于文件现状）后追加尾巴；替换现有尾部时回退原子写。
-/// 复核失败不报错——回 appended=false 让宿主整份重发，一次自愈。
+/// 现存文件尺寸不符时标记冲突；调用方不得用旧快照覆盖它。
 pub struct HistoryAppendJob {
     root: PathBuf,
     session_id: String,
@@ -634,6 +761,7 @@ impl Task for HistoryAppendJob {
             Ok(HistoryAppendResult {
                 error: Some(error),
                 appended: false,
+                conflict: false,
                 bytes: None,
                 ends: None,
             })
@@ -642,6 +770,16 @@ impl Task for HistoryAppendJob {
             Ok(HistoryAppendResult {
                 error: None,
                 appended: false,
+                conflict: false,
+                bytes: None,
+                ends: None,
+            })
+        };
+        let conflict = || -> Result<HistoryAppendResult> {
+            Ok(HistoryAppendResult {
+                error: None,
+                appended: false,
+                conflict: true,
                 bytes: None,
                 ends: None,
             })
@@ -655,6 +793,7 @@ impl Task for HistoryAppendJob {
             Ok(HistoryAppendResult {
                 error: None,
                 appended: true,
+                conflict: false,
                 bytes: Some(bytes as f64),
                 ends: Some(ends.iter().map(|end| *end as f64).collect()),
             })
@@ -702,7 +841,7 @@ impl Task for HistoryAppendJob {
             }
         };
         if len != self.expected_bytes || self.keep_bytes > len {
-            return refused();
+            return conflict();
         }
         if self.keep_bytes < len {
             // Clone extents and replace the tail in the private sibling, then
@@ -814,6 +953,7 @@ fn probe_transcript(body: &str, delivery_id: &str) -> std::result::Result<bool, 
     }
     let line_count = lines.len();
     let mut parsed_count = 0usize;
+    let mut found = false;
     for (index, line) in lines.into_iter().enumerate() {
         if line.chars().all(is_js_whitespace_char) {
             continue;
@@ -839,11 +979,289 @@ fn probe_transcript(body: &str, delivery_id: &str) -> std::result::Result<bool, 
             )));
         }
         parsed_count += 1;
-        if probe_value(&value, delivery_id) == Some(true) {
-            return Ok(true);
+        found |= probe_value(&value, delivery_id) == Some(true);
+    }
+    Ok(found)
+}
+
+enum LegacyScanError {
+    Io(std::io::Error),
+    Napi(Error),
+    Invalid,
+    TooLarge,
+}
+
+impl From<std::io::Error> for LegacyScanError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+// Identify the first non-JS-whitespace character without reading a giant
+// one-line legacy array into memory. The caller rewinds before parsing.
+fn starts_with_array(reader: &mut BufReader<File>) -> std::io::Result<bool> {
+    let result = (|| loop {
+        let mut first = [0_u8; 1];
+        if reader.read(&mut first)? == 0 {
+            return Ok(false);
+        }
+        let byte = first[0];
+        if byte.is_ascii() {
+            if is_js_whitespace_char(char::from(byte)) {
+                continue;
+            }
+            return Ok(byte == b'[');
+        }
+        let width = match byte {
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => return Ok(false),
+        };
+        let mut encoded = [0_u8; 4];
+        encoded[0] = byte;
+        match reader.read_exact(&mut encoded[1..width]) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(error),
+        }
+        match std::str::from_utf8(&encoded[..width])
+            .ok()
+            .and_then(|s| s.chars().next())
+        {
+            Some(ch) if is_js_whitespace_char(ch) => continue,
+            _ => return Ok(false),
+        }
+    })();
+    reader.seek(SeekFrom::Start(0))?;
+    result
+}
+
+fn legacy_array_scan(
+    reader: &mut BufReader<File>,
+    mut on_value: impl FnMut(&str, &SemanticValue) -> std::result::Result<(), LegacyScanError>,
+) -> std::result::Result<(), LegacyScanError> {
+    use std::io::Bytes;
+    use std::iter::Peekable;
+    fn whitespace(
+        bytes: &mut Peekable<Bytes<&mut BufReader<File>>>,
+    ) -> std::result::Result<(), LegacyScanError> {
+        loop {
+            match bytes.peek() {
+                Some(Ok(b' ' | b'\n' | b'\r' | b'\t')) => {
+                    bytes.next();
+                }
+                Some(Err(_)) => {
+                    return Err(LegacyScanError::Io(bytes.next().unwrap().unwrap_err()))
+                }
+                _ => return Ok(()),
+            }
         }
     }
-    Ok(false)
+    fn next(
+        bytes: &mut Peekable<Bytes<&mut BufReader<File>>>,
+    ) -> std::result::Result<u8, LegacyScanError> {
+        bytes
+            .next()
+            .ok_or(LegacyScanError::Invalid)?
+            .map_err(LegacyScanError::Io)
+    }
+    let mut bytes = reader.bytes().peekable();
+    if matches!(bytes.peek(), Some(Ok(0xef)))
+        && (next(&mut bytes)? != 0xef || next(&mut bytes)? != 0xbb || next(&mut bytes)? != 0xbf)
+    {
+        return Err(LegacyScanError::Invalid);
+    }
+    whitespace(&mut bytes)?;
+    if next(&mut bytes)? != b'[' {
+        return Err(LegacyScanError::Invalid);
+    }
+    let mut first = true;
+    loop {
+        whitespace(&mut bytes)?;
+        if matches!(bytes.peek(), Some(Ok(b']'))) {
+            if !first {
+                return Err(LegacyScanError::Invalid);
+            }
+            bytes.next();
+            break;
+        }
+        let mut entry = Vec::new();
+        let mut depth = 0usize;
+        let mut quoted = false;
+        let mut escaped = false;
+        loop {
+            let byte = match bytes.peek() {
+                Some(Ok(byte)) => *byte,
+                Some(Err(_)) => {
+                    return Err(LegacyScanError::Io(bytes.next().unwrap().unwrap_err()))
+                }
+                None => return Err(LegacyScanError::Invalid),
+            };
+            if !quoted && depth == 0 && (byte == b',' || byte == b']') {
+                break;
+            }
+            next(&mut bytes)?;
+            entry.push(byte);
+            if entry.len() as u64 > multicc_core::chat_history_index::MAX_INDEX_RECORD_BYTES {
+                return Err(LegacyScanError::TooLarge);
+            }
+            if quoted {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    quoted = false;
+                }
+            } else {
+                match byte {
+                    b'"' => quoted = true,
+                    b'[' | b'{' => depth += 1,
+                    b']' | b'}' if depth > 0 => depth -= 1,
+                    _ => {}
+                }
+            }
+        }
+        let source = String::from_utf8_lossy(&entry);
+        let value = json_parse(&source).map_err(|_| LegacyScanError::Invalid)?;
+        on_value(&source, &value)?;
+        match next(&mut bytes)? {
+            b']' => break,
+            b',' => first = false,
+            _ => return Err(LegacyScanError::Invalid),
+        }
+    }
+    whitespace(&mut bytes)?;
+    match bytes.next() {
+        None => Ok(()),
+        Some(Err(error)) => Err(LegacyScanError::Io(error)),
+        Some(Ok(_)) => Err(LegacyScanError::Invalid),
+    }
+}
+
+// Same napi-boundary error type as `probe_transcript`; see the note there.
+#[allow(clippy::result_large_err)]
+fn probe_legacy_array(
+    reader: &mut BufReader<File>,
+    delivery_id: &str,
+) -> std::result::Result<bool, HistoryProbeError> {
+    let mut found = false;
+    match legacy_array_scan(reader, |_, value| {
+        found |= probe_value(value, delivery_id) == Some(true);
+        Ok(())
+    }) {
+        Ok(()) => Ok(found),
+        Err(LegacyScanError::Io(error)) => Err(io_probe(error, "read", None)),
+        Err(LegacyScanError::Napi(_)) => unreachable!("the probe callback does not use N-API"),
+        Err(LegacyScanError::TooLarge) => Err(probe_error(
+            "Error",
+            "[session] legacy history record exceeds the read budget".to_string(),
+            "CHAT_HISTORY_RECORD_TOO_LARGE",
+            None,
+            None,
+            None,
+        )),
+        Err(LegacyScanError::Invalid) => {
+            reader
+                .seek(SeekFrom::Start(0))
+                .map_err(|error| io_probe(error, "read", None))?;
+            let mut bytes = Vec::new();
+            reader
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|error| io_probe(error, "read", None))?;
+            if bytes.len() > 1024 * 1024 {
+                return Err(probe_error(
+                    "SyntaxError",
+                    "[session] legacy history is not valid JSON".to_string(),
+                    "CHAT_HISTORY_CORRUPT",
+                    None,
+                    None,
+                    None,
+                ));
+            }
+            probe_transcript(&String::from_utf8_lossy(&bytes), delivery_id)
+        }
+    }
+}
+
+// JSONL is scanned one record at a time. A match is only returned after the
+// entire file has been validated: a later corrupt record must not become a
+// false durable-delivery proof. Legacy arrays are scanned one value at a time.
+#[allow(clippy::result_large_err)]
+fn probe_file(file: File, delivery_id: &str) -> std::result::Result<bool, HistoryProbeError> {
+    let mut reader = BufReader::new(file);
+    if starts_with_array(&mut reader).map_err(|error| io_probe(error, "read", None))? {
+        return probe_legacy_array(&mut reader, delivery_id);
+    }
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
+    let mut parsed_count = 0usize;
+    let mut found = false;
+    let mut started = false;
+    loop {
+        line.clear();
+        let count = (&mut reader)
+            .take(multicc_core::chat_history_index::MAX_INDEX_RECORD_BYTES + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|error| io_probe(error, "read", None))?;
+        if count == 0 {
+            break;
+        }
+        if count as u64 > multicc_core::chat_history_index::MAX_INDEX_RECORD_BYTES {
+            return Err(probe_error(
+                "Error",
+                "[session] history record exceeds the read budget".to_string(),
+                "CHAT_HISTORY_RECORD_TOO_LARGE",
+                None,
+                None,
+                None,
+            ));
+        }
+        line_number += 1;
+        let complete = line.last() == Some(&b'\n');
+        if complete {
+            line.pop();
+        }
+        let text = String::from_utf8_lossy(&line);
+        let text = if line_number == 1 {
+            text.strip_prefix('\u{feff}').unwrap_or(&text)
+        } else {
+            &text
+        };
+        let first = text.chars().find(|ch| !is_js_whitespace_char(*ch));
+        if !started && first.is_some() {
+            started = true;
+        }
+        if first.is_none() {
+            continue;
+        }
+        let torn = !complete && parsed_count > 0;
+        let value = match json_parse(text) {
+            Ok(value) => value,
+            Err(_) if torn => break,
+            Err(_) => {
+                return Err(corrupt_probe(&format!(
+                    "chat history line {line_number} is not valid JSON"
+                )))
+            }
+        };
+        if !matches!(value, SemanticValue::Object(_)) {
+            if torn {
+                break;
+            }
+            return Err(corrupt_probe(&format!(
+                "chat history line {line_number} is not a message object"
+            )));
+        }
+        parsed_count += 1;
+        found |= probe_value(&value, delivery_id) == Some(true);
+    }
+    if !started {
+        return Err(corrupt_probe("chat history file is empty"));
+    }
+    Ok(found)
 }
 
 impl Task for DeliveryProbeJob {
@@ -852,7 +1270,7 @@ impl Task for DeliveryProbeJob {
 
     fn compute(&mut self) -> Result<HistoryProbeResult> {
         let path = probe_path(&self.root, &self.session_id);
-        let mut file = match File::open(&path) {
+        let file = match File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(HistoryProbeResult {
@@ -867,15 +1285,7 @@ impl Task for DeliveryProbeJob {
                 })
             }
         };
-        let mut bytes = Vec::new();
-        if let Err(error) = file.read_to_end(&mut bytes) {
-            return Ok(HistoryProbeResult {
-                found: false,
-                error: Some(io_probe(error, "read", None)),
-            });
-        }
-        let body = String::from_utf8_lossy(&bytes);
-        match probe_transcript(&body, &self.delivery_id) {
+        match probe_file(file, &self.delivery_id) {
             Ok(found) => Ok(HistoryProbeResult { found, error: None }),
             Err(error) => Ok(HistoryProbeResult {
                 found: false,
@@ -1218,14 +1628,134 @@ impl<'a> Repository<'a> {
         }
         Ok(())
     }
-    fn read_strict(&self, session: L<'a>, allow_empty: bool) -> Result<L<'a>> {
+    // Results are rooted in `messages`; all transient N-API handles disappear
+    // after each row instead of retaining a second full transcript in V8.
+    fn parse_row(
+        &self,
+        messages: L<'a>,
+        line: &str,
+        object_only: bool,
+        canonicalize: bool,
+    ) -> Result<u8> {
+        let mut scope = std::ptr::null_mut();
+        napi::check_status!(unsafe { sys::napi_open_handle_scope(self.anchor.env(), &mut scope) })?;
+        let parsed = (|| -> Result<u8> {
+            let mut value = match self
+                .anchor
+                .catch(|| json(text(self.anchor, line)?, c"parse"))?
+            {
+                Some(value) => value,
+                None => return Ok(0),
+            };
+            if object_only
+                && (!value.truthy()?
+                    || value.kind()? != sys::ValueType::napi_object
+                    || value.is_array()?)
+            {
+                return Ok(1);
+            }
+            if canonicalize {
+                value = json(json(value, c"stringify")?, c"parse")?;
+            }
+            method(messages, c"push", &[value])?;
+            Ok(2)
+        })();
+        napi::check_status!(unsafe { sys::napi_close_handle_scope(self.anchor.env(), scope) })?;
+        parsed
+    }
+    fn read_strict(&self, session: L<'a>, allow_empty: bool, canonicalize: bool) -> Result<L<'a>> {
         let path = self.path_for(session, false)?;
-        let body = self.read_text(&path)?;
-        let body = text(self.anchor, &body)?;
-        if allow_empty && !method(body, c"trim", &[])?.truthy()? {
-            return array(self.anchor);
+        let file =
+            File::open(&path).map_err(|error| self.throw_io(error, "open", Some(&path), None))?;
+        let mut reader = BufReader::new(file);
+        if starts_with_array(&mut reader)
+            .map_err(|error| self.throw_io(error, "read", None, None))?
+        {
+            let messages = array(self.anchor)?;
+            match legacy_array_scan(&mut reader, |source, _| {
+                match self
+                    .parse_row(messages, source, false, canonicalize)
+                    .map_err(LegacyScanError::Napi)?
+                {
+                    2 => Ok(()),
+                    _ => Err(LegacyScanError::Invalid),
+                }
+            }) {
+                Ok(()) => return Ok(messages),
+                Err(LegacyScanError::Io(error)) => {
+                    return Err(self.throw_io(error, "read", None, None))
+                }
+                Err(LegacyScanError::Napi(error)) => return Err(error),
+                // Preserve exact JS syntax errors and unusually large legacy
+                // records through the existing full parser; never discard them.
+                Err(LegacyScanError::Invalid | LegacyScanError::TooLarge) => {
+                    reader
+                        .seek(SeekFrom::Start(0))
+                        .map_err(|error| self.throw_io(error, "read", None, None))?;
+                    let mut bytes = Vec::new();
+                    reader
+                        .read_to_end(&mut bytes)
+                        .map_err(|error| self.throw_io(error, "read", None, None))?;
+                    let parsed =
+                        parse_transcript(text(self.anchor, &String::from_utf8_lossy(&bytes))?)?;
+                    return if canonicalize {
+                        json(json(parsed, c"stringify")?, c"parse")
+                    } else {
+                        Ok(parsed)
+                    };
+                }
+            }
         }
-        parse_transcript(body)
+        let messages = array(self.anchor)?;
+        let mut line = Vec::new();
+        let mut line_number = 0usize;
+        let mut parsed_count = 0usize;
+        let mut started = false;
+        loop {
+            line.clear();
+            let count = reader
+                .read_until(b'\n', &mut line)
+                .map_err(|error| self.throw_io(error, "read", None, None))?;
+            if count == 0 {
+                break;
+            }
+            line_number += 1;
+            let complete = line.last() == Some(&b'\n');
+            if complete {
+                line.pop();
+            }
+            let line = String::from_utf8_lossy(&line);
+            let line = if line_number == 1 {
+                line.strip_prefix('\u{feff}').unwrap_or(&line)
+            } else {
+                &line
+            };
+            if line.chars().all(is_js_whitespace_char) {
+                continue;
+            }
+            started = true;
+            let torn = !complete && parsed_count > 0;
+            match self.parse_row(messages, line, true, canonicalize)? {
+                2 => parsed_count += 1,
+                _ if torn => break,
+                0 => {
+                    return Err(corrupt(
+                        self.anchor,
+                        &format!("chat history line {line_number} is not valid JSON"),
+                    )?)
+                }
+                _ => {
+                    return Err(corrupt(
+                        self.anchor,
+                        &format!("chat history line {line_number} is not a message object"),
+                    )?)
+                }
+            }
+        }
+        if !started && !allow_empty {
+            return Err(corrupt(self.anchor, "chat history file is empty")?);
+        }
+        Ok(messages)
     }
     fn read_visibility(&self, session: L<'a>) -> Result<L<'a>> {
         let path = self.path_for(session, true)?;
@@ -1333,7 +1863,7 @@ impl<'a> Repository<'a> {
         if !delivery.truthy()? {
             return Ok(false);
         }
-        let messages = match self.read_strict(session, false) {
+        let messages = match self.read_strict(session, false, false) {
             Ok(messages) => messages,
             Err(error) => {
                 let error = caught(self.anchor, error)?;
@@ -1392,10 +1922,14 @@ impl<'a> Repository<'a> {
         let result = match action {
             "fileFor" => self.file(session, false)?,
             "visibilityFileFor" => self.file(session, true)?,
-            "readStrict" => self.read_strict(session, value.truthy()?)?,
+            "readStrict" => self.read_strict(session, value.truthy()?, false)?,
             "read" => self
                 .anchor
-                .catch(|| self.read_strict(session, false))?
+                .catch(|| self.read_strict(session, false, false))?
+                .unwrap_or(array(session)?),
+            "readOwned" => self
+                .anchor
+                .catch(|| self.read_strict(session, false, true))?
                 .unwrap_or(array(session)?),
             "readVisibility" => self.read_visibility(session)?,
             "writeVisibility" => {
@@ -1454,6 +1988,32 @@ impl RustChatHistoryRepository {
             session_id,
             delivery_id,
         })
+    }
+    #[napi]
+    pub fn read_physical_range_async(
+        &self,
+        session_id: String,
+        start: f64,
+        end: f64,
+        byte_budget: f64,
+    ) -> Result<AsyncTask<HistoryPhysicalPageJob>> {
+        let integer = |value: f64| -> Result<u32> {
+            if !value.is_finite()
+                || value < 0.0
+                || value > f64::from(u32::MAX)
+                || value.fract() != 0.0
+            {
+                return Err(Error::from_reason("HISTORY_INDEX_INVALID_RANGE"));
+            }
+            Ok(value as u32)
+        };
+        Ok(AsyncTask::new(HistoryPhysicalPageJob {
+            root: self.root.clone(),
+            session_id,
+            start: integer(start)?,
+            end: integer(end)?,
+            byte_budget: integer(byte_budget)?,
+        }))
     }
     #[napi]
     pub fn write_async(

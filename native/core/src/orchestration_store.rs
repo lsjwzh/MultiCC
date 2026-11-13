@@ -2,10 +2,15 @@
 //! The compatibility host holds transaction-local proxies; SQLite is authority.
 mod activity;
 mod legacy;
+mod operation_admit;
+mod operation_running;
+mod outbox_recover;
 mod query;
 mod receipts;
 mod record;
+mod schedule_settle;
 mod schema;
+mod wait_cancel;
 
 use crate::js::{from_serde, json_stringify};
 use crate::orchestration_retention::{self, MaintenanceGuard, RetentionPolicy};
@@ -19,6 +24,31 @@ use std::{
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const COLLECTIONS: [&str; 5] = ["waits", "outbox", "operations", "tasks", "sessionSchedules"];
+
+fn claim_metadata(connection: &Connection) -> Result<Value> {
+    let input = json!({"collection":"outbox","options":{
+        "where":{"state":{"$nin":["delivered","dead-letter","cancelled"]}},
+        "fields":["id","sessionId","state","sequence","availableAt","leasedUntil","attempts"]
+    }});
+    let mut result = query::select(connection, &input, "selectKeyed")?;
+    let keys = result["keys"]
+        .as_array()
+        .ok_or_else(|| err("claim metadata keys missing"))?;
+    let rows = result["rowsJson"]
+        .as_array()
+        .ok_or_else(|| err("claim metadata rows missing"))?;
+    let mut leased = Vec::new();
+    for (key, raw) in keys.iter().zip(rows) {
+        let raw = raw
+            .as_str()
+            .ok_or_else(|| err("claim metadata row invalid"))?;
+        if record::parse(raw)?.get("state") == Some(&crate::js::JsValue::string("leased")) {
+            leased.push(key.clone());
+        }
+    }
+    result["leasedKeys"] = json!(leased);
+    Ok(result)
+}
 pub(super) fn err(e: impl std::fmt::Display) -> String {
     format!("ORCHESTRATION_SQLITE_ERROR:{e}")
 }
@@ -340,6 +370,7 @@ pub struct Store {
     file: PathBuf,
     guard: Option<MaintenanceGuard>,
     active: bool,
+    snapshot_data_version: Option<i64>,
     pending: bool,
     redacted: bool,
     policy: RetentionPolicy,
@@ -406,6 +437,7 @@ impl Store {
             file,
             guard: Some(guard),
             active: false,
+            snapshot_data_version: None,
             pending: false,
             redacted: false,
             policy,
@@ -440,6 +472,7 @@ impl Store {
         }
         self.active = false;
         self.pending = false;
+        self.snapshot_data_version = None;
         Ok(())
     }
     fn inspect(&mut self, input: &Value) -> Result<Value> {
@@ -521,11 +554,18 @@ impl Store {
         }
     }
     fn prepare(&mut self, input: &Value) -> Result<Value> {
+        let snapshot_data_version = self.snapshot_data_version;
         self.end()?;
         self.conn()?.execute_batch("BEGIN IMMEDIATE").map_err(err)?;
         self.pending = true;
         let actual = meta(self.conn()?, "revision")?;
-        if actual.as_f64() != input["expectedRevision"].as_f64() {
+        let data_version: i64 = self
+            .conn()?
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .map_err(err)?;
+        if actual.as_f64() != input["expectedRevision"].as_f64()
+            || snapshot_data_version.is_some_and(|version| version != data_version)
+        {
             self.end()?;
             self.add("conflicts_total", 1.0);
             return Err(format!(
@@ -599,8 +639,13 @@ impl Store {
             "info" => Ok(json!({"state":header(self.conn()?)?,"migration":self.migration})),
             "begin" => {
                 self.end()?;
+                let data_version = self
+                    .conn()?
+                    .query_row("PRAGMA data_version", [], |row| row.get(0))
+                    .map_err(err)?;
                 self.conn()?.execute_batch("BEGIN").map_err(err)?;
                 self.active = true;
+                self.snapshot_data_version = Some(data_version);
                 header(self.conn()?)
             }
             "end" => {
@@ -610,6 +655,58 @@ impl Store {
             "inspect" => self.inspect(input),
             "keys" => self.keys(input),
             "materialize" => self.materialize(input),
+            "claimMetadata" => {
+                if !self.active {
+                    return Err(err("claim metadata requires a read transaction"));
+                }
+                claim_metadata(self.conn()?)
+            }
+            "waitCancelCheck" => wait_cancel::check(self.conn()?, input),
+            "scheduleSettlePlan" => schedule_settle::plan(self.conn()?, input),
+            "scheduleSettleCommit" => {
+                let result = schedule_settle::commit(self, input);
+                if result.is_err() {
+                    let _ = self.end();
+                }
+                result
+            }
+            "operationAdmitPlan" => {
+                let result = operation_admit::plan(self, input);
+                if result.is_err() {
+                    let _ = self.end();
+                }
+                result
+            }
+            "operationAdmit" => {
+                let result = operation_admit::commit(self, input);
+                if result.is_err() {
+                    let _ = self.end();
+                }
+                result
+            }
+            "operationRunningPlan" => operation_running::plan(self.conn()?, input),
+            "outboxRecoverPlan" => outbox_recover::plan(self.conn()?, input),
+            "outboxRecoverCommit" => {
+                let result = outbox_recover::commit(self, input);
+                if result.is_err() {
+                    let _ = self.end();
+                }
+                result
+            }
+            "operationRunningCommit" => {
+                let result = operation_running::commit(self, input);
+                if result.is_err() {
+                    let _ = self.end();
+                }
+                result
+            }
+            "waitCancelCommit" => {
+                let result = wait_cancel::commit(self, input);
+                if result.is_err() {
+                    let _ = self.end();
+                }
+                result
+            }
             "select" | "selectKeys" | "count" => {
                 let result = query::select(self.conn()?, input, op)?;
                 self.add("materialized_bytes_total", encode(&result)?.len() as f64);
@@ -686,12 +783,20 @@ impl Store {
                 })?;
                 receipts::compact(self.conn()?, limit)
             }
-            "close" => {
+            "close" | "closeShared" => {
                 let mut result = self.end();
                 if let Some(connection) = self.connection.take() {
-                    let checkpoint = connection
-                        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
-                        .map_err(err);
+                    // Another session in the same owner may hold a read
+                    // snapshot. TRUNCATE would wait for that session while the
+                    // serial owner cannot service its next command. The last
+                    // session still performs the ordinary close checkpoint.
+                    let checkpoint = if op == "close" {
+                        connection
+                            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                            .map_err(err)
+                    } else {
+                        Ok(())
+                    };
                     let close = connection.close().map_err(|(_, e)| err(e));
                     result = result.and(checkpoint).and(close);
                 }

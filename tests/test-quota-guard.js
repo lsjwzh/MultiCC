@@ -195,6 +195,35 @@ test('a missing cache entry is not a verdict', () => {
     .check({ providerId: 'claude-official-abc' }).blocked, false);
 });
 
+test('asynchronous cache reads are awaited and a synchronous caller fails closed', async () => {
+  const cache = { get: async () => entry([window('5h', 99, NOW + HOUR)]) };
+  const instance = guard(cache);
+  const input = { appType: 'claude', providerId: 'claude-official-abc' };
+  assert.equal(instance.check(input).reason, 'async_cache_read_required');
+  const verdict = await instance.checkAsync(input);
+  assert.equal(verdict.blocked, true);
+  assert.equal(verdict.kind, 'five_hour');
+});
+
+test('async auto selection reads one committed snapshot before choosing a line', async () => {
+  const ids = ['claude-official-guarded', 'claude-official-roomy'];
+  const entries = {
+    'claude:claude-official-guarded': entry([window('5h', 99, NOW + HOUR)]),
+    'claude:claude-official-roomy': entry([window('5h', 20, NOW + HOUR)]),
+  };
+  let reads = 0;
+  const cache = { snapshot: async () => { reads += 1; return { entries }; }, get: () => { throw new Error('unexpected sync read'); } };
+  const runtime = createAutoProviderRuntime({ providers: catalog(ids), now: () => NOW,
+    providerLimitCache: cache, quotaGuard: guard(cache), emit: () => {}, hasLiveBackgroundTasks: () => false });
+  const session = { id: 'async-s', cli: 'claude', providerSelection: {
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+    candidates: [{ providerId: ids[0], priority: 1 }, { providerId: ids[1], priority: 2 }],
+  } };
+  const turn = await runtime.beginTurnAsync({ session, turnId: 'async-t', promptText: 'hi' });
+  assert.equal(reads, 1);
+  assert.equal(turn.initial().providerId, ids[1]);
+});
+
 // ── proxy admission: the one place every inference request passes ────────────
 
 function attemptRuntime(quotaGuard) {

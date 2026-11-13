@@ -7,6 +7,7 @@
 
 const nodeFs = require('fs');
 const nodePath = require('path');
+const { invokeNativeCommand, commandEnvelope } = require('./native-command');
 
 const SCHEMA_VERSION = 3;
 let tempCounter = 0;
@@ -258,6 +259,30 @@ function createOrchestrationStore({
     return enqueue(() => applyMutation(mutator));
   }
 
+  // A fixed Rust command owns its state transition. Its result is enveloped so
+  // the queue never assimilates arbitrary `then` properties before commit.
+  function runNativeCommandSync(name, ...args) {
+    return enqueue(() => {
+      const before = JSON.stringify(state);
+      const draft = cloneJson(state);
+      const value = invokeNativeCommand(name, draft, args, state);
+      validateState(draft, file);
+      if (JSON.stringify(draft) !== before) {
+        draft.revision = state.revision + 1;
+        draft.updatedAt = Number(now());
+        validateState(draft, file);
+        try {
+          writeAtomic({ fsImpl, pathImpl, file, state: draft, now, hooks });
+          state = deepFreeze(draft);
+        } catch (error) {
+          state = deepFreeze(loadState({ fsImpl, file }));
+          throw error;
+        }
+      }
+      return commandEnvelope(value);
+    });
+  }
+
   async function mutateIf(predicate, mutator, skippedResult) {
     if (typeof predicate !== 'function' || typeof mutator !== 'function') {
       throw new TypeError('[orchestration-store] mutateIf requires predicate and mutator functions');
@@ -291,6 +316,7 @@ function createOrchestrationStore({
     file,
     mutate,
     mutateIf,
+    runNativeCommandSync,
     read,
     snapshot: () => read(),
     flush: () => tail,

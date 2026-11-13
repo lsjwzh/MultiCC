@@ -92,7 +92,7 @@ function createAutoProviderRouting(options = {}) {
     return { selection: validated.value, routing: validated.value.routing };
   }
 
-  function prepareTurn({ session, text, providers, context } = {}) {
+  function prepareTurn({ session, text, providers, context, limitEntries = null } = {}) {
     let scope = null;
     try { scope = routingFor(session, providers); } catch (error) {
       logger.warn?.('auto_provider_routing_prepare_failed', {
@@ -110,7 +110,7 @@ function createAutoProviderRouting(options = {}) {
     let tiers = routing.tiers;
     if (routing.tiering === 'price') {
       try {
-        tiers = resolveLadder ? resolveLadder({ session, selection: scope.selection, providers }) : [];
+        tiers = resolveLadder ? resolveLadder({ session, selection: scope.selection, providers, limitEntries }) : [];
       } catch (_) { tiers = []; }
       // Fewer than two price tiers: nothing to decide, so no call is spent on
       // it; resolveTier reports price_tiers_unavailable.

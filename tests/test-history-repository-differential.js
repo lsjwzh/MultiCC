@@ -212,8 +212,12 @@ test('旧数组、JSONL、BOM、空文件、尾行损坏与非法 UTF-8 读取�
 
 test('异步投递证明与严格同步读盘逐案一致，且错误在 Promise 拒绝中保留 Node 形状', async () => {
   const bodies = ['', ' \n\t', '﻿', '[]', '﻿ [null,3,{"clientMsgId":"d"}]', '[bad',
+    '[{"deliveryId":"d"},invalid]', '[{"deliveryId":"d"},]',
+    '[{"deliveryId":"d","content":"escaped \\\" ] , [ {"},null]',
+    '\u00a0[{"deliveryId":"d"}]', '[{}, {"deliveryId":"d"}] trailing',
     '{}', '{}\n', '﻿{}\n', ' \r\n{}\r\n', '{"deliveryId":"d"}\n{"x":',
-    '{"clientMsgId":"d"}\nnull', '{}\n[]', '{}\n3', '{}\nnull\n', '{}\nbad\n{}',
+    '{"clientMsgId":"d"}\nnull', '{"deliveryId":"d"}\nbad\n',
+    '{"deliveryId":"d"}\nnull\n', '{}\n[]', '{}\n3', '{}\nnull\n', '{}\nbad\n{}',
     '{}\n{bad\n', 'null', 'null\n', 'true', '{}\n \n', '\n{bad',
     '{"__proto__":{"x":1}}\n', '{"id":"a","content":"中文😀"}\n',
     '{"id":"a","content":"🦀"}\n{"id":"b","content":"中文"}\n',
@@ -260,6 +264,60 @@ test('异步投递证明与严格同步读盘逐案一致，且错误在 Promise
     assert.equal(error.path, undefined);
     return true;
   });
+});
+
+test('物理位置索引按字节有界读取并只为标准 JSONL 返回尾部账本', async () => {
+  const harness = build(native);
+  const first = JSON.stringify({ id: '一', role: 'user', content: '原文😀' });
+  const second = JSON.stringify({ id: '二', role: 'assistant', content: '完整工具输出' });
+  const body = `${first}\n${second}\n`;
+  putFile(harness, 's.json', body);
+  const page = await harness.repository.readPhysicalRangeAsync('s', 1, 2, 1024);
+  assert.equal(page.total, 2);
+  assert.deepEqual(page.records, [`${second}\n`]);
+  assert.deepEqual(page.ledger, {
+    len: 2,
+    bytes: Buffer.byteLength(body),
+    ends: [Buffer.byteLength(`${first}\n`), Buffer.byteLength(body)],
+  });
+  assert.equal(fs.readFileSync(abs(harness, 's.json'), 'utf8'), body);
+  await assert.rejects(harness.repository.readPhysicalRangeAsync('s', 0, 2, 1), /HISTORY_INDEX_BYTE_BUDGET/);
+  await assert.rejects(harness.repository.readPhysicalRangeAsync('s', 0, 101, 1024), /HISTORY_INDEX_INVALID_RANGE/);
+  await assert.rejects(harness.repository.readPhysicalRangeAsync('s', -1, 0, 1024), /HISTORY_INDEX_INVALID_RANGE/);
+  await assert.rejects(harness.repository.readPhysicalRangeAsync('s', 0.5, 1, 1024), /HISTORY_INDEX_INVALID_RANGE/);
+  putFile(harness, 's.json', `${first}\n{\"partial\":`);
+  const torn = await harness.repository.readPhysicalRangeAsync('s', 0, 1, 1024);
+  assert.equal(torn.total, 1);
+  assert.equal(torn.ledger, null);
+  putFile(harness, 's.json', `[${first}]`);
+  await assert.rejects(harness.repository.readPhysicalRangeAsync('s', 0, 1, 1024), /HISTORY_INDEX_LEGACY_ARRAY/);
+  putFile(harness, 's.json', `${first}\ninvalid\n`);
+  await assert.rejects(harness.repository.readPhysicalRangeAsync('s', 0, 1, 1024), /HISTORY_INDEX_CORRUPT/);
+  const huge = `{"content":"${'x'.repeat(16 * 1024 * 1024)}"}\n`;
+  putFile(harness, 's.json', huge);
+  await assert.rejects(harness.repository.readPhysicalRangeAsync('s', 0, 1, 1024), /HISTORY_INDEX_BYTE_BUDGET/);
+  await assert.rejects(harness.repository.hasPersistedDeliveryAsync('s', 'missing'),
+    { code: 'CHAT_HISTORY_RECORD_TOO_LARGE' });
+  assert.equal(fs.statSync(abs(harness, 's.json')).size, Buffer.byteLength(huge));
+  const hugeLegacy = `[${huge.trim()}]`;
+  putFile(harness, 's.json', hugeLegacy);
+  await assert.rejects(harness.repository.hasPersistedDeliveryAsync('s', 'missing'),
+    { code: 'CHAT_HISTORY_RECORD_TOO_LARGE' });
+  assert.equal(fs.statSync(abs(harness, 's.json')).size, Buffer.byteLength(hugeLegacy));
+});
+
+test('独占历史读取逐行保持旧 JSON 克隆的数值规范化', () => {
+  const harness = build(native);
+  for (const body of [
+    '{"id":"a","role":"assistant","n":1e400,"z":-0,"items":[-0,1e400]}\n',
+    '[{"id":"a","role":"assistant","n":1e400,"z":-0,"items":[-0,1e400]}]',
+  ]) {
+    putFile(harness, 's.json', body);
+    const strict = harness.repository.readStrict('s');
+    assert.equal(strict[0].n, Infinity);
+    assert.ok(Object.is(strict[0].z, -0));
+    assert.deepEqual(harness.repository.readOwned('s'), JSON.parse(JSON.stringify(strict)));
+  }
 });
 
 test('增量追加、尾部替换、清空、外部写入与关闭追加差分', () => {

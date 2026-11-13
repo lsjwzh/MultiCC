@@ -1,6 +1,7 @@
 'use strict';
 
 const { outboundFetch } = require('./network/outbound');
+const { getNative } = require('./native/runtime');
 const { requestCodexUsage, readCodexAuth } = require('./quota/codex-usage-request');
 
 // Usage-limit poller — the ACTIVE-POLL half of the limit subsystem.
@@ -35,26 +36,16 @@ const POLL_TIMEOUT_MS = 6000;
 // 借道余量透传：出借方收到查询后自己触发对厂商的真实余量查询（可能比本机
 // 直查慢），给一个比 POLL_TIMEOUT_MS 更长的下限，等它把最新结果传回来。
 const RELAY_TIMEOUT_MS = 20 * 1000;
-// Window quota moves with usage → refresh often. Money balance moves slowly →
-// poll lazily. Both are ceilings on staleness, not fixed timers: a poll only
-// fires at a turn boundary when the cached snapshot for that account is older.
-const TTL_BY_STRATEGY = Object.freeze({
-  'glm-monitor': 60 * 1000,
-  'deepseek-balance': 5 * 60 * 1000,
-  // Codex's weekly window moves slowly, but the read is free (a plain GET, no
-  // quota consumed) so refresh once a minute to keep the bar current per turn.
-  'codex-oauth-usage': 60 * 1000,
-  // 借道：出借方端点的读取代价与其本机直查相同，同窗口节奏即可。
-  'relay-quota': 60 * 1000,
-});
-
 function keyHash(apiKey) {
   return crypto.createHash('sha256').update(String(apiKey || '')).digest('hex').slice(0, 16);
 }
 
-function finite(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+function normalizeResponse(op, body) {
+  const native = getNative();
+  if (native.limitCacheRecorderRequestValue('cachePolicyVersion', {}) !== 1) {
+    throw new Error('[usage-limit] Rust quota policy version mismatch; rebuild the native module');
+  }
+  return native.limitCacheRecorderRequestValue(op, { body });
 }
 
 // ── Adapters: fetch + normalize. Each returns a DTO on success, null when the
@@ -124,30 +115,7 @@ async function pollGlmMonitor(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
     { Authorization: target.apiKey, 'Content-Type': 'application/json' },
     timeoutMs,
   );
-  const limits = body && body.data && Array.isArray(body.data.limits) ? body.data.limits : null;
-  if (!limits) return null;
-  // Two TOKENS_LIMIT entries = the 5h window then the weekly window (percentage
-  // used). Take the first as the primary 5h utilization; ignore TIME_LIMIT
-  // (that's a call-count cap, e.g. MCP web search — not the token window).
-  const tokenWindows = limits.filter((l) => l && l.type === 'TOKENS_LIMIT' && finite(l.percentage) !== null);
-  if (!tokenWindows.length) return null;
-  const pct = finite(tokenWindows[0].percentage);
-  if (pct === null) return null;
-  const resetsAt = finite(tokenWindows[0].nextResetTime);
-  // Second TOKENS_LIMIT entry (when present) is the weekly window.
-  const weeklyPct = tokenWindows[1] ? finite(tokenWindows[1].percentage) : null;
-  const weeklyResetsAt = tokenWindows[1] ? finite(tokenWindows[1].nextResetTime) : null;
-  return {
-    kind: 'window',
-    provider: 'glm',
-    rateLimitType: 'five_hour',
-    status: pct >= 100 ? 'rejected' : (pct >= 80 ? 'allowed_warning' : 'allowed'),
-    utilization: Math.max(0, Math.min(1, pct / 100)),
-    resetsAt: resetsAt !== null ? resetsAt : null,
-    weeklyUtilization: weeklyPct !== null ? Math.max(0, Math.min(1, weeklyPct / 100)) : null,
-    weeklyResetsAt: weeklyResetsAt !== null ? weeklyResetsAt : null,
-    tier: (body.data && body.data.level) || null,
-  };
+  return normalizeResponse('pollGlm', body);
 }
 
 // DeepSeek prepaid balance. Auth is Bearer. Amounts are STRINGS.
@@ -157,19 +125,7 @@ async function pollDeepseekBalance(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
     { Authorization: `Bearer ${target.apiKey}` },
     timeoutMs,
   );
-  if (!body || typeof body !== 'object' || !Array.isArray(body.balance_infos)) return null;
-  const info = body.balance_infos[0] || null;
-  if (!info) {
-    return { kind: 'balance', available: body.is_available === true, currency: null, total: null, granted: null, toppedUp: null };
-  }
-  return {
-    kind: 'balance',
-    available: body.is_available === true,
-    currency: info.currency || null,
-    total: finite(info.total_balance),
-    granted: finite(info.granted_balance),
-    toppedUp: finite(info.topped_up_balance),
-  };
+  return normalizeResponse('pollDeepseek', body);
 }
 
 // Codex (real ChatGPT backend). Quota comes from the same usage read the codex
@@ -233,25 +189,9 @@ async function pollRelayQuota(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
     { Authorization: `Bearer ${apiKey}` },
     Math.max(timeoutMs, RELAY_TIMEOUT_MS),
   );
-  if (!body) return null;
-  if (body.ok !== true) {
-    // 出借方自己查询失败：透传它给出的 detail（HTTP 状态 / errno 链），没有
-    // detail 时保留 reason；两者都没有才保持 null。调用方负责隔离聊天流。
-    if (body.detail) throw limitFetchError(`lender: ${body.detail}`);
-    if (body.reason) throw limitFetchError(`lender: ${String(body.reason).slice(0, 100)}`);
-    return null;
-  }
-  const dto = body.dto;
-  if (!dto || typeof dto !== 'object') return null;
-  // 只透传两种已知 DTO；出借方响应里出现其它形状（或伪造 kind）时按无数据处理。
-  if (dto.kind === 'window') {
-    if (typeof dto.utilization !== 'number' || !Number.isFinite(dto.utilization)) return null;
-  } else if (dto.kind === 'balance') {
-    if (typeof dto.available !== 'boolean' && typeof dto.available !== 'number') return null;
-  } else {
-    return null;
-  }
-  return dto;
+  const result = normalizeResponse('pollRelay', body);
+  if (result.error !== null) throw limitFetchError(result.error);
+  return result.dto;
 }
 
 const ADAPTERS = Object.freeze({
@@ -282,22 +222,33 @@ async function runCodexAuthRefresh(input) {
 function createUsageLimitPoller({ resolveTarget, broadcast, now = () => Date.now(), adapters = ADAPTERS } = {}) {
   if (typeof resolveTarget !== 'function') throw new Error('resolveTarget required');
   if (typeof broadcast !== 'function') throw new Error('broadcast required');
-  // cacheKey = `${providerId}:${keyHash}` → { at, dto }
-  const cache = new Map();
-  // in-flight promise per cacheKey, so concurrent turns share one request
+  // Rust owns the cached values, TTL and per-key admission. The host holds
+  // only promises for injected Node transport callbacks awaiting completion.
+  const state = new (getNative().RustUsageLimitPoller)();
   const inflight = new Map();
+  const cache = Object.freeze({
+    get: key => state.request('get', { key }),
+    has: key => state.request('has', { key }),
+    clear: () => state.request('clear', {}),
+    get size() { return state.request('size', {}); },
+  });
 
   async function refresh(target, nowMs) {
     // keyHashSeed lets a keyless account (codex OAuth, credential read from disk)
     // still dedup deterministically across sessions; otherwise hash the apiKey.
     const cacheKey = `${target.providerId}:${keyHash(target.keyHashSeed || target.apiKey)}`;
-    const ttl = TTL_BY_STRATEGY[target.strategy] || 60 * 1000;
-    const cached = cache.get(cacheKey);
-    if (cached && nowMs - cached.at < ttl) return cached.dto;
-    if (inflight.has(cacheKey)) return inflight.get(cacheKey);
+    let decision = state.request('begin', { key: cacheKey, strategy: target.strategy, now: nowMs });
+    if (decision.action === 'cached') return decision.dto;
+    if (decision.action === 'join') return inflight.get(cacheKey);
     const adapter = adapters[target.strategy];
-    if (!adapter) return null;
-    const promise = (async () => {
+    decision = state.request('begin', {
+      key: cacheKey, strategy: target.strategy, now: nowMs, hasAdapter: !!adapter,
+    });
+    if (decision.action === 'none') return null;
+    // Defer transport until its promise is installed. This also ensures an
+    // immediate egress rejection cannot leave a completed in-flight entry.
+    let finished = false;
+    const promise = Promise.resolve().then(async () => {
       let dto = null;
       let failureDetail = null;
       // Same egress-IP-allowlist gate as the chat-turn admission path: a
@@ -307,8 +258,8 @@ function createUsageLimitPoller({ resolveTarget, broadcast, now = () => Date.now
       if (!egressCheck.allowed) {
         failureDetail = egressCheck.detail;
         console.warn(`[usage-limit] ${target.strategy} poll skipped (${target.providerId}): ${failureDetail}`);
-        cache.set(cacheKey, { at: nowMs, dto: null, error: failureDetail });
-        inflight.delete(cacheKey);
+        state.request('finish', { key: cacheKey, at: nowMs, dto: null, error: failureDetail, includeError: true });
+        finished = true;
         return null;
       }
       try {
@@ -326,10 +277,13 @@ function createUsageLimitPoller({ resolveTarget, broadcast, now = () => Date.now
       // Cache even a null result briefly, so a broken endpoint does not get
       // hammered every turn. A successful later poll overwrites it on TTL expiry.
       if (dto) dto = { ...dto, fetchedAt: now() };
-      cache.set(cacheKey, { at: nowMs, dto, ...(failureDetail ? { error: failureDetail } : {}) });
-      inflight.delete(cacheKey);
+      state.request('finish', { key: cacheKey, at: nowMs, dto, error: failureDetail });
+      finished = true;
       return dto;
-    })();
+    }).finally(() => {
+      if (!finished) state.request('abort', { key: cacheKey });
+      if (inflight.get(cacheKey) === promise) inflight.delete(cacheKey);
+    });
     inflight.set(cacheKey, promise);
     return promise;
   }
@@ -360,5 +314,4 @@ module.exports = {
   setCodexAuthRefresher,
   runCodexAuthRefresh,
   keyHash,
-  TTL_BY_STRATEGY,
 };

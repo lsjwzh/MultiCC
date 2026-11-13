@@ -112,6 +112,14 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), orchestrationStoreProtocol: () => 1
   };`);
   assert.equal(probeAddon(oldOrchestration), false, '旧编排模块不能绕过终态正文分离');
+  const noOwner = write(root, 'old-orchestration-owner.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustIsolatedOrchestrationStore: undefined
+  };`);
+  assert.equal(probeAddon(noOwner), false, 'missing isolated owner must fail preflight');
+  const incompleteOwner = write(root, 'incomplete-orchestration-owner.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustIsolatedOrchestrationStore: class {}
+  };`);
+  assert.equal(probeAddon(incompleteOwner), false, 'partial isolated owner must fail preflight');
   const stale = write(root, 'stale-switch.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), prepareCliSwitchRoute: undefined
   };`);

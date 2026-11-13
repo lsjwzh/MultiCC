@@ -55,6 +55,19 @@ impl<'env> LiveValue<'env> {
         check_status!(unsafe { sys::napi_get_property(self.env, object, key.raw(), &mut value) })?;
         Ok(self.with_value(value))
     }
+    pub fn set_key(self, key: Self, value: Self) -> Result<()> {
+        let mut object = ptr::null_mut();
+        check_status!(unsafe { sys::napi_coerce_to_object(self.env, self.value, &mut object) })?;
+        let reflect = self.global()?.get(c"Reflect")?;
+        if !reflect
+            .get(c"set")?
+            .call(reflect, &[self.with_value(object), key, value, self])?
+            .truthy()?
+        {
+            return Err(self.type_error("Cannot assign to read-only property"));
+        }
+        Ok(())
+    }
     pub fn element(self, index: u32) -> Result<Self> {
         let mut value = ptr::null_mut();
         check_status!(unsafe { sys::napi_get_element(self.env, self.value, index, &mut value) })?;

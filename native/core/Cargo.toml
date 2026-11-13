@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value", "preserve_order", "float_roundtrip"] }
+serde_json = { version = "1", features = ["raw_value", "preserve_order", "float_roundtrip", "unbounded_depth"] }
+serde_stacker = "0.1"
 chrono = "0.4"
 chrono-tz = "0.10"
 rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }

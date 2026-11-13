@@ -19,13 +19,14 @@ require('node:test').mock.method(require('../src/network/outbound'), 'outboundFe
 //   - no credentials ever reach the persisted database
 
 const fs = require('fs');
+const assert = require('node:assert/strict');
 const os = require('os');
 const path = require('path');
 const {
   createProviderLimitCache,
   STALE_MS_DEFAULT,
   DATABASE_SCHEMA_VERSION,
-} = require('../src/quota/provider-limit-cache');
+} = require('./helpers/legacy-provider-limit-cache');
 const {
   createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS,
 } = require('../src/quota/limit-cache-recorder');
@@ -873,7 +874,174 @@ function testNativeRejectionBoundaries() {
     'a shorter account park does not override the model deadline');
 }
 
+// Frozen pre-migration expressions: this is deliberately independent of the
+// Rust implementation so the final migration gate detects behavior drift.
+function testNativeCacheMutationPolicy() {
+  const request = require('../src/native/runtime').getNative().limitCacheRecorderRequestValue;
+  const prior = {
+    appType: 'claude', providerId: 'p', kind: 'window', status: 'ok',
+    summary: { label: '中文😀', value: 20 }, summaryText: 'previous', barText: 'bar',
+    fetchedAt: 100, updatedAt: 105, lastError: null, lastErrorCode: null,
+    lastErrorAt: null, lastAttemptAt: 100,
+  };
+  for (const previous of [null, prior]) for (const entry of [
+    {}, { kind: 'balance', summary: { value: 1 }, summaryText: '', barText: '新', fetchedAt: 101 },
+    { kind: '', summary: null, summaryText: 42, barText: null, fetchedAt: 99 },
+    { kind: 'window', summary: { label: '\ud800' }, fetchedAt: 100.9 },
+  ]) for (const now of [0, 104, 200.5]) {
+    const fetchedAt = entry.fetchedAt != null ? Math.trunc(entry.fetchedAt) : now;
+    const late = !!previous && previous.fetchedAt > fetchedAt;
+    ok(request('cacheIsLate', { previous, fetchedAt }) === late, 'native cache late-observation decision matches legacy');
+    const plan = request('cacheSuccess', { appType: 'claude', providerId: 'p', previous, now, fetchedAt, entry });
+    if (late) {
+      ok(plan.write === false && JSON.stringify(plan.entry) === JSON.stringify(previous), 'native cache preserves stale observation');
+      continue;
+    }
+    const expected = {
+      appType: 'claude', providerId: 'p', kind: entry.kind || (previous ? previous.kind : 'quota'),
+      status: 'ok', summary: entry.summary != null ? entry.summary : (previous ? previous.summary : null),
+      summaryText: typeof entry.summaryText === 'string' ? entry.summaryText : (previous ? previous.summaryText : ''),
+      barText: typeof entry.barText === 'string' ? entry.barText : (previous ? previous.barText : null),
+      fetchedAt, updatedAt: Math.max(now, (previous?.updatedAt || 0) + 1),
+      lastError: null, lastErrorCode: null, lastErrorAt: null, lastAttemptAt: now,
+    };
+    ok(plan.write === true && JSON.stringify(plan.entry) === JSON.stringify(expected), 'native cache success matches legacy');
+  }
+  for (const previous of [null, prior]) for (const meta of [{}, { error: '失败\ud800', code: 429 }]) {
+    const now = 104;
+    const expected = previous ? { ...previous } : {
+      appType: 'claude', providerId: 'p', kind: 'unknown', status: 'error',
+      summary: null, summaryText: '', barText: null, fetchedAt: null, updatedAt: now,
+    };
+    expected.lastError = meta.error ? String(meta.error) : null;
+    expected.lastErrorCode = meta.code ? String(meta.code) : null;
+    expected.lastErrorAt = now;
+    expected.lastAttemptAt = now;
+    expected.updatedAt = Math.max(now, (previous?.updatedAt || 0) + 1);
+    const actual = request('cacheFailure', { appType: 'claude', providerId: 'p', previous, meta, now });
+    ok(JSON.stringify(actual) === JSON.stringify(expected), 'native cache failure matches legacy and preserves last good value');
+  }
+}
+
+async function testNativeTransactionalStore() {
+  const file = tmpDb('native-transaction');
+  const initial = createProviderLimitCache({ file, now: () => 100 });
+  initial.record('claude', 'p', { kind: 'window', summaryText: 'old', fetchedAt: 100 });
+  initial.close();
+  const addon = require('../src/native/runtime').getNative();
+  const store = new addon.RustProviderLimitStore();
+  const call = (op, input = {}) => store.requestAsync(op, input);
+  await call('openExisting', { file });
+  const stale = await call('record', {
+    appType: 'claude', providerId: 'p', entry: { fetchedAt: 99, summaryText: 'stale' }, now: 200,
+  });
+  ok(stale.write === false && stale.entry.summaryText === 'old', 'native transaction discards stale writes');
+  const updated = await call('record', {
+    appType: 'claude', providerId: 'p', entry: { fetchedAt: 101, summary: { text: '\ud800' } }, now: 201,
+  });
+  ok(updated.write === true && updated.entry.summary.text === '\ud800', 'native transaction preserves UTF-16 summary');
+  const failed = await call('recordFailure', {
+    appType: 'claude', providerId: 'p', meta: { error: 'offline' }, now: 202,
+  });
+  ok(failed.lastError === 'offline' && failed.summary.text === '\ud800', 'native failure keeps the committed summary');
+  const snapshot = await call('snapshot');
+  ok(snapshot.entries['claude:p'].summary.text === '\ud800', 'native snapshot reads stored JSON losslessly');
+  ok(await call('prune', { liveKeys: ['claude:p'] }) === 0, 'native prune retains referenced cache keys');
+  ok(await call('prune', { liveKeys: [] }) === 1, 'native prune deletes orphaned cache keys');
+  await call('close');
+  await assert.rejects(call('get', { appType: 'claude', providerId: 'p' }), /provider_limit_store_closed/);
+
+  const freshFile = tmpDb('native-new');
+  const fresh = new addon.RustProviderLimitStore();
+  await fresh.requestAsync('openWithoutLegacy', { file: freshFile, now: 300 });
+  ok(fs.existsSync(freshFile), 'native empty cache is published as a SQLite file');
+  await fresh.requestAsync('close', {});
+  const legacyFile = path.join(path.dirname(freshFile), 'legacy.json');
+  fs.writeFileSync(legacyFile, '{"legacy":"untouched"}');
+  const guarded = new addon.RustProviderLimitStore();
+  await assert.rejects(guarded.requestAsync('openWithoutLegacy', {
+    file: freshFile, legacyFile, now: 300,
+  }), /legacy JSON import has not been migrated/);
+  ok(fs.readFileSync(legacyFile, 'utf8') === '{"legacy":"untouched"}',
+    'native cutover guard keeps legacy files untouched');
+}
+
+async function testAsyncNativeCacheHost() {
+  const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
+  const dir = tmpDir('native-host');
+  const file = path.join(dir, 'limits.db');
+  const legacy = path.join(dir, 'limits.json');
+  writeLegacyJson(legacy, { 'claude:p': {
+    appType: 'claude', providerId: 'p', kind: 'window', status: 'ok',
+    summary: { label: '旧值' }, summaryText: 'old', barText: null,
+    fetchedAt: 100, updatedAt: 100, lastError: null, lastErrorCode: null,
+    lastErrorAt: null, lastAttemptAt: 100,
+  } }, 100);
+  const observed = [], trends = [];
+  const cache = createNativeProviderLimitCache({ file, legacyJsonFile: legacy, now: () => 200,
+    logger: null, onRecord: entry => trends.push(entry.summaryText) });
+  cache.subscribe(entry => observed.push(entry.summaryText));
+  await cache.ready();
+  ok(cache.migration.migrated && cache.migration.legacyEntryCount === 1 && !fs.existsSync(legacy),
+    'async host completes and archives the verified legacy import');
+  const [one, two] = await Promise.all([
+    cache.record('claude', 'p', { summaryText: 'first', fetchedAt: 101 }),
+    cache.record('claude', 'p', { summaryText: 'second', fetchedAt: 102 }),
+  ]);
+  ok(one.summaryText === 'first' && two.summaryText === 'second'
+    && observed.join(',') === 'first,second' && trends.join(',') === 'first,second',
+  'async host serializes committed writes and notifications');
+  await cache.record('claude', 'p', { summaryText: 'late', fetchedAt: 99 });
+  ok(observed.length === 2 && (await cache.get('claude', 'p')).summaryText === 'second',
+    'late async observation cannot overwrite or notify');
+  const failed = await cache.recordFailure('claude', 'p', { error: 'offline' });
+  ok(failed.summaryText === 'second' && failed.lastError === 'offline' && trends.length === 2,
+    'async failure keeps the committed good data and does not sample history');
+  await cache.close();
+  await assert.rejects(cache.get('claude', 'p'), /database is closed/);
+}
+
+async function testAsyncRecorderParity() {
+  const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
+  const now = () => 1_700_000_000_000;
+  const oldCache = createProviderLimitCache({ file: tmpDb('recorder-old'), now });
+  const newCache = createNativeProviderLimitCache({ file: tmpDb('recorder-native'), now, logger: null });
+  await newCache.ready();
+  const providers = stubProviders({ list: [{ id: 'p', appType: 'claude' }] });
+  const args = { persistedSessions: fakeSessions({ s: { cli: 'claude', provider: 'p' } }), providers, now };
+  const oldRecorder = createLimitRecorder({ ...args, cache: oldCache });
+  const newRecorder = createLimitRecorder({ ...args, cache: newCache });
+  const compare = async (name, invoke) => {
+    const oldResult = await invoke(oldRecorder);
+    const newResult = await invoke(newRecorder);
+    ok(JSON.stringify(oldResult) === JSON.stringify(newResult), `async recorder ${name} matches sync result`);
+    ok(JSON.stringify(oldCache.get('claude', 'p')) === JSON.stringify(await newCache.get('claude', 'p')),
+      `async recorder ${name} matches sync stored row`);
+  };
+  await compare('window', recorder => recorder.recordSession('s', {
+    kind: 'window', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.2,
+    resetsAt: now() + 3_600_000, provider: 'glm',
+  }));
+  await compare('official windows', recorder => recorder.recordOfficialWindows('claude', 'p', {
+    windows: [{ window: '7d', usedPercent: 70, resetMs: now() + 86_400_000 }], fetchedAt: now(),
+  }));
+  await compare('account rejection', recorder => recorder.recordProviderFailure({
+    providerId: 'p', category: 'rate_limit', httpStatus: 429,
+    rejection: { kind: 'window', scope: 'account', window: '5h', resetMs: now() + 7_200_000 },
+  }));
+  await compare('preserve long rejection', recorder => recorder.recordProviderFailure({
+    providerId: 'p', category: 'rate_limit', httpStatus: 429,
+  }));
+  await compare('revocation', recorder => recorder.recordProviderFailure({
+    providerId: 'p', category: 'authentication_permission', httpStatus: 401,
+  }));
+  await compare('release', recorder => recorder.releaseProviderFailure({ providerId: 'p' }));
+  oldCache.close();
+  await newCache.close();
+}
+
 require('./helpers/limit-cache-recorder-differential')(ok);
+testNativeCacheMutationPolicy();
 testSharedSnapshots();
 testBareRateLimitKeepsStrongerPark();
 testNativeRejectionBoundaries();
@@ -887,7 +1055,7 @@ testMigration();
 testSchemaGuard();
 testWeeklyWindowAndRejectionRefresh();
 testStructuredRejectionPark();
-testEverySourceKeepsItsCycles().then(() => {
+testEverySourceKeepsItsCycles().then(testNativeTransactionalStore).then(testAsyncNativeCacheHost).then(testAsyncRecorderParity).then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }, (error) => { console.error(error); process.exit(1); });

@@ -8,6 +8,7 @@ function candidateRows(draft, collection, where) {
 }
 
 const crypto = require('crypto');
+const { getNative } = require('./native/runtime');
 
 const TERMINAL_STATES = new Set(['delivered', 'dead-letter', 'cancelled']);
 
@@ -178,10 +179,7 @@ function createOutbox({
   maxAttempts = 5,
   baseBackoffMs = 1_000,
   maxBackoffMs = 60_000,
-  backoff = attempt => Math.min(
-    maxBackoffMs,
-    baseBackoffMs * (2 ** Math.max(0, attempt - 1)),
-  ),
+  backoff,
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
     throw new TypeError('[outbox] create requires an orchestration store');
@@ -190,6 +188,11 @@ function createOutbox({
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
     throw new TypeError('[outbox] maxAttempts must be a positive integer');
   }
+  const customBackoff = backoff !== undefined;
+  if (!customBackoff) backoff = attempt => Math.min(
+    maxBackoffMs,
+    baseBackoffMs * (2 ** Math.max(0, attempt - 1)),
+  );
 
   function retryDelay(attempt) {
     const delay = Number(backoff(attempt));
@@ -221,41 +224,10 @@ function createOutbox({
     return { recovered, deadLettered };
   }
 
-  function hasExpiredLease(draft, at) {
-    return candidateRows(draft, 'outbox', { state: 'leased' }).some(item => (
-      // Mirror recoverExpiredDraft exactly. Legacy/corrupt-but-loadable leased
-      // records without a timestamp were previously recoverable, not immortal.
-      item.state === 'leased' && !(item.leasedUntil > at)
-    ));
-  }
-
-  function claimCandidates(draft, at, limit, selectSessionItem, sessionGroup) {
-    // Only the oldest non-terminal item for a session may be admitted. A
-    // leased item or a retry in backoff blocks later items in that session,
-    // while another session remains independently claimable.
-    const itemsBySession = new Map();
-    const ordered = candidateRows(draft, 'outbox', { state: { $nin: [...TERMINAL_STATES] } }).sort((a, b) => a.sequence - b.sequence);
-    for (const item of ordered) {
-      if (TERMINAL_STATES.has(item.state)) continue;
-      if (!itemsBySession.has(item.sessionId)) itemsBySession.set(item.sessionId, []);
-      itemsBySession.get(item.sessionId).push(item);
-    }
-
-    const selected = [...itemsBySession.values()]
-      .map(items => typeof selectSessionItem === 'function'
-        ? selectSessionItem(items, draft, at)
-        : items[0])
-      .filter(Boolean);
-    const groups = new Set();
-    return selected
-      .filter(item => item.state === 'pending' && item.availableAt <= at)
-      .sort((a, b) => a.sequence - b.sequence)
-      .filter(item => {
-        const group = sessionGroup(item.sessionId);
-        if (groups.has(group)) return false;
-        groups.add(group); return true;
-      })
-      .slice(0, limit);
+  function nativeMutation(action, params, mutate) {
+    if (typeof store.executeOutbox !== 'function') return store.mutate(mutate);
+    return store.executeOutbox({ action, ...params, now, customBackoff, maxAttempts,
+      baseBackoffMs, maxBackoffMs, customCrypto: cryptoImpl !== crypto }, mutate);
   }
 
   async function enqueue({ id = idFactory(), sessionId, payload, source, availableAt } = {}) {
@@ -290,40 +262,18 @@ function createOutbox({
       throw new TypeError('[outbox] leaseForMs must be > 0');
     }
 
-    const mutateClaim = draft => {
-      const at = Number(now());
-      recoverExpiredDraft(draft, at);
-      const candidates = claimCandidates(draft, at, limit, selectSessionItem, sessionGroup);
-      return candidates.map(item => {
-        const leaseToken = String(leaseTokenFactory());
-        if (!leaseToken) throw new Error('[outbox] leaseTokenFactory returned an empty token');
-        item.state = 'leased';
-        item.attempts += 1;
-        item.leasedAt = at;
-        item.leasedUntil = at + Number(leaseForMs);
-        item.leaseOwner = workerId;
-        item.leaseTokenHash = hashSecret(leaseToken, cryptoImpl);
-        item.updatedAt = at;
-        return { ...publicItem(item), leaseToken };
-      });
-    };
-
-    if (typeof store.mutateIf === 'function') {
-      return store.mutateIf(
-        draft => {
-          const at = Number(now());
-          return hasExpiredLease(draft, at)
-            || claimCandidates(draft, at, limit, selectSessionItem, sessionGroup).length > 0;
-        },
-        mutateClaim,
-        () => [],
-      );
+    const policy = { now, retryDelay, maxAttempts, leaseTokenFactory, cryptoImpl,
+      workerId, limit, leaseForMs, selectSessionItem, sessionGroup };
+    if (typeof store.runNativeCommandSync === 'function') {
+      return (await store.runNativeCommandSync('outboxClaim', policy)).value;
     }
-    return store.mutate(mutateClaim);
+    // Lightweight injected stores used by isolated adapters still execute the
+    // Rust state machine; production JSON and SQLite use the synchronous bridge.
+    return store.mutate(draft => getNative().outboxClaimLive(draft, draft, policy));
   }
 
   async function acknowledge(id, leaseToken) {
-    return store.mutate(draft => {
+    const mutate = draft => {
       const at = Number(now());
       recoverExpiredDraft(draft, at);
       const item = draft.outbox[id];
@@ -337,11 +287,12 @@ function createOutbox({
       item.updatedAt = at;
       clearLease(item);
       return { ok: true, item: publicItem(item) };
-    });
+    };
+    return nativeMutation('ack', { id, token: leaseToken }, mutate);
   }
 
   async function fail(id, leaseToken, error, { retryable = true } = {}) {
-    return store.mutate(draft => {
+    const mutate = draft => {
       const at = Number(now());
       recoverExpiredDraft(draft, at);
       const item = draft.outbox[id];
@@ -363,7 +314,9 @@ function createOutbox({
       item.state = 'dead-letter';
       item.deadLetterAt = at;
       return { ok: true, retry: false, deadLetter: true, item: publicItem(item) };
-    });
+    };
+    return nativeMutation('fail', { id, token: leaseToken, reason: error, retryable,
+      formatReason: () => errorText(error) }, mutate);
   }
 
   // Expected session contention is not a delivery failure. Release the lease
@@ -372,7 +325,7 @@ function createOutbox({
   async function defer(id, leaseToken, reason = 'delivery deferred', { delayMs = baseBackoffMs } = {}) {
     const delay = Number(delayMs);
     if (!Number.isFinite(delay) || delay < 0) throw new TypeError('[outbox] defer delayMs must be non-negative');
-    return store.mutate(draft => {
+    const mutate = draft => {
       const at = Number(now());
       recoverExpiredDraft(draft, at);
       const item = draft.outbox[id];
@@ -388,11 +341,14 @@ function createOutbox({
       item.state = 'pending';
       item.availableAt = at + delay;
       return { ok: true, deferred: true, availableAt: item.availableAt, item: publicItem(item) };
-    });
+    };
+    return nativeMutation('defer', { id, token: leaseToken, reason, delayMs: delay,
+      formatReason: () => errorText(reason) }, mutate);
   }
 
   async function recoverExpired() {
-    return store.mutate(draft => recoverExpiredDraft(draft, Number(now())));
+    const mutate = draft => recoverExpiredDraft(draft, Number(now()));
+    return nativeMutation('recover', {}, mutate);
   }
 
   function itemProjection(item) {

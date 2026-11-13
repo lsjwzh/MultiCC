@@ -239,10 +239,10 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-12 测速、routing-test 与 GET /api/v1/providers 迁到 Rust 前门：
   // 删掉三条接线与仅测速使用的依赖，实测回落到 3053/164164，按棘轮双向调到
   // 实测值。该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
-  // 余额/借道路由及 CLI 工具宿主迁移后，按实测继续收紧到 3044/163628。
+  // 额度存储接线后按实测继续收紧到 3042/163616。
   'server.js': Object.freeze({
-    ceiling: 3044,
-    byteCeiling: 163628,
+    ceiling: 3042,
+    byteCeiling: 163616,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
   }),

@@ -37,6 +37,9 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     const at = now();
     const stage = request('dtoPrepare', { dto, now: at });
     if (!stage) return null;
+    if (typeof cache.recordDerived === 'function') {
+      return cache.recordDerived(appType, providerId, 'dtoFinish', { dto, now: at, stage }, now());
+    }
     let previous = null;
     if (stage.previous === 'strict') previous = cache.get(appType, providerId);
     else if (stage.previous === 'optional') previous = previousOptional(appType, providerId);
@@ -50,7 +53,10 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   function recordProvider(appType, providerId, result) {
     const plan = request('providerPlan', { providerId, result });
     if (!plan) return null;
-    if (plan.action === 'failure') { cache.recordFailure(appType, providerId, plan.value); return null; }
+    if (plan.action === 'failure') {
+      const recorded = cache.recordFailure(appType, providerId, plan.value);
+      return typeof cache.recordDerived === 'function' ? Promise.resolve(recorded).then(() => null) : null;
+    }
     if (plan.action === 'dto') return recordDto(appType, providerId, result.dto);
     return cache.record(appType, providerId, request('providerRecord', {
       result, now: plan.needsNow ? now() : undefined,
@@ -61,6 +67,20 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   function recordProviderFailure({ sessionId, providerId, category, httpStatus, blockedUntilMs, rejection } = {}) {
     const identity = providerId ? explicitProviderIdentity(providerId) : appTypeForSession(sessionId);
     if (!identity) return null;
+    if (typeof cache.transitionAvailability === 'function') {
+      const target = providers.getProviderLimitTarget?.(identity.appType, identity.providerId);
+      const raw = rejection && typeof rejection === 'object' && !Array.isArray(rejection)
+        ? { kind: rejection.kind, scope: rejection.scope, window: rejection.window,
+          resetMs: rejection.resetMs, code: rejection.code, model: rejection.model, source: rejection.source } : null;
+      return cache.transitionAvailability(identity.appType, identity.providerId, {
+        category, httpStatus, blockedUntilMs, rejection: raw, hasRejection: !!rejection, targetKind: target?.strategy,
+      }, now()).then(plan => {
+        if (refreshProvider && plan.refresh) {
+          try { Promise.resolve(refreshProvider(identity.appType, identity.providerId)).catch(() => {}); } catch (_) {}
+        }
+        return plan.entry;
+      });
+    }
     const previous = cache.get(identity.appType, identity.providerId);
     const target = providers.getProviderLimitTarget?.(identity.appType, identity.providerId);
     const policy = request('failurePolicy', { httpStatus, targetKind: target?.strategy,
@@ -92,6 +112,10 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   function releaseProviderFailure({ providerId } = {}) {
     const identity = explicitProviderIdentity(providerId);
     if (!identity) return null;
+    if (typeof cache.transitionAvailability === 'function') {
+      return cache.transitionAvailability(identity.appType, identity.providerId, { release: true }, now())
+        .then(plan => plan.write ? plan.entry : null);
+    }
     let entry;
     try { entry = cache.get(identity.appType, identity.providerId); } catch (_) { return null; }
     if (!request('releaseEligible', { entry: summaryOf(entry) })) return null;
@@ -126,12 +150,24 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     if (!ids.length) return 0;
     const plan = request('vendorPlan', { result });
     if (plan.action === 'failure') {
-      if (ids.length === 1 && session) cache.recordFailure(ids[0].appType, ids[0].providerId, plan.value);
+      if (ids.length === 1 && session) {
+        const recorded = cache.recordFailure(ids[0].appType, ids[0].providerId, plan.value);
+        if (typeof cache.recordDerived === 'function') return Promise.resolve(recorded).then(() => 0);
+      }
       return 0;
     }
     let bar = null;
     try { bar = request('vendorRender', { kind, result, baseUrl, opts, now: now() }); } catch (_) {}
     const reported = request('vendorWindows', { kind, result, baseUrl });
+    if (typeof cache.recordDerived === 'function') {
+      return Promise.all(ids.map(id => {
+        const mergeNow = reported.length ? now() : undefined;
+        const at = now();
+        return cache.recordDerived(id.appType, id.providerId, 'vendorRecord', {
+          kind, result, bar, reported, mergeNow, now: result.fetchedAt ? undefined : at,
+        }, at);
+      })).then(() => ids.length);
+    }
     let count = 0;
     for (const id of ids) {
       const previous = previousOptional(id.appType, id.providerId);
@@ -146,13 +182,19 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     const id = appTypeForSession(session);
     if (!id) return null;
     const plan = request('claudePlan', { result });
-    if (plan.action === 'failure') { cache.recordFailure(id.appType, id.providerId, plan.value); return null; }
+    if (plan.action === 'failure') {
+      const recorded = cache.recordFailure(id.appType, id.providerId, plan.value);
+      return typeof cache.recordDerived === 'function' ? Promise.resolve(recorded).then(() => null) : null;
+    }
     return cache.record(id.appType, id.providerId, request('claudeRecord', { result, barText,
       summaryNow: plan.needsNow ? now() : undefined, now: plan.needsNow ? now() : undefined }));
   }
   function recordOfficialWindows(appType, providerId, { windows, fetchedAt } = {}) {
     if (!request('officialValid', { providerId, windows })) return null;
     const at = fetchedAt || now();
+    if (typeof cache.recordDerived === 'function') {
+      return cache.recordDerived(appType, providerId, 'officialRecord', { appType, windows, at }, now());
+    }
     const previous = previousOptional(appType, providerId);
     return cache.record(appType, providerId, request('officialRecord', {
       appType, windows, at, previous: summaryOf(previous),
