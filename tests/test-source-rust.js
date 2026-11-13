@@ -62,7 +62,11 @@ function fixture(t) {
 test('source cache lives in the primary worktree and fingerprints source/config changes', t => {
   const { root, env } = fixture(t);
   const initial = sourcePaths(root, env);
-  assert.ok(initial.prebuiltDir.startsWith(path.join(root, 'data/rust-source') + path.sep));
+  // Git and Node may use different drive-letter casing on Windows. Compare
+  // filesystem paths, while still requiring the exact fingerprint directory.
+  const expectedCache = path.join(root, 'data', 'rust-source');
+  assert.equal(path.relative(expectedCache, initial.prebuiltDir), initial.fingerprint,
+    `cache must be inside ${expectedCache}, got ${initial.prebuiltDir}`);
   write(root, 'native/target/ignored.rs', '// compiler output');
   assert.equal(sourceFingerprint(root, env), initial.fingerprint);
   assert.notEqual(sourceFingerprint(root, { ...env, RUSTFLAGS: '-C opt-level=2' }), initial.fingerprint);
@@ -87,7 +91,8 @@ test('source cache lives in the primary worktree and fingerprints source/config 
     'commit', '--allow-empty', '-qm', 'fixture']).status, 0);
   assert.equal(spawnSync('git', ['-C', root, 'worktree', 'add', '--detach', worktree]).status, 0);
   const { cacheRoot } = require('../scripts/rust-source-cache');
-  assert.equal(cacheRoot(worktree), path.join(root, 'data/rust-source'));
+  assert.equal(path.relative(expectedCache, cacheRoot(worktree)), '',
+    `sibling worktree must share ${expectedCache}, got ${cacheRoot(worktree)}`);
 });
 
 const nativeTest = (name, fn) => test(name, { skip: process.platform === 'win32' && 'source manager uses a POSIX shell' }, fn);

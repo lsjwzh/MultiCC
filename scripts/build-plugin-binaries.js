@@ -175,12 +175,18 @@ function findMember(root, member) {
 
 // tar.gz 各平台 tar 都认；zip 在 Linux 上 GNU tar 不认，先试 unzip。
 function extractArchive(archive, dest, { run = spawnSync } = {}) {
+  archive = path.resolve(archive);
+  dest = path.resolve(dest);
   fs.mkdirSync(dest, { recursive: true });
+  // GNU tar from Git for Windows interprets a drive colon in the archive
+  // argument as a remote host. Resolve paths before changing cwd, then pass
+  // only the local archive basename to both extractors.
+  const name = path.basename(archive);
   const attempts = archive.endsWith('.zip')
-    ? [['unzip', ['-q', '-o', archive, '-d', dest]], ['tar', ['-xf', archive, '-C', dest]]]
-    : [['tar', ['-xzf', archive, '-C', dest]]];
+    ? [['unzip', ['-q', '-o', name, '-d', dest]], ['tar', ['-xf', name, '-C', dest]]]
+    : [['tar', ['-xzf', name, '-C', dest]]];
   for (const [command, args] of attempts) {
-    const result = run(command, args, { stdio: 'ignore' });
+    const result = run(command, args, { cwd: path.dirname(archive), stdio: 'ignore' });
     if (!result.error && result.status === 0) return;
   }
   throw new Error(`解压失败：${path.basename(archive)}`);

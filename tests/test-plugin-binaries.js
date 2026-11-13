@@ -152,7 +152,9 @@ test('第三方内核：sha256 校验、解出单文件、gzip 落到平台目�
   fs.writeFileSync(path.join(work, 'meow-v1-x86_64-unknown-linux-musl', 'meow'), ELF_X64);
   const archiveName = 'meow-v1-x86_64-unknown-linux-musl.tar.gz';
   const tarball = path.join(work, archiveName);
-  assert.equal(spawnSync('tar', ['-czf', tarball, '-C', work, 'meow-v1-x86_64-unknown-linux-musl']).status, 0);
+  const packed = spawnSync('tar', ['-czf', archiveName, 'meow-v1-x86_64-unknown-linux-musl'],
+    { cwd: work, encoding: 'utf8' });
+  assert.equal(packed.status, 0, packed.stderr);
   const digest = crypto.createHash('sha256').update(fs.readFileSync(tarball)).digest('hex');
   // 预置下载缓存：测试不联网。
   const cacheDir = path.join(work, 'cache');
