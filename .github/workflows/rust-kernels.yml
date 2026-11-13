@@ -1,7 +1,7 @@
 name: Rust kernels
 on:
   pull_request:
-    paths: ['.cargo/**', 'scripts/check-linux-cpu-compat.js', 'scripts/fixtures/linux-cpu-*', 'native/**', 'src/native/**', 'src/sqlite/**', 'src/providers/rust-cpr.js', 'src/providers/router-runtime.js', 'src/claude-auth/egress-agent.js', 'tests/test-sqlite*', 'src/routes/token-usage.js', 'src/task-board/**', 'src/routes/task-search.js', 'scripts/*rust*', 'tests/*rust*', 'tests/fixtures/rust-kernel-fixtures.js', 'scripts/generate-outbound-proxy-corpus.js', 'scripts/generate-account-subscription-fixture.js', 'scripts/generate-provider-limit-history-fixture.js', 'scripts/generate-claude-models-fixture.js', 'scripts/generate-auto-provider-fixtures.js', 'tests/test-auto-provider-fixtures.js', 'src/network/proxy-policy.js', 'tests/helpers/legacy-*-route.js', 'tests/helpers/legacy-auto-provider-*.js', 'docker/**', 'scripts/build-task-shell-image.js', '.github/workflows/rust-kernels.yml']
+    paths: ['.cargo/**', 'scripts/check-linux-cpu-compat.js', 'scripts/setup-linux-cpu-emulator.sh', 'scripts/fixtures/linux-cpu-*', 'native/**', 'src/native/**', 'src/sqlite/**', 'src/providers/rust-cpr.js', 'src/providers/router-runtime.js', 'src/claude-auth/egress-agent.js', 'tests/test-sqlite*', 'src/routes/token-usage.js', 'src/task-board/**', 'src/routes/task-search.js', 'scripts/*rust*', 'tests/*rust*', 'tests/fixtures/rust-kernel-fixtures.js', 'scripts/generate-outbound-proxy-corpus.js', 'scripts/generate-account-subscription-fixture.js', 'scripts/generate-provider-limit-history-fixture.js', 'scripts/generate-claude-models-fixture.js', 'scripts/generate-auto-provider-fixtures.js', 'tests/test-auto-provider-fixtures.js', 'src/network/proxy-policy.js', 'tests/helpers/legacy-*-route.js', 'tests/helpers/legacy-auto-provider-*.js', 'docker/**', 'scripts/build-task-shell-image.js', '.github/workflows/rust-kernels.yml']
   workflow_dispatch:
     inputs:
       compare_v2_20_2:
@@ -18,7 +18,8 @@ jobs:
       matrix:
         # Keep the host loader/libc below the amd64v3 baseline used by Ubuntu
         # 26.04; QEMU also executes those libraries under the selected old CPU.
-        os: [macos-latest, ubuntu-22.04, windows-latest]
+        # Ubuntu 24.04 also supplies GLIBC_2.39 required by the legacy addon.
+        os: [macos-latest, ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -129,10 +130,10 @@ jobs:
         run: |
           set -euo pipefail
           ulimit -c 0
-          sudo apt-get update
-          sudo apt-get install -y qemu-user
+          bash scripts/setup-linux-cpu-emulator.sh "$RUNNER_TEMP/multicc-qemu"
           native="$RUNNER_TEMP/multicc-rust-prebuilt/linux-x64"
-          node scripts/check-linux-cpu-compat.js --node "$(command -v node)" \
+          node scripts/check-linux-cpu-compat.js --qemu "$RUNNER_TEMP/multicc-qemu/qemu-x86_64" \
+            --node "$(command -v node)" \
             --addon "$native/multicc_core.node" --companions "$native" \
             --report "$RUNNER_TEMP/cpu-compat-current.json"
 
@@ -154,6 +155,7 @@ jobs:
             "$bundle/Resources/runtime/bin/node" \
             "$bundle/Resources/app-server/native/prebuilt/linux-x64/multicc_core.node"
           node scripts/check-linux-cpu-compat.js \
+            --qemu "$RUNNER_TEMP/multicc-qemu/qemu-x86_64" \
             --node "$legacy/$bundle/Resources/runtime/bin/node" \
             --addon "$legacy/$bundle/Resources/app-server/native/prebuilt/linux-x64/multicc_core.node" \
             --expect-sigill --report "$RUNNER_TEMP/cpu-compat-v2.20.2.json"

@@ -15,11 +15,11 @@ function options(argv) {
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
     if (key === '--expect-sigill') result.expectSigill = true;
-    else if (['--node', '--addon', '--companions', '--report'].includes(key) && argv[i + 1]) {
+    else if (['--node', '--addon', '--companions', '--report', '--qemu'].includes(key) && argv[i + 1]) {
       result[key.slice(2)] = path.resolve(argv[++i]);
     } else throw new Error(`未知参数或缺少参数值：${key}`);
   }
-  for (const key of ['node', 'addon', 'report']) assert.ok(result[key], `缺少 --${key}`);
+  for (const key of ['node', 'addon', 'report', 'qemu']) assert.ok(result[key], `缺少 --${key}`);
   return result;
 }
 
@@ -44,7 +44,10 @@ function main(argv) {
     report.environment = {
       osRelease: fs.readFileSync('/etc/os-release', 'utf8'),
       libc: run('getconf', ['GNU_LIBC_VERSION']),
-      emulator: run('qemu-x86_64', ['--version']),
+      emulator: run(opts.qemu, ['--version']),
+      emulatorSha256: createHash('sha256').update(fs.readFileSync(opts.qemu)).digest('hex'),
+      emulatorImage: fs.existsSync(`${opts.qemu}.image`)
+        ? fs.readFileSync(`${opts.qemu}.image`, 'utf8').trim() : null,
     };
     report.nodeSha256 = createHash('sha256').update(fs.readFileSync(opts.node)).digest('hex');
     report.addonSha256 = createHash('sha256').update(fs.readFileSync(opts.addon)).digest('hex');
@@ -55,14 +58,14 @@ function main(argv) {
     for (const [cpu, avx] of [['Nehalem', false], ['IvyBridge', true]]) {
       const row = { cpu };
       report.cases.push(row);
-      const emulate = (file, args = []) => run('qemu-x86_64', ['-cpu', cpu, file, ...args]);
+      const emulate = (file, args = []) => run(opts.qemu, ['-cpu', cpu, file, ...args]);
       const features = emulate(probe);
       row.probe = features;
       if (features.error || features.status !== 0) {
         // Preserve enough evidence to distinguish the probe from its dynamic
         // loader/libc. A startup SIGILL is not an AVX2 negative-control pass.
         const trace = path.join(temp, `${cpu}-probe.trace`);
-        row.probeTraceResult = run('qemu-x86_64', ['-cpu', cpu, '-d', 'in_asm', '-D', trace, probe]);
+        row.probeTraceResult = run(opts.qemu, ['-cpu', cpu, '-d', 'in_asm', '-D', trace, probe]);
         if (fs.existsSync(trace)) {
           const size = fs.statSync(trace).size;
           const tail = Buffer.alloc(Math.min(size, 16000));

@@ -62,7 +62,7 @@ jobs:
             native_platform: win32
             archs: "x64"
           # Pin the Linux x64 build/runtime baseline; ubuntu-latest can require AVX2.
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             platform: linux
             native_platform: linux
             archs: "x64"
@@ -326,7 +326,7 @@ jobs:
           - os: macos-latest
             platform: darwin
             arch: x64
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             platform: linux
             arch: x64
           - os: ubuntu-latest
@@ -506,8 +506,7 @@ jobs:
         run: |
           set -euo pipefail
           ulimit -c 0
-          sudo apt-get update
-          sudo apt-get install -y qemu-user
+          bash scripts/setup-linux-cpu-emulator.sh "$RUNNER_TEMP/multicc-qemu"
           version=$(node -p "require('./package.json').version")
           name="multicc-standalone-$version-linux-x64"
           extracted="$RUNNER_TEMP/cpu-compat-bundle"
@@ -515,7 +514,8 @@ jobs:
           tar -xzf "dist-standalone/$name.tar.gz" -C "$extracted"
           resources="$extracted/$name/Resources"
           native="$resources/app-server/native/prebuilt/linux-x64"
-          node scripts/check-linux-cpu-compat.js --node "$resources/runtime/bin/node" \
+          node scripts/check-linux-cpu-compat.js --qemu "$RUNNER_TEMP/multicc-qemu/qemu-x86_64" \
+            --node "$resources/runtime/bin/node" \
             --addon "$native/multicc_core.node" --companions "$native" \
             --report "$RUNNER_TEMP/cpu-compat-bundle.json"
 
