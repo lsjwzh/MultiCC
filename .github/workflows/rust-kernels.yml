@@ -16,7 +16,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # Keep the host loader/libc below the amd64v3 baseline used by Ubuntu
+        # 26.04; QEMU also executes those libraries under the selected old CPU.
+        os: [macos-latest, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

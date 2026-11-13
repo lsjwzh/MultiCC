@@ -98,7 +98,7 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  sourceServer = await startGateway(t, true, { dir: sourceDataDir, host: lanIp,
+  sourceServer = await startGateway(t, true, { dir: sourceDataDir, host: lanIp, allowRemote: true,
     source: { directories: [...sourceDirectories.values()], sessions: [...sourceSessions.values()] },
   });
   targetServer = await startGateway(t, true, { dir: targetDataDir });

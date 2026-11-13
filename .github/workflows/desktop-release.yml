@@ -61,7 +61,8 @@ jobs:
             platform: windows
             native_platform: win32
             archs: "x64"
-          - os: ubuntu-latest
+          # Pin the Linux x64 build/runtime baseline; ubuntu-latest can require AVX2.
+          - os: ubuntu-22.04
             platform: linux
             native_platform: linux
             archs: "x64"
@@ -325,7 +326,7 @@ jobs:
           - os: macos-latest
             platform: darwin
             arch: x64
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             platform: linux
             arch: x64
           - os: ubuntu-latest

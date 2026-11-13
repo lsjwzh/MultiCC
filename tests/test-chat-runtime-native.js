@@ -11,12 +11,47 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 
 const { createStateOwner } = require('../src/state/owner');
 const { createChatSessions } = require('../src/chat/sessions');
 const { createTurnRuntimeStore: createNativeRuntime } = require('../src/chat/runtime-store');
 const { createTurnRuntimeStore: createLegacyRuntime } = require('./helpers/legacy-chat-runtime-store');
 const { createLegacyChatSession, createLegacyChatSessions } = require('./helpers/legacy-chat-sessions');
+
+test('a runtime facade keeps its host anchor alive, then releases native/host cycles', () => {
+  const result = spawnSync(process.execPath, ['--expose-gc', '-e', `
+    const assert = require('node:assert/strict');
+    const { createStateOwner } = require('./src/state/owner');
+    const { createTurnRuntimeStore } = require('./src/chat/runtime-store');
+    (async () => {
+      const fixture = (() => {
+        const owner = createStateOwner();
+        const now = () => 100;
+        now.native = owner.native; // anchor -> clock -> native -> anchor cycle
+        return {
+          store: createTurnRuntimeStore({ owner, now }),
+          anchor: new WeakRef(owner.anchor), native: new WeakRef(owner.native),
+        };
+      })();
+      fixture.store.claim('gc-session', 'gc-turn');
+      await new Promise(setImmediate);
+      global.gc();
+      assert.ok(fixture.anchor.deref(), 'live facade must retain the host anchor');
+      assert.equal(fixture.store.settle('gc-session', 'gc-turn', { status: 'failed' }).ok, true);
+      fixture.store = null;
+      for (let i = 0; i < 20; i++) {
+        await new Promise(setImmediate);
+        global.gc();
+        if (!fixture.anchor.deref() && !fixture.native.deref()) break;
+      }
+      assert.equal(fixture.anchor.deref(), undefined, 'unreachable host cycle must be collectible');
+      assert.equal(fixture.native.deref(), undefined, 'native instance must not be rooted forever');
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `], { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+});
 
 function mulberry32(seed) {
   let state = seed >>> 0;

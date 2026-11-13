@@ -41,16 +41,38 @@ function main(argv) {
   const passed = (result, label) => assert.ok(!result.error && result.status === 0,
     `${label} 失败：${JSON.stringify(result)}`);
   try {
+    report.environment = {
+      osRelease: fs.readFileSync('/etc/os-release', 'utf8'),
+      libc: run('getconf', ['GNU_LIBC_VERSION']),
+      emulator: run('qemu-x86_64', ['--version']),
+    };
     report.nodeSha256 = createHash('sha256').update(fs.readFileSync(opts.node)).digest('hex');
     report.addonSha256 = createHash('sha256').update(fs.readFileSync(opts.addon)).digest('hex');
     const probe = path.join(temp, 'cpu-probe');
     passed(run('rustc', [path.join(__dirname, 'fixtures/linux-cpu-probe.rs'), '--edition=2021',
       '-C', 'target-cpu=x86-64', '-D', 'warnings', '-o', probe]), '编译 CPU 探针');
+    report.probeSha256 = createHash('sha256').update(fs.readFileSync(probe)).digest('hex');
     for (const [cpu, avx] of [['Nehalem', false], ['IvyBridge', true]]) {
       const row = { cpu };
       report.cases.push(row);
       const emulate = (file, args = []) => run('qemu-x86_64', ['-cpu', cpu, file, ...args]);
       const features = emulate(probe);
+      row.probe = features;
+      if (features.error || features.status !== 0) {
+        // Preserve enough evidence to distinguish the probe from its dynamic
+        // loader/libc. A startup SIGILL is not an AVX2 negative-control pass.
+        const trace = path.join(temp, `${cpu}-probe.trace`);
+        row.probeTraceResult = run('qemu-x86_64', ['-cpu', cpu, '-d', 'in_asm', '-D', trace, probe]);
+        if (fs.existsSync(trace)) {
+          const size = fs.statSync(trace).size;
+          const tail = Buffer.alloc(Math.min(size, 16000));
+          const fd = fs.openSync(trace, 'r');
+          try { fs.readSync(fd, tail, 0, tail.length, size - tail.length); }
+          finally { fs.closeSync(fd); }
+          row.probeTraceTail = tail.toString('utf8');
+        }
+        row.probeLibraries = run('ldd', [probe]);
+      }
       passed(features, `${cpu} CPU 探针`);
       row.features = JSON.parse(features.stdout);
       assert.equal(row.features.avx2, false, `${cpu} 不能暴露 AVX2`);
