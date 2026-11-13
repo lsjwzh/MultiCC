@@ -119,6 +119,52 @@ test('hook callbacks are answered on the request_id the child asked for', { time
   assert.equal(replies[0].response.subtype, 'success');
 });
 
+for (const failWrite of [false, true]) test(`an early abort result waits for the ${failWrite ? 'failed' : 'successful'} native send acknowledgement`, { timeout: 15000 }, async t => {
+  let releaseWrite, rejectWrite;
+  const writeAck = new Promise((resolve, reject) => { releaseWrite = resolve; rejectWrite = reject; });
+  // Release before fixture teardown even when a regression assertion fails.
+  t.after(() => releaseWrite());
+  const f = await laneFixture(t, { streamDeps: {
+    createLane: callback => {
+      const lane = new (require('../src/native/runtime').getNative().RustClaudeLane)(callback);
+      return new Proxy(lane, { get(target, key) {
+        if (key === 'sendUser') return async line => {
+          await target.sendUser(line);
+          if (JSON.parse(line).message.content[0].text === 'EVT_ABORTED_ONE') await writeAck;
+        };
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    },
+  } });
+  f.configure();
+  const events = [];
+  let settled = false;
+  const turn = f.send('EVT_ABORTED_ONE', event => events.push(event)).then(result => {
+    settled = true;
+    assert.equal(f.runtime.status('sdk').busy, false,
+      'turn-end classification must see an idle stream');
+    return result;
+  });
+  // Attach a handler immediately, while retaining the original rejection.
+  turn.catch(() => {});
+  await until(() => events.some(event => event.type === 'result'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'a result must not overtake the pending native write acknowledgement');
+  assert.equal(f.runtime.status('sdk').busy, true);
+  if (failWrite) {
+    const rejected = assert.rejects(turn, /isolated write failure/);
+    rejectWrite(new Error('isolated write failure'));
+    await rejected;
+    assert.equal(f.runtime.status('sdk').alive, false, 'a failed write must stop the lane');
+    assert.equal(f.runtime.status('sdk').busy, false);
+  } else {
+    releaseWrite();
+    assert.equal((await turn).terminal_reason, 'aborted_tools');
+  }
+  assert.match((await f.send('PING_AFTER_ABORT')).result, /echo:PING_AFTER_ABORT/);
+});
+
 test('interrupt drains the cancelled turn and reuses the child', { timeout: 30000 }, async t => {
   const f = await laneFixture(t);
   f.configure({ interruptTimeoutMs: 3000 });

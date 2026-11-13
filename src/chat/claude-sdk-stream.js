@@ -143,6 +143,10 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     // handing another user message to this query.
     void (async () => {
       try {
+        // Native result callbacks can overtake sendUser's Promise callback.
+        // Finalize only after the send pump releases ownership, so classify
+        // cannot mistake this completed turn for a still-busy SDK stream.
+        await item.pumpFinished;
         await item.interrupt;
         try { await run.relay?.drain(); } catch (error) {
           // Background agents still stream through the relay (hold cap reached).
@@ -334,6 +338,7 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
   async function pump(s) {
     if (s.pumping || s.current || s.disposed) return;
     s.pumping = true;
+    let finishPump;
     try {
       await s.stopping;
       if (s.disposed) return;
@@ -342,6 +347,7 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         return;
       }
       const item = s.current = s.queue.shift();
+      item.pumpFinished = new Promise(resolve => { finishPump = resolve; });
       clearIdle(s);
       try {
         // Capture per-turn configuration when send() was called, not whenever
@@ -384,6 +390,7 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
       }
     } finally {
       s.pumping = false;
+      finishPump?.();
       if (!s.disposed && !s.current && s.queue.length) setImmediate(() => pump(s));
     }
   }

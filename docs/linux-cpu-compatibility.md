@@ -47,11 +47,11 @@ emulation with two CPU models:
 - `IvyBridge`: AVX and F16C, no AVX2, matching the relevant VM constraint.
 
 Ubuntu 22.04's QEMU 6.2 cannot emulate AVX/F16C and therefore fails the
-IvyBridge feature assertion. `setup-linux-cpu-emulator.sh` extracts static
-QEMU 9.2.2 from the digest-pinned `tonistiigi/binfmt` Linux x64 image without
+IvyBridge feature assertion. `setup-linux-cpu-emulator.sh` extracts QEMU 8.2.2
+from a SHA256-pinned Ubuntu 24.04 `qemu-user` package without
 running its installer or changing host binfmt handlers. Both workflows pass
 that executable explicitly with `--qemu`; the reports record its version,
-binary digest and image reference. The current and legacy checks use the same
+binary digest and package provenance. The current and legacy checks use the same
 emulator and Ubuntu 24.04 loader/libc, with all feature assertions retained.
 
 The baseline Rust probe checks exposed CPU features and deliberately executes

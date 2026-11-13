@@ -103,8 +103,6 @@ const frameText = frame => {
 };
 const hasText = (frames, needle) => frames.some(frame =>
   OUTPUT_FRAMES.has(frame?.type) && (frameText(frame).includes(needle) || JSON.stringify(frame).includes(needle)));
-const terminal = frames => frames.some(frame =>
-  frame?.type === 'stream_end' || (frame?.type === 'result' && !frame.partial));
 // Frames from the first one carrying this turn's prompt marker onward. The
 // previous turn's trailing bookkeeping (notify/stream_end/session_queue) can
 // still be in flight, so a length snapshot taken before send is not a safe cut.
@@ -115,11 +113,14 @@ const messageTurnId = (frames, marker) => frames
     && typeof frame.message.content === 'string' && frame.message.content.includes(marker))
   .map(frame => frame.message.turnId)
   .find(Boolean) || null;
-// The scheduler emits one session_queue {event:'completed'} per fully settled
-// turn (including any provider retry); waiting for it keeps one turn's late
-// frames out of the next turn's window.
-const queueCompleted = frames => frames.filter(frame =>
-  frame?.type === 'session_queue' && frame.event === 'completed').length;
+// Correlate completion with this prompt's admitted FIFO entry. Earlier turns'
+// results, stream_end frames and delayed scheduler events cannot satisfy it.
+const turnSettled = (frames, marker, admissionFrames = frames) => {
+  const entry = admissionFrames.find(frame => frame?.type === 'session_queue'
+    && frame.event === 'queued' && frame.message?.includes(marker));
+  return !!entry?.entryId && frames.some(frame => frame?.type === 'session_queue'
+    && frame.event === 'completed' && frame.entryId === entry.entryId);
+};
 
 (async () => {
   const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-chat-events-')));
@@ -213,7 +214,7 @@ const queueCompleted = frames => frames.filter(frame =>
     // ── 1. stream → result over the real lane ──
     sendUser(socket, 'PING_BASIC_ONE');
     await socket.until(frames => hasText(frames, 'echo:PING_BASIC_ONE'), 'basic echo');
-    await socket.until(terminal, 'basic completion');
+    await socket.until(frames => turnSettled(frames, 'PING_BASIC_ONE'), 'basic completion');
     assert.match(await history(session), /echo:PING_BASIC_ONE/, 'basic reply persisted');
 
     // ── 2. tool_use → tool_result → text → result ──
@@ -234,7 +235,7 @@ const queueCompleted = frames => frames.filter(frame =>
       && frame.message.content.some(block => block.type === 'tool_result'
         && JSON.stringify(block.content).includes('patched'))), 'normalized tool_result frame');
     await socket.until(frames => hasText(frames.slice(beforeTool), 'TOOL_DONE'), 'tool turn text');
-    await socket.until(terminal, 'tool turn completion');
+    await socket.until(frames => turnSettled(frames, 'EVT_TOOL_USE_ONE'), 'tool turn completion');
     const toolHistory = await history(session);
     assert.match(toolHistory, /TOOL_DONE/, 'tool turn text persisted');
     assert.match(toolHistory, /toolu_evt_1/, 'tool call persisted with the assistant message');
@@ -245,17 +246,15 @@ const queueCompleted = frames => frames.filter(frame =>
       frame?.type === 'monitor_started' && frame?.task_id === 'bg_evt_1'),
     'background task_started surfaced');
     await socket.until(frames => hasText(frames, 'BG_ACK'), 'background turn text');
-    await socket.until(terminal, 'background turn completion');
+    await socket.until(frames => turnSettled(frames, 'EVT_BG_TASK_ONE'), 'background turn completion');
     await socket.until(frames => frames.some(frame =>
       frame?.type === 'monitor_done' && frame?.task_id === 'bg_evt_1'),
     'post-result task_notification surfaced after the turn');
 
     // ── 4. API error message: append once (dedupe) when there was no output ──
-    const settledError = queueCompleted(socket.frames);
     sendUser(socket, 'EVT_API_ERROR_EMPTY_ONE SUCCESS_RESULT');
     await socket.until(frames => hasText(frames, 'upstream exploded'), 'api error surfaced');
-    await socket.until(terminal, 'api error completion');
-    await socket.until(frames => queueCompleted(frames) > settledError, 'api error turn settled');
+    await socket.until(frames => turnSettled(frames, 'EVT_API_ERROR_EMPTY_ONE'), 'api error completion');
     const errorFrames = socket.frames
       .filter(frame => frame?.type === 'assistant' && frame.turnId === messageTurnId(socket.frames,
         'EVT_API_ERROR_EMPTY_ONE') && JSON.stringify(frame).includes('upstream exploded'));
@@ -269,11 +268,9 @@ const queueCompleted = frames => frames.filter(frame =>
     }
 
     // ── 5. API error message: suppress when the turn already has output ──
-    const settledSuppress = queueCompleted(socket.frames);
     sendUser(socket, 'EVT_API_ERROR_AFTER_OUTPUT_ONE SUCCESS_RESULT');
     await socket.until(frames => hasText(frames, 'genuine answer'), 'pre-error answer surfaced');
-    await socket.until(terminal, 'suppressed api error completion');
-    await socket.until(frames => queueCompleted(frames) > settledSuppress, 'suppressed turn settled');
+    await socket.until(frames => turnSettled(frames, 'EVT_API_ERROR_AFTER_OUTPUT_ONE'), 'suppressed api error completion');
     const suppressTurnId = messageTurnId(socket.frames, 'EVT_API_ERROR_AFTER_OUTPUT_ONE');
     assert.ok(suppressTurnId, 'the committed user message must carry its turnId');
     const suppressFrames = socket.frames.filter(frame => frame?.turnId === suppressTurnId);
@@ -289,14 +286,14 @@ const queueCompleted = frames => frames.filter(frame =>
     sendUser(socket, 'EVT_ABORTED_ONE');
     await socket.until(frames => hasText(frames, 'partial-before-abort'),
       'aborted partial surfaced');
-    await socket.until(terminal, 'aborted turn completion');
+    await socket.until(frames => turnSettled(frames, 'EVT_ABORTED_ONE'), 'aborted turn completion');
     assert.ok(!(await history(session)).includes('undefined'),
       'an aborted result must not persist a literal undefined');
     // The session stays usable for the next turn.
     sendUser(socket, 'PING_AFTER_ABORT');
     await socket.until(frames => hasText(frames, 'echo:PING_AFTER_ABORT'),
       'post-abort turn');
-    await socket.until(terminal, 'post-abort completion');
+    await socket.until(frames => turnSettled(frames, 'PING_AFTER_ABORT'), 'post-abort completion');
 
     // ── 7. reconnect replay of an in-flight delta ──
     sendUser(socket, 'EVT_REPLAY_ONE');
@@ -307,7 +304,7 @@ const queueCompleted = frames => frames.filter(frame =>
     await replay.until(frames => hasText(frames, 'replay-partial'),
       'reconnect replay of the in-flight delta');
     await replay.until(frames => hasText(frames, 'replay-done'), 'replay turn result');
-    await replay.until(terminal, 'replay turn completion');
+    await replay.until(frames => turnSettled(frames, 'EVT_REPLAY_ONE', socket.frames), 'replay turn completion');
 
     console.log('isolated chat-events reducer wiring check passed');
   } catch (error) {

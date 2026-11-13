@@ -6,6 +6,7 @@ All notable changes to MultiCC are documented in this file.
 
 - Pin the Linux x64 CPU baseline for Rust and bundled C/C++ dependencies, including SQLite, to prevent startup crashes on CPUs without AVX2. Keep Linux x64 builds on Ubuntu 24.04 so the loader and libc support both the CPU gate and the legacy comparison. Add CI execution checks on emulated CPUs without AVX/AVX2 and validate the final standalone archive before publication.
 - Keep native turn-state host values alive while a runtime facade is reachable, preventing preparation failures during garbage collection. The Node change only adds a V8-visible ownership edge required by the current N-API bridge; state transitions remain in Rust, and the edge can move when the native binding exposes equivalent cycle-aware ownership.
+- Wait for the native Claude send acknowledgement before finalizing an early result, preventing an aborted turn from leaving subsequent messages stuck in assessment. This Node change only orders existing SDK/N-API Promise callbacks; classification and scheduling policies remain unchanged. Move this bridge when the Rust host owns both send completion and turn finalization.
 
 ## v2.21.0 — Relay balances, terminal provider sync, and resilient presets (2026-11-13)
 
