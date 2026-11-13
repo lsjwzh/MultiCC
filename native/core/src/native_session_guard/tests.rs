@@ -405,7 +405,44 @@ fn native_walk_respects_scan_limit_and_skips_archive_dirs() {
     let all = walk_matches(&root, &id, StoreKind::Files, 100.0);
     assert_eq!(all.len(), 5);
     let limited = walk_matches(&root, &id, StoreKind::Files, 2.0);
-    assert_eq!(limited.len(), 2);
+    // The archive directory sorts first and consumes one inspected entry,
+    // even though its contents are excluded, just as in the Node guard.
+    assert_eq!(limited, vec![node_join(&[&root, "sid-0.jsonl"])]);
+}
+
+#[test]
+fn native_archive_collision_and_scan_bound_follow_node_filename_order() {
+    for order in [["b", "a"], ["a", "b"]] {
+        let tree = TempTree::new();
+        for name in order {
+            tree.file(&format!(".codebuddy/{name}/cb.jsonl"), name);
+        }
+        let root = node_join(&[&tree.path(), ".codebuddy"]);
+        let a = node_join(&[&root, "a/cb.jsonl"]);
+        let b = node_join(&[&root, "b/cb.jsonl"]);
+        let id = JsString::from_rust_str("cb");
+        assert_eq!(
+            walk_matches(&root, &id, StoreKind::Files, 100.0),
+            vec![b.clone(), a.clone()]
+        );
+        assert_eq!(
+            walk_matches(&root, &id, StoreKind::Files, 3.0),
+            vec![b.clone()]
+        );
+        let mut guard = native_guard(&tree.path());
+        let record = record(
+            text("codebuddy"),
+            text("cb"),
+            JsValue::Null,
+            text("task-cb"),
+        );
+        let result = guard.enforce(&record, true, &JsValue::Null, 0.0);
+        assert_eq!(action(&result), "archived");
+        let target = node_join(&[&root, NATIVE_ARCHIVE_DIRNAME, "task-cb-cb.jsonl"]);
+        assert_eq!(fs::read_to_string(target).expect("archive"), "a");
+        assert!(!Path::new(&a).exists());
+        assert!(!Path::new(&b).exists());
+    }
 }
 
 #[test]

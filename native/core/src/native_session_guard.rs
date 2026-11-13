@@ -17,9 +17,9 @@
 //!
 //! Two behaviours are deliberately frozen exactly as the Node code had them:
 //!
-//! 1. The walks are unsorted `readdir` order with a LIFO directory stack, so the
-//!    `archived`/`deleted` arrays and which file wins an archive-name collision
-//!    follow filesystem enumeration order.
+//! 1. Vendor matching uses Node/libuv's filename order with a LIFO directory
+//!    stack. Raw filesystem order must not change bounded scan results or the
+//!    winner of an archive-name collision. Cleanup arrays retain walk order.
 //! 2. Legacy edge cases are reproduced, not fixed: the codex sweep skips
 //!    directories and symlinks while the vendor sweep deletes archived
 //!    directories and counts a symlink's target size; a failed vendor unlink
@@ -909,7 +909,11 @@ fn walk_matches(root: &str, id: &JsString, kind: StoreKind, max_entries: f64) ->
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
+        // Node readdirSync uses libuv scandir's filename sort. Preserve that
+        // order before applying the scan bound and pushing LIFO directories.
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_cached_key(|entry| entry.file_name().to_string_lossy().into_owned());
+        for entry in entries {
             let name = entry.file_name().to_string_lossy().into_owned();
             inspected += 1.0;
             if inspected > max_entries {
