@@ -8,11 +8,11 @@ const dns = require('dns');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
+const os = require('os');
 const { atomicWriteJson } = require('../runtime-security');
 const { createEventHub } = require('./hub');
 const { createEventRuleEngine } = require('./engine');
 const { mountEventRoutes } = require('./routes');
-const { conclusionFromHistory } = require('./envelope');
 
 function readJsonFile(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
@@ -39,7 +39,9 @@ function createEventsHost(deps) {
   const hub = createEventHub({
     bus, logger,
     dirIdOf: (id) => (persistedSessions.get(id) || {}).dirId,
-    conclusionOf: (id) => (deps.loadChatHistory ? conclusionFromHistory(deps.loadChatHistory(id)) : ''),
+    // The history runtime walks its cached messages from the tail and returns
+    // only the finished text, so a long history never crosses into Node whole.
+    conclusionOf: (id) => (deps.latestAssistantConclusion ? deps.latestAssistantConclusion(id, os.homedir()) || '' : ''),
   });
   const engine = createEventRuleEngine({
     hub, persistedSessions, saveBestEffort, logger,

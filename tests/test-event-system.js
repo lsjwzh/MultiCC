@@ -315,6 +315,17 @@ test('session triggers accept type:event and reject bad event rules', () => {
 const envelope = require('../src/events/envelope');
 
 test('envelope: conclusion = last non-empty assistant reply, clipped and redacted', () => {
+  // The conclusion is computed inside the history runtime, against the cached
+  // history, so drive the real service rather than a plain array.
+  const { createChatHistoryService } = require('../src/session/chat-history-service');
+  const conclusionOf = (history) => {
+    let n = 0;
+    const service = createChatHistoryService({
+      history: { read: () => JSON.parse(JSON.stringify(history)), write() {}, deleteSession() { return true; }, hasPersistedDelivery() { return false; } },
+      idFactory: () => `id-${++n}`,
+    });
+    return service.latestAssistantConclusion('s', require('os').homedir()) || '';
+  };
   const history = [
     { role: 'user', content: 'go' },
     { role: 'assistant', content: 'old answer' },
@@ -322,10 +333,9 @@ test('envelope: conclusion = last non-empty assistant reply, clipped and redacte
     { role: 'assistant', content: '   ' },
     { role: 'user', content: 'thanks' },
   ];
-  assert.equal(envelope.conclusionFromHistory(history), 'done, key *** ok');
-  assert.equal(envelope.conclusionFromHistory([]), '');
-  assert.equal(envelope.conclusionFromHistory(null), '');
-  const long = envelope.conclusionFromHistory([{ role: 'assistant', content: 'x'.repeat(5000) }]);
+  assert.equal(conclusionOf(history), 'done, key *** ok');
+  assert.equal(conclusionOf([]), '');
+  const long = conclusionOf([{ role: 'assistant', content: 'x'.repeat(5000) }]);
   assert.ok(long.length <= envelope.CONCLUSION_MAX + 1);
   assert.match(envelope.redactText('Authorization: Bearer abcdefghijklmnopqrstuvwxyz'), /\*\*\*/);
 });

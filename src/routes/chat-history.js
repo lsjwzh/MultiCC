@@ -220,6 +220,14 @@ function createChatHistoryRuntime(rawDeps) {
     return run('latestAssistantAt', sessionId);
   }
 
+  // The newest assistant reply with text, redacted and clipped by the same
+  // rule as events/envelope `conclusionFromHistory`, computed against the
+  // cached history in place: no message array is cloned or marshalled.
+  // `home` is the directory redaction rewrites to `~`. Returns null when none.
+  function latestAssistantConclusion(sessionId, home) {
+    return run('latestAssistantConclusion', sessionId, home);
+  }
+
   function lastActivity(sessionId, activeChat) {
     return run('lastActivity', sessionId, activeChat);
   }
@@ -856,6 +864,7 @@ function createChatHistoryRuntime(rawDeps) {
     hideMessages,
     lastActivity,
     latestAssistantAt,
+    latestAssistantConclusion,
     load,
     viewHistory,
     projectedMessages,

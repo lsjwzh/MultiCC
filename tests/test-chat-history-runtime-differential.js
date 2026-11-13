@@ -465,8 +465,18 @@ test('模块导出与运行时表面与旧实现一致', () => {
   // without those hooks.
   const queueSurface = new Set(['settle', 'removeSession', 'replaceHistory', 'dropMessages',
     'mergeHistory', 'canDeleteSession', 'deletionVerdict', 'registerSession']);
-  const surface = api => Object.keys(api).filter(key => !queueSurface.has(key)).sort();
+  // Read queries added after the frozen oracle was taken. The oracle cannot
+  // have them, so each is compared on its own by a dedicated differential
+  // (docs/rust-migration/differential/latest-assistant-conclusion.js), and its
+  // presence is pinned below so the surface cannot grow unnoticed.
+  const nativeOnlyReads = new Set(['latestAssistantConclusion']);
+  const surface = api => Object.keys(api)
+    .filter(key => !queueSurface.has(key) && !nativeOnlyReads.has(key)).sort();
   assert.deepEqual(surface(nativeHarness.api), surface(legacyHarness.api));
+  for (const name of nativeOnlyReads) {
+    assert.equal(typeof nativeHarness.api[name], 'function', name);
+    assert.equal(legacyHarness.api[name], undefined, `${name} must not exist on the frozen oracle`);
+  }
   assert.equal(typeof nativeHarness.api.settle, 'function');
   assert.equal(typeof nativeHarness.api.removeSession, 'function');
   assert.equal(typeof nativeHarness.api.replaceHistory, 'function');

@@ -1967,6 +1967,9 @@ impl<'a> Runtime<'a> {
     fn latest_assistant_at(&self, session: L<'a>) -> Result<L<'a>> {
         self.service("latestAssistantAt", &[session])
     }
+    fn latest_assistant_conclusion(&self, session: L<'a>, home: L<'a>) -> Result<L<'a>> {
+        self.service("latestAssistantConclusion", &[session, home])
+    }
     fn projected_messages(&self, session: L<'a>, include_hidden: bool) -> Result<L<'a>> {
         let messages = self.service("view", &[session])?;
         let apply = |values: L<'a>| -> Result<L<'a>> {
@@ -2551,6 +2554,7 @@ impl<'a> Runtime<'a> {
             "load" => self.load(first),
             "viewHistory" => self.view_history(first),
             "latestAssistantAt" => self.latest_assistant_at(first),
+            "latestAssistantConclusion" => self.latest_assistant_conclusion(first, second),
             "projectedMessages" => self.projected_messages(first, second.truthy()?),
             "paginate" => {
                 let options = if second.undefined()? {

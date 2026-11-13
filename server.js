@@ -2843,7 +2843,7 @@ const triggerRuntime = createSessionTriggers({
   logger,
 });
 triggerRuntime.mountRoutes(app);
-const eventsHost = require('./src/events/host').createEventsHost({ bus, app, persistedSessions, chatSessions, saveBestEffort: savePersistedSessionsBestEffort, rulesFile: MULTICC_PATHS.eventRulesFile, secretsVault, loadChatHistory, createChatTask: i => taskShellHost.createTask(i), admit: (id, text, opts) => chatTurnEngine.admitChatWork(id, text, opts), notify: (...a) => pushRuntime.notify(...a), logger });
+const eventsHost = require('./src/events/host').createEventsHost({ bus, app, persistedSessions, chatSessions, saveBestEffort: savePersistedSessionsBestEffort, rulesFile: MULTICC_PATHS.eventRulesFile, secretsVault, latestAssistantConclusion: (...a) => chatHistoryRuntime.latestAssistantConclusion(...a), createChatTask: i => taskShellHost.createTask(i), admit: (id, text, opts) => chatTurnEngine.admitChatWork(id, text, opts), notify: (...a) => pushRuntime.notify(...a), logger });
 const teardownTriggers = triggerRuntime.teardownSession;
 
 const ensureFirstRunDirectory = async () => {
