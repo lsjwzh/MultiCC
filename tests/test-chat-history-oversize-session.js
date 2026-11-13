@@ -156,14 +156,22 @@ test('真会话构造的重放帧必须压在 WS 单帧上限内', t => {
   const before = fs.readFileSync(planted.file);
   const runtime = runtimeFor(t, planted);
 
-  const page = runtime.paginate(planted.sessionId, { limit: 5 });
-  const fitted = fitHistoryFrame(page.messages, { maxBytes: DEFAULT_MAX_BYTES });
+  // 一页必须真的超预算，否则这条断言是空跑：20 条里约 10 条 assistant
+  // × 500KB ≈ 5MB，高于 4MB 单帧上限，装帧才会真的丢旧消息。
+  const page = runtime.paginate(planted.sessionId, { limit: 20 });
+  const rawBytes = Buffer.byteLength(JSON.stringify(page.messages));
+  assert.ok(rawBytes > DEFAULT_MAX_BYTES, `样本没超预算(${(rawBytes / 1048576).toFixed(2)}MB)，装帧路径没被考到`);
+
+  const fitted = fitHistoryFrame(page.messages, page.hasMore, { maxBytes: DEFAULT_MAX_BYTES });
   const frameBytes = Buffer.byteLength(JSON.stringify(fitted.messages));
 
   assert.ok(
     frameBytes <= DEFAULT_MAX_BYTES,
     `重放帧 ${(frameBytes / 1048576).toFixed(2)}MB 超过单帧上限 ${(DEFAULT_MAX_BYTES / 1048576).toFixed(0)}MB`,
   );
+  assert.ok(fitted.dropped > 0, '超预算时必须丢最旧的，否则帧永远压不下来');
+  assert.equal(fitted.hasMore, true, '丢了旧消息就必须置 hasMore，否则前端补不齐');
+  assert.equal(fitted.messages.at(-1).id, 'a39', '最新一轮永远不许被丢');
   assert.ok(fitted.messages.length >= 1, '至少保留最新一条，否则页面永远补不齐');
   assert.deepEqual(fs.readFileSync(planted.file), before, '装帧只改副本，落盘 transcript 不许动');
   assert.equal(
