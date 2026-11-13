@@ -22,6 +22,15 @@ checkout for this policy to be discovered, including plugin builds and Docker
 build contexts. The source-cache fingerprint includes this configuration and
 compiler environment changes so previously built modules are not reused.
 
+The Linux x64 parity, desktop and standalone builds pin `ubuntu-22.04`.
+The floating `ubuntu-latest` label moved to Ubuntu 26.04 with `amd64v3`
+packages; the first CPU run failed before the baseline probe reported any
+features. QEMU user-mode also executes the host loader and libc, so compiler
+flags alone cannot make that newer userspace an old-CPU test environment.
+Reports now include the OS, libc, emulator, probe digest and a bounded
+instruction trace on probe failure. That early failure is not evidence of
+the addon's compatibility or an accepted AVX2 negative control.
+
 Explicit feature overrides such as `RUSTFLAGS=-Ctarget-feature=+avx2` or
 `CFLAGS=-mavx2` are not portable release configurations. The runtime gate must
 remain enabled; do not infer compatibility solely from the configured flags,
@@ -38,6 +47,8 @@ emulation with two CPU models:
 The baseline Rust probe checks exposed CPU features and deliberately executes
 an AVX2 instruction as a negative control. That control must receive SIGILL;
 otherwise the emulator cannot establish compatibility and the gate fails.
+The deliberate instruction lives in a separate, non-inlined AVX2 function so
+compiler-generated AVX cleanup cannot enter the baseline feature-report path.
 The positive checks load the real N-API module and exercise SQLite numeric
 parsing, UTF-8/UTF-16 databases, WAL, CRUD, transactions, FTS5 and task storage.
 The remote, CDP and gateway companions must also report their versions.

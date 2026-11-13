@@ -19,6 +19,10 @@ function createStateOwner() {
   }
   const anchor = Object.create(null);
   const owner = new native.RustSessionRecords(anchor);
+  // N-API keeps a weak anchor so host/native cycles remain collectible. Facades
+  // may retain only the native instance; give V8 the missing instance -> anchor
+  // edge instead of adding a permanent strong reference on the Rust side.
+  Object.defineProperty(owner, Symbol('host-value-anchor'), { value: anchor });
   const shared = { native: owner, anchor };
   let directoriesFile = null;
   return {

@@ -46,6 +46,7 @@ async function start(t, native = true, options = {}) {
   }
   const host = options.host || '127.0.0.1';
   const env = { ...process.env, PORT: String(port), HOST: host, MULTICC_ENV_FILE: path.join(dir, '.env'),
+    MULTICC_ALLOW_REMOTE: options.allowRemote ? '1' : '0', ACCESS_TOKEN: 'fixture-token',
     MULTICC_TEST_SOURCE_ROUTES: options.source ? '1' : '0',
     MULTICC_TEST_PACKAGE_ROOT: packageRoot,
     MULTICC_DATA_DIR: dir, MULTICC_GATEWAY_BACKOFF_SCALE: '0.01', MULTICC_RUST_ADDON: addonPath, MULTICC_TEST_EXTERNAL_ROUTES: '1' };

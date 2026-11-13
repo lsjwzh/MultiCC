@@ -19,7 +19,9 @@ function write(root, rel, text) {
 }
 
 function fixture(t) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-source rust-')));
+  // Git expands Windows 8.3 paths (RUNNER~1) to their long spelling. The JS
+  // realpath fallback may preserve that alias; use the OS canonical path.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-source rust-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const git = spawnSync('git', ['init', '-q', root], { encoding: 'utf8' });
   assert.equal(git.status, 0, git.stderr);
