@@ -25,7 +25,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{mpsc, Arc, Mutex, Once};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -116,6 +116,8 @@ struct Seen {
     token: String,
 }
 
+type PendingUpstream = Arc<Mutex<HashMap<String, mpsc::SyncSender<()>>>>;
+
 fn read_headers(stream: &mut impl Read) -> Option<String> {
     let mut text = Vec::new();
     let mut byte = [0u8; 1];
@@ -146,9 +148,9 @@ fn serve_upstream(
     golden: Value,
     config: Arc<ServerConfig>,
     seen: Arc<Mutex<Vec<Seen>>>,
-    port: u16,
+    listener: TcpListener,
+    pending: Option<PendingUpstream>,
 ) {
-    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     let scripts: HashMap<String, Value> = golden["upstream"]
         .as_array()
         .unwrap()
@@ -160,6 +162,7 @@ fn serve_upstream(
         let config = config.clone();
         let seen = seen.clone();
         let scripts = scripts.clone();
+        let pending = pending.clone();
         std::thread::spawn(move || {
             let connection = match ServerConnection::new(config) {
                 Ok(connection) => connection,
@@ -185,6 +188,16 @@ fn serve_upstream(
                 path,
                 token: token.clone(),
             });
+            if let Some(pending) = pending {
+                // The disconnect test must know the leader reached its real
+                // upstream before hanging up, and the response must remain
+                // blocked until that hangup. Elapsed time proves neither.
+                let (release, released) = mpsc::sync_channel(0);
+                pending.lock().unwrap().insert(token.clone(), release);
+                released
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("client must disconnect before upstream release");
+            }
             let script = scripts.get(&token).cloned().unwrap_or_else(
                 || json!({"status": 404, "body": "{\"error\":\"unknown token\"}", "headers": {}}),
             );
@@ -214,8 +227,7 @@ fn serve_upstream(
 
 // ── CONNECT proxy ──────────────────────────────────────────────────────────
 
-fn serve_proxy(upstream_port: u16, port: u16) {
-    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+fn serve_proxy(upstream_port: u16, listener: TcpListener) {
     for stream in listener.incoming() {
         let Ok(mut client) = stream else { continue };
         std::thread::spawn(move || {
@@ -447,14 +459,26 @@ impl Drop for Gateway {
 // ── disconnect helpers ─────────────────────────────────────────────────────
 
 /// Send a real request, then close the socket before the slow upstream answers.
-fn abort_request(port: u16, url: &str) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect gateway");
+fn abort_request(gateway: &Gateway, url: &str, token: &str, pending: &PendingUpstream) {
+    let mut stream = TcpStream::connect(("127.0.0.1", gateway.port)).expect("connect gateway");
     let request = format!(
         "GET {url} HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: diff-abort\r\nConnection: close\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-    let _ = stream.shutdown(std::net::Shutdown::Both);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let release = loop {
+        if let Some(release) = pending.lock().unwrap().remove(token) {
+            break release;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "upstream never received the request before disconnect\n{}",
+            gateway.log()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    release.send(()).expect("release the observed upstream");
 }
 
 /// The leader keeps running after the disconnect, so the row lands later.
@@ -468,7 +492,7 @@ fn wait_for_cache_row(gateway: &Gateway, key: &str) -> String {
             &file.to_string_lossy(),
             "{\"operation\":\"read\"}",
         )
-        .unwrap_or_default();
+        .unwrap_or_else(|error| format!("cache read failed: {error}"));
         if serde_json::from_str::<Value>(&read)
             .ok()
             .and_then(|rows| rows.as_object().map(|map| map.contains_key(key)))
@@ -518,14 +542,16 @@ fn account_subscription_replays_golden_cases() {
     let golden = golden();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let config = tls_config(&golden);
-    let tls_port = free_port();
-    let proxy_port = free_port();
+    let tls_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let tls_port = tls_listener.local_addr().unwrap().port();
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = proxy_listener.local_addr().unwrap().port();
     {
         let golden = golden.clone();
         let seen = seen.clone();
-        std::thread::spawn(move || serve_upstream(golden, config, seen, tls_port));
+        std::thread::spawn(move || serve_upstream(golden, config, seen, tls_listener, None));
     }
-    std::thread::spawn(move || serve_proxy(tls_port, proxy_port));
+    std::thread::spawn(move || serve_proxy(tls_port, proxy_listener));
     let gateway = Gateway::start(&golden, proxy_port);
 
     for case in golden["cases"].as_array().unwrap() {
@@ -634,22 +660,30 @@ fn account_subscription_survives_client_disconnect() {
     let golden = golden();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let config = tls_config(&golden);
-    let tls_port = free_port();
-    let proxy_port = free_port();
+    let tls_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let tls_port = tls_listener.local_addr().unwrap().port();
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = proxy_listener.local_addr().unwrap().port();
+    let pending = PendingUpstream::default();
     {
         let golden = golden.clone();
         let seen = seen.clone();
-        std::thread::spawn(move || serve_upstream(golden, config, seen, tls_port));
+        let pending = pending.clone();
+        std::thread::spawn(move || {
+            serve_upstream(golden, config, seen, tls_listener, Some(pending))
+        });
     }
-    std::thread::spawn(move || serve_proxy(tls_port, proxy_port));
+    std::thread::spawn(move || serve_proxy(tls_port, proxy_listener));
     let gateway = Gateway::start(&golden, proxy_port);
 
     // A unique client hangs up while the slow upstream is still thinking. The
     // query must run to completion anyway: exactly one upstream request and a
     // recorded row, even though no response could be delivered.
     abort_request(
-        gateway.port,
+        &gateway,
         "/api/claude/subscription?account=a1a1a1a1a1a1a1a1",
+        "claude-slow",
+        &pending,
     );
     let rows = wait_for_cache_row(&gateway, "claude:a1a1a1a1a1a1a1a1");
     assert_eq!(
@@ -662,8 +696,10 @@ fn account_subscription_survives_client_disconnect() {
     // Two waiters, the first disconnects: one upstream request for the pair,
     // and the survivor still receives the correct profile.
     abort_request(
-        gateway.port,
+        &gateway,
         "/api/claude/subscription?account=a2a2a2a2a2a2a2a2",
+        "claude-slow2",
+        &pending,
     );
     let response = gateway.exchange("GET", "/api/claude/subscription?account=a2a2a2a2a2a2a2a2");
     assert_eq!(response.status, 200, "{}", gateway.log());
