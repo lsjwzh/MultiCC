@@ -246,6 +246,32 @@ test('an active provider cooldown is skipped and expiry permits a fresh probe', 
   });
 });
 
+// An exhausted line is skipped, so it produces no new readings: nothing would
+// ever mark it available again. Once the full window's reset time has passed
+// the old reading is the only evidence there is, and it is enough to offer the
+// line back — unless a window that is still running is itself nearly spent.
+test('a full window whose reset has passed is offered back and reclaims its place', () => {
+  const { limitState, chooseCandidate } = require('../src/chat/auto-provider-policy');
+  const entry = week => ({
+    status: 'ok', fetchedAt: 1_000,
+    summary: { windows: [{ usedPercent: 100, resetMs: 10_000_000 }, { usedPercent: week, resetMs: 90_000_000 }] },
+  });
+  const read = week => limitState(entry(week), { now: 20_000_000, staleAfterMs: 60_000 });
+  assert.deepEqual(read(40), { state: 'stale', reason: 'limit_window_reset_elapsed', usedPercent: null });
+  assert.equal(read(95).reason, 'limit_stale');
+  assert.equal(limitState(entry(40), { now: 5_000_000, staleAfterMs: 60_000 }).state, 'exhausted');
+
+  const line = (providerId, priority, limit) => ({
+    providerId, priority, index: priority, enabled: true, limitState: limit.state, limitReason: limit.reason,
+  });
+  const fallback = line('fallback', 1, { state: 'available', reason: 'fresh_limit_available' });
+  const pick = week => chooseCandidate({
+    candidates: [line('first', 0, read(week)), fallback], stickyProviderId: 'fallback',
+  }).candidate.providerId;
+  assert.equal(pick(40), 'first');
+  assert.equal(pick(95), 'fallback');
+});
+
 // Revocation is not a cooldown: it does not lapse, because nothing multicc can
 // do repairs it — only a human logging in does. The flag must therefore outrank
 // the timestamp, or a clock change would quietly hand Auto back an account the

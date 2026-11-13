@@ -424,6 +424,30 @@ fn full_until_reset(summary: Option<&Map<String, Value>>, now: f64) -> bool {
     )
 }
 
+/// A window the last reading saw full, whose published reset time has since
+/// passed. The reading itself is old news by then, but the one fact it carried
+/// (this cap was the blocker, and it has rolled over) is exactly what makes the
+/// line worth a fresh try.
+fn full_window_reset_elapsed(summary: Option<&Map<String, Value>>, now: f64) -> bool {
+    let elapsed = |used: Js<'_>, reset: Js<'_>| {
+        let reset = reset.number();
+        !used.nullish()
+            && used.number() >= 100.0
+            && reset.is_finite()
+            && reset > 0.0
+            && reset <= now
+    };
+    windows_of(summary).any(|window| {
+        elapsed(
+            field(Some(window), "usedPercent"),
+            field(Some(window), "resetMs"),
+        )
+    }) || elapsed(
+        field(summary, "usedPercentage"),
+        field(summary, "resetsAtMs"),
+    )
+}
+
 fn family_bounded(text: &str, family: &str) -> bool {
     let is_letter = |c: Option<char>| c.is_some_and(|c| c.is_ascii_lowercase());
     text.match_indices(family).any(|(at, _)| {
@@ -533,6 +557,16 @@ fn limit_state_of(request: &Value) -> Value {
         if full_until_reset(summary, now) {
             return verdict("exhausted", "limit_window_full_until_reset", used);
         }
+        // The cap that blocked this line has rolled over, but nothing re-read
+        // the quota: a line that is not being used produces no new readings.
+        // Waiting for one would leave the session on its fallback indefinitely,
+        // so the line is offered back for its place — unless a window that is
+        // still running is itself close to full. If it is rejected again the
+        // failure records a fresh park, so the retry is bounded.
+        let still_roomy = used_percent_of(summary, now).is_none_or(|n| n < NEAR_LIMIT_PERCENT);
+        if full_window_reset_elapsed(summary, now) && still_roomy {
+            return verdict("stale", "limit_window_reset_elapsed", used);
+        }
         return verdict("stale", "limit_stale", used);
     }
     let status_value = field(Some(entry), "status");
@@ -606,13 +640,14 @@ impl<'a> Line<'a> {
         }
     }
     /// An earlier line the cache reports usable again (a fresh available
-    /// reading, or an availability park that has expired) reclaims its place.
-    /// A line that is merely unmeasured stays behind the sticky route, so
-    /// neither an aged-out reading nor a one-off failure re-rolls the route on
-    /// every turn.
+    /// reading, an availability park that has expired, or a full window whose
+    /// reset time has passed) reclaims its place. A line that is merely
+    /// unmeasured stays behind the sticky route, so neither an aged-out reading
+    /// nor a one-off failure re-rolls the route on every turn.
     fn recovered_for_priority(&self) -> bool {
         self.get("limitState").is("available")
             || self.get("limitReason").is("provider_cooldown_expired")
+            || self.get("limitReason").is("limit_window_reset_elapsed")
     }
 }
 
@@ -1051,6 +1086,90 @@ mod tests {
         assert_eq!(
             call(limit_state, json!({ "entry": null, "now": 0 }))["reason"],
             "limit_unknown"
+        );
+    }
+
+    #[test]
+    fn a_full_window_whose_reset_has_passed_is_offered_back() {
+        // The reading is hours old (the default staleness is five minutes) and
+        // nothing has re-read the quota since: an unused line produces no new
+        // readings, so the reset time is the only evidence there will be.
+        let at = |windows: Value| {
+            call(
+                limit_state,
+                json!({ "entry": { "fetchedAt": 1_000, "status": "ok",
+                    "summary": { "windows": windows } }, "now": 20_000_000 }),
+            )
+        };
+        let week = |used: u32| json!({ "usedPercent": used, "resetMs": 90_000_000 });
+        let elapsed = json!({ "usedPercent": 100, "resetMs": 10_000_000 });
+        let reason = |verdict: &Value| verdict["reason"].clone();
+
+        let back = at(json!([elapsed, week(40)]));
+        assert_eq!(back["state"], "stale");
+        assert_eq!(reason(&back), json!("limit_window_reset_elapsed"));
+        assert_eq!(
+            back["usedPercent"],
+            Value::Null,
+            "an old reading steers nothing"
+        );
+
+        // The weekly cap is still running and nearly spent: stay away.
+        assert_eq!(
+            reason(&at(json!([elapsed, week(95)]))),
+            json!("limit_stale")
+        );
+        // A cap that has not rolled over keeps the line out.
+        let held = at(json!([{ "usedPercent": 100, "resetMs": 30_000_000 }, week(40)]));
+        assert_eq!(held["state"], "exhausted");
+        assert_eq!(reason(&held), json!("limit_window_full_until_reset"));
+        // One rolled-over cap does not hide another that is still full.
+        let still_full = at(json!([elapsed, { "usedPercent": 100, "resetMs": 80_000_000 }]));
+        assert_eq!(still_full["state"], "exhausted");
+        // Nothing was blocking: a window that was not full is just old news.
+        let idle = at(json!([{ "usedPercent": 60, "resetMs": 10_000_000 }]));
+        assert_eq!(reason(&idle), json!("limit_stale"));
+        // Single-figure summaries (no window list) read the same way.
+        let single = |reset: u32| {
+            call(
+                limit_state,
+                json!({ "entry": { "fetchedAt": 1_000, "status": "ok",
+                    "summary": { "usedPercentage": 100, "resetsAtMs": reset } },
+                    "now": 20_000_000 }),
+            )
+        };
+        assert_eq!(
+            reason(&single(10_000_000)),
+            json!("limit_window_reset_elapsed")
+        );
+        assert_eq!(single(30_000_000)["state"], "exhausted");
+    }
+
+    #[test]
+    fn a_line_offered_back_after_its_reset_reclaims_its_place() {
+        let line = |id: &str, priority: u32, state: &str, reason: &str| {
+            json!({ "providerId": id, "priority": priority, "index": priority,
+                "limitState": state, "limitReason": reason })
+        };
+        let choose = |lines: Value| {
+            call(
+                choose_candidate,
+                json!({ "candidates": lines, "attempted": [], "stickyProviderId": "fallback" }),
+            )["candidate"]
+                .clone()
+        };
+        let fallback = line("fallback", 1, "available", "fresh_limit_available");
+        assert_eq!(
+            choose(json!([
+                line("first", 0, "stale", "limit_window_reset_elapsed"),
+                fallback
+            ])),
+            json!(0)
+        );
+        assert_eq!(
+            choose(json!([line("first", 0, "stale", "limit_stale"), fallback])),
+            json!(1),
+            "an unmeasured line still stays behind"
         );
     }
 
