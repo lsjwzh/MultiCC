@@ -2224,6 +2224,12 @@
       ]
     },
     {
+      "path": "tests/test-chat-history-oversize-session.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture"
+    },
+    {
       "path": "tests/test-chat-history-routes.js",
       "tier": "core",
       "lane": "deterministic",
