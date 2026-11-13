@@ -37,6 +37,7 @@ jobs:
         run: |
           cargo fmt --all --manifest-path native/Cargo.toml --check
           cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path native/Cargo.toml -p multicc-core native_session_guard::tests
           cargo test --locked --manifest-path native/Cargo.toml -p multicc-cpr
       # 远控进程的 Rust 测试必须进 CI。crate 还没落进 workspace 时明确略过，
       # 一旦 native/remote/Cargo.toml 出现就必须编过、测过。

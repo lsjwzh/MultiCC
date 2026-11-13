@@ -205,12 +205,38 @@ async function startFixtureServer(routes = {}) {
   };
 }
 
-async function waitForActivePort(profileDir, chrome, timeoutMs, stderrTail) {
+function chromeStartupDiagnostics(binary, profileDir, chrome, startedAt, output) {
+  let resolvedBinary = binary;
+  try { resolvedBinary = fs.realpathSync(binary); } catch (_) {}
+  const processes = [];
+  // Inspect only this test browser's bounded child tree. Do not read command
+  // arguments, environments, or unrelated host processes into CI logs.
+  const pending = process.platform === 'linux' && chrome.pid ? [chrome.pid] : [];
+  for (let index = 0; index < pending.length && index < 12; index++) {
+    const pid = pending[index];
+    const read = file => {
+      try { return fs.readFileSync(`/proc/${pid}/${file}`, 'utf8').trim(); }
+      catch (_) { return ''; }
+    };
+    processes.push({ pid, name: read('comm'), state: read('status').match(/^State:\s*(.*)$/m)?.[1],
+      waitingOn: read('wchan') });
+    for (const value of read(`task/${pid}/children`).split(/\s+/)) {
+      const childPid = Number(value);
+      if (childPid > 0 && !pending.includes(childPid) && pending.length < 12) pending.push(childPid);
+    }
+  }
+  let profileFiles = [];
+  try { profileFiles = fs.readdirSync(profileDir).slice(0, 20); } catch (_) {}
+  return JSON.stringify({ binary, resolvedBinary, pid: chrome.pid, exitCode: chrome.exitCode,
+    signalCode: chrome.signalCode, elapsedMs: Date.now() - startedAt, profileFiles, processes, ...output() });
+}
+
+async function waitForActivePort(profileDir, chrome, timeoutMs, diagnostics, spawnError) {
   const file = path.join(profileDir, 'DevToolsActivePort');
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (chrome.exitCode !== null || chrome.signalCode !== null) {
-      throw new CdpUnavailableError(`Chrome exited before CDP became ready: ${stderrTail()}`);
+    if (spawnError() || chrome.exitCode !== null || chrome.signalCode !== null) {
+      throw new CdpUnavailableError(`Chrome exited before CDP became ready: ${diagnostics()}`);
     }
     try {
       const parsed = parseActivePort(fs.readFileSync(file, 'utf8'));
@@ -218,7 +244,7 @@ async function waitForActivePort(profileDir, chrome, timeoutMs, stderrTail) {
     } catch (_) {}
     await sleep(50);
   }
-  throw new CdpUnavailableError(`Chrome did not create DevToolsActivePort: ${stderrTail()}`);
+  throw new CdpUnavailableError(`Chrome did not create DevToolsActivePort: ${diagnostics()}`);
 }
 
 async function stopProcess(child) {
@@ -246,9 +272,12 @@ async function createCdpHarness(options = {}) {
   let targetId = null;
   let sessionId = null;
   let stderr = '';
+  let stdout = '';
+  let spawnError = null;
 
   try {
     fixture = await startFixtureServer(options.routes || {});
+    const startedAt = Date.now();
     chrome = spawn(binary, [
       '--headless=new',
       '--remote-debugging-address=127.0.0.1',
@@ -260,9 +289,13 @@ async function createCdpHarness(options = {}) {
       '--disable-dev-shm-usage',
       '--disable-gpu',
       'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    chrome.once('error', error => { spawnError = error.message; });
+    chrome.stdout.on('data', chunk => { stdout = (stdout + chunk.toString()).slice(-4_000); });
     chrome.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-4_000); });
-    const active = await waitForActivePort(profileDir, chrome, timeoutMs, () => stderr.trim());
+    const diagnostics = () => chromeStartupDiagnostics(binary, profileDir, chrome, startedAt,
+      () => ({ spawnError, stdout: stdout.trim(), stderr: stderr.trim() }));
+    const active = await waitForActivePort(profileDir, chrome, timeoutMs, diagnostics, () => spawnError);
     connection = await connect(`ws://127.0.0.1:${active.port}${active.wsPath}`, timeoutMs);
     await connection.send('Browser.getVersion');
     const created = await connection.send('Target.createTarget', { url: 'about:blank', background: true });
