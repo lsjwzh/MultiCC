@@ -66,10 +66,20 @@ test('source cache lives in the primary worktree and fingerprints source/config 
   write(root, 'native/target/ignored.rs', '// compiler output');
   assert.equal(sourceFingerprint(root, env), initial.fingerprint);
   assert.notEqual(sourceFingerprint(root, { ...env, RUSTFLAGS: '-C opt-level=2' }), initial.fingerprint);
+  write(root, '.cargo/config.toml', '[target.x86_64-unknown-linux-gnu]\nrustflags=["-C", "target-cpu=x86-64"]\n');
+  const withCpuBaseline = sourceFingerprint(root, env);
+  assert.notEqual(withCpuBaseline, initial.fingerprint, 'adding the CPU baseline must invalidate old addons');
+  fs.appendFileSync(path.join(root, '.cargo/config.toml'), '# revised C compiler baseline\n');
+  assert.notEqual(sourceFingerprint(root, env), withCpuBaseline, 'root Cargo config edits must rebuild native code');
+  const configured = sourceFingerprint(root, env);
+  for (const key of ['CFLAGS_x86_64_unknown_linux_gnu', 'CXXFLAGS_x86_64-unknown-linux-musl',
+    'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS', 'TARGET_CFLAGS', 'CC_x86_64_unknown_linux_gnu']) {
+    assert.notEqual(sourceFingerprint(root, { ...env, [key]: 'changed' }), configured, `${key} must affect the cache`);
+  }
   const messages = 'native/core/src/quota_bar_view/messages.json';
   write(root, messages, '{"quotaLoading":"Loading"}');
   const withMessages = sourceFingerprint(root, env);
-  assert.notEqual(withMessages, initial.fingerprint, 'compiled quota messages must invalidate the addon cache');
+  assert.notEqual(withMessages, configured, 'compiled quota messages must invalidate the addon cache');
   write(root, messages, '{"quotaLoading":"Checking"}');
   assert.notEqual(sourceFingerprint(root, env), withMessages, 'message edits must rebuild native code');
   const worktree = path.join(root, 'sibling');

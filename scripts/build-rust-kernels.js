@@ -151,7 +151,7 @@ function build({ platform = process.platform, arch = process.arch,
   const cargoEnv = { ...process.env, CARGO_TARGET_DIR: path.resolve(targetDir) };
   const cargo = crate => {
     const result = run('cargo', ['build', '--locked', '--release', '--manifest-path',
-      manifest, '--target', target, '-p', crate], { stdio: 'inherit', env: cargoEnv });
+      manifest, '--target', target, '-p', crate], { cwd: repo, stdio: 'inherit', env: cargoEnv });
     if (result.error || result.status !== 0) {
       throw new Error(`Rust 构建失败（${crate}）；请检查 Rust 工具链、目标标准库和链接器`);
     }

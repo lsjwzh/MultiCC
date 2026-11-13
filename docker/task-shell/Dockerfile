@@ -1,5 +1,6 @@
 FROM rust:1.98-bookworm AS rust-build
 WORKDIR /build
+COPY .cargo ./.cargo
 COPY native ./native
 RUN cargo build --locked --release --manifest-path native/Cargo.toml
 

@@ -82,6 +82,26 @@ test('发版矩阵里的每个平台都有构建目标和 meow 内核', () => {
   }
 });
 
+test('plugin Cargo builds discover the enclosing repository CPU policy', async t => {
+  const repo = fixtureRepo();
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  const plugin = build.compiledPlugins(repo)[0];
+  const targetDir = path.join(repo, 'cargo-target');
+  const run = (command, args, options) => {
+    if (command === 'rustc') return { status: 0, stdout: 'host: x86_64-unknown-linux-gnu\n' };
+    if (command !== 'cargo') return { status: 1, stdout: '{"ok":false}\n' };
+    assert.equal(options.cwd, plugin.dir);
+    const target = args[args.indexOf('--target') + 1];
+    const file = path.join(targetDir, target, 'release', 'demo');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, ELF_X64);
+    return { status: 0 };
+  };
+  const [result] = await build.buildPluginBinaries({ repoRoot: repo, platform: 'linux', arch: 'x64',
+    targetDir, run, logger: { log() {} } });
+  assert.ok(fs.existsSync(result.binary));
+});
+
 test('打包只留目标平台目录，删掉编译缓存', () => {
   const repo = fixtureRepo();
   const out = copyPlugins(repo);

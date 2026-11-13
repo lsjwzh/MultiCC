@@ -324,6 +324,29 @@ function ownPrebuiltRoot(t) {
 
 const quiet = { log() {}, error() {} };
 
+test('Cargo discovers the repository CPU policy even when the caller is elsewhere', t => {
+  const fixture = rustBuildFixture(t);
+  assert.notEqual(process.cwd(), fixture.root);
+  const cargo = fakeCargo();
+  const run = (command, args, options) => {
+    if (command === 'cargo') assert.equal(options.cwd, fixture.root);
+    return cargo.run(command, args, options);
+  };
+  build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir,
+    probe: () => true, run, logger: quiet });
+  assert.equal(cargo.calls.length, 2);
+});
+
+test('CPU compatibility gate distinguishes SIGILL from unrelated failures', () => {
+  const { sigill } = require('../scripts/check-linux-cpu-compat');
+  assert.equal(sigill({ status: 132 }), true);
+  assert.equal(sigill({ status: null, signal: 'SIGILL' }), true);
+  for (const result of [{ status: 0 }, { status: 1 }, { status: 139 },
+    { status: null, signal: 'SIGTERM' }, { status: 132, error: 'spawn timeout' }]) {
+    assert.equal(sigill(result), false);
+  }
+});
+
 test('Windows package builds and requires the desktop agent companion', t => {
   ownPrebuiltRoot(t);
   const fixture = rustBuildFixture(t, { members: ['core', 'addon', 'desktop-agent'] });

@@ -1,0 +1,16 @@
+# Linux x64 releases must also run on VMs without AVX/AVX2. Rust's target
+# baseline does not control C dependencies such as bundled SQLite: pin both.
+# Function-level SIMD with runtime feature detection remains available.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-cpu=x86-64"]
+
+[env]
+# cc-rs appends the exact-target spelling last, after generic/underscored flags.
+# force prevents an inherited target-specific -march=native from replacing it.
+"CFLAGS_x86_64-unknown-linux-gnu" = { value = "-march=x86-64 -mtune=generic", force = true }
+"CXXFLAGS_x86_64-unknown-linux-gnu" = { value = "-march=x86-64 -mtune=generic", force = true }
+"CFLAGS_x86_64-unknown-linux-musl" = { value = "-march=x86-64 -mtune=generic", force = true }
+"CXXFLAGS_x86_64-unknown-linux-musl" = { value = "-march=x86-64 -mtune=generic", force = true }

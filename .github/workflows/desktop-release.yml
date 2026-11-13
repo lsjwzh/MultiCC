@@ -498,6 +498,35 @@ jobs:
           node scripts/standalone-smoke.js \
             --bundle "dist-standalone/multicc-standalone-$version-${{ matrix.platform }}-${{ matrix.arch }}"
 
+      - name: 验证最终 Linux x64 归档在无 AVX2 CPU 上运行
+        if: matrix.platform == 'linux' && matrix.arch == 'x64'
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+          version=$(node -p "require('./package.json').version")
+          name="multicc-standalone-$version-linux-x64"
+          extracted="$RUNNER_TEMP/cpu-compat-bundle"
+          mkdir -p "$extracted"
+          tar -xzf "dist-standalone/$name.tar.gz" -C "$extracted"
+          resources="$extracted/$name/Resources"
+          native="$resources/app-server/native/prebuilt/linux-x64"
+          node scripts/check-linux-cpu-compat.js --node "$resources/runtime/bin/node" \
+            --addon "$native/multicc_core.node" --companions "$native" \
+            --report "$RUNNER_TEMP/cpu-compat-bundle.json"
+
+      - name: 保存 Linux x64 归档 CPU 验证证据
+        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-linux-x64-cpu-compatibility
+          path: ${{ runner.temp }}/cpu-compat-bundle.json
+          if-no-files-found: warn
+          retention-days: 14
+
       # POSIX install.sh is exercised by clean-install.yml in a fresh Linux
       # container. Windows has a native PowerShell bootstrap, so execute that
       # exact user path on windows-latest: verify zip + sidecar, install into a
