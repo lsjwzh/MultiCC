@@ -710,12 +710,15 @@ class _InputBarState extends State<InputBar> {
           Row(
             children: [
               // Attachment button
-              _SmallButton(
-                onTap: (!_uploading && isConnected) ? _pickAndUpload : null,
-                icon: _uploading
-                    ? Icons.hourglass_top_rounded
-                    : Icons.attach_file_rounded,
-                color: const Color(0xFF55718c),
+              Tooltip(
+                message: _uploading ? t('attachProcessing') : t('boardAttach'),
+                child: _SmallButton(
+                  onTap: (!_uploading && isConnected) ? _pickAndUpload : null,
+                  icon: _uploading
+                      ? Icons.hourglass_top_rounded
+                      : Icons.attach_file_rounded,
+                  color: const Color(0xFF55718c),
+                ),
               ),
               const SizedBox(width: 4),
               // Voice button — streaming /ws/voice dictation (falls back to the

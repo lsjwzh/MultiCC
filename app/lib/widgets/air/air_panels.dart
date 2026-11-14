@@ -1262,7 +1262,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                           ? null
                           : () => setState(() => _attachments.remove(file)),
                     ),
-                  if (_uploading) const _FileChip(label: '上传中…', busy: true),
+                  if (_uploading) const _FileChip(label: '处理并上传中…', busy: true),
                   if (_attachError.isNotEmpty)
                     _FileChip(label: _attachError, failed: true),
                 ],

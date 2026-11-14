@@ -790,6 +790,8 @@
   "attachSourceTitle": "Add attachment",
   "attachFromFile": "Choose a file",
   "attachFromPhotos": "Choose photos or videos",
+  "attachVideoCompressionFailed": "Video compression failed or the result exceeds 25 MiB. Please choose a shorter video.",
+  "attachProcessing": "Processing and uploading attachment",
   "boardVoice": "Voice input",
   "boardUploading": "Uploading...",
   "boardNoIdleSession": "No idle sessions",
