@@ -105,3 +105,33 @@ test('calendar rejects malformed month and handles empty task list', async t => 
   assert.deepEqual(ok.body.days, {});
   assert.deepEqual(ok.body.dense, []);
 });
+
+test('calendar shows subscription placeholder jobs via their hint cron, but never-hint ones', async t => {
+  const { year, month, key } = nextMonth();
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const hintDay = Math.min(15, daysInMonth);   // 15 号 08:30 触发(展示提示)
+  const hintCron = `30 8 ${hintDay} ${month} *`;
+  const { routes, cron } = await setup(t, [
+    // 订阅插件建的占位 job: disabled + createdBy=subscriptions + 指向下次真实触发时刻。
+    { id: 'cron_sub', name: '📅 视频会员', dirId: 'dir-1', cli: 'claude', cron: hintCron, prompt: 'p', enabled: false, createdBy: 'subscriptions', createdAt: '2026-01-01T00:00:00.000Z' },
+    // 暂停/已完结的订阅: cron 是永不匹配的 2 月 31 → 不展开, 也不烧一年扫描。
+    { id: 'cron_sub_never', name: '📅 已完结', dirId: 'dir-1', cli: 'claude', cron: '0 0 31 2 *', prompt: 'p', enabled: false, createdBy: 'subscriptions', createdAt: '2026-01-01T00:00:00.000Z' },
+    // 普通的停用任务(非订阅): 依旧不展开。
+    { id: 'cron_user_off', name: '用户停用', dirId: 'dir-1', cli: 'claude', cron: '0 10 * * *', prompt: 'p', enabled: false, createdAt: '2026-01-01T00:00:00.000Z' },
+  ]);
+  await cron._migrateTasks();
+
+  const res = response();
+  await routes.get('GET /api/cron/calendar')({ query: { month: key } }, res, e => { throw e; });
+  assert.equal(res.statusCode, 200);
+  const flat = Object.values(res.body.days).flat();
+  const sub = flat.filter(p => p.id === 'cron_sub');
+  // 提示 cron 只在下月 15 号 08:30 命中一次(表达式年字段 *, 但月份限定)。
+  assert.equal(sub.length, 1);
+  assert.equal(new Date(sub[0].at).getDate(), hintDay);
+  assert.equal(new Date(sub[0].at).getHours(), 8);
+  assert.equal(new Date(sub[0].at).getMinutes(), 30);
+  assert.equal(sub[0].dense, false);
+  assert.ok(!flat.some(p => p.id === 'cron_sub_never'));
+  assert.ok(!flat.some(p => p.id === 'cron_user_off'));
+});
