@@ -15,6 +15,7 @@ const {
   shouldReexecutePersistedDelivery,
 } = require('./turn-progress');
 const claudeApiError = require('./claude-api-error-message');
+const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
 const { createSessionNotices } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
@@ -1337,7 +1338,7 @@ function createChatTurnEngine(deps) {
     cs._codexPendingStreamError = '';
     cs._codexPendingStreamErrorCount = 0;
     cs._codexTransportError = '';
-    cs._codexStreamContinuationCount = 0;
+    cs._codexStreamContinuationCount = cs._apiNetworkContinueCount = 0;
 
     // Task start: show a neutral placeholder instantly. Structured finalization
     // decides P/D/W/B/E at turn end; best-effort Aux attribution names/groups the
@@ -1789,9 +1790,14 @@ function createChatTurnEngine(deps) {
         // native conversation is being resumed. Do not consume an Auto pool
         // candidate before the finalizer gives that continuation precedence.
         const deferAutoToCodexContinuation = cs.cli === 'codex' && !!cs._codexPendingStreamError;
-        const autoFailover = apiErrorDecision && !deferAutoToCodexContinuation
+        // OpenCode network continuation: the failure was local, not the route — do not consume an Auto candidate.
+        const isReplayUnsafeNetwork = (d) => !!d && d.action === 'fail_fast'
+          && (d.reason === 'unsafe_failure_phase' || d.reason === 'unsafe_replay_boundary')
+          && (d.error?.category === 'network' || d.error?.category === 'timeout');
+        const deferAutoContinuation = deferAutoToCodexContinuation || (cs.cli === 'opencode' && isReplayUnsafeNetwork(apiErrorDecision));
+        const autoFailover = apiErrorDecision && !deferAutoContinuation
           ? autoTurn.failover(apiErrorDecision, attemptFacts) : null;
-        const autoHandoffPreparation = apiErrorDecision && !deferAutoToCodexContinuation
+        const autoHandoffPreparation = apiErrorDecision && !deferAutoContinuation
           && !autoFailover?.invocationOptions
           ? autoTurn.prepareHandoff?.(apiErrorDecision, attemptFacts) || null : null;
         const effectiveApiErrorDecision = autoFailover?.decision || apiErrorDecision;
@@ -1799,7 +1805,7 @@ function createChatTurnEngine(deps) {
           type: 'system', subtype: 'warning',
           message: `Auto Provider：${autoFailover.fromProviderName} 不可用，正在切换到 ${autoFailover.toProviderName}。`,
         });
-        else if (autoTurn.enabled && apiErrorDecision && !deferAutoToCodexContinuation) chatBroadcast(sessionName, {
+        else if (autoTurn.enabled && apiErrorDecision && !deferAutoContinuation) chatBroadcast(sessionName, {
           type: 'system', subtype: 'warning', message: retryNotice(effectiveApiErrorDecision),
         });
         const closeCheckpointKey = assistantCheckpointKey(cs);
@@ -1826,16 +1832,17 @@ function createChatTurnEngine(deps) {
           pendingStreamError: cs._codexPendingStreamError,
           nativeSession: !!persisted.cliSessionId,
           codexDisconnectAttempt: cs._codexStreamContinuationCount || 0,
+          apiNetworkContinueAttempt: cs._apiNetworkContinueCount || 0,
           freshStartAttempt: isRetry ? 1 : 0,
           handoff: persisted.pendingCliHandoff,
         }, {
-          retry: { limits: { codexDisconnect: CODEX_STREAM_DISCONNECT_CONTINUE_MAX } },
+          retry: { limits: { codexDisconnect: CODEX_STREAM_DISCONNECT_CONTINUE_MAX, apiNetworkContinue: API_NETWORK_CONTINUE_MAX } },
         });
 
         // Timing: a terminal close with no first reply byte gets one abort line.
         // Retry/continuation plans keep the record open — the next attempt may
         // still deliver the first byte under the same turnId.
-        if (!['continue-codex', 'retry-api', 'retry-fresh'].includes(finalizePlan.action)) {
+        if (!['continue-codex', 'continue-opencode', 'retry-api', 'retry-fresh'].includes(finalizePlan.action)) {
           turnTiming.abort(sessionName, turn.turnId,
             `closed_before_first_byte:code=${code}${signal ? `:signal=${signal}` : ''}`);
         }
@@ -1878,7 +1885,7 @@ function createChatTurnEngine(deps) {
           cs._codexPendingStreamError = '';
           cs._codexPendingStreamErrorCount = 0;
           cs.isStreaming = true;
-          cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the continuation spawn (turnStartedAt may be >10min old)
+          cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the continuation spawn
           const continuePrompt = codexStreamDisconnectContinuePrompt();
           const continueInvocation = prepareRetryAttempt({
             bareText: continuePrompt, firstTurn: false, continuation: true,
@@ -1891,6 +1898,24 @@ function createChatTurnEngine(deps) {
           chatBroadcast(sessionName, { type: 'system', subtype: 'warning', message: msg });
           setSessionStatus(sessionName, { status: 'running', currentFile: null });
           console.warn(`[multicc/chat] [${sessionName}] auto-continuing codex after response.completed disconnect #${cs._codexStreamContinuationCount}`);
+          runner.retryPlanned = true;
+          try { cs.claudeProc = spawnChat(continueInvocation, true); }
+          catch (error) { executeBlockedRetry(error); }
+          return;
+        }
+
+        if (finalizePlan.action === 'continue-opencode') {
+          cs._apiNetworkContinueCount = finalizePlan.retry.attempt;
+          cs.isStreaming = true;
+          cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the continuation spawn (turnStartedAt may be >10min old)
+          const continueInvocation = prepareRetryAttempt({
+            bareText: apiNetworkContinuePrompt(), firstTurn: false, continuation: true, reasonCode: 'api_network_continuation',
+            ...currentRouteOptions(),
+          });
+          if (!continueInvocation) return;
+          chatBroadcast(sessionName, { type: 'system', subtype: 'warning', message: `网络中断，正在原线路续跑剩余任务（${cs._apiNetworkContinueCount}/${API_NETWORK_CONTINUE_MAX}）。` });
+          setSessionStatus(sessionName, { status: 'running', currentFile: null });
+          console.warn(`[multicc/chat] [${sessionName}] network api error, continuing #${cs._apiNetworkContinueCount}`);
           runner.retryPlanned = true;
           try { cs.claudeProc = spawnChat(continueInvocation, true); }
           catch (error) { executeBlockedRetry(error); }

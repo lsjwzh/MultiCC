@@ -172,6 +172,7 @@ fn limits_value(deps: &JsValue) -> JsValue {
         ("freshStart", JsValue::Number(1.0)),
         ("codexDisconnect", JsValue::Number(2.0)),
         ("interruptedResume", JsValue::Number(10.0)),
+        ("apiNetworkContinue", JsValue::Number(2.0)),
     ]);
     if let JsValue::Object(entries) = source {
         for (key, value) in entries {
@@ -262,6 +263,68 @@ fn decide_codex_continuation(
     schedule_retry(&decision, "codexDisconnect", deps, now_ms)
 }
 
+/// An API error the classifier already retried-or-refused, where the only
+/// thing standing between the turn and another attempt is replay safety
+/// (partial output or executed tool activity). Only network/timeout
+/// categories qualify: those say nothing about the provider itself, so
+/// resuming the same physical CLI session with a bare continuation prompt
+/// is both safe (no side-effect replay) and the correct remedy (the failure
+/// was on the local network path, not the route).
+fn api_network_replay_blocked(decision: &JsValue) -> bool {
+    if decision.is_nullish() {
+        return false;
+    }
+    let action_fail_fast = matches!(
+        decision.get("action"),
+        Some(JsValue::String(v)) if v.as_str_lossy() == "fail_fast"
+    );
+    if !action_fail_fast {
+        return false;
+    }
+    let replay_unsafe_reason = matches!(
+        decision.get("reason"),
+        Some(JsValue::String(v)) if matches!(
+            v.as_str_lossy().as_ref(),
+            "unsafe_failure_phase" | "unsafe_replay_boundary"
+        )
+    );
+    if !replay_unsafe_reason {
+        return false;
+    }
+    matches!(
+        decision.get("error").and_then(|error| error.get("category")),
+        Some(JsValue::String(v)) if matches!(v.as_str_lossy().as_ref(), "network" | "timeout")
+    )
+}
+
+fn decide_api_network_continuation(
+    input: &JsValue,
+    cli: &JsString,
+    result_durable: bool,
+    kill_reason: bool,
+    native_session: bool,
+    deps: &JsValue,
+    now_ms: f64,
+) -> JsValue {
+    let request = object(vec![
+        ("event", JsValue::string("api-network-continue")),
+        ("cli", JsValue::String(cli.clone())),
+        ("resultSaved", JsValue::Bool(result_durable)),
+        ("killReason", JsValue::Bool(kill_reason)),
+        ("hasNativeSession", JsValue::Bool(native_session)),
+        (
+            "attempts",
+            object(vec![(
+                "apiNetworkContinue",
+                attempt_or_zero(input, "apiNetworkContinueAttempt"),
+            )]),
+        ),
+        ("limits", limits_value(deps)),
+    ]);
+    let decision = retry_policy::decide(&request);
+    schedule_retry(&decision, "apiNetworkContinue", deps, now_ms)
+}
+
 fn decide_empty_exit(
     input: &JsValue,
     cli: &JsString,
@@ -295,6 +358,23 @@ fn decide_empty_exit(
 }
 
 fn retry_effects(action: &str, retry: &JsValue, facts: &JsValue) -> Vec<JsValue> {
+    if action == "continue-opencode" {
+        return vec![
+            effect("mark-retry-planned", vec![]),
+            effect("set-streaming", vec![("value", JsValue::Bool(true))]),
+            effect("set-status", vec![("status", JsValue::string("running"))]),
+            effect(
+                "spawn-api-continuation",
+                vec![
+                    (
+                        "attempt",
+                        retry.get("attempt").cloned().unwrap_or(UNDEFINED),
+                    ),
+                    ("cap", retry.get("cap").cloned().unwrap_or(UNDEFINED)),
+                ],
+            ),
+        ];
+    }
     if action == "continue-codex" {
         return vec![
             effect("mark-retry-planned", vec![]),
@@ -581,6 +661,45 @@ pub fn plan_turn_finalization(input: &JsValue, deps: &JsValue, now_ms: f64) -> J
                 (
                     "effects",
                     JsValue::Array(retry_effects("continue-codex", &retry, &facts)),
+                ),
+            ]);
+        }
+    }
+
+    // OpenCode same-provider continuation for replay-unsafe network errors:
+    // the CLI session is resumed with a bare continuation prompt instead of
+    // replaying the turn (which would re-execute tool side effects) or
+    // switching providers (which would not help — the failure was on the
+    // local network path, not on the route).
+    if !retry_unavailable
+        && runner_kind == "process"
+        && !guarded_handoff_resume_failure
+        && cli.as_str_lossy() == "opencode"
+        && api_error
+        && api_network_replay_blocked(&api_error_decision)
+    {
+        let retry = decide_api_network_continuation(
+            input,
+            &cli,
+            result_durable,
+            !kill_reason.is_empty(),
+            native_session,
+            deps,
+            now_ms,
+        );
+        let resumes = matches!(
+            retry.get("action"),
+            Some(JsValue::String(action)) if action.as_str_lossy() == "resume"
+        );
+        if resumes {
+            return object(vec![
+                ("action", JsValue::string("continue-opencode")),
+                ("code", JsValue::Null),
+                ("facts", facts.clone()),
+                ("retry", retry.clone()),
+                (
+                    "effects",
+                    JsValue::Array(retry_effects("continue-opencode", &retry, &facts)),
                 ),
             ]);
         }
@@ -1276,6 +1395,154 @@ mod tests {
         assert_eq!(
             plan.get("append").unwrap().get("final"),
             Some(&JsValue::Bool(false))
+        );
+    }
+
+    fn network_fail_fast(reason: &str) -> JsValue {
+        object(vec![
+            ("action", JsValue::string("fail_fast")),
+            ("reason", JsValue::string(reason)),
+            (
+                "error",
+                object(vec![("category", JsValue::string("network"))]),
+            ),
+            ("attempt", JsValue::Number(0.0)),
+        ])
+    }
+
+    #[test]
+    fn opencode_network_replay_block_continues_on_the_same_provider() {
+        let input = with(
+            with(
+                with(
+                    with(
+                        with(base(), "cli", JsValue::string("opencode")),
+                        "apiError",
+                        JsValue::Bool(true),
+                    ),
+                    "apiErrorDecision",
+                    network_fail_fast("unsafe_replay_boundary"),
+                ),
+                "nativeSession",
+                JsValue::Bool(true),
+            ),
+            "resultEvent",
+            JsValue::Bool(false),
+        );
+        let plan = plan_turn_finalization(&input, &object(Vec::<(&str, JsValue)>::new()), 0.0);
+        assert_eq!(
+            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            Some("continue-opencode".into())
+        );
+        assert_eq!(
+            plan.get("retry").unwrap().get("attempt"),
+            Some(&JsValue::Number(1.0))
+        );
+        // Second attempt from the host: the counter is host-owned state.
+        let input = with(input, "apiNetworkContinueAttempt", JsValue::Number(1.0));
+        let plan = plan_turn_finalization(&input, &object(Vec::<(&str, JsValue)>::new()), 0.0);
+        assert_eq!(
+            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            Some("continue-opencode".into())
+        );
+        // Cap (default 2) reached: back to terminal finalization.
+        let input = with(input, "apiNetworkContinueAttempt", JsValue::Number(2.0));
+        let plan = plan_turn_finalization(&input, &object(Vec::<(&str, JsValue)>::new()), 0.0);
+        assert_eq!(
+            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            Some("finalize".into())
+        );
+    }
+
+    #[test]
+    fn opencode_network_continuation_requires_session_and_replay_unsafe_network_only() {
+        let decision = network_fail_fast("unsafe_failure_phase");
+        let mk = |cli: &str, native_session: bool, decision: JsValue| {
+            let input = with(
+                with(
+                    with(
+                        with(base(), "cli", JsValue::string(cli)),
+                        "apiError",
+                        JsValue::Bool(true),
+                    ),
+                    "apiErrorDecision",
+                    decision,
+                ),
+                "nativeSession",
+                JsValue::Bool(native_session),
+            );
+            with(input, "resultEvent", JsValue::Bool(false))
+        };
+        let plan = plan_turn_finalization(
+            &mk("opencode", false, decision.clone()),
+            &object(Vec::<(&str, JsValue)>::new()),
+            0.0,
+        );
+        assert_eq!(
+            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            Some("finalize".into()),
+            "no native session to resume: fail closed"
+        );
+        // Timeout category qualifies the same way (local path failure).
+        let timeout_decision = object(vec![
+            ("action", JsValue::string("fail_fast")),
+            ("reason", JsValue::string("unsafe_replay_boundary")),
+            ("error", object(vec![("category", JsValue::string("timeout"))])),
+            ("attempt", JsValue::Number(0.0)),
+        ]);
+        let plan = plan_turn_finalization(
+            &mk("opencode", true, timeout_decision),
+            &object(Vec::<(&str, JsValue)>::new()),
+            0.0,
+        );
+        assert_eq!(
+            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            Some("continue-opencode".into())
+        );
+        // Non-network categories keep the fail-closed terminal path.
+        let auth_decision = object(vec![
+            ("action", JsValue::string("fail_fast")),
+            ("reason", JsValue::string("authentication_permission_not_retryable")),
+            (
+                "error",
+                object(vec![("category", JsValue::string("authentication_permission"))]),
+            ),
+            ("attempt", JsValue::Number(0.0)),
+        ]);
+        let plan = plan_turn_finalization(
+            &mk("opencode", true, auth_decision),
+            &object(Vec::<(&str, JsValue)>::new()),
+            0.0,
+        );
+        assert_eq!(
+            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            Some("finalize".into())
+        );
+        // Other CLIs (e.g. codex transport path, claude) are out of scope.
+        let plan = plan_turn_finalization(
+            &mk("codex", true, decision),
+            &object(Vec::<(&str, JsValue)>::new()),
+            0.0,
+        );
+        assert_eq!(
+            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            Some("finalize".into())
+        );
+        // A retryable network decision (before first token) keeps using the
+        // plain retry-api path, not the continuation.
+        let retry_decision = object(vec![
+            ("action", JsValue::string("retry")),
+            ("attempt", JsValue::Number(0.0)),
+            ("error", object(vec![("category", JsValue::string("network"))])),
+        ]);
+        let plan = plan_turn_finalization(
+            &mk("opencode", true, retry_decision),
+            &object(Vec::<(&str, JsValue)>::new()),
+            0.0,
+        );
+        assert_eq!(
+            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            Some("retry-api".into())
         );
     }
 

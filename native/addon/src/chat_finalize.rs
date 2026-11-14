@@ -82,6 +82,7 @@ fn scheduled_action(value: &JsValue) -> bool {
     matches!(
         value.get("action"),
         Some(JsValue::String(action)) if action.as_str_lossy() == "continue-codex"
+            || action.as_str_lossy() == "continue-opencode"
             || action.as_str_lossy() == "retry-fresh"
     )
 }

@@ -18,6 +18,7 @@ const OPENCODE_VARIANTS = new Set(['minimal', 'low', 'medium', 'high', 'max']);
 const QODER_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEBUDDY_REASONING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
+const API_NETWORK_CONTINUE_MAX = 2;
 
 function assertProviderDependencies(options) {
   if (!options || typeof options !== 'object') throw new TypeError('[session-policy] options are required');
@@ -472,8 +473,21 @@ function createReportedModelRuntime(options) {
   return Object.freeze({ note, backfill });
 }
 
+// Bare continuation prompt for OpenCode same-provider resumes after a
+// network-class API error. English per the model-facing prompt convention.
+function apiNetworkContinuePrompt() {
+  return [
+    'The previous step stopped early because the network connection to the API was reset.',
+    'Some output may already have been shown to the user.',
+    'Do not repeat work that is already done or already displayed; continue the original task from where it stopped.',
+    'If the task is in fact already complete, confirm completion in one sentence; otherwise keep executing the necessary steps until the task can be delivered.',
+  ].join('\n');
+}
+
 module.exports = {
   CODEX_STREAM_DISCONNECT_CONTINUE_MAX,
+  API_NETWORK_CONTINUE_MAX,
+  apiNetworkContinuePrompt,
   createSessionPolicy,
   createReportedModelRuntime,
 };

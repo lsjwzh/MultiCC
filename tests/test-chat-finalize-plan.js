@@ -68,6 +68,52 @@ test('Codex disconnect continues before cleanup and remains capped at two', () =
   assert.equal(capped.facts.recoveredTransport, true);
 });
 
+test('OpenCode replay-unsafe network errors continue on the same provider, capped at two', () => {
+  const decision = {
+    action: 'fail_fast', reason: 'unsafe_replay_boundary',
+    error: { category: 'network' }, attempt: 0,
+  };
+  const first = planTurnFinalization(base({
+    cli: 'opencode',
+    apiError: true,
+    apiErrorDecision: decision,
+    nativeSession: true,
+    resultEvent: false,
+  }), { retry: { now: () => 10 } });
+  assert.equal(first.action, 'continue-opencode');
+  assert.equal(first.retry.attempt, 1);
+  assert.deepEqual(types(first), [
+    'mark-retry-planned', 'set-streaming', 'set-status', 'spawn-api-continuation',
+  ]);
+  const capped = planTurnFinalization(base({
+    cli: 'opencode',
+    apiError: true,
+    apiErrorDecision: decision,
+    nativeSession: true,
+    apiNetworkContinueAttempt: 2,
+    resultEvent: false,
+  }));
+  assert.equal(capped.action, 'finalize');
+  // Without a native session there is nothing to resume: stay fail-closed.
+  const sessionless = planTurnFinalization(base({
+    cli: 'opencode',
+    apiError: true,
+    apiErrorDecision: decision,
+    nativeSession: false,
+    resultEvent: false,
+  }));
+  assert.equal(sessionless.action, 'finalize');
+  // A retryable network error keeps the plain retry-api path.
+  const retryable = planTurnFinalization(base({
+    cli: 'opencode',
+    apiError: true,
+    apiErrorDecision: { action: 'retry', attempt: 0, error: { category: 'network' } },
+    nativeSession: true,
+    resultEvent: false,
+  }));
+  assert.equal(retryable.action, 'retry-api');
+});
+
 test('process empty exit gets one fresh retry but adapter, explicit kill and retry do not', () => {
   const fresh = planTurnFinalization(base({ hasOutput: false, resultEvent: false }));
   assert.equal(fresh.action, 'retry-fresh');
