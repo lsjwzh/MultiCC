@@ -189,3 +189,10 @@ pub fn chat_is_guarded_handoff_failure(
         &facts, &handoff,
     ))
 }
+
+#[napi]
+pub fn chat_replay_safe_handoff_provider_error(env: Env, input: Unknown<'_>) -> Result<bool> {
+    let raw = env.raw();
+    let value = unsafe { crate::js_bridge::read_value(raw, input.raw(), 0, &mut Vec::new()) }?;
+    Ok(multicc_core::chat_finalize::replay_safe_handoff_provider_error(&value))
+}

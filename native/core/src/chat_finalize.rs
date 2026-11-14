@@ -132,6 +132,45 @@ fn fact_truthy(facts: &JsValue, key: &str) -> bool {
     facts.get(key).map(truthy).unwrap_or(false)
 }
 
+/// Only an attempt-scoped upstream response or the Codex app-server's explicit
+/// HTTP rejection can distinguish a provider failure from an empty failed
+/// resume. An open replay fence is still mandatory.
+pub fn replay_safe_handoff_provider_error(input: &JsValue) -> bool {
+    let attempt = prop(input, "attempt");
+    if fact_truthy(input, "killReason")
+        || fact_string(attempt, "replayFence") != "none"
+        || fact_truthy(attempt, "visibleOutputObserved")
+        || fact_truthy(attempt, "toolIntentObserved")
+        || fact_truthy(attempt, "sideEffectObserved")
+        || fact_truthy(input, "partialOutput")
+        || fact_truthy(input, "sideEffects")
+    {
+        return false;
+    }
+    let proxy = prop(input, "proxyFailure");
+    if fact_string(proxy, "source") == "proxy_response" {
+        if let JsValue::Number(status) = prop(proxy, "httpStatus") {
+            if (400.0..=599.0).contains(status) && status.fract() == 0.0 {
+                return true;
+            }
+        }
+    }
+    let raw = prop(input, "raw");
+    if fact_string(raw, "source") != "codex-exp_event" {
+        return false;
+    }
+    let message = fact_string(raw, "message").to_string_lossy();
+    let Some(rest) = message.strip_prefix("unexpected status ") else {
+        return false;
+    };
+    let bytes = rest.as_bytes();
+    bytes.len() >= 4
+        && matches!(bytes[0], b'4' | b'5')
+        && bytes[1].is_ascii_digit()
+        && bytes[2].is_ascii_digit()
+        && bytes[3] == b' '
+}
+
 /// `isGuardedHandoffFailure(facts, handoff)`.
 pub fn is_guarded_handoff_failure(facts: &JsValue, handoff: &JsValue) -> bool {
     if !fact_truthy(handoff, "pending")

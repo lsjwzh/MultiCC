@@ -36,6 +36,10 @@ function isGuardedHandoffFailure(facts, handoff) {
   return getNative().chatIsGuardedHandoffFailure(facts, handoff);
 }
 
+function replaySafeHandoffProviderError(input) {
+  return getNative().chatReplaySafeHandoffProviderError(input);
+}
+
 function planTurnFinalization(input = {}, deps = {}) {
   return freezePlan(getNative().chatPlanTurnFinalization(input, deps, retryClock(deps)));
 }
@@ -51,6 +55,7 @@ function resolveTurnFinalization(plan, outcome = {}) {
 module.exports = {
   classifyProcessExit,
   isGuardedHandoffFailure,
+  replaySafeHandoffProviderError,
   normalizeHandoff,
   planTurnFinalization,
   planRetryBlockedFinalization,

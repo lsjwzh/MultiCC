@@ -242,6 +242,14 @@ test('401/403, billing, invalid request, context, tool/config errors fail fast',
   }
 });
 
+test('Codex app-server HTTP failures are classified from its trusted event', () => {
+  const message = 'unexpected status 401 Unauthorized: Your token has expired. Please try refreshing it.';
+  const result = decide({ source: 'codex-exp_event', provider: 'codex-exp', code: 'provider_error', message });
+  assert.equal(result.error.category, 'authentication_permission');
+  assert.equal(result.action, 'fail_fast');
+  assert.equal(decide({ source: 'assistant_text', provider: 'codex-exp', message }).error.category, 'unknown');
+});
+
 test('Claude invalid native UUID is a local configuration failure, not a retryable API outage', () => {
   const message = 'Claude Code process exited with code 1. stderr: Error: Invalid session ID. Must be a valid UUID.';
   for (const source of ['process_stderr', 'anthropic_event', 'claude-exp_event']) {

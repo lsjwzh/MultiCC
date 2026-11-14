@@ -52,6 +52,7 @@ const TRUSTED_TEXT_SOURCES: [&str; 19] = [
     "claude_result",
     "claude-exp_event",
     "codex_event",
+    "codex-exp_event",
     "opencode_event",
     // A provider error the CLI swallowed but wrote to its own log. The text is
     // the provider's own error string, so it classifies exactly like an event:
