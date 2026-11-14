@@ -76,6 +76,11 @@ function latestStringAssistant(history, minLength = 20) {
 
 function createSessionAdminRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
+  // Read-only admin views only need the transcript's current contents. Prefer
+  // the uncopied runtime view when the host provides it; hosts that only pass
+  // the cloning loader keep working.
+  const viewChatHistory = typeof rawDeps.viewChatHistory === 'function'
+    ? rawDeps.viewChatHistory : deps.loadChatHistory;
 
   // A judgement Aux has stopped revising is still the best description there
   // is, but it must not be presented as current (see
@@ -352,7 +357,7 @@ function createSessionAdminRuntime(rawDeps) {
 
   function classificationReply(sessionId) {
     try {
-      return latestStringAssistant(deps.loadChatHistory(sessionId), 20);
+      return latestStringAssistant(viewChatHistory(sessionId), 20);
     } catch (_) {
       // Preserve the legacy admin contract: an unreadable history behaves like
       // an empty one for a single request and cannot abort a bulk reclassify pass.
@@ -546,7 +551,7 @@ function createSessionAdminRuntime(rawDeps) {
       const sessionName = req.params.id;
       const record = deps.records.get(sessionName);
       if (!record) return res.status(404).json({ error: 'session not found' });
-      const history = deps.loadChatHistory(sessionName);
+      const history = viewChatHistory(sessionName);
       if (!history.length) return res.status(400).json({ error: 'no history' });
       const latest = latestAssistant(history, 0);
       if (!latest.text || latest.text.length < 20) {
@@ -578,7 +583,7 @@ function createSessionAdminRuntime(rawDeps) {
       const cases = [];
       for (const [sessionId, record] of deps.records) {
         if (!record || record.type === 'aux' || record.type === 'gateway' || record.kind !== 'chat') continue;
-        const latest = latestAssistant(deps.loadChatHistory(sessionId), 0);
+        const latest = latestAssistant(viewChatHistory(sessionId), 0);
         if (!latest.text || latest.text.length < 40) continue;
         const tail = latest.text.slice(-1500);
         const task = record.taskState || {};

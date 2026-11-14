@@ -2,7 +2,8 @@
 
 const path = require('node:path');
 const { resolveDataDir, createPaths } = require('../paths');
-const { createSearchIndex } = require('./index-store');
+const { createSearchIndex, MAX_LIMIT } = require('./index-store');
+const { rerank } = require('./diversity');
 const { createMessageCorpus, MESSAGE_SCOPE } = require('./message-corpus');
 const { createSliceRunner, DEFAULT_SLICE_MS, DEFAULT_DUTY } = require('./slice-runner');
 const { createChatHistoryFileRepository } = require('../session/adapters/chat-history-file-repository');
@@ -51,6 +52,15 @@ const INLINE_MAX_BYTES = 4 * 1024 * 1024;
 // own limit too; this is the default the port advertises.
 const DEFAULT_HITS = 10;
 const MAX_FAILURE_LOGS = 3;
+// How many chunks one conversation may contribute to the first pass of a result.
+// Without a cap a long conversation occupies the whole answer: measured on the real
+// corpus, a 20-hit query returned 13 chunks from one session.
+const DEFAULT_PER_REF_QUOTA = 3;
+// The SQL side is asked for more rows than the caller wants, because a diversity
+// pass can only promote another session if that session's rows are in the candidate
+// pool at all. Four pages is enough to fill a page after a quota demotion, and the
+// index's own MAX_LIMIT bounds it.
+const DIVERSITY_POOL_FACTOR = 4;
 
 function createSearchRuntime({
   dataDir = resolveDataDir(),
@@ -65,6 +75,11 @@ function createSearchRuntime({
   inlineMaxBytes = INLINE_MAX_BYTES,
   blockBytes = undefined,
   fsImpl = undefined,
+  // Which directory a conversation belongs to. The session records own that
+  // mapping; chat_history does not carry it. Read through the shared state registry
+  // at call time (server.js fills it during bootstrap) so the runtime needs no new
+  // port threaded through the host, and a test can replace it with a plain function.
+  resolveDirId = defaultResolveDirId,
   dbFile = null,
   index = null,
   history = null,
@@ -74,7 +89,10 @@ function createSearchRuntime({
   const opened = index || createSearchIndex({ dbFile: dbFile || paths.searchIndexDbFile, logger });
   const repo = history || createChatHistoryFileRepository({ dataDir });
   const corpus = opened.available
-    ? createMessageCorpus({ index: opened, history: repo, logger, ...(fsImpl ? { fsImpl } : {}), ...(blockBytes ? { blockBytes } : {}) })
+    ? createMessageCorpus({
+      index: opened, history: repo, logger, resolveDirId,
+      ...(fsImpl ? { fsImpl } : {}), ...(blockBytes ? { blockBytes } : {}),
+    })
     : null;
   const runner = createSliceRunner({
     now,
@@ -231,25 +249,52 @@ function createSearchRuntime({
   // nothing outside this layer) and the snippet left as the index built it — a
   // window with highlight ranges — so a prompt can quote its text and a browser
   // can render its marks.
+  // `dirId` / `taskId` are SQL filters, not post-filters: narrowing after the fact
+  // would return fewer rows than asked for and waste the ranking on chunks the
+  // caller cannot use. Both are optional and independent of each other.
+  //
+  // The rows come back in relevance order and are then handed to the Rust diversity
+  // kernel (native/core/src/search_diversity.rs), which folds the same paragraph
+  // quoted across conversations and caps how much one session may contribute while
+  // keeping relevance as the primary order. The SQL query deliberately over-fetches
+  // so that cap can promote a session that would otherwise sit below the cut.
   function findMessages({
     text = '', limit = DEFAULT_HITS, kinds = ['user', 'assistant'], refIds = null, excludeRefIds = null,
+    dirId = null, taskId = null, perRefQuota = DEFAULT_PER_REF_QUOTA, dedupeContentHash = true,
   } = {}) {
+    const wanted = Math.max(1, Math.min(MAX_LIMIT, Math.floor(Number(limit)) || DEFAULT_HITS));
+    const pool = Math.min(MAX_LIMIT, wanted * DIVERSITY_POOL_FACTOR);
     const result = search({
       text,
-      limit,
+      limit: pool,
       kinds,
       refIds: refIds || undefined,
       excludeRefIds: excludeRefIds || undefined,
+      dirId: dirId ? String(dirId) : undefined,
+      taskId: taskId ? String(taskId) : undefined,
     });
-    return (result.results || []).map(hit => ({
+    const hits = (result.results || []).map(hit => ({
       sessionId: String(hit.refId || ''),
       messageId: hit.itemId || '',
       kind: hit.kind || '',
+      dirId: String(hit.dirId || ''),
+      taskId: String(hit.taskId || ''),
+      contentHash: String(hit.contentHash || ''),
       updatedAt: Number(hit.updatedAt) || 0,
       score: Number(hit.score) || 0,
       text: String(hit.text || ''),
       snippet: hit.snippet || { text: '', ranges: [] },
     })).filter(hit => hit.sessionId);
+    try {
+      return rerank(hits, { limit: wanted, perRefQuota, dedupeContentHash });
+    } catch (error) {
+      // The addon is the only implementation of the rule, and without it the index
+      // itself could not have been opened. Still: a search answer the caller cannot
+      // get because post-processing failed would be worse than a relevance-only
+      // answer, so the raw order is returned and the failure is counted.
+      noteFailure('rerank_failed', error);
+      return hits.slice(0, wanted);
+    }
   }
 
   function stats() {
@@ -299,6 +344,18 @@ function createSearchRuntime({
     close: () => { stop(); runner.stop(); try { opened.close(); } catch (error) { /* closing twice is fine */ } },
   };
   return api;
+}
+
+// server.js publishes the session records into the shared state registry at
+// bootstrap; reading them here (rather than holding a reference) keeps the runtime
+// free of a new port and makes the default a no-op in tests, which never populate
+// the registry.
+function defaultResolveDirId(sessionId) {
+  const state = require('../state/container');
+  const records = state.persistedSessions;
+  if (!records || typeof records.get !== 'function') return '';
+  const record = records.get(String(sessionId));
+  return record && record.dirId ? String(record.dirId) : '';
 }
 
 // One runtime per data directory. Two handles on the same SQLite file would mean

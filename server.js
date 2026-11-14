@@ -1000,7 +1000,6 @@ const gatewayHost = createGatewayHost({
   getCreateSessionRecord: () => createSessionRecord,
   appendChatMessage: (...args) => appendChatMessage(...args),
   chatBroadcast: (...args) => chatBroadcast(...args),
-  loadChatHistory: (...args) => loadChatHistory(...args),
 });
 const {
   GATEWAY_ID,
@@ -1496,6 +1495,7 @@ const sessionAdmin = createSessionAdminRuntime({
   pendingNotesFor,
   getAuxRuntime: () => ({ id: AUX_SESSION_ID, queue: auxQueue }),
   loadChatHistory,
+  viewChatHistory,
   isInjectedOrJunkGoal,
   buildClassifySystemPrompt,
   buildClassifyConversation,
@@ -1883,7 +1883,7 @@ const share = require('./src/share');
 // route below can serve a recipient the same chat document through the same
 // cache-busting writer. Mounting still happens at its original point below.
 const staticAssetsRuntime = createStaticAssetsRoutes({ express, fs, path, publicDir: path.join(__dirname, 'public') });
-mountShareRoutes(app, { share, persistedSessions, loadChatHistory, parseCookies, logger,
+mountShareRoutes(app, { share, persistedSessions, loadChatHistory, viewChatHistory, parseCookies, logger,
   // Read-only paging for a recipient scrolling up; the chat history runtime is
   // assembled later in this file, so it is read at request time.
   paginateChatHistory: (...args) => chatHistoryRuntime.paginate(...args),
@@ -1985,6 +1985,7 @@ const {
   recordApiSuccess,
   appendChatMessage,
   loadChatHistory,
+  viewChatHistory,
   providers,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
@@ -2304,7 +2305,9 @@ const {
 });
 // Codex usage is cumulative upstream; this host converts it before any consumer sees it.
 const codexUsageHost = createCodexUsageHost({
-  loadHistory: loadChatHistory,
+  // The only history read here walks backwards to the newest usage block; the
+  // uncopied view is enough and avoids cloning the whole transcript per turn.
+  loadHistory: viewChatHistory,
   reconcileRole: reconcileCodexRoleUsage,
   clearIncrementalSave: chatHistoryRuntime.clearIncrementalSave,
   persistFinalAssistantResult,
@@ -2796,6 +2799,7 @@ mountWsConnectionRouter(wss, { machines,
   auxSessionId: AUX_SESSION_ID,
   remoteScreenRfb: remoteScreen,
   loadChatHistory,
+  viewChatHistory,
   sessions,
   persistedSessions,
   createSession,

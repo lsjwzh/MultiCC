@@ -7,7 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createChatHistoryService } = require('../src/session/chat-history-service');
-const { projectHistoryUsage } = require('../src/codex/usage');
+const { projectHistoryUsage, createCodexUsageHost } = require('../src/codex/usage');
 const { createLivenessRuntime } = require('../src/liveness/runtime');
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
 const { createOrchestrationStore } = require('../src/orchestration/store');
@@ -140,6 +140,50 @@ test('history usage projection copies on write instead of cloning the transcript
   assert.equal(history[2].usage.input_tokens, 30, 'projection never mutates persisted history');
   assert.equal(projected[3].usageCumulative, undefined, 'private baselines are stripped from the projection');
   assert.ok(history[3].usageCumulative, 'private baselines survive on the source message');
+});
+
+test('codex turn completion reads the newest usage block from the shared history view', async () => {
+  // Every completed codex turn used to deep-clone the whole transcript just to
+  // walk backwards to the most recent cumulative usage block. The host only
+  // reads that block, and server.js now hands it the uncopied runtime view.
+  const shared = [
+    { role: 'user', content: 'hello' },
+    {
+      role: 'assistant', content: 'older reply',
+      usageCumulative: { input_tokens: 100, cached_input_tokens: 70, output_tokens: 20 },
+    },
+  ];
+  const snapshot = JSON.parse(JSON.stringify(shared));
+  let reads = 0;
+  const host = createCodexUsageHost({
+    loadHistory: () => { reads += 1; return shared; },
+    reconcileRole() {},
+    clearIncrementalSave() {},
+    persistFinalAssistantResult() { return true; },
+    recordDurableTurnUsage() {},
+    recordResultEvent() {},
+  });
+  const runner = {};
+  await host.complete({
+    evt: {
+      type: 'complete',
+      usage: {
+        input_tokens: 145, cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 0, output_tokens: 29, reasoning_output_tokens: 5,
+      },
+    },
+    cs: { currentAssistantText: 'done', currentToolCalls: [], chatTurnCount: 1 },
+    persisted: {},
+    sessionName: 'session-a', turn: {}, runner, forward() {},
+  });
+  assert.equal(reads, 1, 'the host read the transcript once, through its port');
+  assert.equal(runner.pendingUsage.input_tokens, 115, 'the cumulative baseline was still subtracted');
+  assert.deepEqual(shared, snapshot, 'the cached transcript was not mutated');
+
+  // The CPU win only exists if server.js actually wires the view in.
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(server, /createCodexUsageHost\(\{[\s\S]{0,400}?loadHistory: viewChatHistory,/,
+    'the codex usage host reads the uncopied view');
 });
 
 test('liveness only pays for the process probe when it can change the verdict', async () => {

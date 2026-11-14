@@ -19,6 +19,142 @@ const { createQueuedTurnPreparation } = require('../src/chat/admission-progress'
 
 const noop = () => {};
 
+// Regression scaffold for the read-only history ports. `viewChatHistory` hands
+// back the runtime cache array itself (the real contract: no copy, no freeze);
+// `loadChatHistory` returns a deep clone. Any changed call site must use the
+// view without mutating what it was handed.
+function historyProbe(shared) {
+  const calls = { view: 0, load: 0 };
+  const snapshot = JSON.parse(JSON.stringify(shared));
+  return {
+    calls,
+    snapshot,
+    viewChatHistory: () => { calls.view += 1; return shared; },
+    loadChatHistory: () => { calls.load += 1; return JSON.parse(JSON.stringify(shared)); },
+    assertOnlyRead: () => {
+      assert.ok(calls.view > 0, 'the path read the live view');
+      assert.equal(calls.load, 0, 'the path never paid for a deep clone');
+      assert.deepEqual(shared, snapshot, 'the cached transcript was not mutated');
+    },
+  };
+}
+
+function baseEngineDeps(overrides = {}) {
+  return {
+    getExperimentalTuiChatRuntime: () => null,
+    isShuttingDown: () => false,
+    cwdForSession: () => '/tmp',
+    savePersistedSessionsBestEffort: () => {},
+    chatTurnPreparationRuntime: { claim: () => ({ ok: true }), settle: noop },
+    turnProgressHeartbeat: { stop: noop },
+    logger: { warn: noop, info: noop, error: noop },
+    chatBroadcast: noop, emitTurnOutcome: noop, classifyTurnEnd: noop,
+    appendChatMessage: () => true,
+    // Stops the turn right after the history read under test, before any CLI
+    // process or provider call.
+    cancelClassify() { throw new Error('history-probe-stop'); },
+    ...overrides,
+  };
+}
+
+test('turn admission counts and restores the live history view, never a clone', async t => {
+  t.mock.method(console, 'error', noop);
+  const shared = [
+    { role: 'user', content: 'hello' },
+    { role: 'assistant', content: 'older reply' },
+  ];
+  const probe = historyProbe(shared);
+  let restored = null;
+  const engine = createChatTurnEngine(baseEngineDeps({
+    persistedSessions: new Map([['s1', { id: 's1', kind: 'chat', cli: 'claude' }]]),
+    chatSessions: new Map(),
+    taskContextHost: { turnOptions: opts => opts, restore: history => { restored = history; return null; } },
+    viewChatHistory: probe.viewChatHistory,
+    loadChatHistory: probe.loadChatHistory,
+  }));
+  await engine.runChatTurn('s1', 'hello', { taskId: 'task-1' });
+  probe.assertOnlyRead();
+  assert.equal(restored, shared,
+    'the same array that seeded chatTurnCount also fed taskContextHost.restore');
+});
+
+test('opencode context rotation builds its checkpoint from the live history view', async t => {
+  t.mock.method(console, 'error', noop);
+  const shared = [
+    { role: 'user', content: 'hello' },
+    { role: 'assistant', content: 'older reply' },
+  ];
+  const probe = historyProbe(shared);
+  const persisted = { id: 's1', kind: 'chat', cli: 'opencode', cliSessionId: 'native-1' };
+  const engine = createChatTurnEngine(baseEngineDeps({
+    persistedSessions: new Map([['s1', persisted]]),
+    chatSessions: new Map([['s1', { cli: 'opencode', chatTurnCount: 2 }]]),
+    // A live chat state exists, so admission does not pre-read history: the
+    // rotation's lazy history() accessor is the only reader.
+    opencodeContextGuard: {
+      enforce: async () => ({
+        action: 'rotate', cliSessionId: 'native-2', reason: 'context_used',
+        message: 'rotate', tokensTotal: 9, contextLimit: 10, ratio: 0.9, threshold: 0.8,
+      }),
+    },
+    rememberActiveCliState: noop,
+    appendEvent: noop,
+    taskContextHost: { turnOptions: opts => opts, restore: () => null },
+    viewChatHistory: probe.viewChatHistory,
+    loadChatHistory: probe.loadChatHistory,
+  }));
+  await engine.runChatTurn('s1', 'hello', { taskId: 'task-1' });
+  probe.assertOnlyRead();
+  assert.equal(persisted.pendingCliHandoff?.status, 'pending',
+    'the rotation still persisted the handoff checkpoint');
+});
+
+test('dispatch recovery scans the live history view', () => {
+  const shared = [
+    { role: 'user', content: 'go', originDispatchId: 'op-1', turnId: 'tu-1' },
+    { role: 'assistant', content: 'done', turnId: 'tu-1' },
+  ];
+  const probe = historyProbe(shared);
+  const engine = createChatTurnEngine(baseEngineDeps({
+    persistedSessions: new Map(),
+    chatSessions: new Map(),
+    viewChatHistory: probe.viewChatHistory,
+    loadChatHistory: probe.loadChatHistory,
+  }));
+  assert.deepEqual(engine.recoverDispatchOperation({ id: 'op-1', spec: { chatId: 's1' } }),
+    { completed: true, text: 'done' });
+  probe.assertOnlyRead();
+});
+
+test('chat websocket session creation reads the live history view', () => {
+  const shared = [
+    { role: 'user', content: 'hello' },
+    { role: 'assistant', content: 'older reply' },
+  ];
+  const probe = historyProbe(shared);
+  let restored = null;
+  const capture = new Error('session-created');
+  // Capture the freshly built chat state by making the cache write observable,
+  // then stop before the replay/WS frames that need the full host.
+  const chatSessions = { get: () => undefined, set: () => { throw capture; } };
+  const engine = createChatTurnEngine(baseEngineDeps({
+    persistedSessions: new Map([['s1', { id: 's1', kind: 'chat', cli: 'claude' }]]),
+    chatSessions,
+    invalidSessions: new Map(),
+    taskContextHost: { restore: history => { restored = history; return null; } },
+    sendWs: noop,
+    viewChatHistory: probe.viewChatHistory,
+    loadChatHistory: probe.loadChatHistory,
+  }));
+  assert.throws(
+    () => engine.handleChatWs({}, {}, new URL('http://localhost/ws/chat?session=s1')),
+    error => error === capture,
+  );
+  probe.assertOnlyRead();
+  assert.equal(restored, shared,
+    'the same cached array seeded _currentTaskId');
+});
+
 test('后台准备等路由结论落定后才放行，路由或记忆失败保留兜底与反馈', async () => {
   let release, ready = false;
   const gate = new Promise(resolve => { release = resolve; });

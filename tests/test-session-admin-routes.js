@@ -122,6 +122,7 @@ function createFixture(overrides = {}) {
     pendingNotesFor: id => id === 's1' ? [{ id: 'note' }] : [],
     getAuxRuntime: () => ({ id: '__aux__', queue }),
     loadChatHistory: overrides.loadChatHistory || (id => history.get(id) || []),
+    viewChatHistory: overrides.viewChatHistory,
     isInjectedOrJunkGoal: goal => String(goal || '').startsWith('[auto]'),
     buildClassifySystemPrompt: goal => `system:${goal}`,
     buildClassifyConversation: (id, reply) => `conversation:${id}:${reply}`,
@@ -383,6 +384,37 @@ test('debug classify and test-case routes preserve guards, structured text, and 
   assert.equal(cases.body.count, 1);
   assert.equal(cases.body.cases[0].sessionId, 's1');
   assert.equal(cases.body.cases[0].lastTs, new Date(2000).toISOString());
+});
+
+test('admin reads classify from the live history view without cloning it', () => {
+  // view returns the runtime cache array itself; load would deep-clone it. All
+  // three admin readers only scan backwards, so they must take the view and
+  // leave it untouched.
+  const shared = [
+    { role: 'user', content: 'hello', ts: 1 },
+    { role: 'assistant', content: 'an assistant reply long enough to classify', ts: 2 },
+  ];
+  const snapshot = JSON.parse(JSON.stringify(shared));
+  const calls = { view: 0, load: 0 };
+  const fixture = createFixture({
+    viewChatHistory: () => { calls.view += 1; return shared; },
+    loadChatHistory: () => { calls.load += 1; return JSON.parse(JSON.stringify(shared)); },
+  });
+  // s1 starts settled (D); force so the reclassify route reads the reply.
+  const reclassify = invoke(fixture.app.routes.get('POST /api/sessions/:id/reclassify'), {
+    params: { id: 's1' }, query: { force: 'true' },
+  });
+  assert.equal(reclassify.statusCode, 200);
+  const classify = invoke(fixture.app.routes.get('POST /api/debug/classify/:id'), {
+    params: { id: 's1' }, query: { force: 'true' },
+  });
+  assert.equal(classify.statusCode, 200);
+  const cases = invoke(fixture.app.routes.get('GET /api/debug/classify-test-cases'));
+  assert.equal(cases.body.count, 1);
+
+  assert.ok(calls.view >= 3, 'every admin reader went through the view');
+  assert.equal(calls.load, 0, 'no admin reader paid for a deep clone');
+  assert.deepEqual(shared, snapshot, 'the cached transcript was not mutated');
 });
 
 test('server delegates session-admin routes and retains only the shared v1 error helper', () => {

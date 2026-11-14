@@ -27,6 +27,8 @@ function mountWsConnectionRouter(wss, deps) {
     auxQueue,
     auxSessionId,
     loadChatHistory,
+    // The Aux replay only slices the transcript; the view avoids cloning it.
+    viewChatHistory = loadChatHistory,
     sessions,
     persistedSessions,
     createSession,
@@ -207,7 +209,7 @@ function mountWsConnectionRouter(wss, deps) {
         status: auxQueue.getStatus(),
         health: { ...auxQueue.health },
       });
-      const history = loadChatHistory(auxSessionId);
+      const history = viewChatHistory(auxSessionId);
       sendWs(ws, { type: 'aux_history', messages: history.slice(-100) });
       return;
     }

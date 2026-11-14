@@ -3778,6 +3778,15 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-history-trace-compact.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-hooks-ui-cdp.js",
       "tier": "flow",
       "lane": "cdp",
@@ -5427,6 +5436,15 @@
     },
     {
       "path": "tests/test-search-index.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-search-message-context.js",
       "tier": "other",
       "lane": "deterministic",
       "owner": "npm:test:core",

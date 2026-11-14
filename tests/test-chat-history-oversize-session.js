@@ -11,9 +11,9 @@
 // 堆，Node 主进程反复 FATAL OOM，Rust 网关每次 respawn 把正在跑的轮次连带
 // 杀掉——表现为任务既无回复也无错误消息。
 //
-// 这里钉住的是【放大倍数不许再变大】和【服务一页不许动落盘文件】，
-// 不是"条数限额已改成字节限额"（那个尚未修复，另案）。tools 字段的裁剪
-// 逻辑本身由 test-history-frame-budget.js 单测覆盖，此处只验真文件的端到端。
+// 这里钉住的是【放大倍数不许再变大】和【服务一页不许动落盘文件】。
+// 2026-11-14 起显示路径另有字节预算（filter(bounded)/paginate，默认 32 MiB，
+// 见下方用例）：它只截断返回量，磁盘原文与 load 的整份读语义都不受影响。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
@@ -75,7 +75,7 @@ function plant(t, { turns, toolBytes }) {
   return { dataDir, repository, sessionId, file, planted: messages };
 }
 
-function runtimeFor(t, { repository, sessionId }) {
+function runtimeFor(t, { repository, sessionId }, extra = {}) {
   const runtime = createChatHistoryRuntime({
     history: repository,
     persistedSessions: new Map([[sessionId, { id: sessionId, kind: 'chat', cli: 'claude' }]]),
@@ -96,6 +96,7 @@ function runtimeFor(t, { repository, sessionId }) {
     setTimeout() { return { unref() {} }; },
     clearTimeout() {},
     logger: { warn() {} },
+    ...extra,
   });
   t.after(() => runtime.stop());
   return runtime;
@@ -211,7 +212,55 @@ test('超长会话只服务一页，落盘文件分毫不动', t => {
 
   // 读路径绝不许改写落盘文件：事故期间每轮都在重写整份，这里钉死只读。
   assert.deepEqual(fs.readFileSync(planted.file), before, '分页读不得改写 transcript');
-  assert.equal(runtime.load(planted.sessionId).length, 80, 'load 仍是整份读（当前语义，字节限额尚未实现）');
+  assert.equal(runtime.load(planted.sessionId).length, 80, 'load 仍是整份读，不经过显示字节预算');
+});
+
+test('显示字节预算按序列化大小截断尾部窗口，且不改落盘原文', t => {
+  const planted = plant(t, { turns: 40, toolBytes: 140 * 1024 });
+  const before = fs.readFileSync(planted.file);
+  const budget = 1024 * 1024;
+  const runtime = runtimeFor(t, planted, { maxBytes: budget });
+
+  const page = runtime.paginate(planted.sessionId, { limit: 100 });
+  assert.equal(page.byteBudgetTruncated, true, '超预算必须显式告诉调用方');
+  assert.ok(page.messages.length >= 1 && page.messages.length < 80,
+    `截断点异常：保留了 ${page.messages.length} 条`);
+  assert.equal(page.messages.at(-1).id, 'a39', '最新的消息必须在窗口里');
+  // 每条的 JSON.stringify 字节相加不超过预算；数组另有 n 个逗号/方括号。
+  const serialized = Buffer.byteLength(JSON.stringify(page.messages));
+  assert.ok(serialized <= budget + page.messages.length + 2,
+    `窗口 ${serialized} 字节超过预算 ${budget}`);
+  assert.deepEqual(fs.readFileSync(planted.file), before, '字节预算只影响返回量，不许动落盘原文');
+});
+
+test('未触达字节预算时与旧的条数窗口逐字节一致', t => {
+  const planted = plant(t, { turns: 40, toolBytes: 140 * 1024 });
+  const roomy = runtimeFor(t, planted, { maxBytes: 64 * 1024 * 1024 });
+  const unlimited = runtimeFor(t, planted, { maxBytes: Number.MAX_SAFE_INTEGER });
+  const a = roomy.paginate(planted.sessionId, { limit: 12 });
+  const b = unlimited.paginate(planted.sessionId, { limit: 12 });
+  assert.equal('byteBudgetTruncated' in a, false, '未截断时不得新增字段');
+  assert.deepEqual(a, b, '预算充足时结果必须与无预算完全一致');
+});
+
+test('单条消息本身超预算也必须返回一条，绝不能返回空', t => {
+  const planted = plant(t, { turns: 1, toolBytes: 2 * 1024 * 1024 });
+  const runtime = runtimeFor(t, planted, { maxBytes: 1024 });
+  const page = runtime.paginate(planted.sessionId, { limit: 100 });
+  assert.equal(page.messages.length, 1, '至少要返回最新一条');
+  assert.equal(page.messages[0].id, 'a0');
+  assert.equal(page.messages[0].tools[0].output.length,
+    planted.planted[1].tools[0].output.length, '返回的消息原样，不许裁剪');
+  assert.equal(page.byteBudgetTruncated, true);
+});
+
+test('字节预算为 0 时只保留最新一条', t => {
+  const planted = plant(t, { turns: 3, toolBytes: 2 * 1024 });
+  const runtime = runtimeFor(t, planted, { maxBytes: 0 });
+  const page = runtime.paginate(planted.sessionId, { limit: 100 });
+  assert.equal(page.messages.length, 1);
+  assert.equal(page.messages[0].id, 'a2');
+  assert.equal(page.byteBudgetTruncated, true);
 });
 
 test('真会话构造的重放帧必须压在 WS 单帧上限内', t => {

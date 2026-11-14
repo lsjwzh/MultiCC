@@ -136,6 +136,11 @@ function withShareUrl(req, record) {
 function createShareRoutes(rawDeps) {
   const deps = assertShareRouteDeps(rawDeps);
   const share = deps.share;
+  // The live-session read is serialized into the response synchronously, so the
+  // uncopied transcript view is enough. Hosts/tests that only inject the
+  // cloning loader keep the old behavior.
+  const viewChatHistory = typeof deps.viewChatHistory === 'function'
+    ? deps.viewChatHistory : deps.loadChatHistory;
   const cookieMaxAge = Number.isInteger(deps.cookieMaxAgeSeconds) && deps.cookieMaxAgeSeconds > 0
     ? deps.cookieMaxAgeSeconds
     : SHARE_COOKIE_MAX_AGE_SECONDS;
@@ -366,7 +371,7 @@ function createShareRoutes(rawDeps) {
         sessionId: record.sessionId,
         label: session.label || record.sessionId,
         cli: session.cli || 'claude',
-        messages: deps.loadChatHistory(record.sessionId),
+        messages: viewChatHistory(record.sessionId),
       });
     } catch (error) {
       return unexpected(res, 'shared session read', error);

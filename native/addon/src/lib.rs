@@ -63,6 +63,7 @@ pub mod quota_rejection;
 pub mod request_timer;
 pub mod request_watch;
 pub mod retry_policy;
+pub mod search_diversity;
 pub mod secret_audit;
 pub mod session_work_selection;
 pub mod sqlite;

@@ -149,6 +149,7 @@ function createHarness(overrides = {}) {
     share: fakeShare,
     persistedSessions,
     loadChatHistory: overrides.loadChatHistory || ((id) => histories.get(id) || []),
+    viewChatHistory: overrides.viewChatHistory,
     paginateChatHistory: overrides.paginateChatHistory || ((id, options) => {
       historyPages.push([id, options]);
       const messages = histories.get(id) || [];
@@ -415,6 +416,32 @@ test('recipient session read preserves password gate, live history, and independ
   res = invoke(routes.readSharedSession, { params: { token: live.token } });
   assert.equal(res.statusCode, 404);
   assert.deepEqual(res.body, { error: 'session no longer exists' });
+});
+
+test('recipient session read serializes the live history view without cloning it', () => {
+  const shared = [
+    { role: 'user', content: 'one', ts: 1 },
+    { role: 'assistant', content: 'two', ts: 2 },
+  ];
+  const snapshot = JSON.parse(JSON.stringify(shared));
+  const calls = { view: 0, load: 0 };
+  const { deps } = createHarness({
+    viewChatHistory: () => { calls.view += 1; return shared; },
+    loadChatHistory: () => { calls.load += 1; return JSON.parse(JSON.stringify(shared)); },
+  });
+  const routes = createShareRoutes(deps);
+  const live = invoke(routes.createSessionShare, {
+    params: { id: 's1' }, body: { access: 'view' },
+  }).body;
+  const res = invoke(routes.readSharedSession, {
+    params: { token: live.token },
+    headers: { cookie: `multicc_share_${live.token}=proof-${live.token}` },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.messages, shared);
+  assert.equal(calls.view, 1);
+  assert.equal(calls.load, 0);
+  assert.deepEqual(shared, snapshot, 'the cached transcript was not mutated');
 });
 
 test('page route serves the chat renderer itself, so a share is the same page', () => {

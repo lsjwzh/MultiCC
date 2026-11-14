@@ -4,6 +4,7 @@ pub mod board;
 pub mod card_cache;
 pub mod cards;
 pub mod classification;
+pub mod deleted;
 pub mod handle;
 pub mod host;
 pub mod normalize;
@@ -117,6 +118,7 @@ fn run_value(v: &Value) -> Result<Value, String> {
             .iter()
             .map(|t| t["id"].clone())
             .collect::<Vec<_>>()),
+        "deletedAmong" => json!(deleted::among(&v["board"], &v["ids"])),
         "normalize" => normalize::run(v),
         "classification" => classification::run(v),
         "repository" => repository::run(v)?,

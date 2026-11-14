@@ -10,6 +10,9 @@ use crate::{
     js_host_value::{Value, Values},
     js_live::LiveValue as L,
 };
+use multicc_core::chat_history_index::{
+    TrailingByteBudget, DEFAULT_DISPLAY_MAX_BYTES, DISPLAY_MAX_BYTES_ENV,
+};
 use multicc_core::js::{JsString, JsValue as J};
 use napi::{
     bindgen_prelude::{ToNapiValue, Unknown},
@@ -99,6 +102,26 @@ fn positive_integer(value: L<'_>, fallback_value: f64) -> Result<f64> {
         Some(n) if n.is_finite() && n.fract() == 0.0 && n > 0.0 && n <= MAX_SAFE_INTEGER => Ok(n),
         _ => Ok(fallback_value),
     }
+}
+
+/// Display byte budget for `filter(bounded=true)` / pagination.
+///
+/// Order: an optional `maxBytes` port (lets a host/config entry override it
+/// without touching Rust), then `MULTICC_CHAT_HISTORY_DISPLAY_MAX_BYTES`, then
+/// [`DEFAULT_DISPLAY_MAX_BYTES`]. Zero is a valid budget (keep exactly one
+/// message); only non-negative integers are accepted.
+fn configured_display_max_bytes(ports: L<'_>) -> Result<u64> {
+    if let Some(value) = ports.get(c"maxBytes")?.number_value()? {
+        if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= MAX_SAFE_INTEGER {
+            return Ok(value as u64);
+        }
+    }
+    if let Ok(raw) = std::env::var(DISPLAY_MAX_BYTES_ENV) {
+        if let Ok(bytes) = raw.trim().parse::<u64>() {
+            return Ok(bytes);
+        }
+    }
+    Ok(DEFAULT_DISPLAY_MAX_BYTES)
 }
 fn clip160<'a>(value: L<'a>) -> Result<L<'a>> {
     method(
@@ -346,6 +369,9 @@ pub struct RustChatHistoryRuntime {
     page_size: f64,
     distill_batch: f64,
     save_delay: f64,
+    /// Serialized-byte ceiling for a display window. Never affects the JSONL on
+    /// disk; it only bounds what `filter(bounded)` / pagination hands back.
+    display_max_bytes: u64,
     stopped: Cell<bool>,
 }
 
@@ -589,7 +615,51 @@ impl<'a> Runtime<'a> {
         };
         Ok(positive_integer(candidate, DEFAULT_HISTORY_LIMIT)? as usize)
     }
-    fn filter(&self, session: L<'a>, messages: L<'a>, bounded: bool) -> Result<L<'a>> {
+    /// Serialized display cost of one message, in UTF-8 bytes of
+    /// `JSON.stringify(message)`.
+    ///
+    /// Rationale: this is byte-for-byte the text the bridge hands to Node (and
+    /// within a newline of the JSONL line on disk), so it bounds what the display
+    /// path can materialize. It is also a safe proxy for V8 string memory: ASCII
+    /// lives in one-byte strings (1 byte/char, identical), while non-ASCII is
+    /// counted at its larger UTF-8 width (CJK 3 bytes vs 2 UTF-16 units), so the
+    /// budget can only over-count, never under-count.
+    fn message_display_bytes(&self, message: L<'a>) -> Result<u64> {
+        let serialized = self.stringify(message)?;
+        let text = serialized.coerce_string()?;
+        Ok(text.as_str_lossy().len() as u64)
+    }
+    /// Trim a newest-first window to the byte budget. Returns the input window
+    /// unchanged (same array identity) when everything fits, so behaviour below
+    /// the budget is identical to the count-only path.
+    fn byte_budget_window(&self, window: L<'a>) -> Result<(L<'a>, bool)> {
+        let total = length(window)?;
+        let mut budget = TrailingByteBudget::new(self.owner.display_max_bytes);
+        let mut kept = 0usize;
+        while kept < total {
+            let message = window.element((total - 1 - kept) as u32)?;
+            let size = self.message_display_bytes(message)?;
+            if !budget.admit(size) {
+                break;
+            }
+            kept += 1;
+        }
+        debug_assert_eq!(kept, budget.kept());
+        if kept == total {
+            return Ok((window, false));
+        }
+        let start = total - kept;
+        let trimmed = method(window, c"slice", &[number(window, start as f64)?])?;
+        Ok((trimmed, true))
+    }
+    /// Hidden-message filter plus the display limits. Returns the visible window
+    /// and whether the byte budget (not the count cap) cut it.
+    fn filter_values(
+        &self,
+        session: L<'a>,
+        messages: L<'a>,
+        bounded: bool,
+    ) -> Result<(L<'a>, bool)> {
         let ids = self.hidden(session)?;
         let has = ids.get(c"has")?;
         let visible = array(self.anchor)?;
@@ -600,11 +670,15 @@ impl<'a> Runtime<'a> {
             }
         }
         if !bounded {
-            return Ok(visible);
+            return Ok((visible, false));
         }
         let limit = self.limit_for(session)?;
         let start = length(visible)?.saturating_sub(limit);
-        method(visible, c"slice", &[number(visible, start as f64)?])
+        let count_window = method(visible, c"slice", &[number(visible, start as f64)?])?;
+        self.byte_budget_window(count_window)
+    }
+    fn filter(&self, session: L<'a>, messages: L<'a>, bounded: bool) -> Result<L<'a>> {
+        Ok(self.filter_values(session, messages, bounded)?.0)
     }
     /// `clearVisibility` without the write: returns the legacy result object and
     /// the visibility plan the queue will persist.
@@ -1970,40 +2044,58 @@ impl<'a> Runtime<'a> {
     fn latest_assistant_conclusion(&self, session: L<'a>, home: L<'a>) -> Result<L<'a>> {
         self.service("latestAssistantConclusion", &[session, home])
     }
-    fn projected_messages(&self, session: L<'a>, include_hidden: bool) -> Result<L<'a>> {
+    /// Projection for the display path. The flag is `true` only when the byte
+    /// budget (not the count cap) removed messages from the returned window.
+    fn project_messages(&self, session: L<'a>, include_hidden: bool) -> Result<(L<'a>, bool)> {
         let messages = self.service("view", &[session])?;
-        let apply = |values: L<'a>| -> Result<L<'a>> {
+        let apply = |values: L<'a>| -> Result<(L<'a>, bool)> {
             if include_hidden {
-                Ok(values)
+                // Archive scope has no count cap but is still a display window.
+                self.byte_budget_window(values)
             } else {
-                self.filter(session, values, true)
+                self.filter_values(session, values, true)
             }
         };
         let project = self.ports.get(c"projectMessages")?;
         if !project.truthy()? {
-            return self.project_codes(apply(messages)?);
+            let (values, truncated) = apply(messages)?;
+            return Ok((self.project_codes(values)?, truncated));
         }
-        let outcome = (|| -> Result<L<'a>> {
+        let outcome = (|| -> Result<(L<'a>, bool)> {
             let projected = project.call_plain(&[string(session)?, messages])?;
             let base = if projected.is_array()? {
                 projected
             } else {
                 messages
             };
-            self.project_codes(apply(base)?)
+            let (values, truncated) = apply(base)?;
+            Ok((self.project_codes(values)?, truncated))
         })();
         match outcome {
             Ok(value) => Ok(value),
             Err(error) => {
                 let value = caught(self.anchor, error)?;
                 self.log_failure("chat_history_projection_failed", value, Some(session))?;
-                self.project_codes(apply(messages)?)
+                let (values, truncated) = apply(messages)?;
+                Ok((self.project_codes(values)?, truncated))
             }
         }
     }
+    fn projected_messages(&self, session: L<'a>, include_hidden: bool) -> Result<L<'a>> {
+        Ok(self.project_messages(session, include_hidden)?.0)
+    }
+    /// Freeze a page result. `byteBudgetTruncated` is only added when the byte
+    /// budget actually cut the window, so every existing response shape (and
+    /// the frozen legacy differential) stays exactly as before below the budget.
+    fn freeze_page(&self, out: L<'a>, byte_truncated: bool) -> Result<L<'a>> {
+        if byte_truncated {
+            out.set(c"byteBudgetTruncated", boolean(self.anchor, true)?)?;
+        }
+        out.freeze()
+    }
     fn paginate(&self, session: L<'a>, options: L<'a>) -> Result<L<'a>> {
-        let messages =
-            self.projected_messages(session, options.get(c"includeHidden")?.truthy()?)?;
+        let (messages, byte_truncated) =
+            self.project_messages(session, options.get(c"includeHidden")?.truthy()?)?;
         let fallback_size = self.owner.page_size;
         let raw_limit = options.get(c"limit")?;
         let limit = if raw_limit.undefined()? {
@@ -2034,7 +2126,7 @@ impl<'a> Runtime<'a> {
                 }
             }
             let Some(target_index) = found else {
-                return object(
+                let out = object(
                     self.anchor,
                     &[
                         (c"messages", array(self.anchor)?),
@@ -2043,8 +2135,8 @@ impl<'a> Runtime<'a> {
                         (c"found", boolean(self.anchor, false)?),
                         (c"hasNewer", boolean(self.anchor, false)?),
                     ],
-                )?
-                .freeze();
+                )?;
+                return self.freeze_page(out, byte_truncated);
             };
             let half = (page_size - 1) / 2;
             let mut start = target_index.saturating_sub(half);
@@ -2063,7 +2155,7 @@ impl<'a> Runtime<'a> {
             } else {
                 self.anchor.from_value(&J::Null)?
             };
-            return object(
+            let out = object(
                 self.anchor,
                 &[
                     (c"messages", clone_json(page)?),
@@ -2072,8 +2164,8 @@ impl<'a> Runtime<'a> {
                     (c"found", boolean(self.anchor, true)?),
                     (c"hasNewer", boolean(self.anchor, end < length(messages)?)?),
                 ],
-            )?
-            .freeze();
+            )?;
+            return self.freeze_page(out, byte_truncated);
         }
         let mut end = length(messages)?;
         let before = options.get(c"before")?;
@@ -2088,15 +2180,15 @@ impl<'a> Runtime<'a> {
             match found {
                 Some(index) => end = index,
                 None => {
-                    return object(
+                    let out = object(
                         self.anchor,
                         &[
                             (c"messages", array(self.anchor)?),
                             (c"hasMore", boolean(self.anchor, false)?),
                             (c"before", self.anchor.from_value(&J::Null)?),
                         ],
-                    )?
-                    .freeze();
+                    )?;
+                    return self.freeze_page(out, byte_truncated);
                 }
             }
         }
@@ -2114,15 +2206,15 @@ impl<'a> Runtime<'a> {
         } else {
             self.anchor.from_value(&J::Null)?
         };
-        object(
+        let out = object(
             self.anchor,
             &[
                 (c"messages", clone_json(page)?),
                 (c"hasMore", boolean(self.anchor, start > 0)?),
                 (c"before", before),
             ],
-        )?
-        .freeze()
+        )?;
+        self.freeze_page(out, byte_truncated)
     }
     fn last_activity(&self, session: L<'a>, active_chat: L<'a>) -> Result<L<'a>> {
         let saved = self.latest_assistant_at(session)?;
@@ -2638,6 +2730,7 @@ impl RustChatHistoryRuntime {
             Some(value) if value.is_finite() && value >= 0.0 => value,
             _ => DEFAULT_INCREMENTAL_SAVE_DELAY_MS,
         };
+        let display_max_bytes = configured_display_max_bytes(ports)?;
         Ok(Self {
             values,
             visibility: RefCell::default(),
@@ -2652,6 +2745,7 @@ impl RustChatHistoryRuntime {
             page_size,
             distill_batch,
             save_delay,
+            display_max_bytes,
             stopped: Cell::new(false),
         })
     }

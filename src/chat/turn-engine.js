@@ -891,7 +891,7 @@ function createChatTurnEngine(deps) {
       let initialHistory = null;
       const turnCount = existingCs
         ? existingCs.chatTurnCount
-        : (initialHistory = loadChatHistory(sessionName)).filter(message => message.role === 'assistant').length;
+        : (initialHistory = viewChatHistory(sessionName)).filter(message => message.role === 'assistant').length;
       const turnCli = (existingCs && existingCs.cli) || persisted.cli || 'claude';
       if (['codex', 'codex-exp'].includes(turnCli) && persisted.cliSessionId) {
         const result = enforceCodexRolloutForTurn({ guard: codexRolloutGuard, persisted, sessionName,
@@ -920,7 +920,7 @@ function createChatTurnEngine(deps) {
       // native id prevents both ACP and legacy JSON from resuming old history.
       if (turnCli === 'opencode' && (persisted._streamSessionId || persisted.cliSessionId)) {
         return enforceOpencodeContextForTurn({ guard: opencodeContextGuard, persisted, sessionName,
-          history: () => initialHistory || loadChatHistory(sessionName), rememberActiveCliState,
+          history: () => initialHistory || viewChatHistory(sessionName), rememberActiveCliState,
           savePersistedSessionsBestEffort, logger, appendEvent, chatBroadcast,
           assertCurrent: () => getWorkspaceAdmission?.()?.assertPermit(sessionName, opts) }).then(finishAdmission);
       }
@@ -1182,7 +1182,7 @@ function createChatTurnEngine(deps) {
     }
     if (!cs) {
       const csCli = persisted.cli || 'claude';
-      const hist = initialHistory || loadChatHistory(sessionName);
+      const hist = initialHistory || viewChatHistory(sessionName);
       cs = {
         clients: new Set(),
         claudeProc: null,
@@ -2100,7 +2100,7 @@ function createChatTurnEngine(deps) {
   }
 
   function recoverDispatchOperation(operation) {
-    return recoverDispatchFromHistory(loadChatHistory(operation.spec.chatId), operation);
+    return recoverDispatchFromHistory(viewChatHistory(operation.spec.chatId), operation);
   }
 
   async function deliverOrchestrationOutbox({ item, sessionId, text, opts }) {
@@ -2686,7 +2686,7 @@ function createChatTurnEngine(deps) {
         persisted.cliSessionId = crypto.randomUUID();
         savePersistedSessionsBestEffort('websocket.chat-session-id-allocate');
       }
-      const history = loadChatHistory(sessionName);
+      const history = viewChatHistory(sessionName);
       cs = {
         clients: new Set(),
         claudeProc: null,   // (kept name for backwards compat in rest of handler; holds any cli child proc)

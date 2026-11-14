@@ -139,6 +139,16 @@ function createTaskShellHost(deps) {
       },
       getTask: id => deps.getTaskBoard?.()?.getBoard?.().tasks?.[id] || null,
       isDeletedTask: id => deps.getTaskBoard?.()?.getBoard?.().deletedTaskIds?.includes(id),
+      // The same question for a whole batch. Asking isDeletedTask() per id makes
+      // the board mirror's Proxy rescan deletedTaskIds every time; the batch rule
+      // indexes it once in Rust (native/core/src/task_domain/deleted.rs) and runs
+      // on the resident board's worker thread. Returns null when there is no
+      // board, so callers keep their per-id fallback.
+      deletedAmong: async ids => {
+        const board = deps.getTaskBoard?.()?.getBoard?.();
+        if (!board) return null;
+        return require('../native/task-domain').taskDomainAsync({ op: 'deletedAmong', board, ids });
+      },
       isTaskLifecycleBusy: id => deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(id),
       prepareExecution: workspace.prepareExecution, captureForkBaseline: workspace.captureForkBaseline,
       captureIndependentBaseline: workspace.captureIndependentBaseline,
