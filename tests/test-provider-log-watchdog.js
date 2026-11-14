@@ -56,7 +56,7 @@ function fixture(options = {}) {
     broadcast: (id, evt) => broadcasts.push([id, evt]),
     cancelTurn: async (id, cancelOptions) => {
       cancelCalls.push([id, cancelOptions]);
-      return { ok: true, classifyState: 'E' };
+      return options.cancelResult ?? { ok: true, providerErrorStop: true, pid: 4242 };
     },
     readLogTail: () => options.logTail ?? '',
     now: () => at,
@@ -66,12 +66,12 @@ function fixture(options = {}) {
   return { watchdog, cs, record, broadcasts, cancelCalls, at, turnStart };
 }
 
-test('quota error without stdout/exit is surfaced once and the turn is ended', async () => {
+test('quota error without stdout/exit is surfaced once and the turn is stopped for finalization', async () => {
   const { watchdog, cs, broadcasts, cancelCalls, at } = fixture({
     logTail: logLine({ ts: AT - 9_000, level: 'ERROR', message: 'stream error', sessionId: 'ses_native1', error: QUOTA_ERROR }),
   });
   const { results } = await watchdog.sweep();
-  assert.equal(results[0].action, 'surfaced_and_cancelled');
+  assert.equal(results[0].action, 'surfaced_and_stopped');
   assert.equal(broadcasts.length, 2);
   const [limitId, limitEvt] = broadcasts[0];
   assert.equal(limitId, 's1');
@@ -90,9 +90,15 @@ test('quota error without stdout/exit is surfaced once and the turn is ended', a
   assert.ok(evt.error.includes('Weekly usage limit reached'), 'quota text visible');
   assert.ok(evt.error.includes('Resets in 2 days'), 'reset info visible');
   assert.ok(evt.error.includes('https://opencode.ai/workspace/'), 'safe action link kept');
+  // Asked to end the turn as a PROVIDER failure, never as a user cancel: the
+  // host stops the wedged child without detaching the runner, so turn-engine's
+  // close handler still runs the API-error classification that drives Auto
+  // failover. A killReason would mark it a cancel and skip that chain.
   assert.equal(cancelCalls.length, 1);
-  assert.equal(cancelCalls[0][1].killReason, 'provider_log_error');
+  assert.equal(cancelCalls[0][1].reason, 'provider_log_error');
   assert.equal(cancelCalls[0][1].source, 'opencode_log_watchdog');
+  assert.equal(cancelCalls[0][1].providerError, true);
+  assert.equal('killReason' in cancelCalls[0][1], false);
   // Close-time classification flags mirror the stdout error path.
   assert.ok(cs._adapterError.includes('Weekly usage limit reached'));
   assert.equal(cs._activeRunner.sawApiError, true);
@@ -173,7 +179,7 @@ test('first turn without native session id correlates via cwd + run id', async (
   const hitTail = tail + '\n' + logLine({ ts: AT - 8_000, run: 'run_this', level: 'ERROR', message: 'stream error', error: QUOTA_ERROR });
   const hit = fixture({ cliSessionId: '', logTail: hitTail, at, turnStart });
   const hitRun = await hit.watchdog.sweep();
-  assert.equal(hitRun.results[0].action, 'surfaced_and_cancelled');
+  assert.equal(hitRun.results[0].action, 'surfaced_and_stopped');
   assert.equal(hitRun.results[0].reason, 'correlated_error');
   assert.equal(hit.broadcasts.length, 2);
   assert.equal(hit.broadcasts[0][1].type, 'rate_limit_event');

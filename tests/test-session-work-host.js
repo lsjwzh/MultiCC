@@ -1123,3 +1123,64 @@ test('recovered-question settlement leaves other turns to the dead-runner path',
     assert.equal(h.calls.some(c => c[0] === 'dispatch'), false);
   }
 });
+
+test('a provider-error stop kills the wedged child without detaching the turn', () => {
+  const kills = [];
+  let onExit = null;
+  const proc = {
+    pid: 4242,
+    kill(signal) { kills.push(signal); },
+    once(event, handler) { if (event === 'exit') onExit = handler; },
+  };
+  const chatState = { cli: 'opencode', claudeProc: proc, _activeRunner: {}, isStreaming: true };
+  const h = fixture({ chatState, runnerKillGraceMs: 60_000 });
+  const result = h.host.stopActiveTurnForProviderError('s1', {
+    reason: 'provider_log_error',
+    source: 'opencode_log_watchdog',
+  });
+  assert.deepEqual(result, { ok: true, pid: 4242 });
+  assert.deepEqual(kills, ['SIGTERM']);
+  // turn-engine's close handler keys off `claudeProc === proc` and the runner;
+  // detaching either (as a cancel does) skips API-error classification, so the
+  // provider-error stop must leave both in place.
+  assert.equal(chatState.claudeProc, proc);
+  assert.equal(chatState._activeRunner.killReason, undefined);
+  // No cancel-chain side effects: no preparation/classify teardown, no scheduler
+  // boundary close — the close handler owns the ending.
+  assert.equal(h.calls.some(call => call[0] === 'cancel-preparation'), false);
+  assert.equal(h.calls.some(call => call[0] === 'assessing'), false);
+  assert.equal(typeof onExit, 'function');
+  if (onExit) onExit();
+});
+
+test('a provider-error stop with no live process reports no_live_runner', () => {
+  const h = fixture({ chatState: { cli: 'opencode', claudeProc: null } });
+  assert.equal(h.host.stopActiveTurnForProviderError('s1').code, 'no_live_runner');
+});
+
+test('a provider-error cancel request takes the non-detaching stop path', async () => {
+  const kills = [];
+  const proc = { pid: 77, kill(signal) { kills.push(signal); }, once() {} };
+  const chatState = { cli: 'opencode', claudeProc: proc, _activeRunner: {}, isStreaming: true };
+  const h = fixture({ chatState, runnerKillGraceMs: 60_000 });
+  const result = await h.host.cancelActiveTurn('s1', {
+    reason: 'provider_log_error',
+    source: 'opencode_log_watchdog',
+    providerError: true,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.providerErrorStop, true);
+  assert.deepEqual(kills, ['SIGTERM']);
+  assert.equal(chatState.claudeProc, proc, 'runner stays attached for close-time finalization');
+  // The cancel chain must not run: no E verdict, no scheduler boundary close.
+  assert.equal(h.calls.some(call => call[0] === 'assessing'), false);
+  assert.equal(h.calls.some(call => call[0] === 'dispatch'), false);
+});
+
+test('a provider-error cancel request with no live process falls back to the cancel chain', async () => {
+  const h = fixture({ chatState: { cli: 'opencode', claudeProc: null } });
+  const result = await h.host.cancelActiveTurn('s1', { providerError: true, source: 'opencode_log_watchdog' });
+  assert.equal(result.ok, true);
+  assert.equal(result.providerErrorStop, undefined);
+  assert.equal(h.calls.some(call => call[0] === 'assessing'), true);
+});

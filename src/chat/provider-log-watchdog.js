@@ -19,8 +19,10 @@
 // session's cwd inside the current turn window).
 //
 // On a correlated ERROR the watchdog surfaces one sanitized chat error event
-// and ends the turn through the same cancel machinery the stop button uses,
-// which kills the wedged child and releases the scheduler slot.
+// and stops the wedged child WITHOUT detaching the turn, so turn-engine's close
+// handler finalizes it like any other provider error (classification -> Auto
+// failover / retry / same-provider continuation). Calling the stop-button cancel
+// here instead silently skipped that entire chain.
 
 const fs = require('fs');
 const os = require('os');
@@ -272,21 +274,24 @@ function createProviderLogWatchdog(deps = {}) {
       sessionId, provider: record.cli, run: hit.run || null,
       nativeSession: hit.sessionId || null, correlation: nativeSessionId ? 'session' : 'directory_run',
     });
-    // End the turn deterministically: kill the wedged child, classify E,
-    // release the scheduler slot. Same machinery as the UI stop button, which
-    // is proven safe for scheduler-bypassed (cron) turns too.
-    let cancel;
+    // End the turn as a PROVIDER failure, not a cancel: the host stops the
+    // wedged child without detaching the runner, so turn-engine's close handler
+    // finalizes the turn like any other provider error (classification -> Auto
+    // failover / retry / same-provider continuation). A cancel detaches the
+    // runner and skips that entire chain — which is exactly why these local
+    // faults used to repeat on the same line.
+    let stop;
     try {
-      cancel = await deps.cancelTurn(sessionId, {
+      stop = await deps.cancelTurn(sessionId, {
         reason: 'provider_log_error',
-        killReason: 'provider_log_error',
         source: `${record.cli}_log_watchdog`,
+        providerError: true,
       });
     } catch (error) {
-      logger.warn('provider_log_error_cancel_failed', { sessionId, error: error?.message || String(error) });
-      return { sessionId, action: 'surfaced_cancel_failed', reason: 'cancel_error' };
+      logger.warn('provider_log_error_stop_failed', { sessionId, error: error?.message || String(error) });
+      return { sessionId, action: 'surfaced_stop_failed', reason: 'stop_error' };
     }
-    return { sessionId, action: 'surfaced_and_cancelled', reason: 'correlated_error', cancel };
+    return { sessionId, action: 'surfaced_and_stopped', reason: 'correlated_error', stop };
   }
 
   async function sweep() {

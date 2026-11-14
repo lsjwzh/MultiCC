@@ -1010,6 +1010,35 @@ function createSessionWorkHost(deps = {}) {
     };
   }
 
+  // A provider fault that the CLI itself swallowed (opencode writes it to its
+  // own log and never exits) still has to end the turn. It must NOT end it the
+  // way a cancel does: runCancel detaches the child so turn-engine's close
+  // handler skips its ENTIRE finalization — and with it the API-error
+  // classification, Auto failover, retry and same-provider continuation that
+  // are the whole point of surfacing a provider error. Leaving `claudeProc` and
+  // `_activeRunner` in place lets that close handler own the chain exactly as
+  // it does when a provider error ends the process by itself.
+  function stopActiveTurnForProviderError(sessionId, {
+    reason = 'provider_log_error',
+    source = 'provider_log',
+  } = {}) {
+    const state = deps.getChatSession(sessionId);
+    const proc = state && state.claudeProc;
+    if (!proc) return { ok: false, code: 'no_live_runner' };
+    log.warn?.('session_provider_error_stop', { sessionId, source, reason, pid: proc.pid });
+    try { proc.kill('SIGTERM'); } catch (_) {}
+    // The same CLI that ignored the provider fault can ignore SIGTERM too. The
+    // graceful cancel path escalates on the same grace period; here nothing
+    // observes the wait, so the escalation is scheduled on the handle.
+    const escalate = setTimeout(() => {
+      log.warn?.('session_provider_error_force_kill', { sessionId, pid: proc.pid });
+      try { proc.kill('SIGKILL'); } catch (_) {}
+    }, RUNNER_KILL_GRACE_MS);
+    if (typeof escalate.unref === 'function') escalate.unref();
+    try { proc.once('exit', () => clearTimeout(escalate)); } catch (_) {}
+    return { ok: true, pid: proc.pid };
+  }
+
   async function cancelActiveTurn(sessionId, {
     // Queue policy is unchanged by a cancel: the E verdict releases the active
     // slot and, per the state machine, only D drains the FIFO. A cancel never
@@ -1018,7 +1047,16 @@ function createSessionWorkHost(deps = {}) {
     killReason = 'user_cancel',
     source = 'manual_cancel',
     operationId = null,
+    // The turn is ending because the PROVIDER failed (a log watchdog surfaced an
+    // error the CLI swallowed), not because someone asked it to stop.
+    providerError = false,
   } = {}) {
+    if (providerError) {
+      const stopped = stopActiveTurnForProviderError(sessionId, { reason, source });
+      if (stopped.ok) return { ok: true, providerErrorStop: true, ...stopped };
+      // No live process handle (the resident/stream lane finalizes on its own
+      // rejection path): fall through to the cancel chain.
+    }
     const record = deps.getRecord(sessionId);
     if (!record) return { ok: false, code: 'session_not_found' };
     const inFlight = cancelOperations.get(sessionId);
@@ -1087,6 +1125,7 @@ function createSessionWorkHost(deps = {}) {
   return Object.freeze({
     admit,
     cancelActiveTurn,
+    stopActiveTurnForProviderError,
     classifyTransition,
     classifyUnavailable,
     getRunState,
