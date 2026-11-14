@@ -1,674 +1,158 @@
-name: desktop-release
-
-# Cross-platform desktop builds (macOS dmg / Windows exe / Linux AppImage+deb).
-#
-# 标签发布先创建含桌面和 standalone 资产的 Release，Android 随后追加。
-#
-# workflow_dispatch runs the build/validation half only — no release, no tag.
-#
-# Signing: builds are unsigned by default. Providing the MAC_* secrets below
-# signs + notarizes the macOS dmg; absence is reported as an explicit unsigned
-# status in the build log and in the SIGNING-STATUS-*.txt assets — never
-# silently skipped and never claimed as signed. Windows/Linux artifacts are
-# always unsigned and pinned by SHA-256.
-
+name: Temporary signed Android OTA artifact
 on:
-  push:
-    tags: ['v*.*.*']
   workflow_dispatch:
-
 permissions:
-  contents: write
-
-concurrency:
-  group: desktop-release-${{ github.ref }}
-  cancel-in-progress: false
-
-
+  contents: read
 jobs:
-  core-tests:
-    uses: ./.github/workflows/core-tests.yml
-    permissions:
-      contents: read
-
-  clean-install:
-    uses: ./.github/workflows/clean-install.yml
-    permissions:
-      contents: read
-
-  rust-kernels:
-    uses: ./.github/workflows/rust-kernels.yml
-    permissions:
-      contents: read
-
-  # 门禁失败只阻断发布，保留并行构建；定位后再决定是否取消。
-  build:
-    name: build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    env:
-      MULTICC_REQUIRE_RUST_BUNDLE: '1'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            platform: macos
-            native_platform: darwin
-            # One Electron config builds both dmgs, so the job has to stage,
-            # rebuild and package once per arch (see the loop below).
-            archs: "arm64 x64"
-          - os: windows-latest
-            platform: windows
-            native_platform: win32
-            archs: "x64"
-          # Pin the Linux x64 build/runtime baseline; ubuntu-latest can require AVX2.
-          - os: ubuntu-24.04
-            platform: linux
-            native_platform: linux
-            archs: "x64"
+  android-ota:
+    name: Build official Android OTA artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: android-release
     steps:
       - uses: actions/checkout@v4
-
-      - name: 配置 Rust 构建目录
-        shell: bash
-        run: |
-          echo "MULTICC_RUST_PREBUILT_DIR=$RUNNER_TEMP/multicc-rust-prebuilt" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/multicc-rust-target" >> "$GITHUB_ENV"
-
-      - uses: actions/setup-node@v4
         with:
-          # Node 22 is the floor MultiCC declares (package.json engines) and the
-          # same major the standalone package pins. Rust uses the stable Node-API.
-          node-version: 22
-
-      - uses: dtolnay/rust-toolchain@stable
-      - name: 准备 Rust 目标标准库
-        shell: bash
-        run: |
-          if [ "${{ matrix.native_platform }}" = darwin ]; then
-            rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          elif [ "${{ matrix.native_platform }}" = linux ]; then
-            # 插件二进制是 musl 静态链接（见 scripts/build-plugin-binaries.js）。
-            rustup target add x86_64-unknown-linux-musl
-            python3 -m venv "$RUNNER_TEMP/zigbuild"
-            "$RUNNER_TEMP/zigbuild/bin/pip" install --quiet cargo-zigbuild ziglang
-            echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
-          fi
-
-      - name: Preflight — desktop version matches root package.json
+          fetch-depth: 2
+      - name: Verify source baseline
         shell: bash
         run: |
           set -euo pipefail
-          node -e '
-          const assert = require("node:assert/strict");
-          const root = require("./package.json");
-          const desktop = require("./desktop/package.json");
-          assert.equal(desktop.version, root.version,
-            `desktop/package.json version ${desktop.version} != root ${root.version} — bump both together`);
-          console.log(`versions aligned at ${root.version}`);
-          '
-
-      - name: Install desktop toolchain
+          test "$(git rev-parse HEAD^)" = "86bdeb1c12a8c17e2a86d58b28fdb998fe485e9c"
+          git diff --exit-code HEAD^ HEAD -- app
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.32.2'
+          cache: true
+      - name: Prepare official signing key
         shell: bash
-        working-directory: desktop
-        run: npm ci --no-audit --no-fund
-
-      - name: Check extraResources copies server dependencies
-        run: node --test --test-name-pattern="extraResources preserves server dependencies" tests/test-desktop-shell.js
         env:
-          MULTICC_REQUIRE_BUILDER_TEST: '1'
-
-      # Stage → gate → package, once per target arch.
-      #
-      # This has to be a loop, not three separate steps: desktop/package.json
-      # asks electron-builder for both mac arches, and a single staged tree
-      # belongs to one arch only. Staging once on the arm64 runner is exactly
-      # how the x64 dmg once ended up carrying an arm64 binary — it installs
-      # fine, and only the first require() on an Intel Mac fails.
-      - name: Stage and package per arch
-        shell: bash
-        working-directory: desktop
-        env:
-          # Passed through only when configured; empty values stay unset so
-          # electron-builder builds unsigned instead of failing half-signed.
-          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ secrets.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          signing_status="unsigned (code signing not configured for this platform; verify via SHA256SUMS.txt)"
-          identity_args=()
-          if [ "${{ matrix.platform }}" = "macos" ]; then
-            if [ -n "${MAC_CSC_LINK:-}" ]; then
-              export CSC_LINK="$MAC_CSC_LINK"
-              export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-}"
-              identity_args+=(--config.mac.identity="Developer ID Application")
-              if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
-                signing_status="signed (Developer ID) + notarized"
-              else
-                signing_status="signed (Developer ID), not notarized (APPLE_* secrets incomplete)"
-              fi
-            else
-              # No signing material: keep electron-builder honest about it.
-              identity_args+=(--config.mac.identity=null)
-              echo "::warning::Building UNSIGNED macOS dmg — configure MAC_CSC_LINK / MAC_CSC_KEY_PASSWORD (+ APPLE_* for notarization) secrets to sign."
-              signing_status="unsigned (MAC_CSC_LINK secret not configured)"
-            fi
-          fi
-          echo "DESKTOP_SIGNING_STATUS=$signing_status" >> "$GITHUB_ENV"
-          # 后续打包检查据此决定要不要 codesign --verify 新加的 multicc-remote / multicc-cdpd / multicc-gateway。
-          echo "DESKTOP_SIGNED=$([ -n "${CSC_LINK:-}" ] && echo 1 || echo 0)" >> "$GITHUB_ENV"
-
-          case "${RUNNER_ARCH}" in
-            ARM64) host_arch=arm64 ;;
-            X64) host_arch=x64 ;;
-            *) host_arch=unknown ;;
-          esac
-
-          for arch in ${{ matrix.archs }}; do
-            node ../scripts/build-rust-kernels.js --platform "${{ matrix.native_platform }}" --arch "$arch"
-            node ../scripts/build-plugin-binaries.js --platform "${{ matrix.native_platform }}" --arch "$arch"
-            # The app is a shell around the standalone tree: this stages exactly
-            # what a multicc-standalone-* package carries (server + production
-            # deps + the pinned Node runtime + launcher). Cross-arch targets skip
-            # only the "boot the staged runtime" half — this runner cannot
-            # execute the target binary, and CI builds every arch natively too.
-            verify_flags=""
-            if [ "$host_arch" != "$arch" ]; then
-              verify_flags="--no-verify"
-            fi
-            echo "::group::staging standalone resources for $arch"
-            rm -rf .staging
-            node ../scripts/desktop-stage-standalone.js \
-              --out .staging/resources \
-              --install \
-              --arch "$arch" --platform "${{ matrix.native_platform }}" \
-              $verify_flags
-            echo "::endgroup::"
-
-            echo "::group::arch gate ($arch)"
-            # Rust SQLite and ASR use N-API with target-specific prebuilt modules.
-            # What still needs proving is that whatever prebuilt binary
-            # did land belongs to this arch — a build-host binary installs fine
-            # and only fails at the first require() on the target machine.
-            # --allow-none: that binary is optional, so a platform without it is
-            # a valid tree, not a silently empty one.
-            node ../scripts/native-arch.js \
-              --root .staging/resources/app-server \
-              --expect-arch "$arch" \
-              --expect-platform "${{ matrix.native_platform }}" \
-              --allow-none
-            echo "::endgroup::"
-
-            echo "::group::electron-builder ($arch)"
-            # `--mac --x64` is NOT enough to pin the arch: desktop/package.json
-            # declares `arch` per target, and an explicit config arch list wins
-            # over the CLI flag (verified against electron-builder 26.15.3 —
-            # `--mac --x64` still yields arm64+x64). The `target:arch` form is
-            # the documented way to build exactly one arch.
-            case "${{ matrix.platform }}" in
-              macos) target_args=(--mac "dmg:$arch") ;;
-              windows) target_args=(--win "nsis:$arch") ;;
-              linux) target_args=(--linux "AppImage:$arch" "deb:$arch") ;;
-              *) echo "::error::unknown platform ${{ matrix.platform }}"; exit 1 ;;
-            esac
-            # ${arr[@]+"${arr[@]}"} keeps an empty array from tripping `set -u`
-            # on the bash 3.2 that macOS runners may still use.
-            npx electron-builder --publish never "${target_args[@]}" ${identity_args[@]+"${identity_args[@]}"}
-            echo "::endgroup::"
-
-            echo "::group::packaged app carries the standalone tree ($arch)"
-            # extraResources is a declarative mapping, and a typo in it produces
-            # an installer that builds, signs, ships and then shows the user an
-            # error page: no server, or no runtime to run it with. Check the
-            # packaged bundle, not the staging directory it came from.
-            case "${{ matrix.platform }}" in
-              macos)
-                if [ "$arch" = "arm64" ]; then app_resources="dist/mac-arm64/MultiCC.app/Contents/Resources"
-                else app_resources="dist/mac/MultiCC.app/Contents/Resources"; fi
-                app_runtime="runtime/bin/node" ;;
-              windows) app_resources="dist/win-unpacked/resources"; app_runtime="runtime/node.exe" ;;
-              linux) app_resources="dist/linux-unpacked/resources"; app_runtime="runtime/bin/node" ;;
-            esac
-            for rel in app-server/server.js launcher/standalone-cli.js bundle-manifest.json "$app_runtime"; do
-              if [ ! -f "$app_resources/$rel" ]; then
-                echo "::error::$app_resources/$rel is missing from the packaged app — the shell would have no server or runtime to run"
-                exit 1
-              fi
-            done
-            # 「🖥 屏幕」的远控进程、浏览器 CDP 网关和 Rust 前门都和原生模块同目录。
-            # 它们不会被 require() 时发现：缺件或丢了可执行位，只有用户用到时才会暴露
-            # （v2.12.0 就这样漏发了 multicc-cdpd）。前门缺了，桌面壳根本起不来服务。
-            exe_suffix=""
-            if [ "${{ matrix.platform }}" = windows ]; then exe_suffix=.exe; fi
-            companions=("multicc-remote:remote screen" "multicc-cdpd:the browser CDP gateway"
-              "multicc-gateway:the Rust front door")
-            for companion in "${companions[@]}"; do
-              companion_rel="app-server/native/prebuilt/${{ matrix.native_platform }}-$arch/${companion%%:*}$exe_suffix"
-              if [ ! -f "$app_resources/$companion_rel" ]; then
-                echo "::error::$app_resources/$companion_rel is missing from the packaged app — ${companion#*:} would be unavailable"
-                exit 1
-              fi
-              if [ "${{ matrix.platform }}" != windows ] && [ ! -x "$app_resources/$companion_rel" ]; then
-                echo "::error::$app_resources/$companion_rel lost its executable bit during packaging"
-                exit 1
-              fi
-              # macOS: extraResources land inside the .app, so @electron/osx-sign
-              # treats extensionless binaries like runtime/bin/node. Prove each was
-              # signed instead of assuming the walk covered it.
-              if [ "${{ matrix.platform }}" = macos ] && [ "${DESKTOP_SIGNED:-0}" = 1 ]; then
-                codesign --verify --strict --verbose=2 "$app_resources/$companion_rel"
-              fi
-            done
-            if [ "${{ matrix.platform }}" = macos ] && [ "${DESKTOP_SIGNED:-0}" = 1 ]; then
-              if [ "$arch" = "arm64" ]; then app_bundle="dist/mac-arm64/MultiCC.app"; else app_bundle="dist/mac/MultiCC.app"; fi
-              codesign --verify --deep --strict --verbose=2 "$app_bundle"
-            fi
-            echo "$app_resources carries the standalone tree"
-            dependency_verify_flags=()
-            if [ "$host_arch" != "$arch" ]; then
-              dependency_verify_flags+=(--no-execute)
-            fi
-            node ../scripts/desktop-verify-resources.js \
-              --resources "$app_resources" \
-              ${dependency_verify_flags[@]+"${dependency_verify_flags[@]}"}
-            echo "::endgroup::"
-          done
-
-      - name: Write sidecars, checksum manifest, signing status
-        shell: bash
-        working-directory: desktop
-        run: |
-          set -euo pipefail
-          node ../scripts/desktop-release-assets.js \
-            --dir dist \
-            --platform "${{ matrix.platform }}" \
-            --version "$(node -p 'require("./package.json").version')" \
-            --signing-status "$DESKTOP_SIGNING_STATUS"
-          # Per-OS suffixes so three artifacts can merge without clobbering.
-          mv dist/SHA256SUMS.txt "dist/SHA256SUMS-${{ matrix.platform }}.txt"
-          mv dist/SIGNING-STATUS.txt "dist/SIGNING-STATUS-${{ matrix.platform }}.txt"
-
-      - name: Upload per-OS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-${{ matrix.platform }}
-          path: |
-            desktop/dist/*.dmg
-            desktop/dist/*.exe
-            desktop/dist/*.AppImage
-            desktop/dist/*.deb
-            desktop/dist/*.sha256
-            desktop/dist/SHA256SUMS-*.txt
-            desktop/dist/SIGNING-STATUS-*.txt
-          if-no-files-found: error
-          retention-days: 14
-
-  # The standalone packages (scripts/standalone-bundle.js): the server + its
-  # production deps + a pinned official Node runtime. This is the primary
-  # distribution form — install.sh downloads exactly these — and it is also what
-  # the Electron desktop app is a shell around, so a failed build here has to
-  # stop the release rather than publish a Release whose assets are incomplete.
-  standalone:
-    name: standalone package (${{ matrix.platform }}-${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
-    env:
-      MULTICC_REQUIRE_RUST_BUNDLE: '1'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            platform: darwin
-            arch: arm64
-          - os: macos-latest
-            platform: darwin
-            arch: x64
-          - os: ubuntu-24.04
-            platform: linux
-            arch: x64
-          - os: ubuntu-latest
-            platform: linux
-            arch: arm64
-          - os: windows-latest
-            platform: win32
-            arch: x64
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 配置 Rust 构建目录
-        shell: bash
-        run: |
-          echo "MULTICC_RUST_PREBUILT_DIR=$RUNNER_TEMP/multicc-rust-prebuilt" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/multicc-rust-target" >> "$GITHUB_ENV"
-
-      - uses: actions/setup-node@v4
-        with:
-          # Builds the bundle; the runtime that ships inside it is pinned
-          # separately (--node-version, Node 22 for the macOS 11 floor).
-          node-version: 22
-
-      - uses: dtolnay/rust-toolchain@stable
-      - name: 构建目标平台 Rust 模块
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.platform }}" = darwin ]; then
-            rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          elif [ "${{ matrix.platform }}-${{ matrix.arch }}" = linux-arm64 ]; then
-            rustup target add aarch64-unknown-linux-gnu
-            sudo apt-get update
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          fi
-          node scripts/build-rust-kernels.js --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
-
-      # 内置插件（chrome-proxy-launcher 等）的二进制和第三方内核按目标平台现编现下，
-      # 打包时只留这一份（scripts/stage-plugin-binaries.js）。Linux 产物是 musl 静态
-      # 链接，交叉链接靠 cargo-zigbuild，免得 runner 的新 glibc 被带到用户机器上。
-      - name: 构建目标平台插件二进制
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.platform }}" = linux ]; then
-            case "${{ matrix.arch }}" in
-              x64) rustup target add x86_64-unknown-linux-musl ;;
-              arm64) rustup target add aarch64-unknown-linux-musl ;;
-            esac
-            # 系统 Python 受 PEP 668 保护，装进独立 venv；cargo-zigbuild 找不到 zig
-            # 时会用 venv 里的 python3 -m ziglang。
-            python3 -m venv "$RUNNER_TEMP/zigbuild"
-            "$RUNNER_TEMP/zigbuild/bin/pip" install --quiet cargo-zigbuild ziglang
-            export PATH="$RUNNER_TEMP/zigbuild/bin:$PATH"
-          fi
-          node scripts/build-plugin-binaries.js --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
-
-      - name: Build standalone package
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${{ runner.arch }}" in
-            ARM64) host_arch=arm64 ;;
-            X64) host_arch=x64 ;;
-            *) host_arch=unknown ;;
-          esac
-          # A plain string, not an array: macOS runners may still be bash 3.2,
-          # where an empty array under `set -u` is an unbound-variable error.
-          extra_flags=""
-          if [ "$host_arch" != "${{ matrix.arch }}" ]; then
-            # Cross-arch: npm still resolves the target's optional deps and
-            # prebuilds, and scripts/native-arch.js still gates arch + format.
-            # Only the "boot the bundled runtime" smoke is skipped, because this
-            # runner cannot execute the target binary.
-            extra_flags="--no-verify"
-          fi
-          node scripts/standalone-bundle.js \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}" \
-            --out dist-standalone $extra_flags
-
-      # 远控二进制、CDP 网关和 Rust 前门必须真的进了 tar/zip：tar 会保留权限位，
-      # zip 不需要，但都必须在解包后还能执行、还能说出协议版本。这里直接看产物目录
-      # （v2.12.0 只查了远控，multicc-cdpd 就这样漏发了）。Windows 上没有前门。
-      - name: 校验远控、CDP 网关与 Rust 前门二进制随包发布
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(node -p "require('./package.json').version")
-          bundle="dist-standalone/multicc-standalone-$version-${{ matrix.platform }}-${{ matrix.arch }}"
-          if [ "${{ matrix.platform }}" = darwin ]; then
-            resources="$bundle/MultiCC.app/Contents/Resources"
-          else
-            resources="$bundle/Resources"
-          fi
-          exe_suffix=""
-          if [ "${{ matrix.platform }}" = win32 ]; then exe_suffix=.exe; fi
-          case "${RUNNER_ARCH}" in
-            ARM64) host_arch=arm64 ;;
-            X64) host_arch=x64 ;;
-            *) host_arch=unknown ;;
-          esac
-          cdpd_prefix="multicc-cdpd $(node -p "require('./scripts/build-rust-kernels').CDPD_PROTOCOL") "
-          gateway_prefix="multicc-gateway $(node -p "require('./scripts/build-rust-kernels').GATEWAY_PROTOCOL") "
-          companions=("multicc-remote:multicc-remote 1 " "multicc-cdpd:$cdpd_prefix"
-            "multicc-gateway:$gateway_prefix")
-          for companion in "${companions[@]}"; do
-            name="${companion%%:*}"
-            prefix="${companion#*:}"
-            file="$resources/app-server/native/prebuilt/${{ matrix.platform }}-${{ matrix.arch }}/$name$exe_suffix"
-            [ -f "$file" ] || { echo "::error::standalone bundle is missing $file"; exit 1; }
-            if [ "${{ matrix.platform }}" != win32 ] && [ ! -x "$file" ]; then
-              echo "::error::$file lost its executable bit before archiving"
-              exit 1
-            fi
-            if [ "$host_arch" = "${{ matrix.arch }}" ]; then
-              "$file" --version | grep -q "^$prefix" || { echo "::error::$file --version does not start with '$prefix'"; exit 1; }
-            else
-              echo "cross-arch build: skipping the $name --version smoke"
+          missing=0
+          for name in \
+            ANDROID_RELEASE_KEYSTORE_BASE64 \
+            ANDROID_RELEASE_STORE_PASSWORD \
+            ANDROID_RELEASE_KEY_ALIAS \
+            ANDROID_RELEASE_KEY_PASSWORD \
+            ANDROID_RELEASE_CERT_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required android-release secret $name is missing"
+              missing=1
             fi
           done
+          [ "$missing" -eq 0 ] || exit 1
 
-      # 插件面板里的「插件二进制缺失」就是这一步漏掉的样子：每个平台的包都必须
-      # 带上自己那份插件二进制和内核，且不夹带别的平台。
-      - name: 校验插件二进制随包发布
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(node -p "require('./package.json').version")
-          bundle="dist-standalone/multicc-standalone-$version-${{ matrix.platform }}-${{ matrix.arch }}"
-          if [ "${{ matrix.platform }}" = darwin ]; then
-            resources="$bundle/MultiCC.app/Contents/Resources"
-          else
-            resources="$bundle/Resources"
-          fi
-          suffix=""; kernel=meow.gz
-          if [ "${{ matrix.platform }}" = win32 ]; then suffix=.exe; kernel=meow.exe.gz; fi
-          dir="$resources/app-server/plugins/chrome-proxy-launcher/bin"
-          plugin="$dir/${{ matrix.platform }}-${{ matrix.arch }}/chrome-proxy-launcher$suffix"
-          [ -f "$plugin" ] || { echo "::error::standalone bundle is missing $plugin"; exit 1; }
-          [ -f "$dir/${{ matrix.platform }}-${{ matrix.arch }}/$kernel" ] || { echo "::error::standalone bundle is missing $kernel"; exit 1; }
-          if [ "${{ matrix.platform }}" != win32 ] && [ ! -x "$plugin" ]; then
-            echo "::error::$plugin lost its executable bit before archiving"
+          signer="$(printf '%s' "$ANDROID_RELEASE_CERT_SHA256" \
+            | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+          if ! [[ "$signer" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::ANDROID_RELEASE_CERT_SHA256 is not a SHA-256 certificate digest"
             exit 1
           fi
-          extra=$(ls "$dir" | grep -vx "${{ matrix.platform }}-${{ matrix.arch }}" || true)
-          [ -z "$extra" ] || { echo "::error::standalone bundle carries other platforms' plugin binaries: $extra"; exit 1; }
-
-
-      # The bundle is only "built" until someone boots it. This runs the real
-      # entry points (--start/--status/--stop through the shipped launcher and
-      # runtime) on every runner that can execute the target runtime — including
-      # windows-latest, where the stop path goes through a marker file instead
-      # of a signal and had never been executed in CI before.
-      - name: Smoke the built bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${RUNNER_ARCH}" in
-            ARM64) host_arch=arm64 ;;
-            X64) host_arch=x64 ;;
-            *) host_arch=unknown ;;
-          esac
-          if [ "$host_arch" != "${{ matrix.arch }}" ]; then
-            echo "cross-arch build ($host_arch -> ${{ matrix.arch }}): skipping the boot smoke, this runner cannot execute the target runtime"
-            exit 0
+          pinned_signer="$(tr -d '[:space:]:' < app/android/release-cert.sha256 \
+            | tr '[:upper:]' '[:lower:]')"
+          if [ "$signer" != "$pinned_signer" ]; then
+            echo "::error::Signing secret does not match app/android/release-cert.sha256"
+            exit 1
           fi
-          version=$(node -p "require('./package.json').version")
-          node scripts/standalone-smoke.js \
-            --bundle "dist-standalone/multicc-standalone-$version-${{ matrix.platform }}-${{ matrix.arch }}"
 
-      - name: 验证最终 Linux x64 归档在无 AVX2 CPU 上运行
-        if: matrix.platform == 'linux' && matrix.arch == 'x64'
-        timeout-minutes: 20
-        shell: bash
-        run: |
-          set -euo pipefail
-          ulimit -c 0
-          bash scripts/setup-linux-cpu-emulator.sh "$RUNNER_TEMP/multicc-qemu"
-          version=$(node -p "require('./package.json').version")
-          name="multicc-standalone-$version-linux-x64"
-          extracted="$RUNNER_TEMP/cpu-compat-bundle"
-          mkdir -p "$extracted"
-          tar -xzf "dist-standalone/$name.tar.gz" -C "$extracted"
-          resources="$extracted/$name/Resources"
-          native="$resources/app-server/native/prebuilt/linux-x64"
-          node scripts/check-linux-cpu-compat.js --qemu "$RUNNER_TEMP/multicc-qemu/qemu-x86_64" \
-            --node "$resources/runtime/bin/node" \
-            --addon "$native/multicc_core.node" --companions "$native" \
-            --report "$RUNNER_TEMP/cpu-compat-bundle.json"
-
-      - name: 保存 Linux x64 归档 CPU 验证证据
-        if: always() && matrix.platform == 'linux' && matrix.arch == 'x64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: standalone-linux-x64-cpu-compatibility
-          path: ${{ runner.temp }}/cpu-compat-bundle.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      # POSIX install.sh is exercised by clean-install.yml in a fresh Linux
-      # container. Windows has a native PowerShell bootstrap, so execute that
-      # exact user path on windows-latest: verify zip + sidecar, install into a
-      # stable directory, configure, boot, query status and stop.
-      - name: Smoke the Windows one-click installer
-        if: matrix.platform == 'win32'
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $version = node -p "require('./package.json').version"
-          $archive = Join-Path $PWD "dist-standalone/multicc-standalone-$version-win32-x64.zip"
-          $target = Join-Path $env:RUNNER_TEMP 'MultiCC-standalone-install'
-          & ./install.ps1 -From $archive -InstallDir $target -NoService -NoOpen
-          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed with $LASTEXITCODE" }
-          & (Join-Path $target 'multicc.cmd') status --json
-          if ($LASTEXITCODE -ne 0) { throw "installed bundle is not running" }
-          & (Join-Path $target 'multicc.cmd') stop
-          if ($LASTEXITCODE -ne 0) { throw "installed bundle did not stop cleanly" }
-
-      - name: Upload standalone artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          # win32 archives itself as a .zip (scripts/zip-archive.js) because a
-          # tarball is not a thing Windows users can double-click; macOS/Linux
-          # ship .tar.gz. Both land here with their .sha256 sidecar.
-          name: standalone-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            dist-standalone/*.tar.gz
-            dist-standalone/*.tar.gz.sha256
-            dist-standalone/*.zip
-            dist-standalone/*.zip.sha256
-          if-no-files-found: error
-          retention-days: 14
-
-  release:
-    name: 发布桌面与 standalone 资产
-    # Both producers, not just the installers: a failed standalone build must
-    # stop the release instead of publishing a Release whose assets are
-    # incomplete.
-    needs: [core-tests, clean-install, rust-kernels, build, standalone]
-    # Only real tag pushes publish; workflow_dispatch validates builds only.
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Prepare canonical English release notes
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/publication-policy-target
-        run: cargo run --locked --quiet --manifest-path native/Cargo.toml -p multicc-core --bin publication-policy -- release-notes "$GITHUB_REF_NAME" CHANGELOG.md "$RUNNER_TEMP/release-notes.md"
-
-      - name: 校验发布标签与主分支
-        shell: bash
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          TAG="$GITHUB_REF_NAME"
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          VERSION="$(node -p "require('./package.json').version")"
-          [ "$TAG" = "v$VERSION" ]
-          git fetch --no-tags origin "$DEFAULT_BRANCH"
-          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: desktop-out
-          pattern: desktop-*
-          merge-multiple: true
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: desktop-out
-          pattern: standalone-*
-          merge-multiple: true
-
-      - name: Upload desktop assets to the release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          # One consolidated manifest covering every artifact.
-          cat desktop-out/SHA256SUMS-*.txt | sort -u > desktop-out/SHA256SUMS.txt
-          rm desktop-out/SHA256SUMS-*.txt
-          # Standalone packages ship their own sidecar hashes; fold them in so
-          # SHA256SUMS.txt covers them too.
-          for sidecar in desktop-out/*.tar.gz.sha256 desktop-out/*.zip.sha256; do
-            [ -f "$sidecar" ] && cat "$sidecar" >> desktop-out/SHA256SUMS.txt
-          done
-          sort -u -o desktop-out/SHA256SUMS.txt desktop-out/SHA256SUMS.txt
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
-            gh release upload "$TAG" desktop-out/* --clobber
-          else
-            gh release create "$TAG" desktop-out/* --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          keystore="$RUNNER_TEMP/multicc-release-keystore"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          if [ ! -s "$keystore" ]; then
+            echo "::error::Decoded Android release keystore is empty"
+            exit 1
           fi
-          echo "uploaded assets:"
-          gh release view "$TAG" --json assets -q '.assets[].name'
+          chmod 600 "$keystore"
 
-      - name: Verify all desktop assets landed
-        shell: bash
+          # Fail fast when the keystore does not actually carry the pinned
+          # certificate (or the alias does not exist): catching it here beats
+          # a full gates + build cycle that can only fail at the post-build
+          # apksigner check (v1.6.3 release, run 4).
+          keystore_signer="$(
+            keytool -exportcert \
+              -storetype PKCS12 \
+              -keystore "$keystore" \
+              -storepass "$ANDROID_RELEASE_STORE_PASSWORD" \
+              -alias "$ANDROID_RELEASE_KEY_ALIAS" \
+            | openssl dgst -sha256 -r \
+            | awk '{ print $1 }' \
+            | tr -d '[:space:]:' \
+            | tr '[:upper:]' '[:lower:]'
+          )"
+          if [ "$keystore_signer" != "$signer" ]; then
+            echo "::error::Decoded Android release keystore certificate does not match app/android/release-cert.sha256"
+            exit 1
+          fi
+
+          {
+            printf 'MULTICC_ANDROID_KEYSTORE_PATH=%s\n' "$keystore"
+            printf 'MULTICC_ANDROID_STORE_PASSWORD=%s\n' "$ANDROID_RELEASE_STORE_PASSWORD"
+            printf 'MULTICC_ANDROID_KEY_ALIAS=%s\n' "$ANDROID_RELEASE_KEY_ALIAS"
+            printf 'MULTICC_ANDROID_KEY_PASSWORD=%s\n' "$ANDROID_RELEASE_KEY_PASSWORD"
+            printf 'MULTICC_APK_EXPECTED_SIGNER_SHA256=%s\n' "$signer"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare optional Firebase client config
         env:
-          GH_TOKEN: ${{ github.token }}
+          MULTICC_FIREBASE_ANDROID_CONFIG_JSON: ${{ secrets.MULTICC_FIREBASE_ANDROID_CONFIG_JSON }}
+        shell: bash
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          export TAG VERSION
+          if [ -n "$MULTICC_FIREBASE_ANDROID_CONFIG_JSON" ]; then
+            config_file="$RUNNER_TEMP/multicc-google-services.json"
+            printf '%s' "$MULTICC_FIREBASE_ANDROID_CONFIG_JSON" > "$config_file"
+            chmod 600 "$config_file"
+            echo "MULTICC_FIREBASE_ANDROID_CONFIG=$config_file" >> "$GITHUB_ENV"
+          fi
+      - name: Build and verify signed OTA APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd app
+          flutter pub get --enforce-lockfile
+          flutter build apk --release --build-number=193
+          cd ..
+          apk=app/build/app/outputs/flutter-apk/app-release.apk
+          test -s "$apk"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -1)"
+          test -n "$build_tools"
+          apk_info="$($build_tools verify --verbose --print-certs "$apk")"
+          signer="$(printf '%s\n' "$apk_info" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+          expected="$(tr -d '[:space:]:' < app/android/release-cert.sha256 | tr '[:upper:]' '[:lower:]')"
+          test "$signer" = "$expected"
+          aapt="$(dirname "$build_tools")/aapt"
+          test -x "$aapt"
+          badging="$($aapt dump badging "$apk")"
+          printf '%s\n' "$badging" | grep -F "package: name='com.multicc.multicc_app' versionCode='193' versionName='2.44.0'"
+          mkdir -p "$RUNNER_TEMP/mobile-ota"
+          cp "$apk" "$RUNNER_TEMP/mobile-ota/multicc.apk"
           node <<'NODE'
-          const assert = require('node:assert/strict');
-          const { execSync } = require('node:child_process');
-          const { TAG, VERSION } = process.env;
-          const assets = execSync(`gh release view ${TAG} --json assets`)
-          const names = new Set(JSON.parse(assets).assets.map(a => a.name));
-          const installers = [
-            `multicc-desktop-${VERSION}-macos-arm64.dmg`,
-            `multicc-desktop-${VERSION}-macos-x64.dmg`,
-            `multicc-desktop-${VERSION}-windows-x64.exe`,
-            `multicc-desktop-${VERSION}-linux-x64.AppImage`,
-            `multicc-desktop-${VERSION}-linux-x64.deb`,
-          ];
-          const standalone = [
-            `multicc-standalone-${VERSION}-darwin-arm64.tar.gz`,
-            `multicc-standalone-${VERSION}-darwin-x64.tar.gz`,
-            `multicc-standalone-${VERSION}-linux-arm64.tar.gz`,
-            `multicc-standalone-${VERSION}-linux-x64.tar.gz`,
-            `multicc-standalone-${VERSION}-win32-x64.zip`,
-          ];
-          for (const name of [...installers, ...standalone, 'SHA256SUMS.txt',
-            'SIGNING-STATUS-macos.txt', 'SIGNING-STATUS-windows.txt', 'SIGNING-STATUS-linux.txt']) {
-            if (!names.has(name)) throw new Error(`missing release asset: ${name}`);
-          }
-          for (const name of names) {
-            if (/^(multicc-desktop-.*\.(dmg|exe|AppImage|deb)|multicc-standalone-.*\.(tar\.gz|zip))$/.test(name)) {
-              assert.ok(names.has(`${name}.sha256`), `missing sidecar for ${name}`);
-            }
-          }
-          console.log(`all desktop assets present on release ${TAG}`);
+          const crypto = require('crypto'), fs = require('fs'), path = require('path');
+          const root = path.join(process.env.RUNNER_TEMP, 'mobile-ota');
+          const p = path.join(root, 'multicc.apk');
+          const data = fs.readFileSync(p);
+          const sha256 = crypto.createHash('sha256').update(data).digest('hex');
+          const signerSha256 = fs.readFileSync('app/android/release-cert.sha256', 'utf8').trim().replace(/:/g, '').toLowerCase();
+          const metadata = { schemaVersion: 1, versionName: '2.44.0', versionCode: 193,
+            distribution: 'temporary-ota', sourceBase: '86bdeb1c12a8c17e2a86d58b28fdb998fe485e9c',
+            gitCommit: process.env.GITHUB_SHA, sha256, size: data.length, signerSha256,
+            builtAt: new Date().toISOString() };
+          fs.writeFileSync(p + '.json', JSON.stringify(metadata) + '\n');
+          fs.writeFileSync(p + '.sha256', sha256 + '\n');
           NODE
+      - name: Upload verified OTA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-android-ota-193
+          path: ${{ runner.temp }}/mobile-ota/multicc.apk*
+          if-no-files-found: error
+          retention-days: 7
