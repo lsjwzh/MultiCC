@@ -30,6 +30,12 @@ const DEFAULTS = Object.freeze({
   // A running turn silent longer than this, with no corroborating outbound
   // signal, is treated as stalled rather than working.
   stallSilentMs: 180_000,
+  // After the proxy reports a request `end`, an in-flight turn that stays
+  // silent with no tool running for this long is presented as waiting for the
+  // CLI's own retry backoff: upstream failures are retried inside the CLI,
+  // and the measured gap before its retry (a ~5.5min silent window) otherwise
+  // looks exactly like a deadlock in the UI.
+  cliRetryBackoffMs: 30_000,
   // Activity (any kind) more recent than this ⇒ at least idle, not dormant.
   idleRecentMs: 10 * 60_000,
 });
@@ -179,6 +185,8 @@ function createLivenessRuntime(deps = {}) {
       silentMs: heartbeatSilentMs,
       proxyPhase: proxy ? proxy.phase : null,
       proxyAgeMs,
+      // Tool in execution per the heartbeat (null while waiting on the model).
+      toolKind: heartbeat && heartbeat.safeToolKind != null ? heartbeat.safeToolKind : null,
       phase: heartbeat && heartbeat.phase
         ? heartbeat.phase
         : (cs && cs.currentTask && cs.currentTask.phase ? cs.currentTask.phase : null),
@@ -208,8 +216,18 @@ function createLivenessRuntime(deps = {}) {
       if (silent != null && silent >= cfg.stallSilentMs && !outbound && !rolloutGrowing) {
         return { state: 'stalled', reason: `silent_${Math.round(silent / 1000)}s`, ...s, probe };
       }
-      const reason = s.phase ? `turn_${s.phase}` : (outbound ? 'outbound_connection' : 'in_flight');
-      return { state: 'working', reason, ...s, probe };
+      // The last proxy request already ended, yet the turn is still in flight,
+      // silent, and no tool is running: the CLI is almost certainly inside its
+      // own retry backoff after an upstream failure. Surface that instead of a
+      // bare "thinking" — during the backoff window nothing else moves.
+      const awaitingRetryMs = s.proxyPhase === 'end'
+        && s.proxyAgeMs != null && s.proxyAgeMs >= cfg.cliRetryBackoffMs
+        && silent != null && silent >= cfg.cliRetryBackoffMs
+        && s.toolKind == null && s.phase !== 'tool'
+          ? s.proxyAgeMs : null;
+      const reason = awaitingRetryMs != null ? 'awaiting_cli_retry'
+        : (s.phase ? `turn_${s.phase}` : (outbound ? 'outbound_connection' : 'in_flight'));
+      return { state: 'working', reason, ...s, probe, awaitingRetryMs };
     }
     if ((outbound || rolloutGrowing) && ownership(sessionId).reason !== 'persistent_stream_idle') {
       // No host-visible turn, but the process is demonstrably talking to an

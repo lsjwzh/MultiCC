@@ -698,9 +698,14 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +2 键 x2 语言（quotaRelayBalanceTitle / quotaRelayTokenBalanceTitle）：第三方中转余额条标题，实测 10402/676071。
     // Existing catalog additions plus the unattended FIFO composer hint:
     // generated bilingual data measured at 10412 lines / 676631 bytes.
-    maxLines: 10412,
+    // Backfilled the 25 drifted keys/locale that only existed in the generated
+    // catalog (unattended/air-unattended/doctor-panel) into app/assets/i18n
+    // dictionaries, then regenerated — source and artifact are single-direction
+    // again, so rerunning the generator no longer drops keys. Measured
+    // 10452 lines / 679072 bytes, plus livenessAwaitingRetry x2 locales.
+    maxLines: 10452,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 676631,
+    maxBytes: 679072,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

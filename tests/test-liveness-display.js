@@ -60,3 +60,21 @@ test('working is refined by turn stage; imprecise lanes say requesting / thinkin
     assert.ok(zh.includes(`"${k}"`) && en.includes(`"${k}"`), `${k} in app json`);
   }
 });
+
+test('awaitingRetryMs overrides the stage label so a CLI retry backoff never reads as plain thinking', () => {
+  const disp = livenessDisplay('working', { stage: 'thinking', awaitingRetryMs: 45_000 });
+  assert.equal(disp.labelKey, 'livenessAwaitingRetry');
+  assert.equal(disp.tint, 'running');
+  assert.equal(disp.dot, 'working');
+  // It wins over every stage refinement, including the imprecise-lane form.
+  assert.equal(livenessDisplay('working', { stage: 'request', stagePrecise: false, awaitingRetryMs: 60_000 }).labelKey, 'livenessAwaitingRetry');
+  // Without the field the stage label is untouched; null counts as absent.
+  assert.equal(livenessDisplay('working', { stage: 'thinking', awaitingRetryMs: null }).labelKey, 'livenessThinking');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const catalog = fs.readFileSync(path.join(__dirname, '..', 'public', 'i18n-catalog.js'), 'utf8');
+  const zh = fs.readFileSync(path.join(__dirname, '..', 'app', 'assets', 'i18n', 'zh.json'), 'utf8');
+  const en = fs.readFileSync(path.join(__dirname, '..', 'app', 'assets', 'i18n', 'en.json'), 'utf8');
+  assert.ok(catalog.split('"livenessAwaitingRetry"').length - 1 >= 2, 'livenessAwaitingRetry in web catalog zh+en');
+  assert.ok(zh.includes('"livenessAwaitingRetry"') && en.includes('"livenessAwaitingRetry"'), 'livenessAwaitingRetry in app json');
+});

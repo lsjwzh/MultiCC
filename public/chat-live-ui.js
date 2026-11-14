@@ -2001,6 +2001,10 @@
         if (!stage && verdict && verdict.proxyPhase === 'request') stage = 'request';
         let labelKey = LIVENESS_STAGE_KEYS[stage] || 'livenessWorking';
         if (stage === 'request' && verdict.stagePrecise === false) labelKey = 'livenessRequestingOrThinking';
+        // The proxy already saw the last request end while the CLI sits in its
+        // own retry backoff: more actionable than "thinking", which reads as a
+        // deadlock during the (measured ~5min) silent window.
+        if (verdict && verdict.awaitingRetryMs != null) labelKey = 'livenessAwaitingRetry';
         return { tint: 'running', dot: 'working', labelKey };
       }
       case 'stalled': return { tint: 'error', dot: 'stalled', labelKey: 'livenessStalled' };

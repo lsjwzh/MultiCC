@@ -374,3 +374,82 @@ test('verdict exposes silentMs (the field the web/App pill reads) equal to heart
   assert.equal(v.heartbeatSilentMs, 6000);
   assert.equal(v.silentMs, 6000);
 });
+
+test('proxy ended + silent in-flight turn with no tool => awaiting_cli_retry', () => {
+  const now = clockFrom(1_000_000);
+  const rt = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, lastStreamAt: now() - 45_000 } },
+    turnHeartbeatStatus: () => ({ phase: 'starting', silentMs: 45_000, safeToolKind: null }),
+  });
+  rt.recordProxyActivity({ sessionId: 's1', phase: 'end', at: now() - 45_000 });
+  const v = rt.verdict('s1');
+  assert.equal(v.state, 'working');
+  assert.equal(v.reason, 'awaiting_cli_retry');
+  assert.equal(v.awaitingRetryMs, 45_000);
+  assert.equal(v.toolKind, null);
+});
+
+test('a tool running while the proxy is ended keeps the plain phase reason', () => {
+  const now = clockFrom(1_000_000);
+  const rt = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, lastStreamAt: now() - 240_000 } },
+    turnHeartbeatStatus: () => ({ phase: 'tool', silentMs: 240_000, safeToolKind: 'process' }),
+  });
+  rt.recordProxyActivity({ sessionId: 's1', phase: 'end', at: now() - 240_000 });
+  const v = rt.verdict('s1', { hasOutboundConnection: true });
+  assert.equal(v.state, 'working');
+  assert.equal(v.reason, 'turn_tool');
+  assert.equal(v.awaitingRetryMs, null);
+  assert.equal(v.toolKind, 'process');
+});
+
+test('silence below the backoff threshold keeps the plain phase reason', () => {
+  const now = clockFrom(1_000_000);
+  const rt = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, lastStreamAt: now() - 8_000 } },
+    turnHeartbeatStatus: () => ({ phase: 'starting', silentMs: 8_000, safeToolKind: null }),
+  });
+  rt.recordProxyActivity({ sessionId: 's1', phase: 'end', at: now() - 12_000 });
+  const v = rt.verdict('s1');
+  assert.equal(v.state, 'working');
+  assert.equal(v.reason, 'turn_starting');
+  assert.equal(v.awaitingRetryMs, null);
+});
+
+test('a fresh proxy request clears the awaiting-retry verdict', () => {
+  const now = clockFrom(1_000_000);
+  const rt = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, lastStreamAt: now() - 45_000 } },
+    turnHeartbeatStatus: () => ({ phase: 'starting', silentMs: 45_000, safeToolKind: null }),
+  });
+  rt.recordProxyActivity({ sessionId: 's1', phase: 'end', at: now() - 45_000 });
+  assert.equal(rt.verdict('s1').reason, 'awaiting_cli_retry');
+  // The CLI's retry goes out: the proxy sees a request again.
+  rt.recordProxyActivity({ sessionId: 's1', phase: 'request', at: now() });
+  const v = rt.verdict('s1');
+  assert.equal(v.state, 'working');
+  assert.equal(v.reason, 'proxy_request');
+  assert.equal(v.awaitingRetryMs, undefined);
+});
+
+test('silence past the stall threshold with no outbound stays stalled, not awaiting retry', () => {
+  const now = clockFrom(1_000_000);
+  const rt = make({
+    now,
+    sessions: { s1: {} },
+    chat: { s1: { isStreaming: true, lastStreamAt: now() - 400_000 } },
+    turnHeartbeatStatus: () => ({ phase: 'starting', silentMs: 400_000, safeToolKind: null }),
+  });
+  rt.recordProxyActivity({ sessionId: 's1', phase: 'end', at: now() - 400_000 });
+  const v = rt.verdict('s1', { hasOutboundConnection: false, rolloutGrowing: false });
+  assert.equal(v.state, 'stalled');
+  assert.equal(v.reason.startsWith('silent_'), true);
+});
