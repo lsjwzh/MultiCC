@@ -262,3 +262,45 @@ test('issue button asks for confirmation before anything opens', async () => {
   assert.deepEqual(opened, [issue.url]);
   assert.match(msgs.at(-1), /doctorIssueOpened/);
 });
+
+function fakeDocument() {
+  class El {
+    constructor(tag) {
+      this.tagName = tag; this.children = []; this.textContent = ''; this.className = '';
+      this.classList = { set: new Set(), add: (...n) => n.forEach(x => this.classList.set.add(x)), remove: (...n) => n.forEach(x => this.classList.set.delete(x)) };
+    }
+    appendChild(child) { this.children.push(child); return child; }
+    remove() { this.removed = true; }
+    setAttribute(name, value) { this.attributes = { ...(this.attributes || {}), [name]: value }; }
+    find(predicate) { return this.children.find(predicate) || null; }
+  }
+  const body = new El('body');
+  return { body, createElement: tag => new El(tag), getElementById: () => null, El };
+}
+
+test('diagnosis progress streams into one small panel, only the report reaches the chat', async () => {
+  const { create } = require('../public/chat-doctor');
+  const doc = fakeDocument();
+  const msgs = [];
+  let polls = 0;
+  const fetchStub = async (url, init) => {
+    if (init && init.method === 'POST') return { ok: true, json: async () => ({ runId: 'doc_1' }) };
+    polls++;
+    const run = polls < 2
+      ? { status: 'running', events: [{ type: 'tool', name: 'run_command' }, { type: 'tool', name: 'tail_file' }] }
+      : { status: 'done', events: [{ type: 'tool', name: 'run_command' }, { type: 'tool', name: 'tail_file' }], report: { summary: 'S', rootCause: 'R' } };
+    return { ok: true, json: async () => ({ run }) };
+  };
+  const doctor = create({ document: doc, translate: (k, v) => k + JSON.stringify(v || {}), fetch: fetchStub, sleep: async () => {},
+    getSessionName: () => 's1', addSystemMsg: m => msgs.push(m), withToken: u => u });
+  await doctor.diagnose();
+
+  const panel = doc.body.find(el => el.id === 'doctor-process-panel');
+  assert.ok(panel, 'a floating panel is created');
+  assert.deepEqual(panel.classList.set.has('done'), true);
+  const body = panel.find(el => el.className === 'doctor-panel-body');
+  assert.equal(body.children.length, 2, 'start line + one tool batch line');
+  assert.match(body.children[1].textContent, /tail_file/);
+  assert.equal(msgs.length, 1, 'progress never becomes chat messages');
+  assert.match(msgs[0], /doctorReportDone/);
+});

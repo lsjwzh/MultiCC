@@ -1,0 +1,89 @@
+/* 会话医生的「诊断过程」小框（DOM 由 chat-doctor.js 造，只有 .doctor-panel*）。
+ *
+ * 医生每轮工具调用原来都写成一条居中的 system 消息，十几条下来把主内容顶出
+ * 屏幕。现在这些过程只进这个右下角的小浮层：流式追加、超出高度自己滚，主聊天
+ * 区只保留最后的诊断报告。颜色一律走 --chat-* token，Air 浅色主题会自动接管。 */
+
+.doctor-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 96px;
+  z-index: 9500;
+  width: min(300px, calc(100vw - 32px));
+  max-height: 210px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--chat-surface, #1b2230);
+  color: var(--chat-muted, #9aa7b8);
+  border: 1px solid var(--chat-line, rgba(140, 160, 190, .32));
+  border-radius: 10px;
+  box-shadow: var(--chat-shadow, 0 8px 24px rgba(0, 0, 0, .28));
+  font-size: 12px;
+  animation: doctor-panel-in .16s ease-out;
+}
+
+.doctor-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--chat-line, rgba(140, 160, 190, .24));
+}
+
+.doctor-panel-title {
+  font-weight: 600;
+  color: var(--chat-text, #dbe4ef);
+}
+
+.doctor-panel-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: var(--chat-muted, #9aa7b8);
+  white-space: nowrap;
+}
+
+.doctor-panel-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--chat-blue, #2f81f7);
+  animation: doctor-panel-pulse 1.2s ease-in-out infinite;
+}
+
+.doctor-panel.done .doctor-panel-status::before { animation: none; background: var(--chat-success, #2ea043); }
+.doctor-panel.failed .doctor-panel-status::before { animation: none; background: var(--chat-danger, #f85149); }
+
+.doctor-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.doctor-panel-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--chat-muted, #9aa7b8);
+}
+
+.doctor-panel-line:last-child { color: var(--chat-text, #dbe4ef); }
+
+@keyframes doctor-panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes doctor-panel-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
