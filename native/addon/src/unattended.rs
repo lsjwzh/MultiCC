@@ -82,6 +82,13 @@ pub fn unattended_delivery_retry_decision(input: String) -> Result<String> {
     multicc_core::unattended::delivery_retry_decision(&input).map_err(napi::Error::from_reason)
 }
 
+/// Whether a restarted supervisor must re-drive an interrupted session →
+/// `{recover, reason}`.
+#[napi]
+pub fn unattended_boot_recover(input: String) -> Result<String> {
+    multicc_core::unattended::boot_recover(&input).map_err(napi::Error::from_reason)
+}
+
 /// Whether a persisted state may be cleared →
 /// `{allowed, noop}` / `{allowed:false, noop:false, code:"invalid_state"}`.
 #[napi]

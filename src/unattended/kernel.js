@@ -87,6 +87,14 @@ function decideTurnEnd(input) {
   return JSON.parse(native().unattendedDecideTurnEnd(JSON.stringify(input || {})));
 }
 
+// Whether a restarted supervisor must re-drive a session whose settle was
+// recorded but whose continuation never landed. The rule (which owners and
+// classify letters exclude a replay) lives in native/core/src/unattended.rs
+// (`boot_recover`); the host only gathers the live facts.
+function bootRecover(input) {
+  return JSON.parse(native().unattendedBootRecover(JSON.stringify(input || {})));
+}
+
 function selectQueued(input) {
   return JSON.parse(native().unattendedSelectQueued(JSON.stringify(input || {})));
 }
@@ -98,6 +106,7 @@ function deferEvaluation(input) {
 module.exports = {
   LIMITS,
   armDeadline,
+  bootRecover,
   buildVerdictPrompt,
   clampDuration,
   deadlineExpired,
