@@ -169,7 +169,11 @@ fn create_database(
         import_rows(&mut connection, values, true)?;
     }
     connection.close().map_err(|(_, error)| err(error))?;
-    fs::File::open(&temp.0)
+    // Windows FlushFileBuffers requires a handle with write access; opening
+    // the freshly created database read-only makes sync_all fail with ERROR_ACCESS_DENIED.
+    OpenOptions::new()
+        .write(true)
+        .open(&temp.0)
         .and_then(|f| f.sync_all())
         .map_err(err)?;
     let created = match fs::hard_link(&temp.0, file) {

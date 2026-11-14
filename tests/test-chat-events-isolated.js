@@ -305,7 +305,13 @@ const turnCompletionEvidence = (frames, marker) => {
     // ── 5. API error message: suppress when the turn already has output ──
     sendUser(socket, 'EVT_API_ERROR_AFTER_OUTPUT_ONE SUCCESS_RESULT');
     await socket.until(frames => hasText(frames, 'genuine answer'), 'pre-error answer surfaced');
-    await socket.until(frames => turnSettled(frames, 'EVT_API_ERROR_AFTER_OUTPUT_ONE'), 'suppressed api error completion');
+    try {
+      await socket.until(frames => turnSettled(frames, 'EVT_API_ERROR_AFTER_OUTPUT_ONE'), 'suppressed api error completion');
+    } catch (error) {
+      console.error('SUPPRESSED API ERROR COMPLETION EVIDENCE:',
+        JSON.stringify(turnCompletionEvidence(socket.frames, 'EVT_API_ERROR_AFTER_OUTPUT_ONE')));
+      throw error;
+    }
     const suppressTurnId = messageTurnId(socket.frames, 'EVT_API_ERROR_AFTER_OUTPUT_ONE');
     assert.ok(suppressTurnId, 'the committed user message must carry its turnId');
     const suppressFrames = socket.frames.filter(frame => frame?.turnId === suppressTurnId);

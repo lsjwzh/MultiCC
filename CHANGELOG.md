@@ -4,16 +4,18 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
-- Exercise the experimental isolated orchestration owner across CI platforms, including concurrent updates, shared ownership, and owner failure. Reject a second experimental owner for the same database with a process-lifetime lease; production storage selection remains unchanged. Capture bounded queue and result metadata when the isolated chat-events tool turn times out without changing test deadlines.
-- Add experimental, transaction-bound scans of bounded scheduler queue ordering, active and priority metadata, with ordered pagination and version-checked preparation; scheduling behavior and production store selection remain unchanged.
-- Apply the orchestration database hard-link safety check on Windows as well as Unix.
-- Ignore the local provider limit cache migration lock when checking repository changes.
 - Pin the Linux x64 CPU baseline for Rust and bundled C/C++ dependencies, including SQLite, to prevent startup crashes on CPUs without AVX2. Keep Linux x64 builds on Ubuntu 24.04 so the loader and libc support both the CPU gate and the legacy comparison. Add CI execution checks on emulated CPUs without AVX/AVX2 and validate the final standalone archive before publication.
 - Keep native turn-state host values alive while a runtime facade is reachable, preventing preparation failures during garbage collection. The Node change only adds a V8-visible ownership edge required by the current N-API bridge; state transitions remain in Rust, and the edge can move when the native binding exposes equivalent cycle-aware ownership.
 - Wait for the native Claude send acknowledgement before finalizing an early result, preventing an aborted turn from leaving subsequent messages stuck in assessment. This Node change only orders existing SDK/N-API Promise callbacks; classification and scheduling policies remain unchanged. Move this bridge when the Rust host owns both send completion and turn finalization.
 - Preserve Node-compatible filename ordering in Rust native-session scans, keeping bounded scans and same-name archive collisions consistent across filesystems.
 - Keep Codex rollout archives beside Windows session directories supplied by the host. Preserve drive and UNC roots when finding the parent so a backslash-only path cannot redirect the archive into the working directory or fail with a cross-volume rename.
 - Synchronize subscription disconnect fixtures with actual upstream receipt before closing clients, and reserve fixture listeners before starting their threads. Execute native-session Rust regressions explicitly in CI and retain bounded browser startup diagnostics without relaxing test assertions or deadlines.
+
+- Exercise the experimental isolated orchestration owner across CI platforms, including concurrent updates, shared ownership, and owner failure. Reject a second experimental owner for the same database with a process-lifetime lease; production storage selection remains unchanged. Capture bounded queue and result metadata when isolated chat-events tool or suppressed-error completion times out without changing test deadlines.
+- Add experimental, transaction-bound scans of bounded scheduler queue ordering, active and priority metadata, with ordered pagination and version-checked preparation; scheduling behavior and production store selection remain unchanged.
+- Apply the orchestration database hard-link safety check on Windows as well as Unix.
+- Ignore the local provider limit cache migration lock when checking repository changes.
+- Open the newly created provider-limit cache with write access when flushing it, avoiding Windows access-denied failures.
 
 ## v2.21.0 — Relay balances, terminal provider sync, and resilient presets (2026-11-13)
 
