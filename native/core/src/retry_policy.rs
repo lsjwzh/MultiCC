@@ -112,6 +112,45 @@ pub fn decide(input: &JsValue) -> JsValue {
                 )
             }
         }
+        // Same-provider continuation for a replay-unsafe network failure: the
+        // physical CLI session is resumed with a bare continuation prompt, so
+        // already-executed tool side effects are never replayed on a fresh
+        // provider. The host (chat_finalize) gates this on the API-error
+        // decision being a network/timeout category that retry blocked only
+        // for replay safety.
+        "api-network-continue" => {
+            if cli != "opencode" {
+                return terminal("transport", "api-continuation-not-applicable", None);
+            }
+            if truthy(prop(input, "killReason")) || truthy(prop(input, "resultSaved")) {
+                return terminal(
+                    "transport",
+                    "api-continuation-preconditions-failed",
+                    None,
+                );
+            }
+            if !truthy(prop(input, "hasNativeSession")) {
+                return terminal("transport", "api-continuation-no-native-session", None);
+            }
+            let n = current(prop(attempts, "apiNetworkContinue"));
+            let cap_raw = js_to_number(prop(limits, "apiNetworkContinue"));
+            let cap = if cap_raw.is_finite() && cap_raw >= 1.0 {
+                cap_raw
+            } else {
+                2.0
+            };
+            if n >= cap {
+                terminal("transport", "api-continuation-cap-reached", None)
+            } else {
+                schedule(
+                    "resume",
+                    "api-network-continue",
+                    n,
+                    &JsValue::Number(cap),
+                    "apiNetworkContinue",
+                )
+            }
+        }
         "empty-exit" => {
             if cli == "claude" || cli == "claude-exp" {
                 return terminal("empty-exit", "claude-stream-does-not-fresh-retry", None);
