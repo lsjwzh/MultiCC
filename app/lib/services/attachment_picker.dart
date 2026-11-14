@@ -27,7 +27,7 @@ class PickedAttachment {
   });
 }
 
-/// Pick one chat attachment (file or photo).
+/// Pick one chat attachment (file, photo, or video).
 ///
 /// iOS 上 file_picker 的文档选择器（Files app）够不到系统相册，所以先弹
 /// 「选择文件 / 从相册选择」二选一：相册走 PHPicker（image_picker，iOS 14+
@@ -87,23 +87,24 @@ Future<PickedAttachment?> _pickFromFiles() async {
 }
 
 Future<PickedAttachment?> _pickFromPhotos() async {
-  final photo = await ImagePicker().pickImage(source: ImageSource.gallery);
-  if (photo == null) return null;
-  final bytes = await photo.readAsBytes();
-  // PHPicker 以隐私为由不给原图文件名（IMG_1234.HEIC），按 iOS 惯例用时间戳
-  // 生成一个；image_picker 在 iOS 会把 HEIC 转成 JPEG，扩展名取自临时文件。
-  final name = photo.name;
+  final media = await ImagePicker().pickMedia();
+  if (media == null) return null;
+  final bytes = await media.readAsBytes();
+  // PHPicker 不保证提供原始文件名；保留临时文件的扩展名以识别图片和视频。
+  final name = media.name;
   final dot = name.lastIndexOf('.');
-  var ext = dot > 0 ? name.substring(dot).toLowerCase() : '.jpg';
-  if (ext.length > 6) ext = '.jpg';
+  final isVideo = media.mimeType?.startsWith('video/') ?? false;
+  final fallbackExt = isVideo ? '.mov' : '.jpg';
+  var ext = dot > 0 ? name.substring(dot).toLowerCase() : fallbackExt;
+  if (ext.length > 6) ext = fallbackExt;
   final now = DateTime.now();
   String two(int v) => v.toString().padLeft(2, '0');
   final filename =
-      'IMG_${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}$ext';
+      '${isVideo ? 'VID' : 'IMG'}_${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}$ext';
   return PickedAttachment(
     bytes: bytes,
     filename: filename,
-    mimeType: photo.mimeType,
+    mimeType: media.mimeType,
   );
 }
 
