@@ -1127,12 +1127,14 @@ function createUnattendedHost(options = {}) {
     return { ok: false, code: (decision && decision.reason) || 'none' };
   }
 
-  // A real user message takes over: pause first, then the caller delivers the
-  // message normally. System-injected messages never reach this port.
+  // Ordinary input joins FIFO. Rust owns whether it changes supervision;
+  // explicit stop/cancel remain the takeover controls.
   function noteUserMessage(sessionId) {
     const state = stateOf(sessionId);
     if (!state || state.status !== STATUS.ACTIVE) return null;
-    return pause(sessionId, 'input');
+    const decision = kernel.decideTurnEnd({ state, now: now(), kind: 'user_input' });
+    if (decision.nextState && !write(sessionId, decision.nextState)) return null;
+    return stateOf(sessionId);
   }
 
   // Called only after the replacement handoff was durably admitted. Clear the

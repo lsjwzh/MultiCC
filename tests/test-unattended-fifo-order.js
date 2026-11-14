@@ -320,7 +320,12 @@ test('(a) W with a pending question: the auto-answer is selected before the stag
   await h.arm();
 
   await h.activeTurn('ask the user');
-  const typed = await h.scheduler.admit({ sessionId: SESSION, text: 'typed queued work', idempotencyKey: 'typed' });
+  h.setPending({ requestId: 'q1', resolved: false, createdAt: 1_002 });
+  const typed = await h.sessionWorkHost.admit(SESSION, 'typed queued work', {
+    clientMsgId: 'typed', taskSource: 'task-shell', originContinue: true,
+    taskShellReceiptId: 'typed', userInputRequestId: 'q1',
+    taskShellControl: { intent: 'answer', turnId: 'question-turn' },
+  });
   const system = await h.scheduler.admit({
     sessionId: SESSION,
     text: 'system queued work',
@@ -328,9 +333,9 @@ test('(a) W with a pending question: the auto-answer is selected before the stag
     idempotencyKey: 'system',
   });
   assert.equal(typed.queued, true);
+  assert.equal(typed.entry.payload.workKind, 'task');
   assert.equal(system.queued, true);
 
-  h.setPending({ requestId: 'q1', resolved: false, createdAt: 1_002 });
   h.setClassifyState('W');
   await h.scheduler.complete(SESSION, { classifyState: 'W', awaitingRequestId: 'q1' });
   assert.equal(await h.claimOne(), null, 'staged work holds behind the open question');
@@ -473,6 +478,40 @@ test('(c) D settle with a staged backlog defers; the backlog drains, then its ow
   assert.equal(h.calls.decide, 1, 'the last backlog settle makes the verdict');
   assert.equal(h.calls.enqueue, 1);
   assert.deepEqual(pushes, ['classic'], 'the follow-up settle produced its own outcome');
+});
+
+test('ordinary unattended user inputs drain in FIFO before the next automatic instruction', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await h.activeTurn('current task');
+  const queued = [];
+  for (const text of ['first user input', 'second user input']) {
+    assert.equal(h.unattended.noteUserMessage(SESSION).status, 'active');
+    const result = await h.sessionWorkHost.admit(SESSION, text, {
+      clientMsgId: text, taskSource: 'task-shell', originContinue: true,
+    });
+    assert.equal(result.queued, true);
+    queued.push(result.entry.id);
+  }
+  h.setClassifyState('D');
+  await h.scheduler.complete(SESSION, { classifyState: 'D' });
+  const deferred = await h.unattended.onTurnEnd(SESSION, {
+    kind: 'settle', settle: 'D', assistantText: 'current task finished',
+  });
+  assert.equal(deferred.code, 'backlog_pending');
+  assert.equal(h.calls.enqueue, 0);
+  for (const [index, entryId] of queued.entries()) {
+    const next = await h.claimOne();
+    assert.equal(next.id, entryId);
+    await h.startClaim(next);
+    h.setClassifyState('D');
+    await h.scheduler.complete(SESSION, { classifyState: 'D' });
+    await h.unattended.onTurnEnd(SESSION, {
+      kind: 'settle', settle: 'D', assistantText: `user input ${index} finished`,
+    });
+    assert.equal(h.unattended.get(SESSION).status, 'active');
+    assert.equal(h.calls.enqueue, index === 0 ? 0 : 1);
+  }
 });
 
 test('(d) a host-side watchdog cancel leaves the frozen slot and its continuation is selectable', async t => {
@@ -706,9 +745,10 @@ test('(g) a user takeover withdraws a supervisor continuation that has not start
   }, 'queued continuation admission');
   await flush();
 
-  const withdrawn = h.unattended.noteUserMessage(SESSION);
-  assert.equal(withdrawn.status, 'stopped');
-  assert.equal(withdrawn.pausedBy, 'input');
+  const withdrawn = h.unattended.stop(SESSION);
+  assert.equal(withdrawn.ok, true);
+  assert.equal(withdrawn.unattended.status, 'stopped');
+  assert.equal(withdrawn.unattended.pausedBy, 'user');
   await flush();
 
   const tagged = (await h.outbox.list({ sessionId: SESSION }))

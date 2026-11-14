@@ -77,9 +77,9 @@
     const errorText = typeof opts.errorText === 'function'
       ? opts.errorText
       : (error => String((error && error.message) || error || ''));
-    // 宿主（chat.js）用这一个回调把锁合成进它自己的 updateUI 逻辑：连接态、
-    // 流式态和无人值守锁只有一个入口，绝不会出现「锁解除后输入框还灰着」。
-    const applyInputLock = typeof opts.applyInputLock === 'function' ? opts.applyInputLock : null;
+    // 宿主（chat.js）用这一个回调把无人值守 active 的输入提示合成进自己的 UI：
+    // 输入区保持可用，只切换「发送会排队」的占位提示。
+    const applyInputState = typeof opts.applyInputState === 'function' ? opts.applyInputState : null;
     if (!doc || !doc.body || typeof request !== 'function') return null;
 
     let state = null;
@@ -562,17 +562,17 @@
       durationUnit.disabled = busy || precheckBusy;
     }
 
-    // ── 输入锁 + 输入栏上方 banner ────────────────────────────────────────────
-    // 锁只在 active 时生效，而且只在布尔值真的翻转时通知宿主一次 —— 宿主那边
-    // 只有一片 updateUI，断开/重连、流式、无人值守共用同一条 disabled 计算。
-    // 终态（含 achieved）与 null 都会立刻解锁：所谓「卡在 disabled」没有路径。
-    let inputLocked = false;
-    function syncInputLock(locked) {
-      const next = !!locked;
-      if (next === inputLocked) return;
-      inputLocked = next;
-      if (applyInputLock) {
-        try { applyInputLock(next); } catch (_) { /* 宿主异常不能把面板拖死 */ }
+    // ── 输入提示 + 输入栏上方 banner ──────────────────────────────────────────
+    // active 不再锁死输入：新消息会进 FIFO，本轮正常结束后由无人值守提交。
+    // 只在布尔值真的翻转时通知宿主一次，避免每帧重设 placeholder。终态与 null
+    // 都会立刻恢复默认提示。
+    let inputActive = false;
+    function syncInputState(active) {
+      const next = !!active;
+      if (next === inputActive) return;
+      inputActive = next;
+      if (applyInputState) {
+        try { applyInputState(next); } catch (_) { /* 宿主异常不能把面板拖死 */ }
       }
     }
 
@@ -580,7 +580,7 @@
       const status = state && state.status;
       const active = status === 'active';
       const resumable = !!(state && RESUMABLE.has(status));
-      syncInputLock(active);
+      syncInputState(active);
       banner.classList.toggle('unat-banner-active', active);
       banner.classList.toggle('unat-banner-paused', !active && resumable);
       // 退避重试期间换成琥珀色：仍然是「进行中」（绿色）之外的第三种平静状态，
@@ -1130,6 +1130,7 @@
       close,
       position,
       isOpen: () => panelOpen,
+      isActive: () => state?.status === 'active',
       // 仅为测试/宿主清理暴露：30 秒倒计时表是否还挂着。
       isTicking: () => !!tickTimer,
       destroy() {
@@ -1145,7 +1146,7 @@
         } catch (_) { /* 节点可能已被宿主移走 */ }
         mounted = false;
         state = null;
-        inputLocked = false;
+        inputActive = false;
       },
     });
   }

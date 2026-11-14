@@ -10,6 +10,7 @@ const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
 const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
 const { processAlive } = require('../session/runtime-busy');
+const unattendedKernel = require('../unattended/kernel');
 
 // Outbox id of a dispatch result (operation-service completeOperationDraft).
 const DISPATCH_RESULT_ENTRY = /^operation:[^:]+:result(?::\d+)?$/;
@@ -99,29 +100,35 @@ function createSessionWorkHost(deps = {}) {
     if (!runtime?.admitSessionWork || !runtime.sessionScheduler) {
       return { ok: false, code: 'scheduler_not_ready' };
     }
-    const requestedRequestId = typeof options.userInputRequestId === 'string'
+    const source = options.taskSource
+      || (options.originTrigger === true ? 'trigger'
+        : options.originContinue === true ? 'continuation' : 'direct');
+    // Rust decides whether ordinary input stays in FIFO. Supervisor answers and
+    // recovery deliveries retain their existing correlation/control metadata.
+    const inputPolicy = unattendedKernel.decideTurnEnd({
+      state: sessionRecord?.unattended, kind: 'user_input', source, options,
+    });
+    const queueInput = inputPolicy?.queueInput === true;
+    const requestedRequestId = !queueInput && typeof options.userInputRequestId === 'string'
       ? options.userInputRequestId.trim() : '';
     const pending = requestedRequestId ? deps.pendingUserInput(sessionId) : null;
     // requestId enriches an input with correlation; it never grants permission
     // to send. A mismatched stale picker answer is still ordinary user text;
     // an exact replay remains an idempotent answer even after it was resolved.
-    const requestId = (pending && pending.requestId === requestedRequestId) || options.taskShellControl?.intent === 'answer'
+    const requestId = !queueInput && ((pending && pending.requestId === requestedRequestId) || options.taskShellControl?.intent === 'answer')
       ? requestedRequestId
       : '';
     const status = await runtime.sessionScheduler.status(sessionId);
-    const source = options.taskSource
-      || (options.originTrigger === true ? 'trigger'
-        : options.originContinue === true ? 'continuation' : 'direct');
     const classifyState = deps.getTaskState(deps.getRecord(sessionId))?.classifyState || null;
-    // Only PROCESS stages typed chat input behind the active turn. In every
-    // other classify state a typed message is an immediate, correlated
-    // continuation of the current native conversation.
-    const directContinuation = !requestId
+    // Outside unattended mode only PROCESS stages typed input. Unattended
+    // input stays in FIFO through waits/faults while recovery runs first.
+    const directContinuation = !queueInput && !requestId
       && source === 'direct'
       && !isProcessingLetter(classifyState)
       && !!status?.active;
     const admissionOptions = { ...options };
     if (!requestId) delete admissionOptions.userInputRequestId;
+    if (queueInput) delete admissionOptions.taskShellControl;
     if (requestId && pending?.taskId && !admissionOptions.taskId) {
       admissionOptions.taskId = pending.taskId;
     }
@@ -130,7 +137,7 @@ function createSessionWorkHost(deps = {}) {
       text,
       options: admissionOptions,
       source,
-      workKind: requestId ? 'answer' : directContinuation ? 'continuation' : null,
+      workKind: queueInput ? 'task' : requestId ? 'answer' : directContinuation ? 'continuation' : null,
       requestId: requestId || null,
       activeEntryId: requestId || directContinuation ? status?.active?.entryId || null : null,
       idempotencyKey: options.idempotencyKey

@@ -503,6 +503,41 @@ void main() {
     });
   });
 
+  test(
+    'unattended FIFO input preserves the pending question for its actual answer',
+    () async {
+      await setupSettings();
+      fakeAsync((async) {
+        final (service, channels) = makeService();
+        service.connect();
+        async.flushMicrotasks();
+        final channel = channels.last;
+        channel.incoming.add(
+          jsonEncode({
+            'type': 'user_input_required',
+            'requestId': 'question-1',
+            'question': '选择方案',
+            'options': ['A', 'B'],
+          }),
+        );
+        async.flushMicrotasks();
+
+        for (final text in ['排队第一条', '排队第二条']) {
+          expect(service.send(text, answerPendingInput: false), isNotNull);
+          final frame = jsonDecode(channel.sent.last) as Map;
+          expect(frame['text'], text);
+          expect(frame.containsKey('userInputRequestId'), isFalse);
+        }
+        expect(service.send('A'), isNotNull);
+        expect(
+          jsonDecode(channel.sent.last)['userInputRequestId'],
+          'question-1',
+        );
+        service.dispose();
+      });
+    },
+  );
+
   test('voice dictation flags the user_message frame with inputSource/voiceRaw', () async {
     await setupSettings();
     fakeAsync((async) {

@@ -1019,10 +1019,10 @@ fn user_pause_by(source: &str, kill_reason: &str) -> &'static str {
 ///     shutdown / provider log watchdog) → the same fault continuation policy;
 ///   * `cancel` with unknown attribution → `pause` (fail safe: unlock input and
 ///     stop rather than inject work the user may just have stopped);
-///   * `user_input` → `pause` as a takeover.
+///   * `user_input` → `none`: ordinary input joins FIFO without taking over.
 ///
 /// Input: `{state, now, kind, turnId?, settle?, cancelSource?, killReason?,
-/// retryScheduled?, backlogPending?, faultCategory?, retryNotBefore?}`.
+/// retryScheduled?, backlogPending?, faultCategory?, retryNotBefore?, source?, options?}`.
 /// `faultCategory` is the API-error policy category (or `preparation_failed`);
 /// `retryNotBefore` is an epoch-ms earliest-unblock hint from the provider / Auto
 /// candidate pool. Non-active states are a no-op; `retryScheduled` must be a
@@ -1070,7 +1070,22 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
         return Ok(none_envelope("duplicate_turn"));
     }
     match kind.as_str() {
-        "user_input" => Ok(pause_decision(&state, "input", "user_input", now, &turn_id)),
+        "user_input" => {
+            let input_source = state_text(&value, "source");
+            let options = field(&value, "options").unwrap_or(&Value::Null);
+            let flag = |key| field(options, key).and_then(Value::as_bool) == Some(true);
+            if !matches!(input_source.as_str(), "" | "direct" | "task-shell")
+                || flag("system") || flag("unattendedSystem") || flag("originTrigger")
+                || (flag("originContinue") && input_source != "task-shell")
+                || field(options, "taskShellControl")
+                    .is_some_and(|control| state_text(control, "intent") == "steer")
+            {
+                return Ok(none_envelope("not_ordinary_input"));
+            }
+            Ok(json!({
+                "action": "none", "reason": "user_input_queued", "queueInput": true
+            }).to_string())
+        }
         "handoff_accepted" => {
             let mut next = state.clone();
             if let Some(object) = next.as_object_mut() {
@@ -2597,12 +2612,32 @@ mod tests {
     }
 
     #[test]
-    fn a_real_user_message_pauses_as_takeover() {
+    fn a_real_user_message_keeps_the_supervisor_armed_for_fifo() {
         let out =
             turn_end_json(json!({ "state": active_state(1), "now": 200, "kind": "user_input" }));
-        assert_eq!(out["action"], json!("pause"));
-        assert_eq!(out["pausedBy"], json!("input"));
-        assert_eq!(out["nextState"]["pausedBy"], json!("input"));
+        assert_eq!(out["action"], json!("none"));
+        assert_eq!(out["reason"], json!("user_input_queued"));
+        assert_eq!(out["queueInput"], json!(true));
+        assert!(out.get("nextState").is_none());
+    }
+
+    #[test]
+    fn queued_shell_input_is_work_while_system_recovery_keeps_control_priority() {
+        for (source, options, queued) in [
+            ("direct", json!({}), true),
+            ("task-shell", json!({"originContinue": true}), true),
+            ("task-shell", json!({"taskShellControl": {"intent":"answer"}}), true),
+            ("task-shell", json!({"taskShellControl": {"intent":"steer"}}), false),
+            ("direct", json!({"unattendedSystem": true}), false),
+            ("task-shell", json!({"system": true}), false),
+            ("direct", json!({"originContinue": true}), false),
+            ("trigger", json!({}), false),
+        ] {
+            let out = turn_end_json(json!({ "state": active_state(1), "kind": "user_input",
+                "source": source, "options": options }));
+            assert_eq!(out["queueInput"].as_bool().unwrap_or(false), queued);
+            assert_eq!(out["action"], json!("none"));
+        }
     }
 
     #[test]

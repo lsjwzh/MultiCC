@@ -573,13 +573,8 @@
 }
 .unat-retry[hidden] { display: none; }
 
-/* 锁定态：灰掉输入区，placeholder 说明原因。取消键不受影响（Esc/Stop 仍可用）。 */
-#input-bar.unattended-locked textarea,
-#input-bar.unattended-locked #send-btn,
-#input-bar.unattended-locked .input-action-btn {
-  opacity: .55;
-}
-#input-bar.unattended-locked textarea { cursor: not-allowed; }
+/* 无人值守 active：输入区保持可用，只把 placeholder 换成「发送会排队」的提示。 */
+#input-bar.unattended-queued textarea::placeholder { color: #b07a34; }
 
 /* ── 对话里的「🤖 无人值守」标记 ─────────────────────────────────────────
    标记消息（role=user + 锁定标记）画成窄卡片；判定轨迹（kind

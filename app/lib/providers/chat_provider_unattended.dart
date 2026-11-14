@@ -28,11 +28,12 @@ mixin ChatProviderUnattended on ChangeNotifier {
   String? get unattendedError => _unattendedError;
   bool _unattendedRefreshInFlight = false;
 
-  /// v2：`active` 是唯一武装态，此时输入区整体锁住（真人先「暂停并接管」）。
+  /// `active` 是唯一武装态。输入区不再锁死：用户消息照常发送并进入 FIFO，
+  /// 本轮正常结束后由无人值守优先提交；待答卡仍据此判断「AI 会代为回答」。
   ///
   /// 放在这里而不是 chat_provider.dart：输入条、待答卡和悬浮球都从这一个
-  /// 判据读，锁与解锁只跟着 WS `unattended_state`（含重连重放）走。
-  bool get unattendedLocksInput => _unattended?.isActive == true;
+  /// 判据读，状态只跟着 WS `unattended_state`（含重连重放）走。
+  bool get unattendedActive => _unattended?.isActive == true;
 
   /// 判定进行中（服务端 verdict 开始/落地的两条边），面板和悬浮球据此转圈。
   bool get unattendedEvaluating => _unattended?.evaluating == true;

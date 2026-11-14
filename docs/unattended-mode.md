@@ -59,7 +59,7 @@ trace `[无人值守 Unattended] 已达到最长值守时间`). UIs show the rem
 `deadlineAt` — never from a round counter.
 
 ```
-active ──stop / user input / cancel / expiry / verdict──▶ stopped | needs_human | exhausted | error | achieved
+active ──stop / cancel / expiry / verdict──▶ stopped | needs_human | exhausted | error | achieved
 any non-active ──resume──▶ active
 any non-active ──clear──▶ (no record.unattended; "not started")
 ```
@@ -126,7 +126,7 @@ E (fault — existing API-error policy owns it). One evaluation in flight per se
      failures/unparseable replies → status `error` + notify.
    - `now >= deadlineAt` (checked by the timer and at the start of every evaluation/fault)
      → `exhausted`, trace `已达到最长值守时间`, notify the user.
-4. A real user message does not disarm it (it resets `stall` only). A user Cancel
+4. A real user message does not disarm it; it joins the scheduler FIFO. A user Cancel
    (`manual_cancel`) sets `stopped`. Server restart keeps the persisted state; it re-arms on the next
    turn end (no verdict at boot).
 
@@ -140,19 +140,21 @@ button/dialog, `goalLimits` plumbing. Server: `resolveGoalLimits`, `buildGoalLim
 
 ## v2: human takeover, scheduler-ordered queue, immediate fault/question handling, marked messages
 
-Product decisions (user, 2026-11-10):
+Product decisions (user, 2026-11-10; input/FIFO updated 2026-11-14):
 
-1. **Input is locked while unattended is `active`.** A human who needs to type first pauses
-   (`stop`, shown as "暂停并接管 / Pause & take over"), types, then presses "继续无人值守 /
-   Resume unattended" (`resume`). `needs_human`, `stopped`, `exhausted`, `error`, `achieved`
-   leave the input enabled. The lock covers: the composer (Enter, send button, slash commands,
-   attach, voice dictation) and the option buttons of a pending `wait_for_user_answer` card
-   (the aux answers it itself while active). A banner above the composer says why and carries the
-   Pause button.
-   Server-side backstop: a *real* user message (not system-injected, not unattended's own) that
-   arrives while `active` pauses the supervisor first (`status: 'stopped'`, `pausedBy: 'input'`)
-   and is then delivered normally, so a stale client can never make human and supervisor fight.
-   `stop` from the UI sets `pausedBy: 'user'`, a Cancel sets `pausedBy: 'cancel'`.
+1. **Input stays enabled while unattended is `active`.** A user message sent during a round is
+   admitted into the scheduler FIFO like any other message; the supervisor never cancels the
+   turn, and on a normal D settle with backlog it defers its own aux verdict so the FIFO runs
+   first (see point 2). The composer (Enter, send button, slash commands, attach, voice
+   dictation) is therefore never disabled by unattended. Only the option buttons of a pending
+   `wait_for_user_answer` card stay locked while active, because the aux answers that question
+   itself. A banner above the composer says why and carries the Pause button; the placeholder
+   says messages will queue.
+   Ordinary composer input does not consume a pending question. Both clients preserve its
+   request ID, and the admission boundary ignores answer/continuation correlation on ordinary
+   input while active; supervisor-authored answers retain their recovery priority.
+   `stop` from the UI sets `pausedBy: 'user'` and takes over immediately; a Cancel sets
+   `pausedBy: 'cancel'`.
    `resume` while a turn is streaming/queued must NOT run `evaluateNow`; the turn-end settle does it.
    A terminal record can be ended for good with "结束无人值守 / End unattended" (`clear`) in the
    paused banner and the panel footer; it deletes the state and the banner disappears. The panel
@@ -201,8 +203,8 @@ Product decisions (user, 2026-11-10):
    `[无人值守 Unattended] 判定：继续 · <reason> · 下一步：<instruction>` / `达成` / `需要人工：<humanReason>` /
    `已暂停（用户接管）` / `故障后自动继续`. Panels show a "判定中…/Judging…" spinner while `evaluating`.
 
-Updated state additions: `"evaluating": false`, `"pausedBy": null`. Removal of the old
-"a real user message only resets stall counters" rule (superseded by 1).
+Updated state additions: `"evaluating": false`, `"pausedBy": null`. Ordinary input keeps
+supervision armed; explicit pause/cancel remains the takeover control.
 
 ## Backend notes (v2)
 
@@ -237,8 +239,8 @@ DTO and every `unattended_state` event) gains:
   applied/failed/cancelled; both edges are broadcast as `unattended_state`. Always false
   after a restart (stale `true` is cleared at boot/load).
 - `pausedBy: "user" | "input" | "cancel" | null` — why the supervisor is paused; cleared by
-  `resume`/`start`. `user` = panel "Pause & take over" (`stop`), `input` = a real user
-  message arrived while active (server backstop), `cancel` = the turn was cancelled.
+  `resume`/`start`. `user` = panel "Pause & take over" (`stop`), `input` = an explicit
+  queue insert interrupted the turn, `cancel` = the turn was cancelled.
 - `maxDurationMinutes: integer` — 5..1440, default 120. Replaces the old `maxRounds`,
   which is gone from the state (requests may still send it; it is ignored).
 - `startedAt: epoch ms` — the last `start` OR `resume`.
@@ -360,13 +362,17 @@ fields. `POST` action semantics added by v2:
 - `resume` → clears `pausedBy`; runs `evaluateNow` **only** when no turn is streaming and no
   delivery is queued — otherwise the turn-end settle evaluates.
 - `clear` → deletes the persisted state (terminal states only; active is 409) and drops the
-  banner/input lock on every client. The Web panel keeps the last goal/criteria/duration as a
+  banner/queue hint on every client. The Web panel keeps the last goal/criteria/duration as a
   draft so a restart is one click.
 - `start` same rule for its default `evaluateNow`.
-- A real user message that arrives while `active` is paused first (`status: "stopped"`,
-  `pausedBy: "input"`) and then delivered normally. System-injected messages
-  (`🔇`-prefixed: autoContinue/bgCheck/bg-completion/dispatch results/cron) and any message
-  carrying the marker never pause it.
+- A real user message that arrives while `active` keeps supervision armed and joins FIFO.
+  It never consumes a pending question or interrupts the active turn. Explicit `stop` or
+  Cancel remains the takeover control.
+
+The input decision lives in Rust (`decide_turn_end`, `kind: "user_input"`, `queueInput: true`).
+The Node changes only marshal this result, preserve supervision state, and remove answer or
+immediate-continuation metadata before existing scheduler admission. These compatibility
+bridges can be removed when the Rust host owns session admission and supervisor persistence.
 
 ### Queue ordering
 
@@ -467,13 +473,13 @@ second time).
 | Host-side cancel: `process_watchdog`, `stalled_recovery`, `*_log_watchdog` / `provider_log_error`, `restart_spawn`, `restart_recovery`, `shutdown`, `cli_switch`, `relocate`, `preparation_failed` | fault continuation with backoff (`preparation_failed` is `capacity`); no 3-fault cap |
 | Persisted `retryAt` reached (retry timer) | `fault_continue` injection with `unattendedRecovery` (recovery priority over FIFO) |
 | Cancel with unrecognized attribution | `pause` / `pausedBy:'cancel'` — fail safe: unlock input, never inject against a possible user stop |
-| Real user message (`noteUserMessage`) | `pause` / `pausedBy:'input'`, then delivery |
+| Real user message (`noteUserMessage`) | `none` / `user_input_queued`; keep active and admit into FIFO |
 | Wall-clock deadline (timer) | `exhausted` |
 | Any of the above on a non-active session | `none` |
 
 Why a host-side interruption is a fault: a watchdog/restart/stalled-recovery cancel is a
 statement about the **host or upstream**, not about the user's goal. Treating it as "turn
-finished" left the session `active` (input locked) with nothing running after the incident
+finished" left the session `active` (supervision armed) with nothing running after the incident
 of 2026-11-10. Treating it as a user Cancel would silently abandon a goal the user never
 stopped. It therefore follows the same continuation policy as an API fault: back off on
 consecutive host interruptions and keep retrying; only the deadline (or a human-only error
@@ -486,7 +492,7 @@ settled turn. A cancel gets its identity from (in this order) the in-memory
 record from before that field or a turn that died before the start write — a fresh
 `turn_recovery_<uuid>` id. It never falls back to `taskState.turnId`: a stale id matches
 `lastTurnEndId`, makes the recovery cancel a `duplicate_turn`, injects nothing and leaves the
-input locked. `ensureCurrentTask` (src/classify/state-machine.js) persists `activeTurnId`
+supervision armed. `ensureCurrentTask` (src/classify/state-machine.js) persists `activeTurnId`
 inside the same P write that starts the turn — one disk save, not a separate identity save —
 and every classify settle clears it. A turn that fails between that write and the runner
 handoff (message composition, spawn guard, runtime start, rejected runner) has no finalizer

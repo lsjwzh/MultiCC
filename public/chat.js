@@ -1187,34 +1187,30 @@ function closeVoicePanel() { return chatComposer?.closeVoicePanel(); }
 function useVoiceText(text) { return chatComposer?.useVoiceText(text); }
 function fetchRefined(raw) { return chatComposer?.fetchRefined(raw); }
 /* ── UI helpers ── */
-// 无人值守 active 时输入整体锁死（v2 产品决定）：一个布尔值并进 updateUI 的
-// disabled 计算，断开/重连、流式与锁互不覆盖；暂停/继续只改这一个入口。
-let _unattendedLocked = false;
+// 无人值守 active 不再锁死输入区：用户的新输入照常发送，进入调度器 FIFO，
+// 本轮正常结束（没有等待/故障）时由无人值守优先提交。这里只切换占位提示，
+// 不参与 updateUI 的 disabled 计算。
 function updateUI() {
   const connected = ws && ws.readyState === WebSocket.OPEN;
   // Always allow typing and sending — even during streaming (user may need to reply to a yes/no prompt)
-  sendBtn.disabled = !connected || _unattendedLocked;
+  sendBtn.disabled = !connected;
   sendBtn.style.display = 'flex';
   cancelBtn.classList.toggle('show', isStreaming);
-  inputEl.disabled = !connected || _unattendedLocked;
+  inputEl.disabled = !connected;
   pendingUserInputController.setConnected();
   syncTokenRate();
 }
-// 宿主侧的锁视图：textarea/发送键由 updateUI 统一改，附件与语音入口在这里
-// 单独关掉（它们不在 updateUI 的管辖里），待答问题卡交给它的控制器。
-function applyUnattendedInputLock(locked) {
-  _unattendedLocked = !!locked;
+// 宿主侧的输入态视图：textarea/发送键/附件/语音全部保持可用，只把 active 变成
+// 「发送会排队」的占位提示；待答问题卡仍交给它的控制器决定是否锁。
+function applyUnattendedInputState(active) {
   const bar = document.getElementById('input-bar');
-  if (bar) bar.classList.toggle('unattended-locked', _unattendedLocked);
-  for (const button of [attachBtn, micBtn]) {
-    if (button) button.disabled = _unattendedLocked;
-  }
+  if (bar) bar.classList.toggle('unattended-queued', !!active);
   if (inputEl) {
-    inputEl.placeholder = _unattendedLocked
-      ? tt('unattendedInputLockedPlaceholder')
+    inputEl.placeholder = active
+      ? tt('unattendedInputQueuedPlaceholder')
       : defaultInputPlaceholder;
   }
-  pendingUserInputController.setUnattendedLock?.(_unattendedLocked);
+  pendingUserInputController.setUnattendedLock?.(!!active);
   updateUI();
 }
 function paintTokenRate() {
@@ -2471,7 +2467,7 @@ if (!SHARE_MODE) {
     getSessionId: () => _sessionName || sessionId || '',
     request: (path, options) => chatApi.json(withToken(path), options),
     errorText: error => chatApi.errorText(error),
-    applyInputLock: locked => applyUnattendedInputLock(locked),
+    applyInputState: active => applyUnattendedInputState(active),
   });
 }
 /* ── Background task activity strip ──
@@ -2587,7 +2583,8 @@ chatComposer = window.MultiCCChatComposer.createComposer({
   debug: dbg,
   updateUi: updateUI,
   getIsStreaming: () => isStreaming,
-  getUserInputRequestId: () => chatEventState.pendingUserInputRequestId,
+  getUserInputRequestId: () => chatUnattended?.isActive?.()
+    ? null : chatEventState.pendingUserInputRequestId,
   consumeUserInputRequestId,
   hasOpenTurn: () => isStreaming || !!currentMsgEl,
   finishOpenTurn: () => {

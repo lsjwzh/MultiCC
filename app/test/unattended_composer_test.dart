@@ -14,8 +14,9 @@ import 'package:multicc_app/widgets/chat_runtime_panels.dart';
 import 'package:multicc_app/widgets/input_bar.dart';
 import 'package:multicc_app/widgets/unattended_sheet.dart';
 
-// v2 契约（docs/unattended-mode.md）：`active` 是唯一武装态，输入区整体锁住；
-// 横幅给出轮次/判定中/暂停原因，真人先「暂停并接管」再打字。
+// v2 契约（docs/unattended-mode.md）：`active` 是唯一武装态；输入区不再锁死，
+// 用户消息进入 FIFO，本轮正常结束后由无人值守优先提交。横幅给出轮次/判定中/
+// 暂停原因。
 class _ComposerProvider extends ChatProvider {
   final sent = <String>[];
   int stopCalls = 0;
@@ -111,7 +112,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => I18n.init('zh'));
 
-  testWidgets('active：横幅带剩余时间与锁定提示，输入/发送全禁用；暂停后恢复发送', (
+  testWidgets('active：横幅带剩余时间，输入区保持可用并提示消息会排队', (
     tester,
   ) async {
     final settings = await _settings();
@@ -122,7 +123,7 @@ void main() {
       _host(manager: manager, provider: provider),
     );
 
-    // 先留一份草稿，验证锁住时草稿不丢、解锁后还能发。
+    // 先留一份草稿，验证 active 下草稿不丢、照常能发。
     final input = find.byKey(const Key('chat-message-input'));
     await tester.enterText(input, '先写一半');
     await tester.pump();
@@ -158,13 +159,19 @@ void main() {
     );
     expect(find.byKey(const ValueKey('unattended-pause')), findsOneWidget);
 
-    // 输入区锁住：文本框禁用 + 锁定文案，发送手势没有回调，但草稿还在。
+    // 输入区不锁：文本框可编辑，占位提示改成「发送会排队」，草稿还在。
     final field = tester.widget<TextField>(input);
-    expect(field.enabled, isFalse);
-    expect(field.decoration?.hintText, t('unattendedInputLocked'));
+    expect(field.enabled, isNot(false), reason: 'enabled 未显式设置时 Flutter 返回 null，语义仍是可编辑');
+    expect(field.decoration?.hintText, t('unattendedInputQueued'));
     expect(field.controller!.text, '先写一半');
-    expect(_sendTarget(tester).onTap, isNull);
-    expect(provider.sent, isEmpty);
+    expect(_sendTarget(tester).onTap, isNotNull);
+
+    await tester.tap(find.byIcon(Icons.send_rounded));
+    await tester.pump();
+    expect(provider.sent, ['先写一半']);
+    expect(provider.unattendedActive, isTrue);
+    await tester.enterText(input, '接着补充');
+    await tester.pump();
 
     // 「暂停并接管」真的调用 stop；返回 stopped 后横幅换成继续 + 原因。
     await tester.ensureVisible(find.byKey(const ValueKey('unattended-pause')));
@@ -179,17 +186,17 @@ void main() {
       t('unattendedPausedByUser'),
     );
 
-    // 解锁：文本框恢复可编辑，草稿仍在，发送手势回来了。
+    // 暂停后：草稿仍在，发送手势照旧可用。
     final unlocked = tester.widget<TextField>(input);
-    expect(unlocked.enabled, isTrue);
-    expect(unlocked.controller!.text, '先写一半');
+    expect(unlocked.enabled, isNot(false));
+    expect(unlocked.controller!.text, '接着补充');
     expect(_sendTarget(tester).onTap, isNotNull);
 
     await tester.tap(find.byIcon(Icons.send_rounded));
     await tester.pump();
-    expect(provider.sent, ['先写一半']);
+    expect(provider.sent, ['先写一半', '接着补充']);
 
-    // 「继续无人值守」再武装回去：横幅回到 active，输入重新锁住。
+    // 「继续无人值守」再武装回去：横幅回到 active，输入仍然可用。
     await tester.ensureVisible(
       find.byKey(const ValueKey('unattended-resume-banner')),
     );
@@ -197,7 +204,11 @@ void main() {
     await tester.pump();
     expect(provider.resumeCalls, 1);
     expect(find.byKey(const ValueKey('unattended-pause')), findsOneWidget);
-    expect(tester.widget<TextField>(input).enabled, isFalse);
+    expect(tester.widget<TextField>(input).enabled, isNot(false));
+    expect(
+      tester.widget<TextField>(input).decoration?.hintText,
+      t('unattendedInputQueued'),
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     provider.dispose();
@@ -254,7 +265,7 @@ void main() {
     final unlocked = tester.widget<TextField>(
       find.byKey(const Key('chat-message-input')),
     );
-    expect(unlocked.enabled, isTrue);
+    expect(unlocked.enabled, isNot(false));
 
     // active 只有「暂停并接管」，不出现结束按钮。
     provider.applyUnattendedEvent(const {'status': 'active'});
@@ -417,7 +428,7 @@ void main() {
     manager.dispose();
   });
 
-  testWidgets('重试等待中：输入仍锁住，暂停并接管仍在', (tester) async {
+  testWidgets('重试等待中：输入仍可用（排队提示），暂停并接管仍在', (tester) async {
     final settings = await _settings();
     final manager = SessionManager(settings: settings);
     final provider = _ComposerProvider(settings: settings);
@@ -445,8 +456,8 @@ void main() {
     final field = tester.widget<TextField>(
       find.byKey(const Key('chat-message-input')),
     );
-    expect(field.enabled, isFalse);
-    expect(field.decoration?.hintText, t('unattendedInputLocked'));
+    expect(field.enabled, isNot(false), reason: 'enabled 未显式设置时 Flutter 返回 null，语义仍是可编辑');
+    expect(field.decoration?.hintText, t('unattendedInputQueued'));
     expect(find.byKey(const ValueKey('unattended-pause')), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
