@@ -327,6 +327,7 @@ function createSessionWorkScheduler({
   getPendingUserInput = null,
   getTurnId = null,
   getUnattendedState = null,
+  getRunActive = null,
   log = () => {},
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
@@ -423,7 +424,14 @@ function createSessionWorkScheduler({
     const schedule = draft.sessionSchedules[items[0].sessionId];
     const priority = schedule?.priorityEntryId || null;
     const pending = canonicalPendingUserInput(items[0].sessionId);
-    return getNative().sessionWorkSelect({ items, schedule, priority, pending, now: at,
+    // `runActive` is the native selector's dead-letter proof: only an actual
+    // boolean reaches the core, so unwired callers and unknown records fail
+    // closed instead of asserting "no run" without knowledge.
+    const runActiveRaw = typeof getRunActive === 'function'
+      ? getRunActive(items[0].sessionId)
+      : undefined;
+    const runActive = typeof runActiveRaw === 'boolean' ? runActiveRaw : undefined;
+    return getNative().sessionWorkSelect({ items, schedule, priority, pending, now: at, runActive,
       classify: id => canonicalClassifyState(id, schedule), unattended: getUnattendedState });
   }
 

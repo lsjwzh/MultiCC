@@ -46,6 +46,12 @@ pub const AUX_FAILURE_LIMIT: u32 = 2;
 /// (index `n - 1`; `n >= 6` uses the last entry). A fault streak never gives up
 /// on its own: only the wall-clock deadline (`deadlineAt`) bounds recovery.
 pub const FAULT_BACKOFF_MS: [i64; 6] = [0, 60_000, 120_000, 300_000, 600_000, 900_000];
+
+/// How long an E fault keeps the FIFO staged waiting for the supervisor's
+/// recovery injection before the supervisor adopts the FIFO head itself (the
+/// injection can be lost to the shutdown race; without this floor the queue
+/// wedges forever — user direction 2026-11-14).
+pub const FAULT_FIFO_GRACE_MS: i64 = 15_000;
 /// API-error categories a human must fix: retrying cannot help, so the
 /// supervisor stops immediately and names the cause instead of burning the
 /// deadline. Chosen conservatively from the categories in
@@ -1075,7 +1081,9 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
             let options = field(&value, "options").unwrap_or(&Value::Null);
             let flag = |key| field(options, key).and_then(Value::as_bool) == Some(true);
             if !matches!(input_source.as_str(), "" | "direct" | "task-shell")
-                || flag("system") || flag("unattendedSystem") || flag("originTrigger")
+                || flag("system")
+                || flag("unattendedSystem")
+                || flag("originTrigger")
                 || (flag("originContinue") && input_source != "task-shell")
                 || field(options, "taskShellControl")
                     .is_some_and(|control| state_text(control, "intent") == "steer")
@@ -1084,7 +1092,8 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
             }
             Ok(json!({
                 "action": "none", "reason": "user_input_queued", "queueInput": true
-            }).to_string())
+            })
+            .to_string())
         }
         "handoff_accepted" => {
             let mut next = state.clone();
@@ -1175,6 +1184,15 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
 
 /// 调度优先级：解决等待/异常 > FIFO > 普通自动接续。
 /// 等待/异常未解决时保持 FIFO 暂存，不抢占活动回合或后台等待。
+///
+/// FIFO 兜底（用户 2026-11-14 指示：有 FIFO 时无人值守要帮着把消息发出去）：
+/// 暂存不是无限的。两种形态下值守直接采纳 FIFO 头，否则队列会永久楔死——
+/// (1) E 态故障 settle 已过 `FAULT_FIFO_GRACE_MS` 仍无恢复指令（恢复注入在
+///     关机竞态中丢失；宽限窗保住「先验证副作用再续跑」的正常次序）；
+/// (2) 处理中字母（P/C）是死字母：既无在途 delivery（`hasActive`）也无活
+///     run（调用方证明 `runActive:false`）——分类转换已随进程一起死掉，永远
+///     不会再产出 D。两处都只在值守 `active` 且队列非空时发生；驱动 FIFO 头
+///     本身就是恢复：下一回合的 settle 会重建干净的分类字母。
 pub fn select_queued(input: &str) -> Result<String, String> {
     let value: Value = crate::json_lenient::from_str(input)
         .map_err(|error| format!("unattended_invalid_input: {error}"))?;
@@ -1205,13 +1223,18 @@ pub fn select_queued(input: &str) -> Result<String, String> {
     let state = field(&value, "state").cloned().unwrap_or(Value::Null);
     let now = int_value(field(&value, "now")).unwrap_or(0);
     let deadline = int_value(field(&state, "deadlineAt")).unwrap_or(0);
+    let cls = state_text(&value, "classifyState");
+    let has_active = field(&value, "hasActive").and_then(Value::as_bool) == Some(true);
+    // A processing letter with neither a staged delivery nor a live run is a
+    // dead leftover (its classify transition died with the process). Absent or
+    // `true` `runActive` fails closed: a resident run may own the letter.
+    let dead_letter = matches!(cls.as_str(), "P" | "C")
+        && !has_active
+        && field(&value, "runActive").and_then(Value::as_bool) == Some(false);
     if state_text(&state, "status") != "active"
         || (deadline > 0 && now >= deadline)
-        || field(&value, "hasActive").and_then(Value::as_bool) == Some(true)
-        || !matches!(
-            state_text(&value, "classifyState").as_str(),
-            "D" | "W" | "E"
-        )
+        || has_active
+        || (!matches!(cls.as_str(), "D" | "W" | "E") && !dead_letter)
     {
         return Ok(json!({ "handled": false }).to_string());
     }
@@ -1221,7 +1244,19 @@ pub fn select_queued(input: &str) -> Result<String, String> {
             || state_text(item, "message").starts_with(&format!("🔇{UNATTENDED_TAG}"))
     };
     let pending_id = state_text(&value, "pendingRequestId");
-    let waiting = state_text(&value, "classifyState") != "D" || !pending_id.is_empty();
+    // D pushes the FIFO head. E pushes it too once the fault settle is older
+    // than FAULT_FIFO_GRACE_MS and no recovery entry arrived: the turn that
+    // would produce D is gone, so staging the FIFO would wedge it forever.
+    // W keeps waiting on its human question; a dead P/C letter (admitted by the
+    // gate above) has no live turn to wait for and pushes immediately.
+    let settled_at = int_value(field(&state, "lastSettleAt")).unwrap_or(0);
+    let fault_orphan =
+        cls == "E" && settled_at > 0 && now.saturating_sub(settled_at) >= FAULT_FIFO_GRACE_MS;
+    let waiting = match cls.as_str() {
+        "D" => false,
+        "E" => !fault_orphan,
+        _ => !dead_letter,
+    } || !pending_id.is_empty();
     let selected = items.and_then(|items| {
         // An already admitted provider handoff is this fault's recovery, not
         // ordinary FIFO work. Never use it to answer an outstanding question.
@@ -2482,6 +2517,85 @@ mod tests {
     }
 
     #[test]
+    fn stale_fault_settles_into_the_fifo_head_after_the_grace_window() {
+        let select = |input: &Value| -> Value {
+            serde_json::from_str(&select_queued(&input.to_string()).unwrap()).unwrap()
+        };
+        let mut state = active_state(1);
+        state["lastSettleAt"] = json!(100_000);
+        let mut input = json!({
+            "state": state, "now": 100_000 + FAULT_FIFO_GRACE_MS, "classifyState": "E",
+            "items": [
+                { "id": "auto", "unattendedSystem": true },
+                { "id": "fifo" }, { "id": "second" }
+            ]
+        });
+        // The grace window is still open: the recovery injection may still land.
+        input["now"] = json!(100_000 + FAULT_FIFO_GRACE_MS - 1);
+        assert_eq!(select(&input), json!({ "handled": true, "entryId": null }));
+        // The settle outlived the grace window: adopt the FIFO head itself.
+        input["now"] = json!(100_000 + FAULT_FIFO_GRACE_MS);
+        assert_eq!(select(&input)["entryId"], json!("fifo"));
+        // A legacy state without a recorded settle stays fail-closed.
+        input["state"]["lastSettleAt"] = Value::Null;
+        assert_eq!(select(&input), json!({ "handled": true, "entryId": null }));
+        // An outstanding question keeps waiting even past the grace window…
+        input["state"]["lastSettleAt"] = json!(100_000);
+        input["pendingRequestId"] = json!("q1");
+        assert_eq!(select(&input), json!({ "handled": true, "entryId": null }));
+        // …unless its answer is queued.
+        input["items"].as_array_mut().unwrap().push(json!({
+            "id": "answer", "workKind": "answer", "requestId": "q1"
+        }));
+        assert_eq!(select(&input)["entryId"], json!("answer"));
+        // A recovery entry that did land still outranks the FIFO head.
+        input["pendingRequestId"] = Value::Null;
+        input["items"].as_array_mut().unwrap().push(json!({
+            "id": "recovery", "unattendedSystem": true, "unattendedRecovery": true
+        }));
+        assert_eq!(select(&input)["entryId"], json!("recovery"));
+        // An admitted provider handoff is this fault's recovery.
+        input["items"].as_array_mut().unwrap().push(json!({
+            "id": "handoff", "taskSource": "auto_provider_handoff"
+        }));
+        assert_eq!(select(&input)["entryId"], json!("handoff"));
+    }
+
+    #[test]
+    fn a_dead_processing_letter_pushes_the_fifo_only_with_run_proof() {
+        let select = |input: &Value| -> Value {
+            serde_json::from_str(&select_queued(&input.to_string()).unwrap()).unwrap()
+        };
+        let base = json!({
+            "state": active_state(1), "now": 200,
+            "items": [ { "id": "fifo" }, { "id": "second" } ]
+        });
+        for letter in ["P", "C"] {
+            let mut input = base.clone();
+            input["classifyState"] = json!(letter);
+            // Without a run-liveness proof the letter may still own a live run.
+            assert_eq!(select(&input)["handled"], json!(false));
+            input["runActive"] = json!(true);
+            assert_eq!(select(&input)["handled"], json!(false));
+            // Proven idle: the letter is a dead leftover, push the FIFO head.
+            input["runActive"] = json!(false);
+            assert_eq!(select(&input)["entryId"], json!("fifo"));
+            // A staged delivery still owns the letter.
+            input["hasActive"] = json!(true);
+            assert_eq!(select(&input)["handled"], json!(false));
+            // An outstanding question outranks the dead letter…
+            input["hasActive"] = json!(false);
+            input["pendingRequestId"] = json!("q1");
+            assert_eq!(select(&input), json!({ "handled": true, "entryId": null }));
+            // …unless its answer is queued.
+            input["items"].as_array_mut().unwrap().push(json!({
+                "id": "answer", "workKind": "answer", "requestId": "q1"
+            }));
+            assert_eq!(select(&input)["entryId"], json!("answer"));
+        }
+    }
+
+    #[test]
     fn backlog_does_not_block_recovery_but_user_cancel_still_pauses() {
         for kind in ["fault", "cancel"] {
             let mut input = json!({ "state": active_state(1), "now": 200,
@@ -2670,8 +2784,16 @@ mod tests {
         for (source, options, queued) in [
             ("direct", json!({}), true),
             ("task-shell", json!({"originContinue": true}), true),
-            ("task-shell", json!({"taskShellControl": {"intent":"answer"}}), true),
-            ("task-shell", json!({"taskShellControl": {"intent":"steer"}}), false),
+            (
+                "task-shell",
+                json!({"taskShellControl": {"intent":"answer"}}),
+                true,
+            ),
+            (
+                "task-shell",
+                json!({"taskShellControl": {"intent":"steer"}}),
+                false,
+            ),
             ("direct", json!({"unattendedSystem": true}), false),
             ("task-shell", json!({"system": true}), false),
             ("direct", json!({"originContinue": true}), false),
