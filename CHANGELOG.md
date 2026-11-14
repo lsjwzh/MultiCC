@@ -12,6 +12,12 @@ All notable changes to MultiCC are documented in this file.
 - Keep Codex rollout archives beside Windows session directories supplied by the host. Preserve drive and UNC roots when finding the parent so a backslash-only path cannot redirect the archive into the working directory or fail with a cross-volume rename.
 - Synchronize subscription disconnect fixtures with actual upstream receipt before closing clients, and reserve fixture listeners before starting their threads. Execute native-session Rust regressions explicitly in CI and retain bounded browser startup diagnostics without relaxing test assertions or deadlines.
 
+- Exercise the experimental isolated orchestration owner across CI platforms, including concurrent updates, shared ownership, and owner failure. Reject a second experimental owner for the same database with a process-lifetime lease; production storage selection remains unchanged. Capture bounded queue and result metadata when isolated chat-events tool or suppressed-error completion times out without changing test deadlines.
+- Add experimental, transaction-bound scans of bounded scheduler queue ordering, active and priority metadata, with ordered pagination and version-checked preparation; scheduling behavior and production store selection remain unchanged.
+- Apply the orchestration database hard-link safety check on Windows as well as Unix.
+- Ignore the local provider limit cache migration lock when checking repository changes.
+- Open the newly created provider-limit cache with write access when flushing it, avoiding Windows access-denied failures.
+
 ## v2.21.0 — Relay balances, terminal provider sync, and resilient presets (2026-11-13)
 
 - Discover balance APIs on supported third-party relay panels, including new-api, sub2api, legacy billing endpoints, and the common user-balance endpoint. Cache the detected panel and distinguish account balances from token balances. Unlimited-token markers and HTML error pages are not reported as usable balances.

@@ -136,6 +136,48 @@ pub struct RetentionReport {
 pub struct MaintenanceGuard {
     file: File,
 }
+
+#[cfg(windows)]
+fn reject_windows_hardlinks(path: &Path) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    // BY_HANDLE_FILE_INFORMATION consists of DWORDs and three FILETIMEs
+    // (each two DWORDs). The link count follows the first ten DWORDs.
+    #[repr(C)]
+    struct FileInformation {
+        before_links: [u32; 10],
+        number_of_links: u32,
+        after_links: [u32; 2],
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            information: *mut FileInformation,
+        ) -> i32;
+    }
+
+    let file = File::open(path)
+        .map_err(|error| format!("cannot inspect orchestration database links: {error}"))?;
+    let mut information = std::mem::MaybeUninit::<FileInformation>::uninit();
+    // SAFETY: the file handle remains open and the API writes the full output
+    // structure on success. A failed call is never read.
+    let success =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) };
+    if success == 0 {
+        return Err(format!(
+            "cannot inspect orchestration database links: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: the successful call initialized the complete output structure.
+    let information = unsafe { information.assume_init() };
+    if information.number_of_links != 1 {
+        return Err("orchestration databases with hard links are not supported".into());
+    }
+    Ok(())
+}
+
 impl MaintenanceGuard {
     pub fn lock_path(database: &Path) -> Result<PathBuf> {
         // All path aliases must converge on the same lock. Hard links cannot be
@@ -154,6 +196,8 @@ impl MaintenanceGuard {
                 if !metadata.is_file() {
                     return Err("orchestration database is not a regular file".into());
                 }
+                #[cfg(windows)]
+                reject_windows_hardlinks(database)?;
                 std::fs::canonicalize(database).map_err(|e| e.to_string())?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

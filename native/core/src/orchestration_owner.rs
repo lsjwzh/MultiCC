@@ -6,19 +6,58 @@
 
 use crate::orchestration_retention::{MaintenanceGuard, RetentionPolicy};
 use crate::orchestration_store::Store;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 /// Incremented whenever owner semantics change, even if framing is unchanged.
-pub const OWNER_PROTOCOL_VERSION: u32 = 3;
+pub const OWNER_PROTOCOL_VERSION: u32 = 4;
 // serde_json's reader parser consumes individual bytes. Small frames are read
 // into a strictly bounded buffer to avoid amplifying synchronous RPC latency;
 // larger frames remain streaming and never reserve their advertised length.
 const BUFFERED_FRAME_LIMIT: u64 = 8 * 1024 * 1024;
+
+// This lease is separate from the shared maintenance lock held by Store.
+// Never unlink it: replacing a locked inode would allow two owners to coexist.
+struct OwnerLease(File);
+
+impl OwnerLease {
+    fn acquire(path: &Path, purpose: &str) -> Result<Self, String> {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options.open(path).map_err(|error| {
+            format!("ORCHESTRATION_SQLITE_ERROR:owner lease open failed: {error}")
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| {
+                    format!("ORCHESTRATION_SQLITE_ERROR:owner lease permissions failed: {error}")
+                })?;
+        }
+        FileExt::try_lock_exclusive(&file).map_err(|error| {
+            format!("ORCHESTRATION_SQLITE_ERROR:{purpose} lease unavailable: {error}")
+        })?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for OwnerLease {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -312,6 +351,56 @@ pub fn serve<R: Read, W: Write>(reader: R, mut writer: W, max_bytes: u64) -> io:
     if open.version != OWNER_PROTOCOL_VERSION {
         return reply(&mut writer, Err("unsupported owner protocol".into()));
     }
+    let database = Path::new(&open.file);
+    if let Some(parent) = database
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return reply(
+                &mut writer,
+                Err(format!("ORCHESTRATION_SQLITE_ERROR:{error}")),
+            );
+        }
+    }
+    // Serialize initial path resolution and creation within a directory. On a
+    // case-insensitive filesystem two spellings of a not-yet-created file
+    // can otherwise choose different owner leases before canonicalization.
+    let parent = database
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent = match std::fs::canonicalize(parent) {
+        Ok(parent) => parent,
+        Err(error) => {
+            return reply(
+                &mut writer,
+                Err(format!("ORCHESTRATION_SQLITE_ERROR:{error}")),
+            )
+        }
+    };
+    let initialization = match OwnerLease::acquire(
+        &parent.join(".multicc-orchestration-owner-init.lock"),
+        "owner initialization",
+    ) {
+        Ok(lease) => lease,
+        Err(error) => return reply(&mut writer, Err(error)),
+    };
+    let identity = match MaintenanceGuard::lock_path(database) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return reply(
+                &mut writer,
+                Err(format!("ORCHESTRATION_SQLITE_ERROR:{error}")),
+            )
+        }
+    };
+    let mut lease_path = identity.as_os_str().to_os_string();
+    lease_path.push(".owner.lock");
+    let _lease = match OwnerLease::acquire(Path::new(&lease_path), "owner") {
+        Ok(lease) => lease,
+        Err(error) => return reply(&mut writer, Err(error)),
+    };
     let store = match Store::open(
         &open.file,
         open.legacy_file.as_deref(),
@@ -321,7 +410,14 @@ pub fn serve<R: Read, W: Write>(reader: R, mut writer: W, max_bytes: u64) -> io:
         Ok(store) => store,
         Err(error) => return reply(&mut writer, Err(error)),
     };
-    let identity = MaintenanceGuard::lock_path(Path::new(&open.file)).map_err(io::Error::other)?;
+    let opened_identity = MaintenanceGuard::lock_path(database).map_err(io::Error::other)?;
+    if opened_identity != identity {
+        return reply(
+            &mut writer,
+            Err("ORCHESTRATION_SQLITE_ERROR:owner database identity changed".into()),
+        );
+    }
+    drop(initialization);
     let mut stores = HashMap::from([(1_u64, store)]);
     let mut next_session = 2_u64;
     reply(&mut writer, Ok(Value::Null))?;
