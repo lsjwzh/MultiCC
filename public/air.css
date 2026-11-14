@@ -1558,6 +1558,40 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .schedule-run-source { flex: 0 0 auto; padding: 0 5px; border-radius: 5px; background: #eef4fa; color: #6c8199; }
 .schedule-run-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .schedule-run.error .schedule-run-status { color: #ad4d36; }
+/* 定时任务月历视图（air-cron-calendar.js）：视图切换条 + 周行/网格/运行点小格 */
+.cron-view-bar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.cron-view-bar .seg { display: inline-flex; padding: 3px; border: 1px solid #d9e7f4; border-radius: 11px; background: rgba(255, 255, 255, .75); }
+.cron-view-bar .seg button { padding: 5px 16px; border: 0; border-radius: 8px; background: transparent; color: #6b7f93; font-size: 12px; cursor: pointer; }
+.cron-view-bar .seg button.active { background: #146dcc; color: #fff; font-weight: 600; }
+.cron-cal-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.cron-cal-nav { display: flex; align-items: center; gap: 8px; }
+.cron-cal-title { min-width: 130px; text-align: center; color: #294760; font-size: 15px; }
+.cron-cal-nav-btn { padding: 4px 12px; border: 1px solid #d9e7f4; border-radius: 9px; background: rgba(255, 255, 255, .85); color: #44607c; font-size: 12px; cursor: pointer; }
+.cron-cal-nav-btn:hover { border-color: #146dcc; color: #146dcc; }
+.cron-cal-legend { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cron-cal-stat { color: #58718b; font-size: 11px; }
+.cron-cal-stat.dense { color: #a4512b; }
+.cron-cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
+.cron-cal-weekdays span { padding: 6px 4px; color: #8aa0b6; font-size: 10px; text-align: center; text-transform: uppercase; letter-spacing: .4px; }
+.cron-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cron-cal-day { min-height: 86px; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 7px 8px; border: 1px solid #e3ecf6; border-radius: 11px; background: rgba(255, 255, 255, .88); }
+.cron-cal-day.blank { border-style: dashed; opacity: .45; background: transparent; }
+.cron-cal-day.today { border-color: #7fb3ea; background: #f3f9ff; box-shadow: inset 0 0 0 1px #7fb3ea; }
+.cron-cal-daynum { color: #405c76; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cron-cal-day.today .cron-cal-daynum { color: #146dcc; }
+.cron-cal-chips { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cron-cal-chip { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 2px 6px; border: 0; border-radius: 7px; background: #e8f1fb; color: #2d5273; font-size: 10px; text-align: left; cursor: pointer; }
+.cron-cal-chip:hover { background: #d9e9f9; }
+.cron-cal-chip.dense { background: #fff1e8; color: #a4512b; }
+.cron-cal-chip-icon { flex: 0 0 auto; }
+.cron-cal-chip-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cron-cal-more { align-self: flex-start; padding: 1px 6px; border: 0; border-radius: 6px; background: transparent; color: #146dcc; font-size: 10px; cursor: pointer; }
+.cron-cal-more:hover { background: #e8f1fb; }
+@media (max-width: 900px) {
+  .cron-cal-day { min-height: 64px; padding: 5px 6px; }
+  .cron-cal-chip { font-size: 9px; }
+  .cron-cal-day .cron-cal-chips .cron-cal-chip:nth-child(n+3) { display: none; }
+}
 .schedule-runs-hint { display: block; padding: 0 10px 8px; color: #a3b1c2; font-size: 10px; }
 /* 脚本任务那一格：没有固定 Air 任务可进去，摆的是命令本身和上次退出码（服务端
    toView 里的 kind='script' 分支）。.schedule-task-mark 直接复用上面那颗方块。 */

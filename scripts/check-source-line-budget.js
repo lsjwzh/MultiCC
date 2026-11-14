@@ -707,9 +707,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // dictionaries, then regenerated — source and artifact are single-direction
     // again, so rerunning the generator no longer drops keys. Measured
     // 10452 lines / 679072 bytes, plus livenessAwaitingRetry x2 locales.
-    maxLines: 10452,
+    // +11 bilingual keys (cronView*/cronCal*): the cron panel's calendar view
+    // (public/air-cron-calendar.js). Regenerated: 10474 lines / 679943 bytes.
+    maxLines: 10474,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 679072,
+    maxBytes: 679943,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

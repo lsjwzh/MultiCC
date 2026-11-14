@@ -219,8 +219,16 @@
         <button type="button" role="tab" class="active" aria-selected="true" data-schedule-tab="cron" data-i18n="hookTabCron">定时任务</button>
         <button type="button" role="tab" aria-selected="false" data-schedule-tab="hooks" data-i18n="hookTabHooks">触发器任务</button>
       </div>
+      <!-- 定时任务 tab 内的第二视图：列表 ↔ 月历（air-cron-calendar.js 自持切换与网格）。 -->
+      <div id="cron-view-bar" class="cron-view-bar">
+        <div class="seg" role="tablist" aria-label="view">
+          <button type="button" id="cron-view-list" class="active" aria-selected="true" data-i18n="cronViewList">列表</button>
+          <button type="button" id="cron-view-cal" aria-selected="false" data-i18n="cronViewCalendar">月历</button>
+        </div>
+      </div>
       <div id="schedule-summary" aria-live="polite"></div>
       <div id="schedule-list"></div>
+      <div id="cron-calendar" hidden></div>
       <div id="hook-summary" class="schedule-summary-like" aria-live="polite" hidden></div>
       <div id="hook-list" hidden></div>
     </section>
@@ -833,6 +841,9 @@
   <!-- 定时任务中心（列表 + 唯一那张表单 + 四个动作）本体。排在 air.js 前面：air.js
        启动时调 MultiCCAirSchedules.bind() 把「通知/跳转/刷新/目录快照」递进去。 -->
   <script src="air-schedule-center.js"></script>
+  <!-- 定时任务的月历视图（GET /api/cron/calendar 按天展开运行点）。自持切换与
+       网格状态，编辑入口复用 MultiCCAirSchedules.open(id)；同样排在 air.js 前面。 -->
+  <script src="air-cron-calendar.js"></script>
   <script src="hook-editor.js"></script>
   <script src="air-trigger-center.js"></script>
   <!-- 目录首页任务清单的分页（上一页 / 第 x / y 页 / 下一页）。自持 DOM 与页码状态，

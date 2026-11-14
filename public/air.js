@@ -489,7 +489,7 @@
     closeNav();
     render();
     if (next === 'library') requestAnimationFrame(() => $('directory-search').focus());
-    if (next === 'schedules') void window.MultiCCAirSchedules?.refresh();
+    if (next === 'schedules') { void window.MultiCCAirSchedules?.refresh(); void window.MultiCCAirCronCalendar?.refresh(); }
   }
   function resourceText(resource) {
     if (resource?.capacityReason) return label(resource.capacityReason);
@@ -2625,6 +2625,7 @@
       // 定时任务与控制台概览只在真的有新数据时重画，否则每 15 秒白建一遍 DOM。
       if (snapshot.unchanged && !entryChanged) return;
       if (mode === 'schedules' || mode === 'overview') await window.MultiCCAirSchedules?.refresh();
+      if (mode === 'schedules') void window.MultiCCAirCronCalendar?.refresh();
       if (mode === 'overview') window.MultiCCAirAdmin?.render('overview', adminContext());
     } catch (error) { failed = true; notice(error.message); }
     finally { if (failed) pollFailures++; else pollFailures = 0; loading = false; }
@@ -2890,6 +2891,8 @@
     laneRouteLabel, cliOffersInChat, firstChatCli, cliOptionLabel,
   });
   window.MultiCCAirHooks?.bind({ notice });
+  // 月历视图只要 notice（加载失败时说一声）；编辑入口走 MultiCCAirSchedules.open。
+  window.MultiCCAirCronCalendar?.bind({ notice });
   // 侧栏那颗「＋ 新任务」开的不是一张表单，是把目录首页那个统一输入框模块搬进
   // 弹窗（见 openNewTaskComposer）—— 任务名取正文第一行，创建完直接执行。
   $('create').onclick = openNewTaskComposer;

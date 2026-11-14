@@ -168,7 +168,8 @@
       element.classList.toggle('active', active);
     }
     const hooks = tab === 'hooks';
-    for (const id of ['schedule-summary', 'schedule-list']) if ($(id)) $(id).hidden = hooks;
+    // cron-view-bar / cron-calendar 是定时 tab 内的第二视图（列表↔月历），跟着 cron 一起显隐。
+    for (const id of ['schedule-summary', 'schedule-list', 'cron-view-bar', 'cron-calendar']) if ($(id)) $(id).hidden = hooks;
     for (const id of ['hook-summary', 'hook-list']) if ($(id)) $(id).hidden = !hooks;
     const create = $('schedule-create');
     const label = create && create.querySelector('[data-i18n]');
