@@ -39,6 +39,9 @@ const SCRIPT_TIMEOUT_MS = 120000;
 // 脚本输出只保留末尾这些字符进执行记录, 防跑飞的脚本把整个任务文件撑爆。
 const SCRIPT_OUTPUT_LIMIT = 2000;
 const SCRIPT_OUTPUT_VIEW = 400;
+// 月历视图每个任务每月最多展开多少个运行点( */1 这类高频表达式到上限后按「高频」
+// 聚合显示, 不把响应和格子撑爆)。
+const CALENDAR_POINTS_CAP = 200;
 
 function load() {
   const source = !fs.existsSync(STORE) && fs.existsSync(LEGACY_STORE) ? LEGACY_STORE : STORE;
@@ -612,6 +615,45 @@ function mount(app) {
       runs: recentRuns(task, RUN_HISTORY_LIMIT),
     });
   });
+
+  // 月历视图: 一个月里每天会有哪些任务跑(定时任务面板的日历 tab 用)。只展开启用的
+  // 任务、只从「现在」往后的运行点(过去的点日历上不显示); 每任务每月最多
+  // CALENDAR_POINTS_CAP 个点, 超过按「高频」聚合, 防止 */1 这类表达式把响应撑爆。
+  app.get('/api/cron/calendar', (req, res, next) => Promise.resolve().then(async () => {
+    await migrateTasks();
+    const match = /^(\d{4})-(\d{2})$/.exec(String(req.query.month || ''));
+    if (!match) return res.status(400).json({ error: 'month 应为 YYYY-MM' });
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    if (month < 1 || month > 12 || year < 2000 || year > 3000) return res.status(400).json({ error: 'month 范围无效' });
+    const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
+    const end = new Date(year, month, 1, 0, 0, 0, 0);
+    const now = Date.now();
+    const days = {};
+    const dense = [];
+    for (const task of tasks) {
+      if (!task.enabled) continue;
+      let cursor = new Date(Math.max(start.getTime(), now));
+      let points = 0;
+      while (points < CALENDAR_POINTS_CAP) {
+        const at = cronNext(task.cron, cursor);
+        if (!at || at >= end.getTime()) break;
+        const day = new Date(at).getDate();
+        (days[day] = days[day] || []).push({
+          id: task.id, name: task.name, kind: task.kind || 'agent',
+          at: new Date(at).toISOString(), dense: false,
+        });
+        cursor = new Date(at);
+        points += 1;
+      }
+      if (points >= CALENDAR_POINTS_CAP) dense.push(task.id);
+    }
+    for (const list of Object.values(days)) list.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    // 到达上限的任务: 已展开的点也标 dense, 前端把同一天同任务的点聚成一个「高频」格。
+    const denseSet = new Set(dense);
+    if (denseSet.size) for (const list of Object.values(days)) for (const point of list) if (denseSet.has(point.id)) point.dense = true;
+    res.json({ month: `${match[1]}-${match[2]}`, days, dense, generatedAt: new Date().toISOString() });
+  }).catch(next));
 }
 
 // One-time consolidation of the fan-out residue left by releases <= 2.0.2 (see
