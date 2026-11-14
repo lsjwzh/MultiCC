@@ -864,8 +864,10 @@ fn js_text_or(value: Option<&JsValue>, fallback: &str) -> JsString {
     }
 }
 
-fn message_text(message: &JsValue) -> JsString {
-    match field(Some(message), "content") {
+/// The text of a message's `content`: the string itself, or the `text` of
+/// every `text` block joined by newlines; anything else is empty.
+fn content_text(content: Option<&JsValue>) -> JsString {
+    match content {
         Some(JsValue::String(text)) => text.clone(),
         Some(JsValue::Array(blocks)) => {
             let texts: Vec<JsString> = blocks
@@ -883,27 +885,24 @@ fn message_text(message: &JsValue) -> JsString {
     }
 }
 
-/// One page of `conclusionFromHistory`: the last non-empty assistant reply in
-/// `messages`, clipped and redacted, or null when the page has none. The
-/// bridge pages from the end, so a long history never crosses FFI whole.
-fn conclusion_page(messages: Option<&JsValue>, home: &str) -> JsValue {
-    let Some(JsValue::Array(messages)) = messages else {
-        return JsValue::Null;
-    };
-    for message in messages.iter().rev() {
-        let assistant = matches!(
-            field(Some(message), "role"),
-            Some(JsValue::String(role)) if role == "assistant"
-        );
-        if assistant {
-            let text = message_text(message);
-            let text = text.trim();
-            if !text.is_empty() {
-                return JsValue::String(clip(&text, CONCLUSION_MAX as f64, home));
-            }
-        }
+/// The conclusion carried by one message's `content`: its text, redacted and
+/// clipped, or `None` when the text is empty after trimming. The caller has
+/// already established that `role` is exactly `"assistant"`. This is the
+/// single rule behind both `conclusionFromHistory` (page by page) and
+/// `latestAssistantConclusion` (walks the cached history in place), so the
+/// two cannot drift apart.
+///
+/// `content` is the message's `content` property as the host holds it, or
+/// `None` when the property is absent; any shape other than a string or an
+/// array of blocks yields empty text.
+pub fn conclusion_of_content(content: Option<&JsValue>, home: &str) -> Option<JsString> {
+    let text = content_text(content);
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(clip(&text, CONCLUSION_MAX as f64, home))
     }
-    JsValue::Null
 }
 
 /// The text injected into the next session. The user's instruction goes last.
@@ -1130,7 +1129,7 @@ pub fn catalog() -> Result<String, String> {
 /// boundary. Text ops receive already-stringified text from the bridge.
 pub fn request(op: &str, input: &str) -> Result<String, String> {
     match op {
-        "redactText" | "clipText" | "conclusionPage" | "renderInjection" => text_request(op, input),
+        "redactText" | "clipText" | "renderInjection" => text_request(op, input),
         _ => json_request(op, input),
     }
 }
@@ -1158,7 +1157,6 @@ fn text_request(op: &str, input: &str) -> Result<String, String> {
             };
             JsValue::String(clip(&text(), max, &home()))
         }
-        "conclusionPage" => conclusion_page(arg("messages"), &home()),
         "renderInjection" => JsValue::String(render_injection(arg("event"), arg("instruction"))?),
         _ => return Err(format!("events_unknown_op: {op}")),
     };
@@ -1440,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn clipping_and_conclusion() {
+    fn clipping() {
         assert_eq!(lossy(clip(&js_text("  abcdef  "), 4.0, "")), "abcd…");
         assert_eq!(lossy(clip(&js_text("abc"), f64::NAN, "")), "abc");
         assert_eq!(lossy(clip(&js_text("abcdef"), -2.0, "")), "abcd…");
@@ -1450,22 +1448,76 @@ mod tests {
             clip(&js_text("a😀b"), 2.0, "").as_units(),
             &[0x61, 0xD83D, 0x2026]
         );
-        let page = as_js(json!([
-            { "role": "assistant", "content": [{ "type": "text", "text": "first" }] },
-            { "role": "user", "content": "q" },
-            { "role": "assistant", "content": [{ "type": "tool_use" }, { "type": "text", "text": "  " }] },
-        ]));
+    }
+
+    #[test]
+    fn conclusion_of_content_is_the_single_rule_for_one_message() {
+        let of = |content: Value, home: &str| {
+            conclusion_of_content(Some(&as_js(content)), home).map(lossy)
+        };
+        // Plain text is trimmed; Unicode whitespace alone is blank.
+        assert_eq!(of(json!("  hi \n"), ""), Some("hi".into()));
+        assert_eq!(of(json!("\u{00a0}\u{3000}\n\t "), ""), None);
+        assert_eq!(of(json!(""), ""), None);
+        // Blocks: only `text` blocks with string text count, joined by a newline.
         assert_eq!(
-            conclusion_page(Some(&page), ""),
-            JsValue::String(js_text("first"))
-        );
-        assert_eq!(
-            conclusion_page(
-                Some(&as_js(json!([{ "role": "user", "content": "x" }]))),
+            of(
+                json!([
+                    { "type": "thinking", "thinking": "hm" },
+                    { "type": "text", "text": "one" },
+                    { "type": "tool_use" },
+                    { "type": "text", "text": 7 },
+                    null,
+                    0,
+                    "",
+                    { "type": "text", "text": "two" },
+                ]),
                 ""
             ),
-            JsValue::Null
+            Some("one\ntwo".into())
         );
+        assert_eq!(of(json!([{ "type": "tool_use" }]), ""), None);
+        assert_eq!(of(json!([]), ""), None);
+        // Any other shape is empty text, not an error.
+        for odd in [
+            json!(null),
+            json!(42),
+            json!(true),
+            json!({ "type": "text", "text": "x" }),
+        ] {
+            assert_eq!(of(odd.clone(), ""), None, "{odd}");
+        }
+        assert_eq!(conclusion_of_content(None, ""), None);
+        // Secrets are redacted and the home directory is rewritten before clipping.
+        assert_eq!(
+            of(json!("key sk-abcdefghijklmnop1234 here"), ""),
+            Some("key *** here".into())
+        );
+        assert_eq!(
+            of(json!("see /Users/me/project/a.txt"), "/Users/me"),
+            Some("see ~/project/a.txt".into())
+        );
+        // Clip at 2000 UTF-16 units: exactly at the limit is untouched, one over
+        // is cut and marked, however long the input is.
+        let at_limit = "x".repeat(2000);
+        assert_eq!(
+            of(json!(at_limit), "").map(|s| s.chars().count()),
+            Some(2000)
+        );
+        let over = of(json!("x".repeat(2001)), "").unwrap();
+        assert_eq!(over.chars().count(), 2001);
+        assert!(over.ends_with('…'));
+        assert_eq!(
+            of(json!("x".repeat(6000)), "").unwrap().chars().count(),
+            2001
+        );
+        // A cut through a surrogate pair keeps the lone high surrogate, exactly
+        // like `String.prototype.slice`, so compare UTF-16 units, not chars.
+        let split = format!("{}😀{}", "a".repeat(1999), "b".repeat(10));
+        let units = conclusion_of_content(Some(&as_js(json!(split))), "").unwrap();
+        assert_eq!(units.as_units().len(), 2001);
+        assert_eq!(units.as_units()[1999], 0xD83D);
+        assert_eq!(units.as_units()[2000], 0x2026);
     }
 
     #[test]

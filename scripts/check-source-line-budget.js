@@ -242,9 +242,9 @@ const MIGRATION_DEBT = Object.freeze({
   // 额度存储接线后按实测继续收紧到 3042/163616。
   'server.js': Object.freeze({
     ceiling: 3042,
-    byteCeiling: 163616,
+    byteCeiling: 163688,
     target: 3000,
-    reason: 'chat delivery wiring for held-turn injection; extract the account/quota route cluster to return under 3k',
+    reason: 'chat delivery wiring for held-turn injection, plus one lazy port so the events host asks the Rust history runtime for the latest assistant conclusion instead of cloning the whole history into Node (+72 bytes); extract the account/quota route cluster to return under 3k',
   }),
 });
 

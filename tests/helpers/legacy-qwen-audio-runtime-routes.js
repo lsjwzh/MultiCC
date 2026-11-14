@@ -1,6 +1,9 @@
+// Frozen from src/routes/qwen-audio-runtime.js before Rust front-door migration.
+// Taken from HEAD 4b611ac9, where the file still exists; the migration batch deletes it from the working tree.
+// Only the require paths differ.
 'use strict';
 
-const { requestContext, withApiMeta } = require('../api-contract');
+const { requestContext, withApiMeta } = require('../../src/api-contract');
 
 function createQwenAudioRuntimeRoutes({ installer, supervisor, log = console } = {}) {
   if (!installer || typeof installer.status !== 'function' || typeof installer.startInstall !== 'function') {

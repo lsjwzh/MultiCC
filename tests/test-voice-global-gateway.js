@@ -24,8 +24,7 @@ const {
 const { createQwenAudioSupervisor } = require('../src/voice/qwen-audio-supervisor');
 const { createVoiceLaunchRegistry } = require('../src/voice/launch');
 const { VOICE_ROUTER_ID, createVoiceRouterProvisioner } = require('../src/voice/router');
-const { createGlobalVoiceGatewayRoutes } = require('../src/routes/voice-gateway-global');
-const { createQwenAudioRuntimeRoutes } = require('../src/routes/qwen-audio-runtime');
+const { createVoiceRuntimeHost, HOST_PATH } = require('../src/routes/voice-runtime-host');
 const { createGatewayHost } = require('../src/dispatch/gateway-host');
 const { resolveDirectoryCommander } = require('../src/task-board/core');
 
@@ -194,6 +193,21 @@ test('two legacy Fleets left enabled still resolve to exactly one unbound child'
   await before.supervisor.stopAll();
 });
 
+const DEFAULT_INSTALLER = Object.freeze({
+  status: () => ({ state: 'ready', installed: true }),
+  startInstall: () => ({ state: 'installing', installed: false }),
+  waitForInstall: async () => ({}),
+});
+
+const DEFAULT_SUPERVISOR = Object.freeze({
+  hasGlobalGateway: () => false,
+  status: directoryId => ({ directoryId, state: 'stopped' }),
+  statusGlobal: () => ({ scope: 'global', state: 'stopped', desired: false }),
+  restart: async directoryId => ({ directoryId, state: 'running' }),
+  restartGlobal: async () => ({ scope: 'global', state: 'running' }),
+  reconcileAll() {},
+});
+
 function launchHarness({
   records = baseRecords(),
   directories = baseDirectories(),
@@ -201,6 +215,9 @@ function launchHarness({
   provisionRouter = true,
   ttlMs = 30 * 60 * 1000,
   runtimeUrl = 'http://127.0.0.1:32123',
+  runtime: runtimeOverride = null,
+  installer = DEFAULT_INSTALLER,
+  supervisor = DEFAULT_SUPERVISOR,
 } = {}) {
   const clock = { value: Date.parse('2026-08-02T00:00:00.000Z') };
   const service = createVoiceGatewayService({
@@ -225,95 +242,110 @@ function launchHarness({
     ttlMs,
   });
   const calls = { start: 0, restart: 0, reconcile: 0 };
-  const runtime = {
+  const runtime = runtimeOverride || {
     statusGlobal: () => ({ scope: 'global', state: 'running', desired: true, url: runtimeUrl }),
     startGlobal: async () => { calls.start += 1; return { scope: 'global', state: 'running', url: runtimeUrl }; },
     restartGlobal: async () => { calls.restart += 1; return { scope: 'global', state: 'running', url: runtimeUrl }; },
     reconcileAll: () => { calls.reconcile += 1; },
     stopGlobal: async () => {},
   };
-  const routes = createGlobalVoiceGatewayRoutes({
+  const host = createVoiceRuntimeHost({
     service,
     launchRegistry,
     voiceRouter,
     runtime,
     getBaseUrl: () => 'http://127.0.0.1:3000',
     log: { info() {}, warn() {} },
+    installer,
+    supervisor,
   });
-  const app = createApp();
-  routes.mountRoutes(app);
-  return { app, calls, clock, directories, launchRegistry, records, runtime, service, voiceRouter };
+  const app = hostApp();
+  host.mountRoutes(app);
+  const handler = app.routes.get(`POST ${HOST_PATH}`);
+  assert.equal(typeof handler, 'function');
+  return { app, calls, clock, directories, handler, host, launchRegistry, records, runtime, service, voiceRouter };
 }
 
-function createApp() {
+function hostApp() {
   const routes = new Map();
-  const add = method => (routePath, handler) => routes.set(`${method} ${routePath}`, handler);
   return {
     routes,
-    get: add('GET'),
-    post: add('POST'),
-    put: add('PUT'),
-    delete: add('DELETE'),
+    post(routePath, handler) { routes.set(`POST ${routePath}`, handler); },
   };
 }
 
-function response() {
+function hostResponse() {
   return {
     statusCode: 200,
     body: null,
-    headers: {},
     status(code) { this.statusCode = code; return this; },
     json(body) { this.body = body; return this; },
-    set(name, value) { this.headers[name] = value; return this; },
   };
 }
 
-async function invoke(app, method, routePath, req = {}) {
-  const handler = app.routes.get(`${method} ${routePath}`);
-  assert.ok(handler, `${method} ${routePath} mounted`);
-  const res = response();
-  // A real browser on this machine reaches the server through loopback, so the
-  // launch handler sees Host: 127.0.0.1:<port>. Tests that want a remote caller
-  // override req.headers.host themselves.
-  const merged = { body: {}, params: {}, ...req };
-  merged.headers = { host: '127.0.0.1:3000', ...(req.headers || {}) };
-  await handler(merged, res, error => { throw error; });
+function localRequest(body) {
+  return {
+    body,
+    ip: '127.0.0.1',
+    headers: { host: '127.0.0.1:3000' },
+    socket: { remoteAddress: '127.0.0.1' },
+    connection: { remoteAddress: '127.0.0.1' },
+  };
+}
+
+async function hostCall(harness, body) {
+  const res = hostResponse();
+  await harness.handler(localRequest(body), res);
   return res;
 }
 
-function launchIdFromUrl(url) {
-  // The launch URL is root-relative (the page is reverse-proxied through this
-  // server); parse it against a dummy origin to read the session id.
-  return new URL(url, 'http://localhost').searchParams.get('session');
-}
-
-async function issueLaunch(app, body) {
-  return invoke(app, 'POST', '/api/v1/voice-gateway/launch', { body });
-}
-
-async function resolveLaunch(app, launchId) {
-  return invoke(app, 'GET', '/api/v1/voice-gateway/launch/:launchId', { params: { launchId } });
+// A runtime host with the shared defaults, for the installer/supervisor-only ops.
+function runtimeHost({ installer = DEFAULT_INSTALLER, supervisor = DEFAULT_SUPERVISOR } = {}) {
+  const records = baseRecords();
+  const directories = baseDirectories();
+  const service = createVoiceGatewayService({
+    records,
+    directories,
+    mutate: (_source, operation) => operation(records),
+  });
+  const launchRegistry = createVoiceLaunchRegistry({
+    records,
+    directories,
+    resolveCommander: resolveDirectoryCommander,
+  });
+  const app = hostApp();
+  createVoiceRuntimeHost({
+    service,
+    launchRegistry,
+    installer,
+    supervisor,
+    log: { info() {}, warn() {}, error() {} },
+  }).mountRoutes(app);
+  const handler = app.routes.get(`POST ${HOST_PATH}`);
+  assert.equal(typeof handler, 'function');
+  return { handler, records };
 }
 
 test('chat and global launches resolve to their own targets and never each other', async () => {
   const harness = launchHarness();
 
-  const chat = await issueLaunch(harness.app, { sourceSessionId: 'chat-1' });
-  assert.equal(chat.statusCode, 200);
+  const chat = await hostCall(harness, { op: 'launchBegin', sourceSessionId: 'chat-1' });
+  assert.equal(chat.body.ok, true);
   assert.equal(chat.body.launch.scope, 'chat');
   assert.equal(chat.body.launch.display, '前端会话');
-  assert.deepEqual(chat.body.launch.transport, { loopbackOnly: true });
-  const chatId = launchIdFromUrl(chat.body.launch.url);
-  assert.equal(chat.body.launch.url, `/voice-gateway/web/?session=${chatId}`);
-  assert.doesNotMatch(chat.body.launch.url, /127\.0\.0\.1/, 'the launch URL must never expose the child loopback address');
-  assert.doesNotMatch(chat.body.launch.url, /token/i, 'a long-lived access token must never ride in the URL');
+  assert.equal(chat.body.launch.sourceSessionId, 'chat-1');
+  assert.equal(chat.body.targetSessionId, 'chat-1');
+  assert.equal(chat.body.status.state, 'running');
+  assert.equal(harness.calls.start, 0, 'an already running child is not restarted');
+  const chatId = chat.body.launch.id;
 
-  const global = await issueLaunch(harness.app, {});
-  const globalId = launchIdFromUrl(global.body.launch.url);
+  const global = await hostCall(harness, { op: 'launchBegin' });
+  const globalId = global.body.launch.id;
   assert.equal(global.body.launch.scope, 'global');
+  assert.equal(global.body.launch.sourceSessionId, null);
   assert.notEqual(chatId, globalId);
 
-  const chatContext = (await resolveLaunch(harness.app, chatId)).body.context;
+  const chatContext = (await hostCall(harness, { op: 'launchResolve', launchId: chatId })).body.context;
   assert.equal(chatContext.scope, 'chat');
   assert.equal(chatContext.targetSessionId, 'chat-1');
   assert.equal(chatContext.sourceSessionId, 'chat-1');
@@ -321,7 +353,7 @@ test('chat and global launches resolve to their own targets and never each other
   assert.equal(chatContext.cwd, '/tmp/fleet-one');
   assert.equal(chatContext.commanderSessionId, 'commander-1');
 
-  const globalContext = (await resolveLaunch(harness.app, globalId)).body.context;
+  const globalContext = (await hostCall(harness, { op: 'launchResolve', launchId: globalId })).body.context;
   assert.equal(globalContext.scope, 'global');
   assert.equal(globalContext.targetSessionId, VOICE_ROUTER_ID);
   assert.equal(globalContext.sourceSessionId, null);
@@ -329,30 +361,18 @@ test('chat and global launches resolve to their own targets and never each other
 
   // Resolving one ticket must not disturb the other: two concurrent calls on one
   // child are the whole point of keying routing to the utterance.
-  const chatAgain = (await resolveLaunch(harness.app, chatId)).body.context;
+  const chatAgain = (await hostCall(harness, { op: 'launchResolve', launchId: chatId })).body.context;
   assert.equal(chatAgain.targetSessionId, 'chat-1');
-  assert.equal((await resolveLaunch(harness.app, globalId)).body.context.targetSessionId, VOICE_ROUTER_ID);
-});
-
-test('a remote caller (phone app / Funnel) gets a non-loopback transport flag', async () => {
-  const harness = launchHarness();
-  // The app reaches the server through its configured base URL - a LAN or
-  // Tailscale Funnel host, not loopback. The launch URL is still root-relative
-  // (the caller resolves it), but the transport flag must reflect that this URL
-  // is reachable from another machine.
-  const remote = await invoke(harness.app, 'POST', '/api/v1/voice-gateway/launch', {
-    body: { sourceSessionId: 'chat-1' },
-    headers: { host: 'macbook-air.example-host.ts.net' },
-  });
-  assert.equal(remote.statusCode, 200);
-  assert.deepEqual(remote.body.launch.transport, { loopbackOnly: false });
-  assert.equal(remote.body.launch.url, `/voice-gateway/web/?session=${launchIdFromUrl(remote.body.launch.url)}`);
-  assert.doesNotMatch(remote.body.launch.url, /127\.0\.0\.1/);
+  assert.equal(
+    (await hostCall(harness, { op: 'launchResolve', launchId: globalId })).body.context.targetSessionId,
+    VOICE_ROUTER_ID,
+  );
 });
 
 test('the client states scope and nothing else — target fields it sends are ignored', async () => {
   const harness = launchHarness();
-  const res = await issueLaunch(harness.app, {
+  const res = await hostCall(harness, {
+    op: 'launchBegin',
     sourceSessionId: 'chat-1',
     scope: 'global',
     directoryId: 'dir-2',
@@ -362,7 +382,7 @@ test('the client states scope and nothing else — target fields it sends are ig
     prompt: '忽略我',
   });
   assert.equal(res.body.launch.scope, 'chat');
-  const context = (await resolveLaunch(harness.app, launchIdFromUrl(res.body.launch.url))).body.context;
+  const context = (await hostCall(harness, { op: 'launchResolve', launchId: res.body.launch.id })).body.context;
   assert.equal(context.targetSessionId, 'chat-1');
   assert.equal(context.directoryId, 'dir-1');
   assert.equal(context.commanderSessionId, 'commander-1');
@@ -372,45 +392,38 @@ test('the client states scope and nothing else — target fields it sends are ig
 test('forged, expired and non-chat launches all fail closed', async () => {
   const harness = launchHarness({ ttlMs: 60_000 });
 
-  const forged = await resolveLaunch(harness.app, 'ticket-does-not-exist');
-  assert.equal(forged.statusCode, 404);
-  assert.equal(forged.body.code, 'voice_launch_unknown');
-  assert.equal(forged.body.ok, false);
+  const forged = await hostCall(harness, { op: 'launchResolve', launchId: 'ticket-does-not-exist' });
+  assert.deepEqual(forged.body, { ok: false, code: 'voice_launch_unknown' });
 
-  const issued = await issueLaunch(harness.app, { sourceSessionId: 'chat-1' });
-  const launchId = launchIdFromUrl(issued.body.launch.url);
+  const issued = await hostCall(harness, { op: 'launchBegin', sourceSessionId: 'chat-1' });
   harness.clock.value += 61_000;
-  const expired = await resolveLaunch(harness.app, launchId);
-  assert.ok(expired.statusCode >= 400, 'an expired ticket must not resolve');
+  const expired = await hostCall(harness, { op: 'launchResolve', launchId: issued.body.launch.id });
+  assert.equal(expired.body.ok, false, 'an expired ticket must not resolve');
   assert.ok(['voice_launch_expired', 'voice_launch_unknown'].includes(expired.body.code));
   assert.equal(harness.launchRegistry.size(), 0, 'expired tickets are swept, not kept');
 
-  const terminal = await issueLaunch(harness.app, { sourceSessionId: 'term-1' });
-  assert.equal(terminal.statusCode, 400);
-  assert.equal(terminal.body.code, 'voice_launch_source_not_chat');
+  const terminal = await hostCall(harness, { op: 'launchBegin', sourceSessionId: 'term-1' });
+  assert.deepEqual(terminal.body, { ok: false, code: 'voice_launch_source_not_chat' });
 
-  const internal = await issueLaunch(harness.app, { sourceSessionId: VOICE_ROUTER_ID });
-  assert.equal(internal.statusCode, 400);
-  assert.equal(internal.body.code, 'voice_launch_source_not_addressable');
+  const internal = await hostCall(harness, { op: 'launchBegin', sourceSessionId: VOICE_ROUTER_ID });
+  assert.deepEqual(internal.body, { ok: false, code: 'voice_launch_source_not_addressable' });
 
-  const missing = await issueLaunch(harness.app, { sourceSessionId: 'gone-1' });
-  assert.equal(missing.statusCode, 404);
-  assert.equal(missing.body.code, 'voice_launch_source_not_found');
+  const missing = await hostCall(harness, { op: 'launchBegin', sourceSessionId: 'gone-1' });
+  assert.deepEqual(missing.body, { ok: false, code: 'voice_launch_source_not_found' });
 });
 
 test('a chat launch defaults to its own session and dies with it', async () => {
   const harness = launchHarness();
-  const issued = await issueLaunch(harness.app, { sourceSessionId: 'chat-2' });
-  const launchId = launchIdFromUrl(issued.body.launch.url);
-  const context = (await resolveLaunch(harness.app, launchId)).body.context;
+  const issued = await hostCall(harness, { op: 'launchBegin', sourceSessionId: 'chat-2' });
+  assert.equal(issued.body.launch.sourceSessionId, 'chat-2');
+  const context = (await hostCall(harness, { op: 'launchResolve', launchId: issued.body.launch.id })).body.context;
   assert.equal(context.targetSessionId, 'chat-2');
   assert.equal(context.directoryId, 'dir-2');
   assert.equal(context.commanderSessionId, 'commander-2');
 
   harness.records.delete('chat-2');
-  const orphaned = await resolveLaunch(harness.app, launchId);
-  assert.equal(orphaned.statusCode, 404);
-  assert.equal(orphaned.body.code, 'voice_launch_source_not_found');
+  const orphaned = await hostCall(harness, { op: 'launchResolve', launchId: issued.body.launch.id });
+  assert.deepEqual(orphaned.body, { ok: false, code: 'voice_launch_source_not_found' });
 });
 
 test('an ambiguous global request lands on the router, never on a guessed Fleet', async () => {
@@ -428,14 +441,15 @@ test('an ambiguous global request lands on the router, never on a guessed Fleet'
   assert.equal(refused.code, 'voice_router_not_provisioned');
   assert.equal(registry.size(), 0, 'a refused launch issues no ticket');
 
-  // The route backfills the missing router instead of failing the user, but it
-  // still lands on the router — never on the only Fleet that happens to exist.
+  // The host port backfills the missing router instead of failing the user, but
+  // it still lands on the router — never on the only Fleet that happens to exist.
   const unprovisioned = launchHarness({ provisionRouter: false });
-  const backfilled = await issueLaunch(unprovisioned.app, {});
-  assert.equal(backfilled.statusCode, 200);
+  const backfilled = await hostCall(unprovisioned, { op: 'launchBegin' });
+  assert.equal(backfilled.body.ok, true);
   assert.ok(unprovisioned.records.has(VOICE_ROUTER_ID));
   assert.equal(
-    (await resolveLaunch(unprovisioned.app, launchIdFromUrl(backfilled.body.launch.url))).body.context.targetSessionId,
+    (await hostCall(unprovisioned, { op: 'launchResolve', launchId: backfilled.body.launch.id }))
+      .body.context.targetSessionId,
     VOICE_ROUTER_ID,
   );
 
@@ -445,8 +459,8 @@ test('an ambiguous global request lands on the router, never on a guessed Fleet'
     ['commander-1', { id: 'commander-1', dirId: 'dir-1', type: 'commander', kind: 'chat', label: 'Commander' }],
   ]);
   const single = launchHarness({ records, directories: new Map([['dir-1', { id: 'dir-1', path: '/tmp/only' }]]) });
-  const issued = await issueLaunch(single.app, {});
-  const context = (await resolveLaunch(single.app, launchIdFromUrl(issued.body.launch.url))).body.context;
+  const issued = await hostCall(single, { op: 'launchBegin' });
+  const context = (await hostCall(single, { op: 'launchResolve', launchId: issued.body.launch.id })).body.context;
   assert.equal(context.targetSessionId, VOICE_ROUTER_ID);
   assert.notEqual(context.targetSessionId, 'commander-1');
 });
@@ -465,20 +479,18 @@ test('a conflicting reserved Voice Router id fails closed before ticket issue', 
   assert.equal(direct.size(), 0);
 
   const harness = launchHarness({ records, provisionRouter: false });
-  const response = await issueLaunch(harness.app, {});
-  assert.equal(response.statusCode, 409);
-  assert.equal(response.body.code, 'voice_router_id_conflict');
+  const response = await hostCall(harness, { op: 'launchBegin' });
+  assert.deepEqual(response.body, { ok: false, code: 'voice_router_id_conflict' });
   assert.equal(harness.launchRegistry.size(), 0);
 
   const valid = launchHarness();
-  const issued = await issueLaunch(valid.app, {});
-  const launchId = launchIdFromUrl(issued.body.launch.url);
+  const issued = await hostCall(valid, { op: 'launchBegin' });
+  const launchId = issued.body.launch.id;
   valid.records.set(VOICE_ROUTER_ID, {
     id: VOICE_ROUTER_ID, dirId: 'dir-1', type: 'worker', kind: 'chat', label: 'Reclassified',
   });
-  const reclassified = await resolveLaunch(valid.app, launchId);
-  assert.equal(reclassified.statusCode, 409);
-  assert.equal(reclassified.body.code, 'voice_router_id_conflict');
+  const reclassified = await hostCall(valid, { op: 'launchResolve', launchId });
+  assert.deepEqual(reclassified.body, { ok: false, code: 'voice_router_id_conflict' });
 
   const racedRecords = baseRecords();
   const raced = createVoiceRouterProvisioner({
@@ -496,10 +508,10 @@ test('a conflicting reserved Voice Router id fails closed before ticket issue', 
 
 test('chat launch refreshes compatibility Commander metadata without changing its source target', async () => {
   const harness = launchHarness();
-  const issued = await issueLaunch(harness.app, { sourceSessionId: 'chat-1' });
-  const launchId = launchIdFromUrl(issued.body.launch.url);
+  const issued = await hostCall(harness, { op: 'launchBegin', sourceSessionId: 'chat-1' });
+  const launchId = issued.body.launch.id;
   assert.equal(
-    (await resolveLaunch(harness.app, launchId)).body.context.commanderSessionId,
+    (await hostCall(harness, { op: 'launchResolve', launchId })).body.context.commanderSessionId,
     'commander-1',
   );
 
@@ -508,31 +520,28 @@ test('chat launch refreshes compatibility Commander metadata without changing it
     id: 'commander-9', dirId: 'dir-1', type: 'commander', kind: 'chat', label: '新 Commander',
   });
 
-  const after = (await resolveLaunch(harness.app, launchId)).body.context;
+  const after = (await hostCall(harness, { op: 'launchResolve', launchId })).body.context;
   assert.equal(after.commanderSessionId, 'commander-9', 'the ticket is re-resolved, not a snapshot');
   assert.equal(after.targetSessionId, 'chat-1', 'Commander metadata never redirects a chat launch');
   assert.equal(after.launchId, launchId, 'the user does not have to re-launch');
   assert.equal(harness.calls.restart, 0, 'no process restart is involved');
 });
 
-test('the global runtime endpoints never leak the loopback child URL', async () => {
+test('the global runtime host ops report the raw child status and restart on demand', async () => {
   const harness = launchHarness();
-  const runtime = await invoke(harness.app, 'GET', '/api/v1/voice-gateway/runtime');
-  assert.equal(runtime.body.runtime.state, 'running');
-  assert.equal(runtime.body.runtime.url, undefined);
-  assert.equal(runtime.headers['Cache-Control'], 'no-store');
+  const runtime = await hostCall(harness, { op: 'globalRuntime' });
+  assert.equal(runtime.body.status.state, 'running');
+  // The host port is internal; stripping the loopback URL from the public
+  // response is the Rust front door's job.
+  assert.equal(runtime.body.status.url, 'http://127.0.0.1:32123');
 
-  const restarted = await invoke(harness.app, 'POST', '/api/v1/voice-gateway/restart');
-  assert.equal(restarted.body.runtime.url, undefined);
+  const restarted = await hostCall(harness, { op: 'globalRestart' });
+  assert.equal(restarted.body.status.state, 'running');
   assert.equal(harness.calls.restart, 1);
 });
 
-test('legacy per-Fleet runtime endpoints project the one global child', async () => {
-  const installer = {
-    status: () => ({ state: 'ready', installed: true }),
-    startInstall: () => ({ state: 'ready', installed: true }),
-    waitForInstall: async () => ({}),
-  };
+test('legacy per-Fleet runtime host ops project the one global child', async () => {
+  const installer = DEFAULT_INSTALLER;
   const projecting = {
     hasGlobalGateway: () => true,
     status: () => { throw new Error('the legacy Fleet slot must not answer once the gateway is global'); },
@@ -541,24 +550,22 @@ test('legacy per-Fleet runtime endpoints project the one global child', async ()
     restartGlobal: async () => ({ scope: 'global', state: 'running', desired: true }),
     reconcileAll() {},
   };
-  const app = createApp();
-  createQwenAudioRuntimeRoutes({ installer, supervisor: projecting, log: { error() {} } }).mountRoutes(app);
+  const harness = runtimeHost({ installer, supervisor: projecting });
 
-  const status = await invoke(app, 'GET', '/api/v1/directories/:id/voice-gateway/runtime', {
-    params: { id: 'dir-1' },
+  const status = await hostCall(harness, { op: 'fleetRuntime', id: 'dir-1' });
+  assert.deepEqual(status.body, {
+    projectsGlobal: true,
+    status: { scope: 'global', state: 'running', desired: true },
   });
-  assert.equal(status.body.runtime.state, 'running');
-  assert.equal(status.body.runtime.projectedFrom, 'global');
-  assert.equal(status.body.runtime.requestedDirectoryId, 'dir-1');
 
-  const restarted = await invoke(app, 'POST', '/api/v1/directories/:id/voice-gateway/restart', {
-    params: { id: 'dir-1' },
+  const restarted = await hostCall(harness, { op: 'fleetRestart', id: 'dir-1' });
+  assert.deepEqual(restarted.body, {
+    projectsGlobal: true,
+    status: { scope: 'global', state: 'running', desired: true },
   });
-  assert.equal(restarted.body.runtime.projectedFrom, 'global');
 
-  // Before the migration the same routes still answer for the Fleet itself.
-  const legacyApp = createApp();
-  createQwenAudioRuntimeRoutes({
+  // Before the migration the same ops still answer for the Fleet itself.
+  const legacy = runtimeHost({
     installer,
     supervisor: {
       hasGlobalGateway: () => false,
@@ -566,13 +573,17 @@ test('legacy per-Fleet runtime endpoints project the one global child', async ()
       restart: async directoryId => ({ directoryId, state: 'running' }),
       reconcileAll() {},
     },
-    log: { error() {} },
-  }).mountRoutes(legacyApp);
-  const legacy = await invoke(legacyApp, 'GET', '/api/v1/directories/:id/voice-gateway/runtime', {
-    params: { id: 'dir-1' },
   });
-  assert.equal(legacy.body.runtime.directoryId, 'dir-1');
-  assert.equal(legacy.body.runtime.projectedFrom, undefined);
+  const legacyStatus = await hostCall(legacy, { op: 'fleetRuntime', id: 'dir-1' });
+  assert.deepEqual(legacyStatus.body, {
+    projectsGlobal: false,
+    status: { directoryId: 'dir-1', state: 'stopped', desired: true },
+  });
+  const legacyRestart = await hostCall(legacy, { op: 'fleetRestart', id: 'dir-1' });
+  assert.deepEqual(legacyRestart.body, {
+    projectsGlobal: false,
+    status: { directoryId: 'dir-1', state: 'running' },
+  });
 });
 
 function gatewayHostFixture() {

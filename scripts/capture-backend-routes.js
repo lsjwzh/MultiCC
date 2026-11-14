@@ -125,6 +125,20 @@ async function capture() {
       ...middleware.map(r => `| ${escape(r.mounts.join(' → '))} | ${r.order} | ${escape(r.name)} | ${escape(r.mount)} | ${r.errorHandler} |`), '',
     ];
     const target = path.join(ROOT, 'docs/backend-runtime-inventory.md');
+    // Hand-written migration notes live between the fingerprint line and the
+    // fixed "default startup profile" paragraph. Regenerating the tables must
+    // not erase them, so carry that block over from the previous file.
+    const profileMarker = 'This is the default startup profile';
+    const previous = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
+    const fingerprintAt = previous.indexOf('Native source fingerprint');
+    const manualStart = fingerprintAt < 0 ? -1 : previous.indexOf('\n\n', fingerprintAt);
+    const manualEnd = previous.indexOf(profileMarker);
+    const manual = manualStart >= 0 && manualEnd > manualStart ? previous.slice(manualStart + 2, manualEnd).trimEnd() : '';
+    if (manual) {
+      const at = result.findIndex(line => line.startsWith(profileMarker));
+      if (at < 0) throw new Error('route inventory template lost its default-profile paragraph');
+      result.splice(at, 0, manual, '');
+    }
     fs.writeFileSync(target, result.join('\n'));
     console.log(JSON.stringify({ fingerprint, routes: routes.length, middleware: middleware.length, output: path.relative(ROOT, target) }));
   } finally {

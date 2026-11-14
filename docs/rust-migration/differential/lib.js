@@ -14,7 +14,10 @@
 // response headers derived from a body field both sides stamp themselves).
 // A corpus entry is [name, request | (side) => request, hooks?]: `side` is
 // { name: 'node' | 'rust', state } so a request can use a value one side
-// handed out (a ticket); hooks.capture(response, side) stores such values and
+// handed out (a ticket); hooks.send(side, request) replaces the transport for
+// one case (a streamed body with per-chunk timing, or a reply the old async
+// handler never produced) and must resolve to the same raw shape send() does;
+// hooks.capture(response, side) stores such values and
 // hooks.normalize(view, side) blanks per-side randomness before comparing;
 // hooks.before(side) runs just before that side's request (re-seeding state).
 // See run-config-presets.js and download-link.js next to this file.
@@ -208,7 +211,8 @@ async function run(spec, argv = process.argv.slice(2)) {
         if (hooks.before) await hooks.before(side);
         let raw;
         try {
-          raw = await send(side.port, typeof request === 'function' ? request(side) : request);
+          const spec = typeof request === 'function' ? request(side) : request;
+          raw = hooks.send ? await hooks.send(side, spec) : await send(side.port, spec);
         } catch (error) {
           throw new Error(`${step}: ${error.message}`);
         }

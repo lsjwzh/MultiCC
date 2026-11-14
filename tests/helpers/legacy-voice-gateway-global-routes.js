@@ -1,3 +1,6 @@
+// Frozen from src/routes/voice-gateway-global.js before Rust front-door migration.
+// Taken from HEAD 4b611ac9, where the file still exists; the migration batch deletes it from the working tree.
+// Only the require paths differ.
 'use strict';
 
 // Global realtime-voice control plane.
@@ -12,9 +15,9 @@
 // compatibility window (see routes/voice-gateway.js). They keep editing the old
 // per-Fleet records, but the *runtime* they project is this single global child.
 
-const { createErrorDto, requestContext, withApiMeta } = require('../api-contract');
-const { publicBaseUrl } = require('./voice-gateway');
-const { PROXY_PREFIX } = require('./voice-gateway-proxy');
+const { createErrorDto, requestContext, withApiMeta } = require('../../src/api-contract');
+const { publicBaseUrl } = require('../../src/routes/voice-gateway-host');
+const { PROXY_PREFIX } = require('../../src/routes/voice-gateway-proxy');
 
 const NOT_FOUND = new Set(['voice_gateway_not_found', 'voice_launch_source_not_found', 'voice_launch_unknown']);
 // voice_router_not_provisioned / voice_router_id_conflict fall through to 409.

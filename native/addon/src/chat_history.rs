@@ -1236,6 +1236,41 @@ impl<'a> History<'a> {
                 }
                 self.anchor.from_value(&J::Null)
             }
+            // The newest assistant reply that has text, redacted and clipped by
+            // the same rule as `conclusionFromHistory`. The cached history is
+            // walked from its tail in place: only `role` is read per message
+            // and only the one winning `content` crosses into Rust values, so
+            // a long history is never cloned or marshalled whole.
+            // `value` is the home directory used for redaction.
+            "latestAssistantConclusion" => {
+                let home = if value.undefined()? {
+                    String::new()
+                } else {
+                    key(value)?.to_string_lossy()
+                };
+                let messages = self.current(session)?;
+                for i in (0..length(messages)?).rev() {
+                    let message = messages.element(i as u32)?;
+                    if !message.truthy()? || !message.get(c"role")?.is_string("assistant")? {
+                        continue;
+                    }
+                    let content = message.get(c"content")?;
+                    let content = if content.undefined()? {
+                        None
+                    } else {
+                        let mut seen = Vec::new();
+                        Some(unsafe {
+                            crate::js_bridge::read_value(content.env(), content.raw(), 0, &mut seen)
+                        }?)
+                    };
+                    if let Some(found) =
+                        multicc_core::events::conclusion_of_content(content.as_ref(), &home)
+                    {
+                        return self.anchor.from_value(&J::String(found));
+                    }
+                }
+                self.anchor.from_value(&J::Null)
+            }
             "paginate" => {
                 let options = if value.undefined()? {
                     object(self.anchor, &[])?

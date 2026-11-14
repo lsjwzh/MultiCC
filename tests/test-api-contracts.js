@@ -345,8 +345,11 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(source.includes("createVoiceHost } = require('./src/voice/host')"));
   assert.ok(source.includes('getBaseUrl: () => `http://127.0.0.1:${PORT}`'));
   assert.doesNotMatch(source, /getBaseUrl:\s*\(\)\s*=>[^\n]*\bgetPort\(\)/);
-  assert.ok(voiceHost.includes("createVoiceGatewayRoutes } = require('../routes/voice-gateway')"));
-  assert.ok(voiceHost.includes("createQwenAudioRuntimeRoutes } = require('../routes/qwen-audio-runtime')"));
+  assert.ok(voiceHost.includes("createVoiceGatewayHost } = require('../routes/voice-gateway-host')"));
+  // The public global voice gateway / voice runtime routes are owned by the Rust
+  // front door; Node keeps only the internal host port it calls back into.
+  assert.ok(voiceHost.includes("createVoiceRuntimeHost } = require('../routes/voice-runtime-host')"));
+  assert.doesNotMatch(voiceHost, /routes\/voice-gateway-global|routes\/qwen-audio-runtime/);
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
   // The outward task short-code registry must be the persisted one — without
   // this wiring the singleton silently degrades to in-memory and every code

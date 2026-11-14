@@ -1,8 +1,11 @@
+// Frozen from src/routes/voice-gateway.js before Rust front-door migration.
+// Taken from HEAD 4b611ac9, where the file still exists; the migration batch deletes it from the
+// working tree. Its last content change was e9cf5158 (2026-09-07). Only the two require paths differ.
 'use strict';
 
 const path = require('path');
-const { createErrorDto, requestContext, withApiMeta } = require('../api-contract');
-const { createVoiceGatewayService, GATEWAY_PROVIDER } = require('../voice/gateway');
+const { createErrorDto, requestContext, withApiMeta } = require('../../src/api-contract');
+const { createVoiceGatewayService, GATEWAY_PROVIDER } = require('../../src/voice/gateway');
 
 function resultStatus(code) {
   if (code === 'directory_not_found' || code === 'voice_gateway_not_found') return 404;

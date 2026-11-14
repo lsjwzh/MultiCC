@@ -73,7 +73,7 @@ function buildChatHistoryService(options = {}) {
   const owner = new (getNative().RustChatHistory)(anchor);
   const methods = ['append', 'assertCanDeleteSession', 'commitAppend', 'containsDelivery',
     'deleteSession', 'discardAppend', 'ensurePersistedIds', 'hasPersistedDelivery',
-    'invalidate', 'latestAssistantAt', 'paginate', 'prepareAppend', 'read', 'remove',
+    'invalidate', 'latestAssistantAt', 'latestAssistantConclusion', 'paginate', 'prepareAppend', 'read', 'remove',
     'replace', 'upsertInterim', 'view'];
   const entries = methods.map(method => [method, (...args) => owner.run(anchor, method, args)]);
   if (typeof history.hasPersistedDeliveryAsync === 'function') {

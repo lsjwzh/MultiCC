@@ -35,7 +35,7 @@
 ### 1. 命令行
 
 - `multicc-gateway --version` → 输出一行 `multicc-gateway 12 <crate 版本>`，退出码 0。`12` 是协议版本（2 = 加了 `--stdin-lifeline`、Node 以 0 退出时前门随之退出；3 = 前门改为 L7，按客户端连接独占上游 HTTP 连接；4 = 私有认证控制流及前门认证端点；5 = service 配置及 HTTP/WS 代理；6 = 外部工作区 HTTP 与文件所有者；7 = 分享源管理专用 Rust 控制通道；8 = 创建接口与双向分帧 source 请求；9 = 状态 HTTP 与实时上下文读端口；10 = 密码导入 HTTP 与原生校验/消费调用链；11 = 分享 WS 票据 HTTP 与共享认证状态引用；12 = 分享落地页与分享源 Express 路由模块退役）；三处必须一致：这里、`scripts/build-rust-kernels.js` 的探测、`src/gateway-child.js` 的 `GATEWAY_PROTOCOL`。
-- `multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--] <脚本> [参数…]`，脚本缺省为 `server.js`。进程 cwd 切到 `--cwd`；argv 里必须出现 `server.js`（管理脚本按 cmdline 里的 `server.js` + cwd 认领端口占用者）。
+- `multicc-gateway serve --cwd <目录> (--no-node | --node <node 可执行文件>) [--stdin-lifeline] [--ephemeral-loopback] [--] <脚本> [参数…]`，脚本缺省为 `server.js`。`--node` 与 `--no-node` 必须恰好给一个：都不给、同时给、或 `--no-node` 之后还带脚本/参数，都以退出码 2 拒绝，没有静默默认值（§8.1）。`--node` 模式下进程 cwd 切到 `--cwd`，argv 里必须出现 `server.js`（管理脚本按 cmdline 里的 `server.js` + cwd 认领端口占用者）；`--no-node` 模式没有子进程也没有脚本 argv，进程识别按 §8 的 `serve` + cwd（或 `--cwd`）规则。
 
 ### 2. 端口策略（唯一实现在 Rust）
 
@@ -114,7 +114,45 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - `src/server-processes.js`：`serve` 模式、cwd 为本检出的 `multicc-gateway` 认作服务根进程；父进程是这种前门的 `node server.js` **不算**根（它是前门的后代，排空后由 `stopServers` 的 SIGTERM 兜底）。这样 stop/restart 只给前门发 SIGINT，前门转给 Node，不会出现「Node 先退、前门以为崩溃又拉起来」的竞态。
 - `list` / `status` / `lock-alive` / `owner` 一并认得前门。
 
-构建与本地启动的 npm 入口：`npm run build:gateway`（cargo 构建 `multicc-gateway` 与 `multicc-writer-launcher` 的 release 产物）、`npm run test:gateway`（对应两个 crate 的 cargo 测试）、`npm run start:gateway`（即 `scripts/start-gateway.js`，等价于 `npm start` 的前台路径）。**Node-free 运行镜像**是构建产物而非可部署服务：`npm run docker:node-free` 构建 `docker/task-shell/Dockerfile` 的 `node-free-runtime` 阶段（debian:bookworm-slim + CA 证书 + 前门与写者启动器两个二进制，镜像内无 Node，构建期冒烟断言 `--version` 形状、无 node、裸前门退出 2、裸 writer 退出 64），CI 的 `rust-kernels.yml` 的 `node-free-runtime` job 会构建并复跑这些冒烟。它不能替代 `server.js`：前门仍要为 §9 之外的每个路由拉起 Node 上游（见 README「What the Rust front door does not cover yet」）。
+构建与本地启动的 npm 入口：`npm run build:gateway`（cargo 构建 `multicc-gateway` 与 `multicc-writer-launcher` 的 release 产物）、`npm run test:gateway`（对应两个 crate 的 cargo 测试）、`npm run start:gateway`（即 `scripts/start-gateway.js`，等价于 `npm start` 的前台路径）。**Node-free 运行镜像**：`npm run docker:node-free` 构建 `docker/task-shell/Dockerfile` 的 `node-free-runtime` 阶段（debian:bookworm-slim + CA 证书 + 前门与写者启动器两个二进制，镜像内无 Node）。默认 CMD 是 `multicc-gateway serve --cwd /srv/multicc --no-node`，即 §8.1 的 Rust-only 形态：不需要 Node 状态的 Rust 代码照常运行，但**鉴权运行态仍由 Node 持有**，所以需要鉴权快照的原生路由与 §9 之外的路由一律立即 503 `node_runtime_absent`。构建期冒烟断言 `--version` 形状、无 node、裸前门退出 2、裸 writer 退出 64，并调用 `scripts/smoke-no-node-gateway.sh`；CI 的 `rust-kernels.yml` 的 `node-free-runtime` job 会构建并复跑这些冒烟。它不能替代 `--node`：完整功能仍需 Node 上游（见 README「What the Rust front door does not cover yet」）。
+
+### 8.1 `--no-node`：Rust-only 前门（不拉起 Node）
+
+`serve` 必须显式二选一。`--no-node` 是唯一不需要 Node 的启动形态，用于无 Node 镜像、冒烟，以及逐组迁路由时的验证：
+
+```
+multicc-gateway serve --cwd <目录> [--stdin-lifeline] [--ephemeral-loopback] --no-node
+multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-lifeline] [--ephemeral-loopback] [--] <脚本> [参数…]
+```
+
+- **二选一**：两者都不给 → 退出码 2，stderr `[multicc-gateway] serve needs --no-node (Rust-only, unmigrated routes fail closed) or --node <node executable>`；同时给 → 退出码 2 并指出冲突；`--no-node` 之后还带脚本或参数（含 `--` 之后的裸 token）→ 退出码 2。没有静默默认值。
+- **不 spawn 任何子进程**：不构造 supervisor、不设置 `MULTICC_GATEWAY_CHILD`、不开内部端口。公开端口照旧绑定（含开发模式顺延与 `--ephemeral-loopback`）、`.env` 照旧读取、原生路由的代码与 Express 语义照常参与匹配。但**鉴权运行态（访问令牌、会话、WS 票据、关停标志）由 Node 子进程持有**：所有需要该快照的 Rust 路由不进入 3 秒控制流超时，立即返回下面「需鉴权的 Rust 路由」那条 503；只有不需要鉴权快照的原生路由（如 `MULTICC_GATEWAY_TEST_ROUTES` 的探针）会真正应答。包根与数据根仍按 `--cwd` 推导，脚本名取缺省 `server.js`（文件本身不需要存在）。
+- **落 Node 的请求立即失败关闭**：所有 fallback（含 WebSocket 升级）**不进入** §6 的 30 秒等待窗口，直接回：
+
+  ```
+  HTTP/1.1 503 Service Unavailable
+  content-type: application/json
+  connection: close
+
+  {"error":"This route is served by the Node runtime, which this front door was started without (--no-node).","code":"node_runtime_absent"}
+  ```
+
+  客户端连接随之关闭，不复用。
+- **需鉴权的 Rust 路由立即失败关闭（诚实文案）**：鉴权快照仍由 Node 持有，因此这些路由不等 `wire::TIMEOUT`（3s），立即回与 fallback 同形状的 503，只把 `error` 换成为什么（`code` 不变）：
+
+  ```
+  HTTP/1.1 503 Service Unavailable
+  content-type: application/json
+  connection: close
+
+  {"error":"Authentication state is held by the Node runtime, which this front door was started without (--no-node).","code":"node_runtime_absent"}
+  ```
+
+  这是删除 Node 进程的第 1 个阻塞项：访问令牌、会话、WS 票据与关停标志需要先迁给 Rust，见 [backend-rust-exit-plan.md](backend-rust-exit-plan.md)。
+- **宿主端口调用立即失败**：经 `host_port` 找 Node 子进程的 Rust 路由（§9 里依赖会话表、provider 存储等 Node 事实的组）不再等 60 秒预算，立即返回该路由原有的 503 `rust_backend_unavailable` 形状。
+- **生命周期**：`SIGINT` / `SIGTERM` / `--stdin-lifeline` 的 EOF 都只停止接受新连接并以 **0** 退出；没有子进程要转发信号或等待排空。日志分别写 `stop signal received; no node to stop, no longer accepting` 与 `stdin closed by our parent; no node to stop, no longer accepting`。
+- **日志行**：绑定成功后紧跟一行 `[multicc-gateway] node runtime disabled (--no-node): routes not owned by Rust answer 503 node_runtime_absent`；运维和冒烟脚本以它判断运行模式。
+- **入口**：`scripts/start-rust-only.sh`（`$MULTICC_GATEWAY_BIN`，否则 `native/target/release/multicc-gateway`，`--cwd` 为本检出）与 `scripts/smoke-no-node-gateway.sh <二进制>`（空 `PATH` + `--ephemeral-loopback`，断言测试钩子路由 200、需鉴权的 claim 路由 503 且文案为「鉴权状态在 Node」、落 Node 路由 503 `node_runtime_absent`、SIGTERM 退出 0；macOS 与 Linux 可跑）。**默认入口不变**：`./multicc`、`npm start`、独立包启动器与桌面壳仍传 `--node`，因为 §9 之外的路由与鉴权运行态仍需 Node。
 
 ### 9. 原生路由（已从 Node 删除）
 
@@ -406,7 +444,7 @@ gateway 27+32 通过；最终 gateway 构建再次通过 27+32 回归。
 |---|---|---|
 | `MULTICC_GATEWAY_UPSTREAM_WAIT_MS` | `30000` | §6 里上游暂不可达时持有客户端连接、每 100ms 重试的总时长（毫秒）；超过后写回 503。 |
 | `MULTICC_GATEWAY_BACKOFF_SCALE` | `1` | §7 里崩溃退避阶梯（0.5→1→2→4→8→16→30s）和退出码 75 的 0.2s 快速重试统一乘以此系数，用来把集成测试从分钟级压到毫秒级。非有限值或负数按 1 处理，上限 1000。 |
-| `MULTICC_GATEWAY_TEST_ROUTES` | 未设置 | 设为 `1` 时 Router 额外注册测试路由 `GET /__gateway_test/native`（§6），证明请求由 Rust 应答。生产环境不要设置。 |
+| `MULTICC_GATEWAY_TEST_ROUTES` | 未设置 | 设为 `1` 时 Router 额外注册两个测试路由：`GET /__gateway_test/native`（§6，证明请求由 Rust 应答）和 `GET /__gateway_test/host-port`（发起一次真实的 `host_port` 调用，`--no-node` 下用来断言上游调用立即 503 `rust_backend_unavailable`）。生产环境不要设置。 |
 
 
 ### 14. Provider 共享授权与来源地址统一到 Rust（2026-11-08）
@@ -2514,3 +2552,232 @@ providers 的 198 条和 provider-misc 的 84 条响应对拍全部一致，七�
 验证使用隔离数据与本地假上游，不修改生产配置或重启服务。结果位于主仓
 `data/rust-source/validation/task-88a969353c0b716636b714b302483a39/precommit-*.log`，
 汇总为 `precommit-rust-summary.json` 与 `precommit-node-summary.json`。
+
+## 41. 语音网关（Fleet 级）路由迁入 Rust（2026-11-14）
+
+`src/routes/voice-gateway.js` 整文件删除。`GET /api/voice-gateways` 与
+`GET/PUT/DELETE /api/directories/:id/voice-gateway`（含各自的 `/api/v1` 变体，共 8 条
+注册）由前门独占：`native/gateway/src/app/voice_gateway.rs`，规则内核
+`multicc_core::voice_gateway_routes`。
+
+**Rust 一侧**：错误码到状态码的映射（`directory_not_found`/`voice_gateway_not_found` → 404；
+`directory_required`、`commander_binding_is_host_owned`、`voice_gateway_provider_invalid`、
+`voice_gateway_enabled_invalid`、`voice_gateway_auto_install_invalid` → 400；其余 409）、
+legacy 与 v1 两种失败体（v1 走 `api_contract::error_dto`，成功体走 `api_meta`）、`gatewayIds`
+只在 legacy 失败体里出现、`acp` 启动说明块的组装（追加在 gateway 对象末尾）、PUT 的
+`autoInstall` 非布尔预检（不触及宿主）、只携带请求体里**存在**的 `enabled`/`provider`/
+`commanderSessionId`（缺键与 JSON `null` 要区分）、`Cache-Control: no-store` 只给 list/get/put
+成功。`:id` 按 Express 语义 `decodeURIComponent`，失败回 400 `Failed to decode param` 且不调用宿主。
+
+**宿主端口** `POST /api/__host/voice-gateway`（`src/routes/voice-gateway-host.js`，仅回环）：
+`list` / `inspect` / `ensure` / `remove` 四个 op。会话记录表的读写（`service`）、
+`runtime.reconcile` / `runtime.stop` 副作用、`process.execPath`、ACP 脚本路径与
+`publicBaseUrl(getBaseUrl())` 都是 Node 独有事实，留在宿主端口并同步完成（service 调用与
+reconcile 之间没有 `await`，与旧单线程路由逐请求等价）。`service` 仍导出，因为
+全局网关的宿主端口（§42 的 `voice-runtime-host.js`）共用同一个 service；`publicBaseUrl` 也由它复用，没有在 Rust
+再写一份。
+
+**串行化**：旧路由在事件循环上同步跑完 ensure/remove；前门现在要等一次宿主往返，并发请求
+会交错。新增 `App::voice_gateway_write` 互斥量恢复串行（与 `providers_write` 同法）。
+
+**未迁**：`/api/directories/:id/voice-gateway/runtime`、`/restart`、`voice-gateway-global.js`
+与 `qwen-audio-runtime.js` 的全部路由仍在 Node。claim 按精确段数匹配，不会吞掉这些更深的
+路径（集成测试覆盖）。
+
+**已知差异（均已由差分逐条校验，不属于未发现的偏差）**
+- 大写 `/API/...` 前缀：Express 大小写不敏感，旧 Node 路由能命中；前门只 claim 区分大小写的
+  `/api/` 前缀（与「约定（前门 ⇄ Node）」一节里 providers、subscription、token-usage 的同类说明一致），路由删除后该变体在真实服务里落回 Express 404。
+- 路由从未支持的方法（如 `POST /api/voice-gateways`、`PATCH …/voice-gateway`）：前门不认领，
+  转发给上游；真实上游已无这些路由，回 Express 的 `Cannot POST …` 404，与旧行为一致。差分里
+  oracle 仍带着路由，所以这两侧在夹具中不同，按预期差异分别钉死各自形状。
+- 宿主不可用或应答形状不合法：503 `{"error":"语音网关接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`，
+  这是新的失败面（旧路径没有跨进程调用）。
+
+**验证记录**（源码指纹 `e28b9380fda55b55b6d55eb6`，隔离数据，未改生产配置、未重启服务）
+- Rust：`cargo fmt --check`、`cargo build --workspace` 退出 0；串行
+  `cargo test --workspace --no-fail-fast` 49 套件 1,398 项通过、0 失败；`cargo clippy
+  --workspace --all-targets -D warnings` 零警告。新增 `voice_gateway_routes` 内核单测 10 项、
+  网关集成测试 `native/gateway/tests/voice_gateway.rs` 16 项。
+- 差分 `docs/rust-migration/differential/voice-gateway.js`（冻结的旧路由
+  `tests/helpers/legacy-voice-gateway-routes.js` 对真网关 + 真宿主端口）：144/144 逐字节一致，
+  16/16 预期差异各自钉死形状；覆盖断言要求 list 非空、get 命中、创建 201、更新 200、删除、
+  `reconcile`、`stop` 都被真实走到（实测 10/8/44/16/16/4/2），否则整次运行失败。变异验证：
+  把 oracle 的一个状态码 404 改成 410，差分立即变红（111/144），随后已还原。
+- 对拍的两个教训：第一版种子把记录的 `type`/`gatewayKind` 写成 DTO 里的取值，记录对服务层不可见，
+  所有「网关存在」用例其实都在测不存在分支，144 条一致却没有覆盖，是覆盖断言发现的；另外原生模块
+  必须与当前源码指纹一致，否则远控 e2e 会在 205 秒后超时。
+- Node：`test:architecture` 143、`test:security` 1,155、`test:rust` 300、`test:provider-router`
+  1,197、`test:contracts` 152 项全部通过；`test:core` 352 项通过、1 项失败，失败项是
+  `differential: real captured Claude traces`（需要 `/tmp` 里的真实轨迹采集文件，缺失即失败，
+  与本批无关）。`tests/test-voice-gateway.js` 18/18，`tests/test-request-locality.js` 11/11，
+  `tests/test-release-version-consistency.js` 5/5。
+- 路由重捕获：492 条路由、34 层中间件（上一次 499；−8 退役、+1 宿主端口）。同时修复
+  `scripts/capture-backend-routes.js` 每次重生成都会抹掉盘点文档手写段落的问题，重跑已字节幂等。
+
+## 42. 全局语音网关与 Qwen 运行时路由迁入 Rust（2026-11-14）
+
+`src/routes/voice-gateway-global.js`（14 条）与 `src/routes/qwen-audio-runtime.js`（8 条）整文件删除，
+22 条注册由前门独占：`native/gateway/src/app/voice_runtime.rs`，规则内核
+`multicc_core::voice_runtime_routes`。
+
+**路由**：`GET/PUT/DELETE /api/voice-gateway`，`GET …/runtime`，`POST …/restart`，
+`POST …/launch`，`GET …/launch/:launchId`，`GET /api/voice-runtime`，
+`POST /api/voice-runtime/install`，`GET /api/directories/:id/voice-gateway/runtime`，
+`POST /api/directories/:id/voice-gateway/restart`，各带 `/api/v1` 变体。claim 按精确段数匹配，且排在
+§41 的 Fleet 级路由之后：四段的 `/api/directories/:id/voice-gateway` 仍归 §41，五段的 `/runtime`
+与 `/restart` 归本节，集成测试同时配置两批夹具来证明互不吞路径。
+
+**Rust 一侧**：失败码到状态码（404：`voice_gateway_not_found`、`voice_launch_source_not_found`、
+`voice_launch_unknown`；400：`commander_binding_is_host_owned`、`voice_gateway_provider_invalid`、
+`voice_gateway_enabled_invalid`、`voice_gateway_auto_install_invalid`、`voice_launch_required`、
+`voice_launch_scope_invalid`、`voice_launch_source_required`、`voice_launch_source_not_addressable`、
+`voice_launch_source_not_chat`；410：`voice_launch_expired`；其余 409）；legacy 与 v1 两种信封
+（全局路由的失败体**不带** `gatewayIds`）；`runtime` 脱敏（删除 `url` 键，其余键序不变）；Fleet 级
+runtime 在全局网关存在时投影为全局状态并追加 `projectedFrom`、`requestedDirectoryId`；
+launch 的代理 URL 构造（`/voice-gateway/web/?session=<encodeURIComponent(id)>`）；`transport.loopbackOnly`
+由请求 `Host` 头判定；`Cache-Control: no-store` 的适用面（DELETE 不设）。
+
+**宿主端口** `POST /api/__host/voice-runtime`（`src/routes/voice-runtime-host.js`，仅回环），12 个 op：
+`globalGet` / `globalPut` / `globalRemove` / `globalRuntime` / `globalRestart` / `launchBegin` /
+`launchEnd` / `launchResolve` / `runtimeGet` / `runtimeInstall` / `fleetRuntime` / `fleetRestart`。
+launch 被拆成两步：`launchBegin` 在 Node 里完成签发与按需启动，Rust 据返回的状态算 URL；
+没有可用 URL 时回调 `launchEnd{revoke:true}` 撤销票据，有 URL 时回调 `launchEnd{revoke:false}`
+让宿主记 `launch issued` 日志。票据注册表、router 提供器、supervisor 与安装器都是 Node 独有的
+进程内状态，留在宿主端口。
+
+**串行化**：新增 `App::voice_runtime_write`，`PUT/DELETE/restart/launch/install` 与 Fleet 级
+restart 共用一把锁。旧路由本身在 `await startGlobal()` 处就会让出事件循环，所以这不是在恢复一个
+单线程保证，而是比旧行为更严格：并发的 launch 不会再交错签发与启动。
+
+**已知差异（均由差分逐条校验）**
+- 大写 `/API/...` 前缀与路由从未支持的方法：与 §41 相同，前门不认领，真实上游已无这些路由，回 Express 404。
+- `voice_launch_expired`（410）无法经真实票据注册表触发：`resolve` 先 `sweep()`，已过期的票据在被判为
+  过期之前就被清掉，调用方看到的是 404 `voice_launch_unknown`。410 的映射仍按源码保留，由内核单测与
+  网关集成测试（宿主夹具直接返回该码）覆盖，差分里用「时钟前移后 resolve 得 404」固定这一事实。
+- 宿主不可用或应答形状不合法：503 `{"error":"语音运行时接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`，
+  与 §41 相同，是新的失败面。
+
+**测试**：`tests/test-voice-global-gateway.js`、`tests/test-qwen-audio-runtime.js` 改写为测宿主端口；
+被删的两条 Node 断言（非回环调用方的 `loopbackOnly` 标记、runtime 不泄露子进程回环 URL）已转移到
+Rust：内核单测 `loopback_only_follows_the_host_header`，网关集成测试
+`launch_marks_a_non_loopback_caller_and_wraps_v1`、`global_runtime_strips_the_raw_url`，以及差分。
+
+**验证记录**（源码指纹 `6b3a551450c4a40b493251ff`，隔离数据，未改生产配置、未重启服务）
+- Rust：`cargo fmt --check`、`cargo build --workspace` 退出 0；串行 `cargo test --workspace
+  --no-fail-fast` 50 套件 1,437 项通过、0 失败（上一节 49 套件 1,398）；`cargo clippy --workspace
+  --all-targets -D warnings` 零警告。
+- 差分 `docs/rust-migration/differential/voice-runtime.js`（冻结的旧路由
+  `tests/helpers/legacy-voice-gateway-global-routes.js`、`legacy-qwen-audio-runtime-routes.js` 对真网关 +
+  真宿主端口）：266/266 逐字节一致，18/18 预期差异各自钉死形状。时钟与 launch id 来源可注入，所以
+  票据 id 与 `expiresAt` 逐字节对拍，没有抹值。覆盖断言要求 launch 成功/无 URL/各失败码、资源 404、
+  撤销后不可再 resolve、201/200、DELETE、runtime 脱敏、restart 抛错、安装 200/202、Fleet 投影与非投影、
+  `loopbackOnly` 的 true 与 false、`startGlobal` 被调用、`launch issued` 日志、`installIfNeeded` 都被真实走到。
+  变异验证：分别改坏旧实现的 launch URL 前缀、安装状态码、投影标记，差分依次掉到 220/266、260/266、
+  250/266 并退出非零，随后均已还原。
+- 对拍的三个教训：（1）`Cookie` 必须写成 `multicc_auth=<值>`，`createCookie()` 只返回裸值；上一节脚本里
+  控制端点的错误写法一直没被发现，因为它们走回环免认证，已一并修正并重跑上一节差分（仍 144/144、16/16）。
+  （2）非回环的 `Host` 在没有凭据时被两侧鉴权闸门同样拒绝为 403，一致却没有覆盖，覆盖断言才暴露出
+  `loopbackOnly:false` 从未被观察到。（3）原生模块指纹随新增 Rust 文件而变，必须用
+  `ensureSourceRust` 取当前指纹的产物。
+- Node：`test:architecture` 143/143、`test:security` 1,155/1,155、`test:rust` 300/300、`test:contracts`
+  152/152、`test:provider-router` 1,197/1,197（首次运行有 1 项失败，见下）、`test:core` 352/353。
+  `tests/test-voice-gateway.js` 27/27，`tests/test-voice-global-gateway.js` 19/19，
+  `tests/test-qwen-audio-runtime.js` 10/10。
+- 两项非本批问题：`test:core` 的 `differential: real captured Claude traces` 需要 `/tmp` 里的真实轨迹采集
+  文件，缺失即失败，上一节起一直如此。`test:provider-router` 首次运行时
+  `tests/test-account-subscription.js` 的「多写者、record 与 project 交错」用例失败，同一文件在低负载下
+  连跑三次 11/11，完整套件重跑 1,197/1,197；该套件由三段 `&&` 串联，第一段失败使后两段被短路，
+  所以首次只统计到 1,078 项。失败发生时同机还在跑变异差分，原因判断为负载下的时序抖动，没有在
+  HEAD 上单独复现，因此不断言它在 HEAD 上也会抖。
+- 路由重捕获：471 条注册、34 层中间件（上一节 492；−22 退役、+1 宿主端口）。
+
+## 43. 语音设置与听写类路由迁入 Rust，前门新增 `--no-node` 模式（2026-11-14）
+
+`src/routes/voice.js` 收缩为只剩 `POST /api/voice/stt`（133 行）。其余 13 条注册由前门独占：
+`native/gateway/src/app/voice_routes.rs`，规则内核 `multicc_core::voice_routes`。
+
+| 路由 | 说明 |
+|---|---|
+| `POST /api/voice/refine`、`/confirm`、`/progress-summary` | 提示词模板、JSON 抽取（贪婪匹配首个 `{` 到末个 `}`）、展开覆盖语义、300 码元切片在 Rust；AuxQueue 入队经宿主端口 `auxEnqueue` |
+| `POST /api/voice/feedback`、`POST /api/voice/hotwords/reject`、`DELETE /api/voice/vocab/:term` | 条件判定与小写化在 Rust，写副作用经宿主端口 |
+| `GET /api/voice/vocab`、`/readiness`、`/hotwords`、`GET /api/settings/voice` | readiness 判定与设置 DTO（掩码、真值回退链、键序）在 Rust，只向宿主取事实 |
+| `POST /api/settings/voice`、`POST /api/settings/voice/asr-model` | 字段映射、`****` 掩码判定、`qwenAudio` 校验在 Rust；事务（persist→asr→tts→runtime→voice）与失败补偿整块留在宿主端口 `settingsApply`，前门不重做 |
+| `GET /api/voice/test-sse` | 纯定时器，无宿主调用：每 500ms 一块、三块后 `[DONE]`，头为 `text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no` |
+
+**未迁**：`POST /api/voice/stt`。它是 multer 内存上传，字节要喂进程内 sherpa-onnx ASR，并受上传准入闸
+约束；宿主端口是 JSON 请求/响应，搬字节没有收益。与 `POST /api/upload`、测速 SSE 同为「Node 独有字节流」。
+
+**宿主端口** `POST /api/__host/voice`（`src/routes/voice-host.js`，仅回环）：`examples`、`auxEnqueue`、
+`feedbackApply`、`vocabGet`、`vocabDelete`、`hotwords`、`hotwordsReject`、`readinessFacts`、
+`settingsFacts`（只回白名单键，不回传整份环境）、`settingsApply`、`asrModelCancel`、`asrModelStart`。
+通用失败统一 `{ok:false,error:{message,statusCode?}}`，唯有 `auxEnqueue` 失败是
+`{ok:false,cancelled,message}`。宿主不可用或应答形状不合法：503
+`{"error":"语音接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`。
+
+**串行化**：新增 `App::voice_routes` 互斥量，写类路由（feedback、hotwords/reject、vocab DELETE、
+asr-model、settings POST）逐个跑完，恢复旧单线程的逐请求语义；refine/confirm/progress-summary
+旧行为就是并发等待 AuxQueue，不串行。
+
+**已知差异（差分登记 28 条，6 类，双谓词各自钉死两侧形状）**
+- Express 4 不接 async handler 的 rejection：旧实现在 `raw` 为数字/布尔/数组/对象等非字符串时
+  请求挂起直到超时并抛 `unhandledRejection`；前门回 500 的 `internal_error` DTO。旧行为是框架缺陷，
+  新行为更合理（7 条）。
+- `POST /api/settings/voice` 的 `qwenAudio` 校验：旧代码抛 `statusCode=400`，而 `safeErrorHandler` 只读
+  `err.status`，实际回 500；前门回原意图的 400 `request_error`（13 条）。若有客户端依赖 500 需产品确认。
+- UTF-16 切片落在 emoji 中间产生孤立代理项：旧实现在 JSON 里写 `\ud83d`，Rust 写 U+FFFD，孤立代理项
+  无法跨宿主端口的 JSON 边界（2 条）。
+- 大写 `/API/` 前缀：前门只认精确 `/api/`（与 §41 相同），其余转给 Node 回 Express 404（3 条）。
+- 公共端口上的 `/api/__host/voice`：旧实现无此路径回 404；前门不拦截 `__host` 前缀，本机回环客户端
+  会真的执行 host op，远端客户端因转发头/非回环对端被 `isLocalRequest` 拒绝（2 条）。这是所有宿主端口
+  从 §28 起共有的既有性质，同机进程本来就能直连 Node 的内部回环端口，没有新增暴露面；是否在前门
+  显式拒绝 `__host` 前缀是单独的加固决定，需要重新对齐此前各批的响应形状，未在本批做。
+- 对拍发现并已修复的一处：progress-summary 在 AuxQueue 返回非字符串文本时，500 诊断文案
+  Rust 原写 `text.trim is not a function`，旧实现是 `(result.text || "").trim is not a function`；
+  已改为逐字节一致，差分里该条登记差异已删除，内核单测钉住文案。
+
+**前门 `--no-node` 模式**：`multicc-gateway serve` 现在必须在 `--node <exe>` 与 `--no-node` 中恰好二选一
+（都不给、同时给、`--no-node` 带脚本参数均退出码 2），不再有静默默认。`--no-node` 不拉起任何子进程，
+不设置 `MULTICC_GATEWAY_CHILD`，仍绑定公开端口并读取 `.env`。落到 Node 的 HTTP 与 WebSocket 升级
+立即回 503 `{"error":"This route is served by the Node runtime, which this front door was started without (--no-node).","code":"node_runtime_absent"}`
+（`Connection: close`，不等重试窗口）；需要 Node 托管鉴权快照的 Rust 路由同样立即回 503
+`{"error":"Authentication state is held by the Node runtime, which this front door was started without (--no-node).","code":"node_runtime_absent"}`；
+经宿主端口的 Rust 路由立即走各自的 503 `rust_backend_unavailable`。**结论要说准**：`--no-node`
+证明的是「前门启动路径可以不依赖 node 可执行文件，并且显式失败关闭」，不是「可用的纯 Rust 服务」。
+鉴权运行态（访问令牌、会话、WS 票据、关停标志）仍由 Node 持有，是删除 Node 进程的第一个阻塞项，
+完整清单见 `docs/backend-rust-exit-plan.md`。现有入口（`./multicc`、`npm start`、桌面壳、独立包、
+launchd）仍传 `--node`，因为 Node 仍持有未迁路由，把默认翻成 `--no-node` 会让聊天等全部 503。
+新入口 `scripts/start-rust-only.sh`、镜像 `node-free-runtime` 的默认命令与 CI 的 no-node 冒烟走 `--no-node`。
+
+**测试**：`tests/test-voice-routes.js` 改写为测宿主端口（回环闸门、unknown op、各 op 分支、
+`settingsApply` 五个阶段的补偿回滚、`auxEnqueue` 失败形状、`settingsFacts` 只回白名单键）与保留的 stt；
+被 Rust 接管的 Express 业务规则用例（refine 提示词、confirm 解析、设置校验与掩码等）已删除，由内核
+单测与差分覆盖。旧实现冻结为 `tests/helpers/legacy-voice-routes.js`。
+
+**验证记录**（源码指纹 `55ae8bac545c8eb63ddc6b92`，隔离数据，未改生产配置、未重启服务）
+- Rust：`cargo fmt --check`、`cargo build --workspace` 退出 0；串行 `cargo test --workspace
+  --no-fail-fast`（单线程）52 套件 1,489 项通过、0 失败、0 忽略（上一节 50 套件 1,437）；`cargo clippy
+  --workspace --all-targets -D warnings` 零警告。新增：`multicc_core` 940 项（其中 `voice_routes` 内核单测
+  19、`public_safety` 7）、网关集成 `voice_routes` 22、`no_node` 6，网关 lib 94（含 `voice_routes` 2）。
+  前门 `--no-node` 冒烟 `scripts/smoke-no-node-gateway.sh`（release 二进制）通过：落 Rust 的测试钩子 200、
+  需鉴权的 Rust 路由 503 `node_runtime_absent`、落 Node 的路由 503、SIGTERM 退出 0；把 `node` 改名并
+  清空 PATH 后同一冒烟仍通过。
+- 差分 `docs/rust-migration/differential/voice-routes.js`（冻结的旧路由 `tests/helpers/legacy-voice-routes.js`
+  对真网关 + 真宿主端口）：259 条逐字节一致，27 条登记差异各自钉死两侧形状（修复 progress 文案后由 258/28 变为 259/27）。覆盖断言 118 条分支（路由×行为）全部命中，首次运行真实报出
+  缺 10 条后补齐才转绿。变异验证：分别把 confirm 的贪婪匹配改非贪婪（258 中 1 条红）、把设置掩码
+  尾长 4 改 5（6 条红）、把 vocab 小写改 ASCII-only（3 条红，仅 Unicode 用例），三次均变红，随后逐字节还原
+  （sha256 与备份一致）并回到全绿。
+- Node：`test:architecture` 143/143、`test:security` 1,155/1,156（整段重跑，另 1 项为既有 `todo`，0 失败）、
+  `test:rust` 300/300、`test:contracts` 152/152、`test:provider-router` 1,197/1,197、`test:governance`
+  20/20、`test:native` 315/315、`test:desktop` 55 通过 1 跳过（跳过的是用真实 electron-builder 拷贝器验证 `extraResources` 的用例，本机没有桌面工具链；发版流水线 `desktop-release` 要求它必须运行，所以本机对这一项没有证据，需由 CI 补）、`test:core` 352/353。
+  `tests/test-voice-routes.js` 26/26，`tests/test-request-locality.js` 11/11。
+- 两项非本批问题：`test:core` 的 `differential: real captured Claude traces` 需要 `/tmp` 里的真实轨迹采集文件，
+  缺失即失败，上一节起一直如此。`test:security` 首次整段运行时 `tests/test-remote-screen.js` 的「从不打印
+  ready 行的进程会被杀掉并报告不可用」用例读 `remote.pid` 时文件尚未写出（ENOENT，约 160ms 处），同一文件
+  单独连跑三次 44/44，整段重跑 1,155/1,156，没有复现。失败发生时同机还有别的会话在编译，原因判断为负载下
+  的时序抖动；我没有在 HEAD 上单独复现过它，因此不断言它在 HEAD 上也会抖。
+- 路由重捕获：459 条注册、34 层中间件（上一节 471；−13 退役、+1 宿主端口）。静态口径（`server.js` +
+  `src/**` 的 JS/CJS/MJS，`scripts/inventory-backend-routes.js`）：598 文件 / 134,172 行，本批前同口径为
+  597 文件 / 134,296 行（+1 文件、−124 行：`voice.js` 648→133 减 515，新增 `voice-host.js` 389，其余接线 +2）。
+- 环境坑：原生模块重建首次失败于 `libsqlite3-sys`，原因是系统临时目录里该包的构建缓存缺了 `out/bindgen.rs`
+  （被系统清理，cargo 仍认为构建脚本输出有效）。只清该包缓存（`cargo clean -p libsqlite3-sys`）后重建成功，
+  不是代码问题。

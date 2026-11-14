@@ -44,6 +44,19 @@ const UPSTREAM_RETRY: Duration = Duration::from_millis(100);
 /// (see docs/gateway.md §6). Production routers have no native routes yet.
 pub const TEST_ROUTE: &str = "/__gateway_test/native";
 pub const TEST_ROUTE_BODY: &str = "multicc-gateway: answered by the rust front door\n";
+/// Test-only route that exercises the real host-port client (`host_port::call`)
+/// so `--no-node` can prove it fails immediately instead of after the 60s
+/// budget. It is not a production route.
+pub const HOST_PORT_TEST_ROUTE: &str = "/__gateway_test/host-port";
+const HOST_PORT_TEST_BODY: &str =
+    r#"{"error":"host port unavailable","code":"rust_backend_unavailable"}"#;
+
+/// docs/gateway.md §8.1: the answer for every request the Rust front door does
+/// not own when it was started with `--no-node`. No retry window is entered.
+const NODE_ABSENT_BODY: &str = concat!(
+    r#"{"error":"This route is served by the Node runtime, which this front door was started without (--no-node).","#,
+    r#""code":"node_runtime_absent"}"#
+);
 
 /// Why a forwarded request could not reach Node.
 enum ForwardError {
@@ -75,6 +88,9 @@ struct UpstreamState {
     /// addresses of the PROXY v1 line (§5).
     client: SocketAddr,
     local: SocketAddr,
+    /// `--no-node` (§8.1): there is no child, so the fallback fails closed
+    /// immediately instead of waiting for an upstream that will never exist.
+    node_absent: bool,
 }
 
 impl UpstreamHandle {
@@ -91,8 +107,27 @@ impl UpstreamHandle {
                 wait,
                 client,
                 local,
+                node_absent: false,
             }),
         }
+    }
+
+    /// `serve --no-node`: no Node child exists anywhere in this process.
+    pub fn absent(client: SocketAddr, local: SocketAddr) -> Self {
+        Self {
+            state: Arc::new(UpstreamState {
+                sender: Mutex::new(None),
+                port: Arc::new(AtomicU16::new(0)),
+                wait: Duration::ZERO,
+                client,
+                local,
+                node_absent: true,
+            }),
+        }
+    }
+
+    fn node_absent(&self) -> bool {
+        self.state.node_absent
     }
 
     /// Forwards `request` over this connection's upstream connection, opening
@@ -184,9 +219,33 @@ impl UpstreamHandle {
 pub fn native_routes(app: Arc<App>) -> Router {
     let mut router = Router::new();
     if std::env::var("MULTICC_GATEWAY_TEST_ROUTES").ok().as_deref() == Some("1") {
-        router = router.route(TEST_ROUTE, get(|| async { TEST_ROUTE_BODY }));
+        router = router
+            .route(TEST_ROUTE, get(|| async { TEST_ROUTE_BODY }))
+            .route(HOST_PORT_TEST_ROUTE, get(host_port_probe));
     }
     router.fallback(dispatch).layer(Extension(app))
+}
+
+/// Test-only: calls the same host-port client every migrating route uses, so a
+/// `--no-node` run can prove a route that needs the Node host fails at once.
+async fn host_port_probe(Extension(upstream): Extension<UpstreamHandle>) -> Response<Body> {
+    let port = upstream.state.port.load(Ordering::SeqCst);
+    let called = crate::host_port::call(
+        port,
+        "/api/__host/gateway-probe",
+        &serde_json::json!({ "op": "probe" }),
+    )
+    .await;
+    let (status, body) = match called {
+        Ok(_) => (StatusCode::OK, r#"{"ok":true}"#),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, HOST_PORT_TEST_BODY),
+    };
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .header("connection", "close")
+        .body(Body::from(body))
+        .expect("static host-port probe response")
 }
 
 /// §8: a route the front door owns is answered here; everything else, and
@@ -205,6 +264,13 @@ async fn dispatch(
 
 /// §6: the fallback. Streams the request to Node and the response back.
 async fn forward(upstream: UpstreamHandle, mut request: Request<Body>) -> Response<Body> {
+    // §8.1: with `--no-node` there is nothing to wait for, so the refusal is
+    // immediate (no 100ms retry loop, no upstream-wait window). This covers
+    // ordinary HTTP and WebSocket upgrades alike: the upgrade request is a
+    // request like any other up to the point where Node would answer 101.
+    if upstream.node_absent() {
+        return node_runtime_absent();
+    }
     // Taken before the request is forwarded: the upgrade belongs to the client
     // connection, not to Node's request extensions.
     let client_upgrade = hyper::upgrade::on(&mut request);
@@ -230,6 +296,18 @@ async fn forward(upstream: UpstreamHandle, mut request: Request<Body>) -> Respon
         });
     }
     response.map(Body::new)
+}
+
+/// §8.1: the synthetic answer for a request the front door would have
+/// forwarded to Node, when it runs `--no-node`. `Connection: close` tears the
+/// client connection down afterwards, exactly like the 503 upstream answer.
+fn node_runtime_absent() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("content-type", "application/json")
+        .header("connection", "close")
+        .body(Body::from(NODE_ABSENT_BODY))
+        .expect("static node-absent response")
 }
 
 /// §6: the synthetic answer when Node cannot be reached (503) or accepted the
