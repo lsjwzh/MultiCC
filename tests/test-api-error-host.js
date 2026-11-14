@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createApiErrorHost } = require('../src/chat/api-error-host');
-const { createApiErrorPolicyRuntime, detectErrorEnvelope } = require('../src/chat/api-error-policy');
+const { createApiErrorPolicyRuntime, detectErrorEnvelope, decideApiErrorPolicy } = require('../src/chat/api-error-policy');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 
@@ -113,6 +113,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
   let evaluateCalls = 0;
   let failovers = 0;
   let retriesScheduled = 0;
+  const handoffs = [];
   const finalizerBroadcasts = [];
   const noop = () => {};
   let attemptId = 0;
@@ -147,6 +148,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
     recordDurableTurnUsage: () => false,
     providerAttemptRuntime: attemptRuntime,
     autoProviderRuntime: {},
+    autoProviderHandoff: { async schedule(input) { handoffs.push(input); return { scheduled: true }; } },
     codexRolloutGuard: { sweepExpiredArchives: noop },
     opencodeContextGuard: {},
   });
@@ -284,6 +286,72 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
   assert.equal(failovers, 2, 'Auto receives the replay-safe 403 decision');
   assert.equal(retriesScheduled, 2, 'the same durable user turn is scheduled on the next provider');
   assert.equal(attemptRuntime.snapshot('session-1').replayFence, 'none');
+
+  const codexAttempt = attemptRuntime.beginAttempt({
+    sessionId: 'session-1', turnId: 'turn-handoff-401', cli: 'codex-exp',
+    providerId: 'official', providerName: 'Official', protocol: 'openai_responses',
+    model: 'model', providerRevision: 'revision', attemptNo: 1,
+  });
+  const codexTurn = { turnId: 'turn-handoff-401', resultDurable: false };
+  const codexRunner = {
+    kind: 'stream', turnId: codexTurn.turnId, killReason: null,
+    resultEvent: false, sawApiError: true, providerAttempt: codexAttempt,
+    apiErrorRaw: { source: 'codex-exp_event', provider: 'codex-exp', code: 'provider_error',
+      message: 'unexpected status 401 Unauthorized: Your token has expired. Please try refreshing it.' },
+  };
+  const codexState = {
+    _streamTurnSeq: 4, _activeTurn: codexTurn, _activeRunner: codexRunner,
+    currentAssistantText: '', currentToolCalls: [], streamReplay: [], isStreaming: true,
+  };
+  h.decideWith((raw, context) => decideApiErrorPolicy(raw, context, { now: () => 1_000, random: () => 0 }));
+  const codexAuto = {
+    enabled: true,
+    failover(providerDecision, facts) {
+      failovers += 1;
+      assert.equal(providerDecision.error.category, 'authentication_permission');
+      assert.equal(facts.replayFence, 'none');
+      return { invocationOptions: { providerId: 'backup' },
+        decision: { ...providerDecision, action: 'retry', attempt: 1, delayMs: 0 },
+        fromProviderName: 'Official', toProviderName: 'Backup' };
+    },
+    recordSuccess: noop,
+  };
+  await engine.finalizeStreamingTurn('session-1', codexState,
+    { cli: 'codex-exp', pendingCliHandoff: { status: 'pending', reusedTarget: true, toCli: 'codex-exp' } },
+    4, codexTurn, codexRunner, null, { name: 'codex-exp' }, noop, codexAuto);
+  assert.equal(evaluateCalls, 3, 'a proven 401 reaches policy during reused-session handoff');
+  assert.equal(failovers, 3, 'the 401 reaches the Auto pool');
+  assert.equal(retriesScheduled, 3, 'the backup owns a retry of the same turn');
+
+  const crossAttempt = attemptRuntime.beginAttempt({
+    sessionId: 'session-1', turnId: 'turn-handoff-401-cross', cli: 'codex-exp',
+    providerId: 'official', providerName: 'Official', protocol: 'openai_responses',
+    model: 'model', providerRevision: 'revision', attemptNo: 1,
+  });
+  const crossTurn = { turnId: 'turn-handoff-401-cross', resultDurable: false };
+  const crossRunner = { ...codexRunner, turnId: crossTurn.turnId, providerAttempt: crossAttempt };
+  const crossState = { ...codexState, _streamTurnSeq: 5, _activeTurn: crossTurn,
+    _activeRunner: crossRunner, currentAssistantText: '', currentToolCalls: [], streamReplay: [] };
+  const crossAuto = {
+    enabled: true,
+    failover(providerDecision) {
+      assert.equal(providerDecision.error.category, 'authentication_permission');
+      return { terminal: true, invocationOptions: null,
+        decision: { ...providerDecision, reason: 'auto_candidate_pool_exhausted' } };
+    },
+    prepareHandoff(providerDecision, facts) {
+      assert.equal(providerDecision.error.category, 'authentication_permission');
+      assert.equal(facts.replayFence, 'none');
+      return { providerId: 'other-cli', providerName: 'Other', cli: 'claude',
+        fromProviderName: 'Official', reasonCode: 'lane_pool_exhausted' };
+    },
+    recordSuccess: noop,
+  };
+  await engine.finalizeStreamingTurn('session-1', crossState,
+    { cli: 'codex-exp', pendingCliHandoff: { status: 'pending', reusedTarget: true, toCli: 'codex-exp' } },
+    5, crossTurn, crossRunner, null, { name: 'codex-exp' }, noop, crossAuto);
+  assert.equal(handoffs.length, 1, 'exhausting the current lane schedules the cross-CLI continuation');
+  assert.equal(handoffs[0].preparation.providerId, 'other-cli');
 });
 
 test('turn duration is diagnostic only and creates no recovery-window state', () => {

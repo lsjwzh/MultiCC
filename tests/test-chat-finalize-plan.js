@@ -7,6 +7,7 @@ const path = require('node:path');
 const {
   classifyProcessExit,
   isGuardedHandoffFailure,
+  replaySafeHandoffProviderError,
   planTurnFinalization,
   planRetryBlockedFinalization,
   resolveTurnFinalization,
@@ -481,6 +482,27 @@ test('a host-proved provider error envelope may fail over during a reused stream
   assert.equal(plan.action, 'retry-api');
   assert.equal(plan.facts.guardedHandoffResumeFailure, false);
   assert.equal(types(plan).includes('schedule-api-retry'), true);
+});
+
+test('handoff HTTP evidence yields only with an open replay fence', () => {
+  const attempt = { replayFence: 'none', visibleOutputObserved: false,
+    toolIntentObserved: false, sideEffectObserved: false };
+  const raw = { source: 'codex-exp_event', message: 'unexpected status 401 Unauthorized: expired' };
+  assert.equal(replaySafeHandoffProviderError({ attempt, raw }), true);
+  assert.equal(replaySafeHandoffProviderError({ attempt, proxyFailure: {
+    source: 'proxy_response', httpStatus: 403,
+  } }), true);
+  for (const input of [
+    { attempt: null, raw },
+    { attempt: { ...attempt, replayFence: 'tool_intent' }, raw },
+    { attempt: { ...attempt, visibleOutputObserved: true }, raw },
+    { attempt, raw, sideEffects: true },
+    { attempt, raw, partialOutput: true },
+    { attempt, raw, killReason: 'user_cancel' },
+    { attempt, raw: { ...raw, source: 'assistant_text' } },
+    { attempt, raw: { ...raw, message: 'native session missing' } },
+    { attempt, proxyFailure: { source: 'proxy_response', httpStatus: 200 } },
+  ]) assert.equal(replaySafeHandoffProviderError(input), false);
 });
 
 test('finalize planner remains pure and exported from chat index', () => {

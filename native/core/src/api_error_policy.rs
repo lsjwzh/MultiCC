@@ -47,11 +47,12 @@ pub const API_ERROR_SIGNATURES: [&str; 6] = [
     "The system is busy",
 ];
 
-const TRUSTED_TEXT_SOURCES: [&str; 18] = [
+const TRUSTED_TEXT_SOURCES: [&str; 19] = [
     "anthropic_event",
     "claude_result",
     "claude-exp_event",
     "codex_event",
+    "codex-exp_event",
     "opencode_event",
     "qoder_result",
     "zcode_event",

@@ -38,6 +38,7 @@ const {
   recordResultEvent,
   hasMatchingPartialCheckpoint,
   isGuardedHandoffFailure,
+  replaySafeHandoffProviderError,
   normalizeHandoff,
   planTurnFinalization,
   planRetryBlockedFinalization,
@@ -2503,15 +2504,6 @@ function createChatTurnEngine(deps) {
         || !!attemptFacts?.visibleOutputObserved || sideEffects,
       killReason: runner.killReason || '',
     }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
-    const shouldClassifyApiError = (!guardedHandoffResumeFailure || errorOnlyBoundary) && !!(
-      boundaryErrorEnvelope
-      || proxyFailure
-      || runner.apiErrorRaw
-      || runner.sawApiError
-      || runner.adapterError
-      || runner.killReason
-      || (!runner.resultEvent && !turn.resultDurable)
-    );
     const rawApiError = runner.killReason
       ? {
         source: 'anthropic_event',
@@ -2525,6 +2517,14 @@ function createChatTurnEngine(deps) {
         code: 'stream_ended_without_result',
         message: 'stream ended without a result event',
       };
+    const replaySafeProviderError = errorOnlyBoundary || replaySafeHandoffProviderError({
+      attempt: attemptFacts, raw: runner.apiErrorRaw, proxyFailure,
+      partialOutput, sideEffects, killReason: runner.killReason,
+    });
+    const shouldClassifyApiError = (!guardedHandoffResumeFailure || replaySafeProviderError) && !!(
+      boundaryErrorEnvelope || proxyFailure || runner.apiErrorRaw || runner.sawApiError
+      || runner.adapterError || runner.killReason || (!runner.resultEvent && !turn.resultDurable)
+    );
     const apiErrorDecision = shouldClassifyApiError
       ? evaluateTurnApiError({
         sessionName,
@@ -2532,7 +2532,7 @@ function createChatTurnEngine(deps) {
         persisted,
         turn,
         runner,
-        raw: rawApiError,
+        raw: replaySafeProviderError && proxyFailure?.source === 'proxy_response' ? proxyFailure : rawApiError,
         attempt: runner.apiRetryAttempt || 0,
         phase: partialOutput || sideEffects ? 'stream' : 'before_first_token',
         partialOutput,
@@ -2560,7 +2560,7 @@ function createChatTurnEngine(deps) {
       killReason: runner.killReason || null,
       apiError: !!effectiveApiErrorDecision || !!runner.sawApiError,
       apiErrorDecision: effectiveApiErrorDecision,
-      replaySafeProviderError: errorOnlyBoundary,
+      replaySafeProviderError,
       adapterError: !!runner.adapterError,
       retryPlanned: !!runner.retryPlanned,
       resultEvent: !!runner.resultEvent,
