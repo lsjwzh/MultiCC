@@ -40,6 +40,7 @@ function recordingKernel() {
       return nativeKernel.decide(input);
     },
     decideClear: input => nativeKernel.decideClear(input),
+    bootRecover: input => nativeKernel.bootRecover(input),
     decideTurnEnd: input => {
       calls.turnEnds.push(input);
       return nativeKernel.decideTurnEnd(input);
@@ -957,7 +958,7 @@ test('boot reconciliation never replays a persisted P turn: the watchdog owns it
   }
 });
 
-test('startup reconciliation leaves live slots, handled settles and user cancels alone', async () => {
+test('startup reconciliation respects live owners and recovers an orphaned settle', async () => {
   const taskState = {
     classifyState: 'E', endedAt: 5000, cancelledAt: 5000,
     cancelReason: 'process_watchdog', cancelSource: 'process_watchdog',
@@ -967,11 +968,20 @@ test('startup reconciliation leaves live slots, handled settles and user cancels
   live.advance(6000 - live.clock());
   assert.deepEqual((await live.host.reconcileStartup()).settled, [], 'the watchdog owns a still-live slot');
 
+  // A settle the watermark already handled is normally never replayed. But when
+  // nothing owns the session (no live slot, no queued delivery, no retry) the
+  // shutdown killed its continuation: the supervisor would sit `active` until
+  // the deadline, so boot re-drives it exactly once.
   const handled = harness({ taskState, schedulerStatus: null });
   await handled.arm();
   handled.advance(6000 - handled.clock());
   handled.records.get('s1').unattended = { ...handled.host.get('s1'), lastSettleAt: 5000 };
-  assert.deepEqual((await handled.host.reconcileStartup()).settled, [], 'an already settled turn is not replayed');
+  const recovered = await handled.host.reconcileStartup();
+  assert.equal(recovered.settled.length, 1, 'the orphaned settle is re-driven');
+  assert.equal(recovered.settled[0].action, 'fault_continue');
+  assert.equal(handled.calls.inject.length, 1);
+  assert.deepEqual((await handled.host.reconcileStartup()).settled, [],
+    'one recovery per process, even before the replay produces its own settle');
 
   const user = harness({
     taskState: { classifyState: 'E', endedAt: 5000, cancelledAt: 5000, cancelSource: 'manual_cancel' },
@@ -984,15 +994,18 @@ test('startup reconciliation leaves live slots, handled settles and user cancels
   assert.equal(out.settled[0].pausedBy, 'cancel', 'a user cancel still pauses');
   assert.equal(user.calls.inject.length, 0);
 
-  // Low 2: a new run started after the old cancel must not be paused by it.
+  // Low 2: a new run started after the old cancel. The cancel belongs to the
+  // previous run, but the current run is still an ownerless E run, so the
+  // recovery pass (which reads the live classify letter, not the watermark)
+  // drives it once.
   const newRun = harness({ taskState, schedulerStatus: null });
   await newRun.arm();
   newRun.advance(6000 - newRun.clock());
   newRun.records.get('s1').unattended = { ...newRun.host.get('s1'), startedAt: 9000 };
   const historical = await newRun.host.reconcileStartup();
-  assert.deepEqual(historical.settled, [], 'an event before startedAt belongs to a previous run');
+  assert.equal(historical.settled.length, 1, 'an ownerless active run is recovered');
   assert.equal(newRun.host.get('s1').status, STATUS.ACTIVE);
-  assert.equal(newRun.calls.inject.length, 0);
+  assert.equal(newRun.calls.inject.length, 1);
 });
 
 test('one failing session does not stop the boot replay of the others', async () => {

@@ -64,6 +64,9 @@ function createUnattendedHost(options = {}) {
   // coalesced into exactly one follow-up run.
   const inFlight = new Set();
   const queued = new Set();
+  // Sessions this process already re-drove from the boot recovery pass. In-memory
+  // by design: a new process is a new restart and may recover again.
+  const bootRecovered = new Set();
   // Classic classify pushes held back while the supervisor decides. Every path
   // that does not produce its own supervisor notice drains these, so a settle is
   // never silent (docs/unattended-mode.md → notifications).
@@ -1177,8 +1180,14 @@ function createUnattendedHost(options = {}) {
     let ids = [];
     try { ids = Array.from(listSessionIds() || []); } catch (_) { ids = []; }
     const replay = async (sessionId, facts) => {
-      const result = await onTurnEnd(sessionId, facts);
-      if (result && !(result.ok === false && result.code === 'duplicate_turn')) settled.push(result);
+      try {
+        const result = await onTurnEnd(sessionId, facts);
+        if (result && !(result.ok === false && result.code === 'duplicate_turn')) settled.push(result);
+      } finally {
+        // This session got its one boot replay; the recovery pass below must
+        // not inject a second continuation for the same restart.
+        bootRecovered.add(sessionId);
+      }
     };
     for (const sessionId of ids) {
       // One broken session must never stop the rest of the boot pass.
@@ -1215,6 +1224,47 @@ function createUnattendedHost(options = {}) {
       } catch (error) {
         failed.push({ sessionId, error });
         log(`[unattended] startup reconcile failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+      }
+    }
+    // A graceful shutdown can cancel the turn, persist the settle and then close
+    // the delivery boundary before the continuation is admitted: the watermark
+    // above treats that settle as handled, and no turn, queued delivery or retry
+    // timer owns the session — it sits `active` until the deadline. Re-drive
+    // that shape once per process through the fault path; the kernel decides
+    // when this pass is allowed to (live work, a waiting delivery, the classify
+    // letter, the deadline), so no second owner is ever invented here.
+    for (const sessionId of ids) {
+      try {
+        if (bootRecovered.has(sessionId)) continue;
+        const state = stateOf(sessionId);
+        if (!state || state.status !== STATUS.ACTIVE) continue;
+        let taskState = {};
+        try { taskState = getTaskState(sessionId) || {}; } catch (_) { taskState = {}; }
+        let runActive = false;
+        try { runActive = isRunActive(sessionId) === true; } catch (_) { runActive = false; }
+        let queuedWork = await backlogPending(sessionId);
+        if (!queuedWork) {
+          let status = null;
+          try { status = await getSchedulerStatus(sessionId); } catch (_) { status = null; }
+          queuedWork = !!(status && status.active);
+        }
+        const decision = kernel.bootRecover({
+          state,
+          classifyState: taskState.classifyState,
+          runActive,
+          queued: queuedWork,
+          now: now(),
+        });
+        if (!decision || decision.recover !== true) continue;
+        // One recovery per process: the replay may take a while to produce its
+        // own settle, and a second boot pass must not inject a second time.
+        bootRecovered.add(sessionId);
+        // The settle was already reported before the restart: an empty turn id
+        // keeps this replay out of the duplicate-settle guard.
+        await replay(sessionId, { kind: 'fault', settle: 'E', turnId: '' });
+      } catch (error) {
+        failed.push({ sessionId, error });
+        log(`[unattended] startup recovery failed for ${sessionId}: ${error && error.message ? error.message : error}`);
       }
     }
     if (failed.length) {

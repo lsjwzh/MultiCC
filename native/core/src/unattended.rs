@@ -1305,6 +1305,50 @@ pub fn decide_fault(input: &str) -> Result<String, String> {
     Ok(fault_decision(&state, now, &fault_category, retry_not_before).to_string())
 }
 
+/// Whether a restarted supervisor must re-drive a session whose last settle it
+/// already recorded but whose continuation never landed.
+///
+/// A graceful shutdown can cancel the running turn, let the settle write
+/// `lastSettleAt`, and then close the delivery boundary before the continuation
+/// is admitted. The restart watermark then treats that settle as handled, so
+/// nothing owns the session: no turn runs, nothing is queued and no `retryAt`
+/// is armed — the supervisor sits `active` until the deadline. This decision
+/// names exactly that shape; the caller replays the fault turn end, so every
+/// recovery rule (backoff, non-recoverable categories, deadline) stays in
+/// [`decide_turn_end`].
+///
+/// Input: `{ state, classifyState, runActive, queued, now }`.
+/// Answer: `{ recover, reason }`.
+pub fn boot_recover(input: &str) -> Result<String, String> {
+    let value: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| format!("unattended_invalid_input: {error}"))?;
+    let state = field(&value, "state").cloned().unwrap_or_else(|| json!({}));
+    let answer = |recover: bool, reason: &str| json!({ "recover": recover, "reason": reason });
+    if state_text(&state, "status") != "active" {
+        return Ok(answer(false, "not_active").to_string());
+    }
+    if field(&state, "retryAt").is_some_and(|at| !at.is_null()) {
+        return Ok(answer(false, "retry_pending").to_string());
+    }
+    if field(&value, "runActive").and_then(Value::as_bool) == Some(true) {
+        return Ok(answer(false, "run_active").to_string());
+    }
+    if field(&value, "queued").and_then(Value::as_bool) == Some(true) {
+        return Ok(answer(false, "delivery_queued").to_string());
+    }
+    // Only an API-error turn end (E) is unambiguously unfinished: D is done,
+    // C/P own a live turn, W/B wait for a human or a background job.
+    if !state_text(&value, "classifyState").eq_ignore_ascii_case("E") {
+        return Ok(answer(false, "not_faulted").to_string());
+    }
+    let now = int_value(field(&value, "now")).unwrap_or(0);
+    let deadline_at = int_value(field(&state, "deadlineAt")).unwrap_or(0);
+    if deadline_at > 0 && now >= deadline_at {
+        return Ok(answer(false, "expired").to_string());
+    }
+    Ok(answer(true, "fault_after_restart").to_string())
+}
+
 /// The fixed recovery instruction. Exported so the host builds exactly the same
 /// message and can recognise it when picking the next queued item.
 pub fn fault_instruction() -> String {
@@ -2914,5 +2958,97 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    // ── bootRecover ────────────────────────────────────────────────────────
+
+    fn boot_json(input: Value) -> Value {
+        serde_json::from_str(&boot_recover(&input.to_string()).unwrap()).unwrap()
+    }
+
+    fn boot_state(retry_at: Value) -> Value {
+        json!({
+            "status": "active",
+            "goal": "ship the feature",
+            "maxDurationMinutes": 600,
+            "rounds": 2,
+            "startedAt": 1_000,
+            "deadlineAt": 3_601_000,
+            "updatedAt": 2_000,
+            "retryAt": retry_at,
+            "retryCategory": Value::Null,
+            "lastSettleAt": 2_000,
+        })
+    }
+
+    #[test]
+    fn boot_recover_names_the_orphaned_after_shutdown_shape() {
+        // The recorded settle, the killed delivery: active + E, nothing owns it.
+        assert_eq!(
+            boot_json(json!({
+                "state": boot_state(Value::Null),
+                "classifyState": "E",
+                "runActive": false,
+                "queued": false,
+                "now": 5_000,
+            })),
+            json!({ "recover": true, "reason": "fault_after_restart" })
+        );
+    }
+
+    #[test]
+    fn boot_recover_never_runs_alongside_another_owner() {
+        fn case(extra: Value, reason: &'static str) -> (Value, &'static str) {
+            let mut input = json!({ "state": boot_state(Value::Null), "now": 5_000 });
+            for (key, value) in extra.as_object().unwrap() {
+                input[key] = value.clone();
+            }
+            (input, reason)
+        }
+        let cases = [
+            (
+                json!({ "state": boot_state(json!(9_000)), "classifyState": "E", "now": 5_000 }),
+                "retry_pending",
+            ),
+            case(
+                json!({ "classifyState": "E", "runActive": true }),
+                "run_active",
+            ),
+            case(
+                json!({ "classifyState": "E", "queued": true }),
+                "delivery_queued",
+            ),
+            case(json!({ "classifyState": "C" }), "not_faulted"),
+            case(json!({ "classifyState": "W" }), "not_faulted"),
+            case(json!({ "classifyState": "P" }), "not_faulted"),
+            case(json!({ "classifyState": "D" }), "not_faulted"),
+            case(json!({}), "not_faulted"),
+            case(json!({ "classifyState": "E", "now": 3_601_000 }), "expired"),
+        ];
+        for (input, reason) in cases {
+            assert_eq!(
+                boot_json(input.clone()),
+                json!({ "recover": false, "reason": reason }),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn boot_recover_ignores_a_paused_supervisor() {
+        let mut state = boot_state(Value::Null);
+        state["status"] = json!("stopped");
+        assert_eq!(
+            boot_json(json!({ "state": state, "classifyState": "E", "now": 5_000 })),
+            json!({ "recover": false, "reason": "not_active" })
+        );
+    }
+
+    #[test]
+    fn boot_recover_tolerates_a_missing_state() {
+        assert_eq!(
+            boot_json(json!({ "classifyState": "E", "now": 5_000 })),
+            json!({ "recover": false, "reason": "not_active" })
+        );
     }
 }
