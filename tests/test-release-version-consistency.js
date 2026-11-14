@@ -603,13 +603,22 @@ test('core runner covers every selected path and expands declared variants', () 
   // regression suites with temporary fixtures, plus one isolated quota wiring
   // suite using a temporary database. They require no external accounts.
   // Re-audited: 447 entries, 372 deterministic, 44 isolated, 419 commands.
-  assert.equal(core.length, 447, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 447);
+  // 2026-11-14 补登记复核：+1 core deterministic。main 上的
+  // tests/test-opencode-native-provider-roundtrip.js 随它的修复一起入库、已进
+  // npm:test:core，但漏了 tiers 登记（门禁在 main 上就是红的）。它钉的是
+  // validProviderId 对 opencode 原生线（opencode-native:<id>）的结构式接受：
+  // 以前新建任务重放上一个运行态时一律 400 invalid provider。完全
+  // hermetic：mkdtemp 临时目录、无网络、无端口、无时钟/随机依赖，按先例
+  // tests/test-opencode-go-default-provider.js 注册为 core deterministic。
+  // 同批 app/test/session_auto_commit_test.dart 补登为 other/flutter，不进 core。
+  // 447 + 1 = 448 entries, 372 + 1 = 373 deterministic, 419 + 1 = 420 commands.
+  assert.equal(core.length, 448, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 448);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 372);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 373);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 44);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -619,8 +628,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 419,
-    '416 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 420,
+    '417 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
