@@ -72,6 +72,19 @@ fn saved_at(value: Option<&Value>) -> i64 {
     }
 }
 
+// A retired lane id folds into the lane that replaced it (`claude-exp` ->
+// `claude`, see cli_switch_runtime::family). Stored presets written before the
+// retirement still carry the old id; the availability table the server hands
+// out no longer lists it, so a client that compared the raw id would reject
+// the whole preset as "lane unavailable". Normalising here means every reader
+// (web, Flutter, merge) sees the live id and the old one is never written back.
+fn canonical_lane(cli: &str) -> String {
+    match cli {
+        "claude-exp" => "claude".to_owned(),
+        _ => cli.to_owned(),
+    }
+}
+
 struct Candidate {
     provider_id: String,
     cli: Option<String>,
@@ -88,7 +101,9 @@ impl Candidate {
         if char_len(&provider_id) > MAX_PROVIDER_ID {
             return None;
         }
-        let cli = trimmed(object.get("cli")).filter(|text| char_len(text) <= MAX_CLI);
+        let cli = trimmed(object.get("cli"))
+            .filter(|text| char_len(text) <= MAX_CLI)
+            .map(|text| canonical_lane(&text));
         let model = match object.get("model") {
             None | Some(Value::Null) => None,
             Some(Value::String(text)) => {
@@ -510,6 +525,26 @@ mod tests {
         }]});
         assert_eq!(norm(oversized)["presets"].as_array().unwrap().len(), 0);
         assert_eq!(presets.len(), 2);
+    }
+
+    // b') 退役车道 id 折叠到接替它的车道：claude-exp 只读不写。
+    #[test]
+    fn folds_retired_lane_alias_into_live_lane() {
+        let out = norm(json!({ "presets": [{
+            "id": "cn",
+            "name": "cnmodel",
+            "protocol": "anthropic",
+            "candidates": [
+                { "providerId": "p-1", "cli": "claude-exp", "priority": 1 },
+                { "providerId": "p-2", "cli": " CLAUDE-EXP ", "priority": 2 },
+                { "providerId": "p-3", "cli": "codex-exp", "priority": 3 },
+            ],
+        }]}));
+        let list = out["presets"][0]["candidates"].as_array().unwrap();
+        assert_eq!(list[0]["cli"], "claude");
+        // Lane ids are case-sensitive everywhere else; only the exact retired id folds.
+        assert_eq!(list[1]["cli"], "CLAUDE-EXP");
+        assert_eq!(list[2]["cli"], "codex-exp");
     }
 
     // b) priority 重排 + cli/model/tier/flag 归一化。

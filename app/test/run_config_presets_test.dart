@@ -421,6 +421,38 @@ void main() {
     expect(runConfigPresetNameFor(selectionOf(['cheap', 'strong'])), '离线');
   });
 
+  test('退役车道 claude-exp 读成 claude：套用不再被判车道不可用，写回只写新 id', () async {
+    // 11-10 之后服务端不再下发 claude-exp 的可用性；老预设（cnmodel）里存的
+    // 还是旧 id，按原样比对会在非 claude 会话里被拒绝套用。
+    final raw = presetJson(id: 'cn', name: 'cnmodel')..remove('recent');
+    (raw['candidates'] as List)[0]['cli'] = 'claude-exp';
+    (raw['candidates'] as List)[1]['cli'] = ' claude-exp ';
+    final parsed = RunConfigPreset.fromJson(raw)!;
+    expect(parsed.rows.map((row) => row.lane), ['claude', 'claude']);
+    expect(jsonEncode(parsed.toJson()), isNot(contains('claude-exp')));
+    // fallbackLane 也走同一条规则（旧会话仍可能以 claude-exp 打开面板）。
+    final viaFallback = RunConfigPreset.fromJson(
+      presetJson(id: 'web', name: 'Web', withCli: false),
+      fallbackLane: 'claude-exp',
+    )!;
+    expect(viaFallback.rows.map((row) => row.lane), ['claude', 'claude']);
+    // 指纹认预设：旧 id 的预设和新 id 的会话池子算同一份。
+    final legacy = [
+      {...raw, 'presetId': null},
+    ];
+    expect(
+      runConfigPresetNameFor(selectionOf(['cheap', 'strong']), legacy),
+      'cnmodel',
+    );
+    expect(
+      runConfigPresetNameFor(
+        selectionOf(['cheap', 'strong'], cli: 'claude-exp'),
+        [presetJson(id: 'n', name: '新预设')..remove('recent')],
+      ),
+      '新预设',
+    );
+  });
+
   test('missingPresetProviderLines：只报目录里确实没了的托管线路', () {
     final pools = <String, List<Map<String, dynamic>>>{
       'claude-exp': [

@@ -867,8 +867,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       .where((cli) => cli.name != 'claude-exp' && cliOffersIn(cli.name, 'chat'))
       .toList();
 
+  // 服务端的可用性表只下发在用的车道 id；退役 id（claude-exp）按接替它的
+  // 车道查，查不到才退回「同家族即可用」。
   bool _available(SessionCli cli) =>
       widget.cliAvailability[cli] ??
+      widget.cliAvailability[tryParseCli(canonicalCliLane(cli.name))] ??
       (cliFamilyOf(cli.name) == cliFamilyOf(widget.cli.name));
 
   /// 首帧之后给每张车道卡补「N 条线路」。取不到就空着，不阻塞面板。
