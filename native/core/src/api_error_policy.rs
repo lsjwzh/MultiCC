@@ -47,12 +47,17 @@ pub const API_ERROR_SIGNATURES: [&str; 6] = [
     "The system is busy",
 ];
 
-const TRUSTED_TEXT_SOURCES: [&str; 18] = [
+const TRUSTED_TEXT_SOURCES: [&str; 19] = [
     "anthropic_event",
     "claude_result",
     "claude-exp_event",
     "codex_event",
     "opencode_event",
+    // A provider error the CLI swallowed but wrote to its own log. The text is
+    // the provider's own error string, so it classifies exactly like an event:
+    // dropping it here left every log-surfaced failure at category=unknown,
+    // which is what kept Auto from switching lines on them.
+    "opencode_log",
     "qoder_result",
     "zcode_event",
     "kimi_event",

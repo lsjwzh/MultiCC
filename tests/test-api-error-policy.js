@@ -1325,3 +1325,18 @@ test('every not-entitled wording lands in billing_quota with a model remedy', ()
     assert.doesNotMatch(retryNotice(decision), /限流窗口/, message);
   }
 });
+
+test('opencode log-surfaced provider errors are trusted and classified like events', () => {
+  // The provider-log watchdog surfaces an error the CLI swallowed into its own
+  // log (no stdout event). Rust's TRUSTED_TEXT_SOURCES must include that source,
+  // otherwise the text is never classified: category stays `unknown`, Auto has
+  // no failover reason, and the turn retries on the same broken line forever.
+  const message = 'AI_APICallError: Cannot connect to API: ECONNRESET (connection reset by peer)';
+  const raw = { provider: 'opencode', code: 'provider_log_error', message };
+  const fromLog = decide({ ...raw, source: 'opencode_log' });
+  const fromEvent = decide({ ...raw, source: 'opencode_event' });
+  assert.equal(fromLog.error.category, 'network');
+  assert.equal(fromLog.error.category, fromEvent.error.category);
+  assert.equal(fromLog.action, fromEvent.action);
+  assert.equal(fromLog.action, 'retry');
+});
