@@ -827,7 +827,7 @@ class _ChatViewState extends State<ChatView> {
     final provider = context.watch<ChatProvider>();
     final mergeReady = _mergeStatus?['mergeReady'] == true;
     final autoCommit = context.select<SessionManager, bool>(
-      (m) => sessionAutoCommitOf(m.sessions, provider.sessionName),
+      (m) => m.autoCommitFor(provider.sessionName),
     );
     final dispatchExpanded =
         _dispatchExpanded && provider.dispatchQueue.isNotEmpty;

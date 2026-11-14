@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 
 import '../models/message.dart';
+import '../services/auto_commit.dart';
 import '../services/background_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
@@ -35,6 +36,21 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// Active ChatProviders keyed by session id (chat sessions only).
   final Map<String, ChatProvider> _providers = {};
   Map<String, ChatProvider> get allProviders => Map.unmodifiable(_providers);
+
+  /// Auto-commit switch for sessions that the fleet list never carries.
+  /// Task-bound hidden sessions are 1:1-owned by a board task and deliberately
+  /// absent from `/api/sessions`, so a lookup there always missed and the
+  /// header fell back to the "on" default — the switch looked stuck. The value
+  /// arrives with the session when it is opened (`/api/air/tasks/:id/open`)
+  /// and every PATCH is remembered here.
+  final Map<String, bool> _autoCommitById = {};
+
+  /// Session-level auto-commit value for [id]. Fleet sessions win (their list
+  /// row is refreshed every few seconds); hidden task-bound sessions resolve
+  /// from the cache above and default to on — same rule as the server's
+  /// `autoCommit !== false`.
+  bool autoCommitFor(String id) =>
+      sessionAutoCommitOf(_sessions, id, cached: _autoCommitById);
 
   /// Currently viewed session (null = show session list).
   String? _activeSessionId;
@@ -572,6 +588,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// Open (or reuse) a chat connection for a session. Only meaningful for
   /// `kind == chat` sessions; terminals run in a separate TerminalService.
   ChatProvider openSession(Session session, {bool historyArchive = false}) {
+    // Ops payloads (`/api/air/tasks/:id/open`) carry the real switch value for
+    // task-bound sessions that the fleet list never returns — remember it
+    // before the header asks. Fleet rows keep the list as the source of truth.
+    _autoCommitById[session.id] = session.autoCommit;
     if (_providers.containsKey(session.id)) {
       final provider = _providers[session.id]!;
       provider.setHistoryArchive(historyArchive);
@@ -863,6 +883,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// server never stored. Throws on failure — callers surface the message.
   Future<void> updateSessionAutoCommit(String id, bool value) async {
     await _sessionService.updateSessionAutoCommit(id, value);
+    _autoCommitById[id] = value;
     for (var i = 0; i < _sessions.length; i++) {
       final s = _sessions[i];
       if (s.id != id) continue;
