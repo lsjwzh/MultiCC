@@ -616,9 +616,13 @@ function mount(app) {
     });
   });
 
-  // 月历视图: 一个月里每天会有哪些任务跑(定时任务面板的日历 tab 用)。只展开启用的
-  // 任务、只从「现在」往后的运行点(过去的点日历上不显示); 每任务每月最多
+  // 月历视图: 一个月里每天会有哪些任务跑(定时任务面板的日历 tab 用)。启用任务只
+  // 从「现在」往后的运行点(过去的点日历上不显示); 每任务每月最多
   // CALENDAR_POINTS_CAP 个点, 超过按「高频」聚合, 防止 */1 这类表达式把响应撑爆。
+  // 例外: 订阅插件(subscriptions)的占位 job 一直 disabled —— 调度器不跑它, 插件到点
+  // POST /run。它的 cron 由插件指向下次真实触发时刻(展示提示), 这里从月初展开,
+  // 让订阅触发的任务在日历上可见; 没有下次(暂停/一次性已完)时 cron 是永不匹配的
+  // 2 月 31, 直接跳过, 别白烧 cronNext 的一年扫描。
   app.get('/api/cron/calendar', (req, res, next) => Promise.resolve().then(async () => {
     await migrateTasks();
     const match = /^(\d{4})-(\d{2})$/.exec(String(req.query.month || ''));
@@ -632,8 +636,12 @@ function mount(app) {
     const days = {};
     const dense = [];
     for (const task of tasks) {
-      if (!task.enabled) continue;
-      let cursor = new Date(Math.max(start.getTime(), now));
+      const subscriptionHint = !task.enabled && task.createdBy === 'subscriptions';
+      if (!task.enabled && !subscriptionHint) continue;
+      if (subscriptionHint && task.cron === '0 0 31 2 *') continue;
+      // 订阅提示从月初展开(它是「计划标记」, 本月早些时候已触发的也要显示);
+      // 启用任务照旧只显示未来点。
+      let cursor = subscriptionHint ? new Date(start.getTime()) : new Date(Math.max(start.getTime(), now));
       let points = 0;
       while (points < CALENDAR_POINTS_CAP) {
         const at = cronNext(task.cron, cursor);

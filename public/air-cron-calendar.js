@@ -37,7 +37,7 @@
 
   function monthKey(of) {
     const d = of || new Date();
-    return { year: d.getFullYear(), month: d.getMonth() + 1, key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` };
+    return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` };
   }
 
   function monthTitle() {
