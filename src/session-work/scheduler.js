@@ -632,7 +632,7 @@ function createSessionWorkScheduler({
   async function started(item) {
     const result = await store.mutate(draft => getNative().scheduleLifecycleLive(
       draft, 'started', item, now, schedule => publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft)));
-    if (result.ok) emit('started', {
+    if (result.ok && !result.late) emit('started', {
       sessionId: item.sessionId,
       entryId: result.schedule.active?.entryId,
       deliveryId: item.id,

@@ -95,6 +95,58 @@ test('Rust lifecycle transitions preserve active ownership and queue projection'
   }
 });
 
+test('late delivery acknowledgement cannot rewind assessment or frozen work', async () => {
+  for (const state of ['assessing', 'frozen']) {
+    const draft = { outbox: {}, sessionSchedules: { s: { sessionId: 's', state: 'starting',
+      active: { entryId: 'entry', deliveryId: 'delivery', taskId: 'task', startedAt: null },
+      classifyState: 'P', freezeReason: null, awaitingRequestId: null } } };
+    const events = [];
+    const store = { mutate: async fn => fn(draft), read: async fn => fn(draft) };
+    const scheduler = createSessionWorkScheduler({ store, now: () => 1000, onEvent: e => events.push(e) });
+    assert.equal((await scheduler.turnEnded('s')).ok, true);
+    if (state === 'frozen') {
+      assert.equal((await scheduler.freeze('s', 'waiting', { requestId: 'request', classifyState: 'W' })).ok, true);
+    }
+    const stale = await scheduler.started({ id: 'old', sessionId: 's', attempts: 2 });
+    assert.equal(stale.code, 'active_delivery_mismatch');
+    const result = await scheduler.started({ id: 'delivery', sessionId: 's', attempts: 2 });
+    assert.equal(result.ok, true);
+    assert.equal(result.late, true);
+    assert.equal(draft.sessionSchedules.s.state, state);
+    assert.equal(draft.sessionSchedules.s.active.startedAt, null);
+    assert.equal(draft.sessionSchedules.s.active.attempt, undefined);
+    assert.equal(draft.sessionSchedules.s.freezeReason, state === 'frozen' ? 'waiting' : null);
+    assert.equal(draft.sessionSchedules.s.awaitingRequestId, state === 'frozen' ? 'request' : null);
+    assert.equal(events.some(e => e.type === 'started'), false);
+    const completed = await scheduler.complete('s', { expectedTaskId: 'task', classifyState: 'D' });
+    assert.equal(completed.ok, true);
+    assert.equal(completed.completed.entryId, 'entry');
+    assert.equal((await scheduler.complete('s')).code, 'no_active_task');
+    assert.equal(events.filter(e => e.type === 'completed').length, 1);
+    assert.equal((await scheduler.started({ id: 'delivery', sessionId: 's' })).code, 'active_delivery_mismatch');
+  }
+});
+
+test('a late acknowledgement from an older attempt cannot start a retried delivery', async () => {
+  const draft = { outbox: {}, sessionSchedules: { s: { sessionId: 's', state: 'starting',
+    active: { entryId: 'entry', deliveryId: 'delivery', taskId: 'task', startedAt: null, attempt: 3 },
+    classifyState: 'P', freezeReason: null, awaitingRequestId: null } } };
+  const events = [];
+  const store = { mutate: async fn => fn(draft), read: async fn => fn(draft) };
+  const scheduler = createSessionWorkScheduler({ store, now: () => 1000, onEvent: e => events.push(e) });
+  const stale = await scheduler.started({ id: 'delivery', sessionId: 's', attempts: 2 });
+  assert.equal(stale.code, 'active_delivery_mismatch');
+  assert.equal(draft.sessionSchedules.s.state, 'starting');
+  assert.equal(draft.sessionSchedules.s.active.attempt, 3);
+  assert.equal(draft.sessionSchedules.s.active.startedAt, null);
+  assert.equal(events.length, 0);
+  const current = await scheduler.started({ id: 'delivery', sessionId: 's', attempts: 3 });
+  assert.equal(current.ok, true);
+  assert.equal(current.schedule.state, 'running');
+  assert.equal(draft.sessionSchedules.s.active.startedAt, 1000);
+  assert.equal(events.filter(e => e.type === 'started').length, 1);
+});
+
 test('Rust lifecycle transitions persist through SQLite draft proxies', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-lifecycle-'));
   const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => 1000 });
