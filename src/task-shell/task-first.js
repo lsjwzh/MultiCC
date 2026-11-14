@@ -23,18 +23,43 @@ function createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports 
       const all = new Map(store.cachedList('task').map(task => [task.id, task]));
       const indexed = new Set(store.cachedEntries('task-first:indexed').map(([id]) => id));
       const known = new Map([...all.values()].map(task => [task.sessionId, task]));
-      for (const record of records) {
+      const list = Array.isArray(records) ? records : [...records];
+      // 已删除判定原来逐条问 ports.isDeletedTask：宿主里它是任务板镜像上
+      // `deletedTaskIds.includes(id)`，而镜像的 Proxy 让每次 includes 都重扫一遍
+      // 整张已删除表 —— 一轮 migrate 要问 ~2N 次，表大时是 O(N·m)。改成一次问一批：
+      // Rust（native/core/src/task_domain/deleted.rs）把表索引进一次 HashSet，再按
+      // 入参顺序回已删除的 id，这里只建一个 Set。端口缺失（旧宿主、只传
+      // isDeletedTask 的测试）或调用失败时，原样退回逐条判定。
+      const deleted = new Set();
+      let bulk = typeof ports.deletedAmong === 'function';
+      const loadDeleted = async ids => {
+        if (!bulk) return false;
+        try {
+          const found = await ports.deletedAmong(ids);
+          if (!Array.isArray(found)) return false;
+          for (const id of found) deleted.add(id);
+          return true;
+        } catch (_) { return false; }
+      };
+      const isDeleted = id => (bulk ? deleted.has(id) : !!ports.isDeletedTask?.(id));
+      const bound = [];
+      for (const record of list) bound.push(record?.taskBoundTaskId, known.get(record?.id)?.id);
+      bulk = await loadDeleted(bound);
+      for (const record of list) {
         if (record.kind !== 'chat' || record.taskExecutionSlot || record.experimentalMode
           || ['aux', 'gateway'].includes(record.type) || !ports.getDirectory?.(record.dirId)) continue;
-        if (ports.isDeletedTask?.(record.taskBoundTaskId) || ports.isDeletedTask?.(known.get(record.id)?.id)) continue;
+        if (isDeleted(record.taskBoundTaskId) || isDeleted(known.get(record.id)?.id)) continue;
         if (known.get(record.id)?.taskFirst && indexed.has(known.get(record.id).id)) continue;
         try {
           const owner = open(record.id), task = adopt(owner.id, record.id);
           all.set(task.id, promote(task));
         } catch (error) { errors.push({ sessionId: record.id, code: error.code || 'task_migration_failed' }); }
       }
+      // 第一轮领养出来的新行到这里才进 all。老实现是进第二轮循环时逐条现问，
+      // 所以这里要用最终的键集再问一次（已问过的 id 结果不变，取并集即可）。
+      if (bulk) bulk = await loadDeleted([...all.keys()]);
       for (const original of all.values()) {
-        if (ports.isDeletedTask?.(original.id)) continue;
+        if (isDeleted(original.id)) continue;
         tasks.push(original);
         try {
           // 已经 promote 且已建索引的行不再走 promote()：那是 roles.snapshot()

@@ -169,6 +169,9 @@ function mountAuxGoalRoutes(app, dependencies) {
     recordApiSuccess,
     appendChatMessage,
     loadChatHistory,
+    // Read-only history listing: prefer the runtime's uncopied view, fall back
+    // to the cloning loader for hosts/tests that only inject the latter.
+    viewChatHistory = loadChatHistory,
     providers,
     getPort,
     getClaudeOfficialViaProxy,
@@ -739,7 +742,7 @@ function mountAuxGoalRoutes(app, dependencies) {
 
   app.get('/api/aux/history', (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 50, AUX_HISTORY_MAX);
-    const history = loadChatHistory(AUX_SESSION_ID);
+    const history = viewChatHistory(AUX_SESSION_ID);
     res.json(history.slice(-limit));
   });
 

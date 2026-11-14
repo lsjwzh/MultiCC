@@ -178,6 +178,10 @@ function createChatHistoryRuntime(rawDeps) {
       projectMessages: typeof deps.projectMessages === 'function' ? deps.projectMessages : null,
       retentionPolicy: typeof deps.retentionPolicy === 'function' ? deps.retentionPolicy : null,
       maxMessages: deps.maxMessages,
+      // Optional serialized-byte ceiling for display windows. Rust falls back to
+      // MULTICC_CHAT_HISTORY_DISPLAY_MAX_BYTES and then a safe 32 MiB default, so
+      // omitting this keeps today's behaviour for normal sessions.
+      maxBytes: deps.maxBytes,
       historyPageSize,
       memoryDistillBatch,
       incrementalSaveDelayMs,
@@ -525,6 +529,7 @@ function createChatHistoryRuntime(rawDeps) {
       type: 'chat_history_reset',
       messages: buildReplayMessages(page.messages, chatState),
       hasMore: page.hasMore,
+      ...(page.byteBudgetTruncated === true ? { byteBudgetTruncated: true } : {}),
       ...result,
       displayOnly: true,
     });
@@ -768,6 +773,10 @@ function createChatHistoryRuntime(rawDeps) {
           limit: req.query.limit && String(req.query.limit),
         });
         const response = { messages: page.messages, hasMore: page.hasMore };
+        // Only present when the serialized-byte budget (not the count cap) cut
+        // the display window; the JSONL on disk is untouched. Omitted otherwise
+        // so the response shape is unchanged for normal sessions.
+        if (page.byteBudgetTruncated === true) response.byteBudgetTruncated = true;
         if (req.query.around) {
           response.found = page.found === true;
           response.hasNewer = page.hasNewer === true;

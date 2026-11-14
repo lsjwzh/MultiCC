@@ -197,6 +197,7 @@ fn dispatch(
             .map(|t| t["id"].clone())
             .collect::<Vec<_>>())),
         "airInputs" => Ok(air::run_on(b, v)),
+        "deletedAmong" => Ok(json!(deleted::among(b, &v["ids"]))),
         _ => Err("TASK_BOARD_UNSUPPORTED_OP".into()),
     }
 }
@@ -700,5 +701,53 @@ mod tests {
         );
         assert_eq!(reply["ok"], true);
         assert!(!s.is_stale());
+    }
+
+    #[test]
+    fn deleted_among_is_a_readonly_batch_lookup() {
+        let mut s = opened(json!({"schemaVersion":2,"tasks":{},"modules":{},
+            "deletedTaskIds":["gone","also-gone"]}));
+        assert!(!mutating(&json!({"op":"deletedAmong"})));
+        let before = s.board().to_string();
+        let reply = call(
+            &mut s,
+            json!({"command":{"op":"deletedAmong","ids":["keep","also-gone","gone","also-gone",null,7]}}),
+        );
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["out"], json!(["also-gone", "gone", "also-gone"]));
+        assert!(reply["diff"].is_null(), "只读规则不应产生差分");
+        assert_eq!(reply["readonlyMutated"], false);
+        assert_eq!(s.board().to_string(), before);
+    }
+
+    #[test]
+    fn deleted_among_runs_on_the_async_read_path() {
+        let mut s = opened(json!({"schemaVersion":2,"tasks":{},"modules":{},
+            "deletedTaskIds":["gone"]}));
+        let out = s
+            .apply_read(
+                &json!({"command":{"op":"deletedAmong","ids":["a","gone","b"]}}).to_string(),
+            )
+            .unwrap();
+        let reply: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["out"], json!(["gone"]));
+        let empty: Value = serde_json::from_str(
+            &s.apply_read(&json!({"command":{"op":"deletedAmong","ids":[]}}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(empty["ok"], true);
+        assert_eq!(empty["out"], json!([]));
+    }
+
+    #[test]
+    fn deleted_among_tolerates_a_board_without_the_field() {
+        let mut s = opened(json!({"schemaVersion":2,"tasks":{},"modules":{}}));
+        let reply = call(&mut s, json!({"command":{"op":"deletedAmong","ids":["a"]}}));
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["out"], json!([]));
+        let missing = call(&mut s, json!({"command":{"op":"deletedAmong"}}));
+        assert_eq!(missing["out"], json!([]));
     }
 }

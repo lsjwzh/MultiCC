@@ -46,6 +46,75 @@ pub struct TailLedger {
     pub ends: Vec<u64>,
 }
 
+/// Default byte budget for the display projection (`filter(bounded=true)` and
+/// pagination). The count cap (`CHAT_HISTORY_SOFT_CAP`, 10000) only limits how
+/// many messages are *displayed*; a tool-heavy session can be over 100 MB, and
+/// every displayed line is materialized into a JS string before it leaves the
+/// native bridge. This budget bounds that tail without ever deleting, trimming
+/// or rewriting the JSONL source on disk. 32 MiB is far above a normal session
+/// and only ever fires on the pathological multi-megabyte transcripts.
+pub const DEFAULT_DISPLAY_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Environment override for [`DEFAULT_DISPLAY_MAX_BYTES`]. Parsed as a plain
+/// unsigned decimal; anything unparsable keeps the default.
+pub const DISPLAY_MAX_BYTES_ENV: &str = "MULTICC_CHAT_HISTORY_DISPLAY_MAX_BYTES";
+
+/// Newest-to-oldest accumulator for the display byte budget.
+///
+/// Callers stringify one trailing message at a time and `admit` its serialized
+/// size, so an over-budget transcript never has to be fully serialized. The
+/// first message is always admitted: a single message larger than the whole
+/// budget is still displayed rather than returning an empty window.
+#[derive(Clone, Copy, Debug)]
+pub struct TrailingByteBudget {
+    budget: u64,
+    used: u64,
+    kept: usize,
+}
+
+impl TrailingByteBudget {
+    pub fn new(budget: u64) -> Self {
+        Self {
+            budget,
+            used: 0,
+            kept: 0,
+        }
+    }
+
+    /// Returns `true` when the next (older) message still fits. Once an
+    /// oversize message is rejected, every older message must be rejected too;
+    /// callers stop iterating at the first `false`.
+    pub fn admit(&mut self, size: u64) -> bool {
+        if self.kept > 0 && self.used.saturating_add(size) > self.budget {
+            return false;
+        }
+        self.used = self.used.saturating_add(size);
+        self.kept += 1;
+        true
+    }
+
+    pub fn kept(&self) -> usize {
+        self.kept
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+}
+
+/// How many of the newest messages fit in `budget`, given their serialized
+/// sizes ordered newest first. Equivalent to feeding the same iterator to
+/// [`TrailingByteBudget::admit`].
+pub fn fit_trailing_bytes(sizes_newest_first: impl IntoIterator<Item = u64>, budget: u64) -> usize {
+    let mut state = TrailingByteBudget::new(budget);
+    for size in sizes_newest_first {
+        if !state.admit(size) {
+            break;
+        }
+    }
+    state.kept()
+}
+
 #[derive(Debug)]
 pub struct HistoryIndex {
     records: Vec<RecordPosition>,
@@ -346,5 +415,79 @@ mod tests {
             Err(IndexError::ByteBudget)
         ));
         assert_eq!(reader.fill_buf().unwrap().first(), Some(&b'x'));
+    }
+
+    // ── display byte budget ───────────────────────────────────────────────
+    // Sizes are ordered newest first, exactly like the projection loop feeds
+    // them. These are the serialized UTF-8 sizes the runtime charges.
+
+    #[test]
+    fn display_budget_keeps_everything_when_it_is_not_reached() {
+        // Same count/order as the old count-only window: the budget never
+        // reorders or drops a message it can afford.
+        assert_eq!(fit_trailing_bytes([10, 20, 30], 100), 3);
+        // The boundary is inclusive: exactly `budget` bytes still fit.
+        assert_eq!(fit_trailing_bytes([10, 10], 20), 2);
+        assert_eq!(fit_trailing_bytes([1, 2, 3, 4], u64::MAX), 4);
+    }
+
+    #[test]
+    fn display_budget_stops_at_the_newest_prefix_that_fits() {
+        // 10 + 10 fits, the third (oldest) 10 does not: keep the two newest.
+        assert_eq!(fit_trailing_bytes([10, 10, 10], 25), 2);
+        // One byte over the boundary drops exactly the next message.
+        assert_eq!(fit_trailing_bytes([10, 10], 19), 1);
+        assert_eq!(fit_trailing_bytes([4, 100, 4], 50), 1);
+    }
+
+    #[test]
+    fn display_budget_always_keeps_one_message() {
+        // A single message bigger than the whole budget must still be shown.
+        assert_eq!(fit_trailing_bytes([9_999], 4), 1);
+        assert_eq!(fit_trailing_bytes([5, 5], 0), 1);
+        assert_eq!(fit_trailing_bytes([100, 100, 100], 0), 1);
+    }
+
+    #[test]
+    fn display_budget_handles_empty_and_extreme_budgets() {
+        // Empty history (or every message hidden) yields an empty window.
+        assert_eq!(fit_trailing_bytes(std::iter::empty(), 0), 0);
+        assert_eq!(fit_trailing_bytes(std::iter::empty(), u64::MAX), 0);
+        // u64::MAX is effectively unbounded; saturating_add must not wrap.
+        assert_eq!(
+            fit_trailing_bytes([u64::MAX / 2, u64::MAX / 2, u64::MAX / 2], u64::MAX),
+            3
+        );
+        assert_eq!(
+            fit_trailing_bytes((0..10_000).map(|_| 1_u64), u64::MAX),
+            10_000
+        );
+        // Budget 0 with zero-byte messages is a degenerate but well-defined case.
+        assert_eq!(fit_trailing_bytes([0, 0, 1], 0), 2);
+    }
+
+    #[test]
+    fn trailing_budget_matches_the_convenience_fit() {
+        let sizes = [7_u64, 0, 11, 3, 40];
+        for budget in [0_u64, 1, 7, 10, 18, 21, 61, 100] {
+            assert_eq!(
+                fit_trailing_bytes(sizes, budget),
+                {
+                    let mut state = TrailingByteBudget::new(budget);
+                    for size in sizes {
+                        if !state.admit(size) {
+                            break;
+                        }
+                    }
+                    state.kept()
+                },
+                "budget={budget}"
+            );
+        }
+        let mut state = TrailingByteBudget::new(20);
+        assert!(state.admit(7));
+        assert!(state.admit(11));
+        assert!(!state.admit(3));
+        assert_eq!((state.kept(), state.used()), (2, 18));
     }
 }

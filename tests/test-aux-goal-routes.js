@@ -509,6 +509,21 @@ test('Aux routes preserve history limiting, enqueue validation and response shap
   assert.equal(runtime.auxQueue.getStatus().queueDepth, 0);
 });
 
+test('Aux history reads the live view instead of cloning the transcript', async () => {
+  const shared = [{ index: 1 }, { index: 2 }, { index: 3 }];
+  const snapshot = JSON.parse(JSON.stringify(shared));
+  const calls = { view: 0, load: 0 };
+  const harness = createHarness({
+    viewChatHistory: () => { calls.view += 1; return shared; },
+    loadChatHistory: () => { calls.load += 1; return JSON.parse(JSON.stringify(shared)); },
+  });
+  const res = await invoke(harness.app, 'GET', '/api/aux/history', { query: { limit: '2' } });
+  assert.deepEqual(res.body, [{ index: 2 }, { index: 3 }]);
+  assert.equal(calls.view, 1);
+  assert.equal(calls.load, 0);
+  assert.deepEqual(shared, snapshot, 'the cached transcript was not mutated');
+});
+
 test('Aux failures never expose provider secrets or filesystem paths', async () => {
   const observedErrors = [];
   const harness = createHarness({

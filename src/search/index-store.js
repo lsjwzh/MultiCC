@@ -47,7 +47,7 @@ const { indexTokens, matchExpression, tokenize } = require('./tokenize');
 // and a schema or tokenizer change is handled by dropping and rebuilding, never by
 // migrating rows.
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 // Bump when the token scheme changes; stored in search_meta so a stale index
 // rebuilds itself instead of silently answering queries in the old scheme.
 const TOKENIZER_SIGNATURE = 'bigram-v1';
@@ -64,7 +64,7 @@ const SNIPPET_RADIUS = 40;
 const SNIPPET_MAX = 200;
 
 const MATCH_SQL = `SELECT c.scope, c.ref_id AS refId, c.ord, c.item_id AS itemId, c.kind, c.dir_id AS dirId,
-    c.text, c.updated_at AS updatedAt, bm25(search_fts) AS rank
+    c.task_id AS taskId, c.content_hash AS contentHash, c.text, c.updated_at AS updatedAt, bm25(search_fts) AS rank
   FROM search_fts JOIN search_chunk c ON c.id = search_fts.rowid
   WHERE search_fts MATCH ? AND c.scope = ?__FILTERS__
   ORDER BY rank ASC, c.updated_at DESC LIMIT ?`;
@@ -72,7 +72,7 @@ const MATCH_SQL = `SELECT c.scope, c.ref_id AS refId, c.ord, c.item_id AS itemId
 // only for queries the inverted index cannot answer (a lone CJK character) and is
 // bounded by the limit; measured ~19ms over 21k chunks.
 const LIKE_SQL = `SELECT c.scope, c.ref_id AS refId, c.ord, c.item_id AS itemId, c.kind, c.dir_id AS dirId,
-    c.text, c.updated_at AS updatedAt
+    c.task_id AS taskId, c.content_hash AS contentHash, c.text, c.updated_at AS updatedAt
   FROM search_chunk c
   WHERE c.scope = ? AND c.text LIKE ? ESCAPE '\\'__FILTERS__
   ORDER BY c.updated_at DESC LIMIT ?`;
@@ -179,8 +179,15 @@ function normalizeRow(row) {
     itemId: String(row?.itemId || ''),
     kind: String(row?.kind || ''),
     dirId: String(row?.dirId || ''),
+    taskId: String(row?.taskId || ''),
     text,
+    // `updatedAt` is the *message* time (epoch ms) — what a caller ranks and shows.
+    // `sourceMtime` is the history file's mtime at the last write that touched this
+    // chunk, and it is what the sync fast-path compares against (see listRefs). A
+    // message without a timestamp falls back to the file mtime, so the two are equal
+    // there; a message with one keeps them apart on purpose.
     updatedAt: Math.max(0, Math.floor(Number(row?.updatedAt) || 0)),
+    sourceMtime: Math.max(0, Math.floor(Number(row?.sourceMtime ?? row?.updatedAt) || 0)),
   };
 }
 
@@ -198,6 +205,7 @@ function unavailableIndex({ dbFile, reason, logger }) {
     listMarkers: () => [],
     dropMarkers: () => 0,
     listRefs: () => [],
+    updateRefDirId: () => 0,
     hashesBefore: () => [],
     search: () => ({ mode: 'unavailable', terms: [], results: [] }),
     stats: () => ({ available: false, reason, dbFile, scopes: [], emptyRefs: 0 }),
@@ -234,7 +242,10 @@ function createSearchIndex({
     }
     // A mismatch means the postings were built by different rules than the ones we
     // are about to query with. Every row is derived, so dropping is the whole fix.
-    if (version > SCHEMA_VERSION || (version && storedSignature !== signature)) {
+    // Any version other than this one is rebuilt, including an older one: the
+    // schema is derived data, and a v1 file simply does not have the columns this
+    // code writes. Written as one comparison so a future bump needs no second edit.
+    if (version && (version !== SCHEMA_VERSION || storedSignature !== signature)) {
       logger?.warn?.(`search_index_rebuild: schema or tokenizer changed (was ${version}/${storedSignature || 'none'})`);
       db.exec('DROP TABLE IF EXISTS search_fts; DROP TABLE IF EXISTS search_chunk; DROP TABLE IF EXISTS search_meta;');
     }
@@ -247,12 +258,19 @@ function createSearchIndex({
       item_id TEXT NOT NULL DEFAULT '',
       kind TEXT NOT NULL DEFAULT '',
       dir_id TEXT NOT NULL DEFAULT '',
+      task_id TEXT NOT NULL DEFAULT '',
       text TEXT NOT NULL,
       content_hash TEXT NOT NULL,
-      updated_at INTEGER NOT NULL DEFAULT 0
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      source_mtime INTEGER NOT NULL DEFAULT 0
     )`);
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS search_chunk_unit ON search_chunk(scope, ref_id, ord)');
     db.exec('CREATE INDEX IF NOT EXISTS search_chunk_ref ON search_chunk(scope, ref_id)');
+    // The two scope filters a caller can combine with a query. The existing
+    // `search_chunk_ref` covers the session filter; these cover the directory and
+    // task dimensions so a filtered search does not fall back to a scan.
+    db.exec('CREATE INDEX IF NOT EXISTS search_chunk_dir ON search_chunk(scope, dir_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS search_chunk_task ON search_chunk(scope, task_id)');
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(tokens, content='', contentless_delete=1, detail=full, tokenize="${TOKENIZE_OPTION}")`);
     db.prepare('INSERT OR REPLACE INTO search_meta(key, value) VALUES (?, ?)').all('signature', signature);
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -274,11 +292,18 @@ function createSearchIndex({
   // while having done its work. .all() never reports lastInsertRowid, so it cannot
   // hit this; RETURNING is not an option on the virtual table itself ("DELETE
   // RETURNING is not available on virtual tables").
-  const findChunk = db.prepare('SELECT id, content_hash FROM search_chunk WHERE scope = ? AND ref_id = ? AND ord = ?');
-  const insertChunk = db.prepare(`INSERT INTO search_chunk (scope, ref_id, ord, item_id, kind, dir_id, text, content_hash, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`);
-  const updateChunk = db.prepare(`UPDATE search_chunk SET item_id = ?, kind = ?, dir_id = ?, text = ?, content_hash = ?, updated_at = ?
+  // The existing row is read with the fields the skip decision compares, not just
+  // the hash: `taskId` is written after the fact (annotateTurn) and `dirId` follows
+  // a session relocate, so a row whose text did not change can still be stale.
+  const findChunk = db.prepare(`SELECT id, content_hash, task_id, dir_id FROM search_chunk
+    WHERE scope = ? AND ref_id = ? AND ord = ?`);
+  const insertChunk = db.prepare(`INSERT INTO search_chunk (scope, ref_id, ord, item_id, kind, dir_id, task_id, text, content_hash, updated_at, source_mtime)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`);
+  const updateChunk = db.prepare(`UPDATE search_chunk SET item_id = ?, kind = ?, dir_id = ?, task_id = ?, text = ?, content_hash = ?, updated_at = ?, source_mtime = ?
     WHERE id = ?`);
+  // Same text, newer attribution or directory: the postings are already right, so
+  // only the metadata columns move.
+  const updateChunkMeta = db.prepare('UPDATE search_chunk SET task_id = ?, dir_id = ? WHERE id = ?');
   const upsertPostings = db.prepare('INSERT OR REPLACE INTO search_fts(rowid, tokens) VALUES (?, ?)');
   const deletePostings = db.prepare('DELETE FROM search_fts WHERE rowid = ?');
   const deleteChunk = db.prepare('DELETE FROM search_chunk WHERE id = ?');
@@ -313,7 +338,15 @@ function createSearchIndex({
   const chunkIdsOfRef = db.prepare('SELECT id FROM search_chunk WHERE scope = ? AND ref_id = ?');
   const tailIdsOfRef = db.prepare('SELECT id FROM search_chunk WHERE scope = ? AND ref_id = ? AND ord > ?');
   const hashesBeforeStmt = db.prepare('SELECT content_hash AS hash FROM search_chunk WHERE scope = ? AND ref_id = ? AND ord < ?');
-  const refList = db.prepare(`SELECT ref_id AS refId, count(*) AS chunks, max(updated_at) AS updatedAt
+  // `updatedAt` here stays what it always meant to the sync layer — how fresh the
+  // *source* is, which the mtime fast-path compares against. It is no longer the
+  // message time, so the two answers come from different columns: `updated_at` is
+  // the message timestamp, `source_mtime` is the file mtime of the last write that
+  // changed a chunk in this session. `dirId` is the session's directory (every
+  // chunk of a session carries the same one); it lets a sweep notice a relocate
+  // even when the transcript itself did not change.
+  const refList = db.prepare(`SELECT ref_id AS refId, count(*) AS chunks, max(source_mtime) AS updatedAt,
+    max(dir_id) AS dirId
     FROM search_chunk WHERE scope = ? GROUP BY ref_id ORDER BY ref_id`);
   // `chars` is a character count and `bytes` is the UTF-8 size of the same text.
   // Both are reported because they differ by ~3x on Chinese text, and only `bytes`
@@ -335,14 +368,28 @@ function createSearchIndex({
       if (!row) { skipped += 1; continue; }
       const hash = hashOf(row.text);
       const existing = findChunk.get(row.scope, row.refId, row.ord);
-      if (existing && existing.content_hash === hash) { skipped += 1; continue; }
+      if (existing && existing.content_hash === hash) {
+        // Text unchanged. The metadata that can move after a line was first indexed
+        // is refreshed without rewriting the postings; everything else (item id,
+        // kind, message time) only moves with the text, which is why an unchanged
+        // chunk stays `skipped` and the sync's counters keep their old meaning.
+        const staleTask = String(existing.task_id || '') !== row.taskId;
+        const staleDir = String(existing.dir_id || '') !== row.dirId;
+        if (staleTask || staleDir) {
+          updateChunkMeta.all(row.taskId, row.dirId, Number(existing.id));
+          updated += 1;
+        } else {
+          skipped += 1;
+        }
+        continue;
+      }
       let id;
       if (existing) {
         id = Number(existing.id);
-        updateChunk.all(row.itemId, row.kind, row.dirId, row.text, hash, row.updatedAt, id);
+        updateChunk.all(row.itemId, row.kind, row.dirId, row.taskId, row.text, hash, row.updatedAt, row.sourceMtime, id);
         updated += 1;
       } else {
-        const created = insertChunk.get(row.scope, row.refId, row.ord, row.itemId, row.kind, row.dirId, row.text, hash, row.updatedAt);
+        const created = insertChunk.get(row.scope, row.refId, row.ord, row.itemId, row.kind, row.dirId, row.taskId, row.text, hash, row.updatedAt, row.sourceMtime);
         id = Number(created.id);
         inserted += 1;
       }
@@ -406,7 +453,18 @@ function createSearchIndex({
       refId: row.refId,
       chunks: Number(row.chunks) || 0,
       updatedAt: Number(row.updatedAt) || 0,
+      dirId: String(row.dirId || ''),
     }));
+  }
+
+  // A session that moved to another directory keeps its chunks — the transcript did
+  // not change — so the directory column has to be corrected in place. RETURNING
+  // (via .all()) rather than .run() keeps the lastInsertRowid hazard below away.
+  const updateRefDirIdStmt = db.prepare('UPDATE search_chunk SET dir_id = ? WHERE scope = ? AND ref_id = ? RETURNING id');
+  function updateRefDirId(scope, refId, dirId) {
+    const id = String(refId || '');
+    if (!id) return 0;
+    return updateRefDirIdStmt.all(String(dirId), String(scope), id).length;
   }
 
   // The content hashes a unit already stores below `ord`. A sync that resumes from
@@ -422,7 +480,7 @@ function createSearchIndex({
   // Filters shared by both query modes. Every value is bound, never interpolated;
   // only the *shape* of the clause list is interpolated, from a fixed set of
   // fragments, and that shape is what caches the prepared statement.
-  function filtersFor({ kinds, dirId, refIds, excludeRefIds }) {
+  function filtersFor({ kinds, dirId, taskId: taskIdOf, refIds, excludeRefIds }) {
     const clauses = [];
     const params = [];
     const inClause = (column, values, negate) => {
@@ -432,6 +490,8 @@ function createSearchIndex({
     const kindsList = (Array.isArray(kinds) ? kinds : []).map(String).filter(Boolean);
     if (kindsList.length) inClause('c.kind', kindsList);
     if (dirId) { clauses.push('c.dir_id = ?'); params.push(String(dirId)); }
+    const taskId = String(taskIdOf ?? '').trim();
+    if (taskId) { clauses.push('c.task_id = ?'); params.push(taskId); }
     const ids = (Array.isArray(refIds) ? refIds : []).map(String).filter(Boolean);
     if (ids.length) inClause('c.ref_id', ids);
     const excluded = (Array.isArray(excludeRefIds) ? excludeRefIds : []).map(String).filter(Boolean);
@@ -472,6 +532,8 @@ function createSearchIndex({
           itemId: row.itemId,
           kind: row.kind,
           dirId: row.dirId,
+          taskId: row.taskId || '',
+          contentHash: row.contentHash || '',
           updatedAt: Number(row.updatedAt) || 0,
           score: Math.round(-Number(row.rank) * 1000) / 1000,
           text: row.text,
@@ -498,6 +560,8 @@ function createSearchIndex({
           itemId: row.itemId,
           kind: row.kind,
           dirId: row.dirId,
+          taskId: row.taskId || '',
+          contentHash: row.contentHash || '',
           updatedAt: Number(row.updatedAt) || 0,
           // No bm25 for a substring scan: rank by how often the substring occurs,
           // breaking ties toward the less diluted (shorter) chunk.
@@ -547,6 +611,7 @@ function createSearchIndex({
     listMarkers,
     dropMarkers,
     listRefs,
+    updateRefDirId,
     hashesBefore,
     search,
     stats,

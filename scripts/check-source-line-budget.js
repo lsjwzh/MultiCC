@@ -240,9 +240,13 @@ const MIGRATION_DEBT = Object.freeze({
   // 删掉三条接线与仅测速使用的依赖，实测回落到 3053/164164，按棘轮双向调到
   // 实测值。该拆的仍是账号/额度路由那一族；落回 <= 3000 就删掉这条。
   // 额度存储接线后按实测继续收紧到 3042/163616。
+  // 2026-11-14 只读历史读口从 loadChatHistory 换成零拷贝 viewChatHistory：
+  // 删掉 gateway-host 未使用的端口（-1 行），三处 mount 各加一行、share 同一行
+  // 内追加，codex usage 宿主换口并加两行注释，实测 3046/163862，按棘轮双向
+  // 调到实测值。
   'server.js': Object.freeze({
-    ceiling: 3042,
-    byteCeiling: 163688,
+    ceiling: 3046,
+    byteCeiling: 163862,
     target: 3000,
     reason: 'chat delivery wiring for held-turn injection, plus one lazy port so the events host asks the Rust history runtime for the latest assistant conclusion instead of cloning the whole history into Node (+72 bytes); extract the account/quota route cluster to return under 3k',
   }),

@@ -9,7 +9,8 @@
 // gets ranked ids plus the matched snippet — never the whole corpus.
 //
 //   GET /api/task-board/search   ranked task ids (src/task-board/search.js)
-//   GET /api/search/messages     ranked message chunks (src/search/runtime.js)
+//   GET /api/search/messages     ranked message chunks (src/search/runtime.js);
+//                                optional dirId / taskId scope filters
 //
 // Both live in this module because both are the same search box asking two
 // corpora, and because the host mounts this module once — a second route module
@@ -23,6 +24,9 @@ const { createTaskSearchBackend } = require('../native/task-search');
 const MAX_QUERY_CHARS = 200;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
+// A directory or task id is an opaque key; this only stops a malformed request from
+// travelling further (the values themselves are always bound, never interpolated).
+const MAX_FILTER_CHARS = 200;
 
 function csv(value) {
   const list = String(value == null ? '' : value).split(',')
@@ -123,11 +127,21 @@ function createTaskSearchRoutes({ getBoard, messages = null, logger = console, s
       // the caller's words and unknown ones are dropped by the index's own filter.
       const kinds = csv(req.query?.role) || csv(req.query?.kinds);
       const refIds = csv(req.query?.session) || csv(req.query?.sessions);
+      // Scope filters for a search that must stay inside one project directory or
+      // one task. Both are optional; absent means "the whole corpus", exactly as
+      // before. They narrow the SQL query, not the returned rows.
+      const dirId = String(req.query?.dirId || '').trim();
+      const taskId = String(req.query?.taskId || '').trim();
+      if (dirId.length > MAX_FILTER_CHARS || taskId.length > MAX_FILTER_CHARS) {
+        return res.status(400).json({ error: 'filter_too_long', maxLength: MAX_FILTER_CHARS });
+      }
       const found = runtime.findMessages({
         text: query,
         limit: clampLimit(req.query?.limit),
         ...(kinds ? { kinds } : {}),
         ...(refIds ? { refIds } : {}),
+        ...(dirId ? { dirId } : {}),
+        ...(taskId ? { taskId } : {}),
       });
       // Best-effort: a board that cannot be read costs the hits their task ids (the
       // client then shows fewer rows), never the whole answer.

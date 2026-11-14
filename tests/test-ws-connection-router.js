@@ -403,6 +403,25 @@ test('native workspace sockets own liveness and backpressure while every other p
   assert.doesNotMatch(JSON.stringify(h.logs), /secret/);
 });
 
+test('/ws/aux replays the live history view instead of cloning the transcript', async t => {
+  const shared = Array.from({ length: 120 }, (_, index) => ({ index }));
+  const snapshot = JSON.parse(JSON.stringify(shared));
+  const calls = { view: 0, load: 0 };
+  const messages = [];
+  const h = harness(t, { overrides: {
+    sendWs: (_ws, message) => messages.push(message),
+    viewChatHistory: () => { calls.view += 1; return shared; },
+    loadChatHistory: () => { calls.load += 1; return JSON.parse(JSON.stringify(shared)); },
+  } });
+  await h.connect('/ws/aux');
+  const frame = messages.find(message => message.type === 'aux_history');
+  assert.equal(frame.messages.length, 100);
+  assert.equal(frame.messages[0].index, 20);
+  assert.equal(calls.view, 1);
+  assert.equal(calls.load, 0);
+  assert.deepEqual(shared, snapshot, 'the cached transcript was not mutated');
+});
+
 test('air=1 meta stays on the shared router policy', async t => {
   const attached = [];
   const h = harness(t, { overrides: {

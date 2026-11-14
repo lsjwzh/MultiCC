@@ -20,6 +20,11 @@ const { hashOf } = require('./index-store');
 // boundary is still inside one whole chunk. Duplicate chunks within a session are
 // dropped — a resent message or a copied quote would otherwise return twice as
 // several separate hits.
+//
+// A chunk never spans two messages: `chunkText` runs inside the per-message loop,
+// so every chunk belongs to exactly one message line. That is what lets a chunk
+// carry that message's own `taskId` and `ts` — and a chunk is only ever written
+// from a message, never from a concatenation of several.
 
 const MESSAGE_SCOPE = 'message';
 const CHUNK_CHARS = 400;
@@ -63,6 +68,28 @@ function isSearchableSession(sessionId) {
   return !!id && !SYNTHETIC_SESSION_IDS.has(id) && !id.includes('__aux__');
 }
 
+// A stored message's own time, in epoch milliseconds, or 0 when it has none.
+// Real transcripts carry `ts` on every line (measured 189/189), either as a number
+// or as an ISO string; anything unparseable answers 0 and the caller falls back to
+// the history file's mtime, so ordering never collapses to 0.
+function messageTime(message) {
+  const raw = message && typeof message === 'object' ? message.ts : null;
+  if (typeof raw === 'number') return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+  if (typeof raw === 'string') {
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+  }
+  return 0;
+}
+
+// A message's task attribution, or '' when it has none (the field is set by
+// annotateTurn after the turn finishes, so older lines may lack it).
+function messageTaskId(message) {
+  if (!message || typeof message !== 'object') return '';
+  const id = message.taskId;
+  return typeof id === 'string' ? id : (typeof id === 'number' && Number.isFinite(id) ? String(id) : '');
+}
+
 // A message's indexable text: the conversation body, or '' for anything else.
 function messageText(message) {
   if (!message || typeof message !== 'object') return '';
@@ -93,9 +120,13 @@ function chunkText(text) {
 // full rewrite of the session. `candidates` is the resulting high-water mark, which
 // the caller hands back as the prune bound.
 //
-// `updatedAt` is the history file's mtime, not the message's timestamp. It is what
-// the sync fast-path compares against, and it moves exactly when the file changes.
-function sessionChunkRows(sessionId, messages, { updatedAt = 0 } = {}) {
+// `updatedAt` is the history file's mtime and is only a fallback: a message with a
+// `ts` stores that instead, because the mtime of the file is one value shared by
+// every chunk in the session and says nothing about when a message was written.
+// `sourceMtime` always carries the file mtime, which is what the sync fast-path
+// compares against (see listRefs in ./index-store.js), so freshness and message
+// time are separate signals and neither is derived from the other.
+function sessionChunkRows(sessionId, messages, { updatedAt = 0, dirId = '' } = {}) {
   const rows = [];
   const seen = new Set();
   let cursor = 0;
@@ -103,6 +134,8 @@ function sessionChunkRows(sessionId, messages, { updatedAt = 0 } = {}) {
     const text = messageText(message);
     if (!text) continue;
     const itemId = String(message.id || message.messageId || '');
+    const taskId = messageTaskId(message);
+    const messageTs = messageTime(message);
     for (const piece of chunkText(text)) {
       const ord = cursor;
       cursor += 1;
@@ -115,9 +148,11 @@ function sessionChunkRows(sessionId, messages, { updatedAt = 0 } = {}) {
         ord,
         itemId,
         kind: message.role,
-        dirId: '',
+        dirId,
+        taskId,
         text: piece,
-        updatedAt,
+        updatedAt: messageTs || updatedAt,
+        sourceMtime: updatedAt,
       });
     }
   }
@@ -143,8 +178,14 @@ function sessionChunkRows(sessionId, messages, { updatedAt = 0 } = {}) {
 //
 // mtime equality is treated as proof of identical content: every write path for
 // these files touches the file when it changes anything (append or full rewrite).
+// `resolveDirId(sessionId)` is the host's answer to "which project directory does
+// this conversation belong to". chat_history does not record it (the mapping lives
+// in the session records), so the corpus cannot derive it — without the callback
+// every chunk stores '' and a directory filter simply matches nothing. An empty
+// answer means "unknown" and never clears a value the index already has.
 function createMessageCorpus({
   index, history, fsImpl = fs, logger = console, now = Date.now, blockBytes = BLOCK_BYTES,
+  resolveDirId = null,
 } = {}) {
   if (!index || typeof index.upsert !== 'function') throw new TypeError('message corpus requires a search index');
   if (!history || typeof history.listSessionIds !== 'function') throw new TypeError('message corpus requires a chat history repository');
@@ -152,6 +193,11 @@ function createMessageCorpus({
   const canStream = typeof history.fileFor === 'function'
     && ['openSync', 'readSync', 'closeSync', 'fstatSync'].every(name => typeof fsImpl[name] === 'function');
   const block = Math.max(1, Math.floor(Number(blockBytes)) || BLOCK_BYTES);
+
+  function dirOf(sessionId) {
+    if (typeof resolveDirId !== 'function') return '';
+    try { return String(resolveDirId(sessionId) || ''); } catch (error) { return ''; }
+  }
 
   function mtimeOf(sessionId) {
     try {
@@ -247,12 +293,12 @@ function createMessageCorpus({
 
   // The original whole-file pass, kept for what cannot be streamed: the legacy array
   // format, or a filesystem handle without positional reads.
-  function syncWhole(id, mtime) {
+  function syncWhole(id, mtime, dirId) {
     // No wipe before re-pushing: the per-chunk content hash is what keeps this
     // incremental. Clearing the ref first would invalidate every hash and rewrite
     // the whole session on every turn.
     const messages = history.read(id);
-    const { rows, candidates } = sessionChunkRows(id, messages, { updatedAt: mtime });
+    const { rows, candidates } = sessionChunkRows(id, messages, { updatedAt: mtime, dirId });
     const written = index.upsert(rows);
     // Only the tail beyond what the re-parse produced is stale — that is where a
     // shortened transcript's leftovers live.
@@ -283,10 +329,23 @@ function createMessageCorpus({
     if (!id || !isSearchableSession(id) || !index.available) return skipped();
     const mtime = mtimeOf(id);
     if (!mtime) return skipped();
+    const known = refs ? refs.get(id) : index.listRefs(MESSAGE_SCOPE).find(ref => ref.refId === id);
+    // The host answers '' when it does not know (a session record that is gone, a
+    // lookup that failed). '' is "unknown", not "no directory": with `force` the
+    // whole file is re-parsed and writing '' would erase an attribution the index
+    // already has, so the previous answer is kept instead.
+    const resolvedDirId = dirOf(id);
+    const dirId = resolvedDirId || (known && known.dirId) || '';
     const tail = force ? null : readTail(id);
     if (!force) {
-      const known = refs ? refs.get(id) : index.listRefs(MESSAGE_SCOPE).find(ref => ref.refId === id);
       const chunks = known ? known.chunks : 0;
+      // A relocated session keeps its transcript, so its chunks are skipped for
+      // being unchanged and would keep answering under the old directory. The
+      // correction is one UPDATE per moved session, not a re-read of the file.
+      if (known && resolvedDirId && known.dirId !== resolvedDirId && typeof index.updateRefDirId === 'function') {
+        index.updateRefDirId(MESSAGE_SCOPE, id, resolvedDirId);
+        known.dirId = resolvedDirId;
+      }
       // Equality, not `>=`: a file restored from backup with an older mtime must
       // still be re-read rather than trusted.
       //
@@ -306,7 +365,7 @@ function createMessageCorpus({
       if (tail && tail.at === mtime && settled) return skipped({ chunks });
       if (quietMs > 0 && now() - mtime < quietMs) return skipped({ chunks, hot: true });
     }
-    if (!canStream) return syncWhole(id, mtime);
+    if (!canStream) return syncWhole(id, mtime, dirId);
 
     let fd;
     try {
@@ -328,7 +387,7 @@ function createMessageCorpus({
         fullAt = tail.full;
         incremental = true;
       }
-      if (!incremental && looksLikeArray(fd)) return syncWhole(id, mtime);
+      if (!incremental && looksLikeArray(fd)) return syncWhole(id, mtime, dirId);
       if (size - start > maxBytes) return skipped({ deferred: true });
 
       // Seed the duplicate filter with what is already stored below the resume
@@ -366,6 +425,8 @@ function createMessageCorpus({
         const body = messageText(message);
         if (!body) return;
         const itemId = String(message.id || message.messageId || '');
+        const taskId = messageTaskId(message);
+        const messageTs = messageTime(message);
         for (const piece of chunkText(body)) {
           const pieceOrd = cursor;
           cursor += 1;
@@ -378,9 +439,11 @@ function createMessageCorpus({
             ord: pieceOrd,
             itemId,
             kind: message.role,
-            dirId: '',
+            dirId,
+            taskId,
             text: piece,
-            updatedAt: mtime,
+            updatedAt: messageTs || mtime,
+            sourceMtime: mtime,
           });
         }
       };
@@ -536,6 +599,8 @@ module.exports = {
   chunkText,
   createMessageCorpus,
   isSearchableSession,
+  messageTaskId,
   messageText,
+  messageTime,
   sessionChunkRows,
 };

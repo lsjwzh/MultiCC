@@ -780,6 +780,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/session_auto_commit_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/session_card_task_icon_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -3778,6 +3783,15 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-history-trace-compact.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-hooks-ui-cdp.js",
       "tier": "flow",
       "lane": "cdp",
@@ -4329,6 +4343,15 @@
     },
     {
       "path": "tests/test-opencode-models.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-opencode-native-provider-roundtrip.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",
@@ -4983,7 +5006,9 @@
       "tier": "core",
       "lane": "isolated",
       "owner": "npm:test:provider-router",
-      "entrypoints": ["npm:test:provider-router"]
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
     },
     {
       "path": "tests/test-quota-outbound-requests.js",
@@ -5427,6 +5452,15 @@
     },
     {
       "path": "tests/test-search-index.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-search-message-context.js",
       "tier": "other",
       "lane": "deterministic",
       "owner": "npm:test:core",

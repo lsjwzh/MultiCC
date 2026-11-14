@@ -57,6 +57,7 @@ pub mod request_watch;
 pub mod retry_policy;
 pub mod run_config_presets;
 pub mod search;
+pub mod search_diversity;
 pub mod secret_audit;
 pub mod sqlite;
 pub mod state_file;
