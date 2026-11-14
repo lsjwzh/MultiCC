@@ -240,6 +240,7 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
       child: SafeArea(
         top: false,
         child: SingleChildScrollView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,

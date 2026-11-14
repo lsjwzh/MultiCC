@@ -888,6 +888,12 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     if (mounted) setState(() {});
   }
 
+  void _dismissIosKeyboard(PointerDownEvent event) {
+    if (Theme.of(context).platform == TargetPlatform.iOS) {
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
+  }
+
   void _onPresetCatalog() {
     if (mounted) setState(() {});
   }
@@ -1196,6 +1202,11 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     // 🎙 跟着当前设置走（顶层的 settings 会随会话/登录刷新）。
     _voice.syncSettings(widget.settings);
     if (widget.docked && !_expanded) return _buildCollapsedBar();
+    // 操作按钮与输入框属于同一交互区，点按钮时不要先失焦收起整个面板。
+    return TextFieldTapRegion(child: _buildExpanded());
+  }
+
+  Widget _buildExpanded() {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.panel,
@@ -1267,6 +1278,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
             ),
           TextField(
             key: const ValueKey('air-quick-input'),
+            onTapOutside: _dismissIosKeyboard,
             controller: _controller,
             focusNode: _focus,
             autofocus: widget.autofocus,
@@ -1352,6 +1364,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                   const SizedBox(height: 4),
                   TextField(
                     key: const ValueKey('air-quick-unattended-goal'),
+                    onTapOutside: _dismissIosKeyboard,
                     controller: _unattendedGoalCtrl,
                     enabled: !widget.busy,
                     maxLines: 2,
@@ -1377,6 +1390,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                   const SizedBox(height: 6),
                   TextField(
                     key: const ValueKey('air-quick-unattended-criteria'),
+                    onTapOutside: _dismissIosKeyboard,
                     controller: _unattendedCriteriaCtrl,
                     enabled: !widget.busy,
                     maxLines: 4,
@@ -1409,6 +1423,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                         width: 72,
                         child: TextField(
                           key: const ValueKey('air-quick-unattended-duration'),
+                          onTapOutside: _dismissIosKeyboard,
                           controller: _unattendedDurationCtrl,
                           enabled: !widget.busy,
                           keyboardType: TextInputType.number,
