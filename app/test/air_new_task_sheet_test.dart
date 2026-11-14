@@ -42,7 +42,9 @@ Widget _host({
   AirService? service,
   String? Function()? errorText,
   bool Function()? capacityExceeded,
+  TargetPlatform? platform,
 }) => MaterialApp(
+  theme: ThemeData(platform: platform),
   home: Builder(
     builder: (context) => Scaffold(
       body: Center(
@@ -208,6 +210,63 @@ void main() {
     await tester.pump();
     expect(field.focusNode!.hasFocus, isTrue);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('iOS 点击弹层标题收起键盘，保留草稿并可继续编辑', (tester) async {
+    final settings = await _settings();
+    await tester.pumpWidget(_host(
+      settings: settings,
+      onSubmit: _recorder(<String>[]),
+      platform: TargetPlatform.iOS,
+    ));
+    await _open(tester);
+    final input = find.byKey(const ValueKey('air-quick-input'));
+    await tester.enterText(input, '保留这份草稿');
+    final field = tester.widget<TextField>(input);
+    expect(field.focusNode!.hasFocus, isTrue);
+
+    await tester.tap(find.text('NEW TASK'));
+    await tester.pumpAndSettle();
+    expect(field.focusNode!.hasFocus, isFalse);
+    expect(field.controller!.text, '保留这份草稿');
+    expect(find.byType(BottomSheet), findsOneWidget);
+
+    await tester.tap(input);
+    await tester.pump();
+    expect(field.focusNode!.hasFocus, isTrue);
+  });
+
+  testWidgets('iOS 拖动弹层收起无人值守输入框的键盘并保留内容', (tester) async {
+    tester.view.physicalSize = const Size(800, 550);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final settings = await _settings();
+    await tester.pumpWidget(_host(
+      settings: settings,
+      onSubmit: _recorder(<String>[]),
+      platform: TargetPlatform.iOS,
+    ));
+    await _open(tester);
+    await tester.enterText(find.byKey(const ValueKey('air-quick-input')), '任务草稿');
+    await tester.tap(find.byKey(const ValueKey('air-quick-unattended')));
+    await tester.pumpAndSettle();
+    final goal = find.byKey(const ValueKey('air-quick-unattended-goal'));
+    await tester.ensureVisible(goal);
+    await tester.enterText(goal, '保留目标');
+    await tester.pump();
+    final goalFocus = tester.widget<EditableText>(
+      find.descendant(of: goal, matching: find.byType(EditableText)),
+    ).focusNode;
+    expect(goalFocus.hasFocus, isTrue);
+
+    final scroll = find.ancestor(of: goal, matching: find.byType(SingleChildScrollView)).first;
+    final scrollRect = tester.getRect(scroll);
+    await tester.dragFrom(Offset(scrollRect.left + 8, scrollRect.center.dy), const Offset(0, -150));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(goal).controller!.text, '保留目标');
+    expect(goalFocus.hasFocus, isFalse);
+    expect(find.byType(BottomSheet), findsOneWidget);
   });
 
   /// 同一份模块在目录首页是常驻的：页面一进来就弹键盘会顶掉滚动位置，而它本来
