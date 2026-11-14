@@ -118,11 +118,10 @@
 .console-directory-grid .directory-card { min-width: 0; display: flex; flex-direction: column; gap: 8px; cursor: grab; }
 .console-directory-grid .directory-card:active { cursor: grabbing; }
 .console-directory-grid .directory-card.is-dragging { opacity: .55; }
-.console-directory-grid .directory-card > button { flex: 1; width: 100%; min-width: 0; padding: 20px; border-radius: 16px; text-align: left; box-shadow: var(--shadow-1); }
+.console-directory-grid .directory-card > button { flex: 1; width: 100%; min-width: 0; text-align: left; }
 .console-directory-grid strong, .console-directory-grid small { display: block; overflow-wrap: anywhere; }
 .console-directory-grid strong { margin-bottom: 7px; font-size: 15px; }
 .console-directory-grid small + small { margin-top: 9px; color: #3e75ad; }
-.console-directory-grid .directory-memo { align-self: flex-end; padding: 4px 12px; color: var(--accent-strong); font-size: 12px; }
 /* 控制台的两种看法（air-admin.js 的 consoleView）：目录看法只留顶栏与目录网格。 */
 .console-view-switch { flex-shrink: 0; margin: 0; }
 /* 任务看法 = 等我处理 + 一份不截条数的清单；目录看法 = 目录网格。两边互相让位。 */

@@ -103,9 +103,11 @@ test('console switches between task and directory views; console, directory and 
     assert.deepEqual(await view(), { view: 'dirs', selected: ['dirs'], flow: false, dirs: true }, '目录看法只留目录网格');
     assert.equal(await page.evaluate(`document.getElementById('console-home-search').placeholder`), '搜索名称或路径', '搜索框改搜目录');
     assert.equal(await page.evaluate(`localStorage.getItem('air:console-view')`), 'dirs', '选择记在本机');
-    // 在跑的目录带圈，在等人的目录卡上写出来。
-    assert.ok(await page.waitFor(`document.querySelector('.console-directory-grid [data-dir-id="d3"] > button')?.classList.contains('ring-running')`), '在跑的目录卡带圈');
-    assert.equal(await page.evaluate(`document.querySelector('.console-directory-grid [data-dir-id="d1"] > button').classList.contains('ring-running')`), false);
+    // 在跑的目录带圈，在等人的目录卡上写出来。圈在整张卡上（data-dir-id 就是那张
+    // article.directory-card），不在卡里的按钮上。
+    assert.ok(await page.waitFor(`document.querySelector('.console-directory-grid [data-dir-id="d3"]')?.classList.contains('ring-running')`), '在跑的目录卡带圈');
+    assert.equal(await page.evaluate(`document.querySelector('.console-directory-grid [data-dir-id="d3"] > button').classList.contains('ring-running')`), false);
+    assert.equal(await page.evaluate(`document.querySelector('.console-directory-grid [data-dir-id="d1"]').classList.contains('ring-running')`), false);
     assert.equal(await page.evaluate(`document.querySelector('[data-dir-id="d2"] .directory-card-needs')?.textContent`), '等我处理 1', '在等人的目录卡写出等我处理数');
     assert.equal(await page.evaluate(`document.querySelector('[data-dir-id="d1"] .directory-card-needs')`), null);
     await page.screenshot('01-console-dirs-view');

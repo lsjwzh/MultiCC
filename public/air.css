@@ -1080,13 +1080,20 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #directory-library { min-height: 0; flex: 1; overflow: auto; padding: 38px; }
 #directory-search { max-width: 620px; }
 #directory-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin-top: 20px; }
-#directory-grid button { min-width: 0; padding: 20px; border-radius: 16px; text-align: left; box-shadow: 0 9px 30px #35577d0a; }
+#directory-grid .directory-card > button { min-width: 0; text-align: left; }
 #directory-grid strong, #directory-grid small { display: block; overflow-wrap: anywhere; }
 #directory-grid strong { margin-bottom: 7px; font-size: 15px; }
 #directory-grid small + small { margin-top: 9px; color: #3e75ad; }
-.directory-card { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.directory-card > button { flex: 1; width: 100%; }
-.directory-memo { align-self: flex-end; padding: 4px 12px; color: var(--accent-strong); font-size: 12px; }
+/* 卡片外观在 article 上：主按钮与底栏（备忘 + 快速删除）都装在卡片框里，
+   备忘不再孤悬在卡片外一行。内层按钮抹平成全透明，只留文字与点击面。 */
+.directory-card { min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: #fff; box-shadow: 0 9px 30px #35577d0a; }
+.directory-card:hover { border-color: #c7ddf5; }
+.directory-card > button { flex: 1; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: inherit; background: transparent; text-align: left; }
+.directory-card > button:hover { background: transparent; border-color: transparent; }
+.directory-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.directory-memo { padding: 4px 0; color: var(--accent-strong); font-size: 12px; }
+.directory-card-delete { min-width: 30px; min-height: 30px; padding: 4px 8px; color: #8aa0b4; border-color: transparent; background: transparent; font-size: 13px; line-height: 1; }
+.directory-card-delete:hover { color: #a04936; border-color: #e4c4bc; background: #fdf3f1; }
 
 /* Every view paints the same surface under the one header band, so switching
    modes no longer looks like a second panel opening. */
@@ -1869,7 +1876,7 @@ input:focus, select:focus, textarea:focus { border-color: #9cc6f3; box-shadow: 0
 dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--shadow-3); }
 #directory-library { padding: 40px; }
 #directory-grid { gap: 16px; }
-#directory-grid button { padding: 22px; border-radius: 20px; box-shadow: var(--shadow-1); }
+#directory-grid .directory-card { padding: 22px; border-radius: 20px; box-shadow: var(--shadow-1); }
 #directory-search { max-width: 640px; }
 .schedule-summary span, .schedule-badge { border-radius: 10px; }
 #palette { border-radius: 22px; box-shadow: var(--shadow-3); }

@@ -516,7 +516,6 @@
     const busy = runningDirectories();
     $('directory-grid').replaceChildren(...directories.map(directory => {
       const button = node('button');
-      applyRing(button, busy.has(directory.id), directory.id);
       const taskCount = data.taskStats?.[directory.id]?.total ?? data.tasks.filter(task => task.dirId === directory.id).length;
       const activeCount = data.taskStats?.[directory.id]?.running ?? data.tasks.filter(task => task.dirId === directory.id && isRunningTask(task)).length;
       button.append(node('strong', '▣ ' + directory.name), node('small', directory.path),
@@ -529,12 +528,10 @@
           || t('airDirWorktreeCount', { n: directory.worktreeCount || 0 })));
       button.onclick = () => navigate(directory.id);
       const card = node('article', null, 'directory-card');
-      const memo = node('a', t('memoTitle'), 'directory-memo');
-      memo.href = `/memo.html?dirId=${encodeURIComponent(directory.id)}`;
-      memo.target = '_blank';
-      memo.rel = 'noopener';
-      memo.setAttribute('aria-label', `${directory.name} · ${t('memoTitle')}`);
-      card.append(button, memo);
+      // 圈画在整张卡上（含底栏），画在内层按钮上会变成方角描边。
+      applyRing(card, busy.has(directory.id), directory.id);
+      const foot = window.MultiCCAirDirectoryCard?.foot?.(directory, () => refresh());
+      card.append(button, ...(foot ? [foot] : []));
       return card;
     }));
     if (!directories.length) $('directory-grid').append(node('p', query ? t('airDirNoMatch') : t('airDirNoneYet'), 'empty-list'));

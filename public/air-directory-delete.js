@@ -70,25 +70,30 @@
     root.dispatchEvent(new root.PopStateEvent('popstate'));
   }
 
+  // 两步确认的删除本体：目录卡片底栏的「快速删除」也走这里（air-directory-card.js），
+  // 所以从 remove() 里抽出来导出。返回是否真的删了（用户取消 = false）。
+  async function deleteDirectory(directory) {
+    if (!directory) { root.alert(t('airDirDeleteMissing')); return false; }
+    const name = directory.name || directory.path || directory.id;
+    if (!root.confirm(t('airDirDeleteConfirm', { name }))) return false;
+    const path = `/api/directories/${encodeURIComponent(directory.id)}`;
+    try {
+      await request(path, 'DELETE');
+    } catch (error) {
+      const count = Array.isArray(error.sessions) ? error.sessions.length : 0;
+      if (!count) throw error;
+      if (!root.confirm(t('airDirDeleteSessionsConfirm', { name, n: count }))) return false;
+      await request(`${path}?force=1`, 'DELETE');
+    }
+    return true;
+  }
+
   async function remove() {
     if (busy) return;
     busy = true;
     if (toggle) toggle.disabled = true;
     try {
-      const directory = await currentDirectory();
-      if (!directory) { root.alert(t('airDirDeleteMissing')); return; }
-      const name = directory.name || directory.path || directory.id;
-      if (!root.confirm(t('airDirDeleteConfirm', { name }))) return;
-      const path = `/api/directories/${encodeURIComponent(directory.id)}`;
-      try {
-        await request(path, 'DELETE');
-      } catch (error) {
-        const count = Array.isArray(error.sessions) ? error.sessions.length : 0;
-        if (!count) throw error;
-        if (!root.confirm(t('airDirDeleteSessionsConfirm', { name, n: count }))) return;
-        await request(`${path}?force=1`, 'DELETE');
-      }
-      returnToLibrary();
+      if (await deleteDirectory(await currentDirectory())) returnToLibrary();
     } catch (error) {
       root.alert(t('airDirDeleteFailed', { message: error?.message || String(error) }));
     } finally {
@@ -128,6 +133,8 @@
     observer.observe(memo, { attributes: true, attributeFilter: ['hidden'] });
     toggle.hidden = memo.hidden;
   }
+
+  root.MultiCCAirDirectoryDelete = { deleteDirectory };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount, { once: true });
   else mount();
