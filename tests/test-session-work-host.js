@@ -829,6 +829,28 @@ test('a running turn durably consumes its structured answer without ordinary que
   );
 });
 
+test('unattended input stays in FIFO through processing, wait and fault without consuming a question', async () => {
+  for (const [classifyState, source] of ['P', 'D', 'W', 'E'].flatMap(state =>
+    ['direct', 'task-shell'].map(source => [state, source]))) {
+    const h = fixture({ record: { unattended: { status: 'active' } } });
+    h.setClassifyState(classifyState);
+    h.setPending({ requestId: 'auto-question', resolved: false });
+    const result = await h.host.admit('s1', '下一项工作', {
+      userInputRequestId: 'auto-question', clientMsgId: `queued-${classifyState}`,
+      taskSource: source,
+      ...(source === 'task-shell' ? { originContinue: true, taskShellControl: { intent: 'answer' } } : {}),
+    });
+    assert.equal(result.ok, true);
+    const admission = h.calls.find(call => call[0] === 'admit')[1];
+    assert.equal(admission.workKind, 'task', `${source}/${classifyState}`);
+    assert.equal(admission.requestId, null, classifyState);
+    assert.equal(admission.activeEntryId, null, classifyState);
+    assert.equal('userInputRequestId' in admission.options, false);
+    assert.equal('taskShellControl' in admission.options, false);
+    assert.equal(h.calls.some(call => call[0] === 'resolve-user-input'), false);
+  }
+});
+
 test('a stale picker correlation degrades to ordinary input instead of blocking send', async () => {
   const h = fixture();
   h.forceState('idle');

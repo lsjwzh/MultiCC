@@ -723,10 +723,13 @@ class ChatService {
   /// server then tells the model to expect recognition errors and includes the
   /// raw text (see src/message-composer.js's normalizeVoiceInput). Omit it for
   /// typed messages — the two extra frame fields are only added when it is set.
+  /// [answerPendingInput] is false for ordinary FIFO input while unattended
+  /// answers the pending question; its correlation remains available afterward.
   String? send(
     String text, {
     String? clientMsgId,
     String? voiceRaw,
+    bool answerPendingInput = true,
   }) {
     if (_channel == null || _state != ChatConnectionState.connected) {
       connect();
@@ -748,7 +751,9 @@ class ChatService {
         payload['inputSource'] = 'voice';
         payload['voiceRaw'] = voice;
       }
-      final pendingRequestId = _pendingUserInputRequestId;
+      final pendingRequestId = answerPendingInput
+          ? _pendingUserInputRequestId
+          : null;
       if (pendingRequestId != null && pendingRequestId.isNotEmpty) {
         payload['userInputRequestId'] = pendingRequestId;
         payload['turnId'] = _controlTurnId;

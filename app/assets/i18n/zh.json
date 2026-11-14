@@ -5168,6 +5168,7 @@
   "unattendedPausedByInput": "已暂停（你已输入）",
   "unattendedPausedByCancel": "已暂停（已取消）",
   "unattendedInputLocked": "无人值守进行中，输入已锁定",
+  "unattendedInputQueued": "无人值守进行中，发送的消息会排队，本轮结束后自动提交",
   "unattendedPendingInputHint": "无人值守进行中，AI 会代为回答",
   "unattendedLastVerdict": "最近判定：{verdict} · {reason}",
   "unattendedHistoryEmpty": "还没有判定记录",

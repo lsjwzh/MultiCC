@@ -247,7 +247,7 @@ test('canonical session ingress runs both ordinary and Commander sessions throug
   assert.equal(runTurns[1].text, '派给工程师改 README');
 });
 
-test('unattended arming rides the first message and only real human text pauses it', async () => {
+test('unattended arming rides the first message and later human input is reported to its policy', async () => {
   const armed = [];
   const noted = [];
   const { host, runTurns } = fixture({
@@ -286,7 +286,7 @@ test('unattended arming rides the first message and only real human text pauses 
   assert.equal(runTurns.at(-1).text, '🔇[无人值守 Unattended] B');
   assert.deepEqual(noted, []);
 
-  // A real human message is delivered unchanged and pauses.
+  // A real human message is delivered unchanged and reported to the queue policy.
   await host.deliverSessionMessage('worker', '取个新方向', { clientMsgId: 'unattended-8' });
   assert.equal(runTurns.at(-1).text, '取个新方向');
   assert.deepEqual(noted, ['worker']);

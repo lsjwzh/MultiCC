@@ -2721,6 +2721,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
       message,
       clientMsgId: clientMsgId,
       voiceRaw: voiceRaw,
+      answerPendingInput: !unattendedActive,
     );
     if (sentMsgId == null) {
       _addSystemMsg(t(_service.shellInputAwaitingConfirm
@@ -2732,7 +2733,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
     // 还是进 FIFO。进队列的只在队列面板出现，不在这里占位（对齐 web
     // stagedUserBubbles）。_commitStaged 在收到裁决（或兜底超时）时才真正加气泡。
     _stagedTracker.stage(sentMsgId, message);
-    _setPendingUserInput(null);
+    if (!unattendedActive) _setPendingUserInput(null);
     _apiErrorPolicy = null;
     // User just sent a message -> resume auto-follow at the bottom, clear any
     // unread pill (mirrors the web client's forceScrollToBottom on send).

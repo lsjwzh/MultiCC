@@ -127,7 +127,7 @@ test('chat unattended panel: duration, precheck-on-start card, start/stop/resume
     assert.equal(idle.mic, false);
     assert.equal(idle.bannerHidden, true);
     assert.equal(idle.placeholder, 'Type a message… or paste files here');
-    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false);
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-queued')`), false);
 
     // 浮动图标必须整个落在发送键上方，不能挡住拇指的目标。
     const geometry = await page.evaluate(`(() => {
@@ -227,17 +227,18 @@ test('chat unattended panel: duration, precheck-on-start card, start/stop/resume
     assert.ok((await page.evaluate(`document.querySelector('.unat-deadline').textContent`)).startsWith('截止 '));
     assert.equal(await page.evaluate(`chatUnattended.isTicking()`), true, 'active 时倒计时表在跑');
 
-    // v2：active 锁死输入区，banner 就在输入栏上方，按钮是「暂停并接管」。
+    // active 不再锁输入：只把占位提示换成「发送会排队」，banner 在输入栏上方，
+    // 按钮是「暂停并接管」。
     const locked = await page.evaluate(INPUT_LOCK);
-    assert.equal(locked.input, true, 'active 时 textarea 必须锁定');
-    assert.equal(locked.send, true, 'active 时发送键必须锁定');
-    assert.equal(locked.attach, true, 'active 时附件入口必须锁定');
-    assert.equal(locked.mic, true, 'active 时语音入口必须锁定');
-    assert.equal(locked.placeholder, await page.evaluate(`t('unattendedInputLockedPlaceholder')`));
+    assert.equal(locked.input, true, '夹具无 WS：输入框只因未连接而禁用');
+    assert.equal(locked.attach, false, 'active 时附件入口仍可用');
+    assert.equal(locked.mic, false, 'active 时语音入口仍可用');
+    assert.equal(locked.placeholder, await page.evaluate(`t('unattendedInputQueuedPlaceholder')`));
     assert.equal(locked.bannerHidden, false);
     assert.equal(locked.bannerLabel, await page.evaluate(`t('unattendedPauseTakeover')`));
     assert.equal(locked.bannerAction, 'stop');
-    // 取消键仍可用：锁不解掉正在跑的这一轮的停止控制。
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-queued')`), true);
+    // 取消键仍可用：不清掉正在跑的这一轮的停止控制。
     assert.equal(await page.evaluate(`document.getElementById('cancel-btn').disabled`), false);
 
     // banner 的「暂停并接管」= POST stop，并立即解锁、清掉倒计时表。
@@ -250,8 +251,8 @@ test('chat unattended panel: duration, precheck-on-start card, start/stop/resume
     assert.equal(unlocked.input, true, '夹具无 WS：输入框只因未连接而禁用，解锁不强行打开');
     assert.equal(unlocked.attach, false);
     assert.equal(unlocked.mic, false);
-    assert.equal(unlocked.placeholder, 'Type a message… or paste files here', '解锁恢复原 placeholder');
-    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false);
+    assert.equal(unlocked.placeholder, 'Type a message… or paste files here', '暂停后恢复原 placeholder');
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-queued')`), false);
     assert.equal(unlocked.bannerText, await page.evaluate(`t('unattendedStatusStopped')`));
     assert.equal(unlocked.bannerReason, await page.evaluate(`t('unattendedPausedByUser')`));
     assert.equal(unlocked.bannerLabel, await page.evaluate(`t('unattendedBannerResume')`));
@@ -492,7 +493,7 @@ routes['/unattended-fixture.html'] = {
         document, window, translate: t,
         getSessionId: () => '',
         request: async () => ({ ok: true, unattended: null }),
-        applyInputLock: locked => window.__locks.push(locked),
+        applyInputState: active => window.__locks.push(active),
         tickMs: fixtureTickMs,
       });
       window.__card = MultiCCChatUserInputCard.createController({
@@ -504,7 +505,7 @@ routes['/unattended-fixture.html'] = {
   </body></html>`,
 };
 
-test('applyState shows remaining time, expires at the deadline, and locks immediately', async t => {
+test('applyState shows remaining time, expires at the deadline, and switches the queue hint immediately', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes }, async page => {
     await page.navigate('/unattended-fixture.html');
@@ -632,20 +633,35 @@ routes['/unattended-marks-fixture.html'] = {
 // 回归：未启用（null）以及任何非 active 状态，已连接的会话输入框必须可用。夹具里没有
 // WS，别的用例里输入框因「未连接」本来就是灰的，看不出「默认被锁」这种回归；这里给
 // 页面一个 OPEN 的假套接字，让 updateUI() 走「已连接」分支再断言。
-test('connected session is NOT locked unless the supervisor is active', async t => {
+test('connected session is never locked by the supervisor', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   unattended = null;
   unattendedPosts.length = 0;
-  await withCdpHarness({ routes, screenshotDir: qaDir() }, async page => {
+  const connectedRoutes = { ...routes, 'POST /api/task-shells': {
+    status: 400, ...json({ code: 'unsupported_source' }),
+  } };
+  await withCdpHarness({ routes: connectedRoutes, screenshotDir: qaDir() }, async page => {
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      window.__sent = [];
+      window.WebSocket = class {
+        static OPEN = 1;
+        constructor() {
+          this.readyState = 0;
+          setTimeout(() => { this.readyState = 1; this.onopen?.({}); }, 0);
+        }
+        send(raw) { window.__sent.push(JSON.parse(raw)); }
+        close() { this.readyState = 3; }
+      };
+    ` });
     await page.navigate('/chat.html?session=s1');
     assert.ok(await page.waitFor(`document.getElementById('unattended-fab').classList.contains('unat-state-idle')`));
-    await page.evaluate(`ws = { readyState: WebSocket.OPEN, send() {}, close() {} }; updateUI();`);
+    assert.ok(await page.waitFor(`ws?.readyState === WebSocket.OPEN && !inputEl.disabled`));
     const open = () => page.evaluate(`({
       input: document.getElementById('input').disabled,
       send: document.getElementById('send-btn').disabled,
       attach: document.getElementById('attach-btn').disabled,
       mic: document.getElementById('mic-btn').disabled,
-      barLocked: document.getElementById('input-bar').classList.contains('unattended-locked'),
+      barLocked: document.getElementById('input-bar').classList.contains('unattended-queued'),
       placeholder: document.getElementById('input').placeholder,
     })`);
     // 真正的「被挡住」：未启用时没有任何东西盖在输入区上 —— 遮罩必须是隐藏的，输入框、
@@ -664,7 +680,7 @@ test('connected session is NOT locked unless the supervisor is active', async t 
       '未启用：已连接的输入区必须全部可用');
     assert.equal(none.placeholder, 'Type a message… or paste files here');
 
-    // 只有 active 才锁；其余五个状态（含 achieved）一律不锁。状态走 WS 帧同一个入口。
+    // 任何状态都不锁输入；状态走 WS 帧同一个入口。
     for (const status of ['stopped', 'achieved', 'needs_human', 'exhausted', 'error']) {
       const state = {
         status, goal: 'g', criteria: [], maxDurationMinutes: 120, rounds: 1, history: [],
@@ -675,22 +691,45 @@ test('connected session is NOT locked unless the supervisor is active', async t 
       assert.deepEqual([snap.input, snap.send, snap.attach, snap.mic, snap.barLocked], [false, false, false, false, false],
         status + '：非 active 不能锁输入');
     }
-    // 真正的 active 帧才锁；随后回到 null（会话被清空）立刻解开。
+    // active 帧也只切换提示，不锁任何入口；回到 null（会话被清空）恢复默认。
     await page.evaluate(`chatUnattended.applyState(${JSON.stringify({
       status: 'active', goal: 'g', criteria: [], maxDurationMinutes: 120, rounds: 1, history: [],
       evaluating: false, pausedBy: null, lastVerdict: null,
     })})`);
     const active = await open();
-    assert.deepEqual([active.input, active.send, active.attach, active.mic, active.barLocked], [true, true, true, true, true]);
+    assert.deepEqual([active.input, active.send, active.attach, active.mic, active.barLocked],
+      [false, false, false, false, true], 'active：全部入口可用，只带排队提示');
+    assert.equal(active.placeholder, await page.evaluate(`t('unattendedInputQueuedPlaceholder')`));
+    // 待答期间的普通输入不能冒充无人值守的回答，也不能取消当前回合。
+    await page.evaluate(`(() => {
+      window.__sent.length = 0;
+      isStreaming = true;
+      chatEventState.pendingUserInputRequestId = 'pending-while-unattended';
+      for (const text of ['排队第一条', '排队第二条']) {
+        inputEl.value = text;
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        chatComposer.send();
+      }
+    })()`);
+    const sent = await page.evaluate(`window.__sent.filter(frame => frame.type === 'user_message')`);
+    assert.equal(sent.length, 2);
+    assert.equal(await page.evaluate(`window.__sent.some(frame => frame.type === 'cancel')`), false);
+    assert.deepEqual(sent.map(frame => frame.type), ['user_message', 'user_message']);
+    assert.deepEqual(sent.map(frame => frame.text), ['排队第一条', '排队第二条']);
+    assert.ok(sent.every(frame => !frame.userInputRequestId));
+    assert.equal(await page.evaluate(`chatEventState.pendingUserInputRequestId`), 'pending-while-unattended');
+    assert.equal(await page.evaluate(`chatUnattended.isActive()`), true);
     await page.evaluate(`chatUnattended.applyState(null)`);
     const cleared = await open();
     assert.deepEqual([cleared.input, cleared.send, cleared.attach, cleared.mic, cleared.barLocked], [false, false, false, false, false]);
+    assert.equal(cleared.placeholder, 'Type a message… or paste files here');
+    await page.evaluate(`inputEl.value = '人工接管后的回答'; chatComposer.send()`);
+    assert.equal((await page.evaluate(`window.__sent.at(-1)`)).userInputRequestId, 'pending-while-unattended');
 
-    // active 才锁，并且回到 stopped 立刻解开。
-    await page.evaluate(`applyUnattendedInputLock(true)`);
-    const locked = await open();
-    assert.deepEqual([locked.input, locked.send, locked.attach, locked.mic, locked.barLocked], [true, true, true, true, true]);
-    await page.evaluate(`applyUnattendedInputLock(false)`);
+    await page.evaluate(`applyUnattendedInputState(true)`);
+    const hinted = await open();
+    assert.deepEqual([hinted.input, hinted.send, hinted.attach, hinted.mic, hinted.barLocked], [false, false, false, false, true]);
+    await page.evaluate(`applyUnattendedInputState(false)`);
     const freed = await open();
     assert.deepEqual([freed.input, freed.send, freed.attach, freed.mic, freed.barLocked], [false, false, false, false, false]);
   });
@@ -763,7 +802,7 @@ test('retry banner: capacity/fault copy, soon branch, panel line, and flip back'
     await page.evaluate(frame('capacity', 2, retryAt));
     const capacityText = await page.evaluate(`t('unattendedRetryCapacity', { time: ${JSON.stringify(clock)}, n: 2 })
       + ' · ' + t('unattendedRemaining', { remaining: ${JSON.stringify(remaining90)} })`);
-    assert.deepEqual(await page.evaluate(`window.__locks`), [true], 'active 时输入保持锁定');
+    assert.deepEqual(await page.evaluate(`window.__locks`), [true], 'active 时输入收到排队提示');
     assert.equal(await page.evaluate(`document.querySelector('.unat-banner-text').textContent`), capacityText);
     assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), true);
     assert.equal(await page.evaluate(`document.querySelector('.unat-retry').hidden`), false);
@@ -843,7 +882,7 @@ test('retryAt timer repaints without waiting for the 30s tick', async t => {
   });
 });
 
-test('retry state keeps the composer locked and pause-and-takeover works', async t => {
+test('retry state keeps the queue hint and pause-and-takeover works', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const now = Date.now();
   unattendedPosts.length = 0;
@@ -871,9 +910,9 @@ test('retry state keeps the composer locked and pause-and-takeover works', async
     assert.equal(locked.bannerAction, 'stop');
     assert.equal(locked.bannerLabel, await page.evaluate(`t('unattendedPauseTakeover')`));
     assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), true);
-    assert.equal(locked.attach, true, '重试期间附件入口仍锁定');
-    assert.equal(locked.mic, true, '重试期间语音入口仍锁定');
-    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), true);
+    assert.equal(locked.attach, false, '重试期间附件入口仍可用');
+    assert.equal(locked.mic, false, '重试期间语音入口仍可用');
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-queued')`), true);
 
     // 「暂停并接管」照常工作：POST stop，立刻解锁、撤掉琥珀色。
     await page.evaluate(`document.querySelector('.unat-banner-btn').click()`);
@@ -883,7 +922,7 @@ test('retry state keeps the composer locked and pause-and-takeover works', async
     const unlocked = await page.evaluate(INPUT_LOCK);
     assert.equal(unlocked.attach, false);
     assert.equal(unlocked.mic, false);
-    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false);
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-queued')`), false);
     assert.equal(await page.evaluate(`document.getElementById('unattended-banner').classList.contains('unat-banner-retry')`), false, '暂停后不再是重试态');
   });
 });
@@ -908,12 +947,12 @@ test('paused banner: 结束无人值守 clears the run, hides the banner and kee
       await page.evaluate(`t('unattendedClear')`));
     // The fixture has no live WS, so the composer may be disabled for its own
     // reasons; what must be false is the unattended input lock.
-    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false, '终态不锁输入');
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-queued')`), false, '终态不锁输入');
 
     await page.evaluate(`document.querySelector('.unat-banner-clear').click()`);
     assert.ok(await page.waitFor(`document.getElementById('unattended-banner').hidden`));
     assert.deepEqual(unattendedPosts.map(post => post.action), ['clear']);
-    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-locked')`), false, 'clear 后输入仍解锁');
+    assert.equal(await page.evaluate(`document.getElementById('input-bar').classList.contains('unattended-queued')`), false, 'clear 后输入仍解锁');
 
     // 面板回到「未启用」：Start 可见，Clear 隐藏，表单保留刚才的草稿。
     await page.evaluate(`document.getElementById('unattended-fab').click()`);

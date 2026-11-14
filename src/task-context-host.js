@@ -256,13 +256,10 @@ function createTaskContextHost(options = {}) {
       // judged, and shell receipt retries are idempotent (same config → no-op).
       try { armUnattended(sessionName, options.unattended, text); } catch (_) {}
     }
-    // The message that carries `options.unattended` IS the start instruction
-    // (the goal itself), so it must not pause the supervisor it just armed. This
-    // also covers shell receipt retries, which replay the same options.
+    // The first message arms supervision; later ordinary input is reported to
+    // the Rust policy before admission and joins FIFO without taking over.
     if (!options.unattended && typeof noteUnattendedUserMessage === 'function'
         && isRealUserMessage(text, options)) {
-      // Human takeover: pause the supervisor BEFORE the message is delivered, so
-      // a verdict already in flight cannot answer over the human's head.
       try { noteUnattendedUserMessage(sessionName); } catch (_) {}
     }
     // `system: true` marks a supervisor-authored delivery: stamp the same 🔇

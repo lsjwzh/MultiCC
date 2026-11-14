@@ -316,18 +316,16 @@ test('evaluating is true while the aux call is in flight and false afterwards', 
     && row.payload.unattended.evaluating === false));
 });
 
-test('real user input pauses the supervisor, cancel and stop record their own cause', async () => {
+test('real user input keeps supervision active, cancel and stop record their own cause', async () => {
   const f = harness();
   await f.arm();
-  const paused = f.host.noteUserMessage('s1');
-  assert.equal(paused.status, STATUS.STOPPED);
-  assert.equal(paused.pausedBy, 'input');
-  assert.match(lastTrace(f).message.content, /已暂停（用户输入）$/);
-
-  const resumed = await f.host.resume('s1');
-  assert.equal(resumed.ok, true);
-  assert.equal(f.host.get('s1').pausedBy, null);
-  await tick();
+  const before = f.host.get('s1');
+  const state = f.host.noteUserMessage('s1');
+  assert.equal(state, before, 'ordinary input preserves state and timers');
+  assert.equal(state.status, STATUS.ACTIVE);
+  assert.equal(state.pausedBy, null);
+  assert.equal(f.calls.inject.length, 0);
+  assert.equal(f.calls.withdraw.length, 0);
 
   const stopped = f.host.stop('s1');
   assert.equal(stopped.ok, true);
@@ -352,7 +350,7 @@ test('a queued supervisor continuation is withdrawn on user takeover, a started 
   await queued.arm();
   await queued.host.evaluate('s1', { assistantText: 'still working' });
   assert.equal(queued.calls.inject.length, 1);
-  queued.host.noteUserMessage('s1');
+  queued.host.stop('s1');
   assert.deepEqual(queued.calls.withdraw, [{ id: 's1', entryId: 'entry-1' }],
     'the not-yet-started continuation is removed instead of running one more round');
 
@@ -365,7 +363,7 @@ test('a queued supervisor continuation is withdrawn on user takeover, a started 
   await asyncQueued.arm();
   await asyncQueued.host.evaluate('s1', { assistantText: 'still working' });
   await tick();
-  asyncQueued.host.noteUserMessage('s1');
+  asyncQueued.host.stop('s1');
   assert.deepEqual(asyncQueued.calls.withdraw, [{ id: 's1', entryId: 'entry-2' }]);
 
   // A selected (already running) delivery, a duplicate admission and a rejected
@@ -378,7 +376,7 @@ test('a queued supervisor continuation is withdrawn on user takeover, a started 
     const f = harness({ injectResult, withdrawQueued: () => ({ ok: true }) });
     await f.arm();
     await f.host.evaluate('s1', { assistantText: 'still working' });
-    f.host.noteUserMessage('s1');
+    f.host.stop('s1');
     assert.deepEqual(f.calls.withdraw, [], JSON.stringify(injectResult));
   }
 });
@@ -652,16 +650,21 @@ test('a clean D/W settle resets the fault streak and clears a pending retry', as
   assert.equal(f.host.stats().retryTimers, 0);
 });
 
-test('stop and a user takeover cancel the pending retry timer', async () => {
-  for (const how of ['stop', 'input']) {
+test('stop and explicit cancel clear the pending retry timer', async () => {
+  for (const how of ['stop', 'cancel']) {
     const f = harness({ clock: 1_000_000 });
     await f.arm({ maxDurationMinutes: 60 });
     await f.host.onTurnEnd('s1', { kind: 'fault', retryScheduled: false });
     const delayed = await f.host.onTurnEnd('s1', { kind: 'fault', retryScheduled: false });
     assert.equal(delayed.action, 'fault_wait');
     assert.equal(f.host.stats().retryTimers, 1);
+    const retryAt = f.host.get('s1').retryAt;
+    f.host.noteUserMessage('s1');
+    assert.equal(f.host.get('s1').status, STATUS.ACTIVE);
+    assert.equal(f.host.get('s1').retryAt, retryAt, 'FIFO input preserves fault recovery');
+    assert.equal(f.host.stats().retryTimers, 1);
     if (how === 'stop') f.host.stop('s1');
-    else f.host.noteUserMessage('s1');
+    else await f.host.onTurnEnd('s1', { kind: 'cancel', cancelSource: 'manual_cancel' });
     assert.equal(f.host.get('s1').retryAt, null, how);
     assert.equal(f.host.get('s1').status, STATUS.STOPPED, how);
     assert.equal(f.host.stats().retryTimers, 0, how);
@@ -1098,7 +1101,9 @@ test('the timer is cleared on stop/pause and re-armed on resume', async () => {
   assert.equal(f.host.get('s1').status, STATUS.ACTIVE);
 
   f.host.noteUserMessage('s1');
-  assert.equal(f.host.stats().timers, 0, 'a human takeover pauses and disarms');
+  assert.equal(f.host.stats().timers, 1, 'ordinary FIFO input keeps supervision armed');
+  f.host.stop('s1');
+  assert.equal(f.host.stats().timers, 0, 'explicit takeover pauses and disarms');
   f.host.shutdown();
   assert.equal(f.host.stats().timers, 0);
 });

@@ -5168,6 +5168,7 @@
   "unattendedPausedByInput": "Paused (you sent a message)",
   "unattendedPausedByCancel": "Paused (cancelled)",
   "unattendedInputLocked": "Unattended mode is running — input is locked",
+  "unattendedInputQueued": "Unattended is running — messages queue and are submitted after this round",
   "unattendedPendingInputHint": "Unattended mode is running — the AI will answer",
   "unattendedLastVerdict": "Last verdict: {verdict} · {reason}",
   "unattendedHistoryEmpty": "No verdicts yet",

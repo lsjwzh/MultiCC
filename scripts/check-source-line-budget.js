@@ -696,9 +696,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // SyncToTerminalConfirm/SyncToTerminalDone/SyncToTerminalFailed/LocalCliActive），
     // 中英各 6 行 = +12 行；同样只往生成物里补键、不重跑生成器，实测 10398/675592。
     // +2 键 x2 语言（quotaRelayBalanceTitle / quotaRelayTokenBalanceTitle）：第三方中转余额条标题，实测 10402/676071。
-    maxLines: 10402,
+    // Existing catalog additions plus the unattended FIFO composer hint:
+    // generated bilingual data measured at 10412 lines / 676631 bytes.
+    maxLines: 10412,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 676071,
+    maxBytes: 676631,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
