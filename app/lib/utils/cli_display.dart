@@ -266,6 +266,16 @@ String _key(String? id) {
   return _cliAliases[key] ?? key;
 }
 
+/// 退役车道 id 折叠到接替它的车道（`claude-exp` -> `claude`），其它 id 原样
+/// 返回（只去首尾空白，不改大小写）。给预设、线路池这类「存过旧 id 的数据」
+/// 读取时用：服务端的车道可用性表已不再下发退役 id，按原样比对会把整份预设
+/// 误判成「车道不可用」。与 Rust 内核 run_config_presets::canonical_lane、
+/// Web auto-provider-editor normalizeCli 同一条规则。
+String canonicalCliLane(String? id) {
+  final lane = (id ?? '').trim();
+  return _cliAliases[lane] ?? lane;
+}
+
 String _firstLetter(String name) {
   final text = name.trim();
   return text.isEmpty ? '?' : text.substring(0, 1).toUpperCase();

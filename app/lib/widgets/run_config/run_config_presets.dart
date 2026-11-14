@@ -13,6 +13,7 @@ import '../../models/message.dart';
 import '../../services/native_vendor_service.dart';
 import '../../services/opencode_models_service.dart';
 import '../../services/settings_service.dart';
+import '../../utils/cli_display.dart';
 import 'run_config_wire.dart';
 
 const runConfigPresetKey = 'multicc.autoProvider.presets.v1';
@@ -79,7 +80,7 @@ List<_PoolRow> _rawPoolRows(Object? candidates) {
         (c['providerId'] ?? '').toString().trim(),
         (c['model'] ?? '').toString().trim(),
         c['autoModel'] == true,
-        (c['cli'] ?? '').toString().trim(),
+        canonicalCliLane((c['cli'] ?? '').toString()),
       ),
   ];
 }
@@ -93,7 +94,7 @@ List<_PoolRow> _selectionPoolRows(SessionProviderSelection selection) {
         c.providerId.trim(),
         (c.model ?? '').trim(),
         c.autoModel,
-        (c.cli ?? '').trim(),
+        canonicalCliLane(c.cli),
       ),
   ];
 }
@@ -357,8 +358,12 @@ class RunConfigPreset {
     final rows = <RunPoolRow>[];
     for (final candidate in sorted) {
       final providerId = (candidate['providerId'] ?? '').toString().trim();
-      var lane = (candidate['cli'] ?? candidate['lane'] ?? '').toString().trim();
-      if (lane.isEmpty) lane = fallbackLane.trim();
+      // 退役车道 id（claude-exp）折叠成接替它的车道：老预设里存的是旧 id，
+      // 而车道可用性表只认新 id；读到就归一，写回时也只会写新 id。
+      var lane = canonicalCliLane(
+        (candidate['cli'] ?? candidate['lane'] ?? '').toString(),
+      );
+      if (lane.isEmpty) lane = canonicalCliLane(fallbackLane);
       if (providerId.isEmpty || lane.isEmpty) return null;
       final tier = RegExp(
         r'^t([1-6])$',
