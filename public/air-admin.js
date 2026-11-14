@@ -788,7 +788,6 @@
     function directoryCard(directory) {
       const button = make('button');
       button.type = 'button';
-      applyRing(button, running.has(directory.id), directory.id);
       const dirTasks = tasks.filter(task => task.dirId === directory.id);
       const activeCount = context.data.taskStats?.[directory.id]?.running ?? dirTasks.filter(isRunning).length;
       const total = context.data.taskStats?.[directory.id]?.total ?? dirTasks.length;
@@ -808,12 +807,13 @@
       button.onclick = () => navigate(directory.id);
       const card = make('article', null, 'directory-card');
       card.dataset.dirId = directory.id;
-      const memo = make('a', t('memoTitle'), 'directory-memo');
-      memo.href = `/memo.html?dirId=${encodeURIComponent(directory.id)}`;
-      memo.target = '_blank';
-      memo.rel = 'noopener';
-      memo.setAttribute('aria-label', `${directory.name} · ${t('memoTitle')}`);
-      card.append(button, memo);
+      applyRing(card, running.has(directory.id), directory.id);
+      // 底栏（备忘 + 快速删除）在 air-directory-card.js。删完只请外壳重取快照：
+      // 外壳拿到新数据会自己重画这一页（render → admin.render(mode, adminContext())）。
+      // 这里不能再拿手上这份 context 画一遍 —— 它攥着删除前的旧快照，画回去就是把
+      // 刚删掉的目录卡原地复活，还会把 currentContext 也污染成旧数据。
+      const foot = root.MultiCCAirDirectoryCard?.foot?.(directory, () => context.refresh?.());
+      card.append(button, ...(foot ? [foot] : []));
       return card;
     }
 

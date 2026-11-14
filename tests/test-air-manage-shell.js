@@ -270,6 +270,36 @@ test('the directory home exposes a guarded delete-workspace entry', () => {
   assert.match(css, /\.directory-toolbar > #directory-delete \{ flex: 1 1 0;/);
 });
 
+// 目录卡片底栏（public/air-directory-card.js）：备忘从卡片外那一行搬进卡片框里，
+// 旁边多一颗快速删除。卡片外观因此从「内层按钮」搬到 article 上，两处画卡的地方
+// （air.js 的目录库、air-admin.js 的控制台目录看法）都只问它要一条底栏。
+test('the directory card keeps its memo inside and borrows the guarded delete', () => {
+  const html = read('public/air.html');
+  const js = read('public/air.js');
+  const admin = read('public/air-admin.js');
+  const css = read('public/air.css');
+  const module = read('public/air-directory-card.js');
+  assert.match(html, /src="air-directory-card\.js"/);
+  assert.ok(html.indexOf('src="air-directory-card.js"') < html.indexOf('src="air.js"'), '底栏模块要先于 air.js');
+  // 底栏 = 备忘 + 快速删除；删除本体不重写，走 air-directory-delete.js 导出的两步确认。
+  assert.match(module, /node\('div', null, 'directory-card-foot'\)/);
+  assert.match(module, /node\('a', t\('memoTitle'\), 'directory-memo'\)/);
+  assert.match(module, /root\.MultiCCAirDirectoryDelete\?\.deleteDirectory\?\.\(directory\)/);
+  assert.match(module, /event\.stopPropagation\(\)/, '删除按钮的点击不能冒泡成「打开目录」');
+  assert.match(module, /root\.MultiCCAirDirectoryCard = \{ foot \}/);
+  // 两处画卡都只取底栏，备忘不再各自挂一行在卡片外面。
+  assert.match(js, /MultiCCAirDirectoryCard\?\.foot\?\.\(directory/);
+  assert.doesNotMatch(js, /node\('a', t\('memoTitle'\), 'directory-memo'\)/);
+  assert.match(admin, /MultiCCAirDirectoryCard\?\.foot\?\.\(directory/);
+  assert.doesNotMatch(admin, /make\('a', t\('memoTitle'\), 'directory-memo'\)/);
+  // 卡片框在 article 上：内边距/描边/圆角都在 .directory-card，卡里的按钮抹平。
+  assert.match(css, /\.directory-card \{[^}]*padding: 20px; border: 1px solid var\(--line\); border-radius: 16px;/);
+  assert.match(css, /\.directory-card > button \{[^}]*padding: 0; border: 0;/);
+  assert.match(css, /\.directory-card-foot \{ display: flex;/);
+  // 删完只请外壳重取快照：拿手上这份旧 context 再画一遍，会把刚删掉的卡片画回来。
+  assert.match(admin, /MultiCCAirDirectoryCard\?\.foot\?\.\(directory, \(\) => context\.refresh\?\.\(\)\)/);
+});
+
 // 那一页自己的骨架与数据：public/artifacts.html + artifacts.css + air-artifacts-page.js。
 // 数据与目录页里原来那块完全同源：URL 里的目录 id → /api/air 里的绝对路径 →
 // ?dir= 作用域的登记表，服务滤掉（服务与文档那一格管），只留一扇到那里的门。

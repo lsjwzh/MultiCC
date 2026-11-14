@@ -50,6 +50,6 @@
  .console-priority-card:nth-child(n+3) { display:none; }
  .console-flow { gap:14px; }
  .console-directories { margin-top:16px; }
- .console-directory-grid .directory-card > button { padding:16px; }
+ .console-directory-grid .directory-card { padding:16px; }
  .air-settings-categories[hidden] { display:none; }
 }

@@ -450,8 +450,11 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(await page.evaluate(`document.getElementById('console-secrets')`), null, '敏感信息集中到设置');
     await page.evaluate(`document.getElementById('library').click(); document.querySelectorAll('.directory-flyout-action')[1].click()`);
     assert.ok(await page.waitFor(`document.getElementById('directory-library').hidden===false`));
-    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-grid button.ring-running').length`), 1, '只有跑着活的目录带圈');
-    assert.equal(await page.evaluate(`document.querySelector('#directory-grid button.ring-running strong').textContent`), '▣ Gapasea', '带圈的是那个目录');
+    // 圈画在整张卡上（article.directory-card），不是卡里那颗按钮：卡片外观挪到
+    // article 之后，备忘与快速删除都在框里，圈画在内层按钮上会变成方角描边。
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-grid .directory-card.ring-running').length`), 1, '只有跑着活的目录带圈');
+    assert.equal(await page.evaluate(`document.querySelector('#directory-grid .directory-card.ring-running strong').textContent`), '▣ Gapasea', '带圈的是那个目录');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-grid .directory-card > button.ring-running').length`), 0, '圈不落在卡里的按钮上');
     // 目录库里也不再有「已收藏」那截尾巴（存储里那条 d1 收藏在上面刻意留着）。
     assert.equal(await page.evaluate(`[...document.querySelectorAll('#directory-grid button small')].some(el=>el.textContent.includes('已收藏'))`), false,
       '目录库不再给收藏过的目录打「已收藏」');

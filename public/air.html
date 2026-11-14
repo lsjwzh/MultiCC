@@ -827,6 +827,9 @@
        会级联删除，所以先确认、有会话再确认一次。同样自持 DOM、不改 air.js 一个字节，
        理由写在 public/air-directory-delete.js 里。 -->
   <script src="air-directory-delete.js"></script>
+  <!-- 目录卡片底栏（备忘 + 快速删除）：air.js / air-admin.js 画卡片时取它，
+       删除流程复用上面 air-directory-delete.js 导出的两步确认。 -->
+  <script src="air-directory-card.js"></script>
   <!-- 定时任务中心（列表 + 唯一那张表单 + 四个动作）本体。排在 air.js 前面：air.js
        启动时调 MultiCCAirSchedules.bind() 把「通知/跳转/刷新/目录快照」递进去。 -->
   <script src="air-schedule-center.js"></script>
