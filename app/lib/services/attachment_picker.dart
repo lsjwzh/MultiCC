@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
@@ -12,19 +13,23 @@ import '../i18n.dart';
 import '../theme.dart';
 import 'settings_service.dart';
 
-/// One in-memory attachment ready for the /api/upload multipart flow.
+/// An attachment held in memory or in a local file for the multipart flow.
 class PickedAttachment {
-  final Uint8List bytes;
+  final Uint8List? bytes;
+  final String? path;
   final String filename;
+  final bool temporary;
 
   /// e.g. 'image/jpeg' from the photo picker; files keep octet-stream.
   final String? mimeType;
 
   const PickedAttachment({
-    required this.bytes,
+    this.bytes,
+    this.path,
     required this.filename,
     this.mimeType,
-  });
+    this.temporary = false,
+  }) : assert(bytes != null || path != null);
 }
 
 /// Pick one chat attachment (file, photo, or video).
@@ -79,17 +84,20 @@ Future<PickedAttachment?> pickChatAttachment(BuildContext context) async {
 }
 
 Future<PickedAttachment?> _pickFromFiles() async {
-  final result = await FilePicker.platform.pickFiles(withData: true);
+  final result = await FilePicker.platform.pickFiles(withData: false);
   if (result == null || result.files.isEmpty) return null;
   final file = result.files.first;
-  if (file.bytes == null) return null;
-  return PickedAttachment(bytes: file.bytes!, filename: file.name);
+  if (file.path == null && file.bytes == null) return null;
+  return PickedAttachment(
+    bytes: file.bytes,
+    path: file.path,
+    filename: file.name,
+  );
 }
 
 Future<PickedAttachment?> _pickFromPhotos() async {
   final media = await ImagePicker().pickMedia();
   if (media == null) return null;
-  final bytes = await media.readAsBytes();
   // PHPicker 不保证提供原始文件名；保留临时文件的扩展名以识别图片和视频。
   final name = media.name;
   final dot = name.lastIndexOf('.');
@@ -102,10 +110,62 @@ Future<PickedAttachment?> _pickFromPhotos() async {
   final filename =
       '${isVideo ? 'VID' : 'IMG'}_${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}$ext';
   return PickedAttachment(
-    bytes: bytes,
+    path: media.path,
     filename: filename,
     mimeType: media.mimeType,
   );
+}
+
+const _uploadLimit = 25 * 1024 * 1024;
+const _videoCompression = MethodChannel(
+  'com.multicc.multicc_app/video_compression',
+);
+
+/// Compress an oversized iOS video without changing the original file.
+@visibleForTesting
+Future<PickedAttachment> prepareChatAttachment(
+  PickedAttachment picked, {
+  bool? isIOS,
+  MethodChannel channel = _videoCompression,
+}) async {
+  final path = picked.path;
+  if (!(isIOS ?? Platform.isIOS) || path == null) return picked;
+  final extension = picked.filename.split('.').last.toLowerCase();
+  final isVideo =
+      (picked.mimeType?.startsWith('video/') ?? false) ||
+      {'mov', 'mp4', 'm4v', 'avi', 'mpeg', 'mpg', '3gp'}.contains(extension);
+  if (!isVideo || await File(path).length() < _uploadLimit) return picked;
+
+  String? compressedPath;
+  try {
+    compressedPath = await channel.invokeMethod<String>('compress', {
+      'path': path,
+      'maxBytes': _uploadLimit - 1,
+    });
+    if (compressedPath == null || compressedPath == path) {
+      throw StateError('Invalid compressed file');
+    }
+    final compressed = File(compressedPath);
+    if (await compressed.length() >= _uploadLimit) {
+      await compressed.delete();
+      throw StateError('Compressed file exceeds limit');
+    }
+    final dot = picked.filename.lastIndexOf('.');
+    final stem = dot > 0 ? picked.filename.substring(0, dot) : picked.filename;
+    final outputExt = compressedPath.split('.').last.toLowerCase();
+    return PickedAttachment(
+      path: compressedPath,
+      filename: '$stem.$outputExt',
+      mimeType: outputExt == 'mp4' ? 'video/mp4' : 'video/quicktime',
+      temporary: true,
+    );
+  } catch (_) {
+    if (compressedPath != null && compressedPath != path) {
+      final file = File(compressedPath);
+      if (await file.exists()) await file.delete();
+    }
+    throw Exception(t('attachVideoCompressionFailed'));
+  }
 }
 
 /// One uploaded attachment: the server-side path plus the name to show on its chip.
@@ -126,35 +186,52 @@ Future<UploadedAttachment> uploadChatAttachment({
   required PickedAttachment picked,
   http.Client? httpClient,
 }) async {
-  final uri = Uri.parse(settings.buildHttpUrl('/api/upload'));
-  final request = http.MultipartRequest('POST', uri);
-  if (settings.token.isNotEmpty) {
-    request.headers['X-Access-Token'] = settings.token;
+  final prepared = await prepareChatAttachment(picked);
+  try {
+    final uri = Uri.parse(settings.buildHttpUrl('/api/upload'));
+    final request = http.MultipartRequest('POST', uri);
+    if (settings.token.isNotEmpty) {
+      request.headers['X-Access-Token'] = settings.token;
+    }
+    request.files.add(
+      prepared.path != null
+          ? await http.MultipartFile.fromPath(
+              'file',
+              prepared.path!,
+              filename: prepared.filename,
+              contentType: prepared.mimeType != null
+                  ? MediaType.parse(prepared.mimeType!)
+                  : MediaType('application', 'octet-stream'),
+            )
+          : http.MultipartFile.fromBytes(
+              'file',
+              prepared.bytes!,
+              filename: prepared.filename,
+              contentType: prepared.mimeType != null
+                  ? MediaType.parse(prepared.mimeType!)
+                  : MediaType('application', 'octet-stream'),
+            ),
+    );
+    final res = await _sendMultipart(request, httpClient);
+    final body = await res.stream.bytesToString();
+    if (res.statusCode != 200) {
+      throw Exception('HTTP ${res.statusCode}');
+    }
+    final json = jsonDecode(body) as Map<String, dynamic>;
+    final path = json['path'] as String?;
+    if (path == null || path.isEmpty) {
+      throw Exception('${json['error'] ?? '上传失败'}');
+    }
+    return UploadedAttachment(
+      path: path,
+      name: json['name'] as String? ?? prepared.filename,
+    );
+  } finally {
+    if (prepared.temporary && prepared.path != null) {
+      final file = File(prepared.path!);
+      if (await file.exists()) await file.delete();
+    }
   }
-  request.files.add(
-    http.MultipartFile.fromBytes(
-      'file',
-      picked.bytes,
-      filename: picked.filename,
-      contentType: picked.mimeType != null
-          ? MediaType.parse(picked.mimeType!)
-          : MediaType('application', 'octet-stream'),
-    ),
-  );
-  final res = await _sendMultipart(request, httpClient);
-  final body = await res.stream.bytesToString();
-  if (res.statusCode != 200) {
-    throw Exception('HTTP ${res.statusCode}');
-  }
-  final json = jsonDecode(body) as Map<String, dynamic>;
-  final path = json['path'] as String?;
-  if (path == null || path.isEmpty) {
-    throw Exception('${json['error'] ?? '上传失败'}');
-  }
-  return UploadedAttachment(
-    path: path,
-    name: json['name'] as String? ?? picked.filename,
-  );
 }
 
 /// 走调用方给的 client（测试拿 MockClient 就能整条桩掉）；没给就自己开一个，
