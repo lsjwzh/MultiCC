@@ -4,6 +4,7 @@ const { sanitizePublicText } = require('../http/public-safety');
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
 const { nativeVendorOf } = require('../providers/native-vendor');
+const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('../providers/native-opencode');
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
@@ -112,6 +113,17 @@ function createProviderRoutes(rawDeps) {
     const nativeVendor = nativeVendorOf(id);
     if (nativeVendor !== null) {
       return cli === nativeVendor.cli ? { ok: true, value: String(id) } : { ok: false };
+    }
+    // OpenCode's own native lines (`opencode-native:<id>`) are legal Auto pool
+    // candidates and are persisted as session.provider; the new-task form replays
+    // that stored line as an explicit provider, so revalidation must accept it.
+    // Structural only, mirroring the Rust candidate validator: opencode lane,
+    // id shape, never a store lookup.
+    const openCodeNative = nativeOpenCodeId(id);
+    if (openCodeNative !== null) {
+      return cli === 'opencode' && NATIVE_OPENCODE_ID.test(openCodeNative)
+        ? { ok: true, value: String(id) }
+        : { ok: false };
     }
     // Qoder CN remains vendor-managed. OpenCode and ZCode both support the two
     // MultiCC pools, so their provider ids are looked up globally and then
