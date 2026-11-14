@@ -223,6 +223,7 @@ function createOrchestrationRuntime({
     getPendingUserInput: sessionId => getSessionRecoveryState(sessionId)?.pendingUserInput || null,
     getTurnId: sessionId => getSessionRecoveryState(sessionId)?.turnId || null,
     getUnattendedState: sessionId => getSessionRecoveryState(sessionId)?.unattended || null,
+    getRunActive: sessionId => getSessionRecoveryState(sessionId)?.runActive ?? null,
     log,
   });
   const pendingBySession = new Map();

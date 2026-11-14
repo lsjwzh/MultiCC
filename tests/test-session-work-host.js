@@ -902,6 +902,9 @@ test('gateway recovery projects a durable ended P turn to D, but never invents a
   assert.deepEqual(durable.host.recoveryState('s1'), {
     classifyState: 'D',
     unattended: null,
+    // Run-liveness proof for the native selector's dead-letter rule: this
+    // fixture's run is still live, so a stale P letter must fail closed.
+    runActive: true,
     startedAt: 100,
     endedAt: 200,
     taskId: 'gateway-task',

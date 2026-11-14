@@ -441,6 +441,13 @@ fn unattended_select<'a>(
     value.set(c"state", state)?;
     value.set(c"now", request.get(c"now")?)?;
     value.set(c"hasActive", request.from_value(&V::Bool(has_active))?)?;
+    // Run-liveness proof for the core's dead-letter rule. Only forwarded when
+    // the caller supplies a boolean; anything else stays absent so the core
+    // fails closed (a resident run may own a processing letter).
+    let run_active = request.get(c"runActive")?;
+    if run_active.kind()? == napi::sys::ValueType::napi_boolean {
+        value.set(c"runActive", run_active)?;
+    }
     value.set(c"classifyState", cls)?;
     value.set(c"pendingRequestId", p)?;
     value.set(c"items", list)?;

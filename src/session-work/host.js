@@ -539,6 +539,10 @@ function createSessionWorkHost(deps = {}) {
     return {
       classifyState: recoveredClassify,
       unattended: record?.unattended || null,
+      // Run-liveness proof for the native selector's dead-letter rule: a
+      // processing letter with neither a staged delivery nor a live run is a
+      // leftover from a shutdown-killed turn, not a turn to wait for.
+      runActive: isRunActive(sessionId),
       startedAt: state.startedAt,
       endedAt,
       taskId: deps.getChatSession(sessionId)?._currentTaskId || null,
