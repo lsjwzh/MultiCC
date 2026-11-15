@@ -9,6 +9,7 @@ const core = require('../src/task-board/core');
 const planning = require('../src/task-board/planning');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
 const { mkRuntime } = require('./helpers/task-board-runtime');
+const { retiredRoutes } = require('./helpers/task-board-ports');
 
 const EMPTY_BOARD = core.createEmptyBoard();
 // ── proactive planning layer ───────────────────────────────────────────────
@@ -21,13 +22,10 @@ function planningResponse() {
   };
 }
 
+// planning 的 HTTP 梯子已搬到 Rust 前门；这里驱动宿主端口（revision 校验、
+// 回滚、持久化失败的真实 Node 行为），按退休时的 URL 取端口。
 function planningRoutes(runtime) {
-  const routes = new Map();
-  runtime.mountRoutes({
-    get: (route, handler) => routes.set(`GET ${route}`, handler),
-    post: (route, handler) => routes.set(`POST ${route}`, handler),
-  });
-  return routes;
+  return retiredRoutes(runtime.routePorts);
 }
 
 test('planning normalization migrates origin without guessing stage from runState and round-trips fields', () => {

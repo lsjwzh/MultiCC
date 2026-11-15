@@ -29,15 +29,12 @@ function createAttributionSettings({ initial = null } = {}) {
     return { mode, changed: true, previous };
   }
 
-  // Only the read route lives here. The write is a host setting: it belongs to
-  // src/routes/host-write.js, which owns the local-only check and the
-  // persist→apply→rollback order, so there is exactly one such layer.
-  function mount(app) {
-    app.get('/api/settings/task-attribution', (_req, res) =>
-      res.json({ mode: getMode(), modes: [...MODES], default: DEFAULT_MODE }));
-  }
-
-  return { getMode, setMode, mount };
+  // The read route moved to the Rust front door
+  // (native/gateway/src/app/task_routes.rs): `{ mode, modes, default }` is
+  // assembled there from multicc_core::task_routing, so this module only holds
+  // the live tier. The write was never here: it is a host setting owned by
+  // src/routes/host-write.js (local-only check, persist→apply→rollback).
+  return { getMode, setMode };
 }
 
 function createAttributionSettingsFromEnv() {

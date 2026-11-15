@@ -141,28 +141,47 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/router-tool-host.js',
     // One host port per migrated route group: each internal listener accepts
     // loopback calls only, so a request forwarded from a real client is 404.
+    'src/routes/account-routes-host.js',
     'src/routes/agent-resources-host.js',
     'src/routes/auth.js',
+    'src/routes/directory-host.js',
+    'src/routes/docs-memory-host.js',
+    'src/routes/events-host.js',
     'src/routes/file-transfer-host.js',
+    'src/routes/host-ops-host.js',
     'src/routes/host-power.js',
     'src/routes/host-read-host.js',
     'src/routes/host-write.js',
     'src/routes/model-catalogs-host.js',
+    'src/routes/orchestration-host.js',
     'src/routes/plugins.js',
     'src/routes/provider-balance-host.js',
     'src/routes/provider-relay-host.js',
     // Passes the dependency through to the provider runtime, does not decide.
     'src/routes/providers-host.js',
     'src/routes/providers.js',
+    'src/routes/push-host.js',
+    'src/routes/quota-host.js',
+    'src/routes/release-history-host.js',
     'src/routes/scan-history-host.js',
     'src/routes/secrets-vault-host.js',
+    'src/routes/session-admin-host.js',
+    'src/routes/session-git-host.js',
+    // The runtime only forwards the injected probe to the host port.
+    'src/routes/session-git.js',
+    'src/routes/session-routes-host.js',
+    'src/routes/share-machines-host.js',
     'src/routes/subagent-defaults-host.js',
     'src/routes/system-host.js',
+    'src/routes/task-routes-host.js',
+    'src/routes/task-shell-host.js',
     'src/routes/token-usage-host.js',
     'src/routes/turn-ledger-host.js',
     'src/routes/voice-gateway-host.js',
     'src/routes/voice-host.js',
     'src/routes/voice-runtime-host.js',
+    // The air host port lives with its runtime rather than under routes/.
+    'src/workspace/air-routes-host.js',
     'src/ws/connection-router.js',
   ]);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
@@ -177,9 +196,12 @@ test('locality checks stay limited to authentication and sensitive host controls
   assert.match(nativeHostRead, /http_gate::is_local_request\(peer, &ctx\.headers\)/,
     'canEdit must be decided by the Rust front door on the real client peer');
   assert.match(hostWriteRoutes, /requireLocal\(deps, req, res/);
+  // task-board 的 16 条公开路由已搬去 Rust 前门；Node 只剩回环宿主端口。
+  // 不变量不变：需要认证的 API 闸门必须挂在宿主端口之前，否则内部端口会先
+  // 接住本该被外层鉴权挡下的请求。
   assert.ok(
-    server.indexOf('authRuntime.mountRoutes(app)') < server.indexOf('taskBoardRuntime.mountRoutes(app)'),
-    'the authenticated API gate must be mounted before task-board routes',
+    server.indexOf('authRuntime.mountRoutes(app)') < server.indexOf('.mountTaskRoutesHostRoute(app,'),
+    'the authenticated API gate must be mounted before the task-routes host port',
   );
   assert.doesNotMatch(server, /\bisExternalProxy\s*\(/, 'removed inline helper must have no stale callers');
   assert.doesNotMatch(authRoutes, /\bisExternalProxy\s*\(/, 'auth module must not reintroduce an inline helper');

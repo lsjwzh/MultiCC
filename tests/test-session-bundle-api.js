@@ -15,6 +15,20 @@ const createLegacySession = require('./helpers/legacy-task-session');
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.join(__dirname, '..');
+
+// The session-management cluster's public routes (bundle export/import, memory,
+// lifecycle, profile, create) are claimed by the Rust front door
+// (native/gateway/src/app/session_routes.rs), so an isolated host has to start
+// the real gateway with server.js as its child instead of bare node. The two
+// binary zip transports (bundle.zip / import-zip) still run in Node and are
+// relayed by the front door.
+function gatewayBinary() {
+  const addon = process.env.MULTICC_RUST_ADDON
+    || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(ROOT, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  return path.join(path.dirname(addon),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
 const PORT = 41000 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'session-bundle-api-test';
@@ -27,8 +41,15 @@ const LEGACY_SECRET = 'sk-legacy-bundle-payload-token';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-session-bundle-'));
 const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
 const project = path.join(tmpRoot, 'project');
+const binDir = path.join(tmpRoot, 'bin');
 fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(project, { recursive: true });
+fs.mkdirSync(binDir, { recursive: true });
+// The handoff fixture never prompts a CLI, but session creation probes the
+// executables; keep stubs on PATH so nothing outside the tmp root is touched.
+for (const cli of ['claude', 'codex', 'opencode', 'zcode', 'qoderclicn']) {
+  fs.writeFileSync(path.join(binDir, cli), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+}
 
 let server = null;
 let stderr = '';
@@ -106,10 +127,11 @@ async function waitForServer() {
 }
 
 async function startServer() {
-  server = spawn(process.execPath, ['server.js'], {
+  server = spawn(gatewayBinary(), ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot,
-           MULTICC_MEMORY_ROOT: path.join(dataRoot, 'memories') },
+           MULTICC_MEMORY_ROOT: path.join(dataRoot, 'memories'),
+           PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}` },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', chunk => { stderr += chunk.toString(); });

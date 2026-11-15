@@ -429,7 +429,6 @@ function createTaskShellHost(deps) {
         },
         history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
           deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) });
-      attributionSettings.mount(app);
       // 独立继续的等待队列由服务端推进：重启后恢复，不依赖页面开着。
       getRuntime().independent.start();
       // 存量分离的可见交接修复：旧版本分离时不播种历史、不迁移待答问题、

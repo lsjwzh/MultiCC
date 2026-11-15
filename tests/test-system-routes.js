@@ -20,7 +20,8 @@ const path = require('node:path');
 const {
   createApkInfoHandler,
   createIosOtaInfoHandler,
-  mountSystemRoutes,
+  mountSystemHostRoutes,
+  mountApkDownload,
 } = require('../src/routes/system');
 const { mountSystemHostRoute, HOST_PATH } = require('../src/routes/system-host');
 const { createApkDistribution } = require('../src/apk-distribution');
@@ -427,7 +428,7 @@ test('zero-byte, directory, malformed manifest, and invalid package versions fai
   }
 });
 
-test('system route mount owns only the app-binary and host-repair routes left in Node', async () => {
+test('the real app keeps only /multicc.apk; the rest mount on the release-history host port', async () => {
   const paths = [];
   const apkDistribution = {
     async info() { return { exists: false, localExists: false, source: null }; },
@@ -437,52 +438,42 @@ test('system route mount owns only the app-binary and host-repair routes left in
     info() { return { exists: false, installable: false, installPage: '/ios-ota' }; },
     manifestHandler() {},
   };
-  mountSystemRoutes({
+  const recorder = {
     get(route, handler) { paths.push(['GET', route, typeof handler]); },
     post(route, handler) { paths.push(['POST', route, typeof handler]); },
-  }, { apkDistribution, iosOta });
+  };
+  // 真实 app：只有 /multicc.apk。有本地文件时它 `next()` 落到 express.static 的
+  // 流式 sendFile（Range/ETag/Last-Modified），所以无法在前门拆分。
+  mountApkDownload(recorder, { apkDistribution, iosOta });
+  assert.deepEqual(paths, [['GET', '/multicc.apk', 'function']]);
+
+  // 捕获应用（release-history 宿主端口）：其余三条 + ios-udid 的三条。
+  paths.length = 0;
+  mountSystemHostRoutes(recorder, { apkDistribution, iosOta });
   assert.deepEqual(paths, [
     ['GET', '/api/apk-info', 'function'],
-    ['GET', '/multicc.apk', 'function'],
     ['GET', '/api/ios-ota-info', 'function'],
     ['GET', '/ios-ota/manifest.plist', 'function'],
     ['GET', '/ios-ota/udid.mobileconfig', 'function'],
     ['GET', '/ios-ota/udid/result/:token', 'function'],
     ['POST', '/ios-ota/udid/callback/:token', 'function'],
-    ['GET', '/api/system/developer-tools', 'function'],
-    ['POST', '/api/system/developer-tools/install', 'function'],
-    ['GET', '/api/system/developer-tools/install-git', 'function'],
-    ['POST', '/api/system/developer-tools/install-git', 'function'],
-    // Host-repair surfaces, all mounted here rather than from server.js because
-    // they need no host state. Listing them exactly is the point: a new route
-    // that grants privileges or opens a settings pane should not slip in
-    // unnoticed. The sudoers password-free helper used to be one of these; the
-    // powerd LaunchDaemon (installed by the one admin prompt that 「关盖运行」
-    // already needs) replaced it, and it has no route of its own.
-    ['GET', '/api/system/disk-access', 'function'],
-    ['POST', '/api/system/disk-access/open', 'function'],
-    // Agent desktop-permission guidance (lid mode): reads which macOS
-    // permissions the Agent holds, and opens the matching System Settings
-    // pane. Same reviewed family as disk-access/open above.
-    ['GET', '/api/system/agent-permissions', 'function'],
-    ['POST', '/api/system/agent-permissions/open', 'function'],
-    ['POST', '/api/system/agent-permissions/restart', 'function'],
-    // Shared-Agent install state (who installed it, which build) and the
-    // user's explicit "use this copy's Agent" in a same-build conflict.
-    ['GET', '/api/system/agent-install', 'function'],
-    ['POST', '/api/system/agent-install/replace', 'function'],
-    // Repair terminal (src/routes/ops-terminal.js): runs a shell command as
-    // the service account for a host that cannot add its first directory.
-    // The widest grant in this family, so it is listed one route at a time:
-    // probe, job status, start, stop. It adds no privilege an authenticated
-    // user lacks (the session terminal runs the same account).
-    ['GET', '/api/system/ops-env', 'function'],
-    ['GET', '/api/system/ops-run', 'function'],
-    ['POST', '/api/system/ops-run', 'function'],
-    ['POST', '/api/system/ops-run/stop', 'function'],
     // /api/server-info、/api/version-check、/api/debug/codex-proxy-trace 已由
     // Rust 前门独占（docs/gateway.md §9），不再出现在这张表里。
+    // 宿主修复面板（developer-tools / macos-privacy / ops-terminal）随宿主与
+    // 系统操作簇迁到 Rust 前门，改由 src/routes/host-ops-host.js 的捕获应用
+    // 挂载；下面用源码断言把这条边界钉住，避免新的高权限路由悄悄回到这里。
   ]);
+  // 已迁的六条不得同时回到真实 app（双轨守卫）。
+  const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.doesNotMatch(serverSource, /mountSystemHostRoutes\(app/);
+  assert.match(serverSource, /mountApkDownload\(app/);
+  const systemSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'system.js'), 'utf8');
+  const hostOpsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-ops-host.js'), 'utf8');
+  assert.doesNotMatch(systemSource, /createDeveloperToolsRoutes|createMacosPrivacyRoutes|createOpsTerminalRoutes/);
+  for (const factory of ['createDeveloperToolsRoutes', 'createMacosPrivacyRoutes', 'createOpsTerminalRoutes']) {
+    assert.match(hostOpsSource, new RegExp(factory));
+  }
+  assert.match(hostOpsSource, /mountEnvDoctorRoutes|mountDoctorRoutes/);
 
   const response = { json(value) { this.body = value; } };
   await createApkInfoHandler({ apkDistribution })({}, response, error => { throw error; });

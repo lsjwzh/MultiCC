@@ -1,10 +1,16 @@
 'use strict';
 
+// The task-shell public routes are served by the Rust front door now; this
+// file drives the one loopback host port (/api/__host/task-shell) that still
+// runs in Node. A successful op answers {ok:true, value}; a refusal carries the
+// facts the retired `route()` catch arm used to project (code, message, the
+// status Express would have sent, and the conflict/receipt fields). The
+// front-door status codes and DTO key order are covered by
+// native/gateway/tests/task_shell.rs and the migration differential.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const express = require('express');
 const { fixture } = require('./helpers/task-shell');
-const { mountTaskShellRoutes, pageTaskHistory } = require('../src/task-shell/routes');
+const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 const { createTaskOperations } = require('../src/task-shell/task-operations');
 const { createClient } = require('../public/task-shell-client');
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
@@ -27,24 +33,18 @@ test('真实发送接口在模型路由和工作区准备期间已经返回，�
     hasPersistedDelivery: async (sessionId, id) => deliveries.some(d => d.sessionId === sessionId && d.opts.deliveryId === id),
   });
   const created = await f.runtime.createStandalone({ dirId: 'd1', title: '异步发送验证', cli: 'codex', clientMsgId: 'create' });
-  const app = express(); app.use(express.json());
-  mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise(resolve => server.once('listening', resolve));
+  const { ok } = mountHost(fakeApp(), { getRuntime: () => f.runtime });
   try {
-    const send = () => fetch(`http://127.0.0.1:${server.address().port}/api/task-shell-tasks/${created.taskId}/messages`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(2000),
-      body: JSON.stringify({ text: '请执行任务', clientMsgId: 'message-1', intent: 'work' }),
-    });
-    const response = await send(), receipt = await response.json();
-    assert.equal(response.status, 200);
+    const send = () => ok({ op: 'task-message', taskId: created.taskId,
+      body: { text: '请执行任务', clientMsgId: 'message-1', intent: 'work' } });
+    const receipt = await send();
     assert.equal(receipt.ok, true);
     assert.equal(deliveries.length, 0, '准备尚未放行时，接口已经返回');
     assert.equal(f.store.get('receipt', receipt.receiptId).status, 'accepted');
     const rows = await queue.outbox.list({ sessionId: created.sessionId });
     assert.equal(rows.length, 1);
     assert.equal(rows[0].payload.message, '请执行任务');
-    assert.deepEqual(await (await send()).json(), receipt);
+    assert.deepEqual(await send(), receipt);
     assert.equal(deliveries.length, 0);
     releaseRouting(); releaseWorkspace();
     await queue.tick();
@@ -56,106 +56,64 @@ test('真实发送接口在模型路由和工作区准备期间已经返回，�
     assert.equal(deliveries.length, 1);
   } finally {
     releaseRouting(); releaseWorkspace();
-    await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     await queue.dispose();
   }
 });
 
-test('read-only task history pages keep exact task messages and stable cursors', () => {
-  const messages = Array.from({ length: 7 }, (_, index) => ({ id: `session:m${index}`, sourceMessageId: `m${index}`, role: 'assistant', content: `${index}` }));
-  const latest = pageTaskHistory(messages, { limit: 3 });
-  assert.deepEqual(latest.messages.map(message => message.id), ['session:m4', 'session:m5', 'session:m6']);
-  assert.equal(latest.hasMore, true);
-  const older = pageTaskHistory(messages, { before: 'session:m4', limit: 3 });
-  assert.deepEqual(older.messages.map(message => message.id), ['session:m1', 'session:m2', 'session:m3']);
-  assert.equal(older.hasMore, true);
-  assert.deepEqual(pageTaskHistory(messages, { around: 'm0', limit: 3 }), {
-    messages: messages.slice(0, 2), hasMore: false, found: true, hasNewer: true,
-  });
-  assert.deepEqual(pageTaskHistory(messages, { before: 'missing' }), { messages: [], hasMore: false, found: false });
-});
-
-test('HTTP routes execute and preserve structured errors, links and receipt ownership', async t => {
-  const f = fixture(t), app = express(); app.use(express.json());
-  mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise(resolve => server.once('listening', resolve));
-  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const api = async (route, body) => {
-    const response = await fetch(base + route, { method: body ? 'POST' : 'GET',
-      headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
-    return { status: response.status, data: await response.json() };
-  };
-  const bad = await api(`/api/task-shells/${f.a.id}/messages`, { text: 'invalid' });
+test('host port executes and preserves structured errors, links and receipt ownership', async t => {
+  const f = fixture(t);
+  const { ok, fail } = mountHost(fakeApp(), { getRuntime: () => f.runtime });
+  const bad = await fail({ op: 'shell-message', shellId: f.a.id, body: { text: 'invalid' } });
   assert.equal(bad.status, 400); assert.equal(f.creations.length, 0);
-  const first = await api(`/api/task-shells/${f.a.id}/messages`, { text: 'work', clientMsgId: 'first', intent: 'work' });
-  assert.equal(first.status, 200); assert.equal(first.data.ok, true);
-  const trace = await api(`/api/sessions/${first.data.sessionId}/context?traceId=${first.data.receiptId}`);
-  assert.equal(trace.status, 200);
-  assert.equal(trace.data.traceId, first.data.receiptId);
-  assert.equal(trace.data.currentTask.taskId, first.data.taskId);
-  const denied = await api(`/api/task-shells/${f.b.id}/receipts/${first.data.receiptId}/retry`, {});
+  const first = await ok({ op: 'shell-message', shellId: f.a.id, body: { text: 'work', clientMsgId: 'first', intent: 'work' } });
+  assert.equal(first.ok, true);
+  const trace = await ok({ op: 'context', sessionId: first.sessionId, traceId: first.receiptId, includeMessages: false });
+  assert.equal(trace.traceId, first.receiptId);
+  assert.equal(trace.currentTask.taskId, first.taskId);
+  const denied = await fail({ op: 'receipt-retry', shellId: f.b.id, receiptId: first.receiptId });
   assert.equal(denied.status, 404);
-  assert.equal((await api(`/api/task-shells/${f.b.id}/links`, { taskId: first.data.taskId })).status, 200);
-  const resolved = await api(`/api/task-shells/${f.b.id}/tasks/resolve`, { taskId: first.data.taskId });
+  await ok({ op: 'links', shellId: f.b.id, taskId: first.taskId });
+  const resolved = await fail({ op: 'tasks-resolve', shellId: f.b.id, taskId: first.taskId });
   assert.equal(resolved.status, 409);
   assert.equal(f.runtime.view(f.b.id).currentTaskId, null);
-  const detail = await api(`/api/task-shells/${f.b.id}/tasks/${first.data.taskId}`);
-  assert.equal(detail.data.execution.busy, true);
+  const detail = await ok({ op: 'detail', shellId: f.b.id, taskId: first.taskId });
+  assert.equal(detail.execution.busy, true);
 });
 
 test('the shell scope hands the browser the input cursor as a display handle', async t => {
   const f = fixture(t, { taskShortCode: id => (id === '' ? '' : 'CURR') });
-  const app = express(); app.use(express.json());
-  mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise(resolve => server.once('listening', resolve));
-  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const scope = async () => (await fetch(`${base}/api/task-shells/${f.a.id}/chat`)).json();
+  const { ok } = mountHost(fakeApp(), { getRuntime: () => f.runtime });
+  const scope = () => ok({ op: 'chat', shellId: f.a.id });
   const before = await scope();
   assert.equal(before.taskId, null, 'a shell with no current task has no cursor to show');
   assert.equal(before.taskShortCode, '');
-  const sent = await (await fetch(`${base}/api/task-shells/${f.a.id}/messages`, { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'work', clientMsgId: 'first', intent: 'work' }) })).json();
+  const sent = await ok({ op: 'shell-message', shellId: f.a.id, body: { text: 'work', clientMsgId: 'first', intent: 'work' } });
   const after = await scope();
   assert.equal(after.taskId, sent.taskId, 'the cursor the chat page shows is the one a message is attributed to');
   assert.equal(after.taskShortCode, 'CURR');
 });
 
-test('a re-attribution over a running turn is queued and can be taken back over HTTP', async t => {
+test('a re-attribution over a running turn is queued and can be taken back through the host port', async t => {
   const f = fixture(t);
   const operations = createTaskOperations({
     store: f.store, revisionOf: () => 'rev-1', isTurnBusy: () => true,
     resolveTarget: async () => ({ id: 'tsk_x' }), taskTitle: id => `Task ${id}`,
     scopeOf: shellId => f.runtime.chatScope(shellId),
   });
-  const app = express(); app.use(express.json());
-  mountTaskShellRoutes(app, { getRuntime: () => f.runtime, taskOperations: () => operations });
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise(resolve => server.once('listening', resolve));
-  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const api = async (route, body) => {
-    const response = await fetch(base + route, { method: body ? 'POST' : 'GET',
-      headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
-    return { status: response.status, data: await response.json() };
-  };
+  const { ok, fail } = mountHost(fakeApp(), { getRuntime: () => f.runtime, taskOperations: () => operations });
   const turns = [{ sessionId: 'a', turnId: 'turn-1' }], target = { taskId: 'tsk_x' };
-  const refused = await api(`/api/task-shells/${f.a.id}/task-operations`, { turns, target, clientMsgId: 'm1' });
+  const refused = await fail({ op: 'task-operations-apply', shellId: f.a.id, turns, target, clientMsgId: 'm1' });
   assert.equal(refused.status, 409);
-  assert.equal(refused.data.code, 'turn_busy', 'without `queue` the caller still gets a refusal');
-  const queued = await api(`/api/task-shells/${f.a.id}/task-operations`, { turns, target, clientMsgId: 'm1', queue: true });
-  assert.equal(queued.status, 200);
-  assert.equal(queued.data.status, 'queued');
-  assert.equal(queued.data.queuedAt > 0, true);
+  assert.equal(refused.code, 'turn_busy', 'without `queue` the caller still gets a refusal');
+  const queued = await ok({ op: 'task-operations-apply', shellId: f.a.id, turns, target, clientMsgId: 'm1', queue: true });
+  assert.equal(queued.status, 'queued');
+  assert.equal(queued.queuedAt > 0, true);
   assert.deepEqual(f.store.list('turn-attr'), [], 'queueing writes no attribution');
-  const listed = await api(`/api/task-shells/${f.a.id}/task-operations`);
-  assert.deepEqual(listed.data.operations.map(row => row.status), ['queued']);
-  const cancelled = await api(`/api/task-operations/${queued.data.id}/cancel`, { clientMsgId: 'c1' });
-  assert.equal(cancelled.data.status, 'cancelled');
-  assert.equal((await api(`/api/task-operations/${queued.data.id}/cancel`, {})).data.status, 'cancelled');
+  const listed = await ok({ op: 'task-operations-list', shellId: f.a.id });
+  assert.deepEqual(listed.map(row => row.status), ['queued']);
+  const cancelled = await ok({ op: 'task-operations-cancel', operationId: queued.id, clientMsgId: 'c1' });
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal((await ok({ op: 'task-operations-cancel', operationId: queued.id })).status, 'cancelled');
 });
 
 test('browser transport preserves payload and key after timeout/reload; no silent reroute', async () => {
@@ -185,42 +143,32 @@ test('browser transport allows correcting a definitively rejected unreserved req
 });
 
 test('the index can move the next-input target with a cursor CAS, and never by accident', async t => {
-  const f = fixture(t), app = express(); app.use(express.json());
-  mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise(resolve => server.once('listening', resolve));
-  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const api = async (route, body) => {
-    const response = await fetch(base + route, { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-    return { status: response.status, data: await response.json() };
-  };
-  const first = await api(`/api/task-shells/${f.a.id}/messages`, { text: 'work', clientMsgId: 'w1', intent: 'work' });
-  const second = await api(`/api/task-shells/${f.a.id}/messages`, { text: 'other', clientMsgId: 'w2', intent: 'work', newTask: true });
-  const secondTaskId = second.data.taskId;
-  assert.notEqual(first.data.taskId, secondTaskId, 'the second message really is another task');
+  const f = fixture(t);
+  const { ok, fail } = mountHost(fakeApp(), { getRuntime: () => f.runtime });
+  const first = await ok({ op: 'shell-message', shellId: f.a.id, body: { text: 'work', clientMsgId: 'w1', intent: 'work' } });
+  const second = await ok({ op: 'shell-message', shellId: f.a.id, body: { text: 'other', clientMsgId: 'w2', intent: 'work', newTask: true } });
+  const secondTaskId = second.taskId;
+  assert.notEqual(first.taskId, secondTaskId, 'the second message really is another task');
   assert.equal(f.runtime.view(f.a.id).currentTaskId, secondTaskId);
 
-  const moved = await api(`/api/task-shells/${f.a.id}/select-target`, { taskId: first.data.taskId });
-  assert.equal(moved.status, 200);
-  assert.equal(moved.data.ok, true);
-  assert.equal(moved.data.changed, true);
-  assert.equal(f.runtime.view(f.a.id).currentTaskId, first.data.taskId);
+  const moved = await ok({ op: 'select-target', shellId: f.a.id, taskId: first.taskId });
+  assert.equal(moved.ok, true);
+  assert.equal(moved.changed, true);
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, first.taskId);
   // The cursor CAS is what keeps two open pages from overwriting each other.
-  const stale = await api(`/api/task-shells/${f.a.id}/select-target`,
-    { taskId: secondTaskId, expectedCursorVersion: moved.data.cursorVersion - 1 });
+  const stale = await fail({ op: 'select-target', shellId: f.a.id,
+    taskId: secondTaskId, expectedCursorVersion: moved.cursorVersion - 1 });
   assert.equal(stale.status, 409);
-  assert.equal(stale.data.code, 'stale_shell_cursor');
-  assert.equal(f.runtime.view(f.a.id).currentTaskId, first.data.taskId, 'a stale write changes nothing');
-  const same = await api(`/api/task-shells/${f.a.id}/select-target`, { taskId: first.data.taskId });
-  assert.equal(same.data.changed, false, 'choosing the current target is a no-op, not a cursor bump');
-  assert.equal(f.runtime.view(f.a.id).cursorVersion, moved.data.cursorVersion);
+  assert.equal(stale.code, 'stale_shell_cursor');
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, first.taskId, 'a stale write changes nothing');
+  const same = await ok({ op: 'select-target', shellId: f.a.id, taskId: first.taskId });
+  assert.equal(same.changed, false, 'choosing the current target is a no-op, not a cursor bump');
+  assert.equal(f.runtime.view(f.a.id).cursorVersion, moved.cursorVersion);
 
   // Identity, attribution and the task itself are untouched: this is a cursor.
-  const other = await api(`/api/task-shells/${f.b.id}/select-target`, { taskId: first.data.taskId });
+  const other = await fail({ op: 'select-target', shellId: f.b.id, taskId: first.taskId });
   assert.equal(other.status, 403);
-  assert.equal(other.data.code, 'task_not_linked');
-  const missing = await api(`/api/task-shells/${f.a.id}/select-target`, { taskId: 'tsk_missing' });
+  assert.equal(other.code, 'task_not_linked');
+  const missing = await fail({ op: 'select-target', shellId: f.a.id, taskId: 'tsk_missing' });
   assert.equal(missing.status, 403);
 });

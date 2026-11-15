@@ -3,11 +3,8 @@
 const { sanitizePublicText } = require('../http/public-safety');
 const { isSettledLetter } = require('../classify/vocab');
 const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
-const { BusinessPushRequestError } = require('./business');
-const { mountBarkDeviceRoutes } = require('./bark-devices');
 const { notificationCopy } = require('./notification-copy');
 const channelRegistry = require('../plugins/channel-registry');
-const { mountChannelSubscriptionRoutes } = require('./channel-subscriptions');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 const DEFAULT_IDLE_MS = 6000;
@@ -352,124 +349,6 @@ function createPushRuntime(options) {
     return payload;
   }
 
-  function route(handler) {
-    return function guardedPushRoute(req, res, next) {
-      Promise.resolve().then(() => handler(req, res)).catch(error => {
-        if (res.headersSent && typeof next === 'function') return next(error);
-        warn('request failed', error);
-        return res.status(500).json({ error: 'push request failed' });
-      });
-    };
-  }
-
-  function mountRoutes(app) {
-    if (!app || typeof app.post !== 'function' || typeof app.delete !== 'function') {
-      throw new TypeError('push routes require Express post/delete');
-    }
-    if (push.fcmDevices) push.fcmDevices.mountRoutes(app, route);
-    if (push.barkDevices) mountBarkDeviceRoutes(app, push.barkDevices, route);
-    if (push.channelSubscriptions && typeof app.get === 'function' && typeof app.put === 'function') {
-      mountChannelSubscriptionRoutes(app, push.channelSubscriptions, route, () => {
-        const fcm = push.fcmDevices && typeof push.fcmDevices.list === 'function' ? push.fcmDevices.list().filter(device => device.enabled !== false).length
-          : (push.fcmDevices?.hasEnabled() ? 1 : 0);
-        const bark = Boolean(push.hasBarkDevices ? push.hasBarkDevices() : push.cfg.BARK_URL);
-        const webhook = Boolean(push.cfg.WEBHOOK_URL);
-        return { webPush: push.subscriptions.size, fcm, bark, webhook, any: push.subscriptions.size > 0 || fcm > 0 || bark || webhook };
-      });
-    }
-    app.post('/api/push/subscribe', route(async (req, res) => {
-      const subscription = req.body;
-      if (!subscription || !subscription.endpoint) {
-        return res.status(400).json({ error: 'Invalid subscription' });
-      }
-      const previous = push.subscriptions.get(subscription.endpoint);
-      const existed = push.subscriptions.has(subscription.endpoint);
-      push.subscriptions.set(subscription.endpoint, subscription);
-      try {
-        await push.saveSubscriptions();
-      } catch (error) {
-        if (existed) push.subscriptions.set(subscription.endpoint, previous);
-        else push.subscriptions.delete(subscription.endpoint);
-        throw error;
-      }
-      try { logger.log(`[multicc/push] New subscription (${push.subscriptions.size} total)`); } catch (_) {}
-      return res.json({ ok: true });
-    }));
-    app.delete('/api/push/subscribe', route(async (req, res) => {
-      const { endpoint } = req.body || {};
-      if (endpoint && push.subscriptions.has(endpoint)) {
-        const previous = push.subscriptions.get(endpoint);
-        push.subscriptions.delete(endpoint);
-        try {
-          await push.saveSubscriptions();
-        } catch (error) {
-          push.subscriptions.set(endpoint, previous);
-          throw error;
-        }
-      }
-      return res.json({ ok: true });
-    }));
-    app.post('/api/push/validate', route((req, res) => {
-      const { endpoint } = req.body || {};
-      if (!endpoint) return res.status(400).json({ error: 'Missing endpoint' });
-      return res.json({ known: push.subscriptions.has(endpoint) });
-    }));
-    app.post('/api/push/test', route(async (req, res) => {
-      const payload = {
-        title: 'MultiCC Test',
-        body: `Push test at ${new Date(now()).toLocaleTimeString()}`,
-        type: 'test',
-        tag: 'multicc-test',
-        url: '/manage',
-      };
-      await push.sendPushToAll(payload);
-      await push.sendBarkNotification(payload.title, payload.body, payload.url);
-      await push.sendWebhookNotification(payload);
-      return res.json({ ok: true, subscribers: push.subscriptions.size });
-    }));
-    app.post('/api/push/notify', route(async (req, res) => {
-      if (typeof req.is !== 'function' || !req.is('application/json')) {
-        return res.status(415).json({
-          ok: false,
-          delivered: false,
-          deduped: false,
-          error: 'UNSUPPORTED_MEDIA_TYPE',
-        });
-      }
-      try {
-        const result = await businessPush.notify(req.body);
-        return res.status(result.statusCode).json(result.body);
-      } catch (error) {
-        if (!(error instanceof BusinessPushRequestError)) throw error;
-        return res.status(error.statusCode).json({
-          ok: false,
-          delivered: false,
-          deduped: false,
-          error: error.code,
-          ...(error.field ? { field: error.field } : {}),
-        });
-      }
-    }));
-    app.post('/api/push/test-bark', route(async (req, res) => {
-      if (!(push.hasBarkDevices ? push.hasBarkDevices() : push.cfg.BARK_URL)) return res.status(400).json({ error: 'Bark URL not configured' });
-      const result = await push.sendBarkNotification(
-        'MultiCC Test', `Bark test at ${new Date(now()).toLocaleTimeString()}`, '/manage',
-      );
-      if (result?.ok === false) return res.status(502).json({ error: 'bark_test_failed' });
-      return res.json({ ok: true });
-    }));
-    app.post('/api/push/test-webhook', route(async (req, res) => {
-      if (!push.cfg.WEBHOOK_URL) return res.status(400).json({ error: 'Webhook URL not configured' });
-      await push.sendWebhookNotification({
-        title: 'MultiCC Test',
-        body: `Webhook test at ${new Date(now()).toLocaleTimeString()}`,
-        type: 'test',
-      });
-      return res.json({ ok: true });
-    }));
-    return app;
-  }
-
   function stop() {
     if (stopped) return;
     stopped = true;
@@ -478,7 +357,6 @@ function createPushRuntime(options) {
   }
 
   return Object.freeze({
-    mountRoutes,
     onOutput,
     onInput,
     notify,

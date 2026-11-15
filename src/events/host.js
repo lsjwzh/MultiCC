@@ -12,7 +12,6 @@ const os = require('os');
 const { atomicWriteJson } = require('../runtime-security');
 const { createEventHub } = require('./hub');
 const { createEventRuleEngine } = require('./engine');
-const { mountEventRoutes } = require('./routes');
 
 function readJsonFile(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
@@ -35,7 +34,7 @@ function postJson(url, headers, body, timeoutMs) {
 }
 
 function createEventsHost(deps) {
-  const { bus, app, persistedSessions, chatSessions, saveBestEffort, rulesFile, logger } = deps;
+  const { bus, persistedSessions, chatSessions, saveBestEffort, rulesFile, logger } = deps;
   const hub = createEventHub({
     bus, logger,
     dirIdOf: (id) => (persistedSessions.get(id) || {}).dirId,
@@ -67,7 +66,7 @@ function createEventsHost(deps) {
       }
     },
   });
-  if (app) mountEventRoutes(app, { hub, engine });
+  // 公开路由由 Rust 前门独占；进程内事实经 src/routes/events-host.js 的宿主端口暴露。
   return Object.freeze({
     hub, engine,
     start() { hub.start(); engine.start(); },

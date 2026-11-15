@@ -12,6 +12,7 @@ const { createTaskRetention, retentionCandidates, lastInteraction } = require('.
 const { createTaskHistoryRetention } = require('../src/session/task-history-retention');
 const { createChatHistoryService } = require('../src/session/chat-history-service');
 const { recordsOf, resetTaskState } = require('./helpers/session-records');
+const { retiredRoutes } = require('./helpers/task-board-ports');
 
 function harness(t, overrides = {}) {
   const purged = [];
@@ -20,11 +21,11 @@ function harness(t, overrides = {}) {
   t.after(() => fs.rmSync(path.dirname(f.file), { recursive: true, force: true }));
   const board = f.runtime.getBoard();
   board.tasks.old = { id: 'old', title: 'Historical task', status: 'active', origin: 'session', refs: [], areas: [] };
-  const routes = new Map();
-  f.runtime.mountRoutes(Object.fromEntries(['get', 'post', 'delete'].map(method => [method, (url, handler) => routes.set(`${method} ${url}`, handler)])));
+  // 公开路由已由 Rust 前门独占；这些端口才是 Node 仍拥有的事实与副作用。
+  const routes = retiredRoutes(f.runtime.routePorts);
   async function call(method, suffix = '', body = {}) {
     const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(value) { this.body = value; return this; } };
-    await routes.get(`${method} /api/task-board/tasks/:taskId${suffix}`)({ params: { taskId: 'old' }, body }, res);
+    await routes.get(`${method.toUpperCase()} /api/task-board/tasks/:taskId${suffix}`)({ params: { taskId: 'old' }, body }, res);
     return res;
   }
   return { ...f, board, purged, call };
@@ -116,9 +117,7 @@ test('retention preview is read-only and confirmed batch rechecks safety before 
       refs: [{ sessionId: `s-${id}`, userMsgId: `u-${id}`, ts: at }] };
     f.deps.records.set(`s-${id}`, { id: `s-${id}`, dirId: 'dir-1', taskBoundTaskId: id });
   }
-  const routes = new Map();
-  f.runtime.mountRoutes({ get: (url, handler) => routes.set(`GET ${url}`, handler),
-    post: (url, handler) => routes.set(`POST ${url}`, handler), delete: () => {} });
+  const routes = retiredRoutes(f.runtime.routePorts);
   const pathName = '/api/task-board/directories/:dirId/retention';
   const call = async (method, body) => {
     const res = { statusCode: 200, status(code) { this.statusCode = code; return this; },

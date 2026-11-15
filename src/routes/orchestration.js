@@ -32,6 +32,7 @@ function assertDependencies(deps) {
 function createOrchestrationRoutes(rawDeps) {
   const deps = assertDependencies(rawDeps);
   let mounted = false;
+  let mountedHost = false;
 
   const terminalDispatchStates = new Set([
     'completed', 'failed', 'interrupted', 'cancelled',
@@ -89,13 +90,22 @@ function createOrchestrationRoutes(rawDeps) {
     };
   }
 
-  function mountRoutes(app) {
+  function assertApp(app) {
     if (!app || typeof app.get !== 'function' || typeof app.post !== 'function'
         || typeof app.delete !== 'function') {
       throw new TypeError('[orchestration-routes] Express-compatible app is required');
     }
-    if (mounted) throw new Error('[orchestration-routes] routes already mounted');
-    mounted = true;
+  }
+
+  // The nine routes the Rust front door answers (native/gateway/src/app/
+  // orchestration_routes.rs): scheduled messages, the v1 waits projection,
+  // observed tasks, dispatch recovery, user-input dismiss and the FIFO queue.
+  // They are mounted only on the host port's capture app
+  // (src/routes/orchestration-host.js), never on the public Express app.
+  function mountHostRoutes(app) {
+    assertApp(app);
+    if (mountedHost) throw new Error('[orchestration-routes] host routes already mounted');
+    mountedHost = true;
 
     app.post('/api/sessions/:id/scheduled-messages', async (req, res) => {
       const session = deps.records.get(req.params.id);
@@ -148,97 +158,6 @@ function createOrchestrationRoutes(rawDeps) {
       }
     });
 
-    app.post('/api/sessions/:id/wait', async (req, res) => {
-      const session = deps.records.get(req.params.id);
-      if (!session) return res.status(404).json({ error: 'session not found' });
-      const body = req.body || {};
-      try {
-        const registration = await deps.runtime.register({
-          session: session.id,
-          mode: body.mode,
-          cwd: deps.cwdForSession(session),
-          pollCmd: body.pollCmd,
-          pollUrl: body.pollUrl,
-          untilContains: body.untilContains,
-          untilRegex: body.untilRegex,
-          intervalSec: body.intervalSec,
-          maxChecks: body.maxChecks,
-          injectPrefix: body.injectPrefix,
-          timeoutSec: body.timeoutSec,
-          ...((body.delaySec ?? body.delaySeconds) == null
-            ? {} : { delaySec: body.delaySec ?? body.delaySeconds }),
-          ...(body.reason == null ? {} : { reason: body.reason }),
-        });
-        const callbackUrl = registration.token
-          ? `${req.protocol}://${req.get('host')}/api/wait/${registration.id}/resolve?token=${registration.token}`
-          : null;
-        res.json({
-          ok: true,
-          ...registration,
-          callbackUrl,
-          status: registration.status || 'pending',
-          dueAt: registration.dueAt || null,
-        });
-      } catch (error) {
-        res.status(400).json({ error: error.message });
-      }
-    });
-
-    app.post('/api/wait/:wid/resolve', async (req, res) => {
-      const body = req.body;
-      const token = req.query.token || req.headers['x-wait-token'] || (body && body.token);
-      let data;
-      if (body && body.data !== undefined) {
-        data = body.data;
-      } else if (body && typeof body === 'object' && !Array.isArray(body)) {
-        data = { ...body };
-        delete data.token;
-      } else {
-        data = body ?? '';
-      }
-      try {
-        const result = await deps.runtime.resolveCallback(req.params.wid, token, data);
-        const statusCode = result.ok ? 200
-          : result.code === 'invalid_token' ? 403
-            : result.code === 'not_found' ? 404
-              : result.code === 'payload_conflict' ? 409
-                : 400;
-        const legacyError = result.code === 'invalid_token' ? 'bad token'
-          : result.code === 'not_found' ? 'wait not found'
-            : result.code === 'payload_conflict' ? 'callback payload conflicts with resolved wait'
-              : result.code;
-        res.status(statusCode).json({
-          ...result,
-          ...(result.ok ? {} : { error: legacyError }),
-          duplicate: !!(result.ok && result.idempotent),
-          status: result.status || (result.ok ? 'resolved' : undefined),
-        });
-      } catch (error) {
-        res.status(error.statusCode || 400).json({ ok: false, error: error.message });
-      }
-    });
-
-    app.get('/api/sessions/:id/waits', async (req, res) => {
-      try {
-        const durableWaits = await deps.runtime.listForSession(req.params.id);
-        const legacyWaits = deps.waitInjector.listForSession(req.params.id)
-          .map(wait => ({ ...wait, status: 'pending' }));
-        const durableStats = await deps.runtime.stats();
-        const legacyStats = deps.waitInjector.stats();
-        res.json({
-          waits: [...durableWaits, ...legacyWaits],
-          stats: {
-            ...legacyStats,
-            ...durableStats,
-            waits: durableStats.waits + legacyStats.waits,
-            legacyWaits: legacyStats.waits,
-          },
-        });
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
-
     app.get('/api/v1/sessions/:id/waits', async (req, res) => {
       const session = deps.records.get(req.params.id);
       if (!session) return deps.v1Error(req, res, 404, 'session not found', 'session_not_found');
@@ -251,87 +170,6 @@ function createOrchestrationRoutes(rawDeps) {
       } catch (error) {
         deps.v1Error(req, res, 500, 'failed to list waits', 'wait_list_failed', { cause: error });
       }
-    });
-
-    app.delete('/api/wait/:wid', async (req, res) => {
-      try {
-        let result = await deps.runtime.cancel(req.params.wid);
-        if (!result.ok && result.code === 'not_found') {
-          const legacy = deps.waitInjector.cancel(req.params.wid);
-          result = legacy.ok ? { ...legacy, status: 'cancelled' } : result;
-        }
-        res.status(result.ok ? 200 : result.code === 'not_found' ? 404 : 409).json(result);
-      } catch (error) {
-        res.status(400).json({ error: error.message });
-      }
-    });
-
-    app.post('/api/sessions/:id/run-detached', async (req, res) => {
-      const session = deps.records.get(req.params.id);
-      if (!session) return res.status(404).json({ error: 'session not found' });
-      const body = req.body || {};
-      const command = (body.command || body.cmd || '').toString();
-      if (!command.trim()) return res.status(400).json({ error: 'command required' });
-      try {
-        const baseCwd = deps.cwdForSession(session);
-        const cwd = body.cwd ? deps.resolveCwd(baseCwd, String(body.cwd)) : baseCwd;
-        const label = (body.label || command.replace(/\s+/g, ' ').slice(0, 60)).trim();
-        const daemon = body.daemon === true || body.daemon === 'true';
-        const intervalSec = Math.max(3, Number(body.intervalSec) || 10);
-        const maxChecks = Math.max(1, Number(body.maxChecks) || 360);
-        const started = await deps.runtime.startDetached({
-          sessionId: session.id,
-          idempotencyKey: req.get('Idempotency-Key') || body.idempotencyKey || null,
-          spec: {
-            command,
-            cwd,
-            label,
-            daemon,
-            intervalSec,
-            maxChecks,
-            injectPrefix: body.injectPrefix || `[后台任务完成] ${label}`,
-          },
-        });
-        const operation = started.operation;
-        const job = started.state || deps.detached.status(operation.externalId) || {};
-        res.json({
-          ok: true,
-          executionKind: 'detached_process',
-          workerDispatched: false,
-          dispatchEndpoint: null,
-          note: '已启动后台 shell 进程；这不会向 worker 会话派活。如需派活，请在发起会话内使用 MultiCC Router MCP 的 route_task 或 dispatch_master。',
-          taskId: operation.externalId,
-          waitId: null,
-          pid: job.pid || operation.pid || null,
-          logPath: job.logPath || null,
-          intervalSec,
-          maxChecks,
-          daemon,
-          operationId: operation.id,
-          status: operation.status,
-          duplicate: !!started.idempotent,
-        });
-      } catch (error) {
-        res.status(error.statusCode || 400).json({
-          error: error.message,
-          operationId: error.operationId || null,
-        });
-      }
-    });
-
-    app.get('/api/sessions/:id/detached', async (req, res) => {
-      const session = deps.records.get(req.params.id);
-      if (!session) return res.status(404).json({ error: 'session not found' });
-      const operations = await listOperationReferences({
-        kind: 'detached',
-        ownerSessionId: session.id,
-      });
-      res.json({
-        tasks: operations.map(operation => {
-          const task = deps.detached.status(operation.externalId);
-          return task ? { ...task, operationId: operation.id, status: operation.status } : null;
-        }).filter(Boolean),
-      });
     });
 
     app.get('/api/sessions/:id/tasks', async (req, res) => {
@@ -635,6 +473,186 @@ function createOrchestrationRoutes(rawDeps) {
         res.status(400).json({ error: error.message });
       }
     });
+  }
+
+  // The seven out-of-scope routes (wait injector, wait resolve/cancel and the
+  // detached set) keep running on Node and stay on the public Express app.
+  function mountRoutes(app) {
+    assertApp(app);
+    if (mounted) throw new Error('[orchestration-routes] routes already mounted');
+    mounted = true;
+
+    app.post('/api/sessions/:id/wait', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+      const body = req.body || {};
+      try {
+        const registration = await deps.runtime.register({
+          session: session.id,
+          mode: body.mode,
+          cwd: deps.cwdForSession(session),
+          pollCmd: body.pollCmd,
+          pollUrl: body.pollUrl,
+          untilContains: body.untilContains,
+          untilRegex: body.untilRegex,
+          intervalSec: body.intervalSec,
+          maxChecks: body.maxChecks,
+          injectPrefix: body.injectPrefix,
+          timeoutSec: body.timeoutSec,
+          ...((body.delaySec ?? body.delaySeconds) == null
+            ? {} : { delaySec: body.delaySec ?? body.delaySeconds }),
+          ...(body.reason == null ? {} : { reason: body.reason }),
+        });
+        const callbackUrl = registration.token
+          ? `${req.protocol}://${req.get('host')}/api/wait/${registration.id}/resolve?token=${registration.token}`
+          : null;
+        res.json({
+          ok: true,
+          ...registration,
+          callbackUrl,
+          status: registration.status || 'pending',
+          dueAt: registration.dueAt || null,
+        });
+      } catch (error) {
+        res.status(400).json({ error: error.message });
+      }
+    });
+
+    app.post('/api/wait/:wid/resolve', async (req, res) => {
+      const body = req.body;
+      const token = req.query.token || req.headers['x-wait-token'] || (body && body.token);
+      let data;
+      if (body && body.data !== undefined) {
+        data = body.data;
+      } else if (body && typeof body === 'object' && !Array.isArray(body)) {
+        data = { ...body };
+        delete data.token;
+      } else {
+        data = body ?? '';
+      }
+      try {
+        const result = await deps.runtime.resolveCallback(req.params.wid, token, data);
+        const statusCode = result.ok ? 200
+          : result.code === 'invalid_token' ? 403
+            : result.code === 'not_found' ? 404
+              : result.code === 'payload_conflict' ? 409
+                : 400;
+        const legacyError = result.code === 'invalid_token' ? 'bad token'
+          : result.code === 'not_found' ? 'wait not found'
+            : result.code === 'payload_conflict' ? 'callback payload conflicts with resolved wait'
+              : result.code;
+        res.status(statusCode).json({
+          ...result,
+          ...(result.ok ? {} : { error: legacyError }),
+          duplicate: !!(result.ok && result.idempotent),
+          status: result.status || (result.ok ? 'resolved' : undefined),
+        });
+      } catch (error) {
+        res.status(error.statusCode || 400).json({ ok: false, error: error.message });
+      }
+    });
+
+    app.get('/api/sessions/:id/waits', async (req, res) => {
+      try {
+        const durableWaits = await deps.runtime.listForSession(req.params.id);
+        const legacyWaits = deps.waitInjector.listForSession(req.params.id)
+          .map(wait => ({ ...wait, status: 'pending' }));
+        const durableStats = await deps.runtime.stats();
+        const legacyStats = deps.waitInjector.stats();
+        res.json({
+          waits: [...durableWaits, ...legacyWaits],
+          stats: {
+            ...legacyStats,
+            ...durableStats,
+            waits: durableStats.waits + legacyStats.waits,
+            legacyWaits: legacyStats.waits,
+          },
+        });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.delete('/api/wait/:wid', async (req, res) => {
+      try {
+        let result = await deps.runtime.cancel(req.params.wid);
+        if (!result.ok && result.code === 'not_found') {
+          const legacy = deps.waitInjector.cancel(req.params.wid);
+          result = legacy.ok ? { ...legacy, status: 'cancelled' } : result;
+        }
+        res.status(result.ok ? 200 : result.code === 'not_found' ? 404 : 409).json(result);
+      } catch (error) {
+        res.status(400).json({ error: error.message });
+      }
+    });
+
+    app.post('/api/sessions/:id/run-detached', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+      const body = req.body || {};
+      const command = (body.command || body.cmd || '').toString();
+      if (!command.trim()) return res.status(400).json({ error: 'command required' });
+      try {
+        const baseCwd = deps.cwdForSession(session);
+        const cwd = body.cwd ? deps.resolveCwd(baseCwd, String(body.cwd)) : baseCwd;
+        const label = (body.label || command.replace(/\s+/g, ' ').slice(0, 60)).trim();
+        const daemon = body.daemon === true || body.daemon === 'true';
+        const intervalSec = Math.max(3, Number(body.intervalSec) || 10);
+        const maxChecks = Math.max(1, Number(body.maxChecks) || 360);
+        const started = await deps.runtime.startDetached({
+          sessionId: session.id,
+          idempotencyKey: req.get('Idempotency-Key') || body.idempotencyKey || null,
+          spec: {
+            command,
+            cwd,
+            label,
+            daemon,
+            intervalSec,
+            maxChecks,
+            injectPrefix: body.injectPrefix || `[后台任务完成] ${label}`,
+          },
+        });
+        const operation = started.operation;
+        const job = started.state || deps.detached.status(operation.externalId) || {};
+        res.json({
+          ok: true,
+          executionKind: 'detached_process',
+          workerDispatched: false,
+          dispatchEndpoint: null,
+          note: '已启动后台 shell 进程；这不会向 worker 会话派活。如需派活，请在发起会话内使用 MultiCC Router MCP 的 route_task 或 dispatch_master。',
+          taskId: operation.externalId,
+          waitId: null,
+          pid: job.pid || operation.pid || null,
+          logPath: job.logPath || null,
+          intervalSec,
+          maxChecks,
+          daemon,
+          operationId: operation.id,
+          status: operation.status,
+          duplicate: !!started.idempotent,
+        });
+      } catch (error) {
+        res.status(error.statusCode || 400).json({
+          error: error.message,
+          operationId: error.operationId || null,
+        });
+      }
+    });
+
+    app.get('/api/sessions/:id/detached', async (req, res) => {
+      const session = deps.records.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+      const operations = await listOperationReferences({
+        kind: 'detached',
+        ownerSessionId: session.id,
+      });
+      res.json({
+        tasks: operations.map(operation => {
+          const task = deps.detached.status(operation.externalId);
+          return task ? { ...task, operationId: operation.id, status: operation.status } : null;
+        }).filter(Boolean),
+      });
+    });
 
     app.get('/api/detached/:taskId', async (req, res) => {
       const state = deps.detached.status(req.params.taskId);
@@ -645,7 +663,7 @@ function createOrchestrationRoutes(rawDeps) {
     });
   }
 
-  return Object.freeze({ mountRoutes });
+  return Object.freeze({ mountRoutes, mountHostRoutes });
 }
 
 module.exports = { createOrchestrationRoutes };

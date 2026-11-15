@@ -10,26 +10,14 @@ const {
 
 // ── 测试夹具 ─────────────────────────────────────────────────────────────
 
-function fakeApp() {
-  const handlers = new Map();
-  const app = {};
-  for (const method of ['get']) {
-    app[method] = (route, handler) => handlers.set(`${method.toUpperCase()} ${route}`, handler);
-  }
-  app.handlers = handlers;
-  return app;
-}
-
-function invoke(app, routePath, query = {}) {
-  const handler = app.handlers.get(`GET ${routePath}`);
-  assert.equal(typeof handler, 'function', `missing GET ${routePath}`);
-  const response = { statusCode: 200, body: undefined };
-  const res = {
-    status(code) { response.statusCode = code; return this; },
-    json(value) { response.body = value; return this; },
-  };
-  handler({ query }, res);
-  return response;
+// GET /api/task-graph is answered by the Rust front door (dirId decoding,
+// `dirId=` meaning all, `meta.durationMs` placement in
+// native/gateway/src/app/task_routes.rs). Node keeps the aggregation, which the
+// front door calls as the `task-graph` host operation (buildHostGraph).
+function invoke(routes, query = {}) {
+  const result = routes.buildHostGraph(query.dirId);
+  if (result.reply) return { statusCode: result.reply.status, body: result.reply.body };
+  return { statusCode: 200, body: result.graph };
 }
 
 function fixture({ board = {}, shell = {}, records = new Map() } = {}) {
@@ -48,10 +36,8 @@ function fixture({ board = {}, shell = {}, records = new Map() } = {}) {
     ]),
     now() { clock += 7; return clock; },
   };
-  const app = fakeApp();
   const routes = createTaskGraphRoutes(deps);
-  routes.mountRoutes(app);
-  return { app, routes, deps };
+  return { routes, deps };
 }
 
 // ── 依赖校验 ─────────────────────────────────────────────────────────────
@@ -67,7 +53,7 @@ test('task graph route dependencies are asserted', () => {
 // ── 节点聚合：board 卡片 + shell 持久任务按 taskId 合并 ───────────────────
 
 test('merges board cards and shell tasks into one node per taskId', () => {
-  const { app } = fixture({
+  const { routes } = fixture({
     board: {
       tasks: {
         tsk_a: { id: 'tsk_a', title: '五层记忆体系', moduleId: 'm1', status: 'active',
@@ -97,7 +83,7 @@ test('merges board cards and shell tasks into one node per taskId', () => {
     ]),
   });
 
-  const response = invoke(app, '/api/task-graph');
+  const response = invoke(routes);
   assert.equal(response.statusCode, 200);
   const nodes = response.body.nodes;
   const byId = new Map(nodes.map(n => [n.id, n]));
@@ -133,14 +119,14 @@ test('merges board cards and shell tasks into one node per taskId', () => {
 });
 
 test('unready shell tasks are provisional; board-only tasks stay canonical', () => {
-  const { app } = fixture({
+  const { routes } = fixture({
     shell: {
       tasks: [{ id: 'tsk_new', dirId: 'd1', sessionId: 'task_new', title: '刚 fork 的新任务', ready: false }],
       shells: [],
       links: [],
     },
   });
-  const response = invoke(app, '/api/task-graph');
+  const response = invoke(routes);
   const node = response.body.nodes.find(n => n.id === 'tsk_new');
   assert.equal(node.provisional, true);
 });
@@ -148,7 +134,7 @@ test('unready shell tasks are provisional; board-only tasks stay canonical', () 
 // ── 边类型：group / merged ────────────────────────────────────────────────
 
 test('draws group fan-out and merge alias edges', () => {
-  const { app } = fixture({
+  const { routes } = fixture({
     board: {
       tasks: {
         tsk_root: { id: 'tsk_root', title: '根任务', moduleId: 'm1', dirId: 'd1' },
@@ -159,7 +145,7 @@ test('draws group fan-out and merge alias edges', () => {
       taskGroups: { g1: { id: 'g1', rootTaskId: 'tsk_root', taskIds: ['tsk_root', 'tsk_kid'] } },
     },
   });
-  const response = invoke(app, '/api/task-graph');
+  const response = invoke(routes);
   const edges = response.body.edges;
   assert.ok(edges.some(e => e.type === 'group' && e.source === 'tsk_root' && e.target === 'tsk_kid'),
     'group root→member');
@@ -174,7 +160,7 @@ test('draws group fan-out and merge alias edges', () => {
 // ── 目录过滤与元数据 ──────────────────────────────────────────────────────
 
 test('filters by dirId, drops unlinked shells, and reports project meta', () => {
-  const { app } = fixture({
+  const { routes } = fixture({
     board: {
       tasks: {
         tsk_a: { id: 'tsk_a', title: '项目一的任务', moduleId: 'm1' },
@@ -195,7 +181,7 @@ test('filters by dirId, drops unlinked shells, and reports project meta', () => 
     },
   });
 
-  const all = invoke(app, '/api/task-graph');
+  const all = invoke(routes);
   assert.equal(all.body.meta.dirId, 'all');
   assert.ok(all.body.nodes.some(n => n.id === 'tsk_a'));
   assert.ok(all.body.nodes.some(n => n.id === 'tsk_b'));
@@ -203,7 +189,7 @@ test('filters by dirId, drops unlinked shells, and reports project meta', () => 
   const p1 = all.body.meta.projects.find(p => p.dirId === 'd1');
   assert.deepEqual(p1, { dirId: 'd1', count: 1, name: '项目一' });
 
-  const filtered = invoke(app, '/api/task-graph', { dirId: 'd1' });
+  const filtered = invoke(routes, { dirId: 'd1' });
   const ids = filtered.body.nodes.map(n => n.id);
   assert.deepEqual(ids.sort(), ['sh_1', 'tsk_a'], 'd2 的任务与未链接的壳都被裁掉');
   assert.equal(filtered.body.meta.dirId, 'd1');
@@ -211,26 +197,25 @@ test('filters by dirId, drops unlinked shells, and reports project meta', () => 
 });
 
 test('empty stores render an empty but valid graph', () => {
-  const { app } = fixture();
-  const response = invoke(app, '/api/task-graph');
+  const { routes } = fixture();
+  const response = invoke(routes);
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body.nodes, []);
   assert.deepEqual(response.body.edges, []);
   assert.equal(response.body.meta.nodeCount, 0);
   assert.equal(response.body.meta.taskCount, 0);
-  assert.equal(typeof response.body.meta.durationMs, 'number');
+  // `meta.durationMs` 是前门对这次聚合的计时，插在 meta 末尾 —— 由
+  // native/gateway/src/app/task_routes.rs 写入，Node 聚合不带它。
+  assert.equal('durationMs' in response.body.meta, false);
 });
 
 test('build failures are sanitized without leaking internals', () => {
-  const { app } = fixture({
-    shell: null, // taskGraphData() 返回 null 应被容错；改用抛错的 getBoard 试 sanitize
-  });
-  // 换一个直接抛错（含敏感路径）的 getBoard。
-  const failing = fixture();
-  failing.deps.getBoard = () => { throw new Error('/Users/alice/.ssh/token=secret'); };
-  const response = invoke(failing.app, '/api/task-graph');
+  const { routes, deps } = fixture();
+  // 换一个直接抛错（含敏感路径）的 getBoard —— 聚合失败由宿主端口变成已脱敏的
+  // 500 回复，前门原样下发。
+  deps.getBoard = () => { throw new Error('/Users/alice/.ssh/token=secret'); };
+  const response = invoke(routes);
   assert.equal(response.statusCode, 500);
   assert.doesNotMatch(JSON.stringify(response.body), /alice|secret|\.ssh/);
   assert.ok(response.body.error);
-  void app;
 });

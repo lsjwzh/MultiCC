@@ -102,14 +102,10 @@ function createStaticAssetsRoutes(rawDeps) {
       return res.redirect(`/air?${params.toString()}`);
     });
 
-    // Root → Air (unless ?id= is specified, which means a terminal session)
-    app.get('/', (req, res, next) => {
-      // `__aux__` is not a real session id — it is the old dashboard's shorthand
-      // for "open the assistant panel", which is an Air mode now.
-      if (req.query.id === '__aux__') return res.redirect('/air?view=aux');
-      if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
-      res.redirect('/air');
-    });
+    // `GET /` 的两种重定向（无参 → /air，`?id=__aux__` → /air?view=aux）已由 Rust
+    // 前门独占（native/gateway/src/app/release_history_routes.rs）。带
+    // `?id=`/`?newid=`/`?cwd=` 的根路径是终端会话 URL，前门不认领，落到下面的
+    // versioned-HTML 中间件 —— 与原来 `next()` 的去向完全一致。
 
     app.use((req, res, next) => {
       if (req.method !== 'GET') return next();

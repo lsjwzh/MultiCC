@@ -33,7 +33,6 @@ const {
   profileDirsFromEnv,
 } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
-const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 const SITE = 'qoder.com.cn';
 const QUOTA_URL = `https://${SITE}/api/v2/me/usages/big_model_credits`;
@@ -226,50 +225,11 @@ async function fetchQoderUsage() {
   return { status: 'unavailable', error: '所有浏览器来源都未能取得用量' };
 }
 
-function mountQoderQuotaRoutes(app) {
-  if (!app || typeof app.get !== 'function') return;
-
-  app.get('/api/qoder/quota', async (req, res) => {
-    try {
-      const result = await fetchQoderUsage();
-      const status = (result && result.status) || 'unavailable';
-      const httpStatus = status === 'ok' ? 200
-        : status === 'needs_login' ? 401
-          : status === 'chrome_unavailable' ? 503 : 500;
-      // The bar is rendered here, once, so the web and the app display the same
-      // string rather than each formatting this JSON their own way.
-      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('qoder', result) });
-    } catch (_) {
-      const result = { status: 'unavailable', error: 'qoder quota fetch failed' };
-      res.status(500).json({ ...result, bar: renderQuotaBar('qoder', result) });
-    }
-  });
-
-  // Open a visible login window on the managed profile. The headless instance
-  // is stopped first (one profile, one Chrome), and the window is left to the
-  // user — once they log in, the session persists in the profile for later
-  // headless fetches.
-  app.post('/api/qoder/quota/login', async (req, res) => {
-    try {
-      await getManagedQuotaBrowser().openVisibleLogin(LOGIN_PAGE_URL);
-      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录 qoder.com.cn，完成后回来重新查询余量' });
-    } catch (err) {
-      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
-      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
-    }
-  });
-
-  app.get('/api/qoder/quota/cookies', (req, res) => {
-    const saved = loadSavedCookies();
-    if (!saved) return res.status(404).json({ ok: false, error: 'no saved cookies' });
-    res.json(saved);
-  });
-}
-
 module.exports = {
-  mountQoderQuotaRoutes,
   fetchQoderUsage,
   fetchWithCookies,
+  LOGIN_PAGE_URL,
+  loadSavedCookies,
   // exposed for tests
   cookieHeader,
   looksLikeQuota,

@@ -250,17 +250,20 @@ test('readClaudeUsageFromPage gives up on a page that never settles', async () =
   assert.match(result.error, /never settled/);
 });
 
-test('both claude usage routes mount without a browser anywhere in sight', () => {
-  const routes = [];
-  const app = {
-    get: (route, handler) => routes.push(['GET', route, typeof handler]),
-    post: (route, handler) => routes.push(['POST', route, typeof handler]),
-  };
-  claude.mountClaudeUsageQuotaRoutes(app);
-  assert.deepEqual(routes, [
-    ['GET', '/api/claude/quota', 'function'],
-    ['POST', '/api/claude/quota/login', 'function'],
-  ]);
+// The two routes are the Rust front door's now (native/gateway/src/app/
+// quota_routes.rs). What stays here is the scraper's parser/driver and the one
+// login-side fact the front door cannot see: the managed window's URL.
+test('the retired mount is gone; the login half lives in the host port', async () => {
+  const { createQuotaRuntime } = require('../src/routes/quota-host');
+  assert.equal(claude.mountClaudeUsageQuotaRoutes, undefined, 'the route is the Rust front door\'s');
+  const opened = [];
+  const runtime = createQuotaRuntime({
+    loginUrl: { claude: claude.CLAUDE_USAGE_URL },
+    openLogin: async (url) => { opened.push(url); },
+    now: () => 1700000000000,
+  });
+  assert.deepEqual(await runtime.handle({ op: 'claude.login' }), {});
+  assert.deepEqual(opened, [claude.CLAUDE_USAGE_URL], 'the managed-profile window, and no scraper');
 });
 
 // ── source 1: OAuth control plane ────────────────────────────────────────────
@@ -716,23 +719,11 @@ test('fetchClaudeUsage falls to the CLI store when no managed account answers', 
 // owns that cache); `force=1` — the user's own ⟳ — is the one thing allowed to
 // start a scrape, and an account nobody has read yet answers `idle`, which is a
 // state, not a failure.
-test('GET /api/claude/quota reads the queue and only scrapes for force=1', async () => {
-  const handlers = new Map();
-  const app = {
-    get: (route, handler) => handlers.set(`GET ${route}`, handler),
-    post: (route, handler) => handlers.set(`POST ${route}`, handler),
-  };
-  claude.mountClaudeUsageQuotaRoutes(app);
-  const request = async (query) => {
-    const res = {
-      statusCode: 200, body: null,
-      status(code) { this.statusCode = code; return this; },
-      json(body) { this.body = body; return this; },
-    };
-    await handlers.get('GET /api/claude/quota')({ query }, res);
-    return res;
-  };
-
+test('the claude quota op reads the queue and only scrapes for force', async () => {
+  // Status codes and the rendered bar are the front door's; this pins the
+  // queue half — first read, forced scrape, the one-minute floor that holds
+  // across sessions — which the front door can only learn through this op.
+  const { createQuotaRuntime } = require('../src/routes/quota-host');
   const Queue = require('../src/quota/claude-usage-queue');
   const BarState = require('../src/quota/claude-bar-state');
   Queue.resetClaudeUsageQueue();
@@ -745,22 +736,26 @@ test('GET /api/claude/quota reads the queue and only scrapes for force=1', async
       return { status: 'ok', fetchedAt: 1_700_000_000_000, summary: [{ window: '1wk', usedPercent: 6 }] };
     },
   });
+  const runtime = createQuotaRuntime({
+    now: () => 1_700_000_000_000,
+    claudeUsageKey: Queue.claudeUsageKey,
+    readClaudeUsage: Queue.readClaudeUsage,
+    enqueueClaudeUsage: Queue.enqueueClaudeUsage,
+    readClaudeLive: BarState.readClaudeLive,
+  });
   try {
-    let res = await request({ session: 's1' });
-    assert.equal(res.statusCode, 200);
-    assert.equal(res.body.status, 'idle', 'never read this account: idle, not an error');
+    let state = await runtime.handle({ op: 'claude.quota', session: 's1', force: false });
+    assert.equal(state.entry, null, 'never read this account: idle, not an error');
     assert.deepEqual(scrapes, [], 'and no browser was opened for a read');
-    assert.ok(res.body.bar, 'the bar is rendered either way, so the client has something to paint');
 
-    res = await request({ session: 's1', force: '1' });
+    state = await runtime.handle({ op: 'claude.quota', session: 's1', force: true });
     assert.deepEqual(scrapes, ['scrape']);
-    assert.equal(res.statusCode, 200);
-    assert.equal(res.body.status, 'ok');
-    assert.match(res.body.bar.text, /1wk 94%/, 'the reading is rendered into the bar server-side');
+    assert.equal(state.result.status, 'ok');
+    assert.equal(state.usage.summary[0].usedPercent, 6, 'the reading is handed over whole');
 
     // The reading now answers reads — from any session — without a second scrape.
-    res = await request({ session: 's2' });
-    assert.equal(res.body.status, 'ok');
+    state = await runtime.handle({ op: 'claude.quota', session: 's2', force: false });
+    assert.equal(state.result.status, 'ok');
     assert.deepEqual(scrapes, ['scrape'], 'the minute floor holds across sessions');
   } finally {
     Queue.resetClaudeUsageQueue();

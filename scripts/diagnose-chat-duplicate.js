@@ -13,7 +13,7 @@
  */
 
 const VERBOSE = process.argv.includes('--verbose');
-const { createRig, scanDuplicates, SCENARIOS } = require('./chat-dup-harness');
+const { createRig, scanDuplicates, scanEmptyBubbles, SCENARIOS } = require('./chat-dup-harness');
 
 let dupCount = 0;
 console.log('═'.repeat(72));
@@ -29,9 +29,14 @@ for (const scenario of SCENARIOS) {
     continue;
   }
   const { findings, bubbles } = scanDuplicates(rig.messagesEl);
-  const verdict = findings.length ? 'DUPLICATE' : 'CLEAN';
-  if (findings.length) dupCount += 1;
+  // 空壳是另一类：框、用量行、归属行都在而正文为空，scanDuplicates 看不到它。
+  const empties = scanEmptyBubbles(rig.messagesEl);
+  const verdict = findings.length ? 'DUPLICATE' : (empties.length ? 'EMPTY-SHELL' : 'CLEAN');
+  if (findings.length || empties.length) dupCount += 1;
   console.log(`\n${verdict === 'CLEAN' ? '✓' : '✗'} [${verdict}] ${scenario.name}`);
+  for (const e of empties) {
+    console.log(`  ⚠ 空壳气泡（无正文，仅装饰：${e.decorative.join('+') || '无'}）msgId=${e.msgId || '-'}`);
+  }
   console.log(`  DOM：${bubbles.map(b => `${b.kind}${b.msgId ? '#' + b.msgId : ''}(${b.text.length}字)`).join(' → ') || '（空）'}`);
   for (const f of findings) console.log(`  ⚠ ${f}`);
   if (VERBOSE) {

@@ -126,7 +126,7 @@ async fn admit(
     // The transport peer gate always precedes a share capability. A successful
     // share scope precedes machine/global authentication, matching Node entry.
     if app.lan_only && !http_gate::is_private_network_address(peer) {
-        return app.gate(ctx, peer, snapshot);
+        return app.gate(ctx, peer, snapshot).await;
     }
     if bootstrap(ctx, snapshot) {
         return None;
@@ -175,7 +175,7 @@ async fn admit(
             }
         }
     }
-    app.gate(ctx, peer, snapshot)
+    app.gate(ctx, peer, snapshot).await
 }
 
 fn bootstrap(ctx: &RequestCtx, snapshot: &multicc_core::auth_runtime::Snapshot) -> bool {

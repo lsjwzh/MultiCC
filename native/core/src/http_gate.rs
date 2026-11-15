@@ -818,19 +818,39 @@ pub fn is_authenticated(policy: &GatePolicy, request: &GateRequest) -> bool {
         && verify_access_token(secret, query_token(request.original_url).as_deref())
 }
 
-/// The gate a non-public, non-relay, non-fleet route sits behind: the peer
-/// allowlist, a download ticket (`GET /api/download` only;
-/// `verify_download_ticket` gets the `download_ticket` query value), the
-/// machine-grant scope (`authorize_machine_grant` is `machines.authorize`),
-/// then `isAuthenticated`, then the refusal shape.
+/// `x-multicc-machine-grant` when the request carries one, with an empty value
+/// treated as absent. This is the only credential `machines.authorize(req)` is
+/// asked about, so both entry points agree on what "a machine grant" is; the
+/// front door resolves [`machine_credential`] against its store and hands the
+/// answer to [`authorize`], the addon resolves it through the host port.
+pub fn machine_credential<'a>(request: &GateRequest<'a>) -> Option<&'a str> {
+    request
+        .headers
+        .get("x-multicc-machine-grant")
+        .filter(|value| !value.is_empty())
+}
+
+/// The gate a non-public, non-relay route sits behind: the peer allowlist, a
+/// download ticket (`GET /api/download` only; `verify_download_ticket` gets the
+/// `download_ticket` query value), the scoped grants, then `isAuthenticated`,
+/// then the refusal shape.
+///
+/// The scoped grants are Node's `authorizeScopedRequest`: the machine grant
+/// (`machine_scoped` is `machines.authorize(machine_credential)`; `None` means
+/// no machine header) OR the fleet token/grant pair (`fleet_scoped`, already
+/// decided by the caller because its live state sits behind an async host
+/// port). The machine half is decided first and short-circuits the pair,
+/// exactly like the `||` in `server.js:421`; a machine header that fails still
+/// disables the ordinary credential (`!machineHeader`).
 ///
 /// Callers own the shutdown gate and must not route a path the Node gate
-/// treats as public or as fleet/relay scoped through here.
+/// treats as public or as provider-relay scoped through here.
 pub fn authorize(
     policy: &GatePolicy,
     request: &GateRequest,
-    authorize_machine_grant: impl FnOnce(&str) -> bool,
+    machine_scoped: Option<bool>,
     verify_download_ticket: impl FnOnce(&str) -> bool,
+    fleet_scoped: bool,
 ) -> GateDecision {
     if policy.lan_only && !is_private_network_address(request.peer) {
         return GateDecision::PeerRejected;
@@ -844,13 +864,13 @@ pub fn authorize(
             }
         }
     }
-    let grant = request.headers.get("x-multicc-machine-grant");
-    if let Some(credential) = grant.filter(|value| !value.is_empty()) {
-        if authorize_machine_grant(credential) {
-            return GateDecision::Allow;
-        }
+    if machine_scoped == Some(true) {
+        return GateDecision::Allow;
     }
-    if grant.filter(|value| !value.is_empty()).is_none() && is_authenticated(policy, request) {
+    if fleet_scoped {
+        return GateDecision::Allow;
+    }
+    if machine_scoped.is_none() && is_authenticated(policy, request) {
         return GateDecision::Allow;
     }
     let html = request
@@ -1017,6 +1037,17 @@ mod tests {
         peer: &str,
         h: &NodeHeaders,
     ) -> GateDecision {
+        gate_scoped(policy, method, url, peer, h, false)
+    }
+
+    fn gate_scoped(
+        policy: &GatePolicy,
+        method: &str,
+        url: &str,
+        peer: &str,
+        h: &NodeHeaders,
+        fleet_scoped: bool,
+    ) -> GateDecision {
         let path = url.split('?').next().unwrap();
         let request = GateRequest {
             method,
@@ -1026,11 +1057,13 @@ mod tests {
             headers: h,
             now_ms: 1_700_000_000_000,
         };
+        let machine_scoped = machine_credential(&request).map(|credential| credential == "mcg_ok");
         authorize(
             policy,
             &request,
-            |credential| credential == "mcg_ok",
+            machine_scoped,
             |ticket| ticket == "tk_ok",
+            fleet_scoped,
         )
     }
 
@@ -1167,6 +1200,67 @@ mod tests {
         assert_eq!(
             gate(&policy, "GET", "/api/x", "192.168.1.9", &lan),
             GateDecision::AuthRequired
+        );
+    }
+
+    #[test]
+    fn fleet_scope_sits_between_the_machine_grant_and_the_credential() {
+        let policy = GatePolicy {
+            access_token: "secret-token".into(),
+            lan_only: false,
+            allow_legacy_token_query: false,
+        };
+        let remote = headers(&[("Host", "dashboard.example.test")]);
+        // A fleet-scoped grant allows a genuinely external request, exactly
+        // like Node's `machines.authorize(req) || fleet...` branch.
+        assert_eq!(
+            gate_scoped(
+                &policy,
+                "GET",
+                "/api/directories/d1/sessions",
+                "203.0.113.9",
+                &remote,
+                true
+            ),
+            GateDecision::Allow
+        );
+        // Without that decision the same request is the ordinary refusal.
+        assert_eq!(
+            gate_scoped(
+                &policy,
+                "GET",
+                "/api/directories/d1/sessions",
+                "203.0.113.9",
+                &remote,
+                false
+            ),
+            GateDecision::AuthRequired
+        );
+        // The `||` semantics: a machine header that fails still lets the fleet
+        // scope authorize, but it never falls back to the cookie.
+        let cookie = create_cookie("secret-token", 1_700_000_000_000, [0; 8]);
+        let bad_machine = headers(&[
+            ("Host", "h"),
+            ("X-Multicc-Machine-Grant", "mcg_bad"),
+            ("Cookie", &format!("multicc_auth={cookie}")),
+        ]);
+        assert_eq!(
+            gate_scoped(&policy, "GET", "/api/x", "203.0.113.9", &bad_machine, true),
+            GateDecision::Allow
+        );
+        assert_eq!(
+            gate_scoped(&policy, "GET", "/api/x", "203.0.113.9", &bad_machine, false),
+            GateDecision::AuthRequired
+        );
+        // The transport peer the gate sees is the original one (PROXY line),
+        // so the lan-only allowlist still rejects before any grant.
+        let lan_only = GatePolicy {
+            lan_only: true,
+            ..policy.clone()
+        };
+        assert_eq!(
+            gate_scoped(&lan_only, "GET", "/api/x", "8.8.8.8", &remote, true),
+            GateDecision::PeerRejected
         );
     }
 

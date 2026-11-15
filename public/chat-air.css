@@ -299,6 +299,7 @@ body.air-chat {
 .air-chat #attach-area,
 .air-chat #pre-input-bar,
 .air-chat #session-queue-dock,
+.air-chat #unattended-banner,
 .air-chat #input-bar,
 .air-chat #dispatch-activity {
   /* The composer floats centered like the Air mock: capped at 880px (still
@@ -312,6 +313,7 @@ body.air-chat {
   .air-chat #attach-area,
   .air-chat #pre-input-bar,
   .air-chat #session-queue-dock,
+  .air-chat #unattended-banner,
   .air-chat #input-bar,
   .air-chat #dispatch-activity { width: min(880px, var(--chat-content-max-width), calc(100% - 24px)); }
 }
@@ -359,6 +361,12 @@ body.air-chat {
    how the conversation column places it: lifted off the bottom edge so it reads
    as part of the column rather than a bar glued to the frame, with the band
    closing the gap above it. */
+/* The unattended banner rides the composer's width formula above, so its own
+   side margins (chat-unattended.css, for the un-skinned chat page) would make
+   it 20px narrower than the card it introduces. Only the side margins go: the
+   4px gap down to the composer is the same one the un-skinned page uses, so
+   the banner and the card it introduces read as one stacked object. */
+.air-chat #unattended-banner { margin: 0 0 4px; }
 .air-chat #input-bar { margin: 6px auto 24px; }
 .air-chat #air-composer-meta:not([hidden]) + #input-bar { margin-top: 0; }
 .air-chat #input-bar textarea { max-height: 120px; resize: none; }

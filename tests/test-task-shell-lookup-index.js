@@ -11,8 +11,7 @@ const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { databaseConstructor } = require('../src/sqlite/driver');
 const { fixture } = require('./helpers/task-shell');
-const { mountAirRoutes } = require('../src/workspace/air-routes');
-const { airResponse } = require('./helpers/air-response');
+const { mountAir } = require('./helpers/air-host');
 
 function storeFixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-index-'));
@@ -93,15 +92,13 @@ test('任务板逐卡片解析权属不再触发 task/link 全表读（每次请
 });
 
 test('/api/air 一次请求只读一次 admission 快照（不再按卡片各读一次）', async () => {
-  const handlers = new Map();
-  const app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   let snapshots = 0, accesses = 0;
   const records = new Map([['s1', { id: 's1', dirId: 'd1', kind: 'chat', workspaceOwnerSessionId: 's1' }]]);
   const board = { tasks: {}, modules: {}, deletedTaskIds: [] };
   for (let i = 0; i < 25; i++) board.tasks[`tsk_${i}`] = { id: `tsk_${i}`, title: `卡片 ${i}`, status: 'active',
     recordType: 'observed', chatSessionId: i === 0 ? 's1' : null, refs: [{ sessionId: 's1', dirId: 'd1' }] };
   board.tasks.tsk_0.ownerShellId = 'sh_1';
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: {
       snapshot: () => { snapshots++; return { workspaces: [{ id: 'ws_1', ownerId: 's1', residency: 'resident', path: '/repo/wt', branch: 'b', pins: [] }],
         leases: [{ workspaceId: 'ws_1', state: 'running', reason: null }], budgets: { residentLimit: 128 } }; },
@@ -111,9 +108,7 @@ test('/api/air 一次请求只读一次 admission 快照（不再按卡片各读
     getBoard: () => board, clis: ['codex'],
     shell: { taskAccess: task => { accesses++; return { readOnly: true, ownerShellId: null, sourceSessionId: null, status: 'active' }; } },
   });
-  const res = airResponse();
-  await handlers.get('/api/air')({}, res);
-  const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   assert.equal(snapshots, 1, 'admission.snapshot 必须每请求一次');
   assert.equal(accesses, 25, '每张卡片仍各自解析一次权属');
   assert.equal(response.tasks.length, 25);

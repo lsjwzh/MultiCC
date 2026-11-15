@@ -305,6 +305,47 @@ test('v1 compatibility baseline catches required-field, property, enum, const, a
   assert.ok(result.errors.filter(item => item.includes('ref changed')).length >= 3);
 });
 
+test('orchestration and unattended routes: host port mounted once, seven out-of-scope routes stay on the real app', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const count = (text, needle) => text.split(needle).length - 1;
+  // The 23 migrated routes are answered by the Rust front door
+  // (orchestration_routes.rs). The four retired modules register only on the
+  // host port's capture app; the single real-app mount is the host endpoint.
+  assert.equal(count(source, 'createOrchestrationHost({ express })'), 1);
+  assert.equal(count(source, 'orchestrationHost.mountRoute(app)'), 1);
+  assert.ok(source.includes('mountAuxGoalRoutes(orchestrationHost.app,'));
+  assert.ok(source.includes('createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(orchestrationHost.app)'));
+  assert.ok(source.includes('orchestrationRoutes.mountHostRoutes(orchestrationHost.app)'));
+  assert.equal(/mountAuxGoalRoutes\(app\b/.test(source), false);
+  assert.equal(/createAuxRunRoutes\([^)]*\)\.mountRoutes\(app\)/.test(source), false);
+  assert.equal(source.includes('orchestrationRoutes.mountHostRoutes(app)'), false);
+  // Only the seven out-of-scope wait-injector / detached routes remain on the
+  // real app. GET /api/sessions/:id/waits (no v1) is among them; the v1
+  // projection is not.
+  assert.equal(count(source, 'orchestrationRoutes.mountRoutes(app)'), 1);
+  const orchestration = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'orchestration.js'), 'utf8');
+  const publicHalf = orchestration.slice(orchestration.indexOf('function mountRoutes(app)'));
+  const hostHalf = orchestration.slice(orchestration.indexOf('function mountHostRoutes(app)'),
+    orchestration.indexOf('function mountRoutes(app)'));
+  for (const route of [
+    "app.post('/api/sessions/:id/wait'",
+    "app.post('/api/wait/:wid/resolve'",
+    "app.get('/api/sessions/:id/waits'",
+    "app.delete('/api/wait/:wid'",
+    "app.post('/api/sessions/:id/run-detached'",
+    "app.get('/api/sessions/:id/detached'",
+    "app.get('/api/detached/:taskId'",
+  ]) {
+    assert.ok(publicHalf.includes(route), `${route} must stay on the real app`);
+    assert.equal(hostHalf.includes(route), false, `${route} must not be captured`);
+  }
+  assert.equal(publicHalf.includes("app.get('/api/v1/sessions/:id/waits'"), false);
+  assert.ok(hostHalf.includes("app.get('/api/v1/sessions/:id/waits'"));
+  for (const file of ['src/routes/aux-goal.js', 'src/routes/aux-runs.js', 'src/unattended/routes.js']) {
+    assert.equal(/\bapp\s*=\s*express\(\)/.test(fs.readFileSync(path.join(ROOT, file), 'utf8')), false);
+  }
+});
+
 test('server composition uses canonical adapters and retires legacy dispatch endpoints', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   const sessionAdmin = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'session-admin.js'), 'utf8');
@@ -319,19 +360,31 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(!workspaceRuntime.includes('const status = new Map()'));
   assert.ok(source.includes("createSessionAdminRuntime } = require('./src/routes/session-admin')"));
   assert.ok(source.includes('const sessionAdmin = createSessionAdminRuntime({'));
-  assert.ok(source.includes('sessionAdmin.mountRoutes(app)'));
+  assert.ok(source.includes('sessionAdmin.mountRoutes(app, { unattendedApp: orchestrationHost.app })'));
   assert.ok(sessionAdmin.includes('const sessionQuery = createSessionQueryService({'));
   assert.ok(sessionAdmin.includes('const sessionWorkspace = createWorkspaceService({'));
-  assert.ok(sessionAdmin.includes("app.get('/api/v1/sessions'"));
-  assert.ok(sessionAdmin.includes("app.get('/api/sessions'"));
-  // Unattended mode owns the per-session goal loop; its routes are mounted with
-  // the other session-admin routes (docs/unattended-mode.md).
-  assert.ok(sessionAdmin.includes("mountUnattendedRoutes(app, deps)"));
+  // The thirteen public session-admin routes are owned by the Rust front door
+  // (native/gateway/src/app/session_admin.rs); Node may only expose the loopback
+  // host port, never the public paths themselves.
+  assert.ok(sessionAdmin.includes('mountSessionAdminHostRoute(app, {'));
+  assert.equal(sessionAdmin.includes("app.get('/api/v1/sessions'"), false);
+  assert.equal(sessionAdmin.includes("app.get('/api/sessions'"), false);
+  // Unattended mode owns the per-session goal loop (docs/unattended-mode.md); its
+  // GET/POST are answered by the Rust front door (orchestration_routes.rs), so
+  // they are mounted only on the orchestration host port's capture app, never on
+  // the public app.
+  assert.ok(sessionAdmin.includes("mountUnattendedRoutes(unattendedApp, deps)"));
+  assert.equal(sessionAdmin.includes("mountUnattendedRoutes(app, deps)"), false);
   // /api/v1/providers is owned by the Rust front door (providers.rs); Node must
   // not register the same path a second time.
   assert.doesNotMatch(source, /app\.get\(['"]\/api\/v1\/providers['"]/);
-  assert.ok(sessionAdmin.includes("app.get('/api/v1/directories/:id/workspace'"));
+  assert.equal(sessionAdmin.includes("app.get('/api/v1/directories/:id/workspace'"), false);
+  // The v1 waits projection is one of the nine orchestration routes the front door
+  // answers (mountHostRoutes, captured by the host port); the unprefixed listing
+  // and the other six wait/detached routes stay in mountRoutes on the public app.
   assert.ok(orchestrationRoutes.includes("app.get('/api/v1/sessions/:id/waits'"));
+  assert.ok(orchestrationRoutes.includes('function mountHostRoutes(app)'));
+  assert.ok(orchestrationRoutes.includes('function mountRoutes(app)'));
   // The auth surface (shutdown gate, login/logout, gate middleware, exchange,
   // ws-ticket) is composed from src/routes/auth.js. The gate delegates to Rust;
   // real wait-resolve method/path authorization is covered by auth-routes.
@@ -442,4 +495,331 @@ test('session DTO exposes the wall-clock unattended shape and drops the legacy r
   });
   assertValid('session.schema.json', clamped);
   assert.equal(clamped.unattended.maxDurationMinutes, 1440);
+});
+
+test('/api pricing and vendor-quota routes are owned by the Rust front door; Node keeps one host port', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'quota-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/routes/quota-host')"), 'server.js requires the host port');
+  assert.ok(source.includes('mountQuotaHostRoute(app,'), 'server.js still wires it');
+  // The 22 public routes live in native/gateway/src/app/quota_routes.rs. Two
+  // Node modules went away with them, and the seven that remain keep only the
+  // fetchers the host port calls: if one starts registering routes again the
+  // front door and Node would disagree about status codes, ETags and the
+  // `{ ok: true, status }` envelopes.
+  for (const retired of ['pricing', 'quota-bars']) {
+    assert.equal(fs.existsSync(path.join(ROOT, 'src', 'routes', `${retired}.js`)), false,
+      `src/routes/${retired}.js must not come back`);
+  }
+  for (const file of [
+    'opencode-quota', 'qoder-quota', 'codex-quota', 'ark-quota', 'kimi-quota',
+    'claude-usage-quota', 'aliyun-quota',
+  ]) {
+    const text = fs.readFileSync(path.join(ROOT, 'src', 'routes', `${file}.js`), 'utf8');
+    assert.equal(/app\.(get|post|put|delete)\(/.test(text), false, `${file}.js must not register routes`);
+  }
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+  assert.ok(host.includes("'/api/__host/quota'"), 'and it is not a public path');
+});
+
+test('/api/air public routes are owned by the Rust front door; Node keeps only the host port', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const mount = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'air-routes.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'air-routes-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/workspace/air-routes').mountAirRoutes(app,"),
+    'server.js still wires the air mount point');
+  // The 15 public routes live in native/gateway/src/app/air_routes.rs. If Node
+  // starts registering them again the front door and Node would disagree about
+  // status codes, ETag/304 and the `{ ok: … }` envelope.
+  for (const retired of [
+    "app.get('/api/air'", "app.post('/api/air/worktrees/reclaim'", "app.get('/api/air/resolve'",
+    "app.post('/api/air/tasks'", "app.get('/api/air/tasks/:id'", "app.get('/api/air/pins'",
+    "app.post('/api/air/pins'", "app.get('/api/air/todos'", "app.post('/api/air/todos'",
+  ]) assert.equal(mount.includes(retired), false, `Node must not register ${retired}`);
+  assert.ok(mount.includes('runtime.mount(app)'), 'the mount point still wires the host port');
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+});
+
+test('/api events, triggers and annotation-live routes are owned by the Rust front door', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const triggers = fs.readFileSync(path.join(ROOT, 'src', 'triggers', 'index.js'), 'utf8');
+  const annotation = fs.readFileSync(path.join(ROOT, 'src', 'annotation-live.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'events-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/routes/events-host').createEventsRuntime({"),
+    'server.js still wires the events host port');
+  assert.ok(source.includes('}).mount(app);'), 'and mounts it once');
+  // The 15 public routes live in native/gateway/src/app/event_routes.rs; the
+  // retired src/events/routes.js must not come back and the two remaining files
+  // must keep only their process-local runtime.
+  assert.equal(fs.existsSync(path.join(ROOT, 'src', 'events', 'routes.js')), false,
+    'src/events/routes.js must not come back');
+  assert.equal(source.includes('triggerRuntime.mountRoutes(app)'), false,
+    'the trigger runtime no longer mounts public routes');
+  for (const file of ['triggers/index.js', 'annotation-live.js']) {
+    const text = file.startsWith('triggers')
+      ? triggers
+      : annotation;
+    assert.equal(/app\.(get|post|put|delete)\(/.test(text), false, `${file} must not register routes`);
+  }
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+  assert.ok(host.includes("'/api/__host/events'"), 'and it is not a public path');
+});
+
+test('/api docs, memory, memo and directory-event routes are owned by the Rust front door', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const docs = fs.readFileSync(path.join(ROOT, 'src', 'docs-registry.js'), 'utf8');
+  const memory = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'memory-browser.js'), 'utf8');
+  const notes = fs.readFileSync(path.join(ROOT, 'src', 'notes-store.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'docs-memory-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/routes/docs-memory-host')"),
+    'server.js requires the docs-memory host port');
+  assert.ok(source.includes('createDocsMemoryHost({'), 'and mounts it once');
+  assert.ok(source.includes('memo: memoModule.controller'),
+    'the memo controller is the host dependency (the router is gone)');
+  // The 16 public routes live in native/gateway/src/app/docs_memory_routes.rs;
+  // the retired mount points must not come back.
+  assert.equal(fs.existsSync(path.join(ROOT, 'src', 'memo', 'router.js')), false,
+    'src/memo/router.js must not come back');
+  assert.equal(source.includes('notesStore.mountRoutes(app)'), false,
+    'the notes store no longer mounts public routes');
+  assert.equal(source.includes('memoModule.router'), false,
+    'the memo module no longer exposes a router');
+  assert.equal(source.includes('memoryBrowser.mountRoutes(app)'), false,
+    'the memory browser no longer mounts public routes');
+  for (const [file, text] of [
+    ['src/docs-registry.js', docs],
+    ['src/routes/memory-browser.js', memory],
+    ['src/notes-store.js', notes],
+  ]) {
+    assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false,
+      `${file} must not register routes`);
+  }
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+  assert.ok(host.includes("'/api/__host/docs-memory'"), 'and it is not a public path');
+  // The store file keeps its historical underscore spelling: the kernel and the
+  // host agree on `docs_registry.json`, not `docs-registry.json`.
+  assert.ok(source.includes('docsRegistry'), 'the registry runtime is still the host dependency');
+});
+
+test('/api task-board, search, task-graph, mark-achieved and task-attribution routes are owned by the Rust front door', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'task-routes-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/routes/task-routes-host').mountTaskRoutesHostRoute(app, {"),
+    'server.js wires the task-routes host port');
+  assert.ok(source.includes('ports: taskBoardRuntime.routePorts,'),
+    'the retired task-board handlers are reached through routePorts');
+  assert.ok(source.includes('taskGoal: sessionAdmin.taskGoalPorts,'),
+    'mark-achieved keeps the one writer injected through session-admin');
+  // The 16 public routes live in native/gateway/src/app/task_routes.rs. If a
+  // retired module starts registering them again, the front door and Node
+  // would disagree about status codes, ETags and the planning envelope.
+  assert.equal(source.includes('taskBoardRuntime.mountRoutes(app)'), false,
+    'the task-board runtime no longer mounts public routes');
+  assert.equal(source.includes('taskSearchRuntime.mountRoutes(app)'), false,
+    'the search runtime no longer mounts public routes');
+  assert.equal(source.includes('mountTaskGoalRoutes'), false,
+    'mark-achieved is no longer mounted by Node');
+  for (const file of [
+    'task-board', 'task-planning', 'task-search', 'task-goal', 'task-graph',
+  ]) {
+    const text = fs.readFileSync(path.join(ROOT, 'src', 'routes', `${file}.js`), 'utf8');
+    assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false, `${file}.js must not register routes`);
+  }
+  const attribution = fs.readFileSync(path.join(ROOT, 'src', 'task-shell', 'attribution-settings.js'), 'utf8');
+  assert.equal(/app\.(get|post|put|patch|delete)\(/.test(attribution), false,
+    'attribution-settings.js must not register routes');
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+  assert.ok(host.includes("'/api/__host/task-routes'"), 'and it is not a public path');
+  assert.ok(host.includes("case 'mark-achieved-facts':"),
+    'eligibility facts and the write stay separate host operations (Rust owns the ladder)');
+});
+
+test('/api push subscribe, notify, channel, fcm and bark routes are owned by the Rust front door', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'push-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/routes/push-host')"),
+    'server.js requires the push host port');
+  assert.ok(source.includes('mountPushHostRoute(app, { push, logger: console })'),
+    'and mounts it once with the push service');
+  // The 18 public routes live in native/gateway/src/app/push_routes.rs. If a
+  // retired module starts registering them again, the front door and Node
+  // would disagree about the gates, envelopes and error codes.
+  assert.equal(source.includes('pushRuntime.mountRoutes(app)'), false,
+    'the push runtime no longer mounts public routes');
+  for (const file of [
+    'src/push/runtime.js', 'src/push/channel-subscriptions.js',
+    'src/push/fcm-devices.js', 'src/push/bark-devices.js',
+  ]) {
+    const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false,
+      `${file} must not register routes`);
+  }
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+  assert.ok(host.includes("'/api/__host/push'"), 'and it is not a public path');
+  assert.ok(host.includes("case 'bark-action':"),
+    'the Bark action verbs stay one host operation (Rust owns the gate)');
+  assert.ok(host.includes("case 'fcm-register':"),
+    'FCM register keeps its reply object for Rust to render');
+});
+
+test('/api directories, fs browse, onboarding and ui-layout routes are owned by the Rust front door', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const index = fs.readFileSync(path.join(ROOT, 'src', 'directory', 'index.js'), 'utf8');
+  const layout = fs.readFileSync(path.join(ROOT, 'src', 'directory', 'ui-layout.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'directory-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/directory')"),
+    'server.js composes the directory module');
+  assert.ok(source.includes('createDirectoryModule({'), 'and wires its runtime adapters once');
+  assert.ok(source.includes('directoryModule.host.mount(app)'),
+    'the host port is mounted for the Rust front door');
+  // The 13 public routes live in native/gateway/src/app/directory_routes.rs;
+  // the retired Node handlers must not come back and the remaining files must
+  // keep only their process-local runtime.
+  for (const gone of [
+    ['src', 'directory', 'controller.js'],
+    ['src', 'directory', 'service.js'],
+    ['src', 'directory', 'ports.js'],
+    ['src', 'ui-layout.js'],
+  ]) {
+    assert.equal(fs.existsSync(path.join(ROOT, ...gone)), false,
+      `${gone.join('/')} must not come back`);
+  }
+  for (const [file, text] of [
+    ['src/directory/index.js', index],
+    ['src/directory/ui-layout.js', layout],
+  ]) {
+    assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false,
+      `${file} must not register routes`);
+  }
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path lives in the runtime');
+  assert.ok(host.includes("'/api/__host/directory'"), 'and it is not a public path');
+  assert.ok(host.includes("case 'sample-ensure':"),
+    'the onboarding sample workspace is created through the host port');
+  assert.ok(host.includes("case 'tx-commit':"),
+    'directory deletion persists through one cross-file transaction');
+});
+
+test('/api session memory, bundle, lifecycle, create, meta and profile routes are owned by the Rust front door', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'session-routes-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/routes/session-routes-host')"),
+    'server.js requires the session-routes host port');
+  assert.ok(source.includes('const sessionRoutesHost = createSessionRoutesHost();'),
+    'and composes the capture app once');
+  // The 18 public routes live in native/gateway/src/app/session_routes.rs. The
+  // six modules still register their handlers, but only on the capture app
+  // behind the internal host port; mounting any of them on the public app
+  // would let Node and the front door disagree about status codes and ETags.
+  for (const mount of [
+    'mountSessionCreateRoutes(sessionRoutesHost.app,',
+    'mountSessionMemoryRoutes(sessionRoutesHost.app,',
+    '}).mountRoutes(sessionRoutesHost.app);',
+  ]) {
+    assert.ok(source.includes(mount), `${mount} stays on the capture app`);
+  }
+  assert.equal(/mountSessionCreateRoutes\(app\b/.test(source), false,
+    'session creation no longer mounts public routes');
+  assert.equal(/mountSessionMemoryRoutes\(app\b/.test(source), false,
+    'session memory no longer mounts public routes');
+  assert.ok(source.includes('sessionBundleRuntime.mountRoutes(sessionRoutesHost.app);'),
+    'the encrypted handoff handlers register on the capture app');
+  // The two binary transports (bundle.zip / import-zip) deliberately stay
+  // public in Node: the front door relays their octet streams byte for byte.
+  // `mountBinaryRoutes` is the zip-only public mount; using `mountRoutes` here
+  // would republish the two migrated JSON transports as a silent Node fallback.
+  assert.ok(source.includes('sessionBundleRuntime.mountBinaryRoutes(app);'),
+    'the zip transports stay publicly served by Node');
+  assert.ok(source.includes('sessionRoutesHost.mountRoute(app);'),
+    'the host port is mounted for the Rust front door');
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path lives in the runtime');
+  assert.ok(host.includes("'/api/__host/session-routes'"), 'and it is not a public path');
+  assert.ok(host.includes('runHandler'), 'the host port returns {ok,value} envelopes');
+  assert.ok(host.includes('thrownEnvelope('),
+    'handler exceptions cross the port as structured envelopes');
+});
+
+test('/api account and login routes are owned by the Rust front door; Node keeps one host port', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'account-routes-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/routes/account-routes-host')"),
+    'server.js requires the account routes host port');
+  assert.ok(source.includes('createAccountRoutesHost()'), 'and builds the capture app once');
+  assert.ok(source.includes('accountRoutesHost.mountRoute(app);'),
+    'the host port is mounted for the Rust front door');
+  // The 32 public routes (claude/codex accounts, zcode, kimi, cli accounts, the
+  // three OAuth status/login pairs) live in
+  // native/gateway/src/app/account_routes.rs. Each retired module may only
+  // register on the capture app: mounting one on `app` again would republish the
+  // migrated paths as a silent Node fallback with its own status codes and DTOs.
+  for (const [file, mount] of [
+    ['claude-accounts', 'mountClaudeAccountRoutes(accountRoutesHost.app'],
+    ['codex-accounts', 'mountCodexAccountRoutes(accountRoutesHost.app'],
+    ['cli-key-accounts', 'mountCliKeyAccountRoutes(accountRoutesHost.app'],
+    ['commandcode-auth', 'mountCommandcodeAuthRoutes(accountRoutesHost.app'],
+    ['codex-oauth', 'mountCodexOAuthRoutes(accountRoutesHost.app'],
+    ['claude-oauth', 'claudeOAuthSurface.mountRoutes(accountRoutesHost.app)'],
+    ['zcode-auth', 'mountZcodeAuthRoutes(accountRoutesHost.app)'],
+    ['kimi-auth', 'mountKimiAuthRoutes(accountRoutesHost.app)'],
+  ]) {
+    assert.ok(source.includes(mount), `${file} registers on the host capture app`);
+  }
+  for (const fn of [
+    'mountClaudeAccountRoutes', 'mountCodexAccountRoutes', 'mountCliKeyAccountRoutes',
+    'mountCommandcodeAuthRoutes', 'mountCodexOAuthRoutes', 'mountZcodeAuthRoutes',
+    'mountKimiAuthRoutes',
+  ]) {
+    assert.equal(source.includes(`${fn}(app`), false, `${fn} must not mount on the public app`);
+  }
+  // The two blocking logins (up to 5 minutes waiting for a child exit) stay
+  // public in Node: they exceed the host port's 60 second budget, so the front
+  // door forwards them whole, automatic OPTIONS included.
+  assert.ok(source.includes('mountZcodeAuthLoginRoute(app);'), 'zcode login stays public');
+  assert.ok(source.includes('mountKimiAuthLoginRoute(app);'), 'kimi login stays public');
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+  assert.ok(host.includes("'/api/__host/account-routes'"), 'and it is not a public path');
+  assert.ok(host.includes('runHandler'), 'the host port returns {ok,value} envelopes');
+  assert.ok(host.includes('thrownEnvelope('),
+    'handler exceptions cross the port as structured envelopes');
+  assert.ok(host.includes("'zcode-auth-login'") === false,
+    'the forwarded logins are not host operations');
+  assert.equal((host.match(/^  '[a-z0-9-]+': \{ method:/gm) || []).length, 32,
+    'the host port serves exactly the 32 migrated public routes');
+});
+
+test('/api share, machine and workspace routes are owned by the Rust front door; Node keeps one host port', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'share-machines-host.js'), 'utf8');
+  assert.ok(source.includes("require('./src/routes/share-machines-host')"),
+    'server.js requires the share/machines host port');
+  assert.ok(source.includes('createShareMachinesHost({'), 'and builds the capture app once');
+  assert.ok(source.includes('shareMachinesHost.mountRoute(app);'),
+    'the host port is mounted for the Rust front door');
+  // The 21 public routes (10 machines, 9 share, 2 workspaces) live in
+  // native/gateway/src/app/share_machine_routes.rs. The three retired modules may
+  // only register on the capture app: mounting any of them on `app` again would
+  // republish the migrated paths as a silent Node fallback with its own status
+  // codes, ETags and DTOs.
+  assert.ok(source.includes('machines.mountProxy(app, express);'),
+    'only the raw/SSE proxy half of src/machines.js stays on the public app');
+  assert.equal(source.includes('machines.mount(app'), false,
+    'the ten JSON machine routes must not mount on the public app');
+  assert.equal(source.includes('mountShareRoutes(app'), false,
+    'the nine share routes must not mount on the public app');
+  assert.equal(source.includes('mountWorkspaceRoutes(app'), false,
+    'the two workspace routes must not mount on the public app');
+  assert.ok(host.includes('machines.mount(app, express);'),
+    'src/machines.js registers its ten JSON routes on the capture app');
+  assert.ok(host.includes("require('./share').mountShareRoutes(app, share);"),
+    'src/routes/share.js registers on the capture app');
+  assert.ok(host.includes("require('./workspaces').mountWorkspaceRoutes(app, workspaces);"),
+    'src/routes/workspaces.js registers on the capture app');
+  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+  assert.ok(host.includes("'/api/__host/share-machines'"), 'and it is not a public path');
+  assert.ok(host.includes('runHandler'), 'the host port returns {ok,value} envelopes');
+  assert.ok(host.includes('thrownEnvelope('),
+    'handler exceptions cross the port as structured envelopes');
+  assert.ok(host.includes("reply.bare = true"),
+    'the versioned-HTML 500 (status().end()) crosses the port without a body');
+  assert.equal((host.match(/^  '[a-z0-9-]+': \{ method:/gm) || []).length, 21,
+    'the host port serves exactly the 21 migrated public routes');
 });

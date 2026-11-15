@@ -1295,9 +1295,63 @@
       }
     }
 
+    // 轮末空壳判定。`message_start` 一到就无条件建气泡，紧接着带 usage 的首帧会挂上
+    // 用量行，自动选线还会提前挂「由 X 产出」的归属行 —— 一个字都还没到，框、用量、
+    // 归属就已经齐了。若这一轮随后被上游限额/接口错误打断（走 error 分支的
+    // `finishStreaming()`，而不是 result），气泡里永远不会有正文，留下的就是只剩两行
+    // 装饰的空框；换一次线多留一个，刷新才消失（没有正文＝没有落库记录）。
+    //
+    // 装饰节点一律不算正文：用量行、归属行（两种形态）、流尾、时间行。实质内容是
+    // 工具卡片、thinking 块、以及渲染出来的文本 —— **只有工具调用、没有文字的回合是
+    // 合法的**，所以绝不能只看文本为空就删。
+    const DECORATIVE_ONLY = [
+      'msg-usage', 'msg-model-attribution', 'msg-model-attribution-row',
+      'msg-stream-tail', 'msg-timing',
+    ];
+    // 容器自身的直接文本（不含子元素的）。浏览器走文本节点，诊断 harness 的假 DOM
+    // 只有 children + _text 两样，所以两种形态都要认 —— 否则守卫在 harness 里走的是
+    // 另一条判定路径，回归测试就测不到线上真正跑的那条。
+    function ownText(content) {
+      if (content.childNodes) {
+        return Array.from(content.childNodes)
+          .filter(node => node.nodeType === 3)
+          .map(node => String(node.textContent || '')).join('');
+      }
+      return String(content._text || '');
+    }
+    function bubbleHasSubstance(bubble) {
+      const content = bubble?.querySelector?.('.msg-content');
+      if (!content) return true; // 结构不认识就别动它
+      for (const child of Array.from(content.children || [])) {
+        const cls = child.classList;
+        if (cls && DECORATIVE_ONLY.some(name => cls.contains(name))) continue;
+        // `renderCurrentText` 会建一个 markdown 容器，哪怕本轮一个字都没有；空容器
+        // 本身不是产出。只对这一个已知的空壳容器放行，其余任何元素（工具卡片、
+        // thinking、图片、附件…）一律算产出 —— 宁可少删，不可误删。
+        if (cls && cls.contains('message-markdown')
+            && !String(child.textContent || '').trim()
+            && !child.querySelector?.('.tool-card')) continue;
+        return true;
+      }
+      return ownText(content).trim() !== '';
+    }
+    function dropEmptyTurnBubble() {
+      const bubble = state.currentMsgEl;
+      if (!bubble) return;
+      // 已落库（正式 id）或已被认领（client id）的气泡不属于「本轮空壳」，交给
+      // 既有的历史/认领路径处理，这里一律不碰。
+      if (bubble.dataset?.msgId || bubble.dataset?.clientMsgId) return;
+      if (state.currentTextContent) return;
+      if (state.currentToolCards?.size) return;
+      if (bubbleHasSubstance(bubble)) return;
+      bubble.remove();
+      state.currentMsgEl = null;
+    }
+
     function finishStreaming() {
       liveUi.hideThinking();
       state.liveStreamUsage = null;
+      dropEmptyTurnBubble();
       if (state.currentMsgEl) {
         // 底部状态行（点 · 进度 · 归属）只属于生成中；归属由 result 挂回时间行。
         liveUi.removeStreamTail?.(state.currentMsgEl);

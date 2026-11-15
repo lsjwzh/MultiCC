@@ -124,15 +124,6 @@ function createNotesStore(rawDeps) {
     if (notes.length !== before) saveNotes();
   }
 
-  function mountRoutes(app) {
-    // Directory event log.
-    app.get('/api/directories/:id/events', (req, res) => {
-      const d = directories.get(req.params.id);
-      if (!d) return res.status(404).json({ error: 'directory not found' });
-      res.json({ events: recentEvents(d.id) });
-    });
-  }
-
   return {
     loadNotes,
     saveNotes,
@@ -141,7 +132,6 @@ function createNotesStore(rawDeps) {
     pendingNotesFor,
     purgeNotesForSession,
     getNotes: () => notes,
-    mountRoutes,
   };
 }
 

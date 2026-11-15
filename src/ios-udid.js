@@ -154,6 +154,9 @@ function createIosUdid({ now = Date.now, decode = decodeSignedResponse } = {}) {
     const item = TOKEN_PATTERN.test(req.params.token) && results.get(req.params.token);
     return res.status(item ? 200 : 410).type('html').send(resultPage(item?.device));
   }
+  // 退休前的公开挂载。只有 tests/helpers/legacy-system-scan-routes.js（system-scan
+  // 差分的冻结 oracle）还在用它按原样复现当时的 Express 栈；生产路径走
+  // `mountHostRoutes`。
   function mountRoutes(app) {
     app.get('/ios-ota/udid.mobileconfig', profile);
     app.get('/ios-ota/udid/result/:token', result);
@@ -163,7 +166,25 @@ function createIosUdid({ now = Date.now, decode = decodeSignedResponse } = {}) {
         return next();
       }), callback);
   }
-  return { mountRoutes };
+  // 公开挂载已由 Rust 前门独占（native/gateway/src/app/release_history_routes.rs）：
+  // 路径匹配、鉴权豁免（回调只对苹果的两种 Content-Type 公开）、64KB 的
+  // express.raw 限额与分帧检查都在前门。这里只剩一次性令牌表、openssl CMS 校验与
+  // 页面渲染，经 src/routes/release-history-host.js 的宿主端口捕获应用挂载。
+  //
+  // 回调的原始请求体由前门读好后经宿主端口传来：`req.body` 是 Buffer（或没有请求
+  // 体时不设），`req.rawBodyError` 是 express.raw 拒绝时的状态（413 / 其余 400）。
+  // 顺序保持原样：先令牌闸门（410/429），再请求体错误，最后回调。
+  function mountHostRoutes(app) {
+    app.get('/ios-ota/udid.mobileconfig', profile);
+    app.get('/ios-ota/udid/result/:token', result);
+    app.post('/ios-ota/udid/callback/:token', (req, res, next) => validateCallback(req, res, () => {
+      if (req.rawBodyError) {
+        return res.status(req.rawBodyError === 413 ? 413 : 400).type('text').send('设备信息格式无效或超过大小限制。');
+      }
+      return callback(req, res, next);
+    }));
+  }
+  return { mountRoutes, mountHostRoutes };
 }
 
 module.exports = { createIosUdid, buildProfile, parseDevicePlist, decodeSignedResponse, resultPage, UDID_PATTERN, TTL_MS };

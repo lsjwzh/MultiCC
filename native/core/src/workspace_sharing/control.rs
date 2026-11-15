@@ -128,6 +128,12 @@ pub async fn serve<F, Fut, C, CFuture>(
                             }
                             Err(_) => Err(internal()),
                         }),
+                        // A session plan resolves against live membership, so
+                        // this arm may await the host context port.
+                        Request::Authorize { input } => Some(match crate::js::json_parse(input) {
+                            Ok(input) => super::source::authorize(&store, input, &context).await,
+                            Err(_) => Err(internal()),
+                        }),
                         _ => None,
                     };
                     if let Some(result) = async_result {
@@ -194,10 +200,8 @@ pub async fn serve<F, Fut, C, CFuture>(
                                 ]),
                                 now,
                             ),
-                            Request::Authorize { input } => crate::js::json_parse(&input)
-                                .map_err(|_| internal())
-                                .and_then(|input| owner.query("authorizePlan", &input, now)),
-                            Request::State { .. }
+                            Request::Authorize { .. }
+                            | Request::State { .. }
                             | Request::Import { .. }
                             | Request::Ticket { .. } => unreachable!(),
                         })

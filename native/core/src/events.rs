@@ -334,7 +334,7 @@ fn parse_int10(text: &str) -> f64 {
 }
 
 /// `clampInt(value, min, max, fallback)` from rules.js.
-fn clamp_int(value: Option<&Value>, min: f64, max: f64, fallback: f64) -> f64 {
+pub(crate) fn clamp_int(value: Option<&Value>, min: f64, max: f64, fallback: f64) -> f64 {
     let number = parse_int10(&js_string_opt(value));
     if number.is_nan() {
         return fallback;
@@ -572,7 +572,10 @@ fn validate_action(raw: Option<&Value>) -> Value {
 /// `validateEventRule(body, { scope })` → `{ error }` or
 /// `{ rule, needsId, needsCreatedAt }`; the bridge fills id/createdAt from its
 /// injected factories, in that order, only for a valid rule.
-fn validate_event_rule(body: Option<&Value>, scope: Option<&Value>) -> Result<Value, String> {
+pub(crate) fn validate_event_rule(
+    body: Option<&Value>,
+    scope: Option<&Value>,
+) -> Result<Value, String> {
     let empty = Value::Object(Map::new());
     let body = match body {
         None => &empty,
@@ -733,7 +736,7 @@ fn matches_filter(rule: Option<&Value>, event: Option<&Value>) -> Result<bool, S
 }
 
 /// The channel actions of a rule (main action and chain steps).
-fn channel_actions(rule: Option<&Value>) -> Value {
+pub(crate) fn channel_actions(rule: Option<&Value>) -> Value {
     let mut actions: Vec<&Value> = Vec::new();
     if truthy_opt(rule) {
         actions.extend(prop(rule, "action"));
@@ -1104,11 +1107,17 @@ fn segment_key(state: Option<&Value>) -> String {
 
 /// Constant tables; the JS modules snapshot this once at load.
 pub fn catalog() -> Result<String, String> {
+    Ok(catalog_object().to_string())
+}
+
+/// The catalog as a JSON value, shared by the FFI entry point and the events
+/// route kernel (which reuses the same tables for its response bodies).
+pub fn catalog_object() -> Value {
     let aliases: Map<String, Value> = ALIASES
         .iter()
         .map(|(name, members)| (name.to_string(), json!(members)))
         .collect();
-    Ok(json!({
+    json!({
         "taskEvents": TASK_EVENTS,
         "turnEvents": TURN_EVENTS,
         "eventTypes": event_types().collect::<Vec<_>>(),
@@ -1122,7 +1131,6 @@ pub fn catalog() -> Result<String, String> {
         "letterEvent": table_object(&LETTER_EVENT),
         "goalEvent": table_object(&GOAL_EVENT),
     })
-    .to_string())
 }
 
 /// Logic-bearing calls (op dispatch). String-in/string-out, lenient at the JS

@@ -158,9 +158,10 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 
 每搬一组路由，就在同一个提交里删掉对应的 Node 代码；前门负责保持那组路由的**完整契约**，客户端分辨不出换了实现：
 
-- **鉴权**：`multicc_core::http_gate` 逐字节复刻 Node 的认证闸门（`src/routes/auth.js` 的中间件、`src/auth-security.js`、`src/request-locality.js`）：局域网对端白名单、`x-multicc-machine-grant` 优先（直接调 `multicc_core::machines::authorize`）、本机请求免登录（loopback 对端 + 本地 Host + 没有任何转发头）、HMAC cookie、`x-access-token`、可选的旧 query token，拒绝时 HTML 请求 302 到 `/login?redirect=…`、其余 403 `AUTH_REQUIRED`。对端地址就是写进 PROXY 行的那个文本，所以 Rust 与 Node 对同一请求的「本机」判断一致。
+- **鉴权**：`multicc_core::http_gate` 逐字节复刻 Node 的认证闸门（`src/routes/auth.js` 的中间件、`src/auth-security.js`、`src/request-locality.js`）：局域网对端白名单、`x-multicc-machine-grant` 优先（直接调 `multicc_core::machines::authorize`）、其次是 fleet 分享的 `x-multicc-fleet-token` + `x-multicc-fleet-grant`（判定见 §51，经子进程 source 控制流问分享 store 的 `authorizePlan`/`authorizeMembers`）、本机请求免登录（loopback 对端 + 本地 Host + 没有任何转发头）、HMAC cookie、`x-access-token`、可选的旧 query token，拒绝时 HTML 请求 302 到 `/login?redirect=…`、其余 403 `AUTH_REQUIRED`。对端地址就是写进 PROXY 行的那个文本，所以 Rust 与 Node 对同一请求的「本机」判断一致。
 - **ACCESS_TOKEN 热改**：Rust `AuthRuntime` 是 Token、关闭状态和 WS 票据的唯一运行时所有者。宿主设置端点先持久化，再同步提交 Rust 状态；网关通过按子进程代次认证的私有控制流读取当前状态，已删除读取 `.env` 猜测 Token 的 `TokenSource`。仅修改文件不会提前切换正在运行的身份凭据。
 - **Express 行为**（`native/gateway/src/app/express.rs`）：`res.json` 的弱 ETag 与 `If-None-Match` → 304、204/304 去掉实体头、`HEAD`、Express 对已注册路径的自动 `OPTIONS` 应答（`Allow`）、`express.json({ limit: '50mb' })`（类型判断、utf-8/utf-16 字符集、gzip/deflate 请求体、strict 首字符、413/415/400）、终端 `safeErrorHandler` 的错误 DTO、`/api/*` 的 JSON gzip（≥1024 字节、`Vary: Accept-Encoding`）、`X-Multicc-Request-Id` / `X-Correlation-Id` / `X-Multicc-API-Version` 响应头，以及写到 stdout 的 `http_request` 日志行。路径匹配同 Express：不区分大小写、允许一个结尾 `/`、不解码；只认区分大小写的 `/api/` 前缀（Node 闸门与 gzip 都按区分大小写判断它）。上述原生路径上的其它方法照常转发给 Node；认证端点见 §12，service 前缀全部方法由 §13 的原生宿主处理。
+- **自动 OPTIONS 的 `Allow` 是多模块并集**：Express 对一个路径按注册顺序收集所有匹配层的方法（`express/lib/router/index.js` 的 `appendMethods`，每个 `GET` 后自动补 `HEAD`）。前门不能由第一个命中路径的簇独自应答，否则字面量路径会漏掉参数形状的方法。每个簇在 `native/gateway/src/app/mod.rs` 的 `OPTIONS_SOURCES` 里登记“自己在这条路径上注册的方法”，由 `multicc_core::route_options::merge` 按同一规则合并；只有一个簇贡献时仍交给该簇自己的应答（保留它的守卫探测与宿主故障文案）。当前覆盖的共享路径：`/api/sessions/:id`（session-admin `GET,HEAD` + session-routes `PATCH,DELETE`）、`/api/sessions/import` 与 `/api/sessions/import-zip`（再并入 bundle 的 `POST`）、`/api/directories/:id/sessions`（+ session-create 的 `POST`）、`/api/air/tasks/mark-achieved`（task-routes 的 `POST` 在 Air 的 `GET,HEAD` 之前）、`/api/providers/:id/models`（model-catalogs 的 `GET,HEAD` 在 providers management 的 `PATCH,DELETE` 之前）。路径落在 `publicSessionAccessGuard` 的 `app.use` 下时，并入的方法不影响守卫：内部执行槽在 OPTIONS 上同样 404。
 - **差分验证**：每组路由搬走前，把原 Node 流水线（真实的 requestId、gzip、认证运行时、body parser、原路由、错误处理）与前门放在一起跑同一组请求，比对状态码、响应体、ETag、内容长度和相关响应头，以及最终落盘文件。
 
 | 路由 | 原 Node 实现 | Rust 实现 | 差分 |
@@ -182,6 +183,20 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 | `GET/HEAD/OPTIONS /api/token-usage/by-role` | `src/routes/token-usage.js` 只剩用量累计/广播/账本导出；宿主端口为 `src/routes/token-usage-host.js` | `native/gateway/src/app/token_usage_by_role.rs`：查询语义（qs 数组/对象 → 空快照）、空快照形状、公开 500 文案与 OPTIONS/HEAD；`RoleTokenTracker.snapshot` 与 `readLedger` 经 `/api/__host/token-usage` 回调 | 见 §35 |
 | `GET/HEAD/OPTIONS /api/push/vapid-key`、`/api/push/health`、`/api/settings/notify`、`/api/settings/tunnel`、`/api/settings/access-token`、`/api/settings/power`、`/api/host/battery`；`GET/HEAD/POST/OPTIONS /api/tunnel/funnel`、`/api/tunnel/ipv6`、`/api/tunnel/sakurafrp`（POST 仍由 Node 写路径回答） | `src/routes/host-read.js`（已删）；push Map/配置、tunnel 客户端、macOS 电源服务与电量探针留在 Node，宿主端口为 `src/routes/host-read-host.js`；通知占位符 helper 在 `src/notify-settings.js` | `native/gateway/src/app/host_read.rs`：10 条路径与逐路由 OPTIONS `Allow`、推送健康 DTO（失败分类、`sha256:` 端点指纹）、notify origin 掩码、access-token 掩码、`canEdit` 本地性判定与 `safeErrorHandler` 映射；运行时事实经 `/api/__host/host-read` 回调 | 见 §36 |
 | `GET/HEAD/OPTIONS /api/sessions/:id/turn-ledger`、`GET/HEAD/POST/OPTIONS /api/sessions/:id/turn-hooks/codex-trust` | `src/turn-ledger/runtime.js` 的 `mountRoutes`/`launchFor`（已删，199 → 191 行）；`launches` 表、TurnLedger 记录与 hook 安装器留在 Node，宿主端口为 `src/routes/turn-ledger-host.js` | `native/gateway/src/app/turn_ledger.rs`：路径匹配（含解码后的 `:id`）、`SID_RE` 闸门、409、快照 DTO（字段顺序、`liveness` 投影、`reason` 回退、`lastEventAt \|\| null`）与 502 映射；原始记录与 codex trust/grant RPC 经 `/api/__host/turn-ledger` 回调 | 32 条请求：27 条逐字节一致，5 条预期差异单独校验 5/5（见 §38） |
+| `GET/HEAD/OPTIONS /api/sessions/:id/{merge-status,diff,diff/files,diff/file}`、`GET/HEAD/OPTIONS /api/git/{log,commit-files,commit-diff,directory-file-diff,directory-status}`、`GET/HEAD/OPTIONS /api/task-board/tasks/:taskId/diff/{files,file}`、`POST/OPTIONS /api/task-board/tasks/:taskId/{merge,cleanup-worktree}`、`POST/OPTIONS /api/sessions/:id/{merge,sync,rebase}` | `src/routes/session-git.js` 的 16 条路由（1387 → 540 行）；merge-state 的进程内缓存与后台刷新泵、`isWorktreeActive`、`autoCommitTurn`、session Map 查找与 `isChatStateBusy` 留在 Node，宿主端口为 `src/routes/session-git-host.js` | `native/gateway/src/app/session_git.rs` + `multicc_core::session_git`：路径与参数校验、`git -z` 输出解析（numstat/name-status/show）、diff 截断（UTF-16 语义）、DTO 键序、错误码映射、merge/sync/rebase/cleanup 决策树、逐路由 OPTIONS `Allow` 与写路由串行化（`app.session_git_write`）；`git` 子进程、会话表、merge-state 缓存与广播经 `/api/__host/session-git` 的 14 个 op 回调，前门绝不 spawn git | 117/117 请求逐字节一致；117 个用例的副作用（`appendEvent`/`workspaceBroadcast`/`chatBroadcast` 的调用序列与参数）逐个一致 |
+| `GET/HEAD/OPTIONS /api/task-shell-tasks/:taskId`、`GET/HEAD/OPTIONS /api/task-shell-tasks/:taskId/{history,artifacts}`、`POST/OPTIONS /api/task-shell-tasks/:taskId/{fork,messages}`、`GET/HEAD/OPTIONS /api/task-shells/config`、`GET/HEAD/OPTIONS /api/sessions/:sessionId/{context,task-separation}`、`POST/OPTIONS /api/sessions/:sessionId/task-separation/:suggestionId`、`GET/HEAD/OPTIONS /api/task-shells/:shellId`、`GET/HEAD/OPTIONS /api/task-shells/:shellId/{chat,history,task-index,artifacts,task-operations,task-continuations,attribution-decisions,relations}`、`GET/HEAD/OPTIONS /api/task-shells/:shellId/tasks/:taskId`、`POST/OPTIONS /api/task-shells`、`POST/OPTIONS /api/task-shells/:shellId/task-operations`、`POST/OPTIONS /api/task-shells/:shellId/task-operations/preview`、`GET/HEAD/OPTIONS /api/task-operations/:operationId`、`POST/OPTIONS /api/task-operations/:operationId/{cancel,undo}`、`POST/OPTIONS /api/task-shells/:shellId/attribution-decisions/:decisionId/{accept,dismiss,defer,undo}`、`POST/OPTIONS /api/task-shells/:shellId/tasks/:taskId/independent-continue`、`GET/HEAD/OPTIONS /api/task-continuations/:continuationId`、`POST/OPTIONS /api/task-continuations/:continuationId/{apply,cancel,retry}`、`POST/OPTIONS /api/task-shells/:shellId/relations`、`POST/OPTIONS /api/task-shells/:shellId/relations/remove`、`DELETE/OPTIONS /api/task-shells/:shellId`、`POST/OPTIONS /api/task-shells/:shellId/{links,select-target,messages}`、`POST/OPTIONS /api/task-shells/:shellId/tasks/resolve`、`POST/OPTIONS /api/task-shells/:shellId/receipts/:receiptId/retry` | `src/task-shell/routes.js` 的 42 条路由（172 → 48 行）；SQLite 任务库、records Map、WS 客户端、聊天历史、task-operations/attribution/independent/relations 运行态与 artifact 采集（8s 合并缓存）留在 Node，宿主端口为 `src/routes/task-shell-host.js` | `native/gateway/src/app/task_shell.rs` + `multicc_core::task_shell`：路径匹配与参数解码、逐路由 OPTIONS `Allow`、`pageTaskHistory` 分页、DTO 键序、`{ok:true,…}` 包装、`cleanError` 脱敏与错误信封、写路由串行化（`app.task_shell_write`）；40 个宿主 op 经 `/api/__host/task-shell` 回调，前门不碰 SQLite、WS 或子进程 | 67/67 请求逐字节一致；67 个用例的副作用（runtime / task-operations / attribution / independent / relations / artifact 端口的调用序列与参数）逐个一致 |
+| `GET/HEAD/OPTIONS /api/v1/sessions`、`GET/HEAD/OPTIONS /api/v1/sessions/:id`、`GET/HEAD/OPTIONS /api/v1/directories/:id/workspace`、`GET/HEAD/OPTIONS /api/sessions`、`GET/HEAD/PATCH/DELETE/OPTIONS /api/sessions/:id`、`POST/OPTIONS /api/sessions/:id/{reclassify,mark-task-done,mark-goal-achieved}`、`POST/OPTIONS /api/reclassify-all`、`GET/HEAD/POST/OPTIONS /api/directories/:id/sessions`、`GET/HEAD/OPTIONS /api/directories/:id/workspace`、`POST/OPTIONS /api/debug/classify/:id`、`GET/HEAD/OPTIONS /api/debug/classify-test-cases` | `src/routes/session-admin.js` 的 13 条路由（629 → 211 行）；会话/目录 Map、`readSessionRuntime`、`sessionView`、`getTaskState`/`setTaskState`、`dispatchStateAction`、`runClassifyNow`、转录读取与 AI 助手队列留在 Node，宿主端口为 `src/routes/session-admin-host.js`（316 行） | `native/gateway/src/app/session_admin.rs` + `multicc_core::session_admin`：路径与参数解码、guarded 404 的两种形态、三套 presenter 的键序、裁剪与过滤语义、reclassify-all 决策树、调试分类校验阶梯与排序、逐路由 OPTIONS `Allow`、写路由串行化（`app.session_admin_write`）；18 个宿主 op 经 `/api/__host/session-admin` 回调，前门不碰 Map、分类状态、广播或转录 | 79/79 请求逐字节一致；79 个用例的副作用（`runClassifyNow`/`dispatchStateAction`/`setTaskState` 的调用序列与参数）逐个一致 |
+| `GET/HEAD/OPTIONS /api/air`、`POST/OPTIONS /api/air/worktrees/reclaim`、`GET/HEAD/OPTIONS /api/air/resolve`、`POST/OPTIONS /api/air/tasks`、`GET/HEAD/OPTIONS /api/air/tasks/:id`、`GET/HEAD/OPTIONS /api/air/tasks/:id/open`、`POST/OPTIONS /api/air/tasks/:id/delivery/reconcile`、`POST/OPTIONS /api/air/tasks/:id/roles`、`GET/HEAD/OPTIONS /api/air/pins`、`POST/OPTIONS /api/air/pins`、`POST/OPTIONS /api/air/pins/toggle`、`GET/HEAD/OPTIONS /api/air/todos`、`POST/OPTIONS /api/air/todos`、`POST/OPTIONS /api/air/todos/toggle`、`POST/OPTIONS /api/air/todos/ignore` | `src/workspace/air-routes.js` 的 15 条路由（624 → 34 行，只剩挂载点）；快照组装与凭据脱敏、任务读写（create/detail/open/reconcile/roles）、pin/todo 落盘与存在性剪枝、liveSync 摘要（`/api/air/sync`、`/api/air/page`）留在 Node，宿主端口为 `src/workspace/air-routes-host.js`（16 个 op） | `native/gateway/src/app/air_routes.rs` + `multicc_core::air_routes`：路径匹配与参数解码、`{ ok: … }` 信封（`taskPins`/`taskTodos`/`taskIgnoredTodos`/`roleBindings`/`publications`）、404/409/500 与 `task_ids_required` 400 映射、逐路由 OPTIONS `Allow`/`HEAD`、`GET /api/air` 与任务详情的弱 ETag + `If-None-Match` → 304；快照正文与 ETag 由宿主定稿，前门只决定 200/304 并原样发出 | 62/62 请求逐字节一致；62 个用例的副作用（宿主 op 的调用序列与参数、pin/todo 落盘内容）逐个一致 |
+| `GET/HEAD/OPTIONS /api/pricing/{status,lookup,search}`、`POST/OPTIONS /api/pricing/refresh`、`GET/HEAD/OPTIONS /api/{opencode,qoder,codex,ark,kimi,claude,aliyun}/quota`、`POST/OPTIONS /api/{opencode,qoder,ark,kimi,claude,aliyun}/quota/login`、`POST/OPTIONS /api/ark/quota/install`、`GET/HEAD/OPTIONS /api/qoder/quota/cookies`、`GET/HEAD/OPTIONS /api/quota/bars/{idle,state}`、`POST/OPTIONS /api/quota/bars/refresh` | `src/routes/pricing.js` 与 `src/routes/quota-bars.js`（已删）；七个厂商模块只剩 fetcher（244/237/118/213/356/541/147 行），宿主端口 `src/routes/quota-host.js`（351 行，22 个 op） | `native/gateway/src/app/quota_routes.rs` + `multicc_core::quota_routes`（额度条渲染复用 `multicc_core::quota_bar_view`）：路径与参数校验、`?models=` 解析与三条 400、`?limit=` 的 parseInt 与封顶、`force` 两种拼写、各厂商 status→HTTP 树、信封键序、额度条 TTL/就绪/并发语义、逐路由 OPTIONS `Allow` 与写路由串行化（`app.quota_write`）；价格表、九个厂商抓取、登录窗、arkcli、额度条进程内缓存、Claude 用量队列与 5h live 窗、两个记账经 `/api/__host/quota` 回调 | 137/137 请求逐字节一致；137 个用例的副作用（价格表查询、各厂商 fetch、登录窗、arkcli spawn/install、缓存读写、Claude 用量队列与 live 窗、`recordVendor`/`recordClaude`）调用序列逐个一致（见 §45） |
+| `GET/HEAD/OPTIONS /api/events/catalog`、`GET/HEAD/OPTIONS /api/events/recent`、`GET/HEAD/OPTIONS /api/event-triggers`、`GET/HEAD/OPTIONS /api/event-rules`、`POST/OPTIONS /api/event-rules`、`PUT/OPTIONS /api/event-rules/:id`、`DELETE/OPTIONS /api/event-rules/:id`、`POST/OPTIONS /api/events/test`、`GET/HEAD/OPTIONS /api/sessions/:id/triggers`、`POST/OPTIONS /api/sessions/:id/triggers`、`PUT/OPTIONS /api/sessions/:id/triggers/:tid`、`DELETE/OPTIONS /api/sessions/:id/triggers/:tid`、`POST/OPTIONS /api/sessions/:id/triggers/:tid/test`、`GET/HEAD/OPTIONS /api/annotation-live`、`POST/OPTIONS /api/annotation-live` | `src/events/routes.js`（已删）；`src/triggers/index.js` 与 `src/annotation-live.js` 只剩运行时（事件环、规则表读写、`fireTrigger`/`reconcileSession`、`appendEvent`、cron 校验、渠道注册表、annotation-live.json 热加载与 HTTP 转发），宿主端口为 `src/routes/events-host.js`（18 个 op） | `native/gateway/src/app/event_routes.rs` + `multicc_core::event_routes`（规则校验复用 `multicc_core::events`）：路径匹配与参数解码、`publicSessionAccessGuard` 的两种 404 形态（复用 `session_admin` 的 `guard_facts`/`guarded_404`）、逐路由 OPTIONS `Allow`、recent 的 `limit` 解释与 1..200 封顶、规则/触发器的校验决策树与 id/旧戳生成、`/api/events/test` 的已发射类型表与 goal 裁剪、annotation-live 的 payload 归一化与 `{config,targets}`/`{ok,relayed,results}` 键序、写路由串行化（`app.event_write`）；18 个宿主 op 经 `/api/__host/events` 回调，前门绝不碰事件环、会话 Map、cron 或渠道插件 | 81/81 请求逐字节一致；81 个用例的副作用（`hub.emit`、规则表持久化、渠道核对、cron 校验、`mutate`/`appendEvent`/`chatBroadcast`/`chat:run`）调用序列逐个一致（见 §46） |
+| `GET/HEAD/POST/OPTIONS /api/docs-registry`、`PATCH/DELETE/OPTIONS /api/docs-registry/:id`、`POST/OPTIONS /api/docs-registry/:id/{start,stop}`、`GET/HEAD/OPTIONS /api/docs-registry/:id/log`、`GET/HEAD/OPTIONS /api/memory/{graph,tree}`、`GET/PUT/DELETE/OPTIONS /api/memory/file`、`GET/PUT/OPTIONS /api/directories/:id/memo`、`POST/OPTIONS /api/directories/:id/memo/send`、`GET/HEAD/OPTIONS /api/directories/:id/events` | `src/docs-registry.js` 7 条（472 → 494 行，只剩注册表内存表、artifact 依赖图与 servedRoots、服务 spawn/kill/probe/日志）、`src/routes/memory-browser.js` 5 条（897 → 849 行，只剩目录扫描、realpath 事实、文件读写与广播）、`src/memo/router.js`（已删，控制器在 `src/memo/`，经宿主端口回调）、`src/notes-store.js` 1 条（144 → 138 行，只剩事件环与 JSONL）；宿主端口 `src/routes/docs-memory-host.js`（250 行，23 个 op） | `native/gateway/src/app/docs_memory_routes.rs` + `multicc_core::docs_memory_routes`：路径匹配与参数解码、逐路由 OPTIONS `Allow`（`/api/directories/:id/memo` 与 session-admin 的 `/sessions`、`/workspace` 共存）、HEAD、弱 ETag/304 与 gzip、docs 列表的 `?dir` 归一化与 view 排序、POST 的预填（session → 目录、worktree 折叠、artifact URL）、PATCH 的 sanitize 与 `updatedAt`、`/api/memory/file` 的 rel 形态与真实路径穿越判定、graph/tree DTO 键序与截断、memo 的三条 400/404/413 校验、事件日志的 404 信封；服务进程、记忆库扫描与文件写入、memo 投递、事件环与目录 Map 经 `/api/__host/docs-memory` 的 23 个 op 回调 | 94/94 请求逐字节一致；94 个用例的副作用（服务 spawn/kill 序列、`runTurn` 投递、记忆库文件落盘与广播）逐个一致（见 §47） |
+| `GET/HEAD/OPTIONS /api/fs/list`、`GET/HEAD/POST/OPTIONS /api/directories`、`PUT/OPTIONS /api/directories/order`、`PATCH/DELETE/OPTIONS /api/directories/:id`、`POST/OPTIONS /api/directories/:id/push`、`GET/HEAD/OPTIONS /api/directories/:id/uncommitted`、`POST/OPTIONS /api/directories/:id/commit`、`POST/OPTIONS /api/onboarding/sample-workspace`、`GET/HEAD/OPTIONS /api/ui-layout`、`PUT/OPTIONS /api/ui-layout/dir-order`、`PUT/OPTIONS /api/ui-layout/session-order/:dirId` | `src/directory/controller.js`、`src/directory/service.js`、`src/directory/ports.js`、`src/ui-layout.js`（均已删）；`src/directory/ui-layout.js` 只剩 `ui-layout.json` 存储（126 → 69 行），`src/directory/index.js` 收缩为组合根；宿主端口 `src/routes/directory-host.js`（482 行，38 个 op） | `native/gateway/src/app/directory_routes.rs` + `multicc_core::directory_routes`：路径匹配与参数解码、逐路由 OPTIONS `Allow`（字面量 `order` 胜过 `:id`）、`/api/fs/list` 的 HOME 及祖先不可选判定（在宿主 realpath 事实之上，符号链接解到 HOME 也拒）、browse 的前缀补全/点文件过滤/localeCompare 排序与 200 条封顶、目录 DTO 键序与 24 个计数回退、`uncommitted` 的 porcelain 解析、`order` 合并、layout 剪枝与 `updatedAt` 盖章、错误码与错误信封、写路由串行化（`App::directory_write`）；git 子进程（push/commit/status/commit-validate）、目录创建与 sample 文件落盘、fs 扫描、会话表与事件环、`directories.json` 的跨文件事务、`ui-layout.json` 存盘经 `/api/__host/directory` 的 38 个 op 回调 | 91/91 请求逐字节一致；187 行副作用日志（git 命令、目录创建、会话级联、事件、事务提交）两侧逐条一致（见 §48） |
+| `POST /api/task-board/tasks`、`POST /api/task-board/tasks/:taskId/{update,title,planning,move}`、`GET/HEAD/POST /api/task-board/directories/:dirId/retention`、`POST /api/task-board/tasks/:taskId/{status,relocate,chat-session}`、`DELETE /api/task-board/tasks/:taskId`、`GET/HEAD /api/task-board/search`、`GET/HEAD /api/search/messages`、`POST /api/air/tasks/mark-achieved`、`GET/HEAD /api/task-graph`、`GET/HEAD /api/settings/task-attribution` | `src/routes/task-board.js`、`task-planning.js`、`task-search.js`、`task-graph.js`、`task-goal.js`、`src/task-shell/attribution-settings.js` 只剩运行时与宿主回调（任务板对外唯一入口是 `routePorts`）；宿主端口为 `src/routes/task-routes-host.js`（17 个 op） | `native/gateway/src/app/task_routes.rs` + `multicc_core::task_routes`：路径与参数解码、planning 的 `{ok,task,revision}` 信封与错误→状态码阶梯、保留策略的排序/`maxBatch`、mark-achieved 的 eligibility 阶梯、`meta.durationMs` 插入位置、搜索信封与 `mode`、attribution 的 `{mode,modes,default}`、逐路由 OPTIONS/HEAD 与写路由串行化；任务板文件与任务库写入、串行锁、会话绑定、FTS 运行时、图谱聚合与活档位经 `/api/__host/task-routes` 回调 | 78/78 请求逐字节一致 + 1/1 预期差异（mark-achieved 的 OPTIONS 并集），79 个用例的副作用（存储、锁、索引、图谱端口调用序列）逐条一致，见 §49 |
+| `POST/OPTIONS /api/push/subscribe`、`DELETE/OPTIONS /api/push/subscribe`、`POST/OPTIONS /api/push/{validate,test,notify,test-bark,test-webhook}`、`GET/HEAD/PUT/POST/OPTIONS /api/push/channel-subscriptions`、`DELETE/OPTIONS /api/push/channel-subscriptions/:id`、`POST/OPTIONS /api/push/test-channel`、`GET/HEAD/POST/DELETE/OPTIONS /api/push/fcm`、`POST/OPTIONS /api/push/fcm/test`、`GET/HEAD/POST/OPTIONS /api/push/bark-devices` | `src/push/runtime.js` 7 条（501 → 379 行，只剩订阅 Map、四个发送器与业务推送回执）、`src/push/channel-subscriptions.js` 5 条（199 → 167 行，只剩订阅表与插件注册表调用）、`src/push/fcm-devices.js` 4 条（83 → 72 行，只剩设备表与 transport）、`src/push/bark-devices.js` 2 条（196 → 170 行，只剩设备库、health Map 与真实投递）；宿主端口 `src/routes/push-host.js`（311 行，18 个 op） | `native/gateway/src/app/push_routes.rs` + `multicc_core::push_routes`：路径匹配与 `:id` 解码、逐路由 OPTIONS `Allow`（fcm `GET,HEAD,POST,DELETE`、channel `GET,HEAD,PUT,POST`、channel/:id `DELETE`、bark `GET,HEAD,POST`、subscribe `POST,DELETE`）、HEAD、FCM id/token 形状闸门、Bark action 词表、notify 的 `application/json` 415、DTO 键序与错误码树、业务推送的去重回执语义、写路由串行化（`App::push_write`）；订阅与健康 Map、web-push/FCM/Bark/webhook 发送器、设备库与订阅表落盘、插件注册表经 `/api/__host/push` 的 18 个 op 回调 | 107/107 请求逐字节一致；107 个用例的副作用（发送器调用、设备/订阅落盘、回执）逐个一致（见 §50） |
+| `GET/HEAD/POST/OPTIONS /api/claude/accounts`、`POST/OPTIONS /api/claude/accounts/:id/{activate,login-callback,relogin}`、`GET/HEAD/OPTIONS /api/claude/accounts/:id/{login-status,quota}`、`DELETE/OPTIONS /api/claude/accounts/:id`、`GET/HEAD/POST/OPTIONS /api/codex/accounts`、`POST/OPTIONS /api/codex/accounts/:id/{activate,login-callback,relogin}`、`GET/HEAD/OPTIONS /api/codex/accounts/:id/login-status`、`DELETE/OPTIONS /api/codex/accounts/:id`、`GET/HEAD/PUT/OPTIONS /api/zcode/auth`、`POST/OPTIONS /api/zcode/auth/sync`、`GET/HEAD/OPTIONS /api/zcode/auth/check`、`GET/HEAD/PUT/OPTIONS /api/kimi/auth`、`GET/HEAD/OPTIONS /api/kimi/auth/check`、`GET/HEAD/POST/OPTIONS /api/cli-accounts/:cli`、`PATCH/DELETE/OPTIONS /api/cli-accounts/:cli/:id`、`GET/HEAD/OPTIONS /api/{claude,codex}/oauth/status`、`POST/OPTIONS /api/{claude,codex}/oauth/login`、`GET/HEAD/OPTIONS /api/commandcode/auth/status`、`POST/OPTIONS /api/commandcode/auth/login` | 八个路由文件只剩运行时与脱敏投影：`src/routes/claude-accounts.js`（291 行）、`codex-accounts.js`（296 行）、`zcode-auth.js`（198 行，含 login-only 公开挂载）、`kimi-auth.js`（194 行，同）、`cli-key-accounts.js`（83 行）、`claude-oauth.js`（185 行）、`codex-oauth.js`（84 行）、`commandcode-auth.js`（50 行）；宿主端口 `src/routes/account-routes-host.js`（226 行，32 个 op）。两条阻塞式 `POST /api/{zcode,kimi}/auth/login` 仍由 Node 公开应答，前门整条转发 | `native/gateway/src/app/account_routes.rs` + `multicc_core::account_routes`：32 条路径匹配、`:id`/`:cli` 解码（坏转义 400）、逐路由 OPTIONS `Allow`（Express 注册序并集：账户根 `GET,HEAD,POST`、`/api/{zcode,kimi}/auth` `GET,HEAD,PUT`、`/api/cli-accounts/:cli` `GET,HEAD,POST`、`/api/cli-accounts/:cli/:id` `PATCH,DELETE`、`.../:id` `DELETE`、其余读口 `GET,HEAD`、写口 `POST`）、HEAD、宿主 `{status,body}` 原样回放、抛出信封重建、写路由串行化（`App::account_write`）；凭据读取（钥匙串、`~/.codex/auth.json`、`~/.claude`、CLI key 账户表）、PKCE 登录状态机与回调监听器、登录终端、CLI 登录、桌面 key 同步与 DTO 脱敏经 `/api/__host/account-routes` 的 32 个 op 回调 | 114/114 请求逐字节一致（含 23 条自动 OPTIONS 的 `Allow` 与 2 条转发 login 的 OPTIONS）；113 个用例的副作用逐个一致（codex 登录完成的 `modelCatalogRuntime.refreshAccount` 是 fire-and-forget，不参与比对），见 §53 |
+| `GET/HEAD/POST/OPTIONS /api/machines`、`GET/HEAD/OPTIONS /api/machines/{self,grants}`、`POST/OPTIONS /api/machines/pair`、`DELETE/OPTIONS /api/machines/connection`、`DELETE/OPTIONS /api/machines/grants/:grantId`、`PATCH/DELETE/OPTIONS /api/machines/:machineId`、`POST/OPTIONS /api/machines/:machineId/ws-ticket`、`POST/OPTIONS /api/sessions/:id/share`、`GET/HEAD/OPTIONS /api/sessions/:id/shares`、`DELETE/OPTIONS /api/sessions/:id/share/:token`、`POST/OPTIONS /api/sessions/:id/share-messages`、`GET/HEAD/OPTIONS /share/:token`、`POST/OPTIONS /api/share/:token/auth`、`GET/HEAD/OPTIONS /api/share/:token/{entry,history,session}`、`GET/HEAD/OPTIONS /api/workspaces/overview`、`POST/OPTIONS /api/workspaces/sweep` | `src/machines.js`（119 行）、`src/routes/share.js`（425 行）、`src/routes/workspaces.js`（81 行）的 21 条公开路由；三个文件对真实 app 的公开挂载已删除，只剩捕获应用。机器注册表与授权表（已是 `native/core/machines`）、分享记录与密码 cookie、工作区扫描/清扫、版本化 HTML 读取留在 Node，宿主端口为 `src/routes/share-machines-host.js`；`GET/HEAD /api/machines/:machineId/proxy` 与其 SSE 变体仍由 `machines.mountProxy` 直挂真实 app（二进制流），前门整条转发 | `native/gateway/src/app/share_machine_routes.rs` + `multicc_core::share_machine_routes`：路径匹配与 `:machineId`/`:grantId`/`:id`/`:token` 解码、逐路由 `Allow` 并集、局部 16 KiB JSON 与全局 50 MiB JSON 的分配、内部执行槽 404、跨站闸门、错误信封，以及 `/share/:token` 的 `Cache-Control: no-store, no-cache, must-revalidate` + `Pragma: no-cache`；`/share/**` 与 `/api/share/**` 复用 `http_entry::public_path`，对**任何方法**免鉴权 | 66/66 请求逐字节一致（含 12 条同段冲突的自动 OPTIONS `Allow`）；分享存储与机器注册表在两侧隔离数据根之间逐字节比对一致，见 §54 |
+| `POST /api/restart`、`POST /api/desktop-shutdown`、`GET/HEAD /api/update/status`、`POST /api/update`、`GET/HEAD/POST /api/system/developer-tools{,/install,/install-git}`、`GET/HEAD/POST /api/system/{disk-access,agent-permissions,agent-install}` 及其 `/open`、`/restart`、`/replace`、`GET/HEAD /api/system/ops-env`、`GET/HEAD/POST /api/system/ops-run`、`POST /api/system/ops-run/stop`、`POST /api/settings/{notify,tunnel,access-token,task-attribution}`、`POST /api/tunnel/restart/:provider`、`POST /api/tunnel/sakurafrp/public-url`、`POST /api/tunnel/funnel`、`POST /api/settings/power{,/auto-unlock,/unlock-password/authorize}`、`POST|DELETE /api/settings/power/unlock-password`、`GET/HEAD /api/skill-sync/status`、`POST /api/skill-sync/run`、`POST /api/system/env-doctor`、`GET/HEAD /api/system/env-doctor/:runId`、`POST …/:runId/cancel`、`POST/GET/HEAD /api/sessions/:id/doctor`、`GET/HEAD /api/doctor/runs/:runId`、`POST /api/doctor/runs/:runId/cancel`（均含 `OPTIONS`） | `src/routes/{server-restart-route,update-route,developer-tools,macos-privacy,ops-terminal,host-write,host-power,skill-sync,env-doctor,doctor}.js` 的 40 条公开路由；十个文件对真实 app 的公开挂载已全部摘除，只在 `src/routes/host-ops-host.js` 的捕获应用上注册；分离式重启/自更新启动器、TCC/电源/Agent、终端子进程、`.env` 写入与 tunnel/push 运行时、doctor 服务留在 Node 宿主端口。没有任何一条留在 Node 公开面 | `native/gateway/src/app/host_ops_routes.rs` + `multicc_core::host_ops_routes`：路径匹配与 `:provider`/`:runId`/`:id` 解码、逐路由 `Allow` 并集（走 `OPTIONS_SOURCES`，与 host-read 的 GET、任务面的 GET 合并）、`publicSessionAccessGuard` 对两条 `:id/doctor` 的 404、本机判定事实 `local`、`{status,body,headers}` 回放、503/500 信封、写路由串行化（`App::host_ops_write`） | 94/94 请求逐字节一致 + 1 条预期差异（宿主不可达），见 §55 |
+| `GET/HEAD /api/aux/{status,health,history}`、`POST /api/aux/{enqueue,cancel}`、`GET/HEAD/POST /api/aux/config`、`GET/HEAD/POST /api/settings/goal`、`POST /api/goal/precheck`、`GET/HEAD /api/sessions/:id/aux-runs{,/:runId}`、`GET/HEAD/POST /api/sessions/:id/unattended`、`POST/GET/HEAD /api/sessions/:id/scheduled-messages`、`DELETE /api/sessions/:id/scheduled-messages/:messageId`、`GET/HEAD /api/sessions/:id/{tasks,dispatches,queue}`、`POST /api/sessions/:id/{user-input/dismiss,queue/action}`、`GET/HEAD /api/v1/sessions/:id/waits`（均含 `OPTIONS`；**不含**无 v1 前缀的 `GET /api/sessions/:id/waits`） | `src/routes/{aux-goal,aux-runs,orchestration}.js` 与 `src/unattended/routes.js` 的 23 条公开路由；四个文件迁走部分对真实 app 的公开挂载已摘除，只在 `src/routes/orchestration-host.js` 的捕获应用上注册；Aux 队列与模型配置、无人值守监督器、持久化编排运行时、Aux 运行日志、会话轮次引擎留在 Node 宿主端口。**排除集 7 条仍由真实 app 挂载并由前门转发**：`POST /api/sessions/:id/wait`、`POST /api/wait/:wid/resolve`、`GET /api/sessions/:id/waits`、`DELETE /api/wait/:wid`、`POST /api/sessions/:id/run-detached`、`GET /api/sessions/:id/detached`、`GET /api/detached/:taskId` | `native/gateway/src/app/orchestration_routes.rs` + `multicc_core::orchestration_routes`：路径匹配与 `:id`/`:messageId`/`:runId` 解码、查询子集、`Idempotency-Key` 头白名单、逐路由 `Allow` 并集（走 `OPTIONS_SOURCES`）、内部执行槽 404（复用 session-admin 的 `guard_facts`/`guarded_404`）、`{status,body,headers}` 回放、503/500 信封、写路由串行化（`App::orchestration_write`，`aux/enqueue`、`goal/precheck`、`aux/cancel` 除外） |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -213,6 +228,16 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 - `claude/models` 的 `?refresh[toString]=1` 与 `?refresh[toString]=` 是预期差异：旧 Node 在 `String(req.query.refresh)` 上对对象抛 TypeError，落到 safeErrorHandler 的 500 `internal_error`；Rust 的 `query_value` 把它当对象，`String()` 得到 `"[object Object]"`，于是按非强制刷新返回 200。这与 `limit-history` 的 `points[toString]` 同类，属有意消除的缺陷；差分组把这两条从逐字节计数中剔除，按两侧各自的文档形状单独断言（2/2）。
 - `claude/models` 的 versions 目录排序与 mtime 精度已与 Node 对齐（复核发现的三处低危差异已修）：libuv 的 scandir 先按名字 strcmp 排序，V8 的 `Array.prototype.sort` 稳定，因此 mtime 完全并列时取字节序更早的文件名——Rust 先按名字字节序、再做稳定降序；`mtimeMs` 采用 Node `statSync` 的同一公式（整毫秒 + `nsec % 1e6 / 1e6` 的分数，非截断整数毫秒），亚毫秒 mtime 参与比较；缓存键用纳秒精度，不弱于 Node 的分数毫秒；缓存 `at` 在扫描完成后取钟（TTL 判定仍用请求到达时刻），长首扫不会自己折损寿命。
 - `claude/models` 扫描期间 Rust 持共享 `App::store_lock` 约 270ms，期间其它原生路由排队；旧 Node 实现在同一扫描里阻塞整个事件循环约 215ms，所有路由（含转发）都停。（这两个数字来自独立复核对真实约 300MB 包的一次实测，后续修复轮次没有重测，只能当量级参考。）当前实现整体不更差，暂不改；若将来该锁成为可观测争用点，再改成路由私有互斥量。
+- `session-git` 组（16 条）新增失败面：宿主端口 `/api/__host/session-git` 不可达或应答形状不合法时，16 条路径统一返回 503 `{"error":"会话 Git 接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内取数，没有这个形状。其余契约（状态码、正文、ETag、逐路由 `Allow`、diff 1MB 截断（UTF-16 语义，带 `truncated` 标记）、merge/sync/rebase 失败到 400/409/500 的映射、`merge_status` 广播与 append 事件）逐字节一致；差分 117/117 且 117 例副作用一致，语料未覆盖宿主端口失败分支。另有一处只在非标准接线可见的差异：旧 Express 仅在注入 `resolveTaskWorktree`/`cleanupTaskWorktree` 时才注册任务面四条路径，前门无条件 claim；`server.js` 始终注入这两个解析器，因此生产行为一致。
+- `session-admin` 组（13 条）新增失败面：宿主端口 `/api/__host/session-admin` 不可达或应答形状不合法时，13 条路径统一返回 503 `{"error":"会话管理接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内取数，没有这个形状。其余契约（状态码、正文、ETag、逐路由 `Allow`、guarded 404 的两种形态、三套 presenter 键序、reclassify-all 的 onlyJunk 语义、调试分类校验阶梯与 test-cases 排序）逐字节一致；差分 79/79 且 79 例副作用一致，语料未覆盖宿主端口失败分支。两处刻意差异：`OPTIONS /api/sessions/:id` 的 `Allow` 是`GET,HEAD,PATCH,DELETE`、`/api/directories/:id/sessions` 是 `GET,HEAD,POST`，即按整个 app 的并集硬编码（见 §44）；2026-11-15 的 §52 把 PATCH/DELETE 与目录建会话的 POST 也迁入前门，这两个并集现在是真实的跨簇并集，值不变。非规范时间戳在 Rust 侧按 `null`（旧 `new Date()` 会尽力解析）。
+- `task-shell` 组（42 条）新增失败面：宿主端口 `/api/__host/task-shell` 不可达或应答形状不合法时，42 条路径统一返回 503 `{"error":"任务板接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内取数，没有这个形状。其余契约（状态码、正文、ETag、逐路由 `Allow`、history 分页的 `limit`/`before`/`around` 语义与 `messages,hasMore,found,hasNewer` 键序、artifact 采集结果与 8s 合并缓存、错误信封的 code/message/status/conflicts/detail/receiptId/taskId/notDelivered 投影、`cleanError` 的 Bearer/secret 脱敏）逐字节一致；差分 67/67 且 67 例副作用一致，语料未覆盖宿主端口失败分支。
+- `air` 组（15 条）新增失败面：宿主端口 `/api/__host/air` 不可达或应答形状不合法时，15 条路径统一返回 503 `{"error":"首页接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内取数，没有这个形状。其余契约（状态码、正文、弱 ETag 与 `If-None-Match` → 304、逐路由 `Allow`、`{ ok: … }` 信封键序、404 `task_not_found`/409 `pin_limit_reached`/500 `pin_save_failed`/`todo_save_failed` 等映射）逐字节一致；差分 62/62 且 62 例副作用一致。语料未覆盖：pin/todo 落盘失败的信封（Node 侧仍有单测）、成功 `todos-ignore` 的展开正文、宿主端口失败分支。错误信封本身不是差异：旧 Node 的 `route()` 包壳同样产出 `{ ok: false, code, message }`（`status` 缺失时 500 且 `message` 为 `Request failed`），Rust 的 `air_routes::error_body` 逐条复刻。另有一处只在副作用层可见的差异：旧 `route()` 包壳对任何非 GET 方法（实际可达的只有 `HEAD`）都会顺带 `liveSync.invalidate([])`，前门把 `HEAD` 留在 Rust，不再触发这次摘要失效；两者都不写正文，下一次 GET 仍会拿到最新摘要，因此差分（未注册 sync）看不到，也无客户端可观察后果。
+- `events` / `triggers` / `annotation-live` 组（15 条）新增失败面：宿主端口 `/api/__host/events`（以及 trigger 路由守卫使用的 `/api/__host/session-admin` 的 `guard-record` op）不可达或应答形状不合法时，15 条路径统一返回 503 `{"error":"事件与触发器接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内取数，没有这个形状。其余契约（状态码、正文、ETag、逐路由 `Allow`、`/api/sessions/:id` 的内部执行槽 404 与宿主 `{error:'not found'}`/`{error:'session not found'}` 的区分、规则/触发器校验文案、annotation 归一化）逐字节一致；差分 81/81 且 81 例副作用一致，语料未覆盖宿主端口失败分支（由 `native/gateway/tests/event_routes.rs` 的 `an_unreachable_host_is_the_documented_503` 守着）。
+- `docs` / `memory` / `memo` / `directory-events` 组（16 条）新增失败面：宿主端口 `/api/__host/docs-memory` 不可达或应答形状不合法时，16 条路径统一返回 503 `{"error":"文档与记忆接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内取数，没有这个形状。其余契约（状态码、正文、ETag、逐路由 `Allow`、`/api/memory/file` 的 rel 判定与真实路径穿越拒绝、docs 列表 `?dir` 的绝对路径/worktree 折叠/相对路径→`[]`/未知→`[]`、服务生命周期 409、memo 的 400/404/413 文案、事件日志 404 `{error:'directory not found'}`）逐字节一致；差分 94/94 且 94 例副作用（`start`/`stop` 与 `runTurn` 的调用序列）一致，语料未覆盖宿主端口失败分支（由 `native/gateway/tests/docs_memory_routes.rs` 的 `an_unreachable_host_is_the_documented_503` 守着）。
+- `directories` / `ui-layout` 组（13 条）新增失败面：宿主端口 `/api/__host/directory` 不可达或应答形状不合法时，13 条路径统一返回 503 `{"error":"目录与布局接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内直接读注册表与 git，没有这个形状。其余契约（状态码、正文、逐路由 `Allow`、`/api/fs/list` 的 HOME/祖先拒绝、`order` 与 `:id` 的歧义裁决、push/commit 的 `git-error` 文案、layout 剪枝）逐字节一致；差分 91/91 且 91 例副作用一致，语料未覆盖宿主端口失败分支（由 `native/gateway/tests/directory_routes.rs` 的 `an_unreachable_host_is_the_documented_503` 守着）。
+- `task-board` / `search` / `task-graph` / `mark-achieved` / `task-attribution` 组（16 条）新增失败面：宿主端口 `/api/__host/task-routes` 不可达或应答形状不合法时，16 条路径统一返回 503 `{"error":"任务接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内取数，没有这个形状。其余契约（状态码、正文、弱 ETag、逐路由 `Allow`、planning 的 `{ok,task,revision}` 键序、`revision_conflict` 的 actualRevision、保留策略的比较器与信封、`delete` 的 409 `task_has_worktree`/`task_streaming` 类拒绝按宿主渲染原样透传、搜索的 `mode` 与 503、mark-achieved 的 400/404/409/501 阶梯与 `{ok,taskId,goalState}` 键序）逐字节保留。`mark-achieved` 的 OPTIONS 是唯一有意差异：旧服务里 Air 的 `GET /api/air/tasks/:id` 与这个 POST 共享路径，Express 自动 OPTIONS 返回 `POST,GET,HEAD`；差分只挂本簇，Node 侧只答 `POST`。
+- `push` 组（18 条）新增失败面：宿主端口 `/api/__host/push` 不可达或应答形状不合法时，18 条路径统一返回 503 `{"error":"推送接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内直接读 Map 与文件，没有这个形状。宿主**回了非 200**（`host port: status N` / `host port: chunked reply`）则按退休的 `route()` 包壳渲染 500 `{"error":"push request failed"}`，与旧行为一致。其余契约（状态码、正文、逐路由 `Allow`、FCM id/token 形状与 400/409/502/503 阶梯、Bark action 词表与 `device_already_added`/`device_limit_reached`/`device_not_found`、notify 的媒体类型 415 与业务推送 400/409/503、channel 的 50 条上限/词表校验/`:id` 解码失败 400、`{subscriptions,categories,defaults,otherChannels}` 键序）逐字节一致；差分 107/107 且 107 例副作用一致，语料未覆盖宿主端口失败分支（由 `native/gateway/tests/push_routes.rs` 的 `host_unreachable_is_the_documented_503` 守着）。
+- `账号与登录` 组（34 条 = 32 条前门独占 + 2 条转发）新增失败面：宿主端口 `/api/__host/account-routes` 不可达或应答形状不合法时，32 条路径统一返回 503 `{"error":"账号管理接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内直接读凭据与账号仓库，没有这个形状。宿主**回了非 200**（`host port: status N` / `host port: chunked reply`）则按退休的 `safeErrorHandler` 渲染 500 `{"error":"account route failed"}`，与旧行为一致。其余契约（状态码、正文、弱 ETag 与 HEAD、逐路由 `Allow`、activation 的 409 `统一官方账号未启用`/404 `账号不存在`/409 `请先完成该账号的登录`、登录状态机的 pending/error 与 reused oauthUrl、客户端回调的 `state` 校验、quota 的 401/502、zcode/kimi PUT 的 400 文案、CLI key 账户的 404 `该 CLI 不支持 API Key 账户`与 400 `API Key 格式无效`、DTO 键序）逐字节一致；差分 114/114 且 113 例副作用一致，语料未覆盖宿主端口失败分支（由 `native/gateway/tests/account_routes.rs` 的 `host_unreachable_is_a_503` 守着）。顶层 JSON `null` 请求体两侧都由 body-parser 的 strict 模式在进入处理器前拒绝为 400 `request_error`，不会触达宿主端口。
 - `claude/codex subscription` 的单飞表（`pending` Map）是进程内的：同一账号的并发 HTTP 请求合并成一次上游查询，不同账号并行；Node 读取器的刷新查询有自己的一张表，两者互不知情。Node 侧是 `pending` promise，客户端断开不会取消它；Rust 同样把「查询 + 结果映射 + record + 槽位清理」整体放进 `tokio::spawn` 的 leader 任务，槽位只保存 `watch` 广播的接收端，所有请求者（包括第一个）都只是订阅者。因此客户端断开只是丢一个接收端：查询照常完成、缓存照常写入，仍在等待的第二个请求拿到同一结果；leader panic 时由 `Drop` 守卫清理槽位（`Arc::ptr_eq` 保证只删自己的槽），订阅者在通道关闭后映射为 `{"status":"unavailable"}`，不会挂起。跨进程合并需要新的协调层，暂不做。
 - 共享缓存的跨进程投影是最终一致：网关写入 `<data>/provider-limit-cache.db` 后，Node 的同步 `project()` 通过比较主库与 `-wal`/`-shm` 的 mtime/size 发现变化并异步重读；发现变化的当次仍用旧快照，下一次 `project()` 起生效。`record()` 完成后主动把指纹置空，因此每次记录后最多多一次廉价重读，绝不会把「record 返回之后才落库的并发写」永久吞进指纹（取 record 之后的 stamp 会吞掉这段窗口）。`src/quota/account-subscription-cache.js` 用串行队列保证重读不会越过先前的写入，SQLite `busy_timeout` 5 秒；测试覆盖网关并发写与 Node 记录并存（不丢写、不报 BUSY）、确定性的「record 期间外部写」复现，以及随机多写者的最终可见性。
 - `GET /api/claude/subscription`（不带 `?account=`）的 CLI 共享登录**不在差分里**：macOS 上它读 Keychain 的 `Claude Code-credentials`（经绝对路径 `/usr/bin/security`），既无法拦截也无法在不接触真实凭据的前提下伪造。该分支的规则（`ok` 且未过期 → token，否则 `no_auth`）由 Rust 单测以注入的凭据文档覆盖；Codex 的全局登录在 `$HOME/.codex/auth.json`，差分在隔离 HOME 下正常覆盖。
@@ -234,6 +259,9 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 - 大写 `/API/token-usage/global`：Express 大小写不敏感，旧 Node 路由能命中；前门只 claim 区分大小写的 `/api/` 前缀，路由删除后该变体在真实服务里落回 Express 404。差分按预期差异单独校验（Node 200、前门转发给桩）。
 - `token-usage/global` 的缓存只在前门进程内，从不落盘，重启后第一次请求重新全量扫描；旧 Node 实现同样如此。`by-role` 路由（含它的 `?session=` 分支）留在 Node：它读 Node 持有的会话/角色表。
 - `token-usage/global` 的 `sources` 路径同样用 `HOME` 拼，`HOME` 缺失时前门得到空路径，与上面 `claude/models` 的说明一致。
+- `分享与电脑` 组（21 条前门独占 + 1 条 `proxy` 转发）新增失败面：宿主端口 `/api/__host/share-machines` 不可达或应答形状不合法时，21 条路径统一返回 503 `{"error":"分享与电脑接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内直接读机器注册表与分享记录，没有这个形状。宿主**回了非 200**（`host port: status N` / `host port: chunked reply`）则按退休的 `safeErrorHandler` 渲染 500 `{"error":"share route failed"}`，与旧行为一致；处理器在宿主里抛出时，宿主回 `{threw,status,code,message}`，前门用**自己的** request id 重建同一信封（绝不外泄 message）。`GET/HEAD /api/machines/:machineId/proxy`（含 SSE）不受该 503 影响：它由 Node 直挂并由前门整条转发。其余契约（状态码、正文、弱 ETag 与 HEAD、逐路由 `Allow`、`/share/:token` 的公开页与两条缓存头、无授权 `403 缺少电脑授权`、执行槽 404、`{ok,value}` 宿主信封、`Cache-Control: no-store` 回放）逐字节一致；差分 66/66 且分享存储与机器注册表一致，语料未覆盖宿主端口失败分支（由 `native/gateway/tests/share_machine_routes.rs` 的 `an_unreachable_host_is_the_registered_503_surface` 守着）。
+- `宿主与系统操作` 组（40 条前门独占）新增失败面：宿主端口 `/api/__host/host-ops` 不可达或应答形状不合法时，40 条路径统一返回 503 `{"error":"宿主与系统操作接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内直接调用处理器，没有这个形状（例如 `POST /api/restart` 在宿主不可达时旧行为是 409，新行为是 503 且**不会**触发任何重启）。宿主回了非 200 则按退休的 `safeErrorHandler` 渲染 500 `{"error":"host operation failed"}`；处理器在宿主里抛出时宿主回 `{threw,status,code,message}`，前门用自己的 request id 重建同一信封，绝不外泄 message。其余契约逐字节一致；差分把「宿主不可达」登记为唯一预期差异，同时由 `native/gateway/tests/host_ops_routes.rs` 的 `unreachable_host_is_the_registered_503` 守着。
+- `编排与无人值守` 组（23 条前门独占）新增失败面：宿主端口 `/api/__host/orchestration` 不可达或应答形状不合法时，23 条路径统一返回 503 `{"error":"编排与无人值守接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；旧 Node 实现在同一进程内直接调用处理器，没有这个形状（差分登记为 2 条预期差异：`GET /api/aux/status`、`GET /api/sessions/:id/queue` 旧行为 200）。会话准入守卫无法询问宿主时同为 503。宿主回了非 200 则按退休的 `safeErrorHandler` 渲染 500 `{"error":"host operation failed"}`；处理器在宿主里抛出时宿主回 `{threw,status,code,message}`，前门用自己的 request id 重建同一信封，绝不外泄 message。排除集 7 条不受影响，仍由 Node 直接应答。
 
 ### 10. 通用请求准入迁移（2026-11-08）
 
@@ -1716,6 +1744,9 @@ HTTP 抓取、官方 Codex 目录运行时（provider store + 出口绑定 + 原
   刷新（300 秒）再只 peek；其余请求先 kick 一次不等待的刷新、再 peek，因此 `refreshing`
   反映刚 kick 的刷新。两条分支都带 `Cache-Control: no-store`。
 - `OPTIONS` 由前门自动应答（`Allow: GET,HEAD` / `POST`）；`HEAD` 与 `GET` 同头无体。
+  `/api/providers/:id/models` 是例外：它与 providers management 的
+  `PATCH|DELETE /api/providers/:appType/:id` 同形，`mod.rs` 的 `OPTIONS_SOURCES` 按
+  `server.js` 注册顺序合并为 `GET,HEAD,PATCH,DELETE`（§9）；本簇只贡献 `GET,HEAD`。
 
 ### 差分与集成
 
@@ -2349,6 +2380,11 @@ TTL 与失败保留上次策略）在 `multicc_core::outbound_proxy`。`MULTICC_
   不再重复校验。
 - 写路由在前门用一把 `tokio::sync::Mutex` 串行，等价于原先 Node 事件循环里
   逐请求跑完的语义；`OPTIONS` 不取锁、不触达宿主。
+- `PATCH|DELETE /api/providers/:appType/:id` 与 §32 的
+  `GET /api/providers/:id/models` 同形。该形状的 `OPTIONS` 由 `mod.rs` 的
+  `OPTIONS_SOURCES` 合并（`server.js` 先挂模型目录 GET，再挂 management，
+  所以是 `GET,HEAD,PATCH,DELETE`，§9）；本簇的 share 只是 `PATCH,DELETE`
+  （`providers::Route::allow` 与 responder 共用同一张表，不会漂移）。
 
 ### 差分与集成
 
@@ -2781,3 +2817,1731 @@ launchd）仍传 `--node`，因为 Node 仍持有未迁路由，把默认翻成 
 - 环境坑：原生模块重建首次失败于 `libsqlite3-sys`，原因是系统临时目录里该包的构建缓存缺了 `out/bindgen.rs`
   （被系统清理，cargo 仍认为构建脚本输出有效）。只清该包缓存（`cargo clean -p libsqlite3-sys`）后重建成功，
   不是代码问题。
+
+## 44. 会话管理路由迁入 Rust（2026-11-14）
+
+`src/routes/session-admin.js` 的 13 条路由现在由前门独占（629 → 211 行）：
+
+```
+GET  /api/v1/sessions                     GET  /api/sessions
+GET  /api/v1/sessions/:id                 GET  /api/sessions/:id
+GET  /api/v1/directories/:id/workspace    GET  /api/directories/:id/sessions
+                                          GET  /api/directories/:id/workspace
+POST /api/sessions/:id/reclassify         POST /api/reclassify-all
+POST /api/sessions/:id/mark-task-done     POST /api/debug/classify/:id
+POST /api/sessions/:id/mark-goal-achieved GET  /api/debug/classify-test-cases
+```
+
+规则在 `multicc_core::session_admin`（1,736 行，9 个单测）：参数解码与校验、
+`publicSessionAccessGuard` 的两种 404 形态、三套 presenter 的字段顺序
+（`toSessionDto` 投影 / legacy 平铺列表 / legacy 详情）、摘要与正文的裁剪
+（`sanitizePublicText` 1000、taskShortCode 8、phase 80）、过滤语义（v1 隐藏
+aux/gateway 与 task-bound、目录列表 `includeHidden` 但排除 task-bound、目录工作区
+排除隐藏、reclassify-all 遍历整个 Map 并跳过已结算）、调试分类的校验阶梯与
+test-cases 的排序（`lastTs` 降序、`localeCompare`）、逐路由 `OPTIONS Allow`、
+错误码与信封。前门在 `app/session_admin.rs`（1,356 行，7 个单测）里做路径匹配、
+`session_admin_write` 写串行化、`guarded_404` 与宿主端口调用。
+
+留在 Node 的是 `src/routes/session-admin-host.js`（316 行）暴露的测试/运行时
+事实：会话与目录 Map、`readSessionRuntime`（终端/聊天运行时快照）、`sessionView`
+（工作区事实）、`getTaskState`/`setTaskState`、`dispatchStateAction`、
+`runClassifyNow`、转录读取与 AI 助手队列。`/api/__host/session-admin` 只认回环
+（`!isLocal(req)` → 404 `{"error":"not found"}`），未知 op → 400
+`{"error":"unknown host operation"}`，op 抛错 → 500 `{"error":"host operation
+failed"}` 并被前门翻译为 503。
+
+**宿主端口 18 个 op**
+
+| op | 输入 | 输出 |
+|---|---|---|
+| `records` | `{}` | `[[id, record], …]`（`[...Map]` 的插入序） |
+| `list-dto` | `{items:[{id, record}]}` | `[{runtime, providerSelection, cliStates, pendingCliHandoff}]` |
+| `dir-dto` | `{items}` | 同上 + `invalid` |
+| `detail-dto` | `{record}` | `{runtime, providerSelection, providerBaseUrl, cliStates, cliAvailability, pendingCliHandoff}` |
+| `v1-dto` | `{items}` | `[{runtime}]` |
+| `workspace-dto` | `{items}` | `[{runtime, facts, invalid}]`（`facts` = `sessionView(id)`） |
+| `directory` | `{id}` | 目录记录，缺省 `null` |
+| `record` | `{id}` | 会话记录，缺省 `null` |
+| `guard-record` | `{id, method}` | `{record, internal, taskStateWritable}`；`internal` 为真时按旧 `app.use` 层打 `internal_execution_slot_public_access_denied` 日志 |
+| `task-state` | `{id}` | `{classifyState, goal, phase, goalState}`，缺键为 `null` |
+| `aux-entry` | `{}` | `{available:false}` / `{available:true, present:false}` / `{available:true, present:true, entry}` |
+| `history` | `{id}` | `{failed:false, history}` 或 `{failed:true}`（读取抛错不穿透） |
+| `chat-flag` | `{id}` | `{exists, streaming}` |
+| `reply` | `{id}` | `classificationReply(id)`（`latestStringAssistant(…, 20)`，抛错当空串） |
+| `enqueue` | `{id, reply}` | `null`；写入 `currentAssistantText` 后 `runClassifyNow(chat, id, {manual:true})`，finally 还原正文 |
+| `dispatch-state` | `{id, goal, phase, isTerminal}` | `null`；`dispatchStateAction({state:'D', …}, {sessionName:id, sessionId:id, cs, isTerminal})` |
+| `set-goal-achieved` | `{id}` | `null`；唯一的状态写入口 `setTaskState(id, {goalState:'achieved', goalStateManualAt:Date.now()})` |
+| `run-classify` | `{id, text}` | `null`；`currentAssistantText = text` 后 `runClassifyNow(chat, id)`（不还原、不带 manual） |
+
+**公开会话访问闸门**：`server.js` 用
+`app.use('/api/sessions/:id')` + `app.use('/api/v1/sessions/:id')` 在路由之前挂
+`publicSessionAccessGuard`，前缀挂载因此也拦住三个 POST 子路径与 `OPTIONS`。前门
+在每条被守卫的路径上先调 `guard-record`（`method` 传真实方法），内部执行槽命中时
+返回两种 404：`/api/v1/*` 下是 v1 错误 DTO
+`{"ok":false,"error":"session not found","code":"session_not_found","apiVersion":"v1",
+"requestId":…,"correlationId":…}`，其余路径是裸 `{"error":"session not found"}`
+（注意详情路由自己的 404 是大写 `{"error":"Session not found"}`，闸门是小写，差分
+把两者分开钉住）。
+
+**`Allow` 的口径**：`OPTIONS` 的 `Allow` 是 Express 对**整个 app** 上同一路径注册
+方法的并集，由 `mod.rs` 的 `OPTIONS_SOURCES` 跨簇汇总（§9），不是本簇的硬编码。
+本簇只贡献自己注册的方法：`/api/sessions/:id` → `GET,HEAD`（再并入 §52 的
+session-profile `PATCH` 与 session-lifecycle `DELETE`，合并后是
+`GET,HEAD,PATCH,DELETE`），`/api/directories/:id/sessions` → `GET,HEAD`（再并入
+session-create 的 `POST`，合并后 `GET,HEAD,POST`）。其余 11 条单方法。差分里 Node
+侧按 `server.js` 的注册顺序挂出邻居的 `app.get('/api/sessions/:id')` 与
+`app.get('/api/directories/:id/sessions')`（handler 不被语料触发），两侧比的是
+生产 `Allow` 而不是「只剩冻结 oracle」的 `Allow`。
+
+**已知差异**
+
+- 宿主端口不可达或应答不合法时，13 条路径统一 503
+  `{"error":"会话管理接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`；
+  旧 Node 实现在同一进程内取数，没有这个形状。差分语料覆盖不到（stub 子进程始终
+  在线），由 `native/gateway/tests/session_admin.rs` 的宿主掉线用例钉住。
+- `new Date(non-canonical)`：旧 presenter 把任意能被 `Date` 解析的时间戳原样
+  `toJSON`；Rust 只接受规范 ISO 串或数字，其它值按 `null`。生产里这些字段都来自
+  `Date.now()`/ISO 写入，不会出现该分支。
+- 转录读取抛错：旧 handler 让异常落到 `safeErrorHandler` 的 500，前门用
+  `history.failed` 复现同一个 500 信封（`{"ok":false,"error":"internal_error",
+  "code":"internal_error",…}`），逐字节一致。
+- 与大写路径一致：`/API/...` 前缀不被 claim（前门口径，见 §9 其它组）。
+
+**验证**
+
+- 差分 `docs/rust-migration/differential/session-admin.js`（冻结的旧路由
+  `tests/helpers/legacy-session-admin-routes.js` + 脚本化世界
+  `tests/helpers/session-admin-scripted-world.js`）：79 条请求逐字节一致，79 例的
+  副作用（`runClassifyNow` 的 manual/正文、`dispatchStateAction` 的 D 动作与
+  isTerminal、`setTaskState` 的 goalState/manualAt）逐个一致。语料覆盖 13 条路径
+  （含尾斜杠）与四条被守卫子路径的 OPTIONS、两种 404 形态、>1KB gzip、畸形百分号
+  转义、reclassify-all 三种 onlyJunk、调试分类校验阶梯与 test-cases 排序。
+- Rust：`multicc_core::session_admin` 9/9 单测、`app::session_admin` 7/7 单测、
+  `tests/session_admin.rs` 18/18 集成用例。
+- Node：`tests/test-session-admin-routes.js` 改写为宿主端口契约
+  （13 个用例），`tests/test-api-contracts.js`、`tests/test-request-locality.js`
+  的白名单与断言同步更新。另有 16 个自起 `node server.js` 的隔离测试改为经
+  `multicc-gateway serve --cwd ROOT --node <node> server.js` 启动（它们读
+  `GET /api/sessions`、`GET /api/sessions/:id`、`GET /api/directories/:id/sessions`
+  等已迁路径）；`test-cli-completion-isolated` 与 `test-fleet-sharing-two-ip`
+  只用仍属 Node 的 POST/PATCH，不改。
+
+## 45. 额度与计价路由迁入 Rust（2026-11-15）
+
+`src/routes/pricing.js`、`src/routes/quota-bars.js` 整文件删除，七个厂商额度模块
+（`opencode-quota.js`、`qoder-quota.js`、`codex-quota.js`、`ark-quota.js`、
+`kimi-quota.js`、`claude-usage-quota.js`、`aliyun-quota.js`）只剩 fetcher 与解析器。
+22 条公开路由全部由前门应答：
+
+- `GET|HEAD|OPTIONS /api/pricing/status`、`/api/pricing/lookup`、
+  `GET|HEAD|OPTIONS /api/pricing/search`、`POST|OPTIONS /api/pricing/refresh`
+- `GET|HEAD|OPTIONS /api/opencode/quota`、`POST|OPTIONS /api/opencode/quota/login`
+- `GET|HEAD|OPTIONS /api/qoder/quota`、`POST|OPTIONS /api/qoder/quota/login`、
+  `GET|HEAD|OPTIONS /api/qoder/quota/cookies`
+- `GET|HEAD|OPTIONS /api/codex/quota`
+- `GET|HEAD|OPTIONS /api/ark/quota`、`POST|OPTIONS /api/ark/quota/login`、
+  `POST|OPTIONS /api/ark/quota/install`
+- `GET|HEAD|OPTIONS /api/kimi/quota`、`POST|OPTIONS /api/kimi/quota/login`
+- `GET|HEAD|OPTIONS /api/claude/quota`、`POST|OPTIONS /api/claude/quota/login`
+- `GET|HEAD|OPTIONS /api/aliyun/quota`、`POST|OPTIONS /api/aliyun/quota/login`
+- `GET|HEAD|OPTIONS /api/quota/bars/idle`、`/api/quota/bars/state`、
+  `POST|OPTIONS /api/quota/bars/refresh`
+
+### 45.1 归属判定
+
+进 Rust（`multicc_core::quota_routes` + `native/gateway/src/app/quota_routes.rs`）：
+
+- 路径匹配（不区分大小写、容忍一个结尾 `/`）、参数解码、`text(value, max)` 清洗
+  与 `?force=` 的 `'1'`/`'true'` 两种拼写、body 覆盖 query 的 `requestInput` 合并。
+- pricing 的 `?models=` 拆分/去空/去重/忽略非字符串，三条 400 的判定顺序
+  （`models_required` → `too_many_models`（>100）→ `model_too_long`（>100 码元））。
+- `?limit=` 的 `parseInt` 与封顶（缺省 20、上限 50、非数字回退 20）。
+- 各厂商 `status` → HTTP 的状态码树：opencode（ok 200 / needs_login·no_auth 401 /
+  chrome_unavailable 503 / 其余 500）、qoder（ok 200 / needs_login 401 /
+  chrome_unavailable 503 / 其余 500）、codex（ok 200 / no_auth 401 / 其余 500）、
+  ark（ok 200 / needs_auth 401 / needs_install 404 / 其余 500）、kimi（ok 200 /
+  not_configured 404 / needs_login 401 / chrome_unavailable 503 / 其余 502）、
+  claude（ok·idle 200 / needs_login 401 / chrome_unavailable 503 / 其余 500）、
+  aliyun（ok 200 / needs_login 401 / chrome_unavailable 503 / 其余 502）。
+- 额度条 refresh 的 `idle`/`ok` 200、`needs_login`·`no_auth`·`needs_auth` 401、
+  `chrome_unavailable`·`needs_install` 503、其余 500；抓取抛错时的固定
+  `{status:'unavailable',error:'quota bar refresh failed'}`。
+- 信封与键序：`{ ok:true, status }`、`{ ok:true, prices, status }`、
+  `{ ok:true, query, count, results, status }`、`{ ...result, bar }`、
+  `{ result, bar, cached }`、登录 `{ ok:true, status, pid }` 等全部在 Rust 组装。
+  额度条文本/颜色/标题与多语言片段复用 `multicc_core::quota_bar_view`，claude 条
+  复用 `multicc_core::claude_quota` 的合并规则。
+- 逐路由 OPTIONS `Allow`（Express 的注册序并集，HEAD 紧跟 GET）、`HEAD`、弱 ETag
+  与 `If-None-Match` → 304、`/api/*` JSON ≥1024 字节的 gzip。
+- 写路由串行化：`App::quota_write`（`tokio::sync::Mutex<()>`，与 server-git /
+  task-shell 同款），所有 POST 串行执行。
+
+不进 Rust（`src/routes/quota-host.js`，`POST /api/__host/quota`，回环限定）：
+
+- models.dev 价格表的进程内实例与 refresh（`src/pricing/price-table.js`）。
+- 九个厂商抓取：CDP 托管浏览器/控制台页面、`~/.codex/auth.json` 与 OAuth 刷新钩子、
+  `arkcli` 子进程与安装器、Claude 用量页抓取。
+- 登录窗（managed profile 的可见窗口，会先停掉 headless 实例）。
+- 额度条缓存（`src/quota/quota-bar-cache.js`，落盘 `quota-bar-cache.json`）与
+  `recordVendor` / `recordClaude` 两个记账。
+- Claude 用量队列（60s 下限 + in-flight join）与 5h live 窗（进程内 Map）。
+
+### 45.2 宿主端口 op 契约
+
+成功 `{ok:true,value}`；依赖缺失 → `400 {error:'unknown host operation'}`；
+非回环 → `404 {error:'not found'}`；op 抛错 → 200 `{ok:false,error:{code?,status?,message?}}`
+（refusal，前门按通用 500 信封呈现）；宿主整体不可用 → 前门 `503
+{"error":"额度接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`（§9）。
+
+| op | 输入 | 输出 |
+|---|---|---|
+| `pricing.status` | `{}` | `{status}` |
+| `pricing.lookup` | `{models:[id]}` | `{prices:{id:price\|null}, status}` |
+| `pricing.refresh` | `{force:boolean}` | `{status}` |
+| `pricing.search` | `{query,limit}` | `{results, status}` |
+| `opencode.quota` / `qoder.quota` / `codex.quota` / `ark.quota` / `kimi.quota` / `aliyun.quota` | codex: `{account}`；ark: `{baseUrl,rawBaseUrl}`；kimi: `{host,rawHost}`；其余 `{}` | `{result}`、`{result,cached}`（kimi）、`{mode:'disabled'\|'missing'}`（codex 账号不可用）或 `{threw:true}`（各路由自己的 catch 分支；ark/kimi 仍会记账，用**原始** query 值） |
+| `claude.quota` | `{session,force}` | `{threw, entry, result, usage, live, nowMs}` |
+| `claude.record` | `{session,result,text}` | `{}`（记账异常吞掉） |
+| `*.login`（opencode/qoder/kimi/claude/aliyun） | `{}` | `{}`；失败抛 refusal |
+| `ark.login` | `{}` | `{mode:'needs_install'}` 或 `{status:'started',pid}`；定位/派生抛错 → refusal |
+| `ark.install` | `{}` | `{ok:true}` / `{ok:false,error?}`；抛错 → `{threw:true,message}` |
+| `qoder.cookies` | `{}` | `{saved}` |
+| `bars.state` | `{selector}`（= `requestInput(req)` 全量：kind/session/baseUrl/host/force） | `{snapshot}` |
+| `bars.fetch` | `{kind,host?,baseUrl?}` | `{result}`（ark/kimi 同时记账）或 `{threw:true}` |
+| `bars.commit` | `{kind,result,bar,record,selector}` | `{cached}` |
+
+### 45.3 缓存 TTL 与并发
+
+- 价格表：进程内实例 + 落盘缓存，refresh 的 304/失败/并发合并语义原样保留在
+  `price-table.js`（并发请求共享一次下载）。
+- 额度条缓存：`quota-bar-cache.js` 的 TTL 与「stale 但可展示」语义原样保留；前门
+  只按 `snapshotFor(selector)` 的返回值决定 `cached`/`idle`，不回写 TTL 规则。
+- Claude 用量队列：60s 下限 + in-flight join。同一 key 的并发 `force` 只会启动一次
+  抓取（后到者 join 同一 promise），这条语义仍由 `claude-usage-queue.js` 持有；
+  前门把 `force` 原样带进 `claude.quota`。
+- 所有 POST 在 `App::quota_write` 下串行，因此 refresh/commit/login/install 之间
+  的先后与 Node 单线程下的一致。
+
+### 45.4 验证
+
+- 差分 `docs/rust-migration/differential/quota-routes.js`（冻结的旧处理器
+  `tests/helpers/legacy-quota-routes.js` + 脚本化世界
+  `tests/helpers/quota-scripted-world.js`）：137 条请求的状态、正文、ETag 与相关
+  响应头逐字节一致；137 个用例的副作用调用序列逐个一致。
+- 语料覆盖 22 条路径的 OPTIONS（逐条比对 `Allow`）、HEAD、304、>1KB gzip、pricing
+  的 200/400/500、七个厂商的全部 status 分支与 catch 分支、codex 的
+  disabled/missing/成功、ark login/install、kimi 的 host/rawHost、claude 的首次读/
+  命中/过期重抓/并发 join/estimated/不可用/needs_login、额度条的 idle/state/
+  refresh（首次、命中、stale、失败、厂商 status、错误脱敏）。finalize 里有覆盖
+  守卫：缺 304/503/login 分支或 OPTIONS `Allow` 不符即非零退出。
+- Rust：`multicc_core::quota_routes` 12 条单测、`app::quota_routes` 单测、
+  `tests/quota_routes.rs` 15 条集成用例（含 22 条路径的 OPTIONS、宿主不可达 503、
+  条件请求与 gzip）。
+- Node：`tests/test-price-table.js`、`tests/test-quota-bars-routes.js`、
+  `tests/test-claude-usage-quota.js`、`tests/test-quota-chrome-routes.js`、
+  `tests/test-aliyun-quota.js`、`tests/test-kimi-quota.js`、
+  `tests/test-official-accounts.js` 改写为宿主端口契约（路由状态码树由 Rust
+  单测与差分覆盖）；`tests/test-api-contracts.js` 增加本组的归属断言，
+  `tests/test-request-locality.js` 白名单加入 `src/routes/quota-host.js`。
+
+## 46. 事件、触发器与标注实时转发迁入 Rust（2026-11-15）
+
+`src/events/routes.js` 整文件删除，`src/triggers/index.js`、`src/annotation-live.js`
+只剩运行时。15 条公开路由全部由前门应答：
+
+- `GET|HEAD|OPTIONS /api/events/catalog`、`GET|HEAD|OPTIONS /api/events/recent`、
+  `GET|HEAD|OPTIONS /api/event-triggers`、`GET|HEAD|OPTIONS /api/event-rules`、
+  `POST|OPTIONS /api/event-rules`、`PUT|OPTIONS /api/event-rules/:id`、
+  `DELETE|OPTIONS /api/event-rules/:id`、`POST|OPTIONS /api/events/test`
+- `GET|HEAD|OPTIONS /api/sessions/:id/triggers`、
+  `POST|OPTIONS /api/sessions/:id/triggers`、
+  `PUT|OPTIONS /api/sessions/:id/triggers/:tid`、
+  `DELETE|OPTIONS /api/sessions/:id/triggers/:tid`、
+  `POST|OPTIONS /api/sessions/:id/triggers/:tid/test`
+- `GET|HEAD|OPTIONS /api/annotation-live`、`POST|OPTIONS /api/annotation-live`
+
+### 46.1 归属判定
+
+进 Rust（`multicc_core::event_routes` + `native/gateway/src/app/event_routes.rs`）：
+
+- 路径匹配与参数解码（`%` 转义失败 → 400 `request_error`）、逐路由 OPTIONS
+  `Allow`（Express 注册序并集，HEAD 紧跟 GET）、HEAD、弱 ETag 与
+  `If-None-Match` → 304、`/api/*` JSON ≥1024 字节的 gzip。
+- 事件目录与已发射类型表（`task.done` 只是别名，不可发射）、`?limit=` 的
+  `parseInt` 与 1..200 封顶（缺省 20，越界钳位，非数字回退 20）、`recent` 的行
+  映射与键序。
+- 规则决策树：`name/type/action` 校验顺序与文案（"unknown event type"、
+  "too many global rules"、cron 表达式校验、`file-change requires paths[]`、渠道
+  目标登记）、`POST /api/events/test` 的 "use POST /api/events/test for event rules"、
+  规则 id 生成规则、旧戳（`createdAt`/`updatedAt`）保留与合并、DELETE 的
+  `{ok:true}` 形状。
+- 触发器五条路由：复用 `session_admin` 的 `guard_facts`/`guarded_404`，内部执行槽
+  （`taskExecutionSlot === true`）在取数前就返回与"会话不存在"同形的 404
+  （v1 与旧信封各自一致）；`/test` 的 `invalid type`、`invalid cron expression`、
+  `trigger not found` 分支；PUT 的合并规则与 `enabled`/`cooldownMs` 覆盖顺序。
+- annotation-live 的请求归一化（`sessionId`/`src` 清洗、`width`/`height` 数值化、
+  `kind` 缺省、`a`/`b` 的 `null` 与坐标形状）与
+  `{config,targets}` / `{ok,relayed,results}` 键序。
+- 写路由串行化：`App::event_write`（`tokio::sync::Mutex<()>`，与 server-git /
+  task-shell / quota 同款）。
+
+不进 Rust（`src/routes/events-host.js`，`POST /api/__host/events`，回环限定，
+18 个 op）：
+
+- 事件环实例（`src/events/hub.js`）与规则引擎（`src/events/engine.js`）：
+  `recent` 缓冲、规则表落盘、链的状态；`GET /api/events/recent` 与
+  `/api/event-rules` 的实际数据仍由宿主读取后回给前门。
+- 会话记录与触发器数组（`persistedSessions` 的进程内 Map）、`saveBestEffort`、
+  `sessionPersistence.mutate` 的理由串、`appendEvent`、`chatBroadcast` 与
+  `bus.emit('chat:run')`。
+- 手动 `/test` 的真实副作用：`fireTrigger(..., {persistence:'required'})`
+  落在活触发器上（改 `lastFiredAt`、追加 `trigger_fired` 事件、广播、发 `chat:run`）。
+- cron 表达式校验（`cron.validate`）与渠道目标核对（`checkChannelTarget`）的
+  具体实现（插件注册表在 Node）。
+- annotation-live 的配置热加载（`annotation-live.json` 的 mtime 缓存与
+  `regex` 匹配）与对 webhook 的真实 HTTP 转发（`fetch` 到用户配置的地址）。
+
+### 46.2 宿主端口 op 契约
+
+成功 `{ok:true,value}`；未知 op → `400 {error:'unknown host operation'}`；
+非回环 → `404 {error:'not found'}`；op 抛错 → 宿主记日志并 `500
+{error:'host operation failed'}`；宿主整体不可用 → 前门 `503
+{"error":"事件与触发器接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`
+（§9）。trigger 路由的会话守卫另用 `POST /api/__host/session-admin` 的
+`guard-record` op 取记录。
+
+**宿主端口 18 个 op**
+
+| op | 输入 | 输出 |
+|---|---|---|
+| `identity` | `{}` | `{id, createdAt}`（`randomUUID()` + `now()` 的 ISO 串） |
+| `rules-state` | `{}` | `{count, id, createdAt}`（`count` = 全局规则数，同一应答顺带取一次 id） |
+| `rules-list` | `{}` | `[rule…]`（`engine.listGlobal()`） |
+| `list-all` | `{}` | `[{scope, sessionId, sessionLabel, rule, lastRun}…]`（`engine.listAll()`） |
+| `rules-add` | `{rule}`（Rust 已校验、已带 id/时间戳） | `{rule}`（落表 + `persist()`） |
+| `rules-get` | `{id}` | `{found:boolean, rule:rule\|null}` |
+| `rules-replace` | `{id, rule}` | `{found:boolean}`（不存在即 `false`，不落盘） |
+| `rules-remove` | `{id}` | `{removed:boolean}` |
+| `check-channels` | `{rule}` | `{problem:string\|null}`（第一个不可达的渠道目标） |
+| `cron-validate` | `{expression}` | `{valid:boolean}` |
+| `recent` | `{limit}`（已钳位） | `{events, runs, chains}` |
+| `emit` | `{event:{type, sessionId, goal, goalState}}` | `{eventId:string\|null}`（`origin:'manual-test'`） |
+| `trigger-add` | `{id, trigger, label}` | `{missing:boolean}`；命中时 `mutate('http.create-session-trigger')` + `reconcileSession` + `appendEvent(trigger_added)` |
+| `trigger-replace` | `{id, tid, trigger}` | `{ok:true}` / `{error:'not found'}`（会话无 triggers） / `{error:'trigger not found'}`；成功走 `mutate('http.update-session-trigger')` + `reconcileSession` |
+| `trigger-delete` | `{id, tid}` | `{ok:true}` / `{error:'not found'}` / `{error:'trigger not found'}`；成功走 `mutate('http.delete-session-trigger')` + `reconcileSession` |
+| `trigger-test` | `{id, trigger}`（`enabled:true`、`cooldownMs:0` 的强制副本，无 `lastFiredAt`） | `{ok:true}` / `{error:'not found'}`；成功即 `fireTrigger(..., {persistence:'required'})` 的真实副作用 |
+| `annotation-get` | `{}` | `{config, targets}`（`annotation-live.json` 的路径与命中表） |
+| `annotation-relay` | `{payload}`（Rust 归一化后的 DTO） | `{relayed:number, results:[{ok, refresh, text?, error?}]}` |
+
+### 46.3 annotation-live 的等待语义
+
+`GET /api/annotation-live` 是一次性的配置读取（`annotation-live.json` 的
+mtime 缓存 + 目标表），不是长轮询、不是 SSE、不写 `res` 分块；`POST` 会把每个
+命中目标的 webhook 逐个 `await`，再把 `{refresh,text}` 收成数组一次性返回。
+因此两条路由都能整条搬到前门：前门只做归一化/键序，真正的 `await fetch` 在
+宿主端口内完成，宿主在自己的事件循环里等，前门等宿主，语义与旧实现相同
+（旧实现同样是"等所有转发完成再回包"）。
+
+### 46.4 验证
+
+- 差分 `docs/rust-migration/differential/event-routes.js`（冻结的旧处理器
+  `tests/helpers/legacy-event-routes.js` + 脚本化世界
+  `tests/helpers/event-scripted-world.js`）：81 条请求的状态、正文、ETag 与相关
+  响应头逐字节一致；81 个用例的副作用（`hub.emit`、规则表 `persist`、渠道核对、
+  cron 校验、`mutate`/`appendEvent`/`chatBroadcast`/`chat:run`）调用序列逐个一致。
+- 语料覆盖 15 条路径的 OPTIONS（逐条比对 `Allow`）、HEAD、304、>1KB gzip、
+  规则 POST/PUT/DELETE 的全部拒绝分支、`/api/events/test` 的已知/未知类型、
+  触发器五条路由的正负用例与 **六种内部执行槽 404**（GET/POST/PUT/DELETE/test/
+  OPTIONS 都是 `{error:'session not found'}`）、annotation 的配置读与转发。
+  finalize 有覆盖守卫：状态码集合、OPTIONS `Allow` 表、内部执行槽名单、约 30 条
+  具名钉子（含 `an_unreachable_host_is_the_documented_503`），并强制读/拒绝类
+  用例零副作用、写/测试类用例的副作用调用序列与 Node 逐条相等。
+- Rust：`multicc_core::event_routes` 17 条单测、`app::event_routes` 2 条单测、
+  `tests/event_routes.rs` 16 条集成用例（含内部执行槽 404、宿主不可达 503、
+  OPTIONS 全覆盖、ETag/304/gzip/HEAD）。
+- Node：`tests/test-event-system.js`、`tests/test-session-triggers.js`、
+  `tests/test-business-push.js`、`tests/test-annotation-live.js`、
+  `tests/test-remote-screen.js` 的标注用例、`tests/test-remote-screen-e2e-harness.js`
+  的标注步骤统一改写为宿主端口契约；新增 `tests/test-events-host.js`
+  （18 个 op 的信封与依赖调用）；`tests/test-api-contracts.js`、
+  `tests/test-request-locality.js`（白名单 `src/routes/events-host.js`）、
+  `tests/test-tiers.json`、`tests/test-release-version-consistency.js` 同步。
+
+## 47. 文档注册表、记忆库、memo 与目录事件迁入 Rust（2026-11-15）
+
+四个 Node 模块里的 16 条公开路由现在由前门独占，`src/memo/router.js` 整文件删除：
+
+```
+GET|POST /api/docs-registry          GET|PUT /api/directories/:id/memo
+PATCH    /api/docs-registry/:id      POST    /api/directories/:id/memo/send
+DELETE   /api/docs-registry/:id      GET     /api/directories/:id/events
+POST     /api/docs-registry/:id/start
+POST     /api/docs-registry/:id/stop GET     /api/memory/graph
+GET      /api/docs-registry/:id/log  GET     /api/memory/tree
+                                     GET|PUT|DELETE /api/memory/file
+```
+
+（每行都带 `HEAD` 与逐路由 `OPTIONS`，下表是 Express 注册序并集的实测值。）
+
+### 47.1 归属判定
+
+进 Rust（`multicc_core::docs_memory_routes` 723 行、`native/gateway/src/app/docs_memory_routes.rs`
+1,223 行）：
+
+- 路径匹配与参数解码（`%` 转义失败 → `400 {ok:false,error:'request_error',…}`）、
+  逐路由 `OPTIONS Allow`、`HEAD` 走 GET、弱 ETag 与 `If-None-Match` → 304、
+  `/api/*` JSON ≥1024 字节的 gzip、50MB `express.json`。
+- 注册表决策树：列表的 `?dir` 归一化（绝对路径、worktree 折叠、相对路径 → `[]`、
+  未知目录 → `[]`）、`toView` 的字段键序与 `pinned/permanent/retained` 投影、
+  `viewSortOrder` 的 retention 等级 + `createdAt` 降序、`POST` 的预填
+  （session → 目录、`cwd` 的 worktree 折叠、artifact URL → `artifactId`/`taskId`）、
+  `sanitizeIncoming`（控制字符 → 空、`title` 120 / `note` 4000 UTF-16 裁剪、
+  旧键序保留、`url` 的相对路径白名单与绝对 URL 交接）、`validateEntry` 的拒绝文案、
+  `PATCH` 的合并 + `updatedAt`、`DELETE` 的 `{ok:true,removed:view}`、
+  start/stop 的 404/409/400 映射、`/log` 的 `text/plain; charset=utf-8` 与
+  `(no log yet)` 兜底。
+- 记忆库：`memory_rel_valid` 的形态判定（非空、`.md` 后缀（ASCII 大小写不敏感）、
+  逐段非空且不是 `.`/`..`、不含反斜杠与 NUL）、`is_inside` 的前缀边界、
+  realpath 祖先判定、`{valid:false}` / `{valid:true,exists:false,abs}` /
+  `{valid:true,exists:true,…}` 三种信封、graph 的 `meta` 键序
+  （`dirId, projects, nodeCount, edgeCount, truncated, maxNodes, durationMs`）、
+  tree 的 DTO 与全局文件上限、PUT 的 200 正文
+  （`ok, rel, path, size, tokens, mtime`）与 413（200000 字符）。
+- memo：`text` 字符串校验（400）、5MB（413）、目录路径缺失（400）、
+  目录不存在（404 `memo_directory_not_found`）、send 的
+  `text required` / `sessionId required` / `session not found` /
+  `session is not in this directory` / `只能发送到 chat 类型的会话` 顺序与文案。
+- 事件日志：目录不存在 → `404 {error:'directory not found'}`。
+
+不进 Rust（`src/routes/docs-memory-host.js`，`POST /api/__host/docs-memory`，
+回环限定，23 个 op）：
+
+- 注册表内存表与 `docs_registry.json`（`<data>/docs_registry.json`）、artifact
+  依赖图（`defaultArtifactExists`/`servedRoots`/`permanentArtifactIds` 的逐条遍历）、
+  task/directory 查找（`resolveTaskId`/`resolveTaskTitle`/`resolveDir`）。
+- 服务进程监督：`spawn('/bin/sh', ['-c', startCmd], {detached:true})`、进程组
+  `kill(-pid)`、pid 探测循环（`probeAllServices` 的 60s 定时器）、日志文件
+  追加与 `tailLog`（末 16KB）。
+- 记忆库文件系统：目录扫描（graph/tree 的真实遍历）、`realpathSync` 的
+  root 与最深存在祖先、`fs.existsSync`、文件读写（`atomicWriteText` 或
+  `.tmp.<pid>.<n>` + rename）、`workspaceBroadcast`（machine/cli 写扇出到全部
+  目录，项目写只发给本项目）。
+- memo 文件（`<memoRoot>/<directoryId>/memo.md`）与 `runTurn` 投递。
+- 目录事件环（native workspace socket owner 的 ring）与 `events/<dirId>.jsonl`。
+
+### 47.2 宿主端口 op 契约
+
+成功 `{ok:true,value}`；未知 op → `400 {error:'unknown host operation'}`；
+非回环 → `404 {error:'not found'}`；op 抛错 → 宿主记日志并 `500
+{error:'host operation failed'}`；宿主整体不可用 → 前门 `503
+{"error":"文档与记忆接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`
+（§9）。memo 的三个 op 不把 DomainError 抛给前门，而是返回
+`{refused:{status,code,message}}`（由 `src/http` 的 `mapError` 定稿），前门只发信封。
+
+**宿主端口 23 个 op**
+
+| op | 输入 | 输出 |
+|---|---|---|
+| `docs-list` | `{}` | `{entries, order, retained}`（entries 快照、view 排序下标、artifact 保留集） |
+| `docs-facts` | `{items:[{sessionId,artifactId,taskId}]}` | `{sessionDir:[…], exists:[…], taskTitle:[…]}`（逐项对齐；无 sessionId/artifactId/taskId 时为 `null`） |
+| `docs-get` | `{id}` | `{found, entry\|null}` |
+| `docs-replace` | `{id, entry}`（Rust 已 sanitize） | `{found:boolean}`（不存在不落盘） |
+| `docs-delete` | `{id}` | `{found:boolean, removed:entry\|null}` |
+| `docs-register` | `{entry}`（Rust 已 sanitize/校验） | `{entry, created:boolean}` 或 `{error}`（容量淘汰失败） |
+| `docs-start` | `{id}` | `{entry}` 或 `{error, status}`（404/409/400/500） |
+| `docs-stop` | `{id}` | `{entry}` 或 `{error, status}`（404/409/500） |
+| `docs-log` | `{id}` | `{found:boolean, text}`（末 16KB，UTF-8） |
+| `docs-probe-kick` | `{}` | `{}`（`probeAllServices()` 即发即忘，`.catch(()=>{})`） |
+| `docs-task-id` | `{sessionId}` | `{taskId:string\|null}` |
+| `docs-dir` | `{sessionId}` | `{dir:string\|null}` |
+| `docs-clean-url` | `{url}`（已 trim 的绝对 URL） | `{href:string\|null}`（WHATWG `new URL`；仅 http/https） |
+| `memory-graph` | `{dirId}` | `{data:{nodes,edges,projects,truncated}, durationMs}` 或 `{error:'graph build failed'}` |
+| `memory-tree` | `{}` | `{data:{root,machine,clis,projects,meta}, durationMs}` 或 `{error:'tree build failed'}` |
+| `memory-resolve` | `{rel}` | `{root, resolved, rootReal, ancestorReal, exists, parentExists, name}` |
+| `memory-read` | `{rel}` | `{valid:false}` / `{valid:true,exists:false,abs}` / `{valid:true,exists:true,abs,name,content,mtime}`；读失败为 `{valid:true,exists:true,…,error:'read failed'}` |
+| `memory-write` | `{rel, content}` | `{valid:true,parentMissing:false,abs,mtime}` / `{valid:true,parentMissing:true,abs}` / `{valid:false}`；写失败带 `error:'write failed'` |
+| `memory-delete` | `{rel}` | `{valid:true}` / `{valid:false}`（幂等：不存在也 `{valid:true}`） |
+| `memo-read` | `{directoryId}` | `{data:{path,text,mtime,exists}}` 或 `{refused:{status,code,message}}` |
+| `memo-write` | `{directoryId, text}` | `{data:{path,mtime}}` 或 `{refused}` |
+| `memo-send` | `{directoryId, text, sessionId}` | `{data:{ok:true,sentTo}}` 或 `{refused}` |
+| `notes-events` | `{directoryId}` | `{found:boolean, events:[…]}`（目录未登记时 `{found:false,events:[]}`） |
+
+### 47.3 `/api/memory/file` 的穿越防御
+
+这条路由的安全性依赖「形态判定 + 真实路径判定」两层，两层都逐字节复刻了
+`src/routes/memory-browser.js` 的 `resolveMemoryFilePath`：
+
+1. `memory_rel_valid(rel)`（纯字符串，Rust）：非空、`.md` 结尾、按 `/` 分段后
+   每段非空且不是 `.`/`..`、不含 `\` 与 NUL。`%2e%2e%2f` 先由路径解码变成
+   `../`，因此同样在这里被拒。
+2. 宿主给出 `MemoryPathFacts`：`path.resolve(root, rel)` 的结果、`realpathSync(root)`、
+   从 `resolved` 向上找到第一个存在祖先的 `realpathSync`（走出 root 或 realpath
+   抛错时为 `null`）、`exists`、`parentExists`、`basename`。宿主只报事实，
+   **不做判断**。
+3. Rust 判定：`is_inside(root, resolved)` 且 `resolved != root`，再要求
+   `storeRealRoot && is_inside(storeRealRoot, ancestorReal)`；任何一项为假即
+   `{valid:false}` / `400 {"error":"invalid rel"}`，宿主不会被调用。
+4. 副作用 op（`memory-write`/`memory-delete`）在 Node 侧仍会再走一遍原来的
+   rel 守卫：即使调用方绕开 Rust 直接打宿主端口，也无法写到库外。
+
+单测（`native/core/src/docs_memory_routes/tests.rs`）：
+`memory_rel_rules_reject_every_traversal_shape`（`..`、`.`、空段、反斜杠、NUL、
+非 `.md`、绝对路径）、`memory_path_verdict_rejects_every_escape_shape`
+（resolved 等于 root、resolved 在 root 外、real root 缺失、祖先 realpath 在
+root 外）、`is_inside_uses_the_platform_separator_boundary`、
+`inside_and_ancestor_checks_are_the_retired_string_test`。集成
+（`native/gateway/tests/docs_memory_routes.rs`）：
+`memory_file_paths_are_judged_in_rust_before_the_host_touches_the_disk`、
+`memory_file_writes_and_deletes_validate_first`。差分的路径证据是
+`../outside.md`、`/etc/passwd.md`、`p-one/../../x.md`、`%2e%2e%2fa.md`、
+错误扩展名与不存在文件，两侧都得到 400 且宿主无副作用。
+
+### 47.4 与其它 `/api/directories/:id/*` 的共存
+
+session-admin 簇已经拥有 `/api/directories/:id/sessions` 与
+`/api/directories/:id/workspace`，语音网关拥有 `voice-gateway`。本簇只 claim
+`memo` 与 `events` 两个尾段，claim 顺序排在它们之后：
+
+- `native/gateway/src/app/docs_memory_routes.rs` 的
+  `the_directory_claims_do_not_shadow_session_admin_or_voice_gateway`
+  断言三条已迁路径仍为 `None`，而 `GET /api/directories/d1/memo` 命中本簇。
+- `native/gateway/tests/docs_memory_routes.rs` 的
+  `cluster_does_not_shadow_the_other_directory_routes` 用真实前门验证同一件事。
+- `OPTIONS /api/directories/:id/memo` → `GET,HEAD,PUT`（不带 POST），
+  `.../memo/send` → `POST`，`.../events` → `GET,HEAD`；这与 Express 按路径
+  精确并集的规则一致，不会把 session-admin 的 POST 混进来。
+
+### 47.5 验证
+
+- 差分 `docs/rust-migration/differential/docs-memory-routes.js`（565 行）：
+  Node 侧是 HEAD 冻结的四个旧处理器（`loadDeleted`），Rust 侧是真实
+  `docs-memory-host` 组合的宿主端口；两侧共用
+  `tests/helpers/docs-memory-scripted-world.js` 的世界。94 条请求的状态、正文、
+  ETag 与相关响应头逐字节一致；94 个用例的副作用（`start`/`stop` 的
+  `effects.log` 序列与 `runTurn` 的 `turn:<id>:<text>` 行）逐条相等。
+- 语料覆盖 11 条路径的 OPTIONS（逐条比对 `Allow`）、HEAD、304、>1KB gzip、
+  `?dir` 的四种取值、POST 的会话/`cwd`/artifact 预填与 upsert、PATCH 的
+  重命名/空标题/畸形 `%`、DELETE 的长 note、服务 start→stop→409→log→DELETE 的
+  完整生命周期、graph/tree 的 all/dirId/未知、记忆库的五种穿越形态与
+  读写删的正负用例、memo 的全部拒绝分支与 percent-encoded 目录 id、事件日志的
+  已登记/未登记。finalize 有覆盖守卫（钉住 304、gzip、400 `invalid rel`、
+  413、memo 404 的 `memo_directory_not_found`、`sentTo`、start/stop 状态、
+  `(no log yet)`/`text/plain`、畸形参数 `request_error`），并要求
+  `docs_memory_routes.rs` 里存在 `an_unreachable_host_is_the_documented_503`；
+  重命名任一钉子会以非零退出（已实测）。
+- Rust：`multicc_core::docs_memory_routes` 21 条单测（含穿越与 DTO 键序）、
+  `app::docs_memory_routes` 4 条 claim/OPTIONS/共存单测、
+  `tests/docs_memory_routes.rs` 16 条集成用例（真实前门 + 脚本化宿主）。
+- Node：`tests/test-docs-registry.js`（21 条）、
+  `tests/test-memory-browser-routes.js`（10 条）、
+  `tests/test-memo-http-api.js`（1 条）改写为「宿主端口 + 保留的运行时」契约；
+  `tests/test-request-locality.js` 白名单加入 `src/routes/docs-memory-host.js`；
+  `scripts/check-source-line-budget.js` 的 server.js 棘轮按实测
+  3055 行 / 163406 字节收紧。
+
+## 48. 目录与布局路由迁入 Rust（2026-11-15）
+
+本批把「目录与布局」簇的 13 条公开路由整体交给前门：
+`GET/HEAD /api/fs/list`、`GET/POST /api/directories`、`PUT /api/directories/order`、
+`PATCH/DELETE /api/directories/:id`、`POST /api/directories/:id/push`、
+`GET /api/directories/:id/uncommitted`、`POST /api/directories/:id/commit`、
+`POST /api/onboarding/sample-workspace`、`GET /api/ui-layout`、
+`PUT /api/ui-layout/dir-order`、`PUT /api/ui-layout/session-order/:dirId`。
+Node 侧的四个文件（`src/directory/controller.js`、`service.js`、`ports.js`、
+`src/ui-layout.js`）整文件删除，公开契约逐字节不变。
+
+### 48.1 归属判定
+
+进 Rust（`native/core/src/directory_routes.rs` + `native/gateway/src/app/directory_routes.rs`）：
+
+- 路径匹配与参数解码（`%2D` → `-`；畸形 `%` → `400 {"message":"request_error",…}`）、
+  逐路由 OPTIONS `Allow` 的并集规则（`/api/directories/order` 是
+  `PUT,PATCH,DELETE`，裸 `/api/directories/:id` 是 `PATCH,DELETE`）、HEAD 走 GET。
+- `/api/fs/list` 的"不可选"判定：宿主只报 `base`/`realHome` 等事实，Rust 用
+  `is_home_or_above` 判 HOME 本身与每个祖先（`..`、绝对路径、`%2e%2e`、符号链接
+  解到 HOME 都落在同一判定上），`parent`/`baseIsDir`/`parentIsDir` 的
+  键序与回退也在 Rust；browse 的前缀补全、点文件过滤、`localeCompare`
+  排序置换与 200 条封顶由宿主给出可排序的条目列表后由 Rust 裁剪。
+- 目录 DTO 的键序与 24 个计数（`claude_terminal`/`codex_chat` 等按声明序，
+  缺失 cli/kind 回退 `claude`/`terminal`）、`pushState` 的键序与失败形态
+  `{available:false,hasRemote:false,ahead:0,behind:0,reason}`。
+- `uncommitted` 的 porcelain 解析（`trimEnd` 后 `status=slice(0,2)`、`path=slice(3)`）、
+  `order` 合并（非字符串/空/超 200 UTF-16/未知/重复的 id 丢掉、只写一次注册表）、
+  layout 归一化与按存活 id 剪枝、`updatedAt` 盖章。
+- 错误码与错误信封（`{code,error}`、5xx 补 `requestId`）、写路由串行化
+  （`App::directory_write`）。
+
+留 Node（宿主端口 `src/routes/directory-host.js`，`POST /api/__host/directory`）：
+
+- git 子进程：`git push`、commit 的 status/validate/run、`uncommitted` 的
+  porcelain 采集。前门绝不 spawn git——仓库运行环境由 Node 侧补丁过的 PATH
+  与非交互 env 决定。
+- 目录创建、onboarding sample 文件的 4 个占位文件落盘、`/api/fs/list` 的
+  `readdirSync`/realpath 事实采集。
+- 进程内目录注册表与 `directories.json` 的权威写入（原生 state owner 的
+  `saveDirectories`/`commitCrossFileWrite`；`createFsDirectoryRepository` 只是
+  面向宿主端口的外观），删除时的 sessions 级联与跨文件事务、事件环
+  `appendEvent`、`ui-layout.json` 的 load/save/known。
+
+### 48.2 宿主端口 op 契约
+
+非回环 → `404 {error:'not found'}`；未知 op → `400 {error:'unknown host operation'}`；
+op 抛错 → 宿主记日志并 `500 {error:'host operation failed'}`；成功一律
+`{ok:true,value}`。
+
+前门共发出 17 个 op；宿主另接受同义名 `planning-alias`（旧 Node 的 `/planning` 处理器），前门把 `/planning` 直接映射成 `planning-update`，因此这条同义名只作兼容保留。
+
+| 组 | op | 输入 | 输出 |
+|---|---|---|---|
+| 浏览 | `browse-facts` / `browse-read` | `{path,prefix,showHidden}` | 路径事实 / 已排好序的条目 |
+| 目录表 | `dirs-annotated` / `dir-ids` / `dir-get` / `dirs-reorder` / `dir-save` / `dir-set-name` / `dir-set-path` / `dir-set-role` | 目录记录或补丁 | 注解后的目录或目录 |
+| 路径 | `resolve-path` / `real-paths` / `path-facts` / `find-by-path` / `realpath-equal` / `mkdirp` / `new-id` | 路径/目录 id | 事实或布尔 |
+| 注册 | `register-add` / `register-rollback` / `register-commit` / `ensure-ready` | 目录候选 | 已保存的目录或 `{ok:false,reason}` |
+| 删除 | `sessions-by-dir` / `destroy-cascade` / `dir-remove` / `tx-commit` | `{id, force, session?}` | 级联结果 / 事务提交 |
+| git | `git-push` / `status-porcelain` / `commit-facts` / `commit-default-message` / `commit-validate` / `commit-run` | `{id, message}` | push 状态 / porcelain / 提交结果或拒绝 |
+| 其它 | `events-append` / `sample-ensure` / `sample-mark` / `dir-reason` | 事件 / sample 根 | 副作用结果 |
+| layout | `layout-load` / `layout-save` / `layout-known` | 文档 / 无 | `{present,corrupt,data}` / 已知 id 快照 |
+
+### 48.3 `/api/fs/list` 的路径安全复刻
+
+安全判定只有一处，且判在宿主报回的 realpath 事实上：
+
+1. 宿主报 `base`（`path.resolve` 结果）与 `realHome`（HOME 的 realpath），
+   不自行判定"能不能选"。
+2. Rust `is_home_or_above(real, home)`：相等即拒；用平台分隔符边界做前缀判断，
+   `..`/绝对路径/%2e%2e 都先由 `resolve` 归一，符号链接由 realpath 归一。
+3. 拒绝形态与旧实现一致：仍按 `{base, parent, selectable, entries}` 键序返回，
+   只是 `selectable:false`；`parent` 由宿主事实给出（`/`、`..` 等形态照旧回退），
+   条目照常列出。只有「带类型的路径与其父都不存在」时才短路为
+   `{base, parent:null, selectable:false, entries:[]}`，且不再发起 `browse-read`。
+
+单测：`native/core/src/directory_routes.rs` 的 `mod tests`（`home_itself_and_every_ancestor_are_refused`、
+`a_sibling_or_child_of_home_is_allowed`、
+`a_symlink_resolved_to_home_is_refused_by_the_verdict`、
+`browse_filters_dotfiles_prefixes_symlinks_and_caps`、
+`browse_caps_at_two_hundred_entries_preserving_order`）；前门的 claim 单测在
+`native/gateway/src/app/directory_routes.rs` 的 `mod tests`
+（`claims_the_thirteen_paths_and_their_automatic_options`、
+`literal_segments_are_case_insensitive_and_trailing_slash_is_optional`、
+`the_directory_claims_do_not_shadow_session_admin_or_memory_routes`）；集成
+`native/gateway/tests/directory_routes.rs` 的
+`fs_list_keeps_the_home_and_above_verdict`、
+`fs_list_without_an_existing_base_reports_no_parent_and_no_read`、
+`fs_list_filters_orders_and_caps_the_host_permutation`。差分语料里的
+`../..`、`%2e%2e`、`%2F..%2F..%2Fetc`、父段与文件路径都两侧同答。
+
+### 48.4 `order` 与 `:id` 的歧义
+
+`PUT /api/directories/order` 是字面量路由，`PATCH /api/directories/:id` 是参数
+路由。claim 时字面量先裁决，`PATCH /api/directories/order` 落到 `:id="order"`
+→ 旧实现的 `404 {"code":"not_found","error":"directory not found"}`。
+`Allow` 按 Express 的精确并集：`/api/directories/order` 得到
+`PUT,PATCH,DELETE`（字面量 PUT 与参数路由的 PATCH/DELETE 并集）。
+单测 `the_literal_order_route_wins_for_put_and_patch_order_is_the_404`。
+
+### 48.5 与其它 `/api/directories/:id/*` 的共存
+
+session-admin 拥有 `/sessions`、`/workspace`，docs-memory 拥有 `/memo`、
+`/memo/send`、`/events`。本簇只 claim `:id` 自身（不加尾段），注册顺序排在
+它们之后：
+
+- `native/gateway/src/app/directory_routes.rs` 的 claim 单测断言
+  `sessions`/`workspace`/`memo` 不被本簇吃掉；
+- `native/gateway/tests/directory_routes.rs` 的
+  `cluster_does_not_shadow_the_other_directory_routes` 用真实前门验证同一件事，
+  并断言 `host_calls` 为空（证明回答者是各自簇而不是本簇）；
+- 裸 PATCH 只吃 `:id` 一段，`PATCH /api/directories/d1/extra` 仍回落到 Node；
+  `Allow` 是全应用并集，不会把别的簇的 POST 混进来。
+
+### 48.6 git 副作用与差分取数
+
+`push`/`commit` 的真实 git 操作只在宿主端口里发生；差分与集成测试全部使用
+临时仓库夹具（含 bare remote），从不对本工作树或主仓执行 git。差分断言：
+
+- 91/91 请求逐字节一致；
+- `<dataRoot>/effects.log` 两侧逐条比对 187 行全部相等（git 命令序列、目录创建、
+  会话级联、事件、事务提交）；
+- 非 push/commit 路径零 git 副作用（effects.log 里没有对应行）。
+
+### 48.7 验证
+
+- Rust：`multicc_core::directory_routes` 16 条单测（含路径事实、browse 过滤与封顶、
+  DTO 键序与计数回退、porcelain、order/layout 合并、错误信封）、
+  `app::directory_routes` 4 条 claim/OPTIONS 单测、
+  `native/gateway/tests/directory_routes.rs` 19 条集成用例（真实前门 +
+  脚本化宿主 + 503 失败面）。
+- 差分 `docs/rust-migration/differential/directory-routes.js`：Node 侧是 HEAD
+  冻结的四个旧处理器（`loadDeleted`），Rust 侧是真实 `directory-host` 组合的
+  宿主端口，finalize 有覆盖守卫并要求
+  `an_unreachable_host_is_the_documented_503` 存在。
+- Node：`tests/test-directory.js`（39 条断言）、
+  `tests/test-directory-service.js`（13 条）、`tests/test-ui-layout-routes.js`
+  （6 条）、`tests/test-newcomer-onboarding.js`、`tests/test-macos-disk-permissions.js`
+  改写为「宿主端口 + 保留的运行时」契约；
+  `tests/test-request-locality.js` 白名单加入 `src/routes/directory-host.js`；
+  `tests/test-api-contracts.js` 增加归属断言。
+
+## 49. 任务面路由迁入 Rust（2026-11-15）
+
+本批把「任务面」簇的 16 条公开路由整体交给前门：
+`POST /api/task-board/tasks`、`POST /api/task-board/tasks/:taskId/{update,title,planning,move}`、
+`GET/HEAD|POST /api/task-board/directories/:dirId/retention`、
+`POST /api/task-board/tasks/:taskId/{status,relocate,chat-session}`、
+`DELETE /api/task-board/tasks/:taskId`、`GET/HEAD /api/task-board/search`、
+`GET/HEAD /api/search/messages`、`POST /api/air/tasks/mark-achieved`、
+`GET/HEAD /api/task-graph`、`GET/HEAD /api/settings/task-attribution`。
+Node 侧的 Express 挂载点全部退休：`src/routes/task-goal.js` 的
+`mountTaskGoalRoutes` 删除，其余五个文件只保留运行时与宿主端口，公开契约逐字节不变。
+
+### 49.1 归属判定
+
+进 Rust（`native/core/src/task_routes.rs` + `native/gateway/src/app/task_routes.rs`）：
+
+- 路径匹配与参数解码（`%E4%B8%AD` 之类先解码再当 `taskId`/`dirId`）、逐路由 OPTIONS
+  `Allow` 与 HEAD 走 GET；`/planning` 与 `/update` 是同一处理器。
+- planning 的 `expectedRevision`（`body.expectedRevision ?? body.revision`）、
+  `{ok,task,revision}` 键序与错误→状态码阶梯（`task_not_found` 404、
+  `persistence_failed` 500、八个 409 码、其余 400）；阶梯之外的拒绝（例如
+  `beforeStageChange` 的 `task_busy`、目录不存在自己的 409）以宿主渲染的
+  `{status, body}` 原样透传，Rust 不用阶梯覆盖。
+- 保留策略：`?limit=` 的 parseInt/默认与上限、比较器（升序 `lastInteractionAt`，
+  并列按宿主 `localeCompare` 顺序，复用 `multicc_core::task_domain::retention`）、
+  `{ok,limit,count,maxBatch,tasks}` 键序、删除的
+  `{ok,deleted,skipped,count,limit}`；`at` → `lastInteractionAt` 的投影在 Rust。
+- 搜索：`?q`/`?limit`/`?kinds`/`?refIds`/`?dirId`/`?taskId` 的读取与 CSV 规则、
+  `mode`（`board` / `message`）、空信封（`{results:[],total:0,…}`）、
+  `{error:'message_search_unavailable'}` 503、结果 DTO 键序。
+- mark-achieved 的 eligibility 阶梯：400 `task_id_required` → 501
+  `task_state_unavailable` → 404 `task_not_found` → 409 `mark_achieved_not_applicable`
+  → 409 `task_streaming`，成功 `{ok,taskId,goalState}`。
+- task-graph 的 `?dirId=` 选择、800 节点 / 2400 边上限、`meta` 里
+  `durationMs` 的插入位置与 500 信封；attribution 的 `{mode,modes,default}`
+  由 `multicc_core::task_routing` 的目录组装。
+
+留 Node（宿主端口 `src/routes/task-routes-host.js`，`POST /api/__host/task-routes`）：
+
+- 任务板文件与任务库写入（`src/task-board/lifecycle-host.js`）、按任务与按目录的
+  串行锁（`holdTaskOperation`）、`pending` 删除集、修复用的 Git/引用安全预检。
+- 聊天会话绑定（`chat-session`）、`status`/`delete`/`relocate` 的事务性 helper：
+  它们持有进程内状态，宿主返回渲染好的 `{status, body}`，前门原样输出。
+- 消息索引运行时（`getSharedSearchRuntime` 记忆化；`messageScope` 的预热判定）与
+  任务图谱聚合（任务板 JSON + 任务壳 SQLite）。
+- attribution 的活档位（`.env` 由 `host-write.js` 独占写入，这里只读 `getMode()`）。
+
+### 49.2 宿主端口 op 契约
+
+非回环 → `404 {error:'not found'}`；未知 op → `400 {error:'unknown host operation'}`；
+op 抛错（真正的 bug，不是业务拒绝）→ 宿主记日志并 `500 {error:'internal_error'}`；
+成功一律 `{ok:true,value}`。
+
+| 组 | op | 输入 | 输出 |
+|---|---|---|---|
+| planning | `planning-create` / `planning-update` / `planning-alias` / `planning-rename` / `planning-move` | `{body}` 或 `{taskId, body}` | `{task,revision}` 成功信封，或 `{outcome:{error,…}}`（Rust 用同一阶梯算状态码），或原样 `{reply}` |
+| 保留策略 | `retention-preview` / `retention-delete` | `{dirId}` / `{dirId,taskIds}` | `{limit,count,maxBatch,entries,idOrder}` / `{deleted,skipped,count,limit}` |
+| 任务生命周期 | `task-status` / `task-delete` / `task-relocate` / `task-chat-session` | `{taskId, body}` | 渲染好的 `{reply:{status,body}}` |
+| 搜索 | `search-board` / `search-messages-scope` / `search-messages` | 查询参数（`minScore:null` → `Infinity`） | `{results}` 或 `{reply}`；scope 原样 |
+| 标记达成 | `mark-achieved-facts` / `mark-achieved-write` | `{taskId}` / `{taskId,sessionId}` | 事实 `{unavailable}`/`{found,…}` / writer 结果或 `{reply}` |
+| 图谱 / 档位 | `task-graph` / `attribution-mode` | `{dirId}` / 无 | `{graph}` 或 `{reply}` / `{mode}` |
+
+`mark-achieved-write` 的失败保留退休处理器的形状：带 `status` 的错误 →
+`{ok:false,code,message}` 与 `error.status`，无 `status` 的错误 → 500
+`{ok:false,code:'mark_achieved_failed',message:'Request failed'}`（不泄露正文）。
+
+### 49.3 mark-achieved 与 Air 的共享路径
+
+`POST /api/air/tasks/mark-achieved` 与 Air 的 `GET /api/air/tasks/:id` 共享路径。
+旧服务里 mark-achieved 先注册，Air 的 `:id` 后注册，所以 `GET .../mark-achieved`
+答的是 Air 的任务详情，`POST` 属于本簇。自动 `OPTIONS` 由 `mod.rs` 的
+`OPTIONS_SOURCES` 按注册顺序汇总：本簇贡献 `POST`，Air 贡献 `GET,HEAD`，合并为
+`POST,GET,HEAD`；`claim` 仍把本簇排在 Air 之前。单测
+`mark_achieved_does_not_shadow_air`（`app::task_routes`，断言本簇 share 只是
+`POST`）、集成用例 `mark_achieved_does_not_shadow_air_or_other_task_routes` 与
+`app::tests::multi_cluster_contributions_keep_express_order`（断言合并顺序）钉住这条
+边界。
+
+### 49.4 非遮蔽证据
+
+本簇与邻居的边界逐一有测试：
+
+- `/api/task-board/tasks/:taskId/{diff/*,merge,cleanup-worktree}` 属 session-git，
+  `/api/task-board/tasks/:taskId` 的 `POST`/`DELETE` 与 `update`/`title`/`planning`/`move`
+  属本簇：claim 单测 `literal_tails_never_swallow_each_other`（含
+  `t1/<tail>/extra` 不匹配）与
+  `the_claims_do_not_shadow_task_shell_session_admin_or_quota`
+  （`GET .../diff/files` 与 `POST .../cleanup-worktree` 的 claim 与 `allow_for`
+  都是 `None`，OPTIONS 留在 session-git）；集成用例
+  `options_answers_the_express_union` 断言
+  `OPTIONS /api/task-board/tasks/t1/merge` 的 `Allow` 是 session-git 的 `POST`，
+  未知尾与 `/api/task-board` 回落 Node 且没有 `Allow`。
+- `/api/task-board/search` 是字面量，不会被任何 `:taskId` 参数层吃掉；
+  `/api/search/messages` 与 `/api/search/*` 的其它路径互不重叠。
+- `/api/settings/task-attribution` 的 `GET` 属本簇，`POST` 仍属 `host-write.js`
+  的本地闸门；两者不共享方法，`Allow` 是全应用并集。
+- 未认领的方法（例如 `PUT /api/task-board/tasks`）继续回落到 Node 的 404。
+
+### 49.5 差分取数与副作用
+
+差分 `docs/rust-migration/differential/task-routes.js` 的 Node 侧挂 HEAD 冻结的
+六个旧处理器（`tests/helpers/legacy-task-routes.js`）与脚本化世界
+（`tests/helpers/task-routes-scripted-world.js`），Rust 侧起真实前门，宿主桩里挂
+同一份 `src/routes/task-routes-host.js` 组合，因此对拍覆盖拆分本身。两个进程把
+`Date.now()` 冻结到同一毫秒，否则每次写入的 `updatedAt`/`lastTs` 与 ETag 都会不同；
+创建任务的随机 `tsk-plan-…` id 与图谱的 `meta.durationMs` 只在正文归一化，带这些
+字段的响应在归一化后按 `normalize` 钩子丢掉 ETag（校验器覆盖原始正文，无法对拍）。
+副作用按用例逐条比对：宿主把每个语义调用（看板存储、串行锁、会话队列、保留/清理、
+会话绑定、消息索引、图谱端口）追加进 NDJSON，finalize 与 Node 侧记录逐条相等。
+
+### 49.6 验证
+
+- Rust：`multicc_core::task_routes` 15 条单测（parseInt/上限/CSV/UTF-16 长度、
+  `responseStatus` 阶梯、planning 键序、搜索信封、保留策略排序与投影、
+  `durationMs` 位置、attribution 目录、mark-achieved 阶梯与失败信封）、
+  `app::task_routes` 7 条 claim/OPTIONS 单测、
+  `native/gateway/tests/task_routes.rs` 26 条集成用例（真实前门 + 脚本化宿主 +
+  503 失败面 + 非遮蔽）。
+- 差分 79/79 逐字节一致（mark-achieved 的 OPTIONS 并集已在 Node 侧挂出 Air 的
+  `GET /api/air/tasks/:id`，不再有预期差异）、79 个用例的副作用全部一致。
+- Node：`tests/test-task-routes-host.js`（新，7 条：回环闸门、未知 op、每个 op 的
+  映射与信封、planning outcome、mark-achieved 失败形状、503 拒绝、mount 期依赖校验）；
+  六个旧测试（`tests/test-task-board.js`、`test-task-planning.js`、
+  `test-task-lifecycle.js`、`test-task-bound-session.js`、`test-task-search.js`、
+  `test-task-graph-routes.js`）改写为「`runtime.routePorts` + 保留的运行时」契约；
+  失败面集成用例是 `a_broken_host_port_is_the_documented_503`；
+  `tests/test-air-todo-ignores.js` 与 `tests/test-session-admin-routes.js` 改走
+  `markTaskAchieved` 组合与新的注册清单（mark-achieved 不再由 Node 挂载）；
+  `tests/test-task-shell-isolated.js` 改由网关入口起宿主（任务面路由已不在裸
+  `node server.js` 上）；`tests/test-request-locality.js` 白名单加入
+  `src/routes/task-routes-host.js`；`tests/test-api-contracts.js` 增加归属断言；
+  `scripts/check-source-line-budget.js` 的 `server.js` 棘轮跟到 3062/163894。
+
+## 50. 推送路由迁入 Rust（2026-11-15）
+
+18 条公开推送路由由前门独占：`src/push/runtime.js` 的 7 条、插件渠道订阅 5 条、
+FCM 设备 4 条、Bark 设备 2 条。路径匹配、参数解码、逐路由 OPTIONS `Allow`、
+请求体闸门、回复信封与错误码树在 `native/core/src/push_routes.rs`（纯函数）与
+`native/gateway/src/app/push_routes.rs`（claim / 宿主调用 / 渲染）；Node 只剩
+运行时事实与真实副作用，经 `/api/__host/push` 的 18 个 op 回调
+（`src/routes/push-host.js`）。四个 Node 模块的 Express 挂载全部退休：
+`mountRoutes` 从 `src/push/runtime.js` 删除，其余三个模块只剩设备库 / 订阅库 /
+发送器本体。
+
+### 50.1 归属判定
+
+| 路由 | 进 Rust 的规则 | 留 Node 的事实 |
+|---|---|---|
+| `POST /api/push/subscribe` | `!body \|\| !body.endpoint` → 400 `{error:'Invalid subscription'}`；成功 `{ok:true}` | 订阅 Map 写入与 `saveSubscriptions()`（失败回滚该条） |
+| `DELETE /api/push/subscribe` | `{ok:true}` | 订阅 Map 删除与 `saveSubscriptions()`（失败恢复） |
+| `POST /api/push/validate` | `!body.endpoint` → 400 `{error:'Missing endpoint'}`；`{known}` | `subscriptions.has(endpoint)` |
+| `POST /api/push/test` | `{ok:true,subscribers}` | `sendPushToAll` / `sendBarkNotification` / `sendWebhookNotification` 三条真实发送与 Map 尺寸 |
+| `POST /api/push/notify` | `Content-Type` 的 essence 不是 `application/json` → 415 `{ok:false,delivered:false,deduped:false,error:'UNSUPPORTED_MEDIA_TYPE'}`；宿主回的 `{status,body}` 原样渲染（业务推送的 409 `IDEMPOTENCY_KEY_REUSE` / 400 / 503 阶梯都在这里透传） | `businessPush.notify()`：browser payload 投影、sha256 回执库、去重与投递 |
+| `POST /api/push/test-bark` | 未配置 → 400 `{error:'Bark URL not configured'}`；发送结果 `ok:false` → 502 `{error:'bark_test_failed'}`；否则 `{ok:true}` | `hasBarkDevices()` 与真实 Bark 投递 |
+| `POST /api/push/test-webhook` | 未配置 → 400 `{error:'Webhook URL not configured'}`；否则 `{ok:true}` | `cfg.WEBHOOK_URL` 与真实 webhook 投递 |
+| `GET /api/push/channel-subscriptions` | `{subscriptions,categories,defaults,otherChannels}` 键序；`categories`/`defaults` 是词表常量 | 订阅表读取、插件注册表 `CATEGORIES`/`DEFAULT_CATEGORIES` 与 `otherChannels()` 计数 |
+| `PUT /api/push/channel-subscriptions` | 整表替换的回复渲染、错误信封 `{error,code}` 与状态码 | 50 条上限、校验顺序与文案、`channel-subscriptions.json` 原子写 |
+| `POST /api/push/channel-subscriptions` | 同上 | 按 plugin+target upsert、`checkTarget` 与落盘 |
+| `DELETE /api/push/channel-subscriptions/:id` | `:id` 的 `decodeURIComponent`（坏转义 → 400 `Failed to decode param`）、回复渲染 | 存在性判定与落盘（404 `{error:'没有这条订阅',code:'notFound'}` 由宿主给出） |
+| `POST /api/push/test-channel` | 成功 `{ok:true,receipt}`；`ChannelSubscriptionError` → 对应状态 + `{error:message,code}` | 插件投递与 down/refused 判定 |
+| `GET /api/push/fcm` | `{configured,devices,storageAvailable}` 键序 | `fcmDevices.status()`（45 天活跃窗计数） |
+| `POST /api/push/fcm` | 形状闸门 `INVALID_FCM_DEVICE`（400，正文带 `status:400`）；其余按宿主回的 `r.status` + `r` 原样渲染（200 `{status:200,ok:true}`、409 `FCM_PROJECT_MISMATCH`/`FCM_DEVICE_LIMIT`、503 `FCM_NOT_CONFIGURED`） | `fcmDevices.register()`：projectId 比对、100 台上限、`fcm-devices.json` 落盘 |
+| `DELETE /api/push/fcm` | 同上（形状 400 与 `r.status` 渲染） | `fcmDevices.remove()` |
+| `POST /api/push/fcm/test` | `!validId(body.id)` → 400 `{error:'INVALID_FCM_DEVICE'}`；`result.ok ? 200 : 502` | `fcmDevices.send()` 与 transport |
+| `GET /api/push/bark-devices` | `{devices:[…]}` 包装 | `barkDevices.list()`：只投影 `origin`（不含完整 URL/key）、health Map |
+| `POST /api/push/bark-devices` | `action` 词表（缺失/非字符串/未知 → 400 `{error:'invalid_action'}`）；add 200 `{ok:true,id,devices}`、update/remove 200 `{ok:true,devices}`、test 200 或 502 `{...result,error:'bark_test_failed'}`；`BarkDeviceError` → `status` + `{error:code}` | `barkDevices.add/update/remove/send`：URL 归一化、重名与 20 台上限、`bark-devices.json` schema、真实投递 |
+
+`GET/HEAD /api/push/vapid-key`、`/api/push/health` 仍归 §36 的 host-read 组，
+不在本簇。
+
+### 50.2 宿主端口 op 契约
+
+`POST /api/__host/push`（`HOST_PATH`），回环闸门 `!isLocalRequest` → 404
+`{error:'not found'}`，未知 op → 400 `{error:'unknown host operation'}`，
+op 抛错 → 记日志 + 500 `{error:'internal_error'}`。成功一律 `{ok:true,value}`。
+
+| op | 入 | 出（`value`） |
+|---|---|---|
+| `subscribe` | `{body:<subscription>}` | `{ok:true}` |
+| `unsubscribe` | `{body:{endpoint}}` | `{ok:true}` |
+| `validate` | `{endpoint}` | `{known:boolean}` |
+| `test` | — | `{subscribers:n}` |
+| `notify` | `{body}` | `{status, body}`（宿主渲染好的业务推送回复） |
+| `test-bark` | — | `{configured:boolean, ok?:boolean}` |
+| `test-webhook` | — | `{configured:boolean}` |
+| `channel-get` | — | `{subscriptions, otherChannels}` 或 `{channelError:{status,message,code}}` |
+| `channel-replace` | `{subscriptions}` | 同上 |
+| `channel-upsert` | `{body}` | 同上 |
+| `channel-remove` | `{id}` | 同上 |
+| `test-channel` | `{body}` | `{ok:true, receipt}` 或 `{channelError}` |
+| `fcm-status` | — | `{configured, devices, storageAvailable}` |
+| `fcm-register` | `{body}` | `{status, error}` 或 `{status:200, ok:true}` |
+| `fcm-remove` | `{body}` | 同上 |
+| `fcm-test` | `{id}` | `{ok, accepted, failed, code?}` |
+| `bark-list` | — | `{devices:[…]}` 或 `{status, body:{error}}` |
+| `bark-action` | `{body}` | `{status, body}`（add 带 `id` 与 `devices`，test 带投递结果） |
+
+### 50.3 共享状态、串行化与投影
+
+- **同一份 Map**：写路由改的 `push.subscriptions` 与只读 `/api/push/health`
+  （host-read 组的 `push-health` op）读的是**同一个**进程内 Map；`/api/push/validate`
+  由宿主 `subscriptions.has()` 回答，也在同一份 Map 上。没有第二份镜像。
+- **串行化**：`POST`/`PUT`/`DELETE` 全部取 `App::push_write`
+  （`tokio::sync::Mutex<()>`）再进宿主。同一进程内 Express 单线程处理，本批写路由
+  在旧实现里天然串行；前门并发处理，用这把锁保持同一语义（订阅 Map 的读-改-写、
+  设备表上限判定、业务推送回执不交叉）。
+- **脱敏不放宽**：`GET /api/push/bark-devices` 的每一项仍只投影
+  `{id,name,enabled,legacy,origin,...health}`，`origin` 是 `new URL(url).origin`，
+  完整 URL（含 device key）从不离开 Node；FCM 与渠道订阅的 GET 也不回显 token /
+  webhook URL。这些是宿主侧投影，前门只做包装，没有新增字段。
+
+### 50.4 差分取数与副作用
+
+差分 `docs/rust-migration/differential/push-routes.js` 的 Node 侧挂 HEAD 冻结的
+四个旧挂载函数（`tests/helpers/legacy-push-routes/index.js`，含 `route()` 包壳、
+`warn` 脱敏、四个模块的逐字处理体）与脚本化世界
+（`tests/helpers/push-scripted-world.js`）：FCM transport、Bark deliverer、插件
+渠道 deliver/checkTarget、webhook 发送全部是记录器，业务推送回执写临时目录。
+因此**没有任何真实外部端点被触达**（`/api/push/test`、`/test-bark`、
+`/test-webhook`、`/test-channel`、`/api/push/fcm/test`、`/api/push/notify` 都只
+走到脚本化 stub）。两个进程把 `Date.now()` 冻结到同一毫秒，否则
+`toLocaleTimeString()` 的测试正文、设备 `updatedAt`、订阅 `createdAt/updatedAt`
+会对不上；子进程同时继承 `LANG`/`LC_ALL`，避免 ICU 时间格式差一小时制。
+副作用按用例逐条比对：宿主把每次发送器调用、设备/订阅/回执落盘追加进 NDJSON，
+finalize 与 Node 侧记录逐条相等。
+
+### 50.5 验证
+
+- Rust：`multicc_core::push_routes` 9 条单测（订阅/validate 的 falsy 闸门、
+  FCM id/token 形状、Bark 四动词、信封键序、channel payload 键序与错误体、
+  `fcm_reply_status`/`fcm_test_status` 阶梯、bark `{devices}` 包装）、
+  `app::push_routes` 5 条 claim/OPTIONS 单测（18 条路径、注册序并集、
+  `channel-subscriptions/:id` 不吞裸路径、与 host-read 组的非遮蔽、结尾斜杠与大小写）、
+  `native/gateway/tests/push_routes.rs` 23 条集成用例（真实前门 + 脚本化宿主 +
+  503 失败面 + bark 存储失败 503）。
+- 差分 107/107 逐字节一致、0 条预期差异、107 个用例的副作用全部一致。
+- Node：`tests/test-push-runtime.js`、`tests/test-bark-devices.js`、
+  `tests/test-fcm-push.js`、`tests/test-channel-routing.js` 改写为
+  「`mountPushHostRoute` + 保留的运行时」契约（含回环闸门、未知 op、每个 op 的
+  映射与信封）；`tests/test-request-locality.js` 白名单加入
+  `src/routes/push-host.js`；`scripts/check-source-line-budget.js` 的 `server.js`
+  棘轮跟到 3065/164136。
+
+## 51. 范围授权（机器 grant 与 fleet 分享）在前门统一（2026-11-15）
+
+会话管理那批路由由前门自答后，`tests/test-auth-locality-isolated.js` 里带
+`X-Multicc-Fleet-Token` + `X-Multicc-Fleet-Grant` 的
+`GET /api/directories/shared-workspace/sessions` 从 200 掉成 403
+`AUTH_REQUIRED`（同文件的 `other-workspace` 仍是 403）。原因不是分享 store：
+前门只有 provider relay 分支（`provider_relay::admission`）认分享凭据，
+其余已 claim 路由都走 `http_gate::authorize`，而那里只实现了
+`x-multicc-machine-grant`。Node 的 `authorizeScopedRequest` 是
+`machines.authorize(req) || fleetSharingRuntime.authorizeRequest({token, grant,
+method, pathname}) === true`（`server.js:422`，由
+`native/addon/src/http_entry.rs` 的 login 前闸门调用），所以 share 凭据从来不是
+relay 专属。这是「谁执行路由，谁必须持有对应状态」的漏项：会话管理路由换了
+执行者，它的授权协作者没有跟着换。
+
+### 51.1 判定顺序与归属
+
+前门按 Node 的原顺序判定，两半都在 Rust：
+
+| 顺序 | 判据 | 位置 |
+|---|---|---|
+| 1 | 局域网对端白名单（`lan_only`）先拒绝公网对端，任何 grant 都不能越过 | `http_gate::authorize` 首段；对端仍是 PROXY 行地址 |
+| 2 | `GET /api/download?download_ticket=` | 同上 |
+| 3 | 机器 grant：header 非空 → `multicc_core::machines::authorize(root, credential, method, url)` | `http_gate::machine_credential` + `App::gate` 的 data root 读取 |
+| 4 | 仅当第 3 步没有放行：fleet token/grant → 分享 store 的 `authorizePlan` / `authorizeMembers` | `native/gateway/src/app/scoped_auth.rs` + `multicc_core::workspace_sharing::source::authorize` |
+| 5 | 没有 machine header 时的 cookie / `x-access-token` / 旧 query token | `http_gate::authorize` |
+| 6 | HTML → 302 `/login?redirect=…`；其余 403 `AUTH_REQUIRED` | 同上 |
+
+`||` 的短路语义保留：机器 grant 通过时根本不问分享 store（机器请求不会被慢的
+分享状态拖住，`authorizations` 侧零调用）；机器 header 存在但无效时仍然禁用
+普通凭据（`!machineHeader`）。
+
+分享侧不重建规则：路径 → 工作区/会话/`dirId`/全局只读集合由
+`multicc_core::workspace_sharing::authority::plan` 决定，会话计划再用
+`authority::resolve` 对宿主读回的 live member id 求解。host 只被问一次
+`{id, membersOnly:true}`（`App::source_workspaces` 的 source 控制流，见 §21），
+不缓存授权结果；`control::serve` 把 `Request::Authorize` 放进 async 分支等待宿主，
+不在 spawn_blocking 里阻塞。
+
+### 51.2 失败面
+
+- 缺任一头或值为空 → 不发控制流请求，直接落到普通凭据/403。Node 把
+  `undefined` 传给 `authorizeRequest`，同样在 `state.authorized` 之前失败。
+- token 不存在、过期、grant 不匹配、已撤销 → `authorizePlan` 回 `false`
+  （与 Node 一样是判定，不是异常），闸门继续走普通凭据，最后 403 `AUTH_REQUIRED`。
+- 分享 store 不可达 / 回复损坏 / 控制流超时（3s）→ 同样视为 `false`：不产生 5xx，
+  也不会退化成「已登录」。
+- 分享 grant 只放行 plan 里那一条路径：另一个工作区目录、`/api/sessions/…/relocate`、
+  非 GET 的全局读、以及不在分享集合里的路由仍然 403；machine / fleet grant 都不改写
+  对端，公网对端即使带合法 grant 仍是 `DIRECT_PUBLIC_ACCESS_DISABLED`。
+
+### 51.3 验证
+
+- `multicc_core::http_gate`：新增 `fleet_scope_sits_between_the_machine_grant_and_the_credential`
+  （fleet=true 放行外部请求、fleet=false 拒绝、机器 header 无效时 `||` 语义与
+  `!machineHeader`、`lan_only` 的 `PeerRejected` 先于任何 grant）。
+- `multicc_core::workspace_sharing::authority` 6 条（目录/会话/git 的 `dirId`/
+  state/全局只读/WS 的 scope 表）与 `source::authorize` 4 条（目录计划不问宿主、
+  会话计划按 live member 求解、宿主失败是拒绝、过期/错 grant/撤销都不问宿主）。
+- `native/gateway/tests/scoped_auth.rs` 7 条集成用例（真实前门 + 脚本化 source
+  控制流）：fleet grant 放行已 claim 路由并记录原始 `{token,grant,method,pathname}`；
+  分享 grant 不拓宽路由集合；不完整凭据不触达 store；store 报错/断流只退回普通
+  凭据；共享目录 200 而越权目录 403（`session-admin` 簇的验收形态）；machine grant
+  不开分享 store 且无效机器 header 禁用普通凭据；两种凭据同时出现时先判机器。
+- `node tests/test-auth-locality-isolated.js` 通过（不改测试断言）；11 个既有差分
+  全部一致；`tests/test-request-locality.js`、`tests/test-api-contracts.js`、
+  `tests/test-auth-security.js`、`scripts/check-source-line-budget.js` 通过。
+
+## 52. 会话管理路由（memory / bundle / lifecycle / create / meta / profile）迁入 Rust（2026-11-15）
+
+六个路由文件的 18 条 JSON 路由由前门独占；同簇的两条二进制传输
+（`GET /api/sessions/:id/bundle.zip`、`POST /api/sessions/import-zip`）仍由
+Node 公开服务，前门原样转发（见 52.6）。路径匹配与规则在
+`native/core/src/session_routes.rs`（纯函数，9 条单测），claim / 守卫 /
+宿主调用 / 渲染在 `native/gateway/src/app/session_routes.rs`（2 条单测），
+集成用例在 `native/gateway/tests/session_routes.rs`（18 条）。Node 只剩运行时
+事实与真实副作用，经 `/api/__host/session-routes` 的 18 个 op 回调
+（`src/routes/session-routes-host.js`）。六个模块仍原样注册，但只挂在宿主端口的
+捕获应用上；公开面只剩 `sessionRoutesHost.mountRoute(app)` 一行
+（`session-bundle.js` 例外：它仍把两条 zip 路由挂到公开 app）。
+
+### 52.1 归属判定（逐路由）
+
+| 路由 | 进 Rust 的规则 | 留 Node 的事实 |
+|---|---|---|
+| `GET/HEAD /api/sessions/:id/memory` | 路径匹配、`:id` 解码、内部槽守卫、宿主 `{status,body}` 回放 | 会话记录查找、记忆根路径解析、文件读取与 404/400 信封 |
+| `PUT /api/sessions/:id/memory` | 同上 + `scope`/`name`/`content` 请求体透传 | 文件名校验、记忆根写入、记录写回 |
+| `DELETE /api/sessions/:id/memory` | 同上（`scope`/`name`） | 文件删除与空目录清理 |
+| `POST /api/sessions/:id/memory/action` | 四段路径匹配（不被裸 `/memory` 吞）、OPTIONS `POST` | `action` 词表归一、curated 范围解析、应用/重试副作用 |
+| `GET/HEAD /api/sessions/:id/bundle` | OPTIONS `GET,HEAD`、`passphrase`/`scopes`/`skillsMode`/`skills`/`git`/`context` 查询白名单透传 | git bundle 生成、AES-256-GCM 加密、会话/目录 Map 与 worktree 事实 |
+| `POST /api/sessions/import` | 字面量 `import` 路径、OPTIONS `POST`、请求体透传 | 解密、legacy payload 校验、会话/目录/凭据不被携带的判定与落盘 |
+| `DELETE /api/sessions/:id` | `force` 查询、内部槽守卫、逐路由 OPTIONS | 级联删除、tmux/CLI 终止、worktree 清理、持久化、广播与事件 |
+| `POST /api/sessions/:id/relocate` | 请求体（`dirId`/`carry`）与 `force` 透传 | 目标目录校验、worktree 迁移与回滚 |
+| `POST /api/sessions/:id/restart` | OPTIONS `POST` | 轮次取消、子进程重启、广播 |
+| `POST /api/sessions/:id/restart-spawn` | OPTIONS `POST` | spawn 生命周期、事件追加 |
+| `POST /api/sessions/:id/vendor-login-terminal` | `:id` 解码、内部槽守卫 | vendor 登录终端 spawn 与会话来源查找 |
+| `PUT /api/directories/:id/role-workers/:presetId` | 四段路径、两个参数都 `decodeURIComponent`（坏转义 → 400）、OPTIONS `PUT` | 目录查找、role-worker 配置暂存 |
+| `POST /api/directories/:id/sessions` | 与 session-admin 共享形状：本簇只 claim POST，GET/HEAD 与 OPTIONS 并集仍归 session-admin | 会话记录创建（worktree/branch/任务板）、payload 归一 |
+| `POST /api/sessions/:id/notes` | 注册序 OPTIONS `POST,GET,HEAD` | 笔记 JSONL 追加 |
+| `GET/HEAD /api/sessions/:id/liveness` | `probe` 查询透传、OPTIONS `GET,HEAD` | liveness 运行时评估 |
+| `GET/HEAD /api/sessions/:id/notes` | 同上并集、内部槽守卫 | 笔记回读 |
+| `PATCH /api/sessions/:id` | 只 claim PATCH（GET/HEAD 与 OPTIONS 并集归 session-admin） | DTO 变更、provider/model/effort 校验、配置暂存、广播 |
+| `POST /api/sessions/:id/fork` | OPTIONS `POST` | transcript fork、配置继承、新会话落盘 |
+| `GET /api/sessions/:id/bundle.zip` | **不 claim**（见 52.6） | 内存 zip 打包与 `res.send` 二进制字节 |
+| `POST /api/sessions/import-zip` | **不 claim**（见 52.6） | 160MB 原始请求体读取与解包落盘 |
+
+### 52.2 宿主端口 op 契约
+
+`POST /api/__host/session-routes`（`HOST_PATH`），回环闸门 `!isLocalRequest` → 404
+`{error:'not found'}`，未知 op → 400 `{error:'unknown host operation'}`，op 抛错 →
+500 `{error:'internal_error'}`。成功一律 `{ok:true,value}`，`value` 是
+`{status,body}`（退休处理器渲染的状态码与 JSON 正文）或
+`{threw:true,status,code,message}`（旧 `safeErrorHandler` 的路径）。请求载荷：
+
+```json
+{ "op": "<name>", "method": "GET|HEAD|PUT|DELETE|POST|PATCH",
+  "id": "<decoded :id>", "presetId": "<decoded :presetId, 仅 role-workers>",
+  "query": { "force": "1", "probe": "0", "passphrase": "…", "scopes": "…",
+             "skillsMode": "…", "skills": "…", "git": "0", "context": "0" },
+  "body": { … } }
+```
+
+`query` 只带退休处理器读过的 8 个标量键；重复或嵌套键在每条分支上与
+`undefined` 不可区分，因此省略。`body` 缺失或 JSON `null` 归一为 `{}`。
+
+| op | 参数 | 宿主返回 |
+|---|---|---|
+| `memory-get` / `memory-delete` | `id` | `{status,body}`，记忆文件投影或错误信封 |
+| `memory-put` | `id`,`body:{scope,name,content}` | 同上 |
+| `memory-action` | `id`,`body:{action,content,oldText}` | 同上 |
+| `bundle-export` | `id`,`query` | 加密信封 `{bundle:…}` 或错误 |
+| `bundle-import` | `body` | 导入结果或错误 |
+| `session-delete` | `id`,`query.force`,`body` | 级联删除结果 |
+| `session-relocate` | `id`,`query.force`,`body:{dirId,carry}` | 迁移结果 |
+| `session-restart` / `session-restart-spawn` | `id` | 重启/重启并 spawn 结果 |
+| `vendor-login-terminal` | `id` | `{url,id,…}` 登录终端形状 |
+| `role-workers-put` | `id`,`presetId`,`body` | 配置保存结果 |
+| `directory-create-session` | `id`,`body` | 新建/复用会话 DTO |
+| `note-create` | `id`,`body:{toSessionId,body}` | 新笔记 |
+| `notes-list` | `id` | `{notes:[…]}` |
+| `liveness` | `id`,`query.probe` | liveness 评估 |
+| `session-patch` | `id`,`body` | 更新后的会话 DTO |
+| `session-fork` | `id`,`body` | 新会话 DTO |
+
+宿主把退休处理器按 `(method, 模板)` 存进一张 Map（`createCaptureApp`），
+`invoke` 只组装 `params`/`query`/`body`——不再做第二遍路径匹配或解码。
+
+### 52.3 串行化与错误映射
+
+- **写串行化**：`memory-put`/`memory-delete`/`memory-action`、`bundle-import`、
+  `session-delete`/`relocate`/`restart`/`restart-spawn`、`vendor-login-terminal`、
+  `role-workers-put`、`directory-create-session`、`note-create`、`session-patch`、
+  `session-fork` 在 `App::session_routes_write`（`tokio::sync::Mutex<()>`）下串行；
+  旧 Express 单线程天然串行。读路由不取锁。
+- **错误双通道**：宿主**答了但处理器抛出** → 宿主回 `{threw:true,…}`，前门用
+  `express::error_dto` 拼同一信封（`internal_error` / `request_error`，4xx 的
+  `err.safe` 才带 message）；宿主**没答完**（拒绝连接、重置、超时、chunked 截断）
+  → 503 `{"error":"会话管理接口尚未就绪，请更新原生模块","code":"rust_backend_unavailable"}`。
+  这是相对旧 Node 的新失败面（旧实现同进程取数）；由
+  `native/gateway/tests/session_routes.rs` 的 `host_unreachable_is_a_503` 与
+  `a_thrown_handler_relays_the_safe_error_envelope` 钉住。
+- **状态码与键序**：宿主回的 `{status,body}` 原样渲染，前门不重新决策；JSON 序列化
+  保持宿主键序（`preserve_order`），ETag/`Content-Length` 因此逐字节一致。
+
+### 52.4 内部执行槽守卫复用
+
+十五个 `/api/sessions/:id/…` 形状（含 `PATCH`/`DELETE` 在共享 `:id` 上）在旧实现里
+都挂在 `app.use('/api/sessions/:id', publicSessionAccessGuard)` 之下。本簇**不复制**
+判定，而是复用 `session_admin::guard_facts(host, id, method)` → 宿主
+`/api/__host/session-admin` 的 `guard-record` op，回答裸值
+`{record,internal,taskStateWritable}`。命中 `internal` 时返回与 session-admin 完全
+相同的裸 404 `{"error":"session not found"}`，且在业务处理器和 `OPTIONS` 的 `Allow`
+行之前。`POST /api/sessions/import` 的 `:id` 是字面量 `import`（守卫查无此记录，
+不会命中内部槽）；`/api/directories/…` 不走该守卫。
+
+证据：
+- 差分 10 条 internal-slot 用例，逐个 404 且两侧正文一致：
+  `GET memory internal slot`、`PUT memory internal slot`、
+  `POST memory action internal slot`、`GET bundle internal slot`、
+  `DELETE session internal slot`、`PATCH session internal slot`、
+  `POST notes internal slot`、`GET liveness internal slot`、
+  `POST fork internal slot`、`OPTIONS memory internal slot`；
+  finalize 断言用例数 ≥10。
+- `native/gateway/tests/session_routes.rs::an_internal_execution_slot_404s_before_every_handler`
+  （GET memory / DELETE / PATCH / POST restart / OPTIONS memory 五条代表路径，
+  并断言宿主一次都没被调用）。
+
+### 52.5 PATCH / DELETE 与 `Allow` 共存
+
+`GET|HEAD /api/sessions/:id` 仍归 session-admin（§44），本簇只 claim 同一路径上的
+`PATCH`/`DELETE`；两簇的自动 `OPTIONS` 由 `mod.rs` 的 `OPTIONS_SOURCES` 汇总
+（§9）。claim 顺序仍是载荷：session-admin 先答读路由，session_routes 只接走两个写
+方法；未命中的请求继续下落到 session-git / events 等邻居。
+`/api/directories/:id/sessions` 同理：GET 归 session-admin、POST 归本簇，
+OPTIONS 合并为 `GET,HEAD,POST`。
+
+`Allow` 证据（差分与集成测试一致）：
+
+| 路径 | `Allow` | 组成 |
+|---|---|---|
+| `/api/sessions/:id` | `GET,HEAD,PATCH,DELETE` | session-admin 的 GET/HEAD + 本簇 PATCH/DELETE（`OPTIONS_SOURCES` 合并） |
+| `/api/sessions/import` | `GET,HEAD,PATCH,POST,DELETE` | session-admin GET/HEAD + 本簇 PATCH（profile）、POST（bundle import）、DELETE（lifecycle） |
+| `/api/sessions/import-zip` | `GET,HEAD,PATCH,POST,DELETE` | 同上；POST 本身仍转发 Node，但注册表里有过这条路由 |
+| `/api/sessions/:id/memory` | `GET,HEAD,PUT,DELETE` | 本簇 |
+| `/api/sessions/:id/memory/action` | `POST` | 本簇 |
+| `/api/sessions/:id/bundle` | `GET,HEAD` | 本簇 |
+| `/api/sessions/:id/notes` | `POST,GET,HEAD` | 注册序 |
+| `/api/sessions/:id/liveness`、`/fork`、`/relocate`、`/restart`、`/restart-spawn`、`/vendor-login-terminal` | 单方法 | 本簇 |
+| `/api/directories/:id/sessions` | `GET,HEAD,POST` | session-admin 的 GET/HEAD + 本簇 POST |
+| `/api/directories/:id/role-workers/:presetId` | `PUT` | 本簇 |
+| `OPTIONS /api/sessions/:id/bundle.zip` | `GET,HEAD` | 路径不 claim，OPTIONS 也由 Node 的 Express 自动应答 |
+
+`native/gateway/tests/session_routes.rs::automatic_options_unions_match_express`
+逐条断言上表（含两条 import 字面量）；`the_shared_session_and_directory_paths_stay_with_session_admin`
+断言邻居方法（GET/HEAD 与 classify POST）不被本簇抢走；
+`options_on_an_unknown_path_still_forwards_to_node` 断言未 claim 的路径仍回落到
+Node；`app::tests::{literal_paths_union_the_param_shape_methods,
+a_pure_param_path_keeps_its_whole_allow, multi_cluster_contributions_keep_express_order,
+unknown_paths_still_fall_through_to_node}` 是并集规则本身的单测。
+
+### 52.6 两条二进制传输留在 Node
+
+`GET /api/sessions/:id/bundle.zip` 与 `POST /api/sessions/import-zip` **不 claim**：
+
+- 前者是内存里现打的 zip，字节含时间戳与随机加密 salt，不能走 JSON 宿主端口，也
+  无法在差分里逐字节比较；
+- 后者是 160MB 原始请求体直通解包，同样不是 JSON。
+
+前门把这两个路径的请求原样转发给 Node 子进程，响应字节、`Content-Type`、
+`Content-Disposition`、`Allow` 与分块行为都不经过前门重渲染。
+`OPTIONS /api/sessions/import-zip` 是唯一由前门答的例外：它落在
+`/api/sessions/:id` 形状上，`OPTIONS_SOURCES` 把 session-admin 的 `GET,HEAD` 与本簇
+的 `PATCH,POST,DELETE` 合并为 `GET,HEAD,PATCH,POST,DELETE`，与旧 Node 的整 app 并集
+逐字节一致（POST 本身仍转发 Node）。`OPTIONS /api/sessions/:id/bundle.zip` 没有
+簇贡献（本簇显式返回 `None`），仍由 Node 的自动 OPTIONS 应答 `GET,HEAD`。
+证据：`native/gateway/tests/session_routes.rs::the_two_binary_bundle_routes_forward_to_node`
+（两条路由都 200、宿主调用为空、子进程请求日志里出现原始 URL）；
+`multicc_core::session_routes::the_two_binary_bundle_routes_stay_in_node`（任何方法都
+`claim → None`）；差分 `GET bundle.zip forwarded` / `POST import-zip forwarded` /
+`OPTIONS forwarded bundle.zip` 三条用真实 Node 子进程答。
+
+### 52.7 fleet 授权与目录建会话
+
+`POST /api/directories/:id/sessions` 是 fleet 分享可用的写路由。前门沿用 §51 的范围
+授予：带 `X-Multicc-Fleet-Token` + `X-Multicc-Fleet-Grant` 的请求先问分享 store，
+授权只覆盖 plan 里的路径；未授权路径 403 `AUTH_REQUIRED` 且**不触达宿主**。
+证据：`native/gateway/tests/session_routes.rs::directory_create_session_is_a_fleet_scoped_write`
+（`/api/directories/shared-workspace/sessions` 200 且宿主只被调一次；
+`/api/directories/other-workspace/sessions` 403，宿主调用数不变；两次都记录了
+原始 `pathname`）。
+
+### 52.8 差分与验证
+
+- 差分 `docs/rust-migration/differential/session-routes.js`：Node 侧挂 HEAD 冻结的
+  六个旧模块（`tests/helpers/legacy-session-routes/`，只改写相对 require）与脚本化
+  世界（`tests/helpers/session-routes-scripted-world.js`）；Rust 侧是真实前门 +
+  stub 子进程，stub 用同一份脚本化世界并同时挂出宿主端口与真实的
+  `mountSessionRoutesLegacy`。两侧 `Date.now()` 冻结到同一毫秒，响应正文里的
+  随机 UUID 归一为 `<uuid>`；**126 个用例全部逐字节一致、0 条预期差异、
+  126 例副作用逐条相等**（级联删除、持久化、广播、事件、git/worktree、
+  codex 守卫等都由脚本化记录器写成 NDJSON 后比对）。
+- 18 条公开路由的宿主调用、未知 op、回环闸门、宿主掉线 503、抛出信封、
+  脚本化宿主失败（`native/gateway/tests/session_routes.rs` 18 条）。
+- Node 测试：`tests/test-session-memory-routes.js`（6）、
+  `tests/test-session-lifecycle-routes.js`（21）、
+  `tests/test-session-create-routes.js`（8）、`tests/test-handoff-zip.js`（6）、
+  `tests/test-session-bundle-api.js`（隔离前门 + server.js 子进程的端到端加密
+  handoff）、`tests/test-session-persistence-api.js`、
+  `tests/test-session-delete-connected-api.js`、`tests/test-liveness-api.js`、
+  `tests/test-session-bounded-api.js` 全部通过。后者与 bundle 测试改为启动真实
+  网关（`serve --cwd ROOT --node node server.js`），因为公开路由已不在裸
+  `node server.js` 上；数据根一律 `mkdtemp` 隔离，未触碰真实 `~/.multicc`。
+- 治理：`tests/test-request-locality.js` 白名单加入
+  `src/routes/session-routes-host.js`；`tests/test-api-contracts.js` 新增
+  「会话管理六族由前门独占」断言；`scripts/check-source-line-budget.js` 的
+  `server.js` 棘轮跟到 3080/165177。
+
+### 52.9 已知差异
+
+- **（已修复，2026-11-15）`OPTIONS /api/sessions/import` 与
+  `/api/sessions/import-zip`**：此前前门按 claim 顺序让 session-admin 先答这个
+  `:id` 形状，返回 `GET,HEAD,PATCH,DELETE`，比旧 Express 的整 app 并集少了
+  `POST`。现在自动 OPTIONS 由 `mod.rs` 的 `OPTIONS_SOURCES` 跨簇汇总（§9），
+  返回 `GET,HEAD,PATCH,POST,DELETE`，差分回到逐字节比对。
+- **转发路由的跳点响应头**：两条 zip 路由的响应由 Node 原样生成，前门在转发时
+  会补自己的 `vary`/`x-multicc-api-version`/`x-multicc-request-id`/
+  `x-correlation-id`，两侧值必然不同；差分的三条转发用例因此只比较状态、正文与
+  `content-type`/`content-disposition`，跳点头由 `dropHopHeaders` 归一。客户端
+  可观察语义不变（请求 id 由前门自己发，和其余前门路由一致）。
+
+## 53. 账号与登录路由迁入 Rust（2026-11-15）
+
+八个路由文件里的 34 条公开路由：32 条由前门独占，两条阻塞式
+`POST /api/zcode/auth/login`、`POST /api/kimi/auth/login` 仍由 Node 公开应答
+（前门整条转发，含自动 OPTIONS，见 53.5）。路径匹配与规则在
+`native/core/src/account_routes.rs`（784 行，14 条单测），claim / 宿主调用 /
+回放进 `native/gateway/src/app/account_routes.rs`（238 行，3 条单测），集成用例
+`native/gateway/tests/account_routes.rs`（24 条）。Node 只剩「前门看不见的事实」，
+经 `/api/__host/account-routes` 的 32 个 op 回调
+（`src/routes/account-routes-host.js`，226 行）。八个模块仍原样注册，但只挂在宿主
+端口的捕获应用上；公开面只剩 `accountRoutesHost.mountRoute(app)` 一行，加上
+`mountZcodeAuthLoginRoute(app)` / `mountKimiAuthLoginRoute(app)` 两条转发路径。
+
+### 53.1 归属判定（逐路由）
+
+| 路由 | 进 Rust 的规则 | 留 Node 的事实 |
+|---|---|---|
+| `GET/HEAD /api/{claude,codex}/accounts` | 路径匹配、`Allow`（`GET,HEAD,POST`）、宿主回放 | 官方账号仓库读取、`credentials.status`、刷新监督器状态与脱敏 DTO |
+| `POST /api/{claude,codex}/accounts` | 请求体透传、写串行化、201/409/500 的状态与正文回放 | 账号创建、provider 绑定/回滚、PKCE 监听器开启（`openLoginListener`） |
+| `POST /api/{claude,codex}/accounts/:id/activate` | `:id` 解码、写串行化 | 统一官方账号开关（`unified` 闭包）、账号存在/已登录校验、选中持久化 |
+| `GET/HEAD /api/{claude,codex}/accounts/:id/login-status` | 读路径、`Allow`（`GET,HEAD`） | `loginStates`/`pending` 状态机、pending 时回传 `oauthUrl` |
+| `POST /api/{claude,codex}/accounts/:id/login-callback` | 请求体（`code`/`state`）透传、写串行化 | `state` 比对（防 CSRF）、换码 fetch（走账号专属出口）、凭据落盘 |
+| `POST /api/{claude,codex}/accounts/:id/relogin` | 写串行化、复用/取代 201 正文 | 单飞行登录（一个回环监听器）：复用同一 `oauthUrl` 或取消旧 listener 并记 `superseded` |
+| `DELETE /api/{claude,codex}/accounts/:id` | 写串行化、204 回放 | 账号删除、绑定 provider 删除、选中项释放 |
+| `GET/HEAD /api/claude/accounts/:id/quota` | 读路径、`Allow`（`GET,HEAD`） | 凭据 peek（`credential_unreadable`/`no_credentials` → 401）、usage 上游抓取、`recordUsage` |
+| `GET/HEAD/PUT /api/zcode/auth` | `GET,HEAD,PUT` 并集、JSON `null`/空体的 `req.body` 语义透传 | `~/.zcode` 配置读取、桌面 key 探测、`setZcodeApiKey` 落盘与 400 文案 |
+| `POST /api/zcode/auth/sync` | 写串行化 | 桌面端配置发现与 key 同步 |
+| `GET/HEAD /api/zcode/auth/check` | 读路径 | `ensureZcodeAuth` 判定与三条 400/500 文案 |
+| `GET/HEAD/PUT /api/kimi/auth` | `GET,HEAD,PUT` 并集、`req.body.apiKey` 透传 | Kimi 凭据文件读写、桌面 key 同步、400 文案 |
+| `GET/HEAD /api/kimi/auth/check` | 读路径、缺失 `message` 不补键（同 `JSON.stringify`） | `ensureKimiAuth` 判定 |
+| `GET/HEAD/POST /api/cli-accounts/:cli` | `:cli` 解码与车道闸门（`commandcode`/`opencode`）、`GET,HEAD,POST` 并集 | CLI key 账户表读取与创建、apiKey 形状校验、404/400 文案 |
+| `PATCH/DELETE /api/cli-accounts/:cli/:id` | 两个参数解码、`PATCH,DELETE` 并集、写串行化 | 账户更新/删除、选中该账户的会话释放（`persist.mutate`） |
+| `GET/HEAD /api/{claude,codex}/oauth/status` | 读路径 `GET,HEAD` | 刷新器 `readCredentials`、落地登录终端的关闭与事件追加 |
+| `POST /api/{claude,codex}/oauth/login` | 写串行化 | 登录目录/会话创建、登录终端 spawn、旧终端释放 |
+| `GET/HEAD /api/commandcode/auth/status` | 读路径 | `~/.commandcode` 登录状态读取 |
+| `POST /api/commandcode/auth/login` | 写串行化 | 登录会话创建与登录终端 spawn |
+| `POST /api/{zcode,kimi}/auth/login` | **不 claim** | 最长 5 分钟等子进程退出，整条由 Node 应答（见 53.5） |
+
+### 53.2 宿主端口 op 契约
+
+`POST /api/__host/account-routes`（`HOST_PATH = '/api/__host/account-routes'`），
+回环闸门 `!isLocalRequest` → 404 `{error:'not found'}`，未知 op → 400
+`{error:'unknown host operation'}`，op 抛错 → 500 `{error:'internal_error'}`。
+成功一律 `{ok:true,value}`，`value` 是 `{status,body}`（退休处理器渲染的状态码与
+JSON 正文）或 `{threw:true,status,code,message}`（处理器异常，由前门用**自己的**
+request id 重建错误 DTO，绝不泄漏异常 message）。请求载荷固定为
+`{op, method, body, id?, cli?}`：`body` 原样取自 `express::json_body`（无体为 `{}`，
+JSON `null` 就是 `null`），参数已在前门解码。
+
+| op | 参数 | 宿主侧事实 |
+|---|---|---|
+| `claude-accounts-list` / `codex-accounts-list` | — | 账号仓库、`credentials.status`、刷新监督器状态 |
+| `claude-accounts-create` / `codex-accounts-create` | body | 创建账号、provider 绑定/回滚、监听器开启 |
+| `claude-account-activate` / `codex-account-activate` | `id` | 选中官方账号 |
+| `claude-account-login-status` / `codex-account-login-status` | `id` | `loginStates`/`pending` |
+| `claude-account-login-callback` / `codex-account-login-callback` | `id`, body | state 校验、换码、凭据落盘 |
+| `claude-account-relogin` / `codex-account-relogin` | `id` | 单飞行登录复用/取代 |
+| `claude-account-delete` / `codex-account-delete` | `id` | 账号与绑定 provider 删除 |
+| `claude-account-quota` | `id` | 凭据 peek、usage 抓取、`recordUsage` |
+| `zcode-auth-status` | — | Z.ai 配置与桌面 key 投影 |
+| `zcode-auth-put` | body | `setZcodeApiKey` |
+| `zcode-auth-sync` | — | 桌面 key 同步 |
+| `zcode-auth-check` | — | `ensureZcodeAuth` |
+| `kimi-auth-status` | — | Kimi 凭据投影 |
+| `kimi-auth-put` | body | 配置落盘 |
+| `kimi-auth-check` | — | `ensureKimiAuth` |
+| `cli-accounts-list` | `cli` | CLI key 账户表 |
+| `cli-accounts-create` | `cli`, body | 车道校验与创建 |
+| `cli-account-patch` | `cli`, `id`, body | 更新 |
+| `cli-account-delete` | `cli`, `id` | 删除与会话释放 |
+| `claude-oauth-status` / `codex-oauth-status` | — | 刷新器状态与终端清理 |
+| `claude-oauth-login` / `codex-oauth-login` | — | 登录会话与终端 |
+| `commandcode-auth-status` | — | 登录状态 |
+| `commandcode-auth-login` | — | 登录会话与终端 |
+
+### 53.3 凭据脱敏只保留一份实现
+
+脱敏不是前门做的，而是**故意留在 Node**：宿主应答的 `{status,body}` 是退休
+处理器已经投影好的公开 DTO（`accountDto`、`zcodeAuth.status()` 等），前门只回放
+状态码与 JSON 值，不重排字段、不增删键。这样「绝不含 token / refresh_token /
+api key / cookie / password」只有一处实现，迁移不会放宽或改写任何一个字节。
+
+证据：
+
+- `native/gateway/tests/account_routes.rs::claude_account_list_and_status_carry_no_credentials`：
+  请求带 `?token=CANARY-QUERY&api_key=CANARY-KEY` 与 `Cookie`/`Authorization`
+  头，断言响应正文既无凭据键、也无 `CANARY`，且宿主调用日志（NDJSON）里同样没有
+  `CANARY`——前门没有把请求头/查询塞进宿主载荷。
+- 同一文件的 `assert_no_credentials` 对每条投影用例扫描
+  `access_token`/`refresh_token`/`api_key`/`password`/`cookie`/`"token"`/`"secret"`。
+- 差分 `docs/rust-migration/differential/account-routes.js` 对**每一个**用例的两侧
+  正文扫描 `SECRETS` 金丝雀（`ACCESS-CANARY`、`REFRESH-CANARY`、`sk-cli-CANARY`、
+  `Cookie: multicc_session=canary`、`cpk_runtime_canary`），任何一侧泄漏即失败；
+  脚本化世界记录写副作用时只记字段名与长度（如 `apiKeyLength`），从不记 token 值。
+
+### 53.4 三步 OAuth 状态如何经宿主端口共享
+
+前门是**无状态**的：浏览器登录的三步全部落在 Node 的 `loginStates` /
+`pending`（claude/codex 各自一份），每一步都是一次宿主往返：
+
+1. `POST /api/{claude,codex}/accounts`（或 `:id/relogin`）→ 宿主在 Node 内生成
+   `state`/`codeVerifier`/`oauthUrl`，开一个固定回环端口的监听器，写入
+   `loginStates[id] = {state:'pending', …}`；
+2. `GET /api/…/:id/login-status` → 宿主读同一张表，pending 时把 `oauthUrl` 一并
+   回传（页面刷新后仍能重开授权页）；
+3. `POST /api/…/:id/login-callback`（体里是授权码与 `state`）→ 宿主比对 `state`、
+   用 `codeVerifier` 换码、写凭据、把状态推进到 `complete`/`error`。
+
+前门只在步骤之间搬运 HTTP，不缓存任何 state，所以多个登录流程、取代旧流程
+（`superseded by a newer login`）、回调 landing 后的终端关闭都与迁移前完全一致。
+差分把这个状态机当作副作用来测：`claude login callback completes the state machine`
+要求两侧都出现 `submitCallback` + `egressFetchForAccount` + `writeClaudeCredential` +
+`log`，`claude relogin supersedes a pending flow` 要求 `cancelListener` + `log`，
+`claude oauth status closes a landed login terminal` 要求
+`refresher.readCredentials` + `destroySessionCascade` + `persist.mutate` + `appendEvent`。
+两侧都为每个用例新建一份组合（Node 侧新的 legacy 子 app、stub 子进程新的 live
+组合），因此模块级的 `pending`/`loginStates` 在用例之间互不污染，多请求流程在同一个
+用例内用真实请求铺状态，行为对称。
+
+### 53.5 两条阻塞式 login 留在 Node
+
+`POST /api/zcode/auth/login` 与 `POST /api/kimi/auth/login` 会 spawn CLI 登录子进程
+并最长等待 5 分钟，超过宿主端口 60 秒的调用上限。它们不 claim：Node 用
+`mountZcodeAuthLoginRoute(app)` / `mountKimiAuthLoginRoute(app)` 只把这一条路径重新
+挂到公开 app 上，前门整条转发（含自动 `OPTIONS`，返回 `POST`），响应头由前门补发
+（与其它转发路由一致）。宿主捕获应用里仍保留这两条注册，是为了让差分/单测在同一
+组合里能看到完整注册序；它们没有对应的宿主 op。
+
+### 53.6 同路径多方法与自动 OPTIONS 的实测 `Allow`
+
+迁移前 Node 的 `Allow` 由整个 app 的注册序并集决定（Express `appendMethods`，
+`GET` 后自动补 `HEAD`）。本簇没有任何跨簇同形路径，但簇内同一路径注册多个方法：
+
+| 路径 | 注册顺序 | 实测 `Allow` |
+|---|---|---|
+| `/api/claude/accounts`、`/api/codex/accounts` | GET → POST | `GET,HEAD,POST` |
+| `/api/claude/accounts/:id`、`/api/codex/accounts/:id` | DELETE | `DELETE` |
+| `/api/zcode/auth`、`/api/kimi/auth` | GET → PUT | `GET,HEAD,PUT` |
+| `/api/cli-accounts/:cli` | GET → POST | `GET,HEAD,POST` |
+| `/api/cli-accounts/:cli/:id` | PATCH → DELETE | `PATCH,DELETE` |
+| `.../{activate,login-callback,relogin}`、`.../oauth/login`、`.../commandcode/auth/login`、`.../zcode|kimi/auth/sync` | POST | `POST` |
+| `.../{login-status,quota}`、`.../auth/check`、`.../oauth/status`、`/api/commandcode/auth/status` | GET | `GET,HEAD` |
+
+以上 23 条 OPTIONS 用例的 `Allow` 全部由 Node oracle 实测（差分 `before(node)`
+记录真实 Express 响应，`finalize` 再对两侧同时断言同一张表），前门与 Node
+逐字节一致。`native/gateway/src/app/mod.rs` 的 `OPTIONS_SOURCES` 也登记了本簇的
+`options_share`，即便将来出现跨簇共享形状也按同一规则合并。
+
+### 53.7 写路由串行化
+
+所有会改凭据、账号仓库、provider、CLI key 账户或登录状态机的 op 都在
+`App::account_write`（`tokio::sync::Mutex<()>`）下串行执行，复刻 Node 单线程事件
+循环下同簇写处理的先后关系；读路径不取锁。差分观察到两侧副作用的**顺序**完全
+一致（`claude create rolls back when provider creation fails` 依次
+`createClaudeAccount` → `createProvider` → `deleteClaudeAccount`；`claude delete`
+依次 `deleteClaudeAccount` → `deleteProvider`）。
+
+### 53.8 差分与验证
+
+- 差分 `docs/rust-migration/differential/account-routes.js`：114 个用例。Node 侧
+  挂 HEAD 冻结的八个旧模块（`tests/helpers/legacy-account-routes/`，只改写相对
+  require）与脚本化世界（`tests/helpers/account-routes-scripted-world.js`）；Rust
+  侧是真实前门 + stub 子进程，stub 用同一份世界并同时挂出宿主端口与真实的
+  `mountLiveComposition`。两侧 `Date.now()` 冻结到同一毫秒，随机 `state`/
+  `code_challenge`/UUID 归一化后比较状态、正文、ETag、`content-length`、
+  `Allow` 与指定响应头。**114/114 逐字节一致、0 条预期差异；113 例副作用逐条
+  相等**（`createClaudeAccount`、`updateProvider`、`openLoginListener`、
+  `submitCallback`、`writeClaudeCredential`、`peekAccountToken`、`fetch`、
+  `cliStore.create/remove`、`zcode.setApiKey`、`kimi.setApiKey`、
+  `destroySessionCascade` 等由脚本化记录器写成 NDJSON 后比对）。唯一不比较副作用
+  的用例是 codex 登录完成：`modelCatalogRuntime.refreshAccount` 是 fire-and-forget，
+  响应已经发出后仍可能在下一用例里落地。
+- 24 条集成用例（真实前门 + 脚本化宿主）覆盖：每条路径的 `{status,body}` 回放、
+  坏转义 400、两份 `login-status` 的 refusal、quota 的 401/502 分支、`:cli` 车道、
+  OAuth 两种 key 顺序、23 条 OPTIONS 并集、HEAD、转发 login、宿主掉线 503、
+  宿主 500 → `internal_error`、抛出信封、未注册方法转发。
+- Node 测试：`tests/test-claude-official-accounts.js`（23）、
+  `tests/test-official-accounts.js`（15）、`tests/test-manage-official-accounts.js`
+  （14）、`tests/test-cli-key-accounts.js`（14）、`tests/test-codex-oauth-routes.js`
+  （8）、`tests/test-claude-oauth-routes.js`（11）、`tests/test-codex-oauth-refresh.js`
+  （27）、`tests/test-codex-oauth-login.js`（8）、`tests/test-zcode-auth.js`（5）、
+  `tests/test-kimi-code.js`（13）、`tests/test-command-code.js`（6）、
+  `tests/test-unified-official-providers.js`（10）全部通过。它们直接测模块与
+  宿主事实，不依赖公开挂载。
+- 隔离：差分与集成用例都用 `mkdtemp` 数据根 + 脚本化 `HOME`/凭据 store，
+  不发真实 OAuth、不读也不打印真实钥匙串或 `~/.codex/auth.json`；上游 fetch 是
+  脚本化桩（usage/token 两条 URL，可返回脚本化状态与正文）。
+- 治理：`tests/test-request-locality.js` 白名单加入
+  `src/routes/account-routes-host.js`；`tests/test-api-contracts.js` 新增「账号与登录
+  由前门独占、Node 只剩宿主端口 + 两条 login 转发」断言；`scripts/check-source-line-budget.js`
+  的 `server.js` 棘轮跟到 3087/165857。
+
+### 53.9 已知差异
+
+- **宿主失败面是新增的**：宿主端口不可达 → 32 条路径统一 503
+  `rust_backend_unavailable`；宿主回了非 200 → 500 `account route failed`。
+  旧 Node 在同一进程内直接读凭据，没有这两个形状（见 53.8 的 503 单测）。
+- **转发 login 的跳点响应头**：两条阻塞 login 由 Node 原样生成，前门转发时补自己的
+  `vary`/`x-multicc-api-version`/`x-multicc-request-id`/`x-correlation-id`；差分只比较
+  状态、正文与 `Allow`/`content-type`，跳点头由 `dropHopHeaders` 归一。客户端可观察
+  语义不变。
+- **fire-and-forget 的目录刷新**：codex 登录完成后 `refreshAccount` 不阻塞响应，
+  差分不把它计入副作用顺序；Node 旧路径同样不等待它。
+
+## 54. 分享与电脑路由迁入 Rust（2026-11-15）
+
+`src/machines.js`、`src/routes/share.js`、`src/routes/workspaces.js` 的 21 条公开路由改由
+前门独占。三个文件对真实 app 的公开挂载已删除：`server.js` 只保留
+`machines.mountProxy(app, express)`（原生转发层，见 54.1 的两条例外）与唯一的宿主端口
+`POST /api/__host/share-machines`（`src/routes/share-machines-host.js`，261 行）。
+路由规则在 `multicc_core::share_machine_routes`（877 行、17 条单测），网关接线在
+`native/gateway/src/app/share_machine_routes.rs`（455 行、4 条单测），端到端用例在
+`native/gateway/tests/share_machine_routes.rs`（23 条）。
+
+### 54.1 逐路由归属
+
+| 方法 | 路径 | 原文件 | 前门职责 | Node 侧（宿主 op） |
+| --- | --- | --- | --- | --- |
+| GET/HEAD | `/api/machines` | `src/machines.js` | 路径匹配、`Allow`、跨站闸门、`no-store` 头回放 | `machines-list` → 机器注册表快照 |
+| GET/HEAD | `/api/machines/self` | `src/machines.js` | 同上 | `machines-self` |
+| GET/HEAD | `/api/machines/grants` | `src/machines.js` | 同上 | `machines-grants`（授权表脱敏投影） |
+| POST | `/api/machines/pair` | `src/machines.js` | 16 KiB JSON、`400 machine_pair_invalid`、`403 目标电脑访问密码不正确` | `machines-pair` → 远端 `/api/machines/pair` 与密码校验 |
+| POST | `/api/machines` | `src/machines.js` | 16 KiB JSON、DTO 键序 | `machines-add` → 远端注册 + peers 落盘 |
+| PATCH | `/api/machines/:machineId` | `src/machines.js` | `:machineId` 解码、`404 machine_not_found` | `machines-rename` |
+| DELETE | `/api/machines/:machineId` | `src/machines.js` | 同上 | `machines-remove` |
+| DELETE | `/api/machines/grants/:grantId` | `src/machines.js` | `:grantId` 解码、404 | `machines-grant-revoke` |
+| DELETE | `/api/machines/connection` | `src/machines.js` | 范围授权在闸门判定（`x-multicc-machine-grant`，`mcg_` + 52 字符） | `machines-connection-delete`（用同一 `authorize` 取回 `grantId`，不复制授权表） |
+| POST | `/api/machines/:machineId/ws-ticket` | `src/machines.js` | 票面 `{ticket,expiresAt,path}` 键序原样回放 | `machines-ws-ticket` → 子进程 `AuthRuntime` 签发 |
+| POST | `/api/sessions/:id/share` | `src/routes/share.js` | 执行槽 404、JSON body、`publicBaseUrl` 校验 | `session-share-create` → `shares.json` |
+| GET/HEAD | `/api/sessions/:id/shares` | `src/routes/share.js` | 执行槽 404 | `session-shares-list` |
+| DELETE | `/api/sessions/:id/share/:token` | `src/routes/share.js` | 双参数解码、`400 token does not belong to this session` | `session-share-revoke` |
+| POST | `/api/sessions/:id/share-messages` | `src/routes/share.js` | 执行槽 404、`400 no valid messages selected` | `session-share-messages` |
+| GET/HEAD | `/share/:token` | `src/routes/share.js` | **公共路径免鉴权**、`no-store`/`Pragma`、`text/html`、读文失败裸 500 | `share-page` → 版本化 HTML 读取与改写 |
+| POST | `/api/share/:token/auth` | `src/routes/share.js` | `Set-Cookie` 回放、`401 needPassword`、`403 密码错误` | `share-auth` → scrypt 校验与 cookie 签名 |
+| GET/HEAD | `/api/share/:token/entry` | `src/routes/share.js` | 免鉴权、`access` 投影（view/operate） | `share-entry` |
+| GET/HEAD | `/api/share/:token/history` | `src/routes/share.js` | `?limit`/`?before`/`?around` 子集、`{messages,hasMore,found,hasNewer}` 键序 | `share-history` |
+| GET/HEAD | `/api/share/:token/session` | `src/routes/share.js` | 免鉴权、完整会话投影 | `share-session` |
+| GET/HEAD | `/api/workspaces/overview` | `src/routes/workspaces.js` | `{status,totals,directories,removedIgnoredAudit,orphans}` 键序 | `workspaces-overview` → 会话/目录 Map 与休眠运行时 |
+| POST | `/api/workspaces/sweep` | `src/routes/workspaces.js` | `?orphans`、`503 hibernation runtime not ready` | `workspaces-sweep` → 孤儿扫描器 |
+
+两条例外**整条留在 Node 并由前门转发**：`GET/HEAD /api/machines/:machineId/proxy` 与它的 SSE
+变体。它们流二进制/事件流，装不进 JSON 宿主端口；`machines.mountProxy` 直接挂在真实 app 上，
+连它自带的 `app.use` 跨站闸门与 OPTIONS 回答一起保留。前门对这些方法不做二次匹配，原样转发。
+
+### 54.2 宿主端口契约
+
+`POST /api/__host/share-machines`（内部端口、回环闸门 `isLocalRequest`）：
+
+* 请求体：`{ op, method, originalUrl, <params…>, query, headers, body }`。参数已由前门解码后按
+  `OPS` 里声明的名字平铺；`query` 只带 `before`/`around`/`limit`/`orphans` 四个键；`headers`
+  只带 `host`、`x-forwarded-proto`、`cookie`、`x-access-token`、`x-multicc-machine-grant`。
+* 成功应答：`{ ok: true, value }`，`value` 是退休处理器渲染出的
+  `{ status, body, headers?, contentType?, bare? }`；处理器抛出时是
+  `{ threw: true, status, code, message }`。
+* 非回环调用 → `404 {"error":"not found"}`；未知 op 或没有对应处理器 →
+  `400 {"error":"unknown host operation"}`（前门按宿主失败渲染 500）；op 执行抛错 →
+  子进程 `console.error` + `500 {"error":"internal_error"}`（前门按 `safeErrorHandler`
+  用自己的 request id 重建信封）。
+
+`OPS` 共 21 条，逐条钉死 `(method, 模板, 参数名)`：`machines-list`/`machines-self`/`machines-grants`/
+`machines-pair`/`machines-connection-delete`/`machines-grant-revoke`/`machines-add`/`machines-rename`/
+`machines-remove`/`machines-ws-ticket`/`session-share-create`/`session-shares-list`/
+`session-share-revoke`/`session-share-messages`/`share-page`/`share-auth`/`share-entry`/
+`share-history`/`share-session`/`workspaces-overview`/`workspaces-sweep`。捕获应用按
+`<method> <模板>` 取处理器，前门已解好的参数直接塞进 `req.params`，宿主不再匹配第二遍路径。
+
+### 54.3 ws-ticket 仍由子进程签发
+
+`POST /api/machines/:machineId/ws-ticket` 的票据来自 Node 子进程的
+`AuthRuntime.issue_ws_ticket`（回 `{ticket, expiresAt, path}` 三键），消费点是
+`src/ws/machines.js` 与 `src/ws/connection-router.js` 的同一张表——前门**不保留第二份**
+票据表，只把宿主回的键序原样回放。因此票据在一次进程生命周期内跨前后门一致，重启后与
+Node 旧行为一样全部失效。差分用例 `ws-ticket through the peer` 在两侧各自拿到
+`200 {"ticket":"<secret>","expiresAt":…,"proxyPath":"/ws/machines/…"}`，票据值按侧收敛
+（scrubber 把 `"ticket":"…"` 也纳入 secrets 集），键序与 `proxyPath` 前缀两侧一字不差。
+
+### 54.4 公共分享页与客人可达性
+
+`/share/:token` 与四条 `/api/share/:token/…` 读是分享 token 自己的授权：Node 的
+`httpEntry` 把这几个前缀对**任何方法**标为公开，前门复用同一谓词
+（`http_entry::public_path`，`/share/`、`/api/share/` 前缀，无方法条件），**不是新写第二条
+规则**。客人（无 access token、无 cookie、无机器授权）能直接打开分享页、进密码闸门、
+用密码换 cookie 后读 entry/history/session。端到端用例
+`the_public_share_page_is_reachable_from_an_external_peer_without_a_token` 与
+`the_public_share_reads_bypass_the_gate_and_an_ordinary_route_does_not` 用真实前门 + 外部对端
+证明；差分用例 `the public share page`、`public entry of a public share`、
+`entry without the password cookie`、`auth with the right password` 两侧一致。
+`share-auth` 的 `Set-Cookie` 由 Node 生成、经 `relay_headers` 原样回放；`entry`/`history`/
+`session` 不设 cookie，只读请求头里的 `cookie`。
+
+### 54.5 范围授权迁移后仍然生效
+
+`DELETE /api/machines/connection` 是唯一吃 `x-multicc-machine-grant` 的路由。授权判定在**前门
+闸门**（`app.gate` → `http_gate`/`addon.authorizeMachineRequest`），前门从自己的 `data_root`
+（`MULTICC_DATA_DIR`，由其 Node 子进程写入 `gw-data`）解析 grant；未知/过期 grant 在闸门就
+403，**到不了 Node**。差分用例 `connection delete with the scoped grant`（200）与
+`connection delete without a grant`（403 `缺少电脑授权`）在两侧一致；集成用例
+`the_two_body_less_deletes_forward_no_body_but_patch_and_pair_do` 证明宿主收到的是**没有 body**
+的 DELETE，`the share admin routes keep the execution slot guard` 证明执行槽 404 先于宿主。
+宿主只在 `machines-connection-delete` 上用同一个 `machines.authorize(req)` 把 `grantId` 取回来，
+绝不复制授权表。
+
+### 54.6 实测 `Allow`（同段冲突全部按 Node oracle 量过）
+
+`:param` 层会对该段上的任意字面量回答 OPTIONS，所以多条路径共段时 `Allow` 是注册顺序并集：
+
+| OPTIONS 路径 | `Allow` |
+| --- | --- |
+| `/api/machines` | `GET,HEAD,POST` |
+| `/api/machines/self` | `GET,HEAD,PATCH,DELETE` |
+| `/api/machines/pair` | `POST,PATCH,DELETE` |
+| `/api/machines/connection` | `DELETE,PATCH` |
+| `/api/machines/grants` | `GET,HEAD,PATCH,DELETE` |
+| `/api/machines/grants/ws-ticket` | `DELETE,POST` |
+| `/api/sessions/s1/share` | `POST` |
+| `/api/sessions/s1/shares` | `GET,HEAD` |
+| `/api/share/t1/entry` | `GET,HEAD` |
+| `/share/t1` | `GET,HEAD` |
+| `/api/workspaces/overview` | `GET,HEAD` |
+| `/api/workspaces/sweep` | `POST` |
+
+12 条都由差分的 `OPTIONS …` 用例在**两侧**断言（正文就是 `Allow` 字符串本身，
+`text/html; charset=utf-8`），并与 `multicc_core::share_machine_routes` 的
+`allow_union_matches_the_measured_express_values` 单测互锁。`/api/machines/:machineId/proxy`
+的 OPTIONS 由 Node 的 `app.use` 层回答，前门整条转发。
+
+### 54.7 写串行化与错误信封
+
+所有写 op（pair/add/rename/remove/grant-revoke/connection-delete/ws-ticket/share-create/
+share-revoke/share-messages/share-auth/sweep）在前门串行化（`App::share_machine_write`），
+保住单线程 Node 事件循环的语义：并发的 `POST /api/machines` 不会交错写 `machines.json`。
+错误信封沿用 `express::error`/`error_dto`：4xx/5xx 只认 `error.status`，正文不泄 message，
+除非宿主标了 `safe`。处理器在宿主抛出 → 前门重建 `{code,message}` 并写自己的
+`x-multicc-request-id`/`x-correlation-id`。
+
+### 54.8 差分、隔离与治理
+
+* 差分：`docs/rust-migration/differential/share-machine-routes.js`，66 例。
+  66/66 状态码、正文、弱 ETag/HEAD、`Allow` 逐字节一致；分享存储（`shares.json`：access、
+  type、label、expiresAt、messageCount、密码哈希按**各侧自己的 salt**重算比对）与机器注册表
+  （`machines.json`：grants/peers 的 id 按 `machine_|grant_|mcg_<48hex>` 收敛、`addedAt`/
+  `createdAt` 折成 `<ts>`）在两份隔离数据根之间逐字节一致。
+  语料覆盖 21 条路由全部至少一次，跑完打印
+  `[share-machine-routes] desensitization canaries hold; share store and machine registry identical`。
+* 脱敏金丝雀：任何一例正文出现 `mcg_[0-9a-f]{48}` 判「泄露配对凭据」，出现
+  `pwHash`/`"salt"`/`"secret"` 判「泄露分享秘密」；任何一例落到通用 500 `internal_error`
+  也直接判失败（防两侧同样 500 的假绿）。代表用例：`pair with the access password`
+  （`"grant":"<secret>"` 已收敛）、`grants list after pairing`（`ownerId` 收敛）、
+  `create a password share`（`hasPassword:true`，无哈希）、
+  `the public share page`（`<html>` 且无 token 泄漏）。
+* 隔离：差分与集成一律 `mkdtemp` 数据根 + 两侧各自 `MULTICC_DATA_DIR`（`node-data`/`gw-data`），
+  脚本化 `SHARE_WORLD`/`FROZEN_NOW`，机器远端是一个本地 stub HTTP 服务（`server.unref()` 后
+  `listen(0)`），**不发真实远端请求、不碰 `~/.multicc`**。
+* 集成：`native/gateway/tests/share_machine_routes.rs` 23 条（回放、解码、大小写/尾斜杠、
+  两条无 body DELETE、16 KiB 413、ws-ticket 键序、proxy 全方法转发、跨站 403、公共分享页与
+  免鉴权、history 查询子集、`Set-Cookie` 回放、执行槽 404、裸 500、overview/sweep、12 条
+  OPTIONS、gzip 与分享页不 gzip、304、HEAD、宿主掉线 503、宿主 500、抛出信封、未注册路径转发）。
+* Node 回归：`tests/test-share-machines-host.js` 13 条（op 表、回环闸门、未知 op 400、
+  抛错 500、`bare` 正文、21 条 op 计数），连同 `tests/test-share-routes.js`（16）、
+  `tests/test-share-store.js`（2）、`tests/test-machines.js`（3）等 10 个原测试全绿。
+* 治理：`tests/test-request-locality.js` 白名单加入 `src/routes/share-machines-host.js`；
+  `tests/test-api-contracts.js` 新增「三条路径由前门独占、Node 只剩宿主端口 +
+  `machines.mountProxy`」断言；`scripts/check-source-line-budget.js` 的 `server.js` 棘轮跟到
+  3096/166304；`tests/test-tiers.json` 登记 `tests/test-share-machines-host.js` 为 core
+  deterministic（907 条已分类），`package.json` 的 `test:core` 加入该文件。
+
+### 54.9 已知差异
+
+* **宿主失败面是新增的**：宿主不可达 → 21 条统一 503 `rust_backend_unavailable`；宿主回了
+  非 200 → 500 `share route failed`。旧 Node 同进程直读，没有这两个形状（见 54.8 的 503 单测）。
+* **超 16 KiB 的 machines 请求体**：差分的 oracle 外层已先跑全局 50 MiB 解析器，无法在
+  oracle 侧复现「内层 16 KiB 拒绝」，因此 `413` 只由集成用例
+  `a_machines_body_over_the_sixteen_kilobyte_limit_is_a_413` 覆盖，差分不计该分支。
+* **随机值按侧收敛**：机器 id（`machine_<48hex>`）、授权（`grant_`/`mcg_`）、分享 token、
+  salt 与 ws 票据都随机，逐例 scrub；密码哈希按各侧 salt 重算比对，弱哈希藏不住。
+* **`createdAt`/`addedAt`** 是 RFC3339 墙钟，两进程不可能相同，统一折成 `<ts>`；这不算
+  契约差异（格式与来源仍是各自 `new Date().toISOString()` 等价物）。
+* **fire-and-forget 副作用**：workspace sweep 的广播与分享创建的追加事件不在两侧比对范围内
+  （与 account 簇先例相同）；公开可观察的状态码/正文/头已逐字节一致。
+
+## 55. 宿主与系统操作簇 40 条公开路由迁入前门（2026-11-15）
+
+### 55.1 范围与归属
+
+十个原文件（`server-restart-route`、`update-route`、`developer-tools`、`macos-privacy`、`ops-terminal`、
+`host-write`、`host-power`、`skill-sync`、`env-doctor`、`doctor`）共 40 条方法+路径全部由前门独占；
+原文件仍在 `src/routes/`，但**只**挂在 `src/routes/host-ops-host.js` 的捕获应用上，真实 app 上没有它们的
+任何公开挂载，也没有「已迁路由与留 Node 路由一起重挂」的双轨。`server.js` 只剩一段
+`createHostOpsHost({...}).mountRoute(app)`。
+
+`ops-terminal` 的四条（`ops-env`、`ops-run` GET/POST、`ops-run/stop`）逐条核实：没有 `res.write`、
+`text/event-stream`、`node-pty`；唯一的 `spawn` 在宿主端口里持有子进程句柄，路由只返回输出快照
+（`running`、`chunk`、`?from=` 偏移），因此不是流式面，不需要留 Node 转发。
+
+### 55.2 宿主端口契约
+
+`POST /api/__host/host-ops`（内部端口，回环闸门 `isLocalRequest`；非回环 404 `{error:'not found'}`，
+未知 op 400 `{error:'unknown host operation'}`，op 抛错记日志后 `{threw,status,code,message}`）。
+请求体 `{ op, originalUrl, <params…>, query, headers, body, local, requestId }`；`query` 只带
+`from`；`local` 是前门按真实客户端地址算出的布尔（宿主自己只会看到前门的回环连接，所以
+`host-write` 的 `isLocalRequest` 在宿主里被改读 `req.local`，`macos-privacy` 按它构造 socket）。
+应答 `{ ok:true, value:{ status, body, headers?, contentType?, bare? } }`。op 表共 40 项，见
+`src/routes/host-ops-host.js` 的 `OPS`（`restart`、`desktop-shutdown`、`update-status`、`update`、
+`developer-tools-*` 4、`disk-access*` 2、`agent-permissions*` 3、`agent-install*` 2、`ops-*` 4、`settings-*`
+8、`tunnel-*` 3、`skill-sync-*` 2、`env-doctor-*` 3、`session-doctor-*` 2、`doctor-*` 2）。
+
+### 55.3 重启与自更新如何不触发真实动作
+
+前门只做闸门与 DTO 回放，启动器留在宿主端口。差分与测试给 `server-restart-route`/`update-route` 注入
+假 spawn（只记录调用、从不启动进程）和临时 manager 文件，并断言「启动器被调用恰好一次、更新器从未启动、
+第二次请求被 409 去抖」；`tests/test-host-ops-host.js` 用只记录调用的路由替身。差分、集成测试与 Node
+测试都不调用真实服务的 `/api/restart`、`/api/update`。
+
+### 55.4 路径安全与脱敏
+
+本簇没有任何用户提供的文件系统路径：`host-write` 写的是固定 `.env`，唯一的路径参数 `:provider` 只在
+前门解码成**单个段**，`a%2Fb`、`..%2F..%2Fetc%2Fpasswd` 仍在该段内，由宿主白名单拒绝（差分用例
+`restart a percent-encoded provider`、`restart with a traversal-looking provider`，核心单测的
+`provider` 解码用例覆盖 `..`、`.`、`%2e%2e`、`%2F`、`..%2F..`）。因此没有第三份手写路径规则，也不需要复用
+`is_inside`/`is_home_or_above`。脱敏金丝雀（差分，两侧响应均扫）：解锁密码 `hunter2`、skill-sync 原始
+失败文案与路径、tunnel 令牌 `NT-SECRET-AUTHTOKEN`；Rust 集成测试另断言解锁密码不回显。
+
+### 55.5 已知差异与保留的缺陷
+
+* 宿主不可达：Rust 503 `rust_backend_unavailable`，旧 Express 在差分里是各路由自己的 409/200（唯一预期差异）。
+* `POST /api/settings/task-attribution` 保留退休时的缺陷：`requireLocal(deps, req)` 少传 `res`，
+  远端请求抛 TypeError，被 `safeErrorHandler` 渲染成 500，而不是 403。差分逐字节对齐，未改契约。
+* 随机/时钟值（request id、`startedAt`）按侧 scrub；差分用 `X-Request-Id` 固定。
+
+### 55.6 治理
+
+`tests/test-request-locality.js` 白名单含 `src/routes/host-ops-host.js`；`tests/test-host-ops-host.js` 登记 core
+deterministic；`scripts/check-source-line-budget.js` 的 `server.js` 棘轮 3105/166686；
+`tests/test-release-version-consistency.js` 的 core 计数 452/377/424。
+
+## 56. 编排与无人值守簇 23 条公开路由迁入前门（2026-11-15）
+
+### 56.1 范围与归属
+
+本簇原有 30 条，**只迁 23 条**：`aux-goal.js` 10、`aux-runs.js` 2、`unattended/routes.js` 2、
+`orchestration.js` 9（定时消息 3、`tasks`、`dispatches`、`user-input/dismiss`、`queue`、`queue/action`、
+`GET /api/v1/sessions/:id/waits`）。前门实现见 `native/gateway/src/app/orchestration_routes.rs`
+（403 行）与 `native/core/src/orchestration_routes.rs`（757 行、15 条单测）。
+
+排除集 7 条保留在真实 app 上，由前门当作未识别路径转发给 Node：`POST /api/sessions/:id/wait`、
+`POST /api/wait/:wid/resolve`、`GET /api/sessions/:id/waits`、`DELETE /api/wait/:wid`、
+`POST /api/sessions/:id/run-detached`、`GET /api/sessions/:id/detached`、`GET /api/detached/:taskId`
+（已登记 out-of-scope 的 wait 注入器 / detached 集）。`orchestration.js` 因此拆成 `mountHostRoutes`
+（9 条，只挂宿主端口的捕获应用）与 `mountRoutes`（7 条，挂真实 app），**没有任何一条同时挂两处**。
+
+### 56.2 v1 与非 v1 waits 的分流
+
+`GET /api/v1/sessions/:id/waits` 归前门；`GET /api/sessions/:id/waits`（无 v1 前缀）仍回落 Node。
+`claim` 以前导 `v1` 段区分。钉住的用例：`native/core` 的
+`v1_waits_is_ours_and_the_unprefixed_listing_stays_on_node`；集成测试
+`v1_waits_is_claimed_and_the_unprefixed_listing_falls_back_to_node`、
+`the_seven_out_of_scope_routes_all_fall_back_to_node`；差分 `v1 waits of a session` /
+`legacy waits of a session stays on Node`（覆盖守卫要求二者正文不同）；Node 侧
+`tests/test-orchestration-routes.js` 的 public/host 两半路由集合断言、`tests/test-api-contracts.js`
+的归属断言、`tests/test-orchestration-host.js` 的排除集断言。
+
+### 56.3 宿主端口契约
+
+`POST /api/__host/orchestration`（内部端口，回环闸门 `isLocalRequest`；非回环 404
+`{error:'not found'}`，未知 op 400 `{error:'unknown host operation'}`，处理器抛错记日志后
+`{threw,status,code,message}`，前门用自己的 request id 重建信封）。请求体
+`{ op, method, originalUrl, <params>, query, headers, body, local, requestId, correlationId }`；
+`query` 只带处理器读的键；`headers` 只放行 `idempotency-key`（不转发 Cookie/Authorization）。应答
+`{ ok:true, value:{ status, body, headers? } }`。op 共 23 个，见 `src/routes/orchestration-host.js`
+的 `OPS`：
+
+| op | 入参 | 出参 |
+|---|---|---|
+| `aux-status` `aux-health` `aux-history` | query | `{status,body}` |
+| `aux-enqueue` `aux-cancel` | body | `{status,body}` |
+| `aux-config-get` `aux-config-post` | body（post） | `{status,body}` |
+| `settings-goal-get` `settings-goal-post` | body（post） | `{status,body}` |
+| `goal-precheck` | body | `{status,body}` |
+| `session-aux-runs` | `id`、query | `{status,body}` |
+| `session-aux-run` | `id`、`runId` | `{status,body}` |
+| `unattended-get` `unattended-post` | `id`、body（post） | `{status,body}` |
+| `scheduled-message-post` | `id`、body、`idempotency-key` | `{status,body}` |
+| `scheduled-messages-get` | `id`、query | `{status,body}` |
+| `scheduled-message-delete` | `id`、`messageId` | `{status,body}` |
+| `session-tasks` `session-dispatches` | `id`、query | `{status,body}` |
+| `user-input-dismiss` | `id`、body | `{status,body}` |
+| `session-queue` | `id`、query | `{status,body}` |
+| `session-queue-action` | `id`、body、`idempotency-key` | `{status,body,headers?}` |
+| `v1-session-waits` | `id`、query、`requestId`、`correlationId` | v1 信封 `{status,body}` |
+
+### 56.4 内部执行槽守卫复用
+
+守卫**复用** session-admin 的 `guard_facts` / `guarded_404`（先例 `event_routes.rs`、
+`session_routes.rs`），没有新写第二份。内部槽在任何处理器与 `OPTIONS` 之前得到与缺失会话相同的
+404：`/api/sessions/:id/*` 用裸信封，`/api/v1/sessions/:id/waits` 用 v1 信封；Aux 与 goal 的十条不在
+守卫后。守卫在全局 JSON 解析器之前，因此内部槽上的坏请求体仍是守卫的 404。用例：集成测试
+`an_internal_execution_slot_404s_before_every_session_scoped_route`、
+`the_aux_and_goal_routes_are_not_behind_the_session_guard`、`a_guard_that_cannot_be_asked_is_the_503`；
+差分 14 条以上内部槽用例（含 OPTIONS）。
+
+### 56.5 本机判定
+
+本簇**没有 local-only 路由**（四个模块都不读 `isLocalRequest`、`req.local`、`remoteAddress`）。前门仍把
+按真实客户端地址算出的 `local` 布尔放进请求体，宿主端口把它写到 `req.local` 与假 `socket`，宿主端口自己的
+回环闸门仍用真实判定；两者分离，参照 `host-ops-host.js` 与 `host_ops_routes.rs`。
+
+### 56.6 实测 `Allow`（同段冲突全部按 Node oracle 量过）
+
+`/api/aux/{status,health,history}`、`aux-runs`、`tasks`、`dispatches`、`queue`、`v1/.../waits`：`GET,HEAD`；
+`/api/aux/{enqueue,cancel}`、`goal/precheck`、`user-input/dismiss`、`queue/action`：`POST`；
+`/api/aux/config`、`/api/settings/goal`、`.../unattended`：`GET,HEAD,POST`；
+`.../scheduled-messages`：`POST,GET,HEAD`（POST 先于 GET 注册）；`.../scheduled-messages/:messageId`：
+`DELETE`。走 `OPTIONS_SOURCES` 并集（`orchestration_routes::options_share`），不做特判。排除集路径
+（如 `/api/sessions/:id/waits`）不在本簇的 `Allow` 里。集成测试 `allow_header_covers_every_registered_path`，
+差分 `OPTIONS ...` 用例逐字节对齐 Node。
+
+### 56.7 写串行化
+
+写路由经 `App::orchestration_write` 串行化，但 `aux/enqueue`、`goal/precheck`（等待 Aux 模型调用，
+超时 30 分钟上限）与 `aux/cancel`（用来打断这种等待）不串行，否则取消会排在被取消的调用之后。
+集成测试 `aux_enqueue_and_its_cancel_run_concurrently_but_other_writes_serialize`。
+
+### 56.8 差分、隔离与治理
+
+差分 `docs/rust-migration/differential/orchestration-routes.js`：Node 侧挂冻结的原模块
+（`tests/helpers/legacy-orchestration-routes/`），Rust 侧经宿主端口，同一份脚本化世界；246 例，244 例
+逐字节一致 + 2 条预期差异（宿主不可达），副作用调用 291 次顺序一致，两个配置文件落盘一致；覆盖守卫
+不满足即非 0 退出。集成测试 `native/gateway/tests/orchestration_routes.rs` 18 条。全部使用隔离数据根
+与 stub，不碰真实会话与任务库。`tests/test-request-locality.js` 白名单含
+`src/routes/orchestration-host.js`；`tests/test-orchestration-host.js` 登记 core deterministic；
+`server.js` 棘轮 3111/167256；`tests/test-release-version-consistency.js` core 计数 453/378/425。

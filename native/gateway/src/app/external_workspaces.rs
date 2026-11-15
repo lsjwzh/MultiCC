@@ -228,7 +228,7 @@ pub async fn handle(
             &[("Retry-After", "1")],
         );
     }
-    if let Some(refusal) = app.gate(&ctx, &peer, &snapshot) {
+    if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
         return refusal;
     }
     let Some(runtime) = app.external_workspaces.get().cloned() else {
@@ -298,7 +298,7 @@ pub async fn handle(
                 &[("Retry-After", "1")],
             );
         }
-        if let Some(refusal) = app.gate(&ctx, &peer, &current) {
+        if let Some(refusal) = app.gate(&ctx, &peer, &current).await {
             return refusal;
         }
     }

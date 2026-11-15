@@ -26,67 +26,22 @@ function authStatusDto(status) {
   };
 }
 
-function mountKimiAuthRoutes(app, deps = {}) {
-  assertApp(app);
-  const kimiAuth = deps.kimiAuth || require('../cli-adapters/kimi-auth');
-  const getBrowser = deps.getBrowser
-    || (() => require('../quota-managed-browser').getManagedQuotaBrowser());
-  const loginWaitMs = Number.isFinite(deps.loginWaitMs) ? deps.loginWaitMs : LOGIN_WAIT_MS;
-  const urlCaptureMs = Number.isFinite(deps.urlCaptureMs) ? deps.urlCaptureMs : URL_CAPTURE_MS;
+// Dependency resolution shared by the mount and the login-only public subset.
+function loginContext(deps = {}) {
+  return {
+    kimiAuth: deps.kimiAuth || require('../cli-adapters/kimi-auth'),
+    getBrowser: deps.getBrowser
+      || (() => require('../quota-managed-browser').getManagedQuotaBrowser()),
+    loginWaitMs: Number.isFinite(deps.loginWaitMs) ? deps.loginWaitMs : LOGIN_WAIT_MS,
+    urlCaptureMs: Number.isFinite(deps.urlCaptureMs) ? deps.urlCaptureMs : URL_CAPTURE_MS,
+  };
+}
 
-  // GET /api/kimi/auth — current native auth status
-  app.get('/api/kimi/auth', (req, res) => {
-    try {
-      res.json({
-        ok: true,
-        ...authStatusDto(kimiAuth.getKimiAuthStatus()),
-        loginAvailable: kimiAuth.isKimiLoginAvailable(),
-      });
-    } catch (_) {
-      res.status(500).json({ error: 'kimi auth status failed' });
-    }
-  });
-
-  // GET /api/kimi/auth/check — pre-check for session creation / turn admission
-  app.get('/api/kimi/auth/check', (req, res) => {
-    try {
-      const result = kimiAuth.ensureKimiAuth(null);
-      if (result && result.ok) {
-        res.json({ ok: true, source: result.source });
-      } else {
-        res.json({
-          ok: false,
-          code: 'configuration_required',
-          message: result && result.message,
-          loginAvailable: !!(result && result.loginAvailable),
-        });
-      }
-    } catch (_) {
-      res.status(500).json({ ok: false, code: 'check_failed', message: 'Kimi 配置检查失败' });
-    }
-  });
-
-  // PUT /api/kimi/auth — L2: manually set API key (provider-less native auth).
-  app.put('/api/kimi/auth', (req, res) => {
-    try {
-      const apiKey = (req.body.apiKey || '').trim();
-      const baseURL = (req.body.baseURL || '').trim() || undefined;
-      if (!apiKey) {
-        return res.status(400).json({ error: 'apiKey is required' });
-      }
-      const result = kimiAuth.setKimiApiKey(apiKey, { baseURL });
-      res.json({ ok: true, ...result });
-    } catch (_) {
-      res.status(400).json({ error: 'Kimi API Key 配置失败' });
-    }
-  });
-
-  // POST /api/kimi/auth/login — spawn `kimi login` (device-code flow).
-  // When the CLI emits the verification URL we open it in the managed VISIBLE
-  // browser (shared quota profile keeps the vendor login alive); a user who is
-  // already logged in on the web only needs to confirm. The route resolves when
-  // the CLI exits (0 = token stored) or after loginWaitMs.
-  app.post('/api/kimi/auth/login', (req, res) => {
+// The long-blocking login handler, shared by the host capture app and the
+// login-only public mount (the front door forwards this one path).
+function createKimiLoginHandler(deps = {}) {
+  const { kimiAuth, getBrowser, loginWaitMs, urlCaptureMs } = loginContext(deps);
+  return function kimiLogin(req, res) {
     try {
       if (!kimiAuth.isKimiLoginAvailable()) {
         return res.status(400).json({
@@ -167,7 +122,72 @@ function mountKimiAuthRoutes(app, deps = {}) {
     } catch (_) {
       res.status(500).json({ error: 'kimi login failed' });
     }
-  });
+  };
 }
 
-module.exports = { mountKimiAuthRoutes };
+function mountKimiAuthRoutes(app, deps = {}) {
+  assertApp(app);
+  const { kimiAuth } = loginContext(deps);
+
+  // GET /api/kimi/auth — current native auth status
+  app.get('/api/kimi/auth', (req, res) => {
+    try {
+      res.json({
+        ok: true,
+        ...authStatusDto(kimiAuth.getKimiAuthStatus()),
+        loginAvailable: kimiAuth.isKimiLoginAvailable(),
+      });
+    } catch (_) {
+      res.status(500).json({ error: 'kimi auth status failed' });
+    }
+  });
+
+  // GET /api/kimi/auth/check — pre-check for session creation / turn admission
+  app.get('/api/kimi/auth/check', (req, res) => {
+    try {
+      const result = kimiAuth.ensureKimiAuth(null);
+      if (result && result.ok) {
+        res.json({ ok: true, source: result.source });
+      } else {
+        res.json({
+          ok: false,
+          code: 'configuration_required',
+          message: result && result.message,
+          loginAvailable: !!(result && result.loginAvailable),
+        });
+      }
+    } catch (_) {
+      res.status(500).json({ ok: false, code: 'check_failed', message: 'Kimi 配置检查失败' });
+    }
+  });
+
+  // PUT /api/kimi/auth — L2: manually set API key (provider-less native auth).
+  app.put('/api/kimi/auth', (req, res) => {
+    try {
+      const apiKey = (req.body.apiKey || '').trim();
+      const baseURL = (req.body.baseURL || '').trim() || undefined;
+      if (!apiKey) {
+        return res.status(400).json({ error: 'apiKey is required' });
+      }
+      const result = kimiAuth.setKimiApiKey(apiKey, { baseURL });
+      res.json({ ok: true, ...result });
+    } catch (_) {
+      res.status(400).json({ error: 'Kimi API Key 配置失败' });
+    }
+  });
+
+  // POST /api/kimi/auth/login — spawn `kimi login` (device-code flow). Blocking
+  // (up to 5 min), so it is mounted here for the host capture app and re-mounted
+  // publicly by `mountKimiAuthLoginRoute`; the front door forwards it.
+  app.post('/api/kimi/auth/login', createKimiLoginHandler(deps));
+}
+
+// Public login-only subset: `POST /api/kimi/auth/login` stays in Node (it
+// blocks up to five minutes on the kimi login child). The front door forwards
+// this exact path — and its automatic OPTIONS — to the real Express app.
+function mountKimiAuthLoginRoute(app, deps = {}) {
+  assertApp(app);
+  app.post('/api/kimi/auth/login', createKimiLoginHandler(deps));
+}
+
+module.exports = { mountKimiAuthRoutes, mountKimiAuthLoginRoute };

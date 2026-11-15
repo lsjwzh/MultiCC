@@ -163,36 +163,4 @@ function createChannelSubscriptions({ file, now = Date.now, idFactory, logger = 
   return { list: view, replace, upsert, remove, hasEnabled, dispatch, test, reload: load, stop: stopUsage };
 }
 
-// 路由挂在推送运行时的 mountRoutes 里（同一套 route() 守卫）。otherChannels 给「只开了
-// 插件渠道」的提示用：插件自身故障只能靠别的渠道报（方案 6.4）。
-function mountChannelSubscriptionRoutes(app, store, route, otherChannels) {
-  const payload = () => ({
-    subscriptions: store.list(),
-    categories: [...registry.CATEGORIES],
-    defaults: [...registry.DEFAULT_CATEGORIES],
-    otherChannels: otherChannels(),
-  });
-  const handle = work => route(async (req, res) => {
-    try {
-      await work(req);
-      return res.json(payload());
-    } catch (error) {
-      if (!(error instanceof ChannelSubscriptionError)) throw error;
-      return res.status(error.status).json({ error: error.message, code: error.code });
-    }
-  });
-  app.get('/api/push/channel-subscriptions', handle(async () => {}));
-  app.put('/api/push/channel-subscriptions', handle(async req => store.replace(req.body && req.body.subscriptions)));
-  app.post('/api/push/channel-subscriptions', handle(async req => store.upsert(req.body || {})));
-  app.delete('/api/push/channel-subscriptions/:id', handle(async req => store.remove(String(req.params.id))));
-  app.post('/api/push/test-channel', route(async (req, res) => {
-    try {
-      return res.json(await store.test(req.body || {}));
-    } catch (error) {
-      if (!(error instanceof ChannelSubscriptionError)) throw error;
-      return res.status(error.status).json({ error: error.message, code: error.code });
-    }
-  }));
-}
-
-module.exports = { createChannelSubscriptions, mountChannelSubscriptionRoutes, ChannelSubscriptionError, MAX_SUBSCRIPTIONS };
+module.exports = { createChannelSubscriptions, ChannelSubscriptionError, MAX_SUBSCRIPTIONS };

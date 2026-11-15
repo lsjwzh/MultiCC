@@ -436,20 +436,17 @@ test('annotation-live hands remote-screen shots to the forwarding layer without 
   fs.mkdirSync(rs.DIR, { recursive: true });
   const shot = path.join(rs.DIR, 'shot-2.png');
   fs.writeFileSync(shot, 'old');
-  const live = require('../src/annotation-live');
-  const app = express();
-  app.use(express.json());
-  live.mount(app);
-  const server = http.createServer(app);
-  const port = await listen(server);
-  t.after(() => new Promise(resolve => { server.closeAllConnections?.(); server.close(() => resolve()); }));
+  const { createEventsRuntime } = require('../src/routes/events-host');
+  // 公开的 /api/annotation-live 已由 Rust 前门独占；这条用例守的是宿主端口
+  // 那一段：内置 remote-screen 处理器不看 annotation-live.json，直接转发。
+  const host = createEventsRuntime({ isLocal: () => true });
 
-  const response = await fetch(`http://127.0.0.1:${port}/api/annotation-live`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sessionId: 's', src: shot, width: 1470, height: 956, kind: 'point', a: { x: 3, y: 4 } }),
+  const value = await host.handle({
+    op: 'annotation-relay',
+    // 前门归一化后的 DTO（b 缺省补 null，数字已穿过 Number 转换）。
+    payload: { sessionId: 's', src: shot, width: 1470, height: 956, kind: 'point', a: { x: 3, y: 4 }, b: null },
   });
-  const body = await response.json();
-  assert.deepEqual(body, { ok: true, relayed: 1, results: [{ ok: true, refresh: true, text: '已执行：point', received: {
+  assert.deepEqual(value, { relayed: 1, results: [{ ok: true, refresh: true, text: '已执行：point', received: {
     sessionId: 's', src: shot, width: 1470, height: 956, kind: 'point', a: { x: 3, y: 4 }, b: null } }] });
 });
 

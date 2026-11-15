@@ -835,7 +835,9 @@ fn path_matching_claims_case_insensitively_and_one_trailing_slash() {
         ("GET", "/api/push/vapid-key/extra"),
         ("GET", "/API/push/vapid-key"),
         ("GET", "/api/push/vapid-key//"),
-        ("POST", "/api/settings/power"),
+        // host-read only registers the GET; `POST /api/settings/power` itself now
+        // belongs to the host-ops cluster, so use a path nobody claims.
+        ("POST", "/api/settings/power/extra/segment"),
     ] {
         let response = gateway.request(method, url);
         assert_eq!(response.status, 200, "{method} {url}: {}", response.body);

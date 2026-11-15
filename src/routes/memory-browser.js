@@ -48,12 +48,6 @@ function assertMemoryBrowserDeps(deps) {
   return deps;
 }
 
-function assertAppMethod(app, method) {
-  if (!app || typeof app[method] !== 'function') {
-    throw new TypeError(`Express app.${method} is required`);
-  }
-}
-
 function publicFailure(prefix, error) {
   const fallback = `${prefix} failed`;
   const message = error && typeof error.message === 'string'
@@ -716,7 +710,7 @@ function createMemoryBrowserRoutes(rawDeps) {
     }
   }
 
-  function writeMemoryFile(target, content) {
+  function writeMemoryFileAtomic(target, content) {
     if (typeof deps.atomicWriteText === 'function') {
       return deps.atomicWriteText(target, content, { mode: 0o600, dirMode: 0o700 });
     }
@@ -751,135 +745,95 @@ function createMemoryBrowserRoutes(rawDeps) {
     } catch (_) {}
   }
 
-  function mountRoutes(app) {
-    for (const method of ['get', 'put', 'delete']) assertAppMethod(app, method);
+  // ── host-port file operations (POST /api/__host/docs-memory) ──
+  // The four public routes are answered by the Rust front door. The traversal
+  // verdict (lexical shape + containment + realpath ancestor) is decided in
+  // native/core/src/docs_memory_routes.rs over `pathFacts`; every operation
+  // below re-resolves `rel` through the same `resolveMemoryFilePath` before it
+  // touches the filesystem, so a caller that skips the verdict still cannot
+  // read or write outside the store.
 
-    app.get('/api/memory/graph', (req, res) => {
-      const startedAt = deps.now();
-      const dirId = req.query.dirId ? String(req.query.dirId) : 'all';
-      let data;
-      try {
-        data = buildMemoryGraph(dirId);
-      } catch (error) {
-        return res.status(500).json({ error: publicFailure('graph build', error) });
+  function pathFacts(rel) {
+    const resolved = path.resolve(root, String(rel == null ? '' : rel));
+    const storeRealRoot = realRoot();
+    let ancestorReal = null;
+    if (storeRealRoot) {
+      let cursor = resolved;
+      while (!fs.existsSync(cursor)) {
+        const parent = path.dirname(cursor);
+        if (parent === cursor || !isInside(root, parent)) { cursor = null; break; }
+        cursor = parent;
       }
-      return res.json({
-        nodes: data.nodes,
-        edges: data.edges,
-        meta: {
-          dirId,
-          projects: data.projects,
-          nodeCount: data.nodes.length,
-          edgeCount: data.edges.length,
-          truncated: data.truncated,
-          maxNodes: maxGraphNodes,
-          durationMs: deps.now() - startedAt,
-        },
-      });
-    });
+      if (cursor) {
+        try { ancestorReal = fs.realpathSync(cursor); } catch (_) { ancestorReal = null; }
+      }
+    }
+    return {
+      root,
+      resolved,
+      rootReal: storeRealRoot,
+      ancestorReal,
+      exists: fs.existsSync(resolved),
+      parentExists: fs.existsSync(path.dirname(resolved)),
+      name: path.basename(resolved),
+    };
+  }
 
-    app.get('/api/memory/tree', (req, res) => {
-      const startedAt = deps.now();
-      let data;
-      try {
-        data = buildMemoryTree();
-      } catch (error) {
-        return res.status(500).json({ error: publicFailure('tree build', error) });
-      }
-      data.meta.durationMs = deps.now() - startedAt;
-      return res.json(data);
-    });
+  function readMemoryFile(rel) {
+    const abs = resolveMemoryFilePath(rel);
+    if (!abs) return { valid: false };
+    if (!fs.existsSync(abs)) return { valid: true, exists: false, abs };
+    try {
+      const content = fs.readFileSync(abs, 'utf8');
+      let mtime = null;
+      try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
+      return { valid: true, exists: true, abs, name: path.basename(abs), content, mtime };
+    } catch (error) {
+      return {
+        valid: true, exists: true, abs, name: path.basename(abs),
+        error: publicFailure('read', error),
+      };
+    }
+  }
 
-    app.get('/api/memory/file', (req, res) => {
-      const rel = req.query.rel ? String(req.query.rel) : '';
-      const abs = resolveMemoryFilePath(rel);
-      if (!abs) {
-        return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
-      }
-      if (!fs.existsSync(abs)) return res.status(404).json({ error: 'file not found' });
-      try {
-        const content = fs.readFileSync(abs, 'utf8');
-        let mtime = null;
-        try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
-        return res.json({
-          rel,
-          path: abs,
-          name: path.basename(abs),
-          content,
-          size: Buffer.byteLength(content),
-          tokens: estimateMemTokens(content),
-          mtime,
-        });
-      } catch (error) {
-        return res.status(500).json({ error: publicFailure('read', error) });
-      }
-    });
-
-    app.put('/api/memory/file', (req, res) => {
-      const body = req.body || {};
-      const rel = body.rel;
-      const content = body.content;
-      if (typeof content !== 'string') {
-        return res.status(400).json({ error: 'content (string) required' });
-      }
-      if (content.length > MEMORY_FILE_MAX_CHARS) {
-        return res.status(413).json({ error: 'content too long (max 200000 chars)' });
-      }
-      const abs = resolveMemoryFilePath(rel);
-      if (!abs) {
-        return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
-      }
-      if (!fs.existsSync(path.dirname(abs))) {
-        return res.status(400).json({ error: 'parent folder does not exist' });
-      }
-      try {
-        writeMemoryFile(abs, content);
-        let mtime = null;
-        try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
-        broadcastMemoryChange(rel);
-        return res.json({
-          ok: true,
-          rel,
-          path: abs,
-          size: Buffer.byteLength(content),
-          tokens: estimateMemTokens(content),
-          mtime,
-        });
-      } catch (error) {
-        return res.status(500).json({ error: publicFailure('write', error) });
-      }
-    });
-
-    app.delete('/api/memory/file', (req, res) => {
-      const rel = (req.body && req.body.rel) || req.query.rel;
-      const abs = resolveMemoryFilePath(rel);
-      if (!abs) {
-        return res.status(400).json({ error: 'invalid rel (must be a *.md under the memory store)' });
-      }
-      try {
-        fs.unlinkSync(abs);
-      } catch (error) {
-        if (error.code !== 'ENOENT') {
-          return res.status(500).json({ error: publicFailure('delete', error) });
-        }
-      }
+  function writeMemoryFile(rel, content) {
+    const abs = resolveMemoryFilePath(rel);
+    if (!abs) return { valid: false };
+    if (!fs.existsSync(path.dirname(abs))) return { valid: true, parentMissing: true, abs };
+    try {
+      writeMemoryFileAtomic(abs, content);
+      let mtime = null;
+      try { mtime = fs.statSync(abs).mtime.toISOString(); } catch (_) {}
       broadcastMemoryChange(rel);
-      return res.json({ ok: true });
-    });
+      return { valid: true, parentMissing: false, abs, mtime };
+    } catch (error) {
+      return { valid: true, parentMissing: false, abs, error: publicFailure('write', error) };
+    }
+  }
+
+  function deleteMemoryFile(rel) {
+    const abs = resolveMemoryFilePath(rel);
+    if (!abs) return { valid: false };
+    try {
+      fs.unlinkSync(abs);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        return { valid: true, error: publicFailure('delete', error) };
+      }
+    }
+    broadcastMemoryChange(rel);
+    return { valid: true };
   }
 
   return Object.freeze({
     buildMemoryGraph,
     buildMemoryTree,
-    mountRoutes,
     resolveMemoryFilePath,
+    pathFacts,
+    readMemoryFile,
+    writeMemoryFile,
+    deleteMemoryFile,
   });
-}
-
-function mountMemoryBrowserRoutes(app, deps) {
-  const routes = createMemoryBrowserRoutes(deps);
-  routes.mountRoutes(app);
-  return routes;
 }
 
 module.exports = {
@@ -890,7 +844,6 @@ module.exports = {
   createMemoryBrowserRoutes,
   estimateMemTokens,
   memNodeKind,
-  mountMemoryBrowserRoutes,
   parseMemoryMarkdown,
   publicFailure,
 };

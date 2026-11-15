@@ -64,35 +64,44 @@ function createTaskSearchRoutes({ getBoard, messages = null, logger = console, s
     throw new TypeError('task-search routes require a getBoard() port');
   }
 
+  // 空查询与 `query_too_long` 的判定在 Rust 侧（native/core/src/task_routes.rs）
+  // ——它们必须在读板块之前发生，和退休的处理器同序。这里只保留检索本身。
+  // 返回 `{ status, body }`，宿主端口原样交给 Rust。
+  function searchBoard({ query, limit, dirId = null, dirIds = null, statuses = null, minScore = 0 }) {
+    let board = null;
+    try {
+      board = getBoard();
+    } catch (error) {
+      logger.warn?.(`task_search_board_failed: ${error.message}`);
+      return { status: 503, body: { error: 'task_board_unavailable' } };
+    }
+    if (!board || typeof board.tasks !== 'object') {
+      return { status: 503, body: { error: 'task_board_unavailable' } };
+    }
+    const options = { limit, dirId, dirIds, statuses, minScore };
+    const respond = results => ({ status: 200, body: { ok: true, query, count: results.length, results } });
+    const fail = () => ({ status: 503, body: { error: 'task_search_unavailable' } });
+    try {
+      const results = searchTasks(board, query, options);
+      return results && typeof results.then === 'function' ? results.then(respond, fail) : respond(results);
+    } catch (_) { return fail(); }
+  }
+
+  /** The retired handler, kept for callers/tests that still hand it a fake req. */
   function handleSearch(req, res) {
     const query = String(req.query?.q ?? req.query?.query ?? '').trim();
     if (!query) return res.json({ ok: true, query: '', count: 0, results: [] });
     if (query.length > MAX_QUERY_CHARS) {
       return res.status(400).json({ error: 'query_too_long', maxLength: MAX_QUERY_CHARS });
     }
-    let board = null;
-    try {
-      board = getBoard();
-    } catch (error) {
-      logger.warn?.(`task_search_board_failed: ${error.message}`);
-      return res.status(503).json({ error: 'task_board_unavailable' });
-    }
-    if (!board || typeof board.tasks !== 'object') {
-      return res.status(503).json({ error: 'task_board_unavailable' });
-    }
-    const options = {
+    return Promise.resolve(searchBoard({
+      query,
       limit: clampLimit(req.query?.limit),
       dirId: String(req.query?.dirId || '').trim() || null,
       dirIds: csv(req.query?.dirIds),
       statuses: csv(req.query?.statuses),
       minScore: Number(req.query?.minScore) || 0,
-    };
-    const respond = results => res.json({ ok: true, query, count: results.length, results });
-    const fail = () => res.status(503).json({ error: 'task_search_unavailable' });
-    try {
-      const results = searchTasks(board, query, options);
-      return results && typeof results.then === 'function' ? results.then(respond, fail) : respond(results);
-    } catch (_) { return fail(); }
+    })).then(result => res.status(result.status).json(result.body));
   }
 
   // The message corpus is the whole conversation, so a result is a *session* plus
@@ -103,46 +112,30 @@ function createTaskSearchRoutes({ getBoard, messages = null, logger = console, s
   // `warming` is reported rather than hidden: while the first sweep is still
   // walking the corpus a short result list is a partial answer, and a client that
   // cannot tell the two apart would cache "no hits" for a query that has them.
-  function handleMessageSearch(req, res) {
-    const query = String(req.query?.q ?? req.query?.query ?? '').trim();
-    // Resolving the runtime is itself a step that can fail (it opens the index),
-    // and a route that cannot reach its index is "unavailable", not "broken": the
-    // caller gets the same 503 as an unwired host rather than an Express 500.
+  // Resolving the runtime is itself a step that can fail (it opens the index),
+  // and a route that cannot reach its index is "unavailable", not "broken".
+  // The front door asks this first so a 503 still wins over an empty query,
+  // exactly like the retired handler's order.
+  function messageScope() {
     let runtime = null;
     try {
       runtime = typeof messages === 'function' ? messages() : messages;
     } catch (error) {
       logger.warn?.(`message_search_unavailable: ${error.message}`);
     }
-    if (!runtime || typeof runtime.findMessages !== 'function') {
-      return res.status(503).json({ error: 'message_search_unavailable' });
-    }
-    const warming = !!runtime.status?.().warming;
-    if (!query) return res.json({ ok: true, query: '', count: 0, results: [], warming });
-    if (query.length > MAX_QUERY_CHARS) {
-      return res.status(400).json({ error: 'query_too_long', maxLength: MAX_QUERY_CHARS });
-    }
+    if (!runtime || typeof runtime.findMessages !== 'function') return { unavailable: true };
+    return { warming: !!runtime.status?.().warming };
+  }
+
+  // 查询校验（空串/超长/过滤键超长）在 Rust 侧完成；这里只查索引并把
+  // 命中映射成会话行，失败统一 503 message_search_unavailable。
+  function findMessages({ text, limit, kinds = null, refIds = null, dirId = null, taskId = null }) {
     try {
-      // Only the two conversation roles are indexed, so the filter is expressed in
-      // the caller's words and unknown ones are dropped by the index's own filter.
-      const kinds = csv(req.query?.role) || csv(req.query?.kinds);
-      const refIds = csv(req.query?.session) || csv(req.query?.sessions);
-      // Scope filters for a search that must stay inside one project directory or
-      // one task. Both are optional; absent means "the whole corpus", exactly as
-      // before. They narrow the SQL query, not the returned rows.
-      const dirId = String(req.query?.dirId || '').trim();
-      const taskId = String(req.query?.taskId || '').trim();
-      if (dirId.length > MAX_FILTER_CHARS || taskId.length > MAX_FILTER_CHARS) {
-        return res.status(400).json({ error: 'filter_too_long', maxLength: MAX_FILTER_CHARS });
-      }
-      const found = runtime.findMessages({
-        text: query,
-        limit: clampLimit(req.query?.limit),
-        ...(kinds ? { kinds } : {}),
-        ...(refIds ? { refIds } : {}),
-        ...(dirId ? { dirId } : {}),
-        ...(taskId ? { taskId } : {}),
-      });
+      const runtime = typeof messages === 'function' ? messages() : messages;
+      if (!runtime || typeof runtime.findMessages !== 'function') throw new Error('message_search_unavailable');
+      const found = runtime.findMessages({ text, limit,
+        ...(kinds ? { kinds } : {}), ...(refIds ? { refIds } : {}),
+        ...(dirId ? { dirId } : {}), ...(taskId ? { taskId } : {}) });
       // Best-effort: a board that cannot be read costs the hits their task ids (the
       // client then shows fewer rows), never the whole answer.
       let bySession = null;
@@ -152,39 +145,51 @@ function createTaskSearchRoutes({ getBoard, messages = null, logger = console, s
       } catch (error) {
         logger.warn?.(`message_search_board_failed: ${error.message}`);
       }
-      return res.json({
-        ok: true,
-        query,
-        count: found.length,
-        mode: 'message',
-        warming,
-        results: found.map(hit => ({
-          sessionId: hit.sessionId,
-          messageId: hit.messageId,
-          kind: hit.kind,
-          updatedAt: hit.updatedAt,
-          score: hit.score,
-          taskIds: bySession ? (bySession.get(String(hit.sessionId || '')) || []) : [],
-          // Same shape the board route returns — a window plus highlight ranges — so
-          // a client renders message hits with the snippet renderer it already has.
-          snippet: hit.snippet,
-        })),
-      });
+      return found.map(hit => ({
+        sessionId: hit.sessionId,
+        messageId: hit.messageId,
+        kind: hit.kind,
+        updatedAt: hit.updatedAt,
+        score: hit.score,
+        taskIds: bySession ? (bySession.get(String(hit.sessionId || '')) || []) : [],
+        // Same shape the board route returns — a window plus highlight ranges — so
+        // a client renders message hits with the snippet renderer it already has.
+        snippet: hit.snippet,
+      }));
     } catch (error) {
       logger.warn?.(`message_search_failed: ${error.message}`);
+      throw Object.assign(new Error('message_search_unavailable'), { code: 'message_search_unavailable', status: 503 });
+    }
+  }
+
+  /** The retired handler, kept for callers/tests that still hand it a fake req. */
+  function handleMessageSearch(req, res) {
+    const query = String(req.query?.q ?? req.query?.query ?? '').trim();
+    const scope = messageScope();
+    if (scope.unavailable) return res.status(503).json({ error: 'message_search_unavailable' });
+    const warming = scope.warming === true;
+    if (!query) return res.json({ ok: true, query: '', count: 0, results: [], warming });
+    if (query.length > MAX_QUERY_CHARS) {
+      return res.status(400).json({ error: 'query_too_long', maxLength: MAX_QUERY_CHARS });
+    }
+    try {
+      const kinds = csv(req.query?.role) || csv(req.query?.kinds);
+      const refIds = csv(req.query?.session) || csv(req.query?.sessions);
+      const dirId = String(req.query?.dirId || '').trim();
+      const taskId = String(req.query?.taskId || '').trim();
+      if (dirId.length > MAX_FILTER_CHARS || taskId.length > MAX_FILTER_CHARS) {
+        return res.status(400).json({ error: 'filter_too_long', maxLength: MAX_FILTER_CHARS });
+      }
+      const found = findMessages({ text: query, limit: clampLimit(req.query?.limit), kinds, refIds, dirId, taskId });
+      return res.json({ ok: true, query, count: found.length, mode: 'message', warming, results: found });
+    } catch (error) {
       return res.status(503).json({ error: 'message_search_unavailable' });
     }
   }
 
-  function mountRoutes(app) {
-    if (!app || typeof app.get !== 'function') {
-      throw new TypeError('task-search routes require Express app.get');
-    }
-    app.get('/api/task-board/search', handleSearch);
-    app.get('/api/search/messages', handleMessageSearch);
-  }
-
-  return { mountRoutes, handleSearch, handleMessageSearch };
+  // 两条 GET 已由 Rust 前门独占（native/gateway/src/app/task_routes.rs）；
+  // 这里只留回环宿主端口用的检索入口。
+  return { searchBoard, messageScope, findMessages, handleSearch, handleMessageSearch };
 }
 
 module.exports = {

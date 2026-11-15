@@ -48,45 +48,65 @@ function resolveExecution(deps, taskId) {
   return legacy;
 }
 
+// 退休处理器仍在的原样组合：eligibility 与写入各走一次端口，异常形状与旧实现
+// 逐字一致（400/501/404/409/409）。留着是给测试与别的调用方一个入口。
 function markTaskAchieved(deps, rawTaskId) {
-  const taskId = typeof rawTaskId === 'string' ? rawTaskId.trim() : '';
-  if (!taskId) throw fail(400, 'task_id_required', 'taskId is required');
-  if (typeof deps.setTaskState !== 'function') {
-    throw fail(501, 'task_state_unavailable', 'task state writes unavailable');
-  }
-  const found = resolveExecution(deps, taskId);
-  if (!found) throw fail(404, 'task_not_found', '任务不存在');
-  const { sessionId, record } = found;
-  const task = deps.getTaskState(record);
-  // 只有「需要交互」才有这件事可做；达成目标/没有子状态都不适用。
-  if (task.goalState !== GOAL_STATES.interact || !isTerminalLetter(task.classifyState)) {
+  const facts = markTaskAchievedFacts(deps, rawTaskId);
+  if (facts.unavailable) throw fail(501, 'task_state_unavailable', 'task state writes unavailable');
+  if (!facts.found) throw fail(404, 'task_not_found', '任务不存在');
+  if (facts.goalState !== GOAL_STATES.interact || !isTerminalLetter(facts.classifyState)) {
     throw fail(409, 'mark_achieved_not_applicable', '只有需要交互的任务才能标记达成目标');
   }
-  // 正在跑的轮次不接受人工终局判定 —— 与 mark-task-done 同一条规则。
+  if (facts.streaming) throw fail(409, 'task_streaming', '任务正在执行，无法标记达成目标');
+  const written = markTaskAchievedWrite(deps, typeof rawTaskId === 'string' ? rawTaskId.trim() : '', facts.sessionId);
+  return { ok: true, taskId: written.taskId, goalState: GOAL_STATES.achieved };
+}
+
+// Express 的挂载点退休了：`POST /api/air/tasks/mark-achieved` 由 Rust 前门独占
+// （native/gateway/src/app/task_routes.rs）。eligibility 阶梯（404 → 409 不适用
+// → 409 正在执行）在 native/core/src/task_routes.rs，这里只保留它需要探的
+// Node 事实与真正落状态的 writer。宿主端口（src/routes/task-routes-host.js）
+// 依次调用这两个端口，中间由 Rust 判定。
+//
+// `markTaskAchievedFacts` 返回：
+//   { unavailable: true }                       deps 没有 setTaskState → 501
+//   { found: false }                            → 404 task_not_found
+//   { found: true, goalState, classifyState, streaming, sessionId }
+//
+// 退休处理器里 `fail()` 的 500 兜底由宿主端口负责（见 host 的 reply 包装）。
+function markTaskAchievedFacts(deps, rawTaskId) {
+  const taskId = typeof rawTaskId === 'string' ? rawTaskId.trim() : '';
+  if (!taskId) throw fail(400, 'task_id_required', 'taskId is required');
+  if (typeof deps.setTaskState !== 'function') return { unavailable: true };
+  const found = resolveExecution(deps, taskId);
+  if (!found) return { found: false, sessionId: null };
+  const { sessionId, record } = found;
+  const task = deps.getTaskState(record);
   const chat = deps.chatSessions && typeof deps.chatSessions.get === 'function'
     ? deps.chatSessions.get(sessionId) : null;
-  if (chat && chat.isStreaming) {
-    throw fail(409, 'task_streaming', '任务正在执行，无法标记达成目标');
-  }
-  // 同一个 writer：server.js 的 setTaskState（经 session-admin 注入）。落盘、chat
-  // 广播、workspace 广播都在里面，别在这里补第二套。
+  return {
+    found: true,
+    goalState: task.goalState,
+    classifyState: task.classifyState,
+    streaming: !!(chat && chat.isStreaming),
+    sessionId,
+  };
+}
+
+// The one writer (server.js's setTaskState, injected through session-admin):
+// persistence, chat broadcast and workspace broadcast all live inside it.
+function markTaskAchievedWrite(deps, taskId, sessionId) {
+  if (typeof deps.setTaskState !== 'function') throw fail(501, 'task_state_unavailable', 'task state writes unavailable');
   deps.setTaskState(sessionId, {
     goalState: GOAL_STATES.achieved, goalStateManualAt: Date.now(),
   });
-  return { ok: true, taskId, goalState: GOAL_STATES.achieved };
+  return { ok: true, taskId };
 }
 
-// `target` 是 express Router（生产）或 app（测试）—— 两者都暴露 post。
-function mountTaskGoalRoutes(target, deps) {
-  target.post('/api/air/tasks/mark-achieved', (req, res) => {
-    try { res.json(markTaskAchieved(deps, (req.body || {}).taskId)); }
-    catch (error) {
-      res.status(error.status || 500).json({
-        ok: false, code: error.code || 'mark_achieved_failed',
-        message: error.status ? error.message : 'Request failed',
-      });
-    }
-  });
-}
-
-module.exports = { EXCLUDED_TYPES, resolveExecution, markTaskAchieved, mountTaskGoalRoutes };
+module.exports = {
+  EXCLUDED_TYPES,
+  resolveExecution,
+  markTaskAchieved,
+  markTaskAchievedFacts,
+  markTaskAchievedWrite,
+};

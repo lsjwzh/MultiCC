@@ -494,13 +494,22 @@ fn express_options_answers_are_preserved() {
         "/api/grok/models",
         "/api/commandcode/models",
         "/api/codebuddy/models",
-        "/api/providers/main/models",
         "/api/codex/models",
     ] {
         let response = gateway.exchange("OPTIONS", path, None);
         assert_eq!(response.status, 200, "{path}");
         assert_eq!(response.header("allow"), Some("GET,HEAD"), "{path}");
     }
+    // `/api/providers/:id/models` shares its three-segment shape with providers
+    // management's `PATCH|DELETE /api/providers/:appType/:id`. Express unions the
+    // whole app (GET is registered first in server.js), so the public `Allow` is
+    // the merged list, not just this cluster's share.
+    let provider_models = gateway.exchange("OPTIONS", "/api/providers/main/models", None);
+    assert_eq!(provider_models.status, 200);
+    assert_eq!(
+        provider_models.header("allow"),
+        Some("GET,HEAD,PATCH,DELETE")
+    );
     let sync = gateway.exchange("OPTIONS", "/api/codex/models/sync", None);
     assert_eq!(sync.status, 200);
     assert_eq!(sync.header("allow"), Some("POST"));

@@ -166,30 +166,4 @@ function createBarkDevices({ file, getLegacyUrl = () => '', write = atomicWriteJ
   return { list, add, update, remove, send, hasEnabled: () => entries().some(d => d.enabled) };
 }
 
-function mountBarkDeviceRoutes(app, devices, route) {
-  const handle = fn => route(async (req, res) => {
-    try { await fn(req, res); }
-    catch (error) {
-      if (!(error instanceof BarkDeviceError)) throw error;
-      res.status(error.status).json({ error: error.code });
-    }
-  });
-  app.get('/api/push/bark-devices', handle(async (_req, res) => res.json({ devices: devices.list() })));
-  app.post('/api/push/bark-devices', handle(async (req, res) => {
-    const input = req.body || {};
-    if (input.action === 'add') {
-      const id = devices.add(input);
-      return res.json({ ok: true, id, devices: devices.list() });
-    }
-    if (input.action === 'update') devices.update(input.id, input);
-    else if (input.action === 'remove') devices.remove(input.id);
-    else if (input.action === 'test') {
-      if (typeof input.id !== 'string' || !input.id) throw new BarkDeviceError('device_not_found', 404);
-      const result = await devices.send('MultiCC 测试提醒', '收到这条通知，说明这台手机可以接收 MultiCC 提醒。', '', input.id);
-      return res.status(result.ok ? 200 : 502).json({ ...result, ...(result.ok ? {} : { error: 'bark_test_failed' }) });
-    } else throw new BarkDeviceError('invalid_action');
-    return res.json({ ok: true, devices: devices.list() });
-  }));
-}
-
-module.exports = { createBarkDevices, mountBarkDeviceRoutes, normalizeBarkUrl, deliverBark, BarkDeviceError };
+module.exports = { createBarkDevices, normalizeBarkUrl, deliverBark, BarkDeviceError };

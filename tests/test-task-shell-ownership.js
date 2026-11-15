@@ -1,14 +1,13 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const express = require('express');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { fixture } = require('./helpers/task-shell');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
-const { mountTaskShellRoutes } = require('../src/task-shell/routes');
+const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 const { createShellWorkspaceHost, sharedWorkspace } = require('../src/task-shell/workspace');
 const { verifySnapshot } = require('../src/task-shell/context');
 const { createTaskShellHost } = require('../src/task-shell/host');
@@ -127,15 +126,12 @@ test('board reads do not move the cursor; all execution controls reject conversa
   const f = fixture(t); const task = f.runtime.adopt(f.a.id, 'a');
   f.histories.set('a', [{ id: 'u', taskId: task.id, role: 'user', content: 'original' }]);
   const cursor = f.runtime.view(f.a.id).currentTaskId;
-  const app = express(); app.use(express.json()); mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
-  const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
-  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  const base = `http://127.0.0.1:${server.address().port}/api/task-shell-tasks/${task.id}`;
-  const entry = await (await fetch(base)).json();
+  const { ok, fail } = mountHost(fakeApp(), { getRuntime: () => f.runtime });
+  const entry = await ok({ op: 'task-entry', taskId: task.id });
   assert.equal(entry.readOnly, true); assert.equal(entry.messages.length, 1);
   for (const intent of ['work', 'answer', 'steer', 'cancel']) {
-    const response = await fetch(`${base}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input(intent, { intent })) });
-    assert.equal(response.status, 409); assert.equal((await response.json()).code, 'task_board_read_only');
+    const error = await fail({ op: 'task-message', taskId: task.id, body: input(intent, { intent }) });
+    assert.equal(error.status, 409); assert.equal(error.code, 'task_board_read_only');
   }
   assert.equal(f.runtime.view(f.a.id).currentTaskId, cursor); assert.equal(f.sends.length, 0);
 });

@@ -78,8 +78,16 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
   }
   async function start(enabled = '1') {
     const port = await freePort(); base = `http://127.0.0.1:${port}`;
-    server = spawn(process.execPath, ['server.js'], {
-      cwd: path.join(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: token,
+    // 任务面的公开路由（task-board / task-graph / search / task-attribution /
+    // mark-achieved）现在归 Rust 前门，裸 `node server.js` 不再挂它们；和
+    // test-task-first-isolated.js 一样从网关入口起宿主。
+    const repoRoot = path.join(__dirname, '..');
+    const addon = process.env.MULTICC_RUST_ADDON || path.join(
+      process.env.MULTICC_RUST_PREBUILT_DIR || path.join(repoRoot, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+    const gateway = path.join(path.dirname(addon), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+    server = spawn(gateway, ['serve', '--cwd', repoRoot, '--node', process.execPath, 'server.js'], {
+      cwd: repoRoot, env: { ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: token,
         NODE_OPTIONS: '--require ' + preload, MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS: '0', MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'), MULTICC_TASK_SHELLS: enabled,
         MULTICC_ENV_FILE: path.join(dataDir, '.env'),
         MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100', CODEX_CMD: fake,

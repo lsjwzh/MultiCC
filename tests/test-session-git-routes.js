@@ -1,30 +1,44 @@
 'use strict';
 
+// session/git 的 16 条公开路由现由 Rust 前门独占。Node 只保留宿主事实与
+// 副作用端口，本文件逐 op 约束该端口契约（回环门禁、未知 op、输入/输出形状），
+// 以及仍然留在 Node 的运行态行为：merge-state 缓存、isWorktreeActive、
+// autoCommitTurn 与两个 git 输出解析器。HTTP 状态码与 DTO 键序由
+// native/gateway/tests/session_git.rs 覆盖。
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles, parseCommitFiles } = require('../src/routes/session-git');
+const {
+  createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles, parseCommitFiles,
+} = require('../src/routes/session-git');
+const { HOST_PATH } = require('../src/routes/session-git-host');
 
 function createFakeApp() {
   const routes = new Map();
-  const register = method => (path, handler) => {
-    const key = `${method} ${path}`;
+  const register = method => (routePath, handler) => {
+    const key = `${method} ${routePath}`;
     assert.equal(routes.has(key), false, `route registered only once: ${key}`);
     routes.set(key, handler);
   };
   return { routes, get: register('GET'), post: register('POST') };
 }
 
-async function invoke(handler, { params = {}, query = {}, body = {} } = {}) {
-  const response = { statusCode: 200, body: undefined };
-  const res = {
-    status(code) { response.statusCode = code; return this; },
-    json(value) { response.body = value; return this; },
+function createFakeRes() {
+  return {
+    statusCode: 200,
+    body: undefined,
+    status(code) { this.statusCode = code; return this; },
+    json(value) { this.body = value; return this; },
   };
-  await handler({ params, query, body }, res);
-  return response;
+}
+
+async function callHandler(handler, request = {}) {
+  const res = createFakeRes();
+  await handler({ body: {}, query: {}, params: {}, ...request }, res);
+  return res;
 }
 
 function tick() {
@@ -86,8 +100,9 @@ function createFixture(overrides = {}) {
     existsSync: overrides.existsSync || (() => true),
     now: () => clock,
     random: () => 0,
-    asyncHandler: overrides.asyncHandler || (handler => handler),
+    asyncHandler: handler => handler,
     readFile: overrides.readFile || (async () => Buffer.from('')),
+    isLocalRequest: overrides.isLocalRequest || (() => true),
     logger: {
       log: value => calls.logs.push(value),
       warn: value => calls.warnings.push(value),
@@ -98,57 +113,360 @@ function createFixture(overrides = {}) {
   });
   const app = createFakeApp();
   runtime.mountRoutes(app);
+  async function host(body, request = {}) {
+    const handler = app.routes.get(`POST ${HOST_PATH}`);
+    assert.equal(typeof handler, 'function', 'host route must be mounted');
+    return callHandler(handler, { ...request, body });
+  }
   return {
-    runtime, app, records, directories, terminalSessions, chatSessions, calls,
+    runtime, app, records, directories, terminalSessions, chatSessions, calls, host,
     setClock(value) { clock = value; },
   };
 }
 
-test('mountRoutes installs the Git routes once per app', () => {
+test('mountRoutes installs the host port once per app', () => {
   const fixture = createFixture();
   fixture.runtime.mountRoutes(fixture.app);
   assert.deepEqual(Object.keys(fixture.runtime).sort(), [
     'autoCommitTurn', 'isWorktreeActive', 'mergeStateCached', 'mountRoutes',
   ]);
-  assert.deepEqual([...fixture.app.routes.keys()].sort(), [
-    'GET /api/git/commit-diff',
-    'GET /api/git/commit-files',
-    'GET /api/git/directory-file-diff',
-    'GET /api/git/directory-status',
-    'GET /api/git/log',
-    'GET /api/sessions/:id/diff',
-    'GET /api/sessions/:id/diff/file',
-    'GET /api/sessions/:id/diff/files',
-    'GET /api/sessions/:id/merge-status',
-    'POST /api/sessions/:id/merge',
-    'POST /api/sessions/:id/rebase',
-    'POST /api/sessions/:id/sync',
-  ].sort());
+  assert.deepEqual([...fixture.app.routes.keys()], [`POST ${HOST_PATH}`]);
 });
 
-test('every Git route is registered through the shared async error boundary', () => {
-  let wrapped = 0;
-  createFixture({ asyncHandler: handler => { wrapped += 1; return handler; } });
-  assert.equal(wrapped, 12);
-});
-
-test('production host delegates the complete Git route surface through narrow ports', () => {
+test('production host delegates the route surface to the Rust front door', () => {
   const root = path.join(__dirname, '..');
   const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
   const source = fs.readFileSync(path.join(root, 'src/routes/session-git.js'), 'utf8');
   assert.match(server, /createSessionGitRuntime\s*\(\s*\{/);
   assert.match(server, /sessionGitRuntime\.mountRoutes\(app\)/);
-  assert.doesNotMatch(server, /function\s+(?:sessionWorktreeActive|sessionSyncGate|autoSyncSiblingWorktrees)\b/);
-  for (const route of [
-    '/api/sessions/:id/merge-status', '/api/sessions/:id/diff',
-    '/api/sessions/:id/diff/files', '/api/sessions/:id/diff/file',
-    '/api/git/log', '/api/git/commit-files', '/api/git/commit-diff', '/api/git/directory-status',
-    '/api/sessions/:id/merge', '/api/sessions/:id/sync', '/api/sessions/:id/rebase',
-  ]) {
-    assert.equal(server.includes(route), false, `${route} is no longer inline in the host`);
-    assert.equal(source.includes(route), true, `${route} is owned by the bounded route module`);
-  }
-  assert.doesNotMatch(source, /require\(['"](?:\.\.\/)+server/);
+  assert.match(source, /require\('\.\/session-git-host'\)\.mountSessionGitHostRoute/);
+  // No Express route literals remain in the runtime module.
+  assert.doesNotMatch(source, /app\.get\('\/api\//);
+  assert.doesNotMatch(source, /app\.post\('\/api\//);
+});
+
+test('the host port only answers loopback callers', async () => {
+  const fixture = createFixture({ isLocalRequest: () => false });
+  const response = await fixture.host({ op: 'session', sessionId: 's1' });
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, { error: 'not found' });
+});
+
+test('an unknown host operation is a 400', async () => {
+  const fixture = createFixture();
+  const response = await fixture.host({ op: 'nope' });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body, { error: 'unknown host operation' });
+});
+
+test('session resolves the workspace owner and reports worktree existence', async () => {
+  const records = new Map([
+    ['slot-1', { id: 'slot-1', dirId: 'd1', workspaceOwnerSessionId: 's1' }],
+    ['s1', { id: 's1', dirId: 'd1', branch: 'multicc/s1', worktreePath: '/repo/wt-s1', workspaceState: 'active' }],
+  ]);
+  const fixture = createFixture({ records });
+  const response = await fixture.host({ op: 'session', sessionId: 'slot-1' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body.session, {
+    id: 's1', worktreePath: '/repo/wt-s1', branch: 'multicc/s1', workspaceState: 'active',
+  });
+  assert.deepEqual(response.body.dir, { id: 'd1', path: '/repo', baseBranch: 'main' });
+  assert.equal(response.body.worktreeExists, true);
+
+  assert.deepEqual((await fixture.host({ op: 'session', sessionId: 'missing' })).body,
+    { error: 'session not found' });
+  const noDir = createFixture({ directories: new Map() });
+  assert.deepEqual((await noDir.host({ op: 'session', sessionId: 's1' })).body,
+    { error: 'directory not found' });
+});
+
+test('session reports a missing physical worktree', async () => {
+  const fixture = createFixture({ existsSync: target => target === '/repo' });
+  const response = await fixture.host({ op: 'session', sessionId: 's1' });
+  assert.equal(response.body.worktreeExists, false);
+});
+
+test('lookup reads the raw maps without owner resolution', async () => {
+  const fixture = createFixture();
+  const response = await fixture.host({ op: 'lookup', sessionId: 's1', dirId: 'd1' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body.session, {
+    id: 's1', worktreePath: '/repo/wt-s1', branch: 'multicc/s1',
+  });
+  assert.deepEqual(response.body.dir, { id: 'd1', path: '/repo', baseBranch: 'main' });
+  assert.equal(response.body.sessionWorktreeExists, true);
+  assert.equal(response.body.dirPathExists, true);
+  const none = await fixture.host({ op: 'lookup', sessionId: null, dirId: null });
+  assert.deepEqual(none.body, {
+    session: null, dir: null, sessionWorktreeExists: false, dirPathExists: false,
+  });
+});
+
+test('merge-state serves the cache, fresh bypasses it, and task identity keys it', async () => {
+  let calls = 0;
+  const fixture = createFixture({
+    implementations: {
+      gitWorktreeMergeState: async () => {
+        calls += 1;
+        return { mergeReady: calls > 1, dirty: false, ahead: calls - 1, behind: 0 };
+      },
+    },
+  });
+  const cached = await fixture.host({ op: 'merge-state', sessionId: 's1', refresh: false });
+  assert.deepEqual(cached.body.value, LOADING_MERGE_STATE);
+  await tick();
+  const fresh = await fixture.host({ op: 'merge-state', sessionId: 's1', refresh: true });
+  assert.equal(fresh.body.value.mergeReady, true);
+  assert.equal(calls, 2);
+  assert.deepEqual((await fixture.host({ op: 'merge-state', sessionId: 'missing' })).body,
+    { error: 'session not found' });
+
+  const taskInfo = { dir: fixture.directories.get('d1'), worktreePath: '/repo/wt-t1', branch: 'task/t1', token: 't1' };
+  const task = createFixture({ resolveTaskWorktree: id => (id === 't1' ? taskInfo : null) });
+  // A task identity is not a record key, so the background sweep declines to
+  // compute it: the cache stays "loading" until an explicit fresh read fills it
+  // (the task merge route does exactly that for its broadcast).
+  const pending = await task.host({ op: 'merge-state', taskId: 't1' });
+  assert.equal(pending.statusCode, 200);
+  assert.deepEqual(pending.body.value, LOADING_MERGE_STATE);
+  await tick();
+  assert.deepEqual((await task.host({ op: 'merge-state', taskId: 't1' })).body.value, LOADING_MERGE_STATE);
+  assert.deepEqual(task.calls.mergeState, [], 'the sweep never runs git for an unknown record key');
+  const freshTask = await task.host({ op: 'merge-state', taskId: 't1', refresh: true });
+  assert.equal(freshTask.body.value.mergeReady, true);
+  assert.deepEqual(task.calls.mergeState, [['d1', 't1']], 'identity id is the task token');
+  assert.equal((await task.host({ op: 'merge-state', taskId: 't1' })).body.value.mergeReady, true);
+  assert.deepEqual((await task.host({ op: 'merge-state', taskId: 'gone' })).body,
+    { error: 'task_not_found' });
+});
+
+test('base-branch delegates to the repo actor probe', async () => {
+  const fixture = createFixture();
+  const response = await fixture.host({ op: 'base-branch', dirPath: '/repo' });
+  assert.deepEqual(response.body, { ok: true, baseBranch: 'fallback-main' });
+  assert.deepEqual(fixture.calls.baseBranch, ['/repo']);
+});
+
+test('git runs through the queue with the given options and reports failure facts', async () => {
+  const fixture = createFixture();
+  const ok = await fixture.host({ op: 'git', repo: '/repo', args: ['status', '--porcelain'], maxBuffer: 4096, raw: true });
+  assert.deepEqual(ok.body, { ok: true, stdout: '' });
+  assert.deepEqual(fixture.calls.run[0], {
+    repo: '/repo', args: ['status', '--porcelain'], options: { maxBuffer: 4096, raw: true },
+  });
+
+  const failing = createFixture({
+    implementations: {
+      gitRunQueued: async () => {
+        const error = new Error('Command failed: git diff');
+        error.stderr = 'fatal: bad revision';
+        throw error;
+      },
+    },
+  });
+  const bad = await failing.host({ op: 'git', repo: '/repo', args: ['diff'], maxBuffer: 1024, raw: false });
+  assert.deepEqual(bad.body, {
+    ok: false, stderr: 'fatal: bad revision', message: 'Command failed: git diff', maxBuffer: false,
+  });
+
+  const overflow = createFixture({
+    implementations: {
+      gitRunQueued: async () => {
+        const error = new Error('maxBuffer exceeded');
+        error.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        throw error;
+      },
+    },
+  });
+  const huge = await overflow.host({ op: 'git', repo: '/repo', args: ['show'], maxBuffer: 1024, raw: false });
+  assert.equal(huge.body.maxBuffer, true);
+});
+
+test('read-facts counts the lines of an untracked text file and flags binaries', async () => {
+  const files = new Map([
+    ['/repo/wt-s1/a.txt', Buffer.from('one\ntwo\n')],
+    ['/repo/wt-s1/bin', Buffer.from([0, 1, 2])],
+  ]);
+  const fixture = createFixture({
+    readFile: async target => {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return files.get(target);
+    },
+  });
+  const response = await fixture.host({
+    op: 'read-facts', worktree: '/repo/wt-s1', paths: ['a.txt', 'bin', 'missing'],
+  });
+  assert.deepEqual(response.body.facts, [
+    { path: 'a.txt', additions: 2, binary: false },
+    { path: 'bin', additions: 0, binary: true },
+    { path: 'missing', additions: 0, binary: false },
+  ]);
+});
+
+test('read-text returns the decoded contents or a binary/missing marker', async () => {
+  const fixture = createFixture({
+    readFile: async target => {
+      if (target.endsWith('/bin')) return Buffer.from([0, 9]);
+      if (target.endsWith('/text')) return Buffer.from('hi\nthere');
+      throw new Error('ENOENT');
+    },
+  });
+  assert.deepEqual((await fixture.host({ op: 'read-text', worktree: '/w', path: 'text' })).body,
+    { exists: true, binary: false, text: 'hi\nthere' });
+  assert.deepEqual((await fixture.host({ op: 'read-text', worktree: '/w', path: 'bin' })).body,
+    { exists: true, binary: true, text: '' });
+  assert.deepEqual((await fixture.host({ op: 'read-text', worktree: '/w', path: 'gone' })).body,
+    { exists: false, binary: false, text: '' });
+});
+
+test('task-worktree resolves the board worktree or reports a miss', async () => {
+  const info = {
+    dir: { id: 'd1', path: '/repo', baseBranch: 'main' },
+    worktreePath: '/repo/wt-t1', branch: 'task/t1', token: 't1',
+  };
+  const fixture = createFixture({ resolveTaskWorktree: id => (id === 't1' ? info : null) });
+  const found = await fixture.host({ op: 'task-worktree', taskId: 't1' });
+  assert.equal(found.body.worktreeExists, true);
+  assert.deepEqual(found.body.info, info);
+  assert.deepEqual((await fixture.host({ op: 'task-worktree', taskId: 'gone' })).body, { info: null });
+
+  const incomplete = createFixture({ resolveTaskWorktree: () => ({ dir: { id: 'd1' }, branch: 'x' }) });
+  assert.deepEqual((await incomplete.host({ op: 'task-worktree', taskId: 't9' })).body, { info: null });
+});
+
+test('sync-gate-facts reports activity and the classify letter', async () => {
+  const terminalSessions = new Map([['s1', {}]]);
+  const fixture = createFixture({ terminalSessions });
+  assert.deepEqual((await fixture.host({ op: 'sync-gate-facts', sessionId: 's1' })).body,
+    { active: true, classifyState: 'D' });
+  delete fixture.records.get('s1').taskState;
+  assert.deepEqual((await fixture.host({ op: 'sync-gate-facts', sessionId: 's1' })).body,
+    { active: true, classifyState: null });
+});
+
+test('session-merge runs the merge flow and reports the result', async () => {
+  const fixture = createFixture();
+  const response = await fixture.host({ op: 'session-merge', sessionId: 's1' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body.result, { ok: true, merged: false, commits: 0 });
+  assert.equal(fixture.calls.merge.length, 1);
+  assert.equal(fixture.calls.broadcasts.at(-1)[1].type, 'merge_status');
+
+  const failing = createFixture({
+    implementations: {
+      gitMergeBack: async () => {
+        const error = new Error('boom');
+        error.code = 'SESSION_ACTIVE';
+        throw error;
+      },
+    },
+  });
+  // executeMergeBack converts a thrown git failure into failedGitResult itself.
+  const failed = await failing.host({ op: 'session-merge', sessionId: 's1' });
+  assert.equal(failed.body.result.ok, false);
+  assert.equal(failed.body.result.blocked, true);
+  assert.deepEqual(failed.body.result.reasons, ['active']);
+});
+
+test('session-sync broadcasts conflicts, maps success, and passes force through', async () => {
+  const conflict = createFixture({
+    implementations: {
+      gitSyncFromBase: async () => ({ ok: false, conflicts: ['a.js', 'b.js'] }),
+    },
+  });
+  const conflicted = await conflict.host({ op: 'session-sync', sessionId: 's1', force: false });
+  assert.deepEqual(conflicted.body.result.conflicts, ['a.js', 'b.js']);
+  assert.equal(conflict.calls.broadcasts.at(-1)[1].type, 'merge_status');
+  assert.equal(conflict.calls.events.some(([, event]) => event === 'sync_conflict'), true);
+
+  const fixture = createFixture();
+  const ok = await fixture.host({ op: 'session-sync', sessionId: 's1', force: true });
+  assert.deepEqual(ok.body.result, { ok: true, merged: false, commits: 0, baseBranch: 'main' });
+  assert.equal(fixture.calls.sync[0].options.force, true);
+  assert.equal(fixture.calls.sync[0].options.activeCheck, null);
+  assert.equal(fixture.calls.events.some(([, event]) => event === 'synced'), true);
+
+  const throwing = createFixture({
+    implementations: { gitSyncFromBase: async () => { throw new Error('lease lost'); } },
+  });
+  const failed = await throwing.host({ op: 'session-sync', sessionId: 's1', force: true });
+  assert.equal(failed.body.error.message, 'lease lost');
+});
+
+test('session-rebase maps action/force, broadcasts state, and reports the result', async () => {
+  const fixture = createFixture();
+  const response = await fixture.host({
+    op: 'session-rebase', sessionId: 's1', action: 'abort', force: true,
+  });
+  assert.deepEqual(response.body.result, { ok: true, done: true });
+  assert.deepEqual(fixture.calls.rebase[0], {
+    dir: 'd1', session: 's1', action: 'abort', options: { activeCheck: null },
+  });
+  assert.equal(fixture.calls.broadcasts.at(-1)[1].type, 'merge_status');
+  assert.equal(fixture.calls.events.at(-1)[1], 'synced');
+});
+
+test('session-rebase still broadcasts when the git transaction throws', async () => {
+  // 退役的 Express handler 用 .catch(blockedGitResult) 接住 SESSION_ACTIVE，
+  // 广播在 err 分支之后照样执行；宿主端口把错误交回前门渲染 blocked DTO 时
+  // 也必须留着这次广播，否则 rebase 被拒后前端收不到状态刷新。
+  const fixture = createFixture({
+    implementations: {
+      gitRebaseResolve: async () => { throw Object.assign(new Error('busy'), { code: 'SESSION_ACTIVE' }); },
+    },
+  });
+  const response = await fixture.host({ op: 'session-rebase', sessionId: 's1', action: 'continue' });
+  assert.equal(response.body.error.code, 'SESSION_ACTIVE');
+  assert.equal(fixture.calls.broadcasts.length, 1);
+  assert.equal(fixture.calls.broadcasts[0][1].type, 'merge_status');
+  assert.equal(fixture.calls.events.length, 0);
+});
+
+test('task merge merges the task identity and reports a missing worktree', async () => {
+  const info = { dir: { id: 'd1', path: '/repo', baseBranch: 'main' }, worktreePath: '/repo/wt-t1', branch: 'task/t1', token: 't1' };
+  const fixture = createFixture({
+    resolveTaskWorktree: id => (id === 't1' ? info : null),
+    implementations: {
+      gitMergeBack: async (dir, identity) => {
+        fixture.calls.merge.push([dir.id, identity.id]);
+        return { ok: true, merged: true, commits: 1 };
+      },
+    },
+  });
+  const response = await fixture.host({ op: 'task-merge', taskId: 't1' });
+  assert.deepEqual(response.body.result, { ok: true, merged: true, commits: 1 });
+  assert.deepEqual(fixture.calls.merge, [['d1', 't1']]);
+  assert.equal(fixture.calls.broadcasts.at(-1)[1].taskId, 't1');
+
+  assert.deepEqual((await fixture.host({ op: 'task-merge', taskId: 'gone' })).body, { missing: true });
+});
+
+test('task cleanup delegates to the board service and reports blocked/missing outcomes', async () => {
+  const info = { dir: { id: 'd1', path: '/repo', baseBranch: 'main' }, worktreePath: '/repo/wt-t1', branch: 'task/t1', token: 't1' };
+  const calls = [];
+  const fixture = createFixture({
+    resolveTaskWorktree: id => (id === 't1' ? info : null),
+    cleanupTaskWorktree: async (id, opts) => {
+      calls.push([id, opts]);
+      return { ok: true, removed: true };
+    },
+  });
+  const ok = await fixture.host({ op: 'task-cleanup', taskId: 't1', force: true });
+  assert.deepEqual(ok.body.result, { ok: true, removed: true });
+  assert.deepEqual(calls, [['t1', { force: true }]]);
+  assert.equal(fixture.calls.events.some(([, event]) => event === 'worktree_cleanup'), true);
+  assert.equal(fixture.calls.broadcasts.at(-1)[1].type, 'task_board_update');
+
+  const blocked = createFixture({
+    resolveTaskWorktree: () => info,
+    cleanupTaskWorktree: async () => ({ ok: false, blocked: true }),
+  });
+  assert.deepEqual((await blocked.host({ op: 'task-cleanup', taskId: 't1', force: false })).body,
+    { result: { ok: false, blocked: true } });
+
+  const missing = createFixture({ resolveTaskWorktree: () => null });
+  assert.deepEqual((await missing.host({ op: 'task-cleanup', taskId: 'gone', force: false })).body,
+    { missing: true });
 });
 
 test('merge-state cache is single-flight, bounded, and fresh refreshes immediately', async () => {
@@ -182,653 +500,26 @@ test('merge-state cache is single-flight, bounded, and fresh refreshes immediate
   assert.equal(count, 2);
   assert.equal(fixture.runtime.mergeStateCached(dir, session).ahead, 2);
 
-  const fresh = await invoke(fixture.app.routes.get('POST /api/sessions/:id/merge'), {
-    params: { id: 's1' },
-  });
+  const fresh = await fixture.host({ op: 'merge-state', sessionId: 's1', refresh: true });
   assert.equal(fresh.statusCode, 200);
   assert.equal(fixture.runtime.mergeStateCached(dir, session).ahead, 3);
 });
 
-test('merge-status?refresh=1 bypasses the cached state', async () => {
-  let calls = 0;
-  const fixture = createFixture({
-    implementations: {
-      gitWorktreeMergeState: async () => {
-        calls += 1;
-        return { mergeReady: calls > 1, dirty: calls > 1, ahead: calls - 1, behind: 0 };
-      },
-    },
-  });
-  const dir = fixture.directories.get('d1');
-  const session = fixture.records.get('s1');
-  assert.deepEqual(fixture.runtime.mergeStateCached(dir, session), LOADING_MERGE_STATE);
-  await tick();
-  assert.equal(calls, 1);
-  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/merge-status'), {
-    params: { id: 's1' }, query: { refresh: '1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(calls, 2);
-  assert.equal(response.body.mergeReady, true);
-  assert.equal(fixture.runtime.mergeStateCached(dir, session).mergeReady, true);
-});
-
-test('diff preserves missing-worktree errors, truncation and best-effort stat', async () => {
-  const missing = createFixture({ existsSync: () => false });
-  const missingResponse = await invoke(missing.app.routes.get('GET /api/sessions/:id/diff'), {
-    params: { id: 's1' },
-  });
-  assert.equal(missingResponse.statusCode, 400);
-  assert.deepEqual(missingResponse.body, { error: 'worktree missing' });
-
-  let runCount = 0;
-  const fixture = createFixture({
-    maxDiffBytes: 5,
-    directories: new Map([['d1', { id: 'd1', path: '/repo', baseBranch: null }]]),
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        runCount += 1;
-        fixture.calls.run.push({ repo, args, options });
-        if (args.includes('--stat')) throw new Error('stat unavailable');
-        return 'abcdefgh';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.baseBranch, 'fallback-main');
-  assert.equal(response.body.diff, 'abcde');
-  assert.equal(response.body.truncated, true);
-  assert.equal(response.body.stat, '');
-  assert.equal(response.body.error, null);
-  assert.equal(runCount, 2);
-  assert.deepEqual(fixture.calls.run[0].args, ['diff', '--no-color', 'fallback-main']);
-});
-
-test('diff maps max-buffer and ordinary errors without failing the response', async () => {
-  const maxBuffer = createFixture({
-    implementations: {
-      gitRunQueued: async (_repo, args) => {
-        if (args.includes('--stat')) return '';
-        const error = new Error('large');
-        error.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-        throw error;
-      },
-    },
-  });
-  const tooLarge = await invoke(maxBuffer.app.routes.get('GET /api/sessions/:id/diff'), {
-    params: { id: 's1' },
-  });
-  assert.equal(tooLarge.body.truncated, true);
-  assert.match(tooLarge.body.diff, /exceeds 1MB/);
-
-  const failed = createFixture({
-    implementations: {
-      gitRunQueued: async (_repo, args) => {
-        if (args.includes('--stat')) return '';
-        const error = new Error('fallback');
-        error.stderr = 'private git failure'.repeat(40);
-        throw error;
-      },
-    },
-  });
-  const ordinary = await invoke(failed.app.routes.get('GET /api/sessions/:id/diff'), {
-    params: { id: 's1' },
-  });
-  assert.equal(ordinary.body.diff, '');
-  assert.equal(ordinary.body.error.length, 400);
-});
-
-test('git log bounds limit, supports all branches, and parses NUL records', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        fixture.calls.run.push({ repo, args, options });
-        return [
-          ['hash1', 'short1', 'Alice', '2026-01-01T00:00:00Z', 'Subject one', ', HEAD -> main'].join('\x00'),
-          ['hash2', 'short2', 'Bob', '2026-01-02T00:00:00Z', 'Subject two', 'tag: v1'].join('\x00'),
-        ].join('\n');
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/git/log'), {
-    query: { sessionId: 's1', limit: '500', all: '1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.repoPath, '/repo/wt-s1');
-  assert.equal(response.body.commits.length, 2);
-  assert.equal(response.body.commits[0].refs, 'HEAD -> main');
-  assert.deepEqual(fixture.calls.run[0].args, [
-    'log', '-100', '--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%D', '--no-color', '--all',
-  ]);
-
-  const invalid = await invoke(fixture.app.routes.get('GET /api/git/log'));
-  assert.equal(invalid.statusCode, 400);
-  assert.deepEqual(invalid.body, { error: 'dirId or sessionId required' });
-});
-
-test('commit files retain rename paths and file diffs stay within the selected commit', async () => {
-  assert.deepEqual(parseCommitFiles('M\0README.md\0R100\0old name.txt\0new name.txt\0'), [
-    { status: 'M', path: 'README.md' },
-    { status: 'R100', path: 'new name.txt', oldPath: 'old name.txt' },
-  ]);
-  const fixture = createFixture({ implementations: {
-    gitRunQueued: async (repo, args) => {
-      fixture.calls.run.push({ repo, args });
-      if (args.includes('--name-status')) return 'M\0README.md\0R100\0old name.txt\0new name.txt\0';
-      return 'diff --git a/old name.txt b/new name.txt\n+hello';
-    },
-  } });
-  const files = await invoke(fixture.app.routes.get('GET /api/git/commit-files'), {
-    query: { dirId: 'd1', hash: 'abcdef0123' },
-  });
-  assert.equal(files.statusCode, 200);
-  assert.equal(files.body.files[1].path, 'new name.txt');
-  const diff = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'd1', hash: 'abcdef0123', file: 'new name.txt' },
-  });
-  assert.equal(diff.statusCode, 200);
-  assert.match(diff.body.diff, /hello/);
-  assert.deepEqual(fixture.calls.run.at(-1).args.slice(-3), ['--', ':(literal)old name.txt', ':(literal)new name.txt']);
-  const missing = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'd1', hash: 'abcdef0123', file: 'secret.txt' },
-  });
-  assert.equal(missing.statusCode, 404);
-  const invalid = await invoke(fixture.app.routes.get('GET /api/git/commit-files'), {
-    query: { dirId: 'd1', hash: '--output=x' },
-  });
-  assert.equal(invalid.statusCode, 400);
-});
-
-test('commit-diff validates hash, resolves directory, and returns diff/stat', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        fixture.calls.run.push({ repo, args, options });
-        if (args.includes('--stat')) return '1 file changed, 2 insertions(+)';
-        if (args.includes('--patch')) return 'diff --git a/foo b/foo\n+hello';
-        return '';
-      },
-    },
-  });
-
-  // invalid hash (non-hex and injection attempts) -> 400
-  const nonHex = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'd1', hash: 'zzz' },
-  });
-  assert.equal(nonHex.statusCode, 400);
-  assert.deepEqual(nonHex.body, { error: 'invalid hash' });
-
-  const injection = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'd1', hash: '--output=x' },
-  });
-  assert.equal(injection.statusCode, 400);
-  assert.deepEqual(injection.body, { error: 'invalid hash' });
-
-  // missing dirId / unknown dir -> 404
-  const missingDirId = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { hash: 'abcdef0' },
-  });
-  assert.equal(missingDirId.statusCode, 404);
-  assert.deepEqual(missingDirId.body, { error: 'directory not found' });
-
-  const unknownDir = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'nope', hash: 'abcdef0' },
-  });
-  assert.equal(unknownDir.statusCode, 404);
-  assert.deepEqual(unknownDir.body, { error: 'directory not found' });
-
-  // sessionId resolves the session's own worktree (same as /api/git/log) so
-  // the mobile git-history view reads commit diffs from the branch it listed,
-  // not the directory's checked-out base.
-  const sessionDiff = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { sessionId: 's1', hash: 'abcdef0123' },
-  });
-  assert.equal(sessionDiff.statusCode, 200);
-  assert.ok(fixture.calls.run.some(call => call.repo === '/repo/wt-s1'
-    && call.args.includes('abcdef0123')), 'diff ran inside the session worktree');
-
-  const unknownSession = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { sessionId: 'nope', hash: 'abcdef0' },
-  });
-  assert.equal(unknownSession.statusCode, 404);
-  assert.deepEqual(unknownSession.body, { error: 'session or worktree not found' });
-
-  // valid hash -> 200 with diff/stat
-  const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'd1', hash: 'abcdef0123' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.hash, 'abcdef0123');
-  assert.equal(response.body.diff, 'diff --git a/foo b/foo\n+hello');
-  assert.equal(response.body.stat, '1 file changed, 2 insertions(+)');
-  assert.equal(response.body.truncated, false);
-  assert.equal(response.body.error, null);
-  assert.deepEqual(fixture.calls.run[0].args, ['show', '--format=', '--patch', 'abcdef0123']);
-  assert.deepEqual(fixture.calls.run[1].args, ['show', '--format=', '--stat', 'abcdef0123']);
-});
-
-test('commit-diff falls back to diff range for empty show and truncates large diffs', async () => {
-  let showPatchCalls = 0;
-  const fixture = createFixture({
-    maxDiffBytes: 10,
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        fixture.calls.run.push({ repo, args, options });
-        if (args.includes('--stat')) return '1 file changed';
-        if (args[0] === 'show' && args.includes('--patch')) {
-          showPatchCalls += 1;
-          return ''; // merge commit: empty show patch
-        }
-        if (args[0] === 'diff' && args.includes('--patch')) {
-          return 'fallback diff content here';
-        }
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'd1', hash: 'abcdef0' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(showPatchCalls, 1);
-  assert.equal(response.body.diff.length, 10);
-  assert.equal(response.body.truncated, true);
-  assert.equal(response.body.error, null);
-  assert.deepEqual(fixture.calls.run[1].args, ['rev-parse', '--verify', '--quiet', 'abcdef0~1']);
-  assert.deepEqual(fixture.calls.run[2].args, ['diff', '--patch', 'abcdef0~1', 'abcdef0']);
-});
-
-test('commit-diff treats maxBuffer overflow as a truncated placeholder, not an error', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        fixture.calls.run.push({ repo, args, options });
-        if (args[0] === 'show' && args.includes('--patch')) {
-          const err = new Error('stdio maxBuffer exceeded');
-          err.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-          throw err;
-        }
-        if (args.includes('--stat')) return '1 file changed';
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'd1', hash: 'abcdef0123' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.truncated, true);
-  assert.ok(String(response.body.diff).includes('exceeds'),
-    'maxBuffer overflow should surface the exceeds placeholder');
-  assert.equal(response.body.error, null);
-  // placeholder diff is non-empty -> parent-range fallback is skipped entirely
-  assert.equal(fixture.calls.run.filter(c => c.args[0] === 'diff').length, 0);
-  assert.equal(fixture.calls.run.filter(c => c.args[0] === 'rev-parse').length, 0);
-});
-
-test('commit-diff returns a clean empty diff for root commits (no parent)', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        fixture.calls.run.push({ repo, args, options });
-        if (args[0] === 'show' && args.includes('--patch')) return ''; // empty commit
-        if (args[0] === 'rev-parse') {
-          // root commit has no parent -> hash~1 does not resolve
-          throw new Error("fatal: bad revision 'abcdef0~1'");
-        }
-        if (args.includes('--stat')) return '';
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
-    query: { dirId: 'd1', hash: 'abcdef0' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.diff, '');
-  assert.equal(response.body.error, null);
-  assert.equal(response.body.truncated, false);
-  // rev-parse failed -> parent-range diff is never attempted
-  assert.equal(fixture.calls.run.filter(c => c.args[0] === 'diff').length, 0);
-});
-
-test('directory-status reports unpushed commits and main-checkout dirty files', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args) => {
-        if (args[0] === 'rev-parse' && args.includes('HEAD')) return 'main\n';
-        if (args[0] === 'rev-parse') return 'origin/main\n';
-        if (args[0] === 'rev-list' && args[1] === '--count' && args[2] === 'origin/main..HEAD') return '2\n';
-        if (args[0] === 'rev-list' && args[1] === '--count' && args[2] === 'HEAD..origin/main') return '1\n';
-        if (args[0] === 'status') return 'M  README.md\n?? notes/scratch.md\n?? .multicc-worktrees/task-1/\n';
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/git/directory-status'), {
-    query: { dirId: 'd1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, {
-    branch: 'main', upstream: 'origin/main', baseBranch: 'main', ahead: 2, behind: 1,
-    dirtyFiles: [
-      { status: 'M', path: 'README.md' },
-      { status: '??', path: 'notes/scratch.md' },
-    ],
-  });
-  // The worktree subtree never reads as a pending change of the main checkout.
-  assert.equal(response.body.dirtyFiles.some(file => file.path.includes('.multicc-worktrees')), false);
-});
-
-test('directory-status keeps the first letter of the first dirty path (runGit trims unless raw)', async () => {
-  const fixture = createFixture({
-    implementations: {
-      // Mirrors the real runGit: stdout is trimmed unless the caller passes raw.
-      gitRunQueued: async (repo, args, options = {}) => {
-        if (args[0] === 'rev-parse' && args.includes('HEAD')) return 'main';
-        if (args[0] === 'rev-parse') throw new Error('no upstream');
-        if (args[0] === 'status') {
-          const out = ' M air-todos.json\n?? notes/scratch.md\n';
-          return options.raw === true ? out : out.trim();
-        }
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/git/directory-status'), {
-    query: { dirId: 'd1' },
-  });
-  assert.deepEqual(response.body.dirtyFiles, [
-    { status: 'M', path: 'air-todos.json' },
-    { status: '??', path: 'notes/scratch.md' },
-  ]);
-});
-
-test('directory-file-diff returns the working-tree patch, untracked files as all-added', async () => {
-  const fixture = createFixture({
-    readFile: async () => Buffer.from('hello\nworld\n'),
-    implementations: {
-      gitRunQueued: async (repo, args) => {
-        if (args[0] === 'diff') return args.includes('tracked.js') ? 'diff --git a/tracked.js b/tracked.js\n@@ -1 +1 @@\n-a\n+b' : '';
-        if (args.includes('ls-files')) return 'fresh.txt\0';
-        return '';
-      },
-    },
-  });
-  const route = fixture.app.routes.get('GET /api/git/directory-file-diff');
-  const tracked = await invoke(route, { query: { dirId: 'd1', path: 'tracked.js' } });
-  assert.equal(tracked.statusCode, 200);
-  assert.match(tracked.body.patch, /^diff --git a\/tracked\.js/);
-  assert.equal(tracked.body.untracked, false);
-  const fresh = await invoke(route, { query: { dirId: 'd1', path: 'fresh.txt' } });
-  assert.equal(fresh.body.untracked, true);
-  assert.match(fresh.body.patch, /\+\+\+ b\/fresh\.txt/);
-  assert.match(fresh.body.patch, /@@ -0,0 \+1,2 @@\n\+hello\n\+world$/);
-  for (const bad of ['', '-rf', '../etc/passwd', '/etc/passwd', 'a/../b']) {
-    const rejected = await invoke(route, { query: { dirId: 'd1', path: bad } });
-    assert.equal(rejected.statusCode, 400, `rejects ${JSON.stringify(bad)}`);
-  }
-  assert.equal((await invoke(route, { query: { dirId: 'nope', path: 'x' } })).statusCode, 404);
-  assert.equal((await invoke(route, { query: { path: 'x' } })).statusCode, 400);
-});
-
-test('directory-status falls back to the base branch without an upstream', async () => {
-  const fixture = createFixture({
-    directories: new Map([['d1', { id: 'd1', path: '/repo' }]]),
-    implementations: {
-      gitRunQueued: async (repo, args) => {
-        if (args[0] === 'rev-parse' && args.includes('HEAD')) return 'main\n';
-        if (args[0] === 'rev-parse') throw new Error("fatal: no upstream configured for branch 'main'");
-        if (args[0] === 'rev-list' && args[2] === 'fallback-main..HEAD') return '3\n';
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/git/directory-status'), {
-    query: { dirId: 'd1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.upstream, null);
-  assert.equal(response.body.baseBranch, 'fallback-main');
-  assert.equal(response.body.ahead, 3);
-  assert.deepEqual(response.body.dirtyFiles, []);
-});
-
-test('directory-status keeps the legacy 400/404 shape', async () => {
-  const fixture = createFixture();
-  assert.equal((await invoke(fixture.app.routes.get('GET /api/git/directory-status'), { query: {} })).statusCode, 400);
-  assert.equal((await invoke(fixture.app.routes.get('GET /api/git/directory-status'), { query: { dirId: 'nope' } })).statusCode, 404);
-  const missing = createFixture({ existsSync: () => false });
-  assert.equal((await invoke(missing.app.routes.get('GET /api/git/directory-status'), { query: { dirId: 'd1' } })).statusCode, 404);
-});
-
-test('active and classify gates block sync while force bypasses both', async () => {
+test('active and classify gates are computed from live facts', () => {
   const terminalSessions = new Map([['s1', {}]]);
   const fixture = createFixture({ terminalSessions });
   assert.equal(fixture.runtime.isWorktreeActive('s1'), true);
-  const blocked = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
-    params: { id: 's1' },
-  });
-  assert.equal(blocked.statusCode, 409);
-  assert.deepEqual(blocked.body.reasons, ['busy']);
-  assert.equal(blocked.body.classifyState, 'running');
-  assert.equal(fixture.calls.sync.length, 0);
-
   terminalSessions.delete('s1');
-  fixture.records.get('s1').taskState.classifyState = 'B';
-  const classified = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
-    params: { id: 's1' },
-  });
-  assert.equal(classified.statusCode, 409);
-  assert.equal(classified.body.classifyState, 'B');
-
-  terminalSessions.set('s1', {});
-  const forced = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
-    params: { id: 's1' }, query: { force: '1' },
-  });
-  assert.equal(forced.statusCode, 200);
-  assert.equal(fixture.calls.sync.length, 1);
-  assert.equal(fixture.calls.sync[0].options.force, true);
-  assert.equal(fixture.calls.sync[0].options.activeCheck, null);
-  assert.equal(fixture.calls.broadcasts.at(-1)[1].type, 'merge_status');
-});
-
-test('the sync gate blocks only letters that can still write into the worktree', async () => {
-  // "Unfinished" is about writing, not about who is waiting: P (a turn in
-  // flight) and the retired-but-persisted C are mid-turn, B ended parked on a
-  // background job that may still write. W ended with the user holding the
-  // question — nothing is running and the user is the one asking, so refusing
-  // the sync would be a dead end. D/E ended too, and an unclassified session has
-  // no turn at all. (src/workspace/inventory.js's read-only preview counts W as
-  // execution_dependency instead; that surface does not refuse a user command.)
-  const fixture = createFixture();
   assert.equal(fixture.runtime.isWorktreeActive('s1'), false);
-  const BLOCKED = { P: true, C: true, B: true, W: false, D: false, E: false };
-  for (const [letter, blocked] of Object.entries(BLOCKED)) {
-    fixture.records.get('s1').taskState.classifyState = letter;
-    fixture.calls.sync.length = 0;
-    const response = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
-      params: { id: 's1' },
-    });
-    assert.equal(response.statusCode, blocked ? 409 : 200, `${letter} sync status`);
-    if (blocked) {
-      assert.equal(response.body.classifyState, letter, `${letter} reported state`);
-      assert.equal(fixture.calls.sync.length, 0, `${letter} must not reach git`);
-    } else {
-      assert.equal(fixture.calls.sync.length, 1, `${letter} should reach git`);
-    }
-  }
-  // No letter at all (never classified) is not a reason to refuse.
-  delete fixture.records.get('s1').taskState;
-  fixture.calls.sync.length = 0;
-  const unclassified = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
-    params: { id: 's1' },
-  });
-  assert.equal(unclassified.statusCode, 200);
-  assert.equal(fixture.calls.sync.length, 1);
-});
-
-test('merge reports sibling active, dirty, unmerged, conflicts and successful sync', async () => {
+  // A busy sibling in the same workspace counts; an unrelated one does not.
   const records = new Map([
-    ['s1', { id: 's1', dirId: 'd1', branch: 'b1', worktreePath: '/wt/1' }],
-    ['active', { id: 'active', dirId: 'd1', branch: 'ba', worktreePath: '/wt/a' }],
-    ['dirty', { id: 'dirty', dirId: 'd1', branch: 'bd', worktreePath: '/wt/d' }],
-    ['ahead', { id: 'ahead', dirId: 'd1', branch: 'bh', worktreePath: '/wt/h' }],
-    ['conflict', { id: 'conflict', dirId: 'd1', branch: 'bc', worktreePath: '/wt/c' }],
-    ['good', { id: 'good', dirId: 'd1', branch: 'bg', worktreePath: '/wt/g' }],
-    ['other', { id: 'other', dirId: 'd2', branch: 'bo', worktreePath: '/wt/o' }],
+    ['owner', { id: 'owner', dirId: 'd1' }],
+    ['m1', { id: 'm1', dirId: 'd1', workspaceOwnerSessionId: 'owner' }],
+    ['x1', { id: 'x1', dirId: 'd1', workspaceOwnerSessionId: 'other' }],
   ]);
-  const fixture = createFixture({
-    records,
-    terminalSessions: new Map([['active', {}]]),
-    implementations: {
-      gitMergeBack: async () => ({ ok: true, merged: true, commits: 2 }),
-      gitWorktreeMergeState: async (_dir, session) => {
-        fixture.calls.mergeState.push(session.id);
-        if (session.id === 'dirty') return { dirty: true, ahead: 0 };
-        if (session.id === 'ahead') return { dirty: false, ahead: 2 };
-        return { dirty: false, ahead: 0, mergeReady: true };
-      },
-      gitSyncFromBase: async (_dir, session, options) => {
-        fixture.calls.sync.push({ session: session.id, options });
-        if (session.id === 'conflict') return { ok: false, conflicts: ['same.js'] };
-        return { ok: true, merged: true, commits: 3 };
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('POST /api/sessions/:id/merge'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.merged, true);
-  assert.deepEqual(response.body.siblingsSynced, [
-    { id: 'active', skipped: true, reason: 'active' },
-    { id: 'dirty', skipped: true, reason: 'dirty' },
-    { id: 'ahead', skipped: true, reason: 'unmerged' },
-    { id: 'conflict', conflict: true, files: ['same.js'] },
-    { id: 'good', commits: 3 },
-  ]);
-  assert.deepEqual(fixture.calls.sync.map(call => call.session), ['conflict', 'good']);
-  assert.equal(typeof fixture.calls.sync[0].options.activeCheck, 'function');
-  assert.equal(fixture.calls.broadcasts.some(([, event]) => event.sessionId === 'dirty'), true);
-  assert.equal(fixture.calls.broadcasts.some(([, event]) => event.sessionId === 'ahead'), true);
-  assert.equal(fixture.calls.broadcasts.some(([, event]) => event.sessionId === 'conflict'), true);
-  assert.equal(fixture.calls.broadcasts.some(([, event]) => event.sessionId === 'good'), true);
-});
-
-test('merge preserves conflict and non-conflict legacy status codes', async () => {
-  const conflict = createFixture({
-    implementations: { gitMergeBack: async () => ({ ok: false, conflicts: ['a.js'] }) },
-  });
-  const response409 = await invoke(conflict.app.routes.get('POST /api/sessions/:id/merge'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response409.statusCode, 409);
-
-  const blocked = createFixture({
-    implementations: { gitMergeBack: async () => ({ ok: false, blocked: true, reasons: ['dirty'] }) },
-  });
-  const response400 = await invoke(blocked.app.routes.get('POST /api/sessions/:id/merge'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response400.statusCode, 400);
-});
-
-test('merge contains unexpected git failures instead of rejecting the request handler', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitMergeBack: async () => {
-        const error = new Error('spawn git ENOENT');
-        error.code = 'ENOENT';
-        throw error;
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('POST /api/sessions/:id/merge'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response.statusCode, 500);
-  assert.deepEqual(response.body, {
-    ok: false,
-    code: 'git_operation_failed',
-    operationId: undefined,
-    queueDepth: undefined,
-    error: 'Git operation failed',
-  });
-});
-
-test('sync maps actor rejection metadata and conflict response broadcasts state', async () => {
-  const rejected = createFixture({
-    implementations: {
-      gitSyncFromBase: async () => {
-        const error = new Error('lease busy');
-        error.code = 'SESSION_LEASED';
-        error.operationId = 'op-sync';
-        error.queueDepth = 4;
-        throw error;
-      },
-    },
-  });
-  const blocked = await invoke(rejected.app.routes.get('POST /api/sessions/:id/sync'), {
-    params: { id: 's1' },
-  });
-  assert.equal(blocked.statusCode, 400);
-  assert.equal(blocked.body.operationId, 'op-sync');
-  assert.equal(blocked.body.queueDepth, 4);
-  assert.deepEqual(blocked.body.reasons, ['leased']);
-
-  const conflict = createFixture({
-    implementations: {
-      gitSyncFromBase: async () => ({ ok: false, conflicts: ['one.js', 'two.js'] }),
-    },
-  });
-  const response = await invoke(conflict.app.routes.get('POST /api/sessions/:id/sync'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response.statusCode, 409);
-  assert.equal(conflict.calls.events.at(-1)[1], 'sync_conflict');
-  assert.equal(conflict.calls.broadcasts.at(-1)[1].type, 'merge_status');
-});
-
-test('rebase maps action, force, conflict and actor operation metadata while always broadcasting', async () => {
-  const conflict = createFixture({
-    implementations: {
-      gitRebaseResolve: async (_dir, _session, action, options) => {
-        conflict.calls.rebase.push({ action, options });
-        return { ok: false, conflicts: ['one.js'] };
-      },
-    },
-  });
-  const response = await invoke(conflict.app.routes.get('POST /api/sessions/:id/rebase'), {
-    params: { id: 's1' }, body: { action: 'abort', force: true },
-  });
-  assert.equal(response.statusCode, 409);
-  assert.equal(conflict.calls.rebase[0].action, 'abort');
-  assert.equal(conflict.calls.rebase[0].options.activeCheck, null);
-  assert.equal(conflict.calls.broadcasts.length, 1);
-
-  const rejected = createFixture({
-    implementations: {
-      gitRebaseResolve: async () => {
-        const error = new Error('active');
-        error.code = 'SESSION_ACTIVE';
-        error.operationId = 'op-rebase';
-        error.queueDepth = 2;
-        throw error;
-      },
-    },
-  });
-  const blocked = await invoke(rejected.app.routes.get('POST /api/sessions/:id/rebase'), {
-    params: { id: 's1' },
-  });
-  assert.equal(blocked.statusCode, 400);
-  assert.equal(blocked.body.operationId, 'op-rebase');
-  assert.equal(blocked.body.queueDepth, 2);
-  assert.deepEqual(blocked.body.reasons, ['active']);
-  assert.equal(rejected.calls.broadcasts.length, 1);
+  const chat = new Map([['m1', { isStreaming: true }]]);
+  const shared = createFixture({ records, chatSessions: chat });
+  assert.equal(shared.runtime.isWorktreeActive('owner'), true);
 });
 
 test('autoCommitTurn merges a ready worktree and reports the result to the chat', async () => {
@@ -990,80 +681,41 @@ test('autoCommitTurn contains unexpected git failures', async () => {
   assert.equal(fixture.calls.chatBroadcasts.at(-1)[1].subtype, 'auto_commit');
 });
 
-test('route lookups preserve legacy 404/400 DTOs', async () => {
-  const fixture = createFixture();
-  const missingSession = await invoke(fixture.app.routes.get('GET /api/sessions/:id/merge-status'), {
-    params: { id: 'missing' },
-  });
-  assert.equal(missingSession.statusCode, 404);
-  assert.deepEqual(missingSession.body, { error: 'session not found' });
-
-  fixture.records.get('s1').worktreePath = null;
-  const noWorktree = await invoke(fixture.app.routes.get('POST /api/sessions/:id/merge'), {
-    params: { id: 's1' },
-  });
-  assert.equal(noWorktree.statusCode, 400);
-  assert.deepEqual(noWorktree.body, { error: '该会话没有 worktree，无需合并' });
-});
-
-test('hibernated worktrees block all git mutations before invoking git', async () => {
-  const records = new Map([['s1', {
-    id: 's1', dirId: 'd1', branch: 'multicc/s1', worktreePath: '/repo/wt-s1',
-    workspaceState: 'hibernated', taskState: { classifyState: 'D' },
-  }]]);
-  const fixture = createFixture({ records, existsSync: target => target === '/repo' });
-  for (const route of ['merge', 'sync', 'rebase']) {
-    const response = await invoke(fixture.app.routes.get(`POST /api/sessions/:id/${route}`), {
-      params: { id: 's1' },
-    });
-    assert.equal(response.statusCode, 409, route);
-    assert.equal(response.body.code, 'workspace_hibernated', route);
-    assert.deepEqual(response.body.reasons, ['hibernated'], route);
-  }
-  assert.equal(fixture.calls.merge.length, 0);
-  assert.equal(fixture.calls.sync.length, 0);
-  assert.equal(fixture.calls.rebase.length, 0);
-});
-
 test('parseDiffFiles handles M/A/D, binary, rename, spaces and non-ASCII paths', () => {
+  // `git diff --numstat -z`: `add\\tdel\\tpath\\0`, or for renames
+  // `add\\tdel\\t\\0old\\0new\\0`. `git diff --name-status -z` keeps status
+  // and paths in their own NUL tokens.
   const numstat = [
     '10\t5\tsrc/foo.js',
-    '-\t-\tsrc/binary.png',
-    '20\t3\t',
-    'old/path.js',
-    'new/path.js',
-    '1\t1\tsrc/my file.js',
-    '2\t2\t中文/路径.js',
-  ].join('\0') + '\0';
+    '3\t0\timage.png',
+    '-\t-\tbin.dat',
+    '2\t2\t', 'old name.js', 'renamed.js',
+    '7\t1\tdir with space/file name.js',
+    '1\t0\t中文路径.js',
+    '',
+  ].join('\0');
   const nameStatus = [
     'M', 'src/foo.js',
-    'A', 'src/binary.png',
-    'R100', 'old/path.js', 'new/path.js',
-    'M', 'src/my file.js',
-    'D', '中文/路径.js',
-  ].join('\0') + '\0';
+    'A', 'image.png',
+    'M', 'bin.dat',
+    'R100', 'old name.js', 'renamed.js',
+    'M', 'dir with space/file name.js',
+    'A', '中文路径.js',
+    '',
+  ].join('\0');
   const files = parseDiffFiles(numstat, nameStatus);
-  assert.equal(files.length, 5);
-  assert.deepEqual(files[0], {
-    path: 'src/foo.js', oldPath: null, status: 'M',
-    additions: 10, deletions: 5, binary: false,
-  });
-  assert.deepEqual(files[1], {
-    path: 'src/binary.png', oldPath: null, status: 'A',
-    additions: 0, deletions: 0, binary: true,
-  });
-  assert.deepEqual(files[2], {
-    path: 'new/path.js', oldPath: 'old/path.js', status: 'R',
-    additions: 20, deletions: 3, binary: false,
-  });
-  assert.deepEqual(files[3], {
-    path: 'src/my file.js', oldPath: null, status: 'M',
-    additions: 1, deletions: 1, binary: false,
-  });
-  assert.deepEqual(files[4], {
-    path: '中文/路径.js', oldPath: null, status: 'D',
-    additions: 2, deletions: 2, binary: false,
-  });
+  assert.deepEqual(files, [
+    { path: 'src/foo.js', oldPath: null, status: 'M', additions: 10, deletions: 5, binary: false },
+    { path: 'image.png', oldPath: null, status: 'A', additions: 3, deletions: 0, binary: false },
+    { path: 'bin.dat', oldPath: null, status: 'M', additions: 0, deletions: 0, binary: true },
+    { path: 'renamed.js', oldPath: 'old name.js', status: 'R', additions: 2, deletions: 2, binary: false },
+    { path: 'dir with space/file name.js', oldPath: null, status: 'M', additions: 7, deletions: 1, binary: false },
+    { path: '中文路径.js', oldPath: null, status: 'A', additions: 1, deletions: 0, binary: false },
+  ]);
+  assert.deepEqual(parseCommitFiles('M\0README.md\0R100\0old name.txt\0new name.txt\0'), [
+    { status: 'M', path: 'README.md' },
+    { status: 'R100', oldPath: 'old name.txt', path: 'new name.txt' },
+  ]);
 });
 
 test('parseDiffFiles returns empty array for empty input and falls back to M for missing status', () => {
@@ -1071,440 +723,4 @@ test('parseDiffFiles returns empty array for empty input and falls back to M for
   assert.deepEqual(parseDiffFiles('1\t1\tonly.js\0', ''), [
     { path: 'only.js', oldPath: null, status: 'M', additions: 1, deletions: 1, binary: false },
   ]);
-});
-
-test('diff/files aggregates numstat and name-status into a bounded file list', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        fixture.calls.run.push({ repo, args, options });
-        if (args.includes('--numstat')) {
-          return ['10\t5\tsrc/foo.js', '-\t-\tsrc/binary.png'].join('\0') + '\0';
-        }
-        if (args.includes('--name-status')) {
-          return ['M', 'src/foo.js', 'A', 'src/binary.png'].join('\0') + '\0';
-        }
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.baseBranch, 'main');
-  assert.equal(response.body.branch, 'multicc/s1');
-  assert.equal(response.body.totalFiles, 2);
-  assert.equal(response.body.totalAdditions, 10);
-  assert.equal(response.body.totalDeletions, 5);
-  assert.equal(response.body.truncated, false);
-  assert.equal(response.body.error, null);
-  assert.deepEqual(response.body.files, [
-    { path: 'src/foo.js', oldPath: null, status: 'M', additions: 10, deletions: 5, binary: false },
-    { path: 'src/binary.png', oldPath: null, status: 'A', additions: 0, deletions: 0, binary: true },
-  ]);
-  assert.deepEqual(fixture.calls.run[0].args,
-    ['-c', 'core.quotepath=false', 'diff', '--numstat', '--no-color', '-z', 'main']);
-  assert.deepEqual(fixture.calls.run[1].args,
-    ['-c', 'core.quotepath=false', 'diff', '--name-status', '--no-color', '-z', 'main']);
-});
-
-test('diff/files truncates at 500 files but reports the full total', async () => {
-  const numstatEntries = [];
-  const nameStatusEntries = [];
-  for (let i = 0; i < 501; i++) {
-    numstatEntries.push(`1\t1\tfile${i}.js`);
-    nameStatusEntries.push('M', `file${i}.js`);
-  }
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args) => {
-        if (args.includes('--numstat')) return numstatEntries.join('\0') + '\0';
-        if (args.includes('--name-status')) return nameStatusEntries.join('\0') + '\0';
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.totalFiles, 501);
-  assert.equal(response.body.files.length, 500);
-  assert.equal(response.body.truncated, true);
-  assert.equal(response.body.totalAdditions, 501);
-  assert.equal(response.body.totalDeletions, 501);
-});
-
-test('diff/files lists untracked files with status U and counts their lines', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        fixture.calls.run.push({ repo, args, options });
-        if (args.includes('--numstat')) return '';
-        if (args.includes('--name-status')) return '';
-        if (args.includes('ls-files')) return 'brand-new.js\0new dir/notes.txt\0binary.dat\0';
-        return '';
-      },
-    },
-    readFile: async (absolute) => {
-      fixture.calls.read = fixture.calls.read || [];
-      fixture.calls.read.push(absolute);
-      if (absolute.endsWith('binary.dat')) return Buffer.from([1, 2, 0, 3]);
-      if (absolute.endsWith('notes.txt')) return Buffer.from('one\n two \n', 'utf8');
-      return Buffer.from('line1\nline2\nline3\n', 'utf8');
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.untrackedCount, 3);
-  assert.equal(response.body.totalFiles, 3);
-  assert.equal(response.body.totalAdditions, 5); // 3 + 2 + 0
-  assert.equal(response.body.totalDeletions, 0);
-  assert.deepEqual(response.body.files, [
-    { path: 'brand-new.js', oldPath: null, status: 'U', additions: 3, deletions: 0, binary: false },
-    { path: 'new dir/notes.txt', oldPath: null, status: 'U', additions: 2, deletions: 0, binary: false },
-    { path: 'binary.dat', oldPath: null, status: 'U', additions: 0, deletions: 0, binary: true },
-  ]);
-  assert.ok(fixture.calls.run.some(call =>
-    call.args.includes('ls-files') && call.args.includes('--others')
-    && call.args.includes('--exclude-standard')), 'untracked list queried with exclude-standard');
-  assert.equal(fixture.calls.read.length, 3, 'each untracked file read for line counts');
-});
-
-test('diff/file serves an untracked file as a new-file patch', async () => {
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        fixture.calls.run.push({ repo, args, options });
-        if (args.includes('ls-files')) return 'src/newfile.js\0';
-        return '';
-      },
-    },
-    readFile: async () => Buffer.from('const x = 1;\nconsole.log(x);\n', 'utf8'),
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: 'src/newfile.js' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.untracked, true);
-  assert.equal(response.body.error, null);
-  assert.match(response.body.patch, /^diff --git a\/src\/newfile\.js b\/src\/newfile\.js/m);
-  assert.match(response.body.patch, /new file mode 100644/);
-  assert.match(response.body.patch, /@@ -0,0 \+1,2 @@/);
-  assert.match(response.body.patch, /\n\+const x = 1;/);
-  assert.match(response.body.patch, /\n\+console\.log\(x\);/);
-});
-
-test('diff/file leaves tracked unchanged files alone and reports binary untracked', async () => {
-  // Tracked file with no diff: patch stays empty, not flagged untracked.
-  const unchanged = createFixture({
-    implementations: {
-      gitRunQueued: async () => '',
-    },
-  });
-  const plain = await invoke(unchanged.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: 'src/tracked.js' },
-  });
-  assert.equal(plain.body.untracked, false);
-  assert.equal(plain.body.patch, '');
-
-  const binary = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args) => {
-        if (args.includes('ls-files')) return 'img/logo.png\0';
-        return '';
-      },
-    },
-    readFile: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]),
-  });
-  const bin = await invoke(binary.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: 'img/logo.png' },
-  });
-  assert.equal(bin.body.untracked, true);
-  assert.match(bin.body.patch, /Binary files/);
-});
-
-test('diff/files preserves missing-worktree error and maps git errors', async () => {
-  const missing = createFixture({ existsSync: () => false });
-  const missingResponse = await invoke(missing.app.routes.get('GET /api/sessions/:id/diff/files'), {
-    params: { id: 's1' },
-  });
-  assert.equal(missingResponse.statusCode, 400);
-  assert.deepEqual(missingResponse.body, { error: 'worktree missing' });
-
-  const fixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args) => {
-        if (args.includes('--numstat')) throw new Error('git failed');
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
-    params: { id: 's1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.error, 'git failed');
-  assert.deepEqual(response.body.files, []);
-  assert.equal(response.body.totalFiles, 0);
-});
-
-test('diff routes return 500 instead of hanging when gitBaseBranch rejects', async () => {
-  const fixture = createFixture({
-    directories: new Map([['d1', { id: 'd1', path: '/repo', baseBranch: null }]]),
-    implementations: {
-      gitBaseBranch: async () => { throw new Error('no remote HEAD'); },
-    },
-  });
-  for (const [routeName, query] of [
-    ['GET /api/sessions/:id/diff', {}],
-    ['GET /api/sessions/:id/diff/files', {}],
-    ['GET /api/sessions/:id/diff/file', { path: 'src/foo.js' }],
-  ]) {
-    const response = await invoke(fixture.app.routes.get(routeName), {
-      params: { id: 's1' }, query,
-    });
-    assert.equal(response.statusCode, 500, `${routeName} returns 500`);
-    assert.equal(response.body.error, 'no remote HEAD', `${routeName} surfaces error text`);
-    assert.equal(fixture.calls.run.length, 0, `${routeName} does not invoke gitRunQueued`);
-  }
-});
-
-test('diff/file validates path, separates args with --, and truncates large patches', async () => {
-  const fixture = createFixture();
-  const noPath = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' },
-  });
-  assert.equal(noPath.statusCode, 400);
-  assert.match(noPath.body.error, /path required/);
-
-  const dashed = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: '-evil' },
-  });
-  assert.equal(dashed.statusCode, 400);
-  assert.match(dashed.body.error, /must not start/);
-
-  const longPath = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: 'a'.repeat(501) },
-  });
-  assert.equal(longPath.statusCode, 400);
-
-  const missing = createFixture({ existsSync: () => false });
-  const missingResponse = await invoke(missing.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: 'src/foo.js' },
-  });
-  assert.equal(missingResponse.statusCode, 400);
-  assert.deepEqual(missingResponse.body, { error: 'worktree missing' });
-
-  const patchFixture = createFixture({
-    implementations: {
-      gitRunQueued: async (repo, args, options) => {
-        patchFixture.calls.run.push({ repo, args, options });
-        return 'diff --git a/foo b/foo\n+hello';
-      },
-    },
-  });
-  const response = await invoke(patchFixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: 'src/foo.js' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.path, 'src/foo.js');
-  assert.equal(response.body.patch, 'diff --git a/foo b/foo\n+hello');
-  assert.equal(response.body.truncated, false);
-  assert.equal(response.body.error, null);
-  assert.deepEqual(patchFixture.calls.run[0].args,
-    ['diff', '--no-color', 'main', '--', 'src/foo.js']);
-
-  const largeFixture = createFixture({
-    implementations: {
-      gitRunQueued: async () => 'x'.repeat(256 * 1024 + 100),
-    },
-  });
-  const large = await invoke(largeFixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: 'src/big.js' },
-  });
-  assert.equal(large.body.truncated, true);
-  assert.equal(large.body.patch.length, 256 * 1024);
-
-  const errorFixture = createFixture({
-    implementations: {
-      gitRunQueued: async () => { throw new Error('diff failed'); },
-    },
-  });
-  const errored = await invoke(errorFixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
-    params: { id: 's1' }, query: { path: 'src/foo.js' },
-  });
-  assert.equal(errored.body.patch, '');
-  assert.equal(errored.body.error, 'diff failed');
-});
-
-// ── per-task worktree routes (M3) ───────────────────────────────────────────
-// Same git core, parameterized by the task's worktree instead of a session's:
-// the board runtime resolves taskId → {dir, worktreePath, branch, token} and
-// these routes reuse the session diff/merge semantics unchanged.
-
-function taskInfo() {
-  return {
-    dirId: 'd1',
-    dir: { id: 'd1', path: '/repo', baseBranch: 'main' },
-    worktreePath: '/repo/.multicc-worktrees/task-abcd1234',
-    branch: 'multicc/task-abcd1234',
-    token: 'task-abcd1234',
-  };
-}
-
-function createTaskFixture(overrides = {}) {
-  return createFixture({
-    resolveTaskWorktree: taskId => (taskId === 'tsk-1' ? taskInfo() : null),
-    cleanupTaskWorktree: async (taskId, opts) => ({ ok: true, removed: true, taskId, opts }),
-    ...overrides,
-  });
-}
-
-test('task worktree routes mount only when the task resolver deps are present', () => {
-  const plain = createFixture();
-  assert.equal([...plain.app.routes.keys()].some(key => key.includes('/api/task-board/')), false,
-    'session-only composition keeps exactly the nine session routes');
-  const withTasks = createTaskFixture();
-  assert.deepEqual(
-    [...withTasks.app.routes.keys()].filter(key => key.includes('/api/task-board/')).sort(),
-    [
-      'GET /api/task-board/tasks/:taskId/diff/file',
-      'GET /api/task-board/tasks/:taskId/diff/files',
-      'POST /api/task-board/tasks/:taskId/cleanup-worktree',
-      'POST /api/task-board/tasks/:taskId/merge',
-    ],
-  );
-});
-
-test('task diff/files mirrors the session diff DTO against the task worktree', async () => {
-  const fixture = createTaskFixture({
-    implementations: {
-      gitRunQueued: async (repo, args) => {
-        if (args.includes('--numstat')) return '1\t2\tsrc/a.js\0';
-        if (args.includes('--name-status')) return 'M\0src/a.js\0';
-        return '';
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/files'), {
-    params: { taskId: 'tsk-1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.baseBranch, 'main');
-  assert.equal(response.body.branch, 'multicc/task-abcd1234');
-  assert.deepEqual(response.body.files, [{
-    path: 'src/a.js', oldPath: null, status: 'M', additions: 1, deletions: 2, binary: false,
-  }]);
-  assert.equal(response.body.totalFiles, 1);
-  assert.equal(response.body.totalAdditions, 1);
-  assert.equal(response.body.totalDeletions, 2);
-  assert.equal(response.body.truncated, false);
-  assert.equal(response.body.error, null);
-  assert.ok(fixture.calls.run.every(call => call.repo === '/repo/.multicc-worktrees/task-abcd1234'),
-    'git runs inside the task worktree, never a slot or directory path');
-
-  const missing = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/files'), {
-    params: { taskId: 'tsk-other' },
-  });
-  assert.equal(missing.statusCode, 404);
-  assert.equal(missing.body.error, 'task_not_found');
-});
-
-test('task diff/file returns the single-file patch from the task worktree', async () => {
-  const fixture = createTaskFixture();
-  const response = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/file'), {
-    params: { taskId: 'tsk-1' }, query: { path: 'src/a.js' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, { path: 'src/a.js', patch: '', truncated: false, error: null, untracked: false });
-  assert.ok(fixture.calls.run.some(call =>
-    JSON.stringify(call.args) === JSON.stringify(['diff', '--no-color', 'main', '--', 'src/a.js'])),
-  'diff ran inside the task worktree against the task base branch');
-
-  const invalid = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/file'), {
-    params: { taskId: 'tsk-1' }, query: { path: '-x' },
-  });
-  assert.equal(invalid.statusCode, 400);
-});
-
-test('task merge merges the task branch identity and reports conflicts as 409', async () => {
-  const merges = [];
-  const fixture = createTaskFixture({
-    implementations: {
-      gitMergeBack: async (dir, session) => {
-        merges.push({ dir: dir.id, session: { ...session } });
-        return { ok: true, merged: true, commits: 3 };
-      },
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('POST /api/task-board/tasks/:taskId/merge'), {
-    params: { taskId: 'tsk-1' },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(merges, [{
-    dir: 'd1',
-    session: {
-      id: 'task-abcd1234',
-      worktreePath: '/repo/.multicc-worktrees/task-abcd1234',
-      branch: 'multicc/task-abcd1234',
-    },
-  }]);
-  assert.ok(fixture.calls.broadcasts.some(([dirId, payload]) => dirId === 'd1'
-    && payload.type === 'merge_status' && payload.taskId === 'tsk-1'));
-
-  const conflicted = createTaskFixture({
-    implementations: {
-      gitMergeBack: async () => ({ ok: false, conflicts: ['src/conflict.js'] }),
-    },
-  });
-  const conflictResponse = await invoke(conflicted.app.routes.get('POST /api/task-board/tasks/:taskId/merge'), {
-    params: { taskId: 'tsk-1' },
-  });
-  assert.equal(conflictResponse.statusCode, 409);
-  assert.deepEqual(conflictResponse.body.conflicts, ['src/conflict.js']);
-});
-
-test('task merge rejects a missing physical worktree before invoking git', async () => {
-  const fixture = createTaskFixture({ existsSync: () => false });
-  const response = await invoke(fixture.app.routes.get('POST /api/task-board/tasks/:taskId/merge'), {
-    params: { taskId: 'tsk-1' },
-  });
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.body, { error: '任务 worktree 不存在' });
-  assert.equal(fixture.calls.merge.length, 0);
-});
-
-test('task cleanup-worktree delegates to the board service and maps blocked outcomes to 409', async () => {
-  const cleanups = [];
-  const fixture = createTaskFixture({
-    cleanupTaskWorktree: async (taskId, opts) => {
-      cleanups.push({ taskId, opts });
-      return { ok: true, removed: true, merged: true };
-    },
-  });
-  const response = await invoke(fixture.app.routes.get('POST /api/task-board/tasks/:taskId/cleanup-worktree'), {
-    params: { taskId: 'tsk-1' }, body: {},
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, { ok: true, removed: true, merged: true });
-  assert.deepEqual(cleanups, [{ taskId: 'tsk-1', opts: {} }]);
-
-  const blocked = createTaskFixture({
-    cleanupTaskWorktree: async () => ({ ok: false, code: 'run_active', blocked: true }),
-  });
-  const blockedResponse = await invoke(blocked.app.routes.get('POST /api/task-board/tasks/:taskId/cleanup-worktree'), {
-    params: { taskId: 'tsk-1' }, body: {},
-  });
-  assert.equal(blockedResponse.statusCode, 409);
-  assert.equal(blockedResponse.body.code, 'run_active');
-
-  const missing = await invoke(fixture.app.routes.get('POST /api/task-board/tasks/:taskId/cleanup-worktree'), {
-    params: { taskId: 'tsk-other' }, body: {},
-  });
-  assert.equal(missing.statusCode, 404);
-  assert.equal(missing.body.error, 'task_not_found');
 });

@@ -104,6 +104,44 @@ fn get_like(method: &Method) -> bool {
     matches!(method.as_str(), "GET" | "HEAD")
 }
 
+impl Route {
+    /// The methods this cluster registers when this route answers Express's
+    /// automatic OPTIONS. Shared by the responder and by the front-door union
+    /// (`super::OPTIONS_SOURCES`) so the two can never drift.
+    fn allow(self) -> Option<&'static str> {
+        Some(match self {
+            Route::CatalogOptions => "GET,HEAD,POST",
+            Route::StatsOptions
+            | Route::RelayImportCodeOptions
+            | Route::RelaySharesOptions
+            | Route::RelayShareCodeOptions
+            | Route::V1ProvidersOptions
+            | Route::LocalCliOptions => "GET,HEAD",
+            Route::ImportOptions
+            | Route::ProbeOptions
+            | Route::ReassignOptions
+            | Route::RelayShareOptions
+            | Route::RelayModelsSyncOptions
+            | Route::SpeedtestOptions
+            | Route::SyncLocalOptions => "POST",
+            Route::ProviderOptions => "PATCH,DELETE",
+            Route::RelayShareDeleteOptions => "DELETE",
+            Route::DefaultsOptions => "GET,HEAD,PUT",
+            _ => return None,
+        })
+    }
+}
+
+/// This cluster's own share of Express's automatic `OPTIONS` `Allow`, for the
+/// front-door union across clusters (`super::OPTIONS_SOURCES`).
+///
+/// Only `/api/providers/:appType/:id` overlaps another cluster: the
+/// model-catalogs `GET /api/providers/:id/models` has the same three-segment
+/// shape, and `server.js` registered that GET first.
+pub fn options_share(path: &str) -> Option<String> {
+    claim(&Method::OPTIONS, path)?.allow().map(str::to_string)
+}
+
 /// Segment view of `/api/<rest>`, one optional trailing slash removed. Express
 /// matches literal segments case-insensitively and parameters as `[^/]+?`,
 /// so an empty segment never matches.
@@ -1502,20 +1540,23 @@ pub async fn handle(
     host_port_num: u16,
 ) -> Response<Body> {
     match route {
-        Route::CatalogOptions => super::options(ctx, "GET,HEAD,POST"),
-        Route::StatsOptions => super::options(ctx, "GET,HEAD"),
-        Route::ImportOptions => super::options(ctx, "POST"),
-        Route::ProviderOptions => super::options(ctx, "PATCH,DELETE"),
-        Route::ProbeOptions | Route::ReassignOptions | Route::RelayShareOptions => {
-            super::options(ctx, "POST")
-        }
-        Route::RelayModelsSyncOptions => super::options(ctx, "POST"),
-        Route::RelayImportCodeOptions => super::options(ctx, "GET,HEAD"),
-        Route::RelaySharesOptions | Route::RelayShareCodeOptions => super::options(ctx, "GET,HEAD"),
-        Route::RelayShareDeleteOptions => super::options(ctx, "DELETE"),
-        Route::DefaultsOptions => super::options(ctx, "GET,HEAD,PUT"),
-        Route::SpeedtestOptions => super::options(ctx, "POST"),
-        Route::V1ProvidersOptions => super::options(ctx, "GET,HEAD"),
+        Route::CatalogOptions
+        | Route::StatsOptions
+        | Route::ImportOptions
+        | Route::ProviderOptions
+        | Route::ProbeOptions
+        | Route::ReassignOptions
+        | Route::RelayShareOptions
+        | Route::RelayModelsSyncOptions
+        | Route::RelayImportCodeOptions
+        | Route::RelaySharesOptions
+        | Route::RelayShareDeleteOptions
+        | Route::RelayShareCodeOptions
+        | Route::DefaultsOptions
+        | Route::SpeedtestOptions
+        | Route::V1ProvidersOptions
+        | Route::LocalCliOptions
+        | Route::SyncLocalOptions => super::options(ctx, route.allow().unwrap_or_default()),
         Route::CatalogGet => catalog(ctx, host_port_num).await,
         Route::StatsGet => stats(ctx, host_port_num).await,
         Route::ImportPost => import(app, ctx, host_port_num).await,
@@ -1530,8 +1571,6 @@ pub async fn handle(
         Route::RelaySharesGet => relay_shares(ctx, host_port_num).await,
         Route::RelayShareDelete => relay_share_delete(app, ctx, host_port_num).await,
         Route::RelayShareCodeGet => relay_share_code(ctx, host_port_num).await,
-        Route::LocalCliOptions => super::options(ctx, "GET,HEAD"),
-        Route::SyncLocalOptions => super::options(ctx, "POST"),
         Route::LocalCliGet => local_cli(app, ctx).await,
         Route::SyncLocalPost => sync_local(app, ctx).await,
         Route::DefaultsGet => defaults_get(ctx, host_port_num).await,

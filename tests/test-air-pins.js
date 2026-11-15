@@ -9,28 +9,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { airResponse } = require('./helpers/air-response');
 
 const { PIN_LIMIT, normalizePins, readStoredPinIds, createAirPinRuntime } = require('../src/workspace/pins');
-const { mountAirRoutes } = require('../src/workspace/air-routes');
+const { mountAir } = require('./helpers/air-host');
 
 function tempFile() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-air-pins-'));
   return path.join(dir, 'air-pins.json');
-}
-
-function invoke(routes, key, { params = {}, body = {} } = {}) {
-  return call(routes.get(key), { params, body });
-}
-
-function call(handler, { params = {}, body = {} } = {}) {
-  const response = { statusCode: 200, body: undefined };
-  const res = {
-    status(code) { response.statusCode = code; return this; },
-    json(value) { response.body = value; return this; },
-  };
-  handler({ params, body }, res);
-  return response;
 }
 
 function fixture({ taskIds = ['t1', 't2', 't3'], file = tempFile() } = {}) {
@@ -70,15 +55,19 @@ test('淘汰读取最新落盘 pin；损坏文件时拒绝猜测保护名单', (
   assert.throws(() => readStoredPinIds(file));
 });
 
-test('failed pin persistence cannot report success or leave a memory-only pin', () => {
+test('failed pin persistence cannot report success or leave a memory-only pin', async () => {
   // A regular file used as a parent is guaranteed to make atomic save fail.
   const blocker = tempFile();
   fs.writeFileSync(blocker, 'not a directory');
   const blocked = fixture({ file: path.join(blocker, 'pins.json') });
   assert.throws(() => blocked.runtime.toggle('t1'), { code: 'pin_save_failed' });
   assert.deepEqual(blocked.runtime.read(), []);
-  assert.equal(invoke(blocked.routes, 'POST /api/air/pins', { body: { taskIds: ['t1'] } }).statusCode, 500);
-  assert.deepEqual(blocked.runtime.read(), []);
+  // 宿主把落盘失败原样抛给前门（status/code 都在信封里），内存里不留半个钉子。
+  const air = mountAir({ pinsFile: path.join(blocker, 'pins.json'), getBoard: () => ({ tasks: { t1: { id: 't1' } } }) });
+  const failed = await air.fail({ op: 'pins-replace', taskIds: ['t1'] });
+  assert.equal(failed.status, 500);
+  assert.equal(failed.code, 'pin_save_failed');
+  assert.deepEqual(await air.ok({ op: 'pins-read' }), []);
 });
 
 test('页头可以 pin 超过 5 个，只在存储安全线拒绝', () => {
@@ -116,19 +105,28 @@ test('replace 整份归一：去重、去空、截到上限、剪掉不存在的
   assert.equal(runtime.replace(['t1', 't2', 't3', 't4', 't5', 't6']).length, 6);
 });
 
-test('HTTP：GET 读、POST 整份替换、toggle 单点，错误码带 status', () => {
-  const { runtime, routes } = fixture();
-  assert.deepEqual(invoke(routes, 'GET /api/air/pins').body, { ok: true, taskIds: [] });
-  const toggled = invoke(routes, 'POST /api/air/pins/toggle', { body: { taskId: 't1' } });
-  assert.equal(toggled.statusCode, 200);
-  assert.deepEqual(toggled.body.taskIds, ['t1']);
-  const replaced = invoke(routes, 'POST /api/air/pins', { body: { taskIds: ['t3', 't2'] } });
-  assert.deepEqual(replaced.body.taskIds, ['t3', 't2']);
-  assert.equal(invoke(routes, 'POST /api/air/pins', { body: {} }).statusCode, 400);
-  const ghost = invoke(routes, 'POST /api/air/pins/toggle', { body: { taskId: 'nope' } });
-  assert.equal(ghost.statusCode, 404);
-  assert.equal(ghost.body.code, 'task_not_found');
-  assert.equal(runtime.read().length, 2);
+test('宿主端口：GET 读、POST 整份替换、toggle 单点，错误码带 status', async () => {
+  const { runtime, file } = fixture();
+  const tasks = Object.fromEntries(['t1', 't2', 't3'].map(id => [id, { id, title: id, refs: [{ sessionId: 's', dirId: 'd1' }] }]));
+  const air = mountAir({
+    pinsFile: file, getBoard: () => ({ tasks }),
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat' }]]), directories: new Map(),
+    shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => Object.values(tasks) },
+  });
+  assert.deepEqual(await air.ok({ op: 'pins-read' }), []);
+  // 前门把数组折成 { ok: true, taskIds }，数组本身是宿主唯一的事实。
+  assert.deepEqual(await air.ok({ op: 'pins-toggle', taskId: 't1' }), ['t1']);
+  assert.deepEqual(await air.ok({ op: 'pins-replace', taskIds: ['t3', 't2'] }), ['t3', 't2']);
+  const ghost = await air.fail({ op: 'pins-toggle', taskId: 'nope' });
+  assert.equal(ghost.status, 404);
+  assert.equal(ghost.code, 'task_not_found');
+  assert.equal((await air.ok({ op: 'pins-read' })).length, 2);
+  // 同一份文件换一个进程实例读 —— 「Web 和 App 看到同一份」那件事。
+  assert.deepEqual(runtime.read(), ['t3', 't2']);
+  // 缺 taskIds / 非数组的 400 由前门判（native/gateway/tests/air_routes.rs），宿主根本
+  // 收不到那次调用；宿主只负责把数组整份归一落盘，空数组就是清空。
+  assert.deepEqual(await air.ok({ op: 'pins-replace', taskIds: [] }), []);
 });
 
 test('损坏的 pins 文件从空开始，不影响别的状态（爆炸半径只有几个钉子）', () => {
@@ -145,16 +143,14 @@ test('损坏的 pins 文件从空开始，不影响别的状态（爆炸半径�
 test('/api/air 快照带着 pin，客户端不用为它多打一次接口', async () => {
   const pinsFile = tempFile();
   const board = { tasks: { t1: { id: 't1', title: 'One' }, t2: { id: 't2', title: 'Two', mergedIntoTaskId: 't1' } } };
-  const handlers = new Map();
-  const app = { get: (p, fn) => handlers.set(p, fn), post: (p, fn) => handlers.set(p, fn) };
-  mountAirRoutes(app, {
+  const air = mountAir({
     pinsFile, getBoard: () => board,
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map(), directories: new Map(), clis: ['claude'],
     shell: { taskAccess: () => ({ readOnly: false }) },
   });
-  call(handlers.get('/api/air/pins/toggle'), { body: { taskId: 't1' } });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const snapshot = JSON.parse(res.body);
+  await air.ok({ op: 'pins-toggle', taskId: 't1' });
+  const snapshot = (await air.snapshot()).json;
   assert.deepEqual(snapshot.taskPins, ['t1']);
   assert.equal(snapshot.tasks.some(t => t.id === 't2'), false);
 });

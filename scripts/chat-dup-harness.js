@@ -226,6 +226,16 @@ function createRig(cli = 'claude') {
 /* ───────────────────────── 事件构造小工具 ───────────────────────── */
 
 const msgStart = () => ({ type: 'stream_event', event: { type: 'message_start', message: {} } });
+// 带 usage 的 message_start：首帧就会挂上用量行（入/出/读/写），这是空壳场景的
+// 关键前提——框里一个字都没有，却已经有一行装饰内容。
+const msgStartUsage = (usage = { input_tokens: 4, output_tokens: 0 }) => ({
+  type: 'stream_event', event: { type: 'message_start', message: { usage } },
+});
+const errorEvent = (text = 'upstream rate limit') => ({ type: 'error', error: text });
+const toolUseStart = (name = 'Bash', id = 'tu-1', index = 0) => ({
+  type: 'stream_event',
+  event: { type: 'content_block_start', index, content_block: { type: 'tool_use', name, id } },
+});
 const streamStart = () => ({ type: 'stream_start' });
 const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
 const result = () => ({ type: 'result', total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 5 } });
@@ -283,6 +293,49 @@ function scanDuplicates(messagesEl) {
     }
   }
   return { findings, bubbles };
+}
+
+/* ─────────────────────── 空壳气泡扫描器 ─────────────────────── */
+
+// scanDuplicates 用 `.filter(b => b.text)` 把无文本气泡滤掉了，所以它对空壳完全
+// 失明——空壳不是「同一段文字画了两遍」，而是「框、用量行、归属行都在，正文一个
+// 字都没有」。这类壳由换线/限额中断留下，刷新即消失（没有正文＝没有落库记录）。
+// 这里单独扫：装饰节点不算正文，工具卡片与 thinking 算正文（纯工具回合是合法的）。
+const DECORATIVE_CLASSES = [
+  'msg-usage', 'msg-model-attribution', 'msg-model-attribution-row',
+  'msg-stream-tail', 'msg-timing',
+];
+
+function scanEmptyBubbles(messagesEl) {
+  const empties = [];
+  for (const node of messagesEl.children) {
+    if (!node.classList.contains('msg') || !node.classList.contains('assistant')) continue;
+    const content = node.querySelector('.msg-content');
+    if (!content) continue;
+    const decorative = [];
+    let substantive = 0;
+    for (const child of content.children) {
+      if (DECORATIVE_CLASSES.some(c => child.classList.contains(c))) {
+        decorative.push([...child._classSet].find(c => DECORATIVE_CLASSES.includes(c)));
+        continue;
+      }
+      // 与 chat-event-controller 的 bubbleHasSubstance 同口径：renderCurrentText
+      // 留下的空 markdown 容器不算产出，否则空壳会被误判成有内容而漏报。
+      if (child.classList.contains('message-markdown')
+          && !String(child.textContent || '').trim()
+          && !child.querySelector('.tool-card')) continue;
+      substantive += 1;
+    }
+    const own = String(content._text || '').trim();
+    if (substantive === 0 && !own) {
+      empties.push({
+        uid: node._uid,
+        msgId: node.dataset.msgId || null,
+        decorative,
+      });
+    }
+  }
+  return empties;
 }
 
 /* ───────────────────────────── 场景集 ───────────────────────────── */
@@ -380,7 +433,37 @@ const SCENARIOS = [
     ],
     expect: 'UNKNOWN',
   },
+  {
+    // 用户实拍：两个只剩「入4/写312.7k」「入6/写469.1k」用量行与「由 Claude 产出」
+    // 归属行的空框，刷新后消失。链条是 message_start 建框 + 首帧 usage 挂用量行 +
+    // 自动选线提前挂归属行，然后本轮被上游限额打断（走 error 分支的 finishStreaming，
+    // 不是 result），正文永远不会到。
+    name: 'S9 message_start 带 usage 后被 error 中断：不得留下空壳气泡',
+    cli: 'claude',
+    events: () => [msgStartUsage(), errorEvent()],
+    expect: 'CLEAN',
+    expectEmptyBubbles: 0,
+  },
+  {
+    // 守卫的安全边界：只有工具调用、没有任何文字的回合是合法产出，绝不能被当成
+    // 空壳删掉。这一条红了说明守卫判定过宽。
+    name: 'S10 纯工具回合（无正文）被 error 中断：工具卡片必须保留',
+    cli: 'claude',
+    events: () => [msgStartUsage(), toolUseStart(), errorEvent()],
+    expect: 'CLEAN',
+    expectEmptyBubbles: 0,
+    expectToolCards: 1,
+  },
 ];
 
 
-module.exports = { createRig, scanDuplicates, SCENARIOS, helpers: { msgStart, streamStart, delta, result, assistantSnapshot, assistantBlock, commit, reconnectInit, chatHistory } };
+module.exports = {
+  createRig,
+  scanDuplicates,
+  scanEmptyBubbles,
+  SCENARIOS,
+  helpers: {
+    msgStart, msgStartUsage, streamStart, delta, result, assistantSnapshot,
+    assistantBlock, commit, reconnectInit, chatHistory, errorEvent, toolUseStart,
+  },
+};

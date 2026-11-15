@@ -65,7 +65,7 @@ const crypto = require('crypto');
 const bus = require('./src/bus');
 const services = require('./src/services');
 const state = require('./src/state/container');
-const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), annotationLive = require('./src/annotation-live'), remoteScreen = require('./src/remote-screen'), pluginsRoutes = require('./src/routes/plugins');
+const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), remoteScreen = require('./src/remote-screen'), pluginsRoutes = require('./src/routes/plugins');
 const providers = require('./src/providers/core');
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/codex/model-catalog').startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
@@ -120,41 +120,40 @@ const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLi
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { mountScanHistoryHostRoute } = require('./src/routes/scan-history-host');
-const { mountSystemRoutes } = require('./src/routes/system');
+const { mountApkDownload } = require('./src/routes/system');
+const { createReleaseHistoryHost } = require('./src/routes/release-history-host');
 const { mountSystemHostRoute } = require('./src/routes/system-host');
 const { createApkDistribution } = require('./src/apk-distribution');
 const { mountHostReadHostRoute } = require('./src/routes/host-read-host');
-const { mountHostWriteRoutes } = require('./src/routes/host-write');
+const { mountPushHostRoute } = require('./src/routes/push-host');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
 const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host');
 const { mountTurnLedgerHostRoute } = require('./src/routes/turn-ledger-host');
-const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/providers/relay-share-store');
 const { mountModelCatalogsHostRoute } = require('./src/routes/model-catalogs-host');
-const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
-const { mountQoderQuotaRoutes } = require('./src/routes/qoder-quota');
-const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota'); const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex/accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
-const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
-const { mountKimiQuotaRoutes } = require('./src/routes/kimi-quota');
-const { mountClaudeUsageQuotaRoutes } = require('./src/routes/claude-usage-quota');
-const { mountAliyunQuotaRoutes } = require('./src/routes/aliyun-quota');
+const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex/accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
+const { mountQuotaHostRoute } = require('./src/routes/quota-host');
 const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance');
 const { createProviderRelayModelCatalogRuntime } = require('./src/providers/relay-model-catalog');
-const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
+const { createMemoryBrowserRoutes } = require('./src/routes/memory-browser');
+const { createDocsMemoryHost } = require('./src/routes/docs-memory-host');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRuntime } = require('./src/routes/agent-resources');
 const { mountAgentResourcesHostRoute } = require('./src/routes/agent-resources-host');
 const { mountSecretsVaultHostRoute } = require('./src/routes/secrets-vault-host');
 const { mountTokenUsageHostRoute } = require('./src/routes/token-usage-host');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
+const { createSessionRoutesHost } = require('./src/routes/session-routes-host');
+const { createShareMachinesHost } = require('./src/routes/share-machines-host');
+const { createAccountRoutesHost } = require('./src/routes/account-routes-host');
 const { createLoginTerminalDisposer } = require('./src/session/login-terminal');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
-const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes } = require('./src/routes/kimi-auth');
+const { mountZcodeAuthRoutes, mountZcodeAuthLoginRoute } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes, mountKimiAuthLoginRoute } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createChatTurnEngine } = require('./src/chat/turn-engine'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/providers/auto-provider-config');
 const { createTuiChatMirrorRuntime, isEnabled: tuiChatMirrorEnabled, validateExperimentalSession } = require('./src/experiments/tui-chat-mirror-runtime');
@@ -182,7 +181,6 @@ const {
 const { createTaskHistoryRetention, taskHistoryRefusal } = require('./src/session/task-history-retention');
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
-const { mountShareRoutes } = require('./src/routes/share');
 const { createFleetSharing } = require('./src/fleet-sharing');
 const { createSessionAdminRuntime } = require('./src/routes/session-admin');
 const { createSessionTriggers } = require('./src/triggers');
@@ -893,8 +891,9 @@ async function destroySessionCascade(s, d, opts = {}) {
 // (never exported by reference) and hydrates it here at boot, exactly where the
 // inline loadNotes() ran before extraction. Created before every consumer —
 // seedCommanderSession/destroySessionCascade/directoryModule all take
-// appendEvent/purgeNotesForSession by value — and before `directories` exists,
-// so the route mount happens after the directory module is composed.
+// appendEvent/purgeNotesForSession by value. The events route itself is served
+// by the Rust front door; src/routes/docs-memory-host.js only answers its
+// `notes-events` host lookup against the directory map composed below.
 const notesStore = createNotesStore({
   eventsDir: MULTICC_PATHS.eventsDir,
   notesFile: MULTICC_PATHS.notesFile,
@@ -955,9 +954,6 @@ const directoryModule = createDirectoryModule({
   },
 });
 function saveDirectories() { directoryModule.repo.save(); }
-// Directory event log route (GET /api/directories/:id/events) — mounted where
-// the inline handler lived, now that `directories` exists and app routing is up.
-notesStore.mountRoutes(app);
 if (_state.needsSave) {
   saveDirectories();
   sessionPersistence.mutate('startup.schema-migration', () => {});
@@ -1370,7 +1366,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) livenessRuntime.recordProxyActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
-machines.mount(app, express); app.use(express.json({ limit: '50mb' }));
+machines.mountProxy(app, express); app.use(express.json({ limit: '50mb' }));
 // Codex 协议代理端点：官方 relay 与 responses-compat（XFYun 流稳定化）。
 // Responses↔Chat 转换桥已退役——主流国产服务商均已原生支持 /responses。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
@@ -1506,7 +1502,10 @@ const sessionAdmin = createSessionAdminRuntime({
   requestContext,
   withApiMeta,
 });
-sessionAdmin.mountRoutes(app);
+// 编排与无人值守 23 条公开路由已由 Rust 前门独占（native/gateway/src/app/orchestration_routes.rs）；
+// 四个退休模块只挂在这个捕获应用上，宿主端口在 createOrchestrationRoutes 之后统一暴露。
+const orchestrationHost = require('./src/routes/orchestration-host').createOrchestrationHost({ express });
+sessionAdmin.mountRoutes(app, { unattendedApp: orchestrationHost.app });
 const workspaceSnapshot = sessionAdmin.workspaceSnapshot;
 
 // Workspace and fleet-wide Meta state share one runtime so every event is
@@ -1541,12 +1540,13 @@ function v1Error(req, res, status, message, code) {
 // Agent presets, installed skills and Claude history share one read/cleanup boundary.
 mountAgentResourcesHostRoute(app, { runtime: agentResources });
 
-// ── Directory REST API (src/directory: controller / service / repository) ──
-// Routes: GET /api/fs/list · GET|POST /api/directories · PATCH|DELETE
-// /api/directories/:id · POST :id/push · GET :id/uncommitted · POST :id/commit.
-// Handlers live in src/directory/controller.js, business rules in service.js,
-// persistence in repository.js — composed next to the persistence bootstrap.
-app.use(directoryModule.router);
+// ── Directory REST API (Rust front door) ──
+// GET /api/fs/list · GET|POST /api/directories · PUT /api/directories/order ·
+// PATCH|DELETE /api/directories/:id · POST :id/push · GET :id/uncommitted ·
+// POST :id/commit and the three /api/ui-layout routes are answered by the Rust
+// front door; this internal port only exposes the live table, git, fs and
+// session effects it asks about (src/routes/directory-host.js).
+directoryModule.host.mount(app);
 
 // Memo is a bounded host/controller. It owns validation and file I/O; errors
 // flow through src/http's branded mapping before the terminal safe handler.
@@ -1563,7 +1563,6 @@ const memoModule = createMemoModule({
   memoRoot: MEMORY_STORE_ROOT,
   log: message => console.log(message),
 });
-app.use(memoModule.router);
 memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration failed: ${error.message}`));
 
 // Create + persist an isolated session record (its own git worktree + branch).
@@ -1590,7 +1589,12 @@ const disposeLoginTerminal = createLoginTerminalDisposer({
   saveSessions: savePersistedSessionsBestEffort,
 });
 
-mountSessionCreateRoutes(app, {
+// 会话管理 16 条公开路由由 Rust 前门独占（native/gateway/src/app/session_routes.rs）；
+// 六个退休模块在捕获应用上注册，Node 只经 `POST /api/__host/session-routes` 暴露它们的运行时事实。
+const sessionRoutesHost = createSessionRoutesHost();
+const accountRoutesHost = createAccountRoutesHost();
+
+mountSessionCreateRoutes(sessionRoutesHost.app, {
   directories, createSessionRecord, asyncHandler, sessions: persistedSessions, disposeLoginTerminal,
   createTask: input => taskShellHost.createTask(input), getRecord: id => persistedSessions.get(id),
 });
@@ -1665,7 +1669,7 @@ const { applySessionPatch, previewSessionPatch } = createSessionProfileRoutes({
   mergeHistory: (id, messages, options) => chatHistoryRuntime.mergeHistory(id, messages, options),
   getFolderMemory: () => folderMemory,
   getCliSwitchGitSnapshot: () => cliSwitchGitSnapshot,
-}).mountRoutes(app);
+}).mountRoutes(sessionRoutesHost.app);
 
 // Folder memory owns filesystem layout, seed files and the frozen prompt snapshot.
 // Session routes consume that service plus the existing curated-memory primitives.
@@ -1686,7 +1690,7 @@ const taskMemoryDistiller = require('./src/memory/task-distill').createTaskMemor
   listFiles: dir => folderMemory.listFiles(dir),
   logger,
 });
-mountSessionMemoryRoutes(app, {
+mountSessionMemoryRoutes(sessionRoutesHost.app, {
   fs,
   path,
   records: persistedSessions,
@@ -1702,7 +1706,8 @@ mountSessionMemoryRoutes(app, {
 
 // Memory graph/tree and generic file editing share one filesystem boundary.
 // Session-level curated memory routes above retain their separate semantics.
-mountMemoryBrowserRoutes(app, {
+// This object is the filesystem half of the docs/memory host port below.
+const memoryBrowser = createMemoryBrowserRoutes({
   fs,
   path,
   memoryStoreRoot: MEMORY_STORE_ROOT,
@@ -1716,7 +1721,7 @@ mountMemoryBrowserRoutes(app, {
 // ── Cross-machine handoff: encrypted bundle v2 (memory scopes + skills + context deps
 // + git); lives in src/routes/session-bundle.js, host wiring here. Provider state
 // deliberately does not travel — the target machine picks its own provider. ──
-createSessionBundleRoutes({
+const sessionBundleRuntime = createSessionBundleRoutes({
   persistedSessions,
   directories,
   asyncHandler,
@@ -1728,7 +1733,16 @@ createSessionBundleRoutes({
   getFolderMemory: () => folderMemory,
   listInstalledSkills,
   getSkillSyncRuntime: () => skillSyncRuntime,
-}).mountRoutes(app);
+});
+// JSON export/import rides the host port; the two binary transports
+// (`bundle.zip`, `import-zip`) stay publicly served by Node (front door does
+// not claim them: a zip's bytes carry timestamps and a raw 160 MB body is not
+// JSON), so the module is mounted on the real app as well.
+sessionBundleRuntime.mountRoutes(sessionRoutesHost.app);
+// Only the binary pair goes on the real app. Mounting all four here would
+// republish the two migrated JSON transports as a silent Node fallback whose
+// behaviour could drift from the front door's.
+sessionBundleRuntime.mountBinaryRoutes(app);
 
 sessionGitRuntime.mountRoutes(app);
 
@@ -1758,19 +1772,19 @@ const sessionLifecycleRuntime = createSessionLifecycleRuntime({
   // pushRuntime is composed further down this file; forward lazily past the TDZ.
   cleanupPushMonitor: (id) => cleanupPushMonitor(id),
   getSessionGitRuntime: () => sessionGitRuntime,
-}).mountRoutes(app); // chainable since the fix: mountRoutes returns the runtime
+}).mountRoutes(sessionRoutesHost.app); // chainable since the fix: mountRoutes returns the runtime
 
 // ── Restart the whole multicc server (graceful) ──
 // Handler + detached-scheduler debounce live in src/routes/server-restart-route.js;
 // only host wiring stays here. rootDir must be THIS file's __dirname (the package
 // root the manager script lives in), not the route module's directory. authSecurity.shuttingDown()
 // is forwarded lazily so the route reads the host's live shutdown flag at request time.
-createServerRestartRoute({
+const serverRestartRoute = createServerRestartRoute({
   chatSessions,
   spawn,
   rootDir: __dirname,
   getShuttingDown: () => authSecurity.shuttingDown(), desktopExit: reason => gracefulShutdown(reason),
-}).mountRoutes(app);
+});
 
 // ── One-click update (runs `./multicc update`, which restarts us at the end) ──
 // Run state lives in logs/update.log, not in memory: the process that starts the
@@ -1785,7 +1799,7 @@ const updateRoute = createUpdateRoute({
   path,
   https,
   gitRun,
-}); updateRoute.mountRoutes(app);
+});
 
 // ── Per-session metadata: inter-agent notes + liveness ──
 // Handler logic lives in src/routes/session-meta.js; only host wiring stays
@@ -1800,7 +1814,11 @@ createSessionMetaRuntime({
   pendingNotesFor,
   getNotes: () => notesStore.getNotes(),
   getLivenessRuntime: () => livenessRuntime,
-}).mountRoutes(app);
+}).mountRoutes(sessionRoutesHost.app);
+
+// The single loopback host port the six retired modules' facts are reached
+// through. Mounted after all six have registered, so the op table resolves.
+sessionRoutesHost.mountRoute(app); accountRoutesHost.mountRoute(app);
 
 // Host port for the file browser: the Rust front door owns /api/files and
 // /api/upload; Node is asked only for the session table and the directory
@@ -1883,23 +1901,39 @@ const share = require('./src/share');
 // route below can serve a recipient the same chat document through the same
 // cache-busting writer. Mounting still happens at its original point below.
 const staticAssetsRuntime = createStaticAssetsRoutes({ express, fs, path, publicDir: path.join(__dirname, 'public') });
-mountShareRoutes(app, { share, persistedSessions, loadChatHistory, viewChatHistory, parseCookies, logger,
-  // Read-only paging for a recipient scrolling up; the chat history runtime is
-  // assembled later in this file, so it is read at request time.
-  paginateChatHistory: (...args) => chatHistoryRuntime.paginate(...args),
-  // A share link opens the real chat renderer, narrowed by the share's own
-  // authority (see src/routes/share.js) — not a second, lesser page.
-  chatPageFile: path.join(__dirname, 'public', 'chat.html'),
-  serveHtml: staticAssetsRuntime.serveHtml,
+// The Rust front door owns the 21 share / machines / workspaces routes. Its
+// Node child keeps the runtime facts — the machine registry (already
+// native/core/machines), the share store and password cookies, the workspace
+// scan/sweep runtime and the versioned-HTML writer — behind one loopback host
+// port (`src/routes/share-machines-host.js`). The three retired modules are
+// mounted on that capture app, in their original order; none of them stays on
+// the public app. Only the raw/SSE machine proxy is still a public route
+// (`machines.mountProxy`).
+const shareMachinesHost = createShareMachinesHost({
+  express,
+  machines,
+  share: { share, persistedSessions, loadChatHistory, viewChatHistory, parseCookies, logger,
+    // Read-only paging for a recipient scrolling up; the chat history runtime is
+    // assembled later in this file, so it is read at request time.
+    paginateChatHistory: (...args) => chatHistoryRuntime.paginate(...args),
+    // A share link opens the real chat renderer, narrowed by the share's own
+    // authority (see src/routes/share.js) — not a second, lesser page.
+    chatPageFile: path.join(__dirname, 'public', 'chat.html'),
+    serveHtml: staticAssetsRuntime.serveHtml,
+  },
+  workspaces: {
+    records: persistedSessions, directories,
+    getHibernation: () => sessionHibernationRuntime, getOrphanScanner: () => worktreeOrphanScanner,
+  },
 });
+shareMachinesHost.mountRoute(app);
 fleetSharingRuntime = createFleetSharing({ sharesFile: MULTICC_PATHS.fleetSharesFile,
   getDirectory: id => directories.get(id),
   listSessions: id => persistedSessions.listByDir(id).filter(session => session.type !== 'aux'),
   authSecurity,
 });
 
-// Rust info routes use Node process facts.
-mountSystemRoutes(app, { apkDistribution, iosOta });
+mountApkDownload(app, { apkDistribution, iosOta }); // 本地文件时 next() 落到 express.static。
 mountSystemHostRoute(app, {
   fs,
   path,
@@ -1924,7 +1958,7 @@ mountHostReadHostRoute(app, {
 // Mutable host settings use the matching narrow boundary. Durable .env/config
 // writes commit before hot runtime state is changed, so write failures reach
 // the terminal safe error handler instead of returning a runtime-only success.
-mountHostWriteRoutes(app, {
+const hostWriteDeps = {
   readEnvFile,
   writeEnvFile,
   push,
@@ -1941,7 +1975,7 @@ mountHostWriteRoutes(app, {
   taskAttributionMode: { get: () => taskShellHost.attributionSettings().getMode(), set: mode => taskShellHost.attributionSettings().setMode(mode) },
   log: message => console.log(message),
   reportFailure: (stage, category) => reportHostControlFailure('host_write', stage, category),
-});
+};
 
 // WS fan-out remains host-owned because terminal, chat, workspace and Aux all use it.
 function sendWs(client, payload, context) {
@@ -1971,7 +2005,7 @@ const {
   AUX_HISTORY_MAX,
   auxQueue,
   getAuxConfig, clearAuxProvider,
-} = mountAuxGoalRoutes(app, {
+} = mountAuxGoalRoutes(orchestrationHost.app, {
   fs,
   crypto,
   rootDir: __dirname,
@@ -2076,7 +2110,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   relocateShellTask: (taskId, dirId, opts) => taskShellHost.relocateTask(taskId, dirId, opts),
   logger: console,
 });
-taskBoardRuntime.mountRoutes(app); createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), messages: messageSearchRuntime, logger }).mountRoutes(app); messageSearchRuntime().start();
+const taskSearchRuntime = createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), messages: messageSearchRuntime, logger }); messageSearchRuntime().start();
 const taskContextHost = createTaskContextHost({
   getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
   append: (id, m) => chatHistoryRuntime.appendMessage(id, m),
@@ -2118,12 +2152,19 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
 });
 taskShellHost.mountRoutes(app);
 // 任务图谱：taskboard JSON + task-shell SQLite 聚合为 { nodes, edges }（只读）。
-require('./src/routes/task-graph').mountTaskGraphRoutes(app, {
+const taskGraphRoutes = require('./src/routes/task-graph').createTaskGraphRoutes({
   getBoard: () => taskBoardRuntime.getBoard(),
   taskGraphData: () => taskShellHost.taskGraphData(),
   getRecord: id => persistedSessions.get(id),
   directories,
   now: () => Date.now(),
+});
+// 任务面 16 条公开路由已由 Rust 前门独占（native/gateway/src/app/task_routes.rs）；
+// 这里只把 Node 独有的存储、锁与索引暴露成回环宿主端口。
+require('./src/routes/task-routes-host').mountTaskRoutesHostRoute(app, {
+  ports: taskBoardRuntime.routePorts, search: taskSearchRuntime,
+  taskGoal: sessionAdmin.taskGoalPorts, taskGraph: taskGraphRoutes,
+  attributionMode: () => taskShellHost.attributionSettings().getMode(),
 });
 const skillSyncRuntime = createSkillSyncRuntime({
   fs,
@@ -2140,7 +2181,7 @@ const skillSyncRuntime = createSkillSyncRuntime({
   auxSessionId: AUX_SESSION_ID,
   logger: console,
 });
-mountSkillSyncRoutes(app, skillSyncRuntime);
+// /api/skill-sync/* 已由 Rust 前门独占；运行时在这里交给 host-ops 宿主端口。
 
 // ── Per-session providers (backed by cc-switch) ──────────────────────────────
 const providerRoutes = createProviderRoutes({
@@ -2168,8 +2209,8 @@ const { providerDefaults, validProviderId } = providerRoutes;
 // served by the Rust front door; Node keeps only the CLI spawns and caches.
 mountModelCatalogsHostRoute(app);
 require('./src/routes/provider-relay-host').mountProviderRelayHostRoute(app, { authRuntime, modelCatalogRuntime: providerRelayModelCatalogRuntime });
-require('./src/routes/cli-key-accounts').mountCliKeyAccountRoutes(app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence });
-require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(app, {
+require('./src/routes/cli-key-accounts').mountCliKeyAccountRoutes(accountRoutesHost.app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence });
+require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(accountRoutesHost.app, {
   directories, createSessionRecord, disposeLoginTerminal,
   getStatus: () => {
     const env = { ...process.env };
@@ -2177,32 +2218,29 @@ require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(app, {
     return require('./src/routes/commandcode-auth').readCommandcodeLogin({ env });
   },
 });
-require('./src/routes/pricing').mountPricingRoutes(app, { priceTable: require('./src/pricing/price-table').sharedPriceTable(), asyncHandler }); // GET /api/pricing/status|lookup|search + POST /api/pricing/refresh — process-wide models.dev price table for the Auto router (src/pricing/price-table.js)
-
 // GET /api/claude/models is served by the Rust front door (native/gateway, docs/gateway.md §9); ids are extracted from the local claude CLI bundle.
 
-// GET /api/opencode/quota — drive whatever Chrome the user already has open
-// (src/chrome-cdp.js) to scrape the OpenCode Zen console's Go subscription
-// usage (5h rolling / weekly / monthly). SSR'd hydration data, no REST API
-// exists. Surfaces chrome_unavailable / needs_login / unavailable states so
-// the chat rate-limit bar can prompt instead of degrading silently.
-mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app, { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
-// Vendor routes feed results into the provider-limit cache via the recorder;
-// Qoder/OpenCode/Codex are account-level, so only ark/kimi/claude feed here.
-mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app, { quotaBarCache, recordVendor: limitRecorder.recordVendor, recordClaude: limitRecorder.recordClaude });
-mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/quota/official-account-usage').claudeUsageWindows(usage) }) }); require('./src/quota/official-account-usage').createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
-const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent, disposeLoginTerminal }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
+// The 22 pricing / vendor-quota / quota-bar routes are served by the Rust front
+// door (native/gateway/src/app/quota_routes.rs, docs/gateway.md §8). What stays
+// in Node is the process-local half — the models.dev price table, the managed
+// Chrome profile that scrapes each vendor console, the codex auth files, the
+// arkcli subprocess, the quota-bar cache, the Claude usage queue and the
+// provider-limit recorders — all reachable only through this one host port.
+mountQuotaHostRoute(app, {
+  quotaBarCache,
+  recordVendor: limitRecorder.recordVendor,
+  recordClaude: limitRecorder.recordClaude,
+  resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id),
+});
+// `?account=` quota reads and the subscription panel resolve the same auth
+// files through the account-subscription reader; the retired codex mount
+// registered it, so it is registered explicitly here.
+require('./src/quota/account-subscription-reader').registerAccountSubscriptionReader('codex', { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
+mountCodexOAuthRoutes(accountRoutesHost.app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/quota/official-account-usage').claudeUsageWindows(usage) }) }); require('./src/quota/official-account-usage').createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
+const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent, disposeLoginTerminal }); claudeOAuthSurface.mountRoutes(accountRoutesHost.app); // see src/routes/claude-oauth.js header
 // The token-usage host port stays between the two Provider route phases: the
 // public token APIs are served by the Rust front door, accounting still lives here.
 mountTokenUsageHostRoute(app, { tracker: roleTokenTracker, logFailure: (event, error) => logger.error(event, { code: error && error.code }) });
-
-// Workspace overview + manual sweep for the /manage「工作区」panel
-// (src/routes/workspaces.js): hibernation status, per-directory awake counts,
-// unknown-ignored deletion audit and the orphan-worktree report.
-require('./src/routes/workspaces').mountWorkspaceRoutes(app, {
-  records: persistedSessions, directories,
-  getHibernation: () => sessionHibernationRuntime, getOrphanScanner: () => worktreeOrphanScanner,
-});
 
 providerRoutes.mountManagementRoutes(app);
 
@@ -2213,9 +2251,11 @@ providerRoutes.mountManagementRoutes(app);
 // good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
 require('./src/quota/quota-self-heal').wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes, getPort: () => PORT }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
 
-// ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
-// pre-turn auth check). Mounted after provider routes for logical grouping.
-mountZcodeAuthRoutes(app); mountKimiAuthRoutes(app);
+// ZCode / Kimi auth management (desktop key sync, manual key, pre-turn auth
+// check) rides the account host port; only their blocking login POSTs stay
+// public in Node, forwarded by the front door.
+mountZcodeAuthRoutes(accountRoutesHost.app); mountKimiAuthRoutes(accountRoutesHost.app);
+mountZcodeAuthLoginRoute(app); mountKimiAuthLoginRoute(app);
 
 // Temp artifacts produced by the multicc-artifact skill (served from
 // ~/.multicc/artifacts). Mounted before the public static handler so /artifacts
@@ -2266,8 +2306,19 @@ chatHistoryRuntime = createChatHistoryRuntime({
   }), taskShortCode, logger,
 });
 chatHistoryService = chatHistoryRuntime.service;
-chatHistoryRuntime.mountRoutes(app);
-createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app); mountTurnLedgerHostRoute(app, { launch: id => turnLedgerRuntime.launch(id), record: id => turnLedgerRuntime.record(id), trust: input => turnLedgerRuntime.trust(input) }); require('./src/doctor/host').mountDoctor(app, { persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir: __dirname, dataDir: MULTICC_PATHS.root });
+createReleaseHistoryHost({ chatHistory: chatHistoryRuntime, apkDistribution, iosOta }).mountRoute(app);
+createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(orchestrationHost.app); mountTurnLedgerHostRoute(app, { launch: id => turnLedgerRuntime.launch(id), record: id => turnLedgerRuntime.record(id), trust: input => turnLedgerRuntime.trust(input) }); const doctorHost = require('./src/doctor/host').createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir: __dirname, dataDir: MULTICC_PATHS.root });
+// 宿主与系统操作 40 条公开路由已由 Rust 前门独占（native/gateway/src/app/host_ops_routes.rs）；
+// 这里只把 Node 独有的进程/主机副作用暴露成回环宿主端口。
+require('./src/routes/host-ops-host').createHostOpsHost({
+  express,
+  serverRestart: serverRestartRoute,
+  update: updateRoute,
+  hostWrite: hostWriteDeps,
+  skillSync: skillSyncRuntime,
+  envDoctor: doctorHost.envDoctor,
+  doctor: doctorHost.doctor,
+}).mountRoute(app);
 
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }
 // Read-only history view.
@@ -2402,7 +2453,9 @@ const pushRuntime = createPushRuntime({
   now: Date.now,
   logger: console,
 });
-pushRuntime.mountRoutes(app);
+// Host port for the push cluster: the Rust front door owns those 18 routes;
+// Node is asked only for the in-process Maps, device stores and real sends.
+mountPushHostRoute(app, { push, logger: console });
 const pushOnOutput = pushRuntime.onOutput;
 const pushOnInput = pushRuntime.onInput;
 const triggerPush = pushRuntime.notify;
@@ -2762,7 +2815,7 @@ waitInjector.init({
 
 // Durable wait/callback, detached operation and observed-task HTTP surfaces share
 // one controller boundary over the already-composed orchestration runtime.
-createOrchestrationRoutes({
+const orchestrationRoutes = createOrchestrationRoutes({
   records: persistedSessions,
   runtime: orchestrationRuntime,
   waitInjector,
@@ -2780,7 +2833,10 @@ createOrchestrationRoutes({
   busyReasons: dispatchTargetBusyReasons,
   // "Cancel did not take" gets one more move: stop the writer holding it.
   unstickBlocked: (id, opts) => workspaceAdmission?.escalate(id, opts),
-}).mountRoutes(app);
+});
+orchestrationRoutes.mountHostRoutes(orchestrationHost.app);
+orchestrationRoutes.mountRoutes(app);
+orchestrationHost.mountRoute(app);
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive
 // live behind one transport boundary. Mutable auth/shutdown state stays lazy.
@@ -2846,16 +2902,25 @@ const triggerRuntime = createSessionTriggers({
   now: Date.now,
   logger,
 });
-triggerRuntime.mountRoutes(app);
-const eventsHost = require('./src/events/host').createEventsHost({ bus, app, persistedSessions, chatSessions, saveBestEffort: savePersistedSessionsBestEffort, rulesFile: MULTICC_PATHS.eventRulesFile, secretsVault, latestAssistantConclusion: (...a) => chatHistoryRuntime.latestAssistantConclusion(...a), createChatTask: i => taskShellHost.createTask(i), admit: (id, text, opts) => chatTurnEngine.admitChatWork(id, text, opts), notify: (...a) => pushRuntime.notify(...a), logger });
+const eventsHost = require('./src/events/host').createEventsHost({ bus, persistedSessions, chatSessions, saveBestEffort: savePersistedSessionsBestEffort, rulesFile: MULTICC_PATHS.eventRulesFile, secretsVault, latestAssistantConclusion: (...a) => chatHistoryRuntime.latestAssistantConclusion(...a), createChatTask: i => taskShellHost.createTask(i), admit: (id, text, opts) => chatTurnEngine.admitChatWork(id, text, opts), notify: (...a) => pushRuntime.notify(...a), logger });
+// 事件/触发器/标注的公开路由由 Rust 前门独占；宿主端口只暴露进程内事实。
+require('./src/routes/events-host').createEventsRuntime({
+  hub: eventsHost.hub,
+  engine: eventsHost.engine,
+  persistedSessions,
+  sessionPersistence,
+  appendEvent,
+  triggerRuntime,
+  cron,
+  logger,
+}).mount(app);
 const teardownTriggers = triggerRuntime.teardownSession;
 
 const ensureFirstRunDirectory = async () => {
   if (!_state.needsDefaultDirectory || directories.size > 0) return;
-  const result = await directoryModule.service.register({
+  const result = await directoryModule.host.registerDefaultDirectory({
     name: '我的工作区',
     path: MULTICC_PATHS.defaultWorkspacePath,
-    create: true,
   });
   if (!result.ok) {
     logger.warn('default_directory_create_failed', { reason: result.message });
@@ -2885,7 +2950,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 
 // Scheduled tasks (定时任务): every rule owns one fixed Air task and enters it through the
 // task-shell receipt protocol, complementing the lower-level per-session triggers.
-cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskTitle: id => taskShellHost.artifactTaskTitle(id), resolveTaskId: id => taskShellHost.artifactTaskId(id), resolveDir: id => directories.get(persistedSessions.get(id)?.dirId)?.path || null }); mountSecretsVaultHostRoute(app, { vault: secretsVault }); annotationLive.mount(app); remoteScreen.mount(app,{logger}); pluginsRoutes.createPluginsRoutes({ pluginsDir: path.join(__dirname, 'plugins'), paths: MULTICC_PATHS, autoRefresh: true, platform: process.platform, arch: process.arch, logger, resident: { port: () => PORT, alert: pushRuntime.notifyHost } }).mount(app); // docs-registry/secrets-vault/annotation-live=管理表/保险箱/标注通道；plugins=内置+已装插件、插件列表、常驻插件。同行守 3000 行
+cronTasks.mount(app); createDocsMemoryHost({ docs: docsRegistry, memory: memoryBrowser, memo: memoModule.controller, notes: notesStore, directories, resolveTaskTitle: id => taskShellHost.artifactTaskTitle(id), resolveTaskId: id => taskShellHost.artifactTaskId(id), resolveDir: id => directories.get(persistedSessions.get(id)?.dirId)?.path || null }).mount(app); mountSecretsVaultHostRoute(app, { vault: secretsVault }); remoteScreen.mount(app,{logger}); pluginsRoutes.createPluginsRoutes({ pluginsDir: path.join(__dirname, 'plugins'), paths: MULTICC_PATHS, autoRefresh: true, platform: process.platform, arch: process.arch, logger, resident: { port: () => PORT, alert: pushRuntime.notifyHost } }).mount(app); // docs-registry/secrets-vault=管理表/保险箱；plugins=内置+已装插件、插件列表、常驻插件。同行守 3000 行
 cronTasks.init({
   directories,
   clis: CLIENT_CHAT_CLIS,

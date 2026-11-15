@@ -7,32 +7,49 @@
 //! them and the few documented differences.
 
 pub mod accept;
+pub mod account_routes;
 pub mod account_subscription;
 pub mod agent_resources;
+pub mod air_routes;
 pub mod auth;
 pub mod auto_provider_routing;
 pub mod claude_models;
+pub mod directory_routes;
+pub mod docs_memory_routes;
 pub mod download;
+pub mod event_routes;
 pub mod express;
 pub mod external_workspaces;
 pub mod file_transfer;
+pub mod host_ops_routes;
 pub mod host_read;
 pub mod model_catalogs;
+pub mod orchestration_routes;
 pub mod provider_balance;
 mod provider_balance_adapters;
 mod provider_balance_panels;
 pub mod provider_limit_history;
 pub mod provider_relay;
 pub mod providers;
+pub mod push_routes;
 pub mod quota_guard;
+pub mod quota_routes;
+pub mod release_history_routes;
 pub mod run_config_presets;
 pub mod scan;
+pub mod scoped_auth;
 pub mod secrets_vault;
 mod service_transport;
 pub mod services;
+pub mod session_admin;
+pub mod session_git;
+pub mod session_routes;
+pub mod share_machine_routes;
 pub mod source_workspaces;
 pub mod subagent_defaults;
 pub mod system;
+pub mod task_routes;
+pub mod task_shell;
 pub mod token_usage_by_role;
 pub mod token_usage_global;
 pub mod turn_ledger;
@@ -59,6 +76,11 @@ use express::RequestCtx;
 /// case-insensitive, one optional trailing slash, raw (undecoded) path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
+    /// Express's automatic OPTIONS for a path whose routes live in more than
+    /// one cluster: the `Allow` list is the registration-order union of every
+    /// cluster's share. A single-cluster path keeps its own cluster's
+    /// responder (same answer, same error messages on host failure).
+    AutoOptions,
     Auth(auth::Route),
     Services(services::Route),
     ExternalWorkspaces(external_workspaces::Route),
@@ -134,6 +156,9 @@ pub enum Route {
     SecretsOptionsValue,
     HostReadGet(host_read::Route),
     HostReadOptions(host_read::Route),
+    HostOps(host_ops_routes::Route),
+    Orchestration(orchestration_routes::Route),
+    ReleaseHistory(release_history_routes::Route),
     FilesGet,
     FilesOptions,
     Upload,
@@ -141,12 +166,141 @@ pub enum Route {
     TurnLedger(turn_ledger::Route),
     TurnLedgerOptions(turn_ledger::Route),
     Providers(providers::Route),
+    SessionGit(session_git::Route),
+    TaskShell(task_shell::Route),
+    SessionAdmin(session_admin::Route),
+    SessionRoutes(session_routes::Route),
+    ShareMachine(share_machine_routes::Route),
+    TaskRoutes(task_routes::Route),
+    Push(push_routes::Route),
+    Air(air_routes::Route),
+    Quota(quota_routes::Route),
+    Account(account_routes::Route),
+    Events(event_routes::Route),
+    DocsMemory(docs_memory_routes::Route),
+    Directory(directory_routes::Route),
     ProviderBalance(provider_balance::Route),
     ProviderRelay(provider_relay::Route),
     AutoProviderRouting(auto_provider_routing::Route),
     VoiceGateway(voice_gateway::Route),
     Voice(voice_routes::Route),
     VoiceRuntime(voice_runtime::Route),
+}
+
+/// Every cluster whose routes can share one path with another cluster, in the
+/// order `server.js` registered the retired Express routes. A source returns
+/// only the methods *that* cluster registers on the path: Express's automatic
+/// OPTIONS answer is `appendMethods` over every matching layer in registration
+/// order, so the first match must not answer alone.
+///
+/// Clusters whose paths never overlap another cluster's stay out of this list;
+/// their own `claim` already unions their internal layers.
+static OPTIONS_SOURCES: &[fn(&str) -> Option<String>] = &[
+    // `/api/settings/{notify,tunnel,access-token,power}` and
+    // `/api/tunnel/funnel`: host-read's GET/HEAD, registered before the
+    // host-write POST. `/api/settings/task-attribution`: the host-write POST,
+    // registered before the task-surface GET (the task-routes source below),
+    // so the host-ops source must stay ahead of it.
+    host_read::options_share,
+    host_ops_routes::options_share,
+    // `/api/sessions/:id`: session-admin's GET/HEAD then session-create/
+    // profile/bundle/lifecycle; `/api/directories/:id/sessions`: session-admin
+    // then session-create.
+    session_admin_share,
+    session_routes::options_share,
+    // `POST /api/air/tasks/mark-achieved` registered before Air's
+    // `GET /api/air/tasks/:id`.
+    task_routes::options_share,
+    air_routes::options_share,
+    // `/api/providers/:id/models` (model catalogs, registered by the retired
+    // server.js first) and `PATCH|DELETE /api/providers/:appType/:id`
+    // (providers management).
+    model_catalogs::options_share,
+    providers::options_share,
+    task_shell::options_share,
+    quota_routes::options_share,
+    account_routes::options_share,
+    event_routes::options_share,
+    docs_memory_routes::options_share,
+    directory_routes::options_share,
+    push_routes::options_share,
+    share_machine_routes::options_share,
+    // Orchestration / unattended: no path is shared with another cluster today
+    // (the measured unions are single-source), but the cluster registers its
+    // own multi-method paths here so a future overlap unions instead of
+    // shadowing.
+    orchestration_routes::options_share,
+    release_history_routes::options_share,
+    // Release assets, iOS OTA and chat history: every path is single-source
+    // today (measured), registered so a future overlap unions.
+];
+
+/// session-admin's share is paired with its guard segment for its own
+/// responder; the union only needs the method list.
+fn session_admin_share(path: &str) -> Option<String> {
+    session_admin::options_share(path).map(|(allow, _)| allow.to_string())
+}
+
+/// The whole-app `Allow` for `path` when several clusters registered routes on
+/// it; `None` when at most one cluster did (that cluster's own responder is
+/// already exact, including its guard probe and host-failure message).
+fn options_allow(path: &str) -> Option<String> {
+    let shares: Vec<String> = OPTIONS_SOURCES
+        .iter()
+        .filter_map(|source| source(path))
+        .collect();
+    if shares.len() < 2 {
+        return None;
+    }
+    Some(multicc_core::route_options::merge(
+        shares.iter().map(String::as_str),
+    ))
+}
+
+/// Segment view of `/api/<rest>`, one optional trailing slash removed. Same
+/// shape rule as every cluster's matcher.
+fn path_segments(path: &str) -> Option<Vec<&str>> {
+    let rest = path.strip_prefix("/api/")?;
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    if rest.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    Some(parts)
+}
+
+/// The `:id` segment of `publicSessionAccessGuard`'s two `app.use` mounts
+/// (`/api/sessions/:id`, `/api/v1/sessions/:id`), which run before the
+/// automatic OPTIONS answer.
+fn guard_segment(path: &str) -> Option<usize> {
+    let parts = path_segments(path)?;
+    if parts[0].eq_ignore_ascii_case("sessions") && parts.len() >= 2 {
+        Some(1)
+    } else if parts.len() >= 3
+        && parts[0].eq_ignore_ascii_case("v1")
+        && parts[1].eq_ignore_ascii_case("sessions")
+    {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+fn is_v1_path(path: &str) -> bool {
+    path_segments(path)
+        .and_then(|parts| parts.first().copied())
+        .is_some_and(|head| head.eq_ignore_ascii_case("v1"))
+}
+
+/// `claim` plus the one route whose claim needs the query string: `GET|HEAD /`
+/// is claimed only when it redirects (`?id=`/`?newid=`/`?cwd=` is the
+/// terminal-session chain, which Express passed on to the HTML middleware).
+pub fn claim_uri(method: &Method, uri: &axum::http::Uri) -> Option<Route> {
+    claim(method, uri.path())
+        .or_else(|| release_history_routes::claim_uri(method, uri).map(Route::ReleaseHistory))
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -156,6 +310,9 @@ pub enum Route {
 /// gate and JSON gzip test `req.path.startsWith('/api/')` case-sensitively,
 /// and a differently-cased prefix took other branches there.
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
+    if method == Method::OPTIONS && options_allow(path).is_some() {
+        return Some(Route::AutoOptions);
+    }
     if let Some(route) = source_workspaces::claim(method, path) {
         return Some(Route::SourceWorkspaces(route));
     }
@@ -199,6 +356,59 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     if let Some(route) = provider_relay::claim(method, path) {
         return Some(Route::ProviderRelay(route));
     }
+    if let Some(route) = session_git::claim(method, path) {
+        return Some(Route::SessionGit(route));
+    }
+    if let Some(route) = task_shell::claim(method, path) {
+        return Some(Route::TaskShell(route));
+    }
+    if let Some(route) = session_admin::claim(method, path) {
+        return Some(Route::SessionAdmin(route));
+    }
+    // After session-admin: it keeps `GET /api/sessions/:id` and the shared
+    // `OPTIONS` unions (which already include this cluster's `PATCH`/`DELETE`
+    // and the `/api/directories/:id/sessions` `POST`). This cluster claims the
+    // write half and its own literals; directory-routes is disjoint.
+    if let Some(route) = session_routes::claim(method, path) {
+        return Some(Route::SessionRoutes(route));
+    }
+    // Before Air: `POST /api/air/tasks/mark-achieved` is a literal this cluster
+    // owns, while Air keeps `GET /api/air/tasks/:id`. Express registered the
+    // POST first, so the shared path's OPTIONS union starts with POST.
+    if let Some(route) = task_routes::claim(method, path) {
+        return Some(Route::TaskRoutes(route));
+    }
+    if let Some(route) = air_routes::claim(method, path) {
+        return Some(Route::Air(route));
+    }
+    if let Some(route) = quota_routes::claim(method, path) {
+        return Some(Route::Quota(route));
+    }
+    // The account / credential cluster owns its own `/api/{claude,codex}/accounts`,
+    // `/api/{claude,codex}/oauth`, `/api/{zcode,kimi}/auth` (minus the two
+    // forwarded `login` POSTs), `/api/cli-accounts` and
+    // `/api/commandcode/auth` literals; none overlaps another cluster.
+    if let Some(route) = account_routes::claim(method, path) {
+        return Some(Route::Account(route));
+    }
+    // The sharing / machines / workspaces cluster owns `/api/machines*`,
+    // `/api/sessions/:id/share*`, `/api/share/:token/*`, `/api/workspaces/*`
+    // and the public `/share/:token` page. The first four are disjoint from
+    // every other cluster; the session-share literals are distinct from
+    // session-admin's and session-routes' (`share`, `shares`, `share-messages`,
+    // `share/:token`), which own the rest of `/api/sessions/:id`.
+    if let Some(route) = share_machine_routes::claim(method, path) {
+        return Some(Route::ShareMachine(route));
+    }
+    if let Some(route) = event_routes::claim(method, path) {
+        return Some(Route::Events(route));
+    }
+    if let Some(route) = docs_memory_routes::claim(method, path) {
+        return Some(Route::DocsMemory(route));
+    }
+    if let Some(route) = directory_routes::claim(method, path) {
+        return Some(Route::Directory(route));
+    }
     if let Some(route) = providers::claim(method, path) {
         return Some(Route::Providers(route));
     }
@@ -225,6 +435,29 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
                 file_transfer::Route::Upload => Route::UploadOptions,
             },
         });
+    }
+    if let Some(route) = push_routes::claim(method, path) {
+        return Some(Route::Push(route));
+    }
+    // The host-and-system operations cluster owns `/api/restart`,
+    // `/api/desktop-shutdown`, `/api/update*`, `/api/system/{developer-tools,
+    // disk-access,agent-permissions,agent-install,ops-env,ops-run,env-doctor}*`,
+    // `/api/settings/{notify,tunnel,access-token,power*,task-attribution}`,
+    // `/api/tunnel/{restart/:provider,sakurafrp/public-url,funnel}`,
+    // `/api/skill-sync/*`, `/api/sessions/:id/doctor` and
+    // `/api/doctor/runs/*`. Every literal is disjoint from the other clusters;
+    // the shared OPTIONS paths are handled by `OPTIONS_SOURCES` above.
+    if let Some(route) = host_ops_routes::claim(method, path) {
+        return Some(Route::HostOps(route));
+    }
+    // The orchestration and unattended cluster owns the Aux and goal routes
+    // (`/api/aux/*`, `/api/settings/goal`, `/api/goal/precheck`) and 13
+    // session-scoped routes: aux-runs, unattended, scheduled messages, tasks,
+    // dispatches, user-input dismiss, queue, queue/action and the **v1** waits
+    // listing. The unprefixed `GET /api/sessions/:id/waits` and the other six
+    // wait-injector / detached routes are deliberately not claimed.
+    if let Some(route) = orchestration_routes::claim(method, path) {
+        return Some(Route::Orchestration(route));
     }
     if let Some(claim) = host_read::claim(method, path) {
         return Some(match claim {
@@ -318,6 +551,66 @@ pub struct App {
     /// `src/routes/providers.js` ran each write handler to completion on the
     /// event loop; these routes await host round trips instead.
     pub providers_write: tokio::sync::Mutex<()>,
+    /// `src/routes/session-git.js` ran each merge/sync/rebase/cleanup handler
+    /// to completion on the event loop; these routes await host round trips
+    /// that mutate real worktrees, so serialize them.
+    pub session_git_write: tokio::sync::Mutex<()>,
+    /// `src/task-shell/routes.js` ran each write handler to completion on the
+    /// event loop; these routes await host round trips that mutate the task
+    /// store, so serialize them.
+    pub task_shell_write: tokio::sync::Mutex<()>,
+    /// `src/routes/session-admin.js` ran each write handler to completion on
+    /// the event loop; these routes await host round trips that mutate the
+    /// classify state machine, so serialize them.
+    pub session_admin_write: tokio::sync::Mutex<()>,
+    /// `src/routes/session-memory.js`, `session-bundle.js`, `session-lifecycle.js`,
+    /// `session-create.js`, `session-meta.js` and `session-profile.js` ran each
+    /// write handler to completion on the event loop; these routes await host
+    /// round trips that mutate session records, spawn or kill CLI children,
+    /// re-stage configuration and fork transcripts, so serialize them.
+    pub session_routes_write: tokio::sync::Mutex<()>,
+    /// `src/machines.js`, `src/routes/share.js` and `src/routes/workspaces.js`
+    /// ran each write handler to completion on the event loop; these routes
+    /// await host round trips that mutate the machine registry, its grants, a
+    /// share record, the WS-ticket table and the workspace hibernation store,
+    /// so serialize them.
+    pub share_machine_write: tokio::sync::Mutex<()>,
+    /// Serializes the host-and-system operations cluster (restart/update,
+    /// `.env` writes, macOS settings, shell jobs).
+    pub host_ops_write: tokio::sync::Mutex<()>,
+    pub orchestration_write: tokio::sync::Mutex<()>,
+    /// Serializes the release-asset/chat-history writes (the one-time UDID
+    /// token issue and consume, and the transcript message delete).
+    pub release_history_write: tokio::sync::Mutex<()>,
+    /// `src/routes/task-planning.js`, `src/routes/task-board.js`,
+    /// `src/routes/task-goal.js` and `src/task-shell/attribution-settings.js`
+    /// ran each write handler to completion on the event loop; these routes
+    /// await host round trips that mutate the board file, the task store, the
+    /// chat-session binding and the retention flights, so serialize them.
+    pub task_routes_write: tokio::sync::Mutex<()>,
+    /// `src/push/*` mounted its write routes on one Node thread; the retired
+    /// handlers mutated the shared subscription and device Maps, so serialize
+    /// the host round trips that write them.
+    pub push_write: tokio::sync::Mutex<()>,
+    /// `src/workspace/air-routes.js` ran each write handler to completion on
+    /// the event loop; these routes await host round trips that mutate pins,
+    /// todos, tasks and worktrees, so serialize them.
+    pub air_write: tokio::sync::Mutex<()>,
+    /// `src/events/routes.js`, `src/triggers/index.js` and the global-rule
+    /// write path ran each handler to completion on the event loop; these
+    /// routes await host round trips that mutate the rule store, session
+    /// records and trigger timers, so serialize them.
+    pub event_write: tokio::sync::Mutex<()>,
+    /// The nine quota & pricing modules ran each write handler to completion
+    /// on the event loop; these routes await host round trips that refresh the
+    /// price table, open login windows, install arkcli and rewrite the
+    /// quota-bar cache, so serialize them.
+    pub quota_write: tokio::sync::Mutex<()>,
+    /// The eight account / credential modules ran each write handler to
+    /// completion on the event loop; these routes await host round trips that
+    /// write the keychain, account records and login-terminal sessions, so
+    /// serialize them.
+    pub account_write: tokio::sync::Mutex<()>,
     /// `src/routes/voice-gateway.js` ran each write handler synchronously; the
     /// ensure/remove routes here await one host round trip instead.
     pub voice_gateway_write: tokio::sync::Mutex<()>,
@@ -325,6 +618,16 @@ pub struct App {
     /// every write to completion on the event loop; these routes await several
     /// host round trips each.
     pub voice_runtime_write: tokio::sync::Mutex<()>,
+    /// `src/docs-registry.js`, the memory browser, the memo router and the
+    /// notes store ran each write handler to completion on the event loop;
+    /// these routes await host round trips that mutate the registry table, the
+    /// memory store, a memo file or a chat turn, so serialize them.
+    pub docs_memory_write: tokio::sync::Mutex<()>,
+    /// `src/directory/service.js` ran each write handler (register, sample,
+    /// reorder, update, delete, push, commit, layout writes) to completion on
+    /// the event loop; these routes await host round trips that mutate the
+    /// directory table, the filesystem, git repos and the layout file.
+    pub directory_write: tokio::sync::Mutex<()>,
     /// `src/routes/voice.js` ran the feedback / hotword-reject / vocab-delete /
     /// settings / asr-model handlers to completion on the event loop; these
     /// routes await one host round trip instead. refine / confirm /
@@ -401,6 +704,22 @@ impl App {
             subagent_defaults: tokio::sync::Mutex::new(()),
             secrets_vault: tokio::sync::Mutex::new(()),
             providers_write: tokio::sync::Mutex::new(()),
+            session_git_write: tokio::sync::Mutex::new(()),
+            task_shell_write: tokio::sync::Mutex::new(()),
+            session_admin_write: tokio::sync::Mutex::new(()),
+            session_routes_write: tokio::sync::Mutex::new(()),
+            share_machine_write: tokio::sync::Mutex::new(()),
+            host_ops_write: tokio::sync::Mutex::new(()),
+            orchestration_write: tokio::sync::Mutex::new(()),
+            release_history_write: tokio::sync::Mutex::new(()),
+            task_routes_write: tokio::sync::Mutex::new(()),
+            push_write: tokio::sync::Mutex::new(()),
+            air_write: tokio::sync::Mutex::new(()),
+            quota_write: tokio::sync::Mutex::new(()),
+            account_write: tokio::sync::Mutex::new(()),
+            event_write: tokio::sync::Mutex::new(()),
+            docs_memory_write: tokio::sync::Mutex::new(()),
+            directory_write: tokio::sync::Mutex::new(()),
             voice_gateway_write: tokio::sync::Mutex::new(()),
             voice_runtime_write: tokio::sync::Mutex::new(()),
             voice_routes: tokio::sync::Mutex::new(()),
@@ -414,7 +733,13 @@ impl App {
         }
     }
 
-    fn gate(
+    /// The auth gate in front of every claimed route. Node's
+    /// `authorizeScopedRequest` and the ordinary credential run in one order;
+    /// only the fleet half is async because its live share state sits behind
+    /// the source control channel (see [`scoped_auth`]). `peer` stays the
+    /// address from the PROXY line, so locality is judged on the real
+    /// requester rather than the front door's loopback.
+    pub(crate) async fn gate(
         &self,
         ctx: &RequestCtx,
         peer: &str,
@@ -434,25 +759,34 @@ impl App {
             headers: &ctx.headers,
             now_ms,
         };
+        // `authorizeScopedRequest` is `machines.authorize(req) || fleet...`, so
+        // the share store is asked only when the machine scope did not already
+        // allow this request (server.js:421). Both halves are read live: the
+        // machine registry from the data root, the share record and membership
+        // through the child's source control port.
         let root = self.data_root.to_string_lossy().into_owned();
+        let machine_scoped = http_gate::machine_credential(&request).map(|credential| {
+            multicc_core::machines::authorize(
+                &root,
+                credential,
+                ctx.method.as_str(),
+                &ctx.original_url,
+            )
+            .is_some()
+        });
+        let fleet_scoped =
+            machine_scoped != Some(true) && scoped_auth::fleet_scoped(self, ctx).await;
         let decision = http_gate::authorize(
             &policy,
             &request,
-            |credential| {
-                multicc_core::machines::authorize(
-                    &root,
-                    credential,
-                    ctx.method.as_str(),
-                    &ctx.original_url,
-                )
-                .is_some()
-            },
+            machine_scoped,
             |ticket| {
                 self.tickets
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .verify(ticket, &ctx.original_url, now_ms)
             },
+            fleet_scoped,
         );
         match decision {
             GateDecision::Allow => None,
@@ -479,6 +813,25 @@ pub fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Express's automatic OPTIONS for a path several clusters registered routes
+/// on: their registration-order `Allow` union. When the path sits under the
+/// public-session access guard, that `app.use` layer runs before the automatic
+/// answer, so an internal execution slot still gets the same 404 as a missing
+/// session (the guard round trip is session-admin's, exactly as before).
+async fn auto_options(ctx: &RequestCtx, host: u16) -> Response<Body> {
+    let allow = options_allow(&ctx.path).unwrap_or_default();
+    let Some(index) = guard_segment(&ctx.path) else {
+        return options(ctx, &allow);
+    };
+    let parts = path_segments(&ctx.path).unwrap_or_default();
+    let id = parts.get(index).copied().unwrap_or("");
+    match session_admin::guard_facts(host, id, ctx.method.as_str()).await {
+        Ok(found) if found.internal => session_admin::guarded_404(ctx, is_v1_path(&ctx.path)),
+        Ok(_) => options(ctx, &allow),
+        Err(_) => session_admin::unavailable(ctx),
+    }
 }
 
 /// Express's automatic OPTIONS answer for a path with these methods.
@@ -588,7 +941,29 @@ pub async fn handle(
     if let Route::SourceWorkspaces(route) = route {
         return source_workspaces::handle(&app, route, &ctx, &peer, body, snapshot).await;
     }
-    if let Some(refusal) = app.gate(&ctx, &peer, &snapshot) {
+    // The share surface is exempt from the ordinary gate by token authority
+    // (`/share/:token` and the `/api/share/:token/*` reads), so this cluster
+    // decides public-vs-gated itself, exactly like `auth.rs`.
+    if let Route::ShareMachine(route) = route {
+        return share_machine_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host).await;
+    }
+    // One host port for the host-and-system operations cluster. It decides
+    // locality from the real client address before asking Node.
+    if let Route::HostOps(route) = route {
+        return host_ops_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host).await;
+    }
+    // Orchestration / unattended: same host-port shape; it decides the session
+    // guard (both envelopes) itself.
+    if let Route::Orchestration(route) = route {
+        return orchestration_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host).await;
+    }
+    // Release assets / iOS OTA / chat history: the OTA fetchers cannot log in, so
+    // this cluster decides gate-or-not itself from the shared HTTP-entry rule.
+    if let Route::ReleaseHistory(route) = route {
+        return release_history_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host)
+            .await;
+    }
+    if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
         return refusal;
     }
     // multer owns the raw multipart body: the upload route runs in front of the
@@ -608,6 +983,7 @@ pub async fn handle(
         Err(error) => return express::error(&ctx, error.status, error.reason),
     };
     match route {
+        Route::AutoOptions => return auto_options(&ctx, host).await,
         Route::ModelCatalogOptions(_)
         | Route::ProviderModelsOptions
         | Route::CodexModelsOptions => return options(&ctx, "GET,HEAD"),
@@ -710,6 +1086,32 @@ pub async fn handle(
             return subagent_defaults::sync(&app, &ctx, &body, host).await
         }
         Route::Providers(route) => return providers::handle(&app, route, &ctx, &body, host).await,
+        Route::SessionGit(route) => {
+            return session_git::handle(&app, route, &ctx, &body, host).await
+        }
+        Route::TaskShell(route) => return task_shell::handle(&app, route, &ctx, &body, host).await,
+        Route::SessionAdmin(route) => {
+            return session_admin::handle(&app, route, &ctx, &body, host).await
+        }
+        Route::SessionRoutes(route) => {
+            return session_routes::handle(&app, route, &ctx, &body, host).await
+        }
+        Route::TaskRoutes(route) => {
+            return task_routes::handle(&app, route, &ctx, &body, host).await
+        }
+        Route::Push(route) => return push_routes::handle(&app, route, &ctx, &body, host).await,
+        Route::Air(route) => return air_routes::handle(&app, route, &ctx, &body, host).await,
+        Route::Quota(route) => return quota_routes::handle(&app, route, &ctx, &body, host).await,
+        Route::Account(route) => {
+            return account_routes::handle(&app, route, &ctx, &body, host).await
+        }
+        Route::Events(route) => return event_routes::handle(&app, route, &ctx, &body, host).await,
+        Route::DocsMemory(route) => {
+            return docs_memory_routes::handle(&app, route, &ctx, &body, host).await
+        }
+        Route::Directory(route) => {
+            return directory_routes::handle(&app, route, &ctx, &body, host).await
+        }
         Route::ProviderBalance(route) => {
             return provider_balance::handle(&app, route, &ctx, host).await
         }
@@ -801,6 +1203,89 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn literal_paths_union_the_param_shape_methods() {
+        // `/api/sessions/import` and `/api/sessions/import-zip` are matched both
+        // by the `:id` shape (session-admin's GET/HEAD, session-profile's
+        // PATCH, session-lifecycle's DELETE) and by the literal bundle POST.
+        for path in ["/api/sessions/import", "/api/sessions/import-zip"] {
+            assert_eq!(
+                options_allow(path).as_deref(),
+                Some("GET,HEAD,PATCH,POST,DELETE"),
+                "{path}"
+            );
+            assert_eq!(claim(&Method::OPTIONS, path), Some(Route::AutoOptions));
+        }
+    }
+
+    #[test]
+    fn a_pure_param_path_keeps_its_whole_allow() {
+        assert_eq!(
+            options_allow("/api/sessions/s1").as_deref(),
+            Some("GET,HEAD,PATCH,DELETE")
+        );
+        // One cluster only: its own responder already holds the exact answer
+        // (and its own host-failure message), so the front door leaves it there.
+        assert_eq!(options_allow("/api/sessions/s1/memory"), None);
+        assert!(matches!(
+            claim(&Method::OPTIONS, "/api/sessions/s1/memory"),
+            Some(Route::SessionRoutes(_))
+        ));
+        assert_eq!(options_allow("/api/v1/sessions/s1"), None);
+    }
+
+    #[test]
+    fn multi_cluster_contributions_keep_express_order() {
+        // Task-routes' literal POST registered before Air's `:id` GET/HEAD.
+        assert_eq!(
+            options_allow("/api/air/tasks/mark-achieved").as_deref(),
+            Some("POST,GET,HEAD")
+        );
+        // session-admin's GET/HEAD registered before session-create's POST.
+        assert_eq!(
+            options_allow("/api/directories/d1/sessions").as_deref(),
+            Some("GET,HEAD,POST")
+        );
+        // Model catalogs' `GET /api/providers/:id/models` shares its
+        // three-segment shape with providers' `PATCH|DELETE
+        // /api/providers/:appType/:id`; the retired server.js mounted the GET
+        // first (mountProviderModelRoutes before mountManagementRoutes).
+        assert_eq!(
+            options_allow("/api/providers/Main/models").as_deref(),
+            Some("GET,HEAD,PATCH,DELETE")
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/providers/Main/models"),
+            Some(Route::AutoOptions)
+        );
+        // A provider management path has no catalog twin: its own responder
+        // stays in charge.
+        assert_eq!(options_allow("/api/providers/claude/claude-1"), None);
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/air/tasks/mark-achieved"),
+            Some(Route::AutoOptions)
+        );
+    }
+
+    #[test]
+    fn unknown_paths_still_fall_through_to_node() {
+        assert_eq!(options_allow("/api/not-a-route"), None);
+        assert_eq!(claim(&Method::OPTIONS, "/api/not-a-route"), None);
+        assert_eq!(claim(&Method::OPTIONS, "/api/nope/nothing"), None);
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/sessions"),
+            Some(Route::SessionAdmin(session_admin::Route::Options {
+                allow: "GET,HEAD",
+                guard_segment: None
+            }))
+        );
+        // The guard mount is a path shape, not a cluster: it never makes a
+        // path the front door does not own into an answer.
+        assert_eq!(guard_segment("/api/sessions/import"), Some(1));
+        assert_eq!(guard_segment("/api/v1/sessions/s1"), Some(2));
+        assert_eq!(guard_segment("/api/directories/d1/sessions"), None);
+    }
 
     #[test]
     fn claims_follow_express_matching() {

@@ -64,12 +64,20 @@ pub fn apply(b: &Value, v: &Value, host: Host) -> Value {
             out.push(json!({"id":t["id"],"sessionId":r["id"],"at":at}));
         }
     }
-    out.sort_by(|a, b| {
+    sort_entries(&mut out, host);
+    json!(out)
+}
+
+/// The one ordering rule for retention candidates: ascending interaction time,
+/// ties broken by the host's `localeCompare` order. Shared with
+/// [`crate::task_routes::retention_preview`], which re-sorts the host's
+/// already-ordered preview rows with the same comparator.
+pub fn sort_entries(entries: &mut [Value], host: Host) {
+    entries.sort_by(|a, b| {
         num(&a["at"])
             .total_cmp(&num(&b["at"]))
             .then_with(|| host.compare(&a["id"], &b["id"]))
     });
-    json!(out)
 }
 pub fn run(v: &Value) -> Value {
     let facts = Facts::of(v);

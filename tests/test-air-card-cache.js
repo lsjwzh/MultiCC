@@ -5,12 +5,10 @@
 // runState / worktreeChanges 必须每轮现算，不能被缓存冻住。
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mountAirRoutes } = require('../src/workspace/air-routes');
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
-const { airResponse } = require('./helpers/air-response');
+const { mountAir } = require('./helpers/air-host');
 
 function fixture({ mode = 'on', verifyMs = 60_000 } = {}) {
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const now = Date.now();
   const board = { tasks: {
     tsk_1: { id: 'tsk_1', title: '任务一', status: 'active', chatSessionId: 's1',
@@ -28,7 +26,8 @@ function fixture({ mode = 'on', verifyMs = 60_000 } = {}) {
   const accessOf = t => ({ readOnly: false, status: 'active', ...state.access[t.id] });
   const logs = [];
   const logger = { warn: (event, data) => logs.push({ event, ...data }), info: (event, data) => logs.push({ event, ...data }) };
-  mountAirRoutes(app, {
+  // 快照正文在宿主定稿（GET /api/air 的 304 判定在前门），这里直接驱动宿主端口。
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [{ id: 'ws1', ownerId: 's1', residency: 'resident', path: '/wt', branch: 'b', pins: [] }],
       leases: [], budgets: { residentLimit: 4 } }), capacityReason: () => null },
     records, directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
@@ -40,11 +39,10 @@ function fixture({ mode = 'on', verifyMs = 60_000 } = {}) {
     cardCache: counted(createAirCardCache({ mode, verifyMs, logger }), state),
   });
   const get = async () => {
-    const res = airResponse();
-    await handlers.get('/api/air')({ headers: {} }, res);
-    return { body: res.body, json: JSON.parse(res.body) };
+    const snapshot = await air.snapshot();
+    return { body: snapshot.body, json: snapshot.json };
   };
-  return { get, board, records, state, logs };
+  return { get, air, board, records, state, logs };
 }
 const card = (json, id) => json.tasks.find(task => task.id === id);
 // 数「这一轮真正重建了几张卡」：缓存层自己报的 builds。
@@ -100,7 +98,6 @@ test('卡片或它引用的会话记录被原地改写时，只重建那一张�
 });
 
 test('capacityReason 每轮现算（跨卡输入），且一轮里按目录/驻留态只问一次', async () => {
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const tasks = {}, records = new Map(), workspaces = [];
   for (let i = 0; i < 6; i++) {
     tasks[`t${i}`] = { id: `t${i}`, title: `卡 ${i}`, status: 'active', chatSessionId: `s${i}`, refs: [{ sessionId: `s${i}`, dirId: 'd1' }] };
@@ -108,13 +105,13 @@ test('capacityReason 每轮现算（跨卡输入），且一轮里按目录/驻�
     workspaces.push({ id: `ws${i}`, ownerId: `s${i}`, dirId: i < 4 ? 'd1' : 'd2', residency: i % 2 ? 'resident' : 'hibernated', pins: [] });
   }
   let asked = 0, reason = null;
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces, leases: [], budgets: {} }), capacityReason: () => { asked += 1; return reason; } },
     records, directories: new Map(), getBoard: () => ({ tasks }), clis: [],
     shell: { taskAccess: () => ({ readOnly: false }) },
     cardCache: createAirCardCache({ mode: 'on' }),
   });
-  const run = async () => { const res = airResponse(); await handlers.get('/api/air')({ headers: {} }, res); return JSON.parse(res.body); };
+  const run = async () => (await air.snapshot()).json;
   await run();
   // 键：resident 一个；非 resident 按目录 d1、d2 各一个 —— 共 3 次，而不是 6 次。
   assert.equal(asked, 3);

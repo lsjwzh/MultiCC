@@ -655,7 +655,7 @@ async function invoke(app, method, route, options = {}) {
 function routeFixture(cancelResult = { ok: true, classifyState: 'E' }) {
   const calls = [];
   const app = fakeApp();
-  createOrchestrationRoutes({
+  const orchestration = createOrchestrationRoutes({
     records: new Map([['s1', { id: 's1', cwd: '/repo' }]]),
     runtime: {
       operations: { list: async () => [], listTasks: async () => [] },
@@ -692,7 +692,9 @@ function routeFixture(cancelResult = { ok: true, classifyState: 'E' }) {
       calls.push({ type: 'cancelActiveTurn', sessionId, options });
       return cancelResult;
     },
-  }).mountRoutes(app);
+  });
+  orchestration.mountHostRoutes(app);
+  orchestration.mountRoutes(app);
   return { app, calls };
 }
 

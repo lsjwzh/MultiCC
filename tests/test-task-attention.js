@@ -9,7 +9,7 @@ const path = require('node:path');
 const attention = require('../src/task-board/attention');
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
-const { mountAirRoutes } = require('../src/workspace/air-routes');
+const { mountAir } = require('./helpers/air-host');
 
 test('a run moving into completed / error / waiting leaves a mark; the same outcome again does not', () => {
   const task = { id: 't', status: 'active' };
@@ -97,15 +97,14 @@ test('runtime: a classify verdict that beats the scheduler event still leaves th
 });
 
 test('GET /api/air/tasks/:id/open is where every client marks the task seen', async () => {
-  const routes = new Map();
   const seen = [];
-  mountAirRoutes({ get: (url, fn) => routes.set(url, fn), post() {}, put() {}, delete() {}, patch() {} }, {
+  // 路由由 Rust 前门持有；「打开即已读」这个副作用留在宿主的 task-open 操作里。
+  const air = mountAir({
     shell: { taskEntry: async id => ({ readOnly: false, sessionId: 's-' + id }), roleBindings: () => null },
     records: new Map(), directories: new Map(),
     markTaskSeen: id => seen.push(id),
   });
-  const res = { json(body) { this.body = body; }, status(code) { this.code = code; return this; } };
-  await routes.get('/api/air/tasks/:id/open')({ params: { id: 'x' }, headers: {} }, res);
-  assert.equal(res.body.ok, true);
+  const entry = await air.ok({ op: 'task-open', taskId: 'x' });
+  assert.equal(entry.ok, true);
   assert.deepEqual(seen, ['x']);
 });

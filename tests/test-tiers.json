@@ -3577,6 +3577,15 @@
       ]
     },
     {
+      "path": "tests/test-events-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-fcm-push.js",
       "tier": "core",
       "lane": "deterministic"
@@ -3816,6 +3825,15 @@
       "owner": "npm:test:state",
       "entrypoints": [
         "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-host-ops-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
       ]
     },
     {
@@ -4388,6 +4406,15 @@
     },
     {
       "path": "tests/test-orchestration-canonical-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-orchestration-host.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",
@@ -5806,6 +5833,15 @@
       ]
     },
     {
+      "path": "tests/test-share-machines-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-share-routes.js",
       "tier": "other",
       "lane": "deterministic",
@@ -6251,6 +6287,15 @@
       "entrypoints": [
         "docker/task-shell/run-tests.js",
         "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-task-routes-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
       ]
     },
     {

@@ -9,6 +9,7 @@ const core = require('../src/task-board/core');
 const planning = require('../src/task-board/planning');
 const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/task-board');
 const { mkRuntime } = require('./helpers/task-board-runtime');
+const { retiredRoutes } = require('./helpers/task-board-ports');
 require('./test-task-planning');
 
 const EMPTY_BOARD = core.createEmptyBoard();
@@ -946,29 +947,24 @@ test('legacy marker turns still attach without re-enabling AI task creation', ()
 
 test('REST: the surviving task-board endpoints register and keep working', async () => {
   const { runtime } = mkRuntime();
-  const routes = new Map();
-  const app = {
-    get: (p, h) => routes.set(`GET ${p}`, h),
-    post: (p, h) => routes.set(`POST ${p}`, h),
-  };
-  runtime.mountRoutes(app);
-  // Planning owns the card CRUD; the board runtime adds the lifecycle and
-  // binding endpoints Air still drives. DELETE is optional-chained, so this
-  // fake app (no delete) never registers it.
-  assert.deepEqual([...routes.keys()], [
-    'POST /api/task-board/tasks',
-    'POST /api/task-board/tasks/:taskId/update',
-    'POST /api/task-board/tasks/:taskId/title',
-    'POST /api/task-board/tasks/:taskId/planning',
-    'POST /api/task-board/tasks/:taskId/move',
-    'GET /api/task-board/directories/:dirId/retention',
-    'POST /api/task-board/directories/:dirId/retention',
-    'POST /api/task-board/tasks/:taskId/status',
-    // Air 任务「移动」：跨目录搬迁。
-    'POST /api/task-board/tasks/:taskId/relocate',
-    // P1 · get-or-create the task-bound hidden chat session (addressable, not fleet-listed).
-    'POST /api/task-board/tasks/:taskId/chat-session',
+  // The ten public routes are answered by the Rust front door; Node keeps the
+  // same ten operations as routePorts (src/routes/task-routes-host.js calls
+  // exactly one per request). Planning owns the card CRUD; the board runtime
+  // adds the lifecycle and binding operations Air still drives.
+  assert.deepEqual(Object.keys(runtime.routePorts), [
+    'planningCreate',
+    'planningUpdate',
+    'planningRename',
+    'planningMove',
+    'retentionPreview',
+    'retentionDelete',
+    'status',
+    'delete',
+    'relocate',
+    'chatSession',
   ]);
+  // 按退休时的 URL 调用同一个端口（tests/helpers/task-board-ports.js）。
+  const routes = retiredRoutes(runtime.routePorts);
 
   // seed one task with a ref
   core.applyTagResult(runtime.getBoard(), [{ id: 'new', title: 'T', module: 'M', areas: [] }],
@@ -1323,8 +1319,7 @@ test('startup scan does not flood untouched backlog or requeue interrupted work'
 
 test('authenticated task-board mutations do not depend on transport locality', async () => {
   const { runtime } = mkRuntime();
-  const routes = new Map();
-  runtime.mountRoutes({ get: (p, h) => routes.set(p, h), post: (p, h) => routes.set(p, h) });
+  const routes = retiredRoutes(runtime.routePorts);
   const task = core.createPendingTask(runtime.getBoard(), {
     dirId: 'dir-1', sessionId: 'sess-1', seed: '允许远程归档', now: 1,
   });
@@ -1332,7 +1327,7 @@ test('authenticated task-board mutations do not depend on transport locality', a
   const remoteRequest = { socket: { remoteAddress: '203.0.113.10' }, headers: { host: 'dashboard.example.com' } };
 
   const status = response();
-  await routes.get('/api/task-board/tasks/:taskId/status')({
+  await routes.get('POST /api/task-board/tasks/:taskId/status')({
     ...remoteRequest, params: { taskId: task.id }, body: { status: 'archived' },
   }, status);
   assert.equal(status.code, 200);

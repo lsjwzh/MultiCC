@@ -38,8 +38,11 @@ function createMachineRuntime({ root, authSecurity, getWss = () => null }) {
     }
     return res.status(response.status).json(response.data);
   }
-  function mount(app, express) {
-    const json = express.json({ limit: '16kb' });
+  // The raw/SSE proxy and the cross-site guard stay on the real app: the other
+  // ten routes are answered by the Rust front door, which reproduces the guard
+  // itself, but a binary stream cannot ride the JSON host port. Mounted before
+  // the global JSON parser: preserve multipart and binary bodies.
+  function mountProxy(app, express) {
     // Loopback bypasses authentication and the proxy attaches the paired grant,
     // so a cross-site page must never reach /api/machines by borrowing either.
     app.use('/api/machines', (req, res, next) => {
@@ -48,8 +51,6 @@ function createMachineRuntime({ root, authSecurity, getWss = () => null }) {
       }
       next();
     });
-    const route = (method, path, operation, input = req => req.body || {}) => app[method](path, json, async (req, res) => send(res, await operate(operation, input(req))));
-    // Mounted before the global JSON parser: preserve multipart and binary bodies.
     app.use('/api/machines/:machineId/proxy', express.raw({ type: () => true, limit: '48mb' }), async (req, res) => {
       if (req.method === 'GET' && req.headers.accept?.includes('text/event-stream')) {
         try {
@@ -70,6 +71,14 @@ function createMachineRuntime({ root, authSecurity, getWss = () => null }) {
       });
       send(res, response);
     });
+  }
+
+  // The ten JSON routes, registered verbatim on whichever app owns them: the
+  // Rust front door's Node child mounts them on a capture app and answers
+  // `{ status, body, headers }` over `POST /api/__host/share-machines`.
+  function mountRoutes(app, express) {
+    const json = express.json({ limit: '16kb' });
+    const route = (method, path, operation, input = req => req.body || {}) => app[method](path, json, async (req, res) => send(res, await operate(operation, input(req))));
     route('get', '/api/machines', 'list');
     route('get', '/api/machines/self', 'self');
     route('get', '/api/machines/grants', 'grants');
@@ -99,6 +108,12 @@ function createMachineRuntime({ root, authSecurity, getWss = () => null }) {
       send(res, { status: 200, data: { ...issued, path: result.data.path, proxyPath } });
     });
   }
-  return { operate, authorize, active, mount, closeRevoked };
+
+  function mount(app, express) {
+    mountProxy(app, express);
+    mountRoutes(app, express);
+  }
+
+  return { operate, authorize, active, mount, mountProxy, mountRoutes, closeRevoked };
 }
 module.exports = { createMachineRuntime };

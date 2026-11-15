@@ -19,6 +19,7 @@ const path = require('node:path');
 const core = require('../src/task-board/core');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
 const { createSessionQueryService } = require('../src/session/query-service');
+const { retiredRoutes } = require('./helpers/task-board-ports');
 
 function mkRuntime(overrides = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskbound-'));
@@ -51,13 +52,10 @@ function mkRuntime(overrides = {}) {
   return { runtime: createTaskBoardRuntime(deps), deps, file };
 }
 
+// 公开路由由 Rust 前门独占；这里测的是 chat-session 端口本身（绑定、继承、
+// 幂等、失败模式），按退休时的 URL 取端口。
 function mkRoutes(runtime) {
-  const routes = new Map();
-  runtime.mountRoutes({
-    get: (name, handler) => routes.set(`GET ${name}`, handler),
-    post: (name, handler) => routes.set(`POST ${name}`, handler),
-  });
-  return routes;
+  return retiredRoutes(runtime.routePorts);
 }
 
 const response = () => ({

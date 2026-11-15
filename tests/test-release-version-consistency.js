@@ -612,13 +612,41 @@ test('core runner covers every selected path and expands declared variants', () 
   // tests/test-opencode-go-default-provider.js 注册为 core deterministic。
   // 同批 app/test/session_auto_commit_test.dart 补登为 other/flutter，不进 core。
   // 447 + 1 = 448 entries, 372 + 1 = 373 deterministic, 419 + 1 = 420 commands.
-  assert.equal(core.length, 448, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 448);
+  // 2026-11-15 events & triggers 簇（15 条公开路由）迁到 Rust 前门：
+  // tests/test-events-host.js 钉宿主端口的 op 映射、回环闸门与 500 信封，
+  // 完全 hermetic（纯内存假依赖、无端口、无时钟/随机依赖），按先例
+  // tests/test-agent-resources-host.js 登记为 core deterministic。
+  // 448 + 1 = 449 entries, 373 + 1 = 374 deterministic, 420 + 1 = 421 commands。
+  // 2026-11-15 任务面 16 条公开路由迁到 Rust 前门：tests/test-task-routes-host.js
+  // 钉宿主端口的 op 映射、回环闸门、错误信封与依赖校验，完全 hermetic（纯内存
+  // 假依赖、无端口、无时钟/随机依赖），并按 events-host 先例挂进
+  // npm:test:core 的 `node --test` 批次（批次按测试文件切命令）。
+  // 449 + 1 = 450 entries, 374 + 1 = 375 deterministic, 421 + 1 = 422 commands。
+  // 2026-11-15 分享与电脑簇 21 条公开路由迁到 Rust 前门：
+  // tests/test-share-machines-host.js 钉宿主端口的 op 映射、回环闸门、错误信封、
+  // 三个退休模块的捕获挂载与依赖校验；机器域用假 addon，分享/工作区用内存假依赖，
+  // 完全 hermetic（无端口、无时钟/随机依赖、只写一个 mkdtemp 假 addon 文件），
+  // 按先例 tests/test-task-routes-host.js 登记为 core deterministic。
+  // 450 + 1 = 451 entries, 375 + 1 = 376 deterministic, 422 + 1 = 423 commands。
+  // 2026-11-15 宿主与系统操作簇 40 条公开路由迁到 Rust 前门：
+  // tests/test-host-ops-host.js 钉宿主端口的 op 表（40 条一一对应且都已注册）、
+  // 回环闸门、未知 op、错误信封、重启/更新只调用注入的替身一次、host-write 读前门的
+  // `local` 事实。完全 hermetic（假 express、纯内存假依赖，不起端口、不执行任何
+  // 系统调用或重启），按先例 tests/test-share-machines-host.js 登记为 core deterministic。
+  // 451 + 1 = 452 entries, 376 + 1 = 377 deterministic, 423 + 1 = 424 commands。
+  // 2026-11-15 编排与无人值守簇 23 条公开路由迁到 Rust 前门（排除集 7 条留在 Node）：
+  // tests/test-orchestration-host.js 钉宿主端口的 op 表（23 条一一对应且都已注册、
+  // 排除集 7 条既不在 op 表也不在捕获应用上）、回环闸门、未知 op、错误信封与
+  // v1 waits 信封 id 的传递。完全 hermetic（内存世界替身、不起端口、配置文件只写
+  // mkdtemp 目录），按先例 tests/test-host-ops-host.js 登记为 core deterministic。
+  // 452 + 1 = 453 entries, 377 + 1 = 378 deterministic, 424 + 1 = 425 commands。
+  assert.equal(core.length, 453, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 453);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 373);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 378);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 44);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -628,8 +656,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 420,
-    '417 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 425,
+    '421 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

@@ -207,8 +207,8 @@ test('server mounts the public-session guard before any session route surface', 
   assert.notEqual(guardIndex, -1, 'central public-session guard must be mounted');
 
   const firstSessionSurface = [
-    "sessionAdmin.mountRoutes(app)",
-    "mountSessionCreateRoutes({",
+    "sessionAdmin.mountRoutes(app, { unattendedApp: orchestrationHost.app })",
+    "mountSessionCreateRoutes(sessionRoutesHost.app, {",
     "cliSwitchRuntime.mountRoutes(app",
     "sessionGitRuntime.mountRoutes(app)",
   ].map(marker => source.indexOf(marker)).filter(index => index >= 0).sort((a, b) => a - b)[0];

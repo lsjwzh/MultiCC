@@ -366,6 +366,26 @@ function createEventRuleEngine(deps) {
     return validation;
   }
 
+  // 前门（Rust）拥有 100 条上限、schema 与渠道接收人的决策树；这些入口只做
+  // 已经校验过的落表与持久化，避免在 Node 侧二次校验改变错误顺序。
+  function insertGlobal(rule) {
+    globalRules.push(rule);
+    persist();
+  }
+
+  function findGlobal(id) {
+    const index = globalRules.findIndex((rule) => rule.id === id);
+    return index < 0 ? null : { ...globalRules[index] };
+  }
+
+  function replaceGlobal(id, rule) {
+    const index = globalRules.findIndex((candidate) => candidate.id === id);
+    if (index < 0) return false;
+    globalRules[index] = rule;
+    persist();
+    return true;
+  }
+
   function removeGlobal(id) {
     const next = globalRules.filter((rule) => rule.id !== id);
     if (next.length === globalRules.length) return false;
@@ -376,6 +396,7 @@ function createEventRuleEngine(deps) {
 
   return Object.freeze({
     start, stop, load, addGlobal, updateGlobal, removeGlobal,
+    insertGlobal, findGlobal, replaceGlobal,
     listGlobal: () => globalRules.map((rule) => ({ ...rule })),
     // Every event rule (global + all sessions) with its last run, for the UI list.
     listAll() {

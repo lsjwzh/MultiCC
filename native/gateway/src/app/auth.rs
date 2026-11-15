@@ -120,7 +120,7 @@ pub async fn handle(
     let public = matches!(route, Route::Page | Route::Login | Route::Logout)
         || matches!(ctx.path.as_str(), "/login" | "/logout");
     if !public {
-        if let Some(refusal) = app.gate(ctx, peer, &snapshot) {
+        if let Some(refusal) = app.gate(ctx, peer, &snapshot).await {
             return refusal;
         }
     }
@@ -235,7 +235,7 @@ pub async fn handle(
                 Ok(value) => value,
                 Err(_) => return express::error(ctx, 503, "authentication runtime unavailable"),
             };
-            if let Some(refusal) = app.gate(ctx, peer, &snapshot) {
+            if let Some(refusal) = app.gate(ctx, peer, &snapshot).await {
                 return refusal;
             }
             let path_value = value.get("path");

@@ -1,8 +1,11 @@
 'use strict';
-// Tests for src/annotation-live.js — the realtime annotation relay route.
-// Config loading/matching against an isolated MULTICC_DATA_DIR plus the route
-// handler through a fake express app (payload normalization + awaited forwarding
-// whose { refresh, text } reply is surfaced back, via a stubbed global fetch). Real state files are never touched.
+// Tests for src/annotation-live.js — the process-local half of the realtime
+// annotation relay. The two public routes (/api/annotation-live GET|POST) are
+// answered by the Rust front door (native/gateway/src/app/event_routes.rs),
+// including the DTO normalization; this process keeps config loading/matching
+// against an isolated MULTICC_DATA_DIR and the awaited webhook forwarding whose
+// { refresh, text } reply the host port hands back to the front door (via a
+// stubbed global fetch). Real state files are never touched.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -20,26 +23,6 @@ const CFG = path.join(tmp, 'annotation-live.json');
 function writeCfg(entries, stamp) {
   fs.writeFileSync(CFG, JSON.stringify(entries, null, 2));
   if (stamp) fs.utimesSync(CFG, stamp, stamp); // 确定性 mtime，钉死缓存失效
-}
-
-function fakeApp() {
-  const handlers = {};
-  return {
-    handlers,
-    get: (p, h) => { handlers['GET ' + p] = h; },
-    post: (p, h) => { handlers['POST ' + p] = h; },
-  };
-}
-
-async function invoke(handler, body) {
-  const res = {
-    statusCode: 200,
-    body: undefined,
-    status(c) { this.statusCode = c; return this; },
-    json(v) { this.body = v; return this; },
-  };
-  await handler({ body: body || {} }, res);
-  return res;
 }
 
 test('config resolves inside the isolated data dir; missing file = relay off', () => {
@@ -76,13 +59,9 @@ test('matching: session/src regexes, absent = match-all, bad regex never matches
   assert.ok(!hit('s1', '/a/demo-shot.png').includes('http://h/bad-regex'));
 });
 
-test('route: normalizes payload, relays hits and surfaces handler replies', async () => {
+test('host relay forwards the (already normalized) payload and surfaces handler replies', async () => {
   writeCfg([{ match: { session: 's1' }, url: 'http://127.0.0.1:8899/annotation' }],
     new Date('2026-10-03T11:00:00Z'));
-  const app = fakeApp();
-  live.mount(app);
-  assert.ok(app.handlers['GET /api/annotation-live']);
-  const post = app.handlers['POST /api/annotation-live'];
 
   const sent = [];
   const realFetch = global.fetch;
@@ -92,45 +71,41 @@ test('route: normalizes payload, relays hits and surfaces handler replies', asyn
   };
 
   try {
-    const res = await invoke(post, {
-      sessionId: 's1', src: '/a/demo-shot.png', width: '1000', height: '1434',
+    // The front door normalizes the request body (numbers, nulls, key order) and
+    // hands this op the finished DTO; the relay must forward it verbatim.
+    const payload = {
+      sessionId: 's1', src: '/a/demo-shot.png', width: 1000, height: 1434,
       kind: 'arrow', a: { x: 1, y: 2 }, b: { x: 3, y: 2 },
-    });
-    assert.deepEqual(res.body, { ok: true, relayed: 1, results: [{ ok: true, refresh: true, text: '正中' }] });
-    const res2 = await invoke(post, { sessionId: 'other-session' });  // 无命中：只回包，不转发
-    assert.deepEqual(res2.body, { ok: true, relayed: 0, results: [] });
+    };
+    const res = await live.relay(payload);
+    assert.deepEqual(res, { relayed: 1, results: [{ ok: true, refresh: true, text: '正中' }] });
+    const res2 = await live.relay({ sessionId: 'other-session', src: '/a/demo-shot.png' });
+    assert.deepEqual(res2, { relayed: 0, results: [] });  // 无命中：不转发
 
     assert.equal(sent.length, 1);
     assert.equal(sent[0].url, 'http://127.0.0.1:8899/annotation');
     assert.equal(sent[0].init.method, 'POST');
-    const body = JSON.parse(sent[0].init.body);
-    assert.deepEqual(body, {
-      sessionId: 's1', src: '/a/demo-shot.png', width: 1000, height: 1434,
-      kind: 'arrow', a: { x: 1, y: 2 }, b: { x: 3, y: 2 },
-    });
+    assert.equal(sent[0].init.headers['Content-Type'], 'application/json');
+    assert.deepEqual(JSON.parse(sent[0].init.body), payload);
   } finally {
     global.fetch = realFetch;
   }
 });
 
-test('route: unreachable / non-JSON handler is reported per result, reply stays ok', async () => {
+test('host relay reports unreachable / non-JSON handlers per result', async () => {
   writeCfg([{ url: 'http://127.0.0.1:1/dead' }], new Date('2026-10-03T12:00:00Z'));
-  const app = fakeApp();
-  live.mount(app);
   const realFetch = global.fetch;
   global.fetch = () => Promise.reject(new Error('ECONNREFUSED'));
   try {
-    const post = app.handlers['POST /api/annotation-live'];
-    const res = await invoke(post, { sessionId: 's1', kind: 'point', a: { x: 0, y: 0 } });
-    assert.equal(res.statusCode, 200);
-    assert.equal(res.body.relayed, 1);
-    assert.equal(res.body.results[0].ok, false);
-    assert.equal(res.body.results[0].refresh, false);
-    assert.match(res.body.results[0].error, /ECONNREFUSED/);
+    const res = await live.relay({ sessionId: 's1', kind: 'point', a: { x: 0, y: 0 } });
+    assert.equal(res.relayed, 1);
+    assert.equal(res.results[0].ok, false);
+    assert.equal(res.results[0].refresh, false);
+    assert.match(res.results[0].error, /ECONNREFUSED/);
     // 非 JSON 回包：照样 ok（HTTP 200），但不 refresh、无文案。
     global.fetch = () => Promise.resolve({ ok: true, json: () => Promise.reject(new SyntaxError('bad')) });
-    const res2 = await invoke(post, { sessionId: 's1', kind: 'arrow' });
-    assert.deepEqual(res2.body.results, [{ ok: true, refresh: false, text: '' }]);
+    const res2 = await live.relay({ sessionId: 's1', kind: 'arrow' });
+    assert.deepEqual(res2.results, [{ ok: true, refresh: false, text: '' }]);
   } finally {
     global.fetch = realFetch;
   }

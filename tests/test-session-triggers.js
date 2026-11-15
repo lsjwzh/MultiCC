@@ -7,6 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { DEFAULT_TRIGGER_PROMPT, createSessionTriggers } = require('../src/triggers');
+const { createEventsRuntime } = require('../src/routes/events-host');
 const { createChatHostRuntime } = require('../src/chat/host-runtime');
 
 function clone(value) {
@@ -50,35 +51,6 @@ class FakeWatcher extends EventEmitter {
   }
 }
 
-function createApp() {
-  const handlers = new Map();
-  const app = { handlers };
-  for (const method of ['get', 'post', 'put', 'delete']) {
-    app[method] = (routePath, handler) => {
-      handlers.set(`${method.toUpperCase()} ${routePath}`, handler);
-      return app;
-    };
-  }
-  return app;
-}
-
-function createResponse() {
-  return {
-    statusCode: 200,
-    body: undefined,
-    status(code) { this.statusCode = code; return this; },
-    json(body) { this.body = body; return this; },
-  };
-}
-
-function invoke(app, method, routePath, request = {}) {
-  const handler = app.handlers.get(`${method} ${routePath}`);
-  assert.equal(typeof handler, 'function', `missing ${method} ${routePath}`);
-  const response = createResponse();
-  const result = handler({ params: {}, body: {}, ...request }, response);
-  return { response, result };
-}
-
 function createHarness(options = {}) {
   const timers = options.timers || createTimers();
   const bus = options.bus || new EventEmitter();
@@ -120,7 +92,7 @@ function createHarness(options = {}) {
     },
   };
 
-  const runtime = createSessionTriggers({
+  const deps = {
     crypto: { randomUUID: () => 'trigger-generated' },
     cron,
     chokidar,
@@ -140,12 +112,16 @@ function createHarness(options = {}) {
       info(event, fields) { logs.push({ level: 'info', event, fields }); },
       warn(event, fields) { logs.push({ level: 'warn', event, fields }); },
     },
-  });
-  const app = createApp();
-  runtime.mountRoutes(app);
+  };
+  const runtime = createSessionTriggers(deps);
+  deps.triggerRuntime = runtime;
+  // The five trigger routes answer from the Rust front door
+  // (native/gateway/src/app/event_routes.rs); this process only serves the
+  // host port ops the front door calls, so these tests drive that contract.
+  const host = createEventsRuntime(deps);
   return {
     runtime,
-    app,
+    host,
     bus,
     timers,
     persistedSessions,
@@ -198,38 +174,34 @@ test('trigger validation and glob matching preserve the established contract', (
   assert.equal(harness.runtime.matchAnyGlob('README.md', ['*.md']), true);
 });
 
-test('trigger CRUD preserves route DTOs, last-fired state, and strong persistence sources', () => {
+test('host trigger ops preserve persistence sources, last-fired state, and appended events', async () => {
   const session = makeSession();
   const harness = createHarness({ persistedSessions: new Map([[session.id, session]]) });
+  const added = {
+    id: 'trigger-generated', type: 'post-turn', enabled: true, prompt: 'review',
+    cooldownMs: 30000, mode: 'inject', createdAt: '2026-07-19T00:00:00.000Z',
+  };
 
-  let call = invoke(harness.app, 'GET', '/api/sessions/:id/triggers', {
-    params: { id: session.id },
+  let value = await harness.host.handle({
+    op: 'trigger-add', id: session.id, trigger: added, label: '每轮结束',
   });
-  assert.deepEqual(call.response.body, { triggers: [] });
+  assert.deepEqual(value, { missing: false });
+  assert.deepEqual(session.triggers, [added]);
+  assert.deepEqual(harness.events, [['directory-1', 'trigger_added', '每轮结束', 'session-1']]);
 
-  call = invoke(harness.app, 'POST', '/api/sessions/:id/triggers', {
-    params: { id: session.id },
-    body: { type: 'post-turn', prompt: 'review' },
-  });
-  assert.equal(call.response.statusCode, 200);
-  assert.equal(call.response.body.id, 'trigger-generated');
-  assert.equal(session.triggers.length, 1);
-  assert.deepEqual(harness.events, [[
-    'directory-1', 'trigger_added', '每轮结束', 'session-1',
-  ]]);
-
+  // The front door merges the stored trigger with the body and carries the
+  // stamps; the host replaces the stored definition.
   session.triggers[0].lastFiredAt = 123;
-  call = invoke(harness.app, 'PUT', '/api/sessions/:id/triggers/:tid', {
-    params: { id: session.id, tid: 'trigger-generated' },
-    body: { prompt: 'updated' },
+  const replaced = { ...added, prompt: 'updated', lastFiredAt: 123 };
+  value = await harness.host.handle({
+    op: 'trigger-replace', id: session.id, tid: 'trigger-generated', trigger: replaced,
   });
-  assert.equal(call.response.body.prompt, 'updated');
-  assert.equal(call.response.body.lastFiredAt, 123);
+  assert.deepEqual(value, { ok: true });
+  assert.equal(session.triggers[0].prompt, 'updated');
+  assert.equal(session.triggers[0].lastFiredAt, 123);
 
-  call = invoke(harness.app, 'DELETE', '/api/sessions/:id/triggers/:tid', {
-    params: { id: session.id, tid: 'trigger-generated' },
-  });
-  assert.deepEqual(call.response.body, { ok: true });
+  value = await harness.host.handle({ op: 'trigger-delete', id: session.id, tid: 'trigger-generated' });
+  assert.deepEqual(value, { ok: true });
   assert.deepEqual(session.triggers, []);
   assert.deepEqual(harness.persistenceSources, [
     'http.create-session-trigger',
@@ -237,30 +209,27 @@ test('trigger CRUD preserves route DTOs, last-fired state, and strong persistenc
     'http.delete-session-trigger',
   ]);
 
-  call = invoke(harness.app, 'POST', '/api/sessions/:id/triggers', {
-    params: { id: session.id },
-    body: { type: 'bad' },
+  // Unknown session / trigger ids are reported to the front door, not thrown.
+  value = await harness.host.handle({ op: 'trigger-add', id: 'other', trigger: added, label: '' });
+  assert.deepEqual(value, { missing: true });
+  value = await harness.host.handle({
+    op: 'trigger-replace', id: session.id, tid: 'nope', trigger: added,
   });
-  assert.equal(call.response.statusCode, 400);
-  assert.deepEqual(call.response.body, { error: 'invalid type' });
+  assert.deepEqual(value, { error: 'trigger not found' });
+  value = await harness.host.handle({ op: 'trigger-delete', id: session.id, tid: 'nope' });
+  assert.deepEqual(value, { error: 'trigger not found' });
+  assert.deepEqual(session.triggers, []);
 });
 
-test('create, update, and delete rely on persistence rollback and do not reconcile after failure', () => {
+test('create, update, and delete rely on persistence rollback and do not reconcile after failure', async () => {
+  const existing = {
+    id: 'existing', type: 'post-turn', enabled: true, prompt: 'old',
+    cooldownMs: 0, mode: 'inject', createdAt: 'old',
+  };
   const cases = [
-    {
-      method: 'POST', route: '/api/sessions/:id/triggers',
-      request: { body: { type: 'post-turn' } }, initial: [],
-    },
-    {
-      method: 'PUT', route: '/api/sessions/:id/triggers/:tid',
-      request: { params: { tid: 'existing' }, body: { prompt: 'changed' } },
-      initial: [{ id: 'existing', type: 'post-turn', enabled: true, prompt: 'old', cooldownMs: 0, mode: 'inject', createdAt: 'old' }],
-    },
-    {
-      method: 'DELETE', route: '/api/sessions/:id/triggers/:tid',
-      request: { params: { tid: 'existing' } },
-      initial: [{ id: 'existing', type: 'post-turn', enabled: true, prompt: 'old', cooldownMs: 0, mode: 'inject', createdAt: 'old' }],
-    },
+    { op: { op: 'trigger-add', trigger: { id: 'trigger-generated', type: 'post-turn' } }, initial: [] },
+    { op: { op: 'trigger-replace', tid: 'existing', trigger: { ...existing, prompt: 'changed' } }, initial: [existing] },
+    { op: { op: 'trigger-delete', tid: 'existing' }, initial: [existing] },
   ];
 
   for (const item of cases) {
@@ -276,10 +245,12 @@ test('create, update, and delete rely on persistence rollback and do not reconci
       },
     };
     const harness = createHarness({ persistedSessions: records, sessionPersistence: persistence });
-    assert.throws(() => invoke(harness.app, item.method, item.route, {
-      params: { id: session.id, ...(item.request.params || {}) },
-      body: item.request.body || {},
-    }), /disk unavailable/);
+    // The host port surfaces a failed durable write as a rejected op; the front
+    // door turns that into its 503 rather than a half-applied trigger table.
+    await assert.rejects(
+      harness.host.handle({ ...item.op, id: session.id }),
+      /disk unavailable/,
+    );
     assert.deepEqual(records.get(session.id).triggers, item.initial);
     assert.deepEqual(harness.runtime.status(), {
       started: false,
@@ -292,13 +263,15 @@ test('create, update, and delete rely on persistence rollback and do not reconci
   }
 });
 
-test('manual test bypasses enabled and cooldown while requiring durable lastFiredAt', () => {
+test('manual test bypasses enabled and cooldown while requiring durable lastFiredAt', async () => {
   const trigger = {
     id: 'manual',
     type: 'post-turn',
     enabled: false,
     prompt: '',
     cooldownMs: 86400000,
+    mode: 'inject',
+    createdAt: '2026-07-19T00:00:00.000Z',
     lastFiredAt: Date.parse('2026-07-19T00:00:00.000Z'),
   };
   const session = makeSession([trigger]);
@@ -309,10 +282,14 @@ test('manual test bypasses enabled and cooldown while requiring durable lastFire
   const runs = [];
   harness.bus.on('chat:run', (...args) => runs.push(args));
 
-  const call = invoke(harness.app, 'POST', '/api/sessions/:id/triggers/:tid/test', {
-    params: { id: session.id, tid: trigger.id },
+  // The front door builds the forced shape for a manual test (enabled, no
+  // cooldown, no lastFiredAt); the host only runs it.
+  const forced = { ...trigger, enabled: true, cooldownMs: 0 };
+  delete forced.lastFiredAt;
+  const value = await harness.host.handle({
+    op: 'trigger-test', id: session.id, trigger: forced,
   });
-  assert.deepEqual(call.response.body, { ok: true });
+  assert.deepEqual(value, { ok: true });
   assert.equal(trigger.lastFiredAt, Date.parse('2026-07-19T00:00:01.000Z'));
   assert.deepEqual(harness.persistenceSources, ['http.test-session-trigger']);
   assert.equal(runs.length, 1);
@@ -320,6 +297,11 @@ test('manual test bypasses enabled and cooldown while requiring durable lastFire
   assert.equal(runs[0][1], DEFAULT_TRIGGER_PROMPT);
   assert.deepEqual(runs[0][2], { originTrigger: true });
   assert.equal(harness.broadcasts[0][1].subtype, 'trigger_fired');
+
+  const missing = await harness.host.handle({
+    op: 'trigger-test', id: 'other', trigger: forced,
+  });
+  assert.deepEqual(missing, { error: 'not found' });
 });
 
 test('busy sessions keep only one deferred fire and run it after streaming ends', () => {

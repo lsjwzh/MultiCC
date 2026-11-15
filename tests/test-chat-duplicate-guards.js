@@ -20,7 +20,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const { createRig, scanDuplicates, SCENARIOS } = require(
+const { createRig, scanDuplicates, scanEmptyBubbles, SCENARIOS } = require(
   path.join(__dirname, '..', 'scripts', 'chat-dup-harness.js'),
 );
 const { createTransportAdapter } = require('../public/chat-shell-entry');
@@ -369,6 +369,75 @@ test('a rejected pending send still releases authoritative reconnect history', (
   assert.equal(bubbles.length, 1);
   assert.equal(bubbles[0].dataset.msgId, 'stored-old');
 });
+
+// 空壳气泡守卫（S9/S10）。scanDuplicates 只看「同一段文字画了两遍」，对空壳失明
+// （它 filter 掉无文本气泡），所以这两条走 scanEmptyBubbles 单独断言。症状：
+// message_start 建框 + 首帧 usage 挂用量行 + 自动选线提前挂归属行，本轮随后被上游
+// 限额/错误打断（走 error 分支的 finishStreaming 而非 result），正文永不到达 ——
+// 每换一次线留一个只剩装饰的空框，刷新才消失。
+for (const scenario of SCENARIOS.filter(s => typeof s.expectEmptyBubbles === 'number')) {
+  test(`空壳气泡场景 ${scenario.name}`, () => {
+    const rig = createRig(scenario.cli || 'claude');
+    rig.feed(scenario.events(rig));
+    const empties = scanEmptyBubbles(rig.messagesEl);
+    assert.equal(
+      empties.length, scenario.expectEmptyBubbles,
+      `期望 ${scenario.expectEmptyBubbles} 个空壳，实际 ${empties.length}`
+      + `（装饰节点：${JSON.stringify(empties.map(e => e.decorative))}）`,
+    );
+    if (typeof scenario.expectToolCards === 'number') {
+      // 守卫的安全边界：只有工具调用、没有文字的回合是合法产出，不能被当空壳删掉。
+      const cards = rig.messagesEl.querySelectorAll('.tool-card');
+      assert.equal(
+        cards.length, scenario.expectToolCards,
+        `工具卡片数不符：期望 ${scenario.expectToolCards}、实际 ${cards.length}`
+        + '（空壳守卫判定过宽，误删了纯工具回合？）',
+      );
+    }
+  });
+}
+
+// 空壳守卫的边界矩阵。守卫会在轮末把无产出的气泡摘掉并清空 currentMsgEl，所以这
+// 四条分别钉住：①正常结束但空回复也算空壳 ②摘掉之后迟到的真实内容仍能建新气泡
+// （守卫不能堵住后续帧）③④有正文或只有工具卡的回合绝不能被误删。
+const EMPTY_GUARD_CASES = [
+  {
+    name: 'result 正常结束但无任何正文：空壳同样清理',
+    events: h => [h.msgStartUsage(), h.result()],
+    bubbles: 0, empties: 0, tools: 0, withText: 0,
+  },
+  {
+    name: '空壳摘除后迟到的真实快照仍能显示',
+    events: h => [h.msgStartUsage(), h.result(),
+      h.assistantSnapshot('这是迟到才到达的真实回复内容，必须正常显示出来。')],
+    bubbles: 1, empties: 0, tools: 0, withText: 1,
+  },
+  {
+    name: '有正文的一轮不受守卫影响',
+    events: h => [h.msgStartUsage(), h.delta('正常回复内容，长度足够触发守卫判定。'), h.result()],
+    bubbles: 1, empties: 0, tools: 0, withText: 1,
+  },
+  {
+    name: '纯工具回合（无文字）正常结束也必须保留',
+    events: h => [h.msgStartUsage(), h.toolUseStart(), h.result()],
+    bubbles: 1, empties: 0, tools: 1, withText: 1,
+  },
+];
+
+for (const probe of EMPTY_GUARD_CASES) {
+  test(`空壳守卫边界：${probe.name}`, () => {
+    const harness = require(path.join(__dirname, '..', 'scripts', 'chat-dup-harness.js'));
+    const rig = createRig('claude');
+    rig.feed(probe.events(harness.helpers));
+    const assistants = rig.messagesEl.querySelectorAll('.msg.assistant');
+    const withText = Array.from(assistants)
+      .filter(b => String(b.textContent || '').trim()).length;
+    assert.equal(assistants.length, probe.bubbles, `assistant 气泡数不符（实际 ${assistants.length}）`);
+    assert.equal(scanEmptyBubbles(rig.messagesEl).length, probe.empties, '空壳数不符');
+    assert.equal(rig.messagesEl.querySelectorAll('.tool-card').length, probe.tools, '工具卡片数不符');
+    assert.equal(withText, probe.withText, `有文本的气泡数不符（实际 ${withText}）`);
+  });
+}
 
 for (const scenario of SCENARIOS) {
   const isKnownDup = scenario.name.startsWith('S6');

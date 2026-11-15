@@ -155,28 +155,28 @@ function fakeRes() {
   };
 }
 
-test('the task-board search route registers GET and answers with ranked hits', async () => {
-  const mounted = [];
+test('the task-board search host operation answers with ranked hits', async () => {
+  // GET /api/task-board/search is answered by the Rust front door; the query
+  // ladder (empty / oversized / clamped limit) lives there and is pinned by
+  // native/gateway/tests/task_routes.rs. Node keeps the search itself.
   const routes = createTaskSearchRoutes({
     getBoard: () => board([
       task('tsk-a', { title: '全文检索：任务搜索', updatedAt: 9 }),
       task('tsk-b', { title: '全文检索：任务关联', updatedAt: 5 }),
     ]),
   });
-  routes.mountRoutes({ get: (path, handler) => mounted.push([path, handler]) });
-  assert.deepEqual(mounted.map(([path]) => path), ['/api/task-board/search', '/api/search/messages']);
-
-  const res = fakeRes();
-  await mounted[0][1]({ query: { q: '全文检索', limit: '1' } }, res);
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.ok, true);
-  assert.equal(res.body.query, '全文检索');
-  assert.equal(res.body.count, 1, 'limit is honoured');
-  assert.deepEqual(res.body.results.map(hit => hit.taskId), ['tsk-a']);
-  assert.ok(res.body.results[0].snippet.text.includes('全文检索'));
+  assert.deepEqual(Object.keys(routes).sort(),
+    ['findMessages', 'handleMessageSearch', 'handleSearch', 'messageScope', 'searchBoard']);
+  const result = await routes.searchBoard({ query: '全文检索', limit: 1 });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.ok, true);
+  assert.equal(result.body.query, '全文检索');
+  assert.equal(result.body.count, 1, 'limit is honoured');
+  assert.deepEqual(result.body.results.map(hit => hit.taskId), ['tsk-a']);
+  assert.ok(result.body.results[0].snippet.text.includes('全文检索'));
 });
 
-test('the search route fails closed on an empty, oversized or unavailable board', () => {
+test('the search route fails closed on an empty, oversized or unavailable board', async () => {
   const routes = createTaskSearchRoutes({ getBoard: () => board([task('tsk-a', { title: '全文检索' })]) });
   const empty = fakeRes();
   routes.handleSearch({ query: { q: '   ' } }, empty);
@@ -189,13 +189,13 @@ test('the search route fails closed on an empty, oversized or unavailable board'
   assert.equal(long.body.error, 'query_too_long');
 
   const broken = fakeRes();
-  createTaskSearchRoutes({ getBoard: () => { throw new Error('board offline'); }, logger: { warn() {} } })
+  await createTaskSearchRoutes({ getBoard: () => { throw new Error('board offline'); }, logger: { warn() {} } })
     .handleSearch({ query: { q: '全文检索' } }, broken);
   assert.equal(broken.statusCode, 503);
   assert.equal(broken.body.error, 'task_board_unavailable');
 
   const missing = fakeRes();
-  createTaskSearchRoutes({ getBoard: () => null }).handleSearch({ query: { q: '全文检索' } }, missing);
+  await createTaskSearchRoutes({ getBoard: () => null }).handleSearch({ query: { q: '全文检索' } }, missing);
   assert.equal(missing.statusCode, 503);
   assert.deepEqual(missing.body, { error: 'task_board_unavailable' });
 });
@@ -221,7 +221,10 @@ test('the route clamps limit and parses the csv filters it forwards', async () =
     'a comma list with a space is still two ids');
 
   assert.throws(() => createTaskSearchRoutes({}), /getBoard/);
-  assert.throws(() => routes.mountRoutes({}), /Express app\.get/);
+  // 公开挂载点退休了；端口契约本身仍是函数（宿主端口逐个调用）。
+  assert.equal(typeof routes.searchBoard, 'function');
+  assert.equal(typeof routes.messageScope, 'function');
+  assert.equal(typeof routes.findMessages, 'function');
 });
 
 // ── 消息级检索（GET /api/search/messages）────────────────────────────────────

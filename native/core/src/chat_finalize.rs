@@ -1470,7 +1470,9 @@ mod tests {
         );
         let plan = plan_turn_finalization(&input, &object(Vec::<(&str, JsValue)>::new()), 0.0);
         assert_eq!(
-            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            plan.get("action")
+                .map(js_to_string)
+                .map(|s| s.to_string_lossy()),
             Some("continue-opencode".into())
         );
         assert_eq!(
@@ -1481,14 +1483,18 @@ mod tests {
         let input = with(input, "apiNetworkContinueAttempt", JsValue::Number(1.0));
         let plan = plan_turn_finalization(&input, &object(Vec::<(&str, JsValue)>::new()), 0.0);
         assert_eq!(
-            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            plan.get("action")
+                .map(js_to_string)
+                .map(|s| s.to_string_lossy()),
             Some("continue-opencode".into())
         );
         // Cap (default 2) reached: back to terminal finalization.
         let input = with(input, "apiNetworkContinueAttempt", JsValue::Number(2.0));
         let plan = plan_turn_finalization(&input, &object(Vec::<(&str, JsValue)>::new()), 0.0);
         assert_eq!(
-            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            plan.get("action")
+                .map(js_to_string)
+                .map(|s| s.to_string_lossy()),
             Some("finalize".into())
         );
     }
@@ -1518,7 +1524,9 @@ mod tests {
             0.0,
         );
         assert_eq!(
-            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            plan.get("action")
+                .map(js_to_string)
+                .map(|s| s.to_string_lossy()),
             Some("finalize".into()),
             "no native session to resume: fail closed"
         );
@@ -1526,7 +1534,10 @@ mod tests {
         let timeout_decision = object(vec![
             ("action", JsValue::string("fail_fast")),
             ("reason", JsValue::string("unsafe_replay_boundary")),
-            ("error", object(vec![("category", JsValue::string("timeout"))])),
+            (
+                "error",
+                object(vec![("category", JsValue::string("timeout"))]),
+            ),
             ("attempt", JsValue::Number(0.0)),
         ]);
         let plan = plan_turn_finalization(
@@ -1535,16 +1546,24 @@ mod tests {
             0.0,
         );
         assert_eq!(
-            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            plan.get("action")
+                .map(js_to_string)
+                .map(|s| s.to_string_lossy()),
             Some("continue-opencode".into())
         );
         // Non-network categories keep the fail-closed terminal path.
         let auth_decision = object(vec![
             ("action", JsValue::string("fail_fast")),
-            ("reason", JsValue::string("authentication_permission_not_retryable")),
+            (
+                "reason",
+                JsValue::string("authentication_permission_not_retryable"),
+            ),
             (
                 "error",
-                object(vec![("category", JsValue::string("authentication_permission"))]),
+                object(vec![(
+                    "category",
+                    JsValue::string("authentication_permission"),
+                )]),
             ),
             ("attempt", JsValue::Number(0.0)),
         ]);
@@ -1554,7 +1573,9 @@ mod tests {
             0.0,
         );
         assert_eq!(
-            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            plan.get("action")
+                .map(js_to_string)
+                .map(|s| s.to_string_lossy()),
             Some("finalize".into())
         );
         // Other CLIs (e.g. codex transport path, claude) are out of scope.
@@ -1564,7 +1585,9 @@ mod tests {
             0.0,
         );
         assert_eq!(
-            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            plan.get("action")
+                .map(js_to_string)
+                .map(|s| s.to_string_lossy()),
             Some("finalize".into())
         );
         // A retryable network decision (before first token) keeps using the
@@ -1572,7 +1595,10 @@ mod tests {
         let retry_decision = object(vec![
             ("action", JsValue::string("retry")),
             ("attempt", JsValue::Number(0.0)),
-            ("error", object(vec![("category", JsValue::string("network"))])),
+            (
+                "error",
+                object(vec![("category", JsValue::string("network"))]),
+            ),
         ]);
         let plan = plan_turn_finalization(
             &mk("opencode", true, retry_decision),
@@ -1580,7 +1606,9 @@ mod tests {
             0.0,
         );
         assert_eq!(
-            plan.get("action").map(js_to_string).map(|s| s.to_string_lossy()),
+            plan.get("action")
+                .map(js_to_string)
+                .map(|s| s.to_string_lossy()),
             Some("retry-api".into())
         );
     }

@@ -255,7 +255,7 @@ async fn dispatch(
     Extension(app): Extension<Arc<App>>,
     request: Request<Body>,
 ) -> Response<Body> {
-    if let Some(route) = crate::app::claim(request.method(), request.uri().path()) {
+    if let Some(route) = crate::app::claim_uri(request.method(), request.uri()) {
         let host = upstream.state.port.load(Ordering::SeqCst);
         return crate::app::handle(app, route, request, upstream.state.client, host).await;
     }

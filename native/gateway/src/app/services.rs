@@ -287,7 +287,7 @@ async fn management_entry(
             http_gate::query_token(&ctx.original_url).as_deref(),
         );
     if !public && !bootstrap {
-        if let Some(refusal) = app.gate(ctx, peer, &snapshot) {
+        if let Some(refusal) = app.gate(ctx, peer, &snapshot).await {
             return refusal;
         }
     }

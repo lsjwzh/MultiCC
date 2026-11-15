@@ -621,9 +621,11 @@ test('the task panel input does not carry the dispatch-mode group', () => {
 });
 
 test('the session detail endpoint carries the role the group keys off', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'src/routes/session-admin.js'), 'utf8');
-  const start = source.indexOf('function legacySessionDetailPresenter');
+  // The presenter moved into the Rust rules kernel with the rest of the
+  // session-admin detail route.
+  const source = fs.readFileSync(path.join(ROOT, 'native/core/src/session_admin.rs'), 'utf8');
+  const start = source.indexOf('pub fn legacy_session_detail');
   assert.ok(start > 0);
-  const presenter = source.slice(start, source.indexOf('\n  }\n', start));
-  assert.match(presenter, /type: record\.type \|\| null/);
+  const presenter = source.slice(start, source.indexOf('\n}', start));
+  assert.match(presenter, /out\.insert\("type"\.into\(\), or_null\(record\.get\("type"\)\)\);/);
 });
