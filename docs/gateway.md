@@ -4545,3 +4545,174 @@ deterministic；`scripts/check-source-line-budget.js` 的 `server.js` 棘轮 310
 与 stub，不碰真实会话与任务库。`tests/test-request-locality.js` 白名单含
 `src/routes/orchestration-host.js`；`tests/test-orchestration-host.js` 登记 core deterministic；
 `server.js` 棘轮 3111/167256；`tests/test-release-version-consistency.js` core 计数 453/378/425。
+
+## 57. 发布资产、iOS OTA 与聊天历史簇 10 条公开路由迁入前门（2026-11-15）
+
+### 57.1 范围与归属
+
+本簇横跨四个文件，共 11 条公开路由，**只迁 10 条**。前门实现见
+`native/gateway/src/app/release_history_routes.rs`（423 行、4 条单测）与
+`native/core/src/release_history_routes.rs`（685 行、15 条单测）。
+
+| 路由 | 原文件 | host op |
+|---|---|---|
+| `GET\|HEAD /api/apk-info` | `routes/system.js` | `apk-info` |
+| `GET\|HEAD /api/ios-ota-info` | `routes/system.js` | `ios-ota-info` |
+| `GET\|HEAD /ios-ota/manifest.plist` | `routes/system.js` | `ios-ota-manifest` |
+| `GET\|HEAD /ios-ota/udid.mobileconfig` | `ios-udid.js` | `udid-profile` |
+| `GET\|HEAD /ios-ota/udid/result/:token` | `ios-udid.js` | `udid-result` |
+| `POST /ios-ota/udid/callback/:token` | `ios-udid.js` | `udid-callback` |
+| `DELETE /api/sessions/:id/messages/:msgId` | `routes/chat-history.js` | `message-delete` |
+| `GET\|HEAD /api/sessions/:id/history` | `routes/chat-history.js` | `history` |
+| `GET\|HEAD /api/sessions/:id/context-level` | `routes/chat-history.js` | `context-level` |
+| `GET\|HEAD /`（仅当会重定向时） | `routes/static-assets.js` | 无（前门直接答） |
+
+排除 1 条：`GET /multicc.apk` 保留在真实 app 上。它在有本地文件时 `next()`，落到
+`express.static` 的流式 `sendFile`（Range / ETag / Last-Modified 由 Express 产生），
+把这条拆进前门就等于要在 Rust 侧复刻一份静态文件服务，因此整条留 Node 转发。
+`routes/system.js` 据此拆成 `mountSystemHostRoutes`（3 条 + ios-udid 的 3 条，只挂宿主端口的
+捕获应用）与 `mountApkDownload`（1 条，挂真实 app），**没有任何一条同时挂两处**。
+
+### 57.2 `GET /` 的条件认领
+
+`GET|HEAD /` 只在它会重定向时认领，这是本簇唯一按查询串决定归属的路由：
+
+- 无参 → 302 `/air`（前门直接答，没有 host 往返）
+- `?id=__aux__` → 302 `/air?view=aux`（旧面板打开助手面板的简写）
+- `?id=` / `?newid=` / `?cwd=` 为真值 → **不认领**，回落 Node 的 versioned-HTML 中间件，
+  与退役前 `next()` 的去向完全一致
+
+真值判定复刻 `qs` 的语义：非空字符串、任意数组、任意对象都为真（`multicc_core::http_gate::QueryValue`）。
+因为认领要看查询串，前门的入口从 `claim(method, path)` 改成 `claim_uri(method, uri)`
+（`native/gateway/src/forward.rs`），后者在原有 `claim` 之上追加这一条。
+钉住的用例：`native/core` 的 `root_redirects_to_air_unless_a_terminal_session_is_named`、
+`claim_root_needs_a_read_of_the_bare_path_that_redirects`；前门的
+`the_root_claims_only_when_it_redirects`。
+
+### 57.2b 两个认领入口都要接线（已修的真缺口）
+
+本簇的认领分两处，**缺一不可**：9 条非根路由在 `app::claim` 里分派
+`release_history_routes::claim`，`GET|HEAD /` 在 `app::claim_uri` 里分派
+`release_history_routes::claim_uri`（只有它需要读查询串）。
+
+首次落盘时只接了后者，`release_history_routes::claim` 成了没人调用的 `pub fn`。后果很别扭且不会被
+单测发现：`OPTIONS /api/apk-info` 照常 200（`options_share` 已在 `OPTIONS_SOURCES` 里），而 `GET` 不被
+认领、转发给 Node，Node 侧的处理器已经搬到宿主端口的捕获应用上，于是变成硬 404。`multicc_core` 与前门的
+模块单测都直接调模块内的 `claim`，绕过了 `app::claim`，所以 2128 个通过的 Rust 测试一个都没响。
+
+抓住它的是本簇的集成测试：撤掉 `app::claim` 里那一行，`native/gateway/tests/release_history_routes.rs`
+的 33 条里 30 条立刻变红（只剩两条根路由用例和 `/multicc.apk` 回落用例是绿的，因为它们本来就不走
+`app::claim`）。这条回归钉在集成测试上，不是单测上——**本簇任一公开路由的认领缺失都必须让集成测试变红**。
+
+### 57.3 鉴权豁免复用共享表，不是副本
+
+OTA 的取件方不是浏览器：`itms-services` 无法登录，苹果设备从手机直接 POST 它的签名回传。
+豁免判定**复用**共享 HTTP 入口规则 `multicc_core::http_entry`（`public_path` /
+`udid_callback_path` / `udid_content_type`），没有在本簇新写第二份表：
+
+- 公开：`/ios-ota/manifest.plist`、`GET /ios-ota/udid/result/<64 hex>`
+- 公开但**仅限苹果的两种 Content-Type**：`POST /ios-ota/udid/callback/<64 hex>`，
+  `application/pkcs7-signature` 或 `application/x-apple-aspen-deviceinfo`
+- **仍在闸门后**：`/ios-ota/udid.mobileconfig`（描述文件下载）、`/api/apk-info`、`/api/ios-ota-info`
+
+`gate('peer')` 对所有路径（含公开的）照旧先跑，与 Node 的顺序一致。
+
+### 57.4 宿主端口契约
+
+`POST /api/__host/release-history`（内部端口，回环闸门 `isLocalRequest`；非回环 404
+`{error:'not found'}`，未知 op 400 `{error:'unknown host operation'}`）。
+Node 侧只剩真正的宿主事实：APK/IPA 边车文件、plist 与 `.mobileconfig` 渲染、一次性 UDID 令牌表
+与 `openssl cms` 校验、会话记录表与 transcript 存储、原生历史运行时。
+
+退役的处理器**按退休时的顺序原样挂在一个捕获应用上**（`src/routes/release-history-host.js`，322 行，
+9 个 op），`mountRoute` 再把唯一的宿主路由挂到真实 app。请求体
+`{ op, method, originalUrl, <params>, query, headers, body, rawBody?, local, requestId, correlationId }`：
+
+- `query` 只带处理器读的键：`historyScope`、`before`、`around`、`limit`、`plan`
+- `headers` 只放行 `host`、`x-forwarded-proto`、`x-forwarded-host`、`sec-fetch-site`
+  （`absoluteBaseUrl` 读前三个算设备看到的回调基址，第四个是描述文件下载的跨站检查）。
+  凭据一律不转发。
+- `params`：`udid-result` / `udid-callback` 带 `token`；`message-delete` 带 `id` + `msgId`；
+  `history` / `context-level` 带 `id`
+
+应答 `{ ok:true, value:{ status, body?, contentType?, bare?, headers? } }`，其中 `headers` 是
+`[[name, value], ...]`（处理器自己设的头，如 301 的 `Location`）。三种体形态：
+
+- `bare:true` → 无 Content-Type、无 ETag 的空体（`res.status(n).end()`），带 `Content-Length: 0`，
+  但处理器设的头保留
+- `contentType` 存在 → 按该 Content-Type 发送 `body` 字符串的字节（plist / mobileconfig / HTML）
+- 都没有 → `body` 当 JSON 发
+
+处理器抛错 → `{threw:true, status, code, message}`，前门用**自己的** request id 重建信封，
+不外泄 message。宿主答非 `ok:true`、形状坏或不可达 → 503
+`{error:"发布资产与聊天历史接口尚未就绪，请更新原生模块", code:"rust_backend_unavailable"}`。
+
+### 57.5 苹果设备回传的 `express.raw` 分帧
+
+回调原本挂在自己的 `express.raw({ type: () => true, limit: 64KB, inflate: false })` 之后。
+前门复刻 `body-parser` 在读第一个字节之前做的检查（`multicc_core::release_history_routes::raw_precheck`），
+把结果作为 `rawBody` 的四态传给宿主，由退役处理器按原顺序作答：
+
+| `rawBody.kind` | 含义 | 退役处理器的反应 |
+|---|---|---|
+| `buffer` + `base64` | 正常读到请求体 | 正常流程 |
+| `error` + `status` | 声明或实收超过 64KB → 413；带内容编码（`inflate:false`）与其它解析失败 → 400 | 固定文案 |
+| `none` | 既无 `Transfer-Encoding` 也无数值 `Content-Length` | `req.body` 未设，走它自己的 400 |
+| `parsed` | 全局 `express.json` 已经吃掉了 JSON 体 | 与退役栈一致 |
+
+`typeis.hasBody` 的 `!isNaN(content-length)` 语义照抄（空头值算 0，所以也算有体）。
+顺序也保持原样：先令牌闸门（410 过期/已用、429 并发），再请求体错误，最后回调。
+
+### 57.6 内部执行槽守卫与写串行化
+
+chat-history 的三条在 `/api/sessions/:id/*` 下，守卫**复用** session-admin 的
+`guard_facts` / `guarded_404`（先例 `event_routes.rs`、`session_routes.rs`、`orchestration_routes.rs`），
+没有新写第二份。内部槽在处理器与 `OPTIONS` 之前得到与缺失会话相同的 404。
+`:id` 先解码再进守卫——Express 在跑守卫前已解码该层的参数，畸形转义是它的 400。
+
+写路由经 `App::release_history_write` 串行化：`udid-profile`（往 pending 表发一次性令牌）、
+`udid-callback`（消费令牌）、`message-delete`（改写 transcript）。读路由不取锁。
+
+### 57.7 实测 `Allow`
+
+`/api/apk-info`、`/api/ios-ota-info`、`/ios-ota/manifest.plist`、`/ios-ota/udid.mobileconfig`、
+`/ios-ota/udid/result/:token`、`/api/sessions/:id/history`、`/api/sessions/:id/context-level`：`GET,HEAD`；
+`/ios-ota/udid/callback/:token`：`POST`；`/api/sessions/:id/messages/:msgId`：`DELETE`。
+走 `OPTIONS_SOURCES` 并集（`release_history_routes::options_share`），不做特判。
+`/multicc.apk` 与带会话参数的 `/` 不在本簇的 `Allow` 里。
+
+### 57.8 差分、隔离与治理
+
+集成测试 `native/gateway/tests/release_history_routes.rs` 33 条：10 条路由各自的正常路径与键序、
+三种非 JSON 响应的头部逐字节（`text/xml` / `application/x-apple-aspen-config`（都带 `; charset=utf-8`） /
+`text/html` 带 CSP 与 `X-Robots-Tag`）、OTA 三条豁免路径用外部对端可达而 profile 与两条 JSON info 仍被拒、
+callback 换任何其它 Content-Type 被拒、内部执行槽在三条 chat-history 路由与其 `OPTIONS` 上 404 且宿主零副作用、
+`Allow` 并集、宿主不可达与坏形状的 503、`threw:true` 的信封重建不外泄 message、`GET /` 三形态、
+`/multicc.apk` 回落、`rawBody` 四态（含 64KB 边界与 chunked 超限的 413、gzip 的 400）、HEAD 有头无体、
+三条写路由共用一把锁而读路由不被串行化。
+
+Rust 侧全量：`cargo fmt --check` 净、`clippy --all-targets -D warnings` 零警告、
+`cargo test --workspace --no-fail-fast -- --test-threads=1` **69 目标 / 2161 通过 / 0 失败**
+（较上一批基线 68 / 2128 恰好多出本簇这 33 条）。
+Node 侧：`tests/test-ios-ota.js` 14、`tests/test-system-routes.js` 11、`tests/test-api-contracts.js` 24、
+`tests/test-request-locality.js` 11，全绿；`tests/test-request-locality.js` 白名单含
+`src/routes/release-history-host.js`。行长闸通过，`server.js` 棘轮 3111 行 / 167411 字节。
+
+退役前的实现逐字冻结在 `tests/helpers/legacy-release-history-routes/`（固化成文件，不走
+`git show HEAD:`，因此提交之后仍然有效）。其 `index.js` 有两处必要设计：冻结 `system.js` 的
+`require('../ios-udid')` 重定向到**冻结副本**（live 的已长出 `mountHostRoutes`，否则 oracle 会拿新代码
+跟自己比），裸依赖用 `require.resolve` 指向仓库 `node_modules`（副本在临时目录里跑）。
+
+### 57.9 `res.send(string)` 的 charset 不看基础类型
+
+首版宿主把补 `; charset=utf-8` 的判断写成按基础类型白名单（`text/*`、`application/json`、
+`application/javascript`），于是 `.mobileconfig` 回的是裸 `application/x-apple-aspen-config`。
+真实 Express 不是这样：`res.send(chunk)` 只要 `typeof chunk === 'string'`，就对**已设的任何**
+Content-Type 跑一次 `setCharset(type, 'utf-8')`（`express/lib/response.js`），不看它的基础类型。
+`res.type()` 自己确实只给 text-ish 补，所以这一步必须留在 send 时点，不能并进 `withCharset`。
+
+抓住它的是本簇差分的 4 个 profile 用例（`profile over https`、`xml-hostile forwarded host`、
+`HEAD profile`、`same-origin fetch`）：oracle 在真实 Express 下回带 charset，前门回不带。
+修复在 `src/routes/release-history-host.js` 的 `send`；前门原样透传宿主 Content-Type 这一行为本身是对的，
+集成测试相应改成按修好的宿主建模（`udid_profile_relays_the_aspen_content_type_verbatim`）。
+这类「我以为 Express 会怎样」的偏差只有拿真实 oracle 对拍才会暴露，单测与集成测试都钉不住。
