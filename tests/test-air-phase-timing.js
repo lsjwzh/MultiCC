@@ -13,8 +13,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { mountAirRoutes } = require('../src/workspace/air-routes');
-const { airResponse } = require('./helpers/air-response');
+const { mountAir } = require('./helpers/air-host');
 
 // 日志契约：这十一个分段名是对外可读的字段，改名要连测试一起改（别让日志悄悄少一段）。
 const PHASE_MARKS = ['migrateMs', 'recordsMs', 'boardMs', 'admissionMs', 'admissionIndexMs',
@@ -27,8 +26,7 @@ const DEFAULT_LIKE = { logMs: 200, gapMs: 30_000, bootWindowS: 0, bootGapMs: 30_
 
 // costMs 是每张卡片在 taskAccess 里空转的毫秒数：它就是「逐卡路径很贵」的可控版本。
 function fixture({ costMs = 0, logger = true, diagnostics = EAGER } = {}) {
-  const handlers = new Map(), lines = [];
-  const app = { get: (path, fn) => handlers.set(path, fn), post() {} };
+  const lines = [];
   // 空转按 hrtime 自己记一笔真实时长：Date.now() 只有毫秒刻度，拿它当断言会被读数
   // 截断坑到（实测两次 30ms 空转合计 58.9ms）。
   let burnedMs = 0;
@@ -38,7 +36,7 @@ function fixture({ costMs = 0, logger = true, diagnostics = EAGER } = {}) {
     while (Date.now() < until);
     burnedMs += Number(process.hrtime.bigint() - start) / 1e6;
   };
-  mountAirRoutes(app, {
+  const air = mountAir({
     // 宿主真实接线里 server.js 会传 logger（air_snapshot_slow 就落在它上面）。
     ...(logger ? { logger: { warn: (event, fields) => lines.push({ event, fields }) } } : {}),
     phaseDiagnostics: diagnostics,
@@ -54,18 +52,14 @@ function fixture({ costMs = 0, logger = true, diagnostics = EAGER } = {}) {
       taskAccess: () => { burn(); return { readOnly: true }; } },
   });
   const phaseLines = () => lines.filter(line => line.event === 'air_snapshot_slow');
-  return { handlers, lines, phaseLines, burnedMs: () => burnedMs };
+  // 快照正文与 ETag 在宿主定稿；ifNoneMatch 只喂给分相位日志的 status 一栏
+  // （200 / 304），304 的响应本身在前门。
+  return { air, lines, phaseLines, burnedMs: () => burnedMs };
 }
 
-const get = (handlers, headers) => {
-  const res = airResponse();
-  return handlers.get('/api/air')({ headers }, res).then(() => res);
-};
-
 test('慢轮次落一行 air_snapshot_slow，各段耗时与判读上下文齐全', async () => {
-  const { handlers, phaseLines, burnedMs } = fixture({ costMs: 30 });   // 2 张卡 × 30ms 空转
-  const res = await get(handlers, {});
-  assert.equal(res.statusCode, 200);
+  const { air, phaseLines, burnedMs } = fixture({ costMs: 30 });   // 2 张卡 × 30ms 空转
+  const res = await air.snapshot();
 
   const lines = phaseLines();
   assert.equal(lines.length, 1, '一轮只该落一行');
@@ -93,14 +87,14 @@ test('慢轮次落一行 air_snapshot_slow，各段耗时与判读上下文齐�
 });
 
 test('304 那一轮同样计时，正文与 ETag 不受影响', async () => {
-  const { handlers, phaseLines } = fixture({ costMs: 30 });
-  const first = await get(handlers, {});
+  const { air, phaseLines } = fixture({ costMs: 30 });
+  const first = await air.snapshot();
   const expected = `W/"${crypto.createHash('sha1').update(first.body).digest('base64url')}"`;
-  assert.equal(first.headers.etag, expected, 'ETag 仍然只由正文派生');
+  assert.equal(first.etag, expected, 'ETag 仍然只由正文派生');
 
-  const second = await get(handlers, { 'if-none-match': first.headers.etag });
-  assert.equal(second.statusCode, 304, '计时不许动摇条件请求');
-  assert.equal(second.body, undefined);
+  const second = await air.snapshot(first.etag);
+  assert.equal(second.etag, first.etag, '计时不许动摇校验器');
+  assert.equal(second.body, first.body, '宿主仍然产出正文；前门在 304 时不发它');
   const lines = phaseLines();
   assert.equal(lines.length, 2);
   assert.equal(lines[1].fields.status, 304, '304 也要留下耗时，否则「便宜的那一轮」没数据');
@@ -109,19 +103,19 @@ test('304 那一轮同样计时，正文与 ETag 不受影响', async () => {
 
 test('快轮次静默、慢轮次限流：日志不能比它诊断的开销还贵', async () => {
   const fast = fixture({ costMs: 0, diagnostics: DEFAULT_LIKE });
-  assert.equal((await get(fast.handlers, {})).statusCode, 200);
+  await fast.air.snapshot();
   assert.equal(fast.phaseLines().length, 0, '低于阈值的一轮一行都不该打');
 
   // 默认间隔 30s：连着两轮都慢（每张卡 110ms 空转，稳稳越过 200ms 阈值），也只能落一行。
   const slow = fixture({ costMs: 110, diagnostics: DEFAULT_LIKE });
-  await get(slow.handlers, {});
-  await get(slow.handlers, {});
+  await slow.air.snapshot();
+  await slow.air.snapshot();
   assert.equal(slow.phaseLines().length, 1, '限流没生效，每 15 秒一轮会变成每轮一行');
 
   // 间隔清零后同样的两轮就该落两行 —— 证明上一条是限流而不是「根本没打」。
   const eager = fixture({ costMs: 30 });
-  await get(eager.handlers, {});
-  await get(eager.handlers, {});
+  await eager.air.snapshot();
+  await eager.air.snapshot();
   assert.equal(eager.phaseLines().length, 2);
 });
 
@@ -129,19 +123,19 @@ test('启动窗口那一档只在宿主接了 logger 时生效', async () => {
   // 窗口极宽 + 间隔清零：慢轮次的阈值被放到不可能达到，唯一还能触发的就是启动窗口。
   const boot = { logMs: 1e9, gapMs: 0, bootWindowS: 1e6, bootGapMs: 0 };
   const withLogger = fixture({ costMs: 0, diagnostics: boot });
-  await get(withLogger.handlers, {});
+  await withLogger.air.snapshot();
   assert.equal(withLogger.phaseLines().length, 1, '重启窗口内即便这一轮很快也要留下样本');
 
   const withoutLogger = fixture({ costMs: 0, logger: false, diagnostics: boot });
-  await get(withoutLogger.handlers, {});
+  await withoutLogger.air.snapshot();
   assert.equal(withoutLogger.phaseLines().length, 0,
     '没有宿主 logger 的进程（测试/工具）不该被启动窗口刷屏到 console');
 });
 
 test('计时数字绝不进正文：payload 字段集合与从前逐字节一致', async () => {
-  const { handlers } = fixture({ costMs: 0 });
-  const res = await get(handlers, {});
-  assert.deepEqual(Object.keys(JSON.parse(res.body)).sort(), [...PAYLOAD_KEYS].sort());
+  const { air } = fixture({ costMs: 0 });
+  const res = await air.snapshot();
+  assert.deepEqual(Object.keys(res.json).sort(), [...PAYLOAD_KEYS].sort());
   for (const key of ['totalMs', 'calibMs', 'unaccountedMs', 'cardCount', 'cardLoopMs']) {
     assert.ok(!res.body.includes(key), `正文里不该出现诊断字段 ${key}`);
   }

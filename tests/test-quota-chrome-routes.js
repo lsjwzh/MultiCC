@@ -201,19 +201,25 @@ test('isUnauthenticated covers both the 401 and the redirect-to-login shape', ()
   assert.ok(!qoder.isUnauthenticated({ statusCode: 500 }));
 });
 
-test('both routes mount without a browser anywhere in sight', () => {
-  const routes = [];
-  const app = {
-    get: (route, handler) => routes.push(['GET', route, typeof handler]),
-    post: (route, handler) => routes.push(['POST', route, typeof handler]),
-  };
-  opencode.mountOpenCodeQuotaRoutes(app);
-  qoder.mountQoderQuotaRoutes(app);
-  assert.deepEqual(routes, [
-    ['GET', '/api/opencode/quota', 'function'],
-    ['POST', '/api/opencode/quota/login', 'function'],
-    ['GET', '/api/qoder/quota', 'function'],
-    ['POST', '/api/qoder/quota/login', 'function'],
-    ['GET', '/api/qoder/quota/cookies', 'function'],
-  ]);
+// The five routes are the Rust front door's now. Each module keeps only the
+// browser-driving fetcher (and its parsers), and the host port is the one place
+// the front door can ask for them.
+test('the retired mounts are gone and the host port is the only caller left', async () => {
+  const { createQuotaRuntime } = require('../src/routes/quota-host');
+  assert.equal(opencode.mountOpenCodeQuotaRoutes, undefined, 'the routes are the Rust front door\'s');
+  assert.equal(qoder.mountQoderQuotaRoutes, undefined);
+
+  const runtime = createQuotaRuntime({
+    now: () => 1700000000000,
+    fetchOpenCodeUsage: async () => ({ status: 'needs_login', error: 'no browser' }),
+    fetchQoderUsage: async () => ({ status: 'ok', fetchedAt: 1, quota: {} }),
+    loadSavedCookies: () => ({ cookie: 'x' }),
+    loginUrl: { opencode: opencode.OPENCODE_AUTH_URL, qoder: qoder.LOGIN_PAGE_URL },
+    openLogin: async () => {},
+  });
+  assert.deepEqual(await runtime.handle({ op: 'opencode.quota' }),
+    { result: { status: 'needs_login', error: 'no browser' } });
+  assert.deepEqual(await runtime.handle({ op: 'qoder.quota' }),
+    { result: { status: 'ok', fetchedAt: 1, quota: {} } });
+  assert.deepEqual(await runtime.handle({ op: 'qoder.cookies' }), { saved: { cookie: 'x' } });
 });

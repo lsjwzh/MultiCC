@@ -6,6 +6,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+
+const ROOT = path.join(__dirname, '..');
+
+// The session-admin cluster's public routes are claimed by the Rust front door
+// (native/gateway/src/app/session_admin.rs), so an isolated host has to start
+// the real gateway with server.js as its child instead of bare node.
+function gatewayBinary() {
+  const addon = process.env.MULTICC_RUST_ADDON
+    || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(ROOT, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  return path.join(path.dirname(addon),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { assertTestDir } = require('../src/paths');
@@ -38,7 +52,7 @@ async function start() {
   await new Promise(resolve => probe.once('listening', resolve));
   const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
   const base = `http://127.0.0.1:${port}`;
-  server = spawn(process.execPath, ['server.js'], {
+  server = spawn(gatewayBinary(), ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
     cwd: path.join(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1',
       ACCESS_TOKEN: 'zcode-recovery-test', MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'),
       MULTICC_ENV_FILE: path.join(root, 'test.env'), MULTICC_TASK_SHELLS: '0', ASR_LOCAL: 'off',

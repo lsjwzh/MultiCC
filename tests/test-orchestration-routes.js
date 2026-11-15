@@ -212,7 +212,10 @@ function fixture(options = {}) {
       return res.status(status).json({ ok: false, error: message, code, requestId: req.id });
     },
   });
+  // Both halves on one fake app: the nine host-port routes (Rust front door) and
+  // the seven out-of-scope routes that stay on the public Express app.
   const app = fakeApp();
+  routes.mountHostRoutes(app);
   routes.mountRoutes(app);
   return { app, calls, records, routes, runtime };
 }
@@ -236,6 +239,54 @@ test('dependency and mount boundaries own the orchestration routes', () => {
     'POST /api/wait/:wid/resolve',
   ]);
   assert.throws(() => current.routes.mountRoutes(current.app), /already mounted/);
+  assert.throws(() => current.routes.mountHostRoutes(current.app), /already mounted/);
+});
+
+test('the public mount keeps only the seven out-of-scope routes; the nine migrated routes are host-only', () => {
+  const noop = async () => ({});
+  const routes = createOrchestrationRoutes({
+    records: new Map(),
+    runtime: {
+      register: noop, resolveCallback: noop, listForSession: noop, stats: noop, cancel: noop,
+      startDetached: noop, scheduleMessage: noop, listScheduledMessages: noop,
+      cancelScheduledMessage: noop,
+      operations: { list: noop, listTasks: noop },
+      sessionScheduler: { status: noop },
+    },
+    waitInjector: { listForSession() {}, stats() {}, cancel() {} },
+    detached: { status() {} },
+    dismissUserInput: noop,
+    cwdForSession() {}, resolveCwd() {}, toWaitDto() {}, withApiMeta() {}, requestContext() {}, v1Error() {},
+  });
+  const publicApp = fakeApp();
+  const hostApp = fakeApp();
+  routes.mountRoutes(publicApp);
+  routes.mountHostRoutes(hostApp);
+  assert.deepEqual([...publicApp.routes.keys()].sort(), [
+    'DELETE /api/wait/:wid',
+    'GET /api/detached/:taskId',
+    'GET /api/sessions/:id/detached',
+    'GET /api/sessions/:id/waits',
+    'POST /api/sessions/:id/run-detached',
+    'POST /api/sessions/:id/wait',
+    'POST /api/wait/:wid/resolve',
+  ]);
+  assert.deepEqual([...hostApp.routes.keys()].sort(), [
+    'DELETE /api/sessions/:id/scheduled-messages/:messageId',
+    'GET /api/sessions/:id/dispatches',
+    'GET /api/sessions/:id/queue',
+    'GET /api/sessions/:id/scheduled-messages',
+    'GET /api/sessions/:id/tasks',
+    'GET /api/v1/sessions/:id/waits',
+    'POST /api/sessions/:id/queue/action',
+    'POST /api/sessions/:id/scheduled-messages',
+    'POST /api/sessions/:id/user-input/dismiss',
+  ]);
+  // The unprefixed waits listing stays public; only the v1 projection moved.
+  assert.ok(publicApp.routes.has('GET /api/sessions/:id/waits'));
+  assert.ok(!hostApp.routes.has('GET /api/sessions/:id/waits'));
+  assert.ok(hostApp.routes.has('GET /api/v1/sessions/:id/waits'));
+  assert.ok(!publicApp.routes.has('GET /api/v1/sessions/:id/waits'));
 });
 
 test('dispatch and detached status views only load operation references', async () => {

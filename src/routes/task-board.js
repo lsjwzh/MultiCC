@@ -1699,40 +1699,54 @@ function createTaskBoardRuntime(deps) {
     logger,
   });
 
-  function mountRoutes(app) {
-    planningRuntime.mountRoutes(app);
-    const retentionRoute = handler => async (req, res) => {
-      try {
-        const dirId = req.params.dirId;
-        if (!deps.directories?.get(dirId)) return res.status(404).json({ ok: false, code: 'directory_not_found' });
-        if (typeof deps.listShellTasks !== 'function') return res.status(503).json({ ok: false, code: 'task_inventory_unavailable' });
-        return res.json({ ok: true, ...await handler(dirId, () => deps.listShellTasks(), req) });
-      } catch (error) {
-        return res.status(error.status || 500).json({ ok: false, code: error.code || 'retention_failed' });
-      }
-    };
-    app.get('/api/task-board/directories/:dirId/retention', retentionRoute((dirId, list) => retention.preview(dirId, list)));
-    app.post('/api/task-board/directories/:dirId/retention', retentionRoute((dirId, list, req) =>
-      retention.deleteSelected(dirId, list, req.body?.taskIds)));
-    app.post('/api/task-board/tasks/:taskId/status', (req, res) => {
-      // Return the promise so harness callers can await the full handler.
-      return handleStatus(req, res).catch(error => {
-        logger.log(`[multicc/taskboard] status update failed: ${error?.message || error}`);
-        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
-      });
-    });
-    app.delete?.('/api/task-board/tasks/:taskId', taskLifecycle.delete);
-    app.post('/api/task-board/tasks/:taskId/relocate', (req, res) => taskRelocate.relocate(req, res)
-      .catch(error => { logger.log(`[multicc/taskboard] relocate failed: ${error?.message || error}`);
-        if (!res.headersSent) res.status(500).json({ error: 'internal_error' }); }));
-    app.post('/api/task-board/tasks/:taskId/chat-session', (req, res) => {
-      // Return the promise so harness callers can await the full handler.
-      return handleChatSession(req, res).catch(error => {
-        logger.log(`[multicc/taskboard] chat-session failed: ${error?.message || error}`);
-        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
-      });
-    });
+  // 任务板的 11 条公开路由（5 条 planning、2 条保留策略、status、DELETE、
+  // relocate、chat-session）已由 Rust 前门独占；路径匹配、参数解码、状态码
+  // 决策树与响应信封都在 native/gateway/src/app/task_routes.rs 与
+  // native/core/src/task_routes.rs。这里保留 Node 独有的事实：任务库写入、
+  // 任务锁、聊天会话绑定、保留策略预检与会话索引，以及处理器原样写
+  // `res.status().json(...)` 的形态 —— 宿主端口（src/routes/task-routes-host.js）
+  // 用捕获器取走 body，交给 Rust 决定最终信封。
+  function fakeRequest({ taskId = '', dirId = '', body = undefined } = {}) {
+    return { params: { taskId, dirId }, body };
   }
+
+  // 与退休的 mountRoutes 内联 catch 逐字一致：同一行日志、同一个兜底 body。
+  function guardedRoute(label, run) {
+    return (context, res) => Promise.resolve()
+      .then(() => run(context, res))
+      .catch(error => {
+        logger.log(`[multicc/taskboard] ${label} failed: ${error?.message || error}`);
+        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
+      });
+  }
+
+  const retentionRoute = handler => async (context, res) => {
+    try {
+      const dirId = context.dirId;
+      if (!deps.directories?.get(dirId)) return res.status(404).json({ ok: false, code: 'directory_not_found' });
+      if (typeof deps.listShellTasks !== 'function') return res.status(503).json({ ok: false, code: 'task_inventory_unavailable' });
+      return res.json({ ok: true, ...await handler(dirId, () => deps.listShellTasks(), context) });
+    } catch (error) {
+      return res.status(error.status || 500).json({ ok: false, code: error.code || 'retention_failed' });
+    }
+  };
+
+  const routePorts = Object.freeze({
+    planningCreate: (context, res) => planningRuntime.handleCreate(fakeRequest(context), res),
+    planningUpdate: (context, res) => planningRuntime.withTaskLock(context.taskId,
+      () => planningRuntime.handleUpdate(fakeRequest(context), res)),
+    planningRename: (context, res) => planningRuntime.withTaskLock(context.taskId,
+      () => planningRuntime.handleRename(fakeRequest(context), res)),
+    planningMove: (context, res) => planningRuntime.withTaskLock(context.taskId,
+      () => planningRuntime.handleMove(fakeRequest(context), res)),
+    retentionPreview: retentionRoute((dirId, list) => retention.preview(dirId, list)),
+    retentionDelete: retentionRoute((dirId, list, context) =>
+      retention.deleteSelected(dirId, list, context.body?.taskIds)),
+    status: guardedRoute('status update', (context, res) => handleStatus(fakeRequest(context), res)),
+    delete: (context, res) => taskLifecycle.delete(fakeRequest(context), res),
+    relocate: guardedRoute('relocate', (context, res) => taskRelocate.relocate(fakeRequest(context), res)),
+    chatSession: guardedRoute('chat-session', (context, res) => handleChatSession(fakeRequest(context), res)),
+  });
 
   // Recover interrupted module assignment and retire already-confirmed stale
   // cards once after startup. Fresh automatic work is driven by the settled
@@ -1756,7 +1770,7 @@ function createTaskBoardRuntime(deps) {
       core.setTaskRouting(task, { mode: 'task-bound', workerSessionId: input.sessionId, oneWay: true });
       return { ok: true };
     }),
-    mountRoutes, isTaskLifecycleBusy: id => taskLifecycle.isBusy(id),
+    routePorts, isTaskLifecycleBusy: id => taskLifecycle.isBusy(id),
     evictOldestSafeTask: (dirId, listShellTasks, atCapacity, excludedIds) => retention.evict(dirId, listShellTasks, atCapacity, excludedIds),
     onMessagePersisted,
     onQueueEvent,

@@ -45,7 +45,6 @@ const { outboundFetch } = require('../network/outbound');
 
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
-const { renderClaudeBar } = require('../quota/claude-bar-state');
 const {
   configureClaudeUsageQueue, claudeUsageKey, readClaudeUsage, enqueueClaudeUsage,
 } = require('../quota/claude-usage-queue');
@@ -517,66 +516,16 @@ function quotaHttpStatus(status) {
   return 500;
 }
 
-function mountClaudeUsageQuotaRoutes(app, recordClaude) {
-  if (!app || typeof app.get !== 'function') return;
-  app.get('/api/claude/quota', async (req, res) => {
-    const session = typeof req.query?.session === 'string' ? req.query.session : '';
-    // `force=1` is the user's own refresh (the bar's ⟳ / tap, and the scrapes
-    // that follow a completed login). Without it this route only REPORTS what
-    // the session's account already has cached: loading a page or switching a
-    // session must not drive a browser for 30-40s over a number that has not
-    // moved. The cache, its one-minute floor and the in-flight join live in
-    // ../quota/claude-usage-queue.js.
-    const force = req.query?.force === '1' || req.query?.force === 'true';
-    const key = claudeUsageKey(session);
-    try {
-      const entry = force ? await enqueueClaudeUsage(key) : readClaudeUsage(key);
-      const result = entry ? entry.result : null;
-      // The bar is rendered here, once, merged with whatever 5h window this
-      // session's account has already reported — so the web and the app get the
-      // combined bar instead of each merging the two sources themselves.
-      const bar = renderClaudeBar(session);
-      // Only a real reading is recorded. A miss means we have never read this
-      // account, and writing that as a failure would park a perfectly healthy
-      // provider in the shared cache (see recordClaude in limit-cache-recorder).
-      if (entry && recordClaude) {
-        try { await recordClaude(session, result, bar && bar.text); } catch (_) {}
-      }
-      const status = (result && result.status) || 'idle';
-      res.status(quotaHttpStatus(status)).json({ ...(result || {}), status, bar });
-    } catch (err) {
-      res.status(500).json({
-        status: 'unavailable',
-        error: 'claude quota fetch failed',
-        bar: renderClaudeBar(session),
-      });
-    }
-  });
-
-  // Visible login window on the managed profile — same pattern as qoder /
-  // opencode / kimi. The user logs into claude.ai once; the session then
-  // persists for headless usage-page scrapes.
-  app.post('/api/claude/quota/login', async (req, res) => {
-    try {
-      await getManagedQuotaBrowser().openVisibleLogin(CLAUDE_USAGE_URL);
-      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录 claude.ai，完成后回来重新查询余量' });
-    } catch (err) {
-      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
-      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
-    }
-  });
-}
-
 // The queue's scrape is this module's own, so the two are wired together here
-// rather than in server.js: the route above and the unified quota-bar refresh
-// (routes/quota-bars.js) both reach the same cache through the module, and
-// neither can start a second browser for an account that was read inside the
-// last minute.
+// rather than in server.js: the front door's `GET /api/claude/quota` and the
+// unified bar refresh both reach this module through the host port
+// (routes/quota-host.js), and neither can start a second browser for an account
+// that was read inside the last minute.
 configureClaudeUsageQueue({ fetchUsage: fetchClaudeUsage });
 
 module.exports = {
-  mountClaudeUsageQuotaRoutes,
   fetchClaudeUsage,
+  CLAUDE_USAGE_URL,
   fetchClaudeUsageViaOAuth,
   fetchClaudeUsageViaCli,
   summarizeOAuthUsage,

@@ -165,20 +165,32 @@ test('fetchAliyunUsage passes scrape results through and attaches the loginUrl o
   assert.match(down.error, /no binary/);
 });
 
-test('mountAliyunQuotaRoutes maps statuses onto HTTP codes', async () => {
-  const routes = {};
-  const app = {
-    get: (path, handler) => { routes[`GET ${path}`] = handler; },
-    post: (path, handler) => { routes[`POST ${path}`] = handler; },
-  };
-  const { mountAliyunQuotaRoutes } = require('../src/routes/aliyun-quota');
-  mountAliyunQuotaRoutes(app, { usageDeps: { console: async () => ({ status: 'needs_login', error: 'no session' }) } });
-  assert.ok(routes['GET /api/aliyun/quota'], 'GET quota route mounted');
-  assert.ok(routes['POST /api/aliyun/quota/login'], 'POST login route mounted');
+// The two routes are the Rust front door's now; the status→HTTP map lives in
+// native/core/src/quota_routes.rs. What stayed here is the console scrape and
+// the one login-side fact: which URL the managed window opens.
+test('the aliyun host ops carry the fetch result and the login URL', async () => {
+  const { createQuotaRuntime } = require('../src/routes/quota-host');
+  const runtime = createQuotaRuntime({
+    now: () => 1700000000000,
+    fetchAliyunUsage: async (nowMs) => ({ status: 'needs_login', error: 'no session', loginUrl: ALIYUN_CONSOLE_URL, nowMs }),
+    loginUrl: { aliyun: ALIYUN_CONSOLE_URL },
+    openLogin: async (url) => { opened.push(url); },
+  });
+  const opened = [];
 
-  let statusCode = null; let body = null;
-  const res = { status(c) { statusCode = c; return this; }, json(b) { body = b; return this; } };
-  await routes['GET /api/aliyun/quota']({}, res);
-  assert.equal(statusCode, 401);
-  assert.equal(body.status, 'needs_login');
+  const read = await runtime.handle({ op: 'aliyun.quota' });
+  assert.equal(read.result.status, 'needs_login');
+  assert.equal(read.result.loginUrl, ALIYUN_CONSOLE_URL);
+  assert.equal(read.result.nowMs, 1700000000000, 'the port stamps the world clock it was given');
+
+  // A scrape that throws is a value, not a refusal: the route's own fixed
+  // `unavailable` body is the front door's (see the differential).
+  const throwing = createQuotaRuntime({
+    now: () => 1700000000000,
+    fetchAliyunUsage: async () => { throw new Error('boom'); },
+  });
+  assert.deepEqual(await throwing.handle({ op: 'aliyun.quota' }), { threw: true });
+
+  assert.deepEqual(await runtime.handle({ op: 'aliyun.login' }), {});
+  assert.deepEqual(opened, [ALIYUN_CONSOLE_URL]);
 });

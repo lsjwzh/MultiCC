@@ -1,21 +1,30 @@
 'use strict';
 
-// Isolated HTTP coverage for the memo host/controller. It uses a temporary
-// MULTICC_DATA_DIR and an injected fake runTurn port, so no native CLI or AI
-// process can be started by this test.
+// The three public memo routes (GET/PUT /api/directories/:id/memo and
+// POST /api/directories/:id/memo/send) belong to the Rust front door now
+// (native/gateway/src/app/docs_memory_routes.rs + native/core/src/docs_memory_routes.rs,
+// live suite in native/gateway/tests/docs_memory_routes.rs). Status codes,
+// request bodies and the "text required" style validation are Rust's, and the
+// differential (docs/rust-migration/differential/docs-memory-routes.js) pins them.
+//
+// What stayed in Node, and what this test isolates with a temporary
+// MULTICC_DATA_DIR plus an injected fake runTurn port (so no native CLI or AI
+// process can be started): the memo controller — where the memo file lives, the
+// 5MB cap, the directory registry checks, the runTurn delivery, and the
+// `<project>/multicc.memo.md` migration — and the host-port envelope the front
+// door calls for them.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const express = require('express');
 
-const { requestIdMiddleware, safeErrorHandler } = require('../src/http-errors');
 const { createMemoFilePort, createMemoModule, MEMO_MAX_BYTES } = require('../src/memo');
+const { createDocsMemoryHost } = require('../src/routes/docs-memory-host');
 const { assertTestDir, createPaths } = require('../src/paths');
 
-test('isolated memo HTTP contract uses the safe boundary and fake turn port', async (t) => {
+test('memo controller keeps memos in the store and delivers over the fake turn port', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-memo-http-'));
   const dataDir = assertTestDir(path.join(root, 'data'));
   const project = path.join(root, 'project');
@@ -65,73 +74,59 @@ test('isolated memo HTTP contract uses the safe boundary and fake turn port', as
     files,
     memoRoot,
   });
-
-  const app = express();
-  app.use(requestIdMiddleware);
-  app.use(express.json({ limit: '6mb' }));
-  app.use(module.router);
-  app.use(safeErrorHandler({ error() {} }));
-  const server = await new Promise((resolve, reject) => {
-    const value = app.listen(0, '127.0.0.1', () => resolve(value));
-    value.once('error', reject);
+  const controller = module.controller;
+  const host = createDocsMemoryHost({
+    memo: controller,
+    directories,
+    isLocal: () => true,
+    logger: { error() {} },
   });
-  const base = `http://127.0.0.1:${server.address().port}`;
-  let sequence = 0;
 
-  t.after(async () => {
-    await new Promise(resolve => server.close(resolve));
+  t.after(() => {
     if (previousDataDir === undefined) delete process.env.MULTICC_DATA_DIR;
     else process.env.MULTICC_DATA_DIR = previousDataDir;
     assertTestDir(root);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  async function api(method, route, body) {
-    const requestId = `memo_http_${++sequence}`;
-    const response = await fetch(base + route, {
-      method,
-      headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const payload = JSON.parse(await response.text());
-    return { status: response.status, body: payload, requestId, headers: response.headers };
+  function refused(envelope) {
+    assert.equal(Object.keys(envelope).length, 1);
+    return envelope.refused;
   }
 
-  function assertFailure(result, status, message) {
-    assert.equal(result.status, status);
-    assert.equal(result.body.error, message);
-    assert.equal(result.body.requestId, result.requestId);
-    assert.equal(result.headers.get('x-multicc-request-id'), result.requestId);
-    assert.equal(typeof result.body.code, 'string');
-  }
+  // ── host port: what the front door asks for ──────────────────────────────
+  let answer = await host.handle({ op: 'memo-read', directoryId: 'missing' });
+  assert.deepEqual(refused(answer), {
+    status: 404,
+    code: 'memo_directory_not_found',
+    message: 'directory not found',
+  });
 
-  let response = await api('GET', '/api/directories/missing/memo');
-  assertFailure(response, 404, 'directory not found');
-
-  response = await api('GET', '/api/directories/dir-1/memo');
-  assert.equal(response.status, 200);
-  assert.deepEqual(response.body, {
+  answer = await host.handle({ op: 'memo-read', directoryId: 'dir-1' });
+  assert.deepEqual(answer.data, {
     path: path.join(memoRoot, 'dir-1', 'memo.md'), text: '', mtime: 0, exists: false,
   });
 
-  response = await api('PUT', '/api/directories/dir-1/memo', {});
-  assertFailure(response, 400, 'text must be a string');
-  response = await api('PUT', '/api/directories/dir-1/memo', { text: 'x'.repeat(MEMO_MAX_BYTES + 1) });
-  assertFailure(response, 413, 'memo too large (>5MB)');
-  response = await api('PUT', '/api/directories/dir-missing-path/memo', { text: 'memo' });
-  assertFailure(response, 400, 'directory path missing');
+  assert.deepEqual(refused(await host.handle({ op: 'memo-write', directoryId: 'dir-1', text: undefined })), {
+    status: 400, code: 'memo_text_invalid', message: 'text must be a string',
+  });
+  assert.deepEqual(refused(await host.handle({
+    op: 'memo-write', directoryId: 'dir-1', text: 'x'.repeat(MEMO_MAX_BYTES + 1),
+  })), { status: 413, code: 'memo_too_large', message: 'memo too large (>5MB)' });
+  assert.deepEqual(refused(await host.handle({
+    op: 'memo-write', directoryId: 'dir-missing-path', text: 'memo',
+  })), { status: 400, code: 'memo_directory_path_missing', message: 'directory path missing' });
 
-  response = await api('PUT', '/api/directories/dir-1/memo', { text: '# release\n' });
-  assert.equal(response.status, 200);
-  assert.equal(response.body.path, path.join(memoRoot, 'dir-1', 'memo.md'));
-  assert.equal(typeof response.body.mtime, 'number');
-  response = await api('GET', '/api/directories/dir-1/memo');
-  assert.equal(response.status, 200);
-  assert.equal(response.body.text, '# release\n');
-  assert.equal(response.body.exists, true);
+  answer = await host.handle({ op: 'memo-write', directoryId: 'dir-1', text: '# release\n' });
+  assert.equal(answer.data.path, path.join(memoRoot, 'dir-1', 'memo.md'));
+  assert.equal(typeof answer.data.mtime, 'number');
+  answer = await host.handle({ op: 'memo-read', directoryId: 'dir-1' });
+  assert.equal(answer.data.text, '# release\n');
+  assert.equal(answer.data.exists, true);
   // The whole point of the move: writing a memo must not touch the project.
   assert.deepEqual(fs.readdirSync(project), []);
 
+  // ── the legacy project memo migration ────────────────────────────────────
   // A memo written by an older build is copied out and the untracked original
   // removed, so it can no longer show up as a dirty entry in that project.
   fs.writeFileSync(path.join(project, 'multicc.memo.md'), '# legacy', 'utf8');
@@ -145,37 +140,47 @@ test('isolated memo HTTP contract uses the safe boundary and fake turn port', as
   assert.equal(fs.readFileSync(path.join(memoRoot, 'dir-1', 'memo.md'), 'utf8'), '# release\n');
   fs.rmSync(path.join(project, 'multicc.memo.md'), { force: true });
 
-  response = await api('GET', '/api/directories/dir-io-failure/memo');
-  assertFailure(response, 500, 'internal_error');
-  assert.doesNotMatch(JSON.stringify(response.body), /private|\/Users|EIO|token|stack|stderr/i);
+  // A read failure surfaces as the branded 500 and never leaks the cause.
+  answer = await host.handle({ op: 'memo-read', directoryId: 'dir-io-failure' });
+  assert.deepEqual(refused(answer), { status: 500, code: 'internal_error', message: 'internal_error' });
+  assert.doesNotMatch(JSON.stringify(answer), /private|\/Users|EIO|token|stack|stderr/i);
 
-  response = await api('POST', '/api/directories/dir-1/memo/send', { sessionId: 'chat-1' });
-  assertFailure(response, 400, 'text required');
-  response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'go' });
-  assertFailure(response, 400, 'sessionId required');
-  response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'go', sessionId: 'missing' });
-  assertFailure(response, 404, 'session not found');
-  response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'go', sessionId: 'chat-other' });
-  assertFailure(response, 400, 'session is not in this directory');
-  response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'go', sessionId: 'terminal-1' });
-  assertFailure(response, 400, '只能发送到 chat 类型的会话');
+  // ── send: validation, then a real delivery through runTurn ───────────────
+  assert.deepEqual(refused(await host.handle({
+    op: 'memo-send', directoryId: 'dir-1', text: undefined, sessionId: 'chat-1',
+  })), { status: 400, code: 'memo_text_required', message: 'text required' });
+  assert.deepEqual(refused(await host.handle({
+    op: 'memo-send', directoryId: 'dir-1', text: 'go', sessionId: undefined,
+  })), { status: 400, code: 'memo_session_required', message: 'sessionId required' });
+  assert.deepEqual(refused(await host.handle({
+    op: 'memo-send', directoryId: 'dir-1', text: 'go', sessionId: 'missing',
+  })), { status: 404, code: 'memo_session_not_found', message: 'session not found' });
+  assert.deepEqual(refused(await host.handle({
+    op: 'memo-send', directoryId: 'dir-1', text: 'go', sessionId: 'chat-other',
+  })), { status: 400, code: 'memo_session_mismatch', message: 'session is not in this directory' });
+  assert.deepEqual(refused(await host.handle({
+    op: 'memo-send', directoryId: 'dir-1', text: 'go', sessionId: 'terminal-1',
+  })), { status: 400, code: 'memo_session_kind_invalid', message: '只能发送到 chat 类型的会话' });
   assert.deepEqual(turns, []);
 
   // A busy session queues rather than 409s: admitChatWork owns the FIFO, so the
   // memo host must not second-guess it (see the controller test's "queue me").
-  response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'go', sessionId: 'busy-1' });
-  assert.equal(response.status, 200);
-  assert.deepEqual(response.body, { ok: true, sentTo: 'busy-1' });
+  answer = await host.handle({ op: 'memo-send', directoryId: 'dir-1', text: 'go', sessionId: 'busy-1' });
+  assert.deepEqual(answer.data, { ok: true, sentTo: 'busy-1' });
 
-  response = await api('POST', '/api/directories/dir-1/memo/send', { text: '  ship it  ', sessionId: 'chat-1' });
-  assert.equal(response.status, 200);
-  assert.deepEqual(response.body, { ok: true, sentTo: 'chat-1' });
+  answer = await host.handle({ op: 'memo-send', directoryId: 'dir-1', text: '  ship it  ', sessionId: 'chat-1' });
+  assert.deepEqual(answer.data, { ok: true, sentTo: 'chat-1' });
   assert.deepEqual(turns, [
     { id: 'busy-1', text: 'go', options: {} },
     { id: 'chat-1', text: 'ship it', options: {} },
   ]);
 
-  response = await api('POST', '/api/directories/dir-1/memo/send', { text: 'fail', sessionId: 'start-fail' });
-  assertFailure(response, 500, 'internal_error');
+  // runTurn returning false (a turn that could not start) is a 500, not a 200.
+  assert.deepEqual(refused(await host.handle({
+    op: 'memo-send', directoryId: 'dir-1', text: 'fail', sessionId: 'start-fail',
+  })), { status: 500, code: 'internal_error', message: 'internal_error' });
   assert.equal(turns.length, 3);
+
+  // The controller is frozen: the front door only ever sees these three calls.
+  assert.equal(Object.isFrozen(controller), true);
 });

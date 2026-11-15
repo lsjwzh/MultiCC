@@ -449,40 +449,19 @@ test('system route mount owns only the app-binary and host-repair routes left in
     ['GET', '/ios-ota/udid.mobileconfig', 'function'],
     ['GET', '/ios-ota/udid/result/:token', 'function'],
     ['POST', '/ios-ota/udid/callback/:token', 'function'],
-    ['GET', '/api/system/developer-tools', 'function'],
-    ['POST', '/api/system/developer-tools/install', 'function'],
-    ['GET', '/api/system/developer-tools/install-git', 'function'],
-    ['POST', '/api/system/developer-tools/install-git', 'function'],
-    // Host-repair surfaces, all mounted here rather than from server.js because
-    // they need no host state. Listing them exactly is the point: a new route
-    // that grants privileges or opens a settings pane should not slip in
-    // unnoticed. The sudoers password-free helper used to be one of these; the
-    // powerd LaunchDaemon (installed by the one admin prompt that 「关盖运行」
-    // already needs) replaced it, and it has no route of its own.
-    ['GET', '/api/system/disk-access', 'function'],
-    ['POST', '/api/system/disk-access/open', 'function'],
-    // Agent desktop-permission guidance (lid mode): reads which macOS
-    // permissions the Agent holds, and opens the matching System Settings
-    // pane. Same reviewed family as disk-access/open above.
-    ['GET', '/api/system/agent-permissions', 'function'],
-    ['POST', '/api/system/agent-permissions/open', 'function'],
-    ['POST', '/api/system/agent-permissions/restart', 'function'],
-    // Shared-Agent install state (who installed it, which build) and the
-    // user's explicit "use this copy's Agent" in a same-build conflict.
-    ['GET', '/api/system/agent-install', 'function'],
-    ['POST', '/api/system/agent-install/replace', 'function'],
-    // Repair terminal (src/routes/ops-terminal.js): runs a shell command as
-    // the service account for a host that cannot add its first directory.
-    // The widest grant in this family, so it is listed one route at a time:
-    // probe, job status, start, stop. It adds no privilege an authenticated
-    // user lacks (the session terminal runs the same account).
-    ['GET', '/api/system/ops-env', 'function'],
-    ['GET', '/api/system/ops-run', 'function'],
-    ['POST', '/api/system/ops-run', 'function'],
-    ['POST', '/api/system/ops-run/stop', 'function'],
     // /api/server-info、/api/version-check、/api/debug/codex-proxy-trace 已由
     // Rust 前门独占（docs/gateway.md §9），不再出现在这张表里。
+    // 宿主修复面板（developer-tools / macos-privacy / ops-terminal）随宿主与
+    // 系统操作簇迁到 Rust 前门，改由 src/routes/host-ops-host.js 的捕获应用
+    // 挂载；下面用源码断言把这条边界钉住，避免新的高权限路由悄悄回到这里。
   ]);
+  const systemSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'system.js'), 'utf8');
+  const hostOpsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-ops-host.js'), 'utf8');
+  assert.doesNotMatch(systemSource, /createDeveloperToolsRoutes|createMacosPrivacyRoutes|createOpsTerminalRoutes/);
+  for (const factory of ['createDeveloperToolsRoutes', 'createMacosPrivacyRoutes', 'createOpsTerminalRoutes']) {
+    assert.match(hostOpsSource, new RegExp(factory));
+  }
+  assert.match(hostOpsSource, /mountEnvDoctorRoutes|mountDoctorRoutes/);
 
   const response = { json(value) { this.body = value; } };
   await createApkInfoHandler({ apkDistribution })({}, response, error => { throw error; });

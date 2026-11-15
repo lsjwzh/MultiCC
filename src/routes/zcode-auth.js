@@ -33,65 +33,10 @@ function authStatusDto(status) {
   };
 }
 
-function mountZcodeAuthRoutes(app, deps = {}) {
-  assertApp(app);
-  const zcodeAuth = deps.zcodeAuth || require('../cli-adapters/zcode-auth');
-
-  // GET /api/zcode/auth -- get current auth status
-  app.get('/api/zcode/auth', (req, res) => {
-    try {
-      const status = zcodeAuth.getZcodeAuthStatus();
-      const desktopKeys = zcodeAuth.detectDesktopApiKeys();
-      const desktopProviders = Object.keys(desktopKeys).map(id => ({
-        id,
-        hasKey: true,
-      }));
-      res.json({
-        ...authStatusDto(status),
-        loginAvailable: zcodeAuth.isZcodeLoginAvailable(),
-        desktopProviders,
-      });
-    } catch (_) {
-      res.status(500).json({ error: 'zcode auth status failed' });
-    }
-  });
-
-  // POST /api/zcode/auth/sync -- L1: sync desktop API key to CLI config
-  app.post('/api/zcode/auth/sync', (req, res) => {
-    try {
-      const result = zcodeAuth.syncDesktopKeyToCli();
-      if (result.synced) {
-        res.json({ ok: true, ...result });
-      } else {
-        res.status(400).json({
-          ok: false,
-          code: result.reason || 'sync_failed',
-          message: '未在 ZCode 桌面端配置中检测到 API Key。请先在桌面端设置 API Key，或手动填写。',
-        });
-      }
-    } catch (_) {
-      res.status(500).json({ error: 'zcode auth sync failed' });
-    }
-  });
-
-  // PUT /api/zcode/auth -- L2: manually set API key
-  app.put('/api/zcode/auth', (req, res) => {
-    try {
-      const providerId = (req.body.providerId || '').trim();
-      const apiKey = (req.body.apiKey || '').trim();
-      const baseURL = (req.body.baseURL || '').trim() || undefined;
-      if (!providerId || !apiKey) {
-        return res.status(400).json({ error: 'providerId and apiKey are required' });
-      }
-      const result = zcodeAuth.setZcodeApiKey(providerId, apiKey, { baseURL });
-      res.json({ ok: true, ...result });
-    } catch (_) {
-      res.status(400).json({ error: 'invalid ZCode API key configuration' });
-    }
-  });
-
-  // POST /api/zcode/auth/login -- L3: spawn 'zcode login' for OAuth
-  app.post('/api/zcode/auth/login', (req, res) => {
+// The long-blocking login handler, shared by the host capture app and the
+// login-only public mount (the front door forwards this one path).
+function createZcodeLoginHandler(zcodeAuth) {
+  return function zcodeLogin(req, res) {
     try {
       if (!zcodeAuth.isZcodeLoginAvailable()) {
         return res.status(400).json({
@@ -150,7 +95,70 @@ function mountZcodeAuthRoutes(app, deps = {}) {
     } catch (_) {
       res.status(500).json({ error: 'zcode login failed' });
     }
+  };
+}
+
+function mountZcodeAuthRoutes(app, deps = {}) {
+  assertApp(app);
+  const zcodeAuth = deps.zcodeAuth || require('../cli-adapters/zcode-auth');
+
+  // GET /api/zcode/auth -- get current auth status
+  app.get('/api/zcode/auth', (req, res) => {
+    try {
+      const status = zcodeAuth.getZcodeAuthStatus();
+      const desktopKeys = zcodeAuth.detectDesktopApiKeys();
+      const desktopProviders = Object.keys(desktopKeys).map(id => ({
+        id,
+        hasKey: true,
+      }));
+      res.json({
+        ...authStatusDto(status),
+        loginAvailable: zcodeAuth.isZcodeLoginAvailable(),
+        desktopProviders,
+      });
+    } catch (_) {
+      res.status(500).json({ error: 'zcode auth status failed' });
+    }
   });
+
+  // POST /api/zcode/auth/sync -- L1: sync desktop API key to CLI config
+  app.post('/api/zcode/auth/sync', (req, res) => {
+    try {
+      const result = zcodeAuth.syncDesktopKeyToCli();
+      if (result.synced) {
+        res.json({ ok: true, ...result });
+      } else {
+        res.status(400).json({
+          ok: false,
+          code: result.reason || 'sync_failed',
+          message: '未在 ZCode 桌面端配置中检测到 API Key。请先在桌面端设置 API Key，或手动填写。',
+        });
+      }
+    } catch (_) {
+      res.status(500).json({ error: 'zcode auth sync failed' });
+    }
+  });
+
+  // PUT /api/zcode/auth -- L2: manually set API key
+  app.put('/api/zcode/auth', (req, res) => {
+    try {
+      const providerId = (req.body.providerId || '').trim();
+      const apiKey = (req.body.apiKey || '').trim();
+      const baseURL = (req.body.baseURL || '').trim() || undefined;
+      if (!providerId || !apiKey) {
+        return res.status(400).json({ error: 'providerId and apiKey are required' });
+      }
+      const result = zcodeAuth.setZcodeApiKey(providerId, apiKey, { baseURL });
+      res.json({ ok: true, ...result });
+    } catch (_) {
+      res.status(400).json({ error: 'invalid ZCode API key configuration' });
+    }
+  });
+
+  // POST /api/zcode/auth/login -- L3: spawn 'zcode login' for OAuth. Blocking
+  // (up to 5 min), so it is mounted here for the host capture app and re-mounted
+  // publicly by `mountZcodeAuthLoginRoute`; the front door forwards it.
+  app.post('/api/zcode/auth/login', createZcodeLoginHandler(zcodeAuth));
 
   // GET /api/zcode/auth/check -- L4: pre-check for session creation/turn admission
   app.get('/api/zcode/auth/check', (req, res) => {
@@ -177,4 +185,13 @@ function mountZcodeAuthRoutes(app, deps = {}) {
   });
 }
 
-module.exports = { mountZcodeAuthRoutes };
+// Public login-only subset: `POST /api/zcode/auth/login` stays in Node (it
+// blocks up to five minutes on the ZCode login child). The front door forwards
+// this exact path — and its automatic OPTIONS — to the real Express app.
+function mountZcodeAuthLoginRoute(app, deps = {}) {
+  assertApp(app);
+  const zcodeAuth = deps.zcodeAuth || require('../cli-adapters/zcode-auth');
+  app.post('/api/zcode/auth/login', createZcodeLoginHandler(zcodeAuth));
+}
+
+module.exports = { mountZcodeAuthRoutes, mountZcodeAuthLoginRoute };

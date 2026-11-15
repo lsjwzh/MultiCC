@@ -580,7 +580,15 @@ function createSessionBundleRoutes(rawDeps) {
     }
   }
 
-  function mountRoutes(app) {
+  // The front door owns the two JSON transports (`GET …/bundle`,
+  // `POST /api/sessions/import`); only the binary pair stays publicly served by
+  // Node. `mountRoutes` registers all four for the capture app that backs the
+  // host port, so the real app must use `mountBinaryRoutes` instead — mounting
+  // all four there would leave the migrated JSON routes as a silent Node
+  // fallback whose behaviour could drift from the front door's.
+  function mountRoutes(app) { mountJsonRoutes(app); mountBinaryRoutes(app); }
+
+  function mountJsonRoutes(app) {
     app.get('/api/sessions/:id/bundle', asyncHandler(async (req, res) => {
       const guard = requireSessionForExport(req, res);
       if (!guard) return;
@@ -600,6 +608,45 @@ function createSessionBundleRoutes(rawDeps) {
     // text (chat history, memories, context docs) stays inside the
     // AES-256-GCM encrypted manifest.json entry. No base64 inflation, so a
     // 20MB asset stays ~20MB instead of ~27MB of JSON.
+    app.post('/api/sessions/import', asyncHandler(async (req, res) => {
+      const b = req.body || {};
+      const { salt, iv, ct, tag } = b;
+      const passphrase = b.passphrase;
+      const dirId = b.dirId;
+      const targetProviderId = b.targetProviderId || undefined;
+      const labelOverride = (b.label || '').toString().trim() || null;
+      const targetSessionId = (b.targetSessionId || '').toString().trim() || null;
+      const envOnly = b.envOnly === true || b.envOnly === 1 || b.envOnly === '1';
+      if (!salt || !iv || !ct || !tag) return res.status(400).json({ error: 'missing bundle fields (salt/iv/ct/tag)' });
+      if (!passphrase) return res.status(400).json({ error: 'passphrase required' });
+      if (!dirId && !targetSessionId && !envOnly) {
+        return res.status(400).json({ error: 'dirId required — or targetSessionId to merge into an '
+          + 'existing session, or envOnly:true to install just the environment layer' });
+      }
+      const dir = dirId ? directories.get(dirId) : null;
+      if (dirId && !dir) return res.status(404).json({ error: 'target directory not found' });
+
+      let payload;
+      try {
+        const plaintext = bundleDecrypt(String(passphrase), { salt, iv, ct, tag });
+        payload = JSON.parse(plaintext.toString('utf8'));
+      } catch (e) {
+        return res.status(400).json({ error: 'decrypt failed (wrong passphrase or corrupt bundle): ' + e.message });
+      }
+      if (!payload || (payload.v !== 1 && payload.v !== 2) || !payload.sessionMeta) {
+        return res.status(400).json({ error: 'unsupported bundle version' });
+      }
+      const result = await restoreImportedPayload(payload,
+        { dir, targetProviderId, labelOverride, targetSessionId, envOnly });
+      res.status(result.status).json(result.body);
+    }));
+
+    // Import a v3 zip bundle produced by GET /api/sessions/:id/bundle.zip.
+    // Raw body (Content-Type: application/zip); knobs ride on the query string
+    // exactly like the JSON route's body fields.
+  }
+
+  function mountBinaryRoutes(app) {
     app.get('/api/sessions/:id/bundle.zip', asyncHandler(async (req, res) => {
       const guard = requireSessionForExport(req, res);
       if (!guard) return;
@@ -677,42 +724,6 @@ function createSessionBundleRoutes(rawDeps) {
     }));
 
     // Import an encrypted JSON bundle produced by GET /api/sessions/:id/bundle.
-    app.post('/api/sessions/import', asyncHandler(async (req, res) => {
-      const b = req.body || {};
-      const { salt, iv, ct, tag } = b;
-      const passphrase = b.passphrase;
-      const dirId = b.dirId;
-      const targetProviderId = b.targetProviderId || undefined;
-      const labelOverride = (b.label || '').toString().trim() || null;
-      const targetSessionId = (b.targetSessionId || '').toString().trim() || null;
-      const envOnly = b.envOnly === true || b.envOnly === 1 || b.envOnly === '1';
-      if (!salt || !iv || !ct || !tag) return res.status(400).json({ error: 'missing bundle fields (salt/iv/ct/tag)' });
-      if (!passphrase) return res.status(400).json({ error: 'passphrase required' });
-      if (!dirId && !targetSessionId && !envOnly) {
-        return res.status(400).json({ error: 'dirId required — or targetSessionId to merge into an '
-          + 'existing session, or envOnly:true to install just the environment layer' });
-      }
-      const dir = dirId ? directories.get(dirId) : null;
-      if (dirId && !dir) return res.status(404).json({ error: 'target directory not found' });
-
-      let payload;
-      try {
-        const plaintext = bundleDecrypt(String(passphrase), { salt, iv, ct, tag });
-        payload = JSON.parse(plaintext.toString('utf8'));
-      } catch (e) {
-        return res.status(400).json({ error: 'decrypt failed (wrong passphrase or corrupt bundle): ' + e.message });
-      }
-      if (!payload || (payload.v !== 1 && payload.v !== 2) || !payload.sessionMeta) {
-        return res.status(400).json({ error: 'unsupported bundle version' });
-      }
-      const result = await restoreImportedPayload(payload,
-        { dir, targetProviderId, labelOverride, targetSessionId, envOnly });
-      res.status(result.status).json(result.body);
-    }));
-
-    // Import a v3 zip bundle produced by GET /api/sessions/:id/bundle.zip.
-    // Raw body (Content-Type: application/zip); knobs ride on the query string
-    // exactly like the JSON route's body fields.
     app.post('/api/sessions/import-zip', express.raw({ type: () => true, limit: ZIP_BODY_LIMIT }),
       asyncHandler(async (req, res) => {
         const body = req.body;
@@ -777,7 +788,7 @@ function createSessionBundleRoutes(rawDeps) {
       }));
   }
 
-  return { mountRoutes };
+  return { mountRoutes, mountJsonRoutes, mountBinaryRoutes };
 }
 
 module.exports = { createSessionBundleRoutes };

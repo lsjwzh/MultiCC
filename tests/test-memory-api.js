@@ -13,6 +13,18 @@ const { ENTRY_DELIMITER } = require('../src/memory-store');
 const SEED_RULES = DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n';
 
 const ROOT = path.join(__dirname, '..');
+
+// The session-admin cluster's public routes are claimed by the Rust front door
+// (native/gateway/src/app/session_admin.rs), so an isolated host has to start
+// the real gateway with server.js as its child instead of bare node.
+function gatewayBinary() {
+  const addon = process.env.MULTICC_RUST_ADDON
+    || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(ROOT, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  return path.join(path.dirname(addon),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+
 const PORT = 39000 + (process.pid % 900);
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'memory-api-test';
@@ -70,7 +82,7 @@ async function cleanup() {
 }
 
 async function startServer() {
-  server = spawn(process.execPath, ['server.js'], {
+  server = spawn(gatewayBinary(), ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
     cwd: ROOT,
     env: {
       ...process.env,

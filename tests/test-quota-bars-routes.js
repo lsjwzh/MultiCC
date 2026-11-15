@@ -1,37 +1,27 @@
 'use strict';
 
+// The three quota-bar routes (GET /api/quota/bars/idle, GET /api/quota/bars/state
+// and POST /api/quota/bars/refresh) are the Rust front door's now: the request
+// reading, the TTL/readiness decision, the `{ result, bar, cached }` envelope,
+// the status→HTTP map and `{status:'unavailable'}` on a failed fetch all live
+// in native/core/src/quota_routes.rs + native/gateway/src/app/quota_routes.rs.
+//
+// What stayed in Node is the host port (src/routes/quota-host.js): the nine
+// vendor fetchers, the on-disk quota-bar cache, the vendor recorders, and the
+// Claude usage queue with its 60s floor. These tests pin that half — including
+// the one invariant the port itself must keep: reading a bar never spends a
+// 30-40s browser drive, only `force` does.
+
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { mountQuotaBarRoutes, createQuotaBarRuntime, statusCodeFor } = require('../src/routes/quota-bars');
+const { createQuotaRuntime } = require('../src/routes/quota-host');
 const { createQuotaBarCache } = require('../src/quota/quota-bar-cache');
 const Queue = require('../src/quota/claude-usage-queue');
 const BarState = require('../src/quota/claude-bar-state');
-
-function appHarness() {
-  const handlers = new Map();
-  return {
-    app: {
-      get(route, handler) { handlers.set(`GET ${route}`, handler); },
-      post(route, handler) { handlers.set(`POST ${route}`, handler); },
-    },
-    async invoke(method, route, req = {}) {
-      const handler = handlers.get(`${method} ${route}`);
-      assert.equal(typeof handler, 'function', `missing ${method} ${route}`);
-      const res = {
-        statusCode: 200,
-        body: null,
-        status(code) { this.statusCode = code; return this; },
-        json(body) { this.body = body; return this; },
-      };
-      await handler({ body: {}, query: {}, ...req }, res);
-      return res;
-    },
-  };
-}
 
 function tmpCache() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-quota-bar-cache-test-'));
@@ -42,70 +32,123 @@ function bar(kind) {
   return { text: `${kind} 50%`, color: '#58a6ff', title: `${kind} title`, action: null };
 }
 
-test('unified quota refresh fetches, renders and stores a server-side bar', async () => {
+const SELECTOR = { kind: 'opencode', session: '', baseUrl: '', host: '', force: false };
+
+function hostHandler(deps) {
+  const registered = [];
+  createQuotaRuntime(deps).mount({ post: (routePath, handler) => registered.push({ routePath, handler }) });
+  assert.equal(registered.length, 1);
+  return registered[0].handler;
+}
+
+function fakeRes() {
+  const res = { statusCode: 200, body: null };
+  res.status = (code) => { res.statusCode = code; return res; };
+  res.json = (body) => { res.body = body; return res; };
+  return res;
+}
+
+test('a fetched reading is stored by the commit the front door sends after rendering', async () => {
   const cache = tmpCache();
   const calls = [];
-  const runtime = createQuotaBarRuntime({
+  const runtime = createQuotaRuntime({
     quotaBarCache: cache,
+    now: () => 1700000000000,
     fetchOpenCodeUsage: async () => {
       calls.push('opencode');
       return { status: 'ok', fetchedAt: 123, usage: { rolling: { usagePercent: 50 } } };
     },
-    renderQuotaBar: (kind, value) => ({ ...bar(kind), title: String(value.fetchedAt) }),
   });
 
-  const result = await runtime.refresh({ kind: 'opencode' });
-  assert.equal(result.httpStatus, 200);
+  const fetched = await runtime.handle({ op: 'bars.fetch', kind: 'opencode' });
   assert.deepEqual(calls, ['opencode']);
-  assert.equal(result.body.bar.text, 'opencode 50%');
-  assert.equal(result.body.cached.bar.text, 'opencode 50%');
+  assert.equal(fetched.result.status, 'ok');
+
+  // The bar is rendered by the front door (the shared kernel); the port only
+  // stores it, and answers with what the cache now holds for that selector.
+  const committed = await runtime.handle({
+    op: 'bars.commit',
+    kind: 'opencode',
+    record: true,
+    result: fetched.result,
+    bar: bar('opencode'),
+    selector: SELECTOR,
+  });
+  assert.equal(committed.cached.bar.text, 'opencode 50%');
   assert.equal(cache.get('opencode').bar.text, 'opencode 50%');
+
+  // `record: false` is the not-cacheable branch (a miss, a needs_login): the
+  // reading is answered but nothing lands in the shared cache.
+  const skipped = await runtime.handle({
+    op: 'bars.commit',
+    kind: 'qoder',
+    record: false,
+    result: { status: 'needs_login' },
+    bar: bar('qoder'),
+    selector: { ...SELECTOR, kind: 'qoder' },
+  });
+  assert.equal(skipped.cached, null);
 });
 
-test('unified quota refresh records provider-scoped vendor results when identity exists', async () => {
+test('a vendor fetch records the provider-scoped result the front door asked for', async () => {
   const recorded = [];
-  const runtime = createQuotaBarRuntime({
+  const runtime = createQuotaRuntime({
+    now: () => 1700000000000,
     fetchKimiUsage: async (host) => ({ status: 'ok', fetchedAt: 456, host }),
-    renderQuotaBar: (kind) => bar(kind),
     recordVendor: (entry) => recorded.push(entry),
   });
 
-  const result = await runtime.refresh({ kind: 'kimi', host: 'moonshot.cn' });
-  assert.equal(result.httpStatus, 200);
-  assert.equal(result.body.bar.text, 'kimi 50%');
+  const fetched = await runtime.handle({ op: 'bars.fetch', kind: 'kimi', host: 'moonshot.cn' });
+  assert.equal(fetched.result.host, 'moonshot.cn');
   assert.equal(recorded.length, 1);
   assert.equal(recorded[0].kind, 'kimi');
   assert.equal(recorded[0].host, 'moonshot.cn');
-});
 
-test('quota bar routes expose idle, state and refresh without vendor URLs in the client contract', async () => {
-  const cache = tmpCache();
-  const h = appHarness();
-  mountQuotaBarRoutes(h.app, {
-    quotaBarCache: cache,
-    fetchCodexUsage: async () => ({ status: 'ok', fetchedAt: 789 }),
-    renderQuotaBar: (kind) => bar(kind),
+  // A throwing fetcher is a value, not a refusal: each vendor route has its own
+  // fixed catch body, so the front door learns `threw` and renders it.
+  const throwing = createQuotaRuntime({
+    now: () => 1700000000000,
+    fetchArkUsage: async () => { throw new Error('boom'); },
+    recordVendor: (entry) => recorded.push(entry),
   });
-
-  let res = await h.invoke('GET', '/api/quota/bars/idle');
-  assert.equal(res.statusCode, 200);
-  assert.ok(res.body.bars.codex);
-
-  res = await h.invoke('POST', '/api/quota/bars/refresh', { body: { kind: 'codex' } });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.bar.text, 'codex 50%');
-
-  res = await h.invoke('GET', '/api/quota/bars/state');
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.bars.codex.bar.text, 'codex 50%');
+  const caught = await throwing.handle({ op: 'bars.fetch', kind: 'ark', baseUrl: 'https://ark.test' });
+  assert.deepEqual(caught, { threw: true });
+  // The bar refresh has no per-kind catch body: the throw is the whole answer,
+  // and nothing is recorded (the refresh route's own `unavailable` envelope is
+  // the front door's).
+  assert.equal(recorded.length, 1, 'a throwing fetch records nothing');
 });
 
-// ── The one expensive kind: claude's refresh is a 30-40s browser drive ──────
-// Every other kind's refresh is a cheap query, so a bar asking for it costs
-// nothing. Claude's is the exception, and `force` is how a caller says "a human
-// pressed the ⟳" — without it this route must report the account's cache.
-test('the claude bar only scrapes when the caller asks it to', async () => {
+test('the state op answers the cache snapshot, and an empty envelope without a cache', async () => {
   const cache = tmpCache();
+  cache.record('codex', { status: 'ok', fetchedAt: 789 }, bar('codex'), { session: '', baseUrl: '', host: '' });
+  const runtime = createQuotaRuntime({ quotaBarCache: cache, now: () => 1700000000000 });
+
+  const snapshot = await runtime.handle({ op: 'bars.state', selector: { kind: 'codex', session: '', baseUrl: '', host: '', force: false } });
+  assert.equal(snapshot.snapshot.bars.codex.bar.text, 'codex 50%');
+
+  // server.js always passes the cache; a deployment without one must still
+  // answer the front door instead of throwing.
+  const bare = createQuotaRuntime({ now: () => 1700000000000 });
+  const empty = await bare.handle({ op: 'bars.state', selector: {} });
+  assert.deepEqual(empty.snapshot, { status: 'ok', bars: {}, updatedAt: 0 });
+  const commitless = await bare.handle({ op: 'bars.commit', kind: 'codex', record: true, selector: {} });
+  assert.deepEqual(commitless, { cached: null });
+});
+
+test('a bar kind this port cannot fetch is an unknown operation, not a 500', async () => {
+  const handler = hostHandler({ isLocal: () => true, now: () => 1700000000000 });
+  const res = fakeRes();
+  await handler({ body: { op: 'bars.fetch', kind: 'not-a-kind' } }, res);
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.body, { error: 'unknown host operation' });
+});
+
+// ── The one expensive kind: claude's read is a 30-40s browser drive ─────────
+// Every other kind's fetch is a cheap query, so a bar asking for it costs
+// nothing. Claude's is the exception, and `force` is how a caller says "a human
+// pressed the ⟳" — without it the front door must get the account's cache.
+test('the claude bar only scrapes when the front door says force', async () => {
   Queue.resetClaudeUsageQueue();
   BarState.resetClaudeBarState();
   const scrapes = [];
@@ -116,47 +159,53 @@ test('the claude bar only scrapes when the caller asks it to', async () => {
       return { status: 'ok', fetchedAt: 1_700_000_000_000, summary: [{ window: '1wk', usedPercent: 6 }] };
     },
   });
-  const recorded = [];
-  const runtime = createQuotaBarRuntime({
-    quotaBarCache: cache,
-    recordClaude: (session, result, text) => recorded.push({ session, status: result.status, text }),
+  // The queue is process-local: production injects its accessors through
+  // defaultDeps(); a test that owns the queue must inject the same ones.
+  const runtime = createQuotaRuntime({
+    now: () => 1_700_000_000_000,
+    claudeUsageKey: Queue.claudeUsageKey,
+    readClaudeUsage: Queue.readClaudeUsage,
+    enqueueClaudeUsage: Queue.enqueueClaudeUsage,
+    readClaudeLive: BarState.readClaudeLive,
   });
   try {
-    // A page loading asks for the bar without `force`: it is answered from the
-    // cache, and an account nobody has read yet is `idle` — not an error, and
-    // emphatically not a reason to open a browser.
-    let result = await runtime.refresh({ kind: 'claude', session: 's1' });
-    assert.equal(result.httpStatus, 200);
-    assert.equal(result.body.status, 'idle');
+    // A page loading asks for the bar without `force`: answered from the queue,
+    // and an account nobody has read yet is idle — not a reason to open a
+    // browser.
+    let state = await runtime.handle({ op: 'claude.quota', session: 's1', force: false });
     assert.deepEqual(scrapes, [], 'a read never scrapes');
-    // A miss is not a reading: caching one would park a healthy provider in the
-    // shared cache, and recording one would overwrite the last known bar.
-    assert.equal(result.body.cached, null);
-    assert.deepEqual(recorded, []);
+    assert.equal(state.entry, null);
+    assert.equal(state.usage, undefined);
 
     // The user's own refresh is the one thing allowed to start the scrape.
-    result = await runtime.refresh({ kind: 'claude', session: 's1', force: true });
+    state = await runtime.handle({ op: 'claude.quota', session: 's1', force: true });
     assert.deepEqual(scrapes, ['scrape']);
-    assert.equal(result.httpStatus, 200);
-    assert.equal(result.body.status, 'ok');
-    assert.match(result.body.bar.text, /1wk 94%/);
-    assert.equal(result.body.cached.bar.text, result.body.bar.text, 'a real reading is stored');
-    assert.deepEqual(recorded.map(r => r.status), ['ok']);
+    assert.equal(state.result.status, 'ok');
+    assert.equal(state.entry.result.status, 'ok');
+    assert.equal(state.usage.status, 'ok');
 
     // A second ask inside the minute is answered from that reading: the queue's
     // floor is what stops two sessions — or two taps — racing two browsers.
-    result = await runtime.refresh({ kind: 'claude', session: 's1', force: true });
+    state = await runtime.handle({ op: 'claude.quota', session: 's1', force: true });
     assert.deepEqual(scrapes, ['scrape'], 'the minute holds');
-    assert.equal(result.body.status, 'ok');
+    assert.equal(state.result.status, 'ok');
+
+    // The live 5h window is a process-local map; the port is where the front
+    // door can read it, at the same instant the reading is stamped.
+    assert.equal(state.live, null);
+    assert.equal(state.nowMs, 1_700_000_000_000);
+    const { normalizeWindowEvent } = require('../src/quota/quota-bar-view');
+    BarState.rememberClaudeLive('s1', normalizeWindowEvent({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.42,
+      resetsAt: 4_102_444_800,
+      windows: [{ window: '5h', usedPercent: 42, resetMs: 4_102_444_800_000 }],
+    }, 1_700_000_000_000));
+    const withLive = await runtime.handle({ op: 'claude.quota', session: 's1', force: false });
+    assert.equal(withLive.live.usedPercentage, 42);
   } finally {
     Queue.resetClaudeUsageQueue();
     BarState.resetClaudeBarState();
   }
-});
-
-test('idle is a state of the claude cache, not a failed request', () => {
-  assert.equal(statusCodeFor('idle'), 200);
-  assert.equal(statusCodeFor('ok'), 200);
-  assert.equal(statusCodeFor('needs_login'), 401);
-  assert.equal(statusCodeFor('chrome_unavailable'), 503);
 });

@@ -12,7 +12,7 @@ const {
   parseResetAfter,
   siteLabel,
   balanceHost,
-  mountKimiQuotaRoutes,
+  KIMI_SUBSCRIPTION_URL,
 } = require('../src/routes/kimi-quota');
 const { renderQuotaBar } = require('../src/quota/quota-bar-view');
 const { resolveQuotaBar, humanizeCountdown } = require('../public/quota-bar-view');
@@ -89,28 +89,47 @@ test('fetchKimiUsage is unavailable when every site fails', async () => {
   assert.equal(result.sites.every((s) => s.ok === false), true);
 });
 
-test('route maps status to HTTP code', async () => {
-  const routes = {};
-  const app = {
-    get: (path, handler) => { routes[path] = handler; },
-    post: (path, handler) => { routes[path] = handler; },
-  };
-  // console: null disables the membership-page fallback so this unit test
-  // never spawns a managed Chrome.
-  mountKimiQuotaRoutes(app, { usageDeps: { console: null } });
-  assert.equal(typeof routes['/api/kimi/quota'], 'function');
-  assert.equal(typeof routes['/api/kimi/quota/login'], 'function');
+// The two routes are the Rust front door's now; the status→HTTP map
+// (ok 200, not_configured 404, needs_login 401, chrome_unavailable 503, else
+// 502) lives in native/core/src/quota_routes.rs. What stayed here is the fetch
+// plus its balance memo, which the front door reaches through these ops.
+test('the kimi host ops carry the fetch result, the memo and the raw host', async () => {
+  const { createQuotaRuntime } = require('../src/routes/quota-host');
+  const { rememberKimiBalance, lastKimiBalance } = require('../src/routes/kimi-quota');
 
-  const captured = {};
-  const res = {
-    status(code) { captured.code = code; return this; },
-    json(body) { captured.body = body; return this; },
-  };
-  await routes['/api/kimi/quota']({ query: {} }, res);
-  // No Kimi provider configured in the test env (or live fetch fails closed):
-  // either way it must not be a 200 ok with empty sites.
-  assert.ok([404, 502, 500].includes(captured.code), `unexpected code ${captured.code}`);
-  assert.ok(captured.body && typeof captured.body.status === 'string');
+  const runtime = createQuotaRuntime({
+    now: () => 1700000000000,
+    fetchKimiUsage: async (host) => ({ status: 'not_configured', host }),
+    rememberKimiBalance,
+    lastKimiBalance,
+    loginUrl: { kimi: KIMI_SUBSCRIPTION_URL },
+    openLogin: async (url) => { opened.push(url); },
+  });
+  const opened = [];
+
+  const read = await runtime.handle({ op: 'kimi.quota', host: 'api.moonshot.cn', rawHost: 'API.Moonshot.CN' });
+  assert.equal(read.result.status, 'not_configured');
+  assert.equal(read.result.host, 'api.moonshot.cn', 'the fetch gets the sanitized host');
+  assert.equal(read.cached, null, 'a non-ok reading is not remembered');
+
+  // The catch arm records the RAW query value and still answers a value: each
+  // route has its own fixed body, which the front door renders.
+  const throwing = createQuotaRuntime({
+    now: () => 1700000000000,
+    fetchKimiUsage: async () => { throw new Error('boom'); },
+    rememberKimiBalance,
+    lastKimiBalance,
+    recordVendor: (entry) => recorded.push(entry),
+  });
+  const recorded = [];
+  const caught = await throwing.handle({ op: 'kimi.quota', host: 'api.moonshot.cn', rawHost: 'API.Moonshot.CN' });
+  assert.equal(caught.threw, true);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].host, 'API.Moonshot.CN', 'the fallback bookkeeping keeps the raw spelling');
+  assert.equal(recorded[0].result.status, 'unavailable');
+
+  assert.deepEqual(await runtime.handle({ op: 'kimi.login' }), {});
+  assert.deepEqual(opened, [KIMI_SUBSCRIPTION_URL]);
 });
 
 test('isKimiBaseUrl gates on moonshot/kimi hosts only', () => {

@@ -11,7 +11,6 @@
 //   no_auth           — ~/.codex/auth.json missing / unreadable (not logged in)
 //   unavailable       — API error / unexpected shape
 
-const { renderQuotaBar } = require('../quota/quota-bar-view');
 const { codexRateLimitWindows } = require('../codex/rate-limit-windows');
 const { requestCodexUsage, readCodexAuth } = require('../quota/codex-usage-request');
 
@@ -116,37 +115,4 @@ async function fetchCodexUsage(nowMs = Date.now(), options = {}) {
   };
 }
 
-function mountCodexQuotaRoutes(app, deps = {}) {
-  if (!app || typeof app.get !== 'function') return;
-  require('../quota/account-subscription-reader').registerAccountSubscriptionReader('codex', deps);
-  app.get('/api/codex/quota', async (req, res) => {
-    try {
-      // ?account=<officialAccountId> reads that account's own auth.json
-      // (multi-account); absent → the shared ~/.codex login as before.
-      const accountId = String(req.query && req.query.account || '').trim();
-      let authFile = null;
-      if (accountId) {
-        if (typeof deps.resolveAccountAuthFile !== 'function') {
-          return res.status(400).json({ status: 'unavailable', error: 'official accounts not enabled' });
-        }
-        authFile = deps.resolveAccountAuthFile(accountId);
-        if (!authFile) return res.status(404).json({ status: 'no_auth', error: '账号不存在' });
-      }
-      const result = await fetchCodexUsage(undefined, {
-        ...(authFile ? { authFile } : {}),
-        // Tests inject a stub; production keeps the shared proxy-aware request.
-        ...(typeof deps.fetch === 'function' ? { fetch: deps.fetch } : {}),
-      });
-      const status = result?.status || 'unavailable';
-      const httpStatus = status === 'ok' ? 200 : status === 'no_auth' ? 401 : 500;
-      // The bar is rendered here, once, so the web and the app display the same
-      // string rather than each formatting this JSON their own way.
-      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('codex', result) });
-    } catch (_) {
-      const result = { status: 'unavailable', error: 'codex quota fetch failed' };
-      res.status(500).json({ ...result, bar: renderQuotaBar('codex', result) });
-    }
-  });
-}
-
-module.exports = { mountCodexQuotaRoutes, fetchCodexUsage };
+module.exports = { fetchCodexUsage };

@@ -7,6 +7,7 @@ const { mountAirRoutes } = require('../src/workspace/air-routes');
 
 test('真实 HTTP/WS：1277 张卡、20 客户端、重连补齐、健康检查与消息心跳并行', async t => {
   const app = express(), server = http.createServer(app), wss = new WebSocket.WebSocketServer({ noServer: true });
+  app.use(express.json());
   const sockets = new Set(), requests = [], board = { tasks: {} }; let reads = 0;
   for (let i = 0; i < 1277; i++) board.tasks['t' + i] = { id: 't' + i, title: '任务 ' + i,
     status: 'active', refs: [{ sessionId: 's', dirId: 'd1' }], updatedAt: i + 1 };
@@ -29,6 +30,15 @@ test('真实 HTTP/WS：1277 张卡、20 客户端、重连补齐、健康检查�
   const base = `http://127.0.0.1:${server.address().port}`;
   async function get(path) { const start = performance.now(); const r = await fetch(base + path); const body = await r.text();
     assert.equal(r.status, 200, body); requests.push({ path, ms: performance.now() - start, bytes: Buffer.byteLength(body) }); return JSON.parse(body); }
+  // 全量快照现在走宿主端口：正文与 ETag 由宿主从同一份摘要序列化，前门比对 If-None-Match。
+  async function post(path, payload) {
+    const response = await fetch(base + path, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.ok, true, JSON.stringify(body));
+    return body.value;
+  }
   const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable(); t.after(() => loop.disable());
   assert.equal(runtime.index.backend, 'rust');
   const bootstrap = await get('/api/air/sync'); assert.equal(bootstrap.taskStats.all.total, 1277);
@@ -69,8 +79,10 @@ test('真实 HTTP/WS：1277 张卡、20 客户端、重连补齐、健康检查�
   const replay = new WebSocket(base.replace('http:', 'ws:') + '/ws/meta?air=1&cursor=' + bootstrap.cursor);
   const frame = once(replay, 'message'); await once(replay, 'open');
   assert.equal(JSON.parse((await frame)[0]).tasks[0].id, 't0');
-  const legacy = await fetch(base + '/api/air'), etag = legacy.headers.get('etag'); await legacy.text();
-  const same = await fetch(base + '/api/air', { headers: { 'If-None-Match': etag } }); assert.equal(same.status, 304);
+  const legacy = await post('/api/__host/air', { op: 'snapshot' }), etag = legacy.etag;
+  assert.equal(JSON.parse(legacy.body).tasks.length, 1277);
+  const same = await post('/api/__host/air', { op: 'snapshot', ifNoneMatch: etag });
+  assert.equal(same.etag, etag, '同一份摘要必须给出同一个校验器，前门才能回 304');
   assert.equal(reads, 1278, '兼容全量读取也复用摘要和序列化正文');
   await ping();
   for (const task of Object.values(board.tasks)) task.title += ' 整批变更';

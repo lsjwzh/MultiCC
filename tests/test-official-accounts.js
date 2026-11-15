@@ -22,7 +22,8 @@ const {
 const { createCodexOfficialRelayHandler } = require('../src/codex/official-relay');
 const { createCodexAccountRefreshSupervisor } = require('../src/codex/accounts-refresh');
 const poller = require('../src/usage-limit-poller');
-const { mountCodexQuotaRoutes } = require('../src/routes/codex-quota');
+const { fetchCodexUsage } = require('../src/routes/codex-quota');
+const { createQuotaRuntime } = require('../src/routes/quota-host');
 
 // Swap the outbound transport with a scripted stub for the duration of one call.
 async function withFetch(handler, fn) {
@@ -368,62 +369,47 @@ test('poller reads the per-account authFile instead of the shared login', async 
   );
 });
 
-function quotaHarness(deps) {
-  const routes = {};
-  const app = { get: (path, handler) => { routes[`GET ${path}`] = handler; } };
-  mountCodexQuotaRoutes(app, deps);
-  return {
-    invoke: (query) => new Promise((resolve, reject) => {
-      const res = {
-        statusCode: 200,
-        status(code) { this.statusCode = code; return this; },
-        json(body) { resolve({ statusCode: this.statusCode, body }); return this; },
-      };
-      try {
-        routes['GET /api/codex/quota']({ query: query || {} }, res);
-      } catch (error) { reject(error); }
-    }),
-  };
+// The quota route itself is the Rust front door's now; the status tree it
+// applied (disabled 400, unknown 404, no_auth 401, ok 200) lives in
+// native/core/src/quota_routes.rs. What stayed in Node is these three facts:
+// which auth file `?account=` resolves to, that a missing resolver disables
+// the feature, and that an unfinished login fails closed.
+function codexQuotaRuntime(deps) {
+  return createQuotaRuntime({ now: () => 1700000000000, fetchCodexUsage, ...deps });
 }
 
-test('quota route: ?account resolves the account auth file; shared default unchanged', async () => {
+test('codex quota op: ?account resolves the account auth file', async () => {
   const store = createOfficialAccountStore({ root: tmpRoot() });
   const account = store.createCodexAccount({ label: 'acct' });
   writeCodexAuth(store.codexDir(account.id));
 
-  // The route keeps an explicit fetch dependency for isolated transport tests.
-  const h = quotaHarness({
+  const runtime = codexQuotaRuntime({
     resolveAccountAuthFile: id => store.codexAuthFile(id),
-    fetch: async (url, opts) => {
+    codexFetch: async (url, opts) => {
       assert.equal(opts.headers['ChatGPT-Account-Id'], 'acct-ext-1');
       return { ok: true, status: 200, json: async () => USAGE_BODY };
     },
   });
-  const res = await h.invoke({ account: account.id });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.status, 'ok');
-  assert.equal(res.body.weekly.usedPercent, 42);
-  assert.ok(res.body.bar, 'bar rendered once, server-side');
+  const value = await runtime.handle({ op: 'codex.quota', account: account.id });
+  assert.equal(value.result.status, 'ok');
+  assert.equal(value.result.weekly.usedPercent, 42);
 });
 
-test('quota route: account param edge cases fail closed and offline', async () => {
+test('codex quota op: account param edge cases fail closed and offline', async () => {
   // resolver missing entirely → feature not enabled
-  const noResolver = quotaHarness({});
-  let res = await noResolver.invoke({ account: 'a'.repeat(16) });
-  assert.equal(res.statusCode, 400);
+  const noResolver = codexQuotaRuntime({});
+  assert.deepEqual(await noResolver.handle({ op: 'codex.quota', account: 'a'.repeat(16) }), { mode: 'disabled' });
 
-  // unknown account → 404
+  // unknown account → the resolver answers nothing
   const store = createOfficialAccountStore({ root: tmpRoot() });
-  const h = quotaHarness({
+  const runtime = codexQuotaRuntime({
     resolveAccountAuthFile: id => (store.listCodexAccounts().some(a => a.id === id) ? store.codexAuthFile(id) : null),
   });
-  res = await h.invoke({ account: 'f'.repeat(16) });
-  assert.equal(res.statusCode, 404);
+  assert.deepEqual(await runtime.handle({ op: 'codex.quota', account: 'f'.repeat(16) }), { mode: 'missing' });
 
-  // known account that never finished login → 401 with the account-specific message
+  // known account that never finished login → no_auth with the account-specific message
   const account = store.createCodexAccount({ label: 'pending' });
-  res = await h.invoke({ account: account.id });
-  assert.equal(res.statusCode, 401);
-  assert.equal(res.body.status, 'no_auth');
-  assert.match(res.body.error, /尚未完成登录/);
+  const value = await runtime.handle({ op: 'codex.quota', account: account.id });
+  assert.equal(value.result.status, 'no_auth');
+  assert.match(value.result.error, /尚未完成登录/);
 });

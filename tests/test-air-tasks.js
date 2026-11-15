@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
 const { fixture } = require('./helpers/task-shell');
-const { airResponse } = require('./helpers/air-response');
+const { mountAir } = require('./helpers/air-host');
 
 test('navigation entry skips history reads while ordinary task details retain the transcript', async t => {
   let historyReads = 0;
@@ -20,20 +20,18 @@ test('navigation entry skips history reads while ordinary task details retain th
 });
 
 test('Air chat-open endpoint returns only authorized session metadata and skips delivery work', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map();
   let readOnly = false;
   const calls = [];
   const record = { id: 'bound', kind: 'chat', dirId: 'd', cli: 'codex', taskBoundTaskId: 't', autoCommit: false,
     memory: 'PRIVATE', rolePrompt: 'PRIVATE', providerSecret: 'PRIVATE' };
-  mountAirRoutes({ get: (p, fn) => handlers.set(p, fn), post() {} }, {
+  // 路由由 Rust 前门持有；宿主只返回可公开的会话元数据，并在同一次操作里标已读。
+  const air = mountAir({
     records: new Map([['bound', record], ['source', { id: 'source', kind: 'chat', dirId: 'd' }]]),
     directories: new Map([['d', { path: '/repo' }]]),
     shell: { taskEntry: async (id, options) => { calls.push([id, options]); return { sessionId: 'bound', sourceSessionId: 'source', readOnly }; },
       attributionCandidate() { throw Error('must not inspect delivery when opening'); } },
   });
-  const route = handlers.get('/api/air/tasks/:id/open');
-  const read = async () => { const res = { headersSent: false, json(value) { this.body = value; } }; await route({ params: { id: 't' } }, res); return res.body; };
+  const read = () => air.ok({ op: 'task-open', taskId: 't' });
   const entry = await read();
   assert.deepEqual(calls, [['t', { includeMessages: false }]]);
   assert.equal(entry.session.id, 'bound');
@@ -130,22 +128,18 @@ test('online attribution candidates do not create task B or rewrite the original
   assert.equal(candidates.latest(created.taskId).state, 'stale');
 });
 test('Air list resolves legacy reference directories and never includes provider credentials', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', providerSecret: 'private' }]]),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ modules: {}, tasks: { t: { id: 't', chatSessionId: 's', title: 'Legacy', recordType: 'planned', workflowStage: 'inbox', refs: [{ sessionId: 's', dirId: 'd1' }] } } }),
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   assert.equal(response.tasks[0].dirId, 'd1'); assert.equal(response.tasks[0].recordType, 'planned');
   assert.equal(response.tasks[0].workflowStage, 'inbox'); assert.equal(JSON.stringify(response).includes('private'), false);
 });
 
 test('Air exposes message time separately from task metadata update time', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat' }]]),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ modules: {}, tasks: { t: { id: 't', chatSessionId: 's', title: 'Task',
@@ -154,18 +148,16 @@ test('Air exposes message time separately from task metadata update time', async
         { sessionId: 's', dirId: 'd1', ts: 500 },
       ] } } }),
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: false }) } });
-  const res = airResponse(); await handlers.get('/api/air')({}, res);
-  const [task] = JSON.parse(res.body).tasks;
+  const { json } = await air.snapshot();
+  const [task] = json.tasks;
   assert.equal(task.updatedAt, 900);
   assert.equal(task.lastMessageAt, 500);
 });
 
 test('Air projects compact unattended progress onto task cards without mutating cached tasks', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const cached = { id: 't', chatSessionId: 's', title: 'Task', createdAt: 100, updatedAt: 900,
     refs: [{ sessionId: 's', dirId: 'd1', ts: 300 }] };
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', unattended: {
       status: 'active', goal: 'ship it', criteria: ['tests pass'], rounds: 2, maxDurationMinutes: 120,
       startedAt: 100, deadlineAt: 7200100,
@@ -174,18 +166,16 @@ test('Air projects compact unattended progress onto task cards without mutating 
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ modules: {}, tasks: { t: cached } }),
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: false }) } });
-  const res = airResponse(); await handlers.get('/api/air')({}, res);
-  const [task] = JSON.parse(res.body).tasks;
+  const { json } = await air.snapshot();
+  const [task] = json.tasks;
   assert.deepEqual(task.unattended, { status: 'active', rounds: 2, deadlineAt: 7200100, evaluating: false });
   assert.equal('maxRounds' in task.unattended, false);
   assert.equal('unattended' in cached, false, 'the cached task card is never mutated');
-  assert.equal(JSON.stringify(JSON.parse(res.body)).includes('ship it'), false,
+  assert.equal(JSON.stringify(json).includes('ship it'), false,
     'task rows only expose compact progress, not the goal text');
 });
 
 test('Air projects cached worktree delivery state onto task cards without treating behind as pending work', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const records = new Map([
     ['dirty-session', { id: 'dirty-session', dirId: 'd1', kind: 'chat', worktreePath: '/repo/wt-dirty' }],
     ['ahead-session', { id: 'ahead-session', dirId: 'd1', kind: 'chat', worktreePath: '/repo/wt-ahead' }],
@@ -198,7 +188,7 @@ test('Air projects cached worktree delivery state onto task cards without treati
     'behind-session': { dirty: false, ahead: 0, behind: 7 },
   };
   const reads = [];
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { capacityReason: () => null, snapshot: () => ({ workspaces: [
       { id: 'w-dirty', ownerId: 'dirty-session', dirId: 'd1', residency: 'resident' },
       { id: 'w-ahead', ownerId: 'ahead-session', dirId: 'd1', residency: 'retained' },
@@ -214,9 +204,8 @@ test('Air projects cached worktree delivery state onto task cards without treati
     mergeStateCached: (_dir, record) => { reads.push(record.id); return states[record.id]; },
     shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
   });
-  const res = airResponse();
-  await handlers.get('/api/air')({ headers: {} }, res);
-  const byId = Object.fromEntries(JSON.parse(res.body).tasks.map(task => [task.id, task]));
+  const { json } = await air.snapshot();
+  const byId = Object.fromEntries(json.tasks.map(task => [task.id, task]));
   assert.deepEqual(byId['dirty-session'].worktreeChanges, { dirty: true, ahead: 0 });
   assert.deepEqual(byId['ahead-session'].worktreeChanges, { dirty: false, ahead: 3 });
   assert.deepEqual(byId['behind-session'].worktreeChanges, { dirty: false, ahead: 0 },
@@ -227,14 +216,12 @@ test('Air projects cached worktree delivery state onto task cards without treati
 });
 
 test('Air reports unique worktree counts per directory for manual task cleanup', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const records = new Map([
     ['s1', { id: 's1', dirId: 'd1', kind: 'chat', worktreePath: '/repo/.multicc-worktrees/a' }],
     ['s2', { id: 's2', dirId: 'd1', kind: 'chat', worktreePath: '/repo/.multicc-worktrees/a' }],
     ['s3', { id: 's3', dirId: 'd1', kind: 'chat', worktreePath: '/repo/.multicc-worktrees/b' }],
   ]);
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records,
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
@@ -245,15 +232,11 @@ test('Air reports unique worktree counts per directory for manual task cleanup',
     clis: ['codex'],
     shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
   });
-  const res = airResponse();
-  await handlers.get('/api/air')({}, res);
-  assert.equal(JSON.parse(res.body).directories[0].worktreeCount, 3,
+  assert.equal((await air.snapshot()).json.directories[0].worktreeCount, 3,
     'duplicate record paths count once; detached task worktrees still count');
 });
 
 test('Air folds workspace residency into a per-directory worktree lifecycle', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post: (p, fn) => handlers.set(p, fn) };
   // 光有总数看不出这个数是怎么长的：本地占着磁盘的、睡下只剩分支引用的、计划了还
   // 没落地的，是三种状态，而用户要判断的正是要不要现在腾地方。口径来自 registry 的
   // residency，这里逐档各放一条，另外两条用来钉住「不属于本目录的不算」和「认不出来的
@@ -267,7 +250,7 @@ test('Air folds workspace residency into a per-directory worktree lifecycle', as
     { id: 'w6', dirId: 'd1', residency: 'not-a-residency' },
   ];
   const leases = [{ id: 'l1', workspaceId: 'w1' }, { id: 'l2', workspaceId: 'w5' }];
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces, leases, budgets: {} }) },
     hibernation: () => ({ policy: () => ({ idleMs: 86400000, intervalMs: 900000, startupDelayMs: 30000, batchSize: 16, enabled: true }) }),
     records: new Map(),
@@ -279,9 +262,7 @@ test('Air folds workspace residency into a per-directory worktree lifecycle', as
     clis: ['codex'],
     shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
   });
-  const res = airResponse();
-  await handlers.get('/api/air')({}, res);
-  const snapshot = JSON.parse(res.body);
+  const snapshot = (await air.snapshot()).json;
   const d1 = snapshot.directories.find(directory => directory.id === 'd1');
   const d2 = snapshot.directories.find(directory => directory.id === 'd2');
   // resident + retained 才是磁盘上真占地方的；认不出来的 residency 按计划态算。
@@ -296,25 +277,16 @@ test('Air folds workspace residency into a per-directory worktree lifecycle', as
 });
 
 test('Air reclaims worktrees on demand: idles first, force only when asked, unknown directory is a 404', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
   const calls = [];
-  const mount = (deps = {}) => {
-    const handlers = new Map();
-    mountAirRoutes({ get: (p, fn) => handlers.set(p, fn), post: (p, fn) => handlers.set(p, fn) }, {
-      admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
-      records: new Map(),
-      directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
-      getBoard: () => ({ modules: {}, tasks: {} }),
-      clis: ['codex'],
-      shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
-      ...deps,
-    });
-    return async body => {
-      const res = airResponse();
-      await handlers.get('/api/air/worktrees/reclaim')({ body }, res);
-      return { status: res.statusCode, body: JSON.parse(res.body) };
-    };
-  };
+  const mount = (deps = {}) => mountAir({
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map(),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ modules: {}, tasks: {} }),
+    clis: ['codex'],
+    shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
+    ...deps,
+  });
   const hibernation = {
     policy: () => ({ idleMs: 86400000, intervalMs: 900000, startupDelayMs: 30000, batchSize: 16, enabled: true }),
     reclaim: async ({ dirId, force }) => {
@@ -325,35 +297,33 @@ test('Air reclaims worktrees on demand: idles first, force only when asked, unkn
         : { ok: true, considered: 3, attempted: 3, hibernated: 1, failed: 0, skipped: 2 };
     },
   };
-  const post = mount({ hibernation: () => hibernation });
+  const air = mount({ hibernation: () => hibernation });
+  const post = body => air.ok({ op: 'reclaim', ...body });
 
   // 不带 dirId = 所有目录，且默认不带 force：替用户决定「连最近用过的也收」不是这里的事。
   const idleFirst = await post({});
   assert.deepEqual(calls[0], { dirId: null, force: false });
-  assert.equal(idleFirst.status, 200);
-  assert.equal(idleFirst.body.ok, true);
-  assert.equal(idleFirst.body.hibernated, 1);
-  assert.equal(idleFirst.body.skipped, 2, 'skipped 要说出来，面板才能解释「为什么还剩几个」');
+  assert.equal(idleFirst.kind, 'reclaimed');
+  assert.equal(idleFirst.dirId, null);
+  assert.equal(idleFirst.result.hibernated, 1);
+  assert.equal(idleFirst.result.skipped, 2, 'skipped 要说出来，面板才能解释「为什么还剩几个」');
 
   const forced = await post({ dirId: 'd1', force: true });
   assert.deepEqual(calls[1], { dirId: 'd1', force: true });
-  assert.equal(forced.body.hibernated, 3);
-  assert.equal(forced.body.dirId, 'd1');
+  assert.equal(forced.dirId, 'd1');
+  assert.equal(forced.result.hibernated, 3);
 
-  const missing = await post({ dirId: 'nope' });
-  assert.equal(missing.status, 404);
-  assert.equal(missing.body.code, 'directory_not_found');
+  const rejected = await air.fail({ op: 'reclaim', dirId: 'nope' });
+  assert.equal(rejected.status, 404);
+  assert.equal(rejected.code, 'directory_not_found');
   assert.equal(calls.length, 2, '目录不存在就不该去动任何 worktree');
 
   // 旧实例（没接线）如实说「这条能力现在不可用」，不是 500、也不是假装收了 0 个。
-  const unavailable = await mount()({ dirId: 'd1' });
-  assert.equal(unavailable.status, 200);
-  assert.equal(unavailable.body.ok, false);
-  assert.equal(unavailable.body.code, 'hibernation_unavailable');
+  // 用户看到的是前门拼的 { ok:false, code:'hibernation_unavailable', … }。
+  assert.deepEqual(await mount().ok({ op: 'reclaim', dirId: 'd1' }), { kind: 'unavailable' });
 });
 
 test('Air lists and pins hide unseparated tasks across decisions and restarts, then show the same identity after separation', async t => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
   const { createTaskShellRuntime } = require('../src/task-shell/runtime');
   const path = require('node:path');
   const { createAirPinRuntime } = require('../src/workspace/pins');
@@ -385,60 +355,50 @@ test('Air lists and pins hide unseparated tasks across decisions and restarts, t
     const pinsFile = path.join(path.dirname(f.file), 'air-pins.json');
     createAirPinRuntime({ file: pinsFile, listTaskIds: () => Object.keys(board.tasks) })
       .replace([source.taskId, suggestion.taskId]);
-    const handlers = new Map();
-    mountAirRoutes({ get: (url, fn) => handlers.set(url, fn), post: (url, fn) => handlers.set(`POST ${url}`, fn) }, {
+    const air = mountAir({
       pinsFile, getBoard: () => board, records: f.records,
       directories: new Map([['d1', { id: 'd1', path: '/repo' }]]), clis: ['codex'],
       admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
       shell: { listTasks: () => f.runtime.listTasks(), taskAccess: task => f.runtime.taskAccess(task),
         migrateTaskSessions: () => f.runtime.migrateTaskSessions([]) },
     });
-    const before = airResponse();
-    await handlers.get('/api/air')({}, before);
-    assert.deepEqual(JSON.parse(before.body).tasks.map(task => task.id), [source.taskId]);
-    assert.deepEqual(JSON.parse(before.body).taskPins, [source.taskId]);
-    const pins = airResponse(); handlers.get('/api/air/pins')({}, pins);
-    assert.deepEqual(JSON.parse(pins.body).taskIds, [source.taskId]);
-    const toggle = airResponse();
-    handlers.get('POST /api/air/pins/toggle')({ body: { taskId: suggestion.taskId } }, toggle);
-    assert.equal(toggle.statusCode, 404);
+    const before = await air.snapshot();
+    assert.deepEqual(before.json.tasks.map(task => task.id), [source.taskId]);
+    assert.deepEqual(before.json.taskPins, [source.taskId]);
+    assert.deepEqual(await air.ok({ op: 'pins-read' }), [source.taskId]);
+    // 未分离的执行槽任务钉不进去：宿主按可见集合剪枝后 404，前门把它翻成信封。
+    assert.equal((await air.fail({ op: 'pins-toggle', taskId: suggestion.taskId })).status, 404);
     assert.ok(f.store.get('task', suggestion.taskId), 'filtering must preserve conversation identity');
     assert.ok(f.store.get('link', `${source.shellId}:${suggestion.taskId}`));
 
     const separated = await f.runtime.separation.decide(source.sessionId, suggestion.id, 'separate');
     assert.equal(separated.taskId, suggestion.taskId);
-    const after = airResponse();
-    await handlers.get('/api/air')({ headers: { 'if-none-match': before.headers.etag } }, after);
-    assert.equal(after.statusCode, 200, 'separation invalidates the list ETag');
+    const after = await air.snapshot(before.etag);
+    assert.notEqual(after.etag, before.etag, 'separation invalidates the list ETag');
     // 只验成员（分离后两条都在），顺序由「最近有消息的在前」决定，另有专门用例。
-    assert.deepEqual(JSON.parse(after.body).tasks.map(task => task.id).sort(), [source.taskId, suggestion.taskId].sort());
-    assert.deepEqual(JSON.parse(after.body).taskPins, [source.taskId, suggestion.taskId]);
+    assert.deepEqual(after.json.tasks.map(task => task.id).sort(), [source.taskId, suggestion.taskId].sort());
+    assert.deepEqual(after.json.taskPins, [source.taskId, suggestion.taskId]);
   });
 });
 
 test('Air hides incomplete separation but keeps idle, planned and legacy standalone tasks', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
   const tasks = [
     { id: 'partial', separatedFromTaskId: 'source', embedded: false, ready: false },
     { id: 'idle', ready: true }, { id: 'planned', ready: false },
     { id: 'separated', separatedFromTaskId: 'source', embedded: false, ready: true },
   ];
   const board = { tasks: Object.fromEntries([...tasks, { id: 'legacy' }].map(task => [task.id, { id: task.id }])) };
-  const handlers = new Map();
-  mountAirRoutes({ get: (url, fn) => handlers.set(url, fn), post() {} }, {
+  const air = mountAir({
     records: new Map(), directories: new Map(), getBoard: () => board, clis: [],
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     shell: { listTasks: () => tasks, taskAccess: () => ({ readOnly: false }) },
   });
-  const res = airResponse(); await handlers.get('/api/air')({}, res);
-  assert.deepEqual(JSON.parse(res.body).tasks.map(task => task.id), ['idle', 'planned', 'separated', 'legacy']);
+  assert.deepEqual((await air.snapshot()).json.tasks.map(task => task.id), ['idle', 'planned', 'separated', 'legacy']);
 });
 
 test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行中', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const stale = Date.now() - 10 * 60 * 1000;
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([
       // 会话记录在，但从头到尾没有任何 taskState：这一轮连受理都没发生过。
@@ -461,7 +421,7 @@ test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行�
         refs: [{ sessionId: 'live', dirId: 'd1' }] },
     } }),
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   const byId = Object.fromEntries(response.tasks.map(task => [task.id, task.runState]));
   assert.equal(byId.g, 'idle', '派发时的乐观值 + 会话从没受理过 → 空闲，不是执行中');
   assert.equal(byId.a, 'idle', '只有归因标注不算受理物证');
@@ -472,8 +432,6 @@ test('Air cards carry the ✅ sub-state, and drop one the display layer cannot n
   // ✅ 那一格有三个说法（执行成功 / 需要交互 / 达成目标），词由服务端 classify 判定时
   // 落好（src/classify/vocab.js goalStateForClassify）。卡片只是把它抄出来 —— 但必须
   // 过 isGoalState 这一关：一条陈旧或伪造的记录不能让 UI 印出别的词。
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const now = Date.now();
   const chat = (goalState) => (id) => ({ id, dirId: 'd1', kind: 'chat', taskState: {
     goal: '把登录页改成暗色', phase: 'done', classifyState: 'D', queueState: 'succeeded',
@@ -482,7 +440,7 @@ test('Air cards carry the ✅ sub-state, and drop one the display layer cannot n
     const value = ['achieved', 'interact', 'wat', null][index];
     return [key, chat(value)(key)];
   });
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map(records),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
@@ -490,7 +448,7 @@ test('Air cards carry the ✅ sub-state, and drop one the display layer cannot n
       id: key, title: key, status: 'active', runState: 'succeeded', runStateAt: now, updatedAt: now,
       sessionId: key, refs: [{ sessionId: key, dirId: 'd1' }] }])) }),
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   const byId = Object.fromEntries(response.tasks.map(task => [task.id, task]));
   assert.equal(byId.ok.runState, 'succeeded', '这一轮正常收尾');
   assert.equal(byId.ok.goalState, 'achieved');
@@ -500,9 +458,7 @@ test('Air cards carry the ✅ sub-state, and drop one the display layer cannot n
 });
 
 test('Air snapshot carries the most recently worked chat runtime as lastRuntime', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([
       // 老一些的 chat 会话：更近的那份赢了它才不该出现。
       ['older', { id: 'older', dirId: 'd1', kind: 'chat', cli: 'claude', provider: 'p-old',
@@ -516,16 +472,14 @@ test('Air snapshot carries the most recently worked chat runtime as lastRuntime'
     getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'],
     shell: { taskAccess: () => ({ readOnly: true }) },
     providerName: record => record.provider === 'p-new' ? 'New Relay' : null });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   assert.deepEqual(response.lastRuntime, { cli: 'codex', provider: 'p-new', providerName: 'New Relay',
     providerSelection: null, model: 'gpt-5.6', effort: 'high', subagent: null });
   assert.equal(JSON.stringify(response).includes('private'), false);
 });
 
 test('Air task cards expose only their own bound Provider display name', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (path, fn) => handlers.set(path, fn), post() {} };
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([['bound', { id: 'bound', dirId: 'd1', kind: 'chat', provider: 'p1', providerSecret: 'PRIVATE' }]]),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
@@ -536,30 +490,25 @@ test('Air task cards expose only their own bound Provider display name', async (
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) },
     providerName: record => record.provider === 'p1' ? 'Provider One' : null,
   });
-  const res = airResponse(); await handlers.get('/api/air')({}, res);
-  const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   assert.equal(response.tasks.find(task => task.id === 'bound').providerName, 'Provider One');
   assert.equal(response.tasks.find(task => task.id === 'unbound').providerName, null);
   assert.equal(JSON.stringify(response).includes('PRIVATE'), false);
 });
 
 test('Air snapshot leaves lastRuntime null when no chat session has a cli', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', providerSecret: 'private' }]]),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ tasks: {} }), clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   assert.equal(response.lastRuntime, null);
 });
 
 // 「最近用过」= 用户最后用过的那套，不是「最后动过的那条记录」。两个反例会一起
 // 把它顶掉：上一轮以故障收尾的配置，和定时任务每小时自动跑出来的固定会话。
 test('Air snapshot skips a chat session whose last turn ended abnormally', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([
       // 最近一轮是 E（API 异常或显式取消）：把这条线路钉回胶囊只会让用户再挂一次。
       ['failed', { id: 'failed', dirId: 'd1', kind: 'chat', cli: 'claude', provider: 'p-glm',
@@ -569,15 +518,13 @@ test('Air snapshot skips a chat session whose last turn ended abnormally', async
     ]),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   assert.equal(response.lastRuntime.cli, 'codex', '上一轮故障的那套不算「最近用过」');
   assert.equal(response.lastRuntime.model, 'gpt-5.6');
 });
 
 test('Air snapshot skips the fixed sessions a scheduled task owns', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([
       // 定时任务每小时自动跑一轮，lastWorkAt 几乎总是全场最新（实测 TTShop 那条
       // 就是 claude + GLM）。用户什么也没挑，不该被告知「最近用的是这个」。
@@ -589,15 +536,13 @@ test('Air snapshot skips the fixed sessions a scheduled task owns', async () => 
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'], shell: { taskAccess: () => ({ readOnly: true }) },
     cronSessionIds: () => ['robot'] });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   assert.equal(response.lastRuntime.cli, 'codex', '自动化的运行时不算用户的选择');
   assert.equal(response.lastRuntime.model, 'gpt-5.6');
 });
 
 test('Air snapshot leaves lastRuntime null when every chat session is unusable', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map([
       ['failed', { id: 'failed', dirId: 'd1', kind: 'chat', cli: 'claude', provider: 'p-glm',
         model: 'glm-5.2', lastWorkAt: '2026-09-15T00:00:00.000Z', taskState: { classifyState: 'E' } }],
@@ -607,13 +552,11 @@ test('Air snapshot leaves lastRuntime null when every chat session is unusable',
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'], shell: { taskAccess: () => ({ readOnly: true }) },
     cronSessionIds: () => ['robot'] });
-  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const response = (await air.snapshot()).json;
   assert.equal(response.lastRuntime, null, '全都不可用时退回 null，前端自己画默认线路');
 });
 
 test('Air task entry exposes provider routing metadata without credentials', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const record = { id: 's', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'provider-a',
     providerSecret: 'must-not-leak', model: 'gpt-alias', effort: 'high',
     subagent: { providerId: 'provider-b', model: 'gpt-b' },
@@ -621,7 +564,7 @@ test('Air task entry exposes provider routing metadata without credentials', asy
       { providerId: 'provider-a', model: 'gpt-a', priority: 1, enabled: true },
       { providerId: 'provider-b', model: 'gpt-b', priority: 2, enabled: true },
     ], maxAttempts: 2, sticky: true, allowCrossTrust: false } };
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }),
       deliveryEvidence: () => ({ run: null, integration: null }) },
     records: new Map([['s', record]]), directories: new Map([['d1', { id: 'd1', path: '/repo' }]]),
@@ -631,9 +574,7 @@ test('Air task entry exposes provider routing metadata without credentials', asy
     effectiveModel: () => 'gpt-a', effectiveEffort: () => 'high',
     serializeSubagent: sa => (sa ? { providerId: sa.providerId, model: sa.model, effectiveModel: 'gpt-b' } : null),
   });
-  const res = airResponse();
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, res);
-  const response = JSON.parse(res.body);
+  const response = JSON.parse((await air.ok({ op: 'task-detail', taskId: 't' })).body);
   assert.deepEqual(response.configuration, {
     pendingConfiguration: null,
     cli: 'codex', model: 'gpt-alias', effectiveModel: 'gpt-a', effort: 'high', effectiveEffort: 'high',
@@ -648,25 +589,21 @@ test('Air task entry exposes provider routing metadata without credentials', asy
   // Once Auto has routed a turn, the pill names the model that actually
   // answered, not the first candidate's.
   record.autoProviderLastRoute = { providerId: 'provider-b', providerName: 'Provider B', model: 'gpt-b-routed' };
-  const routed = airResponse();
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, routed);
-  assert.equal(JSON.parse(routed.body).configuration.effectiveModel, 'gpt-b-routed');
+  const routed = JSON.parse((await air.ok({ op: 'task-detail', taskId: 't' })).body);
+  assert.equal(routed.configuration.effectiveModel, 'gpt-b-routed');
   record.providerSelection = null;
-  const manual = airResponse();
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, manual);
-  assert.equal(JSON.parse(manual.body).configuration.effectiveModel, 'gpt-a', 'a stale Auto line never leaks into a manual session');
+  const manual = JSON.parse((await air.ok({ op: 'task-detail', taskId: 't' })).body);
+  assert.equal(manual.configuration.effectiveModel, 'gpt-a', 'a stale Auto line never leaks into a manual session');
 });
 
 test('Air task entry resolves the pending route provider name instead of leaking the id', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   // 待生效的那份配置存的是 id：它是给人看的胶囊文字，必须由服务端换成名字。
   const profile = { provider: 'provider-b', providerSelection: null, model: 'gpt-b', effort: 'low',
     agent: null, subagent: null, rolePrompt: null };
   const record = { id: 's', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'provider-a', model: 'gpt-a',
     effectiveModel: 'gpt-a', pendingConfiguration: { cli: 'codex', fresh: false, profile,
       updatedAt: '2026-09-18T00:00:00.000Z' } };
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }),
       deliveryEvidence: () => ({ run: null, integration: null }) },
     records: new Map([['s', record]]), directories: new Map([['d1', { id: 'd1', path: '/repo' }]]),
@@ -677,9 +614,7 @@ test('Air task entry resolves the pending route provider name instead of leaking
       : (session.provider === 'provider-a' ? 'Main Relay' : null),
     effectiveModel: () => 'gpt-a', effectiveEffort: () => 'low',
   });
-  const res = airResponse();
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, res);
-  const response = JSON.parse(res.body);
+  const response = JSON.parse((await air.ok({ op: 'task-detail', taskId: 't' })).body);
   assert.equal(response.configuration.providerName, 'Main Relay');
   assert.equal(response.configuration.pendingConfiguration.providerName, 'Backup Relay');
   // 只读的展示名落在 pending 上，不进 profile：应用这份配置时 profile 会被整体
@@ -707,8 +642,6 @@ test('a task pinned at creation keeps its sub-agent route in the runtime', async
 });
 
 test('Air folds terminal liveness on the server so a row cannot report a dead pane as alive', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const records = new Map([
     // 有运行时会话（tmux 活着）的普通终端：直连登录，没有托管 provider。
     ['live', { id: 'live', dirId: 'd1', kind: 'terminal', cli: 'claude', createdAt: '2026-09-20T08:00:00.000Z' }],
@@ -731,12 +664,10 @@ test('Air folds terminal liveness on the server so a row cannot report a dead pa
     ['broken', { id: 'broken', lastActivity: new Date(1_800_000_000_000), cwd: '/repo' }],
     ['patched', { id: 'patched', lastActivity: new Date(1_800_000_000_000), cwd: '/repo', spawnedProvider: null }],
   ]);
-  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+  const air = mountAir({ admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records, sessions, directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'], shell: { taskAccess: () => ({}) } });
-  const res = airResponse();
-  await handlers.get('/api/air')({}, res);
-  const rows = Object.fromEntries(JSON.parse(res.body).sessions.map(row => [row.id, row]));
+  const rows = Object.fromEntries((await air.snapshot()).json.sessions.map(row => [row.id, row]));
 
   assert.deepEqual(Object.keys(rows).sort(), ['broken', 'gone', 'live', 'patched', 'routed', 'undated'],
     'chat sessions never become terminal rows');
@@ -758,7 +689,6 @@ test('Air folds terminal liveness on the server so a row cannot report a dead pa
 });
 
 test('Air snapshot lists tasks newest-message first, ties keep board order', async () => {
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
   const tasks = [
     { id: 'old', refs: [{ ts: 1000 }], createdAt: 900, updatedAt: 5000 },
     { id: 'new', refs: [{ ts: 3000 }], createdAt: 2900, updatedAt: 3000 },
@@ -766,13 +696,11 @@ test('Air snapshot lists tasks newest-message first, ties keep board order', asy
     { id: 'tie-b', createdAt: 2000, updatedAt: 2000 },
   ];
   const board = { tasks: Object.fromEntries(tasks.map(task => [task.id, task])) };
-  const handlers = new Map();
-  mountAirRoutes({ get: (url, fn) => handlers.set(url, fn), post() {} }, {
+  const air = mountAir({
     records: new Map(), directories: new Map(), getBoard: () => board, clis: [],
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     shell: { listTasks: () => tasks, taskAccess: () => ({ readOnly: false }) },
   });
-  const res = airResponse(); await handlers.get('/api/air')({}, res);
   // old 的 updatedAt 最新，但最后一条消息最早 —— 元数据改动不能把旧任务顶上来。
-  assert.deepEqual(JSON.parse(res.body).tasks.map(task => task.id), ['new', 'tie-a', 'tie-b', 'old']);
+  assert.deepEqual((await air.snapshot()).json.tasks.map(task => task.id), ['new', 'tie-a', 'tie-b', 'old']);
 });

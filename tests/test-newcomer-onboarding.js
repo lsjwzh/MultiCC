@@ -34,11 +34,18 @@ test('a real first assistant result advances the final onboarding step', () => {
 
 test('the opt-in sample workspace never writes into the running source tree', () => {
   const sample = fs.readFileSync(path.join(root, 'src', 'directory', 'sample-workspace.js'), 'utf8');
-  const controller = fs.readFileSync(path.join(root, 'src', 'directory', 'controller.js'), 'utf8');
+  // The public route is claimed by the Rust front door
+  // (native/gateway/src/app/directory_routes.rs); the Node host port it asks
+  // is the only place the sample files are written.
+  const gatewayRoutes = fs.readFileSync(
+    path.join(root, 'native', 'gateway', 'src', 'app', 'directory_routes.rs'), 'utf8');
+  const host = fs.readFileSync(path.join(root, 'src', 'routes', 'directory-host.js'), 'utf8');
   assert.match(sample, /sampleRoot\(\)/);
   assert.doesNotMatch(sample, /PKG_ROOT|__dirname/);
   assert.match(sample, /writeFileExclusive/);
-  assert.match(controller, /\/api\/onboarding\/sample-workspace/);
+  assert.match(gatewayRoutes, /Lit\("onboarding"\), Lit\("sample-workspace"\)/);
+  assert.match(gatewayRoutes, /\/api\/onboarding\/sample-workspace/);
+  assert.match(host, /case 'sample-ensure':/);
 });
 
 test('curated team bundles stay backed by valid role presets', () => {

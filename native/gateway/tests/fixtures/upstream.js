@@ -112,6 +112,76 @@ function controlConnect() {
 }
 controlConnect();
 
+// Workspace source control (docs/gateway.md §21, §51): the front door asks the
+// share store for scoped fleet decisions. The real child is the Rust addon's
+// `Store`; this fixture answers `Authorize` from FIXTURE_HOST_SCRIPT.fleet and
+// appends every input to source-authorize.jsonl. Framing differs from the auth
+// channel: requests and replies are chunk lists terminated by a zero length.
+const sourcePort = Number(process.env.MULTICC_GATEWAY_SOURCE_PORT);
+const sourceCapability = process.env.MULTICC_GATEWAY_SOURCE_CAPABILITY;
+delete process.env.MULTICC_GATEWAY_SOURCE_PORT;
+delete process.env.MULTICC_GATEWAY_SOURCE_CAPABILITY;
+const sourceLog = path.join(stateDir, 'source-authorize.jsonl');
+function workspaceControl() {
+  const socket = net.connect(sourcePort, '127.0.0.1');
+  const sourceSign = text => crypto.createHmac('sha256', sourceCapability).update(text).digest('base64url');
+  let phase = 0, nonce, buffered = Buffer.alloc(0), message = Buffer.alloc(0);
+  const chunk = value => {
+    const body = Buffer.from(JSON.stringify(value));
+    const head = Buffer.alloc(4); head.writeUInt32BE(body.length);
+    socket.write(Buffer.concat([head, body]));
+  };
+  // The addon answers with `reply(...)`: a JSON *string* holding the reply
+  // object, written with `write_chunks`. Stringify twice to match it.
+  const send = value => {
+    chunk(JSON.stringify(value));
+    socket.write(Buffer.alloc(4)); // zero-length terminator
+  };
+  const internal = { ok: false, error: { code: 'WORKSPACE_SHARING_INTERNAL', message: '工作区分享操作失败', status: 500, metadata: {} } };
+  const answer = request => {
+    const authorize = request == null ? null : request.Authorize;
+    if (!authorize) return send(internal);
+    let input;
+    try { input = JSON.parse(authorize.input); } catch (_) { return send(internal); }
+    fs.appendFileSync(sourceLog, `${JSON.stringify(input)}\n`);
+    let script = {};
+    try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+    const fleet = script.fleet || {};
+    if (fleet.mode === 'destroy') return socket.destroy();
+    if (fleet.mode === 'error') return send(internal);
+    const answers = fleet.authorize || {};
+    const allowed = Object.prototype.hasOwnProperty.call(answers, input.pathname)
+      ? answers[input.pathname] === true
+      : fleet.default === true;
+    send({ ok: true, value: allowed });
+  };
+  socket.on('error', () => {});
+  socket.on('close', () => setTimeout(workspaceControl, 50).unref());
+  socket.on('data', raw => {
+    buffered = Buffer.concat([buffered, raw]);
+    for (;;) {
+      if (buffered.length < 4) return;
+      const size = buffered.readUInt32BE();
+      if (size > 65536) return socket.destroy();
+      if (buffered.length < size + 4) return;
+      const body = buffered.subarray(4, size + 4);
+      buffered = buffered.subarray(size + 4);
+      if (phase === 0) { nonce = JSON.parse(body); chunk(sourceSign(`child:${nonce}`)); phase = 1; continue; }
+      if (phase === 1) {
+        if (JSON.parse(body) !== sourceSign(`parent:${nonce}`)) return socket.destroy();
+        phase = 2;
+        // Scoped-auth tests start requesting at once; the marker makes the
+        // handshake completion observable without a sleep.
+        fs.writeFileSync(path.join(stateDir, 'source-ready'), '1');
+        continue;
+      }
+      if (!size) { let request = null; try { request = JSON.parse(message); } catch (_) {} message = Buffer.alloc(0); answer(request); continue; }
+      message = Buffer.concat([message, body]);
+    }
+  });
+}
+if (sourcePort && sourceCapability) workspaceControl();
+
 const connectionsLog = path.join(stateDir, 'connections.log');
 const requestsLog = path.join(stateDir, 'requests.log');
 const closedLog = path.join(stateDir, 'closed.log');
@@ -431,6 +501,38 @@ const server = http.createServer((req, res) => {
         return send({ ok: true, payload: usage.ledger || {} });
       }
       send({ ok: false });
+    });
+    return;
+  }
+  // Host port for the quota & pricing routes retired from nine modules
+  // (src/routes/quota-host.js, native/gateway/src/app/quota_routes.rs). The
+  // script file carries one answer per op under `quota.ops` (wrapped as
+  // { ok: true, value }) and per-op refusals under `quota.fail` (also a
+  // value; the front door maps both a refusal and a dropped connection onto
+  // its own failure surface). Every call is appended so the tests can assert
+  // the exact op, selector and force flag the front door sent.
+  if (route === '/api/__host/quota' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'quota-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const quota = script.quota || {};
+      if (script.hostDown === true || quota.hostDown === true) { req.socket.destroy(); return; }
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (quota.fail && Object.prototype.hasOwnProperty.call(quota.fail, input.op)) {
+        return send({ ok: false, error: quota.fail[input.op] });
+      }
+      if (quota.ops && Object.prototype.hasOwnProperty.call(quota.ops, input.op)) {
+        return send({ ok: true, value: quota.ops[input.op] });
+      }
+      send({ ok: false, error: { code: 'unknown_op', message: `no script for ${input.op}` } });
     });
     return;
   }
@@ -810,6 +912,640 @@ const server = http.createServer((req, res) => {
       if (input.op === 'defaultsValidate') return send(200, { ok: true, valid: true, value: input.id });
       if (input.op === 'defaultsPersist') return send(200, { ok: true, defaults: input.next });
       return send(400, { error: 'unknown host operation' });
+    });
+    return;
+  }
+  // Host port for the session/git routes retired from src/routes/session-git.js
+  // (src/routes/session-git-host.js, native/gateway/src/app/session_git.rs).
+  // The fixture only speaks the wire: the script's `sessionGit` object maps the
+  // facts and flow answers ({ sessions, lookups, mergeState, mergeStateFresh,
+  // baseBranch, git, facts, texts, tasks, syncGate, flows }) and every payload
+  // is appended to session-git-calls.jsonl. `git` entries are keyed by the
+  // joined argv (tab or space) so one route can chain several subprocess calls.
+  // Host port for the events & triggers cluster retired from
+  // src/events/routes.js, the five trigger routes of src/triggers/index.js and
+  // the two /api/annotation-live routes of src/annotation-live.js
+  // (src/routes/events-host.js, native/gateway/src/app/event_routes.rs).
+  // `events.ops` maps an op to the value the real host would have answered;
+  // every payload is appended to events-calls.jsonl (round-trip order).
+  // The trigger routes also ride the session-admin guard port above.
+  if (route === '/api/__host/events' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'events-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const events = script.events || {};
+      if (script.hostDown === true || events.hostDown === true) { req.socket.destroy(); return; }
+      const send = (value) => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      const ops = events.ops || {};
+      if (Object.prototype.hasOwnProperty.call(ops, input.op)) {
+        return send({ ok: true, value: ops[input.op] });
+      }
+      send({ ok: false, error: { code: 'unknown_op', message: `no script for ${input.op}` } });
+    });
+    return;
+  }
+  // Host port for the directory / onboarding / UI-layout cluster retired from
+  // src/directory/controller.js and src/directory/ui-layout.js
+  // (src/routes/directory-host.js, native/gateway/src/app/directory_routes.rs).
+  // `directory.ops` maps `<op>:<id>` (then `<op>`) to the value the real host
+  // would have answered; the fallbacks below are one empty, harmless world.
+  // Every payload is appended to directory-calls.jsonl (side-effect order).
+  if (route === '/api/__host/directory' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'directory-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const dir = script.directory || {};
+      if (script.hostDown === true || dir.hostDown === true) { req.socket.destroy(); return; }
+      const send = (value) => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      const paths = Array.isArray(input.paths) ? input.paths.map(String) : [];
+      const defaults = {
+        'browse-facts': () => ({
+          base: '/base', prefix: '', baseIsDir: true, parentIsDir: false, parent: '/',
+          realBase: '/base', realHome: '/home',
+        }),
+        'browse-read': () => ({ entries: [], order: [] }),
+        'dirs-annotated': () => ({ dirs: [], sessions: [], pushStates: [] }),
+        'dir-ids': () => ({ ids: [] }),
+        'dir-get': () => ({ dir: null }),
+        'resolve-path': () => ({ resolved: String(input.path == null ? '' : input.path) }),
+        'real-paths': () => ({ real: paths.slice(), home: '/home' }),
+        'path-facts': () => ({ exists: paths.map(() => true), isDirectory: paths.map(() => true) }),
+        'find-by-path': () => ({ found: null }),
+        mkdirp: () => ({}),
+        'new-id': () => ({ id: 'dir-fixed-1' }),
+        'register-add': () => ({}),
+        'register-rollback': () => ({}),
+        'register-commit': () => ({ dir: null }),
+        'ensure-ready': () => ({ ok: true }),
+        'dir-set-name': () => ({}),
+        'realpath-equal': () => ({ equal: true }),
+        'dir-set-path': () => ({}),
+        'dir-set-role': () => ({}),
+        'dir-save': () => ({}),
+        'dir-remove': () => ({}),
+        'sessions-by-dir': () => ({ sessions: [] }),
+        'destroy-cascade': () => ({ result: { ok: true } }),
+        'tx-commit': () => ({}),
+        'git-push': () => ({
+          result: {
+            pushed: true,
+            before: { available: true, hasRemote: true, ahead: 1, behind: 0, branch: 'main', remote: 'origin', remoteBranch: 'main' },
+            after: { available: true, hasRemote: true, ahead: 0, behind: 0, branch: 'main', remote: 'origin', remoteBranch: 'main' },
+          },
+        }),
+        'events-append': () => ({}),
+        'status-porcelain': () => ({ out: '' }),
+        'commit-facts': () => ({
+          pushState: { available: true, hasRemote: true, ahead: 1, behind: 0, dirty: 2, branch: 'main', remote: 'origin', remoteBranch: 'main' },
+        }),
+        'commit-default-message': () => ({ message: 'chore: quick commit' }),
+        'commit-validate': () => ({ ok: true }),
+        'commit-run': () => ({
+          pushState: { available: true, hasRemote: true, ahead: 2, behind: 0, dirty: 0, branch: 'main', remote: 'origin', remoteBranch: 'main' },
+        }),
+        'dirs-reorder': () => ({ ids: ['dir-b', 'dir-a'] }),
+        'sample-ensure': () => ({ name: 'MultiCC 入门示例', path: '/base/getting-started', createdFiles: ['README.md'] }),
+        'sample-mark': () => ({ dir: null }),
+        'dir-reason': () => ({ detail: '目录初始化失败', fix: null }),
+        'layout-load': () => ({ present: false, corrupt: false, data: null }),
+        'layout-save': () => ({}),
+        'layout-known': () => ({ dirIds: [], sessionIds: {} }),
+      };
+      const ops = dir.ops || {};
+      const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+      const scoped = `${input.op}:${input.id == null ? '' : String(input.id)}`;
+      let answer;
+      if (own(ops, scoped)) answer = ops[scoped];
+      else if (own(ops, input.op)) answer = ops[input.op];
+      else answer = own(defaults, input.op) ? defaults[input.op]() : { ok: true };
+      send({ ok: true, value: answer });
+    });
+    return;
+  }
+  // Host port for the docs / memory / memo / directory-events cluster retired
+  // from src/docs-registry.js, src/routes/memory-browser.js, src/memo/router.js
+  // and src/notes-store.js (src/routes/docs-memory-host.js,
+  // native/gateway/src/app/docs_memory_routes.rs). `docsMemory.ops` maps an op
+  // to the value the real host would have answered; the fallbacks below are one
+  // empty world (empty registry, a nonexistent memory file, no directories).
+  // Every payload is appended to docs-memory-calls.jsonl (side-effect order).
+  if (route === '/api/__host/docs-memory' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'docs-memory-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const dm = script.docsMemory || {};
+      if (script.hostDown === true || dm.hostDown === true) { req.socket.destroy(); return; }
+      const send = (value) => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      const items = Array.isArray(input.items) ? input.items : [];
+      const rel = typeof input.rel === 'string' ? input.rel : '';
+      const defaults = {
+        'docs-list': () => ({ entries: [], order: [], retained: [] }),
+        'docs-facts': () => ({
+          sessionDir: items.map(() => null),
+          exists: items.map(() => null),
+          taskTitle: items.map(() => null),
+        }),
+        'docs-get': () => ({ found: false, entry: null }),
+        'docs-replace': () => ({ found: false }),
+        'docs-delete': () => ({ found: false, removed: null }),
+        'docs-register': () => ({ error: 'entry not found' }),
+        'docs-start': () => ({ error: 'entry not found', status: 404 }),
+        'docs-stop': () => ({ error: 'entry not found', status: 404 }),
+        'docs-log': () => ({ found: false, text: '' }),
+        'docs-probe-kick': () => ({}),
+        'docs-task-id': () => ({ taskId: null }),
+        'docs-dir': () => ({ dir: null }),
+        'docs-clean-url': () => ({ href: null }),
+        'memory-graph': () => ({ data: { nodes: [], edges: [], projects: [], truncated: false }, durationMs: 0 }),
+        'memory-tree': () => ({ data: { files: [], meta: {} }, durationMs: 0 }),
+        'memory-resolve': () => ({
+          root: '/store',
+          resolved: `/store/${rel}`,
+          rootReal: '/store',
+          ancestorReal: '/store',
+          exists: false,
+          parentExists: true,
+          name: rel.split('/').filter(Boolean).pop() || '',
+        }),
+        'memory-read': () => ({ valid: false }),
+        'memory-write': () => ({ valid: false }),
+        'memory-delete': () => ({ valid: false }),
+        'memo-read': () => ({ data: null }),
+        'memo-write': () => ({ data: null }),
+        'memo-send': () => ({ data: null }),
+        'notes-events': () => ({ found: false, events: [] }),
+      };
+      const ops = dm.ops || {};
+      if (Object.prototype.hasOwnProperty.call(ops, input.op)) {
+        return send({ ok: true, value: ops[input.op] });
+      }
+      if (Object.prototype.hasOwnProperty.call(defaults, input.op)) {
+        return send({ ok: true, value: defaults[input.op]() });
+      }
+      send({ ok: false, error: { code: 'unknown_op', message: `no script for ${input.op}` } });
+    });
+    return;
+  }
+  // Host port for the sharing / machines cluster retired from
+  // src/machines.js, src/routes/share.js and src/routes/workspaces.js
+  // (src/routes/share-machines-host.js,
+  // native/gateway/src/app/share_machine_routes.rs).
+  // `shareMachines.ops` maps an op string (the kernel's `Route::op()`) to the
+  // `{ status, body }` — plus optional `headers` (a list of `[name, value]`
+  // pairs), `contentType`, `bare` or `threw` — that the retired Express
+  // handler produced; the fallback is an empty 200. Every payload is appended
+  // to share-machines-calls.jsonl (side-effect order). `shareMachines.fail`
+  // answers HTTP 500 (the front door's host-failure surface) and
+  // `shareMachines.hostDown` / `hostDown` drops the socket (the 503).
+  if (route === '/api/__host/share-machines' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'share-machines-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const sm = script.shareMachines || {};
+      if (script.hostDown === true || sm.hostDown === true) { req.socket.destroy(); return; }
+      if (Array.isArray(sm.fail) && sm.fail.includes(input.op)) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end('{"error":"internal_error"}');
+        return;
+      }
+      const ops = sm.ops || {};
+      const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+      const value = own(ops, input.op) ? ops[input.op] : { status: 200, body: {} };
+      const text = JSON.stringify({ ok: true, value });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the host-and-system-operations cluster retired from
+  // src/routes/{server-restart-route,update-route,developer-tools,macos-privacy,
+  // ops-terminal,host-write,host-power,skill-sync,doctor,env-doctor}.js
+  // (src/routes/host-ops-host.js, native/gateway/src/app/host_ops_routes.rs).
+  // `hostOps.ops` maps an op string (the kernel's `Route::op()`) to the
+  // `{ status, body }` — plus optional `headers` (a list of `[name, value]`
+  // pairs), `contentType`, `bare`, `threw`, `code` or `message` — that the
+  // retired Express handler produced. Unscripted ops answer a 200 echoing the
+  // op, which is enough to prove the relay but not to assert a real DTO.
+  // Every payload is appended to host-ops-calls.jsonl (side-effect order).
+  // `hostOps.fail` lists ops whose handler threw out of its own try (the front
+  // door renders 500 `host operation failed`); `hostDown` drops the socket
+  // (the 503 `rust_backend_unavailable`).
+  if (route === '/api/__host/host-ops' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'host-ops-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const ho = script.hostOps || {};
+      if (script.hostDown === true || ho.hostDown === true) { req.socket.destroy(); return; }
+      if (Array.isArray(ho.fail) && ho.fail.includes(input.op)) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end('{"error":"internal_error"}');
+        return;
+      }
+      const ops = ho.ops || {};
+      const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+      const value = own(ops, input.op)
+        ? ops[input.op]
+        : { status: 200, body: { ok: true, op: input.op } };
+      const text = JSON.stringify({ ok: true, value });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the orchestration and unattended cluster retired from
+  // src/routes/{aux-goal,aux-runs,orchestration}.js and src/unattended/routes.js
+  // (src/routes/orchestration-host.js, native/gateway/src/app/
+  // orchestration_routes.rs). `orchestration.ops` maps an op string (the
+  // kernel's `Route::op()`) to the `{ status, body }` (optionally `headers`,
+  // `threw`, `code`, `message`) the retired Express handler produced; unscripted
+  // ops answer a 200 echoing the op. `orchestration.delayMs` holds every answer
+  // (the Aux long-poll budget), `fail` lists ops that answer HTTP 500, and
+  // `hostDown` drops the socket (the 503). Every payload is appended to
+  // orchestration-calls.jsonl (side-effect order).
+  if (route === '/api/__host/orchestration' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'orchestration-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const oc = script.orchestration || {};
+      if (script.hostDown === true || oc.hostDown === true) { req.socket.destroy(); return; }
+      const answer = () => {
+        if (Array.isArray(oc.fail) && oc.fail.includes(input.op)) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end('{"error":"internal_error"}');
+          return;
+        }
+        const ops = oc.ops || {};
+        const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+        const value = own(ops, input.op)
+          ? ops[input.op]
+          : { status: 200, body: { ok: true, op: input.op } };
+        const text = JSON.stringify({ ok: true, value });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (Number(oc.delayMs) > 0) setTimeout(answer, Number(oc.delayMs)); else answer();
+    });
+    return;
+  }
+  // Host port for the session-admin cluster retired from
+  // src/routes/session-admin.js (src/routes/session-admin-host.js,
+  // native/gateway/src/app/session_admin.rs). `sessionAdmin.ops` maps
+  // `<op>:<id>` (then `<op>`) to the value the real host would have answered, so
+  // a test can script every fact batch, guard denial and mutation; the
+  // fallbacks below are one empty world. Every payload is appended to
+  // session-admin-calls.jsonl (side-effect order).
+  if (route === '/api/__host/session-admin' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'session-admin-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const sa = script.sessionAdmin || {};
+      if (script.hostDown === true || sa.hostDown === true) { req.socket.destroy(); return; }
+      const items = Array.isArray(input.items) ? input.items : [];
+      const defaults = {
+        records: () => sa.records || [],
+        'list-dto': () => items.map(() => ({
+          runtime: {}, providerSelection: null, cliStates: [], pendingCliHandoff: null,
+        })),
+        'dir-dto': () => items.map(() => ({
+          runtime: {}, providerSelection: null, cliStates: [], pendingCliHandoff: null,
+          invalid: null,
+        })),
+        'v1-dto': () => items.map(() => ({ runtime: {} })),
+        'workspace-dto': () => items.map(() => ({ runtime: {}, facts: {}, invalid: null })),
+        'detail-dto': () => ({
+          runtime: {}, providerSelection: null, providerBaseUrl: null,
+          cliStates: [], cliAvailability: [], pendingCliHandoff: null,
+        }),
+        directory: () => null,
+        record: () => null,
+        'guard-record': () => ({ record: null, internal: false, taskStateWritable: true }),
+        'task-state': () => ({ classifyState: null, goal: null, phase: null, goalState: null }),
+        'aux-entry': () => ({ available: true, present: false }),
+        history: () => ({ failed: false, history: [] }),
+        'chat-flag': () => ({ exists: false, streaming: false }),
+        reply: () => '',
+      };
+      const ops = sa.ops || {};
+      const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+      const scoped = `${input.op}:${input.id == null ? '' : String(input.id)}`;
+      let answer;
+      if (own(ops, scoped)) answer = ops[scoped];
+      else if (own(ops, input.op)) answer = ops[input.op];
+      else answer = own(defaults, input.op) ? defaults[input.op]() : { ok: true };
+      const text = JSON.stringify(answer);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the account / credential cluster retired from
+  // src/routes/{claude-accounts,codex-accounts,zcode-auth,cli-key-accounts,
+  // kimi-auth,claude-oauth,codex-oauth,commandcode-auth}.js
+  // (src/routes/account-routes-host.js, native/gateway/src/app/account_routes.rs).
+  // `accountRoutes.ops` maps `<op>:<id>:<cli>` (then `<op>:<id>`, then `<op>`) to
+  // the `{ status, body }` (or `{ threw, … }`) the retired handler produced; the
+  // fallback is an empty 200. Every payload is appended to
+  // account-routes-calls.jsonl (side-effect order). `accountRoutes.fail` answers
+  // HTTP 500 (the front door's host-failure surface).
+  if (route === '/api/__host/account-routes' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'account-routes-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const ar = script.accountRoutes || {};
+      if (script.hostDown === true || ar.hostDown === true) { req.socket.destroy(); return; }
+      if (Array.isArray(ar.fail) && ar.fail.includes(input.op)) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end('{"error":"internal_error"}');
+        return;
+      }
+      const ops = ar.ops || {};
+      const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+      const keys = [
+        `${input.op}:${input.id == null ? '' : String(input.id)}:${input.cli == null ? '' : String(input.cli)}`,
+        `${input.op}:${input.id == null ? '' : String(input.id)}`,
+        input.op,
+      ];
+      let value = { status: 200, body: {} };
+      for (const key of keys) {
+        if (own(ops, key)) { value = ops[key]; break; }
+      }
+      const text = JSON.stringify({ ok: true, value });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the session-management cluster retired from
+  // src/routes/session-{memory,bundle,lifecycle,create,meta,profile}.js
+  // (src/routes/session-routes-host.js, native/gateway/src/app/session_routes.rs).
+  // `sessionRoutes.ops` maps `<op>:<id>` (then `<op>`) to the `{ status, body }`
+  // (or `{ threw, … }`) the retired handler produced; the fallback is an empty
+  // 200. Every payload is appended to session-routes-calls.jsonl (side-effect
+  // order).
+  if (route === '/api/__host/session-routes' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'session-routes-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const sr = script.sessionRoutes || {};
+      if (script.hostDown === true || sr.hostDown === true) { req.socket.destroy(); return; }
+      const ops = sr.ops || {};
+      const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+      const scoped = `${input.op}:${input.id == null ? '' : String(input.id)}`;
+      let value;
+      if (own(ops, scoped)) value = ops[scoped];
+      else if (own(ops, input.op)) value = ops[input.op];
+      else value = { status: 200, body: {} };
+      const text = JSON.stringify({ ok: true, value });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  if (route === '/api/__host/session-git' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'session-git-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const sg = script.sessionGit || {};
+      if (script.hostDown === true || sg.hostDown === true) { req.socket.destroy(); return; }
+      const send = (status, value) => {
+        const text = JSON.stringify(value);
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+      switch (input.op) {
+        case 'session': {
+          const answers = sg.sessions || {};
+          return send(200, own(answers, input.sessionId)
+            ? answers[input.sessionId] : { error: 'session not found' });
+        }
+        case 'lookup': {
+          const answers = sg.lookups || {};
+          const key = `${input.sessionId || ''}|${input.dirId || ''}`;
+          return send(200, own(answers, key) ? answers[key]
+            : { session: null, dir: null, sessionWorktreeExists: false, dirPathExists: false });
+        }
+        case 'merge-state': {
+          const key = input.taskId != null ? `task:${input.taskId}` : `session:${input.sessionId}`;
+          const table = (input.refresh === true ? sg.mergeStateFresh : sg.mergeState)
+            || sg.mergeState || {};
+          return send(200, table[key] || { error: input.taskId != null ? 'task_not_found' : 'session not found' });
+        }
+        case 'base-branch':
+          return send(200, sg.baseBranch || { ok: true, baseBranch: 'main' });
+        case 'git': {
+          const table = sg.git || {};
+          const args = Array.isArray(input.args) ? input.args : [];
+          for (const key of [args.join('\t'), args.join(' ')]) {
+            if (own(table, key)) return send(200, table[key]);
+          }
+          if (args.length && own(table, args[0])) return send(200, table[args[0]]);
+          return send(200, { ok: true, stdout: '' });
+        }
+        case 'read-facts': {
+          const table = sg.facts || {};
+          const paths = Array.isArray(input.paths) ? input.paths : [];
+          return send(200, {
+            facts: paths.map(filePath => ({
+              path: filePath,
+              ...(own(table, filePath) ? table[filePath] : { additions: 0, binary: false }),
+            })),
+          });
+        }
+        case 'read-text': {
+          const table = sg.texts || {};
+          return send(200, own(table, input.path) ? table[input.path]
+            : { exists: false, binary: false, text: '' });
+        }
+        case 'task-worktree': {
+          const table = sg.tasks || {};
+          if (!own(table, input.taskId)) return send(200, { info: null });
+          const info = table[input.taskId];
+          return send(200, { info, worktreeExists: info.worktreeExists !== false });
+        }
+        case 'sync-gate-facts':
+          return send(200, sg.syncGate || { active: false, classifyState: null });
+        case 'session-merge':
+        case 'session-sync':
+        case 'session-rebase':
+        case 'task-merge':
+        case 'task-cleanup': {
+          const flows = sg.flows || {};
+          const scoped = `${input.op}:${input.taskId || input.sessionId || ''}`;
+          if (own(flows, scoped)) return send(200, flows[scoped]);
+          return send(200, flows[input.op] || { result: { ok: true } });
+        }
+        default:
+          return send(400, { error: 'unknown host operation' });
+      }
+    });
+    return;
+  }
+  // Host port for the task-shell routes retired from src/task-shell/routes.js
+  // (src/routes/task-shell-host.js, native/gateway/src/app/task_shell.rs).
+  // The script's `taskShell.ops` object maps an op (or `op:scopeId`) to the
+  // { ok, value } / { ok, error } envelope the Node port would return; every
+  // payload is appended to task-shell-calls.jsonl (side-effect order).
+  if (route === '/api/__host/task-shell' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'task-shell-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const ts = script.taskShell || {};
+      if (script.hostDown === true || ts.hostDown === true) { req.socket.destroy(); return; }
+      const ops = ts.ops || {};
+      const scopeId = input.taskId || input.shellId || input.operationId || input.decisionId
+        || input.continuationId || input.receiptId || input.suggestionId || input.relationId
+        || input.sessionId || '';
+      const answer = Object.prototype.hasOwnProperty.call(ops, `${input.op}:${scopeId}`)
+        ? ops[`${input.op}:${scopeId}`]
+        : (Object.prototype.hasOwnProperty.call(ops, input.op) ? ops[input.op] : null);
+      const text = JSON.stringify(answer || {
+        ok: false, error: { code: 'task_shell_failed', message: `unscripted op ${input.op}`, status: 500 },
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the Air task-board cluster retired from
+  // src/workspace/air-routes.js (src/workspace/air-routes-host.js,
+  // native/gateway/src/app/air_routes.rs). The script's `air.ops` object maps
+  // an op (or `op:scopeId`) to the { ok, value } / { ok, error } envelope the
+  // Node port would return; the snapshot and task-detail ops answer with the
+  // already serialized { body, etag } pair. Every payload is appended to
+  // air-calls.jsonl (side-effect order).
+  if (route === '/api/__host/air' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'air-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const air = script.air || {};
+      if (script.hostDown === true || air.hostDown === true) { req.socket.destroy(); return; }
+      const ops = air.ops || {};
+      const scopeId = input.taskId || input.dirId || '';
+      const answer = Object.prototype.hasOwnProperty.call(ops, `${input.op}:${scopeId}`)
+        ? ops[`${input.op}:${scopeId}`]
+        : (Object.prototype.hasOwnProperty.call(ops, input.op) ? ops[input.op] : null);
+      const text = JSON.stringify(answer || {
+        ok: false, error: { code: 'air_failed', message: `unscripted op ${input.op}`, status: 500 },
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the task-surface cluster retired from
+  // src/routes/task-planning.js / task-board.js / task-search.js /
+  // task-goal.js / task-graph.js and src/task-shell/attribution-settings.js
+  // (src/routes/task-routes-host.js, native/gateway/src/app/task_routes.rs).
+  // The script's `taskRoutes.ops` object maps an op (or `op:scopeId`) to the
+  // `{ ok, value }` / `{ ok, error }` envelope the Node port returns; the
+  // retired handlers' rendered bodies travel inside `value.reply`. Every
+  // payload is appended to task-routes-calls.jsonl (side-effect order).
+  if (route === '/api/__host/task-routes' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'task-routes-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const routes = script.taskRoutes || {};
+      if (script.hostDown === true || routes.hostDown === true) { req.socket.destroy(); return; }
+      const ops = routes.ops || {};
+      const scopeId = input.query || input.taskId || input.dirId || '';
+      const answer = Object.prototype.hasOwnProperty.call(ops, `${input.op}:${scopeId}`)
+        ? ops[`${input.op}:${scopeId}`]
+        : (Object.prototype.hasOwnProperty.call(ops, input.op) ? ops[input.op] : null);
+      const text = JSON.stringify(answer || {
+        ok: false, error: { code: 'task_routes_failed', message: `unscripted op ${input.op}`, status: 500 },
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the push cluster retired from src/push/runtime.js,
+  // channel-subscriptions.js, fcm-devices.js and bark-devices.js
+  // (src/routes/push-host.js, native/gateway/src/app/push_routes.rs). The
+  // script's `push.ops` object maps an op to the `{ ok, value }` envelope the
+  // Node port returns; the retired handlers' rendered bodies travel inside
+  // `value`. Every payload is appended to push-calls.jsonl (side-effect
+  // order). No real FCM/Bark/webhook endpoint is ever contacted here.
+  if (route === '/api/__host/push' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'push-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const push = script.push || {};
+      if (script.hostDown === true || push.hostDown === true) { req.socket.destroy(); return; }
+      const ops = push.ops || {};
+      const answer = Object.prototype.hasOwnProperty.call(ops, input.op) ? ops[input.op] : null;
+      const text = JSON.stringify(answer || { ok: false, error: { message: 'unscripted push op' } });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
     });
     return;
   }

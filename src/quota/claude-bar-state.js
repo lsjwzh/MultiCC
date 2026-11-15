@@ -87,6 +87,15 @@ function liveFor(key, nowMs) {
 }
 
 /**
+ * The live 5h/weekly window for one session's account, filtered at `nowMs`.
+ * Exposed for the host port, which renders the bar at the front door but must
+ * read the process-local map here (the map does not survive serialization).
+ */
+function readClaudeLive(sessionName, nowMs = Date.now()) {
+  return liveFor(claudeUsageKey(sessionName), nowMs);
+}
+
+/**
  * The Claude bar as of right now, for one session: that session's account's
  * newest manual reading, merged with that account's live 5h and weekly windows.
  */
@@ -104,6 +113,7 @@ function resetClaudeBarState() {
 
 module.exports = {
   rememberClaudeLive,
+  readClaudeLive,
   renderClaudeBar,
   resetClaudeBarState,
 };

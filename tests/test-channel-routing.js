@@ -22,7 +22,8 @@ const test = require('node:test');
 
 const registry = require('../src/plugins/channel-registry');
 const { createPluginsRoutes } = require('../src/routes/plugins');
-const { createChannelSubscriptions, mountChannelSubscriptionRoutes } = require('../src/push/channel-subscriptions');
+const { createChannelSubscriptions } = require('../src/push/channel-subscriptions');
+const { mountPushHostRoute, HOST_PATH } = require('../src/routes/push-host');
 const { createPushRuntime } = require('../src/push/runtime');
 const { createEventRuleEngine } = require('../src/events/engine');
 
@@ -146,7 +147,40 @@ function setup(t, { backoffMs = [50, 100] } = {}) {
     now: () => (time += 10_000), // past the per-session cooldown every call
     logger: quiet,
   });
-  mountChannelSubscriptionRoutes(app, subscriptions, handler => handler, () => ({ webPush: 0, fcm: 0, bark: true, webhook: false, any: true }));
+  // The public channel routes are answered by the Rust front door now. This
+  // fake Express app mirrors just enough of that rendering (categories,
+  // defaults, the {error,code} envelope) so the assertions below keep reading
+  // the public body; the store logic under test runs in the real host port.
+  const hostRoutes = new Map();
+  mountPushHostRoute(
+    { post: (route, handler) => hostRoutes.set(`POST ${route}`, handler) },
+    { push, businessPush: { async notify() { return { statusCode: 200, body: {} }; } }, isLocal: () => true, logger: quiet, now: () => time },
+  );
+  const hostHandler = hostRoutes.get(`POST ${HOST_PATH}`);
+  const publicChannel = opBody => new Promise((resolve, reject) => {
+    const sink = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(envelope) { resolve({ statusCode: this.statusCode, value: envelope && envelope.value }); return this; } };
+    Promise.resolve(hostHandler({ local: true, body: opBody }, sink)).catch(reject);
+  });
+  const render = async (res, opBody) => {
+    const { statusCode, value } = await publicChannel(opBody);
+    if (statusCode !== 200) return res.status(statusCode).json(value);
+    if (value && value.channelError) {
+      res.statusCode = value.channelError.status;
+      return res.json({ error: value.channelError.message, code: value.channelError.code });
+    }
+    if (opBody.op === 'test-channel') return res.status(200).json(value);
+    return res.json({
+      subscriptions: value.subscriptions,
+      categories: [...registry.CATEGORIES],
+      defaults: [...registry.DEFAULT_CATEGORIES],
+      otherChannels: value.otherChannels,
+    });
+  };
+  app.get('/api/push/channel-subscriptions', (req, res) => render(res, { op: 'channel-get' }));
+  app.put('/api/push/channel-subscriptions', (req, res) => render(res, { op: 'channel-replace', subscriptions: req.body && req.body.subscriptions }));
+  app.post('/api/push/channel-subscriptions', (req, res) => render(res, { op: 'channel-upsert', body: req.body || {} }));
+  app.delete('/api/push/channel-subscriptions/:id', (req, res) => render(res, { op: 'channel-remove', id: String(req.params.id) }));
+  app.post('/api/push/test-channel', (req, res) => render(res, { op: 'test-channel', body: req.body || {} }));
 
   let handler = null;
   const hub = { subscribe(fn) { handler = fn; return () => { handler = null; }; }, emit() {} };

@@ -244,11 +244,60 @@ const MIGRATION_DEBT = Object.freeze({
   // 删掉 gateway-host 未使用的端口（-1 行），三处 mount 各加一行、share 同一行
   // 内追加，codex usage 宿主换口并加两行注释，实测 3046/163862，按棘轮双向
   // 调到实测值。
+  // 2026-11-15 events & triggers 簇 15 条公开路由迁到 Rust 前门：三个路由模块
+  // 的 mount 换成 events 宿主端口那一段（七行说明 + 九行 handler 依赖），
+  // server.js 实测 3056/163271，按棘轮双向调到实测值。该拆的仍是账号/额度
+  // 路由那一族。
+  // 2026-11-15 docs/memory/memo/notes 簇 16 条公开路由迁到 Rust 前门：四个
+  // 路由模块的 mount 换成 docs-memory 宿主端口那一段（三行说明 + 六行依赖），
+  // server.js 实测 3055/163406，按棘轮双向调到实测值。该拆的仍是账号/额度
+  // 路由那一族。
+  // 2026-11-15 directory + ui-layout 簇 13 条公开路由迁到 Rust 前门：目录 REST 的
+  // mount 换成 directory 宿主端口一行（说明块同长），默认工作区改走
+  // host.registerDefaultDirectory，server.js 行数不变，实测 3055/163434，按棘轮
+  // 双向调到实测值。该拆的仍是账号/额度路由那一族。
+  // 2026-11-15 任务面 16 条公开路由迁到 Rust 前门：任务板 routePorts 的九个
+  // mount 与 search/task-graph/task-goal/attribution 的接线换成 task-routes
+  // 宿主端口那一段（三行说明 + 六行依赖），少的 mount 被新的依赖表吃掉，
+  // server.js 实测 3062/163894，按棘轮双向调到实测值。该拆的仍是账号/额度
+  // 路由那一族。
+  // 2026-11-15 推送簇 18 条公开路由迁到 Rust 前门：四个推送路由模块的 mount
+  // 换成 push 宿主端口那一段（两行说明 + 三行依赖），server.js 实测
+  // 3065/164136，按棘轮双向调到实测值。该拆的仍是账号/额度路由那一族。
+  // 2026-11-15 会话管理簇 18 条公开路由（memory/bundle/lifecycle/create/meta/
+  // profile）迁到 Rust 前门：六个路由模块仍注册，但只挂在 session-routes 宿主
+  // 端口的捕获应用上，公开面只剩 host.mountRoute 一行；两个 zip 二进制传输
+  // （bundle.zip/import-zip）留在 Node。server.js 实测 3080/165177，按棘轮
+  // 双向调到实测值。该拆的仍是账号/额度路由那一族。
+  // 2026-11-15 自动 OPTIONS 多模块并集那一轮复测：上一条登记没算上收尾的
+  // `sessionBundleRuntime.mountBinaryRoutes(app)` 与两行注释，实测已是
+  // 3083/165384，按棘轮双向调到实测值。该拆的仍是账号/额度路由那一族。
+  // 2026-11-15 账号与登录簇 34 条公开路由（claude/codex 账号、zcode、kimi、
+  // CLI key 账号、claude/codex OAuth、commandcode）迁到 Rust 前门：八个路由
+  // 模块仍注册，但只挂在 account-routes 宿主端口的捕获应用上，公开面只剩
+  // host.mountRoute 一行加两条阻塞式 login 转发（各一行）；多出来的行是
+  // 宿主端口的依赖表。server.js 实测 3087/165857，按棘轮双向调到实测值。
+  // 2026-11-15 分享与电脑簇 21 条公开路由（machines 十条、share 九条、
+  // workspaces 两条）迁到 Rust 前门：machines.mount 换成只留 raw/SSE 代理的
+  // mountProxy，share/workspaces 两个模块改为挂在 share-machines 宿主端口的
+  // 捕获应用上；公开面只剩 host.mountRoute 一行加宿主端口依赖表（share 的
+  // 分页/页面写入器、workspaces 的记录与懒取运行时）。server.js 实测
+  // 3096/166304，按棘轮双向调到实测值。该拆的仍是账号/额度路由那一族。
+  // 2026-11-15 宿主与系统操作簇 40 条公开路由迁到 Rust 前门：十个路由模块的
+  // mount 换成 host-ops 宿主端口那一段（两行说明 + 七行依赖），重启/自更新/
+  // host-write 的依赖对象改成具名常量，server.js 实测 3105/166686，按棘轮
+  // 双向调到实测值。该拆的仍是账号/额度路由那一族。
+  // 2026-11-15 编排与无人值守簇 23 条公开路由（aux/goal 十条、aux-runs 两条、
+  // unattended 两条、orchestration 九条）迁到 Rust 前门：四个路由模块改为挂在
+  // orchestration 宿主端口的捕获应用上，orchestration 保留的七条（wait 注入器
+  // 与 detached 集）仍挂真实 app；公开面新增 createOrchestrationHost 一行与
+  // mountHostRoutes/mountRoutes/mountRoute 三行，server.js 实测 3111/167256，
+  // 按棘轮双向调到实测值。该拆的仍是账号/额度路由那一族。
   'server.js': Object.freeze({
-    ceiling: 3046,
-    byteCeiling: 163862,
+    ceiling: 3111,
+    byteCeiling: 167256,
     target: 3000,
-    reason: 'chat delivery wiring for held-turn injection, plus one lazy port so the events host asks the Rust history runtime for the latest assistant conclusion instead of cloning the whole history into Node (+72 bytes); extract the account/quota route cluster to return under 3k',
+    reason: 'the 23 orchestration and unattended routes (aux queue/config/history, goal settings and precheck, aux run log, unattended get/post, scheduled messages, observed tasks, dispatch recovery, user-input dismiss, queue read and actions, the v1 waits projection) moved to the Rust front door (native/gateway/src/app/orchestration_routes.rs) behind one orchestration host port, the wait injector and detached routes staying on Node; the 18 session-management routes (memory get/put/delete/action, bundle export/import, session delete/relocate/restart/restart-spawn, vendor-login-terminal, role-workers and directory session creation, notes get/post, liveness, session patch/fork) moved to the Rust front door (native/gateway/src/app/session_routes.rs) behind one session-routes host port; the 18 push routes (subscribe, validate, test, notify, test-bark, test-webhook, channel subscriptions plus :id removal and test-channel, fcm devices plus fcm/test, bark devices) moved to the Rust front door (native/gateway/src/app/push_routes.rs) behind one push host port; the 16 task-surface routes (task-board writes, retention, status, delete, relocate, chat-session, both searches, mark-achieved, task-graph, task-attribution) moved to the Rust front door (native/gateway/src/app/task_routes.rs) behind one task-routes host port; the 16 docs/memory/memo/directory-event routes live behind the docs-memory host port; the 15 events/trigger/annotation routes live behind the events host port; the 22 pricing/vendor-quota/quota-bar routes live behind the quota host port; the 13 directory/onboarding/ui-layout routes live behind the directory host port; the 32 account and login routes (claude/codex account list-create-activate-login-status-login-callback-relogin-delete, claude account quota, zcode auth get/put/sync/check, kimi auth get/put/check, CLI key account list/create/patch/delete, claude/codex oauth status+login, commandcode auth status/login) live behind the account-routes host port; the next extraction is the remaining vendor-quota fetchers and chat routes to return under 3k',
   }),
 });
 

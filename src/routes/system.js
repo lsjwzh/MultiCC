@@ -1,6 +1,8 @@
 'use strict';
 
-// 系统路由的 Node 侧只剩发布资产一族（APK / iOS OTA）与四组宿主修复面板。
+// 系统路由的 Node 侧只剩发布资产一族（APK / iOS OTA）。宿主修复面板
+// （developer-tools / macos-privacy / ops-terminal）已随宿主与系统操作簇迁到
+// Rust 前门，由 src/routes/host-ops-host.js 的捕获应用挂载。
 // 这三条已经迁进 Rust 前门（native/gateway/src/app/system.rs，规则在
 // multicc_core::system_info，逐字节对比在
 // docs/rust-migration/differential/system-scan.js）：
@@ -13,10 +15,6 @@
 //   GET /api/debug/codex-proxy-trace limit 语义 → Rust；环形缓冲留在 Node
 //
 // 退役前的实现冻结在 tests/helpers/legacy-system-scan-routes.js，供差分使用。
-
-const { createDeveloperToolsRoutes } = require('./developer-tools');
-const { createMacosPrivacyRoutes } = require('./macos-privacy');
-const { createOpsTerminalRoutes } = require('./ops-terminal');
 
 function createApkInfoHandler(deps) {
   return async function apkInfoHandler(req, res, next) {
@@ -68,16 +66,6 @@ function mountSystemRoutes(app, rawDeps) {
   // same IPA installs over loopback, LAN or Tailscale Funnel HTTPS.
   app.get('/ios-ota/manifest.plist', deps.iosOta.manifestHandler);
   require('../ios-udid').createIosUdid().mountRoutes(app);
-  // Host toolchain repair. Mounted here rather than from server.js because it
-  // needs no host state — only the platform and xcode-select — and server.js
-  // sits against its source-line budget.
-  createDeveloperToolsRoutes().mountRoutes(app);
-  createMacosPrivacyRoutes().mountRoutes(app);
-  // Ops terminal: shell-level environment repair (git install / commit
-  // identity) for hosts that cannot create their first directory. Same mount
-  // rationale as developer-tools above — no host state, and server.js sits
-  // against its source-line budget.
-  createOpsTerminalRoutes().mountRoutes(app);
 }
 
 module.exports = {

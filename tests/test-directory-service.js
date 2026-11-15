@@ -1,32 +1,50 @@
 'use strict';
-// Unit tests for src/directory/service.js — drives the service layer through
-// in-memory fakes of every port (no fs, no git, no server process). This is
-// the interface/implementation-separation payoff: the same contracts server.js
-// binds to real adapters are satisfied here by fakes.
+// Unit tests for the directory cluster's Node half.
+//
+// The decision tree that used to live in src/directory/service.js is now Rust:
+// validation, the $HOME verdict, the duplicate-path rule, the reorder merge,
+// the layout prune rules and the error envelopes are in
+// native/core/src/directory_routes.rs and the routes in
+// native/gateway/src/app/directory_routes.rs (unit + integration suites there,
+// byte comparison in docs/rust-migration/differential/directory-routes.js).
+//
+// What is left in Node is the process-local world and its effect order:
+//   src/routes/directory-host.js  the op envelope the front door calls
+//   src/directory/repository.js   the directories.json facade over the native
+//                                 table (repo.save() is the writer)
+// These tests drive every op through in-memory fakes of the ports: no fs, no
+// git subprocess, no server.
+
 const path = require('path');
-const { createDirectoryService } = require('../src/directory/service');
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const { createDirectoryHost, HOST_PATH } = require('../src/routes/directory-host');
 const { createFsDirectoryRepository } = require('../src/directory/repository');
 const { createDirectoryTable } = require('../src/directory/records');
 const { createStateOwner } = require('../src/state/owner');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => { if (c) { pass++; console.log('✅', m); } else { fail++; console.log('❌', m); } };
-
-// ── fakes ──────────────────────────────────────────────────────────────
-function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new Set(), mkdirError = null } = {}) {
-  const calls = { saved: 0, seeded: [], destroyed: [], tx: [], events: [], gitReady: [], unmarked: [], writes: [] };
-  const realPathOf = (p) => p;   // identity: no symlinks in fake fs
+function makeWorld({
+  dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new Set(), mkdirError = null,
+} = {}) {
+  const calls = {
+    saved: 0, seeded: [], destroyed: [], tx: [], events: [], gitReady: [], unmarked: [],
+    writes: [], invalidated: [], layoutSaved: [],
+  };
+  const realPathOf = (p) => p; // identity: no symlinks in the fake fs
   const owner = createStateOwner().configure({ stringify: JSON.stringify });
   const table = createDirectoryTable(owner);
   for (const d of dirs) table.set(d.id, d);
-  const repo = createFsDirectoryRepository({ file: '/nonexistent/never-written.json', map: table, realPathOf, owner });
-  repo.save = () => { calls.saved++; };   // don't touch the real fs in unit tests
+  const repo = createFsDirectoryRepository({
+    file: '/nonexistent/never-written.json', map: table, realPathOf, owner,
+  });
+  repo.save = () => { calls.saved++; }; // never touch the real fs here
 
   const git = {
     baseBranch: () => 'main',
     pushState: async () => ({ available: true, hasRemote: false, ahead: 0, behind: 0, dirty: 0 }),
     push: async () => { throw new Error('no remote'); },
-    invalidatePushCache: () => {},
+    invalidatePushCache: (p, branch) => { calls.invalidated.push({ p, branch }); },
     statusPorcelain: async () => '',
     stageAll: async () => {},
     commit: async () => {},
@@ -36,12 +54,14 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
   const sessionPort = {
     listByDir: (dirId) => sessions.filter(s => s.dirId === dirId),
     seedCommander: (dir) => { calls.seeded.push(dir.id); },
-    destroyCascade: (s) => { calls.destroyed.push(s.id); },
+    destroyCascade: (session) => { calls.destroyed.push(session.id); return { ok: true }; },
   };
   const tx = {
-    commitCrossFileWrite: spec => { calls.tx.push(spec); if (calls.txFails) throw new Error('journal write failed'); },
+    commitCrossFileWrite: (spec) => { calls.tx.push(spec); },
   };
-  const events = { append: (dirId, type, detail) => { calls.events.push({ dirId, type, detail }); } };
+  const events = {
+    append: (dirId, type, detail) => { calls.events.push({ dirId, type, detail }); },
+  };
   const fsPort = {
     homedir: () => '/home/u',
     sampleRoot: () => '/data/samples',
@@ -49,9 +69,10 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     isDirectory: (p) => fsDirs.has(p),
     mkdirp: (p) => { if (mkdirError) throw mkdirError; fsDirs.add(p); },
     readDirents: (p) => {
-      if (!fsDirs.has(p)) { const e = new Error(`ENOENT: ${p}`); throw e; }
-      const kids = [...fsDirs].filter(d => path.dirname(d) === p && d !== p);
-      return kids.map(d => ({ name: path.basename(d), isDirectory: true, isSymbolicLink: false }));
+      if (!fsDirs.has(p)) throw new Error(`ENOENT: ${p}`);
+      return [...fsDirs]
+        .filter((entry) => path.dirname(entry) === p && entry !== p)
+        .map((entry) => ({ name: path.basename(entry), isDirectory: true, isSymbolicLink: false }));
     },
     writeFileExclusive: (p, content) => {
       if (fsFiles.has(p)) return false;
@@ -63,269 +84,347 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     isHomeOrAbove: (p) => p === '/home/u' || p === '/home' || p === '/',
     realPathOf,
     friendlyDirReason: (r) => `friendly:${r}`,
-    dirReasonFix: (r) => (String(r).includes('xcode-select') ? 'install-developer-tools' : null),
+    dirReasonFix: (r) => (String(r).includes('git-error: ') ? 'open-ops-terminal' : null),
   };
-  const svc = createDirectoryService({ repo, git, sessions: sessionPort, events, fsPort, helpers, tx, newId: () => 'id-1' });
-  return { svc, repo, calls, git, fsDirs, table };
+  const uiLayout = {
+    state: { present: false, corrupt: false, data: null },
+    load() { return this.state; },
+    save(doc) { calls.layoutSaved.push(doc); this.state = { present: true, corrupt: false, data: doc }; },
+    known() {
+      return {
+        dirIds: [...table.keys()],
+        sessionIds: Object.fromEntries([...table.keys()].map(id => [id,
+          sessions.filter(s => s.dirId === id).map(s => s.id)])),
+      };
+    },
+  };
+  const logger = { warn() {}, error() {} };
+  const host = createDirectoryHost({
+    repo, git, sessions: sessionPort, events, fsPort, helpers, tx, uiLayout, logger,
+    newId: () => 'id-1',
+  });
+  return { host, repo, table, git, fsPort, uiLayout, calls, sessions };
 }
 
-(async () => {
-  // ── port contract enforcement ──
-  try {
-    createDirectoryService({ repo: {}, git: {}, sessions: {}, events: {}, fsPort: {}, helpers: {} });
-    ok(false, 'assertPort rejects incomplete implementations');
-  } catch (e) {
-    ok(/not implemented|implementation missing/.test(e.message), 'assertPort rejects incomplete implementations');
-  }
+test('path facts stay in Node: tilde, relative resolution and lstat flags', async () => {
+  const world = makeWorld({ fsDirs: new Set(['/home/u', '/home/u/p']) });
+  assert.deepEqual(await world.host.invoke({ op: 'resolve-path', path: 'rel' }),
+    { resolved: '/home/u/rel' });
+  assert.deepEqual(await world.host.invoke({ op: 'resolve-path', path: '/abs' }),
+    { resolved: '/abs' });
+  assert.deepEqual(await world.host.invoke({ op: 'real-paths', paths: ['/a'] }),
+    { real: ['/a'], home: '/home/u' });
+  assert.deepEqual(await world.host.invoke({ op: 'path-facts', paths: ['/home/u', '/nope'] }),
+    { exists: [true, false], isDirectory: [true, false] });
+});
 
-  // ── register ──
-  {
-    const { svc, repo, calls } = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
-    let r = await svc.register({ name: '', path: '/p/a' });
-    ok(!r.ok && r.message === 'name and path required', 'register: empty name rejected');
-    r = await svc.register({ name: 'x', path: '/home/u' });
-    ok(!r.ok && r.message === '不允许选择 $HOME 或更高层目录', 'register: home dir rejected');
-    r = await svc.register({ name: 'x', path: '/p/missing' });
-    ok(!r.ok && r.message === 'path does not exist: /p/missing', 'register: missing path without create rejected');
-    r = await svc.register({ name: 'x', path: '/p/missing', create: true });
-    ok(r.ok && r.data.id === 'id-1' && r.data.path === '/p/missing', 'register: create:true mkdirps and registers');
-    ok(calls.gitReady.includes('id-1') && calls.saved === 1 && calls.seeded.includes('id-1'),
-      'register: git-ready checked, saved once, commander seeded');
-    r = await svc.register({ name: 'y', path: '/p/missing' });
-    ok(!r.ok && r.message === '该路径已被目录 "x" 登记，不允许重复', 'register: duplicate path rejected');
-    ok(repo.get('id-1'), 'register: record present in repository');
+test('browse facts classify the typed path and the readdir order comes from localeCompare', async () => {
+  const world = makeWorld({
+    fsDirs: new Set(['/home/u', '/home/u/proj', '/home/u/prox', '/home/u/.hidden']),
+  });
+  assert.deepEqual(await world.host.invoke({ op: 'browse-facts' }), {
+    base: '/home/u', prefix: '', baseIsDir: true, parentIsDir: false, parent: '/home',
+    realBase: '/home/u', realHome: '/home/u',
+  });
+  assert.deepEqual(await world.host.invoke({ op: 'browse-facts', path: '~' }), {
+    base: '/home/u', prefix: '', baseIsDir: true, parentIsDir: false, parent: '/home',
+    realBase: '/home/u', realHome: '/home/u',
+  });
+  // A partial name completes against its parent directory.
+  const partial = await world.host.invoke({ op: 'browse-facts', path: '/home/u/pro' });
+  assert.equal(partial.base, '/home/u');
+  assert.equal(partial.prefix, 'pro');
+  assert.equal(partial.baseIsDir, false);
+  assert.equal(partial.parentIsDir, true);
+  assert.equal(partial.parent, '/home');
 
-    const denied = makeFakes({
-      fsDirs: new Set(['/p']),
-      mkdirError: new Error('EACCES: permission denied'),
+  const read = await world.host.invoke({ op: 'browse-read', base: '/home/u' });
+  // `entries` keeps readdir order; `order` is the localeCompare permutation of
+  // its indices (the engine, not the Rust kernel, owns collation).
+  assert.deepEqual(read.entries.map(e => e.name), ['proj', 'prox', '.hidden']);
+  const collated = [...read.entries]
+    .sort((a, b) => a.name.localeCompare(b.name)).map(e => e.name);
+  assert.deepEqual(read.order.map(i => read.entries[i].name), collated);
+  assert.deepEqual(read.order, [2, 0, 1]);
+  assert.deepEqual([...read.order].sort(), [0, 1, 2]);
+  const missing = await world.host.invoke({ op: 'browse-read', base: '/nope' });
+  assert.match(missing.error, /ENOENT/);
+  assert.deepEqual(missing.entries, []);
+});
+
+test('dirs-annotated pairs registry rows with their sessions and push state', async () => {
+  const world = makeWorld({
+    dirs: [{ id: 'd1', name: 'one', path: '/p/1' }],
+    sessions: [{ id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat' }],
+  });
+  const answer = await world.host.invoke({ op: 'dirs-annotated' });
+  assert.deepEqual(answer.dirs, [{ id: 'd1', name: 'one', path: '/p/1' }]);
+  assert.deepEqual(answer.sessions, [[{ cli: 'codex', kind: 'chat' }]]);
+  assert.deepEqual(answer.pushStates, [{ ok: true, value: {
+    available: true, hasRemote: false, ahead: 0, behind: 0, dirty: 0,
+  } }]);
+  // A failing pushState degrades to the reason, never to a rejected op.
+  world.git.pushState = async () => { throw new Error('kaput'); };
+  const degraded = await world.host.invoke({ op: 'dirs-annotated' });
+  assert.deepEqual(degraded.pushStates, [{ ok: false, error: 'kaput' }]);
+});
+
+test('registration ops persist once, seed the commander and roll back on refusal', async () => {
+  const world = makeWorld({ fsDirs: new Set(['/p']) });
+  const dir = { id: 'id-1', name: 'x', path: '/p/x', createdAt: '2026-01-01T00:00:00.000Z' };
+  assert.deepEqual(await world.host.invoke({ op: 'new-id' }), { id: 'id-1' });
+  await world.host.invoke({ op: 'register-add', dir });
+  assert.deepEqual(await world.host.invoke({ op: 'dir-get', id: 'id-1' }), { dir });
+  assert.deepEqual(await world.host.invoke({ op: 'ensure-ready', id: 'id-1' }), { ok: true });
+  assert.deepEqual(world.calls.gitReady, ['id-1']);
+
+  const committed = await world.host.invoke({ op: 'register-commit', id: 'id-1' });
+  assert.equal(world.calls.saved, 1);
+  assert.deepEqual(world.calls.seeded, ['id-1']);
+  assert.deepEqual(committed, { dir });
+
+  // ensure-ready on an unknown id is a reason, not a throw.
+  assert.deepEqual(await world.host.invoke({ op: 'ensure-ready', id: 'gone' }),
+    { ok: false, reason: 'path-missing' });
+  // A readiness refusal is a reason the Rust kernel turns into a 400 + fix.
+  world.git.ensureReady = () => ({ ok: false, reason: 'git-error: fatal' });
+  assert.deepEqual(await world.host.invoke({ op: 'ensure-ready', id: 'id-1' }),
+    { ok: false, reason: 'git-error: fatal' });
+
+  await world.host.invoke({ op: 'register-rollback', id: 'id-1' });
+  assert.deepEqual(await world.host.invoke({ op: 'dir-get', id: 'id-1' }), { dir: null });
+});
+
+test('mutation ops keep the directory table and its readiness flags in step', async () => {
+  const world = makeWorld({ dirs: [{ id: 'd1', name: 'old', path: '/p/a' }] });
+  await world.host.invoke({ op: 'dir-set-name', id: 'd1', name: 'new' });
+  await world.host.invoke({ op: 'dir-set-role', id: 'd1', value: 'role' });
+  assert.deepEqual((await world.host.invoke({ op: 'dir-get', id: 'd1' })).dir,
+    { id: 'd1', name: 'new', path: '/p/a', rolePrompt: 'role' });
+
+  // A path change unmarks the readiness cache and reports the new facts.
+  assert.deepEqual(await world.host.invoke({ op: 'dir-set-path', id: 'd1', path: '/p/b' }),
+    {});
+  assert.deepEqual(world.calls.unmarked, ['d1']);
+  assert.deepEqual(await world.host.invoke({ op: 'realpath-equal', id: 'd1', path: '/p/b' }),
+    { equal: true });
+  assert.deepEqual(await world.host.invoke({ op: 'realpath-equal', id: 'd1', path: '/p/c' }),
+    { equal: false });
+
+  assert.deepEqual(await world.host.invoke({ op: 'find-by-path', path: '/p/b' }),
+    { found: { id: 'd1', name: 'new', path: '/p/b', rolePrompt: 'role' } });
+  assert.deepEqual(await world.host.invoke({ op: 'find-by-path', path: '/p/b', excludeId: 'd1' }),
+    { found: null });
+  assert.deepEqual(await world.host.invoke({ op: 'dir-save' }), {});
+  assert.equal(world.calls.saved, 1);
+  assert.deepEqual(await world.host.invoke({ op: 'dir-remove', id: 'd1' }), {});
+  assert.deepEqual(await world.host.invoke({ op: 'dir-get', id: 'd1' }), { dir: null });
+});
+
+test('delete cascade uses the session record it was given and one cross-file transaction', async () => {
+  const world = makeWorld({
+    dirs: [{ id: 'd1', name: 'one', path: '/p/a' }],
+    sessions: [{ id: 's1', dirId: 'd1' }, { id: 's2', dirId: 'd1' }],
+  });
+  assert.deepEqual(await world.host.invoke({ op: 'sessions-by-dir', id: 'd1' }),
+    { sessions: [{ id: 's1', dirId: 'd1' }, { id: 's2', dirId: 'd1' }] });
+  // The front door sends the record it already has; the host must not re-list.
+  const sent = { id: 's2', dirId: 'd1' };
+  await world.host.invoke({ op: 'destroy-cascade', sessionId: 's2', session: sent, dirId: 'd1', force: true });
+  assert.deepEqual(world.calls.destroyed, ['s2']);
+  // Without a record it falls back to the table.
+  await world.host.invoke({ op: 'destroy-cascade', sessionId: 's1', dirId: 'd1', force: false });
+  assert.deepEqual(world.calls.destroyed, ['s2', 's1']);
+  await world.host.invoke({ op: 'tx-commit', id: 'd1', force: true });
+  assert.deepEqual(world.calls.tx, [{ kind: 'delete-directory', reason: 'dir=d1 force=true' }]);
+  // No dirId -> the cascade reports "nothing to cascade", not a crash.
+  assert.deepEqual(await world.host.invoke({ op: 'destroy-cascade', dirId: 'gone', sessionId: 'x' }),
+    { result: null });
+});
+
+test('git ops: status, force-refreshed facts, staging, commit, invalidation and push', async () => {
+  const world = makeWorld({ dirs: [{ id: 'd1', name: 'one', path: '/p/a' }] });
+  world.git.statusPorcelain = async () => ' M src/app.js\n';
+  assert.deepEqual(await world.host.invoke({ op: 'status-porcelain', id: 'd1' }),
+    { out: ' M src/app.js\n' });
+  assert.deepEqual(await world.host.invoke({ op: 'commit-facts', id: 'd1' }),
+    { pushState: { available: true, hasRemote: false, ahead: 0, behind: 0, dirty: 0 } });
+  assert.deepEqual(await world.host.invoke({ op: 'commit-validate', message: 'chore: tidy' }),
+    { ok: true });
+  const bad = await world.host.invoke({ op: 'commit-validate', message: 'fix: x\n\n修复正文' });
+  assert.match(bad.error, /必须使用英文/);
+
+  const staged = [];
+  world.git.stageAll = async (p) => { staged.push(['stage', p]); };
+  world.git.commit = async (p, m) => { staged.push(['commit', p, m]); };
+  world.git.pushState = async (p, branch, opts) => {
+    staged.push(['pushState', p, branch, opts && opts.force === true]);
+    return { dirty: 0, ahead: 3 };
+  };
+  assert.deepEqual(await world.host.invoke({ op: 'commit-run', id: 'd1', message: 'chore: tidy' }),
+    { pushState: { dirty: 0, ahead: 3 } });
+  assert.deepEqual(staged, [
+    ['stage', '/p/a'],
+    ['commit', '/p/a', 'chore: tidy'],
+    ['pushState', '/p/a', 'main', true],
+  ]);
+  assert.deepEqual(world.calls.invalidated, [{ p: '/p/a', branch: 'main' }]);
+
+  world.git.push = async (p, branch) => { staged.push(['push', p, branch]); return { pushed: true }; };
+  assert.deepEqual(await world.host.invoke({ op: 'git-push', id: 'd1' }),
+    { result: { pushed: true } });
+  assert.deepEqual(staged.at(-1), ['push', '/p/a', 'main']);
+  world.git.push = async () => { throw new Error('no remote'); };
+  assert.deepEqual(await world.host.invoke({ op: 'git-push', id: 'd1' }), { error: 'no remote' });
+
+  await world.host.invoke({ op: 'events-append', dirId: 'd1', kind: 'pushed', text: '1 个提交 → origin/main' });
+  assert.deepEqual(world.calls.events, [{ dirId: 'd1', type: 'pushed', detail: '1 个提交 → origin/main' }]);
+  // Unknown ids never reach a git subprocess.
+  assert.deepEqual(await world.host.invoke({ op: 'commit-facts', id: 'gone' }),
+    { error: 'directory not found' });
+});
+
+test('reorder rewrites the registry order and reports the ids it holds', async () => {
+  const world = makeWorld({
+    dirs: ['a', 'b', 'c', 'd'].map(id => ({ id, name: id, path: `/p/${id}` })),
+  });
+  const answer = await world.host.invoke({ op: 'dirs-reorder', order: ['c', 'a', 'b', 'd'] });
+  assert.deepEqual(answer, { ids: ['c', 'a', 'b', 'd'] });
+  assert.deepEqual([...world.table.keys()], ['c', 'a', 'b', 'd']);
+  assert.equal(world.calls.saved, 1);
+  assert.deepEqual(await world.host.invoke({ op: 'dir-ids' }),
+    { ids: ['c', 'a', 'b', 'd'] });
+});
+
+test('the readiness prose and its one-click fix stay in the shared vocabulary', async () => {
+  const world = makeWorld();
+  assert.deepEqual(await world.host.invoke({ op: 'dir-reason', reason: 'path-missing' }),
+    { detail: 'friendly:path-missing', fix: null });
+  assert.deepEqual(await world.host.invoke({ op: 'dir-reason', reason: 'git-error: fatal' }),
+    { detail: 'friendly:git-error: fatal', fix: 'open-ops-terminal' });
+  // `body.reason || null`: an empty reason reaches the vocabulary as null.
+  assert.deepEqual(await world.host.invoke({ op: 'dir-reason', reason: '' }),
+    { detail: 'friendly:null', fix: null });
+});
+
+test('sample workspace creation is bounded to the managed sample root', async () => {
+  const world = makeWorld({ fsDirs: new Set(['/data/samples']) });
+  const first = await world.host.invoke({ op: 'sample-ensure' });
+  assert.deepEqual(first, {
+    name: 'MultiCC 入门示例',
+    path: '/data/samples/getting-started',
+    createdFiles: ['README.md', 'index.html', 'styles.css', 'TASKS.md'],
+  });
+  // A second call reuses existing files instead of overwriting them.
+  const second = await world.host.invoke({ op: 'sample-ensure' });
+  assert.deepEqual(second.createdFiles, []);
+  assert.equal(world.calls.writes.length, 4);
+
+  world.table.set('d1', { id: 'd1', name: 'sample', path: first.path });
+  const marked = await world.host.invoke({ op: 'sample-mark', id: 'd1' });
+  assert.equal(marked.dir.sample, true);
+  assert.equal(world.calls.saved, 1);
+  assert.deepEqual(await world.host.invoke({ op: 'sample-mark', id: 'gone' }),
+    { error: 'directory not found' });
+});
+
+test('layout ops are the store, never a second normalizer', async () => {
+  const world = makeWorld({ dirs: [{ id: 'd1', name: 'one', path: '/p/a' }] });
+  assert.deepEqual(await world.host.invoke({ op: 'layout-load' }),
+    { present: false, corrupt: false, data: null });
+  const doc = { dirOrder: ['d1'], sessionOrder: { d1: ['s1'] }, updatedAt: '2026-01-01T00:00:00.000Z' };
+  assert.deepEqual(await world.host.invoke({ op: 'layout-save', doc }), {});
+  assert.deepEqual(world.calls.layoutSaved, [doc]);
+  assert.deepEqual(await world.host.invoke({ op: 'layout-load' }),
+    { present: true, corrupt: false, data: doc });
+  assert.deepEqual(await world.host.invoke({ op: 'layout-known' }),
+    { dirIds: ['d1'], sessionIds: { d1: [] } });
+});
+
+test('the host route only answers loopback with the documented envelopes', async () => {
+  const handlers = {};
+  const app = { post: (routePath, handler) => { handlers[routePath] = handler; } };
+  const logged = [];
+  const world = makeWorld();
+  const host = createDirectoryHost({
+    repo: world.repo, git: world.git, sessions: {}, events: {}, fsPort: world.fsPort,
+    helpers: { resolveCwd: (c, a) => a, realPathOf: p => p, friendlyDirReason: r => String(r), dirReasonFix: () => null },
+    tx: {}, uiLayout: world.uiLayout, isLocal: () => true,
+    logger: { warn() {}, error: (...args) => logged.push(args) },
+  });
+  host.mount(app);
+  assert.equal(typeof handlers[HOST_PATH], 'function');
+
+  const run = async (body, { local = true } = {}) => {
+    let status = 200;
+    let payload;
+    const res = {
+      status(code) { status = code; return this; },
+      json(value) { payload = value; return this; },
+    };
+    const deps = host.mount === app.post ? null : null;
+    void deps;
+    const remote = createDirectoryHost({
+      repo: world.repo, git: world.git, sessions: {}, events: {}, fsPort: world.fsPort,
+      helpers: { resolveCwd: (c, a) => a, realPathOf: p => p, friendlyDirReason: r => String(r), dirReasonFix: () => null },
+      tx: {}, uiLayout: world.uiLayout, isLocal: () => local,
+      logger: { warn() {}, error: (...args) => logged.push(args) },
     });
-    r = await denied.svc.register({ name: 'denied', path: '/p/denied', create: true });
-    ok(!r.ok && r.message === '无法创建目录: EACCES: permission denied',
-      'register: permission failure is reported instead of creating a broken record');
-    ok(denied.calls.saved === 0 && denied.calls.gitReady.length === 0,
-      'register: permission failure does not persist or initialize git');
-  }
+    const captured = {};
+    remote.mount({ post: (routePath, handler) => { captured.route = routePath; captured.handler = handler; } });
+    await captured.handler({ body }, res);
+    return { status, payload };
+  };
 
-  // ── register rollback when git init fails ──
-  {
-    const { svc, repo, calls } = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
-    calls.gitReady.push = () => 0;  // noop
-    const g = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
-    g.svc; // (separate instance below)
-    const fakes = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
-    fakes.git.ensureReady = () => ({ ok: false, reason: 'boom' });
-    const r = await fakes.svc.register({ name: 'x', path: '/p/a' });
-    ok(!r.ok && r.message === 'friendly:boom', 'register: git-init failure → friendly error');
-    ok(!fakes.repo.get('id-1') && fakes.calls.saved === 0, 'register: failed record rolled back, never saved');
-    ok(r.extra === undefined, 'register: a failure with no known remedy carries no fix code');
+  assert.deepEqual(await run({ op: 'dir-ids' }, { local: false }),
+    { status: 404, payload: { error: 'not found' } });
+  assert.deepEqual(await run({ op: 'nope' }),
+    { status: 400, payload: { error: 'unknown host operation' } });
+  assert.deepEqual(await run({ op: 'dir-ids' }),
+    { status: 200, payload: { ok: true, value: { ids: [] } } });
+  assert.deepEqual(await run({}),
+    { status: 400, payload: { error: 'unknown host operation' } });
 
-    // A failure the host knows how to repair must reach the client as a code, not
-    // only as prose — that code is what turns the remedy into a clickable button.
-    const repairable = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
-    repairable.git.ensureReady = () => ({ ok: false, reason: 'git-error: xcode-select: note: No developer tools were found' });
-    const rf = await repairable.svc.register({ name: 'x', path: '/p/a' });
-    ok(!rf.ok && rf.extra && rf.extra.fix === 'install-developer-tools',
-      'register: missing developer tools → fix code for the UI');
+  const throwing = createDirectoryHost({
+    repo: { list() { throw new Error('boom'); } }, git: {}, sessions: {}, events: {},
+    fsPort: {}, helpers: {}, tx: {},
+    uiLayout: world.uiLayout, isLocal: () => true,
+    logger: { warn() {}, error: (...args) => logged.push(args) },
+  });
+  const captured = {};
+  throwing.mount({ post: (routePath, handler) => { captured.route = routePath; captured.handler = handler; } });
+  let status = 200;
+  let payload;
+  await captured.handler({ body: { op: 'dir-ids' } }, {
+    status(code) { status = code; return this; },
+    json(value) { payload = value; return this; },
+  });
+  assert.deepEqual({ status, payload }, { status: 500, payload: { error: 'host operation failed' } });
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0][1], 'dir-ids');
+});
 
-    // Any other git failure while adding still opens the ops terminal: on a
-    // host with no directories the dialog is the only way to reach a shell.
-    const unknownGit = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
-    unknownGit.git.ensureReady = () => ({ ok: false, reason: 'git-error: fatal: bad config line 3' });
-    const ru = await unknownGit.svc.register({ name: 'x', path: '/p/a' });
-    ok(!ru.ok && ru.extra && ru.extra.fix === 'open-ops-terminal',
-      'register: unknown git failure → generic ops terminal entry');
-    void svc; void repo;
-  }
+test('registerDefaultDirectory is the one boot-time registry path', async () => {
+  const world = makeWorld();
+  const denied = await world.host.registerDefaultDirectory({ name: 'x', path: '/home/u' });
+  assert.deepEqual(denied, { ok: false, message: '不允许选择 $HOME 或更高层目录' });
 
-  // ── safe starter sample ──
-  {
-    const fakes = makeFakes({ fsDirs: new Set(['/data', '/data/samples']), fsFiles: new Set() });
-    let r = await fakes.svc.createSample();
-    ok(r.ok && r.data.sample === true && r.data.reused === false
-      && r.data.path === '/data/samples/getting-started', 'createSample: registers a marked workspace below the managed sample root');
-    ok(fakes.calls.writes.length === 4 && fakes.calls.writes.some(item => item.path.endsWith('/README.md')),
-      'createSample: seeds the bounded starter files');
-    const writesAfterFirstCreate = fakes.calls.writes.length;
-    r = await fakes.svc.createSample();
-    ok(r.ok && r.data.reused === true && fakes.calls.writes.length === writesAfterFirstCreate,
-      'createSample: reuses registration and never overwrites existing files');
-  }
+  const created = await world.host.registerDefaultDirectory({ name: '  Default ', path: '/data/ws' });
+  assert.equal(created.ok, true);
+  assert.equal(created.data.id, 'id-1');
+  assert.equal(created.data.name, 'Default');
+  assert.equal(created.data.path, '/data/ws');
+  assert.equal(world.fsPort.exists('/data/ws'), true);
+  assert.equal(world.calls.saved, 1);
+  assert.deepEqual(world.calls.seeded, ['id-1']);
 
-  // ── update ──
-  {
-    const d = { id: 'd1', name: 'old', path: '/p/a' };
-    const { svc, calls } = makeFakes({ dirs: [d], fsDirs: new Set(['/p', '/p/a', '/p/b']) });
-    let r = await svc.update('nope', { name: 'x' });
-    ok(!r.ok && r.code === 'not_found', 'update: unknown id → not_found');
-    r = await svc.update('d1', { name: ' renamed ' });
-    ok(r.ok && r.data.name === 'renamed' && calls.saved === 1, 'update: rename trims and saves');
-    r = await svc.update('d1', { path: '/p/missing' });
-    ok(!r.ok && r.message === 'path does not exist: /p/missing', 'update: missing path rejected');
-    r = await svc.update('d1', { path: '/p/b' });
-    ok(r.ok && r.data.path === '/p/b' && calls.unmarked.includes('d1') && calls.gitReady.includes('d1'),
-      'update: path change re-verifies git readiness');
-    r = await svc.update('d1', { rolePrompt: 'R'.repeat(40001) });
-    ok(!r.ok && r.message === 'rolePrompt too long (max 40000)', 'update: oversized rolePrompt rejected');
-    r = await svc.update('d1', { rolePrompt: '  ' });
-    ok(r.ok && r.data.rolePrompt === null, 'update: blank rolePrompt → null');
-  }
+  // Idempotent: an already-registered path answers the existing record.
+  const again = await world.host.registerDefaultDirectory({ name: 'Default', path: '/data/ws' });
+  assert.deepEqual(again, { ok: true, data: created.data });
 
-  // ── remove ──
-  {
-    const d = { id: 'd1', name: 'x', path: '/p/a' };
-    const sess = [{ id: 's1', dirId: 'd1' }, { id: 's2', dirId: 'd1' }, { id: 's3', dirId: 'other' }];
-    const { svc, repo, calls } = makeFakes({ dirs: [d], sessions: sess, fsDirs: new Set(['/p/a']) });
-    let r = await svc.remove('nope', {});
-    ok(!r.ok && r.code === 'not_found', 'remove: unknown id → not_found');
-    r = await svc.remove('d1', { force: false });
-    ok(!r.ok && r.message === 'directory has 2 session(s); pass ?force=1 to delete them too'
-      && r.extra.sessions.join() === 's1,s2', 'remove: refuses without force, lists sessions');
-    r = await svc.remove('d1', { force: true });
-    ok(r.ok && r.data.removedSessions === 2, 'remove: force destroys owned sessions');
-    ok(calls.destroyed.join() === 's1,s2' && !repo.get('d1') && calls.saved === 0
-      && calls.tx.length === 1 && calls.tx[0].kind === 'delete-directory',
-    'remove: cascade order — destroy, delete record, one native cross-file transaction');
-
-    const failing = makeFakes({ dirs: [d], sessions: sess, fsDirs: new Set(['/p/a']) });
-    failing.calls.txFails = true;
-    r = await failing.svc.remove('d1', { force: true });
-    ok(!r.ok && r.code === 'internal' && /persist failed: journal write failed/.test(r.message),
-      'remove: a failed native transaction surfaces as internal, never a false success');
-    ok(!failing.repo.get('d1') && failing.calls.tx.length === 1,
-      'remove: the in-memory delete stays (the boot journal retries the writes)');
-  }
-
-  // ── browseFs ──
-  {
-    const { svc } = makeFakes({ fsDirs: new Set(['/home/u', '/home/u/proj', '/home/u/prox', '/home/u/.hidden']) });
-    let r = svc.browseFs('');
-    ok(r.ok && r.data.base === '/home/u' && r.data.entries.length === 2 && r.data.selectable === false,
-      'browseFs: empty → home, hidden dirs filtered, unsafe home cannot be selected');
-    r = svc.browseFs('~');
-    ok(r.ok && r.data.base === '/home/u', 'browseFs: tilde → home');
-    r = svc.browseFs('/home/u/pro');
-    ok(r.ok && r.data.selectable === false && r.data.entries.map(e => e.name).join() === 'proj,prox',
-      'browseFs: prefix completion keeps its home parent unselectable');
-    r = svc.browseFs('/home/u/proj');
-    ok(r.ok && r.data.selectable === true, 'browseFs: a project below home can be selected');
-    r = svc.browseFs('/home/u/.hi');
-    ok(r.ok && r.data.entries.map(e => e.name).join() === '.hidden', 'browseFs: dot-prefix reveals hidden');
-    r = svc.browseFs('/nope/deeper/x');
-    ok(r.ok && r.data.entries.length === 0 && r.data.parent === null && r.data.selectable === false,
-      'browseFs: missing parent → empty, unselectable result');
-  }
-
-  // ── listAnnotated ──
-  {
-    const d = { id: 'd1', name: 'x', path: '/p/a' };
-    const sess = [
-      { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat' },
-      { id: 's2', dirId: 'd1' },                              // defaults → claude_terminal
-      { id: 's3', dirId: 'd1', cli: 'codex', kind: 'chat' },
-    ];
-    const fakes = makeFakes({ dirs: [d], sessions: sess });
-    const r = await fakes.svc.listAnnotated();
-    const e = r.data[0];
-    ok(r.ok && e.counts.claude_chat === 1 && e.counts.claude_terminal === 1 && e.counts.codex_chat === 1,
-      'listAnnotated: per-(cli,kind) counts with defaults');
-    ok(e.pushState && e.pushState.available === true, 'listAnnotated: pushState attached');
-    fakes.git.pushState = async () => { throw new Error('kaput'); };
-    const r2 = await fakes.svc.listAnnotated();
-    ok(r2.data[0].pushState.available === false && r2.data[0].pushState.reason === 'kaput',
-      'listAnnotated: pushState failure degrades gracefully');
-  }
-
-  // ── uncommitted parsing ──
-  {
-    const d = { id: 'd1', name: 'x', path: '/p/a' };
-    const fakes = makeFakes({ dirs: [d] });
-    fakes.git.statusPorcelain = async () => '?? added.txt\n M src/app.js\n?? new file.txt\n';
-    const r = await fakes.svc.uncommitted('d1');
-    ok(r.ok && r.data.files.length === 3
-      && r.data.files[0].status === '??' && r.data.files[0].path === 'added.txt'
-      && r.data.files[1].status === ' M' && r.data.files[1].path === 'src/app.js'
-      && r.data.files[2].status === '??' && r.data.files[2].path === 'new file.txt',
-      'uncommitted: porcelain parsed (status + path with spaces)');
-    // A first line that starts with a space (' M …') must keep its status
-    // column and its full path (the output used to be .trim()ed, which turned
-    // 'air-todos.json' into 'ir-todos.json').
-    fakes.git.statusPorcelain = async () => ' M src/app.js\n';
-    const r2 = await fakes.svc.uncommitted('d1');
-    ok(r2.ok && r2.data.files[0].status === ' M' && r2.data.files[0].path === 'src/app.js',
-      'uncommitted: first-line leading-space status keeps its full path');
-  }
-
-  // ── commitAll ──
-  {
-    const d = { id: 'd1', name: 'x', path: '/p/a' };
-    const fakes = makeFakes({ dirs: [d] });
-    let staged = 0, committed = [];
-    fakes.git.pushState = async () => ({ dirty: 0, ahead: 0 });
-    let r = await fakes.svc.commitAll('d1');
-    ok(r.ok && r.data.committed === false, 'commitAll: clean tree → committed:false');
-    let phase = 0;
-    fakes.git.pushState = async () => (phase++ === 0 ? { dirty: 3, ahead: 1 } : { dirty: 0, ahead: 2 });
-    fakes.git.stageAll = async () => { staged++; };
-    fakes.git.commit = async (_, m) => { committed.push(m); };
-    r = await fakes.svc.commitAll('d1', '  custom msg  ');
-    ok(r.ok && r.data.committed === true && staged === 1 && committed[0] === 'custom msg',
-      'commitAll: dirty tree stages + commits with trimmed message');
-    ok(fakes.calls.events.some(e => e.type === 'committed' && e.detail === '提交 1 个未提交改动'),
-      'commitAll: event detail uses ahead-delta when it grew');
-    phase = 0;
-    committed = [];
-    fakes.git.statusPorcelain = async () => ' M src/app.js\n?? a/b.txt\n M c.js\n D d.js\n';
-    await fakes.svc.commitAll('d1');
-    ok(committed[0] === 'chore: update app.js, b.txt, c.js and 1 more',
-      'commitAll: empty message → generated from changed files');
-    phase = 0;
-    const stagedBefore = staged;
-    r = await fakes.svc.commitAll('d1', 'fix(chat): restore delivery\n\n修复正文');
-    ok(!r.ok && /必须使用英文/.test(r.message) && staged === stagedBefore,
-      'commitAll: non-English body is refused before staging');
-    phase = 0;
-    fakes.git.statusPorcelain = async () => '?? 中文文件.md\n';
-    await fakes.svc.commitAll('d1');
-    ok(!/中文/.test(committed.at(-1)) && committed.at(-1).includes('chore: add'),
-      'commitAll: non-English paths do not leak into generated messages');
-  }
-
-  // ── push ──
-  {
-    const d = { id: 'd1', name: 'x', path: '/p/a' };
-    const fakes = makeFakes({ dirs: [d] });
-    let r = await fakes.svc.push('d1');
-    ok(!r.ok && r.message === 'no remote', 'push: git failure → error message surfaced');
-    fakes.git.push = async () => ({ pushed: true, before: { ahead: 2, remote: 'origin', remoteBranch: 'main' } });
-    r = await fakes.svc.push('d1');
-    ok(r.ok && r.data.ok === true && r.data.pushed === true, 'push: success shape { ok, ...result }');
-    ok(fakes.calls.events.some(e => e.type === 'pushed' && e.detail === '2 个提交 → origin/main'),
-      'push: event appended with push summary');
-  }
-
-  // ── reorder (console drag-sort; order persisted as registry order) ──
-  {
-    const dirs = ['a', 'b', 'c', 'd'].map(id => ({ id, name: id, path: `/p/${id}` }));
-    const { svc, repo, calls } = makeFakes({ dirs });
-    let r = svc.reorder(['c', 'ghost', 'a', 'c']);
-    ok(r.ok && r.data.ids.join() === 'c,a,b,d', 'reorder: listed ids first, unknown/dup ignored, rest keep order');
-    ok(repo.list().map(d => d.id).join() === 'c,a,b,d' && [...repo.map().keys()].join() === 'c,a,b,d', 'reorder: list() and persisted snapshot follow new order');
-    ok(calls.saved === 1, 'reorder: saved once');
-    r = svc.reorder('nope');
-    ok(!r.ok && r.code === 'invalid', 'reorder: non-array rejected');
-  }
-
-  // ── friendlyDirReason (real impl) ──
-  {
-    const { friendlyDirReason } = require('../src/directories');
-    const perm = friendlyDirReason('git-error: Command failed: git init fatal: unable to get current working directory: Operation not permitted');
-    ok(perm.includes('完全磁盘访问权限') && perm.includes('Operation not permitted'),
-      'friendlyDirReason: TCC/EPERM git failure → actionable macOS guidance');
-    ok(friendlyDirReason('git-error: boom') === '无法将目录初始化为 git 仓库: git-error: boom',
-      'friendlyDirReason: other git failures keep the plain prefix');
-    ok(friendlyDirReason('path-missing') === '目录不存在', 'friendlyDirReason: path-missing unchanged');
-  }
-
-  console.log(`\n== directory service unit: ${pass} passed, ${fail} failed ==`);
-  process.exit(fail ? 1 : 0);
-})().catch(e => { console.error(e); process.exit(1); });
+  // A failed readiness probe removes the fresh record and never saves.
+  world.git.ensureReady = () => ({ ok: false, reason: 'git-error: boom' });
+  const failed = await world.host.registerDefaultDirectory({ name: 'B', path: '/data/ws2' });
+  assert.deepEqual(failed, { ok: false, message: 'friendly:git-error: boom' });
+  assert.equal(world.calls.saved, 1);
+});

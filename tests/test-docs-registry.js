@@ -1,8 +1,16 @@
 'use strict';
 // Tests for src/docs-registry.js — the docs & web-services management table.
-// Store-level (register/upsert/pin/validation) plus route-level through a fake
-// express app, all against an isolated MULTICC_DATA_DIR so real state files
-// are never touched (paths.assertTestDir rules are honoured by the temp dir).
+//
+// The seven HTTP routes now belong to the Rust front door
+// (native/gateway/src/app/docs_memory_routes.rs, rules in
+// native/core/src/docs_memory_routes.rs); what is left here is the store plus
+// the host port (src/routes/docs-memory-host.js) the front door drives it
+// through. Path matching, ?dir= scoping, the view assembly (artifactId/taskId/
+// dirName/expired) and validation all live in Rust, so these tests pin the
+// Node half: upsert/pin/validation/eviction semantics, the ordering indices the
+// front door sorts by, the fact arrays it renders and the op envelope.
+// Everything runs against an isolated MULTICC_DATA_DIR so real state files are
+// never touched (paths.assertTestDir rules are honoured by the temp dir).
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -17,26 +25,15 @@ assertTestDir(tmp);
 
 function reset() { reg._resetForTests([]); }
 
-function fakeApp() {
-  const handlers = [];
-  return {
-    handlers,
-    get: (p, h) => handlers.push({ method: 'GET', p, h }),
-    post: (p, h) => handlers.push({ method: 'POST', p, h }),
-    patch: (p, h) => handlers.push({ method: 'PATCH', p, h }),
-    delete: (p, h) => handlers.push({ method: 'DELETE', p, h }),
-  };
-}
+const { createDocsMemoryHost } = require('../src/routes/docs-memory-host');
 
-function invoke(handler, { body, params, query } = {}) {
-  const res = {
-    statusCode: 200,
-    body: undefined,
-    status(c) { this.statusCode = c; return this; },
-    json(v) { this.body = v; return this; },
-  };
-  handler({ body: body || {}, params: params || {}, query: query || {} }, res);
-  return res;
+/** The host port the front door calls; `handle(body)` runs one operation. */
+function host(overrides = {}) {
+  return createDocsMemoryHost({
+    docs: reg,
+    logger: { error() {} },
+    ...overrides,
+  });
 }
 
 test('register creates an entry and re-registering the same URL upserts', () => {
@@ -105,7 +102,7 @@ test('rows pinned before `permanent` existed are upgraded instead of losing thei
   reset();
 });
 
-test('permanent sorts above 置顶 and both above the rest, each group newest-first', () => {
+test('permanent sorts above 置顶 and both above the rest, each group newest-first', async () => {
   reset();
   reg._resetForTests([
     { id: 'a', kind: 'page', title: 'a', url: '/a', createdAt: '2026-01-03T00:00:00Z' },
@@ -114,43 +111,37 @@ test('permanent sorts above 置顶 and both above the rest, each group newest-fi
     { id: 'd', kind: 'page', title: 'd', url: '/d', permanent: true, pinned: true, createdAt: '2020-01-02T00:00:00Z' },
     { id: 'e', kind: 'page', title: 'e', url: '/e', createdAt: '2026-01-01T00:00:00Z' },
   ]);
-  const app = fakeApp();
-  reg.mount(app, { artifactExists: () => true });
-  const list = invoke(app.handlers.find(h => h.method === 'GET').h).body;
-  assert.deepEqual(list.map(x => x.id), ['d', 'c', 'b', 'a', 'e']);
+  // The front door sorts by the indices this store hands it.
+  const listed = await host().handle({ op: 'docs-list' });
+  const ids = listed.order.map(index => listed.entries[index].id);
+  assert.deepEqual(ids, ['d', 'c', 'b', 'a', 'e']);
   reset();
 });
 
-test('directory grouping normalizes task worktrees and ?dir= scopes the list', () => {
+test('directory normalization collapses worktrees and refuses relative paths', async () => {
   reset();
-  const app = fakeApp();
   const root = path.join(tmp, 'project');
-  reg.mount(app, {
-    artifactExists: () => true,
-    resolveDir: id => (id === 'exec-a' ? path.join(tmp, 'project2') : null),
-  });
-  const get = app.handlers.find(h => h.method === 'GET').h;
-  const post = app.handlers.find(h => h.method === 'POST').h;
   const worktree = path.join(root, '.multicc-worktrees', 'task-abc12345');
-  invoke(post, { body: { kind: 'page', title: 'wt', url: '/artifacts/w1/index.html', cwd: worktree } });
-  invoke(post, { body: { kind: 'page', title: 'sess', url: '/artifacts/s1/index.html', sessionId: 'exec-a' } });
-  invoke(post, { body: { kind: 'page', title: 'other', url: '/artifacts/o1/index.html', cwd: path.join(tmp, 'elsewhere') } });
+  // ?dir= scoping and the worktree collapse in the view are Rust's
+  // (native/gateway/tests/docs_memory_routes.rs); the store-level pieces the
+  // host port reports are the normalized directory of a session and the raw
+  // cwd/dir fields the kernel normalizes.
+  assert.equal(reg.normalizeDir(worktree), root, 'a worktree belongs to its project');
+  assert.equal(reg.normalizeDir(root + '/'), root, 'trailing separators are dropped');
+  assert.equal(reg.normalizeDir(path.sep), path.sep);
+  assert.equal(reg.normalizeDir('relative/path'), null);
+  assert.equal(reg.normalizeDir(''), null);
+  assert.equal(reg.normalizeDir(undefined), null);
 
-  const all = invoke(get).body;
-  const wt = all.find(e => e.title === 'wt');
-  assert.equal(wt.dir, root, 'a worktree publication belongs to its project');
-  assert.equal(wt.dirName, 'project');
-  assert.equal(all.find(e => e.title === 'sess').dir, path.join(tmp, 'project2'), 'no cwd → the session directory');
-  assert.equal(all.find(e => e.title === 'other').dir, path.join(tmp, 'elsewhere'));
-  assert.equal(all.find(e => e.title === 'other').dirName, 'elsewhere');
-
-  assert.deepEqual(invoke(get, { query: { dir: root } }).body.map(e => e.title), ['wt']);
-  assert.deepEqual(invoke(get, { query: { dir: worktree } }).body.map(e => e.title), ['wt'], 'a worktree path scopes to its project');
-  assert.deepEqual(invoke(get, { query: { dir: path.join(tmp, 'project2') } }).body.map(e => e.title), ['sess']);
-  assert.deepEqual(invoke(get, { query: { dir: path.join(tmp, 'nope') } }).body, []);
-  assert.deepEqual(invoke(get, { query: { dir: 'relative/path' } }).body, [],
-    'an unscopable ?dir= answers [] instead of the whole registry');
-  assert.equal(invoke(get).body.length, 3, 'no ?dir= lists everything');
+  const h = host({ resolveDir: id => (id === 'exec-a' ? path.join(tmp, 'project2') : null) });
+  reg.register({ kind: 'page', title: 'wt', url: '/artifacts/w1/index.html', cwd: worktree });
+  reg.register({ kind: 'page', title: 'sess', url: '/artifacts/s1/index.html', sessionId: 'exec-a' });
+  reg.register({ kind: 'page', title: 'other', url: '/artifacts/o1/index.html', cwd: path.join(tmp, 'elsewhere') });
+  const facts = await h.handle({ op: 'docs-facts', items: [{ sessionId: 'exec-a' }, { sessionId: 'none' }] });
+  assert.deepEqual(facts.sessionDir, [path.join(tmp, 'project2'), null],
+    'no cwd → the session directory the front door falls back to');
+  assert.deepEqual(facts.exists, [null, null]);
+  assert.deepEqual(facts.taskTitle, [null, null]);
   reset();
 });
 
@@ -163,39 +154,44 @@ test('a relative or over-long working directory is refused, never stored', () =>
   reset();
 });
 
-test('routes: GET lists newest-first, POST 201/200, PATCH, DELETE, expired flag', () => {
+test('host operations: register created/upserted, get, replace, remove, facts', async () => {
   reset();
-  const app = fakeApp();
-  reg.mount(app, { artifactExists: (id) => id === 'alive1' });
-  const get = app.handlers.find(h => h.method === 'GET').h;
-  const post = app.handlers.find(h => h.method === 'POST').h;
-  const patch = app.handlers.find(h => h.method === 'PATCH').h;
-  const del = app.handlers.find(h => h.method === 'DELETE').h;
+  const h = host({ artifactExists: id => id === 'alive1' });
 
-  const created = invoke(post, { body: { kind: 'page', title: 'A', url: '/artifacts/alive1/index.html' } });
-  assert.equal(created.statusCode, 201);
-  const id = created.body.id;
+  const created = await h.handle({ op: 'docs-register', entry: { kind: 'page', title: 'A', url: '/artifacts/alive1/index.html' } });
+  assert.equal(created.created, true);
+  const id = created.entry.id;
 
-  const dup = invoke(post, { body: { kind: 'page', title: 'A2', url: '/artifacts/alive1/index.html' } });
-  assert.equal(dup.statusCode, 200);
+  const dup = await h.handle({ op: 'docs-register', entry: { kind: 'page', title: 'A2', url: '/artifacts/alive1/index.html' } });
+  assert.equal(dup.created, false);
+  assert.equal(dup.entry.id, id);
 
-  invoke(post, { body: { kind: 'page', title: 'B', url: '/artifacts/gone9/index.html' } });
-  const list = invoke(get).body;
-  assert.equal(list.length, 2);
-  assert.equal(list.find(e => e.id === id).expired, false);
-  assert.equal(list.find(e => e.title === 'B').expired, true);
+  await h.handle({ op: 'docs-register', entry: { kind: 'page', title: 'B', url: '/artifacts/gone9/index.html' } });
+  const listed = await h.handle({ op: 'docs-list' });
+  assert.equal(listed.entries.length, 2);
+  const facts = await h.handle({
+    op: 'docs-facts',
+    items: listed.entries.map(entry => ({ artifactId: entry.artifactId || null })),
+  });
+  assert.deepEqual(facts.exists, [true, false], 'the front door renders expired from these facts');
 
-  const bad = invoke(post, { body: { title: 'x', url: 'javascript:x' } });
-  assert.equal(bad.statusCode, 400);
+  // Validation is the kernel's; the store only sees the already-valid entries.
+  assert.ok(reg.register({ title: 'x', url: 'javascript:x' }).error);
 
-  const patched = invoke(patch, { params: { id }, body: { pinned: true } });
-  assert.equal(patched.body.pinned, true);
-  assert.equal(invoke(patch, { params: { id: 'nope' }, body: {} }).statusCode, 404);
+  assert.deepEqual(await h.handle({ op: 'docs-get', id }), { found: true, entry: reg.entryById(id) });
+  assert.deepEqual(await h.handle({ op: 'docs-get', id: 'nope' }), { found: false, entry: null });
 
-  const removed = invoke(del, { params: { id } });
-  assert.equal(removed.body.ok, true);
-  assert.equal(invoke(del, { params: { id } }).statusCode, 404);
-  assert.equal(invoke(get).body.length, 1);
+  const replaced = await h.handle({ op: 'docs-replace', id, entry: { ...reg.entryById(id), pinned: true } });
+  assert.deepEqual(replaced, { found: true });
+  assert.equal(reg.entryById(id).pinned, true);
+  assert.deepEqual(await h.handle({ op: 'docs-replace', id: 'nope', entry: {} }), { found: false });
+
+  const removed = await h.handle({ op: 'docs-delete', id });
+  assert.equal(removed.found, true);
+  assert.equal(removed.removed.id, id);
+  assert.deepEqual(await h.handle({ op: 'docs-delete', id }), { found: false, removed: null });
+  assert.equal((await h.handle({ op: 'docs-list' })).entries.length, 1);
+  reset();
 });
 
 test('store persists to docs_registry.json under MULTICC_DATA_DIR', () => {
@@ -207,15 +203,19 @@ test('store persists to docs_registry.json under MULTICC_DATA_DIR', () => {
   reset();
 });
 
-test('publication records its generating task and keeps it when an unscoped update arrives', () => {
+test('publication records its generating task and keeps it when an unscoped update arrives', async () => {
   reset();
-  const app = fakeApp();
-  reg.mount(app, { artifactExists: () => true, resolveTaskId: id => id === 'execution-a' ? 'tsk_a' : null });
-  const post = app.handlers.find(h => h.method === 'POST').h;
-  const body = { kind: 'page', title: 'Task output', url: '/artifacts/scoped/index.html', sessionId: 'execution-a' };
-  const created = invoke(post, { body }).body;
+  const h = host({ artifactExists: () => true, resolveTaskId: id => (id === 'execution-a' ? 'tsk_a' : null) });
+  assert.deepEqual(await h.handle({ op: 'docs-task-id', sessionId: 'execution-a' }), { taskId: 'tsk_a' });
+  assert.deepEqual(await h.handle({ op: 'docs-task-id', sessionId: 'other' }), { taskId: null });
+
+  // The kernel prefills taskId from that fact before the store write.
+  const created = (await h.handle({
+    op: 'docs-register',
+    entry: { kind: 'page', title: 'Task output', url: '/artifacts/scoped/index.html', sessionId: 'execution-a', taskId: 'tsk_a' },
+  })).entry;
   assert.equal(created.taskId, 'tsk_a');
-  invoke(post, { body: { title: 'Updated title', url: body.url } });
+  await h.handle({ op: 'docs-register', entry: { title: 'Updated title', url: '/artifacts/scoped/index.html' } });
   const stored = JSON.parse(fs.readFileSync(path.join(tmp, 'docs_registry.json'), 'utf8'))[0];
   assert.equal(stored.taskId, 'tsk_a');
   assert.equal(stored.sessionId, 'execution-a');
@@ -333,44 +333,49 @@ test('web isLoopbackHost recognizes the loopback family only', () => {
   }
 });
 
-test('related entries survive eviction and expose inherited retention independently from their own flags', () => {
+test('related entries survive eviction and expose inherited retention independently from their own flags', async () => {
   reset();
   const parent = reg.register({ title: 'Final', url: '/artifacts/final-keep/index.html', permanent: true, relatedArtifactIds: ['input-keep'] }).entry;
   const input = reg.register({ title: 'Input', url: '/artifacts/input-keep/data.csv', pinned: false }).entry;
   assert.ok(reg.listPermanentArtifactIds().includes('input-keep'));
-  const app = fakeApp(); reg.mount(app, { artifactExists: () => true });
-  const get = app.handlers.find(r => r.method === 'GET' && r.p === '/api/docs-registry').h;
-  const patch = app.handlers.find(r => r.method === 'PATCH').h;
-  let view = invoke(get).body.find(row => row.id === input.id);
-  assert.equal(view.retained, true); assert.equal(view.permanent, false); assert.equal(view.pinned, false);
+  // The set the front door turns into `retained: true` on the input's view.
+  let listed = await host().handle({ op: 'docs-list' });
+  assert.ok(listed.retained.includes('input-keep'));
+  const inputRow = listed.entries.find(entry => entry.id === input.id);
+  assert.equal(inputRow.permanent, undefined);
+  assert.equal(inputRow.pinned, false);
   const filler = Array.from({ length: 498 }, (_, i) => ({ id: 'fill-' + i, title: 'Filler', kind: 'page', url: '/filler/' + i }));
   reg._resetForTests([input, parent, ...filler]);
   assert.equal(reg.register({ title: 'new', url: '/new' }).created, true);
   assert.ok(reg.list().some(row => row.id === input.id), 'the intermediate row cannot be evicted');
-  invoke(patch, { params: { id: parent.id }, body: { permanent: false } });
-  view = invoke(get).body.find(row => row.id === input.id);
-  assert.equal(view.retained, false);
+  const h = host();
+  assert.deepEqual(await h.handle({ op: 'docs-replace', id: parent.id, entry: { ...reg.entryById(parent.id), permanent: false } }), { found: true });
+  listed = await h.handle({ op: 'docs-list' });
+  assert.equal(listed.retained.includes('input-keep'), false);
   reset();
 });
 
-test('task views resolve saved task titles and never infer ownership from a reused session cursor', () => {
+test('task facts resolve saved titles and never infer ownership from a reused session cursor', async () => {
   reset();
-  const app = fakeApp(); reg.mount(app, {
+  const h = host({
     artifactExists: () => true,
     resolveTaskId: () => 'tsk_wrong-current-task',
-    resolveTaskTitle: id => id === 'tsk_original' ? 'Original task' : null,
+    resolveTaskTitle: id => (id === 'tsk_original' ? 'Original task' : null),
   });
   reg.register({ title: 'report', url: '/artifacts/task-report/index.html', taskId: 'tsk_original', sessionId: 'reused' });
   reg.register({ title: 'legacy', url: '/artifacts/legacy-report/index.html', sessionId: 'reused' });
   reg.register({ title: 'dedicated', url: '/artifacts/dedicated-report/index.html', sessionId: 'task-' + 'a'.repeat(32) });
-  const views = invoke(app.handlers.find(r => r.method === 'GET' && r.p === '/api/docs-registry').h).body;
-  assert.equal(views.find(r => r.title === 'report').taskTitle, 'Original task');
-  assert.equal(views.find(r => r.title === 'legacy').taskId, null);
-  assert.equal(views.find(r => r.title === 'dedicated').taskId, 'tsk_' + 'a'.repeat(32));
+  const entries = reg.entriesSnapshot();
+  const facts = await h.handle({ op: 'docs-facts', items: entries.map(entry => ({ taskId: entry.taskId || null })) });
+  assert.deepEqual(facts.taskTitle, ['Original task', null, null],
+    'the title comes from the stored task id; a reused session cursor never supplies one');
+  assert.equal(entries.find(entry => entry.title === 'legacy').taskId, undefined);
+  assert.equal(entries.find(entry => entry.title === 'dedicated').taskId, undefined,
+    'the dedicated-session task id is inferred by the kernel, not stored');
   reset();
 });
 
-test('an incomplete dependency scan pauses cleanup but keeps list and unkeep actions usable', () => {
+test('an incomplete dependency scan pauses cleanup but keeps list and unkeep actions usable', async () => {
   reset();
   const dir = path.join(tmp, 'artifacts', 'oversized-graph'); fs.mkdirSync(dir, { recursive: true });
   const fd = fs.openSync(path.join(dir, 'large.js'), 'w'); fs.ftruncateSync(fd, 65 * 1024 * 1024); fs.closeSync(fd);
@@ -378,10 +383,11 @@ test('an incomplete dependency scan pauses cleanup but keeps list and unkeep act
     const row = reg.register({ title: 'large', url: '/artifacts/oversized-graph/index.html', permanent: true }).entry;
     assert.throws(() => reg.listPermanentArtifactIds(), /byte limit/);
     assert.equal(reg.list()[0].permanent, true);
-    const app = fakeApp(); reg.mount(app, { artifactExists: () => true });
-    assert.equal(invoke(app.handlers.find(r => r.method === 'GET' && r.p === '/api/docs-registry').h).body.length, 1);
-    const result = invoke(app.handlers.find(r => r.method === 'PATCH').h, { params: { id: row.id }, body: { permanent: false } });
-    assert.equal(result.body.permanent, false);
+    const h = host({ artifactExists: () => true });
+    assert.equal((await h.handle({ op: 'docs-list' })).entries.length, 1);
+    const replaced = await h.handle({ op: 'docs-replace', id: row.id, entry: { ...reg.entryById(row.id), permanent: false } });
+    assert.deepEqual(replaced, { found: true });
+    assert.equal(reg.entryById(row.id).permanent, false);
     assert.deepEqual(reg.listPermanentArtifactIds(), []);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); reset(); }
 });

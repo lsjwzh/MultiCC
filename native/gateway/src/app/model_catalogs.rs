@@ -149,6 +149,23 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
 }
 
+/// This cluster's own share of Express's automatic `OPTIONS` `Allow`, for the
+/// front-door union across clusters (`super::OPTIONS_SOURCES`).
+///
+/// `/api/providers/:id/models` shares its three-segment shape with the
+/// providers cluster's `PATCH|DELETE /api/providers/:appType/:id`; `server.js`
+/// registered this GET first (`mountProviderModelRoutes`, line 2187 of the
+/// retired file, before `mountManagementRoutes`).
+pub fn options_share(path: &str) -> Option<String> {
+    match claim(&Method::OPTIONS, path)? {
+        Route::ProviderModelsOptions | Route::CatalogOptions(_) | Route::CodexModelsOptions => {
+            Some("GET,HEAD".to_string())
+        }
+        Route::CodexModelsSyncOptions => Some("POST".to_string()),
+        _ => None,
+    }
+}
+
 /// `String(req.query.x || '')` — the raw text the retired handlers matched on.
 fn query_text(ctx: &RequestCtx, name: &str) -> String {
     multicc_core::http_gate::query_string(&query_value(&ctx.original_url, name))

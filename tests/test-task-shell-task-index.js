@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { buildTaskIndex, collectTaskIndex } = require('../src/task-shell/task-index');
-const { mountTaskShellRoutes } = require('../src/task-shell/routes');
+const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 
 function message(id, taskId, extra = {}) {
   return { id: `s1:${id}`, sourceSessionId: 's1', sourceMessageId: id, taskId, ts: 1000 + Number(String(id).replace(/\D/g, '') || 0), ...extra };
@@ -13,12 +13,6 @@ function codes(ids) {
   const table = Object.fromEntries(ids.map((id, index) => [id, String(2000 + index)]));
   return id => table[id] || '';
 }
-function fakeApp(handlers) {
-  const record = (method, path, handler) => handlers.set(`${method} ${path}`, handler);
-  return { get: (path, handler) => record('GET', path, handler), post: (path, handler) => record('POST', path, handler),
-    delete: (path, handler) => record('DELETE', path, handler) };
-}
-
 test('collectTaskIndex projects the same shell message ids the chat view uses', () => {
   const scope = { shellId: 'sh_1', sessionIds: ['s1'] };
   const history = { s1: [{ id: 'u1', role: 'user', taskId: 'tsk_a', turnId: 't1', ts: 1 },
@@ -98,26 +92,19 @@ test('capabilities fail closed: without a callback the index offers no write act
 });
 
 test('a read-only shell exposes the directory without detach capability', async () => {
-  const handlers = new Map();
   const runtime = { chatScope: () => ({ shellId: 'sh_1', sessionIds: ['s1'] }), listTasks: () => [], taskAccess: () => ({ readOnly: true }) };
-  mountTaskShellRoutes(fakeApp(handlers), { getRuntime: () => runtime,
+  const { ok } = mountHost(fakeApp(), { getRuntime: () => runtime,
     taskIndex: () => ({ version: 1, shellId: 'sh_1', tasks: [], scopeRevision: 'r1' }) });
-  let body = null;
-  await handlers.get('GET /api/task-shells/:shellId/task-index')({ params: { shellId: 'sh_1' }, query: {} },
-    { json: value => { body = value; } });
-  assert.equal(body.scopeRevision, 'r1');
+  const value = await ok({ op: 'task-index', shellId: 'sh_1', includeEmpty: false });
+  assert.equal(value.scopeRevision, 'r1');
 });
 
-test('index route reports a clean error envelope when the shell is unknown', async () => {
-  const handlers = new Map();
-  mountTaskShellRoutes(fakeApp(handlers), { getRuntime: () => ({}),
+test('index op reports a clean error envelope when the shell is unknown', async () => {
+  const { fail } = mountHost(fakeApp(), { getRuntime: () => ({}),
     taskIndex: () => { throw Object.assign(new Error('shell_not_found'), { code: 'shell_not_found', status: 404 }); } });
-  let status = null, body = null;
-  await handlers.get('GET /api/task-shells/:shellId/task-index')({ params: { shellId: 'missing' }, query: {} },
-    { json: value => { body = value; }, status: code => { status = code; return { json: value => { body = value; } }; } });
-  assert.equal(status, 404);
-  assert.equal(body.ok, false);
-  assert.equal(body.code, 'shell_not_found');
+  const error = await fail({ op: 'task-index', shellId: 'missing', includeEmpty: false });
+  assert.equal(error.status, 404);
+  assert.equal(error.code, 'shell_not_found');
 });
 
 test('exactly one entry is marked as the shell current input target', () => {

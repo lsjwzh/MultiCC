@@ -340,14 +340,21 @@ test('remote-screen e2e harness: the real binary serves frames, input, wake cons
   const region = JSON.parse(fs.readFileSync(`${shot.path}.json`, 'utf8'));
   const point = { x: 200, y: 120 };
 
-  const annotated = await fetch(`${h.server}/api/annotation-live`, {
+  // 公开的 /api/annotation-live 归 Rust 前门；这台裸 server.js 没有前门，所以
+  // 直接打宿主端口，喂一份前门会归一化出来的 DTO（b 缺省 null）。这里要证的
+  // 是标注 → remote-screen → 假 Agent 的落点换算，归一化由前门用例守。
+  const annotated = await fetch(`${h.direct}/api/__host/events`, {
     method: 'POST',
     headers: { ...auth, 'content-type': 'application/json' },
-    body: JSON.stringify({ src: shot.path, width: imageWidth, height: imageHeight, kind: 'point', a: point }),
+    body: JSON.stringify({
+      op: 'annotation-relay',
+      payload: { src: shot.path, width: imageWidth, height: imageHeight, kind: 'point', a: point, b: null },
+    }),
   });
   assert.equal(annotated.status, 200, h.serverLog().slice(-1500));
-  const annotateBody = await annotated.json();
-  assert.equal(annotateBody.ok, true);
+  const hostBody = await annotated.json();
+  assert.equal(hostBody.ok, true, JSON.stringify(hostBody));
+  const annotateBody = hostBody.value;
   assert.equal(annotateBody.relayed, 1);
   assert.equal(annotateBody.results?.[0]?.ok, true, JSON.stringify(annotateBody));
   assert.equal(annotateBody.results?.[0]?.refresh, true);

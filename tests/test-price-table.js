@@ -29,7 +29,7 @@ const {
   FIRST_PARTY_PROVIDERS,
   DEFAULT_REMOTE_URL,
 } = require('../src/pricing/price-table');
-const { mountPricingRoutes, MAX_LOOKUP_MODELS } = require('../src/routes/pricing');
+const { createQuotaRuntime } = require('../src/routes/quota-host');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SEED_FILE = path.join(REPO_ROOT, 'src', 'pricing', 'seed-prices.json');
@@ -668,68 +668,51 @@ test('the shipped seed prices the first-party providers offline', () => {
   assert.equal(table.lookup('anthropic/claude-sonnet-4-5').matchedBy, 'normalized');
 });
 
-// ── routes ────────────────────────────────────────────────────────────────
+// ── the host port the retired pricing handlers now feed ───────────────────
+//
+// The four routes are the Rust front door's now (native/gateway/src/app/
+// quota_routes.rs): parsing `?models=`, the three 400s, `?limit=` capping and
+// the `{ok:true,...}` envelopes are pinned by that crate's tests and by
+// docs/rust-migration/differential/quota-routes.js. What is still Node's is
+// this port — the reads over the real price table — so that is what these
+// tests exercise.
 
-test('pricing routes expose status, bulk lookup, search and refresh', async () => {
+test('the quota host serves the three pricing reads over the real price table', async () => {
   const { table } = fixtureTable(test);
-  const { app, routes } = fakeApp();
-  mountPricingRoutes(app, { priceTable: table });
+  const runtime = createQuotaRuntime({ priceTable: table, now: () => 1700000000000 });
 
-  const status = fakeRes();
-  routes['GET /api/pricing/status']({ query: {} }, status);
-  assert.equal(status.body.ok, true);
-  assert.equal(status.body.status.source, 'opencode-cache');
-  assert.equal(status.body.status.pricedCount, FIXTURE_COUNTS.priced);
+  const status = await runtime.handle({ op: 'pricing.status' });
+  assert.equal(status.status.source, 'opencode-cache');
+  assert.equal(status.status.pricedCount, FIXTURE_COUNTS.priced);
 
-  const lookup = fakeRes();
-  routes['GET /api/pricing/lookup']({ query: { models: 'gpt-5, claude-sonnet-4-5 ,,gpt-5,nope' } }, lookup);
-  assert.equal(lookup.statusCode, 200);
-  assert.deepEqual(Object.keys(lookup.body.prices), ['gpt-5', 'claude-sonnet-4-5', 'nope']);
-  assert.equal(lookup.body.prices['gpt-5'].providerKey, 'openai');
-  assert.equal(lookup.body.prices.nope, null);
-  assert.equal(lookup.body.status.source, 'opencode-cache');
+  const lookup = await runtime.handle({
+    op: 'pricing.lookup',
+    models: ['gpt-5', 'claude-sonnet-4-5', 'nope'],
+  });
+  assert.deepEqual(Object.keys(lookup.prices), ['gpt-5', 'claude-sonnet-4-5', 'nope']);
+  assert.equal(lookup.prices['gpt-5'].providerKey, 'openai');
+  assert.equal(lookup.prices.nope, null);
+  assert.equal(lookup.status.source, 'opencode-cache');
 
-  const search = fakeRes();
-  routes['GET /api/pricing/search']({ query: { q: 'gpt-5', limit: '2' } }, search);
-  assert.equal(search.body.count, 2);
-  assert.equal(search.body.results.length, 2);
-  assert.equal(search.body.query, 'gpt-5');
+  const search = await runtime.handle({ op: 'pricing.search', query: 'gpt-5', limit: 2 });
+  assert.equal(search.results.length, 2);
+  assert.equal(search.status.source, 'opencode-cache');
 
-  const capped = fakeRes();
-  routes['GET /api/pricing/search']({ query: { q: 'claude', limit: '500' } }, capped);
-  assert.equal(capped.statusCode, 200, 'an oversized limit is capped, not refused');
-  assert.equal(capped.body.count, 5);
+  // `?limit=` is clamped by the front door (search_limit in native/core); the
+  // port passes through whatever number the front door hands it.
+  const five = await runtime.handle({ op: 'pricing.search', query: 'claude', limit: 5 });
+  assert.equal(five.results.length, 5);
 
-  const empty = fakeRes();
-  routes['GET /api/pricing/search']({ query: {} }, empty);
-  assert.equal(empty.body.count, 0);
+  // An empty list never reaches this port — the front door refuses it with
+  // `models_required` (pricing_refusals_never_reach_the_host in
+  // native/gateway/tests/quota_routes.rs). If it did, the port is permissive.
+  const empty = await runtime.handle({ op: 'pricing.lookup', models: [] });
+  assert.deepEqual(empty.prices, {});
 });
 
-test('pricing routes refuse oversized or empty bulk lookups', () => {
-  const { table } = fixtureTable(test);
-  const { app, routes } = fakeApp();
-  mountPricingRoutes(app, { priceTable: table });
-
-  const missing = fakeRes();
-  routes['GET /api/pricing/lookup']({ query: {} }, missing);
-  assert.equal(missing.statusCode, 400);
-  assert.equal(missing.body.error, 'models_required');
-
-  const tooMany = fakeRes();
-  const ids = Array.from({ length: MAX_LOOKUP_MODELS + 1 }, (unused, index) => `model-${index}`).join(',');
-  routes['GET /api/pricing/lookup']({ query: { models: ids } }, tooMany);
-  assert.equal(tooMany.statusCode, 400);
-  assert.equal(tooMany.body.error, 'too_many_models');
-
-  const tooLong = fakeRes();
-  routes['GET /api/pricing/lookup']({ query: { models: `${'x'.repeat(101)}` } }, tooLong);
-  assert.equal(tooLong.statusCode, 400);
-  assert.equal(tooLong.body.error, 'model_too_long');
-});
-
-test('pricing refresh route awaits the table and reports it, failures included', async () => {
-  // A stub, not the real frozen table: the route's job is to await whatever it
-  // is handed and report the outcome, including a rejection.
+test('pricing refresh awaits the table and lets a rejection through as a refusal', async () => {
+  // A stub, not the real frozen table: the op's job is to await whatever it is
+  // handed and report the outcome, including a rejection.
   const stub = {
     calls: [],
     lookupMany: () => ({}),
@@ -740,42 +723,59 @@ test('pricing refresh route awaits the table and reports it, failures included',
       return { forced: Boolean(force) };
     },
   };
-  const { app, routes } = fakeApp();
-  mountPricingRoutes(app, { priceTable: stub });
+  const runtime = createQuotaRuntime({ priceTable: stub, now: () => 1700000000000 });
+  assert.deepEqual(await runtime.handle({ op: 'pricing.refresh' }), { status: { forced: false } });
+  assert.deepEqual(await runtime.handle({ op: 'pricing.refresh', force: true }), { status: { forced: true } });
+  assert.deepEqual(stub.calls, [false, true], 'force arrives already decided by the front door');
 
-  const res = fakeRes();
-  await routes['POST /api/pricing/refresh']({ query: {}, body: {} }, res);
-  assert.deepEqual(res.body, { ok: true, status: { forced: false } });
-  const forced = fakeRes();
-  await routes['POST /api/pricing/refresh']({ query: { force: '1' }, body: {} }, forced);
-  assert.deepEqual(forced.body, { ok: true, status: { forced: true } });
-  const bodyForce = fakeRes();
-  await routes['POST /api/pricing/refresh']({ body: { force: true } }, bodyForce);
-  assert.equal(bodyForce.body.status.forced, true);
-  assert.deepEqual(stub.calls, [false, true, true]);
-
-  // A broken table is a 500 with the house error envelope, not an unhandled
-  // rejection (server.js is not the only user of the fallback wrapper).
-  const broken = fakeApp();
-  mountPricingRoutes(broken.app, { priceTable: { ...stub, refresh: () => Promise.reject(new Error('boom')) } });
-  const failure = fakeRes();
-  await broken.routes['POST /api/pricing/refresh']({ query: {}, body: {} }, failure);
-  assert.equal(failure.statusCode, 500);
-  assert.deepEqual(failure.body, { ok: false, error: 'pricing request failed' });
+  // A broken table rejects out of the op; the mount maps that to the 500 the
+  // front door renders as internal_error (safeErrorHandler's shape).
+  const broken = createQuotaRuntime({
+    priceTable: { ...stub, refresh: () => Promise.reject(new Error('boom')) },
+    now: () => 1700000000000,
+  });
+  await assert.rejects(broken.handle({ op: 'pricing.refresh' }), /boom/);
 });
 
-test('mountPricingRoutes requires a table and uses the injected asyncHandler', () => {
-  const { table } = fixtureTable(test);
-  const { app } = fakeApp();
-  assert.throws(() => mountPricingRoutes(app, {}), /priceTable/);
-  // A host without express route registration is a no-op, not an error.
-  assert.equal(mountPricingRoutes(null, { priceTable: table }), null);
+function hostHandler(deps) {
+  const registered = [];
+  createQuotaRuntime(deps).mount({ post: (routePath, handler) => registered.push({ routePath, handler }) });
+  assert.equal(registered.length, 1, 'the port is one POST, not a route family');
+  assert.equal(registered[0].routePath, '/api/__host/quota');
+  return registered[0].handler;
+}
 
-  const wrapped = [];
-  const { app: second } = fakeApp();
-  mountPricingRoutes(second, {
+test('the quota host answers only loopback, in the success/refusal envelope', async () => {
+  const { table } = fixtureTable(test);
+
+  const remote = hostHandler({ priceTable: table, isLocal: () => false });
+  let res = fakeRes();
+  await remote({ body: { op: 'pricing.status' } }, res);
+  assert.equal(res.statusCode, 404, 'a non-loopback caller cannot reach the port');
+  assert.deepEqual(res.body, { error: 'not found' });
+
+  const local = hostHandler({ priceTable: table, isLocal: () => true });
+  res = fakeRes();
+  await local({ body: { op: 'pricing.status' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.value.status.source, 'opencode-cache');
+
+  res = fakeRes();
+  await local({ body: { op: 'nope.at.all' } }, res);
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.body, { error: 'unknown host operation' });
+
+  // A dependency that throws outside its own catch is a refusal: the retired
+  // handlers read err.code / err.message straight into their envelopes, so the
+  // port carries them out untouched (ark.login is the one such call).
+  const refusing = hostHandler({
     priceTable: table,
-    asyncHandler: (handler) => { wrapped.push(handler); return handler; },
+    isLocal: () => true,
+    resolveArkcliBin: () => { throw Object.assign(new Error('no arkcli'), { code: 'ENOENT' }); },
   });
-  assert.equal(wrapped.length, 1, 'only the awaiting route needs the wrapper');
+  res = fakeRes();
+  await refusing({ body: { op: 'ark.login' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, { ok: false, error: { code: 'ENOENT', message: 'no arkcli' } });
 });

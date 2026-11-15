@@ -279,8 +279,12 @@ test('notification placeholders preserve current values while empty strings clea
 test('server mounts the host port and retains no inline host read GETs', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const writeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-write.js'), 'utf8');
+  const hostOpsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-ops-host.js'), 'utf8');
   assert.match(source, /mountHostReadHostRoute\(app, \{/);
-  assert.match(source, /mountHostWriteRoutes\(app, \{/);
+  // The mutable host plane (host-write + host-power) now rides the host-ops
+  // port; server.js only builds the dependency table and asks the host to mount.
+  assert.match(source, /createHostOpsHost\(\{/);
+  assert.match(hostOpsSource, /mountHostWriteRoutes\(app, hostWrite\)/);
   assert.match(writeSource, /resolveNotifySettingsUpdates\(req\.body \|\| \{\}, current\)/);
   assert.equal(fs.existsSync(path.join(__dirname, '..', 'src', 'routes', 'host-read.js')), false);
   for (const routePath of [

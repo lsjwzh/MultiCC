@@ -7,6 +7,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { createFcmDevices } = require('../src/push/fcm-devices');
 const { createFcmTransport } = require('../src/push/fcm-transport');
+const { basePush, createPushHost } = require('./helpers/push-host-call');
 const { assertTestDir } = require('../src/paths');
 const device = (extra = {}) => ({ id: 'device_1234567890123456', binding: 'binding_12345678901234', token: 'fcm-token-12345678901234567890', projectId: 'multicc-test', ...extra });
 function fixture(t, options = {}) {
@@ -135,23 +136,17 @@ test('only explicit FCM UNREGISTERED expires a token, not generic 404 or permiss
   }
 });
 
-test('device routes expose no tokens and targeted tests report acceptance or failure truthfully', async t => {
+test('fcm host ops expose no tokens and targeted tests report acceptance or failure truthfully', async t => {
   const { devices, transport } = fixture(t);
-  const routes = new Map();
-  const app = Object.fromEntries(['get', 'post', 'delete'].map(method => [method, (url, handler) => routes.set(`${method} ${url}`, handler)]));
-  devices.mountRoutes(app, handler => handler);
-  const invoke = async (method, path, body) => {
-    const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(value) { this.body = value; return this; } };
-    await routes.get(`${method} ${path}`)({ body }, res);
-    return res;
-  };
-  assert.equal((await invoke('post', '/api/push/fcm', device())).statusCode, 200);
-  const result = await invoke('get', '/api/push/fcm');
-  assert.equal(result.body.devices, 1);
-  assert.doesNotMatch(JSON.stringify(result.body), /fcm-token|binding_123/);
-  assert.equal((await invoke('post', '/api/push/fcm/test', { id: device().id })).body.accepted, 1);
+  const host = createPushHost({ push: basePush({ fcmDevices: devices }) });
+  const register = await host.call({ op: 'fcm-register', body: device() });
+  assert.equal(register.body.value.status, 200);
+  const result = (await host.call({ op: 'fcm-status' })).body.value;
+  assert.equal(result.devices, 1);
+  assert.doesNotMatch(JSON.stringify(result), /fcm-token|binding_123/);
+  assert.equal((await host.call({ op: 'fcm-test', id: device().id })).body.value.accepted, 1);
   transport.send = async () => ({ ok: false, code: 'unavailable' });
-  assert.equal((await invoke('post', '/api/push/fcm/test', { id: device().id })).statusCode, 502);
-  await invoke('delete', '/api/push/fcm', device());
+  assert.equal((await host.call({ op: 'fcm-test', id: device().id })).body.value.ok, false);
+  await host.call({ op: 'fcm-remove', body: device() });
   assert.equal(devices.status().devices, 0);
 });

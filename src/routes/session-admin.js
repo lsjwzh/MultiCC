@@ -1,12 +1,17 @@
 'use strict';
 
 const { createSessionQueryService, createWorkspaceService } = require('../session');
-const { isTerminalLetter, isSettledLetter, classifyDisplay, GOAL_STATES } = require('../classify/vocab');
+const { classifyDisplay } = require('../classify/vocab');
 const { taskShortCode } = require('../classify/task-short-code');
 const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
-const { providerSelectionDto } = require('../providers/auto-provider-config');
-const { mountTaskGoalRoutes } = require('./task-goal');
+const { markTaskAchievedFacts, markTaskAchievedWrite } = require('./task-goal');
 const { mountUnattendedRoutes } = require('../unattended/routes');
+const {
+  assistantText,
+  latestAssistant,
+  latestStringAssistant,
+  mountSessionAdminHostRoute,
+} = require('./session-admin-host');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[session-admin] ${name} must be a function`);
@@ -35,53 +40,18 @@ function assertDependencies(deps) {
     'cliAvailabilitySummary', 'sessionProviderBaseUrl',
     'getInvalidSession', 'getWorkspaceStatus',
     'getSessionSummary', 'getTaskState', 'pendingNotesFor', 'getAuxRuntime',
-    'loadChatHistory', 'isInjectedOrJunkGoal', 'buildClassifySystemPrompt',
-    'buildClassifyConversation', 'parseClassifyResult', 'dispatchStateAction',
-    'runClassifyNow', 'createErrorDto', 'requestContext', 'withApiMeta',
+    'dispatchStateAction', 'runClassifyNow',
   ]) assertFunction(deps[name], name);
+  // Transcript reads moved to the host port; the legacy cloning loader is still
+  // accepted for hosts that never wired the uncopied view.
+  if (typeof deps.viewChatHistory !== 'function' && typeof deps.loadChatHistory !== 'function') {
+    throw new TypeError('[session-admin] dependency missing: viewChatHistory');
+  }
   return deps;
-}
-
-function assistantText(message) {
-  if (!message || message.role !== 'assistant') return '';
-  if (typeof message.content === 'string') return message.content;
-  if (!Array.isArray(message.content)) return '';
-  return message.content
-    .filter(block => block && block.type === 'text')
-    .map(block => String(block.text || ''))
-    .join(' ');
-}
-
-function latestAssistant(history, minLength = 20) {
-  const source = Array.isArray(history) ? history : [];
-  for (let index = source.length - 1; index >= 0; index -= 1) {
-    const message = source[index];
-    if (!message || message.role !== 'assistant'
-        || (typeof message.content !== 'string' && !Array.isArray(message.content))) continue;
-    const text = assistantText(message);
-    if (text.length >= minLength) return { text, ts: message.ts || null };
-  }
-  return { text: '', ts: null };
-}
-
-function latestStringAssistant(history, minLength = 20) {
-  const source = Array.isArray(history) ? history : [];
-  for (let index = source.length - 1; index >= 0; index -= 1) {
-    const message = source[index];
-    if (message?.role !== 'assistant' || typeof message.content !== 'string') continue;
-    if (message.content.length >= minLength) return message.content;
-  }
-  return '';
 }
 
 function createSessionAdminRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
-  // Read-only admin views only need the transcript's current contents. Prefer
-  // the uncopied runtime view when the host provides it; hosts that only pass
-  // the cloning loader keep working.
-  const viewChatHistory = typeof rawDeps.viewChatHistory === 'function'
-    ? rawDeps.viewChatHistory : deps.loadChatHistory;
-
   // A judgement Aux has stopped revising is still the best description there
   // is, but it must not be presented as current (see
   // src/classify/aux-verdict-health.js). Every presenter below whitelists its
@@ -168,78 +138,6 @@ function createSessionAdminRuntime(rawDeps) {
     },
   });
 
-  function legacySessionListPresenter({ record, runtime }) {
-    const useChatRuntime = record.kind === 'chat' || !runtime.terminalActive;
-    return {
-      id: record.id,
-      dirId: record.dirId || null,
-      cli: record.cli || 'claude',
-      kind: record.kind || 'terminal',
-      type: record.type || null,   // 'commander' etc. — lets the UI badge/guard by role
-      cliSessionId: record.cliSessionId || null,
-      label: record.label || null,
-      model: record.model || null,
-      effectiveModel: runtime.effectiveModel,
-      effort: record.effort || null,
-      effectiveEffort: runtime.effectiveEffort,
-      agent: record.agent || null,
-      rolePrompt: record.rolePrompt || null,
-      rolePresetId: record.rolePresetId || null,
-      provider: record.provider || null,
-      providerSelection: providerSelectionDto(record.providerSelection),
-      experimentalMode: record.experimentalMode || null,
-      subagent: runtime.subagent,
-      autoCommit: record.autoCommit !== false,
-      cliStates: deps.cliStateSummary(record),
-      pendingCliHandoff: deps.cliHandoffSummary(record),
-      pendingConfiguration: record.pendingConfiguration || null,
-      cwd: runtime.sessionCwd,
-      createdAt: record.createdAt,
-      mergeState: runtime.mergeState,
-      lastActivity: record.kind === 'chat'
-        ? runtime.chatLastActivity
-        : runtime.terminalLastActivity,
-      clients: useChatRuntime ? runtime.chatClients : runtime.terminalClients,
-      active: useChatRuntime ? runtime.chatActive : true,
-    };
-  }
-
-  function legacyDirectorySessionPresenter({ record, runtime }) {
-    const useTerminalRuntime = record.kind === 'terminal';
-    return {
-      id: record.id,
-      dirId: record.dirId,
-      cli: record.cli,
-      kind: record.kind,
-      type: record.type || null,   // 'commander' etc. — lets the UI badge/guard by role
-      cliSessionId: record.cliSessionId || null,
-      label: record.label || null,
-      model: record.model || null,
-      effort: record.effort || null,
-      effectiveEffort: runtime.effectiveEffort,
-      agent: record.agent || null,
-      rolePrompt: record.rolePrompt || null,
-      rolePresetId: record.rolePresetId || null,
-      provider: record.provider || null,
-      providerSelection: providerSelectionDto(record.providerSelection),
-      experimentalMode: record.experimentalMode || null,
-      subagent: runtime.subagent,
-      cliStates: deps.cliStateSummary(record),
-      pendingCliHandoff: deps.cliHandoffSummary(record),
-      pendingConfiguration: record.pendingConfiguration || null,
-      createdAt: record.createdAt,
-      branch: record.branch || null,
-      worktreePath: record.worktreePath || null,
-      invalid: deps.getInvalidSession(record.id) || null,
-      mergeState: runtime.mergeState,
-      lastActivity: record.kind === 'chat'
-        ? runtime.chatLastActivity
-        : runtime.terminalLastActivity,
-      active: useTerminalRuntime ? runtime.terminalActive : runtime.chatActive,
-      clients: useTerminalRuntime ? runtime.terminalClients : runtime.chatClients,
-    };
-  }
-
   function legacyWorkspacePresenter({ session, facts }) {
     const record = session.record;
     const runtime = session.runtime;
@@ -269,347 +167,30 @@ function createSessionAdminRuntime(rawDeps) {
     };
   }
 
-  function legacySessionDetailPresenter({ record, runtime }) {
-    const cli = record.cli || 'claude';
-    const isClaudeChat = cli === 'claude' && record.kind !== 'terminal';
-    return {
-      id: record.id,
-      cwd: runtime.cwd,
-      createdAt: runtime.createdAt,
-      lastActivity: runtime.lastActivity,
-      clients: runtime.clients || 0,
-      active: !!runtime.active,
-      mergeState: runtime.mergeState,
-      cli,
-      type: record.type || null,   // 'commander' etc. — lets the UI badge/guard by role
-      model: record.model || null,
-      effectiveModel: runtime.effectiveModel,
-      effort: record.effort || null,
-      effectiveEffort: runtime.effectiveEffort,
-      agent: record.agent || null,
-      rolePrompt: record.rolePrompt || null,
-      rolePresetId: record.rolePresetId || null,
-      memory: record.memory || null,
-      provider: record.provider || null,
-      providerSelection: providerSelectionDto(record.providerSelection),
-      providerBaseUrl: deps.sessionProviderBaseUrl(record),
-      cliAccounts: record.cliAccounts || null, // per-lane API-key account picks (ids only, never keys)
-      experimentalMode: record.experimentalMode || null,
-      subagent: runtime.subagent,
-      cliStates: deps.cliStateSummary(record),
-      cliAvailability: deps.cliAvailabilitySummary(),
-      pendingCliHandoff: deps.cliHandoffSummary(record),
-      pendingConfiguration: record.pendingConfiguration || null,
-      streaming: isClaudeChat,
-      autoContinue: record.autoContinue !== false,
-      autoCommit: record.autoCommit !== false,
-      // P1/P3: task-bound chat sessions are fleet-hidden but directly
-      // addressable — the marker (plus identity fields) lets a client that
-      // already holds the id open the session without a fleet-list entry.
-      taskBoundTaskId: record.taskBoundTaskId || null,
-      dirId: record.dirId || null,
-      label: record.label || null,
-    };
-  }
-
-  function workspaceContractView(snapshot) {
-    return {
-      directory: snapshot.directory,
-      sessions: snapshot.sessions.map(entry => {
-        const {
-          status, statusUpdatedAt, runStartedAt, runEndedAt, pendingNotes,
-          summary, summaryAt, classifyState, goal, phase, ...session
-        } = entry;
-        return {
-          session, status, statusUpdatedAt, runStartedAt, runEndedAt,
-          pendingNotes, summary, summaryAt, classifyState, goal, phase,
-        };
-      }),
-      count: snapshot.count,
-    };
-  }
-
-  function v1Error(req, res, status, message, code) {
-    return res.status(status).json(deps.createErrorDto({
-      ...deps.requestContext(req, res), message, code,
-    }));
-  }
-
-  function auxRuntime() {
-    const runtime = deps.getAuxRuntime();
-    if (!runtime || !runtime.queue) throw new Error('[session-admin] aux runtime unavailable');
-    return runtime;
-  }
-
-  function enqueueClassification(sessionId, record, reply) {
-    const chat = deps.chatSessions.get(sessionId);
-    if (!chat) return;
-    const previous = chat.currentAssistantText;
-    chat.currentAssistantText = reply;
-    try {
-      // Legacy endpoint name retained. The action now replays task attribution
-      // only; turn state remains owned by structured finalization rules.
-      deps.runClassifyNow(chat, sessionId, { manual: true });
-    } finally {
-      chat.currentAssistantText = previous;
-    }
-  }
-
-  function classificationReply(sessionId) {
-    try {
-      return latestStringAssistant(viewChatHistory(sessionId), 20);
-    } catch (_) {
-      // Preserve the legacy admin contract: an unreadable history behaves like
-      // an empty one for a single request and cannot abort a bulk reclassify pass.
-      return '';
-    }
-  }
-
   function workspaceSnapshot(dirId) {
     const snapshot = sessionWorkspace.snapshot(dirId, { presenter: legacyWorkspacePresenter });
     return snapshot ? snapshot.sessions : [];
   }
 
-  function mountRoutes(app) {
+  function mountRoutes(app, { unattendedApp = null } = {}) {
     if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
       throw new TypeError('[session-admin] Express app is required');
     }
 
-    app.get('/api/v1/sessions', (req, res) => {
-      const list = sessionQuery.list();
-      res.json(deps.withApiMeta(
-        { sessions: list, count: list.length },
-        deps.requestContext(req, res),
-      ));
+    // 13 条公开路由（/api/v1/sessions*、/api/sessions*、/api/directories/:id/*、
+    // /api/reclassify-all、/api/debug/classify*）已由 Rust 前门独占；这里只把
+    // 进程内事实与副作用暴露成回环宿主端口。
+    mountSessionAdminHostRoute(app, {
+      deps,
+      sessionView,
+      readSessionRuntime,
     });
-
-    app.get('/api/v1/sessions/:id', (req, res) => {
-      const session = sessionQuery.get(req.params.id, { includeTaskBound: true });
-      if (!session) return v1Error(req, res, 404, 'session not found', 'session_not_found');
-      return res.json(deps.withApiMeta({ session }, deps.requestContext(req, res)));
-    });
-
-    app.get('/api/v1/directories/:id/workspace', (req, res) => {
-      const snapshot = sessionWorkspace.snapshot(req.params.id);
-      if (!snapshot) return v1Error(req, res, 404, 'directory not found', 'directory_not_found');
-      return res.json(deps.withApiMeta(
-        { workspace: workspaceContractView(snapshot) },
-        deps.requestContext(req, res),
-      ));
-    });
-
-    app.get('/api/sessions', (req, res) => {
-      const list = sessionQuery.list({ presenter: legacySessionListPresenter });
-      const aux = auxRuntime();
-      const record = deps.records.get(aux.id);
-      if (record) {
-        list.unshift({
-          id: aux.id,
-          cwd: record.cwd,
-          createdAt: record.createdAt,
-          lastActivity: aux.queue.lastTaskTime ? new Date(aux.queue.lastTaskTime) : null,
-          clients: aux.queue.clients.size,
-          active: aux.queue.processing,
-          type: 'aux',
-          label: record.label || 'AI Assistant',
-          auxStatus: aux.queue.getStatus(),
-        });
-      }
-      res.json(list);
-    });
-
-    app.post('/api/sessions/:id/reclassify', (req, res) => {
-      const record = deps.records.get(req.params.id);
-      if (!record) return res.status(404).json({ error: 'session not found' });
-      if (record.type === 'aux' || record.type === 'gateway') {
-        return res.status(400).json({ error: 'not a chat session' });
-      }
-      const task = deps.getTaskState(record);
-      const force = String(req.query.force).toLowerCase() === 'true';
-      if (isSettledLetter(task.classifyState) && !force) {
-        return res.json({
-          ok: true,
-          skipped: true,
-          classifyState: task.classifyState,
-          note: `会话状态为 ${task.classifyState}，跳过重判（需用户发新消息触发，或 ?force=true 强制）`,
-        });
-      }
-      const reply = classificationReply(req.params.id);
-      if (reply.length < 20) {
-        return res.status(400).json({ error: 'no assistant reply to classify against' });
-      }
-      enqueueClassification(req.params.id, record, reply);
-      return res.json({ ok: true, note: 'reclassify enqueued; 状态更新会通过 WS 异步到达' });
-    });
-
-    // Back-compatible endpoint for a manual TURN verdict. It flips W to
-    // D/succeeded, but deliberately does not mutate TaskBoard lifecycle status.
-    app.post('/api/sessions/:id/mark-task-done', (req, res) => {
-      const id = req.params.id;
-      const record = deps.records.get(id);
-      if (!record) return res.status(404).json({ error: 'session not found' });
-      if (record.type === 'aux' || record.type === 'gateway') {
-        return res.status(400).json({ error: 'not a chat session' });
-      }
-      const task = deps.getTaskState(record);
-      if (isTerminalLetter(task.classifyState)) {
-        return res.json({
-          ok: true, alreadySucceeded: true, alreadyDone: true,
-          classifyState: 'D', turnOutcome: 'succeeded',
-        });
-      }
-      const cs = deps.chatSessions.get(id);
-      if (cs && cs.isStreaming) {
-        return res.status(409).json({ error: 'session is streaming', note: '会话正在执行，无法标记执行成功' });
-      }
-      // 'D' — the LETTER, not the pre-letter word 'completed'. dispatchStateAction
-      // compares against letters: any other value falls through to the W/B/E arm,
-      // persists itself verbatim as classifyState, and is neither terminal nor
-      // settled — so the scan picks the task back up 60s later and the manual
-      // "done" silently reverts to waiting.
-      deps.dispatchStateAction(
-        { state: 'D', goal: task.goal || '', phase: task.phase || '' },
-        { sessionName: id, sessionId: id, cs: cs || null, isTerminal: record.kind !== 'chat' },
-      );
-      return res.json({ ok: true, classifyState: 'D', turnOutcome: 'succeeded' });
-    });
-
-    // Manual D sub-state: the user declares a 「需要交互」 turn 「达成目标」. Only
-    // the display/filter sub-state moves (goalState → achieved); the letter stays
-    // D and the TaskBoard lifecycle is untouched. goalStateManualAt keeps the
-    // late attribution refine (state-machine) from painting interact back.
-    app.post('/api/sessions/:id/mark-goal-achieved', (req, res) => {
-      const id = req.params.id;
-      const record = deps.records.get(id);
-      if (!record) return res.status(404).json({ error: 'session not found' });
-      if (record.type === 'aux' || record.type === 'gateway') {
-        return res.status(400).json({ error: 'not a chat session' });
-      }
-      if (typeof deps.setTaskState !== 'function') {
-        return res.status(501).json({ error: 'task state writes unavailable' });
-      }
-      const task = deps.getTaskState(record);
-      if (!isTerminalLetter(task.classifyState)) {
-        return res.status(409).json({
-          error: 'turn not succeeded', classifyState: task.classifyState || null,
-          note: '只有执行成功的一轮才能标记为达成目标',
-        });
-      }
-      if (task.goalState === GOAL_STATES.achieved) {
-        return res.json({ ok: true, alreadyAchieved: true, classifyState: 'D', goalState: GOAL_STATES.achieved });
-      }
-      deps.setTaskState(id, { goalState: GOAL_STATES.achieved, goalStateManualAt: Date.now() });
-      return res.json({ ok: true, classifyState: 'D', goalState: GOAL_STATES.achieved });
-    });
-
-    app.post('/api/reclassify-all', (req, res) => {
-      const onlyJunk = req.body?.onlyJunk !== false;
-      const ids = [];
-      for (const [sessionId, record] of deps.records) {
-        if (!record || record.type === 'aux' || record.type === 'gateway') continue;
-        const task = deps.getTaskState(record);
-        if (isSettledLetter(task.classifyState)) continue;
-        if (onlyJunk && !deps.isInjectedOrJunkGoal(task.goal)) continue;
-        const reply = classificationReply(sessionId);
-        if (reply.length < 20) continue;
-        enqueueClassification(sessionId, record, reply);
-        ids.push(sessionId);
-      }
-      return res.json({ ok: true, count: ids.length, ids, onlyJunk });
-    });
-
-    app.get('/api/directories/:id/sessions', (req, res) => {
-      const directory = deps.directories.get(req.params.id);
-      if (!directory) return res.status(404).json({ error: 'directory not found' });
-      const sessions = sessionQuery.list({
-        dirId: directory.id,
-        includeHidden: true,
-        presenter: legacyDirectorySessionPresenter,
-      });
-      return res.json({ directory, sessions });
-    });
-
-    app.get('/api/directories/:id/workspace', (req, res) => {
-      const directory = deps.directories.get(req.params.id);
-      if (!directory) return res.status(404).json({ error: 'directory not found' });
-      return res.json({ directory, sessions: workspaceSnapshot(directory.id) });
-    });
-
-    app.get('/api/sessions/:id', (req, res) => {
-      // includeTaskBound: task-bound chat sessions are ordinary sessions that
-      // are merely unlisted; direct addressing is their whole point (P1).
-      const detail = sessionQuery.get(req.params.id, {
-        includeHidden: true,
-        includeTaskBound: true,
-        presenter: legacySessionDetailPresenter,
-      });
-      if (!detail) return res.status(404).json({ error: 'Session not found' });
-      return res.json(detail);
-    });
-
-    app.post('/api/debug/classify/:id', (req, res) => {
-      const sessionName = req.params.id;
-      const record = deps.records.get(sessionName);
-      if (!record) return res.status(404).json({ error: 'session not found' });
-      const history = viewChatHistory(sessionName);
-      if (!history.length) return res.status(400).json({ error: 'no history' });
-      const latest = latestAssistant(history, 0);
-      if (!latest.text || latest.text.length < 20) {
-        return res.status(400).json({ error: 'no valid assistant text', len: latest.text.length });
-      }
-      const chat = deps.chatSessions.get(sessionName);
-      if (!chat) return res.status(400).json({ error: 'session not active' });
-      const task = deps.getTaskState(record);
-      const force = String(req.query.force).toLowerCase() === 'true';
-      if (isSettledLetter(task.classifyState) && !force) {
-        return res.status(409).json({
-          error: `session is ${task.classifyState}; use ?force=true to override`,
-          classifyState: task.classifyState,
-        });
-      }
-      chat.currentAssistantText = latest.text;
-      deps.runClassifyNow(chat, sessionName);
-      const tail = latest.text.slice(-1500);
-      return res.json({
-        ok: true,
-        sessionName,
-        triggered: true,
-        tailPreview: tail.slice(-300).replace(/\n/g, ' '),
-        note: 'classify enqueued — check server logs for classify RESULT',
-      });
-    });
-
-    app.get('/api/debug/classify-test-cases', (req, res) => {
-      const cases = [];
-      for (const [sessionId, record] of deps.records) {
-        if (!record || record.type === 'aux' || record.type === 'gateway' || record.kind !== 'chat') continue;
-        const latest = latestAssistant(viewChatHistory(sessionId), 0);
-        if (!latest.text || latest.text.length < 40) continue;
-        const tail = latest.text.slice(-1500);
-        const task = record.taskState || {};
-        cases.push({
-          sessionId,
-          label: record.label || '',
-          classifyState: task.classifyState || null,
-          goal: task.goal || '',
-          summary: record.summary || '',
-          lastAssistantTail300: tail.slice(-300),
-          lastAssistantFullTail: tail,
-          lastActivity: record.lastActivity || null,
-          lastTs: latest.ts ? new Date(latest.ts).toISOString() : null,
-        });
-      }
-      cases.sort((left, right) => (right.lastTs || '').localeCompare(left.lastTs || ''));
-      return res.json({ count: cases.length, cases });
-    });
-
-    // Air 的「标记达成」：语义与上面的 /mark-goal-achieved 相同，只是入口给的是
-    // taskId。挂在这里是因为 deps 里已经有真正的状态 writer（server.js 的
-    // setTaskState）；air-routes 的依赖没有它，另写一份写盘 + 广播就是第二套实现。
-    mountTaskGoalRoutes(app, deps);
-    // Unattended mode's per-session GET/POST; the supervisor host is composed
-    // later, so it is resolved lazily through deps.getUnattended.
-    mountUnattendedRoutes(app, deps);
+    // Unattended mode's per-session GET/POST are owned by the Rust front door
+    // (native/gateway/src/app/orchestration_routes.rs); they are mounted only on
+    // the orchestration host port's capture app, never on the public app. The
+    // supervisor host is composed later, so it is resolved lazily through
+    // deps.getUnattended.
+    if (unattendedApp) mountUnattendedRoutes(unattendedApp, deps);
   }
 
   return Object.freeze({
@@ -618,6 +199,14 @@ function createSessionAdminRuntime(rawDeps) {
     sessionWorkspace,
     workspaceSnapshot,
     sessionView,
+    // Air 的「标记达成」：语义与 /mark-goal-achieved 相同，只是入口给的是 taskId。
+    // 路由本身已由 Rust 前门独占（native/gateway/src/app/task_routes.rs）；eligibility
+    // 阶梯也在 Rust，这里只把 deps 里真正的状态 writer（server.js 的 setTaskState）
+    // 暴露成两个端口供回环宿主端口调用。
+    taskGoalPorts: Object.freeze({
+      facts: taskId => markTaskAchievedFacts(deps, taskId),
+      write: (taskId, sessionId) => markTaskAchievedWrite(deps, taskId, sessionId),
+    }),
   });
 }
 

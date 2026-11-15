@@ -118,7 +118,7 @@ run('Rust Air 输出直接交给现有客户端，重复帧、离线补齐与换
 });
 run('沿用真实 Air 卡片生产者验证可见性与动态字段，Rust 不猜权限或状态', async t => {
   const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const { mountAir } = require('./helpers/air-host');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-air-contract-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const board = { tasks: {}, deletedTaskIds: ['tsk_2'] }, shells = [], records = new Map();
@@ -129,7 +129,7 @@ run('沿用真实 Air 卡片生产者验证可见性与动态字段，Rust 不�
   board.tasks.tsk_3.mergedIntoTaskId = 'tsk_1';
   shells.push({ id: 'tsk_4', embedded: true }, { id: 'tsk_5', separatedFromTaskId: 'tsk_1', ready: false }, { id: 'tsk_6', separatedFromTaskId: 'tsk_1', ready: true });
   let dirty = false, readOnly = true, capacity = null;
-  const handlers = new Map(), runtime = mountAirRoutes({ get: (p, fn) => handlers.set(p, fn), post() {} }, {
+  const { liveSync: runtime } = mountAir({
     getBoard: () => board, records, directories: new Map([['d', { id: 'd', name: '项目', path: '/isolated' }]]), clis: ['codex'],
     pinsFile: path.join(dir, 'pins.json'), registerSync() {}, send() {}, providerName: () => '线路名称',
     admission: { snapshot: () => ({ workspaces: [{ id: 'ws1', ownerId: 's1', dirId: 'd', residency: 'resident' }], leases: [], budgets: {} }), capacityReason: () => capacity },

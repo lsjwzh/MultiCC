@@ -44,12 +44,6 @@ function assertTaskGraphDeps(deps) {
   return deps;
 }
 
-function assertAppMethod(app, method) {
-  if (!app || typeof app[method] !== 'function') {
-    throw new TypeError(`Express app.${method} is required`);
-  }
-}
-
 function createTaskGraphRoutes(rawDeps) {
   const deps = assertTaskGraphDeps(rawDeps);
 
@@ -266,29 +260,19 @@ function createTaskGraphRoutes(rawDeps) {
     };
   }
 
-  function mountRoutes(app) {
-    assertAppMethod(app, 'get');
-    app.get('/api/task-graph', (req, res) => {
-      const startedAt = deps.now();
-      const dirId = req.query.dirId ? String(req.query.dirId) : 'all';
-      let data;
-      try {
-        data = buildTaskGraph(dirId);
-      } catch (error) {
-        return res.status(500).json({ error: publicFailure('task graph build', error) });
-      }
-      data.meta.durationMs = deps.now() - startedAt;
-      return res.json(data);
-    });
+  // `GET /api/task-graph` 已由 Rust 前门独占（native/gateway/src/app/task_routes.rs）：
+  // 路径/查询解析、`dirId` 真值规则、`meta.durationMs` 的插入位置都在那边。
+  // 这里只留聚合本身与它唯一的状态码决策（构建失败 → 500），整个结果经回环
+  // 宿主端口（src/routes/task-routes-host.js）交给前门。
+  function buildHostGraph(dirId) {
+    try {
+      return { graph: buildTaskGraph(dirId) };
+    } catch (error) {
+      return { reply: { status: 500, body: { error: publicFailure('task graph build', error) } } };
+    }
   }
 
-  return Object.freeze({ buildTaskGraph, mountRoutes });
-}
-
-function mountTaskGraphRoutes(app, deps) {
-  const routes = createTaskGraphRoutes(deps);
-  routes.mountRoutes(app);
-  return routes;
+  return Object.freeze({ buildTaskGraph, buildHostGraph });
 }
 
 module.exports = {
@@ -296,6 +280,5 @@ module.exports = {
   TASK_GRAPH_MAX_EDGES,
   assertTaskGraphDeps,
   createTaskGraphRoutes,
-  mountTaskGraphRoutes,
   publicFailure,
 };

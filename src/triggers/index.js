@@ -49,12 +49,6 @@ function assertDependencies(deps) {
   return deps;
 }
 
-function assertApp(app) {
-  for (const method of ['get', 'post', 'put', 'delete']) {
-    if (!app || typeof app[method] !== 'function') throw new TypeError(`Express app.${method} is required`);
-  }
-}
-
 function clampInt(value, min, max, fallback) {
   const number = parseInt(value, 10);
   if (Number.isNaN(number)) return fallback;
@@ -76,7 +70,6 @@ function createSessionTriggers(rawDeps) {
   const pendingClosures = new Set();
   const globCache = new Map();
   let started = false;
-  let routesMounted = false;
 
   function safeError(error, fallback = 'trigger runtime failed') {
     return sanitizePublicText(error && error.message, fallback);
@@ -404,74 +397,6 @@ function createSessionTriggers(rawDeps) {
     return count;
   }
 
-  function mountRoutes(app) {
-    assertApp(app);
-    if (routesMounted) throw new Error('trigger routes already mounted');
-    routesMounted = true;
-
-    app.get('/api/sessions/:id/triggers', (req, res) => {
-      const session = deps.persistedSessions.get(req.params.id);
-      if (!session) return res.status(404).json({ error: 'session not found' });
-      return res.json({ triggers: session.triggers || [] });
-    });
-
-    app.post('/api/sessions/:id/triggers', (req, res) => {
-      const session = deps.persistedSessions.get(req.params.id);
-      if (!session) return res.status(404).json({ error: 'session not found' });
-      const validation = validateTrigger(req.body || {});
-      if (validation.error) return res.status(400).json({ error: validation.error });
-      deps.sessionPersistence.mutate('http.create-session-trigger', () => {
-        if (!Array.isArray(session.triggers)) session.triggers = [];
-        session.triggers.push(validation.trigger);
-      });
-      reconcileSession(session.id);
-      deps.appendEvent(session.dirId, 'trigger_added', triggerLabel(validation.trigger), session.id);
-      return res.json(validation.trigger);
-    });
-
-    app.put('/api/sessions/:id/triggers/:tid', (req, res) => {
-      const session = deps.persistedSessions.get(req.params.id);
-      if (!session || !Array.isArray(session.triggers)) return res.status(404).json({ error: 'not found' });
-      const index = session.triggers.findIndex((trigger) => trigger.id === req.params.tid);
-      if (index < 0) return res.status(404).json({ error: 'trigger not found' });
-      const validation = validateTrigger({ ...session.triggers[index], ...req.body, id: req.params.tid });
-      if (validation.error) return res.status(400).json({ error: validation.error });
-      deps.sessionPersistence.mutate('http.update-session-trigger', () => {
-        validation.trigger.lastFiredAt = session.triggers[index].lastFiredAt;
-        // Keep the one-shot consumption stamp across edits; only an explicit
-        // re-enable re-arms the rule.
-        if (session.triggers[index].firedAt) validation.trigger.firedAt = session.triggers[index].firedAt;
-        session.triggers[index] = validation.trigger;
-      });
-      reconcileSession(session.id);
-      return res.json(validation.trigger);
-    });
-
-    app.delete('/api/sessions/:id/triggers/:tid', (req, res) => {
-      const session = deps.persistedSessions.get(req.params.id);
-      if (!session || !Array.isArray(session.triggers)) return res.status(404).json({ error: 'not found' });
-      const next = session.triggers.filter((trigger) => trigger.id !== req.params.tid);
-      if (next.length === session.triggers.length) return res.status(404).json({ error: 'trigger not found' });
-      deps.sessionPersistence.mutate('http.delete-session-trigger', () => { session.triggers = next; });
-      reconcileSession(session.id);
-      return res.json({ ok: true });
-    });
-
-    app.post('/api/sessions/:id/triggers/:tid/test', (req, res) => {
-      const session = deps.persistedSessions.get(req.params.id);
-      if (!session || !Array.isArray(session.triggers)) return res.status(404).json({ error: 'not found' });
-      const trigger = session.triggers.find((candidate) => candidate.id === req.params.tid);
-      if (!trigger) return res.status(404).json({ error: 'trigger not found' });
-      if (trigger.type === 'event') return res.status(400).json({ error: 'use POST /api/events/test for event rules' });
-      fireTrigger(session.id, { ...trigger, enabled: true, cooldownMs: 0 }, 'manual-test', {
-        persistence: 'required',
-      });
-      return res.json({ ok: true });
-    });
-
-    return app;
-  }
-
   function onTurnComplete(sessionId, chat, completion) {
     try {
       if (typeof completion?.isCurrentRunner === 'function' && !completion.isCurrentRunner()) return;
@@ -519,7 +444,6 @@ function createSessionTriggers(rawDeps) {
   }
 
   return Object.freeze({
-    mountRoutes,
     start,
     stop,
     status,

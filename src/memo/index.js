@@ -8,7 +8,6 @@ const {
 } = require('./controller');
 const { createMemoFilePort } = require('./file-port');
 const { createGitTrackPort, migrateProjectMemos } = require('./migrate');
-const { createMemoRouter } = require('./router');
 
 function createMemoModule({
   directories, sessions, runtime, files, memoRoot, pathPort, git, log,
@@ -24,7 +23,6 @@ function createMemoModule({
   });
   return Object.freeze({
     controller,
-    router: createMemoRouter(controller),
     // Idempotent: once a legacy file is gone the scan is a no-op, so calling
     // this on every boot costs one existsSync per registered directory.
     // Returns { report, done }: the copies are already applied when it returns,
@@ -48,6 +46,5 @@ module.exports = {
   createMemoController,
   createMemoFilePort,
   createMemoModule,
-  createMemoRouter,
   migrateProjectMemos,
 };

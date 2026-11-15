@@ -123,11 +123,7 @@ pub fn decide(input: &JsValue) -> JsValue {
                 return terminal("transport", "api-continuation-not-applicable", None);
             }
             if truthy(prop(input, "killReason")) || truthy(prop(input, "resultSaved")) {
-                return terminal(
-                    "transport",
-                    "api-continuation-preconditions-failed",
-                    None,
-                );
+                return terminal("transport", "api-continuation-preconditions-failed", None);
             }
             if !truthy(prop(input, "hasNativeSession")) {
                 return terminal("transport", "api-continuation-no-native-session", None);

@@ -135,6 +135,14 @@ pub fn claim(method: &Method, path: &str) -> Option<Claim> {
     }
 }
 
+/// This cluster's share of the front-door `OPTIONS` union across clusters
+/// (`super::OPTIONS_SOURCES`): five of these paths also carry the host-write
+/// `POST` (`src/routes/host-write.js` / `host-power.js`), which owns the
+/// methods. The read half is always `GET,HEAD`.
+pub fn options_share(path: &str) -> Option<String> {
+    matches!(claim(&Method::OPTIONS, path), Some(Claim::Options(_))).then(|| "GET,HEAD".to_string())
+}
+
 // ── health DTOs (verbatim port of host-read.js) ─────────────────────────────
 
 fn re_http_status() -> &'static Regex {

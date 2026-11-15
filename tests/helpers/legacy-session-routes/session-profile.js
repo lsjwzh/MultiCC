@@ -1,0 +1,654 @@
+'use strict';
+// FROZEN ORACLE — git show HEAD:src/routes/session-profile.js (the parent of the
+// session-management migration commit). Only relative require paths were
+// rewritten to point at the live tree; the handler logic is unchanged. Mounted
+// by tests/helpers/legacy-session-routes.js over the scripted world in
+// tests/helpers/session-routes-scripted-world.js.
+
+const crypto = require('crypto');
+const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../../../src/session/pending-configuration');
+const { normalizeSubagentInput, withSubagentSource } = require('../../../src/session/subagent');
+const { forkConfiguration } = require('../../../src/session/fork-configuration');
+const { selectionKey } = require('../../../src/chat/auto-provider-selection-key');
+const fs = require('fs');
+const path = require('path');
+
+const { normalizeManualMemory } = require('../../../src/memory/runtime');
+const { taskShortCode } = require('../../../src/classify/task-short-code');
+const { auxVerdictStaleness } = require('../../../src/classify/aux-verdict-health');
+const { isGoalState } = require('../../../src/classify/vocab');
+const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../../../src/providers/auto-provider-config');
+const { mergeCliAccountsPatch, retainExistingCliAccounts, sharedCliKeyAccountStore } = require('../../../src/cli-key-accounts');
+const { nativeVendorName, nativeVendorOf } = require('../../../src/providers/native-vendor');
+const { nativeOpenCodeId, nativeOpenCodeName } = require('../../../src/providers/native-opencode');
+
+// Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/
+// rolePrompt/memory/auto-flags/provider/subagent/cliAccounts edits) and POST
+// /api/sessions/:id/fork (Happier-parity transcript branch).
+//
+// Extracted verbatim from server.js. Behaviour is preserved exactly; the only
+// change is that mutable host state (chatHistoryService, folderMemory, the
+// CLI-switch snapshot helper) is read through getters so a runtime that is
+// composed after this module mounts is still resolved at request time rather
+// than captured as a stale null snapshot.
+
+function assertFunction(value, name) {
+  if (typeof value !== 'function') {
+    throw new TypeError(`[session-profile] ${name} must be a function`);
+  }
+}
+
+function createSessionProfileRoutes(rawDeps) {
+  const deps = rawDeps || {};
+  const {
+    persistedSessions,
+    directories,
+    sessionPersistence,
+    sessionPolicy,
+    providers,
+    providerRouterRuntime,
+    getChatStream,
+    getChatState,
+    hasLiveBackgroundTasks,
+    validProviderId,
+    asyncHandler,
+    appendEvent,
+    workspaceBroadcast,
+    chatBroadcast,
+    getTaskState,
+    rememberActiveCliState,
+    buildHandoffCheckpoint,
+    cliStateSummary,
+    cliAvailabilitySummary,
+    cliHandoffSummary,
+    createSessionRecord,
+    loadChatHistory,
+    newChatMsgId,
+    mergeHistory,
+    getFolderMemory,
+    getCliSwitchGitSnapshot,
+  } = deps;
+  // Per-lane API-key account picks (src/cli-key-accounts.js); tests inject one.
+  const cliKeyAccounts = deps.cliKeyAccounts || sharedCliKeyAccountStore();
+
+  if (!persistedSessions || typeof persistedSessions.get !== 'function') {
+    throw new TypeError('[session-profile] persistedSessions map is required');
+  }
+  if (!directories || typeof directories.get !== 'function') {
+    throw new TypeError('[session-profile] directories map is required');
+  }
+  if (!sessionPersistence
+    || typeof sessionPersistence.begin !== 'function'
+    || typeof sessionPersistence.mutate !== 'function') {
+    throw new TypeError('[session-profile] sessionPersistence (with begin/mutate) is required');
+  }
+  if (!sessionPolicy
+    || typeof sessionPolicy.normalizeEffort !== 'function'
+    || typeof sessionPolicy.validEffortForCli !== 'function'
+    || typeof sessionPolicy.effectiveSessionEffort !== 'function'
+    || typeof sessionPolicy.effortLabel !== 'function'
+    || typeof sessionPolicy.normalizeCliAgent !== 'function'
+    || typeof sessionPolicy.providerDefaultModel !== 'function'
+    || typeof sessionPolicy.effectiveSessionModel !== 'function'
+    || typeof sessionPolicy.serializeSubagent !== 'function') {
+    throw new TypeError('[session-profile] sessionPolicy must expose effort/model/subagent helpers');
+  }
+  if (!providers
+    || typeof providers.appTypeForCli !== 'function'
+    || typeof providers.modelValidForProvider !== 'function'
+    || typeof providers.codexProviderProxyable !== 'function'
+    || typeof providers.synchronizeCodexSessionRoute !== 'function'
+    || typeof providers.CODEX_HOMES_DIR !== 'string') {
+    throw new TypeError('[session-profile] providers must expose app-type/model/codex helpers and CODEX_HOMES_DIR');
+  }
+  if (!providerRouterRuntime || typeof providerRouterRuntime.getProviderSummary !== 'function') {
+    throw new TypeError('[session-profile] providerRouterRuntime.getProviderSummary is required');
+  }
+  for (const [fn, name] of [
+    [getChatStream, 'getChatStream'], [getChatState, 'getChatState'],
+    [hasLiveBackgroundTasks, 'hasLiveBackgroundTasks'],
+    [validProviderId, 'validProviderId'], [asyncHandler, 'asyncHandler'],
+    [appendEvent, 'appendEvent'], [workspaceBroadcast, 'workspaceBroadcast'],
+    [chatBroadcast, 'chatBroadcast'], [getTaskState, 'getTaskState'],
+    [rememberActiveCliState, 'rememberActiveCliState'],
+    [buildHandoffCheckpoint, 'buildHandoffCheckpoint'],
+    [cliStateSummary, 'cliStateSummary'], [cliAvailabilitySummary, 'cliAvailabilitySummary'],
+    [cliHandoffSummary, 'cliHandoffSummary'],
+    [createSessionRecord, 'createSessionRecord'], [loadChatHistory, 'loadChatHistory'],
+    [newChatMsgId, 'newChatMsgId'],
+    [mergeHistory, 'mergeHistory'],
+    [getFolderMemory, 'getFolderMemory'],
+    [getCliSwitchGitSnapshot, 'getCliSwitchGitSnapshot'],
+  ]) assertFunction(fn, name);
+
+  // chatStream is composed further down server.js (after route mounting), so it
+  // arrives as a getter and resolves per call.
+  const chatStream = () => getChatStream();
+
+  const {
+    normalizeEffort,
+    validEffortForCli,
+    effectiveSessionEffort,
+    effortLabel,
+    normalizeCliAgent,
+    providerDefaultModel,
+    effectiveSessionModel,
+    serializeSubagent,
+  } = sessionPolicy;
+
+  function mountRoutes(app) {
+    // PATCH a session — supports display-name edits via label.
+    function patchSession(req, res, preview = null) {
+      const s = preview || persistedSessions.get(req.params.id);
+      const appendEvent = preview ? () => {} : deps.appendEvent;
+      const workspaceBroadcast = preview ? () => {} : deps.workspaceBroadcast;
+      const chatBroadcast = preview ? () => {} : deps.chatBroadcast;
+      const closeStream = () => { if (!preview) chatStream().close(s.id); };
+      const synchronizeRoute = route => { if (!preview) providers.synchronizeCodexSessionRoute(route); };
+      if (!s) return res.status(404).json({ error: 'session not found' });
+      if (s.type === 'aux' || s.type === 'gateway') {
+        return res.status(400).json({ error: 'system session cannot be renamed' });
+      }
+      if (req.body.cli !== undefined) {
+        return res.status(400).json({
+          error: 'cli cannot be changed with PATCH; use POST /api/sessions/:id/switch-cli',
+        });
+      }
+      const routeMutation = ['model', 'effort', 'agent', 'rolePrompt', 'provider', 'providerSelection', 'subagent']
+        .some(key => Object.prototype.hasOwnProperty.call(req.body || {}, key));
+      if (!preview && routeMutation && (s.pendingConfiguration || configurationBusy(s.id, {
+        getChatState, getChatStream, hasLiveBackgroundTasks, getPreparation: deps.getPreparation,
+      }))) {
+        // Run the exact same validation on a detached desired-state draft. No
+        // process, rollout, audit event or active route is touched by preview.
+        const draft = desiredSession(s);
+        let status = 200, result;
+        patchSession(req, {
+          status(code) { status = code; return this; },
+          json(body) { result = body; return this; },
+        }, draft);
+        if (status !== 200) return res.status(status).json(result);
+        sessionPersistence.mutate('http.stage-session-configuration', () => {
+          for (const key of ['label', 'memory', 'autoContinue', 'autoCommit', 'cliAccounts']) {
+            if (Object.prototype.hasOwnProperty.call(req.body, key)) s[key] = draft[key];
+          }
+          stageConfiguration(s, draft, { fresh: s.pendingConfiguration?.fresh === true });
+        });
+        const event = { type: 'session_configuration_pending', sessionId: s.id,
+          pendingConfiguration: s.pendingConfiguration };
+        chatBroadcast(s.id, event); workspaceBroadcast(s.dirId, event);
+        appendEvent(s.dirId, 'session_configuration_pending', 'AI 配置已保存，下一轮生效', s.id);
+        return res.json({ ...result, ...readConfiguration(s), cli: s.cli,
+          effectiveModel: effectiveSessionModel(s), effectiveEffort: effectiveSessionEffort(s),
+          pendingConfiguration: s.pendingConfiguration,
+          deferred: true, appliesOn: 'next_turn' });
+      }
+      const hasProviderSelectionPatch = req.body.providerSelection !== undefined;
+      const hasProviderPatch = req.body.provider !== undefined;
+      let preparedProviderSelection = null;
+      let preparedPrimaryProvider = null;
+      let preparedProvider = null;
+      if (hasProviderSelectionPatch) {
+        preparedProviderSelection = validateProviderSelection(req.body.providerSelection, {
+          cli: s.cli || 'claude', providers,
+        });
+        if (!preparedProviderSelection.ok) {
+          return res.status(400).json({
+            error: preparedProviderSelection.error,
+            code: preparedProviderSelection.code,
+          });
+        }
+        preparedPrimaryProvider = primaryProviderCandidate(preparedProviderSelection.value, s.cli || 'claude');
+      }
+      if (hasProviderPatch) {
+        preparedProvider = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());
+        if (!preparedProvider.ok) return res.status(400).json({ error: 'invalid provider' });
+      }
+      const requestedFallback = hasProviderPatch
+        ? preparedProvider.value : preparedPrimaryProvider?.providerId;
+      if (preparedProviderSelection?.value
+          && !preparedProviderSelection.value.candidates.some(candidate => candidate.enabled
+            && candidate.providerId === requestedFallback)) {
+        return res.status(400).json({ error: 'Auto Provider fallback must be an enabled candidate' });
+      }
+      const mutation = preview ? { commit() {}, rollback() {} } : sessionPersistence.begin('http.patch-session');
+      const previousSelectionKey = selectionKey(s.providerSelection);
+      const rejectMutation = (status, body) => {
+        mutation.rollback();
+        return res.status(status).json(body);
+      };
+      try {
+      if (req.body.label !== undefined) {
+        const label = (req.body.label || '').toString().trim();
+        if (label.length > 80) return rejectMutation(400, { error: 'label too long (max 80)' });
+        s.label = label || null;
+        appendEvent(s.dirId, 'session_renamed', s.label || s.id, s.id);
+        // Renames used to be write-only: the PATCH persisted + audited but no
+        // socket heard about it, so every client kept showing the old title
+        // until its next full list reload. Push the new label on both planes —
+        // workspace (fleet lists/dashboards) and the session's own chat socket
+        // (open chat headers).
+        const labelEvent = { type: 'session_updated', sessionId: s.id, label: s.label || null };
+        workspaceBroadcast(s.dirId, labelEvent);
+        chatBroadcast(s.id, labelEvent);
+      }
+      if (req.body.model !== undefined) {
+        const model = (req.body.model || '').toString().trim();
+        // Allow `/` and `:` for OpenRouter-style ids and provider:model forms.
+        if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
+          return rejectMutation(400, { error: 'invalid model' });
+        }
+        s.model = model || null;
+        // Ordinary Claude requires a fresh process to apply --model. The SDK
+        // runner applies setModel() at the next turn boundary; other chat CLIs
+        // spawn per turn. Terminals still need a manual restart.
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
+        appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
+      }
+      if (req.body.effort !== undefined) {
+        const effort = normalizeEffort(req.body.effort);
+        if (effort === undefined) return rejectMutation(400, { error: 'invalid effort' });
+        if (!validEffortForCli(s.cli || 'claude', effort)) return rejectMutation(400, { error: 'invalid reasoning level' });
+        s.effort = effort || null;
+        if ((s.cli || 'claude') === 'claude') closeStream();
+        appendEvent(s.dirId, 'session_effort_changed', `${s.label || s.id} → ${effectiveSessionEffort(s) || effortLabel(s.effort)}`, s.id);
+      }
+      if (req.body.agent !== undefined) {
+        const agent = normalizeCliAgent(s.cli || 'claude', req.body.agent);
+        if (agent === undefined) return rejectMutation(400, { error: 'agent is only supported by Claude/OpenCode and must be a valid agent name' });
+        s.agent = agent;
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
+        appendEvent(s.dirId, 'session_agent_changed', `${s.label || s.id} → ${s.agent || '默认 agent'}`, s.id);
+      }
+      if (req.body.rolePrompt !== undefined) {
+        const rp = (req.body.rolePrompt == null ? '' : String(req.body.rolePrompt));
+        if (rp.length > 40000) return rejectMutation(400, { error: 'rolePrompt too long (max 40000)' });
+        // null clears the session override → it falls back to the directory default.
+        s.rolePrompt = rp.trim() || null;
+        if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
+        appendEvent(s.dirId, 'session_role_changed', s.rolePrompt ? (s.label || s.id) : `${s.label || s.id}（清除，继承目录）`, s.id);
+      }
+      if (req.body.memory !== undefined) {
+        // Session memory: structured entries (array of {type,text,ts}).
+        // Accept both new array format and legacy string (auto-converted).
+        const normalized = normalizeManualMemory(req.body.memory);
+        if (normalized.error) return rejectMutation(400, { error: normalized.error });
+        const { entries } = normalized;
+        s.memory = entries;
+        appendEvent(s.dirId, 'memory_updated', s.memory ? '手动编辑会话记忆' : '清空会话记忆', s.id);
+        workspaceBroadcast(s.dirId, { type: 'memory', sessionId: s.id, memory: s.memory || [] });
+      }
+      // streaming (流式常驻) is no longer user-configurable: claude chat always runs
+      // in persistent-streaming mode. Any legacy `streaming` field in the PATCH body
+      // is ignored — the routing guard in runChatTurn keys on cli only.
+      if (req.body.autoContinue !== undefined) {
+        // autoContinue is no longer user-configurable (the streaming picker dropped
+        // this toggle). Accept the field for back-compat with older clients but pin
+        // it true. The old auto-drive paths are
+        // retired; classify's D/W guards are the safety rails now.
+        s.autoContinue = true;
+      }
+      if (req.body.autoCommit !== undefined) {
+        // Auto-commit and merge worktree back to base branch after a successful turn.
+        s.autoCommit = !!req.body.autoCommit;
+        appendEvent(s.dirId, 'session_autocommit_changed', `${s.label || s.id} → ${s.autoCommit ? '自动提交合并' : '关闭'}`, s.id);
+      }
+      if (req.body.cliAccounts !== undefined) {
+        // Which API-key account each key-account lane spawns with. Read only at
+        // the next spawn, so even a busy session takes it immediately (it is not
+        // a staged route field — see the pending branch above).
+        const checked = mergeCliAccountsPatch(s.cliAccounts, req.body.cliAccounts, cliKeyAccounts);
+        if (!checked.ok) return rejectMutation(400, { error: checked.error });
+        if (checked.value) s.cliAccounts = checked.value;
+        else delete s.cliAccounts;
+        appendEvent(s.dirId, 'session_cli_account_changed', `${s.label || s.id} → ${Object.keys(s.cliAccounts || {}).join(', ') || '本机登录'}`, s.id);
+      }
+      if (hasProviderSelectionPatch) {
+        s.providerSelection = preparedProviderSelection.value;
+        if (preparedPrimaryProvider && !hasProviderPatch) {
+          if ((s.cli === 'codex' || s.cli === 'codex-exp') && s.cliSessionId
+              && s.provider !== preparedPrimaryProvider.providerId) {
+            synchronizeRoute({
+              logicalSessionId: s.id,
+              nativeSessionId: s.cliSessionId,
+              fromProviderId: s.provider,
+              toProviderId: preparedPrimaryProvider.providerId,
+            });
+          }
+          s.provider = nativeVendorOf(preparedPrimaryProvider.providerId) !== null
+            ? null : preparedPrimaryProvider.providerId;
+          s.model = preparedPrimaryProvider.model
+            || providerRouterRuntime.getProviderSummary(undefined, preparedPrimaryProvider.providerId)?.model || null;
+        }
+        if ((s.cli || 'claude') === 'claude') closeStream();
+        appendEvent(s.dirId, 'session_provider_selection_changed',
+          `${s.label || s.id} → ${preparedProviderSelection.value ? `Auto (${preparedProviderSelection.value.protocol}, ${preparedProviderSelection.value.candidates.filter(item => item.enabled).length} candidates)` : '手动 Provider'}`, s.id);
+      }
+      if (hasProviderPatch) {
+        // Per-session cc-switch provider. '' / null clears the override → default login.
+        const v = preparedProvider;
+        const prevProvider = s.provider;
+        // Old clients only know the concrete provider field. An explicit
+        // provider patch leaves Auto mode unless this request also carries the
+        // new providerSelection contract.
+        if (req.body.providerSelection === undefined) s.providerSelection = null;
+        // When switching provider the old session.model may hold a model that
+        // only works with the previous backend (e.g. claude-opus-4-8 set while
+        // on Anthropic Official, then switching to DeepSeek/GLM which don't
+        // ship that model). Replace it with the new provider's primary model
+        // (or the user's /model default when switching back to the default login)
+        // so the card always shows a concrete, correct model name instead of a
+        // stale "默认" placeholder. The user can still re-set via /model afterwards.
+        const sessionCli = s.cli || 'claude';
+        const appType = providers.appTypeForCli(sessionCli);
+        const globalProviderCli = sessionCli === 'opencode' || sessionCli === 'zcode';
+        const providerSummary = v.value
+          ? providerRouterRuntime.getProviderSummary(globalProviderCli ? undefined : appType, v.value)
+          : null;
+        // ZCode/OpenCode consume either pool directly. Their default must be the
+        // provider's real model id, never Claude's synthetic alias-tier fallback.
+        const nextDefaultModel = globalProviderCli
+          ? (providerSummary?.model || providerSummary?.modelOptions?.[0] || null)
+          : providerDefaultModel(appType, v.value);
+        // Provider-less OpenCode/ZCode sessions run on the CLI's native config
+        // (e.g. OpenCode Go in ~/.config/opencode/opencode.json); their model is
+        // a native `provider/model` id from /api/opencode/models, which the
+        // claude-pool validation below always rejects. Skipping it here stops
+        // every default-provider save from silently wiping the model to 默认.
+        const nativeCliDefault = globalProviderCli && !v.value;
+        const validationAppType = nativeCliDefault
+          ? null
+          : (providerSummary?.appType || appType);
+        if ((appType || globalProviderCli) && (req.body.model === undefined
+            || (appType === 'codex' && v.value && !s.model))) {
+          s.model = nextDefaultModel || null;
+        } else if (validationAppType && !providers.modelValidForProvider(
+          validationAppType,
+          v.value,
+          s.model,
+          providerSummary,
+        )) {
+          // The same PATCH carried a model (the AI-config dialog always submits
+          // provider+model together), but the new provider doesn't serve it — a
+          // stale value from the previous provider. Replace it with the new
+          // provider's primary model instead of letting every subsequent spawn
+          // 400/10404 against a model the provider never had.
+          const stale = s.model;
+          s.model = nextDefaultModel || null;
+          appendEvent(s.dirId, 'session_model_changed',
+            `${s.label || s.id} → ${s.model || '默认'}（${stale} 与新 Provider 不兼容，已自动替换）`, s.id);
+        }
+        // A resumed Codex thread can retain the previous provider's model.
+        // A blank picker selection means the NEW route's default, not "reuse
+        // the old thread model". If discovery has no answer, require a model
+        // before switching instead of silently sending DeepSeek to ChatGPT.
+        if (appType === 'codex' && providerSummary?.isOfficial && !s.model
+            && s.cliSessionId) {
+          return rejectMutation(400, { code: 'codex_official_model_required',
+            error: '切换到 Codex 官方线路前，请选择一个官方模型；当前未获取到官方默认模型，不能沿用原会话模型。' });
+        }
+        // Providerless Codex retains the real ~/.codex OAuth store. At this
+        // idle route boundary synchronize only the exact native rollout with
+        // the canonical managed-session root before changing its authority.
+        if ((s.cli === 'codex' || s.cli === 'codex-exp') && s.cliSessionId && prevProvider !== v.value) {
+          synchronizeRoute({
+            logicalSessionId: s.id,
+            nativeSessionId: s.cliSessionId,
+            fromProviderId: prevProvider,
+            toProviderId: v.value,
+          });
+        }
+        // A vendor-native line (Command Code) is a pool candidate, not a
+        // provider binding: the lane stays provider-less while its Auto pool
+        // keeps the synthetic line id.
+        s.provider = nativeVendorOf(v.value) !== null ? null : v.value;
+        // Chat sessions pick it up on the next per-turn spawn; a warm streaming
+        // process must be torn down so it relaunches with the new env.
+        if ((s.cli || 'claude') === 'claude') closeStream();
+        const pname = v.value
+          ? (nativeVendorOf(v.value) !== null ? nativeVendorName(nativeVendorOf(v.value).cli)
+            : nativeOpenCodeId(v.value) !== null ? nativeOpenCodeName(nativeOpenCodeId(v.value))
+            : (providerSummary?.name || v.value))
+          : (sessionCli === 'zcode' ? 'ZCode 原生 / Coding Plan' : (appType ? '默认登录' : '厂商客户端设置'));
+        appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
+        // Push current classify state to chat so the classify bar updates immediately
+        // (otherwise the chat page shows stale / blank until the next classify run).
+        try {
+          const ts = getTaskState(s);
+          if (ts && (ts.goal || ts.classifyState)) {
+            chatBroadcast(s.id, {
+              type: 'task_state', goal: ts.goal || '', taskShortCode: taskShortCode(ts.taskId),
+              phase: ts.phase || 'idle', classifyState: ts.classifyState || null,
+              goalState: isGoalState(ts.goalState) ? ts.goalState : null,
+              ...auxVerdictStaleness(),
+            });
+          }
+        } catch (_) {}
+      }
+      if (req.body.subagent !== undefined) {
+        // Per-session subagent provider+model. Claude encodes the route in its model;
+        // Codex materializes native default/worker/explorer agent config layers that
+        // select a second model_provider. null / '' / {} clears the override.
+        // The rules live in src/session/subagent.js — the same ones session creation
+        // applies, so a route pinned at creation behaves exactly like one set here.
+        const checked = normalizeSubagentInput({
+          cli: s.cli || 'claude', provider: s.provider, subagent: req.body.subagent, validProviderId, providers,
+        });
+        if (!checked.ok) return rejectMutation(400, { error: checked.error });
+        s.subagent = withSubagentSource(checked.value, s.subagent, req.body.subagentInherited === true);
+        // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
+        if ((s.cli || 'claude') === 'claude') closeStream();
+        const subApp2 = (s.cli === 'codex' || s.cli === 'codex-exp') ? 'codex' : 'claude';
+        const saName = s.subagent
+          ? `${providerRouterRuntime.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
+          : '默认(随主)';
+        appendEvent(s.dirId, 'session_subagent_changed', `${s.label || s.id} 子任务 → ${saName}`, s.id);
+      }
+      // Only a changed policy retires its sticky route. Re-saving an equivalent
+      // pool must not send the next turn back to the first (exhausted) provider.
+      if (previousSelectionKey !== selectionKey(s.providerSelection)) delete s.autoProviderLastRoute;
+      rememberActiveCliState(s);
+      mutation.commit();
+      // An immediately-applied route change (provider/model/effort/…) used to be
+      // write-only: the PATCH persisted + audited but the session's chat socket
+      // heard nothing, so an open chat page kept the OLD provider's quota bar and
+      // header pills until its next full reload. The Air task page's AI 配置
+      // dialog saves from the parent page, so its embedded chat iframe depends
+      // entirely on this push. Mirror the deferred branch's
+      // session_configuration_pending with the applied variant — the chat client
+      // already treats it as "re-read the session configuration".
+      if (routeMutation) {
+        const applied = { type: 'session_configuration_applied', sessionId: s.id };
+        chatBroadcast(s.id, applied);
+        workspaceBroadcast(s.dirId, applied);
+      }
+      res.json({
+        ...s,
+        // The full checkpoint can contain recent visible conversation text. Keep
+        // it server-side and expose only lifecycle metadata in ordinary responses.
+        cliStates: cliStateSummary(s),
+        cliAvailability: cliAvailabilitySummary(),
+        pendingCliHandoff: cliHandoffSummary(s),
+        subagent: serializeSubagent(s.subagent),
+        providerSelection: providerSelectionDto(s.providerSelection),
+        effectiveModel: effectiveSessionModel(s),
+        effectiveEffort: effectiveSessionEffort(s),
+      });
+      } catch (error) {
+        mutation.rollback();
+        throw error;
+      }
+    }
+    app.patch('/api/sessions/:id', (req, res) => patchSession(req, res));
+
+    // ── Session fork (Happier-parity: branch a session at any message) ──
+    // Creates a NEW live session that inherits the source's provider/model/effort/
+    // rolePrompt and replays the transcript up to (and including) the chosen message
+    // as its starting context — like Happier's forkedTranscriptSnapshot + replaySeed.
+    // The 50-message rolling window means old messages may already be distilled into
+    // memory; we therefore also copy the source session's private memory folder so the
+    // forked session isn't blind to pre-window context. A `forkedFrom` meta record is
+    // stamped as the first message of the new history.
+    app.post('/api/sessions/:id/fork', asyncHandler(async (req, res) => {
+      const src = persistedSessions.get(req.params.id);
+      if (!src) return res.status(404).json({ error: 'session not found' });
+      if (src.type === 'aux' || src.type === 'gateway') {
+        return res.status(400).json({ error: 'system session cannot be forked' });
+      }
+      const b = req.body || {};
+      const label = (b.label || '').toString().trim() || null;
+      const includeMemory = b.includeMemory !== false; // default true
+      const atMessageId = b.atMessageId ? String(b.atMessageId) : null;
+
+      // Slice source history up to (and including) the chosen message id.
+      // If atMessageId is null/omitted, fork from the latest message.
+      const history = loadChatHistory(src.id);
+      let sliced;
+      if (!atMessageId) {
+        sliced = history.map(m => ({ ...m }));
+      } else {
+        const idx = history.findIndex(m => m && m.id === atMessageId);
+        if (idx < 0) return res.status(400).json({ error: 'atMessageId not found in history' });
+        sliced = history.slice(0, idx + 1).map(m => ({ ...m }));
+      }
+
+      // History may belong to an older shell execution than the composer. Read
+      // the composer's saved desired configuration, including next-turn edits.
+      const configSource = b.configurationSessionId == null ? src : persistedSessions.get(b.configurationSessionId);
+      if (!configSource || configSource.dirId !== src.dirId || configSource.kind !== 'chat'
+          || ['aux', 'gateway'].includes(configSource.type)) {
+        return res.status(400).json({ error: 'invalid fork configuration session' });
+      }
+      const { configuration, reset } = forkConfiguration(configSource, { validProviderId, validateProviderSelection, providers });
+      const dir = directories.get(src.dirId);
+      const r = await createSessionRecord({
+        ...configuration, dir, kind: 'chat', label: label || `${src.label || src.id} · fork`,
+        // Keep the source's API-key account picks: dropping them would silently
+        // move the fork onto the CLI's own login (and its billing).
+        cliAccounts: retainExistingCliAccounts(configSource.cliAccounts, cliKeyAccounts),
+        persistence: 'required', persistenceSource: 'http.fork-session-create',
+      });
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      const newSid = r.id;
+
+      // Seed the new session's chat history with the sliced transcript. The forkedFrom
+      // meta message goes first so the agent and UI can see this is a fork.
+      const forkMeta = {
+        id: newChatMsgId(),
+        role: 'system',
+        content: `Forked from session \`${src.id}\` (label: ${src.label || '—'}) at message \`${atMessageId || 'latest'}\`. ` +
+                 `This session continues from that point; prior context above is the replayed transcript, ` +
+                 `and the source session's distilled memory has been copied into this session's memory folder.` +
+                 (reset ? ' Unavailable saved provider settings were reset to defaults for this new session.' : ''),
+        ts: Date.now(),
+        forkedFrom: { sessionId: src.id, atMessageId: atMessageId || null, atTs: sliced.length ? sliced[sliced.length - 1].ts : null },
+      };
+      // Replay context without importing the source task's identity. Provenance
+      // stays available for inspection; adoption allocates the fork's own task.
+      const inherited = sliced.map(({ taskId, taskName, ...message }) => ({ ...message, inherited: true,
+        inheritedFrom: { sessionId: src.id, messageId: message.id, taskId: taskId || null, taskName: taskName || null } }));
+      const newHistory = [forkMeta, ...inherited];
+      // 新会话的初始历史也走同一 FIFO，并由 Rust 在队首读取底稿后追加：即使
+      // fork 的 id 在写入前就被打开并产生追加，也只会排在这份初始历史之前，
+      // 不会被 Node 的旧底稿整份覆盖。
+      await mergeHistory(newSid, newHistory, { reason: 'fork' });
+
+      // A fork has a fresh vendor-native session, so copying display history alone
+      // is not context continuation. Seed the same one-shot checkpoint mechanism
+      // used by cross-CLI switches; it is consumed only after the fork produces a
+      // successful result.
+      const forkGitSnapshot = await getCliSwitchGitSnapshot()(r.session);
+      const forkCheckpoint = buildHandoffCheckpoint({
+        session: src,
+        fromCli: src.cli,
+        toCli: r.session.cli,
+        history: sliced,
+        git: forkGitSnapshot,
+      });
+      sessionPersistence.mutate('http.fork-session-finalize', () => {
+        r.session.pendingCliHandoff = {
+          id: `fork_${crypto.randomBytes(8).toString('hex')}`,
+          fromCli: src.cli,
+          toCli: r.session.cli,
+          createdAt: forkCheckpoint.createdAt,
+          status: 'pending',
+          reusedTarget: false,
+          checkpoint: forkCheckpoint,
+        };
+        rememberActiveCliState(r.session);
+      });
+
+      // Copy the source session's private memory folder (CLAUDE.md/AGENTS.md + any
+      // notes) so pre-window distilled context survives into the fork. Best-effort.
+      const folderMemory = getFolderMemory();
+      if (includeMemory) {
+        try {
+          const srcMemDir = folderMemory.sessionDir(src);
+          const dstMemDir = folderMemory.sessionDir(r.session);
+          if (fs.existsSync(srcMemDir)) {
+            fs.mkdirSync(dstMemDir, { recursive: true });
+            // Same invariant as the handoff exporter's scope reader: a dotfile
+            // in a memory folder is machine bookkeeping, not memory content.
+            // Copying them here would clone a legacy `.handoff-provider.json`
+            // (plaintext credentials) into every fork.
+            fs.cpSync(srcMemDir, dstMemDir, {
+              recursive: true,
+              filter: (srcPath) => !path.basename(srcPath).startsWith('.'),
+            });
+          }
+        } catch (e) {
+          console.error(`[multicc/fork] memory copy failed ${src.id}→${newSid}:`, e.message);
+        }
+      }
+
+      appendEvent(src.dirId, 'session_forked', `${src.label || src.id} → ${newSid}`, newSid);
+      // 任务卡是懒挂板的：新会话要等下一次全量构建的挂板迁移才拿到卡，而 fork 之后
+      // 收到的会话级事件（task_state/status…）解析不出任何任务卡，只会走元数据档 ——
+      // 卡就要等 30s 兜底核对才出现，任务板与派发发现会空半分钟。会话集合本身变了，
+      // 这里要求台账做一次全量；fork 是低频动作，不值得为它引入逐卡增量。
+      try { deps.workspaceBroadcast?.(src.dirId, { type: 'workspace_state' }); } catch (_) {}
+      res.json({
+        ok: true,
+        sessionId: newSid,
+        session: {
+          ...r.session,
+          cliStates: cliStateSummary(r.session),
+          pendingCliHandoff: cliHandoffSummary(r.session),
+        },
+        forkedFrom: forkMeta.forkedFrom, replayedMessages: sliced.length });
+    }));
+
+    // In-process PATCH for host-side edits (provider force-delete unwiring its
+    // references): same validation, staging and side effects as the HTTP route.
+    function applySessionPatch(sessionId, body) {
+      let status = 200, result;
+      patchSession({ params: { id: sessionId }, body: body || {}, query: {} }, {
+        status(code) { status = code; return this; },
+        json(value) { result = value; return this; },
+      });
+      return { status, body: result };
+    }
+
+    // Dry run of the same patch: validation runs against a detached
+    // desired-state draft (pending configuration included) and nothing is
+    // written — no process, rollout, audit event or active route is touched.
+    // Used by the bulk provider reassignment preview so its "this is what would
+    // happen" answer comes from the very code that would do it.
+    function previewSessionPatch(sessionId, body) {
+      const session = persistedSessions.get(sessionId);
+      if (!session) return { status: 404, body: { error: 'session not found' } };
+      const draft = desiredSession(session);
+      let status = 200, result;
+      patchSession({ params: { id: sessionId }, body: body || {}, query: {} }, {
+        status(code) { status = code; return this; },
+        json(value) { result = value; return this; },
+      }, draft);
+      return { status, body: result, draft };
+    }
+    return { applySessionPatch, previewSessionPatch };
+  }
+
+  return { mountRoutes };
+}
+
+module.exports = { createSessionProfileRoutes };

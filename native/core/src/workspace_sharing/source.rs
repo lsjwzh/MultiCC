@@ -4,6 +4,9 @@ use super::{access::Gate, get, put, text, Error, Result, Store};
 use crate::auth_runtime::{AuthRuntime, Metadata, Response};
 
 #[cfg(test)]
+#[path = "source_authorize_tests.rs"]
+mod authorize_tests;
+#[cfg(test)]
 #[path = "source_ticket_tests.rs"]
 mod ticket_tests;
 use crate::{
@@ -94,6 +97,34 @@ where
             _ => Err(internal()),
         }
     })
+}
+
+/// `fleetSharingRuntime.authorizeRequest`: decide a fleet token/grant pair for
+/// one request. The published grant answers path-scoped plans without leaving
+/// the VM; a session plan names its workspace and is resolved against the live
+/// member ids the host port reads, never a cached authorization result.
+pub async fn authorize<C, CFut>(store: &Store, mut input: V, context: &C) -> Result<V>
+where
+    C: Fn(String) -> CFut,
+    CFut: std::future::Future<Output = Option<String>>,
+{
+    let plan = store.query("authorizePlan", &input, clock(None))?;
+    if matches!(plan, V::Bool(_)) {
+        return Ok(plan);
+    }
+    let request = js::json::json_encode_wire(&V::object(vec![
+        ("id", get(&plan, "workspaceId").clone()),
+        ("membersOnly", true.into()),
+    ]))
+    .ok_or_else(internal)?;
+    let raw = tokio::time::timeout(wire::TIMEOUT, context(request))
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(internal)?;
+    let snapshot = js::json_parse(&raw).map_err(|_| internal())?;
+    put(&mut input, "members", get(&snapshot, "members").clone());
+    store.query("authorizeMembers", &input, clock(None))
 }
 
 pub fn clock(fixed: Option<f64>) -> f64 {

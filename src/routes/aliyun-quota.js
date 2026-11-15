@@ -138,38 +138,7 @@ async function fetchAliyunUsage(nowMs = Date.now(), deps = {}) {
   return { status: scraped?.status || 'unavailable', error: scraped?.error || 'aliyun console scrape failed', fetchedAt: nowMs };
 }
 
-function mountAliyunQuotaRoutes(app, options = {}) {
-  if (!app || typeof app.get !== 'function') return;
-  const usageDeps = options.usageDeps || {};
-  app.get('/api/aliyun/quota', async (req, res) => {
-    try {
-      const result = await fetchAliyunUsage(Date.now(), usageDeps);
-      const status = result?.status || 'unavailable';
-      const httpStatus = status === 'ok' ? 200
-        : status === 'needs_login' ? 401
-          : status === 'chrome_unavailable' ? 503 : 502;
-      res.status(httpStatus).json(result);
-    } catch (_) {
-      res.status(500).json({ status: 'unavailable', error: 'aliyun quota fetch failed' });
-    }
-  });
-
-  // Visible login window on the managed profile — same pattern as kimi / qoder /
-  // opencode. The user logs into aliyun.com once; the session then persists for
-  // headless console scrapes.
-  app.post('/api/aliyun/quota/login', async (req, res) => {
-    try {
-      await getManagedQuotaBrowser().openVisibleLogin(ALIYUN_CONSOLE_URL);
-      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录阿里云，完成后回来重新查询余量' });
-    } catch (err) {
-      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
-      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
-    }
-  });
-}
-
 module.exports = {
-  mountAliyunQuotaRoutes,
   fetchAliyunUsage,
   fetchAliyunConsolePage,
   summarizeAliyunUsageText,

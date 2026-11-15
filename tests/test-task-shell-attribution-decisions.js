@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { fixture } = require('./helpers/task-shell');
 const { createTaskOperations } = require('../src/task-shell/task-operations');
 const { createAttributionDecisions } = require('../src/task-shell/attribution-decisions');
-const { mountTaskShellRoutes } = require('../src/task-shell/routes');
+const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 
 const input = (clientMsgId, extra = {}) => ({ clientMsgId, text: clientMsgId, ...extra });
 
@@ -194,18 +194,12 @@ test('a resolved suggestion cannot be postponed', async t => {
   assert.throws(() => decisions.defer(f.a.id, first.decision.id), { code: 'attribution_decision_resolved' });
 });
 
-test('the decisions HTTP surface exposes the defer route', async () => {
-  const handlers = new Map();
-  const app = { get: (path, handler) => handlers.set(`GET ${path}`, handler),
-    post: (path, handler) => handlers.set(`POST ${path}`, handler),
-    delete: (path, handler) => handlers.set(`DELETE ${path}`, handler) };
+test('the decisions host port exposes the defer op', async () => {
   const calls = [];
   const decisions = { list: () => [], accept: () => ({}), dismiss: () => ({}), undo: () => ({}),
     defer: (shellId, decisionId) => { calls.push([shellId, decisionId]); return { id: decisionId, state: 'deferred' }; } };
-  mountTaskShellRoutes(app, { getRuntime: () => ({}), attributionDecisions: () => decisions });
-  let body = null;
-  await handlers.get('POST /api/task-shells/:shellId/attribution-decisions/:decisionId/defer')(
-    { params: { shellId: 'sh_1', decisionId: 'dec_1' }, body: {} }, { json: value => { body = value; } });
+  const { ok } = mountHost(fakeApp(), { getRuntime: () => ({}), attributionDecisions: () => decisions });
+  const body = await ok({ op: 'attribution-defer', shellId: 'sh_1', decisionId: 'dec_1' });
   assert.deepEqual(calls, [['sh_1', 'dec_1']]);
   assert.equal(body.state, 'deferred');
 });

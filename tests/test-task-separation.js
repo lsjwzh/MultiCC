@@ -11,8 +11,7 @@ const { createSeparationTransfer } = require('../src/workspace/separation-transf
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
 const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/task-shell/capacity');
 const { parseTaskAttribution, buildTaskAttributionSystemPrompt } = require('../src/classify/task-attribution');
-const { mountTaskShellRoutes } = require('../src/task-shell/routes');
-const express = require('express');
+const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 async function setup(t, extra = {}) {
   const f = fixture(t, extra);
   const source = f.runtime.adopt(f.a.id, 'a');
@@ -385,16 +384,19 @@ test('a failed execution checkout cannot be mislabeled as kept in the shared she
   const result = await createTaskShellRuntime(f.ports).separation.decide('a', p.id, 'separate');
   assert.equal(result.ok, true);
 });
-test('HTTP confirmation binds session and suggestion, validates decisions and keeps errors structured', async t => {
-  const f = await setup(t), p = await f.propose(), app = express(); app.use(express.json());
-  mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
-  const server = app.listen(0, '127.0.0.1'); await new Promise(r => server.once('listening', r));
-  t.after(() => new Promise(r => { server.close(r); server.closeAllConnections(); }));
-  const base = `http://127.0.0.1:${server.address().port}/api/sessions`;
-  const get = await fetch(`${base}/a/task-separation`); assert.equal((await get.json()).suggestion.id, p.id);
+test('host-port confirmation binds session and suggestion, validates decisions and keeps errors structured', async t => {
+  const f = await setup(t), p = await f.propose();
+  const { ok, fail } = mountHost(fakeApp(), { getRuntime: () => f.runtime });
+  const suggestion = await ok({ op: 'separation-latest', sessionId: 'a' });
+  assert.equal(suggestion.id, p.id);
   for (const [session, decision, code] of [['b','separate','separation_not_found'], ['a','yes','invalid_input'], ['a','keep',null]]) {
-    const res = await fetch(`${base}/${session}/task-separation/${p.id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });
-    const body = await res.json(); assert.equal(body.code || null, code); assert.equal(body.ok, !code);
+    if (code) {
+      const error = await fail({ op: 'separation-decide', sessionId: session, suggestionId: p.id, decision });
+      assert.equal(error.code, code);
+    } else {
+      const value = await ok({ op: 'separation-decide', sessionId: session, suggestionId: p.id, decision });
+      assert.equal(value.ok, true);
+    }
   }
 });
 test('confirmed separation seeds the full judged turn into the new transcript and moves its open question', async t => {

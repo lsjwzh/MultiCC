@@ -63,37 +63,24 @@ function relayTargets({ sessionId, src }, configPath = CONFIG) {
   });
 }
 
-function mount(app) {
-  app.get('/api/annotation-live', (req, res) => {
-    res.json({ config: CONFIG, targets: loadTargets() });
-  });
-  app.post('/api/annotation-live', (req, res) => {
-    const body = req.body || {};
-    const payload = {
-      sessionId: String(body.sessionId || ''),
-      src: String(body.src || ''),
-      width: Number(body.width) || 0,
-      height: Number(body.height) || 0,
-      kind: String(body.kind || ''),
-      a: body.a || null,
-      b: body.b || null,
-    };
-    // 内置处理器：「🖥 屏幕」浮层冻结的截图直接由 remote-screen 执行，不查配置。
-    const remoteScreen = require('./remote-screen');
-    if (remoteScreen.isOwnShot(payload.src)) {
-      return remoteScreen.handleAnnotation(payload)
-        .catch(error => ({ ok: false, refresh: false, text: String(error && error.message || error).slice(0, 200) }))
-        .then(result => res.json({ ok: true, relayed: 1, results: [result] }));
-    }
-    const hits = relayTargets(payload);
-    if (!hits.length) { res.json({ ok: true, relayed: 0, results: [] }); return; }
-    // 等处理器回包（有上限）再回复：回包里的 { refresh, text } 让标注器原地换上
-    // 执行后的新截图并显示判定——用户不必另找被执行的窗口。离线/超时/非 JSON
-    // 一律记为 { ok:false }，不影响标注器。
-    return Promise.all(hits.map(t => relayOne(t.url, payload))).then(results => {
-      res.json({ ok: true, relayed: hits.length, results });
-    });
-  });
+// 公开路由已由 Rust 前门独占（native/gateway/src/app/event_routes.rs），
+// DTO 归一化与错误信封在那里；这里保留真正要跑的东西：内置处理器、配置命中
+// 和带 8s 超时的 HTTP 转发。宿主端口只等它回 { relayed, results }。
+async function relay(payload) {
+  // 内置处理器：「🖥 屏幕」浮层冻结的截图直接由 remote-screen 执行，不查配置。
+  const remoteScreen = require('./remote-screen');
+  if (remoteScreen.isOwnShot(payload.src)) {
+    const result = await remoteScreen.handleAnnotation(payload)
+      .catch(error => ({ ok: false, refresh: false, text: String(error && error.message || error).slice(0, 200) }));
+    return { relayed: 1, results: [result] };
+  }
+  const hits = relayTargets(payload);
+  if (!hits.length) return { relayed: 0, results: [] };
+  // 等处理器回包（有上限）再回复：回包里的 { refresh, text } 让标注器原地换上
+  // 执行后的新截图并显示判定——用户不必另找被执行的窗口。离线/超时/非 JSON
+  // 一律记为 { ok:false }，不影响标注器。
+  const results = await Promise.all(hits.map(t => relayOne(t.url, payload)));
+  return { relayed: hits.length, results };
 }
 
 const RELAY_TIMEOUT_MS = 8000;
@@ -118,7 +105,7 @@ async function relayOne(url, payload) {
 }
 
 module.exports = {
-  mount,
+  relay,
   CONFIG,
   relayTargets,
   loadTargets,

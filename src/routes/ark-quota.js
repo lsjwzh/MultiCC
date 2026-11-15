@@ -22,8 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFile, spawn } = require('child_process');
-const { renderQuotaBar } = require('../quota/quota-bar-view');
+const { execFile } = require('child_process');
 
 const TIMEOUT_MS = 45000;
 const INSTALL_TIMEOUT_MS = 240000;
@@ -211,67 +210,4 @@ async function fetchArkUsage(nowMs = Date.now()) {
   };
 }
 
-function mountArkQuotaRoutes(app, recordVendor) {
-  if (!app || typeof app.get !== 'function') return;
-  const record = typeof recordVendor === 'function' ? recordVendor : null;
-
-  app.get('/api/ark/quota', async (req, res) => {
-    try {
-      const result = await fetchArkUsage();
-      const status = result?.status || 'unavailable';
-      const httpStatus = status === 'ok' ? 200
-        : status === 'needs_auth' ? 401
-        : status === 'needs_install' ? 404
-        : 500;
-      // The bar is rendered here, once, so the web and the app display the same
-      // string. `baseUrl` is the one thing only the caller knows — which Ark
-      // plan the session it is looking at actually routes through — so the
-      // caller passes it in rather than re-picking the plan itself.
-      const baseUrl = typeof req.query?.baseUrl === 'string' ? req.query.baseUrl : '';
-      if (record) {
-        try { await record({ kind: 'ark', result, baseUrl }); } catch (_) {}
-      }
-      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('ark', result, { baseUrl }) });
-    } catch (_) {
-      const result = { status: 'unavailable', error: 'ark quota fetch failed' };
-      if (record) {
-        try { await record({ kind: 'ark', result, baseUrl: req.query?.baseUrl || '' }); } catch (_) {}
-      }
-      res.status(500).json({ ...result, bar: renderQuotaBar('ark', result) });
-    }
-  });
-
-  app.post('/api/ark/quota/login', (req, res) => {
-    const bin = resolveArkcliBin();
-    if (!bin) {
-      res.status(404).json({ status: 'needs_install', error: 'arkcli not found on PATH' });
-      return;
-    }
-    try {
-      const child = spawn(bin.cmd, [...bin.prefix, 'auth', 'login', 'volc-sso'], {
-        detached: true,
-        stdio: 'ignore',
-        env: process.env,
-      });
-      child.unref();
-      res.json({ status: 'started', pid: child.pid || null });
-    } catch (err) {
-      res.status(500).json({ status: 'unavailable', error: err.message || 'spawn failed' });
-    }
-  });
-
-  app.post('/api/ark/quota/install', async (req, res) => {
-    try {
-      const result = await installArkcli();
-      if (result.ok) {
-        res.json({ status: 'ok' });
-      } else {
-        res.status(500).json({ status: 'error', error: result.error });
-      }
-    } catch (err) {
-      res.status(500).json({ status: 'error', error: err.message || 'install failed' });
-    }
-  });
-}
-
-module.exports = { mountArkQuotaRoutes, fetchArkUsage, resolveArkcliBin, installArkcli, parseArkcliJsonStream };
+module.exports = { fetchArkUsage, resolveArkcliBin, installArkcli, parseArkcliJsonStream };

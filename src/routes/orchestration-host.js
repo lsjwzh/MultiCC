@@ -1,0 +1,149 @@
+'use strict';
+
+// 宿主端口：编排与无人值守 23 条公开路由（原本分散在四个文件里）已由 Rust
+// 前门独占。
+//
+//   GET    /api/aux/status, /api/aux/health, /api/aux/history      (aux-goal.js)
+//   POST   /api/aux/enqueue, /api/aux/cancel
+//   GET|POST /api/aux/config, /api/settings/goal
+//   POST   /api/goal/precheck
+//   GET    /api/sessions/:id/aux-runs, …/aux-runs/:runId           (aux-runs.js)
+//   GET|POST /api/sessions/:id/unattended                          (unattended/routes.js)
+//   POST|GET /api/sessions/:id/scheduled-messages                  (orchestration.js)
+//   DELETE /api/sessions/:id/scheduled-messages/:messageId
+//   GET    /api/sessions/:id/tasks, …/dispatches, …/queue
+//   POST   /api/sessions/:id/user-input/dismiss, …/queue/action
+//   GET    /api/v1/sessions/:id/waits
+//
+// 路径匹配、参数解码、查询子集、Express 自动 OPTIONS 并集、会话准入守卫（含 v1
+// 信封）、主机不可达/未知 op 的错误形状都在 native/gateway/src/app/
+// orchestration_routes.rs 与 native/core/src/orchestration_routes.rs。
+//
+// 这里只剩 Node 独有的运行时事实与副作用：会话记录表、无人值守监督器、Aux
+// 队列与其 Provider/模型配置、持久化编排运行时（定时消息、operations、FIFO
+// 调度器）、Aux 运行日志与会话轮次引擎。处理器仍按退休时的样子写
+// `res.status/json`；捕获器把它们变成 `{ status, body, headers }`，前门原样回放
+// —— 两边不会各自长出第二套状态码、头或键序规则。
+//
+// 明确不在这里的 7 条（已登记的 out-of-scope wait 注入器 / detached 集，继续由
+// 真实 app 挂载、由前门转发给 Node）：POST /api/sessions/:id/wait、
+// POST /api/wait/:wid/resolve、GET /api/sessions/:id/waits（注意：无 v1 前缀）、
+// DELETE /api/wait/:wid、POST /api/sessions/:id/run-detached、
+// GET /api/sessions/:id/detached、GET /api/detached/:taskId。
+//
+// 不存在“仅本机”路由；前门仍把按真实客户端地址算出的 `local` 事实放进 req.local，
+// 宿主端口自己看到的永远是回环，不能用来判定。
+//
+// 这不是一条公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest`
+// 拒绝任何转发自真实远端客户端的请求。
+
+const { createCaptureApp, runHandler, thrownEnvelope } = require('./host-ops-host');
+
+const HOST_PATH = '/api/__host/orchestration';
+
+/** Marker meaning "this op has no handler to run it" -> unknown operation. */
+const UNKNOWN = Symbol('unknown');
+
+// 每个 op 指向退休模块注册的那一对 (method, 路径模板)。参数由前门解好后直接塞进
+// `req.params`；路径匹配与解码是 Rust 的活，这里不再匹配第二遍。
+const OPS = {
+  'aux-status': { method: 'GET', path: '/api/aux/status', params: [] },
+  'aux-health': { method: 'GET', path: '/api/aux/health', params: [] },
+  'aux-history': { method: 'GET', path: '/api/aux/history', params: [] },
+  'aux-enqueue': { method: 'POST', path: '/api/aux/enqueue', params: [] },
+  'aux-cancel': { method: 'POST', path: '/api/aux/cancel', params: [] },
+  'aux-config-get': { method: 'GET', path: '/api/aux/config', params: [] },
+  'aux-config-post': { method: 'POST', path: '/api/aux/config', params: [] },
+  'settings-goal-get': { method: 'GET', path: '/api/settings/goal', params: [] },
+  'settings-goal-post': { method: 'POST', path: '/api/settings/goal', params: [] },
+  'goal-precheck': { method: 'POST', path: '/api/goal/precheck', params: [] },
+  'session-aux-runs': { method: 'GET', path: '/api/sessions/:id/aux-runs', params: ['id'] },
+  'session-aux-run': { method: 'GET', path: '/api/sessions/:id/aux-runs/:runId', params: ['id', 'runId'] },
+  'unattended-get': { method: 'GET', path: '/api/sessions/:id/unattended', params: ['id'] },
+  'unattended-post': { method: 'POST', path: '/api/sessions/:id/unattended', params: ['id'] },
+  'scheduled-message-post': { method: 'POST', path: '/api/sessions/:id/scheduled-messages', params: ['id'] },
+  'scheduled-messages-get': { method: 'GET', path: '/api/sessions/:id/scheduled-messages', params: ['id'] },
+  'scheduled-message-delete': { method: 'DELETE', path: '/api/sessions/:id/scheduled-messages/:messageId', params: ['id', 'messageId'] },
+  'session-tasks': { method: 'GET', path: '/api/sessions/:id/tasks', params: ['id'] },
+  'session-dispatches': { method: 'GET', path: '/api/sessions/:id/dispatches', params: ['id'] },
+  'user-input-dismiss': { method: 'POST', path: '/api/sessions/:id/user-input/dismiss', params: ['id'] },
+  'session-queue': { method: 'GET', path: '/api/sessions/:id/queue', params: ['id'] },
+  'session-queue-action': { method: 'POST', path: '/api/sessions/:id/queue/action', params: ['id'] },
+  'v1-session-waits': { method: 'GET', path: '/api/v1/sessions/:id/waits', params: ['id'] },
+};
+
+async function invoke(handlers, body) {
+  const spec = OPS[body.op];
+  if (!spec) return UNKNOWN;
+  const handler = handlers.get(`${spec.method} ${spec.path}`);
+  if (typeof handler !== 'function') return UNKNOWN;
+  const params = {};
+  for (const name of spec.params) params[name] = body[name];
+  const headers = body.headers && typeof body.headers === 'object' ? body.headers : {};
+  const local = body.local === true;
+  const requestId = typeof body.requestId === 'string' ? body.requestId : undefined;
+  const req = {
+    method: spec.method,
+    path: spec.path,
+    originalUrl: typeof body.originalUrl === 'string' ? body.originalUrl : spec.path,
+    params,
+    query: body.query && typeof body.query === 'object' ? body.query : {},
+    body: body.body === undefined ? null : body.body,
+    headers,
+    protocol: 'http',
+    local,
+    socket: { remoteAddress: local ? '127.0.0.1' : '203.0.113.9' },
+    // `requestContext(req, res)` (v1 envelopes) reads these when res.locals is empty.
+    id: requestId,
+    correlationId: typeof body.correlationId === 'string' ? body.correlationId : undefined,
+    get(name) { return headers[String(name).toLowerCase()]; },
+  };
+  try {
+    return await runHandler(handler, req);
+  } catch (error) {
+    console.error(`[orchestration-host] ${body.op} threw: ${error?.stack || error}`);
+    return thrownEnvelope(error);
+  }
+}
+
+/**
+ * 建一个捕获应用；四个退休模块在它上面挂载，`mountRoute` 再把唯一的宿主端点挂到
+ * 真实的 Express app 上。`app`（捕获应用）要在任何一个模块挂载之前创建；
+ * 处理器按 (method, 模板) 在调用时才查，所以挂载顺序与 `mountRoute` 的先后无关。
+ */
+function createOrchestrationHost(deps = {}) {
+  const { express } = deps;
+  if (!express || typeof express.json !== 'function') {
+    throw new TypeError('[orchestration-host] express is required');
+  }
+  const handlers = new Map();
+  const app = createCaptureApp(handlers);
+
+  function mountRoute(expressApp, options = {}) {
+    if (!expressApp || typeof expressApp.post !== 'function') {
+      throw new TypeError('[orchestration-host] Express app is required');
+    }
+    const isLocal = options.isLocal || require('../request-locality').isLocalRequest;
+    expressApp.post(HOST_PATH, (req, res) => {
+      // 只认回环。前门转发到内网端口时写的是真实对端地址，远端客户端在这里就被挡住。
+      if (!isLocal(req)) return res.status(404).json({ error: 'not found' });
+      const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+        ? req.body : {};
+      return Promise.resolve()
+        .then(() => invoke(handlers, body))
+        .then(
+          (value) => {
+            if (value === UNKNOWN) return res.status(400).json({ error: 'unknown host operation' });
+            return res.json({ ok: true, value: value === undefined ? null : value });
+          },
+          (error) => {
+            console.error(`[orchestration-host] ${body.op} failed: ${error?.message || error}`);
+            return res.status(500).json({ error: 'internal_error' });
+          },
+        );
+    });
+  }
+  return { app, handlers, mountRoute };
+}
+
+module.exports = { HOST_PATH, OPS, createOrchestrationHost };

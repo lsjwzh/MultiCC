@@ -66,17 +66,6 @@ function createFcmDevices({ file, transport = createFcmTransport(), write = atom
     }
     return { ok: targets.length > 0 && accepted === targets.length, accepted, failed: targets.length - accepted };
   }
-  function mountRoutes(app, guard) {
-    // Host global authentication protects all of these endpoints.
-    app.get('/api/push/fcm', guard((_req, res) => res.json(status())));
-    app.post('/api/push/fcm', guard((req, res) => { const r = register(req.body); return res.status(r.status).json(r); }));
-    app.delete('/api/push/fcm', guard((req, res) => { const r = remove(req.body); return res.status(r.status).json(r); }));
-    app.post('/api/push/fcm/test', guard(async (req, res) => {
-      if (!validId(req.body?.id)) return res.status(400).json({ error: 'INVALID_FCM_DEVICE' });
-      const result = await send({ title: 'MultiCC', body: 'FCM test' }, req.body.id);
-      return res.status(result.ok ? 200 : 502).json(result);
-    }));
-  }
-  return { status, register, remove, send, mountRoutes, hasEnabled: () => !!transport.projectId && !storageError && active().length > 0 };
+  return { status, register, remove, send, hasEnabled: () => !!transport.projectId && !storageError && active().length > 0 };
 }
 module.exports = { createFcmDevices };

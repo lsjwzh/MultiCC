@@ -441,6 +441,13 @@ main({
       providerModelsRuntime: providerRuntime,
       isOfficialCodexOAuthProvider,
     });
+    // The real app also answers PATCH/DELETE on `/api/providers/:appType/:id`
+    // (providers management), which matches `GET /api/providers/:id/models`
+    // when the id is followed by the literal `models`. `server.js` registered
+    // that GET first, so Express's automatic OPTIONS unions the two. Mounted
+    // as inert stubs (never invoked) so the oracle's Allow matches production.
+    app.patch('/api/providers/:appType/:id', (_req, res) => res.json({}));
+    app.delete('/api/providers/:appType/:id', (_req, res) => res.json({}));
     upstreamText = upstreamSource(repo);
   },
   get upstream() {

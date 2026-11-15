@@ -6,7 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { assertTestDir } = require('../src/paths');
-const { createBarkDevices, normalizeBarkUrl, deliverBark, mountBarkDeviceRoutes } = require('../src/push/bark-devices');
+const { createBarkDevices, normalizeBarkUrl, deliverBark } = require('../src/push/bark-devices');
+const { basePush, createPushHost } = require('./helpers/push-host-call');
 
 function setup(t, options = {}) {
   const dir = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-bark-')));
@@ -103,19 +104,16 @@ test('Bark sender awaits response and rejects HTTP or application-level failures
   assert.equal((await deliverBark(url, 't', 'b', '')).ok, false);
 });
 
-test('device API uses opaque IDs, reports failed tests and does not return secrets', async t => {
+test('bark-action host op uses opaque IDs, reports failed tests and does not return secrets', async t => {
   const { devices } = setup(t, { deliver: async () => ({ ok: false, error: 'network_error' }) });
-  const handlers = {};
-  mountBarkDeviceRoutes({ get: (p, h) => handlers['GET ' + p] = h, post: (p, h) => handlers['POST ' + p] = h }, devices, fn => fn);
-  async function call(method, body) {
-    let status = 200, result;
-    await handlers[method + ' /api/push/bark-devices']({ body }, { status: n => { status = n; return { json: x => result = x }; }, json: x => result = x });
-    return { status, result };
+  const host = createPushHost({ push: basePush({ barkDevices: devices, hasBarkDevices: () => true }) });
+  async function call(body) {
+    return (await host.call({ op: 'bark-action', body })).body.value;
   }
-  const added = await call('POST', { action: 'add', name: 'Phone', url: 'https://api.day.app/my-secret' });
+  const added = await call({ action: 'add', name: 'Phone', url: 'https://api.day.app/my-secret' });
   assert.equal(added.status, 200);
   assert.ok(!JSON.stringify(added).includes('my-secret'));
-  assert.equal((await call('POST', { action: 'test', id: added.result.id })).status, 502);
-  assert.equal((await call('POST', { action: 'test' })).status, 404);
-  assert.equal((await call('POST', { action: 'update', id: added.result.id, enabled: 'false' })).status, 400);
+  assert.equal((await call({ action: 'test', id: added.body.id })).status, 502);
+  assert.equal((await call({ action: 'test' })).status, 404);
+  assert.equal((await call({ action: 'update', id: added.body.id, enabled: 'false' })).status, 400);
 });

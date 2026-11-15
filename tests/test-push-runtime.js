@@ -5,16 +5,22 @@ const test = require('node:test');
 
 const { BusinessPushRequestError, browserPayloadOf } = require('../src/push/business');
 const { createPushRuntime, redactClassifierTail, stripAnsi, CLASSIFY_PROMPT } = require('../src/push/runtime');
+const { mountPushHostRoute, HOST_PATH } = require('../src/routes/push-host');
 
-function createApp() {
+// The public /api/push/* DTOs now live in Rust (native/gateway/src/app/
+// push_routes.rs, pinned by native/gateway/tests/push_routes.rs). These tests
+// exercise the Node side of the split: the host port
+// (POST /api/__host/push) reads the in-process Maps, drives the real device
+// stores and senders, and returns the raw values or rendered replies Rust
+// needs. No real FCM/Bark/webhook endpoint is contacted.
+function createHostApp() {
   const routes = new Map();
-  const register = method => (path, handler) => routes.set(`${method} ${path}`, handler);
-  return { routes, post: register('POST'), delete: register('DELETE') };
+  return { routes, post: (path, handler) => routes.set(`POST ${path}`, handler) };
 }
 
-async function invoke(app, method, path, body = {}, options = {}) {
-  const handler = app.routes.get(`${method} ${path}`);
-  assert.equal(typeof handler, 'function', `missing ${method} ${path}`);
+async function callHost(app, body, options = {}) {
+  const handler = app.routes.get(`POST ${HOST_PATH}`);
+  assert.equal(typeof handler, 'function', `missing POST ${HOST_PATH}`);
   let resolveResponse;
   const completed = new Promise(resolve => { resolveResponse = resolve; });
   const response = {
@@ -29,13 +35,21 @@ async function invoke(app, method, path, body = {}, options = {}) {
       return this;
     },
   };
-  const contentType = options.contentType === undefined ? 'application/json' : options.contentType;
-  handler({
-    body,
-    is(type) { return type === contentType; },
-  }, response, error => { throw error; });
+  handler({ local: options.local !== false, body }, response);
   await completed;
   return response;
+}
+
+function mountHost(harness) {
+  const app = createHostApp();
+  mountPushHostRoute(app, {
+    push: harness.push,
+    businessPush: harness.businessPush,
+    isLocal: req => req.local === true,
+    logger: harness.state.logger,
+    now: () => harness.state.time,
+  });
+  return app;
 }
 
 function createHarness(options = {}) {
@@ -141,12 +155,13 @@ function createHarness(options = {}) {
     idleMs: 25,
     minChars: 5,
     cooldownMs: 100,
-    logger: {
+    logger: (state.logger = {
       log(message) { state.logs.push(message); },
       warn(message) { state.warnings.push(message); },
-    },
+      error(message) { state.warnings.push(message); },
+    }),
   });
-  return { runtime, state, push, sessions, persistedSessions, workspaceClients };
+  return { runtime, state, push, businessPush, sessions, persistedSessions, workspaceClients };
 }
 
 function deferred() {
@@ -169,67 +184,69 @@ const VALID_BUSINESS_PUSH = Object.freeze({
   dedupeKey: 'us:strategy:AAPL:BUY:2026-08-08T03:55:00+08:00',
 });
 
-test('mountRoutes preserves subscribe, delete, validate, test, Bark and Webhook DTOs', async () => {
+test('host port preserves subscribe, delete, validate, test, Bark and Webhook side effects', async () => {
   const harness = createHarness();
-  const app = createApp();
-  harness.runtime.mountRoutes(app);
-  assert.deepEqual([...app.routes.keys()], [
-    'POST /api/push/subscribe',
-    'DELETE /api/push/subscribe',
-    'POST /api/push/validate',
-    'POST /api/push/test',
-    'POST /api/push/notify',
-    'POST /api/push/test-bark',
-    'POST /api/push/test-webhook',
-  ]);
+  const app = mountHost(harness);
 
-  assert.deepEqual((await invoke(app, 'POST', '/api/push/subscribe')).body,
-    { error: 'Invalid subscription' });
-  assert.deepEqual((await invoke(app, 'POST', '/api/push/subscribe', {
-    endpoint: 'https://push.test/one', locale: 'en',
-  })).body, { ok: true });
+  assert.deepEqual((await callHost(app, { op: 'subscribe', body: {} })).body,
+    { ok: true, value: { status: 400, body: { error: 'Invalid subscription' } } });
+  assert.equal(harness.state.saves, 0);
+
+  assert.deepEqual((await callHost(app, {
+    op: 'subscribe', body: { endpoint: 'https://push.test/one', locale: 'en' },
+  })).body, { ok: true, value: { ok: true } });
   assert.equal(harness.state.saves, 1);
-  assert.deepEqual((await invoke(app, 'POST', '/api/push/validate', {
-    endpoint: 'https://push.test/one',
-  })).body, { known: true });
+  assert.equal(harness.push.subscriptions.size, 1);
 
-  const tested = await invoke(app, 'POST', '/api/push/test');
-  assert.deepEqual(tested.body, { ok: true, subscribers: 1 });
+  assert.deepEqual((await callHost(app, {
+    op: 'validate', endpoint: 'https://push.test/one',
+  })).body, { ok: true, value: { known: true } });
+
+  assert.deepEqual((await callHost(app, { op: 'test' })).body,
+    { ok: true, value: { subscribers: 1 } });
   assert.equal(harness.state.pushCalls.length, 1);
   assert.equal(harness.state.barkCalls.length, 1);
   assert.equal(harness.state.webhookCalls.length, 1);
 
-  assert.equal((await invoke(app, 'POST', '/api/push/test-bark')).statusCode, 400);
+  assert.deepEqual((await callHost(app, { op: 'test-bark' })).body,
+    { ok: true, value: { configured: false } });
   harness.push.cfg.BARK_URL = 'https://bark.test';
-  assert.deepEqual((await invoke(app, 'POST', '/api/push/test-bark')).body, { ok: true });
-  assert.equal((await invoke(app, 'POST', '/api/push/test-webhook')).statusCode, 400);
+  assert.deepEqual((await callHost(app, { op: 'test-bark' })).body,
+    { ok: true, value: { configured: true, ok: true } });
+  assert.deepEqual((await callHost(app, { op: 'test-webhook' })).body,
+    { ok: true, value: { configured: false } });
   harness.push.cfg.WEBHOOK_URL = 'https://hook.test';
-  assert.deepEqual((await invoke(app, 'POST', '/api/push/test-webhook')).body, { ok: true });
+  assert.deepEqual((await callHost(app, { op: 'test-webhook' })).body,
+    { ok: true, value: { configured: true } });
 
-  assert.deepEqual((await invoke(app, 'DELETE', '/api/push/subscribe', {
-    endpoint: 'https://push.test/one',
-  })).body, { ok: true });
+  assert.deepEqual((await callHost(app, {
+    op: 'unsubscribe', body: { endpoint: 'https://push.test/one' },
+  })).body, { ok: true, value: { ok: true } });
   assert.equal(harness.push.subscriptions.size, 0);
   assert.equal(harness.state.saves, 2);
 });
 
-test('business notification route defaults to JSON, delegates once, and returns its delivery DTO', async () => {
+test('notify op delegates once to the validated business push service and returns its reply', async () => {
   const harness = createHarness();
-  const app = createApp();
-  harness.runtime.mountRoutes(app);
+  const app = mountHost(harness);
 
-  const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH);
-  assert.equal(response.statusCode, 200);
+  const response = await callHost(app, { op: 'notify', body: VALID_BUSINESS_PUSH });
   assert.deepEqual(response.body, {
     ok: true,
-    delivered: true,
-    deduped: false,
-    dedupe_persisted: true,
-    subscriber_count: 2,
-    delivery_count: 2,
-    failure_count: 0,
-    stale_count: 0,
-    remaining_subscriber_count: 2,
+    value: {
+      status: 200,
+      body: {
+        ok: true,
+        delivered: true,
+        deduped: false,
+        dedupe_persisted: true,
+        subscriber_count: 2,
+        delivery_count: 2,
+        failure_count: 0,
+        stale_count: 0,
+        remaining_subscriber_count: 2,
+      },
+    },
   });
   assert.deepEqual(harness.state.businessPushCalls, [VALID_BUSINESS_PUSH]);
   assert.equal(harness.state.pushCalls.length, 0,
@@ -245,29 +262,11 @@ test('business notification route defaults to JSON, delegates once, and returns 
     'the idempotency key is server metadata, not browser-controlled notification data');
 });
 
-test('business notification route rejects non-JSON before invoking the service', async () => {
-  const harness = createHarness();
-  const app = createApp();
-  harness.runtime.mountRoutes(app);
-
-  const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH, {
-    contentType: 'text/plain',
-  });
-  assert.equal(response.statusCode, 415);
-  assert.deepEqual(response.body, {
-    ok: false,
-    delivered: false,
-    deduped: false,
-    error: 'UNSUPPORTED_MEDIA_TYPE',
-  });
-  assert.equal(harness.state.businessPushCalls.length, 0);
-});
-
-test('business notification route maps validation and idempotency errors without leaking details', async () => {
+test('notify op maps validation and idempotency errors without leaking details', async () => {
   for (const expected of [
     {
       error: new BusinessPushRequestError('UNKNOWN_FIELD', 'actions'),
-      statusCode: 400,
+      status: 400,
       body: {
         ok: false,
         delivered: false,
@@ -278,7 +277,7 @@ test('business notification route maps validation and idempotency errors without
     },
     {
       error: new BusinessPushRequestError('IDEMPOTENCY_KEY_REUSE', 'dedupeKey'),
-      statusCode: 409,
+      status: 409,
       body: {
         ok: false,
         delivered: false,
@@ -289,16 +288,14 @@ test('business notification route maps validation and idempotency errors without
     },
   ]) {
     const harness = createHarness({ businessPushError: expected.error });
-    const app = createApp();
-    harness.runtime.mountRoutes(app);
-    const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH);
-    assert.equal(response.statusCode, expected.statusCode);
-    assert.deepEqual(response.body, expected.body);
+    const app = mountHost(harness);
+    const response = await callHost(app, { op: 'notify', body: VALID_BUSINESS_PUSH });
+    assert.deepEqual(response.body, { ok: true, value: { status: expected.status, body: expected.body } });
     assert.equal(harness.state.businessPushCalls.length, 1);
   }
 });
 
-test('business notification route preserves empty-subscriber and incomplete-delivery status', async () => {
+test('notify op preserves empty-subscriber and incomplete-delivery status', async () => {
   for (const expected of [
     {
       statusCode: 503,
@@ -331,56 +328,52 @@ test('business notification route preserves empty-subscriber and incomplete-deli
     },
   ]) {
     const harness = createHarness({ businessPushResult: expected });
-    const app = createApp();
-    harness.runtime.mountRoutes(app);
-    const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH);
-    assert.equal(response.statusCode, expected.statusCode);
-    assert.deepEqual(response.body, expected.body);
+    const app = mountHost(harness);
+    const response = await callHost(app, { op: 'notify', body: VALID_BUSINESS_PUSH });
+    assert.deepEqual(response.body, { ok: true, value: { status: expected.statusCode, body: expected.body } });
   }
 });
 
-test('business notification route contains unknown failures behind a stable 500 response', async () => {
+test('host port contains unknown failures behind a stable 500 and logs the op', async () => {
   const harness = createHarness({
     businessPushError: new Error('/Users/alice/private token=business-push-secret'),
   });
-  const app = createApp();
-  harness.runtime.mountRoutes(app);
-  const response = await invoke(app, 'POST', '/api/push/notify', VALID_BUSINESS_PUSH);
+  const app = mountHost(harness);
+  const response = await callHost(app, { op: 'notify', body: VALID_BUSINESS_PUSH });
   assert.equal(response.statusCode, 500);
-  assert.deepEqual(response.body, { error: 'push request failed' });
-  assert.doesNotMatch(JSON.stringify(response.body), /business-push-secret|\/Users\/alice/);
+  assert.deepEqual(response.body, { error: 'internal_error' });
+  assert.match(harness.state.warnings.join('\n'), /notify failed/);
   assert.equal(harness.state.businessPushCalls.length, 1);
 });
 
-test('route sync and async failures are contained and redact paths and credentials', async () => {
-  const harness = createHarness({
-    pushError: new Error('/Users/alice/.multicc token=push-secret'),
-  });
-  const app = createApp();
-  harness.runtime.mountRoutes(app);
-  const failed = await invoke(app, 'POST', '/api/push/test');
-  assert.equal(failed.statusCode, 500);
-  assert.deepEqual(failed.body, { error: 'push request failed' });
-  assert.doesNotMatch(JSON.stringify(failed.body), /push-secret|\/Users\/alice/);
-
+test('subscribe/delete roll back the in-memory Map when the save fails', async () => {
   const saveHarness = createHarness({
     saveError: new Error('Authorization: Bearer push-secret'),
   });
-  const saveApp = createApp();
-  saveHarness.runtime.mountRoutes(saveApp);
-  const saveFailed = await invoke(saveApp, 'POST', '/api/push/subscribe', { endpoint: 'x' });
+  const saveApp = mountHost(saveHarness);
+  const saveFailed = await callHost(saveApp, { op: 'subscribe', body: { endpoint: 'x' } });
   assert.equal(saveFailed.statusCode, 500);
-  assert.deepEqual(saveFailed.body, { error: 'push request failed' });
   assert.equal(saveHarness.push.subscriptions.has('x'), false,
     'failed subscribe rolls back its in-memory mutation');
 
   saveHarness.push.subscriptions.set('existing', { endpoint: 'existing' });
-  const deleteFailed = await invoke(saveApp, 'DELETE', '/api/push/subscribe', {
-    endpoint: 'existing',
+  const deleteFailed = await callHost(saveApp, {
+    op: 'unsubscribe', body: { endpoint: 'existing' },
   });
   assert.equal(deleteFailed.statusCode, 500);
   assert.equal(saveHarness.push.subscriptions.has('existing'), true,
     'failed delete restores its in-memory subscription');
+});
+
+test('host port gates non-loopback callers and unknown operations', async () => {
+  const harness = createHarness();
+  const app = mountHost(harness);
+  assert.deepEqual((await callHost(app, { op: 'test' }, { local: false })).body,
+    { error: 'not found' });
+  assert.equal((await callHost(app, { op: 'test' }, { local: false })).statusCode, 404);
+  assert.deepEqual((await callHost(app, { op: 'nope' })).body,
+    { error: 'unknown host operation' });
+  assert.equal((await callHost(app, { op: 'nope' })).statusCode, 400);
 });
 
 test('output without a notification consumer does not allocate a timer or Aux request', () => {

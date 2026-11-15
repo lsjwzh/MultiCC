@@ -6,60 +6,43 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { mountAirRoutes } = require('../src/workspace/air-routes');
-const { airResponse } = require('./helpers/air-response');
+const { mountAir } = require('./helpers/air-host');
 
 function snapshotFixture() {
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const board = { tasks: { tsk_1: { id: 'tsk_1', title: '任务', status: 'active', refs: [{ sessionId: 's', dirId: 'd1' }] } } };
-  mountAirRoutes(app, {
+  // 正文与 ETag 在宿主定稿；304 判定在前门（native/core/src/air_routes.rs）。
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: { residentLimit: 4 } }), capacityReason: () => null },
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', cli: 'codex' }]]), directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => board, clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) },
   });
-  return { handlers, board };
+  return { air, board };
 }
 
-test('/api/air 内容没变回 304，变了才重新发正文', async () => {
-  const { handlers, board } = snapshotFixture();
-  const first = airResponse();
-  await handlers.get('/api/air')({ headers: {} }, first);
-  assert.equal(first.statusCode, 200);
-  assert.match(first.headers.etag, /^W\//, 'ETag 必须是弱校验器（正文派生）');
-  const payload = JSON.parse(first.body);
-  assert.equal(payload.tasks.length, 1);
+test('/api/air 的校验器由正文派生：内容没变 ETag 就一样，变了才不一样', async () => {
+  const { air, board } = snapshotFixture();
+  const first = await air.snapshot();
+  assert.match(first.etag, /^W\//, 'ETag 必须是弱校验器（正文派生）');
+  assert.equal(first.json.tasks.length, 1);
 
-  const second = airResponse();
-  await handlers.get('/api/air')({ headers: { 'if-none-match': first.headers.etag } }, second);
-  assert.equal(second.statusCode, 304, '同一份内容必须 304');
-  assert.equal(second.body, undefined, '304 不带正文');
-
-  // 多值 If-None-Match（浏览器/代理可能合并）里命中也要算命中。
-  const third = airResponse();
-  await handlers.get('/api/air')({ headers: { 'if-none-match': `"other", ${first.headers.etag}` } }, third);
-  assert.equal(third.statusCode, 304);
+  // 前门拿 If-None-Match 与这份 ETag 比对：同一份内容必须命中，所以宿主再算一遍
+  // 必须逐字节复现同一份正文与同一份校验器（否则客户端的 304 永远拿不到）。
+  const second = await air.snapshot(first.etag);
+  assert.equal(second.etag, first.etag, '同一份内容必须给出同一个校验器');
+  assert.equal(second.body, first.body, '同一份内容必须逐字节同一份正文');
 
   board.tasks.tsk_2 = { id: 'tsk_2', title: '新任务', status: 'active', refs: [{ sessionId: 's', dirId: 'd1' }] };
-  const changed = airResponse();
-  await handlers.get('/api/air')({ headers: { 'if-none-match': first.headers.etag } }, changed);
-  assert.equal(changed.statusCode, 200, '内容变了必须重新发正文');
-  assert.notEqual(changed.headers.etag, first.headers.etag);
-  assert.equal(JSON.parse(changed.body).tasks.length, 2);
-
-  // 旧的校验器不能命中新内容：304 绝不能回给已经陈旧的客户端。
-  const stale = airResponse();
-  await handlers.get('/api/air')({ headers: { 'if-none-match': changed.headers.etag } }, stale);
-  assert.equal(stale.statusCode, 304);
-  assert.equal(JSON.parse(changed.body).tasks.length, 2);
+  const changed = await air.snapshot(first.etag);
+  assert.notEqual(changed.etag, first.etag, '内容变了校验器必须变');
+  assert.equal(changed.json.tasks.length, 2);
 });
 
 test('/api/air 不把迁移的内部 task 全表随正文发出去', async () => {
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const marker = 'MARKER_TASK_BODY';
   // 宿主为了省掉第二遍全表扫描，会把迁移读到的 task 全表跟着结果带回来
   // （src/task-shell/host.js）。这份内部载荷一旦进了快照，每轮正文会从 0.74MB
   // 涨到 5.5MB —— 客户端只用 migration.errors，不该付这份钱。
-  mountAirRoutes(app, {
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }), capacityReason: () => null },
     records: new Map(), directories: new Map(), getBoard: () => ({ tasks: {} }), clis: [],
     shell: {
@@ -68,20 +51,17 @@ test('/api/air 不把迁移的内部 task 全表随正文发出去', async () =>
       taskAccess: () => ({ readOnly: true }),
     },
   });
-  const res = airResponse();
-  await handlers.get('/api/air')({ headers: {} }, res);
-  assert.equal(res.statusCode, 200);
-  const payload = JSON.parse(res.body);
+  const { body, json: payload } = await air.snapshot();
   assert.equal(payload.migration.tasks, undefined, '内部 task 全表不能进正文');
   assert.deepEqual(payload.migration.migrated, ['t1'], '其余字段照旧透传');
   assert.equal(payload.migration.ok, true);
-  assert.ok(!res.body.includes(marker), '正文里不该出现任务体内容');
+  assert.ok(!body.includes(marker), '正文里不该出现任务体内容');
 });
 
-test('/api/air/tasks/:id 详情同样支持 304（3.5MB 的消息正文不再每 15 秒重传）', async () => {
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+test('/api/air/tasks/:id 详情同样由正文派生校验器（3.5MB 的消息正文不再每 15 秒重传）', async () => {
   let messages = [{ id: 'm1', role: 'user', content: 'x'.repeat(64) }];
-  mountAirRoutes(app, {
+  // 详情正文与 ETag 都在宿主定稿：前门只做 304 判定后原样发出。
+  const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }), capacityReason: () => null,
       deliveryEvidence: () => ({ run: null, integration: null }) },
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', cli: 'codex' }]]), directories: new Map([['d1', { id: 'd1', path: '/repo' }]]),
@@ -89,20 +69,17 @@ test('/api/air/tasks/:id 详情同样支持 304（3.5MB 的消息正文不再每
     shell: { taskEntry: async id => ({ ok: true, task: { id, title: '任务' }, messages, execution: { busy: false }, sessionId: 's' }),
       attributionCandidate: () => null, roleBindings: () => null },
   });
-  const first = airResponse();
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' }, headers: {} }, first);
-  assert.equal(first.statusCode, 200);
-  assert.equal(JSON.parse(first.body).messages.length, 1);
+  const first = await air.ok({ op: 'task-detail', taskId: 't' });
+  assert.deepEqual(JSON.parse(first.body).messages, messages);
+  assert.match(first.etag, /^W\//);
 
-  const same = airResponse();
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' }, headers: { 'if-none-match': first.headers.etag } }, same);
-  assert.equal(same.statusCode, 304);
-  assert.equal(same.body, undefined);
+  const same = await air.ok({ op: 'task-detail', taskId: 't' });
+  assert.equal(same.etag, first.etag, '同一份详情必须给出同一个校验器');
+  assert.equal(same.body, first.body);
 
   messages = [...messages, { id: 'm2', role: 'assistant', content: 'y' }];
-  const next = airResponse();
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' }, headers: { 'if-none-match': first.headers.etag } }, next);
-  assert.equal(next.statusCode, 200, '新消息到达时必须给完整详情');
+  const next = await air.ok({ op: 'task-detail', taskId: 't' });
+  assert.notEqual(next.etag, first.etag, '新消息到达时必须换校验器，前门才会给完整详情');
   assert.equal(JSON.parse(next.body).messages.length, 2);
 });
 

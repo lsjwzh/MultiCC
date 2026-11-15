@@ -334,13 +334,17 @@ const NO_TOOLS = 'Command failed: git init\n'
     ok(dirReasonFix('boom') === null && dirReasonFix(null) === null,
       'dirReasonFix: unknown and empty reasons stay null');
 
-    ok(/'dirReasonFix'/.test(read('src/directory/ports.js')),
-      'wiring: dirReasonFix is part of the directory helper port, not an optional extra');
-    const svc = read('src/directory/service.js');
-    ok(/helpers\.dirReasonFix\(reason\)/.test(svc) && /fixExtra\(ready\.reason\)/.test(svc),
-      'wiring: register/update attach the fix code to the failure they return');
+    const host = read('src/routes/directory-host.js');
+    ok(/helpers\.friendlyDirReason\(reason\)/.test(host) && /helpers\.dirReasonFix\(reason\)/.test(host),
+      'wiring: the directory host port answers {detail,fix} for a readiness reason');
+    // The register/update decision tree is the Rust kernel now; the
+    // `git-error:` -> ops-terminal fallback has to live there or a raw git
+    // failure loses its one-click repair.
+    const kernel = read('native/gateway/src/app/directory_routes.rs');
+    ok(/reason_text\.starts_with\("git-error: "\)/.test(kernel) && /open-ops-terminal/.test(kernel),
+      'wiring: the Rust kernel maps an unknown git failure to open-ops-terminal');
     ok(/helpers: \{ resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason, dirReasonFix \}/.test(read('server.js')),
-      'wiring: server.js supplies dirReasonFix to the directory service');
+      'wiring: server.js supplies dirReasonFix to the directory host port');
 
     // xcode-select is safe to probe. A real Git may be version-checked, but the
     // macOS /usr/bin/git shim must be rejected before any version probe.
@@ -350,7 +354,8 @@ const NO_TOOLS = 'Command failed: git init\n'
     ok(/platform === 'darwin' && gitPath === CLT_SHIM_PATH\) return false/.test(route),
       'wiring: the macOS git shim is rejected before a version probe');
     ok(/\/api\/system\/developer-tools\/install/.test(route)
-      && /createDeveloperToolsRoutes\(\)\.mountRoutes\(app\)/.test(read('src/routes/system.js')),
+      && /createDeveloperToolsRoutes\(deps\.developerTools \|\| \{\}\)\.mountRoutes\(app\)/.test(read('src/routes/host-ops-host.js'))
+      && /developer-tools-install': \{ method: 'POST', path: '\/api\/system\/developer-tools\/install'/.test(read('src/routes/host-ops-host.js')),
       'wiring: the install route is mounted');
 
     ok(read('public/air-task-settings.js').includes('/api/system/developer-tools/install'),

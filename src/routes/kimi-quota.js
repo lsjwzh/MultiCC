@@ -24,7 +24,6 @@ const { outboundFetch } = require('../network/outbound');
 const providers = require('../providers/core');
 const { keyHash } = require('../usage-limit-poller');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
-const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 // The last response that actually carried a balance. A Kimi balance fetch fails
 // for reasons that say nothing about the money (a Kimi-for-Coding key 401s the
@@ -36,6 +35,10 @@ function rememberKimiBalance(result) {
   const hasBalance = result && result.status === 'ok' && Array.isArray(result.sites)
     && result.sites.some((s) => s && s.ok && Number.isFinite(s.available));
   if (hasBalance) lastKimiWithBalance = result;
+  return lastKimiWithBalance;
+}
+// Read-only view for the host port's catch path (it must not update the state).
+function lastKimiBalance() {
   return lastKimiWithBalance;
 }
 
@@ -336,51 +339,7 @@ async function fetchKimiUsage(preferHost, nowMs = Date.now(), deps = {}) {
   return { status: 'ok', fetchedAt: nowMs, sites };
 }
 
-function mountKimiQuotaRoutes(app, options = {}) {
-  if (!app || typeof app.get !== 'function') return;
-  const usageDeps = options.usageDeps || {};
-  const recordVendor = typeof options.recordVendor === 'function' ? options.recordVendor : null;
-  app.get('/api/kimi/quota', async (req, res) => {
-    try {
-      const preferHost = typeof req.query?.host === 'string' ? req.query.host : '';
-      const result = await fetchKimiUsage(preferHost, Date.now(), usageDeps);
-      const status = result?.status || 'unavailable';
-      const httpStatus = status === 'ok' ? 200
-        : status === 'not_configured' ? 404
-          : status === 'needs_login' ? 401
-            : status === 'chrome_unavailable' ? 503 : 502;
-      // The bar is rendered here, once, so the web and the app display the same
-      // string rather than each formatting this JSON their own way.
-      const cached = rememberKimiBalance(result);
-      if (recordVendor) {
-        try { await recordVendor({ kind: 'kimi', result, host: preferHost, opts: { cached } }); } catch (_) {}
-      }
-      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('kimi', result, { cached }) });
-    } catch (_) {
-      const result = { status: 'unavailable', error: 'kimi quota fetch failed' };
-      if (recordVendor) {
-        try { await recordVendor({ kind: 'kimi', result, host: req.query?.host || '' }); } catch (_) {}
-      }
-      res.status(500).json({ ...result, bar: renderQuotaBar('kimi', result, { cached: lastKimiWithBalance }) });
-    }
-  });
-
-  // Visible login window on the managed profile — same pattern as qoder /
-  // opencode. The user logs into kimi.com once; the session then persists for
-  // headless membership-page scrapes.
-  app.post('/api/kimi/quota/login', async (req, res) => {
-    try {
-      await getManagedQuotaBrowser().openVisibleLogin(KIMI_SUBSCRIPTION_URL);
-      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录 kimi.com，完成后回来重新查询余量' });
-    } catch (err) {
-      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
-      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
-    }
-  });
-}
-
 module.exports = {
-  mountKimiQuotaRoutes,
   fetchKimiUsage,
   fetchKimiBalance,
   fetchKimiSubscriptionPage,
@@ -392,4 +351,6 @@ module.exports = {
   siteLabel,
   balanceHost,
   KIMI_SUBSCRIPTION_URL,
+  rememberKimiBalance,
+  lastKimiBalance,
 };

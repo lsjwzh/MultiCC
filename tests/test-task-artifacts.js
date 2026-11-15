@@ -2,7 +2,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const { collectTaskArtifacts } = require('../src/task-shell/artifacts');
 const { fixture } = require('./helpers/task-shell');
-const { mountTaskShellRoutes } = require('../src/task-shell/routes');
+const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 const entry = messages => ({ task: { id: 'tsk_a', title: 'Task A' }, sessionId: 'task-a', messages });
 const message = (content, extra = {}) => ({ role: 'assistant', taskId: 'tsk_a', content, ts: 1000, ...extra });
 const row = (artifact, extra = {}) => ({ kind: 'page', title: artifact, url: `/artifacts/${artifact}/index.html`, ...extra });
@@ -45,25 +45,22 @@ test('registered URL parameters survive collection and invalid legacy timestamps
   assert.equal(result.items[0].createdAt, null);
 });
 
-test('task artifact routes follow the shell cursor, read historical tasks and do not start execution', async t => {
-  const f = fixture(t), express = require('express'), app = express();
+test('task artifact host ops follow the shell cursor, read historical tasks and do not start execution', async t => {
+  const f = fixture(t);
   const first = await f.runtime.send(f.a.id, { text: 'First', intent: 'work', clientMsgId: 'first' });
   f.statuses.set(first.sessionId, { busy: false });
   const second = await f.runtime.send(f.a.id, { text: 'Second', newTask: true, intent: 'work', clientMsgId: 'second' });
   f.histories.set(first.sessionId, [message('/artifacts/first/index.html', { taskId: first.taskId })]);
   f.histories.set(second.sessionId, [message('/artifacts/second/index.html', { taskId: second.taskId })]);
   const before = { sends: f.sends.length, creations: f.creations.length, view: f.runtime.view(f.a.id) };
-  mountTaskShellRoutes(app, { getRuntime: () => f.runtime,
+  const { ok, fail } = mountHost(fakeApp(), { getRuntime: () => f.runtime,
     artifacts: async id => collectTaskArtifacts(await f.runtime.taskEntry(id), [], () => true) });
-  const server = app.listen(0, '127.0.0.1'); await new Promise(r => server.once('listening', r));
-  t.after(() => new Promise(r => { server.close(r); server.closeAllConnections(); }));
-  const get = async path => { const res = await fetch(`http://127.0.0.1:${server.address().port}${path}`); return { status: res.status, body: await res.json() }; };
-  const current = await get(`/api/task-shells/${f.a.id}/artifacts`);
-  assert.equal(current.body.taskId, second.taskId);
-  assert.deepEqual(current.body.items.map(i => i.artifactId), ['second']);
-  assert.deepEqual((await get(`/api/task-shell-tasks/${first.taskId}/artifacts`)).body.items.map(i => i.artifactId), ['first']);
-  assert.equal((await get('/api/task-shell-tasks/missing/artifacts')).status, 404);
-  assert.deepEqual((await get(`/api/task-shells/${f.b.id}/artifacts`)).body.items, []);
+  const scope = await ok({ op: 'shell-artifacts-scope', shellId: f.a.id });
+  assert.equal(scope.taskId, second.taskId);
+  assert.deepEqual((await ok({ op: 'artifacts', taskId: scope.taskId })).items.map(i => i.artifactId), ['second']);
+  assert.deepEqual((await ok({ op: 'artifacts', taskId: first.taskId })).items.map(i => i.artifactId), ['first']);
+  assert.equal((await fail({ op: 'artifacts', taskId: 'missing' })).status, 404);
+  assert.equal((await ok({ op: 'shell-artifacts-scope', shellId: f.b.id })).taskId, null);
   assert.deepEqual({ sends: f.sends.length, creations: f.creations.length, view: f.runtime.view(f.a.id) }, before);
 });
 
@@ -81,47 +78,38 @@ test('task artifacts expose registry controls and sort permanent and pinned outp
   assert.equal(result.items.find(i => i.artifactId === 'unregistered').registryId, null);
 });
 
-test('artifact routes coalesce in-flight collects and memoize briefly per task', async () => {
-  const fakeRes = () => { const r = { body: null, status(code) { r.code = code; return r; }, json(v) { r.body = v; } }; return r; };
+test('artifact ops coalesce in-flight collects and memoize briefly per task', async () => {
   let collects = 0; let release; const gate = new Promise(done => { release = done; });
-  const routes = new Map();
-  const fakeApp = { get: (p, h) => routes.set(p, h), post() {}, delete() {} };
-  mountTaskShellRoutes(fakeApp, {
+  const { ok } = mountHost(fakeApp(), {
     getRuntime: () => null,
     artifacts: async id => { collects += 1; if (collects === 1) await gate; return { taskId: id, title: '', items: [] }; },
     artifactsMemoMs: 60,
   });
-  const handler = routes.get('/api/task-shell-tasks/:taskId/artifacts');
-  const inflight = [handler({ params: { taskId: 'tsk_a' } }, fakeRes()), handler({ params: { taskId: 'tsk_a' } }, fakeRes())];
+  const inflight = [ok({ op: 'artifacts', taskId: 'tsk_a' }), ok({ op: 'artifacts', taskId: 'tsk_a' })];
   release();
   await Promise.all(inflight);
   assert.equal(collects, 1, '进行中的采集要合并成一个');
-  await handler({ params: { taskId: 'tsk_a' } }, fakeRes());
+  await ok({ op: 'artifacts', taskId: 'tsk_a' });
   assert.equal(collects, 1, '完成后的短窗口内直接复用同一份结果');
   await new Promise(done => setTimeout(done, 70));
-  await handler({ params: { taskId: 'tsk_a' } }, fakeRes());
+  await ok({ op: 'artifacts', taskId: 'tsk_a' });
   assert.equal(collects, 2, '窗口过后重新采集');
-  await handler({ params: { taskId: 'tsk_b' } }, fakeRes());
+  await ok({ op: 'artifacts', taskId: 'tsk_b' });
   assert.equal(collects, 3, '不同任务各自采集');
 });
 
 test('a failed artifact collect is not memoized', async () => {
-  const fakeRes = () => { const r = { body: null, status(code) { r.code = code; return r; }, json(v) { r.body = v; } }; return r; };
   let fails = true;
-  const routes = new Map();
-  mountTaskShellRoutes({ get: (p, h) => routes.set(p, h), post() {}, delete() {} }, {
+  const { ok, fail } = mountHost(fakeApp(), {
     getRuntime: () => null,
     artifacts: async id => { if (fails) throw Object.assign(new Error('boom'), { status: 500 }); return { taskId: id, title: '', items: [id] }; },
     artifactsMemoMs: 10_000,
   });
-  const handler = routes.get('/api/task-shell-tasks/:taskId/artifacts');
-  const failed = fakeRes();
-  await handler({ params: { taskId: 'tsk_b' } }, failed);
-  assert.equal(failed.code, 500);
+  const failed = await fail({ op: 'artifacts', taskId: 'tsk_b' });
+  assert.equal(failed.status, 500);
   fails = false;
-  const recovered = fakeRes();
-  await handler({ params: { taskId: 'tsk_b' } }, recovered);
-  assert.deepEqual(recovered.body.items, ['tsk_b'], '失败不能落缓存，下一轮要能恢复');
+  const recovered = await ok({ op: 'artifacts', taskId: 'tsk_b' });
+  assert.deepEqual(recovered.items, ['tsk_b'], '失败不能落缓存，下一轮要能恢复');
 });
 
 test('registry task titles are readable before the shell runtime has started', t => {

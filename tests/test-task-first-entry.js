@@ -2,7 +2,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const express = require('express'), fs = require('node:fs'), path = require('node:path');
 const { createStaticAssetsRoutes } = require('../src/routes/static-assets');
-const { mountAirRoutes } = require('../src/workspace/air-routes');
+const { mountAir } = require('./helpers/air-host');
 
 test('public conversation bookmarks resolve through tasks; Air owns the only chat entry', async t => {
   const app = express();
@@ -65,18 +65,19 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
   assert.doesNotMatch(embeddedHtml, /task-board-entry\.js/);
 });
 
-test('legacy bookmark resolution retains explicit task identity and encodes its destination', async () => {
-  const handlers = new Map(); let migrations = 0;
-  mountAirRoutes({ get: (url, h) => handlers.set(url, h), post() {} }, {
+test('legacy bookmark resolution retains explicit task identity and its directory', async () => {
+  let migrations = 0;
+  // 前门（Rust）负责把 {taskId, dirId} 拼成 /air?task=…&dir=…；宿主只回答「定位到哪」。
+  const air = mountAir({
     records: new Map([['s', { id: 's', dirId: 'd1' }]]), shell: {
       migrateTaskSessions: async () => { migrations++; },
       stateTarget: () => ({ taskId: 't-current' }), artifactTaskId: () => 't-owned',
       chatScope: () => ({ taskId: 't-shell' }), taskEntry: async id => ({ sessionId: 's', task: { id } }),
     },
   });
-  for (const [query, id] of [[{ task: 't-explicit', session: 's' }, 't-explicit'], [{ session: 's' }, 't-current'], [{ shell: 'sh' }, 't-shell']]) {
-    let data; await handlers.get('/api/air/resolve')({ query }, { json: x => { data = x; } });
-    assert.equal(data.taskId, id); assert.equal(data.url, `/air?task=${id}&dir=d1`);
+  for (const [input, id] of [[{ task: 't-explicit', session: 's' }, 't-explicit'], [{ session: 's' }, 't-current'], [{ shell: 'sh' }, 't-shell']]) {
+    const data = await air.ok({ op: 'resolve', ...input });
+    assert.deepEqual(data, { taskId: id, dirId: 'd1' });
   }
   assert.equal(migrations, 3);
 });

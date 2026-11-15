@@ -169,27 +169,13 @@ function createTaskPlanningRuntime({
     return success(res, updated);
   }
 
-  function wrap(handler, label) {
-    return (req, res) => Promise.resolve(handler(req, res)).catch(error => {
-      logger.log(`[multicc/task-planning] ${label} failed: ${error?.message || error}`);
-      if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
-    });
-  }
-
-  function mountRoutes(app) {
-    app.post('/api/task-board/tasks', wrap(handleCreate, 'create'));
-    app.post('/api/task-board/tasks/:taskId/update', wrap(
-      (req, res) => withTaskLock(req.params.taskId, () => handleUpdate(req, res)), 'update'));
-    app.post('/api/task-board/tasks/:taskId/title', wrap(
-      (req, res) => withTaskLock(req.params.taskId, () => handleRename(req, res)), 'rename'));
-    // Compatibility alias for early planning clients.
-    app.post('/api/task-board/tasks/:taskId/planning', wrap(
-      (req, res) => withTaskLock(req.params.taskId, () => handleUpdate(req, res)), 'update'));
-    app.post('/api/task-board/tasks/:taskId/move', wrap(
-      (req, res) => withTaskLock(req.params.taskId, () => handleMove(req, res)), 'move'));
-  }
-
-  return Object.freeze({ mountRoutes, handleCreate, handleUpdate, handleRename, handleMove });
+  // 五条 planning 路由（含 `/planning` 兼容别名）已由 Rust 前门独占；路径匹配、
+  // 请求体读取、`responseStatus()` 的状态码阶梯与 `{ok,task,revision}` 信封都在
+  // native/gateway/src/app/task_routes.rs 与 native/core/src/task_routes.rs。
+  // 这里保留处理器本身和按任务的串行锁，供回环宿主端口
+  // （src/routes/task-routes-host.js）调用；处理器仍用 `res.status().json(...)`
+  // 表达结果，宿主端口用捕获器取走。
+  return Object.freeze({ withTaskLock, handleCreate, handleUpdate, handleRename, handleMove });
 }
 
-module.exports = { createTaskPlanningRuntime };
+module.exports = { createTaskPlanningRuntime, responseStatus, expectedRevision };

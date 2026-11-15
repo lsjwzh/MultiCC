@@ -1,0 +1,198 @@
+'use strict';
+
+// ── One-click update from the web UI ──
+// POST /api/update        starts `./multicc update [--force]` in a detached child
+// GET  /api/update/status reads the run's state back off disk
+//
+// The route is auth-gated (deliberately NOT in the bypass allowlist at the top
+// of server.js), so shared view/operate viewers cannot trigger an update.
+//
+// Concurrency is guarded twice on purpose. The on-disk log is the durable
+// answer, but it does not exist yet in the second between spawning and the
+// child's first write — `_updateScheduled` covers exactly that window, and
+// expires so a child that died before writing anything cannot 409 forever.
+const { startDetachedUpdate, readUpdateStatus, detectStandaloneUpdate } = require('../update-runner');
+const { resolveVersionInfo } = require('./system');
+
+const UPDATE_FLAG_TTL_MS = 20000;
+
+// deps:
+//   chatSessions      Map — live chat sessions (read-only; counts streaming turns)
+//   spawn             child_process.spawn (forwarded to startDetachedUpdate)
+//   rootDir           host package root (server.js __dirname), NOT this module's dir
+//   getShuttingDown   () => boolean — lazy read of the host's _shuttingDown let-binding
+//   log               console-like sink (defaults to console)
+//   isDesktopMode     () => boolean — desktop installs ship an immutable copy of
+//                     the server; `./multicc update` (git-based) can only
+//                     corrupt it, so refuse with an actionable error instead.
+//                     The standalone package runs in desktop mode too but
+//                     updates itself (bundled `multicc update`), so it is let
+//                     through — see detectStandaloneUpdate.
+//   isStandalone      () => boolean — defaults to detecting the standalone layout
+//   getPort           () => number — current listen port, forwarded to install.sh
+//                     as --port so a non-default port survives the update
+//                     (install.sh otherwise resets PORT to 3000)
+//   fs, path, https, gitRun — forwarded to resolveVersionInfo to resolve the
+//                     target version for the standalone/install.sh path
+function createUpdateRoute(deps) {
+  const {
+    chatSessions,
+    spawn,
+    rootDir,
+    getShuttingDown = () => false,
+    log = console,
+    now = Date.now,
+    isDesktopMode = () => /^(1|true|yes|on)$/i.test(String(process.env.MULTICC_DESKTOP || '').trim()),
+    isStandalone = () => Boolean(detectStandaloneUpdate({ rootDir })),
+    getPort = () => null,
+    fs,
+    path,
+    https,
+    gitRun,
+  } = deps || {};
+  if (typeof spawn !== 'function') throw new TypeError('update route requires spawn');
+  if (!rootDir) throw new TypeError('update route requires rootDir');
+
+  let _updateScheduled = false;
+  let _updateScheduledAt = 0;
+
+  function expireScheduledFlag() {
+    if (_updateScheduled && now() - _updateScheduledAt > UPDATE_FLAG_TTL_MS) {
+      _updateScheduled = false;
+      _updateScheduledAt = 0;
+    }
+  }
+
+  function statusNow() {
+    try {
+      return readUpdateStatus({ rootDir, now });
+    } catch (error) {
+      log.error('[multicc] /api/update/status: could not read update state', error && error.message);
+      return { state: 'unknown', running: false, exitCode: null, tail: '' };
+    }
+  }
+
+  function admissionStatus() {
+    expireScheduledFlag();
+    const current = statusNow();
+    if (_updateScheduled && !current.running) {
+      return {
+        ...current,
+        state: 'scheduled',
+        running: true,
+        scheduled: true,
+        startedAt: new Date(_updateScheduledAt).toISOString(),
+      };
+    }
+    return { ...current, scheduled: false };
+  }
+
+  // Tells the client which updater will run: the standalone package has no
+  // git "force" mode, so the dialog leaves that option out.
+  function updateKind() {
+    // 'desktop' is the Electron shell: it runs with MULTICC_DESKTOP=1 like a
+    // standalone package but cannot update itself — its program is the app
+    // bundle, replaced by installing a new desktop release. The client renders
+    // that as a download prompt instead of an in-app update.
+    try {
+      if (isStandalone()) return 'standalone';
+      return isDesktopMode() ? 'desktop' : 'git';
+    } catch (_) {
+      return isDesktopMode() ? 'desktop' : 'git';
+    }
+  }
+
+  function mountRoutes(app) {
+    app.get('/api/update/status', (req, res) => {
+      res.json({ ...admissionStatus(), kind: updateKind() });
+    });
+
+    app.post('/api/update', async (req, res) => {
+      expireScheduledFlag();
+      if (getShuttingDown()) return res.status(409).json({ error: 'server is shutting down' });
+      if (isDesktopMode() && updateKind() !== 'standalone') {
+        return res.status(409).json({
+          error: 'this MultiCC runs inside the desktop app; install a new desktop release to update',
+          code: 'DESKTOP_UPDATE_UNSUPPORTED',
+          requestId: req.id,
+        });
+      }
+      const current = statusNow();
+      if (_updateScheduled || current.running) {
+        return res.status(409).json({ error: 'update already in progress', status: current });
+      }
+      const force = Boolean(req.body && (req.body.force === true || req.body.force === 'true' || req.body.force === 1));
+      const kind = updateKind();
+
+      // The standalone path runs install.sh against a specific target release;
+      // resolve it up front so the client can poll /api/version-check for this
+      // exact version after the restart instead of guessing when "done" means.
+      let targetVersion = null;
+      if (kind === 'standalone' && fs && path && https && gitRun) {
+        try {
+          const info = await resolveVersionInfo({ fs, path, https, gitRun, rootDir });
+          targetVersion = info.latestVersion || info.current || null;
+        } catch (error) {
+          log.error('[multicc] /api/update: could not resolve target version', error && error.message);
+        }
+      }
+
+      _updateScheduled = true;
+      _updateScheduledAt = now();
+      const scheduledAt = _updateScheduledAt;
+
+      // The client is told how many turns the restart at the end of the update
+      // will interrupt, using the same definition as /api/restart: streaming,
+      // and not stale for more than ten minutes.
+      let activeStreaming = 0;
+      const sessions = chatSessions && typeof chatSessions.values === 'function' ? chatSessions.values() : [];
+      for (const cs of sessions) {
+        if (cs && cs.isStreaming && (now() - (cs.lastStreamAt || 0)) < 600000) activeStreaming++;
+      }
+
+      try {
+        await startDetachedUpdate({
+          spawn,
+          getChildProxyEnv: deps.getChildProxyEnv,
+          rootDir,
+          force,
+          targetVersion,
+          port: getPort(),
+          env: process.env,
+          log,
+          onFailure: (error) => {
+            // An older attempt's child must never clear a newer attempt's flag.
+            if (_updateScheduledAt === scheduledAt) {
+              _updateScheduled = false;
+              _updateScheduledAt = 0;
+              log.error('[multicc] /api/update: scheduling state reset after child failure', error && error.code);
+            }
+          },
+        });
+      } catch (error) {
+        if (_updateScheduledAt === scheduledAt) {
+          _updateScheduled = false;
+          _updateScheduledAt = 0;
+        }
+        log.error('[multicc] /api/update: could not start update', error && error.message);
+        const code = error && /^UPDATE_[A-Z_]+$/.test(error.code || '') ? error.code : 'UPDATE_START_FAILED';
+        return res.status(503).json({
+          error: 'update could not be started',
+          code,
+          requestId: req.id,
+        });
+      }
+
+      return res.status(202).json({ ok: true, status: 'started', force, activeStreaming, targetVersion });
+    });
+  }
+
+  return {
+    mountRoutes,
+    status() {
+      return admissionStatus();
+    },
+  };
+}
+
+module.exports = { createUpdateRoute, UPDATE_FLAG_TTL_MS };

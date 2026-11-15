@@ -173,9 +173,35 @@ pub fn send(
     extra: &[(&str, &str)],
 ) -> Response<Body> {
     let etag = weak_etag(&body);
+    send_body(ctx, status, content_type, body, extra, &etag)
+}
+
+/// `res.set('ETag', etag)` followed by `res.send(body)`: Express keeps an ETag
+/// that was already set instead of deriving its own, then still runs the
+/// `fresh()` check against it. The Air snapshot/detail routes precompute their
+/// ETag in Node, so the front door forwards that exact tag here.
+pub fn send_with_etag(
+    ctx: &RequestCtx,
+    status: u16,
+    content_type: &str,
+    body: Vec<u8>,
+    extra: &[(&str, &str)],
+    etag: &str,
+) -> Response<Body> {
+    send_body(ctx, status, content_type, body, extra, etag)
+}
+
+fn send_body(
+    ctx: &RequestCtx,
+    status: u16,
+    content_type: &str,
+    body: Vec<u8>,
+    extra: &[(&str, &str)],
+    etag: &str,
+) -> Response<Body> {
     let mut status = status;
     let get_like = ctx.method == Method::GET || ctx.is_head();
-    if get_like && ((200..300).contains(&status) || status == 304) && fresh(&ctx.headers, &etag) {
+    if get_like && ((200..300).contains(&status) || status == 304) && fresh(&ctx.headers, etag) {
         status = 304;
     }
     let empty = status == 204 || status == 304;
@@ -189,7 +215,7 @@ pub fn send(
     if let Some(content_type) = content_type {
         builder = header(builder, "Content-Type", content_type);
     }
-    builder = header(builder, "ETag", &etag);
+    builder = header(builder, "ETag", etag);
 
     // src/http/json-compression.js: /api/* only, never HEAD.
     let json = content_type.is_some_and(|value| {

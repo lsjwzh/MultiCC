@@ -1,19 +1,27 @@
 'use strict';
 
+// The thirteen public session-admin routes are answered by the Rust front door
+// (native/gateway/src/app/session_admin.rs, rules in
+// native/core/src/session_admin.rs). What is left in Node is the loopback host
+// port the front door queries for process-local facts and effects. This suite
+// covers that contract; the route semantics themselves are covered by
+// native/gateway/tests/session_admin.rs and
+// docs/rust-migration/differential/session-admin.js.
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
 const { createErrorDto, requestContext, withApiMeta } = require('../src/api-contract');
-const { isTerminalLetter } = require('../src/classify/vocab');
-const { installAuxHealthProvider } = require('../src/classify/aux-verdict-health');
+const { GOAL_STATES } = require('../src/classify/vocab');
 const {
   assistantText,
   latestAssistant,
   latestStringAssistant,
   createSessionAdminRuntime,
 } = require('../src/routes/session-admin');
+const { HOST_PATH } = require('../src/routes/session-admin-host');
 
 function createFakeApp() {
   const routes = new Map();
@@ -25,17 +33,22 @@ function createFakeApp() {
   return { routes, get: register('GET'), post: register('POST') };
 }
 
-function invoke(handler, { params = {}, query = {}, body = {} } = {}) {
-  const req = { params, query, body, id: 'req-test', correlationId: 'corr-test' };
-  const response = { statusCode: 200, body: undefined };
-  const res = {
-    locals: {},
-    status(code) { response.statusCode = code; return this; },
-    json(value) { response.body = value; return this; },
-  };
-  handler(req, res);
-  return response;
-}
+/** The retired public routes; none of them may be registered in Node again. */
+const RETIRED = [
+  'GET /api/v1/sessions',
+  'GET /api/v1/sessions/:id',
+  'GET /api/v1/directories/:id/workspace',
+  'GET /api/sessions',
+  'POST /api/sessions/:id/reclassify',
+  'POST /api/sessions/:id/mark-task-done',
+  'POST /api/sessions/:id/mark-goal-achieved',
+  'POST /api/reclassify-all',
+  'GET /api/directories/:id/sessions',
+  'GET /api/directories/:id/workspace',
+  'GET /api/sessions/:id',
+  'POST /api/debug/classify/:id',
+  'GET /api/debug/classify-test-cases',
+];
 
 function createFixture(overrides = {}) {
   const records = new Map([
@@ -45,6 +58,16 @@ function createFixture(overrides = {}) {
       experimentalMode: 'tui-chat-mirror',
       rolePrompt: 'legacy-only prompt', cwd: '/private/worktree',
       rolePresetId: 'testing__testing-engineer',
+      // A saved Auto pool: the canonical providerSelectionDto projects it back
+      // with the defaults it fills in (enabled/preferMaxQuota/allowCrossTrust).
+      providerSelection: {
+        version: 1, mode: 'auto', protocol: 'anthropic',
+        candidates: [
+          { providerId: 'provider-1', model: 'model-1', priority: 1 },
+          { providerId: 'provider-2', model: 'model-2', priority: 2 },
+        ],
+        maxAttempts: 2, sticky: true,
+      },
       taskState: { classifyState: 'D', goal: 'done goal', phase: 'done' },
       cliSessionId: 'native-secret', worktreePath: '/private/worktree',
     }],
@@ -74,35 +97,29 @@ function createFixture(overrides = {}) {
     ]],
     ['t1', [{ role: 'assistant', content: 'terminal assistant response long enough to classify', ts: 1500 }]],
   ]);
-  const enqueued = [];
-  const dispatched = [];
-  const taskStateWrites = [];
-  let classifyNow = 0;
-  let mergeStateReads = 0;
+  const effects = { dispatched: [], writes: [], classified: [], warned: [], failed: [] };
   const queue = {
     clients: new Set([{}]),
     processing: false,
     lastTaskTime: 1234,
-    unhealthy: false,
     getStatus: () => ({ state: 'idle' }),
-    isUnhealthy() { return this.unhealthy; },
-    enqueue(task) { enqueued.push(task); return Promise.resolve({ text: 'goal\n实现中\nC' }); },
   };
-  const runtime = createSessionAdminRuntime({
+  const deps = {
     records,
     resolveStateTarget: overrides.resolveStateTarget,
     terminalSessions,
     chatSessions,
     directories,
+    logger: {
+      warn: (message, detail) => effects.warned.push({ message, detail }),
+      error: (message, op) => effects.failed.push({ message, op }),
+    },
     cwdForSession: record => `/session/${record.id}`,
     chatLastActivity: () => new Date(3000),
     effectiveSessionModel: record => record.model || 'effective-model',
     effectiveSessionEffort: () => 'high',
     serializeSubagent: value => value || null,
-    mergeStateCached: overrides.mergeStateCached || (() => {
-      mergeStateReads += 1;
-      return { ahead: 0, behind: 0, dirty: false };
-    }),
+    mergeStateCached: () => ({ ahead: 0, behind: 0, dirty: false }),
     cliStateSummary: () => ({ claude: { available: true } }),
     cliHandoffSummary: () => null,
     cliAvailabilitySummary: () => ({ claude: true, codex: true }),
@@ -116,7 +133,7 @@ function createFixture(overrides = {}) {
     setTaskState: (id, patch) => {
       const record = records.get(id);
       record.taskState = { ...(record.taskState || {}), ...patch };
-      taskStateWrites.push({ id, patch });
+      effects.writes.push({ id, patch });
       return record.taskState;
     },
     pendingNotesFor: id => id === 's1' ? [{ id: 'note' }] : [],
@@ -127,19 +144,44 @@ function createFixture(overrides = {}) {
     buildClassifySystemPrompt: goal => `system:${goal}`,
     buildClassifyConversation: (id, reply) => `conversation:${id}:${reply}`,
     parseClassifyResult: text => ({ state: text.endsWith('C') ? 'continue' : 'waiting' }),
-    dispatchStateAction: (result, context) => dispatched.push({ result, context }),
-    runClassifyNow: () => { classifyNow += 1; },
+    dispatchStateAction: (action, context) => effects.dispatched.push({ action, context }),
+    runClassifyNow: (chat, id, options) => {
+      effects.classified.push({
+        id,
+        manual: !!(options && options.manual === true),
+        text: chat?.currentAssistantText ?? null,
+      });
+    },
     createErrorDto,
     requestContext,
     withApiMeta,
-  });
+  };
+  const runtime = createSessionAdminRuntime(deps);
   const app = createFakeApp();
   runtime.mountRoutes(app);
-  return {
-    app, runtime, records, chatSessions, queue, history,
-    enqueued, dispatched, taskStateWrites, getClassifyNow: () => classifyNow,
-    getMergeStateReads: () => mergeStateReads,
+  return { app, runtime, deps, records, chatSessions, directory: directories.get('d1'), effects };
+}
+
+/** Calls the host route the way the front door does: loopback peer, JSON body. */
+function callHost(app, body, options = {}) {
+  const handler = app.routes.get(`POST ${HOST_PATH}`);
+  assert.equal(typeof handler, 'function', 'host port is mounted');
+  const remoteAddress = options.remoteAddress || '127.0.0.1';
+  const req = {
+    body,
+    headers: { host: options.host || 'localhost' },
+    socket: { remoteAddress },
+    connection: { remoteAddress },
   };
+  let settle;
+  const answered = new Promise(resolve => { settle = resolve; });
+  const res = {
+    statusCode: 200,
+    status(code) { res.statusCode = code; return res; },
+    json(value) { settle({ status: res.statusCode, body: value }); return res; },
+  };
+  handler(req, res);
+  return answered;
 }
 
 test('assistant extraction preserves string and structured legacy history', () => {
@@ -163,266 +205,300 @@ test('assistant extraction preserves string and structured legacy history', () =
   ]), 'plain response long enough');
 });
 
-test('session admin mounts the complete bounded route set once', () => {
+test('the runtime mounts the host port and none of the retired public routes', () => {
   const { app } = createFixture();
-  const expected = [
-    'GET /api/v1/sessions',
-    'GET /api/v1/sessions/:id',
-    'GET /api/v1/directories/:id/workspace',
-    'GET /api/sessions',
-    'POST /api/sessions/:id/reclassify',
-    'POST /api/sessions/:id/mark-task-done',
-    'POST /api/sessions/:id/mark-goal-achieved',
+  // Air 的「标记达成」也搬到 Rust 前门了（native/gateway/src/app/task_routes.rs），
+  // unattended 的 GET/POST 也搬到 Rust 前门了（orchestration_routes.rs），公开 app 上
+  // 只剩这一个宿主端口；无人值守处理器只挂在编排宿主端口的捕获应用上。
+  assert.deepEqual([...app.routes.keys()].sort(), [`POST ${HOST_PATH}`].sort());
+  for (const key of RETIRED) {
+    assert.equal(app.routes.has(key), false, `${key} is answered by the front door, not Node`);
+  }
+});
+
+test('unattended handlers are mounted only on the capture app handed in', () => {
+  const { runtime } = createFixture();
+  const app = createFakeApp();
+  const capture = createFakeApp();
+  runtime.mountRoutes(app, { unattendedApp: capture });
+  assert.deepEqual([...app.routes.keys()], [`POST ${HOST_PATH}`]);
+  assert.deepEqual([...capture.routes.keys()].sort(), [
     'GET /api/sessions/:id/unattended',
     'POST /api/sessions/:id/unattended',
-    'POST /api/air/tasks/mark-achieved',
-    'POST /api/reclassify-all',
-    'GET /api/directories/:id/sessions',
-    'GET /api/directories/:id/workspace',
-    'GET /api/sessions/:id',
-    'POST /api/debug/classify/:id',
-    'GET /api/debug/classify-test-cases',
-  ];
-  assert.deepEqual([...app.routes.keys()].sort(), expected.sort());
+  ]);
 });
 
-test('v1 responses stay bounded while legacy fields remain compatible', () => {
+test('the host port only answers loopback callers', async () => {
   const { app } = createFixture();
-  const v1 = invoke(app.routes.get('GET /api/v1/sessions'));
-  assert.equal(v1.body.count, 2);
-  const wire = JSON.stringify(v1.body);
-  for (const secret of ['/private/', 'native-secret', 'legacy-only prompt']) {
-    assert.equal(wire.includes(secret), false, `v1 excludes ${secret}`);
-  }
-
-  const legacy = invoke(app.routes.get('GET /api/sessions'));
-  assert.equal(legacy.body[0].id, '__aux__');
-  assert.equal(legacy.body.find(item => item.id === 's1').cwd, '/session/s1');
-  assert.equal(legacy.body.find(item => item.id === 's1').rolePresetId, 'testing__testing-engineer');
-  assert.equal(legacy.body.find(item => item.id === 's1').experimentalMode, 'tui-chat-mirror');
-  assert.equal(legacy.body.find(item => item.id === 't1').active, true);
-
-  const directorySessions = invoke(app.routes.get('GET /api/directories/:id/sessions'), {
-    params: { id: 'd1' },
-  });
-  assert.equal(directorySessions.body.sessions.find(item => item.id === 's1').rolePresetId,
-    'testing__testing-engineer');
-  assert.equal(directorySessions.body.sessions.find(item => item.id === 's1').experimentalMode,
-    'tui-chat-mirror');
-
-  const detail = invoke(app.routes.get('GET /api/sessions/:id'), { params: { id: 's1' } });
-  assert.equal(detail.body.rolePresetId, 'testing__testing-engineer');
-  assert.equal(detail.body.experimentalMode, 'tui-chat-mirror');
-
-  const workspace = invoke(app.routes.get('GET /api/directories/:id/workspace'), {
-    params: { id: 'd1' },
-  });
-  assert.equal(workspace.body.sessions.length, 2);
-  assert.equal(workspace.body.sessions.find(item => item.id === 's1').pendingNotes, 1);
-  assert.equal(workspace.body.sessions.find(item => item.id === 't1').invalid, 'test-invalid');
+  const remote = await callHost(app, { op: 'records' }, { remoteAddress: '203.0.113.9' });
+  assert.equal(remote.status, 404);
+  assert.deepEqual(remote.body, { error: 'not found' });
+  const forwarded = await callHost(app, { op: 'records' }, { host: 'example.test' });
+  assert.equal(forwarded.status, 404);
+  const unknown = await callHost(app, { op: 'nope' });
+  assert.equal(unknown.status, 400);
+  assert.deepEqual(unknown.body, { error: 'unknown host operation' });
 });
 
-test('every roster carries whether Aux is still revising the judgement', () => {
-  const { app } = createFixture();
+test('a failing operation is logged and answered as a generic 500', async () => {
+  const fixture = createFixture();
+  const original = fixture.deps.getAuxRuntime;
+  fixture.deps.getAuxRuntime = () => { throw new Error('queue exploded'); };
   try {
-    // A frozen judgement must not read as a current one: the roster says so,
-    // and it keeps showing the judgement itself (it is still the best we have).
-    installAuxHealthProvider(() => ({ unhealthy: true, sinceAt: 1_700_000_000_000 }));
-    for (const [name, request] of [
-      ['workspace roster', ['GET /api/directories/:id/workspace', { params: { id: 'd1' } }]],
-    ]) {
-      const [route, args] = request;
-      const body = invoke(app.routes.get(route), args).body;
-      const s1 = body.sessions.find(item => item.id === 's1');
-      assert.equal(s1.auxUnhealthy, true, `${name} marks the stale judgement`);
-      assert.equal(s1.auxUnhealthySince, 1_700_000_000_000, `${name} says since when`);
-      assert.equal(s1.goal, 'done goal', `${name} still shows the judgement`);
-    }
-
-    installAuxHealthProvider(() => ({ unhealthy: false }));
-    const recovered = invoke(app.routes.get('GET /api/directories/:id/workspace'),
-      { params: { id: 'd1' } }).body.sessions;
-    assert.equal(recovered.find(item => item.id === 's1').auxUnhealthy, false);
-    assert.equal(recovered.find(item => item.id === 's1').auxUnhealthySince, null);
+    const answer = await callHost(fixture.app, { op: 'aux-entry' });
+    assert.equal(answer.status, 500);
+    assert.deepEqual(answer.body, { error: 'host operation failed' });
   } finally {
-    installAuxHealthProvider(null);
+    fixture.deps.getAuxRuntime = original;
   }
+  assert.equal(fixture.effects.failed.length, 1);
+  assert.equal(fixture.effects.failed[0].op, 'aux-entry');
 });
 
-test('manual reclassify keeps D/W guard and fire-and-forget completion semantics', async () => {
+test('records and directory lookups return the live process objects', async () => {
+  const { app, records, directory } = createFixture();
+  const roster = await callHost(app, { op: 'records' });
+  assert.equal(roster.status, 200);
+  assert.deepEqual(roster.body.map(([id]) => id), ['s1', 't1', '__aux__']);
+  assert.equal(roster.body[0][1], records.get('s1'));
+  assert.deepEqual((await callHost(app, { op: 'directory', id: 'd1' })).body, directory);
+  assert.equal((await callHost(app, { op: 'directory', id: 'nope' })).body, null);
+  assert.deepEqual((await callHost(app, { op: 'record', id: 't1' })).body, records.get('t1'));
+  assert.equal((await callHost(app, { op: 'record', id: 'nope' })).body, null);
+});
+
+test('one runtime read feeds the four DTO shapes', async () => {
+  const { app, records, directory } = createFixture();
+  const s1 = { id: 's1', record: records.get('s1') };
+  const t1 = { id: 't1', record: records.get('t1') };
+
+  const list = await callHost(app, { op: 'list-dto', items: [s1, t1] });
+  assert.deepEqual(Object.keys(list.body[0]), [
+    'runtime', 'providerSelection', 'cliStates', 'pendingCliHandoff',
+  ]);
+  assert.equal(list.body[0].runtime.sessionCwd, '/session/s1');
+  assert.equal(list.body[0].runtime.createdAt, 100);
+  assert.deepEqual(list.body[0].providerSelection, {
+    version: 1, mode: 'auto', protocol: 'anthropic',
+    candidates: [
+      { providerId: 'provider-1', model: 'model-1', priority: 1, enabled: true },
+      { providerId: 'provider-2', model: 'model-2', priority: 2, enabled: true },
+    ],
+    maxAttempts: 2, sticky: true, preferMaxQuota: true, allowCrossTrust: false,
+  });
+  assert.equal(list.body[1].runtime.terminalActive, true);
+  assert.equal(list.body[1].runtime.clients, 1);
+  assert.equal(list.body[1].runtime.subagent, null);
+
+  const dir = await callHost(app, { op: 'dir-dto', items: [s1, t1] });
+  assert.deepEqual(Object.keys(dir.body[0]), [
+    'runtime', 'providerSelection', 'cliStates', 'pendingCliHandoff', 'invalid',
+  ]);
+  assert.equal(dir.body[0].invalid, null);
+  assert.equal(dir.body[1].invalid, 'test-invalid');
+
+  const detail = await callHost(app, { op: 'detail-dto', record: records.get('s1') });
+  assert.deepEqual(Object.keys(detail.body), [
+    'runtime', 'providerSelection', 'providerBaseUrl', 'cliStates',
+    'cliAvailability', 'pendingCliHandoff',
+  ]);
+  assert.equal(detail.body.providerBaseUrl, 'https://provider-1.example.com');
+  assert.deepEqual(detail.body.cliAvailability, { claude: true, codex: true });
+
+  const v1 = await callHost(app, { op: 'v1-dto', items: [s1] });
+  assert.deepEqual(Object.keys(v1.body[0]), ['runtime']);
+
+  const workspace = await callHost(app, { op: 'workspace-dto', items: [s1, t1] });
+  assert.deepEqual(Object.keys(workspace.body[0]), ['runtime', 'facts', 'invalid']);
+  // D is a done verdict: the card status comes from the classify letter, not
+  // from the raw workspace status the host port reported.
+  assert.equal(workspace.body[0].facts.status, 'succeeded');
+  assert.equal(workspace.body[0].facts.summary, 'summary');
+  assert.equal(workspace.body[0].facts.pendingNotes, 1);
+  assert.equal(workspace.body[1].invalid, 'test-invalid');
+  assert.deepEqual((await callHost(app, { op: 'workspace-dto', items: [] })).body, []);
+});
+
+test('internal execution slots are flagged and denied by the front door', async () => {
   const fixture = createFixture();
-  const handler = fixture.app.routes.get('POST /api/sessions/:id/reclassify');
-  const skipped = invoke(handler, { params: { id: 's1' } });
-  assert.equal(skipped.statusCode, 200);
-  assert.equal(skipped.body.skipped, true);
-  assert.equal(fixture.enqueued.length, 0);
+  fixture.records.set('slot', { id: 'slot', dirId: 'd1', kind: 'chat', taskExecutionSlot: true });
+  const plain = await callHost(fixture.app, { op: 'guard-record', id: 's1', method: 'GET' });
+  assert.equal(plain.body.internal, false);
+  assert.equal(plain.body.taskStateWritable, true);
+  assert.equal(plain.body.record.id, 's1');
+  // A task-bound chat session stays addressable; the marker rides along.
+  fixture.records.set('bound', {
+    id: 'bound', dirId: 'd1', kind: 'chat', taskBoundTaskId: 'task-9', label: '任务 · 修 bug',
+  });
+  const bound = await callHost(fixture.app, { op: 'guard-record', id: 'bound', method: 'GET' });
+  assert.equal(bound.body.internal, false);
+  assert.equal(bound.body.record.taskBoundTaskId, 'task-9');
+  const missing = await callHost(fixture.app, { op: 'guard-record', id: 'nope', method: 'POST' });
+  assert.equal(missing.body.record, null);
+  assert.equal(missing.body.internal, false);
 
-  const forced = invoke(handler, { params: { id: 's1' }, query: { force: 'true' } });
-  assert.equal(forced.statusCode, 200);
-  assert.equal(fixture.getClassifyNow(), 1);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(fixture.dispatched.length, 0, 'manual replay cannot write turn state');
+  const slot = await callHost(fixture.app, { op: 'guard-record', id: 'slot', method: 'OPTIONS' });
+  assert.equal(slot.body.internal, true);
+  assert.equal(slot.body.record.id, 'slot');
+  assert.deepEqual(fixture.effects.warned, [{
+    message: 'internal_execution_slot_public_access_denied',
+    detail: { method: 'OPTIONS' },
+  }]);
 
-  fixture.queue.unhealthy = true;
-  const nextRequest = invoke(handler, { params: { id: 's1' }, query: { force: 'true' } });
-  assert.equal(nextRequest.statusCode, 200);
-  assert.equal(fixture.getClassifyNow(), 2,
-    'historical Aux health must not gate a later manual request');
+  const noWriter = createFixture();
+  noWriter.deps.setTaskState = undefined;
+  const answer = await callHost(noWriter.app, { op: 'guard-record', id: 's1', method: 'GET' });
+  assert.equal(answer.body.taskStateWritable, false);
 });
 
-test('manual mark-task-done compatibility route flips only the waiting turn outcome', () => {
+test('task state is projected with explicit nulls', async () => {
+  const { app, records } = createFixture();
+  const settled = await callHost(app, { op: 'task-state', id: 's1' });
+  assert.deepEqual(settled.body, {
+    classifyState: 'D', goal: 'done goal', phase: 'done', goalState: null,
+  });
+  records.get('s1').taskState = undefined;
+  const empty = await callHost(app, { op: 'task-state', id: 's1' });
+  assert.deepEqual(empty.body, { classifyState: null, goal: null, phase: null, goalState: null });
+});
+
+test('the aux roster entry reports presence, availability and the queue shape', async () => {
   const fixture = createFixture();
-  const handler = fixture.app.routes.get('POST /api/sessions/:id/mark-task-done');
+  const present = await callHost(fixture.app, { op: 'aux-entry' });
+  assert.equal(present.body.available, true);
+  assert.equal(present.body.present, true);
+  assert.deepEqual(Object.keys(present.body.entry), [
+    'id', 'cwd', 'createdAt', 'lastActivity', 'clients', 'active', 'type', 'label', 'auxStatus',
+  ]);
+  assert.equal(present.body.entry.clients, 1);
+  assert.equal(present.body.entry.active, false);
+  assert.deepEqual(present.body.entry.auxStatus, { state: 'idle' });
+  assert.ok(present.body.entry.lastActivity instanceof Date);
 
-  const missing = invoke(handler, { params: { id: 'nope' } });
-  assert.equal(missing.statusCode, 404);
+  fixture.records.delete('__aux__');
+  const absent = await callHost(fixture.app, { op: 'aux-entry' });
+  assert.deepEqual(absent.body, { available: true, present: false });
 
-  const aux = invoke(handler, { params: { id: '__aux__' } });
-  assert.equal(aux.statusCode, 400);
-
-  // s1 starts as D -> already succeeded, no dispatch side effect
-  const done = invoke(handler, { params: { id: 's1' } });
-  assert.equal(done.statusCode, 200);
-  assert.equal(done.body.alreadyDone, true);
-  assert.equal(done.body.alreadySucceeded, true);
-  assert.equal(done.body.turnOutcome, 'succeeded');
-  assert.equal(fixture.dispatched.length, 0);
-
-  // waiting chat session -> succeeded turn dispatch, non-terminal session kind
-  fixture.records.get('s1').taskState = { classifyState: 'W', goal: 'wait goal', phase: 'verifying' };
-  const ok = invoke(handler, { params: { id: 's1' } });
-  assert.equal(ok.statusCode, 200);
-  assert.equal(ok.body.classifyState, 'D');
-  assert.equal(ok.body.turnOutcome, 'succeeded');
-  assert.equal(fixture.dispatched.length, 1);
-  // The LETTER, and a terminal one: dispatchStateAction routes on letters, and
-  // anything non-terminal here would be re-judged by the 60s scan, quietly
-  // undoing the manual turn verdict the user just asked for.
-  assert.equal(fixture.dispatched[0].result.state, 'D');
-  assert.equal(isTerminalLetter(fixture.dispatched[0].result.state), true);
-  assert.equal(fixture.dispatched[0].result.state, ok.body.classifyState);
-  assert.equal(fixture.dispatched[0].result.goal, 'wait goal');
-  assert.equal(fixture.dispatched[0].context.sessionName, 's1');
-  assert.equal(fixture.dispatched[0].context.isTerminal, false);
-
-  // streaming session -> 409, no extra dispatch
-  fixture.chatSessions.get('s1').isStreaming = true;
-  const busy = invoke(handler, { params: { id: 's1' } });
-  assert.equal(busy.statusCode, 409);
-  assert.equal(fixture.dispatched.length, 1);
-  fixture.chatSessions.get('s1').isStreaming = false;
-
-  // terminal-kind session -> isTerminal true
-  fixture.records.get('t1').taskState = { classifyState: 'W', goal: 'tg', phase: 'tp' };
-  const term = invoke(handler, { params: { id: 't1' } });
-  assert.equal(term.statusCode, 200);
-  assert.equal(fixture.dispatched[1].context.isTerminal, true);
+  fixture.deps.getAuxRuntime = () => null;
+  const unavailable = await callHost(fixture.app, { op: 'aux-entry' });
+  assert.deepEqual(unavailable.body, { available: false });
 });
 
-test('manual mark-goal-achieved moves only the D sub-state out of 需要交互', () => {
-  const fixture = createFixture();
-  const handler = fixture.app.routes.get('POST /api/sessions/:id/mark-goal-achieved');
-
-  assert.equal(invoke(handler, { params: { id: 'nope' } }).statusCode, 404);
-  assert.equal(invoke(handler, { params: { id: '__aux__' } }).statusCode, 400);
-
-  // Not a succeeded turn -> refuse, nothing written.
-  fixture.records.get('s1').taskState = { classifyState: 'W', goal: 'g', phase: 'verifying' };
-  assert.equal(invoke(handler, { params: { id: 's1' } }).statusCode, 409);
-  assert.equal(fixture.taskStateWrites.length, 0);
-
-  // 需要交互 -> 达成目标: goalState flips, the letter and lifecycle stay put.
-  fixture.records.get('s1').taskState = { classifyState: 'D', goal: 'g', phase: 'verifying', goalState: 'interact' };
-  const ok = invoke(handler, { params: { id: 's1' } });
-  assert.equal(ok.statusCode, 200);
-  assert.equal(ok.body.goalState, 'achieved');
-  assert.equal(fixture.records.get('s1').taskState.goalState, 'achieved');
-  assert.equal(fixture.records.get('s1').taskState.classifyState, 'D');
-  assert.ok(fixture.records.get('s1').taskState.goalStateManualAt > 0);
-  assert.equal(fixture.dispatched.length, 0);
-
-  // Idempotent.
-  const again = invoke(handler, { params: { id: 's1' } });
-  assert.equal(again.body.alreadyAchieved, true);
-  assert.equal(fixture.taskStateWrites.length, 1);
-});
-
-test('history read failures degrade per session and never abort bulk reclassify', () => {
+test('transcript failures degrade to flags instead of throwing', async () => {
+  const state = { throws: false };
   const fixture = createFixture({
-    loadChatHistory: id => {
-      if (id === 's1') throw new Error('corrupt history');
-      return [{ role: 'assistant', content: 'terminal assistant response long enough to classify' }];
+    viewChatHistory: (id) => {
+      if (state.throws) throw new Error('transcript unavailable');
+      return id === 's1' ? [{ role: 'assistant', content: 'reply long enough to classify' }] : [];
     },
   });
-  fixture.records.get('s1').taskState = { classifyState: 'C', goal: '[auto] broken' };
-  const single = invoke(fixture.app.routes.get('POST /api/sessions/:id/reclassify'), {
-    params: { id: 's1' },
-  });
-  assert.equal(single.statusCode, 400);
-  assert.equal(single.body.error, 'no assistant reply to classify against');
-
-  const bulk = invoke(fixture.app.routes.get('POST /api/reclassify-all'), {
-    body: { onlyJunk: false },
-  });
-  assert.equal(bulk.statusCode, 200);
-  assert.deepEqual(bulk.body.ids, ['t1']);
+  const ok = await callHost(fixture.app, { op: 'history', id: 's1' });
+  assert.equal(ok.body.failed, false);
+  assert.equal(ok.body.history.length, 1);
+  const empty = await callHost(fixture.app, { op: 'history', id: 'nope' });
+  assert.deepEqual(empty.body, { failed: false, history: [] });
+  state.throws = true;
+  const failed = await callHost(fixture.app, { op: 'history', id: 's1' });
+  assert.deepEqual(failed.body, { failed: true });
+  // classificationReply treats an unreadable transcript as an empty one, so a
+  // single unreadable session cannot abort a bulk reclassify pass.
+  const reply = await callHost(fixture.app, { op: 'reply', id: 's1' });
+  assert.equal(reply.body, '');
+  state.throws = false;
+  const text = await callHost(fixture.app, { op: 'reply', id: 's1' });
+  assert.equal(text.body, 'reply long enough to classify');
 });
 
-test('debug classify and test-case routes preserve guards, structured text, and sorting', () => {
+test('the host port performs the three write effects through injected deps', async () => {
   const fixture = createFixture();
-  const classify = fixture.app.routes.get('POST /api/debug/classify/:id');
-  const guarded = invoke(classify, { params: { id: 's1' } });
-  assert.equal(guarded.statusCode, 409);
-  assert.equal(fixture.getClassifyNow(), 0);
+  const chat = fixture.chatSessions.get('s1');
+  chat.currentAssistantText = 'previous';
 
-  const forced = invoke(classify, { params: { id: 's1' }, query: { force: 'true' } });
-  assert.equal(forced.body.triggered, true);
-  assert.equal(fixture.getClassifyNow(), 1);
-  assert.match(fixture.chatSessions.get('s1').currentAssistantText, /structured assistant/);
+  const flag = await callHost(fixture.app, { op: 'chat-flag', id: 's1' });
+  assert.deepEqual(flag.body, { exists: true, streaming: false });
+  assert.deepEqual((await callHost(fixture.app, { op: 'chat-flag', id: 'nope' })).body,
+    { exists: false, streaming: false });
 
-  const cases = invoke(fixture.app.routes.get('GET /api/debug/classify-test-cases'));
-  assert.equal(cases.body.count, 1);
-  assert.equal(cases.body.cases[0].sessionId, 's1');
-  assert.equal(cases.body.cases[0].lastTs, new Date(2000).toISOString());
+  // enqueue: manual replay, and the assistant text is restored afterwards.
+  const enqueued = await callHost(fixture.app, { op: 'enqueue', id: 's1', reply: 'fresh reply' });
+  assert.equal(enqueued.body, null);
+  assert.deepEqual(fixture.effects.classified, [
+    { id: 's1', manual: true, text: 'fresh reply' },
+  ]);
+  assert.equal(chat.currentAssistantText, 'previous');
+  const noChat = await callHost(fixture.app, { op: 'enqueue', id: 'nope', reply: 'x' });
+  assert.equal(noChat.body, null);
+  assert.equal(fixture.effects.classified.length, 1);
+
+  // dispatch: the D letter, the goal/phase passthrough and the terminal flag.
+  await callHost(fixture.app, { op: 'dispatch-state', id: 's1', goal: 'g', phase: 'work' });
+  await callHost(fixture.app, { op: 'dispatch-state', id: 't1', goal: '', phase: '', isTerminal: true });
+  assert.equal(fixture.effects.dispatched.length, 2);
+  assert.deepEqual(fixture.effects.dispatched[0].action, { state: 'D', goal: 'g', phase: 'work' });
+  assert.equal(fixture.effects.dispatched[0].context.sessionName, 's1');
+  assert.equal(fixture.effects.dispatched[0].context.sessionId, 's1');
+  assert.equal(fixture.effects.dispatched[0].context.cs, fixture.chatSessions.get('s1'));
+  assert.equal(fixture.effects.dispatched[0].context.isTerminal, false);
+  assert.deepEqual(fixture.effects.dispatched[1].action, { state: 'D', goal: '', phase: '' });
+  assert.equal(fixture.effects.dispatched[1].context.cs, null);
+  assert.equal(fixture.effects.dispatched[1].context.isTerminal, true);
+
+  // set-goal-achieved: the only state writer, with the manual stamp.
+  await callHost(fixture.app, { op: 'set-goal-achieved', id: 's1' });
+  assert.equal(fixture.effects.writes.length, 1);
+  assert.equal(fixture.effects.writes[0].id, 's1');
+  assert.equal(fixture.effects.writes[0].patch.goalState, GOAL_STATES.achieved);
+  assert.equal(typeof fixture.effects.writes[0].patch.goalStateManualAt, 'number');
+
+  // run-classify: the debug route seeds the text and leaves it in place.
+  const classified = await callHost(fixture.app, { op: 'run-classify', id: 's1', text: 'debug text' });
+  assert.equal(classified.body, null);
+  assert.equal(chat.currentAssistantText, 'debug text');
+  assert.deepEqual(fixture.effects.classified[1], { id: 's1', manual: false, text: 'debug text' });
+  assert.equal((await callHost(fixture.app, { op: 'run-classify', id: 'nope', text: 'x' })).body, null);
 });
 
-test('admin reads classify from the live history view without cloning it', () => {
-  // view returns the runtime cache array itself; load would deep-clone it. All
-  // three admin readers only scan backwards, so they must take the view and
-  // leave it untouched.
-  const shared = [
-    { role: 'user', content: 'hello', ts: 1 },
-    { role: 'assistant', content: 'an assistant reply long enough to classify', ts: 2 },
-  ];
-  const snapshot = JSON.parse(JSON.stringify(shared));
-  const calls = { view: 0, load: 0 };
+test('workspace facts read the shell cursor execution, not the historical source row', async () => {
+  let executionSessionId = 'child';
   const fixture = createFixture({
-    viewChatHistory: () => { calls.view += 1; return shared; },
-    loadChatHistory: () => { calls.load += 1; return JSON.parse(JSON.stringify(shared)); },
+    resolveStateTarget: id => ({
+      sourceSessionId: id,
+      shellId: id === 's1' ? 'shell-1' : null,
+      executionSessionId: id === 's1' ? executionSessionId : id,
+    }),
   });
-  // s1 starts settled (D); force so the reclassify route reads the reply.
-  const reclassify = invoke(fixture.app.routes.get('POST /api/sessions/:id/reclassify'), {
-    params: { id: 's1' }, query: { force: 'true' },
+  fixture.records.get('s1').taskState = { classifyState: 'E', goal: 'old failure' };
+  fixture.records.set('child', {
+    id: 'child', dirId: 'd1', kind: 'chat', taskBoundTaskId: 'task-new',
+    taskState: { classifyState: 'W', goal: 'new question', phase: 'implementing' },
   });
-  assert.equal(reclassify.statusCode, 200);
-  const classify = invoke(fixture.app.routes.get('POST /api/debug/classify/:id'), {
-    params: { id: 's1' }, query: { force: 'true' },
-  });
-  assert.equal(classify.statusCode, 200);
-  const cases = invoke(fixture.app.routes.get('GET /api/debug/classify-test-cases'));
-  assert.equal(cases.body.count, 1);
-
-  assert.ok(calls.view >= 3, 'every admin reader went through the view');
-  assert.equal(calls.load, 0, 'no admin reader paid for a deep clone');
-  assert.deepEqual(shared, snapshot, 'the cached transcript was not mutated');
+  fixture.chatSessions.set('child', { clients: new Set(), isStreaming: true });
+  for (const letter of ['P', 'W', 'D', 'E']) {
+    fixture.records.get('child').taskState.classifyState = letter;
+    const snapshot = fixture.runtime.workspaceSnapshot('d1').find(s => s.id === 's1');
+    assert.equal(snapshot.classifyState, letter);
+    assert.equal(snapshot.stateSource.executionSessionId, 'child');
+    assert.equal(snapshot.goal, 'new question');
+    // The front door resolves the roster through the same cursor; this is the
+    // fact payload it lifts the roster fields from.
+    const answer = await callHost(fixture.app, {
+      op: 'workspace-dto', items: [{ id: 's1', record: fixture.records.get('s1') }],
+    });
+    assert.equal(answer.body[0].facts.classifyState, letter);
+    assert.equal(answer.body[0].facts.goal, 'new question');
+    assert.equal(fixture.records.get('s1').taskState.classifyState, 'E');
+  }
+  executionSessionId = 's1';
+  assert.equal(fixture.runtime.sessionView('s1').goal, 'old failure');
 });
 
-test('server delegates session-admin routes and retains only the shared v1 error helper', () => {
+test('server delegates to the runtime and the module registers no public route', () => {
   const root = path.join(__dirname, '..');
   const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
   const moduleSource = fs.readFileSync(path.join(root, 'src', 'routes', 'session-admin.js'), 'utf8');
+  const hostSource = fs.readFileSync(path.join(root, 'src', 'routes', 'session-admin-host.js'), 'utf8');
   assert.match(server, /const sessionAdmin = createSessionAdminRuntime\(\{/);
-  assert.match(server, /sessionAdmin\.mountRoutes\(app\);/);
+  assert.match(server, /sessionAdmin\.mountRoutes\(app, \{ unattendedApp: orchestrationHost\.app \}\);/);
   assert.doesNotMatch(server, /const sessionQuery = createSessionQueryService/);
   assert.doesNotMatch(server, /app\.get\('\/api\/dashboard\/sessions'/);
   for (const [method, route] of [
@@ -432,55 +508,9 @@ test('server delegates session-admin routes and retains only the shared v1 error
     ['get', '/api/directories/:id/workspace'],
   ]) {
     const registration = `app.${method}('${route}'`;
-    assert.equal(
-      moduleSource.split(registration).length - 1,
-      1,
-      `${method.toUpperCase()} ${route} is registered once in module`,
-    );
+    assert.equal(moduleSource.includes(registration), false, `${route} is not registered in Node`);
   }
-});
-
-test('legacy session detail exposes the task-bound marker for direct addressing (P3)', () => {
-  const { app, records } = createFixture();
-  records.set('b1', {
-    id: 'b1', dirId: 'd1', cli: 'codex', kind: 'chat',
-    label: '任务 · 修 bug', createdAt: 400, taskBoundTaskId: 'task-9',
-  });
-  const detail = invoke(app.routes.get('GET /api/sessions/:id'), { params: { id: 'b1' } });
-  assert.equal(detail.statusCode, 200);
-  // The App gates its hidden-session open on this exact marker (aux/gateway
-  // and slots must never resolve through the fleet-miss path).
-  assert.equal(detail.body.taskBoundTaskId, 'task-9');
-  assert.equal(detail.body.dirId, 'd1');
-  assert.equal(detail.body.label, '任务 · 修 bug');
-  // Ordinary records carry a null marker, never an accidental truthy.
-  const plain = invoke(app.routes.get('GET /api/sessions/:id'), { params: { id: 's1' } });
-  assert.equal(plain.body.taskBoundTaskId, null);
-});
-
-
-test('the workspace roster reads the shell cursor execution without overwriting historical source state', () => {
-  let executionSessionId = 'child';
-  const f = createFixture({ resolveStateTarget: id => ({ sourceSessionId: id,
-    shellId: id === 's1' ? 'shell-1' : null, executionSessionId: id === 's1' ? executionSessionId : id }) });
-  f.records.get('s1').taskState = { classifyState: 'E', goal: 'old failure' };
-  f.records.set('child', { id: 'child', dirId: 'd1', kind: 'chat', taskBoundTaskId: 'task-new',
-    taskState: { classifyState: 'W', goal: 'new question', phase: 'implementing' } });
-  f.chatSessions.set('child', { clients: new Set(), isStreaming: true });
-  for (const letter of ['P', 'W', 'D', 'E']) {
-    f.records.get('child').taskState.classifyState = letter;
-    const snapshot = f.runtime.workspaceSnapshot('d1').find(s => s.id === 's1');
-    assert.equal(snapshot.classifyState, letter);
-    assert.equal(snapshot.status, { P: 'running', W: 'waiting', D: 'succeeded', E: 'error' }[letter]);
-    assert.equal(snapshot.goal, 'new question');
-    assert.equal(snapshot.stateSource.executionSessionId, 'child');
-    // The route layer must resolve through the same cursor as the runtime above.
-    const roster = invoke(f.app.routes.get('GET /api/directories/:id/workspace'),
-      { params: { id: 'd1' } }).body.sessions;
-    assert.equal(roster.find(s => s.id === 's1').classifyState, letter);
-    assert.equal(roster.find(s => s.id === 's1').goal, 'new question');
-    assert.equal(f.records.get('s1').taskState.classifyState, 'E');
-  }
-  executionSessionId = 's1';
-  assert.equal(f.runtime.sessionView('s1').goal, 'old failure');
+  assert.match(hostSource, /app\.post\(HOST_PATH/);
+  assert.match(hostSource, /unknown host operation/);
+  assert.match(hostSource, /if \(!isLocal\(req\)\) return res\.status\(404\)\.json\(\{ error: 'not found' \}\)/);
 });

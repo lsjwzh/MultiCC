@@ -8,23 +8,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { airResponse } = require('./helpers/air-response');
 
 const { TODO_LIMIT, createAirTodoRuntime } = require('../src/workspace/todos');
-const { mountAirRoutes } = require('../src/workspace/air-routes');
+const { mountAir } = require('./helpers/air-host');
 
 function tempFile(name = 'air-todos.json') {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-air-todos-')), name);
-}
-
-function call(handler, { params = {}, body = {} } = {}) {
-  const response = { statusCode: 200, body: undefined };
-  const res = {
-    status(code) { response.statusCode = code; return this; },
-    json(value) { response.body = value; return this; },
-  };
-  handler({ params, body }, res);
-  return response;
 }
 
 test('toggle 标记再取消，落盘后换一个运行时实例仍在', () => {
@@ -55,21 +44,19 @@ test('任务删掉标记自己掉下来；不存在的任务不许标记；落�
 test('/api/air 快照带着 taskTodos，与 pin 互不串；toggle 接口可用', async () => {
   const pinsFile = tempFile('air-pins.json');
   const board = { tasks: { t1: { id: 't1', title: 'One' }, t2: { id: 't2', title: 'Two' } } };
-  const handlers = new Map();
-  const app = { get: (p, fn) => handlers.set(`GET ${p}`, fn), post: (p, fn) => handlers.set(`POST ${p}`, fn) };
-  mountAirRoutes(app, {
+  const air = mountAir({
     pinsFile, getBoard: () => board,
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records: new Map(), directories: new Map(), clis: ['claude'],
     shell: { taskAccess: () => ({ readOnly: false }) },
   });
-  const toggled = call(handlers.get('POST /api/air/todos/toggle'), { body: { taskId: 't2' } });
-  assert.deepEqual(toggled.body, { ok: true, taskIds: ['t2'] });
-  assert.equal(call(handlers.get('POST /api/air/todos/toggle'), { body: { taskId: 'ghost' } }).statusCode, 404);
-  call(handlers.get('POST /api/air/pins/toggle'), { body: { taskId: 't1' } });
+  // 清单类写操作走宿主：失败与成功都按原语义失效摘要，响应外壳由前门补。
+  assert.deepEqual(await air.ok({ op: 'todos-toggle', taskId: 't2' }), ['t2']);
+  assert.equal((await air.fail({ op: 'todos-toggle', taskId: 'ghost' })).status, 404);
+  await air.ok({ op: 'pins-toggle', taskId: 't1' });
   // 没指定 todosFile 时落在 pins 文件旁边，测试不会碰真实数据目录。
   assert.ok(fs.existsSync(path.join(path.dirname(pinsFile), 'air-todos.json')));
-  const res = airResponse(); await handlers.get('GET /api/air')({}, res); const snapshot = JSON.parse(res.body);
+  const snapshot = (await air.snapshot()).json;
   assert.deepEqual(snapshot.taskTodos, ['t2']);
   assert.deepEqual(snapshot.taskPins, ['t1']);
 });

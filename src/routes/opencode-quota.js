@@ -41,7 +41,6 @@
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 const { fetchZenGoUsage } = require('../quota/opencode-zen');
-const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 const CDP_TIMEOUT_MS = Number(process.env.OPENCODE_QUOTA_TIMEOUT_MS || 10000);
 const OPENCODE_AUTH_URL = process.env.OPENCODE_QUOTA_URL || 'https://opencode.ai/auth';
@@ -237,41 +236,10 @@ async function fetchOpenCodeUsage() {
   return viaApi || viaBrowser;
 }
 
-function mountOpenCodeQuotaRoutes(app) {
-  if (!app || typeof app.get !== 'function') return;
-  app.get('/api/opencode/quota', async (req, res) => {
-    try {
-      const result = await fetchOpenCodeUsage();
-      const status = (result && result.status) || 'unavailable';
-      const httpStatus = status === 'ok' ? 200
-        : (status === 'needs_login' || status === 'no_auth' ? 401
-          : (status === 'chrome_unavailable' ? 503 : 500));
-      // The bar is rendered here, once, so the web and the app display the same
-      // string rather than each formatting this JSON their own way.
-      res.status(httpStatus).json({ ...result, bar: renderQuotaBar('opencode', result) });
-    } catch (err) {
-      const result = { status: 'unavailable', error: 'opencode quota fetch failed' };
-      res.status(500).json({ ...result, bar: renderQuotaBar('opencode', result) });
-    }
-  });
-
-  // Visible login window on the managed profile — same pattern as qoder: the
-  // user logs in once, the session persists for later headless fetches.
-  app.post('/api/opencode/quota/login', async (req, res) => {
-    try {
-      await getManagedQuotaBrowser().openVisibleLogin(OPENCODE_AUTH_URL);
-      res.json({ ok: true, message: '已打开登录窗口：请在弹出的 Chrome 中登录 opencode.ai，完成后回来重新查询余量' });
-    } catch (err) {
-      const status = err && err.code === 'chrome_unavailable' ? 503 : 500;
-      res.status(status).json({ ok: false, error: (err && err.code) || 'login_window_failed', message: err && err.message });
-    }
-  });
-}
-
 module.exports = {
-  mountOpenCodeQuotaRoutes,
   fetchOpenCodeUsage,
   parseUsage,
+  OPENCODE_AUTH_URL,
   // exposed for tests
   readUsageFromPage,
 };

@@ -13,6 +13,18 @@ const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
 
 const ROOT = path.join(__dirname, '..');
+
+// The session-admin cluster's public routes are claimed by the Rust front door
+// (native/gateway/src/app/session_admin.rs), so an isolated host has to start
+// the real gateway with server.js as its child instead of bare node.
+function gatewayBinary() {
+  const addon = process.env.MULTICC_RUST_ADDON
+    || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(ROOT, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  return path.join(path.dirname(addon),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+
 const ACCESS_TOKEN = 'session-delete-connected-test';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-session-delete-connected-'));
 const dataDir = assertTestDir(path.join(root, 'data'));
@@ -88,7 +100,7 @@ function waitForClose(socket) {
 }
 
 async function startServer(port) {
-  server = spawn(process.execPath, ['server.js'], {
+  server = spawn(gatewayBinary(), ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
     cwd: ROOT,
     env: {
       ...process.env,
