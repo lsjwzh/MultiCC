@@ -137,6 +137,12 @@ function runHandler(handler, req) {
       send(body) {
         if (Buffer.isBuffer(body)) throw new Error('release-history host does not relay binary bodies');
         reply.body = body === undefined ? null : body;
+        // `res.send(string)` 对**已设的任何** Content-Type 补 charset，不看它的基础类型
+        // （express/lib/response.js 的 `setCharset(type, 'utf-8')`）。`res.type()` 自己
+        // 只给 text-ish 补，所以这一步必须留在 send 时点，不能并进 withCharset。
+        if (typeof body === 'string' && reply.contentType && !CHARSET_PRESENT.test(reply.contentType)) {
+          reply.contentType = `${reply.contentType}; charset=utf-8`;
+        }
         finish();
         return res;
       },

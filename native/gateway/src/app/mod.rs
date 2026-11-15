@@ -459,6 +459,9 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     if let Some(route) = orchestration_routes::claim(method, path) {
         return Some(Route::Orchestration(route));
     }
+    if let Some(route) = release_history_routes::claim(method, path) {
+        return Some(Route::ReleaseHistory(route));
+    }
     if let Some(claim) = host_read::claim(method, path) {
         return Some(match claim {
             host_read::Claim::Get(route) => Route::HostReadGet(route),

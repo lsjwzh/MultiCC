@@ -1184,6 +1184,49 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the release-asset / iOS OTA / chat-history cluster
+  // (src/routes/release-history-host.js,
+  // native/gateway/src/app/release_history_routes.rs). `releaseHistory.ops`
+  // maps `<op>:<token|id>` (then `<op>`) to the `{ status, body | contentType +
+  // body | bare, headers }` (or `{ threw, ... }`) the retired handler produced;
+  // the fallback is `{ status: 200, body: { ok: true, op } }`. `delayMs` holds
+  // every answer back so a test can observe interleaving; `rawAnswer` replaces
+  // the whole reply text (a malformed host); `hostDown` drops the socket. Every
+  // payload is appended to release-history-calls.jsonl, and each request logs a
+  // `start` and an `end` line to release-history-events.jsonl.
+  if (route === '/api/__host/release-history' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'release-history-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      const events = path.join(stateDir, 'release-history-events.jsonl');
+      fs.appendFileSync(events, `${JSON.stringify({ phase: 'start', op: input.op, at: Date.now() })}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const rh = script.releaseHistory || {};
+      if (script.hostDown === true || rh.hostDown === true) { req.socket.destroy(); return; }
+      const answer = () => {
+        const ops = rh.ops || {};
+        const own = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+        const scoped = `${input.op}:${input.token != null ? input.token : (input.id != null ? input.id : '')}`;
+        let text;
+        if (typeof rh.rawAnswer === 'string') {
+          text = rh.rawAnswer;
+        } else {
+          const value = own(ops, scoped) ? ops[scoped]
+            : own(ops, input.op) ? ops[input.op]
+              : { status: 200, body: { ok: true, op: input.op } };
+          text = JSON.stringify({ ok: true, value });
+        }
+        fs.appendFileSync(events, `${JSON.stringify({ phase: 'end', op: input.op, at: Date.now() })}\n`);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (Number(rh.delayMs) > 0) setTimeout(answer, Number(rh.delayMs)); else answer();
+    });
+    return;
+  }
   // Host port for the orchestration and unattended cluster retired from
   // src/routes/{aux-goal,aux-runs,orchestration}.js and src/unattended/routes.js
   // (src/routes/orchestration-host.js, native/gateway/src/app/
