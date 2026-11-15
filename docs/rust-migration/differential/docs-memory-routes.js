@@ -45,6 +45,10 @@ const fs = require('fs');
 const path = require('path');
 const { main, loadDeleted } = require('./lib');
 
+// Parent of the commit that retired the Node docs/memory/memo routes
+// (feat(gateway): move eleven route clusters into the Rust front door).
+const LEGACY_REV = '57ec6260';
+
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-dm-1' };
 const JSONH = { ...L, 'Content-Type': 'application/json' };
 
@@ -399,10 +403,14 @@ main({
 
     const world = require(path.join(repo, 'tests/helpers/docs-memory-scripted-world'));
     const state = world.buildState(nodeData);
-    const legacyNotes = loadDeleted(repo, 'HEAD', 'src/notes-store.js');
-    const legacyMemory = loadDeleted(repo, 'HEAD', 'src/routes/memory-browser.js');
-    const legacyMemo = loadDeleted(repo, 'HEAD', 'src/memo/router.js');
-    const legacyDocs = loadDeleted(repo, 'HEAD', 'src/docs-registry.js');
+    // The oracle is the code as it stood BEFORE the commit that retired it:
+    // `HEAD` stops working once that commit lands (src/memo/router.js is gone
+    // from HEAD, and the other three have been rewritten there), so the
+    // revision is pinned to the parent of the retiring commit.
+    const legacyNotes = loadDeleted(repo, LEGACY_REV, 'src/notes-store.js');
+    const legacyMemory = loadDeleted(repo, LEGACY_REV, 'src/routes/memory-browser.js');
+    const legacyMemo = loadDeleted(repo, LEGACY_REV, 'src/memo/router.js');
+    const legacyDocs = loadDeleted(repo, LEGACY_REV, 'src/docs-registry.js');
     const { createMemoModule } = require(path.join(repo, 'src/memo'));
 
     // server.js registration order: notes, memo, memory, docs.
