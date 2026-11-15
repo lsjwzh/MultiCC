@@ -34,6 +34,7 @@ pub mod providers;
 pub mod push_routes;
 pub mod quota_guard;
 pub mod quota_routes;
+pub mod release_history_routes;
 pub mod run_config_presets;
 pub mod scan;
 pub mod scoped_auth;
@@ -157,6 +158,7 @@ pub enum Route {
     HostReadOptions(host_read::Route),
     HostOps(host_ops_routes::Route),
     Orchestration(orchestration_routes::Route),
+    ReleaseHistory(release_history_routes::Route),
     FilesGet,
     FilesOptions,
     Upload,
@@ -228,6 +230,7 @@ static OPTIONS_SOURCES: &[fn(&str) -> Option<String>] = &[
     // own multi-method paths here so a future overlap unions instead of
     // shadowing.
     orchestration_routes::options_share,
+    release_history_routes::options_share,
     // Release assets, iOS OTA and chat history: every path is single-source
     // today (measured), registered so a future overlap unions.
 ];
@@ -290,6 +293,14 @@ fn is_v1_path(path: &str) -> bool {
     path_segments(path)
         .and_then(|parts| parts.first().copied())
         .is_some_and(|head| head.eq_ignore_ascii_case("v1"))
+}
+
+/// `claim` plus the one route whose claim needs the query string: `GET|HEAD /`
+/// is claimed only when it redirects (`?id=`/`?newid=`/`?cwd=` is the
+/// terminal-session chain, which Express passed on to the HTML middleware).
+pub fn claim_uri(method: &Method, uri: &axum::http::Uri) -> Option<Route> {
+    claim(method, uri.path())
+        .or_else(|| release_history_routes::claim_uri(method, uri).map(Route::ReleaseHistory))
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -568,6 +579,9 @@ pub struct App {
     /// `.env` writes, macOS settings, shell jobs).
     pub host_ops_write: tokio::sync::Mutex<()>,
     pub orchestration_write: tokio::sync::Mutex<()>,
+    /// Serializes the release-asset/chat-history writes (the one-time UDID
+    /// token issue and consume, and the transcript message delete).
+    pub release_history_write: tokio::sync::Mutex<()>,
     /// `src/routes/task-planning.js`, `src/routes/task-board.js`,
     /// `src/routes/task-goal.js` and `src/task-shell/attribution-settings.js`
     /// ran each write handler to completion on the event loop; these routes
@@ -697,6 +711,7 @@ impl App {
             share_machine_write: tokio::sync::Mutex::new(()),
             host_ops_write: tokio::sync::Mutex::new(()),
             orchestration_write: tokio::sync::Mutex::new(()),
+            release_history_write: tokio::sync::Mutex::new(()),
             task_routes_write: tokio::sync::Mutex::new(()),
             push_write: tokio::sync::Mutex::new(()),
             air_write: tokio::sync::Mutex::new(()),
@@ -941,6 +956,12 @@ pub async fn handle(
     // guard (both envelopes) itself.
     if let Route::Orchestration(route) = route {
         return orchestration_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host).await;
+    }
+    // Release assets / iOS OTA / chat history: the OTA fetchers cannot log in, so
+    // this cluster decides gate-or-not itself from the shared HTTP-entry rule.
+    if let Route::ReleaseHistory(route) = route {
+        return release_history_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host)
+            .await;
     }
     if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
         return refusal;

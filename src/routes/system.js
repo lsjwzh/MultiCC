@@ -1,6 +1,9 @@
 'use strict';
 
-// 系统路由的 Node 侧只剩发布资产一族（APK / iOS OTA）。宿主修复面板
+// 系统路由的 Node 侧只剩发布资产一族（APK / iOS OTA），且其中只有 /multicc.apk
+// 还挂在真实 app 上：其余三条与 ios-udid 的三条已随发布资产与聊天历史簇迁到
+// Rust 前门（native/gateway/src/app/release_history_routes.rs），由
+// src/routes/release-history-host.js 的捕获应用挂载。宿主修复面板
 // （developer-tools / macos-privacy / ops-terminal）已随宿主与系统操作簇迁到
 // Rust 前门，由 src/routes/host-ops-host.js 的捕获应用挂载。
 // 这三条已经迁进 Rust 前门（native/gateway/src/app/system.rs，规则在
@@ -51,25 +54,39 @@ function assertSystemRouteDeps(deps) {
   return deps;
 }
 
-function mountSystemRoutes(app, rawDeps) {
+// 三条已迁路由 + ios-udid 的三条，挂在宿主端口的捕获应用上。
+// `deps.iosUdid` 可选注入（测试用）；生产留空即在这里构造唯一实例 —— UDID 的
+// 一次性令牌表必须跨请求存活，所以整个进程只能构造一次。
+function mountSystemHostRoutes(app, rawDeps) {
   if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
     throw new TypeError('Express app.get and app.post are required');
   }
   const deps = assertSystemRouteDeps(rawDeps);
   app.get('/api/apk-info', createApkInfoHandler(deps));
-  // Mounted before express.static: local files fall through to static serving;
-  // verified releases redirect, and every other state terminates explicitly.
-  app.get('/multicc.apk', deps.apkDistribution.downloadHandler);
   app.get('/api/ios-ota-info', createIosOtaInfoHandler(deps));
-  // itms-services fetches the manifest without the login cookie (bypassed in
-  // src/routes/auth.js); the asset URL inside is rendered per request so the
-  // same IPA installs over loopback, LAN or Tailscale Funnel HTTPS.
+  // itms-services fetches the manifest without the login cookie (the shared
+  // HTTP-entry exemption, multicc_core::http_entry::public_path); the asset URL
+  // inside is rendered per request so the same IPA installs over loopback, LAN
+  // or Tailscale Funnel HTTPS.
   app.get('/ios-ota/manifest.plist', deps.iosOta.manifestHandler);
-  require('../ios-udid').createIosUdid().mountRoutes(app);
+  (deps.iosUdid || require('../ios-udid').createIosUdid()).mountHostRoutes(app);
+}
+
+// 唯一仍在真实 app 上的发布资产路由：有本地文件时它 `next()` 落到 express.static
+// 的流式 sendFile（Range/ETag/Last-Modified），无法在前门拆分，所以留在 Node。
+// Mounted before express.static: local files fall through to static serving;
+// verified releases redirect, and every other state terminates explicitly.
+function mountApkDownload(app, rawDeps) {
+  if (!app || typeof app.get !== 'function') {
+    throw new TypeError('Express app.get is required');
+  }
+  const deps = assertSystemRouteDeps(rawDeps);
+  app.get('/multicc.apk', deps.apkDistribution.downloadHandler);
 }
 
 module.exports = {
   createApkInfoHandler,
   createIosOtaInfoHandler,
-  mountSystemRoutes,
+  mountSystemHostRoutes,
+  mountApkDownload,
 };

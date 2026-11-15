@@ -293,9 +293,14 @@ const MIGRATION_DEBT = Object.freeze({
   // 与 detached 集）仍挂真实 app；公开面新增 createOrchestrationHost 一行与
   // mountHostRoutes/mountRoutes/mountRoute 三行，server.js 实测 3111/167256，
   // 按棘轮双向调到实测值。该拆的仍是账号/额度路由那一族。
+  // 2026-11-15 发布资产 / iOS OTA / 聊天历史那 10 条公开路由迁进 Rust 前门
+  // （native/gateway/src/app/release_history_routes.rs）：server.js 这边删掉
+  // chatHistoryRuntime.mountRoutes 与 mountSystemRoutes 两处旧挂载，换成
+  // release-history 宿主端口的顶部 require + 同行挂载。按本条既定做法先压注释
+  // 抵偿，行数已压回 3111（ceiling 不动），字节按实测高水位登记 167411。
   'server.js': Object.freeze({
     ceiling: 3111,
-    byteCeiling: 167256,
+    byteCeiling: 167411,
     target: 3000,
     reason: 'the 23 orchestration and unattended routes (aux queue/config/history, goal settings and precheck, aux run log, unattended get/post, scheduled messages, observed tasks, dispatch recovery, user-input dismiss, queue read and actions, the v1 waits projection) moved to the Rust front door (native/gateway/src/app/orchestration_routes.rs) behind one orchestration host port, the wait injector and detached routes staying on Node; the 18 session-management routes (memory get/put/delete/action, bundle export/import, session delete/relocate/restart/restart-spawn, vendor-login-terminal, role-workers and directory session creation, notes get/post, liveness, session patch/fork) moved to the Rust front door (native/gateway/src/app/session_routes.rs) behind one session-routes host port; the 18 push routes (subscribe, validate, test, notify, test-bark, test-webhook, channel subscriptions plus :id removal and test-channel, fcm devices plus fcm/test, bark devices) moved to the Rust front door (native/gateway/src/app/push_routes.rs) behind one push host port; the 16 task-surface routes (task-board writes, retention, status, delete, relocate, chat-session, both searches, mark-achieved, task-graph, task-attribution) moved to the Rust front door (native/gateway/src/app/task_routes.rs) behind one task-routes host port; the 16 docs/memory/memo/directory-event routes live behind the docs-memory host port; the 15 events/trigger/annotation routes live behind the events host port; the 22 pricing/vendor-quota/quota-bar routes live behind the quota host port; the 13 directory/onboarding/ui-layout routes live behind the directory host port; the 32 account and login routes (claude/codex account list-create-activate-login-status-login-callback-relogin-delete, claude account quota, zcode auth get/put/sync/check, kimi auth get/put/check, CLI key account list/create/patch/delete, claude/codex oauth status+login, commandcode auth status/login) live behind the account-routes host port; the next extraction is the remaining vendor-quota fetchers and chat routes to return under 3k',
   }),

@@ -20,7 +20,8 @@ const path = require('node:path');
 const {
   createApkInfoHandler,
   createIosOtaInfoHandler,
-  mountSystemRoutes,
+  mountSystemHostRoutes,
+  mountApkDownload,
 } = require('../src/routes/system');
 const { mountSystemHostRoute, HOST_PATH } = require('../src/routes/system-host');
 const { createApkDistribution } = require('../src/apk-distribution');
@@ -427,7 +428,7 @@ test('zero-byte, directory, malformed manifest, and invalid package versions fai
   }
 });
 
-test('system route mount owns only the app-binary and host-repair routes left in Node', async () => {
+test('the real app keeps only /multicc.apk; the rest mount on the release-history host port', async () => {
   const paths = [];
   const apkDistribution = {
     async info() { return { exists: false, localExists: false, source: null }; },
@@ -437,13 +438,20 @@ test('system route mount owns only the app-binary and host-repair routes left in
     info() { return { exists: false, installable: false, installPage: '/ios-ota' }; },
     manifestHandler() {},
   };
-  mountSystemRoutes({
+  const recorder = {
     get(route, handler) { paths.push(['GET', route, typeof handler]); },
     post(route, handler) { paths.push(['POST', route, typeof handler]); },
-  }, { apkDistribution, iosOta });
+  };
+  // 真实 app：只有 /multicc.apk。有本地文件时它 `next()` 落到 express.static 的
+  // 流式 sendFile（Range/ETag/Last-Modified），所以无法在前门拆分。
+  mountApkDownload(recorder, { apkDistribution, iosOta });
+  assert.deepEqual(paths, [['GET', '/multicc.apk', 'function']]);
+
+  // 捕获应用（release-history 宿主端口）：其余三条 + ios-udid 的三条。
+  paths.length = 0;
+  mountSystemHostRoutes(recorder, { apkDistribution, iosOta });
   assert.deepEqual(paths, [
     ['GET', '/api/apk-info', 'function'],
-    ['GET', '/multicc.apk', 'function'],
     ['GET', '/api/ios-ota-info', 'function'],
     ['GET', '/ios-ota/manifest.plist', 'function'],
     ['GET', '/ios-ota/udid.mobileconfig', 'function'],
@@ -455,6 +463,10 @@ test('system route mount owns only the app-binary and host-repair routes left in
     // 系统操作簇迁到 Rust 前门，改由 src/routes/host-ops-host.js 的捕获应用
     // 挂载；下面用源码断言把这条边界钉住，避免新的高权限路由悄悄回到这里。
   ]);
+  // 已迁的六条不得同时回到真实 app（双轨守卫）。
+  const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.doesNotMatch(serverSource, /mountSystemHostRoutes\(app/);
+  assert.match(serverSource, /mountApkDownload\(app/);
   const systemSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'system.js'), 'utf8');
   const hostOpsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-ops-host.js'), 'utf8');
   assert.doesNotMatch(systemSource, /createDeveloperToolsRoutes|createMacosPrivacyRoutes|createOpsTerminalRoutes/);

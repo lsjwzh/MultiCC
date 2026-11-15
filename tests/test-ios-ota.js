@@ -176,7 +176,11 @@ test('wiring: manifest + IPA bypass auth, strangers’ binaries stay hidden, rou
 
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.ok(serverSource.includes("require('./src/ios-ota').createIosOta"));
-  assert.ok(serverSource.includes('mountSystemRoutes(app, { apkDistribution, iosOta })'));
+  // 真实 app 上只剩 /multicc.apk（express.static 的流式 sendFile 无法在前门拆分）；
+  // 其余三条与 ios-udid 的三条经 release-history 宿主端口。
+  assert.ok(serverSource.includes('mountApkDownload(app, { apkDistribution, iosOta })'));
+  assert.ok(serverSource.includes("require('./src/routes/release-history-host')"));
+  assert.ok(serverSource.includes('createReleaseHistoryHost({ chatHistory: chatHistoryRuntime'));
 });
 
 // 使用真实 HTTP 和 CMS 签名回传覆盖设备采集协议，不依赖真机或苹果账号。

@@ -60,6 +60,7 @@ pub mod quota_guard;
 pub mod quota_history;
 pub mod quota_rejection;
 pub mod redaction;
+pub mod release_history_routes;
 pub mod request_watch;
 pub mod retry_policy;
 pub mod route_options;

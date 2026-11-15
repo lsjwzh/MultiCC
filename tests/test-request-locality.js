@@ -162,6 +162,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/providers.js',
     'src/routes/push-host.js',
     'src/routes/quota-host.js',
+    'src/routes/release-history-host.js',
     'src/routes/scan-history-host.js',
     'src/routes/secrets-vault-host.js',
     'src/routes/session-admin-host.js',

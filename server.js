@@ -120,7 +120,8 @@ const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLi
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { mountScanHistoryHostRoute } = require('./src/routes/scan-history-host');
-const { mountSystemRoutes } = require('./src/routes/system');
+const { mountApkDownload } = require('./src/routes/system');
+const { createReleaseHistoryHost } = require('./src/routes/release-history-host');
 const { mountSystemHostRoute } = require('./src/routes/system-host');
 const { createApkDistribution } = require('./src/apk-distribution');
 const { mountHostReadHostRoute } = require('./src/routes/host-read-host');
@@ -1932,8 +1933,7 @@ fleetSharingRuntime = createFleetSharing({ sharesFile: MULTICC_PATHS.fleetShares
   authSecurity,
 });
 
-// Rust info routes use Node process facts.
-mountSystemRoutes(app, { apkDistribution, iosOta });
+mountApkDownload(app, { apkDistribution, iosOta }); // 本地文件时 next() 落到 express.static。
 mountSystemHostRoute(app, {
   fs,
   path,
@@ -2306,7 +2306,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
   }), taskShortCode, logger,
 });
 chatHistoryService = chatHistoryRuntime.service;
-chatHistoryRuntime.mountRoutes(app);
+createReleaseHistoryHost({ chatHistory: chatHistoryRuntime, apkDistribution, iosOta }).mountRoute(app);
 createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(orchestrationHost.app); mountTurnLedgerHostRoute(app, { launch: id => turnLedgerRuntime.launch(id), record: id => turnLedgerRuntime.record(id), trust: input => turnLedgerRuntime.trust(input) }); const doctorHost = require('./src/doctor/host').createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir: __dirname, dataDir: MULTICC_PATHS.root });
 // 宿主与系统操作 40 条公开路由已由 Rust 前门独占（native/gateway/src/app/host_ops_routes.rs）；
 // 这里只把 Node 独有的进程/主机副作用暴露成回环宿主端口。
