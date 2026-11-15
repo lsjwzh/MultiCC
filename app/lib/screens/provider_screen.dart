@@ -14,6 +14,22 @@ import '../widgets/provider_option.dart';
 import '../widgets/provider_reassign_dialog.dart';
 import '../widgets/provider_subscription.dart';
 
+/// 带着选中的连接方式外开 Web 设置页；token 仍按聊天页外开控制台的约定传递。
+/// 设置页和 Provider 页共用这一份 URL 构造，避免两处参数漂移。
+Future<void> openProviderConnection(SettingsService settings, String section) {
+  final uri = Uri.parse(settings.buildHttpUrl('/air')).replace(
+    queryParameters: {
+      'view': 'provider',
+      'providerConnection': section,
+      if (settings.isMachineScoped) 'machine': settings.machineId!,
+      if (settings.isMachineScoped) 'machineName': settings.machineName!,
+      if (settings.machineOrigin.isNotEmpty) 'machineOrigin': settings.machineOrigin,
+      if (settings.token.isNotEmpty) 'token': settings.token,
+    },
+  );
+  return launchUrl(uri, mode: LaunchMode.externalApplication);
+}
+
 /// Provider 配置。镜像网页管理台的「Provider」页：从 cc-switch 导入/同步，
 /// 在 multicc 自己的存储里增删改，设全局默认（claude / codex 各一个）。
 /// 每个会话可在聊天页单独切换 provider，互相独立。
@@ -444,6 +460,10 @@ class _ProviderScreenState extends State<ProviderScreen> {
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
                     children: [
+                      // 「更多连接方式」是共享/登录类入口，放在页面最前面，
+                      // 不再让用户滚过整张线路列表才找到它。
+                      _advancedCard(),
+                      const SizedBox(height: 16),
                       _importCard(),
                       const SizedBox(height: 16),
                       _defaultsCard(),
@@ -460,9 +480,6 @@ class _ProviderScreenState extends State<ProviderScreen> {
                         const SizedBox(height: 16),
                         _providerGroup('⚡ Codex', _byType('codex')),
                       ],
-                      // 低频连接方式永远在最后；账号已经进入右下角「新建」流程。
-                      const SizedBox(height: 16),
-                      _advancedCard(),
                     ],
                   ),
                 ),
@@ -614,19 +631,8 @@ class _ProviderScreenState extends State<ProviderScreen> {
     );
   }
 
-  /// 带着用户选中的任务外开 Web 设置页；token 仍按聊天页外开控制台的约定传递。
   void _openConnection(String section) {
-    final uri = Uri.parse(widget.settings.buildHttpUrl('/air')).replace(
-      queryParameters: {
-        'view': 'provider',
-        'providerConnection': section,
-        if (widget.settings.isMachineScoped) 'machine': widget.settings.machineId!,
-        if (widget.settings.isMachineScoped) 'machineName': widget.settings.machineName!,
-        if (widget.settings.machineOrigin.isNotEmpty) 'machineOrigin': widget.settings.machineOrigin,
-        if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
-      },
-    );
-    unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+    unawaited(openProviderConnection(widget.settings, section));
   }
 
   Widget _importCard() {
