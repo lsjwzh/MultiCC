@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -464,6 +465,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     builder: (_) => SecretsScreen(settings: widget.settings),
                   ),
                 ),
+              ),
+            ],
+          ),
+          // 「更多连接方式」不再只藏在 高级模式 → 管理 → 线路 → 页底折叠卡 里：
+          // 跨设备共享和 ZCode/Kimi 登录是独立向导，设置页点一下就能外开，
+          // 也就不用为了这两项先开高级模式。
+          _Section(
+            title: t('moreConnectionsTitle'),
+            children: [
+              _NavTile(
+                key: const ValueKey('settings-connection-device'),
+                icon: Icons.devices_other_rounded,
+                title: t('connectionDeviceTitle'),
+                subtitle: t('connectionDeviceHint'),
+                onTap: () =>
+                    unawaited(openProviderConnection(widget.settings, 'device')),
+              ),
+              const SizedBox(height: 8),
+              _NavTile(
+                key: const ValueKey('settings-connection-native'),
+                icon: Icons.terminal_rounded,
+                title: t('connectionNativeTitle'),
+                subtitle: t('connectionNativeHint'),
+                onTap: () =>
+                    unawaited(openProviderConnection(widget.settings, 'native')),
               ),
             ],
           ),
@@ -1080,6 +1106,7 @@ class _NavTile extends StatelessWidget {
   final String subtitle;
   final VoidCallback onTap;
   const _NavTile({
+    super.key,
     required this.icon,
     required this.title,
     required this.subtitle,
