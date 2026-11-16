@@ -1,7 +1,7 @@
 //! Claude lane protocol kernel.
 //!
 //! This is the pure half of MultiCC's native replacement for
-//! `@anthropic-ai/claude-agent-sdk` 0.3.317. It turns the option set MultiCC
+//! `@anthropic-ai/claude-agent-sdk` 0.3.325. It turns the option set MultiCC
 //! already materializes into the exact argv/env/settings the SDK produced,
 //! frames and classifies the CLI's JSONL output, and keeps the control-request
 //! bookkeeping. No process, socket or filesystem access lives here; the addon
@@ -12,7 +12,7 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
 /// SDK version whose observable behaviour this kernel reproduces.
-pub const SDK_VERSION: &str = "0.3.317";
+pub const SDK_VERSION: &str = "0.3.325";
 /// `CLAUDE_AGENT_SDK_CLIENT_APP` is set by `src/chat/claude-sdk-config.js` today.
 pub const CLIENT_APP: &str = "multicc-claude-exp/1.0";
 /// Matcher callback id MultiCC registers for `UserPromptSubmit`.

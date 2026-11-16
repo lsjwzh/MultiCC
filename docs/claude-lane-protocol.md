@@ -1,4 +1,4 @@
-# Claude 车道 stdio 协议规范（@anthropic-ai/claude-agent-sdk 0.3.317）
+# Claude 车道 stdio 协议规范（@anthropic-ai/claude-agent-sdk 0.3.325）
 
 本文是「用 Rust 取代 JS SDK、驱动原生 `claude` 二进制」的协议规范，范围只覆盖
 MultiCC 实际使用的功能。所有 CLI→SDK 方向的形状来自三处：`sdk.mjs` 源码、
@@ -11,7 +11,7 @@ MultiCC 实际使用的功能。所有 CLI→SDK 方向的形状来自三处：`
 ## 0. 取证方式与产物
 
 - SDK 源码：`.../multicc/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs`
-  （0.3.317；`.d.ts` 落后于 `.mjs` 时以 `.mjs` 为准）。
+  （0.3.325；`.d.ts` 落后于 `.mjs` 时以 `.mjs` 为准）。
 - 实测：`createSdkStream`（真实 MultiCC 驱动）+ `processOptions`（真实选项物化）
   跑在主仓 node_modules 上，`spawnClaudeCodeProcess` 被替换成启动
   `/tmp/claude-lane-capture/scripts/fake-claude.mjs`。假 CLI 只读写 stdin/stdout，
@@ -32,15 +32,16 @@ MultiCC 实际使用的功能。所有 CLI→SDK 方向的形状来自三处：`
 
 | 项 | 值 |
 |---|---|
-| SDK 包 | `@anthropic-ai/claude-agent-sdk` **0.3.317** |
-| 原生包 | `@anthropic-ai/claude-agent-sdk-darwin-arm64` **0.3.317** |
+| SDK 包 | `@anthropic-ai/claude-agent-sdk` **0.3.325** |
+| 原生包 | `@anthropic-ai/claude-agent-sdk-darwin-arm64` **0.3.325** |
 | 二进制 | `/Users/Zhuanz/Downloads/gapasea-all-in-one/code/claudecode/multicc/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude` |
-| 大小 | 312,806,400 bytes |
-| sha256 | `09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9` |
-| 其它平台 | 可选依赖 `claude-agent-sdk-{linux-x64,linux-arm64,linux-x64-musl,linux-arm64-musl,darwin-x64,win32-x64,win32-arm64}` 同版本 0.3.317 |
+| 大小 | 347,406,976 bytes |
+| sha256 | `84590fefe6338be9087f5814b61f9a54c5f21524163a4c127cb5a808e31009f2` |
+| 其它平台 | 可选依赖 `claude-agent-sdk-{linux-x64,linux-arm64,linux-x64-musl,linux-arm64-musl,darwin-x64,win32-x64,win32-arm64}` 同版本 0.3.325 |
 
 `system/init.claude_code_version` 是运行期才能知道的 CLI 版本，本文不写死；
-本轮未运行真实二进制（`--version` 也没跑），版本以 sha256 钉死。
+2026-11-17 升级轮已运行真实二进制：`--version` = **2.1.325**（sha256 与上表一致），
+兼容性复测记录见附录 S。上一钉版 0.3.317 的抓包结论保留在附录 R（历史记录，未改）。
 
 ---
 
@@ -176,14 +177,14 @@ MultiCC 不设置；它的语义是「插件经 initialize 下发」，与用户
 
 ### 4.1 SDK 自身强设（子进程 env）
 
-`sdk.mjs` 在 `query()` 里先改 `process.env.CLAUDE_AGENT_SDK_VERSION="0.3.317"`，
+`sdk.mjs` 在 `query()` 里先改 `process.env.CLAUDE_AGENT_SDK_VERSION="0.3.325"`，
 再按以下规则生成子进程 env（**注意：`options.env` 一旦提供，就完全不继承
 `process.env`**，只有不提供时才 `{...process.env}`）：
 
 | 变量 | 值 | 条件 |
 |---|---|---|
 | `CLAUDE_CODE_ENTRYPOINT` | `sdk-ts` | 未设置时 |
-| `CLAUDE_AGENT_SDK_VERSION` | `0.3.317` | 未设置时 |
+| `CLAUDE_AGENT_SDK_VERSION` | `0.3.325` | 未设置时 |
 | `CLAUDE_CODE_SDK_READS_SESSION_STATE` | `1` | 键不存在时（大小写不敏感判断）→ **总是** |
 | `CLAUDE_CODE_SDK_READS_STARTUP_MARKS` | `1` | 仅 readsStartupMarks 场景 |
 | `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` | `true` | 仅 `enableFileCheckpointing` |
@@ -1176,3 +1177,30 @@ argv: --output-format stream-json --verbose --input-format stream-json
    帧（`s1` 两次裸 spawn 均为 0 条）；只要增量分帧，就必须保留该参数。
 8. **仍待实测**：`--settings` 与 process env 的优先级（未知 9）、去掉 `--verbose`
    的行为（未知 11）、故障态 stdout 污染（未知 12）。
+---
+
+## 附录 S：0.3.325 兼容性复测（2026-11-17）
+
+升级 `@anthropic-ai/claude-agent-sdk` 0.3.317 → 0.3.325（对应 CLI 2.1.317 → 2.1.325，
+共 8 个补丁版）时做的接入面回归，结论：**Rust 车道无需任何协议改动，仅版本钉同步**。
+
+- **静态面对比**（`sdk.mjs` 逐字节 diff + 字面量扫描）：
+  - CLI flag：64 → 65，唯一新增 `--managed-settings-in-initialize`，为 opt-in，
+    车道不发即无影响；车道实际发射的 15 个 flag 在 325 全部存在
+    （`--settings` 两版均为动态构造、非字面量，构造逻辑仍在）。
+  - 协议字面量（`control_request`/`control_response`/`control_cancel_request`/
+    `keep_alive` 及 initialize/interrupt/set_model/get_task_output/stop_task/
+    hook_callback 等 subtype）16 → 16，零变化。
+  - initialize 载荷形状逐字节一致。
+- **动态面探针**（真实 darwin-arm64 0.3.325 二进制，sha256 同第 1 节；
+  按车道 argv 精确 spawn，假 `ANTHROPIC_BASE_URL` 指向 127.0.0.1:9 使 API 必败，
+  只观察到重试为止）：
+  - 帧序列与 0.3.317 探针逐帧一致：
+    `control_response/success` → `system/session_state_changed` → `system/init`
+    → `system/status` → `system/api_retry`×6。
+  - `system/init` 的键集合两版完全一致，`claude_code_version` = `2.1.325`。
+  - 唯一新增键：initialize 的 `control_response.response` 里多了
+    `other_hook_ask_outranks_host`；车道不消费该键（src/ 与 native/ 均无引用）。
+- 版本钉同步点：`package.json` / `package-lock.json`（主包 + 8 平台包）、
+  `native/core/src/claude_lane.rs` 的 `SDK_VERSION`（作为 env
+  `CLAUDE_AGENT_SDK_VERSION` 传给二进制）、本文第 1 节。
