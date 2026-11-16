@@ -17,10 +17,25 @@ pub struct VerifiedAccess {
     record: V,
     token: V,
     created: Instant,
+    #[cfg(test)]
+    elapsed_override: Option<Duration>,
 }
 impl VerifiedAccess {
     pub fn workspace_id(&self) -> &V {
         get(&self.record, "fleetId")
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_elapsed_for_test(&mut self, elapsed: Duration) {
+        self.elapsed_override = Some(elapsed);
+    }
+
+    fn elapsed(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(elapsed) = self.elapsed_override {
+            return elapsed;
+        }
+        self.created.elapsed()
     }
 }
 /// Writers serialize crypto and durable state transitions. Readers clone an
@@ -407,13 +422,13 @@ impl Store {
             record: record.clone(),
             token: token.clone(),
             created: Instant::now(),
+            #[cfg(test)]
+            elapsed_override: None,
         })
     }
     pub fn consume_access(&self, proof: VerifiedAccess, directory: bool, now: f64) -> Result<V> {
         self.owns("consumeAccess")?;
-        if !Arc::ptr_eq(&self.owner, &proof.owner)
-            || proof.created.elapsed() >= Duration::from_secs(30)
-        {
+        if !Arc::ptr_eq(&self.owner, &proof.owner) || proof.elapsed() >= Duration::from_secs(30) {
             return Err(internal());
         }
         let _guard = self.writer.lock().map_err(|_| internal())?;

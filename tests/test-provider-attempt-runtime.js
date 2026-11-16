@@ -123,6 +123,29 @@ test('attempt admission is released after a host callback throws', () => {
   assert.equal(runtime.acceptEvent(runtime.beginAttempt(route())), true);
 });
 
+test('failed capability and identity issuance publishes no attempt and releases admission', () => {
+  for (const failedPrefix of ['proxy-route', 'route-decision', 'route-attempt']) {
+    const sentinel = new Error(`failed ${failedPrefix}`);
+    const events = [];
+    let failing = true;
+    let sequence = 0;
+    const runtime = createProviderAttemptRuntime({
+      runtimeEpoch: 'epoch', emit: (_, event) => events.push(event),
+      nextId: prefix => {
+        if (failing && prefix === failedPrefix) { failing = false; throw sentinel; }
+        return `${prefix}-${++sequence}`;
+      },
+    });
+    assert.throws(() => runtime.beginAttempt(route()), error => error === sentinel);
+    assert.equal(runtime.snapshot('session-1'), null, failedPrefix);
+    assert.deepEqual(events, [], failedPrefix);
+    const attempt = runtime.beginAttempt(route());
+    assert.equal(attempt.routeGeneration, 2, 'failed admission still consumes its generation');
+    assert.equal(runtime.acceptEvent(attempt), true);
+    assert.equal(events.length, 1);
+  }
+});
+
 test('selection callback can finish the installed attempt and start its successor', () => {
   let runtime;
   let successor;
@@ -2585,4 +2608,336 @@ test('Rust proxy outcomes keep exception points, strict assignment and spread se
     { op: 'failure', reference: undefined }, { op: 'failure', reference: 'attempt', facts: null }]);
   // An ended producer is bound once, then reported ambiguous.
   compareOutcomeTrace([{ ...usage, active: null }, usage, { ...usage, event: { ...usage.event, providerId: 'provider-b' } }]);
+});
+
+// Frozen creation oracle from HEAD before this batch; it must never import the
+// live runtime or the new creation command (that would compare Rust to itself).
+const legacyCreationRuntime = require('./helpers/legacy-provider-attempt-runtime').createProviderAttemptRuntime;
+
+function creationTrace(factory, { overrides = {}, throwAt, reenterAt, failEmit = false, seed = 1 } = {}) {
+  const trace = [];
+  let runtime;
+  let ids = 0;
+  let ticks = 0;
+  let fired = false;
+  let armed = true;
+  const sentinel = new Error('creation callback failed');
+  const capture = fn => {
+    try {
+      const value = fn();
+      return { value, frozen: Object.isFrozen(value) };
+    } catch (error) {
+      return { error: [error.name, error.message, error.code], sameError: error === sentinel };
+    }
+  };
+  // Finish results keep their key order in the trace: `{ ok, code, attempt }`
+  // is a wire shape, and so is the nested attempt snapshot's own order.
+  const finishCapture = fn => {
+    const result = capture(fn);
+    if (!result.value) return result;
+    return { ...result, keys: Object.keys(result.value),
+      attemptKeys: result.value.attempt ? Object.keys(result.value.attempt) : null };
+  };
+  const hook = where => {
+    trace.push(where);
+    if (armed && throwAt === where) { armed = false; throw sentinel; }
+    if (!fired && reenterAt === where) {
+      fired = true;
+      trace.push(['nestedSame', capture(() => runtime.beginAttempt(route({ turnId: 'nested' })))]);
+      trace.push(['nestedOther', capture(() => runtime.beginAttempt(route({ sessionId: 'other' })))]);
+    }
+  };
+  runtime = factory({ runtimeEpoch: 'trace-epoch',
+    nextId: prefix => { hook(`id.${prefix}`); return `${prefix}-${++ids}`; },
+    now: () => { hook('now'); return 1000 + ticks++; },
+    emit: (_, event) => {
+      trace.push(['event', event, Object.keys(event), Object.isFrozen(event)]);
+      if (reenterAt === 'emit' && !fired) {
+        fired = true;
+        const first = runtime.snapshot('session-1');
+        trace.push(['finish', finishCapture(() => runtime.finishAttempt(first, { outcome: 'failed' }))]);
+        trace.push(['successor', capture(() => runtime.beginAttempt(route({ turnId: 'successor' })))]);
+      }
+      if (failEmit) throw sentinel;
+    },
+    audit: (_, event) => trace.push(['audit', event, Object.keys(event)]),
+  });
+  const createInput = values => new Proxy(values, {
+    get(target, key, receiver) {
+      hook(`input.${String(key)}`);
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  let current;
+  let state = seed >>> 0;
+  const pick = choices => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return choices[state % choices.length]; };
+  for (let i = 0; i < 12; i++) {
+    const values = route({ ...overrides, turnId: `turn-${Math.floor(i / 3)}`,
+      attemptNo: i % 3 + 1, cli: overrides.cli ?? pick(['codex', 'claude-exp', 'CLAUDE', 'kimi', 'unknown']),
+      spawnKey: pick(['spawn-a', 'spawn-b', '']), providerId: pick(['provider-a', 'provider-b']),
+      model: pick(['model-a', 'model-b', '']), continuation: pick([true, false, false]),
+      subagentProviderId: pick(['', 'provider-a', 'provider-sub']),
+      stallTimeoutMs: pick([0, 200, NaN, -1, '200', 5n]),
+      requestTimeoutMs: pick([0, 5000, undefined]), connectTimeoutMs: pick([1, Infinity, null]),
+    });
+    // Overrides also test invalid identities, conversions and optional budgets.
+    Object.assign(values, overrides);
+    const result = capture(() => runtime.beginAttempt(createInput(values)));
+    trace.push(['begin', result]);
+    if (result.value) {
+      if (current) {
+        // A replaced attempt's snapshot is a stale reference: finishing it
+        // audits the late write and never touches the installed attempt.
+        trace.push(['finishStale', finishCapture(() => runtime.finishAttempt(current, { outcome: 'failed' }))]);
+      }
+      current = result.value;
+      trace.push(['keys', Object.keys(current)]);
+      trace.push(['capability', capture(() => runtime.proxySessionId(current))]);
+      if (i % 3 === 1) runtime.observeEvent(current, { type: 'part_delta', delta: 'visible' });
+      if (i % 4 !== 2) trace.push(['finish', finishCapture(() => runtime.finishAttempt(current, { outcome: i % 5 === 4 ? 'succeeded' : 'failed' }))]);
+    }
+    const currentSnapshot = runtime.snapshot('session-1');
+    trace.push(['current', currentSnapshot, currentSnapshot ? Object.keys(currentSnapshot) : null]);
+  }
+  // A throwing getter/clock/id must release admission; record installation and
+  // consumed generations must remain visible at precisely the old failure point.
+  armed = false;
+  trace.push(['recovery', capture(() => runtime.beginAttempt(route({ sessionId: 'recovery' })))]);
+  return trace;
+}
+
+function compareCreation(options) {
+  assert.deepEqual(creationTrace(createProviderAttemptRuntime, options), creationTrace(legacyCreationRuntime, options));
+}
+
+test('Rust attempt creation matches the frozen Node sequence, capabilities and snapshots', () => {
+  for (let seed = 1; seed <= 80; seed++) compareCreation({ seed });
+  for (const overrides of [
+    { cli: 'claude', spawnKey: 'same-spawn' }, { cli: 'claude-exp', spawnKey: 'same-spawn' },
+    { cli: 'codex', spawnKey: 'same-spawn' }, { cli: 'kimi', spawnKey: 'same-spawn' },
+    { cli: 'constructor', spawnKey: 'same-spawn' }, { cli: '\u0085claude', spawnKey: 'same-spawn' },
+    { sessionId: '\ud800', turnId: '\ud801' }, { sessionId: '\ud801' },
+    { continuation: 'true' }, { attemptNo: 5n }, { providerName: null },
+    { providerId: 'provider-a', subagentProviderId: 'provider-a' },
+    { stallTimeoutMs: { valueOf: () => 300 }, requestTimeoutMs: 5n },
+  ]) compareCreation({ overrides });
+});
+
+test('Rust creation keeps validation failures, exact exceptions and failure-point side effects', () => {
+  for (const key of ['sessionId', 'turnId', 'cli', 'providerId', 'protocol', 'providerRevision', 'attemptNo']) {
+    for (const value of [null, undefined, '', ' ', NaN, Symbol('identity'), 0, -1, {}]) {
+      compareCreation({ overrides: { [key]: value } });
+    }
+  }
+  for (const where of ['sessionId', 'turnId', 'cli', 'providerId', 'providerName', 'protocol', 'model',
+    'providerRevision', 'subagentProviderId', 'attemptNo', 'continuation', 'spawnKey',
+    'stallTimeoutMs', 'requestTimeoutMs', 'connectTimeoutMs', 'reasonCode']) compareCreation({ throwAt: `input.${where}` });
+  for (const throwAt of ['id.proxy-route', 'id.route-decision', 'id.route-attempt', 'now']) compareCreation({ throwAt });
+  compareCreation({ failEmit: true });
+  for (const value of [Symbol('budget'), { valueOf() { throw new RangeError('budget'); } }]) {
+    compareCreation({ overrides: { requestTimeoutMs: value } });
+  }
+});
+
+test('Rust creation permits cross-session and post-install reentry without holding a native mutable borrow', () => {
+  for (const reenterAt of ['input.cli', 'input.spawnKey', 'id.proxy-route', 'id.route-decision', 'id.route-attempt', 'now', 'emit']) {
+    compareCreation({ reenterAt });
+  }
+});
+
+// Finish coordination is native (provider_attempt_route); the frozen oracle
+// finishes through its own JavaScript closures. Every scenario compares the
+// emitted events, audit rows, callback order, result key order and the
+// lifecycle state left behind.
+function finishTrace(factory, { reference = 'fresh', facts, failEmit = false, throwAt, reenterEmit = false } = {}) {
+  const trace = [];
+  let runtime;
+  let ids = 0;
+  let ticks = 0;
+  let fired = false;
+  let armed = true;
+  let begun = false;
+  const sentinel = new Error('finish callback failed');
+  const capture = fn => {
+    try {
+      const value = fn();
+      return { value, frozen: Object.isFrozen(value) };
+    } catch (error) {
+      return { error: [error.name, error.message, error.code], sameError: error === sentinel };
+    }
+  };
+  const hook = where => {
+    trace.push(where);
+    const hit = throwAt === where || (throwAt === 'finish:now' && where === 'now' && begun);
+    if (armed && hit) { armed = false; throw sentinel; }
+  };
+  const input = turn => ({ sessionId: 'session-1', turnId: turn, cli: 'codex',
+    providerId: 'provider-a', providerName: 'A', protocol: 'openai', model: 'm1',
+    providerRevision: 'r1', attemptNo: 1 });
+  runtime = factory({ runtimeEpoch: 'finish-epoch',
+    nextId: prefix => { hook(`id.${prefix}`); return `${prefix}-${++ids}`; },
+    now: () => { hook('now'); return 2000 + ticks++; },
+    emit: (_, event) => {
+      trace.push(['event', event, Object.keys(event), Object.isFrozen(event)]);
+      if (reenterEmit && !fired && event.routePhase === 'released') {
+        fired = true;
+        trace.push(['nestedBegin', capture(() => runtime.beginAttempt(input('turn-2')))]);
+      }
+      if (failEmit) throw sentinel;
+    },
+    audit: (_, event) => trace.push(['audit', event, Object.keys(event)]),
+  });
+  trace.push(['begin', capture(() => runtime.beginAttempt(input('turn-1')))]);
+  begun = true;
+  const fresh = runtime.snapshot('session-1');
+  trace.push(['fresh', fresh, fresh ? Object.keys(fresh) : null]);
+  if (reference === 'stale') trace.push(['rebegin', capture(() => runtime.beginAttempt(input('turn-2')))]);
+  const target = reference === 'fresh' || reference === 'stale' ? fresh
+    : reference === 'plain' ? { sessionId: ' session-1 ' }
+    : reference === 'other' ? { sessionId: 'other' }
+    : reference;
+  const finished = capture(() => runtime.finishAttempt(target, facts));
+  trace.push(['finish', finished,
+    finished.value ? Object.keys(finished.value) : null,
+    finished.value && finished.value.attempt ? Object.keys(finished.value.attempt) : null]);
+  trace.push(['again', capture(() => runtime.finishAttempt(target, { outcome: 'failed' }))]);
+  const after = runtime.snapshot('session-1');
+  trace.push(['after', after, after ? Object.keys(after) : null]);
+  return trace;
+}
+
+function compareFinish(options) {
+  assert.deepEqual(finishTrace(createProviderAttemptRuntime, options), finishTrace(legacyCreationRuntime, options),
+    JSON.stringify(options, (_, value) => typeof value === 'bigint' ? `${value}n` : value));
+}
+
+test('Rust finish matches the frozen Node finalization, stale audit and event dispatch', () => {
+  for (const facts of [
+    { outcome: 'succeeded', errorCategory: 'provider_quota', reasonCode: 'limit' },
+    { outcome: 'failed' }, { outcome: 'released' }, { outcome: 'cancelled' },
+    { outcome: '' }, { outcome: '  ' }, { outcome: 5n }, { outcome: {} },
+    { outcome: 'succeeded', errorCategory: '  ' }, { outcome: 'succeeded', reasonCode: 0 },
+    {}, undefined,
+  ]) compareFinish({ facts });
+  for (const reference of ['fresh', 'stale', 'plain', 'other', undefined, null]) {
+    compareFinish({ reference, facts: { outcome: 'failed', errorCategory: 'transport' } });
+  }
+  compareFinish({ facts: null });
+  compareFinish({ failEmit: true });
+  compareFinish({ throwAt: 'finish:now' });
+  compareFinish({ reenterEmit: true });
+  // A getter that throws while the dispatch arguments are evaluated leaves the
+  // lifecycle finalized but unannounced on both sides.
+  const hostile = new Proxy({ outcome: 'succeeded', errorCategory: 'transport' }, {
+    get(target, key, receiver) {
+      if (key === 'reasonCode') throw new Error('reasonCode getter');
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  compareFinish({ facts: hostile });
+});
+
+test('the Rust owner mints capabilities in the host shape when no id override is injected', () => {
+  const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+  const input = over => ({ sessionId: 'session-1', turnId: 'turn-1', cli: 'claude',
+    providerId: 'provider-a', providerName: 'A', protocol: 'anthropic', model: 'm',
+    providerRevision: 'r', attemptNo: 1, spawnKey: 'spawn', ...over });
+  const runtime = createProviderAttemptRuntime({ runtimeEpoch: 'epoch', now: () => 1000 });
+  const first = runtime.beginAttempt(input({}));
+  assert.match(first.routeAttemptId, new RegExp(`^route-attempt_${UUID}$`));
+  assert.match(first.decisionId, new RegExp(`^route-decision_${UUID}$`));
+  const firstRoute = runtime.proxySessionId(first);
+  // A turn rolls over only after its attempt finished; a resident lane then
+  // keeps its capability while the spawn contract is unchanged.
+  runtime.finishAttempt(first, { outcome: 'succeeded' });
+  const reused = runtime.beginAttempt(input({ turnId: 'turn-2', attemptNo: 2 }));
+  assert.notEqual(reused.routeAttemptId, first.routeAttemptId, 'attempt identity always advances');
+  assert.equal(runtime.proxySessionId(reused), firstRoute,
+    'a resident CLI with an unchanged spawn contract reuses the capability');
+  runtime.finishAttempt(reused, { outcome: 'succeeded' });
+  const respawned = runtime.beginAttempt(input({ turnId: 'turn-3', attemptNo: 3, spawnKey: 'spawn-new' }));
+  assert.notEqual(runtime.proxySessionId(respawned), firstRoute,
+    'a changed spawn contract mints a fresh capability');
+  const epochRuntime = createProviderAttemptRuntime({ now: () => 1 });
+  assert.match(epochRuntime.beginAttempt(input({})).runtimeEpoch, new RegExp(`^runtime_${UUID}$`),
+    'the runtime epoch default keeps the host shape without node:crypto');
+});
+
+test('creation differential witnesses detect capability, phase, budget and admission mutations', () => {
+  const fs = require('node:fs');
+  const Module = require('node:module');
+  const filename = require.resolve('./helpers/legacy-provider-attempt-runtime');
+  const frozen = fs.readFileSync(filename, 'utf8');
+  for (const [before, after, options] of [
+    ['isResident(cli) && spawnKey && previous', 'false && spawnKey && previous', { overrides: { cli: 'claude', spawnKey: 'same' } }],
+    ["continuation ? 'continued' : switched ? 'switched' : 'selected'", "'selected'", { seed: 3 }],
+    ['requestTimeoutMs: stallTimeoutBudget(input.requestTimeoutMs)', 'requestTimeoutMs: 0', { overrides: { requestTimeoutMs: 5000 } }],
+    ['    releaseAdmission();\n    const switched', '    const switched', { reenterAt: 'emit' }],
+  ]) {
+    assert.ok(frozen.includes(before), 'mutation must change the frozen implementation');
+    const oracle = new Module(filename, module);
+    oracle.filename = filename;
+    oracle.paths = module.paths;
+    oracle._compile(frozen.replace(before, after), filename);
+    assert.notDeepEqual(creationTrace(createProviderAttemptRuntime, options),
+      creationTrace(oracle.exports.createProviderAttemptRuntime, options), before);
+  }
+});
+
+test('finish differential witnesses detect snapshot, dispatch and finalization mutations', () => {
+  const fs = require('node:fs');
+  const Module = require('node:module');
+  const filename = require.resolve('./helpers/legacy-provider-attempt-runtime');
+  const frozen = fs.readFileSync(filename, 'utf8');
+  for (const [before, after, options] of [
+    // The snapshot's replay verdict feeds the replay gate directly.
+    ["    ...fence,\n    safeToReplay: fence.replayFence === 'none',",
+      "    ...fence,\n    safeToReplay: fence.replayFence === 'tool_intent',", { seed: 3 }],
+    // A dispatched event without its clock read cannot be audited downstream.
+    ['      ts: Number(now()),\n      ...extra,', '      ...extra,', { seed: 3 }],
+    // The finish phase selects the route event consumers react to.
+    ["    emitRoute(record, outcome === 'failed' ? 'failed'\n      : outcome === 'succeeded' ? 'succeeded' : 'released', {",
+      "    emitRoute(record, 'released', {", { seed: 3 }],
+    // A stale finish must answer with the live attempt, not a void.
+    ["      return Object.freeze({ ok: false, code: 'stale_attempt', attempt: snapshot(record) });",
+      "      return Object.freeze({ ok: false, code: 'stale_attempt', attempt: null });", { seed: 1 }],
+  ]) {
+    assert.ok(frozen.includes(before), 'mutation must change the frozen implementation');
+    const oracle = new Module(filename, module);
+    oracle.filename = filename;
+    oracle.paths = module.paths;
+    oracle._compile(frozen.replace(before, after), filename);
+    assert.notDeepEqual(creationTrace(createProviderAttemptRuntime, options),
+      creationTrace(oracle.exports.createProviderAttemptRuntime, options), before);
+  }
+  for (const [before, after, options] of [
+    ['      errorCategory,\n      reasonCode: clean(facts.reasonCode) || null,',
+      "      errorCategory,\n      reasonCode: 'mutated',", { facts: { outcome: 'succeeded' } }],
+    ["    const outcome = clean(facts.outcome) || 'released';",
+      "    const outcome = 'released';", { facts: { outcome: 'failed' } }],
+  ]) {
+    assert.ok(frozen.includes(before), 'mutation must change the frozen implementation');
+    const oracle = new Module(filename, module);
+    oracle.filename = filename;
+    oracle.paths = module.paths;
+    oracle._compile(frozen.replace(before, after), filename);
+    assert.notDeepEqual(finishTrace(createProviderAttemptRuntime, options),
+      finishTrace(oracle.exports.createProviderAttemptRuntime, options), before);
+  }
+});
+
+
+test('creation keeps the public contract for nullish and primitive inputs', () => {
+  const execute = (factory, input) => {
+    const runtime = factory({ runtimeEpoch: 'epoch' });
+    try { return runtime.beginAttempt(input); }
+    catch (error) { return [error.name, error.message, error.code]; }
+  };
+  for (const input of [null, undefined, false, 0, '', [], {}, Symbol('input'), 5n]) {
+    assert.deepEqual(execute(createProviderAttemptRuntime, input), execute(legacyCreationRuntime, input));
+  }
+});
+
+require('./helpers/provider-attempt-finish-regressions')({
+  createProviderAttemptRuntime, legacyCreationRuntime, route,
 });

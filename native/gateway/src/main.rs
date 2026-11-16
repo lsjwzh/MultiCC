@@ -32,8 +32,8 @@ fn main() {
         return;
     }
     match args.first().map(String::as_str) {
-        // Experimental private stdin/stdout protocol. The host does not use
-        // this path until lifecycle, packaging and compatibility are verified.
+        // Private database-owner protocol. This mode opens no HTTP listener
+        // and exits with its host's stdin; it never launches a Node child.
         Some("orchestration-owner") if args.len() == 1 => {
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();

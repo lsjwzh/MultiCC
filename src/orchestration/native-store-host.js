@@ -2,7 +2,8 @@
 
 // Compatibility callbacks and proxies only. SQLite ownership, path queries,
 // filtering, persistence, retention and streaming export live in Rust.
-const { getNative } = require('../native/runtime');
+const path = require('node:path');
+const { addonPath, getNative } = require('../native/runtime');
 const { invokeNativeCommand, commandEnvelope } = require('./native-command');
 const { types: { isProxy, isNativeError } } = require('node:util');
 const { Buffer: NodeBuffer } = require('node:buffer');
@@ -103,7 +104,7 @@ const RETENTION_ENV = [
 ];
 
 function createNativeStore({ file, legacyFile = null, now = Date.now,
-  hooks = {}, retention = {}, experimentalOwnerBinary = null } = {}, deps) {
+  hooks = {}, retention = {}, ownerBinary = null } = {}, deps) {
   const { createDraft, cloneJson, deepFreeze, OrchestrationStoreCorruptError,
     OrchestrationSqliteError, OrchestrationSqliteConflictError, COLLECTIONS } = deps;
   if (!file || typeof file !== 'string') throw new TypeError('[orchestration-sqlite-store] create requires an injected { file }');
@@ -122,15 +123,16 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   let handle;
   try {
     const native = getNative();
-    if (native.orchestrationStoreProtocol?.() !== 10) {
+    if (native.orchestrationStoreProtocol?.() !== 11) {
       throw new OrchestrationSqliteError('编排原生模块版本不匹配，请重新构建 Rust 模块', { file });
     }
     const options = { env: Object.fromEntries(RETENTION_ENV.map(name => [name, process.env[name]])), policy: retention };
-    // Explicit opt-in for isolated integration tests; production does not select
-    // this path until its process lifecycle and packaging have been verified.
-    handle = experimentalOwnerBinary
-      ? new native.RustIsolatedOrchestrationStore(file, legacyFile, Number(now()), options, experimentalOwnerBinary)
-      : new native.RustOrchestrationStore(file, legacyFile, Number(now()), options);
+    // The companion is staged beside the addon for source, desktop and
+    // standalone installs. Never search PATH or fall back to an in-process
+    // SQLite connection: a foreign SQLite library can invalidate its WAL locks.
+    const binary = ownerBinary || path.join(path.dirname(addonPath()),
+      process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+    handle = new native.RustIsolatedOrchestrationStore(file, legacyFile, Number(now()), options, binary);
   } catch (error) { throw normalize(error); }
   function request(op, input = {}) {
     try {
@@ -153,9 +155,9 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
     try { return await handle.requestAsync(op, input); }
     catch (error) { throw normalize(error); }
     finally {
-      // The experimental owner exits after acknowledging close; the existing
-      // in-process store still supports querying its metrics after close.
-      if (op !== 'close' || !experimentalOwnerBinary) refreshMetrics();
+      // The owner exits after acknowledging the last close. Preserve the last
+      // metrics snapshot instead of querying a closed transport.
+      if (op !== 'close') refreshMetrics();
     }
   }
   async function requestAdmissionAsync(op, input, spec) {
@@ -171,11 +173,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   let cachedMetrics = request('metrics');
   function refreshMetrics() {
     try { cachedMetrics = request('metrics'); }
-    catch (error) {
-      // Metrics are best-effort for the isolated experiment. In particular,
-      // their failure must not turn an acknowledged commit into a retry.
-      if (!experimentalOwnerBinary) throw error;
-    }
+    catch (_) { /* A metrics failure must never turn an acknowledged commit into a retry. */ }
   }
   let knownRevision = initial.state.revision;
   let closed = false;

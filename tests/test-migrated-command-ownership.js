@@ -20,7 +20,7 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
     'scheduleEditQueuedLive', 'scheduleInsertQueuedLive', 'scheduleNoteQueuedLive',
     'waitCancelLive', 'waitResolveLive', 'operationAdmitLive',
   ]);
-  const NativeStore = new Proxy(native.RustOrchestrationStore, {
+  const NativeStore = new Proxy(native.RustIsolatedOrchestrationStore, {
     construct(target, args) {
       const store = Reflect.construct(target, args);
       return new Proxy(store, {
@@ -37,7 +37,7 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
   });
   runtime.getNative = () => new Proxy(native, {
     get(target, key) {
-      if (key === 'RustOrchestrationStore') return NativeStore;
+      if (key === 'RustIsolatedOrchestrationStore') return NativeStore;
       const value = Reflect.get(target, key, target);
       if (!commandNames.has(key) || typeof value !== 'function') return value;
       return (...args) => { calls.push(key); return Reflect.apply(value, target, args); };

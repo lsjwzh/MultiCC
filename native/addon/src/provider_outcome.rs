@@ -117,6 +117,8 @@ fn current_field<'a>(
     name: &CStr,
 ) -> Result<LiveValue<'a>> {
     let record = current(port, session.clean_text()?)?;
+    // A port seam, not Node logic: production passes the native snapshot
+    // command, while record-mocking differentials pass a traced stand-in.
     let snapshot = port.get(c"snapshot")?.call_plain(&[record])?;
     or_null(snapshot.optional(name)?)
 }

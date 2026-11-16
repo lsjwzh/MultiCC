@@ -12,7 +12,11 @@ fn identity_error(constructor: LiveValue<'_>, message: &str) -> Result<Error> {
     provider_error(constructor, message, "PROVIDER_ATTEMPT_IDENTITY_INVALID")
 }
 
-fn provider_error(constructor: LiveValue<'_>, message: &str, code: &str) -> Result<Error> {
+pub(crate) fn provider_error(
+    constructor: LiveValue<'_>,
+    message: &str,
+    code: &str,
+) -> Result<Error> {
     Ok(constructor
         .construct(&[
             constructor.from_value(&JsValue::string(message))?,
@@ -29,10 +33,20 @@ pub fn provider_validate_attempt_transition(
     facts: Unknown<'_>,
     constructor: Unknown<'_>,
 ) -> Result<()> {
-    let previous = LiveValue::new(&env, previous);
-    let fence = LiveValue::new(&env, previous_fence);
-    let facts = LiveValue::new(&env, facts);
-    let constructor = LiveValue::new(&env, constructor);
+    validate_attempt_transition(
+        LiveValue::new(&env, previous),
+        LiveValue::new(&env, previous_fence),
+        LiveValue::new(&env, facts),
+        LiveValue::new(&env, constructor),
+    )
+}
+
+pub(crate) fn validate_attempt_transition(
+    previous: LiveValue<'_>,
+    fence: LiveValue<'_>,
+    facts: LiveValue<'_>,
+    constructor: LiveValue<'_>,
+) -> Result<()> {
     if previous.truthy()?
         && previous.get(c"turnId")?.equals(facts.get(c"turnId")?)?
         && !fence.get(c"replayFence")?.is_string("none")?
@@ -94,7 +108,7 @@ pub fn provider_validate_attempt_transition(
     Ok(())
 }
 
-fn required<'a>(
+pub(crate) fn required<'a>(
     value: LiveValue<'a>,
     label: &str,
     constructor: LiveValue<'a>,
@@ -109,12 +123,12 @@ fn required<'a>(
     Ok(text)
 }
 
-fn number(value: LiveValue<'_>) -> Result<LiveValue<'_>> {
+pub(crate) fn number(value: LiveValue<'_>) -> Result<LiveValue<'_>> {
     // Number() accepts BigInt; ECMAScript ToNumber does not.
     value.global()?.get(c"Number")?.call_plain(&[value])
 }
 
-fn integer<'a>(
+pub(crate) fn integer<'a>(
     value: LiveValue<'a>,
     label: &str,
     constructor: LiveValue<'a>,
@@ -161,7 +175,11 @@ pub fn provider_positive_integer(
 
 #[napi]
 pub fn provider_timeout_budget(env: Env, value: Unknown<'_>) -> Result<f64> {
-    let number = number(LiveValue::new(&env, value))?.number_value()?;
+    timeout_budget(LiveValue::new(&env, value))
+}
+
+pub(crate) fn timeout_budget(value: LiveValue<'_>) -> Result<f64> {
+    let number = number(value)?.number_value()?;
     Ok(if policy::positive_integer(number) {
         number.unwrap()
     } else {

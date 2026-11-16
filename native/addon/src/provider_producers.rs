@@ -22,6 +22,9 @@ fn running(record: LiveValue<'_>) -> Result<bool> {
     Ok(record.truthy()? && method(record.get(c"lifecycle")?, c"running", &[])?.truthy()?)
 }
 fn snapshot<'a>(record: LiveValue<'a>, port: LiveValue<'a>) -> Result<LiveValue<'a>> {
+    // A port seam, not Node logic: production passes the native snapshot
+    // command, while record-mocking differentials pass a traced stand-in that
+    // can reenter release.
     port.get(c"snapshot")?.call_plain(&[record])
 }
 fn now(port: LiveValue<'_>) -> Result<f64> {
@@ -463,8 +466,20 @@ pub fn provider_drain_stale_producers(
     producer: Unknown<'_>,
     port: Unknown<'_>,
 ) -> Result<()> {
-    let port = LiveValue::new(&env, port);
-    let producer = LiveValue::new(&env, producer);
+    drain_stale_producers(
+        LiveValue::new(&env, session),
+        LiveValue::new(&env, turn),
+        LiveValue::new(&env, producer),
+        LiveValue::new(&env, port),
+    )
+}
+
+pub(crate) fn drain_stale_producers(
+    session: LiveValue<'_>,
+    turn: LiveValue<'_>,
+    producer: LiveValue<'_>,
+    port: LiveValue<'_>,
+) -> Result<()> {
     if !producer.truthy()? || !producer.get(c"count")?.positive()? {
         return Ok(());
     }
@@ -473,10 +488,9 @@ pub fn provider_drain_stale_producers(
         && producer.get(c"lastRequestAt")?.truthy()?
         && elapsed >= port.get(c"producerStaleGraceMs")?.number()?
     {
-        let session = LiveValue::new(&env, session);
         let audit = port.get(c"auditOnly")?;
         let event = drain_event(port)?;
-        event.set(c"turnId", LiveValue::new(&env, turn))?;
+        event.set(c"turnId", turn)?;
         event.set(c"count", producer.get(c"count")?)?;
         event.set(c"ageMs", number(port, elapsed)?)?;
         event.set(c"graceMs", port.get(c"producerStaleGraceMs")?)?;

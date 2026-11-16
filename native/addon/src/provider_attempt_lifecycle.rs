@@ -6,7 +6,7 @@ use multicc_core::provider_attempt_lifecycle::{
 use napi::bindgen_prelude::{JsValue as _, ToNapiValue, Unknown};
 use napi::{check_status, sys, Env, Error, Result};
 use napi_derive::napi;
-use std::{ffi::CStr, ptr};
+use std::{cell::RefCell, ffi::CStr, ptr};
 
 unsafe fn named(
     env: sys::napi_env,
@@ -47,7 +47,7 @@ pub struct RustProviderAttemptLifecycle {
 
 #[napi]
 pub struct RustProviderAttemptGenerations {
-    inner: AttemptGenerations,
+    inner: RefCell<AttemptGenerations>,
 }
 
 fn producer_key(env: &Env, key: Unknown<'_>) -> Result<JsString> {
@@ -78,14 +78,18 @@ struct StrongAttempt {
 
 impl StrongAttempt {
     fn new(env: &Env, value: Unknown<'_>) -> Result<Option<Self>> {
+        Self::from_raw(env, value.raw())
+    }
+
+    fn from_raw(env: &Env, value: sys::napi_value) -> Result<Option<Self>> {
         let raw = env.raw();
         let mut kind = sys::ValueType::napi_undefined;
-        check_status!(unsafe { sys::napi_typeof(raw, value.raw(), &mut kind) })?;
+        check_status!(unsafe { sys::napi_typeof(raw, value, &mut kind) })?;
         if kind == sys::ValueType::napi_null || kind == sys::ValueType::napi_undefined {
             return Ok(None);
         }
         let mut reference = ptr::null_mut();
-        check_status!(unsafe { sys::napi_create_reference(raw, value.raw(), 1, &mut reference) })?;
+        check_status!(unsafe { sys::napi_create_reference(raw, value, 1, &mut reference) })?;
         Ok(Some(Self {
             env: raw,
             reference,
@@ -112,7 +116,7 @@ impl Drop for StrongAttempt {
 
 #[napi]
 pub struct RustCurrentAttempts {
-    inner: CurrentAttempts<StrongAttempt>,
+    inner: RefCell<CurrentAttempts<StrongAttempt>>,
 }
 
 impl Default for RustCurrentAttempts {
@@ -126,40 +130,66 @@ impl RustCurrentAttempts {
     #[napi(constructor)]
     pub fn new() -> Self {
         Self {
-            inner: CurrentAttempts::default(),
+            inner: RefCell::new(CurrentAttempts::default()),
         }
     }
 
     #[napi]
     pub fn get(&self, env: Env, key: Unknown<'_>) -> Result<sys::napi_value> {
-        match self.inner.get(&producer_key(&env, key)?) {
-            Some(value) => value.value(&env),
+        self.get_key(&env, &producer_key(&env, key)?)
+    }
+
+    #[napi]
+    pub fn set(&self, env: Env, key: Unknown<'_>, value: Unknown<'_>) -> Result<()> {
+        self.set_key(&env, producer_key(&env, key)?, value.raw())
+    }
+
+    #[napi]
+    pub fn begin_admission(&self, env: Env, key: Unknown<'_>) -> Result<bool> {
+        Ok(self
+            .inner
+            .borrow_mut()
+            .begin_admission(producer_key(&env, key)?))
+    }
+
+    #[napi]
+    pub fn end_admission(&self, env: Env, key: Unknown<'_>) -> Result<()> {
+        self.inner
+            .borrow_mut()
+            .end_admission(&producer_key(&env, key)?);
+        Ok(())
+    }
+}
+
+impl RustCurrentAttempts {
+    pub(crate) fn get_key(&self, env: &Env, key: &JsString) -> Result<sys::napi_value> {
+        match self.inner.borrow().get(key) {
+            Some(value) => value.value(env),
             None => {
-                let mut undefined = ptr::null_mut();
-                check_status!(unsafe { sys::napi_get_undefined(env.raw(), &mut undefined) })?;
-                Ok(undefined)
+                let mut value = ptr::null_mut();
+                check_status!(unsafe { sys::napi_get_undefined(env.raw(), &mut value) })?;
+                Ok(value)
             }
         }
     }
-
-    #[napi]
-    pub fn set(&mut self, env: Env, key: Unknown<'_>, value: Unknown<'_>) -> Result<()> {
-        let key = producer_key(&env, key)?;
-        let value = StrongAttempt::new(&env, value)?
+    pub(crate) fn set_key(&self, env: &Env, key: JsString, value: sys::napi_value) -> Result<()> {
+        let value = StrongAttempt::from_raw(env, value)?
             .ok_or_else(|| Error::from_reason("invalid current attempt"))?;
-        self.inner.set(key, value);
+        self.inner.borrow_mut().set(key, value);
         Ok(())
     }
 
-    #[napi]
-    pub fn begin_admission(&mut self, env: Env, key: Unknown<'_>) -> Result<bool> {
-        Ok(self.inner.begin_admission(producer_key(&env, key)?))
+    pub(crate) fn begin_key(&self, key: JsString) -> bool {
+        self.inner.borrow_mut().begin_admission(key)
     }
+    pub(crate) fn end_key(&self, key: &JsString) {
+        self.inner.borrow_mut().end_admission(key);
+    }
+}
 
-    #[napi]
-    pub fn end_admission(&mut self, env: Env, key: Unknown<'_>) -> Result<()> {
-        self.inner.end_admission(&producer_key(&env, key)?);
-        Ok(())
+impl RustProviderAttemptGenerations {
+    pub(crate) fn next_key(&self, key: JsString) -> f64 {
+        self.inner.borrow_mut().next(key)
     }
 }
 
@@ -370,17 +400,17 @@ impl RustProviderAttemptGenerations {
     #[napi(constructor)]
     pub fn new() -> Self {
         Self {
-            inner: AttemptGenerations::default(),
+            inner: RefCell::new(AttemptGenerations::default()),
         }
     }
     #[napi]
-    pub fn next(&mut self, env: Env, session: Unknown<'_>) -> Result<f64> {
+    pub fn next(&self, env: Env, session: Unknown<'_>) -> Result<f64> {
         let value =
             unsafe { crate::js_bridge::read_value(env.raw(), session.raw(), 0, &mut Vec::new()) }?;
         let JsValue::String(session) = value else {
             return Err(Error::from_reason("invalid session identity"));
         };
-        Ok(self.inner.next(session))
+        Ok(self.next_key(session))
     }
 }
 
@@ -396,6 +426,21 @@ pub struct AttemptStatusSnapshot {
     pub outcome: String,
     pub error_category: Option<String>,
     pub finished_at: Option<f64>,
+}
+
+impl RustProviderAttemptLifecycle {
+    pub(crate) fn from_parts(
+        inner: AttemptFence,
+        budget: AttemptBudget,
+        identity: AttemptIdentity,
+    ) -> Self {
+        Self {
+            inner,
+            budget,
+            status: AttemptStatus::default(),
+            identity,
+        }
+    }
 }
 
 #[napi]

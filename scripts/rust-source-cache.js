@@ -170,7 +170,7 @@ function probeAddon(file, node = process.execPath) {
       || ['start','sendUser','interrupt','setModel','getTaskOutput','stopTask','respondControl','respondControlError','closeInput','kill','stderrTail'].some(key=>typeof a.RustClaudeLane.prototype[key]!=='function')) process.exit(1);
     if(['providerEventFence','providerHostTextEnvelope'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['providerRequiredIdentity','providerPositiveInteger','providerTimeoutBudget','providerAttemptFields',
-      'providerRevision','providerEncodeProxySession','providerDecodeProxySession','providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
+      'providerBeginAttempt','providerAttemptSnapshot','providerFinishAttempt','providerMintPrefixedId','providerRevision','providerEncodeProxySession','providerDecodeProxySession','providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
       'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
       'providerForceReleaseProducers', 'providerDrainStaleProducers'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['chatApplyClaudeEvent','chatApplyAdapterEvent','chatCommitFinalPersist','chatCommitHeldAnswer',
@@ -389,7 +389,7 @@ function probeAddon(file, node = process.execPath) {
     if(a.limitCacheRecorderRequestValue('isRevokedCategory',{category:'authentication_permission'})!==true
       || a.limitCacheRecorderRequestValue('cachePolicyVersion',{})!==1
       || typeof a.RustProviderLimitStore!=='function' || typeof a.RustUsageLimitPoller!=='function') process.exit(1);
-    if(a.orchestrationStoreProtocol?.()!==10 || typeof a.RustOrchestrationStore!=='function'
+    if(a.orchestrationStoreProtocol?.()!==11 || typeof a.RustOrchestrationStore!=='function'
       || typeof a.RustIsolatedOrchestrationStore!=='function'
       || typeof a.RustIsolatedOrchestrationStore.prototype.request!=='function'
       || typeof a.RustIsolatedOrchestrationStore.prototype.requestAsync!=='function'

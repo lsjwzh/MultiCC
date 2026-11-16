@@ -1,6 +1,6 @@
 //! Framed protocol for an isolated orchestration SQLite owner.
 //!
-//! This is not yet connected to the production host. A dedicated process keeps
+//! A dedicated process keeps
 //! foreign SQLite libraries in the caller from invalidating its POSIX locks.
 //! Every request runs on the same store and responses preserve request order.
 
@@ -14,9 +14,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Incremented whenever owner semantics change, even if framing is unchanged.
-pub const OWNER_PROTOCOL_VERSION: u32 = 4;
+pub const OWNER_PROTOCOL_VERSION: u32 = 5;
 // serde_json's reader parser consumes individual bytes. Small frames are read
 // into a strictly bounded buffer to avoid amplifying synchronous RPC latency;
 // larger frames remain streaming and never reserve their advertised length.
@@ -28,6 +29,10 @@ struct OwnerLease(File);
 
 impl OwnerLease {
     fn acquire(path: &Path, purpose: &str) -> Result<Self, String> {
+        Self::acquire_with_timeout(path, purpose, Duration::ZERO)
+    }
+
+    fn acquire_with_timeout(path: &Path, purpose: &str, timeout: Duration) -> Result<Self, String> {
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
@@ -46,9 +51,26 @@ impl OwnerLease {
                     format!("ORCHESTRATION_SQLITE_ERROR:owner lease permissions failed: {error}")
                 })?;
         }
-        FileExt::try_lock_exclusive(&file).map_err(|error| {
-            format!("ORCHESTRATION_SQLITE_ERROR:{purpose} lease unavailable: {error}")
-        })?;
+        let started = Instant::now();
+        loop {
+            match FileExt::try_lock_exclusive(&file) {
+                Ok(()) => break,
+                Err(error)
+                    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+                        && started.elapsed() < timeout =>
+                {
+                    // This runs only in the dedicated owner, before opening
+                    // any database. Unrelated databases in one directory must
+                    // not fail just because their first opens coincide.
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "ORCHESTRATION_SQLITE_ERROR:{purpose} lease unavailable: {error}"
+                    ));
+                }
+            }
+        }
         Ok(Self(file))
     }
 }
@@ -198,7 +220,7 @@ fn parse_reply(mut envelope: Value) -> Option<OwnerReply> {
     }
 }
 
-/// Client for the experimental owner protocol. Transport errors poison the
+/// Client for the owner protocol. Transport errors poison the
 /// client: replaying a command after losing its response could double-commit.
 pub struct OwnerClient {
     child: Child,
@@ -338,7 +360,7 @@ impl Drop for OwnerClient {
 
 /// Serve one connection until explicit close or EOF. EOF drops the store and
 /// SQLite rolls back any incomplete transaction. The caller chooses a maximum
-/// frame size when this experimental protocol is integrated.
+/// frame size; production preserves the existing unbounded record contract.
 pub fn serve<R: Read, W: Write>(reader: R, mut writer: W, max_bytes: u64) -> io::Result<()> {
     let mut reader = BufReader::new(reader);
     let Some(open) = read_value(&mut reader, max_bytes)? else {
@@ -379,9 +401,10 @@ pub fn serve<R: Read, W: Write>(reader: R, mut writer: W, max_bytes: u64) -> io:
             )
         }
     };
-    let initialization = match OwnerLease::acquire(
+    let initialization = match OwnerLease::acquire_with_timeout(
         &parent.join(".multicc-orchestration-owner-init.lock"),
         "owner initialization",
+        Duration::from_secs(5),
     ) {
         Ok(lease) => lease,
         Err(error) => return reply(&mut writer, Err(error)),
@@ -552,6 +575,49 @@ mod tests {
         assert!(responses.iter().all(|response| response["ok"] == true));
         assert_eq!(responses[1]["value"]["revision"], 0);
         assert!(read_value(&mut output, 1024 * 1024).unwrap().is_none());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn first_open_waits_for_directory_initialization_without_losing_its_request() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("multicc-owner-init-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let initialization = OwnerLease::acquire(
+            &directory.join(".multicc-orchestration-owner-init.lock"),
+            "test",
+        )
+        .unwrap();
+        let database = directory.join("state.sqlite");
+        let mut input = encoded(
+            json!({"version": OWNER_PROTOCOL_VERSION, "file": database, "now": 1, "policy": {}}),
+        );
+        input.extend(encoded(json!({"op": "close", "input": {}})));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let result = serve(Cursor::new(input), &mut output, 1024 * 1024);
+            tx.send((result, output)).unwrap();
+        });
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        drop(initialization);
+        let (result, output) = match early {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                rx.recv_timeout(Duration::from_secs(5)).unwrap()
+            }
+            Err(error) => panic!("owner startup disconnected: {error}"),
+        };
+        thread.join().unwrap();
+        result.unwrap();
+        let response = read_value(&mut Cursor::new(output), 1024 * 1024)
+            .unwrap()
+            .unwrap();
+        assert_eq!(response["ok"], true, "{response}");
         std::fs::remove_dir_all(directory).unwrap();
     }
 

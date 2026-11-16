@@ -1,5 +1,4 @@
-//! Experimental N-API bridge to the isolated Rust orchestration owner.
-//! Production continues to use the existing store until integration is proved.
+//! N-API transport bridge to the isolated Rust orchestration owner.
 use crate::guard::guard;
 use crate::orchestration_store::{read, write};
 use multicc_core::js::from_serde;
@@ -19,7 +18,7 @@ use std::time::SystemTime;
 
 // The former in-process API has no fixed payload cap. The streaming transport
 // preserves that contract; owner allocations grow only with bytes received.
-const EXPERIMENTAL_MAX_FRAME: u64 = u64::MAX;
+const MAX_FRAME: u64 = u64::MAX;
 
 type SharedOwner = Arc<Mutex<OwnerClient>>;
 #[derive(PartialEq, Eq)]
@@ -125,8 +124,7 @@ impl OwnerSession {
             }
         }
         let owner = Arc::new(Mutex::new(
-            OwnerClient::spawn(&binary, open, EXPERIMENTAL_MAX_FRAME)
-                .map_err(napi::Error::from_reason)?,
+            OwnerClient::spawn(&binary, open, MAX_FRAME).map_err(napi::Error::from_reason)?,
         ));
         entries.insert(
             key,

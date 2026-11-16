@@ -329,7 +329,10 @@ fn a_claimed_route_that_needs_the_node_auth_runtime_fails_closed_at_once() {
         "auth-runtime refusal: body"
     );
     assert!(
-        elapsed < Duration::from_secs(1),
+        // Same load tolerance as the host-port refusal below: 2s still proves
+        // the refusal did not wait for the 3s control-stream timeout, while a
+        // parallel full-suite run can starve this process past 1s.
+        elapsed < Duration::from_secs(2),
         "the auth-runtime refusal took {elapsed:?}; it must not wait for the 3s control-stream timeout"
     );
 }

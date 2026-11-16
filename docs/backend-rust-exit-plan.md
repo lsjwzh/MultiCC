@@ -15,6 +15,23 @@ Use the existing Axum/Tokio gateway, rusqlite/SQLite databases and established J
 
 No production restart, configuration switch, live-data migration, commit, merge or push is part of this worktree execution unless separately authorized. Reversible implementation, isolated data copies/fixtures and verification continue autonomously. Keep one owner for mutable authorization and persistence state. Unknown behavior defaults to the established API contract and is recorded, rather than replaced with a stub or a success response.
 
+## Active continuation (2026-11-16)
+
+The worktree now routes the production orchestration store through the dedicated
+Rust owner instead of selecting an in-process SQLite connection. Store addon
+protocol 11 and owner protocol 5 must be deployed together. This is an isolated
+implementation batch: Rust checks and 175 focused tests pass, while the full npm
+acceptance still has eight failures (one unavailable trace, three raw mixed-driver
+diagnostics and four scheduler migration guards). It does not complete any
+of the four overall acceptance criteria above, and no live service is switched.
+See [the current owner boundary](rust-migration/orchestration-owner-experiment.md).
+
+Next dependencies remain the scheduler's versioned read model and Rust admission,
+completion, queue reordering and recovery commands, followed by the remaining
+runtime state owners, HTTP/WS/SSE hosts, adapters and plugin processes. Existing
+live callback/microtask timing is an acceptance constraint. Production Node exit
+must not be inferred from the database owner's move to a Rust process.
+
 ## Step 6 execution ledger
 
 | Work item | Deliverable and exit condition | State |
@@ -4723,3 +4740,7 @@ local-only 路由，`local` 事实仍随请求转发。**OPTIONS** 走 `OPTIONS_
 `tests/helpers/legacy-orchestration-routes/` 冻结原四个文件作 oracle。治理：request-locality 白名单、
 test-tiers、release-version 的 core 计数 453/378/425、`server.js` 棘轮 3111/167256。
 Rust 全量 68 目标 / 2103 通过 / 0 失败。
+
+### Provider attempt creation command (2026-11-16, worktree only)
+
+The complete `beginAttempt` creation command now runs in Rust, reusing the existing identity, transition, producer and CLI capability kernels. It installs the captured record before releasing admission and invoking event callbacks; direct table operations and lifecycle construction avoid repeated native method dispatch and JSON serialization. The Node runtime shrinks by 127 net lines, but still owns snapshot/event delivery and remaining lifecycle coordination, so this does not complete chat orchestration or Node production exit. See [the module inventory, retained host scope and verification](rust-migration/provider-attempt-creation.md). No commit, merge, live configuration change or restart was performed.
