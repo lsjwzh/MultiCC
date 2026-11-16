@@ -761,3 +761,20 @@ test('关闭与失效发生在派发之前时，不再启动旧请求', async ()
   assert.deepEqual(await old, await fresh);
   assert.equal(published.length, 1);
 });
+
+test('胶囊在未打开配置面板时读取共享预设，并保留本机离线预设', async () => {
+  const remoteRows = [{ providerId: 'remote-a' }, { providerId: 'remote-b' }];
+  const localRows = [{ providerId: 'local-a' }, { providerId: 'local-b' }];
+  const local = [{ id: 'local', name: '离线预设', candidates: localRows }];
+  global.window = { localStorage: { getItem: () => JSON.stringify(local) } };
+  const label = candidates => run.pillText(run.pillModel({ next: { providerSelection: { mode: 'auto', candidates } } }));
+  try {
+    assert.equal(label(remoteRows), '⚡ 自动 · 按顺序 · 2 条');
+    assert.equal(await run.refreshPresetCatalog(async path => {
+      assert.equal(path, '/api/run-config/presets');
+      return { presets: [{ id: 'remote', name: '共享预设', candidates: remoteRows }] };
+    }), true);
+    assert.equal(label(remoteRows), '⚡ 自动 · 共享预设 · 按顺序 · 2 条');
+    assert.equal(label(localRows), '⚡ 自动 · 离线预设 · 按顺序 · 2 条');
+  } finally { delete global.window; }
+});
