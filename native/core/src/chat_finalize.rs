@@ -746,10 +746,16 @@ pub fn plan_turn_finalization(input: &JsValue, deps: &JsValue, now_ms: f64) -> J
 
     let api_retry = !retry_unavailable
         && !guarded_handoff_resume_failure
-        && matches!(
+        && (matches!(
             api_error_decision.get("action"),
             Some(JsValue::String(action)) if action.as_str_lossy() == "retry"
-        );
+        ) || (matches!(
+            api_error_decision.get("action"),
+            Some(JsValue::String(action)) if action.as_str_lossy() == "fail_fast"
+        ) && matches!(
+            api_error_decision.get("poolExhausted"),
+            Some(JsValue::Bool(true))
+        )));
     if api_retry {
         return object(vec![
             ("action", JsValue::string("retry-api")),

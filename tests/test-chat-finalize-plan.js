@@ -113,6 +113,19 @@ test('OpenCode replay-unsafe network errors continue on the same provider, cappe
     resultEvent: false,
   }));
   assert.equal(retryable.action, 'retry-api');
+  // Pool-exhausted retryable decisions still retry on the same provider.
+  const poolExhausted = planTurnFinalization(base({
+    cli: 'opencode',
+    apiError: true,
+    apiErrorDecision: {
+      action: 'fail_fast', reason: 'auto_candidate_pool_exhausted',
+      poolExhausted: true, attempt: 0, error: { category: 'network' },
+    },
+    nativeSession: true,
+    resultEvent: false,
+  }));
+  assert.equal(poolExhausted.action, 'retry-api');
+  assert.equal(poolExhausted.retry.poolExhausted, true);
 });
 
 test('process empty exit gets one fresh retry but adapter, explicit kill and retry do not', () => {

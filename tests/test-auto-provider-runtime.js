@@ -757,6 +757,23 @@ test('candidate pool exhaustion is terminal when remaining routes are freshly ex
   assert.equal(exhausted.decision.reason, 'auto_candidate_pool_exhausted');
 });
 
+test('pool exhaustion preserves retry intent when the original decision was retryable', () => {
+  const { runtime, session } = fixture({ emptyFetchedAt: 900_000, thirdFetchedAt: 990_000 });
+  const turn = runtime.beginTurn({ session, turnId: 'turn-pool-retry' });
+  turn.initial();
+  const retryableDecision = {
+    action: 'retry', reason: 'bounded_backoff', delayMs: 1200, attempt: 1,
+    error: { category: 'network', phase: 'before_first_token', partialOutput: false, sideEffects: false },
+  };
+  turn.failover(retryableDecision, openAttempt());
+  const exhausted = turn.failover(retryableDecision, openAttempt('backup'));
+  assert.equal(exhausted.terminal, true);
+  assert.equal(exhausted.decision.action, 'fail_fast');
+  assert.equal(exhausted.decision.reason, 'auto_candidate_pool_exhausted');
+  assert.equal(exhausted.decision.poolExhausted, true, 'retryable origin must be marked');
+  assert.equal(exhausted.decision.error.category, 'network', 'original error category preserved');
+});
+
 test('live background tasks fail closed before a provider route switch', () => {
   const { runtime, session, events } = fixture({
     emptyFetchedAt: 900_000, backgroundActive: true,
