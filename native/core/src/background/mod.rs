@@ -7,5 +7,6 @@
 pub mod coalescer;
 pub mod metadata;
 pub mod native_tasks;
+pub mod settled;
 pub mod snippet;
 pub mod state;

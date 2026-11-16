@@ -4,23 +4,17 @@
 //
 // 位置说明：本文件刻意放在 src/session/（与 state-transition.js 的 isRunningStatus
 // 同一层），而不是 src/chat/ —— src/session/*.js 是被封住的 bounded context（只许
-// require node: / 同目录 / ../session-dto，见 tests/test-architecture-boundaries.js），
-// 而 hibernation-composition.js 与 pending-configuration.js 正是最需要这个判定的两个
-// 调用点。放在这里，它们能用 ./runtime-busy，不必破例。
+// require node: / 同目录 / ../session-dto，外加 tests/test-architecture-boundaries.js
+// 白名单里的 ../native/runtime），而 hibernation-composition.js 与
+// pending-configuration.js 正是最需要这个判定的两个调用点。放在这里，它们能用
+// ./runtime-busy，不必破例。
 //
-// 一轮 turn 会在 chat state 上留下最多四条痕迹，而各个子系统历史上各读了其中
-// 一个子集，于是同一个会话在不同调用点会得到不同答案：
-//   · `isStreaming`    —— admission 接下这一轮时置 true（所有车道），由结构化
-//                        finalize 或 stopRunner() 清掉。
-//   · `claudeProc`     —— 老式 per-turn 子进程句柄，活到进程退出。
-//   · `_cancelledProc` —— 已发信号但还没被 reap 的子进程。stopRunner() 在发信号
-//                        的那一刻就把 `claudeProc` 摘掉了，所以「还没真死」这件事
-//                        只有这里有。
-//   · `_activeRunner`  —— 本轮 turn 的归属记录。它比 `isStreaming` 活得更久：
-//                        stopRunner() 先清 isStreaming，确认子进程真的停了之后才
-//                        释放 runner（也见 chat/finalize-host.js 的收尾路径）。
-//                        只读 isStreaming 的调用点会在「这一轮正在收尾」的窗口里
-//                        把会话判成空闲。
+// 规则现在的唯一实现是 native/core/src/active_turns.rs，本文件只是 Node 侧端口。
+// 原生入口是 addon 的 `sessionChatStateBusy` / `sessionProcAlive`（纯值读取，不需要
+// chat 表），它们和 owner 上的 `chatStateBusy` / `procAlive` 调的是同一组 core 函数。
+// 一轮 turn 在 chat state 上留下的四条痕迹（isStreaming / claudeProc /
+// _cancelledProc / _activeRunner）以及「为什么少读一条就是另一个答案」，都写在
+// active_turns.rs 的模块注释里；不要在 JS 里再抄一份判定分支。
 //
 // 少读一条就是另一个答案：session-git 的 isWorktreeActive() 曾对同一个会话给出
 // 两种判定 —— 作为同组 member 看时读 `_activeRunner`，作为被请求的那个 id 看时
@@ -54,22 +48,17 @@
 //   · dispatch/targeting.js:148 与 session-admin 的 `clients.size`：那是「有没有人在
 //     看」，不是「有没有活在跑」。
 
+const { getNative } = require('../native/runtime');
+
 // Node 在子进程被 reap 后写入 exitCode / signalCode。刻意【不】用
 // `process.kill(pid, 0)` 探针：pid 会被复用，外部进程撞上同一个 pid 会变成一个
-// 永远清不掉的假「还活着」。
+// 永远清不掉的假「还活着」。判定本身在 native/core/src/active_turns.rs。
 function processAlive(proc) {
-  if (!proc) return false;
-  if (proc.exitCode !== null && proc.exitCode !== undefined) return false;
-  if (proc.signalCode) return false;
-  return true;
+  return getNative().sessionProcAlive(proc) === true;
 }
 
 function isChatStateBusy(cs) {
-  if (!cs) return false;
-  if (cs.isStreaming === true) return true;
-  if (processAlive(cs.claudeProc)) return true;
-  if (processAlive(cs._cancelledProc)) return true;
-  return !!cs._activeRunner;
+  return getNative().sessionChatStateBusy(cs) === true;
 }
 
 module.exports = { isChatStateBusy, processAlive };

@@ -237,14 +237,78 @@ test('closing during start cannot send a user message', async t => {
   assert.equal(sdk.status('sdk'), null);
 });
 
-test('missing established native history stays missing', { timeout: 30000 }, async t => {
+test('a missing resume target rotates the native session once and replays the same message', { timeout: 30000 }, async t => {
   const f = await laneFixture(t, { scenario: 'missing-history' });
-  f.configure({ resume: true });
-  const result = await f.send('missing history must stay missing');
+  const captured = [];
+  const recovered = [];
+  f.configure({
+    resume: true,
+    onNewSessionId: id => captured.push(id),
+    onResumeTargetMissing: info => { recovered.push(info); return { text: 'checkpoint + original prompt' }; },
+  });
+  const events = [];
+  const result = await f.send('missing resume must heal', event => events.push(event));
+
+  assert.equal(result.subtype, 'success', 'the replay answer is the turn result');
+  assert.equal(recovered.length, 1, 'a missing resume target is recovered exactly once');
+  assert.equal(recovered[0].previousSessionId, f.sessionId);
+  assert.deepEqual(captured, [recovered[0].sessionId], 'the replacement id is persisted before the reply');
+  assert.notEqual(recovered[0].sessionId, f.sessionId);
+  const spawns = f.files.spawns();
+  assert.equal(spawns.length, 2);
+  assert.ok(spawns[0].argv.includes(`--resume=${f.sessionId}`), 'first spawn resumes the dead id');
+  assert.ok(spawns[1].argv.includes(`--session-id=${recovered[0].sessionId}`),
+    'the replay CREATES the replacement id instead of resuming it');
+  assert.equal(spawns[1].argv.some(arg => arg.startsWith('--resume=')), false);
+  const users = f.files.stdin().filter(line => line.type === 'user');
+  assert.equal(users.length, 2, 'the same message is sent again');
+  assert.match(JSON.stringify(users.at(-1)), /checkpoint \+ original prompt/,
+    'the host checkpoint replaces the replayed text');
+  assert.equal(users.at(-1).session_id, recovered[0].sessionId);
+  assert.equal(events.filter(event => event.type === 'result').length, 1,
+    'the doomed resume result never reaches the caller');
+  assert.equal(events.at(-1).subtype, 'success');
+});
+
+test('a missing resume target reported before the message is sent still heals', { timeout: 30000 }, async t => {
+  const f = await laneFixture(t, { scenario: 'missing-history-early' });
+  const recovered = [];
+  f.configure({ resume: true, onResumeTargetMissing: info => recovered.push(info) });
+  const result = await f.send('early missing resume must heal');
+
+  assert.equal(result.subtype, 'success', 'the replay answer is the turn result');
+  assert.equal(recovered.length, 1);
+  const spawns = f.files.spawns();
+  assert.equal(spawns.length, 2);
+  assert.ok(spawns[0].argv.includes(`--resume=${f.sessionId}`));
+  assert.ok(spawns[1].argv.includes(`--session-id=${recovered[0].sessionId}`));
+});
+
+test('a missing resume target after forwarded output never replays the turn', { timeout: 30000 }, async t => {
+  const f = await laneFixture(t, { scenario: 'missing-history-after-output' });
+  const captured = [];
+  f.configure({ resume: true, onNewSessionId: id => captured.push(id) });
+  const events = [];
+  const result = await f.send('output already reached the host', event => events.push(event));
+
   assert.match(JSON.stringify(result), /No conversation found with session ID/);
-  assert.equal(f.files.spawns().length, 1);
-  assert.ok(f.files.spawns()[0].argv.includes(`--resume=${f.sessionId}`));
+  assert.deepEqual(captured, [], 'nothing is rotated once output has been forwarded');
+  assert.equal(f.files.spawns().length, 1, 'no replay child for a turn the host already saw');
   assert.equal(f.files.stdin().filter(line => line.type === 'user').length, 1);
+  assert.ok(events.some(event => event.type === 'assistant'), 'the host keeps the partial output');
+});
+
+test('a second missing resume target fails fast instead of rotating again', { timeout: 30000 }, async t => {
+  const f = await laneFixture(t, { scenario: 'missing-history-always' });
+  const captured = [];
+  f.configure({ resume: true, onNewSessionId: id => captured.push(id) });
+  const result = await f.send('still missing after rotation');
+
+  assert.match(JSON.stringify(result), /No conversation found with session ID/);
+  assert.equal(captured.length, 1, 'one rotation, then no further replacement id');
+  assert.equal(f.files.spawns().length, 2, 'a spent recovery must not spawn a third child');
+  assert.equal(f.files.spawns()[1].argv.some(arg => arg.startsWith('--resume=')), false);
+  assert.equal(f.files.stdin().filter(line => line.type === 'user').length, 2);
 });
 
 test('crash recovery resumes history and pruning waits for background work', { timeout: 30000 }, async t => {

@@ -25,6 +25,17 @@ use std::{
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const COLLECTIONS: [&str; 5] = ["waits", "outbox", "operations", "tasks", "sessionSchedules"];
+/// The ledger's own terminal vocabulary for a task or operation row, mirroring
+/// `TERMINAL_TASK_STATES` in `src/operation-service.js`. Anything that needs to
+/// know "did this task already settle" reads these words instead of inventing a
+/// second list: `receipts`, `operation_running` and the background-task nudge
+/// gate (`background::settled`) all resolve here.
+pub const TERMINAL_TASK_STATES: [&str; 4] = ["completed", "failed", "interrupted", "cancelled"];
+
+/// `TERMINAL_TASK_STATES.has(status)` for a plain status string.
+pub fn is_terminal_task_status(status: &str) -> bool {
+    TERMINAL_TASK_STATES.contains(&status)
+}
 
 fn claim_metadata(connection: &Connection) -> Result<Value> {
     let input = json!({"collection":"outbox","options":{

@@ -14,6 +14,7 @@ use crate::{
     js_live::LiveValue as L,
 };
 use multicc_core::{
+    active_turns::{self, ActiveTurnTally, ChatBusyAxes, ProcObservation},
     chat_runtime::{
         self, Outcome as TurnOutcome, PendingOutcome, Phase, Record as TurnRecord, RouteProofFacts,
         StartError,
@@ -93,6 +94,66 @@ fn nullable_string(value: L<'_>) -> Result<Option<JsString>> {
         Ok(None)
     } else {
         Ok(Some(value.coerce_string()?))
+    }
+}
+
+/// `object[name]`, treating a throwing getter as a missing property. The chat
+/// state passed in is sometimes a test fixture, so a failed read must not abort
+/// the whole busy check. `catch` clears the pending exception (a bare `ok()`
+/// would leave it set and poison the next host call).
+fn read_prop<'a>(object: L<'a>, name: &CStr) -> Result<L<'a>> {
+    match object.catch(|| object.get(name)) {
+        Ok(Some(value)) => Ok(value),
+        _ => object.from_value(&V::Undefined),
+    }
+}
+
+/// `processAlive(proc)` facts, read lazily. `present` is
+/// `proc !== null && proc !== undefined`; `exitCode` set means reaped (`0`
+/// counts); a truthy `signalCode` means reaped too.
+fn proc_observation(proc: L<'_>) -> Result<ProcObservation> {
+    if proc.nullish()? {
+        return Ok(ProcObservation {
+            present: false,
+            exit_code_set: false,
+            signal_code_set: false,
+        });
+    }
+    Ok(ProcObservation {
+        present: true,
+        exit_code_set: !read_prop(proc, c"exitCode")?.nullish()?,
+        signal_code_set: read_prop(proc, c"signalCode")?.truthy()?,
+    })
+}
+
+/// The four-trace chat-state verdict (native/core/src/active_turns.rs). `null`,
+/// `undefined` and non-objects are idle, matching `if (!cs) return false`.
+fn chat_busy_of(state: L<'_>) -> Result<bool> {
+    if state.nullish()? {
+        return Ok(false);
+    }
+    let kind = state.kind()?;
+    if kind != sys::ValueType::napi_object && kind != sys::ValueType::napi_function {
+        return Ok(false);
+    }
+    Ok(active_turns::chat_state_busy(&ChatBusyAxes {
+        // `cs.isStreaming === true` — strict true, never merely truthy.
+        streaming: read_prop(state, c"isStreaming")?.is_true()?,
+        claude_proc: proc_observation(read_prop(state, c"claudeProc")?)?,
+        cancelled_proc: proc_observation(read_prop(state, c"_cancelledProc")?)?,
+        active_runner: read_prop(state, c"_activeRunner")?.truthy()?,
+    }))
+}
+
+/// Call a host callback and rethrow its exception with the original identity
+/// (the active-turn counter must let a `stream_busy` failure escape).
+fn call_propagating<'a>(callback: L<'a>, arguments: &[L<'a>]) -> Result<L<'a>> {
+    match callback.call_plain(arguments) {
+        Ok(value) => Ok(value),
+        Err(error) => match callback.exception_value()? {
+            Some(exception) => Err(exception.throw_error()),
+            None => Err(error),
+        },
     }
 }
 
@@ -1980,6 +2041,73 @@ impl RustSessionRecords {
         }
         Ok(pairs.raw())
     }
+    /// `isChatStateBusy(cs)` for one chat state. The rule is
+    /// `multicc_core::active_turns`; this only reads the four traces off the
+    /// live host object.
+    #[napi]
+    pub fn chat_state_busy(&self, env: Env, value: Unknown<'_>) -> Result<bool> {
+        self.values.drain(&env)?;
+        chat_busy_of(L::new(&env, value))
+    }
+    /// The same verdict for the chat state stored under `session`; an absent id
+    /// is idle.
+    #[napi]
+    pub fn chat_session_busy(&self, env: Env, session: Unknown<'_>) -> Result<bool> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let key = self.key(L::new(&env, session))?;
+        let found = self.chat.borrow().get(&key);
+        match found {
+            Some(value) => chat_busy_of(self.read(&env, anchor, &value)?),
+            None => Ok(false),
+        }
+    }
+    /// `server.js`'s active-turn counter, in chat-table order. A busy chat
+    /// state short-circuits and **does not call** `stream_busy`; otherwise the
+    /// probe is asked and only `=== true` counts. A falsy table value is
+    /// skipped (the legacy loop's `if (cs && ...)`).
+    #[napi]
+    pub fn chat_active_turns(&self, env: Env, stream_busy: Unknown<'_>) -> Result<f64> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let callback = L::new(&env, stream_busy);
+        // Snapshot first: `stream_busy` is host code and may re-enter the owner
+        // (e.g. `chatSessions.get(name)`), which must not meet a live borrow.
+        let entries: Vec<(JsString, Value)> = {
+            let table = self.chat.borrow();
+            table
+                .order
+                .iter()
+                .map(|id| {
+                    let value = table.map.get(id).expect("ordered id").clone();
+                    (id.clone(), value)
+                })
+                .collect()
+        };
+        let mut tally = ActiveTurnTally::new();
+        for (name, value) in entries {
+            let state = self.read(&env, anchor, &value)?;
+            if !state.truthy()? {
+                continue;
+            }
+            let chat_busy = chat_busy_of(state)?;
+            let busy = chat_busy
+                || (ActiveTurnTally::needs_stream_probe(chat_busy) && {
+                    let argument = anchor.from_value(&V::String(name))?;
+                    call_propagating(callback, &[argument])?.is_true()?
+                });
+            tally.observe(busy);
+        }
+        Ok(f64::from(tally.count()))
+    }
+    /// `processAlive(proc)` for one child handle. Used by the stop wait
+    /// (`session-work/host.js`), not only by the chat-state rule.
+    #[napi]
+    pub fn proc_alive(&self, env: Env, value: Unknown<'_>) -> Result<bool> {
+        self.values.drain(&env)?;
+        let proc = L::new(&env, value);
+        Ok(active_turns::process_alive(&proc_observation(proc)?))
+    }
 
     // ── Turn runtime store ──
     /// Install the host clock (`Date.now` or a deterministic test clock).
@@ -2527,4 +2655,22 @@ pub fn session_records_protocol_version() -> u32 {
 #[cfg_attr(test, allow(dead_code))]
 pub fn session_records_task_state_defaults(env: Env) -> Result<sys::napi_value> {
     unsafe { crate::js_bridge::write_value(env.raw(), &task_state_defaults()) }
+}
+
+/// Pure value readers for `src/session/runtime-busy.js`. That module sits in the
+/// closed `src/session/` bounded context and may only reach Rust through
+/// `../native/runtime`, so it cannot hold a table owner; neither rule needs the
+/// table. They call the same `multicc_core::active_turns` functions as the owner
+/// methods above — there is no second implementation.
+#[napi]
+#[cfg_attr(test, allow(dead_code))]
+pub fn session_chat_state_busy(env: Env, value: Unknown<'_>) -> Result<bool> {
+    chat_busy_of(L::new(&env, value))
+}
+
+#[napi]
+#[cfg_attr(test, allow(dead_code))]
+pub fn session_proc_alive(env: Env, value: Unknown<'_>) -> Result<bool> {
+    let proc = L::new(&env, value);
+    Ok(active_turns::process_alive(&proc_observation(proc)?))
 }

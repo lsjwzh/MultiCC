@@ -7,7 +7,27 @@ const { configure } = require('../../scripts/configure-command-code');
 const config = configure();
 console.log(`DeepSeek 模型：${config.model}；密钥${config.keyConfigured ? '已配置' : '未配置'}（健康检查不代表模型调用成功）`);
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
-const server = spawn(process.execPath, ['server.js'], { stdio: 'inherit' });
+
+// 必须经 Rust 前门起，不能裸跑 `node server.js`：公开路由已经逐簇迁进前门，裸 Node
+// 只剩回环宿主端口，所以下面播种用的 /api/directories、/api/sessions，以及健康检查
+// 用的 /readyz 在裸 Node 上全是 404。启动形态与独立包启动器一致
+// （desktop/lib/desktop-env.js 的 gatewayLaunch）：前门监听对外端口，用
+// --stdin-lifeline 带起并看住 server.js 子进程。
+function gatewayBinary() {
+  const arch = { x64: 'x64', arm64: 'arm64' }[process.arch];
+  if (!arch) throw new Error(`unsupported arch for the Rust front door: ${process.arch}`);
+  const binary = path.join(__dirname, '..', '..', 'native', 'prebuilt', `linux-${arch}`, 'multicc-gateway');
+  // 缺二进制就立刻失败，不要退回裸 Node —— 那会让容器"起来了"却答不了任何公开路由。
+  fs.accessSync(binary, fs.constants.X_OK);
+  return binary;
+}
+const serverDir = path.join(__dirname, '..', '..');
+// 位置参数用绝对路径，与 desktop/lib/desktop-env.js 的 gatewayLaunch 保持一致。
+// stdin 留 pipe：--stdin-lifeline 靠它判断父进程还在，父进程退出即连带收掉前门。
+const server = spawn(gatewayBinary(), [
+  'serve', '--cwd', serverDir, '--node', process.execPath,
+  '--stdin-lifeline', path.join(serverDir, 'server.js'),
+], { stdio: ['pipe', 'inherit', 'inherit'] });
 let stopping = false;
 let failed = false;
 function stop() {

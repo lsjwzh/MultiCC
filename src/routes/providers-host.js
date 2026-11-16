@@ -44,28 +44,7 @@ function importErrorDto(error) {
 }
 
 function sanitizeProbeResult(result) {
-  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
-  const safe = { ...result };
-  if (Object.prototype.hasOwnProperty.call(safe, 'error')) {
-    safe.error = publicText(safe.error, 'provider probe failed');
-  }
-  if (Array.isArray(safe.tested)) {
-    safe.tested = safe.tested.map((entry) => {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
-      const item = { ...entry };
-      if (Object.prototype.hasOwnProperty.call(item, 'error')) {
-        item.error = publicText(item.error, 'provider probe failed');
-      }
-      if (Object.prototype.hasOwnProperty.call(item, 'reason')) {
-        item.reason = publicText(item.reason, 'provider probe failed');
-      }
-      if (Object.prototype.hasOwnProperty.call(item, 'sample')) {
-        item.sample = publicText(item.sample, 'provider probe output hidden');
-      }
-      return item;
-    });
-  }
-  return safe;
+  return require('../native/runtime').getNative().providerSanitizeProbeResult(result);
 }
 
 function text(value) {
@@ -99,6 +78,9 @@ function assertDependencies(deps) {
   }
   if (!deps.providerDefaults || typeof deps.providerDefaults !== 'object') {
     throw new TypeError('[providers-host] providerDefaults object is required');
+  }
+  if (!deps.defaultsOwner || typeof deps.defaultsOwner.snapshot !== 'function' || typeof deps.defaultsOwner.patch !== 'function') {
+    throw new TypeError('[providers-host] defaultsOwner is required');
   }
   const shares = deps.providerRelayShares;
   if (!shares || typeof shares.create !== 'function' || typeof shares.list !== 'function'
@@ -315,7 +297,11 @@ function mountProvidersHostRoute(app, options = {}) {
         const result = routeEnv
           ? await deps.providers.probeRelayModels(routeEnv, body.candidates, deps.claudeCmd)
           : { tested: [], accepted: [], error: 'no base url' };
-        return { ok: true, result: sanitizeProbeResult(result) };
+        const safe = sanitizeProbeResult(result);
+        // JSON text keeps lone UTF-16 surrogates intact across the host port.
+        return body.resultEncoding === 'json'
+          ? { ok: true, resultJson: JSON.stringify(safe) }
+          : { ok: true, result: safe };
       } catch (error) {
         return { ok: false, error: { message: publicError(error, 'provider probe failed') } };
       }
@@ -553,22 +539,38 @@ function mountProvidersHostRoute(app, options = {}) {
     }
 
     if (body.op === 'defaultsGet') {
-      return { ok: true, defaults: deps.providerDefaults };
+      return { ok: true, defaults: deps.defaultsOwner.snapshot() };
     }
 
-    if (body.op === 'defaultsValidate') {
-      const result = deps.validProviderId(text(body.cli), body.id);
+    // validProviderId 的 ① 段：官方线路 id 归一化。cli 的 -exp 折叠由前门做，
+    // 这里收到的已是折叠后的车道名。
+    if (body.op === 'normalizeId') {
+      const normalize = deps.providers.normalizeOfficialProviderId;
+      return { ok: true, id: typeof normalize === 'function' ? normalize(text(body.cli), body.id) : body.id };
+    }
+
+    // validProviderId 的 ⑤ 段事实：store 里的线路摘要，只投影规则需要的那 6 个
+    // 字段（布尔按 JS 真值语义转 !!）。规则本身在 Rust。
+    if (body.op === 'providerSummary') {
+      const appType = typeof body.appType === 'string' && body.appType !== '' ? body.appType : undefined;
+      const summary = deps.providerRouterRuntime.getProviderSummary(appType, text(body.id));
       return {
         ok: true,
-        valid: result.ok === true,
-        value: result.ok === true ? (result.value === undefined ? null : result.value) : null,
+        summary: summary ? {
+          appType: summary.appType,
+          virtual: !!summary.virtual,
+          apiFormat: summary.apiFormat,
+          protocol: summary.protocol,
+          baseUrl: !!summary.baseUrl,
+          hasToken: !!summary.hasToken,
+        } : null,
       };
     }
 
     if (body.op === 'defaultsPersist') {
-      Object.assign(deps.providerDefaults, (body.next && typeof body.next === 'object' && !Array.isArray(body.next)) ? body.next : {});
+      deps.defaultsOwner.patch(body.next);
       deps.saveProviderDefaults();
-      return { ok: true, defaults: deps.providerDefaults };
+      return { ok: true, defaults: deps.defaultsOwner.snapshot() };
     }
 
     return null;

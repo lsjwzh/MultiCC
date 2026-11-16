@@ -14,6 +14,7 @@ pub mod air_routes;
 pub mod auth;
 pub mod auto_provider_routing;
 pub mod claude_models;
+pub mod cli_switch;
 pub mod directory_routes;
 pub mod docs_memory_routes;
 pub mod download;
@@ -39,6 +40,7 @@ pub mod run_config_presets;
 pub mod scan;
 pub mod scoped_auth;
 pub mod secrets_vault;
+pub mod server_core;
 mod service_transport;
 pub mod services;
 pub mod session_admin;
@@ -46,6 +48,7 @@ pub mod session_git;
 pub mod session_routes;
 pub mod share_machine_routes;
 pub mod source_workspaces;
+pub mod static_assets_routes;
 pub mod subagent_defaults;
 pub mod system;
 pub mod task_routes;
@@ -159,6 +162,8 @@ pub enum Route {
     HostOps(host_ops_routes::Route),
     Orchestration(orchestration_routes::Route),
     ReleaseHistory(release_history_routes::Route),
+    StaticAssets(static_assets_routes::Route),
+    ServerCore(server_core::Route),
     FilesGet,
     FilesOptions,
     Upload,
@@ -170,6 +175,7 @@ pub enum Route {
     TaskShell(task_shell::Route),
     SessionAdmin(session_admin::Route),
     SessionRoutes(session_routes::Route),
+    CliSwitch(cli_switch::Route),
     ShareMachine(share_machine_routes::Route),
     TaskRoutes(task_routes::Route),
     Push(push_routes::Route),
@@ -301,6 +307,7 @@ fn is_v1_path(path: &str) -> bool {
 pub fn claim_uri(method: &Method, uri: &axum::http::Uri) -> Option<Route> {
     claim(method, uri.path())
         .or_else(|| release_history_routes::claim_uri(method, uri).map(Route::ReleaseHistory))
+        .or_else(|| static_assets_routes::claim_uri(method, uri).map(Route::StaticAssets))
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -312,6 +319,13 @@ pub fn claim_uri(method: &Method, uri: &axum::http::Uri) -> Option<Route> {
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
     if method == Method::OPTIONS && options_allow(path).is_some() {
         return Some(Route::AutoOptions);
+    }
+    // The server-core literals `/healthz`, `/readyz`, `/metrics` and
+    // `/api/repo-operations/:operationId`. None overlaps another cluster, so
+    // the cluster answers its own OPTIONS; they are exact/single-segment
+    // matchers and can be claimed up front.
+    if let Some(route) = server_core::claim(method, path) {
+        return Some(Route::ServerCore(route));
     }
     if let Some(route) = source_workspaces::claim(method, path) {
         return Some(Route::SourceWorkspaces(route));
@@ -371,6 +385,11 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     // write half and its own literals; directory-routes is disjoint.
     if let Some(route) = session_routes::claim(method, path) {
         return Some(Route::SessionRoutes(route));
+    }
+    // Cross-CLI switching: one literal under the session guard
+    // (`POST /api/sessions/:id/switch-cli`), disjoint from the other clusters.
+    if let Some(route) = cli_switch::claim(method, path) {
+        return Some(Route::CliSwitch(route));
     }
     // Before Air: `POST /api/air/tasks/mark-achieved` is a literal this cluster
     // owns, while Air keeps `GET /api/air/tasks/:id`. Express registered the
@@ -467,6 +486,15 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
             host_read::Claim::Get(route) => Route::HostReadGet(route),
             host_read::Claim::Options(route) => Route::HostReadOptions(route),
         });
+    }
+    // The static-assets rules: the three redirect families and the global
+    // `.apk`/`.ipa` guard (the query-dependent `/air` case lives in
+    // `claim_uri`). Last among the path-prefix matchers, like the retired
+    // `mountRoutes(app)` which sat after the earlier API routes; the guard is
+    // still broad, so claiming it after every literal keeps another cluster's
+    // path (if one ever ended in `.apk`) untouched.
+    if let Some(route) = static_assets_routes::claim(method, path) {
+        return Some(Route::StaticAssets(route));
     }
     let rest = path.strip_prefix("/api/")?;
     let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
@@ -966,6 +994,12 @@ pub async fn handle(
         return release_history_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host)
             .await;
     }
+    // Server core: `/healthz` and `/readyz` are public (the shared HTTP-entry
+    // exemption); `/metrics` and `/api/repo-operations` keep the ordinary gate.
+    // The cluster runs the peer allowlist itself for every path.
+    if let Route::ServerCore(route) = route {
+        return server_core::handle(&app, route, &ctx, &peer, &snapshot, host).await;
+    }
     if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
         return refusal;
     }
@@ -974,6 +1008,12 @@ pub async fn handle(
     // is where the retired stack parsed them).
     if let Route::Upload = route {
         return file_transfer::upload(&ctx, body).await;
+    }
+    // CLI switching runs its own `publicSessionAccessGuard` before parsing the
+    // body, exactly like the retired `app.use('/api/sessions/:id')` layer that
+    // sat in front of the global `express.json`.
+    if let Route::CliSwitch(route) = route {
+        return cli_switch::handle(route, &ctx, body, host).await;
     }
     // The ticket route sits in front of the global `express.json` with its
     // own `express.json({ limit: '4kb' })`; everything else gets the global one.
@@ -986,6 +1026,7 @@ pub async fn handle(
         Err(error) => return express::error(&ctx, error.status, error.reason),
     };
     match route {
+        Route::StaticAssets(route) => return static_assets_routes::handle(route, &ctx),
         Route::AutoOptions => return auto_options(&ctx, host).await,
         Route::ModelCatalogOptions(_)
         | Route::ProviderModelsOptions

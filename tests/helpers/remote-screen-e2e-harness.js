@@ -36,6 +36,7 @@ const zlib = require('node:zlib');
 const { spawn } = require('node:child_process');
 const { assertTestDir } = require('../../src/paths');
 const { ensureSourceRust } = require('../../scripts/ensure-source-rust');
+const { waitServerReady } = require('./wait-server-ready');
 
 const ROOT = path.join(__dirname, '..', '..');
 const FIXTURE_DIR = path.join(ROOT, 'tests', 'fixtures', 'remote-screen-h264');
@@ -327,17 +328,6 @@ function startTunnel(targetPort) {
   return listen(server);
 }
 
-async function waitReady(base, child, output) {
-  for (let i = 0; i < 300; i += 1) {
-    if (child.exitCode !== null) throw new Error(`server.js exited early (${child.exitCode}):\n${output()}`);
-    try {
-      if ((await fetch(`${base}/readyz`)).status === 200) return;
-    } catch {}
-    await new Promise(r => setTimeout(r, 100));
-  }
-  throw new Error(`server.js not ready after 30s:\n${output()}`);
-}
-
 async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platform, p2pStats = false,
   powerConsentFile = null } = {}) {
   if (platform !== 'darwin') throw new Error('the server only exposes h264.sock on macOS (Rust host profile)');
@@ -400,7 +390,8 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     });
     const direct = `http://127.0.0.1:${port}`;
-    await waitReady(direct, child, () => log);
+    await waitServerReady(direct, { attempts: 300, child, output: () => log, token,
+      message: 'server.js not ready after 30s' });
 
     const tunnel = await startTunnel(port);
     cleanups.push(() => new Promise(r => {

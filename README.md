@@ -672,7 +672,11 @@ The writer-lease launcher is the other shipped binary: `multicc-writer exec -- <
 ```bash
 npm run docker:node-free   # docker build --target node-free-runtime, tag multicc-node-free:local
 docker run --rm multicc-node-free:local --version   # multicc-gateway <protocol> <crate version>
-docker run --rm -p 3000:3000 multicc-node-free:local  # default CMD: serve --no-node
+docker run -d --name mcc multicc-node-free:local    # default CMD: serve --no-node
+# The front door binds 127.0.0.1 inside the container, so `-p 3000:3000` cannot reach it.
+# Probe it from a container that shares its network namespace:
+docker run --rm --network container:mcc curlimages/curl -s http://127.0.0.1:3000/api/anything
+# -> 503 {"error":"This route is served by the Node runtime, ...","code":"node_runtime_absent"}
 ```
 
 CI builds and re-runs the smoke checks for this stage in the `node-free-runtime` job of `.github/workflows/rust-kernels.yml`.

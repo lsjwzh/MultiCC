@@ -11,6 +11,21 @@ const { spawn, execFileSync } = require('node:child_process');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
 const isolatedHostEnv = require('./helpers/isolated-host-env');
+const { waitServerReady } = require('./helpers/wait-server-ready');
+
+const ROOT = path.join(__dirname, '..');
+
+// The directory/session clusters are answered by the Rust front door
+// (native/gateway/src/app/directory_routes.rs), so an isolated host has to start
+// the real gateway with server.js as its child instead of bare node.
+function gatewayBinary() {
+  const addon = process.env.MULTICC_RUST_ADDON
+    || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(ROOT, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  return path.join(path.dirname(addon),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+
 
 const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-completion-e2e-')));
 const dataDir = path.join(root, 'data');
@@ -142,8 +157,8 @@ async function stop() {
     await new Promise(resolve => probe.once('listening', resolve));
     const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
     const base = `http://127.0.0.1:${port}`;
-    server = spawn(process.execPath, ['server.js'], {
-      cwd: path.join(__dirname, '..'), env: { ...isolatedHostEnv(), ...commands,
+    server = spawn(gatewayBinary(), ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
+      cwd: ROOT, env: { ...isolatedHostEnv(), ...commands,
         // Claude chat uses the bundled SDK engine now, not CLAUDE_CMD. Keep
         // that engine on this fixture too, so no real model request can run.
         MULTICC_CLAUDE_BIN: commands.CLAUDE_CMD,
@@ -160,13 +175,7 @@ async function stop() {
         MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000' }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     for (const s of [server.stdout, server.stderr]) s.on('data', chunk => { output = (output + chunk).slice(-60000); });
-    let ready = false;
-    for (let i = 0; i < 150; i++) {
-      try { if ((await fetch(base + '/readyz')).ok) { ready = true; break; } } catch (_) {}
-      if (server.exitCode !== null) break;
-      await delay(100);
-    }
-    assert.ok(ready, 'isolated host ready');
+    await waitServerReady(base, { attempts: 150, child: server, output: () => output, message: 'isolated host ready' });
     const repoDir = path.join(root, 'repo'); fs.mkdirSync(repoDir);
     const git = args => execFileSync('git', ['-C', repoDir, ...args], { stdio: 'pipe' });
     git(['init', '-q']); git(['config', 'user.email', 'test@example.invalid']); git(['config', 'user.name', 'Test']);

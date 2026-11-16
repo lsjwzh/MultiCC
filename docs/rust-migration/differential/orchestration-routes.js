@@ -1,6 +1,6 @@
 'use strict';
 
-// Differential run for the 23 orchestration and unattended routes retired from
+// Differential run for the 30 orchestration and unattended routes retired from
 // src/routes/{aux-goal,aux-runs,orchestration}.js and src/unattended/routes.js
 // and now answered by native/gateway/src/app/orchestration_routes.rs (rules in
 // native/core/src/orchestration_routes.rs):
@@ -22,13 +22,12 @@
 // routes together, behind the real public-session guard) over one scripted
 // world (.../world.js). The Rust front door calls its host port
 // (/api/__host/orchestration); the stub child mounts the live
-// src/routes/orchestration-host.js over the same world, and mounts the seven
-// out-of-scope routes on its public app exactly as server.js does, so the
-// comparison covers the split itself: path matching, parameter decoding, the
+// src/routes/orchestration-host.js over the same world. The comparison covers
+// path matching, parameter decoding, the
 // query subset, the Idempotency-Key header, the automatic OPTIONS union, the
 // guard in both envelopes, and -- the easiest thing to get wrong --
 // `GET /api/v1/sessions/:id/waits` (ours) against `GET /api/sessions/:id/waits`
-// (still Node's).
+// (the distinct unprefixed projection).
 //
 // Every case is compared byte for byte (status, body, ETag, headers). On top of
 // that the run compares the *side effects*: the ordered list of calls each
@@ -279,7 +278,7 @@ function corpus() {
   add('queue action for an internal slot', () => post('/api/sessions/internal1/queue/action', { action: 'cancel', confirm: true }));
   add('queue action with a malformed body', () => post('/api/sessions/s1/queue/action', '{bad'));
 
-  // ── v1 waits (ours) against the unprefixed listing (still Node's) ───────
+  // ── v1 waits against the distinct unprefixed listing ───────────────────
   add('v1 waits of a session', () => get('/api/v1/sessions/s1/waits'));
   add('v1 waits HEAD', () => head('/api/v1/sessions/s1/waits'));
   add('v1 waits with an unrenderable wait', () => get('/api/v1/sessions/worker1/waits'));
@@ -288,24 +287,33 @@ function corpus() {
   add('v1 waits of an internal slot', () => get('/api/v1/sessions/internal1/waits'));
   add('v1 waits with an encoded id', () => get('/api/v1/sessions/s%31/waits'));
   add('v1 waits with mixed case', () => get('/api/V1/Sessions/s1/Waits'));
-  add('legacy waits of a session stays on Node', () => get('/api/sessions/s1/waits'));
-  add('legacy waits HEAD stays on Node', () => head('/api/sessions/s1/waits'));
-  add('legacy waits of an unknown session stays on Node', () => get('/api/sessions/ghost/waits'));
-  add('legacy waits runtime failure stays on Node', () => get('/api/sessions/s2/waits'));
+  add('legacy waits of a session via front door', () => get('/api/sessions/s1/waits'));
+  add('legacy waits HEAD via front door', () => head('/api/sessions/s1/waits'));
+  add('legacy waits of an unknown session via front door', () => get('/api/sessions/ghost/waits'));
+  add('legacy waits runtime failure via front door', () => get('/api/sessions/s2/waits'));
   add('legacy waits of an internal slot is still guarded', () => get('/api/sessions/internal1/waits'));
 
-  // ── the other six out-of-scope routes (Node on both sides) ──────────────
-  add('wait registration stays on Node', () => post('/api/sessions/s1/wait', { mode: 'delay', delaySec: 1 }));
-  add('wait resolve with a bad token stays on Node', () => post('/api/wait/w-new/resolve?token=wrong', { data: 1 }));
-  add('wait resolve with a good token stays on Node', () => post('/api/wait/w-new/resolve?token=tok-wait', { data: 1 }));
-  add('wait resolve of an unknown wait stays on Node', () => post('/api/wait/w-missing/resolve?token=x', {}));
-  add('wait cancel stays on Node', () => del('/api/wait/w1'));
-  add('wait cancel of an unknown wait stays on Node', () => del('/api/wait/nope'));
-  add('run detached stays on Node', () => post('/api/sessions/s1/run-detached', { command: 'echo hi' }));
-  add('run detached without a command stays on Node', () => post('/api/sessions/s1/run-detached', {}));
-  add('detached list stays on Node', () => get('/api/sessions/s1/detached'));
-  add('detached task stays on Node', () => get('/api/detached/job-1'));
-  add('detached unknown task stays on Node', () => get('/api/detached/nope'));
+  // ── wait registration, resolution, cancellation and detached tasks ─────
+  add('wait registration via front door', () => post('/api/sessions/s1/wait', { mode: 'delay', delaySec: 1 }));
+  add('wait resolve with a bad token via front door', () => post('/api/wait/w-new/resolve?token=wrong', { data: 1 }));
+  add('wait resolve with a good token via front door', () => post('/api/wait/w-new/resolve?token=tok-wait', { data: 1 }));
+  add('wait resolve token header', () => post('/api/wait/w-new/resolve', { data: { value: 2 } }, { ...J, 'X-Wait-Token': 'tok-wait' }));
+  add('wait resolve token body', () => post('/api/wait/w-new/resolve', { token: 'tok-wait', value: 3 }));
+  add('wait resolve query precedes header and body', () => post('/api/wait/w-new/resolve?token=wrong', { token: 'tok-wait', data: null }, { ...J, 'X-Wait-Token': 'tok-wait' }));
+  add('wait resolve of an unknown wait via front door', () => post('/api/wait/w-missing/resolve?token=x', {}));
+  add('wait cancel via front door', () => del('/api/wait/w1'));
+  add('wait cancel falls back to legacy injector', () => del('/api/wait/lw1'));
+  add('wait cancel of an unknown wait via front door', () => del('/api/wait/nope'));
+  add('run detached via front door', () => post('/api/sessions/s1/run-detached', { command: 'echo hi' }));
+  add('run detached without a command via front door', () => post('/api/sessions/s1/run-detached', {}));
+  add('detached list via front door', () => get('/api/sessions/s1/detached'));
+  add('detached task via front door', () => get('/api/detached/job-1'));
+  add('detached unknown task via front door', () => get('/api/detached/nope'));
+  add('wait registration unknown session', () => post('/api/sessions/ghost/wait', {}));
+  add('wait registration internal slot', () => post('/api/sessions/internal1/wait', {}));
+  add('detached start internal slot', () => post('/api/sessions/internal1/run-detached', { command: 'echo hi' }));
+  add('detached list internal slot', () => get('/api/sessions/internal1/detached'));
+  add('wait resolve malformed id', () => post('/api/wait/%zz/resolve', {}));
 
   // ── decoding ────────────────────────────────────────────────────────────
   add('queue with a bad escape in the id', () => get('/api/sessions/%zz/queue'));
@@ -328,6 +336,8 @@ function corpus() {
     ['v1 waits', '/api/v1/sessions/s1/waits'], ['legacy waits', '/api/sessions/s1/waits'],
     ['legacy wait', '/api/sessions/s1/wait'], ['legacy detached', '/api/sessions/s1/detached'],
     ['legacy run detached', '/api/sessions/s1/run-detached'],
+    ['wait resolve', '/api/wait/w1/resolve'], ['wait cancel', '/api/wait/w1'],
+    ['detached task', '/api/detached/job-1'],
   ]) add(`OPTIONS ${name}`, () => options(url));
   add('OPTIONS queue for an internal slot', () => options('/api/sessions/internal1/queue'));
   add('OPTIONS v1 waits for an internal slot', () => options('/api/v1/sessions/internal1/waits'));
@@ -439,15 +449,13 @@ app.post('/api/__host/session-admin', (req, res) => {
   res.end(text);
 });
 
-// The wiring server.js does: the four retired modules mount on the host
-// port's capture app, the seven out-of-scope routes on the public app.
+// The four retired modules mount only on the host port's capture app.
 const host = createOrchestrationHost({ express });
 mountUnattendedRoutes(host.app, world.unattendedDeps);
 mountAuxGoalRoutes(host.app, world.auxDeps);
 createAuxRunRoutes({ records: world.records, getLog: () => world.auxRunLog }).mountRoutes(host.app);
 const orchestration = createOrchestrationRoutes(world.orchestrationDeps);
 orchestration.mountHostRoutes(host.app);
-orchestration.mountRoutes(app);
 host.mountRoute(app);
 // Express answers OPTIONS itself once nothing else did: let it through.
 app.use((req, res, next) => (req.method === 'OPTIONS' ? next() : res.status(404).end('forwarded')));
@@ -610,12 +618,12 @@ function finalize(views) {
   expect('v1 waits runtime failure', 500, 'wait_list_failed');
   expect('v1 waits of an unknown session', 404, '"code":"session_not_found","apiVersion":"v1"');
   expect('v1 waits of an internal slot', 404, '"code":"session_not_found","apiVersion":"v1"');
-  expect('legacy waits of a session stays on Node', 200, '"legacyWaits"');
-  expect('legacy waits runtime failure stays on Node', 500, 'wait store offline');
-  expect('wait registration stays on Node', 200, '"callbackUrl":"http://localhost/api/wait/w-new/resolve?token=tok-wait"');
-  expect('wait resolve with a bad token stays on Node', 403, 'bad token');
-  expect('run detached stays on Node', 200, '"executionKind":"detached_process"');
-  expect('detached task stays on Node', 200, '"operationId":"op-d1"');
+  expect('legacy waits of a session via front door', 200, '"legacyWaits"');
+  expect('legacy waits runtime failure via front door', 500, 'wait store offline');
+  expect('wait registration via front door', 200, '"callbackUrl":"http://localhost/api/wait/w-new/resolve?token=tok-wait"');
+  expect('wait resolve with a bad token via front door', 403, 'bad token');
+  expect('run detached via front door', 200, '"executionKind":"detached_process"');
+  expect('detached task via front door', 200, '"operationId":"op-d1"');
   expect('queue OPTIONS with a bad escape in the id', 400, '"code":"request_error"');
 
   // The automatic OPTIONS union, measured against the retired Express stack.
@@ -627,9 +635,10 @@ function finalize(views) {
     'OPTIONS scheduled messages': 'POST,GET,HEAD', 'OPTIONS scheduled message': 'DELETE',
     'OPTIONS tasks': 'GET,HEAD', 'OPTIONS dispatches': 'GET,HEAD', 'OPTIONS user input dismiss': 'POST',
     'OPTIONS queue': 'GET,HEAD', 'OPTIONS queue action': 'POST', 'OPTIONS v1 waits': 'GET,HEAD',
-    // The out-of-scope neighbours still answer from Node's own routes.
+    // The formerly excluded paths are also claimed by the front door.
     'OPTIONS legacy waits': 'GET,HEAD', 'OPTIONS legacy wait': 'POST',
     'OPTIONS legacy detached': 'GET,HEAD', 'OPTIONS legacy run detached': 'POST',
+    'OPTIONS wait resolve': 'POST', 'OPTIONS wait cancel': 'DELETE', 'OPTIONS detached task': 'GET,HEAD',
     'OPTIONS scheduled messages for an unknown session': 'POST,GET,HEAD',
   };
   for (const [name, allow] of Object.entries(allows)) expectAllow(name, allow);
@@ -722,7 +731,7 @@ function finalize(views) {
   // The v1 projection answered by the front door and the legacy listing answered
   // by Node must be different documents on both sides.
   const v1 = byName.get('v1 waits of a session');
-  const legacy = byName.get('legacy waits of a session stays on Node');
+  const legacy = byName.get('legacy waits of a session via front door');
   if (v1 && legacy && v1.rust.body === legacy.rust.body) problems.push('coverage: v1 and legacy waits answered the same body');
 
   if (!problems.length) {

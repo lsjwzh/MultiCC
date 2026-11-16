@@ -2,15 +2,15 @@
 
 // 宿主端口（host port）：POST /api/__host/orchestration。
 //
-// 编排与无人值守 23 条公开路由已由 Rust 前门独占
+// 编排与无人值守 30 条公开路由已由 Rust 前门独占
 // （native/gateway/src/app/orchestration_routes.rs，规则在
 // native/core/src/orchestration_routes.rs，集成测试在
 // native/gateway/tests/orchestration_routes.rs，差分在
 // docs/rust-migration/differential/orchestration-routes.js）。路径匹配、参数解码、
 // Express 自动 OPTIONS 并集、会话准入守卫（含 v1 信封）都在 Rust。本文件只断言宿主
-// 端口自己：op 表与 23 条一一对应、四个退休模块真的注册在捕获应用上、被排除的 7 条
-// （wait 注入器 / detached 集）既不在 op 表里也不在捕获应用上、回环闸门、未知 op、
-// 错误信封，以及请求头 / 请求 id 的传递。
+// 端口自己：op 表与 30 条一一对应、四个退休模块真的注册在捕获应用上、第二批搬入的
+// 7 条（wait 注入器 / detached 集）确实在捕获应用上且 orchestration.js 不再有公开
+// 挂载、回环闸门、未知 op、错误信封，以及请求头 / 请求 id 的传递。
 //
 // 完全 hermetic：不起端口、不碰 data 根；世界（tests/helpers/legacy-orchestration-
 // routes/world.js）是内存替身，配置文件写在 mkdtemp 的临时目录里。
@@ -28,7 +28,8 @@ const { mountAuxGoalRoutes } = require('../src/routes/aux-goal');
 const { createAuxRunRoutes } = require('../src/routes/aux-runs');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 
-const EXCLUDED = [
+// 第二批搬进宿主端口的 wait 注入器 / detached 集。
+const SECOND_BATCH = [
   'POST /api/sessions/:id/wait',
   'POST /api/wait/:wid/resolve',
   'GET /api/sessions/:id/waits',
@@ -59,9 +60,7 @@ function build(options = {}) {
   createAuxRunRoutes({ records: world.records, getLog: () => world.auxRunLog }).mountRoutes(host.app);
   const routes = createOrchestrationRoutes({ ...world.orchestrationDeps, ...options.deps });
   routes.mountHostRoutes(host.app);
-  const publicApp = recordingApp();
-  routes.mountRoutes(publicApp);
-  return { host, world, publicApp, dir };
+  return { host, world, routes, dir };
 }
 
 function mount(host, isLocal = () => true) {
@@ -83,30 +82,34 @@ async function call(handler, body, req = {}) {
   return { status, payload };
 }
 
-test('the op table names exactly the 23 retired routes and every one is registered', () => {
-  assert.equal(Object.keys(OPS).length, 23);
+test('the op table names exactly the 30 retired routes and every one is registered', () => {
+  assert.equal(Object.keys(OPS).length, 30);
   const { host } = build();
-  assert.equal(new Set(Object.values(OPS).map(spec => `${spec.method} ${spec.path}`)).size, 23);
+  assert.equal(new Set(Object.values(OPS).map(spec => `${spec.method} ${spec.path}`)).size, 30);
   for (const [op, spec] of Object.entries(OPS)) {
     assert.equal(typeof host.handlers.get(`${spec.method} ${spec.path}`), 'function', `${op} has no handler`);
   }
-  assert.equal(host.handlers.size, 23, 'the capture app holds nothing but the 23 routes');
+  assert.equal(host.handlers.size, 30, 'the capture app holds nothing but the 30 routes');
 });
 
-test('the seven out-of-scope routes are neither ops nor captured; they stay on the public app', () => {
-  const { host, publicApp } = build();
+test('the wait injector and detached set are ops on the capture app, with no public mount left', () => {
+  const { host, routes } = build();
   const ops = new Set(Object.values(OPS).map(spec => `${spec.method} ${spec.path}`));
-  for (const key of EXCLUDED) {
-    assert.equal(ops.has(key), false, `${key} must not be an op`);
-    assert.equal(host.handlers.has(key), false, `${key} must not be captured`);
-    assert.equal(typeof publicApp.routes.get(key), 'function', `${key} must stay mounted on the public app`);
+  for (const key of SECOND_BATCH) {
+    assert.ok(ops.has(key), `${key} must be an op`);
+    assert.equal(typeof host.handlers.get(key), 'function', `${key} must be captured`);
   }
-  assert.deepEqual([...publicApp.routes.keys()].sort(), [...EXCLUDED].sort());
-  // The waits pair that is easy to confuse: v1 is captured, the unprefixed one is not.
+  // The module exposes nothing that could put a route back on the real app: a
+  // second answer for a claimed path is the one failure the front door cannot
+  // see (Express would answer first for whatever it still has mounted).
+  assert.deepEqual(Object.keys(routes), ['mountHostRoutes']);
+  // Both waits listings are captured now, and they stay two distinct handlers.
   assert.ok(host.handlers.has('GET /api/v1/sessions/:id/waits'));
-  assert.ok(!publicApp.routes.has('GET /api/v1/sessions/:id/waits'));
-  assert.ok(publicApp.routes.has('GET /api/sessions/:id/waits'));
-  assert.ok(!host.handlers.has('GET /api/sessions/:id/waits'));
+  assert.ok(host.handlers.has('GET /api/sessions/:id/waits'));
+  assert.notEqual(
+    host.handlers.get('GET /api/v1/sessions/:id/waits'),
+    host.handlers.get('GET /api/sessions/:id/waits'),
+  );
 });
 
 test('non-loopback callers get the same 404 as an unknown path', async () => {
@@ -120,7 +123,9 @@ test('non-loopback callers get the same 404 as an unknown path', async () => {
 test('an unknown op is a 400 and never reaches a handler', async () => {
   const { host, world } = build();
   const handler = mount(host);
-  for (const op of ['format-disk', 'session-wait', 'session-waits', 'detached-task']) {
+  // Near-misses of real op names: `session-wait` lacks the `-post` suffix,
+  // `session-detached-task` and `wait-resolve-callback` do not exist at all.
+  for (const op of ['format-disk', 'session-wait', 'session-detached-task', 'wait-resolve-callback']) {
     const result = await call(handler, { op });
     assert.equal(result.status, 400, op);
     assert.deepEqual(result.payload, { error: 'unknown host operation' });
@@ -221,16 +226,17 @@ test('an op whose conditional route was not mounted is an unknown operation, not
   assert.equal((await call(handler, { op: 'session-tasks', id: 's1' })).status, 200);
 });
 
-test('server.js wires the capture app for the four retired modules and the public app for the seven', () => {
+test('server.js wires the capture app for all four retired modules and no public mount', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.match(server, /createOrchestrationHost\(\{ express \}\)/);
   assert.match(server, /sessionAdmin\.mountRoutes\(app, \{ unattendedApp: orchestrationHost\.app \}\)/);
   assert.match(server, /mountAuxGoalRoutes\(orchestrationHost\.app, \{/);
   assert.match(server, /createAuxRunRoutes\(\{ records: persistedSessions, getLog: \(\) => auxRunLog \}\)\.mountRoutes\(orchestrationHost\.app\)/);
   assert.match(server, /orchestrationRoutes\.mountHostRoutes\(orchestrationHost\.app\)/);
-  assert.match(server, /orchestrationRoutes\.mountRoutes\(app\)/);
   assert.match(server, /orchestrationHost\.mountRoute\(app\)/);
-  // Never the public app for a retired module.
+  // Never the public app for a retired module -- including the wait injector and
+  // detached set, which the second batch took: only the host endpoint is public.
+  assert.doesNotMatch(server, /orchestrationRoutes\.mountRoutes\(/);
   assert.doesNotMatch(server, /mountAuxGoalRoutes\(app,/);
   assert.doesNotMatch(server, /createAuxRunRoutes\([^)]*\)\.mountRoutes\(app\)/);
   assert.doesNotMatch(server, /mountUnattendedRoutes\(app/);

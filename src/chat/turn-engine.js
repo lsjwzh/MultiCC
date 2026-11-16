@@ -926,9 +926,9 @@ function createChatTurnEngine(deps) {
       }
       return finishAdmission();
       function finishAdmission() {
-        // Preserve legacy Claude admission without mutating duplicate deliveries;
-        // Exp and existing chat states require persisted native-history proof.
-        const willAllocateClaudeNativeSession = !existingCs && turnCli === 'claude' && !persisted.cliSessionId;
+        // Exp and existing chat states require persisted native-history proof. An
+        // id nothing was written under is NOT history — claiming it asks for a
+        // resume of a UUID the CLI has never seen.
         const inheritedLineage = opts.originContinue === true
           && existingCs && existingCs._continuationLineage
           ? existingCs._continuationLineage.lineage
@@ -940,7 +940,7 @@ function createChatTurnEngine(deps) {
             text,
             cli: turnCli,
             turnCount,
-            hasNativeSession: hasNativeHistory(persisted) || willAllocateClaudeNativeSession,
+            hasNativeSession: hasNativeHistory(persisted),
             requestId: opts.requestId,
             clientMsgId: opts.clientMsgId,
             deliveryId: opts.deliveryId,
@@ -2178,17 +2178,17 @@ function createChatTurnEngine(deps) {
       ? [...streamArgs, '--settings', streamSettingsFile]
       : streamArgs;
     const nativeKey = invocation.nativeKey || (invocation.sdkOptions ? 'cliSessionId' : '_streamSessionId');
-    const resumeExistingStream = invocation.sdkOptions
-      ? !prepared.invocationEnvelope.historyHandle.isFirstTurn : !!persisted[nativeKey];
-    if (invocation.clientAllocatesNativeId !== false && !persisted[nativeKey]) {
+    const hadNativeId = !!persisted[nativeKey];
+    // A brand-new id has no transcript yet, so it must be CREATED
+    // (`--session-id`), never resumed: a missing id is not native-history proof.
+    const resumeExistingStream = hadNativeId && (invocation.sdkOptions
+      ? !prepared.invocationEnvelope.historyHandle.isFirstTurn : true);
+    if (invocation.clientAllocatesNativeId !== false && !hadNativeId) {
       persisted[nativeKey] = crypto.randomUUID();
       rememberActiveCliState(persisted);
       savePersistedSessionsBestEffort('runtime.streaming-session-id-allocate');
     }
-    // Which spawn contract this process will serve. The chat stream stores it
-    // with the child; a message the user types while the turn is held can be
-    // delivered into that process only while the persisted record still
-    // projects the same digest (see held-turn-injection.js).
+    // Which spawn contract this process will serve (see held-turn-injection.js).
     const spawnContractDigest = spawnContractOf(persisted);
     chatStream.ensure(sessionName, {
       cmd: invocation.cmd,

@@ -55,6 +55,18 @@ This is the structure of the remaining work. Counts must be re-measured from [ba
 
 Exit for this item: every entry point in the table above starts with `--no-node`, the full test/contract/packaging matrix passes without a Node child, and the `host_port` fallback, the auth-runtime refusal and the forwarding `node_runtime_absent` branch can all be deleted rather than merely exercised.
 
+### Node-free entry points, measured (2026-11-16)
+
+What was run, not what the table above says:
+
+- `sh scripts/smoke-no-node-gateway.sh native/target/debug/multicc-gateway` on this checkout (`env -i`, an isolated `PATH` that resolves no `node`): `PASS`. The Rust test-hook route answers 200, an auth-gated native route (`/api/claude/models`) and a Node-owned route (`/api/not-owned-by-rust`) both answer 503 `node_runtime_absent`, and SIGTERM exits 0.
+- `npm run docker:node-free` (`docker build --target node-free-runtime`): the in-image `cargo build --locked --release` succeeds, the build asserts there is no `node` executable, and the same smoke passes inside the build. A started container has `multicc-gateway` as PID 1 and nothing else from the product; `/usr/local/bin` holds only `multicc-gateway` and `multicc-writer`; `docker stop` exits 0. A second container sharing its network namespace got the same two 503 bodies over HTTP.
+- The front door binds `127.0.0.1` inside the container (the network policy still refuses a non-loopback bind without `HOST` + `MULTICC_ALLOW_REMOTE=1` + `ACCESS_TOKEN`), so a published port cannot reach it. Probe it from a container that shares its network namespace, or give it the three-part remote opt-in.
+
+Constraint this exposed: the image is built from the tracked-file export, so a Rust module that exists only in the working tree makes `cargo build` fail inside the image with `E0583 file not found for module` while the local build is green. Track every new source file (`git add`) before treating a local green build as a build the image can reproduce.
+
+Still true after this measurement: auth-gated native routes cannot answer without Node (blocker 1 above), so this image proves the binaries run with no Node; it does not yet serve the product.
+
 ## Ownership snapshot at Goal start
 
 | Domain | Current implementation | Remaining work |

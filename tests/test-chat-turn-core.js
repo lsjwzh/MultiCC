@@ -710,7 +710,10 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   };
 
   const normalized = at('normalizeTurnRequest({');
-  const futureClaudeProof = at('const willAllocateClaudeNativeSession =');
+  // Native-history proof is now handed to the kernel inline as the admission
+  // input; a freshly reserved id may never stand in for it.
+  assert.match(body, /hasNativeSession: hasNativeHistory\(persisted\)/);
+  assert.doesNotMatch(body, /willAllocateClaudeNativeSession/);
   const admission = at('planTurnAdmission(turnRequest');
   const duplicateReturn = at("admission.decision === 'duplicate'");
   const nativeAllocation = at('persisted.cliSessionId = crypto.randomUUID()');
@@ -727,7 +730,7 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   const codexRunner = at('cs.claudeProc = spawnChat(initialInvocation, false)');
   const failureRelease = at('if (preparationOpen)');
 
-  assert.ok(futureClaudeProof < normalized && normalized < admission);
+  assert.ok(normalized < admission);
   assert.ok(admission < duplicateReturn && duplicateReturn < nativeAllocation,
     'duplicate delivery must not allocate or mutate a native session');
   assert.ok(duplicateReturn < claim);

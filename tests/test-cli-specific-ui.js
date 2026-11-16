@@ -11,8 +11,21 @@ const os = require('os');
 const path = require('path');
 const puppeteer = require('puppeteer');
 const { assertTestDir } = require('../src/paths');
+const { waitServerReady } = require('./helpers/wait-server-ready');
 
 const ROOT = path.join(__dirname, '..');
+
+// The directory/session clusters are answered by the Rust front door
+// (native/gateway/src/app/directory_routes.rs), so an isolated host has to start
+// the real gateway with server.js as its child instead of bare node.
+function gatewayBinary() {
+  const addon = process.env.MULTICC_RUST_ADDON
+    || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(ROOT, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  return path.join(path.dirname(addon),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+
 const PORT = 3995;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'cli-specific-ui-test';
@@ -26,6 +39,7 @@ fs.mkdirSync(dataRoot, { recursive: true });
 let server;
 let browser;
 let dirId;
+let stderr = '';
 
 async function api(method, route, body) {
   const response = await fetch(BASE + route, {
@@ -41,11 +55,8 @@ async function api(method, route, body) {
 }
 
 async function waitForServer() {
-  for (let i = 0; i < 60; i += 1) {
-    try { await api('GET', '/api/directories'); return; } catch (_) {}
-    await new Promise(resolve => setTimeout(resolve, 200));
-  }
-  throw new Error('isolated server did not start');
+  await waitServerReady(BASE, { attempts: 60, intervalMs: 200, child: server,
+    output: () => stderr, message: 'isolated server did not start' });
 }
 
 async function clickElement(page, selector) {
@@ -77,7 +88,7 @@ async function cleanup() {
 }
 
 (async () => {
-  server = spawn(process.execPath, ['server.js'], {
+  server = spawn(gatewayBinary(), ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -90,7 +101,6 @@ async function cleanup() {
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
-  let stderr = '';
   server.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-3000); });
   await waitForServer();
 

@@ -313,7 +313,7 @@ const TEXT_FALLBACK_TOOL_SOURCE: &str = r"invalid tool|tool (?:schema|arguments?
 const TEXT_FALLBACK_CANCEL_SOURCE: &str =
     r"cancelled by user|canceled by user|server (?:is )?shutting down|sigterm|sigint";
 const TEXT_FALLBACK_INVALID_SESSION_SOURCE: &str = r"invalid session id\. must be a valid uuid\b";
-const TEXT_FALLBACK_NO_SESSION_SOURCE: &str = r"no conversation found with session id\b";
+pub const TEXT_FALLBACK_NO_SESSION_SOURCE: &str = r"no conversation found with session id\b";
 const TEXT_FALLBACK_SESSION_BUSY_SOURCE: &str = r"\bsession id\s+\S+\s+is already in use\b";
 const TEXT_FALLBACK_CONFIG_SOURCE: &str = r"provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed|\b(?:eacces|enoent|enoexec)\b|\bexit(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*-13\b";
 const TEXT_FALLBACK_TIMEOUT_SOURCE: &str =
@@ -411,6 +411,15 @@ fn pattern(source: &str, ci: bool) -> String {
 
 fn compile(source: &str, ci: bool) -> Regex {
     Regex::new(&pattern(source, ci)).expect("api error policy regex")
+}
+
+/// The "No conversation found with session ID" detector, shared with
+/// `missing_resume_recovery` so both consumers compile one source string with
+/// one exact semantics (ASCII word boundary, not the Unicode one). Callers run
+/// it over lowercased text, exactly like [`text_fallback_category`].
+pub fn no_session_regex() -> &'static Regex {
+    static NO_SESSION_SHARED: OnceLock<Regex> = OnceLock::new();
+    NO_SESSION_SHARED.get_or_init(|| compile(TEXT_FALLBACK_NO_SESSION_SOURCE, false))
 }
 
 fn compiled(cell: &'static OnceLock<Vec<Regex>>, sources: &[&str], ci: bool) -> &'static [Regex] {

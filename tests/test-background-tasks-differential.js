@@ -14,6 +14,16 @@
 // clock a different number of times, which is not observable by the host. Later
 // control-channel enrichment (fetchTaskOutput) is exercised in the focused suite.
 //
+// Also deliberately out of corpus: the durable replay-suppression gate
+// (native/core/src/background/settled.rs). It is the one intended behavioural
+// difference from the legacy runtime — a completion whose nudge already went out
+// is answered with `already-settled` instead of a second `inject` — and it only
+// arms when the host names a `settledNudgeFile`, which this harness does not.
+// That keeps this corpus a pure legacy-parity check; the gate itself is covered
+// by tests/test-background-task-runtime.js (first nudge, replay, restart,
+// re-run, unwritable ledger) and by the Rust unit tests in settled.rs. If you
+// add a file here, expect seed 4 step 25 to diverge by design.
+//
 //   node tests/test-background-tasks-differential.js
 
 const assert = require('assert');
@@ -108,6 +118,9 @@ function makeHarness(kind, options = {}) {
       info() {},
     },
     completionWindowMs: WINDOW_MS,
+    // No durable nudge ledger: the legacy runtime has none, so arming the gate
+    // here would make this corpus diverge by design (see the header note).
+    settledNudgeFile: null,
     ...options,
   };
   const runtime = kind === 'legacy'

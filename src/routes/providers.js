@@ -3,8 +3,8 @@
 const { sanitizePublicText } = require('../http/public-safety');
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
-const { nativeVendorOf } = require('../providers/native-vendor');
-const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('../providers/native-opencode');
+const { VENDOR_NATIVE_CLIS, NATIVE_VENDOR_SUFFIX } = require('../providers/native-vendor');
+const { NATIVE_OPENCODE_PREFIX } = require('../providers/native-opencode');
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
@@ -17,16 +17,12 @@ function publicText(value, fallback) {
 function assertProviderRouteDeps(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('provider route dependencies are required');
   const requiredFunctions = [
-    'atomicWriteJson',
     'findProviderReferences',
     'getAuxConfig',
     'getPort',
   ];
   for (const name of requiredFunctions) {
     if (typeof deps[name] !== 'function') throw new TypeError(`provider route dependency missing: ${name}`);
-  }
-  if (!deps.fs || typeof deps.fs.readFileSync !== 'function') {
-    throw new TypeError('provider route dependency missing: fs.readFileSync');
   }
   if (!deps.providers || !deps.providerRouterRuntime || !deps.persistedSessions
       || !deps.providerRelayShares
@@ -53,48 +49,27 @@ function createProviderRoutes(rawDeps) {
   const deps = assertProviderRouteDeps(rawDeps);
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   const log = deps.logger || console;
-  const providerDefaults = { ...DEFAULT_PROVIDER_IDS };
+  const defaultsPort = require('../providers/defaults-port');
+  const defaultsOwner = deps.providerDefaultsOwner || defaultsPort.getProviderDefaultsOwner(deps.providerDefaultsFile);
+  const providerDefaults = defaultsPort.providerDefaultsView(defaultsOwner);
 
   // 子任务默认线路的归一化只由 Rust 决定。
   const subagentNative = () => typeof deps.getNative === 'function'
     ? deps.getNative()
     : require('../native/runtime').getNative();
-  function normalizeStoredSubagent(value) {
-    const native = subagentNative();
-    try {
-      const parsed = JSON.parse(native.normalizeSubagentDefaults(JSON.stringify({ stored: value })));
-      if (!parsed || typeof parsed !== 'object') return undefined;
-      return { claude: parsed.claude ?? null, codex: parsed.codex ?? null };
-    } catch (_) { return undefined; }
-  }
-
-  try {
-    const stored = JSON.parse(deps.fs.readFileSync(deps.providerDefaultsFile, 'utf8'));
-    providerDefaults.claude = stored.claude || null;
-    providerDefaults.codex = stored.codex || null;
-    // Only users who already used the feature see the key; everybody else keeps
-    // the exact response shapes existing clients and tests deepEqual.
-    if (Object.prototype.hasOwnProperty.call(stored, 'subagent')) {
-      const normalized = normalizeStoredSubagent(stored.subagent);
-      providerDefaults.subagent = normalized === undefined ? stored.subagent : normalized;
-    }
-  } catch (_) {
-    // Missing or invalid legacy defaults keep the established null defaults.
-  }
-
   if (typeof deps.providers.normalizeOfficialProviderId === 'function') {
-    for (const cli of ['claude', 'codex']) providerDefaults[cli] = deps.providers.normalizeOfficialProviderId(cli, providerDefaults[cli]);
+    for (const cli of ['claude', 'codex']) defaultsOwner.set(cli, deps.providers.normalizeOfficialProviderId(cli, defaultsOwner.get(cli)));
   }
 
   // Throws so callers that must answer "saved or not" (the subagent-defaults
   // sync) can defer every session mutation until the file write succeeded.
   function persistProviderDefaults(value = providerDefaults) {
-    deps.atomicWriteJson(deps.providerDefaultsFile, value);
+    defaultsOwner.commit(value);
   }
 
   function saveProviderDefaults() {
     try {
-      persistProviderDefaults();
+      defaultsOwner.persist();
     } catch (error) {
       log.error('[multicc] save provider-defaults failed:', publicError(error, 'save failed'));
       return false;
@@ -102,43 +77,15 @@ function createProviderRoutes(rawDeps) {
     return true;
   }
 
+  // 校验控制流全在 Rust（`multicc_core::provider_registry`）。唯一的形状适配：
+  // 内核把「空 id 放行」编成 `{ok:true}`（没有 value 键），退役实现返回
+  // `{ok:true,value:null}`，而消费点是直接读 `.value` 的（会话记录、子任务路由
+  // 都以 null 落盘），所以这里把缺省的 value 补回 null。这是结果形状适配，不是规则。
   function validProviderId(cli, id) {
-    const appType = deps.providers.appTypeForCli(cli);
-    if (typeof deps.providers.normalizeOfficialProviderId === 'function') {
-      id = deps.providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli, id);
-    }
-    if (id == null || id === '') return { ok: true, value: null };
-    // A vendor-native Auto line has no provider record; the lane itself owns the
-    // account, so only the lane check applies.
-    const nativeVendor = nativeVendorOf(id);
-    if (nativeVendor !== null) {
-      return cli === nativeVendor.cli ? { ok: true, value: String(id) } : { ok: false };
-    }
-    // OpenCode's own native lines (`opencode-native:<id>`) are legal Auto pool
-    // candidates and are persisted as session.provider; the new-task form replays
-    // that stored line as an explicit provider, so revalidation must accept it.
-    // Structural only, mirroring the Rust candidate validator: opencode lane,
-    // id shape, never a store lookup.
-    const openCodeNative = nativeOpenCodeId(id);
-    if (openCodeNative !== null) {
-      return cli === 'opencode' && NATIVE_OPENCODE_ID.test(openCodeNative)
-        ? { ok: true, value: String(id) }
-        : { ok: false };
-    }
-    // Qoder CN remains vendor-managed. OpenCode and ZCode both support the two
-    // MultiCC pools, so their provider ids are looked up globally and then
-    // constrained by the provider's declared protocol compatibility.
-    const appTypes = typeof deps.providers.appTypesForCli === 'function'
-      ? deps.providers.appTypesForCli(cli)
-      : (appType ? [appType] : []);
-    if (!appTypes.length) return { ok: false };
-    const globalPoolCli = appTypes.length > 1;
-    const summary = deps.providerRouterRuntime.getProviderSummary(
-      globalPoolCli ? undefined : appType,
-      String(id),
-    );
-    if (!summary || !deps.providers.providerSupportsCli(summary, cli)) return { ok: false };
-    return { ok: true, value: String(id) };
+    const result = subagentNative().providerValidateId(deps, cli, id,
+      VENDOR_NATIVE_CLIS, NATIVE_VENDOR_SUFFIX, NATIVE_OPENCODE_PREFIX);
+    if (result && result.ok === true && result.value === undefined) return { ok: true, value: null };
+    return result;
   }
 
   function mountManagementRoutes(app) {
@@ -148,6 +95,7 @@ function createProviderRoutes(rawDeps) {
     // provider store 事实、会话引用、落盘与逐会话 PATCH。
     require('./providers-host').mountProvidersHostRoute(app, {
       providerDefaults,
+      defaultsOwner,
       saveProviderDefaults,
       validProviderId,
       providers: deps.providers,

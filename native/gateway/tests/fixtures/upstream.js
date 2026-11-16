@@ -303,6 +303,33 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the cross-CLI switch (docs/gateway.md §10). The scripted
+  // answers are keyed `<op>:<sessionId>`, then `<op>`; every input is appended
+  // to cli-switch-calls.jsonl so a test can prove a refusal never reached Node.
+  if (route === '/api/__host/cli-switch' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'cli-switch-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const config = script.cliSwitch || {};
+      if (script.hostDown === true || config.hostDown === true) { req.socket.destroy(); return; }
+      const answers = config.answers || {};
+      const key = `${input.op}:${input.sessionId || ''}`;
+      let out;
+      if (Object.prototype.hasOwnProperty.call(answers, key)) out = answers[key];
+      else if (Object.prototype.hasOwnProperty.call(config, input.op)) out = config[input.op];
+      else if (input.op === 'facts') out = { ok: true, exists: false, internalSlot: false, session: null, supported: [] };
+      else if (input.op === 'noop') out = { ok: false, error: { message: 'unexpected noop' } };
+      else out = { ok: false, error: { message: 'unexpected switch' } };
+      const text = JSON.stringify(out);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
   // Rust balance/relay routes: script the host facts, never a public Node route.
   if ((route === '/api/__host/provider-balance' || route === '/api/__host/provider-relay') && req.method === 'POST') {
     const chunks = [];
@@ -901,6 +928,7 @@ const server = http.createServer((req, res) => {
       };
       const answers = providers.answers || {};
       const keys = [
+        `${input.op}:${input.appType || ''}:${input.id || ''}`,
         `${input.op}:${input.id || ''}`,
         `${input.op}:${input.cli || ''}`,
         `${input.op}:${input.targetProviderId || ''}`,
@@ -909,7 +937,13 @@ const server = http.createServer((req, res) => {
       for (const key of keys) {
         if (Object.prototype.hasOwnProperty.call(answers, key)) return send(200, answers[key]);
       }
-      if (input.op === 'defaultsValidate') return send(200, { ok: true, valid: true, value: input.id });
+      // The two facts the Rust provider-id validator asks for. The fixture
+      // implements no rules: `normalizeId` echoes the js `String(id)` form and
+      // an unscripted lookup simply finds no provider.
+      if (input.op === 'normalizeId') {
+        return send(200, { ok: true, id: input.id == null ? null : String(input.id) });
+      }
+      if (input.op === 'providerSummary') return send(200, { ok: true, summary: null });
       if (input.op === 'defaultsPersist') return send(200, { ok: true, defaults: input.next });
       return send(400, { error: 'unknown host operation' });
     });
@@ -1588,6 +1622,56 @@ const server = http.createServer((req, res) => {
       const answer = Object.prototype.hasOwnProperty.call(ops, input.op) ? ops[input.op] : null;
       const text = JSON.stringify(answer || { ok: false, error: { message: 'unscripted push op' } });
       res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the server-core cluster retired from server.js and
+  // src/health.js (src/routes/server-core-host.js,
+  // native/gateway/src/app/server_core.rs). The script's `serverCore` object
+  // supplies the three answers the retired handlers built in-process:
+  // `health` ({ uptimeSeconds, ready, checks }), `metrics` (already a
+  // name -> number table) and `operations` (operationId -> object). Every call
+  // is appended to server-core-calls.jsonl so a test can assert the exact op
+  // and operationId the front door sent.
+  if (route === '/api/__host/server-core' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'server-core-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const core = script.serverCore || {};
+      if (script.hostDown === true || core.hostDown === true) { req.socket.destroy(); return; }
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (input.op === 'health') {
+        const health = core.health || { uptimeSeconds: 0, ready: false, checks: null };
+        // Pass the shapes through untouched: the front door's stale-child
+        // guard is what rejects a non-boolean `ready` (and names the 503), so
+        // coercing here would hide the very case a test wants to provoke.
+        return send({
+          ok: true,
+          uptimeSeconds: health.uptimeSeconds === undefined ? 0 : health.uptimeSeconds,
+          ready: health.ready,
+          checks: health.checks === undefined ? null : health.checks,
+        });
+      }
+      if (input.op === 'metrics') {
+        if (core.metricsDown === true) return send({ ok: false });
+        return send({ ok: true, metrics: core.metrics || {} });
+      }
+      if (input.op === 'repoOperation') {
+        const operations = core.operations || {};
+        const found = Object.prototype.hasOwnProperty.call(operations, input.operationId);
+        return send({ ok: true, operation: found ? operations[input.operationId] : null });
+      }
+      const text = JSON.stringify({ error: 'unknown host operation' });
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
       res.end(text);
     });
     return;

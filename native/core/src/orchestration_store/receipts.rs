@@ -87,10 +87,7 @@ pub(super) fn is_split_collection(collection: &str) -> bool {
 
 fn terminal(collection: &str, value: &JsValue) -> bool {
     let (field, states): (&str, &[&str]) = match collection {
-        "tasks" | "operations" => (
-            "status",
-            &["completed", "failed", "interrupted", "cancelled"],
-        ),
+        "tasks" | "operations" => ("status", &super::TERMINAL_TASK_STATES),
         "outbox" => ("state", &["delivered", "cancelled"]),
         "waits" => ("status", &["resolved", "cancelled"]),
         _ => return false,

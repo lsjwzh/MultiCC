@@ -7,6 +7,7 @@ const { fingerprint, laneOptions } = require('./claude-sdk-config');
 const { envDigest } = require('../secrets-vault');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('./monitor-admission');
 const { createBackgroundHold, processStale } = require('./background-hold');
+const { decideMissingResume } = require('./missing-resume-recovery');
 const { bundledClaudeCodeBinary } = require('../cli/claude-bundled-binary');
 const { getNative } = require('../native/runtime');
 const writerGroup = require('../workspace/writer-group');
@@ -32,7 +33,12 @@ function laneEvents() {
 
 const cancelled = () => Object.assign(new Error('cancelled'), { code: 'SDK_INTERRUPTED' });
 const alive = run => !!run?.lane && run.lane.alive === true;
-const safe = (fn, ...args) => { try { fn?.(...args); } catch (_) {} };
+const safe = (fn, ...args) => { try { return fn?.(...args); } catch (_) {} };
+// What counts as "this turn already reached the host" for the replay gate: only
+// frames that carry this turn's output. A `system` init/hook/task frame is
+// bookkeeping the host receives again from any replacement child — exactly as
+// a normal process recycle re-delivers it — so it must not block a replay.
+const carriesTurnOutput = event => /^(assistant|stream_event|user|result)$/.test(event?.type || '');
 const safeTail = run => { try { return run.lane?.stderrTail?.() || run.stderr || ''; } catch (_) { return run.stderr || ''; } };
 
 // One RustClaudeLane (one `claude` child) per native conversation. Host send()
@@ -159,6 +165,51 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     })();
   }
 
+  // A `--resume` whose transcript Claude no longer has answers with a RESULT,
+  // not with a stream failure, so that result is the only evidence of it. The
+  // kernel decides (is this the missing answer, was this spawn really a resume,
+  // has anything been forwarded, is the attempt spent); this function performs
+  // the IO: fence the failed run, persist the replacement id, hand the host its
+  // checkpoint, and replay the SAME message on a NEW native session.
+  //
+  // Replay is safe only because forwardedEventCount === 0: the host received no
+  // event of this turn, so running it again cannot duplicate output or tool side
+  // effects. It must spawn with `resume: false` — a brand-new id has no
+  // transcript yet, and `--resume <new id>` fails exactly like the turn being
+  // recovered.
+  async function rotateMissingResume(s, run, item, decision) {
+    // Never stop a newer run: only the run that produced the answer may rotate.
+    if (s.run !== run) return;
+    item.resumeRecoveryAttempt = (item.resumeRecoveryAttempt || 0) + 1;
+    const previousSessionId = s.cfg.sessionId;
+    const nextSessionId = decision.nextSessionId;
+    // stop() fences the run first: its buffered events, stderr tail and
+    // streamError all belong to the turn that already ended, never to the replay.
+    await stop(s);
+    if (s.disposed || item.cancelled) {
+      if (s.current === item) { s.current = null; item.reject(cancelled()); }
+      return;
+    }
+    const cfg = item.cfg;
+    cfg.sessionId = nextSessionId;
+    cfg.resume = false;
+    // ensure() may already have staged a different object for a later send; it
+    // must not keep pointing at the transcript the CLI just disowned.
+    if (s.nextCfg && s.nextCfg !== cfg) s.nextCfg.sessionId = nextSessionId;
+    s.started = false; // the replacement child must be created, never resumed
+    safe(cfg.onNewSessionId, nextSessionId);
+    const recovery = safe(cfg.onResumeTargetMissing, { previousSessionId, sessionId: nextSessionId });
+    const replacement = typeof recovery === 'string' ? recovery : recovery && recovery.text;
+    if (typeof replacement === 'string' && replacement.trim()) item.text = replacement;
+    item.firstByte = false; // the replay reports its own first byte
+    item.sent = false; // ...and is not on the wire to the failed child any more
+    item.epoch = (item.epoch || 0) + 1; // void any still-pending failure of the old run
+    if (s.current === item) s.current = null;
+    s.queue.unshift(item);
+    console.warn('[multicc/claude-sdk-stream] resume target missing; rotating native session and retrying');
+    setImmediate(() => pump(s));
+  }
+
   async function consume(s, run) {
     let failure;
     try {
@@ -177,6 +228,19 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         // Self-wake queries of a held turn stream into it; their results stay internal.
         if (live && item.hold?.held && item.hold.observe(event)) continue;
         if (isMonitorHandoffResult(event)) continue;
+        // The missing-resume answer is this turn's FIRST event, before anything
+        // was forwarded, so decide here: ahead of the `live` gate (a `--resume`
+        // spawn can report the dead target and exit before `item.sent` flips,
+        // and dropping the event would lose the only heal), the timing callback
+        // and every forward path. Only a result carries it, so ordinary stream
+        // traffic never pays for a native round trip.
+        if (item && !item.finishing && !item.cancelled && event.type === 'result') {
+          const decision = decideMissingResume({ event,
+            lastSpawnWasResume: s.cfg.resume === true,
+            forwardedEventCount: item.eventCount || 0,
+            attempt: item.resumeRecoveryAttempt || 0 });
+          if (decision.action === 'rotate') { await rotateMissingResume(s, run, item, decision); return; }
+        }
         if (!live) continue;
         if (!item.firstByte) { item.firstByte = true; safe(item.onTiming, 'firstByte'); }
         if (isMainResult(event) && !item.cancelled) {
@@ -191,7 +255,12 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
             } } });
           if (item.hold.start(event)) continue;
         }
-        if (!item.cancelled) safe(item.onEvent, event);
+        // Count the output that actually reached the host: the replay-safety
+        // gate reads it (see carriesTurnOutput).
+        if (!item.cancelled) {
+          safe(item.onEvent, event);
+          if (carriesTurnOutput(event)) item.eventCount += 1;
+        }
         if (isMainResult(event)) finish(s, run, item, event);
       }
       failure = run.streamError
@@ -347,6 +416,11 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         return;
       }
       const item = s.current = s.queue.shift();
+      // Which delivery of this message this pump owns. A missing-resume
+      // rotation replaces the run while this pump may still be inside
+      // sendUser, then re-queues the same item; its late failure belongs to the
+      // dead run and must neither stop nor settle the replay.
+      const epoch = item.epoch || 0;
       item.pumpFinished = new Promise(resolve => { finishPump = resolve; });
       clearIdle(s);
       try {
@@ -385,6 +459,7 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
           message: { role: 'user', content: [{ type: 'text', text: item.text }] } }));
         safe(item.onTiming, 'sent');
       } catch (error) {
+        if ((item.epoch || 0) !== epoch) return;
         if (error.code !== 'SDK_BACKGROUND_ACTIVE') await stop(s);
         settle(s, item, error);
       }
@@ -408,7 +483,8 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     const s = sessions.get(name);
     if (!s || s.disposed) return Promise.reject(new Error('SDK stream session not ensured'));
     return new Promise((resolve, reject) => {
-      s.queue.push({ text, onEvent, onTiming: opts.onTiming, resolve, reject, cfg: s.nextCfg });
+      s.queue.push({ text, onEvent, onTiming: opts.onTiming, resolve, reject, cfg: s.nextCfg,
+        eventCount: 0, resumeRecoveryAttempt: 0, epoch: 0 });
       // Join a previous close even when the host has already created a new
       // runtime entry for the same logical session.
       Promise.resolve(closing.get(name)).then(() => pump(s), reject);

@@ -61,7 +61,15 @@ function installCapture() {
     for (const candidate of args) if (typeof candidate === 'function' && typeof candidate.use === 'function') applications.add(candidate);
     const server = Reflect.apply(createServer, this, args);
     server.on('request', (req, res) => {
-      if (req.url === '/readyz') res.once('finish', () => { if (res.statusCode === 200) snapshot(); });
+      // The server-core cluster (/healthz, /readyz, /metrics, the repo-operation
+      // lookup) now lives in the Rust front door, so Node no longer sees its own
+      // /readyz. The front door asks Node for those facts over the server-core
+      // host port, which is a real Node registration: snapshot once that
+      // request finishes. The /readyz hook is kept for the pre-migration shape.
+      const triggersSnapshot = req.url === '/api/__host/server-core' || req.url === '/readyz';
+      if (triggersSnapshot) {
+        res.once('finish', () => { if (res.statusCode >= 200 && res.statusCode < 300) snapshot(); });
+      }
     });
     return server;
   };
@@ -108,7 +116,13 @@ async function capture() {
     }
     if (!ready) throw new Error('isolated server did not produce a ready router snapshot');
     const { routes, middleware } = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (!routes.some(r => r.path === '/readyz') || routes.length < 100) throw new Error('incomplete runtime capture');
+    // The four public server-core routes are Rust's now; Node must no longer
+    // register them, while the host port it answers for them must be captured.
+    const retired = ['/healthz', '/readyz', '/metrics', '/api/repo-operations/:operationId'];
+    if (routes.some(r => retired.includes(r.path))) throw new Error('server-core routes are still registered in Express');
+    if (!routes.some(r => r.path === '/api/__host/server-core') || routes.length < 100) {
+      throw new Error('incomplete runtime capture');
+    }
     if (routes.some(r => !r.mounts.length && ['/login', '/logout', '/api/auth/exchange', '/api/auth/ws-ticket'].includes(r.path))) {
       throw new Error('gateway authentication routes unexpectedly remain mounted in Express');
     }

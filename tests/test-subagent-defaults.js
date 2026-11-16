@@ -294,7 +294,7 @@ function providerHarness(options = {}) {
   const providerRouterRuntime = {
     getProviderSummary: (appType, id) => (id ? { id, appType: appType || 'claude', name: id } : null),
   };
-  const routes = createProviderRoutes({
+  const routeDeps = {
     fs: {
       readFileSync() {
         return JSON.stringify(options.stored === undefined ? { claude: null, codex: null } : options.stored);
@@ -326,7 +326,9 @@ function providerHarness(options = {}) {
     https: { request() { throw new Error('unexpected HTTP'); } },
     logger: { error() {} },
     isLocalRequest: () => true,
-  });
+  };
+  routeDeps.providerDefaultsOwner = require('./helpers/provider-defaults-owner').fixtureDefaultsOwner(routeDeps);
+  const routes = createProviderRoutes(routeDeps);
   const app = createApp();
   routes.mountManagementRoutes(app);
   return { app, routes, providerDefaults: routes.providerDefaults, writes, applied, sessions };

@@ -31,7 +31,6 @@ function assertDependencies(deps) {
 
 function createOrchestrationRoutes(rawDeps) {
   const deps = assertDependencies(rawDeps);
-  let mounted = false;
   let mountedHost = false;
 
   const terminalDispatchStates = new Set([
@@ -97,11 +96,13 @@ function createOrchestrationRoutes(rawDeps) {
     }
   }
 
-  // The nine routes the Rust front door answers (native/gateway/src/app/
-  // orchestration_routes.rs): scheduled messages, the v1 waits projection,
-  // observed tasks, dispatch recovery, user-input dismiss and the FIFO queue.
-  // They are mounted only on the host port's capture app
-  // (src/routes/orchestration-host.js), never on the public Express app.
+  // All sixteen routes the Rust front door answers (native/gateway/src/app/
+  // orchestration_routes.rs): scheduled messages, both waits listings, observed
+  // tasks, dispatch recovery, user-input dismiss, the FIFO queue, the wait
+  // injector (register / resolve / cancel) and the detached set. They are
+  // mounted only on the host port's capture app (src/routes/
+  // orchestration-host.js) -- this module no longer touches the public Express
+  // app, so there is no second place a status code or key order could drift.
   function mountHostRoutes(app) {
     assertApp(app);
     if (mountedHost) throw new Error('[orchestration-routes] host routes already mounted');
@@ -473,15 +474,12 @@ function createOrchestrationRoutes(rawDeps) {
         res.status(400).json({ error: error.message });
       }
     });
-  }
 
-  // The seven out-of-scope routes (wait injector, wait resolve/cancel and the
-  // detached set) keep running on Node and stay on the public Express app.
-  function mountRoutes(app) {
-    assertApp(app);
-    if (mounted) throw new Error('[orchestration-routes] routes already mounted');
-    mounted = true;
-
+    // The wait injector and detached set joined in the second batch. Their
+    // handlers are unchanged from the day they were public: the front door
+    // matches the path, decodes `:id` / `:wid` / `:taskId`, forwards the
+    // `token` query key plus the `host` and `x-wait-token` headers, and
+    // replays whatever `res.status/json` these produce.
     app.post('/api/sessions/:id/wait', async (req, res) => {
       const session = deps.records.get(req.params.id);
       if (!session) return res.status(404).json({ error: 'session not found' });
@@ -663,7 +661,7 @@ function createOrchestrationRoutes(rawDeps) {
     });
   }
 
-  return Object.freeze({ mountRoutes, mountHostRoutes });
+  return Object.freeze({ mountHostRoutes });
 }
 
 module.exports = { createOrchestrationRoutes };

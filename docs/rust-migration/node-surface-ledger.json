@@ -1,0 +1,235 @@
+{
+  "version": 1,
+  "capturedAt": "2026-11-16",
+  "capture": {
+    "routes": 133,
+    "middleware": 31,
+    "fingerprint": "c9b08482d12193d34e1360ea"
+  },
+  "terminalStates": {
+    "front-door": "公开路由由 Rust 前门独占；Node 不再注册。终态=0 条 Node 注册。",
+    "host-port": "路由本体已在前门；Node 只剩 POST /api/__host/<domain> 回环接口，提供 Node 独有事实或执行进程/文件副作用。这是目标形态，不是待消除项。",
+    "state-in-rust": "Node 路由处理器只做『收集事实 → 调 Rust 持有的状态机 → 发回 response』；状态（作业表/互斥/缓存）已在 Rust。注册本身是否上移前门取决于进程副作用归属。",
+    "node-resident": "路由持有子进程、长连接、内存句柄或浏览器会话；句柄无法跨进程搬移，须先拆出『状态/规则』与『句柄执行』两层才可前移。",
+    "plugin": "plugins/ 下的可独立发布插件代码，不属于核心后端迁移范围，由插件自身发版。"
+  },
+  "clusters": [
+    {
+      "id": "host-ports",
+      "title": "宿主端口 /api/__host/*",
+      "routes": 34,
+      "state": "host-port",
+      "files": [
+        "src/routes/*-host.js",
+        "src/workspace/air-routes-host.js"
+      ],
+      "note": "每个端口对应一个已迁到前门的路由簇；条数随新簇迁入而增加，这是迁移推进的正向信号，不应当作负债清零。"
+    },
+    {
+      "id": "plugins-bridges",
+      "title": "IM bridge 与 cron 插件",
+      "routes": 71,
+      "state": "plugin",
+      "files": [
+        "plugins/bridges/*.js",
+        "plugins/cron/cron-tasks.js"
+      ],
+      "note": "wechat-ilink 15 + feishu/telegram/discord/slack 各 12 + cron 8。bridge.router 持有各平台 SDK 句柄与长连接。"
+    },
+    {
+      "id": "cli-tools",
+      "title": "CLI 安装/升级/版本探测",
+      "routes": 6,
+      "state": "state-in-rust",
+      "files": [
+        "src/cli/tools-host.js"
+      ],
+      "note": "RustCliToolsRuntime 已持有作业表、互斥、日志环、缓存与响应策略；Node 只执行 spawn(bash -c)、超时 SIGKILL、refresh/probe。前门接管需要先决定网关是否持有子进程，与『无状态 L7』定位冲突，故保持。"
+    },
+    {
+      "id": "cli-switch",
+      "title": "会话切换 CLI",
+      "routes": 0,
+      "state": "front-door",
+      "files": [
+        "src/cli/switch-runtime.js"
+      ],
+      "note": "2026-11-16 POST /api/sessions/:id/switch-cli 已迁 Rust 前门（native/gateway/src/app/cli_switch.rs）。入口闸门在前门内用 multicc_core::cli_switch_runtime::plan(\"manualGate\") 直接判掉：会话不存在 404、aux/gateway 系统会话 400、非 chat 会话 400、cli 不在支持表 400，以及 taskExecutionSlot 内部槽 404（早于 OPTIONS 与 body 解析）——这些分支零 Node 往返。Node 只剩宿主端口 src/routes/cli-switch-host.js（由 host-ports 簇认领）的 facts/noop/switch 三个 op；switch 一次往返内跑完 availability→manualReady→排队/Git 快照/签名比对/preparations/事务/publish，因为 signature 与 preparations 是跨 await 的 TOCTOU 保护，拆成多次往返会破。switch-runtime.js 仍引用 chatSessions 7 处（停止运行中轮次再启新车道），但忙判定已走 Rust 规则（native/core/src/active_turns.rs）。"
+    },
+    {
+      "id": "plugins-core",
+      "title": "插件管理与通道",
+      "routes": 11,
+      "state": "node-resident",
+      "files": [
+        "src/routes/plugins.js"
+      ],
+      "note": "channelHost/installer/catalog 是 Node 实例；/plugins/:id/* 是插件 UI 静态树。可先抽 /api/channels/recheck 这类纯整形路由。"
+    },
+    {
+      "id": "oauth-login",
+      "title": "ZCode/Kimi OAuth 登录",
+      "routes": 2,
+      "state": "node-resident",
+      "files": [
+        "src/routes/zcode-auth.js",
+        "src/routes/kimi-auth.js"
+      ],
+      "note": "阻塞最多 5 分钟并持有登录子进程；前门已原样转发该路径。"
+    },
+    {
+      "id": "session-bundle",
+      "title": "会话打包导入导出",
+      "routes": 2,
+      "state": "node-resident",
+      "files": [
+        "src/routes/session-bundle.js"
+      ],
+      "note": "流式 zip 写出与 multipart 导入。persistedSessions 引用 5 处，聊天历史文件读写。"
+    },
+    {
+      "id": "provider-proxy",
+      "title": "codex 协议代理入口",
+      "routes": 2,
+      "state": "node-resident",
+      "files": [
+        "src/providers/proxy-guard.js"
+      ],
+      "note": "SSE 上游透传经 Rust CPR。守卫依赖的是每轮 attempt 能力令牌授权（authorizeProxyRequest/authorizeProxyRequestAsync）与 CPR 观测钩子（onUsageEvent/onStall/onOutcome/onActivity），不读 chatSessions/persistedSessions（实测 0 处引用）。前置=把 attempt 能力表落到 Rust。"
+    },
+    {
+      "id": "air-sync",
+      "title": "Air 同步与页面",
+      "routes": 2,
+      "state": "node-resident",
+      "files": [
+        "src/workspace/air-sync-runtime.js"
+      ],
+      "note": "/api/air/sync、/api/air/page。实测不引用 chatSessions/persistedSessions；依赖 air-sync-runtime 的工作区运行态快照。"
+    },
+    {
+      "id": "server-core",
+      "title": "健康/就绪/指标与早期单条路由",
+      "routes": 0,
+      "state": "front-door",
+      "files": [
+        "server.js"
+      ],
+      "note": "2026-11-16 四条公开路由已迁 Rust 前门（native/gateway/src/app/server_core.rs）：/healthz、/readyz 公共；/metrics 精确 text/plain; charset=utf-8; version=0.0.4 且按名升序；/api/repo-operations/:operationId 原始 JSON 或 404。Node 只剩宿主端口 src/routes/server-core-host.js（由 host-ports 簇认领），multicc_active_turns 经 owner.chatActiveTurns(streamBusyFn) 计数，不再遍历 chatSessions。"
+    },
+    {
+      "id": "static-and-apk",
+      "title": "APK 下载",
+      "routes": 1,
+      "state": "node-resident",
+      "files": [
+        "src/routes/system.js"
+      ],
+      "note": "2026-11-16：/manage /dashboard /air?view=planner 三条重定向与 apk/ipa 路径守卫迁入前门（native/gateway/src/app/static_assets_routes.rs + multicc_core::static_assets_routes，差分 docs/rust-migration/differential/static-assets-routes.js，307 请求/273 逐字节一致/34 按设计落回）。剩 GET /multicc.apk：有本地文件时落回 Node（apkDistribution），按设计不认领。versioned-HTML 与 express.static 仍在 src/routes/static-assets.js，文件读取与 send 语义未迁。"
+    },
+    {
+      "id": "router-tools",
+      "title": "内部 router-tool 与语音 STT",
+      "routes": 2,
+      "state": "node-resident",
+      "files": [
+        "src/router-tool-host.js",
+        "src/routes/voice.js"
+      ],
+      "note": "POST /api/internal/router-tools/:tool 仅回环；POST /api/voice/stt 上传音频。"
+    }
+  ],
+  "middleware": {
+    "total": 31,
+    "keyFormat": "<name>@<mount>#<同名同挂载的出现序号>；位置号易变不作键",
+    "groups": [
+      {
+        "id": "request-shaping",
+        "count": 4,
+        "layers": [
+          "query@/#1",
+          "expressInit@/#1",
+          "requestIdMiddleware@/#1",
+          "jsonCompression@/#1"
+        ],
+        "terminal": "随 Node 自发 JSON 响应数下降退役；前门 app/express.rs 已有等价的请求 ID/gzip/弱 ETag"
+      },
+      {
+        "id": "admission-adapters",
+        "count": 3,
+        "layers": [
+          "<anonymous>@/api#1",
+          "<anonymous>@/#1",
+          "<anonymous>@/#2"
+        ],
+        "terminal": "auth.js gate(shutdown/peer/auth)：规则唯一源是 Rust admission owner，Node 只是适配器（src/routes/auth.js:124-132）；仅当不再存在不经前门直达 Node 的入口时才能删"
+      },
+      {
+        "id": "session-and-proxy-guards",
+        "count": 4,
+        "layers": [
+          "publicSessionAccessGuard@/api/sessions(?:/([^/]+?))#1",
+          "publicSessionAccessGuard@/api/v1/sessions(?:/([^/]+?))#1",
+          "providerProxyGuard@/claude-proxy#1",
+          "providerProxyGuard@/codex-proxy#1"
+        ],
+        "terminal": "publicSessionAccessGuard 依赖会话归属；providerProxyGuard 依赖 attempt 能力令牌表。留 Node 直到对应表落 Rust"
+      },
+      {
+        "id": "protocol-proxy-mounts",
+        "count": 3,
+        "layers": [
+          "<anonymous>@/claude-proxy#1",
+          "middleware@/codex-proxy#1",
+          "unmatched@/codex-proxy#1"
+        ],
+        "terminal": "CPR 协议代理入口 /claude-proxy、/codex-proxy；SSE 透传不可在此 gzip"
+      },
+      {
+        "id": "machines-and-parsers",
+        "count": 4,
+        "layers": [
+          "<anonymous>@/api/machines#1",
+          "rawParser@/api/machines(?:/([^/]+?))/proxy#1",
+          "<anonymous>@/api/machines(?:/([^/]+?))/proxy#1",
+          "jsonParser@/#1"
+        ],
+        "terminal": "machines 跨站拦截 + raw/json 局部解析 + 全局 express.json(50mb)；随承载它们的 Node 路由一并退役"
+      },
+      {
+        "id": "static-and-artifacts",
+        "count": 6,
+        "layers": [
+          "<anonymous>@/voice-gateway/web#1",
+          "headers@/artifacts#1",
+          "serveStatic@/artifacts#1",
+          "serveStatic@/artifacts#2",
+          "<anonymous>@/#3",
+          "serveStatic@/#1"
+        ],
+        "terminal": "artifacts、versioned-HTML、express.static、voice-gateway web；apk/ipa 路径守卫与 /manage /dashboard /air?view=planner 重定向已于 2026-11-16 迁入前门"
+      },
+      {
+        "id": "bridges-and-remote",
+        "count": 6,
+        "layers": [
+          "router@/api/wechat#1",
+          "router@/api/feishu#1",
+          "router@/api/telegram#1",
+          "router@/api/discord#1",
+          "router@/api/slack#1",
+          "<anonymous>@/api/remote-screen#1"
+        ],
+        "terminal": "IM bridge router x5 与 /api/remote-screen；属插件/远控"
+      },
+      {
+        "id": "terminal-error",
+        "count": 1,
+        "layers": [
+          "safeErrorHandlerMiddleware@/#1"
+        ],
+        "terminal": "safeErrorHandler 必须最后一个；仅在 Node 路由数归零时才能删"
+      }
+    ]
+  }
+}

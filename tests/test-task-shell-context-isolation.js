@@ -14,6 +14,21 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { createPaths, assertTestDir } = require('../src/paths');
 const { readJson } = require('../src/state/store');
+const { waitServerReady } = require('./helpers/wait-server-ready');
+
+const ROOT = path.join(__dirname, '..');
+
+// The directory/session clusters are answered by the Rust front door
+// (native/gateway/src/app/directory_routes.rs), so an isolated host has to start
+// the real gateway with server.js as its child instead of bare node.
+function gatewayBinary() {
+  const addon = process.env.MULTICC_RUST_ADDON
+    || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(ROOT, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  return path.join(path.dirname(addon),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-ctx-'));
 const dataDir = assertTestDir(path.join(root, 'data'));
@@ -167,8 +182,8 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
   }
   async function start(enabled = '1') {
     const port = await freePort(); base = `http://127.0.0.1:${port}`;
-    server = spawn(process.execPath, ['server.js'], {
-      cwd: path.join(__dirname, '..'),
+    server = spawn(gatewayBinary(), ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
+      cwd: ROOT,
       env: {
         ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: token,
         NODE_OPTIONS: '--require ' + preload, MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS: '0', MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'), MULTICC_TASK_SHELLS: enabled,
@@ -179,7 +194,7 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     });
     server.stdout.on('data', c => { logs = (logs + c).slice(-40000); });
     server.stderr.on('data', c => { logs = (logs + c).slice(-40000); });
-    await wait(async () => { try { return (await fetch(base + '/readyz')).ok; } catch (_) { return false; } }, 'server readiness', 500);
+    await waitServerReady(base, { attempts: 500, child: server, output: () => logs, message: 'server readiness' });
   }
   // Find the assistant answer text for a task from its formal shell history.
   async function answerOf(shellId, taskId, needle) {

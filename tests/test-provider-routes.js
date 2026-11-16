@@ -59,19 +59,26 @@ function createHarness(overrides = {}) {
   const defaultsFile = '/runtime/provider-defaults.json';
   const providers = {
     WIRE_DEFAULT_MODEL: 'claude-wire-default',
+    // These three mirror the retired JS tables for the lanes this file touches
+    // (`-exp` folds onto its base lane, dsh speaks Anthropic only, and
+    // opencode/zcode/kimi/grok span both stored pools). They are fakes on
+    // purpose: the native validator must answer without calling them at all.
     appTypeForCli(cli) {
-      if (cli === 'codex') return 'codex';
-      if (cli === 'claude' || cli === 'opencode') return 'claude';
+      if (cli === 'codex' || cli === 'codex-exp') return 'codex';
+      if (cli === 'claude' || cli === 'claude-exp' || cli === 'opencode' || cli === 'dsh') return 'claude';
       return null;
     },
     appTypesForCli(cli) {
-      if (cli === 'opencode' || cli === 'zcode') return ['claude', 'codex'];
+      if (['opencode', 'zcode', 'kimi', 'grok'].includes(cli)) return ['claude', 'codex'];
       const type = this.appTypeForCli(cli);
       return type ? [type] : [];
     },
     providerSupportsCli(provider, cli) {
-      return !!provider && (cli === 'opencode' || cli === 'zcode'
-        || provider.appType === (cli === 'codex' ? 'codex' : 'claude'));
+      if (!provider) return false;
+      const text = String(cli);
+      if (['opencode', 'zcode', 'kimi', 'grok'].includes(text)) return true;
+      if (provider.virtual) return true;
+      return provider.appType === ((text === 'codex' || text === 'codex-exp') ? 'codex' : 'claude');
     },
     getCcSwitchStatus: () => ({ available: true, dbFound: true, dbPath: '/private/cc-switch.db' }),
     listProviders(appType) {
@@ -185,6 +192,7 @@ function createHarness(overrides = {}) {
     isLocalRequest: () => true,
     ...dependencyOverrides,
   };
+  deps.providerDefaultsOwner = require('./helpers/provider-defaults-owner').fixtureDefaultsOwner(deps);
   const app = createApp();
   const runtime = createProviderRoutes(deps);
   runtime.mountManagementRoutes(app);
@@ -202,6 +210,63 @@ test('the Node surface is only the provider/subagent host ports', () => {
     'POST /api/providers', 'PATCH /api/providers/:appType/:id', 'DELETE /api/providers/:appType/:id',
     'POST /api/providers/:appType/:id/probe', 'GET /api/provider-defaults', 'PUT /api/provider-defaults']) {
     assert.equal(harness.app.handlers.has(gone), false, gone);
+  }
+});
+
+test('native provider line checks keep lane rules and observable coercion order', () => {
+  const { runtime } = createHarness();
+  for (const cli of ['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']) {
+    assert.deepEqual(runtime.validProviderId(cli, `${cli}-native:anything`), { ok: true, value: `${cli}-native:anything` });
+    assert.deepEqual(runtime.validProviderId('claude', `${cli}-native:anything`), { ok: false });
+  }
+  assert.deepEqual(runtime.validProviderId('opencode', 'opencode-native:open-code_1'), { ok: true, value: 'opencode-native:open-code_1' });
+  assert.deepEqual(runtime.validProviderId('opencode', 'opencode-native:-bad'), { ok: false });
+  let count = 0;
+  const id = { toString() { count++; return 'qoder-native:qoder'; } };
+  assert.deepEqual(runtime.validProviderId('qoder', id), { ok: true, value: 'qoder-native:qoder' });
+  // The retired code stringified twice (lane classification, then the value it
+  // returned); the kernel stringifies once and reuses that text. Pinned so a
+  // regression that stops coercing -- or coerces per branch again -- shows up.
+  assert.equal(count, 1);
+});
+
+test('native provider line validation keeps the retired answers without asking the host for rules', () => {
+  const legacy = require('./helpers/legacy-provider-validation').validProviderId;
+  const fixtures = [
+    ['claude', null], ['claude', ''], ['claude', 'claude-one'], ['codex-exp', 'missing'],
+    ['qoder', 'qoder-native:'], ['claude', 'qoder-native:qoder'],
+    ['opencode', 'opencode-native:GO_1'], ['opencode', 'opencode-native:-bad'],
+    ['opencode', `opencode-native:${'x'.repeat(65)}`], ['zcode', 'opencode-native:x'],
+    ['qoder', { toString: () => 'qoder-native:qoder' }],
+  ];
+  for (const [cli, id] of fixtures) {
+    const actual = createHarness();
+    const expected = createHarness();
+    // The three rule callbacks are what the ⑤ rules used to ask the host for.
+    // The native validator owns those rules now: reaching them is a contract bug.
+    const ruleCalls = [];
+    for (const name of ['appTypeForCli', 'appTypesForCli', 'providerSupportsCli']) {
+      const original = actual.providers[name];
+      actual.providers[name] = function (...args) {
+        ruleCalls.push([name, ...args]);
+        return original.apply(this, args);
+      };
+    }
+    function summaryTrace(harness) {
+      const seen = [];
+      const original = harness.deps.providerRouterRuntime.getProviderSummary;
+      harness.deps.providerRouterRuntime.getProviderSummary = function (...args) {
+        seen.push([args[0], args[1]]);
+        return original.apply(this, args);
+      };
+      return seen;
+    }
+    const actualSummaries = summaryTrace(actual);
+    const expectedSummaries = summaryTrace(expected);
+    assert.deepEqual(actual.runtime.validProviderId(cli, id), legacy(expected.deps, cli, id), `${cli}: ${String(id)}`);
+    assert.deepEqual(ruleCalls, [], `${cli}: ${String(id)}`);
+    // The ⑤ fact lookup still happens exactly where the retired code made it.
+    assert.deepEqual(actualSummaries, expectedSummaries, `${cli}: ${String(id)}`);
   }
 });
 
@@ -560,6 +625,32 @@ test('probeExec runs the loopback route and sanitizes the probe output', async (
   assert.doesNotMatch(JSON.stringify(sanitized.body), /probe-secret|\/Users\/alice/);
 });
 
+test('native probe sanitization preserves legacy response bytes and UTF-16 boundaries', () => {
+  const { sanitizeProbeResult } = require('../src/routes/providers-host');
+  const legacy = require('./helpers/legacy-provider-routes').sanitizeProbeResult;
+  const cases = [
+    { error: 'token=secret', tested: [{ reason: 'ok', sample: '/Users/a/private' }] },
+    { error: `${'a'.repeat(239)}😀`, tested: [{ sample: '\ud800', reason: null }], extra: undefined },
+    { error: 42, tested: ['line', null, { error: undefined, sample: ' normal\ntext ' }] },
+    null, ['line', null], 'unchanged',
+  ];
+  for (const input of cases) {
+    assert.equal(JSON.stringify(sanitizeProbeResult(input)), JSON.stringify(legacy(input)));
+  }
+});
+
+test('probe host JSON transport keeps escaped lone surrogates and redacts before transport', async () => {
+  const harness = createHarness({ providers: { probeRelayModels: async () => ({
+    tested: [{ sample: `${'a'.repeat(239)}😀`, reason: 'token=secret' }], accepted: [],
+  }) } });
+  const response = await host(harness.app, { op: 'probeExec', appType: 'claude', id: 'x', resultEncoding: 'json' });
+  assert.equal(response.body.ok, true);
+  assert.equal(typeof response.body.resultJson, 'string');
+  assert.match(response.body.resultJson, /\\ud83d/);
+  assert.doesNotMatch(response.body.resultJson, /token=secret/);
+  assert.equal(JSON.parse(response.body.resultJson).tested[0].sample.length, 240);
+});
+
 test('probeExec reports the no-base-url shape without spawning the CLI', async () => {
   let probeCalls = 0;
   const harness = createHarness({
@@ -742,19 +833,47 @@ test('relayImportFacts returns the provider, summary and stored import token', a
   });
 });
 
-test('defaultsGet, defaultsValidate and defaultsPersist keep the live object identity', async () => {
-  const harness = createHarness();
+test('normalizeId, providerSummary and defaultsPersist keep the live object identity', async () => {
+  const calls = [];
+  const harness = createHarness({
+    providers: {
+      normalizeOfficialProviderId(cli, id) {
+        calls.push([cli, id]);
+        return id === 'official-alias' ? 'official-canonical' : id;
+      },
+    },
+    providerRouterRuntime: {
+      getProviderSummary(appType, id) {
+        calls.push([appType, id]);
+        if (id !== 'claude-one') return null;
+        return {
+          id: 'claude-one', appType: 'claude', apiFormat: 'anthropic', protocol: 'anthropic',
+          baseUrl: 'https://claude.example', hasToken: true, virtual: false,
+        };
+      },
+    },
+  });
   const live = harness.runtime.providerDefaults;
 
   let response = await host(harness.app, { op: 'defaultsGet' });
   assert.deepEqual(response.body, { ok: true, defaults: { claude: 'claude-one', codex: null } });
 
-  response = await host(harness.app, { op: 'defaultsValidate', cli: 'zcode', id: '' });
-  assert.deepEqual(response.body, { ok: true, valid: true, value: null });
-  response = await host(harness.app, { op: 'defaultsValidate', cli: 'zcode', id: 'codex-one' });
-  assert.deepEqual(response.body, { ok: true, valid: true, value: 'codex-one' });
-  response = await host(harness.app, { op: 'defaultsValidate', cli: 'qoder', id: 'claude-one' });
-  assert.deepEqual(response.body, { ok: true, valid: false, value: null });
+  // ① 段的归一化：前门送来的已是折叠后的 cli，宿主只回调 normalize。
+  response = await host(harness.app, { op: 'normalizeId', cli: 'claude', id: 'official-alias' });
+  assert.deepEqual(response.body, { ok: true, id: 'official-canonical' });
+  // ⑤ 段的事实投影：规则需要的 6 个字段，布尔按真值语义。
+  response = await host(harness.app, { op: 'providerSummary', appType: 'claude', id: 'claude-one' });
+  assert.deepEqual(response.body, {
+    ok: true,
+    summary: {
+      appType: 'claude', virtual: false, apiFormat: 'anthropic',
+      protocol: 'anthropic', baseUrl: true, hasToken: true,
+    },
+  });
+  // 全局池：appType=null 要传 undefined 给 getProviderSummary。
+  response = await host(harness.app, { op: 'providerSummary', appType: null, id: 'missing' });
+  assert.deepEqual(response.body, { ok: true, summary: null });
+  assert.deepEqual(calls.at(-1), [undefined, 'missing']);
 
   response = await host(harness.app, { op: 'defaultsPersist', next: { claude: null, codex: 'codex-one' } });
   assert.deepEqual(response.body, { ok: true, defaults: { claude: null, codex: 'codex-one' } });

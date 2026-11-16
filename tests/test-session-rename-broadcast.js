@@ -331,7 +331,7 @@ test('idle Codex route changes synchronize the exact native rollout before autho
 test('server composition gives profile routes the live chat-state reader', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const start = source.indexOf('createSessionProfileRoutes({');
-  const end = source.indexOf('}).mountRoutes(app);', start);
+  const end = source.indexOf('}).mountRoutes(sessionRoutesHost.app);', start);
   assert.ok(start >= 0 && end > start);
   const composition = source.slice(start, end);
   assert.match(composition, /getChatStream: \(\) => chatStream, getChatState: id => chatSessions\.get\(id\),/);

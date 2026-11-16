@@ -196,7 +196,8 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 | `GET/HEAD/POST/OPTIONS /api/claude/accounts`、`POST/OPTIONS /api/claude/accounts/:id/{activate,login-callback,relogin}`、`GET/HEAD/OPTIONS /api/claude/accounts/:id/{login-status,quota}`、`DELETE/OPTIONS /api/claude/accounts/:id`、`GET/HEAD/POST/OPTIONS /api/codex/accounts`、`POST/OPTIONS /api/codex/accounts/:id/{activate,login-callback,relogin}`、`GET/HEAD/OPTIONS /api/codex/accounts/:id/login-status`、`DELETE/OPTIONS /api/codex/accounts/:id`、`GET/HEAD/PUT/OPTIONS /api/zcode/auth`、`POST/OPTIONS /api/zcode/auth/sync`、`GET/HEAD/OPTIONS /api/zcode/auth/check`、`GET/HEAD/PUT/OPTIONS /api/kimi/auth`、`GET/HEAD/OPTIONS /api/kimi/auth/check`、`GET/HEAD/POST/OPTIONS /api/cli-accounts/:cli`、`PATCH/DELETE/OPTIONS /api/cli-accounts/:cli/:id`、`GET/HEAD/OPTIONS /api/{claude,codex}/oauth/status`、`POST/OPTIONS /api/{claude,codex}/oauth/login`、`GET/HEAD/OPTIONS /api/commandcode/auth/status`、`POST/OPTIONS /api/commandcode/auth/login` | 八个路由文件只剩运行时与脱敏投影：`src/routes/claude-accounts.js`（291 行）、`codex-accounts.js`（296 行）、`zcode-auth.js`（198 行，含 login-only 公开挂载）、`kimi-auth.js`（194 行，同）、`cli-key-accounts.js`（83 行）、`claude-oauth.js`（185 行）、`codex-oauth.js`（84 行）、`commandcode-auth.js`（50 行）；宿主端口 `src/routes/account-routes-host.js`（226 行，32 个 op）。两条阻塞式 `POST /api/{zcode,kimi}/auth/login` 仍由 Node 公开应答，前门整条转发 | `native/gateway/src/app/account_routes.rs` + `multicc_core::account_routes`：32 条路径匹配、`:id`/`:cli` 解码（坏转义 400）、逐路由 OPTIONS `Allow`（Express 注册序并集：账户根 `GET,HEAD,POST`、`/api/{zcode,kimi}/auth` `GET,HEAD,PUT`、`/api/cli-accounts/:cli` `GET,HEAD,POST`、`/api/cli-accounts/:cli/:id` `PATCH,DELETE`、`.../:id` `DELETE`、其余读口 `GET,HEAD`、写口 `POST`）、HEAD、宿主 `{status,body}` 原样回放、抛出信封重建、写路由串行化（`App::account_write`）；凭据读取（钥匙串、`~/.codex/auth.json`、`~/.claude`、CLI key 账户表）、PKCE 登录状态机与回调监听器、登录终端、CLI 登录、桌面 key 同步与 DTO 脱敏经 `/api/__host/account-routes` 的 32 个 op 回调 | 114/114 请求逐字节一致（含 23 条自动 OPTIONS 的 `Allow` 与 2 条转发 login 的 OPTIONS）；113 个用例的副作用逐个一致（codex 登录完成的 `modelCatalogRuntime.refreshAccount` 是 fire-and-forget，不参与比对），见 §53 |
 | `GET/HEAD/POST/OPTIONS /api/machines`、`GET/HEAD/OPTIONS /api/machines/{self,grants}`、`POST/OPTIONS /api/machines/pair`、`DELETE/OPTIONS /api/machines/connection`、`DELETE/OPTIONS /api/machines/grants/:grantId`、`PATCH/DELETE/OPTIONS /api/machines/:machineId`、`POST/OPTIONS /api/machines/:machineId/ws-ticket`、`POST/OPTIONS /api/sessions/:id/share`、`GET/HEAD/OPTIONS /api/sessions/:id/shares`、`DELETE/OPTIONS /api/sessions/:id/share/:token`、`POST/OPTIONS /api/sessions/:id/share-messages`、`GET/HEAD/OPTIONS /share/:token`、`POST/OPTIONS /api/share/:token/auth`、`GET/HEAD/OPTIONS /api/share/:token/{entry,history,session}`、`GET/HEAD/OPTIONS /api/workspaces/overview`、`POST/OPTIONS /api/workspaces/sweep` | `src/machines.js`（119 行）、`src/routes/share.js`（425 行）、`src/routes/workspaces.js`（81 行）的 21 条公开路由；三个文件对真实 app 的公开挂载已删除，只剩捕获应用。机器注册表与授权表（已是 `native/core/machines`）、分享记录与密码 cookie、工作区扫描/清扫、版本化 HTML 读取留在 Node，宿主端口为 `src/routes/share-machines-host.js`；`GET/HEAD /api/machines/:machineId/proxy` 与其 SSE 变体仍由 `machines.mountProxy` 直挂真实 app（二进制流），前门整条转发 | `native/gateway/src/app/share_machine_routes.rs` + `multicc_core::share_machine_routes`：路径匹配与 `:machineId`/`:grantId`/`:id`/`:token` 解码、逐路由 `Allow` 并集、局部 16 KiB JSON 与全局 50 MiB JSON 的分配、内部执行槽 404、跨站闸门、错误信封，以及 `/share/:token` 的 `Cache-Control: no-store, no-cache, must-revalidate` + `Pragma: no-cache`；`/share/**` 与 `/api/share/**` 复用 `http_entry::public_path`，对**任何方法**免鉴权 | 66/66 请求逐字节一致（含 12 条同段冲突的自动 OPTIONS `Allow`）；分享存储与机器注册表在两侧隔离数据根之间逐字节比对一致，见 §54 |
 | `POST /api/restart`、`POST /api/desktop-shutdown`、`GET/HEAD /api/update/status`、`POST /api/update`、`GET/HEAD/POST /api/system/developer-tools{,/install,/install-git}`、`GET/HEAD/POST /api/system/{disk-access,agent-permissions,agent-install}` 及其 `/open`、`/restart`、`/replace`、`GET/HEAD /api/system/ops-env`、`GET/HEAD/POST /api/system/ops-run`、`POST /api/system/ops-run/stop`、`POST /api/settings/{notify,tunnel,access-token,task-attribution}`、`POST /api/tunnel/restart/:provider`、`POST /api/tunnel/sakurafrp/public-url`、`POST /api/tunnel/funnel`、`POST /api/settings/power{,/auto-unlock,/unlock-password/authorize}`、`POST|DELETE /api/settings/power/unlock-password`、`GET/HEAD /api/skill-sync/status`、`POST /api/skill-sync/run`、`POST /api/system/env-doctor`、`GET/HEAD /api/system/env-doctor/:runId`、`POST …/:runId/cancel`、`POST/GET/HEAD /api/sessions/:id/doctor`、`GET/HEAD /api/doctor/runs/:runId`、`POST /api/doctor/runs/:runId/cancel`（均含 `OPTIONS`） | `src/routes/{server-restart-route,update-route,developer-tools,macos-privacy,ops-terminal,host-write,host-power,skill-sync,env-doctor,doctor}.js` 的 40 条公开路由；十个文件对真实 app 的公开挂载已全部摘除，只在 `src/routes/host-ops-host.js` 的捕获应用上注册；分离式重启/自更新启动器、TCC/电源/Agent、终端子进程、`.env` 写入与 tunnel/push 运行时、doctor 服务留在 Node 宿主端口。没有任何一条留在 Node 公开面 | `native/gateway/src/app/host_ops_routes.rs` + `multicc_core::host_ops_routes`：路径匹配与 `:provider`/`:runId`/`:id` 解码、逐路由 `Allow` 并集（走 `OPTIONS_SOURCES`，与 host-read 的 GET、任务面的 GET 合并）、`publicSessionAccessGuard` 对两条 `:id/doctor` 的 404、本机判定事实 `local`、`{status,body,headers}` 回放、503/500 信封、写路由串行化（`App::host_ops_write`） | 94/94 请求逐字节一致 + 1 条预期差异（宿主不可达），见 §55 |
-| `GET/HEAD /api/aux/{status,health,history}`、`POST /api/aux/{enqueue,cancel}`、`GET/HEAD/POST /api/aux/config`、`GET/HEAD/POST /api/settings/goal`、`POST /api/goal/precheck`、`GET/HEAD /api/sessions/:id/aux-runs{,/:runId}`、`GET/HEAD/POST /api/sessions/:id/unattended`、`POST/GET/HEAD /api/sessions/:id/scheduled-messages`、`DELETE /api/sessions/:id/scheduled-messages/:messageId`、`GET/HEAD /api/sessions/:id/{tasks,dispatches,queue}`、`POST /api/sessions/:id/{user-input/dismiss,queue/action}`、`GET/HEAD /api/v1/sessions/:id/waits`（均含 `OPTIONS`；**不含**无 v1 前缀的 `GET /api/sessions/:id/waits`） | `src/routes/{aux-goal,aux-runs,orchestration}.js` 与 `src/unattended/routes.js` 的 23 条公开路由；四个文件迁走部分对真实 app 的公开挂载已摘除，只在 `src/routes/orchestration-host.js` 的捕获应用上注册；Aux 队列与模型配置、无人值守监督器、持久化编排运行时、Aux 运行日志、会话轮次引擎留在 Node 宿主端口。**排除集 7 条仍由真实 app 挂载并由前门转发**：`POST /api/sessions/:id/wait`、`POST /api/wait/:wid/resolve`、`GET /api/sessions/:id/waits`、`DELETE /api/wait/:wid`、`POST /api/sessions/:id/run-detached`、`GET /api/sessions/:id/detached`、`GET /api/detached/:taskId` | `native/gateway/src/app/orchestration_routes.rs` + `multicc_core::orchestration_routes`：路径匹配与 `:id`/`:messageId`/`:runId` 解码、查询子集、`Idempotency-Key` 头白名单、逐路由 `Allow` 并集（走 `OPTIONS_SOURCES`）、内部执行槽 404（复用 session-admin 的 `guard_facts`/`guarded_404`）、`{status,body,headers}` 回放、503/500 信封、写路由串行化（`App::orchestration_write`，`aux/enqueue`、`goal/precheck`、`aux/cancel` 除外） |
+| 编排与无人值守 30 条公开路由，包括 wait 注册、查询、回调、取消以及 detached 启动与查询 | 四个路由模块只在 `src/routes/orchestration-host.js` 的捕获应用上注册；Aux 队列、无人值守监督器和编排运行时仍在 Node 宿主端口 | Rust 前门负责路径匹配、参数解码、查询及头白名单、OPTIONS、内部执行槽守卫和结果回放；回调所需 `Host`、`X-Wait-Token` 与 `token` 查询参数传给宿主 |
+| `GET/HEAD/OPTIONS /healthz`、`GET/HEAD/OPTIONS /readyz`、`GET/HEAD/OPTIONS /metrics`、`GET/HEAD/OPTIONS /api/repo-operations/:operationId` | `src/health.js` 的 `createHealthHandlers` 与 `server.js` 里的 `/metrics`、repo-operation 查询（均已删；事实读取移到 `src/routes/server-core-host.js` 的回环宿主端口） | `native/gateway/src/app/server_core.rs`：就绪检查、指标文本与仓库操作状态经宿主端口取 Node 事实；`multicc_active_turns` 直接取 addon 的 `owner.chatActiveTurns(streamBusyFn)`，Node 侧不再遍历 chatSessions | 28 个请求逐字节一致（ready 19/19、not-ready 9/9），宿主调用实测计数 ready health 6 / metrics 3 / repoOperation 7、not-ready health 5–6 / metrics 2 / repoOperation 1（health 是实测区间而非契约：它含对拍工装自身的 `/healthz` 就绪探针，条数随探针重试次数浮动；两次独立复现分别得 6 与 5）；`/metrics` 的 wire Content-Type 是 Express `setCharset` 重排后的 `text/plain; charset=utf-8; version=0.0.4`；三处变异（指标排序反向、Content-Type 少一个空格、404 文案改为 `operation not found!`）全部被抓到；repo-operation 的 gzip 语料含 ≥1024 字节带/不带 `Accept-Encoding: gzip` 与 HEAD |
 
 原生路由的查询参数统一走 `multicc_core::http_gate::query_value`，它按已安装 Express 的 qs `extended` 解析器（arrayLimit 1000、depth 5、parameterLimit 1000、combine、strictMerge）复刻。因此 `?points[0]=5` 与 Node 一样得到单元素数组再 `Number('5')`，`?points[0]=5&points[1]=6` 经数组 `toString()` 变成 `"5,6"` → NaN → 回退 48；`?since[0]=<ms>` 按元素取值，`?since[a]=1` 是对象 → NaN。语料 `native/core/tests/fixtures/qs-query-cases.json` 由 `scripts/generate-qs-query-fixture.js` 对实装 Express 采集（81 例），Rust 单测与 `tests/test-qs-query-fixture.js` 共用同一份文件，`query_param` / `query_token` 的旧行为另有回归断言。
 
@@ -2473,8 +2474,10 @@ Node 例外范围及后续迁移条件：
 
 `src/cli/switch-runtime.js` 原先同时承载会话切换与 CLI 安装、版本管理。本批把两个子域
 的业务规则分别落入 `native/core/src/cli_switch_runtime.rs` 和 `cli_tools_runtime.rs`，
-经 addon 接到现有宿主。这里的七条 HTTP 路由仍由 Node 注册，不计为新增前门接管路由；
-不能用 JavaScript 文件缩短量代替整个调用链已脱离 Node 的结论。
+经 addon 接到现有宿主。本节落地时七条 HTTP 路由仍由 Node 注册，不计为新增前门接管路由；
+不能用 JavaScript 文件缩短量代替整个调用链已脱离 Node 的结论。**2026-11-16 订正**：其中
+`POST /api/sessions/:id/switch-cli` 已迁入前门（见 §59），Node 注册剩六条（CLI 安装与版本
+管理）加一个回环宿主端口。
 
 - 切换内核负责手动、暂存及自动配置门禁、切换前后字段计划、交接摘要、交接消费和
   响应/事件 DTO。已有 `cli_switch.rs` 继续拥有各 CLI 的原生会话状态与上下文检查点规则。
@@ -4449,11 +4452,15 @@ share-revoke/share-messages/share-auth/sweep）在前门串行化（`App::share_
 deterministic；`scripts/check-source-line-budget.js` 的 `server.js` 棘轮 3105/166686；
 `tests/test-release-version-consistency.js` 的 core 计数 452/377/424。
 
-## 56. 编排与无人值守簇 23 条公开路由迁入前门（2026-11-15）
+## 56. 编排与无人值守簇 30 条公开路由迁入前门（2026-11-15 / 2026-11-16）
 
-### 56.1 范围与归属
+> **2026-11-16 第二批**：本节原先记录的「排除集 7 条」（wait 注入器 / detached 集）
+> 已经迁完，见 §56.9。56.1–56.8 保留第一批（23 条）的记录，其中关于排除集留在
+> Node、以及两个 waits 列表分流的叙述已被 §56.9 取代。
 
-本簇原有 30 条，**只迁 23 条**：`aux-goal.js` 10、`aux-runs.js` 2、`unattended/routes.js` 2、
+### 56.1 范围与归属（第一批）
+
+本簇原有 30 条，**第一批只迁 23 条**：`aux-goal.js` 10、`aux-runs.js` 2、`unattended/routes.js` 2、
 `orchestration.js` 9（定时消息 3、`tasks`、`dispatches`、`user-input/dismiss`、`queue`、`queue/action`、
 `GET /api/v1/sessions/:id/waits`）。前门实现见 `native/gateway/src/app/orchestration_routes.rs`
 （403 行）与 `native/core/src/orchestration_routes.rs`（757 行、15 条单测）。
@@ -4545,6 +4552,58 @@ deterministic；`scripts/check-source-line-budget.js` 的 `server.js` 棘轮 310
 与 stub，不碰真实会话与任务库。`tests/test-request-locality.js` 白名单含
 `src/routes/orchestration-host.js`；`tests/test-orchestration-host.js` 登记 core deterministic；
 `server.js` 棘轮 3111/167256；`tests/test-release-version-consistency.js` core 计数 453/378/425。
+
+### 56.9 第二批：wait 注入器与 detached 集 7 条（2026-11-16）
+
+第一批刻意留在真实 app 上的 7 条已全部迁入前门，`src/routes/orchestration.js`
+因此**再没有公开挂载**：`mountRoutes` 整个函数连同 `server.js` 的
+`orchestrationRoutes.mountRoutes(app)` 一起删除，模块只导出 `mountHostRoutes`。
+
+| 路由 | host op |
+|---|---|
+| `POST /api/sessions/:id/wait` | `session-wait-post` |
+| `POST /api/wait/:wid/resolve` | `wait-resolve` |
+| `GET\|HEAD /api/sessions/:id/waits` | `session-waits` |
+| `DELETE /api/wait/:wid` | `wait-cancel` |
+| `POST /api/sessions/:id/run-detached` | `run-detached` |
+| `GET\|HEAD /api/sessions/:id/detached` | `session-detached` |
+| `GET\|HEAD /api/detached/:taskId` | `detached-task` |
+
+`multicc_core::orchestration_routes` 的 `LAYERS` 从 23 条增到 30 条，`Route` 加了
+对应的 7 个变体，`QUERY_KEYS` 加 `token`（resolve 回调先读 `?token=`）。`:wid` 与
+`:taskId` 是本簇唯一不是会话 id 的参数；`/api/wait/...` 与 `/api/detached/...` 不是
+会话作用域，所以公开会话守卫不能在它们上面触发（`guard_index` 返回 `None`）。
+四条写路由（wait 注册 / resolve / cancel / run-detached）走本簇写锁串行化，都不是
+长轮询。实测 `Allow`：`.../wait`、`/api/wait/:wid/resolve`、`.../run-detached` 为
+`POST`；`.../waits`、`.../detached`、`/api/detached/:taskId` 为 `GET,HEAD`；
+`/api/wait/:wid` 为 `DELETE`（注意 `/api/wait/:wid` 与 `/api/wait/:wid/resolve` 是
+两个路径，长的那条不得把 `POST` 带进短的那条的 `Allow`）。
+
+**两个 waits 列表现在都归前门**，但仍是两条路由、两种 DTO：`/api/v1/sessions/:id/waits`
+是带信封的 v1 投影，`/api/sessions/:id/waits`（无前缀）把进程内旧注入器的行并进
+`stats`。单测 `both_waits_listings_are_ours_but_stay_two_distinct_routes` 与集成测试
+`both_waits_listings_are_claimed_as_two_different_ops` 两头钉住。
+
+转发头从 1 个增到 3 个：`idempotency-key` 之外加 `host` 与 `x-wait-token`。`host`
+是必须的——wait 注册用 `${req.protocol}://${req.get('host')}` 拼 `callbackUrl`，丢掉这个
+头会让每个回调 URL 变成 `http://undefined/...`；前门转发请求时不改写客户端的
+`Host`，所以宿主看到的就是客户端原值。`protocol` 在宿主端口恒为 `http`（内网明文端口
+上的 Express 没有 `trust proxy`）。`Cookie` 与 `Authorization` 仍不进宿主载荷。
+
+验证：`multicc-core` 的 `orchestration_routes` 单测 16 项通过（含新增的参数/守卫/
+`Allow` 三组用例）；集成测试 `native/gateway/tests/orchestration_routes.rs` 19 项通过，
+原先钉「7 条回落 Node」的 `the_seven_out_of_scope_routes_all_fall_back_to_node` 改写为
+`the_wait_and_detached_set_is_claimed_and_never_forwarded`（断言 7 条都不再到达 Node 的
+路由器，且 7 条的 `OPTIONS` 也归前门），并新增
+`the_wait_registration_sees_the_clients_host_for_its_callback_url`。Node 侧
+`tests/test-orchestration-routes.js` 21 项、`tests/test-orchestration-host.js` 10 项、
+`tests/test-api-contracts.js` 24 项通过；`test-wait-api-durable.js` 与
+`test-durable-operations-api.js`（都起真网关 + server.js 子进程）通过。
+`server.js` 棘轮降到 3110/167373。
+
+Node 保留的部分：wait 注册/回调/取消与后台进程启动的**处理器本身**仍在宿主端口
+（`src/routes/orchestration-host.js` 的 30 个 op），因为它们依赖进程内的 wait 注入器、
+detached 进程表和会话记录。**这批迁的是路由层，不是「Node 已可移除」。**
 
 ## 57. 发布资产、iOS OTA 与聊天历史簇 10 条公开路由迁入前门（2026-11-15）
 
@@ -4716,3 +4775,116 @@ Content-Type 跑一次 `setCharset(type, 'utf-8')`（`express/lib/response.js`�
 修复在 `src/routes/release-history-host.js` 的 `send`；前门原样透传宿主 Content-Type 这一行为本身是对的，
 集成测试相应改成按修好的宿主建模（`udid_profile_relays_the_aspen_content_type_verbatim`）。
 这类「我以为 Express 会怎样」的偏差只有拿真实 oracle 对拍才会暴露，单测与集成测试都钉不住。
+
+## 58. providers 宿主端口的增量迁移（未完成）
+
+`provider_registry` 负责线路校验的控制流及探测结果脱敏；Node 仍提供 provider
+增删改、会话引用及逐会话 PATCH、借道凭据等宿主操作和线路查询事实。
+会话记录表由 Rust addon 管理，但记录字段仍是 Node 进程内的实时对象；独立网关不能
+通过重新读取磁盘代替该事实源，也不能绕开现有 PATCH 的忙会话暂存和广播副作用。
+
+探测结果的宿主协议支持 `resultEncoding: "json"`：Node 调用 Rust 脱敏后将 JSON 文本
+包装返回，前门验证后原样发送。这样保留 JavaScript 按 UTF-16 截断后可能产生的孤立
+代理项，也兼容不支持该标记的旧宿主响应。相关代码分别在
+`src/routes/providers-host.js`、`native/core/src/provider_registry.rs` 和
+`native/gateway/src/app/providers.rs`。
+
+providers 差分对拍覆盖 207 个场景：203 个响应逐字节一致，4 个既有路由接缝差异按
+预期验证；可比较的副作用调用 Node 和 Rust 两侧各 342 次，没有不一致。该结果验证的是
+现有前门与宿主的组合，**不代表宿主端口已退役**。最近一次隔离启动捕获的 Node 路由
+注册是 139 条，中间件和路由器是 32 层。
+
+### 58.1 引用查找与强制解绑（2026-11-16）
+
+`deleteFacts` 与 `deleteExec` 的规则已迁走，Node 侧两个文件收为转发桩：
+`src/providers/references.js` 58 → 22 行，`src/providers/force-detach.js` 103 → 39 行。
+
+- 内核：`multicc_core::provider_registry` 新增 `reference_app_type_for_cli`（`-exp`
+  车道折叠到基础 CLI、`opencode` 归 Claude 池）、`reference_cli_spans_pools`
+  （`opencode`/`zcode` 跨两个池，因此跳过池比较）、`reference_target_is_poolable`、
+  `reference_aux_app_type`（按线路协议而非存储 appType 定池）、`detach_keeps_auto`
+  （剩余启用候选 < 2 则回落手动）、`detach_max_attempts`（钳进旧版合法的 2..=4）与
+  `DETACH_ERROR_LIMIT`。
+- 遍历与副作用编排在 `native/addon/src/provider_registry.rs` 的
+  `provider_find_references` / `provider_detach_references`：Rust 持有控制流、去重
+  （Set，首次出现序）、每会话 patch 计划、手动回退重试与结果分类；实时会话表、
+  Rust 支撑的默认值视图、Aux 配置与 `applySessionPatch`/`clearDefault`/
+  `clearAuxProvider` 仍在 Node 进程内，由 addon 按退休实现的顺序惰性调用。
+- 两处易错语义刻意保留：id 与 appType 走 `String(x || '')` 的 **falsy** 链（不是
+  nullish），所以数字 `0` 的 id 没有任何引用；Aux 协议只小写不去空白，`" openai "`
+  仍算 Anthropic 形状。失败消息按 UTF-16 码元切 200，切片本身留在 JavaScript。
+- `js_live` 新增 `instance_of`，`sessions instanceof Map` 保持原判定——带 `values`
+  方法的普通对象不是 `Map`，必须走另一条分支。
+
+验证：`multicc-core` 的 `provider_registry` 单测 21 项通过；
+`tests/test-provider-references.js` 用 30 条语料把 Rust 与冻结旧实现
+（`tests/helpers/legacy-provider-references.js`）逐字节对比，并断言数组与每个引用
+对象仍被冻结、键序一致，覆盖守卫要求五种 `kind` 全部出现。
+`tests/test-provider-routes.js` 29 项通过。
+
+大对拍新增 4 个用例补齐此前**零覆盖**的分支：`sess-auto3` 夹具让修剪后仍有 3 个启用
+候选，从而真正走到保持 Auto 的那条路（写回修剪后的候选表与重算的 `maxAttempts`）、
+手动回退重试、一个会话被两条引用命中只 patch 一次、以及引用指向已消失会话时跳过。
+变异检验：把 `detach_keeps_auto` 的阈值从 `>= 2` 改成 `>= 4` 后，对拍以退出码 1
+失败并报出 3 处副作用不一致（注意摘要行只报响应字节比较，轨迹不一致要看退出码与
+`result.json` 的 `extra.ok`）。
+
+冻结 oracle 原先从**活**代码 `require` `force-detach`，迁移后会变成「拿新实现和自己
+比」而永久失效；`tests/helpers/legacy-provider-routes.js` 已改指新的冻结副本
+`tests/helpers/legacy-provider-force-detach.js`。
+
+仍留在 Node 的决策：`createProvider`（`src/providers/core.js:946`，32 行）、
+`updateProvider`（:978，111 行）、`deleteProvider`（:1165，21 行）——store 文件的
+读写早已是 Rust（`getNative().providerStore`），留下的是「写什么」的决策（id 生成、
+`settingsConfig` 组装、官方目录分支、虚拟线路）。此外 `catalog`/`import`/
+`reassignExec`/借道与探测事实、`speedtestFacts` 的宿主事实也仍在 Node。
+每一部分均须保留失败和副作用顺序并补齐差分覆盖，最终才能移除宿主操作及其 Node 注册。
+
+`RustProviderDefaultsStore` 已接入官方账号初始化与默认值宿主操作。相同路径在同一
+Node 进程中共享持有器；旧调用方的对象形状由不缓存值的代理保留。官方账号映射仍通过
+现有 Node provider 端口查询，跨进程或绕过组合入口的多实例尚未实施唯一写者约束，
+provider 凭据和 CRUD 也尚未整体脱离 Node。隔离测试覆盖真实宿主 HTTP、持有器重载和
+两种失败发布顺序；差分夹具的 Rust 一侧使用真实持有器，写盘副作用由夹具记录。
+
+
+## 59. cli-switch 簇 `switch-cli` 迁入前门（2026-11-16）
+
+`POST /api/sessions/:id/switch-cli` 由 `native/gateway/src/app/cli_switch.rs` 接管，
+Node 侧的公开注册删除，只留回环宿主端口 `src/routes/cli-switch-host.js`。
+
+这一簇与「把 Node handler 整条隧道化」不同：切换规则早就在
+`native/core/src/cli_switch_runtime.rs`，而 gateway crate 本来就依赖 `multicc_core`，
+所以**入口闸门在前门进程内直接算**，根本不发往 Node：
+
+- `decodeURIComponent` 失败 → 400
+- `record.taskExecutionSlot === true` 的内部执行槽 → 404 `{"error":"session not found"}`，
+  且**早于 OPTIONS 与 body 解析**（`publicSessionAccessGuard` 是 `app.use` 层，顺序必须守住，
+  否则内部槽会在 OPTIONS 上泄漏存在性）
+- `plan("manualGate")` 的四条拒绝：会话不存在 404、`aux`/`gateway` 系统会话 400、
+  非 chat 会话 400、`cli` 不在支持表 400
+- `OPTIONS` → 200 `Allow: POST`
+- 非法 JSON → 400
+
+过闸之后才有两个宿主 op：
+
+| op | 入参 | 出参 | Node 副作用 |
+|---|---|---|---|
+| `facts` | `{sessionId}` | `{ok,exists,internalSlot,session,supported}` | 无 |
+| `noop` | `{sessionId}` | `{ok,body}` | `mutate('http.switch-cli-noop')` + 清 auto-provider 记录 |
+| `switch` | `{sessionId,targetCli,fresh}` | `{ok,status,body}` 或 `{ok:false,status,code,safeMessage,detail}` | 排队 / 409 / 提交整段 |
+
+`switch` 刻意**只有一次往返**：`signature`（`JSON.stringify(session)` 比对）与
+`preparations` Map 是跨 `await` 的 TOCTOU 保护，拆成多次前门往返就失效了。同理，session
+对象身份、子进程句柄、持久化事务与广播留在 Node，这是「状态/规则在 Rust + 句柄执行在 Node」
+的边界，不是暂时妥协。
+
+错误码必须透传：`tests/test-session-persistence-api.js` 钉着 switch-cli 的 500 体带
+`code=SESSION_PERSISTENCE_FAILED`。宿主失败形状因此采用与 `host-read-host.js` 相同的
+`{ok:false,status,code,safeMessage,detail}`，前门原地复刻 `safeErrorHandler`；
+若用朴素的 `{ok:false,error:{message}}` 会把错误码吞掉。
+
+验证：网关集成测试 13/13；差分 `docs/rust-migration/differential/cli-switch.js` 24 个请求
+逐字节一致 24/24、副作用一致 24/24，宿主调用实测 `facts` 24 / `noop` 4 / `switch` 10，
+其中 7 条入口拒绝全部只调 `facts`、零执行副作用，2 条内部槽同样只调 `facts`。三项变异
+（拒绝文案、`Allow` 列表、把 OPTIONS 提前到守卫之前）均被抓到：前两项 23/24，第三项 23/24
+且内部槽 facts-only 降为 1/2。

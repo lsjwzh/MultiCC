@@ -1,6 +1,6 @@
 'use strict';
 
-// 宿主端口：编排与无人值守 23 条公开路由（原本分散在四个文件里）已由 Rust
+// 宿主端口：编排与无人值守 30 条公开路由（原本分散在四个文件里）已由 Rust
 // 前门独占。
 //
 //   GET    /api/aux/status, /api/aux/health, /api/aux/history      (aux-goal.js)
@@ -14,6 +14,10 @@
 //   GET    /api/sessions/:id/tasks, …/dispatches, …/queue
 //   POST   /api/sessions/:id/user-input/dismiss, …/queue/action
 //   GET    /api/v1/sessions/:id/waits
+//   POST   /api/sessions/:id/wait, /api/wait/:wid/resolve
+//   GET    /api/sessions/:id/waits        DELETE /api/wait/:wid
+//   POST   /api/sessions/:id/run-detached
+//   GET    /api/sessions/:id/detached, /api/detached/:taskId
 //
 // 路径匹配、参数解码、查询子集、Express 自动 OPTIONS 并集、会话准入守卫（含 v1
 // 信封）、主机不可达/未知 op 的错误形状都在 native/gateway/src/app/
@@ -25,11 +29,11 @@
 // `res.status/json`；捕获器把它们变成 `{ status, body, headers }`，前门原样回放
 // —— 两边不会各自长出第二套状态码、头或键序规则。
 //
-// 明确不在这里的 7 条（已登记的 out-of-scope wait 注入器 / detached 集，继续由
-// 真实 app 挂载、由前门转发给 Node）：POST /api/sessions/:id/wait、
-// POST /api/wait/:wid/resolve、GET /api/sessions/:id/waits（注意：无 v1 前缀）、
-// DELETE /api/wait/:wid、POST /api/sessions/:id/run-detached、
-// GET /api/sessions/:id/detached、GET /api/detached/:taskId。
+// 第二批（wait 注入器 / detached 集）把原先留在真实 app 上的 7 条也搬了进来，
+// 所以 src/routes/orchestration.js 再没有公开挂载。这 7 条是本簇唯一会读
+// `Idempotency-Key` 之外请求头的：wait 注册用 `req.get('host')` 拼 callbackUrl，
+// resolve 回调从 `x-wait-token` 取令牌 —— 两个头由前门转发；`protocol` 仍恒为
+// http（内网明文端口上的 Express 没有 `trust proxy`）。
 //
 // 不存在“仅本机”路由；前门仍把按真实客户端地址算出的 `local` 事实放进 req.local，
 // 宿主端口自己看到的永远是回环，不能用来判定。
@@ -70,6 +74,13 @@ const OPS = {
   'session-queue': { method: 'GET', path: '/api/sessions/:id/queue', params: ['id'] },
   'session-queue-action': { method: 'POST', path: '/api/sessions/:id/queue/action', params: ['id'] },
   'v1-session-waits': { method: 'GET', path: '/api/v1/sessions/:id/waits', params: ['id'] },
+  'session-wait-post': { method: 'POST', path: '/api/sessions/:id/wait', params: ['id'] },
+  'wait-resolve': { method: 'POST', path: '/api/wait/:wid/resolve', params: ['wid'] },
+  'session-waits': { method: 'GET', path: '/api/sessions/:id/waits', params: ['id'] },
+  'wait-cancel': { method: 'DELETE', path: '/api/wait/:wid', params: ['wid'] },
+  'run-detached': { method: 'POST', path: '/api/sessions/:id/run-detached', params: ['id'] },
+  'session-detached': { method: 'GET', path: '/api/sessions/:id/detached', params: ['id'] },
+  'detached-task': { method: 'GET', path: '/api/detached/:taskId', params: ['taskId'] },
 };
 
 async function invoke(handlers, body) {

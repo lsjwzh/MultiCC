@@ -257,7 +257,7 @@ const { envEnabled, resolveNetworkPolicy, selectListenPort } = require('./src/ne
 const { isLocalRequest, isPrivateRequestPeer } = require('./src/request-locality');
 const { createObservability, installConsoleRedaction } = require('./src/observability');
 const { mountWsConnectionRouter } = require('./src/ws/connection-router');
-const { createHealthHandlers } = require('./src/health');
+const { mountServerCoreHostRoute } = require('./src/routes/server-core-host');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const { createHostEnv } = require('./src/host-env');
 // Windows keeps its startup PATH: widen it from install dirs + registry now.
@@ -433,28 +433,6 @@ const providerRelayModelCatalogRuntime = createProviderRelayModelCatalogRuntime(
 
 let serviceReady = false;
 const commanderMigrationState = createCommanderMigrationState();
-const healthHandlers = createHealthHandlers({
-  isReady: () => serviceReady && !authSecurity.shuttingDown() && commanderMigrationState.snapshot().ready,
-  readinessDetails: () => ({ commanderMigration: commanderMigrationState.snapshot() }),
-});
-app.get('/healthz', healthHandlers.healthz);
-app.get('/readyz', healthHandlers.readyz);
-app.get('/metrics', (req, res) => {
-  let activeTurns = 0;
-  for (const [name, cs] of chatSessions) {
-    if (cs && (isChatStateBusy(cs) || chatStream.status(name)?.busy)) activeTurns++;
-  }
-  const waitStats = waitInjector.stats();
-  res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8').send(metrics.render({
-    ...observability.eventLoopMetrics(),
-    multicc_active_turns: activeTurns,
-    multicc_ws_clients: wss.clients.size,
-    multicc_git_queue_depth: gitQueueDepth(),
-    multicc_active_waits: waitStats.waits + (orchestrationRuntime ? orchestrationRuntime.pendingCount() : 0),
-    ...(orchestrationRuntime?.store.metrics?.() || {}),
-    multicc_ready: serviceReady && !authSecurity.shuttingDown() && commanderMigrationState.snapshot().ready ? 1 : 0,
-  }));
-});
 let PORT = networkPolicy.port;
 const BIND_HOST = networkPolicy.host;
 const server = http.createServer(app);
@@ -659,11 +637,6 @@ const { slotOwnsWorktree } = require('./src/task-worktree');
 // RepoActor operations are retained in a bounded in-memory history. Destructive
 // endpoint responses include operationId; callers can inspect progress and the
 // observed queue depth here without polling child processes themselves.
-app.get('/api/repo-operations/:operationId', (req, res) => {
-  const operation = defaultRepoActor.status(req.params.operationId);
-  if (!operation) return res.status(404).json({ error: 'operation not found' });
-  res.json(operation);
-});
 
 const gitReadyDirs = new Set();          // dir.id once its repo is verified/initialised
 const invalidSessions = new Map();       // sessionId → reason; recovery is skipped for these
@@ -1874,7 +1847,7 @@ function reportHostControlFailure(component, stage, category) {
 tunnel.setFailureReporter((stage, category) => {
   reportHostControlFailure('tunnel', stage, category);
 });
-const chatStream = require('./src/chat/chat-stream'); const { isChatStateBusy } = require('./src/session/runtime-busy');
+const chatStream = require('./src/chat/chat-stream');
 const waitInjector = require('./src/wait/injector');
 const sessionDelivery = require('./src/session/delivery').createSessionDelivery({
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
@@ -2538,6 +2511,23 @@ sessionWorkHost = createSessionWorkHost({
 
 // Rust reads the scan ring via this host.
 mountScanHistoryHostRoute(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
+// Rust answers /healthz, /readyz, /metrics and /api/repo-operations; it reads
+// the process uptime/readiness flags, the merged metric table and the repo-actor
+// status through this host port. orchestrationRuntime is assigned later, so it
+// stays behind a getter.
+mountServerCoreHostRoute(app, {
+  metrics,
+  eventLoopMetrics: () => observability.eventLoopMetrics(),
+  chatSessions,
+  isStreamBusy: name => chatStream.status(name)?.busy,
+  wss,
+  gitQueueDepth,
+  waitInjector,
+  getOrchestrationRuntime: () => orchestrationRuntime,
+  isReady: () => serviceReady && !authSecurity.shuttingDown() && commanderMigrationState.snapshot().ready,
+  readinessDetails: () => ({ commanderMigration: commanderMigrationState.snapshot() }),
+  defaultRepoActor,
+});
 
 // ── Turn state + task attribution ───────────────────────────────────────────
 // Structured finalization facts are the sole source of chat turn state. Aux is
@@ -2835,7 +2825,6 @@ const orchestrationRoutes = createOrchestrationRoutes({
   unstickBlocked: (id, opts) => workspaceAdmission?.escalate(id, opts),
 });
 orchestrationRoutes.mountHostRoutes(orchestrationHost.app);
-orchestrationRoutes.mountRoutes(app);
 orchestrationHost.mountRoute(app);
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive

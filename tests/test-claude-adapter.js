@@ -247,24 +247,27 @@ test('source CLI display replies cannot make a new Claude Exp target resume', as
   assert.equal(invocation.args[1], '--resume', 'missing established history must not silently restart');
 });
 
-test('a pending new target resumes after SDK history exists; unknown/reused history fails closed', () => {
+test('a pending new target resumes after SDK history exists; unknown/reused history fails closed', t => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-exp-history-probe-'));
+  t.after(() => fs.rmSync(configDir, { recursive: true, force: true }));
   const record = { cli: 'claude-exp', cliSessionId: SESSION_UUID,
     pendingCliHandoff: { status: 'pending', toCli: 'claude-exp', reusedTarget: false } };
-  const absent = () => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); };
-  const dir = { name: 'SDK-custom-or-hashed-project', isDirectory: () => true };
-  const io = { readdirSync: () => [dir], statSync: absent };
-  assert.equal(hasNativeHistory(record, { fs: io }), false);
-  assert.equal(hasNativeHistory(record, { fs: { ...io, readdirSync: absent } }), false);
-  const checked = [];
-  assert.equal(hasNativeHistory(record, { fs: { ...io, statSync: file => checked.push(file) } }), true);
-  assert.ok(checked[0].endsWith(path.join(dir.name, SESSION_UUID + '.jsonl')));
-  const denied = () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
-  assert.equal(hasNativeHistory(record, { fs: { ...io, statSync: denied } }), true);
-  assert.equal(hasNativeHistory(record, { fs: { ...io, readdirSync: denied } }), true);
+  // No projects tree: the Rust probe proves absence, so the reserved id cannot
+  // masquerade as a conversation.
+  assert.equal(hasNativeHistory(record, { configDir }), false);
+  // Any project directory holding <id>.jsonl is history, whatever canonical
+  // name the SDK gave it (symlink/hash/custom project layouts).
+  const project = path.join(configDir, 'projects', 'SDK-custom-or-hashed-project');
+  fs.mkdirSync(project, { recursive: true });
+  assert.equal(hasNativeHistory(record, { configDir }), false, 'an empty project tree is still absence');
+  fs.writeFileSync(path.join(project, `${SESSION_UUID}.jsonl`), '{}\n');
+  assert.equal(hasNativeHistory(record, { configDir }), true);
   for (const pendingCliHandoff of [undefined,
     { ...record.pendingCliHandoff, reusedTarget: true },
     { ...record.pendingCliHandoff, status: 'consumed' },
-  ]) assert.equal(hasNativeHistory({ ...record, pendingCliHandoff }, { fs: io }), true);
-  assert.equal(hasNativeHistory({ ...record, cli: 'claude' }, { fs: io }), true);
-  assert.equal(hasNativeHistory({ ...record, cli: 'codex' }, { fs: io }), true);
+  ]) assert.equal(hasNativeHistory({ ...record, pendingCliHandoff }, { configDir }), true);
+  assert.equal(hasNativeHistory({ ...record, cli: 'claude' }, { configDir }), true);
+  assert.equal(hasNativeHistory({ ...record, cli: 'codex' }, { configDir }), true);
+  assert.equal(hasNativeHistory({ ...record, cliSessionId: null }, { configDir }), false);
+  assert.equal(hasNativeHistory({ ...record, cliSessionId: 'not-a-uuid' }, { configDir }), true);
 });

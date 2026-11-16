@@ -10,40 +10,21 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const root = await fetch(base, { redirect: 'manual' }); assert.equal(root.headers.get('location'), '/air');
-  const manage = await fetch(base + '/manage', { redirect: 'manual' });
-  assert.equal(manage.headers.get('location'), '/air?view=overview');
-  const provider = await fetch(base + '/manage?view=provider&token=bootstrap', { redirect: 'manual' });
-  assert.equal(provider.headers.get('location'), '/air?view=provider&token=bootstrap');
-  const cron = await fetch(base + '/manage?view=cron', { redirect: 'manual' });
-  assert.equal(cron.headers.get('location'), '/air?view=schedules');
-  const planner = await fetch(base + '/manage?view=tasks', { redirect: 'manual' });
-  assert.equal(planner.headers.get('location'), '/air?view=overview');
-  for (const url of ['/air?view=planner', '/air.html?view=planner', '/manage?view=planner',
-    '/manage?view=tasks', '/manage.html?view=tasks&embed=air', '/manage.html?view=planner']) {
-    const response = await fetch(base + url + '&dir=fleet%26one&task=task-1&token=bootstrap', { redirect: 'manual' });
-    assert.equal(response.status, 302, url);
-    const destination = new URL(response.headers.get('location'), base);
-    assert.equal(destination.pathname, '/air');
-    assert.equal(destination.searchParams.get('view'), 'overview');
-    assert.equal(destination.searchParams.get('dir'), 'fleet&one');
-    assert.equal(destination.searchParams.get('task'), 'task-1');
-    assert.equal(destination.searchParams.get('token'), 'bootstrap');
-    assert.equal(destination.searchParams.has('embed'), false);
+  // `/manage`、`/dashboard` 与 `/air?view=planner` 的重定向已由 Rust 前门独占
+  // （native/core/src/static_assets_routes.rs；Node 侧注册已删除）。这里只断言
+  // Node 不再用 302 认领它们，剩下的 versioned-HTML 入口仍在 Node 上。
+  for (const url of ['/manage', '/dashboard', '/air?view=planner']) {
+    const response = await fetch(base + url, { redirect: 'manual' });
+    assert.notEqual(response.status, 302, `${url} 归 Rust 前门，Node 不再重定向`);
+    assert.equal(response.headers.get('location'), null, url);
   }
   for (const url of ['/manage-task-planner.js', '/manage-task-planner.css']) {
     assert.equal((await fetch(base + url)).status, 404, url);
   }
   const air = await (await fetch(base + '/air')).text();
   assert.doesNotMatch(air, /view=planner|directory-open-planner/);
-  // 旧管理台整页已删：/manage.html 只剩书签语义，带着 view 转进 Air，
-  // 它那张兼容皮肤（manage-air-embed.css）连同 planner 资源一起 404。
-  const legacyManage = await fetch(base + '/manage.html?view=memory&embed=air', { redirect: 'manual' });
-  assert.equal(legacyManage.status, 302);
-  const legacyTarget = new URL(legacyManage.headers.get('location'), base);
-  assert.equal(legacyTarget.pathname, '/air');
-  assert.equal(legacyTarget.searchParams.get('view'), 'memory');
-  assert.equal(legacyTarget.searchParams.has('embed'), false);
+  // 旧管理台整页已删：它那张兼容皮肤（manage-air-embed.css）连同 planner
+  // 资源一起 404；书签语义只在前门（/manage → /air?view=…）。
   assert.equal((await fetch(base + '/manage-air-embed.css')).status, 404);
   assert.equal((await fetch(base + '/manage.js')).status, 404);
   for (const url of ['/chat?session=a', '/chat.html?session=a', '/task-shell?shell=s', '/task-shell.html?task=t&board=1', '/task-shell.html?air=1', '/task-shell.html?air=1&board=1&shell=s']) {

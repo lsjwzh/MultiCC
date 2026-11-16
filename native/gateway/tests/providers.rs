@@ -728,6 +728,37 @@ fn probe_checks_existence_before_candidates() {
     assert_eq!(exec["candidates"], json!(["m1", "m2"]));
 }
 
+#[test]
+fn probe_replays_valid_json_with_lone_surrogate_and_rejects_invalid_json() {
+    let valid = Gateway::start(
+        "probe-json-valid",
+        json!({ "providers": { "answers": {
+            "probeFacts:ok": { "ok": true, "exists": true },
+            "probeExec": { "ok": true, "resultJson": r#"{"sample":"\ud83d"}"# }
+        } } }),
+    );
+    let response = valid.send("POST", "/api/providers/claude/ok/probe", &json!({}));
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, r#"{"sample":"\ud83d"}"#);
+    let call = valid
+        .provider_calls()
+        .into_iter()
+        .find(|call| call["op"] == "probeExec")
+        .unwrap();
+    assert_eq!(call["resultEncoding"], "json");
+
+    let invalid = Gateway::start(
+        "probe-json-invalid",
+        json!({ "providers": { "answers": {
+            "probeFacts:ok": { "ok": true, "exists": true },
+            "probeExec": { "ok": true, "resultJson": "not json" }
+        } } }),
+    );
+    let response = invalid.send("POST", "/api/providers/claude/ok/probe", &json!({}));
+    assert_eq!(response.status, 503);
+    assert!(!response.body.contains("not json"));
+}
+
 // ── reassign ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1147,8 +1178,10 @@ fn defaults_get_and_put_merge_before_persisting() {
         "defaults",
         json!({ "providers": { "answers": {
             "defaultsGet": { "ok": true, "defaults": { "claude": null, "codex": "p2" } },
-            "defaultsValidate:claude": { "ok": true, "valid": true, "value": "p1" },
-            "defaultsValidate:codex": { "ok": true, "valid": false, "value": null },
+            "providerSummary:claude:p1": { "ok": true, "summary": {
+                "appType": "claude", "virtual": false, "apiFormat": "anthropic",
+                "protocol": "anthropic", "baseUrl": "https://h", "hasToken": true } },
+            "providerSummary:codex:bad": { "ok": true, "summary": null },
             "defaultsPersist": { "ok": true, "defaults": { "claude": "p1", "codex": "p2" } }
         } } }),
     );
@@ -1168,6 +1201,16 @@ fn defaults_get_and_put_merge_before_persisting() {
         .find(|call| call["op"] == "defaultsPersist")
         .unwrap();
     assert_eq!(persist["next"], json!({ "claude": "p1", "codex": "p2" }));
+    // The managed id reached rule ⑤, so exactly one summary lookup happened,
+    // and it asked the provider's own pool.
+    let summaries: Vec<Value> = gateway
+        .provider_calls()
+        .into_iter()
+        .filter(|call| call["op"] == "providerSummary")
+        .collect();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0]["appType"], json!("claude"));
+    assert_eq!(summaries[0]["id"], json!("p1"));
 
     let response = gateway.send("PUT", "/api/provider-defaults", &json!({ "codex": "bad" }));
     assert_eq!(response.status, 400, "{}", response.body);
@@ -1181,6 +1224,176 @@ fn defaults_get_and_put_merge_before_persisting() {
         .filter(|call| call["op"] == "defaultsPersist")
         .count();
     assert_eq!(persists, 1);
+}
+
+/// The provider-id rules the defaults route can reach: the empty pass-through,
+/// the native-line rejections that never touch the store, the pool/format gate
+/// and the lazy summary lookup.
+#[test]
+fn defaults_put_validates_ids_with_the_core_rules() {
+    let gateway = Gateway::start(
+        "defaults-rules",
+        json!({ "providers": { "answers": {
+            "defaultsGet": { "ok": true, "defaults": { "claude": null, "codex": null } },
+            // A claude-pool summary accepts the claude lane.
+            "providerSummary:claude:claude-native:x": { "ok": true, "summary": {
+                "appType": "claude", "virtual": false, "apiFormat": "anthropic",
+                "protocol": "anthropic", "baseUrl": "https://h", "hasToken": true } },
+            // A codex-pool summary is an incompatible protocol for the claude
+            // lane (codex pins openai_responses).
+            "providerSummary:claude:codex-line": { "ok": true, "summary": {
+                "appType": "codex", "virtual": false, "apiFormat": "openai_responses",
+                "protocol": "openai_responses", "baseUrl": "https://h", "hasToken": true } },
+            "defaultsPersist": { "ok": true, "defaults": { "claude": "claude-native:x", "codex": null } }
+        } } }),
+    );
+
+    // Empty value: accepted as null without any lookup.
+    let response = gateway.send("PUT", "/api/provider-defaults", &json!({ "claude": null }));
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(
+        response.body,
+        r#"{"ok":true,"defaults":{"claude":"claude-native:x","codex":null}}"#
+    );
+    let persist = gateway
+        .provider_calls()
+        .into_iter()
+        .find(|call| call["op"] == "defaultsPersist")
+        .unwrap();
+    assert_eq!(persist["next"], json!({ "claude": null, "codex": null }));
+    assert_eq!(
+        gateway
+            .provider_calls()
+            .into_iter()
+            .filter(|call| call["op"] == "providerSummary")
+            .count(),
+        0
+    );
+
+    // `String(5)` is what rule ⑤ looks up; the fixture has no such provider.
+    let response = gateway.send("PUT", "/api/provider-defaults", &json!({ "codex": 5 }));
+    assert_eq!(response.status, 400, "{}", response.body);
+    let looked_up = gateway
+        .provider_calls()
+        .into_iter()
+        .rfind(|call| call["op"] == "providerSummary")
+        .unwrap();
+    assert_eq!(looked_up["appType"], json!("codex"));
+    assert_eq!(looked_up["id"], json!("5"));
+
+    // Rules ①-④ accept the claude lane and reject the codex lane for the same
+    // id, and the rejections never reach the summary lookup.
+    let before = gateway
+        .provider_calls()
+        .into_iter()
+        .filter(|call| call["op"] == "providerSummary")
+        .count();
+    let response = gateway.send(
+        "PUT",
+        "/api/provider-defaults",
+        &json!({ "claude": "claude-native:x" }),
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    let response = gateway.send(
+        "PUT",
+        "/api/provider-defaults",
+        &json!({ "codex": "claude-native:x" }),
+    );
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(
+        response.json(),
+        json!({ "error": "invalid codex provider id" })
+    );
+    let after = gateway
+        .provider_calls()
+        .into_iter()
+        .filter(|call| call["op"] == "providerSummary")
+        .count();
+    // Both lanes reach rule ⑤ (the id is not a native line), so both look the
+    // provider up; only the claude pool accepts it.
+    assert_eq!(after - before, 2, "one lookup per lane");
+
+    // A vendor-native id on the wrong lane is rejected by rule ① itself: no
+    // summary op is ever sent.
+    for id in [
+        "qoder-native:q1",
+        "opencode-native:ok-1",
+        "opencode-native:-bad",
+    ] {
+        let before = gateway
+            .provider_calls()
+            .into_iter()
+            .filter(|call| call["op"] == "providerSummary")
+            .count();
+        let response = gateway.send("PUT", "/api/provider-defaults", &json!({ "claude": id }));
+        assert_eq!(response.status, 400, "{id}: {}", response.body);
+        let after = gateway
+            .provider_calls()
+            .into_iter()
+            .filter(|call| call["op"] == "providerSummary")
+            .count();
+        assert_eq!(after, before, "{id} must be rejected before the lookup");
+    }
+
+    // A provider from the other pool is an incompatible protocol.
+    let response = gateway.send(
+        "PUT",
+        "/api/provider-defaults",
+        &json!({ "claude": "codex-line" }),
+    );
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(
+        response.json(),
+        json!({ "error": "invalid claude provider id" })
+    );
+}
+
+#[test]
+fn defaults_put_maps_host_failures_to_503() {
+    // A host answer that is not ok is unavailable, not an invalid id.
+    let gateway = Gateway::start(
+        "defaults-host-fail",
+        json!({ "providers": { "answers": {
+            "defaultsGet": { "ok": true, "defaults": { "claude": null, "codex": null } },
+            "normalizeId": { "ok": false },
+            "defaultsPersist": { "ok": true, "defaults": {} }
+        } } }),
+    );
+    let response = gateway.send("PUT", "/api/provider-defaults", &json!({ "claude": "p1" }));
+    assert_eq!(response.status, 503, "{}", response.body);
+    assert_eq!(
+        gateway
+            .provider_calls()
+            .into_iter()
+            .filter(|call| call["op"] == "defaultsPersist")
+            .count(),
+        0
+    );
+
+    // A failing summary lookup is unavailable too.
+    let gateway = Gateway::start(
+        "defaults-summary-fail",
+        json!({ "providers": { "answers": {
+            "defaultsGet": { "ok": true, "defaults": { "claude": null, "codex": null } },
+            "providerSummary:claude:p1": { "ok": false },
+            "defaultsPersist": { "ok": true, "defaults": {} }
+        } } }),
+    );
+    let response = gateway.send("PUT", "/api/provider-defaults", &json!({ "claude": "p1" }));
+    assert_eq!(response.status, 503, "{}", response.body);
+    assert_eq!(
+        gateway
+            .provider_calls()
+            .into_iter()
+            .filter(|call| call["op"] == "defaultsPersist")
+            .count(),
+        0
+    );
+
+    // The ordinary transport failure keeps its 503 as well.
+    let gateway = Gateway::start("defaults-down", json!({ "hostDown": true }));
+    let response = gateway.send("PUT", "/api/provider-defaults", &json!({ "claude": "p1" }));
+    assert_eq!(response.status, 503, "{}", response.body);
 }
 
 // ── transport, Express behavior and the claim boundary ──────────────────────

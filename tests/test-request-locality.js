@@ -136,6 +136,8 @@ test('locality checks stay limited to authentication and sensitive host controls
   // machine, and the explicitly enumerated sensitive host settings.
   assert.deepEqual(localityUsers, [
     'server.js',
+    // The runtime only forwards the injected probe to the host port.
+    'src/cli/switch-runtime.js',
     'src/host-power-services.js',
     'src/request-locality.js',
     'src/router-tool-host.js',
@@ -144,6 +146,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/account-routes-host.js',
     'src/routes/agent-resources-host.js',
     'src/routes/auth.js',
+    'src/routes/cli-switch-host.js',
     'src/routes/directory-host.js',
     'src/routes/docs-memory-host.js',
     'src/routes/events-host.js',
@@ -165,6 +168,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/release-history-host.js',
     'src/routes/scan-history-host.js',
     'src/routes/secrets-vault-host.js',
+    'src/routes/server-core-host.js',
     'src/routes/session-admin-host.js',
     'src/routes/session-git-host.js',
     // The runtime only forwards the injected probe to the host port.
