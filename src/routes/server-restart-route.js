@@ -60,6 +60,13 @@ function createServerRestartRoute(deps) {
         _restartScheduled = false;
       }
       if (getShuttingDown() || _restartScheduled) return res.status(409).json({ error: 'restart already in progress' });
+      const requested = req.body && req.body.port;
+      if (requested !== undefined && (!Number.isInteger(requested) || requested < 1 || requested > 65535)) {
+        return res.status(400).json({ error: 'invalid restart port', code: 'RESTART_PORT_INVALID' });
+      }
+      if (req.body && req.body.expectedPid !== undefined && req.body.expectedPid !== process.ppid) {
+        return res.status(409).json({ error: 'gateway identity changed', code: 'RESTART_IDENTITY_CHANGED' });
+      }
       // Count sessions with a genuinely in-flight streaming turn (not a stale
       // one) so the client can warn the user those turns will be interrupted —
       // their partial output is flushed to disk by gracefulShutdown before exit.
@@ -72,9 +79,9 @@ function createServerRestartRoute(deps) {
       _restartScheduledAt = Date.now();
       const scheduledAt = _restartScheduledAt;
       try {
-        const pending = scheduleRestart({ spawn, rootDir, dataDir, port: getPort(), host: getHost(), env: process.env });
-        pending.then(({ mode }) => {
-          res.status(202).json({ ok: true, status: 'scheduled', activeStreaming, mode });
+        const pending = scheduleRestart({ spawn, rootDir, dataDir, port: getPort(), targetPort: requested ?? getPort(), host: getHost(), env: process.env });
+        pending.then(({ mode, generation, supervisorPid }) => {
+          res.status(202).json({ ok: true, status: 'scheduled', activeStreaming, mode, restartId: generation, supervisorPid });
           setTimeout(() => { try { desktopExit('restart'); } catch (error) {
             log.error('[multicc] /api/restart: shutdown failed', error && error.message);
           } }, 250);

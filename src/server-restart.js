@@ -5,7 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 // Thin host bridge: the independent Rust executable owns the restart policy.
-function scheduleRustRestart({ spawn, rootDir, dataDir, port, host = '127.0.0.1', env = process.env }) {
+function scheduleRustRestart({ spawn, rootDir, dataDir, port, targetPort = port, host = '127.0.0.1', env = process.env }) {
   const addon = env.MULTICC_RUST_ADDON || path.join(env.MULTICC_RUST_PREBUILT_DIR || path.join(rootDir, 'native', 'prebuilt'),
     `${process.platform}-${process.arch}`, 'multicc_core.node');
   const oldPid = Number(env.MULTICC_GATEWAY_PID);
@@ -24,9 +24,19 @@ function scheduleRustRestart({ spawn, rootDir, dataDir, port, host = '127.0.0.1'
   const logs = path.join(dataDir, 'logs');
   fs.mkdirSync(logs, { recursive: true });
   const logPath = path.join(logs, 'restart-supervisor.log');
-  const config = { mode, old_pid: oldPid, port, probe_host: probeHost, generation,
+  if (targetPort !== port && mode !== 'standalone') throw Object.assign(new Error('port changes require the standalone launcher'), { code: 'RESTART_PORT_UNSUPPORTED' });
+  const config = { mode, old_pid: oldPid, port: targetPort, probe_host: probeHost, generation,
     generation_file: path.join(dataDir, '.restart-generation'), lock_file: path.join(dataDir, '.restart-supervisor.lock'),
-    cwd: rootDir, gateway, node: process.execPath, log_path: logPath };
+    port_file: path.join(dataDir, '.restart-port'),
+    cwd: rootDir, gateway, node: process.execPath, log_path: logPath,
+    source_launcher: mode === 'background' ? path.join(rootDir, 'scripts', 'start-gateway.js') : null };
+  if (env.NODE_ENV === 'test' && env.MULTICC_RESTART_TEST_TIMEOUT_MS) {
+    const timeout = Number(env.MULTICC_RESTART_TEST_TIMEOUT_MS);
+    if (Number.isInteger(timeout) && timeout >= 100 && timeout <= 30000) {
+      config.old_timeout_ms = timeout;
+      config.ready_timeout_ms = timeout;
+    }
+  }
   const output = fs.openSync(logPath, 'a', 0o600);
   let child;
   try { child = spawn(binary, [], { detached: true, cwd: rootDir, windowsHide: true,
@@ -46,7 +56,7 @@ function scheduleRustRestart({ spawn, rootDir, dataDir, port, host = '127.0.0.1'
       }
       child.stdout.destroy();
       child.unref();
-      resolve({ mode, logPath });
+      resolve({ mode, logPath, generation, supervisorPid: child.pid });
     }
     let message = '';
     child.stdout.on('data', chunk => {
@@ -57,6 +67,17 @@ function scheduleRustRestart({ spawn, rootDir, dataDir, port, host = '127.0.0.1'
     child.once('error', done);
     child.once('exit', code => done(new Error(`restart supervisor exited before handshake: ${code}`)));
   });
+}
+
+// CLI compatibility bridge. The Rust executable performs identity checks,
+// the HTTP request, and readiness monitoring; no credentials are passed.
+function requestRustRestart({ binary, origin, expectedPids, port, run = require('node:child_process').spawnSync }) {
+  const result = run(binary, ['--request'], {
+    input: JSON.stringify({ origin, expected_pids: expectedPids, port: port || null }),
+    stdio: ['pipe', 'inherit', 'inherit'], encoding: 'utf8', timeout: 740000, windowsHide: true,
+  });
+  if (result.error) { process.stderr.write(`restart supervisor unavailable: ${result.error.message}\n`); return 1; }
+  return result.status === 0 ? 0 : (result.status || 1);
 }
 
 // Use the same ./multicc restart entry as a manual restart, with a bash fallback
@@ -192,6 +213,7 @@ function scheduleDetachedRestart(options = {}) {
 
 module.exports = {
   scheduleRustRestart,
+  requestRustRestart,
   BASH_PATH,
   MANAGER_NAME,
   RESTART_EXEC_COMMAND,
@@ -201,3 +223,20 @@ module.exports = {
   writeRestartScript,
   scheduleDetachedRestart,
 };
+
+if (require.main === module && process.argv[2] === '--request') {
+  const root = path.resolve(process.argv[3]);
+  const config = require('./host-env').readEnvFile();
+  const port = Number(process.env.PORT || config.PORT || 3000);
+  const host = process.env.HOST || config.HOST || '127.0.0.1';
+  const loopback = host === '::1' || host === '::' ? '[::1]' : host === '127.0.0.1' || host === '0.0.0.0' ? '127.0.0.1' : '';
+  const expectedPids = String(process.env.MULTICC_RESTART_PIDS || '').split(/\s+/).map(Number).filter(n => Number.isInteger(n) && n > 1);
+  const addon = process.env.MULTICC_RUST_ADDON;
+  if (!addon || !loopback || !Number.isInteger(port) || port < 1 || port > 65535 || !expectedPids.length) {
+    process.stderr.write('Cannot verify the running MultiCC instance; restart was not requested.\n');
+    process.exitCode = 1;
+  } else {
+    const binary = path.join(path.dirname(addon), process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
+    process.exitCode = requestRustRestart({ binary, origin: `http://${loopback}:${port}`, expectedPids });
+  }
+}
