@@ -372,26 +372,15 @@ function createPluginsRoutes(deps) {
       const result = await runPluginCommand(req.params.id, command, req.body.input);
       res.status(result.status).json(result.payload);
     });
-    // 常驻插件与通知渠道：是否在运行、未恢复的告警；各渠道的接收人（推送设置、钩子用）。
-    app.get('/api/channels', (req, res) => {
-      res.set('Cache-Control', 'no-store');
-      // inUse：有推送订阅或钩子指望它。插件停了而 inUse 为真，Air 要出横幅。
-      const usage = channelRegistry.usage();
-      const plugins = (channelHost ? channelHost.status() : []).map(item => {
-        if (!item.channel) return item;
-        const count = usage.filter(use => use.plugin === item.id).length;
-        return { ...item, inUse: count > 0, subscriptions: usage.filter(use => use.plugin === item.id && use.kind === 'push').length, uses: count };
-      });
-      res.json({ available: Boolean(channelHost), plugins });
-    });
     app.get('/api/channels/targets', async (req, res) => {
       res.set('Cache-Control', 'no-store');
       try { res.json({ channels: channelHost ? await channelHost.targets() : [] }); }
       catch (error) { res.status(500).json({ error: error.message }); }
     });
-    // 插件发送前复核与插件 UI 静态树已由 Rust 前门独占；Node 只留回环宿主端口
-    // （findPlugin / channelStillActive，协议见 src/routes/plugins-host.js）。
-    mountPluginsHostRoute(app, { findManifest, channelRegistry, isLocalRequest });
+    // 插件发送前复核、`GET /api/channels` 与插件 UI 静态树已由 Rust 前门独占；Node 只留回环
+    // 宿主端口（findPlugin / channelStillActive / channelsStatus，协议见
+    // src/routes/plugins-host.js）。
+    mountPluginsHostRoute(app, { findManifest, channelRegistry, channelHost, isLocalRequest });
   }
 
   return { mount, listPlugins, scan, catalogPayload: publicPayload, runPluginCommand, catalog, installer, channelHost };

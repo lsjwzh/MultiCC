@@ -9,6 +9,9 @@
 //                       目录与 UI 入口；前门据此重新做 realpath 与子树闸门
 //   channelStillActive  逐个 (sessionId, category) 问 channel registry：那条任务
 //                       的问题还在不在（会话状态机只在本进程里）
+//   channelsStatus      常驻插件宿主与渠道登记处里的事实：available、status() 原样、
+//                       usage() 原样。原 GET /api/channels 的 inUse/subscriptions/uses
+//                       整形已归 Rust 前门，这里不做任何加工。
 //
 // 这不是一条公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest`
 // 拒绝任何转发自真实远端客户端的请求，所以前门的公网端口也拿不到额外能力
@@ -50,6 +53,16 @@ function mountPluginsHostRoute(app, options = {}) {
     ? options.stillActive
     : options.channelRegistry && options.channelRegistry.stillActive;
   assertFunction(stillActive, 'channelRegistry.stillActive');
+  const usage = typeof options.usage === 'function'
+    ? options.usage
+    : options.channelRegistry && options.channelRegistry.usage;
+  assertFunction(usage, 'channelRegistry.usage');
+  const usageReceiver = typeof options.usage === 'function' ? undefined : options.channelRegistry;
+  // channelHost 可以没有（这台机器不起常驻插件宿主）；给了就必须能报状态。
+  const channelHost = options.channelHost || null;
+  if (channelHost && typeof channelHost.status !== 'function') {
+    throw new TypeError('[plugins-host] channelHost.status must be a function');
+  }
   // 测试注入；生产解析与其余路由同一个实现，每次请求现取。
   const isLocal = options.isLocal || options.isLocalRequest || isLocalRequest;
 
@@ -73,6 +86,23 @@ function mountPluginsHostRoute(app, options = {}) {
     if (body.op === 'channelStillActive') {
       const items = Array.isArray(body.items) ? body.items : [];
       return res.json({ ok: true, active: recheckItems(items, stillActive) });
+    }
+    if (body.op === 'channelsStatus') {
+      // 两个数组原样过 JSON：undefined 键被省略、null 保留、键序照旧。前门自己做
+      // inUse/subscriptions/uses 与 Cache-Control。
+      try {
+        const usageSnapshot = usage.call(usageReceiver);
+        const plugins = channelHost ? channelHost.status() : [];
+        return res.json({
+          ok: true,
+          available: Boolean(channelHost),
+          plugins,
+          usage: usageSnapshot,
+        });
+      } catch (error) {
+        const message = error && error.message ? String(error.message) : String(error);
+        return res.json({ ok: false, error: { message } });
+      }
     }
     return res.status(400).json({ error: 'unknown host operation' });
   });

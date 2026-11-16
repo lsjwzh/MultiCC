@@ -12,7 +12,8 @@
 //   • push subscription and hook hitting the same recipient for the same thing send
 //     the same dedup key, so the plugin keeps one;
 //   • the existing 「推送」 hook also reaches plugin subscriptions;
-//   • /api/channels reports inUse; recheck 由前门独占，宿主端口回答 channelStillActive。
+//   • the host port reports raw channel status/usage; inUse 由前门算；recheck 已迁
+//     前门，宿主端口回答 channelStillActive。
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -318,27 +319,43 @@ test('the same thing via a push subscription and a hook carries one dedup key; t
   assert.equal(env.bark.length, 1, 'and the existing channels got it as before');
 });
 
-test('/api/channels reports who relies on a channel; the host port says whether the problem is still there', { skip: SKIP }, async t => {
+test('the host port reports raw channel status and usage; the front door renders inUse from it', { skip: SKIP }, async t => {
   const env = setup(t);
   await env.ready();
-  const before = await call(env.app, 'GET', '/api/channels');
-  assert.equal(before.body.plugins[0].inUse, false);
-  await call(env.app, 'POST', '/api/push/channel-subscriptions', { body: { plugin: 'demo-channel', target: 'tgt_a' } });
-  env.engine.addGlobal({ on: ['task.failed'], action: { kind: 'channel', plugin: 'demo-channel', target: 'tgt_b' } });
-  const after = await call(env.app, 'GET', '/api/channels');
-  assert.deepEqual([after.body.plugins[0].inUse, after.body.plugins[0].subscriptions, after.body.plugins[0].uses], [true, 1, 2]);
+  const ask = () => call(env.app, 'POST', PLUGINS_HOST_PATH, { body: { op: 'channelsStatus' } });
+  const before = await ask();
+  assert.deepEqual([before.body.ok, before.body.available], [true, true]);
+  assert.deepEqual(before.body.usage, []);
+  assert.ok(before.body.plugins.some(item => item.id === 'demo-channel'));
+  // 原 GET /api/channels 的 inUse/subscriptions/uses 整形已归 Rust 前门；宿主端口原样透传。
+  for (const item of before.body.plugins) {
+    assert.equal(Object.hasOwn(item, 'inUse'), false);
+    assert.equal(Object.hasOwn(item, 'subscriptions'), false);
+    assert.equal(Object.hasOwn(item, 'uses'), false);
+  }
+
+  const saved = await call(env.app, 'POST', '/api/push/channel-subscriptions', { body: { plugin: 'demo-channel', target: 'tgt_a' } });
+  const hook = env.engine.addGlobal({ on: ['task.failed'], action: { kind: 'channel', plugin: 'demo-channel', target: 'tgt_b' } });
+  assert.ok(hook.rule, hook.error);
+  const after = await ask();
+  // usage() 原样：推送订阅与钩子两条来源都在，前门据此自己算 inUse/uses。
+  assert.deepEqual(after.body.usage, [
+    { plugin: 'demo-channel', target: 'tgt_a', kind: 'push', source: saved.body.subscriptions[0].id },
+    { plugin: 'demo-channel', target: 'tgt_b', kind: 'hook', source: hook.rule.id, owner: null },
+  ]);
+  assert.equal(after.body.available, true);
 
   // /api/channels/recheck 已由 Rust 前门独占；Node 只剩回环宿主端口，
   // 逐个 (sessionId, category) 回答 stillActive，等长同序的布尔表。
-  const ask = items => call(env.app, 'POST', PLUGINS_HOST_PATH, { body: { op: 'channelStillActive', items } });
-  let answer = await ask([{ sessionId: 's1', category: 'error' }, { sessionId: 's2', category: 'question' }, { sessionId: 's2', category: 'error' }, { sessionId: 'gone', category: 'error' }, { sessionId: 's2', category: 'done' }]);
+  const askActive = items => call(env.app, 'POST', PLUGINS_HOST_PATH, { body: { op: 'channelStillActive', items } });
+  let answer = await askActive([{ sessionId: 's1', category: 'error' }, { sessionId: 's2', category: 'question' }, { sessionId: 's2', category: 'error' }, { sessionId: 'gone', category: 'error' }, { sessionId: 's2', category: 'done' }]);
   assert.deepEqual(answer.body, { ok: true, active: [true, true, false, false, true] });
   env.persistedSessions.get('s1').taskState.classifyState = 'P'; // the user picked it up again
-  answer = await ask([{ sessionId: 's1', category: 'error' }]);
+  answer = await askActive([{ sessionId: 's1', category: 'error' }]);
   assert.equal(answer.body.active[0], false);
   // question 类别接受 W 和 D（task.needs_interaction 触发时 classifyState 已是 D）
   env.persistedSessions.get('s2').taskState.classifyState = 'D';
-  answer = await ask([{ sessionId: 's2', category: 'question' }]);
+  answer = await askActive([{ sessionId: 's2', category: 'question' }]);
   assert.equal(answer.body.active[0], true);
   env.persistedSessions.get('s2').taskState.classifyState = 'W'; // restore
   // 非数组是前门的防御缺口：宿主端口退回空表而不是抛错。

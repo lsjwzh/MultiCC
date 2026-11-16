@@ -270,6 +270,11 @@ const server = http.createServer((req, res) => {
   //   entries[id].raw   that whole answer verbatim (malformed-shape tests)
   //   active            one boolean per channelStillActive item
   //   activeDown        answer { ok: false } for channelStillActive
+  //   channels          the channelsStatus answer fields ({ available, plugins,
+  //                     usage }) and `down` for { ok: false }
+  //   channelsRaw       the whole channelsStatus reply text, verbatim (so a
+  //                     test can put number spellings JSON.stringify avoids,
+  //                     such as -0, on the wire)
   //   answer            one verbatim answer for every op
   if (route === '/api/__host/plugins' && req.method === 'POST') {
     const chunks = [];
@@ -281,6 +286,12 @@ const server = http.createServer((req, res) => {
       try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
       const plugins = script.plugins || {};
       if (script.hostDown === true || plugins.hostDown === true) { req.socket.destroy(); return; }
+      if (input.op === 'channelsStatus' && typeof plugins.channelsRaw === 'string') {
+        const text = plugins.channelsRaw;
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+        return;
+      }
       let out;
       if (plugins.answer !== undefined) {
         out = plugins.answer;
@@ -297,6 +308,15 @@ const server = http.createServer((req, res) => {
           const active = Array.isArray(plugins.active) ? plugins.active : [];
           out = { ok: true, active: items.map((_, index) => Boolean(active[index])) };
         }
+      } else if (input.op === 'channelsStatus') {
+        const channels = plugins.channels || {};
+        if (channels.down === true) out = { ok: false };
+        else out = {
+          ok: true,
+          available: channels.available === undefined ? false : channels.available,
+          plugins: channels.plugins === undefined ? [] : channels.plugins,
+          usage: channels.usage === undefined ? [] : channels.usage,
+        };
       } else {
         const text = JSON.stringify({ error: 'unknown host operation' });
         res.writeHead(400, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });

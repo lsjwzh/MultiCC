@@ -24,9 +24,9 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use crate::js::serde::from_serde;
+use crate::js::serde::{from_serde, js_json_stringify};
 use crate::js::{json_stringify, JsString, JsValue};
 
 /// `items.slice(0, 200)`.
@@ -295,6 +295,105 @@ fn normalize(input: &str) -> String {
     } else {
         joined
     }
+}
+
+// ── GET|HEAD /api/channels ─────────────────────────────────────────────────
+
+/// `res.set('Cache-Control', 'no-store')` on the channels answer.
+pub const CHANNELS_CACHE_CONTROL: &str = "no-store";
+
+/// A `plugins` element that is not a JSON object. The frozen host-port
+/// contract says the host never produces one, so the front door treats it as a
+/// broken answer (503) instead of guessing at the retired handler's coercion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShapeError;
+
+/// The retired handler:
+///
+/// ```js
+/// const usage = channelRegistry.usage();
+/// const plugins = (channelHost ? channelHost.status() : []).map(item => {
+///   if (!item.channel) return item;
+///   const count = usage.filter(use => use.plugin === item.id).length;
+///   return { ...item, inUse: count > 0,
+///            subscriptions: usage.filter(use => use.plugin === item.id && use.kind === 'push').length,
+///            uses: count };
+/// });
+/// ```
+///
+/// `if (!item.channel)` is JS ToBoolean: only `undefined`, `null`, `false`,
+/// `0`, `""` and `NaN` are falsy (an empty array or object is truthy). The two
+/// filters use `===`: a missing property is `undefined`, and
+/// `undefined === undefined` is true, so an item without an `id` matches a
+/// usage entry without a `plugin`. Spreading first keeps the item's own key
+/// positions; the three assignments overwrite an existing key in place (its
+/// first position) or append a new one at the end, in `inUse`,
+/// `subscriptions`, `uses` order.
+pub fn shape_channels(plugins: &[Value], usage: &[Value]) -> Result<Vec<Value>, ShapeError> {
+    let mut shaped = Vec::with_capacity(plugins.len());
+    for plugin in plugins {
+        let Value::Object(item) = plugin else {
+            return Err(ShapeError);
+        };
+        if !crate::js::serde::truthy_opt(item.get("channel")) {
+            shaped.push(plugin.clone());
+            continue;
+        }
+        let id = item.get("id");
+        let mut count: u64 = 0;
+        let mut subscriptions: u64 = 0;
+        for entry in usage {
+            if !strict_equals(entry.get("plugin"), id) {
+                continue;
+            }
+            count += 1;
+            if entry
+                .get("kind")
+                .is_some_and(|kind| kind.as_str() == Some("push"))
+            {
+                subscriptions += 1;
+            }
+        }
+        let mut item = item.clone();
+        // `Map::insert` keeps the position of an existing key (serde_json is
+        // built with `preserve_order`) and appends a new one, exactly like the
+        // JS spread-then-assign sequence.
+        item.insert("inUse".to_string(), Value::Bool(count > 0));
+        item.insert("subscriptions".to_string(), Value::from(subscriptions));
+        item.insert("uses".to_string(), Value::from(count));
+        shaped.push(Value::Object(item));
+    }
+    Ok(shaped)
+}
+
+/// JS `===` between two optional wire properties (`None` is `undefined`).
+/// Arrays and objects parsed from separate positions are distinct references,
+/// so they never compare equal; `NaN !== NaN`.
+fn strict_equals(left: Option<&Value>, right: Option<&Value>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (None, Some(_)) | (Some(_), None) => false,
+        (Some(left), Some(right)) => match (left, right) {
+            (Value::Null, Value::Null) => true,
+            (Value::Bool(left), Value::Bool(right)) => left == right,
+            (Value::Number(left), Value::Number(right)) => match (left.as_f64(), right.as_f64()) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            },
+            (Value::String(left), Value::String(right)) => left == right,
+            _ => false,
+        },
+    }
+}
+
+/// `res.json({ available, plugins })`: fixed key order `available, plugins`,
+/// serialized with `JSON.stringify` rules (the JS number spellings, not
+/// Rust's `f64` display) over the already-parsed wire values.
+pub fn channels_response(available: bool, shaped: &[Value]) -> String {
+    let mut body = Map::new();
+    body.insert("available".to_string(), Value::Bool(available));
+    body.insert("plugins".to_string(), Value::Array(shaped.to_vec()));
+    js_json_stringify(&Value::Object(body))
 }
 
 #[cfg(test)]
@@ -637,5 +736,186 @@ mod tests {
         assert_eq!(plugin_not_found_message("ghost"), "插件 ghost 不存在");
         assert_eq!(plugin_not_found_message("幽灵"), "插件 幽灵 不存在");
         assert_eq!(plugin_not_found_message(".."), "插件 .. 不存在");
+    }
+
+    // ── GET|HEAD /api/channels ──────────────────────────────────────────
+
+    fn channel_item(id: &str) -> Value {
+        json!({ "id": id, "channel": { "label": "WeChat" } })
+    }
+
+    fn object_keys(value: &Value) -> Vec<String> {
+        let Value::Object(item) = value else {
+            panic!("object");
+        };
+        item.keys().cloned().collect()
+    }
+
+    #[test]
+    fn items_without_a_truthy_channel_pass_through_unchanged() {
+        let plugins = vec![
+            json!({ "id": "null", "channel": null }),
+            json!({ "id": "missing" }),
+            json!({ "id": "false", "channel": false }),
+            json!({ "id": "zero", "channel": 0 }),
+            json!({ "id": "empty", "channel": "" }),
+            json!({ "id": "keep", "channel": null, "extra": [1, 2] }),
+        ];
+        let usage = vec![json!({ "plugin": "null", "kind": "push" })];
+        let shaped = shape_channels(&plugins, &usage).unwrap();
+        assert_eq!(shaped, plugins);
+    }
+
+    #[test]
+    fn empty_arrays_and_objects_are_truthy_channels() {
+        let plugins = vec![
+            json!({ "id": "arr", "channel": [] }),
+            json!({ "id": "obj", "channel": {} }),
+            json!({ "id": "str", "channel": "yes" }),
+            json!({ "id": "num", "channel": 3 }),
+            json!({ "id": "true", "channel": true }),
+        ];
+        let shaped = shape_channels(&plugins, &[]).unwrap();
+        assert_eq!(shaped.len(), plugins.len());
+        for item in &shaped {
+            assert_eq!(item["inUse"], json!(false));
+            assert_eq!(item["subscriptions"], json!(0));
+            assert_eq!(item["uses"], json!(0));
+        }
+    }
+
+    #[test]
+    fn counts_are_strict_matches_and_push_subscriptions() {
+        let plugins = vec![channel_item("wechat"), channel_item("feishu")];
+        let usage = vec![
+            json!({ "plugin": "wechat", "kind": "push" }),
+            json!({ "plugin": "wechat", "kind": "hook" }),
+            json!({ "plugin": "wechat" }),
+            json!({ "plugin": "wechat", "kind": "PUSH" }),
+            json!({ "plugin": "feishu", "kind": "push" }),
+        ];
+        let shaped = shape_channels(&plugins, &usage).unwrap();
+        assert_eq!(shaped[0]["inUse"], json!(true));
+        assert_eq!(shaped[0]["uses"], json!(4));
+        // Only the exact lowercase `kind === 'push'` counts as a subscription.
+        assert_eq!(shaped[0]["subscriptions"], json!(1));
+        assert_eq!(shaped[1]["inUse"], json!(true));
+        assert_eq!(shaped[1]["uses"], json!(1));
+        assert_eq!(shaped[1]["subscriptions"], json!(1));
+    }
+
+    #[test]
+    fn usage_entries_that_are_not_objects_or_lack_plugin_do_not_match() {
+        let plugins = vec![channel_item("a")];
+        let usage = vec![
+            json!(7),
+            json!("a"),
+            json!(null),
+            json!(true),
+            json!({}),
+            json!({ "kind": "push" }),
+            json!({ "plugin": null }),
+            json!({ "plugin": "a" }),
+            json!({ "plugin": ["a"] }),
+            json!({ "plugin": "a", "kind": "push" }),
+        ];
+        let shaped = shape_channels(&plugins, &usage).unwrap();
+        assert_eq!(shaped[0]["uses"], json!(2));
+        assert_eq!(shaped[0]["subscriptions"], json!(1));
+    }
+
+    #[test]
+    fn undefined_equals_undefined_for_missing_plugin_and_missing_id() {
+        // No `id` on the item, no `plugin` on two usage entries: `===` says the
+        // two `undefined`s are equal.
+        let plugins = vec![json!({ "channel": { "label": "x" } })];
+        let usage = vec![
+            json!({}),
+            json!({ "kind": "push" }),
+            json!({ "plugin": null }),
+            json!({ "plugin": "a" }),
+            json!({ "kind": "push", "plugin": "b" }),
+        ];
+        let shaped = shape_channels(&plugins, &usage).unwrap();
+        assert_eq!(shaped[0]["uses"], json!(2));
+        assert_eq!(shaped[0]["subscriptions"], json!(1));
+
+        // An explicit `null` id only matches an explicit `null` plugin; the
+        // missing-plugin entries are `undefined`, which `null` is not.
+        let plugins = vec![json!({ "id": null, "channel": { "label": "x" } })];
+        let usage = vec![
+            json!({}),
+            json!({ "plugin": null }),
+            json!({ "plugin": null, "kind": "push" }),
+        ];
+        let shaped = shape_channels(&plugins, &usage).unwrap();
+        assert_eq!(shaped[0]["uses"], json!(2));
+        assert_eq!(shaped[0]["subscriptions"], json!(1));
+    }
+
+    #[test]
+    fn derived_keys_overwrite_in_place_and_keep_their_first_position() {
+        let plugins = vec![json!({
+            "id": "a",
+            "inUse": "stale",
+            "name": "A",
+            "channel": { "label": "x" },
+            "uses": 99,
+            "subscriptions": false
+        })];
+        let usage = vec![json!({ "plugin": "a", "kind": "push" })];
+        let shaped = shape_channels(&plugins, &usage).unwrap();
+        assert_eq!(
+            object_keys(&shaped[0]),
+            ["id", "inUse", "name", "channel", "uses", "subscriptions"]
+        );
+        assert_eq!(shaped[0]["inUse"], json!(true));
+        assert_eq!(shaped[0]["uses"], json!(1));
+        assert_eq!(shaped[0]["subscriptions"], json!(1));
+    }
+
+    #[test]
+    fn missing_derived_keys_append_after_the_item_keys() {
+        let plugins = vec![json!({ "id": "a", "channel": {}, "extra": 1, "uses": 5 })];
+        let shaped = shape_channels(&plugins, &[]).unwrap();
+        // `inUse` and `subscriptions` are new and append in assignment order;
+        // `uses` already existed and keeps its first position.
+        assert_eq!(
+            object_keys(&shaped[0]),
+            ["id", "channel", "extra", "uses", "inUse", "subscriptions"]
+        );
+        assert_eq!(shaped[0]["uses"], json!(0));
+    }
+
+    #[test]
+    fn a_non_object_plugin_entry_is_a_shape_error() {
+        for plugin in [json!(null), json!(1), json!("x"), json!(true), json!([])] {
+            assert_eq!(shape_channels(&[plugin], &[]), Err(ShapeError));
+        }
+        let plugins = vec![json!({ "id": "ok", "channel": null }), json!(7)];
+        assert_eq!(shape_channels(&plugins, &[]), Err(ShapeError));
+    }
+
+    #[test]
+    fn the_response_is_available_then_plugins_with_js_number_spellings() {
+        // Parsed from wire text so `-0`, the exponent and the 2^53 boundary
+        // reach the serializer exactly as a host could have spelled them.
+        let plugins: Vec<Value> = serde_json::from_str(
+            r#"[{"id":"a","channel":{"label":"x"},"pid":9007199254740992,"startedAt":1e+21,"ratio":0.1,"neg":-0}]"#,
+        )
+        .unwrap();
+        let shaped = shape_channels(&plugins, &[]).unwrap();
+        assert_eq!(
+            channels_response(true, &shaped),
+            concat!(
+                r#"{"available":true,"plugins":[{"id":"a","channel":{"label":"x"},"#,
+                r#""pid":9007199254740992,"startedAt":1e+21,"ratio":0.1,"neg":0,"#,
+                r#""inUse":false,"subscriptions":0,"uses":0}]}"#
+            )
+        );
+        assert_eq!(
+            channels_response(false, &[]),
+            r#"{"available":false,"plugins":[]}"#
+        );
     }
 }

@@ -2,15 +2,20 @@
 //!
 //! ```text
 //! POST   /api/channels/recheck   -> 403 non-local | 200 {items:[{sessionId,category,active}]}
+//! GET    /api/channels           -> 200 {available,plugins:[…]}
+//! HEAD   /api/channels           -> same headers, no body
 //! GET    /plugins/:id/*          -> 200 file | 400/403/404 | 500 (unreadable plugin dir)
 //! HEAD   /plugins/:id/*          -> same headers, no body
 //! OPTIONS                        -> Express's automatic answer
 //! ```
 //!
-//! `POST /api/channels/recheck` sits behind the ordinary gate (`App::gate`):
-//! an anonymous call is the API 403. Recheck then adds its own locality check
-//! on the real client address (`isLocalRequest`, the same rule Node used —
-//! never the Host header).
+//! `POST /api/channels/recheck` and `GET|HEAD /api/channels` sit behind the
+//! ordinary gate (`App::gate`): an anonymous call is the API 403. Recheck then
+//! adds its own locality check on the real client address (`isLocalRequest`,
+//! the same rule Node used — never the Host header). The channels answer adds
+//! no extra authority check; it reads the same `Cache-Control: no-store`
+//! `{available, plugins}` projection as before, with `channelsStatus` supplying
+//! the registry and host facts.
 //!
 //! `/plugins/:id/*` is NOT simply behind the gate. The retired route was
 //! mounted after Node's auth gate, and that gate lets a path through without a
@@ -35,6 +40,9 @@
 //!   subtree decision itself and reads the file.
 //! * `channelStillActive {items}` -> `{ok:true,active:[bool,…]}`, one answer
 //!   per item, same order.
+//! * `channelsStatus {}` -> `{ok:true,available:<bool>,plugins:[…],usage:[…]}`,
+//!   `channelHost.status()` and `channelRegistry.usage()` verbatim; the front
+//!   door applies the retired `inUse`/`subscriptions`/`uses` projection.
 //!
 //! Anything else — a transport failure, a malformed answer, a length mismatch,
 //! `--no-node` (port 0 fails at once) — is the route's 503
@@ -72,6 +80,10 @@ pub enum Route {
     Recheck,
     /// Express's automatic OPTIONS for the one registered method.
     RecheckOptions,
+    /// `GET|HEAD /api/channels`
+    Channels,
+    /// Express's automatic OPTIONS for the registered read pair.
+    ChannelsOptions,
     /// `GET|HEAD /plugins/:id/*`
     File,
     /// Express's automatic OPTIONS for the registered read pair.
@@ -102,6 +114,13 @@ fn recheck_path(path: &str) -> bool {
     })
 }
 
+/// `GET|HEAD /api/channels`: exactly one literal segment after `/api/`, so
+/// `/api/channels/targets` and `/api/channels/recheck` stay unclaimed here.
+fn channels_path(path: &str) -> bool {
+    segments(path)
+        .is_some_and(|parts| parts.len() == 1 && parts[0].eq_ignore_ascii_case("channels"))
+}
+
 /// `strip_prefix` with Express's case-insensitive literal matching.
 fn strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     let head = text.get(..prefix.len())?;
@@ -127,6 +146,13 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         match method.as_str() {
             "POST" => return Some(Route::Recheck),
             "OPTIONS" => return Some(Route::RecheckOptions),
+            _ => {}
+        }
+    }
+    if channels_path(path) {
+        match method.as_str() {
+            "GET" | "HEAD" => return Some(Route::Channels),
+            "OPTIONS" => return Some(Route::ChannelsOptions),
             _ => {}
         }
     }
@@ -227,6 +253,55 @@ async fn still_active(
         .map(Value::as_bool)
         .collect::<Option<Vec<bool>>>()
         .ok_or_else(|| unavailable(ctx))
+}
+
+// ── GET|HEAD /api/channels ─────────────────────────────────────────────────
+
+/// The two host facts the retired handler read in-process plus the projected
+/// plugin list.
+struct ChannelFacts {
+    available: bool,
+    plugins: Vec<Value>,
+}
+
+/// One `channelsStatus` round trip. `{ok:false}`, a non-bool `available`, a
+/// non-array `plugins`/`usage`, or a non-object plugin element is the route's
+/// 503 — the same contract as the other host-port clusters.
+async fn channel_status(ctx: &RequestCtx, host: u16) -> Result<ChannelFacts, Response<Body>> {
+    let answer = host_port::call(host, HOST_PATH, &json!({ "op": "channelsStatus" }))
+        .await
+        .map_err(|_| unavailable(ctx))?;
+    if answer.get("ok") != Some(&Value::Bool(true)) {
+        return Err(unavailable(ctx));
+    }
+    let available = answer
+        .get("available")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| unavailable(ctx))?;
+    let plugins = answer
+        .get("plugins")
+        .and_then(Value::as_array)
+        .ok_or_else(|| unavailable(ctx))?;
+    let usage = answer
+        .get("usage")
+        .and_then(Value::as_array)
+        .ok_or_else(|| unavailable(ctx))?;
+    let plugins = plugin_routes::shape_channels(plugins, usage).map_err(|_| unavailable(ctx))?;
+    Ok(ChannelFacts { available, plugins })
+}
+
+async fn channels(ctx: &RequestCtx, host: u16) -> Response<Body> {
+    let facts = match channel_status(ctx, host).await {
+        Ok(facts) => facts,
+        Err(response) => return response,
+    };
+    express::send(
+        ctx,
+        200,
+        "application/json; charset=utf-8",
+        plugin_routes::channels_response(facts.available, &facts.plugins).into_bytes(),
+        &[("Cache-Control", plugin_routes::CHANNELS_CACHE_CONTROL)],
+    )
 }
 
 // ── GET|HEAD /plugins/:id/* ────────────────────────────────────────────────
@@ -463,6 +538,8 @@ pub async fn handle(
     match route {
         Route::Recheck => recheck(ctx, body, peer, host).await,
         Route::RecheckOptions => super::options(ctx, "POST"),
+        Route::Channels => channels(ctx, host).await,
+        Route::ChannelsOptions => super::options(ctx, "GET,HEAD"),
         // The file routes are answered by `handle_file` before the global gate;
         // reaching here would be a dispatch bug, not a request.
         Route::File | Route::FileOptions => {
@@ -501,6 +578,29 @@ mod tests {
         assert_eq!(claim(&Method::POST, "/api/channels/recheck/x"), None);
         assert_eq!(claim(&Method::POST, "/api/channels/recheck//"), None);
         assert_eq!(claim(&Method::POST, "/api/channels"), None);
+    }
+
+    #[test]
+    fn channels_is_the_one_read_literal() {
+        assert_eq!(claim(&Method::GET, "/api/channels"), Some(Route::Channels));
+        assert_eq!(claim(&Method::HEAD, "/api/channels"), Some(Route::Channels));
+        // One optional trailing slash, like every other literal here.
+        assert_eq!(claim(&Method::GET, "/api/channels/"), Some(Route::Channels));
+        // Literal segments are case-insensitive; the `/api/` prefix is not.
+        assert_eq!(claim(&Method::GET, "/api/ChAnNeLs"), Some(Route::Channels));
+        assert_eq!(claim(&Method::GET, "/API/channels"), None);
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/channels"),
+            Some(Route::ChannelsOptions)
+        );
+        // The two other registrations on this prefix are not this route.
+        assert_eq!(claim(&Method::GET, "/api/channels/targets"), None);
+        assert_eq!(claim(&Method::POST, "/api/channels"), None);
+        assert_eq!(claim(&Method::PUT, "/api/channels"), None);
+        assert_eq!(claim(&Method::DELETE, "/api/channels"), None);
+        // An empty segment never matches.
+        assert_eq!(claim(&Method::GET, "/api/channels//"), None);
+        assert_eq!(claim(&Method::GET, "/api//channels"), None);
     }
 
     #[test]
@@ -624,5 +724,8 @@ mod tests {
         assert!(is_file_route(Route::FileOptions));
         assert!(!is_file_route(Route::Recheck));
         assert!(!is_file_route(Route::RecheckOptions));
+        // The channels pair runs behind `App::gate` like recheck.
+        assert!(!is_file_route(Route::Channels));
+        assert!(!is_file_route(Route::ChannelsOptions));
     }
 }

@@ -3,16 +3,17 @@
 //! Integration coverage for the plugin cluster retired from
 //! `src/routes/plugins.js` and answered by the Rust front door
 //! (`native/gateway/src/app/plugins.rs` + `multicc_core::plugin_routes`):
-//! `POST /api/channels/recheck` and `GET|HEAD /plugins/:id/*`.
+//! `POST /api/channels/recheck`, `GET|HEAD /api/channels` and
+//! `GET|HEAD /plugins/:id/*`.
 //!
 //! The Node process here is only the protocol fixture: it answers
 //! `POST /api/__host/plugins` from `FIXTURE_HOST_SCRIPT.plugins` and appends
 //! every payload to `plugins-calls.jsonl`, so each test asserts exactly which
-//! `findPlugin`/`channelStillActive` calls the front door made and what it
-//! rendered from the answers. The plugin tree the fixture's `findPlugin`
-//! points at is a real directory (ui subtree, a file outside it, an escaping
-//! symlink), because the realpath and containment decisions are the front
-//! door's own.
+//! `findPlugin`/`channelStillActive`/`channelsStatus` calls the front door made
+//! and what it rendered from the answers. The plugin tree the fixture's
+//! `findPlugin` points at is a real directory (ui subtree, a file outside it,
+//! an escaping symlink), because the realpath and containment decisions are
+//! the front door's own.
 //!
 //! `hostDown` drops the internal socket (the `--no-node`/stale-module 503).
 //! The locality branch needs a peer that is authenticated but not local:
@@ -269,6 +270,12 @@ impl Gateway {
 
     fn log(&self) -> String {
         fs::read_to_string(self.dir.join("gateway.log")).unwrap_or_default()
+    }
+
+    /// Replace the script the fixture reads per host-port request. The fixture
+    /// re-reads it on every call, so one gateway can answer several shapes.
+    fn set_script(&self, script: Value) {
+        fs::write(self.dir.join("host-script.json"), script.to_string()).unwrap();
     }
 
     /// Every payload the front door sent the plugin host port.
@@ -632,6 +639,232 @@ fn recheck_host_failure_and_bad_answers_are_the_503() {
     assert_unavailable(&response);
 
     drop(tree);
+}
+
+// ── GET|HEAD /api/channels ─────────────────────────────────────────────────
+
+/// The retired handler:
+///
+/// ```text
+/// res.set('Cache-Control', 'no-store');
+/// const usage = channelRegistry.usage();
+/// const plugins = (channelHost ? channelHost.status() : []).map(item => {
+///   if (!item.channel) return item;              // JS falsiness, pass-through
+///   const count = usage.filter(use => use.plugin === item.id).length;
+///   return { ...item, inUse: count > 0,
+///            subscriptions: usage.filter(use => use.plugin === item.id && use.kind === 'push').length,
+///            uses: count };
+/// });
+/// res.json({ available: Boolean(channelHost), plugins });
+/// ```
+#[test]
+fn channels_renders_the_in_use_projection_and_keeps_key_order() {
+    let gateway = Gateway::start(
+        "channels-shape",
+        json!({ "plugins": { "channels": {
+            "available": true,
+            "plugins": [
+                // `uses`/`inUse` already exist: the spread overwrites them in
+                // place, `subscriptions` appends after them.
+                { "id": "a", "name": "A", "channel": { "label": "L" }, "uses": 9, "inUse": false },
+                // A falsy `channel` returns the item untouched (no derived keys).
+                { "id": "b", "name": "B", "channel": null },
+                // No `id`: `undefined === <string>` is always false.
+                { "name": "no id", "channel": {} },
+            ],
+            // Only plugin `a` is counted; the `b` row never reaches the filter
+            // because its item has no truthy `channel`.
+            "usage": [
+                { "plugin": "a", "target": "t1", "source": "s", "kind": "push" },
+                { "plugin": "a", "target": "t2", "source": "s" },
+                { "plugin": "a", "target": "t3", "source": "s", "kind": "pull" },
+                { "plugin": "b", "target": "t4", "source": "s" },
+            ],
+        } } }),
+    );
+    let response = gateway.get("/api/channels", &local());
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    assert_eq!(
+        response.header("content-type"),
+        Some("application/json; charset=utf-8")
+    );
+    assert_eq!(response.header("cache-control"), Some("no-store"));
+    assert_eq!(
+        response.body(),
+        concat!(
+            r#"{"available":true,"plugins":["#,
+            r#"{"id":"a","name":"A","channel":{"label":"L"},"uses":3,"inUse":true,"subscriptions":1},"#,
+            r#"{"id":"b","name":"B","channel":null},"#,
+            r#"{"name":"no id","channel":{},"inUse":false,"subscriptions":0,"uses":0}"#,
+            "]}",
+        )
+    );
+    assert_key_order(&response.body(), &["available", "plugins"]);
+
+    // HEAD answers the same entity headers with no body.
+    let head = gateway.head("/api/channels", &local());
+    assert_eq!(head.status, 200, "{}", gateway.log());
+    assert!(head.bytes.is_empty(), "HEAD body: {}", head.body());
+    assert_eq!(head.header("content-type"), response.header("content-type"));
+    assert_eq!(
+        head.header("content-length"),
+        response.header("content-length")
+    );
+    assert_eq!(head.header("cache-control"), Some("no-store"));
+
+    // One host round trip per request, no fields beyond the op.
+    let calls = gateway.calls();
+    assert_eq!(
+        calls,
+        vec![
+            json!({ "op": "channelsStatus" }),
+            json!({ "op": "channelsStatus" })
+        ]
+    );
+}
+
+#[test]
+fn channels_without_a_channel_host_is_an_empty_unavailable_list() {
+    // `channelHost === null`: `available` is `Boolean(null)` and the `.map`
+    // never runs, so `plugins` is the empty array.
+    let gateway = Gateway::start(
+        "channels-absent",
+        json!({ "plugins": { "channels": { "available": false } } }),
+    );
+    let response = gateway.get("/api/channels", &local());
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    assert_eq!(response.body(), r#"{"available":false,"plugins":[]}"#);
+    assert_eq!(response.header("cache-control"), Some("no-store"));
+}
+
+#[test]
+fn channels_answers_options_and_leaves_its_neighbours_to_node() {
+    let gateway = Gateway::start(
+        "channels-unclaimed",
+        json!({ "plugins": { "channels": { "available": false } } }),
+    );
+    // Express's automatic OPTIONS for the registered read pair.
+    let response = gateway.options("/api/channels", &local());
+    assert_eq!(response.status, 200);
+    assert_eq!(response.header("allow"), Some("GET,HEAD"));
+    assert_eq!(
+        response.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(response.body(), "GET,HEAD");
+    assert!(gateway.calls().is_empty(), "OPTIONS never asks the host");
+
+    // One optional trailing slash is inside the route literal.
+    let response = gateway.get("/api/channels/", &local());
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    assert_eq!(response.body(), r#"{"available":false,"plugins":[]}"#);
+    assert!(!gateway.forwarded("GET", "/api/channels/"));
+
+    // The other registrations on this prefix belong to Node.
+    let response = gateway.get("/api/channels/targets", &local());
+    assert_eq!(response.status, 200, "{}", response.body());
+    assert!(gateway.forwarded("GET", "/api/channels/targets"));
+    // POST was never registered.
+    let response = gateway.post_json("/api/channels", &local(), "{}");
+    assert_eq!(response.status, 200, "{}", response.body());
+    assert!(gateway.forwarded("POST", "/api/channels"));
+    // The `/api/` prefix keeps its exact case: differently-cased prefixes are
+    // not this front door's to claim.
+    let response = gateway.get("/API/channels", &local());
+    assert_eq!(response.status, 200, "{}", response.body());
+    assert!(gateway.forwarded("GET", "/API/channels"));
+
+    // Only the claimed trailing-slash read asked the host; OPTIONS did not.
+    assert_eq!(gateway.calls(), vec![json!({ "op": "channelsStatus" })]);
+}
+
+#[test]
+fn channels_sits_behind_the_ordinary_gate() {
+    let gateway = Gateway::start(
+        "channels-gate",
+        json!({ "plugins": { "channels": { "available": true } } }),
+    );
+    let response = gateway.get("/api/channels", &anonymous());
+    assert_eq!(response.status, 403, "{}", response.body());
+    assert_eq!(
+        response.header("content-type"),
+        Some("application/json; charset=utf-8")
+    );
+    let body = response.json();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"], "Forbidden: not authenticated");
+    assert_eq!(body["code"], "AUTH_REQUIRED");
+    assert!(
+        gateway.calls().is_empty(),
+        "the gate refuses before the host"
+    );
+}
+
+#[test]
+fn channels_host_failure_and_bad_answers_are_the_503() {
+    // Dead host port (`--no-node`/stale module).
+    let gateway = Gateway::start("channels-down", json!({ "plugins": { "hostDown": true } }));
+    assert_unavailable(&gateway.get("/api/channels", &local()));
+    let head = gateway.head("/api/channels", &local());
+    assert_eq!(head.status, 503);
+    assert!(head.bytes.is_empty());
+    assert_eq!(
+        head.header("content-type"),
+        Some("application/json; charset=utf-8")
+    );
+
+    // Every well-formed-but-unusable answer: no `ok`, `{ok:false}`, a non-bool
+    // `available`, a non-array `plugins`/`usage`, a missing one of the three, or
+    // a plugin element that is not an object. Raw text so the fixture's defaults
+    // do not fill in the missing fields.
+    let gateway = Gateway::start(
+        "channels-shapes",
+        json!({ "plugins": { "channels": { "available": false } } }),
+    );
+    for raw in [
+        r#"{"ok":false}"#,
+        r#"{}"#,
+        r#"{"ok":true,"available":"yes","plugins":[],"usage":[]}"#,
+        r#"{"ok":true,"available":1,"plugins":[],"usage":[]}"#,
+        r#"{"ok":true,"plugins":[],"usage":[]}"#,
+        r#"{"ok":true,"available":true,"plugins":{},"usage":[]}"#,
+        r#"{"ok":true,"available":true,"usage":[]}"#,
+        r#"{"ok":true,"available":true,"plugins":[]}"#,
+        r#"{"ok":true,"available":true,"plugins":[],"usage":{}}"#,
+        r#"{"ok":true,"available":true,"plugins":[7],"usage":[]}"#,
+        r#"{"ok":true,"available":true,"plugins":[null],"usage":[]}"#,
+        r#"{"ok":true,"available":true,"plugins":["x"],"usage":[]}"#,
+    ] {
+        gateway.set_script(json!({ "plugins": { "channelsRaw": raw } }));
+        let response = gateway.get("/api/channels", &local());
+        assert_unavailable(&response);
+    }
+}
+
+#[test]
+fn channels_serializes_wire_numbers_like_json_stringify() {
+    // `-0` and a 2^53 boundary cannot be expressed through `JSON.stringify`, so
+    // the fixture sends raw text. Rust's f64 Display would print `1e21` and
+    // `-0`; the JS number path must print `1e+21` and `0`.
+    let raw = concat!(
+        r#"{"ok":true,"available":true,"plugins":["#,
+        r#"{"id":"n","channel":{"label":"L"},"pid":9007199254740992,"startedAt":1e+21,"ratio":0.1,"neg":-0}"#,
+        r#"],"usage":[]}"#,
+    );
+    let gateway = Gateway::start(
+        "channels-numbers",
+        json!({ "plugins": { "channelsRaw": raw } }),
+    );
+    let response = gateway.get("/api/channels", &local());
+    assert_eq!(response.status, 200, "{}", response.body());
+    assert_eq!(
+        response.body(),
+        concat!(
+            r#"{"available":true,"plugins":["#,
+            r#"{"id":"n","channel":{"label":"L"},"pid":9007199254740992,"startedAt":1e+21,"ratio":0.1,"neg":0,"inUse":false,"subscriptions":0,"uses":0}"#,
+            "]}",
+        )
+    );
 }
 
 // ── GET|HEAD /plugins/:id/* ────────────────────────────────────────────────
