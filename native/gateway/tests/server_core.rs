@@ -105,6 +105,7 @@ impl Gateway {
         for path in [&dir, &data, &home, &state] {
             fs::create_dir_all(path).unwrap();
         }
+        fs::write(data.join(".restart-generation"), "fixture-generation").unwrap();
         let script_path = dir.join("host-script.json");
         fs::write(&script_path, script.to_string()).unwrap();
         fs::write(dir.join("server.js"), FIXTURE_JS).unwrap();
@@ -124,7 +125,6 @@ impl Gateway {
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
             )
             .env("PORT", port.to_string())
-            .env("MULTICC_RESTART_GENERATION", "fixture-generation")
             .env("ACCESS_TOKEN", TOKEN)
             .env("HOME", &home)
             .env("MULTICC_DATA_DIR", &data)
@@ -404,6 +404,10 @@ fn readyz_appends_checks_after_request_id() {
     let response = gateway.get("/readyz", &anonymous());
     assert_eq!(response.status, 200, "{}", gateway.log());
     assert_eq!(response.header("cache-control"), Some("no-store"));
+    assert_eq!(
+        response.header("x-multicc-gateway-pid"),
+        Some(gateway.child.id().to_string().as_str())
+    );
     assert_eq!(
         response.header("x-multicc-restart-generation"),
         Some("fixture-generation")

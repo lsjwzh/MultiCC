@@ -231,38 +231,11 @@ do_stop() {
 }
 
 do_restart() {
-  # Serialize manual + API restarts, including requests received by duplicate
-  # servers. A killed manager's lock is reclaimable on the next invocation.
-  local lock="$LOG_DIR/restart.lock" owner=""
-  if ! mkdir "$lock" 2>/dev/null; then
-    owner=$(cat "$lock/pid" 2>/dev/null)
-    if "$NODE" "$SCRIPT_DIR/src/server-processes.js" lock-alive "$SCRIPT_DIR"; then
-      echo "MultiCC restart is already running (PID $owner)"
-      return 0
-    fi
-    # A contender may be writing pid immediately after mkdir. Leave that small
-    # window alone, then recheck before claiming a stale directory.
-    sleep 1
-    owner=$(cat "$lock/pid" 2>/dev/null)
-    if "$NODE" "$SCRIPT_DIR/src/server-processes.js" lock-alive "$SCRIPT_DIR"; then return 0; fi
-    # Only one contender may reclaim a dead owner's directory.
-    mkdir "$lock/reclaim" 2>/dev/null || return 0
-    owner=$(cat "$lock/pid" 2>/dev/null)
-    if "$NODE" "$SCRIPT_DIR/src/server-processes.js" lock-alive "$SCRIPT_DIR"; then
-      rmdir "$lock/reclaim" 2>/dev/null
-      return 0
-    fi
-    # Keep the recovery guard in place until our identity is published. Removing
-    # its parent here lets another stale-owner contender acquire a new guard
-    # before owner.json is written, so both managers can stop and start servers.
-  fi
-  echo $$ > "$lock/pid"
-  trap 'rm -rf "$LOG_DIR/restart.lock"' EXIT
-  "$NODE" "$SCRIPT_DIR/src/server-processes.js" owner "$SCRIPT_DIR" $$ > "$lock/owner.json" || return 1
-  rmdir "$lock/reclaim" 2>/dev/null || true
-  do_stop || return 1
-  sleep 1
-  do_start
+  local running_pids
+  running_pids="$(get_pids)" || return 1
+  if [ -z "$running_pids" ]; then do_start; return $?; fi
+  check_runtime_dependencies || return 1
+  MULTICC_RESTART_PIDS="$running_pids" "$NODE" "$SCRIPT_DIR/src/server-restart.js" --request "$SCRIPT_DIR"
 }
 
 do_status() {

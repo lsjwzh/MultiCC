@@ -110,12 +110,25 @@ test('server composition returns 202 scheduled and resets debounce on scheduling
   assert.match(routeSrc, /try\s*\{[\s\S]*?scheduleRestart\(\{[\s\S]*?rootDir\b/);
   assert.match(routeSrc, /\.catch\(error[\s\S]*?_restartScheduled\s*=\s*false/);
   assert.match(routeSrc, /catch\s*\(error\)[\s\S]*?_restartScheduled\s*=\s*false[\s\S]*?res\.status\(503\)/);
-  assert.match(routeSrc, /res\.status\(202\)\.json\(\{\s*ok:\s*true,\s*status:\s*'scheduled',\s*activeStreaming,\s*mode\s*\}\)/);
+  assert.match(routeSrc, /res\.status\(202\)\.json\(\{\s*ok:\s*true,\s*status:\s*'scheduled',\s*activeStreaming,\s*mode,\s*restartId:\s*generation,\s*supervisorPid\s*\}\)/);
   assert.match(hostSrc, /createServerRestartRoute\(\{[\s\S]*?rootDir:\s*__dirname/);
   // Negative safety net: neither host nor route may resurrect the old shell-string form.
   const combined = hostSrc + '\n' + routeSrc;
   assert.equal(combined.includes("sleep 2 && ./multicc restart"), false);
   assert.equal(combined.includes("spawn('/bin/sh', ['-c', 'sleep 2"), false);
+});
+
+test('restart route rejects a changed gateway identity before scheduling', () => {
+  const { createServerRestartRoute } = require('../src/routes/server-restart-route');
+  let handler, scheduled = false;
+  const app = { post(path, fn) { if (path === '/api/restart') handler = fn; } };
+  createServerRestartRoute({ chatSessions: new Map(), spawn() {}, rootDir: '/tmp',
+    getShuttingDown: () => false, desktopExit() {}, scheduleRestart() { scheduled = true; } }).mountRoutes(app);
+  const res = { status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+  handler({ id: 'fixture', body: { expectedPid: process.ppid + 1 } }, res);
+  assert.equal(res.code, 409);
+  assert.equal(res.body.code, 'RESTART_IDENTITY_CHANGED');
+  assert.equal(scheduled, false);
 });
 
 test('detached scheduler preflights, preserves lifecycle options and unreferences the child', () => {

@@ -358,7 +358,14 @@ impl HyperService<Request<Incoming>> for ConnectionService {
             match TowerService::call(&mut router, request).await {
                 Ok(mut response) => {
                     if restart_probe {
-                        if let Ok(generation) = std::env::var("MULTICC_RESTART_GENERATION") {
+                        // Local lifecycle clients must prove they reached the
+                        // gateway they discovered before sending restart.
+                        if let Ok(value) = std::process::id().to_string().parse() {
+                            response
+                                .headers_mut()
+                                .insert("x-multicc-gateway-pid", value);
+                        }
+                        if let Some(generation) = crate::restart_generation() {
                             if !generation.is_empty()
                                 && generation.len() <= 128
                                 && generation

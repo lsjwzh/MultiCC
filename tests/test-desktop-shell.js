@@ -354,6 +354,30 @@ test('supervisor: classifies EADDRINUSE as port-in-use', async () => {
   await sup.stop();
 });
 
+test('standalone supervisor adopts a verified requested restart port', async () => {
+  const dir = tmpdir('desktop-restart-port-');
+  const port = await reservePort();
+  let target = await reservePort();
+  while (target === port) target = await reservePort();
+  const marker = path.join(dir, 'once');
+  const { sup, phases } = makeSupervisor({
+    env: { EXIT_AFTER_READY_MS: '1500', EXIT_CODE: '0', EXIT_ONCE_MARKER: marker },
+    logsDir: dir,
+    runtimeInfoFile: path.join(dir, 'desktop-runtime.json'),
+    opts: { healthTimeoutMs: 10000, restartBackoffMs: 60, readRestartPort: () => desktopEnv.readRestartPort(dir) },
+  });
+  try {
+    await sup.start({ port });
+    await waitFor(() => phases.some(p => p.phase === 'ready'), { what: 'first ready' });
+    fs.writeFileSync(path.join(dir, '.restart-generation'), 'fixture-generation');
+    fs.writeFileSync(path.join(dir, '.restart-port'), `other:${target}`);
+    assert.equal(desktopEnv.readRestartPort(dir), null, 'a stale port marker cannot redirect a restart');
+    fs.writeFileSync(path.join(dir, '.restart-port'), `fixture-generation:${target}`);
+    await waitFor(() => sup.getState().state === 'ready' && sup.getState().port === target, { timeoutMs: 12000, what: 'ready on requested port' });
+    assert.equal((await httpGet(`http://127.0.0.1:${target}/readyz`)).status, 200);
+  } finally { await sup.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('supervisor: crash-loop guard stops respawning', async () => {
   const dir = tmpdir('desktop-crash-');
   const port = await reservePort();
@@ -1133,10 +1157,23 @@ test('host-env honors MULTICC_ENV_FILE for read and write', withEnv({ MULTICC_EN
 
 // ── static: security posture, purity, packaging, workflow, icon ─────────────
 
-test('desktop-stage-standalone stages the same Resources tree a package ships', { timeout: 180_000 }, () => {
+test('desktop-stage-standalone stages the same Resources tree a package ships', { timeout: 195_000 }, async () => {
   const out = tmpdir('desktop-stage-res-');
-  const res = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'desktop-stage-standalone.js'),
-    '--out', out, '--no-install', '--no-runtime'], { encoding: 'utf8' });
+  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'desktop-stage-standalone.js'),
+    '--out', out, '--no-install', '--no-runtime'], { detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '', expired = false;
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  child.stdout.resume();
+  const res = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      expired = true;
+      if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      else { try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {} }
+    }, 180_000);
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('close', status => { clearTimeout(timer); resolve({ status, stderr }); });
+  });
+  assert.equal(expired, false, 'desktop staging exceeded its 180-second deadline');
   assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
   for (const must of ['app-server/server.js', 'app-server/public/air.html',
     'launcher/standalone-launcher.js', 'launcher/standalone-cli.js',
