@@ -590,6 +590,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/more_connections_entry_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/notification_foreground_test.dart",
       "tier": "core",
       "lane": "flutter"

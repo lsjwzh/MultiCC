@@ -26,6 +26,7 @@ pub mod host_ops_routes;
 pub mod host_read;
 pub mod model_catalogs;
 pub mod orchestration_routes;
+pub mod plugins;
 pub mod provider_balance;
 mod provider_balance_adapters;
 mod provider_balance_panels;
@@ -164,6 +165,7 @@ pub enum Route {
     ReleaseHistory(release_history_routes::Route),
     StaticAssets(static_assets_routes::Route),
     ServerCore(server_core::Route),
+    Plugins(plugins::Route),
     FilesGet,
     FilesOptions,
     Upload,
@@ -495,6 +497,16 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     // path (if one ever ended in `.apk`) untouched.
     if let Some(route) = static_assets_routes::claim(method, path) {
         return Some(Route::StaticAssets(route));
+    }
+    // The plugin cluster (`src/routes/plugins.js`): the literal
+    // `POST /api/channels/recheck` (registered by `mount(app)`, after the auth
+    // gate) and `GET /plugins/:id/*` (registered after it in `server.js`). It
+    // sits after the static-assets guard on purpose: Express registered the
+    // global `.apk`/`.ipa` rule first, so a plugin file with that extension
+    // keeps the guard's 404. `/plugins/:id/*` needs its second slash
+    // (path-to-regexp), so `/plugins/x` stays unclaimed.
+    if let Some(route) = plugins::claim(method, path) {
+        return Some(Route::Plugins(route));
     }
     let rest = path.strip_prefix("/api/")?;
     let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
@@ -1003,6 +1015,15 @@ pub async fn handle(
     if let Route::ServerCore(route) = route {
         return server_core::handle(&app, route, &ctx, &peer, &snapshot, host).await;
     }
+    // Plugin UI files: Node's auth gate lets a static-extension path through
+    // without a login (`http_entry::public_path`), so this route runs the peer
+    // allowlist itself and decides the login gate from that shared rule. The
+    // recheck pair stays behind the ordinary gate below.
+    if let Route::Plugins(route) = route {
+        if plugins::is_file_route(route) {
+            return plugins::handle_file(&app, route, &ctx, &peer, &snapshot, host).await;
+        }
+    }
     if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
         return refusal;
     }
@@ -1030,6 +1051,7 @@ pub async fn handle(
     };
     match route {
         Route::StaticAssets(route) => return static_assets_routes::handle(route, &ctx),
+        Route::Plugins(route) => return plugins::handle(route, &ctx, &body, &peer, host).await,
         Route::AutoOptions => return auto_options(&ctx, host).await,
         Route::ModelCatalogOptions(_)
         | Route::ProviderModelsOptions

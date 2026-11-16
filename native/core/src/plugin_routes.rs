@@ -154,11 +154,7 @@ pub fn ui_root(root: &Path, ui: &str) -> PathBuf {
 /// form, because Node's strings are the lossy form too. Note this excludes
 /// `root` itself: the UI directory is not a file inside the UI subtree.
 pub fn within(root: &Path, absolute: &Path) -> bool {
-    let prefix = format!(
-        "{}{}",
-        root.to_string_lossy(),
-        std::path::MAIN_SEPARATOR
-    );
+    let prefix = format!("{}{}", root.to_string_lossy(), std::path::MAIN_SEPARATOR);
     absolute.to_string_lossy().starts_with(&prefix)
 }
 
@@ -222,9 +218,7 @@ pub fn extension_lower(path: &str) -> String {
     if start_dot == -1
         || end == -1
         || pre_dot_state == 0
-        || (pre_dot_state == 1
-            && start_dot == end - 1
-            && start_dot == start_part as isize + 1)
+        || (pre_dot_state == 1 && start_dot == end - 1 && start_dot == start_part as isize + 1)
     {
         return String::new();
     }
@@ -280,18 +274,16 @@ fn normalize(input: &str) -> String {
     for segment in input.split('/') {
         match segment {
             "" | "." => {}
-            ".." => {
-                match parts.last() {
-                    Some(last) if *last != ".." => {
-                        parts.pop();
-                    }
-                    _ => {
-                        if !absolute {
-                            parts.push("..");
-                        }
+            ".." => match parts.last() {
+                Some(last) if *last != ".." => {
+                    parts.pop();
+                }
+                _ => {
+                    if !absolute {
+                        parts.push("..");
                     }
                 }
-            }
+            },
             other => parts.push(other),
         }
     }
@@ -315,7 +307,10 @@ mod tests {
     }
 
     fn lossy(item: &Item) -> (String, String) {
-        (item.session_id.to_string_lossy(), item.category.to_string_lossy())
+        (
+            item.session_id.to_string_lossy(),
+            item.category.to_string_lossy(),
+        )
     }
 
     // ── recheck projection ──────────────────────────────────────────────
@@ -402,8 +397,7 @@ mod tests {
     fn exactly_128_and_32_units_are_kept_whole() {
         let session = "a".repeat(128);
         let category = "b".repeat(32);
-        let projected =
-            items(json!({ "items": [{ "sessionId": session, "category": category }] }));
+        let projected = items(json!({ "items": [{ "sessionId": session, "category": category }] }));
         assert_eq!(projected[0].session_id.len(), 128);
         assert_eq!(projected[0].category.len(), 32);
         assert!(projected[0].session_id.is_well_formed());
@@ -425,8 +419,7 @@ mod tests {
     #[test]
     fn a_surrogate_pair_straddling_the_32_cut_leaves_the_lone_high_unit() {
         let category = format!("{}😀", "b".repeat(31));
-        let projected =
-            items(json!({ "items": [{ "sessionId": "s", "category": category }] }));
+        let projected = items(json!({ "items": [{ "sessionId": "s", "category": category }] }));
         let units = projected[0].category.as_units();
         assert_eq!(units.len(), 32);
         assert_eq!(units[31], 0xD83D);
@@ -435,8 +428,7 @@ mod tests {
     #[test]
     fn a_pair_ending_exactly_at_the_cut_survives_whole() {
         let session = format!("{}😀", "a".repeat(126));
-        let projected =
-            items(json!({ "items": [{ "sessionId": session, "category": "" }] }));
+        let projected = items(json!({ "items": [{ "sessionId": session, "category": "" }] }));
         assert_eq!(projected[0].session_id.len(), 128);
         assert!(projected[0].session_id.is_well_formed());
     }
@@ -464,7 +456,10 @@ mod tests {
             "sessionId is first: {text}"
         );
         assert!(text.contains("\\ud83d"), "lone unit as an escape: {text}");
-        assert!(text.ends_with("\"category\":\"\",\"active\":true}]}"), "{text}");
+        assert!(
+            text.ends_with("\"category\":\"\",\"active\":true}]}"),
+            "{text}"
+        );
     }
 
     #[test]

@@ -264,6 +264,51 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the plugin cluster (`src/routes/plugins.js`): the test
+  // script's `plugins` object supplies the Node-side facts.
+  //   entries           id -> { found: false } | { found: true, dir, ui }
+  //   entries[id].raw   that whole answer verbatim (malformed-shape tests)
+  //   active            one boolean per channelStillActive item
+  //   activeDown        answer { ok: false } for channelStillActive
+  //   answer            one verbatim answer for every op
+  if (route === '/api/__host/plugins' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'plugins-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const plugins = script.plugins || {};
+      if (script.hostDown === true || plugins.hostDown === true) { req.socket.destroy(); return; }
+      let out;
+      if (plugins.answer !== undefined) {
+        out = plugins.answer;
+      } else if (input.op === 'findPlugin') {
+        const entries = plugins.entries || {};
+        const entry = Object.prototype.hasOwnProperty.call(entries, input.id)
+          ? entries[input.id]
+          : { found: false };
+        out = entry && entry.raw !== undefined ? entry.raw : { ok: true, ...entry };
+      } else if (input.op === 'channelStillActive') {
+        const items = Array.isArray(input.items) ? input.items : [];
+        if (plugins.activeDown === true) out = { ok: false, error: { message: 'registry unavailable' } };
+        else {
+          const active = Array.isArray(plugins.active) ? plugins.active : [];
+          out = { ok: true, active: items.map((_, index) => Boolean(active[index])) };
+        }
+      } else {
+        const text = JSON.stringify({ error: 'unknown host operation' });
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+        return;
+      }
+      const text = JSON.stringify(out);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
   // Host port for routes that need in-process Node state (docs/gateway.md §10).
   // FIXTURE_HOST_SCRIPT names a JSON file the test writes: subagent defaults,
   // the session projection, provider facts and per-session patch outcomes.

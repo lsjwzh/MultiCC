@@ -198,9 +198,9 @@ function corpus(ctx) {
   add('recheck: no content type', { method: 'POST', url: '/api/channels/recheck', headers: { ...h }, body: '{"items":[{"sessionId":"sess-active","category":"attention"}]}' });
   add('recheck: unauthenticated', { method: 'POST', url: '/api/channels/recheck', headers: { 'content-type': 'application/json', host: 'example.test' }, body: '{"items":[]}' });
   add('recheck: OPTIONS', { method: 'OPTIONS', url: '/api/channels/recheck', headers: { ...h } });
-  add('recheck: GET is not registered', get('/api/channels/recheck'));
+  add('recheck: GET is not registered', get('/api/channels/recheck'), { expectedDifference: { node: v => v.status === 404, rust: v => v.status === 599 && /^forwarded:/.test(v.body) } });
   add('recheck: trailing slash', json('POST', '/api/channels/recheck/', { items: [{ sessionId: 'sess-active', category: 'attention' }] }));
-  add('recheck: upper case path', json('POST', '/API/CHANNELS/RECHECK', { items: [{ sessionId: 'sess-active', category: 'attention' }] }));
+  add('recheck: upper case path', json('POST', '/API/CHANNELS/RECHECK', { items: [{ sessionId: 'sess-active', category: 'attention' }] }), { expectedDifference: { node: v => v.status === 200 && /\"items\"/.test(v.body), rust: v => v.status === 599 && /^forwarded:/.test(v.body) } });
 
   // ---- GET|HEAD /plugins/:id/* ----------------------------------------------------
   const files = ['index.html', 'app.js', 'style.CSS', 'data.json', 'logo.svg', 'pic.png', 'favicon.ico', 'archive.bin', 'noext', 'empty.txt', 'sub/deep/page.html', 'alias.js'];
@@ -230,7 +230,7 @@ function corpus(ctx) {
   add('file: directory with trailing slash', get('/plugins/demo/ui/dir/'));
   add('file: ui directory itself', get('/plugins/demo/ui/'));
   add('file: plugin root with only the star empty', get('/plugins/demo/'));
-  add('file: plugin without the second segment', get('/plugins/demo'));
+  add('file: plugin without the second segment', get('/plugins/demo'), { expectedDifference: { node: v => v.status === 404, rust: v => v.status === 599 && /^forwarded:/.test(v.body) } });
   add('file: unknown plugin', get('/plugins/ghost/ui/index.html'));
   add('file: unknown plugin id is echoed (unicode)', get('/plugins/%E5%B9%BD%E7%81%B5/ui/index.html'));
   add('file: id with a dot dot', get('/plugins/../ui/index.html'));
@@ -245,7 +245,7 @@ function corpus(ctx) {
   add('file: upper case route prefix', get('/PLUGINS/demo/ui/app.js'));
   add('file: unauthenticated', { method: 'GET', url: '/plugins/demo/ui/app.js', headers: { host: 'example.test' } });
   add('file: OPTIONS', { method: 'OPTIONS', url: '/plugins/demo/ui/app.js', headers: { ...h } });
-  add('file: POST is not registered', json('POST', '/plugins/demo/ui/app.js', {}));
+  add('file: POST is not registered', json('POST', '/plugins/demo/ui/app.js', {}), { expectedDifference: { node: v => v.status === 404, rust: v => v.status === 599 && /^forwarded:/.test(v.body) } });
   add('file: If-None-Match miss', get('/plugins/demo/ui/app.js', { 'if-none-match': '"nope"' }));
   add('file: If-Modified-Since', get('/plugins/demo/ui/app.js', { 'if-modified-since': 'Wed, 21 Oct 2099 07:28:00 GMT' }));
   add('file: Range request', get('/plugins/demo/ui/app.js', { range: 'bytes=0-3' }));
@@ -257,6 +257,28 @@ function corpus(ctx) {
   add('file: If-None-Match weak hit on HEAD', ctxSide => ({ method: 'HEAD', url: '/plugins/demo/ui/index.html', headers: { ...h, 'if-none-match': ctxSide.state.etag2 || '"unset"' } }), {
     before: async side => { side.state.etag2 = await etagOf(side.port, '/plugins/demo/ui/index.html', h); },
   });
+
+  // ---- anonymous file requests: the shared public-path rule --------------------------
+  // A non-local Host makes both sides judge the caller anonymous and remote. Static
+  // extensions (case-insensitive) pass the login on Node; everything else is the
+  // HTML login redirect.
+  const remote = { host: 'example.test' };
+  for (const f of ['app.js', 'style.CSS', 'data.json', 'logo.svg', 'pic.png', 'favicon.ico']) {
+    add(`anon: GET ${f} is public`, { method: 'GET', url: `/plugins/demo/ui/${f}`, headers: { ...remote } });
+    add(`anon: HEAD ${f} is public`, { method: 'HEAD', url: `/plugins/demo/ui/${f}`, headers: { ...remote } });
+  }
+  for (const f of ['index.html', 'noext', 'archive.bin', 'empty.txt', 'sub/deep/page.html']) {
+    add(`anon: GET ${f} is the login redirect`, { method: 'GET', url: `/plugins/demo/ui/${f}`, headers: { ...remote } });
+  }
+  add('anon: public extension but the plugin does not exist', { method: 'GET', url: '/plugins/ghost/ui/app.js', headers: { ...remote } });
+  add('anon: public extension outside the UI subtree', { method: 'GET', url: '/plugins/demo/secret.json', headers: { ...remote } });
+  add('anon: public extension, traversal', { method: 'GET', url: '/plugins/demo/ui/..%2fplugin.json', headers: { ...remote } });
+  add('anon: upper case extension', { method: 'GET', url: '/plugins/demo/ui/STYLE.CSS', headers: { ...remote } });
+  add('anon: Accept text/html does not change a public extension', { method: 'GET', url: '/plugins/demo/ui/app.js', headers: { ...remote, accept: 'text/html' } });
+  add('anon: OPTIONS on a public extension', { method: 'OPTIONS', url: '/plugins/demo/ui/app.js', headers: { ...remote } });
+  add('anon: OPTIONS on a page', { method: 'OPTIONS', url: '/plugins/demo/ui/index.html', headers: { ...remote } });
+  add('anon: wrong token on a public extension', { method: 'GET', url: '/plugins/demo/ui/app.js', headers: { ...remote, 'x-access-token': 'wrong' } });
+  add('anon: wrong token on a page', { method: 'GET', url: '/plugins/demo/ui/index.html', headers: { ...remote, 'x-access-token': 'wrong' } });
   return cases;
 }
 
@@ -283,4 +305,14 @@ main({
   },
   upstream: upstreamScript(TREE_ROOT),
   corpus,
+  // The ETag is a hash of the body, and an error body carries each side's own random
+  // request ids, so the two ETags differ even when the normalised bodies are equal. Blank
+  // the ETag only for such a body; a body without a placeholder keeps its ETag, which then
+  // has to match byte for byte.
+  normalizeView(view) {
+    if (view.headers.etag !== undefined && view.body.includes('<rand>')) {
+      return { ...view, headers: { ...view.headers, etag: '<etag-of-random-body>' } };
+    }
+    return view;
+  },
 });
