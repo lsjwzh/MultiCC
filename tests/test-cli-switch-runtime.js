@@ -16,6 +16,7 @@ const {
   buildHandoffCheckpoint,
 } = require('../src/cli-switch');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('../src/cli/switch-runtime');
+const { getNative } = require('../src/native/runtime');
 const { recordsOf } = require('./helpers/session-records');
 
 function createResponse() {
@@ -127,6 +128,9 @@ function createHarness(overrides = {}) {
     registryBase: overrides.registryBase,
     env: overrides.env,
     envFile: overrides.envFile,
+    // The host port only answers the loopback front door; the fixture request
+    // has no socket, so the harness injects the same verdict.
+    isLocalRequest: overrides.isLocalRequest || (() => true),
   });
   const app = {
     routes: {},
@@ -134,10 +138,57 @@ function createHarness(overrides = {}) {
     get(route, handler) { this.routes[`GET ${route}`] = handler; },
   };
   runtime.mountRoutes(app, handler => handler);
-  async function invoke({ id = 's1', body = {} } = {}) {
-    const res = createResponse();
-    await app.routes['POST /api/sessions/:id/switch-cli']({ params: { id }, body }, res);
-    return res;
+  // The Rust front door now owns `POST /api/sessions/:id/switch-cli`. These
+  // tests drive the same path the front door does: host `facts`, then the
+  // addon's `manualGate`, then one side-effect host op (`noop` or `switch`).
+  // `callHost` invokes the host route synchronously, so the switch still runs
+  // to its first await (the Git snapshot) before `invoke` returns — the
+  // "turn begins during the snapshot" test depends on that ordering.
+  function callHost(payload) {
+    const box = { statusCode: undefined, body: undefined };
+    let settle;
+    const promise = new Promise(resolve => { settle = resolve; });
+    const res = {
+      status(code) { box.statusCode = code; return this; },
+      json(body) { box.body = body; settle(box); return this; },
+    };
+    app.routes['POST /api/__host/cli-switch']({ params: {}, body: payload }, res);
+    return { box, promise };
+  }
+  function reply(statusCode, body) { return { statusCode, body }; }
+  // The retired route let the raw error reach safeErrorHandler; the front door
+  // now receives it as `{ ok:false, status, code, safeMessage, detail }`. Keep
+  // throwing an error with the same message/code so the assertions below still
+  // describe the real failure.
+  function hostThrown(failure, fallback) {
+    const answer = failure && typeof failure === 'object' ? failure : {};
+    const error = new Error(answer.detail || fallback);
+    if (answer.code) error.code = answer.code;
+    if (Number.isInteger(answer.status)) error.status = answer.status;
+    return error;
+  }
+  function invoke({ id = 's1', body = {} } = {}) {
+    const facts = callHost({ op: 'facts', sessionId: id }).box;
+    if (!facts.body) return Promise.reject(new Error('host facts did not answer'));
+    if (facts.body.internalSlot) return Promise.resolve(reply(404, { error: 'session not found' }));
+    const gate = JSON.parse(getNative().cliSwitchRuntimeRequest('manualGate', JSON.stringify({
+      exists: facts.body.exists, session: facts.body.session, body, supported: facts.body.supported,
+    })));
+    if (gate.action === 'respond') return Promise.resolve(reply(gate.status, gate.body));
+    if (gate.action === 'noop') {
+      const noop = callHost({ op: 'noop', sessionId: id }).box;
+      if (!noop.body || noop.body.ok !== true) {
+        return Promise.reject(hostThrown(noop.body, 'switch-cli noop failed'));
+      }
+      return Promise.resolve(reply(200, noop.body.body));
+    }
+    const { box, promise } = callHost({
+      op: 'switch', sessionId: id, targetCli: gate.targetCli, fresh: gate.fresh,
+    });
+    return promise.then(() => {
+      if (!box.body || box.body.ok !== true) throw hostThrown(box.body, 'switch-cli failed');
+      return reply(box.body.status, box.body.body);
+    });
   }
   async function invokeSpecs() {
     const res = createResponse();

@@ -16,7 +16,7 @@ fn load(connection: &Connection, id: &str) -> Result<Option<JsValue>> {
         .transpose()
 }
 fn terminal(value: Option<&JsValue>) -> bool {
-    matches!(value, Some(value) if ["completed", "failed", "interrupted", "cancelled"].iter().any(|s| value == &JsValue::string(s)))
+    matches!(value, Some(value) if super::TERMINAL_TASK_STATES.iter().any(|s| value == &JsValue::string(s)))
 }
 fn projection(operation: &JsValue, idempotent: bool) -> Result<Value> {
     let mut public = operation.clone();

@@ -9,7 +9,7 @@ Continue the existing plan: steps 1–5 are complete; step 6 is the backend migr
 | HTTP, middleware, authentication, errors, WS and SSE | Inventory reconciled with runtime mounts; equivalent response/event contracts; isolated integration tests; no remaining Express handler in production | Open. Axum owns the public listener and selected routes; the remainder is forwarded to Node |
 | Chat orchestration | Rust owns admission, turn/attempt state, provider selection, CLI supervision, streaming, cancellation, background work, completion and recovery; unchanged client contracts | Open. Several Rust kernels and Claude process supervision exist; the turn coordinator and other host lifecycles remain in Node |
 | Persistence | Rust owns schemas/migrations, reads/writes/transactions and history; old-format import and recovery fixtures pass; isolated migration checks prove record/order/relationship consistency | Open. Rust owns SQLite operations and several stores; many domain writes and history/delivery effects still use Node |
-| Node production exit | Full project/contract/integration checks pass; standalone Rust startup has no backend Node child; packaging, deployment and rollback instructions tested | Open. `serve --no-node` now starts the front door with no Node child at all (only routes needing no Node state answer; forwarded routes and auth-gated native routes fail closed with 503 `node_runtime_absent`, [gateway.md §8.1](gateway.md)) and a Node-free Docker stage plus CI smoke exercise it; the complete product still needs `--node` until the preceding criteria pass |
+| Node production exit | Full project/contract/integration checks pass; standalone Rust startup has no backend Node child; packaging, deployment and rollback instructions tested | Open. `serve --no-node` now starts the front door with no Node child at all (routes needing neither Node state nor a local access token answer; forwarded routes always fail closed, and auth-gated native routes fail closed only when `.env` has no usable `ACCESS_TOKEN`, [gateway.md §8.1](gateway.md)) and a Node-free Docker stage plus CI smoke exercise it; the complete product still needs `--node` until the preceding criteria pass |
 
 Use the existing Axum/Tokio gateway, rusqlite/SQLite databases and established JSON/JSONL formats. Do not change databases or client APIs as a shortcut. Build/test tooling, frontend JavaScript and the Electron client are outside backend replacement; any Node helper needed to serve backend requests remains an open dependency. External user-selected CLI executables retain their existing protocol contracts.
 
@@ -24,13 +24,13 @@ No production restart, configuration switch, live-data migration, commit, merge 
 | 6c. Replace remaining HTTP and stream hosts | Each inventory entry has a Rust route and fixture; static files, uploads/downloads, WS/SSE, provider relays, administration, tools and integration hosts covered | Open; batch existing coherent domains with their state owners |
 | 6d. Replace chat orchestration | Complete turn/attempt state machine and CLI lanes; abort/retry/background/reconnect/finalization invariants tested against recorded events | In progress. The live chat-session table and the per-session turn runtime store now have one native owner beside the session-record owner; CLI supervision, streaming, finalize effects and the remaining turn/attempt transitions stay in Node. Existing Rust kernels are reused, not rewritten |
 | 6e. Finish domain persistence | Versioned schema and old-format readers, transaction boundaries, recovery and restart consistency; isolated data validation manifests | Open; migrate stores alongside their consuming domains, then reconcile all remaining writers |
-| 6f. Disable Node backend and verify delivery | Rust-only production startup/package, full tests, contract inventory has no Node fallback, verified deployment/rollback documentation | Open; the Node-free start path (gateway `--no-node`, `scripts/start-rust-only.sh`, the `node-free-runtime` image and the CI smoke) exists and spawns no `server.js`, but it only serves what needs no Node state: auth-gated native routes and all forwarded routes fail closed, so the supervisor path cannot be disabled until the auth runtime and 6c/6d cover the inventory (see “What deleting the Node process still needs”) |
+| 6f. Disable Node backend and verify delivery | Rust-only production startup/package, full tests, contract inventory has no Node fallback, verified deployment/rollback documentation | Open; the Node-free start path (gateway `--no-node`, `scripts/start-rust-only.sh`, the `node-free-runtime` image and the CI smoke) exists and spawns no `server.js`, but it only serves what needs no Node state: forwarded routes still fail closed and the image has no access token for the auth-gated native routes, so the supervisor path cannot be disabled until 6c/6d cover the inventory (see “What deleting the Node process still needs”) |
 
 6b–6e can advance by coherent domain, but this ledger is one plan. Every batch records deleted Node code, retained bridges, tests, format differences and next dependency. Existing evidence is in [gateway.md](gateway.md) and [request-lifecycle-rust.md](request-lifecycle-rust.md).
 
 ## Node-free startup and what deleting the Node process still needs (2026-11-14)
 
-The front door now has an explicit Rust-only mode. `multicc-gateway serve --cwd <dir> --no-node` never spawns a child: it binds the public port and loads `.env`; everything it cannot serve without Node — forwarded routes, WebSocket upgrades, and every native route that needs the authentication snapshot — answers 503 `node_runtime_absent` immediately, with an auth-specific error text for the last group (contract: [gateway.md §8.1](gateway.md)). `--node` keeps its previous behaviour unchanged, and exactly one of the two flags is mandatory: neither, both, or `--no-node` with a script argument exits 2 with the documented text. This changes the entry state, not the Goal criteria.
+The front door now has an explicit Rust-only mode. `multicc-gateway serve --cwd <dir> --no-node` never spawns a child: it binds the public port and loads `.env`; forwarded routes, WebSocket upgrades and every native route that needs the authentication snapshot with no locally installable token answer 503 `node_runtime_absent` immediately, with an auth-specific error text for the last group (contract: [gateway.md §8.1](gateway.md)). A usable `ACCESS_TOKEN` installs a process-local authentication runtime, so those native routes answer normally instead. `--node` keeps its previous behaviour unchanged, and exactly one of the two flags is mandatory: neither, both, or `--no-node` with a script argument exits 2 with the documented text. This changes the entry state, not the Goal criteria.
 
 | Entry point | Runtime today | Node-free? |
 |---|---|---|
@@ -45,7 +45,15 @@ The front door now has an explicit Rust-only mode. `multicc-gateway serve --cwd 
 
 This is the structure of the remaining work. Counts must be re-measured from [backend-route-inventory.md](backend-route-inventory.md) and [backend-runtime-inventory.md](backend-runtime-inventory.md) when the list is acted on; do not copy numbers from an older batch, and put the final figures here when the main inventory is re-run.
 
-1. **Authentication runtime ownership.** Access token, HMAC session cookies, WS tickets and the shutdown flag are still held by the Node child; the gateway reads a snapshot over the authenticated control stream. This is the first blocker for deleting Node, and the reason every auth-gated native route fails closed under `--no-node`: the snapshot owner, not just the route, has to move to Rust (6b).
+1. **Authentication runtime ownership — done for `--no-node` (2026-11-16).** When the front door starts with `--no-node`, it now owns the access token, revision, WS-ticket table and shutdown flag itself: it reads `ACCESS_TOKEN` with the same `.env` rules `server.js` used and installs a local `multicc_core::auth_runtime::AuthRuntime`; auth-gated native routes answer with the same Rust gate (403 `AUTH_REQUIRED` / 302 `/login` / 200) instead of failing closed. Missing, empty or over-64-KiB tokens install nothing: the old 503 `node_runtime_absent` answer and text stay, plus one diagnostic line on stderr. `--node` never installs a local instance, so the child remains the only owner. WS ticket *redemption* is unchanged (upgrades are still forwarded to Node, so `/ws/*` fails closed under `--no-node`); the remaining blockers are hosts, not token ownership. Verify with:
+   ```
+   cargo test --locked --manifest-path native/Cargo.toml -p multicc-gateway --test no_node_auth
+   env -i PATH=/nonexistent ACCESS_TOKEN=<16 chars> native/target/release/multicc-gateway \
+     serve --cwd <dir with empty server.js> --no-node --ephemeral-loopback
+   curl -H 'Host: test' http://127.0.0.1:<port>/api/claude/models                     # 403 AUTH_REQUIRED
+   curl -H 'Host: test' -H 'X-Access-Token: <16 chars>' .../api/claude/models         # 200
+   ```
+   `scripts/smoke-no-node-gateway.sh` deliberately sets no token, so it still asserts the 503 branch (fail-closed).
 2. **Unmigrated HTTP route domains.** The remainder of the inventory (chat/session/task control routes, administration and settings, plugin hosts, the static `public/` files Express still serves, …). Each domain moves together with its state owner, fixtures and the deleted Node handler (6c, 6e).
 3. **WebSocket hosts and upgrades.** Every `/ws/*` endpoint that is still forwarded needs a Rust host with the same ticket/snapshot/replay contract before the forwarding fallback can be dropped (6b, 6c).
 4. **Chat control plane and turn/worker lifecycle.** Admission, turn/attempt transitions, CLI supervision, streaming, cancellation, background work, completion and recovery still run in Node (6d). Reuse the existing native kernels; do not rewrite them.
@@ -55,13 +63,37 @@ This is the structure of the remaining work. Counts must be re-measured from [ba
 
 Exit for this item: every entry point in the table above starts with `--no-node`, the full test/contract/packaging matrix passes without a Node child, and the `host_port` fallback, the auth-runtime refusal and the forwarding `node_runtime_absent` branch can all be deleted rather than merely exercised.
 
+### Node-free entry points, measured (2026-11-16)
+
+What was run, not what the table above says:
+
+- `sh scripts/smoke-no-node-gateway.sh native/target/debug/multicc-gateway` on this checkout (`env -i`, an isolated `PATH` that resolves no `node`): `PASS`. The Rust test-hook route answers 200, an auth-gated native route (`/api/claude/models`) and a Node-owned route (`/api/not-owned-by-rust`) both answer 503 `node_runtime_absent`, and SIGTERM exits 0.
+- `npm run docker:node-free` (`docker build --target node-free-runtime`): the in-image `cargo build --locked --release` succeeds, the build asserts there is no `node` executable, and the same smoke passes inside the build. A started container has `multicc-gateway` as PID 1 and nothing else from the product; `/usr/local/bin` holds only `multicc-gateway` and `multicc-writer`; `docker stop` exits 0. A second container sharing its network namespace got the same two 503 bodies over HTTP.
+- The bind address depends on the access token, measured on the built image. Without `ACCESS_TOKEN` the front door binds `127.0.0.1` inside the container (log line `listening on 127.0.0.1:3000`), so `docker run -p` cannot reach it (host-side `curl` returned `000`); probe it from a container that shares its network namespace. With `ACCESS_TOKEN` of 6 or more characters and no explicit `HOST`/`MULTICC_ALLOW_REMOTE`, the existing `auto_lan` rule in `native/core/src/network_policy.rs` opens the IPv4 LAN, the front door binds `0.0.0.0` (`listening on 0.0.0.0:3000`) and a published port works. This is the pre-existing bind policy, not something this batch changed.
+
+Constraint this exposed: the image is built from the tracked-file export, so a Rust module that exists only in the working tree makes `cargo build` fail inside the image with `E0583 file not found for module` while the local build is green. Track every new source file (`git add`) before treating a local green build as a build the image can reproduce.
+
+Still true after this measurement: the node-free image ships no `.env`, so it has no `ACCESS_TOKEN` and auth-gated native routes still answer 503; the image proves the binaries run with no Node, not that they serve the product.
+
+### Auth runtime self-owned under `--no-node` (2026-11-16)
+
+What was measured on this worktree with the release binary: `serve --no-node --ephemeral-loopback`, an isolated temporary `--cwd` holding an empty `server.js` and a `.env` with `ACCESS_TOKEN=local-secret-123`, and an empty `PATH`.
+
+- `GET /api/claude/models` with `Host: test` and no credential: 403 `AUTH_REQUIRED`. The `--node` fixture (`native/gateway/tests/fixtures/upstream.js`) answers the same request with the same 403 body shape, because both modes run the one `multicc_core::http_gate` rule.
+- The same request with `X-Access-Token: local-secret-123`: 200 with the model list; a wrong token: 403 `AUTH_REQUIRED`.
+- `POST /api/auth/ws-ticket` with the token and `{"path":"/ws/meta"}`: 200 `{"ticket":"<32 chars>","expiresAt":<ms>,"path":"/ws/meta"}`, minted by the local table.
+- `/api/not-owned-by-rust`: 503 `node_runtime_absent`; `/__gateway_test/host-port`: 503 `rust_backend_unavailable`; SIGTERM: exit 0.
+- Without `ACCESS_TOKEN`, or with a token over the 64 KiB private-control-frame limit: the old 503 `node_runtime_absent` body and text are unchanged, with one diagnostic line on stderr and no panic. `scripts/smoke-no-node-gateway.sh` exercises this branch (it sets no token) and still passes.
+
+Not covered: WS ticket redemption. The front door forwards every upgrade to Node, so under `--no-node` `/ws/*` still answers 503 `node_runtime_absent`; a locally minted ticket has no Rust WS host to consume it (blocker 3). Runtime token rotation (`/api/settings/access-token`) remains a Node route; the local runtime reads `.env` once at startup.
+
 ## Ownership snapshot at Goal start
 
 | Domain | Current implementation | Remaining work |
 |---|---|---|
 | Public listener and selected HTTP routes | `native/gateway` Axum/Hyper | Fallback still opens a dedicated connection to Node |
 | Login endpoints and service proxy | Gateway-native HTTP; service config/HTTP/WS wholly Rust | Auth state lives in a Rust addon in the Node process; relocate owner after dependent hosts migrate |
-| Token/shutdown/WS tickets | `native/core/auth_runtime.rs`; private authenticated control stream | General Node WS host still consumes tickets and creates business snapshots |
+| Token/shutdown/WS tickets | `native/core/auth_runtime.rs`; `--node` reads it through the private authenticated control stream, `--no-node` holds a local instance built from `.env` | General Node WS host still consumes tickets and creates business snapshots |
 | Workspace-sharing authorization (legacy `fleet` API names) | `native/core/workspace_sharing`, asynchronous addon handle; live directory/session callbacks | Core owns records, scrypt, grant policy, counters, revocations and both JSON writers. Remote HTTP/HTTPS transport is now core-owned. Move rate limiting, HTTP/WS routes and the live context owners into Rust |
 | Provider relay share authorization | `native/core/relay_shares.rs` and `durable_state.rs`; asynchronous addon handle | Core owns scrypt/AES-GCM, recovery, counters, revocations and backups. Move its HTTP routes and owner placement into the gateway alongside provider lifecycle |
 | Other provider/CLI authorization | Mixed Rust kernels and live addon host ports | Remove live host references by transferring attempts/session/provider state owners |

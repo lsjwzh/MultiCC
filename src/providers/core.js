@@ -78,9 +78,9 @@ function enableUnifiedOfficialProviders() {
   if (officialCatalog) return;
   const selectionFile = path.join(RUNTIME_PATHS.root, 'official-provider-selection.json');
   if (!fs.existsSync(selectionFile)) {
-    let defaults = {};
-    try { defaults = JSON.parse(fs.readFileSync(RUNTIME_PATHS.providerDefaultsFile, 'utf8')); }
-    catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
+    const defaultsOwner = require('./defaults-port').getProviderDefaultsOwner(RUNTIME_PATHS.providerDefaultsFile);
+    defaultsOwner.assertReadable();
+    const defaults = defaultsOwner.snapshot();
     const records = loadStore();
     const selection = {};
     for (const type of ['claude', 'codex']) {
@@ -146,97 +146,35 @@ const API_FORMATS = Object.freeze({
   OPENAI_RESPONSES: 'openai_responses',
 });
 
-// Legacy 'openai_chat' values (provider rows, cc-switch meta, stale clients)
-// normalize to OPENAI_RESPONSES: every mainstream provider now serves
-// /responses natively (probed 2026-09-12 — DeepSeek, GLM, Qwen, MiniMax,
-// Moonshot, XFYun, StepFun, Ark all return 401 not 404 on /responses), so the
-// local responses↔chat conversion bridge was retired.
-//
-// The pool (appType) fixes the wire format: a claude row stores ANTHROPIC_* env
-// and a codex row stores a config.toml with wire_api = "responses". Every
-// route builder reads credentials from the shape that matches the format, so a
-// codex row labelled 'anthropic' had no usable key on any lane — the label is
-// therefore derived from the pool, never trusted on its own.
-function apiFormatForAppType(appType) {
-  if (appType === 'claude') return API_FORMATS.ANTHROPIC;
-  if (appType === 'codex') return API_FORMATS.OPENAI_RESPONSES;
-  return null;
+
+// The pool's pinned format, else the requested spelling. The third `cfg`
+// argument of the retired signature was never read; callers still pass it.
+function normalizeApiFormat(value, appType) {
+  return getNative().providerNormalizeApiFormat({ apiFormat: value, appType });
 }
 
-function normalizeApiFormat(value, appType, cfg = {}) {
-  const fixed = apiFormatForAppType(appType);
-  if (fixed) return fixed;
-  const raw = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  if (raw === 'anthropic' || raw === 'messages' || raw === 'anthropic_messages') return API_FORMATS.ANTHROPIC;
-  return API_FORMATS.OPENAI_RESPONSES;
-}
 
-// An explicit apiFormat from a client that contradicts the pool is a form bug
-// (e.g. CLI=Codex + protocol=Anthropic): reject it instead of storing a row
-// that no lane can run. Legacy spellings that normalize to the pool's format
-// ('openai_chat', 'messages') are still accepted.
-function assertApiFormatMatchesAppType(apiFormat, appType) {
-  if (apiFormat === undefined || apiFormat === null || apiFormat === '') return;
-  const raw = String(apiFormat).trim().toLowerCase().replace(/[\s-]+/g, '_');
-  const asked = (raw === 'anthropic' || raw === 'messages' || raw === 'anthropic_messages')
-    ? API_FORMATS.ANTHROPIC : API_FORMATS.OPENAI_RESPONSES;
-  const fixed = apiFormatForAppType(appType);
-  if (fixed && asked !== fixed) {
-    throw new Error(appType === 'codex'
-      ? 'Codex 线路只能用 OpenAI Responses 协议；Anthropic 协议的上游请建成 Claude 线路'
-      : 'Claude 线路只能用 Anthropic Messages 协议；OpenAI 协议的上游请建成 Codex 线路');
-  }
-}
-
+// 协议兼容表、车道→池映射与凭据门禁都在 Rust
+// (`multicc_core::provider_registry`)，这四行只保持旧导出名。完整列表
+// （不过滤凭据门禁车道）以 hasCredentials=true 问；summarize 用它自己那份
+// baseUrl/token 事实决定门禁。
 function compatibleClisForFormat(apiFormat) {
-  // DSH joins the Anthropic pool: its only LLM client speaks Anthropic Messages
-  // (default endpoint https://api.deepseek.com/anthropic, DEEPSEEK_BASE_URL
-  // replaces the whole base — verified in dsh-llm-deepseek). Grok joins both
-  // pools: its config.toml [model.*] api_backend accepts "messages" and
-  // "responses" (docs/user-guide/11-custom-models.md). WorkBuddy/Qoder CN were
-  // probe-tested 2026-10-15 and ignore endpoint overrides entirely — they stay
-  // providerless by vendor design, not by our choice.
-  if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'claude-exp', 'opencode', 'zcode', 'dsh', 'grok'];
-  // Kimi Code joins the OpenAI-family pool (moonshot's own API is
-  // OpenAI-compatible).
-  return ['codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'grok'];
+  return getNative().providerCompatibleClis(apiFormat, true);
 }
-
-// These CLIs replay a provider over plain HTTP: an OAuth-subscription entry
-// (Claude/Codex official) has no credential they can use, so they only appear
-// on providers with a real baseUrl+token. Their official logins stay on the
-// provider-less native route.
-const CREDENTIAL_GATED_CLIS = new Set(['zcode', 'kimi', 'dsh', 'grok']);
 
 function providerSupportsCli(provider, cli) {
   if (!provider || !cli) return false;
-  if (provider.virtual) return [provider.appType, `${provider.appType}-exp`].includes(String(cli));
-  const format = normalizeApiFormat(provider.apiFormat || provider.protocol, provider.appType, parseConfig(provider.settingsConfig));
-  if (!compatibleClisForFormat(format).includes(String(cli))) return false;
-  if (!CREDENTIAL_GATED_CLIS.has(String(cli))) return true;
-  const summary = provider.settingsConfig ? summarize(provider) : provider;
-  return !!(summary && summary.baseUrl && summary.hasToken);
+  // 虚拟线路的池标签由原生规则直接作答；provider 行先摊平成 summary 事实。
+  const summary = provider.settingsConfig && !provider.virtual ? summarize(provider) : provider;
+  return !!getNative().providerSupportsCli(summary, cli);
 }
 
-// Map a session's cli to its MultiCC-managed provider pool (appType).
-// Qoder CN owns authentication/provider configuration in its vendor client, so
-// it deliberately returns null. OpenCode and ZCode can consume both provider
-// pools and therefore resolve globally by provider id; appTypeForCli remains a
-// legacy single-pool default only.
 function appTypeForCli(cli) {
-  if (cli === 'codex' || cli === 'codex-exp') return 'codex';
-  if (cli === 'claude' || cli === 'claude-exp' || cli === 'opencode') return 'claude';
-  // DSH speaks only Anthropic Messages — its pool is the claude-side one.
-  if (cli === 'dsh') return 'claude';
-  return null;
+  return getNative().providerAppTypeForCli(cli);
 }
 
 function appTypesForCli(cli) {
-  // Grok's per-model api_backend accepts both "messages" and "responses", so it
-  // resolves providers globally by id like OpenCode/ZCode/Kimi.
-  if (cli === 'opencode' || cli === 'zcode' || cli === 'kimi' || cli === 'grok') return ['claude', 'codex'];
-  const type = appTypeForCli(cli);
-  return type ? [type] : [];
+  return getNative().providerAppTypesForCli(cli);
 }
 
 // Safe wire model used when a provider is "alias-only" — it declares only
@@ -289,30 +227,13 @@ function uniqueModels(values) {
   return out;
 }
 
-function parseModelList(models, primary) {
-  const extras = Array.isArray(models)
-    ? models
-    : String(models || '').split(/[\n,]/);
-  return uniqueModels([primary, ...extras]);
-}
 
-// Providers that expose /responses but need a local compatibility hop for Codex
-// streaming. XFYun MaaS Coding returns a Responses-shaped stream, but long Codex
-// turns can close before Codex observes response.completed; the proxy keeps the
-// wire stable and injects only the missing terminal event.
-const RESPONSES_COMPAT_PROXY_MAP = [
-  { host: 'maas-coding-api.cn-huabei-1.xf-yun.com', target: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses' },
-];
-
+// The local compatibility hop a Codex provider needs, if any. The host table
+// and the URL parse live in Rust
+// (`multicc_core::provider_settings_config::detect_responses_compat_target`).
 function detectResponsesCompatTarget(baseUrl) {
-  if (!baseUrl) return null;
-  let host;
-  try { host = new URL(baseUrl).host; } catch (_) { return null; }
-  for (const m of RESPONSES_COMPAT_PROXY_MAP) {
-    if (m.host && host === m.host) return m.target;
-    if (m.hostRe && m.hostRe.test(host)) return m.target;
-  }
-  return null;
+  const target = getNative().providerResponsesCompatTarget({ baseUrl });
+  return target === undefined ? null : target;
 }
 
 // Tier → env key for the per-tier model-mapping UI (settings screen). Lets a
@@ -445,25 +366,7 @@ function modelValidForProvider(appType, providerId, model, summaryOverride) {
   return served.length === 0 || served.includes(bare);
 }
 
-// Apply a { opus: {model, name}, sonnet: {...}, ... } map onto a claude env
-// object (in place), writing/clearing ANTHROPIC_DEFAULT_*_MODEL[_NAME]. Blank
-// model for a tier clears that tier's mapping.
-function applyAliasMapToEnv(env, aliasMap) {
-  if (!aliasMap || typeof aliasMap !== 'object') return;
-  for (const [tier, key] of Object.entries(ALIAS_TIER_KEYS)) {
-    const entry = aliasMap[tier];
-    const model = (entry && typeof entry === 'object' ? entry.model : entry) || '';
-    const name = (entry && typeof entry === 'object' ? entry.name : '') || '';
-    if (String(model).trim()) {
-      env[key] = String(model).trim();
-      if (String(name).trim()) env[key + '_NAME'] = String(name).trim();
-      else delete env[key + '_NAME'];
-    } else {
-      delete env[key];
-      delete env[key + '_NAME'];
-    }
-  }
-}
+
 
 // Official Zhipu (GLM) claude providers: bounded fable-tier alias fill. The
 // fable tier maps to GLM-5.3 (wire id glm-5.3, confirmed on
@@ -473,84 +376,36 @@ function applyAliasMapToEnv(env, aliasMap) {
 // applies when the base URL is a Zhipu host AND the fable mapping is absent
 // or empty — never overwrites a non-empty custom value, other tiers, or
 // non-Zhipu providers.
-const ZHIPU_FABLE_ALIAS = { model: 'glm-5.3', name: 'GLM5.3' };
+// The literal itself lives in
+// `multicc_core::provider_settings_config` (the write path fills it in); this
+// read path projects the same mapping onto legacy configs that predate it.
+const ZHIPU_FABLE_ALIAS = getNative().providerZhipuFableAlias();
 
 function isZhipuBaseUrl(baseUrl) {
-  const host = String(baseUrl || '').replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
-  return host === 'open.bigmodel.cn' || host === 'api.z.ai'
-    || host.endsWith('.bigmodel.cn') || host.endsWith('.z.ai');
+  return getNative().providerIsZhipuBaseUrl({ baseUrl });
 }
 
-// Fill the fable alias on an env object (in place) when the bounded
-// conditions hold. Returns true when the fill was applied.
+// Replace `target`'s contents with `next`'s, in place. Keys `next` dropped are
+// deleted; keys it kept are reassigned (which leaves their position alone in
+// JavaScript, matching the in-place mutation the retired Node code did).
+function syncEnvInPlace(target, next) {
+  for (const key of Object.keys(target)) {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) delete target[key];
+  }
+  for (const [key, value] of Object.entries(next)) target[key] = value;
+  return target;
+}
+
+// Fill the fable alias on an env object (in place) when the bounded conditions
+// hold. Returns true when the fill was applied. Rust owns the host test and the
+// "already mapped" test; the write is synced back onto the caller's object.
 function ensureZhipuFableAlias(env) {
   if (!env || typeof env !== 'object') return false;
-  if (!isZhipuBaseUrl(env.ANTHROPIC_BASE_URL)) return false;
-  if (String(env.ANTHROPIC_DEFAULT_FABLE_MODEL || '').trim()) return false;
-  env.ANTHROPIC_DEFAULT_FABLE_MODEL = ZHIPU_FABLE_ALIAS.model;
-  env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = ZHIPU_FABLE_ALIAS.name;
-  return true;
+  const result = getNative().providerEnsureZhipuFableAlias({ env });
+  if (result.applied) syncEnvInPlace(env, result.env);
+  return result.applied;
 }
 
-// Build a cc-switch-shaped settingsConfig from simple fields.
-function buildSettingsConfig(appType, { baseUrl, authToken, model, models, providerId, apiFormat, aliasMap }) {
-  const modelOptions = parseModelList(models, model);
-  if (appType === 'claude') {
-    const env = {};
-    if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
-    if (authToken) env.ANTHROPIC_AUTH_TOKEN = authToken;
-    if (model) env.ANTHROPIC_MODEL = model;
-    applyAliasMapToEnv(env, aliasMap);
-    // Persist the bounded Zhipu fable fill so newly created/edited providers
-    // carry ANTHROPIC_DEFAULT_FABLE_MODEL=glm-5.3 in their stored config.
-    ensureZhipuFableAlias(env);
-    return { env, modelCatalog: { models: modelOptions.map(m => ({ model: m })) } };
-  }
-  const provName = 'custom';
-  // codex CLI (>= 0.130) only supports wire_api = "responses"; the "chat"
-  // protocol was removed (see openai/codex#7782). Codex therefore talks to the
-  // provider's /responses endpoint directly. Mainstream domestic providers
-  // (DeepSeek, GLM, Qwen, MiniMax, Moonshot, XFYun, StepFun, Ark) all serve
-  // /responses natively now (probed 2026-09-12), so the former local
-  // responses↔chat conversion bridge was retired. The one remaining local hop
-  // is responses-compat (stream-stabilizing, same wire protocol) for hosts in
-  // RESPONSES_COMPAT_PROXY_MAP.
-  const compat = detectResponsesCompatTarget(baseUrl);
-  const proxySpec = compat ? { baseUrl: compat, mode: 'responses-compat' } : null;
-  const port = process.env.PORT || 3000;
-  const proxyBaseUrl = (proxySpec && providerId)
-    ? `http://127.0.0.1:${port}/codex-proxy/${providerId}`
-    : baseUrl;
-  const lines = [
-    `model_provider = "${provName}"`,
-    model ? `model = "${model}"` : '',
-    '',
-    `[model_providers.${provName}]`,
-    `name = "${provName}"`,
-    proxyBaseUrl ? `base_url = "${proxyBaseUrl}"` : '',
-    // codex 0.15x only attaches credentials for custom providers through
-    // env_key + the matching env var; auth.json alone sends no Authorization
-    // header and DeepSeek's gateway answers 401 "Authentication Fails".
-    authToken ? 'env_key = "OPENAI_API_KEY"' : '',
-    'wire_api = "responses"',
-  ].filter(Boolean);
-  const cfg = {
-    auth: !baseUrl && !authToken
-      ? { auth_mode: 'chatgpt' }
-      : { OPENAI_API_KEY: authToken || null },
-    config: lines.join('\n') + '\n',
-    modelCatalog: { models: modelOptions.map(m => ({ model: m })) },
-  };
-  if (proxySpec) {
-    cfg.proxyTarget = {
-      baseUrl: proxySpec.baseUrl,
-      apiKey: authToken || '',
-      originalBaseUrl: baseUrl || '',
-      mode: proxySpec.mode,
-    };
-  }
-  return cfg;
-}
 
 function replaceTomlString(config, key, value) {
   const line = `${key} = "${String(value || '').replace(/["\\]/g, '')}"`;
@@ -672,8 +527,7 @@ function summarize(p, opts = {}) {
     apiFormat,
     protocol: apiFormat,
     wireApi: apiFormat === API_FORMATS.ANTHROPIC ? 'messages' : 'responses',
-    compatibleClis: compatibleClisForFormat(apiFormat)
-      .filter(cli => !CREDENTIAL_GATED_CLIS.has(cli) || (!!baseUrl && !!token)),
+    compatibleClis: getNative().providerCompatibleClis(apiFormat, !!baseUrl && !!token),
     name: p.name,
     // Optional explicit quota classification override (frontend quotaKindForProvider
     // honors it; 'none' disables the badge) for proxy-hosted providers whose
@@ -916,170 +770,116 @@ function resolveCodexDirectHttp(providerId) {
 // resolveUpstreamAgent hook (see src/claude-auth/egress-agent.js). `null` clears, `undefined` leaves as is.
 const EGRESS_PLUGIN_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const EGRESS_PROFILE_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
-function normalizeEgressBinding(value) {
-  if (value === undefined || value === null) return value;
-  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('egressBinding must be an object');
-  const pluginId = String(value.pluginId || '').trim();
-  const profileId = String(value.profileId || '').trim();
-  if (!EGRESS_PLUGIN_PATTERN.test(pluginId) || !EGRESS_PROFILE_PATTERN.test(profileId)) {
-    throw new Error('egressBinding needs a valid pluginId and profileId');
-  }
-  return { pluginId, profileId };
-}
 
-function saveVirtualProvider(appType, id, name, virtual) {
-  if (!String(name || '').trim()) throw new Error('name required');
-  const plan = require('./virtual-provider').validate({ appType, id, virtual, providers: listProviders() });
-  const list = loadStore();
-  const previous = list.find(p => p.id === id && p.appType === appType);
-  const record = { id, appType, name: String(name).trim(), source: 'local', virtual: plan.virtual,
-    apiFormat: appType === 'claude' ? 'anthropic' : 'openai_responses',
-    createdAt: previous?.createdAt || Date.now(),
-    // Non-routable placeholder: only Rust CPR may resolve virtual members.
-    settingsConfig: buildSettingsConfig(appType, { baseUrl: 'https://virtual.invalid',
-      authToken: 'multicc-virtual', providerId: id, model: plan.models[0] || '', models: plan.models }) };
-  if (previous) list[list.indexOf(previous)] = record; else list.push(record);
-  saveStore(list);
-  return { id, appType, name: record.name };
-}
+// —— provider 写入：决策全部在 Rust ——
+// createProvider / updateProvider / deleteProvider 的分支树、id 生成、
+// settingsConfig 组装、官方目录分支、虚拟线路记录与 egress 归一化都在
+// `multicc_core::provider_writes`。这里只剩三件事：把宿主独有的事实查出来、
+// 把 Rust 给出的 commit 执行掉（落盘 / 直接作答 / 交给官方目录）、以及用
+// 本进程的 Error 身份抛出被拒绝的原因。
 
-function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist, egressBinding, virtual }) {
-  if (virtual !== undefined) return saveVirtualProvider(appType, crypto.randomUUID(), name, virtual);
-  if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
-  if (!name || !String(name).trim()) throw new Error('name required');
-  // Official entries are never created here (they come from the account
-  // catalog), so a brand-new provider can't own a dedicated egress.
-  if (egressBinding !== undefined) throw new Error('专用出口只能绑在 Claude 官方账号线路上');
-  assertApiFormatMatchesAppType(apiFormat, appType);
-  // Generate id first so buildSettingsConfig can embed it in the proxy base_url.
-  const id = crypto.randomUUID();
-  const cfg = (settingsConfig && typeof settingsConfig === 'object')
-    ? settingsConfig
-    : buildSettingsConfig(appType, { baseUrl, authToken, model, models, apiFormat, providerId: id, aliasMap });
-  const format = normalizeApiFormat(apiFormat, appType, cfg);
-  const p = {
-    id,
-    appType,
-    apiFormat: format,
-    name: String(name).trim(),
-    source: 'local',
-    settingsConfig: cfg,
-    createdAt: Date.now(),
+// Rust 在做决策前需要、但只有本进程能回答的事实。
+function writeFacts(appType, id, extra = {}) {
+  return {
+    officialCatalogMounted: !!officialCatalog,
+    idIsOfficial: !!officialCatalog && isOfficialProviderId(appType, id),
+    normalizedIdIsOfficial: !!officialCatalog
+      && isOfficialProviderId(appType, officialCatalog.normalize(appType, id)),
+    normalizedId: officialCatalog ? officialCatalog.normalize(appType, id) : null,
+    newId: id,
+    nowMs: Date.now(),
+    port: process.env.PORT || 3000,
+    ...extra,
   };
-  const normalizedEgressIpAllowlist = normalizeEgressIpAllowlist(egressIpAllowlist);
-  if (normalizedEgressIpAllowlist.length) p.egressIpAllowlist = normalizedEgressIpAllowlist;
-  const list = loadStore();
-  if (officialCatalog && require('./official-catalog').isOfficial(p)) return summarize(officialCatalog.provider(appType));
-  list.push(p);
-  saveStore(list);
-  return { id: p.id, appType, name: p.name };
 }
 
-function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist, egressBinding, virtual }) {
-  const existingVirtual = getProvider(appType, id);
-  if (virtual !== undefined || existingVirtual?.virtual) {
-    if (!existingVirtual?.virtual) throw new Error('普通线路不能直接转换成虚拟线路，请新建组合');
-    return saveVirtualProvider(appType, id, name ?? existingVirtual.name, virtual ?? existingVirtual.virtual);
-  }
-  if (officialCatalog && (isOfficialProviderId(appType, id) || isOfficialProviderId(appType, officialCatalog.normalize(appType, id)))) {
-    // Login/account identity is OAuth-managed and not editable here. Advanced
-    // settings (currently: egress-IP allowlist) are the one thing an official
-    // provider's editor may still submit — persisted as a minimal override
-    // record (see official-catalog.js's provider() merge), everything else
-    // still bounces to the dedicated official-account flow.
-    if ([name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap].some(v => v !== undefined)) {
-      throw new Error('请在官方账号中管理登录和切换账号');
-    }
-    // The allowlist override belongs to the entry being edited: the terminal
-    // alias keeps its own record, each account entry gets its own — never a
-    // vendor-wide shared one (an unrestricted account must stay unrestricted).
-    // The dedicated-egress binding is per entry for the same reason: binding one
-    // account to an egress profile must never move the others.
-    const targetId = isOfficialProviderId(appType, id)
-      ? id
-      : officialCatalog.normalize(appType, id);
-    const list = loadStore();
-    const normalized = normalizeEgressIpAllowlist(egressIpAllowlist);
-    const binding = normalizeEgressBinding(egressBinding);
-    let p = list.find(x => x.appType === appType && x.id === targetId);
-    if (!p && (normalized.length || binding)) {
-      p = { id: targetId, appType, source: 'builtin-override' };
-      list.push(p);
-    }
-    if (p) {
-      // `undefined` = this PATCH didn't touch the allowlist (e.g. the UI only
-      // sent an egress binding); only an explicit list or `[]` rewrites it.
-      if (egressIpAllowlist !== undefined) {
-        if (normalized.length) p.egressIpAllowlist = normalized;
-        else delete p.egressIpAllowlist;
-      }
-      if (binding) p.egressBinding = binding;
-      else if (binding === null) delete p.egressBinding;
-      // Drop the record only when it is a pure override stub; a record that
-      // carries anything else (e.g. a legacy import with a name) keeps its
-      // identity and just loses the settings.
-      if (p.source === 'builtin-override' && !p.egressIpAllowlist && !p.egressBinding) {
-        const idx = list.indexOf(p);
-        if (idx !== -1) list.splice(idx, 1);
-      }
-    }
-    saveStore(list);
-    return { id: targetId, appType };
-  }
-  // A dedicated egress only means something for an OAuth-managed official entry:
-  // any other line already names its own upstream, and routing it through the
-  // loopback hop would need a different pipeline. Reject instead of storing a
-  // binding that silently does nothing.
-  if (egressBinding !== undefined) {
-    throw new Error('专用出口只能绑在 Claude 官方账号线路上');
-  }
-  assertApiFormatMatchesAppType(apiFormat, appType);
-  const list = loadStore();
-  const p = list.find(x => x.appType === appType && x.id === id);
-  if (!p) throw new Error('provider not found');
-  let cfg = parseConfig(p.settingsConfig);
-  if (settingsConfig && typeof settingsConfig === 'object') {
-    cfg = settingsConfig;
-  } else if (appType === 'claude') {
-    cfg.env = cfg.env || {};
-    if (baseUrl !== undefined) { if (baseUrl) cfg.env.ANTHROPIC_BASE_URL = baseUrl; else delete cfg.env.ANTHROPIC_BASE_URL; }
-    if (authToken !== undefined && authToken) cfg.env.ANTHROPIC_AUTH_TOKEN = authToken;
-    if (model !== undefined) { if (model) cfg.env.ANTHROPIC_MODEL = model; else delete cfg.env.ANTHROPIC_MODEL; }
-    if (models !== undefined || model !== undefined) {
-      cfg.modelCatalog = { models: parseModelList(models, model !== undefined ? model : cfg.env.ANTHROPIC_MODEL).map(m => ({ model: m })) };
-    }
-    if (aliasMap !== undefined) applyAliasMapToEnv(cfg.env, aliasMap);
-    // Bounded Zhipu fable fill on edit-save (also fires when aliasMap is not
-    // part of the update — e.g. a legacy provider whose editor only touched
-    // the model list). Never overwrites a non-empty custom fable mapping.
-    ensureZhipuFableAlias(cfg.env);
-  } else {
-    const currentBaseUrl = (cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url');
-    const rebuilt = buildSettingsConfig('codex', {
-      baseUrl: baseUrl !== undefined ? baseUrl : currentBaseUrl,
-      authToken: authToken || (cfg.auth && cfg.auth.OPENAI_API_KEY) || '',
-      model: model !== undefined ? model : tomlValue(cfg.config, 'model'),
-      models: models !== undefined
-        ? models
-        : ((cfg.modelCatalog && Array.isArray(cfg.modelCatalog.models)) ? cfg.modelCatalog.models.map(m => m && m.model).filter(Boolean) : undefined),
-      apiFormat,
-      providerId: id,
-    });
-    // Drop a stale proxyTarget if the rebuilt config no longer needs one.
-    cfg = { ...cfg, ...rebuilt };
-    if (!rebuilt.proxyTarget) delete cfg.proxyTarget;
-  }
-  if (name) p.name = String(name).trim();
-  p.apiFormat = normalizeApiFormat(apiFormat || p.apiFormat, appType, cfg);
-  p.settingsConfig = cfg;
-  if (egressIpAllowlist !== undefined) {
-    const normalized = normalizeEgressIpAllowlist(egressIpAllowlist);
-    if (normalized.length) p.egressIpAllowlist = normalized;
-    else delete p.egressIpAllowlist;
-  }
-  saveStore(list);
-  return { id, appType };
+// 虚拟线路的成员校验本身已经是 Rust（validateVirtualProvider），但它要看完整的
+// provider 清单，所以由宿主代为取用。它只在 Rust 明确索要时才跑：这个校验会抛，
+// 而排在它前面的守卫（名字必填、普通线路不能转虚拟）必须先生效。
+function virtualPlanOf(appType, id, virtual) {
+  return require('./virtual-provider').validate({ appType, id, virtual, providers: listProviders() });
 }
+
+// 执行 Rust 返回的 commit。`loaded` 必须是 loadStore() 返回的那个数组本身：
+// store 的乐观并发把 revision 记在以该数组为键的 WeakMap 里，换成别的对象就等于
+// 放弃版本检查。Rust 给的是一份新清单，所以两个参数不能合并。
+function runCommit(commit, loaded, onOfficialDelete, onNeedsVirtualPlan) {
+  if (commit.kind === 'error') throw new Error(commit.error);
+  if (commit.kind === 'needsVirtualPlan') return onNeedsVirtualPlan();
+  if (commit.kind === 'answer') return commit.result;
+  if (commit.kind === 'save') {
+    saveStore(commit.records, loaded);
+    return commit.result;
+  }
+  if (commit.kind === 'officialCatalogEntry') {
+    return summarize(officialCatalog.provider(commit.appType));
+  }
+  if (commit.kind === 'officialDelete') return onOfficialDelete(commit);
+  throw new Error(`unknown provider write commit: ${commit.kind}`);
+}
+
+function createProvider(input) {
+  const appType = input && input.appType;
+  const id = crypto.randomUUID();
+  const facts = writeFacts(appType, id);
+  // 官方目录的判定（Claude 看 env 三键、Codex 看 OAuth 形态）属于
+  // official-catalog / codex-official-relay 两个簇，这里只把裁决回填给 Rust。
+  if (officialCatalog) {
+    const probe = getNative().providerCreateRecord({ input, facts });
+    if (probe.kind === 'error') throw new Error(probe.error);
+    if (probe.kind === 'record') {
+      facts.assembledIsOfficial = require('./official-catalog').isOfficial(probe.record);
+    }
+  }
+  const records = loadStore();
+  const call = () => runCommit(
+    getNative().providerCreate({ records, input, facts }), records, null,
+    () => {
+      facts.virtualPlan = virtualPlanOf(appType, id, input ? input.virtual : undefined);
+      return call();
+    }
+  );
+  return call();
+}
+
+function updateProvider(appType, id, input) {
+  const existingVirtual = getProvider(appType, id);
+  const facts = writeFacts(appType, id);
+  const records = loadStore();
+  const call = () => runCommit(
+    getNative().providerUpdate({
+      records, appType, id, input: input || {},
+      existingVirtual: existingVirtual || null,
+      facts,
+    }), records, null,
+    () => {
+      const virtual = input && input.virtual !== undefined
+        ? input.virtual
+        : existingVirtual && existingVirtual.virtual;
+      facts.virtualPlan = virtualPlanOf(appType, id, virtual);
+      return call();
+    }
+  );
+  return call();
+}
+
+function deleteProvider(appType, id) {
+  const records = loadStore();
+  return runCommit(
+    getNative().providerDelete({ records, appType, id, facts: writeFacts(appType, id) }),
+    records,
+    commit => {
+      const deleted = officialCatalog.delete(commit.appType, commit.id);
+      // source 必须是 loadStore() 返回的那个数组：native-store 用它的对象身份在
+      // WeakMap 里查乐观并发的 revision。commit.records 是 Rust 新造的数组，查不到
+      // revision，传它等于声明「我没读过当前版本」→ PROVIDER_STORE_CONFLICT。
+      if (commit.recordsChanged) saveStore(commit.records, records);
+      return deleted;
+    }
+  );
+}
+
+
 
 // Apply a lender's authenticated live model catalog to an imported relay.
 // This is intentionally narrower than updateProvider(): it cannot change the
@@ -1162,23 +962,6 @@ function updateProviderRelayModelCatalog(appType, id, input = {}) {
   return result;
 }
 
-function deleteProvider(appType, id) {
-  if (officialCatalog && id === `${appType}-official`) throw new Error(`“同 ${appType === 'codex' ? 'Codex' : 'Claude'} 终端”为内置线路，不能删除`);
-  if (officialCatalog && isOfficialProviderId(appType, id)) {
-    const deleted = officialCatalog.delete(appType, id);
-    // The account's allowlist override record (if any) outlived its synthetic
-    // provider — drop it so store reads never see a dead entry's restriction.
-    const list = loadStore();
-    const next = list.filter(p => !(p.appType === appType && p.id === id));
-    if (next.length !== list.length) saveStore(next, list);
-    return deleted;
-  }
-  const list = loadStore();
-  const next = list.filter(p => !(p.appType === appType && p.id === id));
-  if (next.length === list.length) return false;
-  saveStore(next, list);
-  return true;
-}
 
 // Pull cc-switch's providers into multicc's store. Idempotent: keyed by the
 // cc-switch id (kept as the provider id with source='ccswitch'), so re-import

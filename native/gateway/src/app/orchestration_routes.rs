@@ -1,6 +1,6 @@
 //! The orchestration and unattended route cluster retired from
 //! `src/routes/{aux-goal,aux-runs,orchestration}.js` and
-//! `src/unattended/routes.js` -- the 23 routes listed in
+//! `src/unattended/routes.js` -- the 30 routes listed in
 //! [`multicc_core::orchestration_routes`].
 //!
 //! Path matching, parameter decoding, the automatic `OPTIONS` answer, the
@@ -66,7 +66,15 @@ const HOST_PATH: &str = "/api/__host/orchestration";
 const LONG_POLL: Duration = Duration::from_secs(30 * 60);
 
 /// Lowercase names of the request headers forwarded to the host.
-const FORWARDED_HEADERS: &[&str] = &["idempotency-key"];
+///
+/// `host` is forwarded because the wait registration answers a `callbackUrl`
+/// built from `req.get('host')`. Node sees the client's original `Host` (the
+/// front door forwards requests without rewriting it), so dropping the header
+/// here would silently turn every callback URL into `http://undefined/...`.
+/// `x-wait-token` is the resolve callback's second token source, after
+/// `?token=` and before the body's own field. Nothing else is forwarded --
+/// `Cookie` and `Authorization` in particular stay out of the host payload.
+const FORWARDED_HEADERS: &[&str] = &["idempotency-key", "host", "x-wait-token"];
 
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
     orchestration_routes::claim(method.as_str(), path)
@@ -347,13 +355,22 @@ mod tests {
             claim(&Method::GET, "/api/v1/sessions/s1/waits"),
             Some(Route::V1SessionWaits)
         );
-        assert_eq!(claim(&Method::GET, "/api/sessions/s1/waits"), None);
+        assert_eq!(
+            claim(&Method::GET, "/api/sessions/s1/waits"),
+            Some(Route::SessionWaits)
+        );
         assert_eq!(
             claim(&Method::POST, "/api/sessions/s1/queue/action"),
             Some(Route::SessionQueueAction)
         );
-        assert_eq!(claim(&Method::POST, "/api/sessions/s1/wait"), None);
-        assert_eq!(claim(&Method::GET, "/api/detached/t1"), None);
+        assert_eq!(
+            claim(&Method::POST, "/api/sessions/s1/wait"),
+            Some(Route::SessionWaitPost)
+        );
+        assert_eq!(
+            claim(&Method::GET, "/api/detached/t1"),
+            Some(Route::DetachedTask)
+        );
     }
 
     #[test]
@@ -370,7 +387,10 @@ mod tests {
             options_share("/api/sessions/s1/scheduled-messages/m1").as_deref(),
             Some("DELETE")
         );
-        assert_eq!(options_share("/api/sessions/s1/waits"), None);
+        assert_eq!(
+            options_share("/api/sessions/s1/waits").as_deref(),
+            Some("GET,HEAD")
+        );
     }
 
     #[test]

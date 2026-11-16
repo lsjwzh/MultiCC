@@ -69,6 +69,9 @@ function makeHarness(overrides = {}) {
       info: message => logs.push({ level: 'info', message }),
     },
     completionWindowMs: 100,
+    // Hermetic by default: no durable nudge ledger unless a case names one, so
+    // the suite never writes into the real data root.
+    settledNudgeFile: null,
     ...overrides,
   };
   const runtime = createBackgroundTaskRuntime(dependencies);
@@ -995,6 +998,125 @@ async function test(name, fn) {
     assert.strictEqual(h.broadcasts.filter(b => b.event.type === 'monitor_done').at(-1).event.status, 'interrupted');
     assert.strictEqual(h.runtime.reapSessionShadows('s1'), 0);
     assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), false);
+  });
+
+  // ── Durable replay suppression ──────────────────────────────────────────────
+  // The Claude Code CLI re-reads the previous transcript on every start; a
+  // background agent that died without a completion record (provider 409,
+  // killed process) never gets one, so the CLI re-emits its
+  // `task_notification` / `status: stopped` for as long as the session lives.
+  // The guards that existed before could not see it: the dedup window is
+  // minutes while the gap is hours, and a replay has no preceding
+  // `task_started` to leave an `owned.delivered` flag behind.
+  function stoppedReplay(taskId) {
+    return {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: taskId,
+      status: 'stopped',
+      summary: `Background agent "${taskId}" didn't finish before the previous session ended`,
+    };
+  }
+
+  await test('a replayed stopped notification injects once and is then already-settled', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-nudge-')), 'background-nudges.json');
+    const h = makeHarness({ settledNudgeFile: file });
+    const first = h.runtime.handleEvent('s1', {}, stoppedReplay('a55bb899'));
+    assert.deepStrictEqual(first, { handled: true, decision: 'inject' });
+    h.clock.advance(200);
+    assert.strictEqual(h.injections.length, 1, 'the user must learn the agent did not finish');
+    assert.match(h.injections[0].text, /a55bb899/);
+
+    // Every later start replays the same notification.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const again = h.runtime.handleEvent('s1', {}, stoppedReplay('a55bb899'));
+      assert.deepStrictEqual(again, { handled: true, decision: 'already-settled' });
+    }
+    h.clock.advance(5000);
+    assert.strictEqual(h.injections.length, 1, 'no replay may reach the session FIFO again');
+  });
+
+  await test('replay suppression survives a restart through the durable file', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-nudge-')), 'background-nudges.json');
+    const before = makeHarness({ settledNudgeFile: file });
+    before.runtime.handleEvent('s1', {}, stoppedReplay('a7e730ac'));
+    before.clock.advance(200);
+    assert.strictEqual(before.injections.length, 1);
+    assert.ok(fs.existsSync(file), 'the delivered set must be published, not kept in memory');
+
+    // This is the restart: a brand-new owner over the same file, which is
+    // exactly when the CLI replays the notification.
+    const after = makeHarness({ settledNudgeFile: file });
+    const replay = after.runtime.handleEvent('s1', {}, stoppedReplay('a7e730ac'));
+    assert.deepStrictEqual(replay, { handled: true, decision: 'already-settled' });
+    after.clock.advance(5000);
+    assert.strictEqual(after.injections.length, 0, 'a restart must not re-open the nudge');
+
+    // A different task in the same session is unaffected.
+    const other = after.runtime.handleEvent('s1', {}, stoppedReplay('other-task'));
+    assert.deepStrictEqual(other, { handled: true, decision: 'inject' });
+  });
+
+  await test('a genuine re-run of the same task id nudges again', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-nudge-')), 'background-nudges.json');
+    const h = makeHarness({ settledNudgeFile: file });
+    h.runtime.handleEvent('s1', {}, stoppedReplay('reused'));
+    h.clock.advance(200);
+    assert.strictEqual(h.injections.length, 1);
+    assert.deepStrictEqual(h.runtime.handleEvent('s1', {}, stoppedReplay('reused')),
+      { handled: true, decision: 'already-settled' });
+
+    // `task_started` under the same id means a new run, which owns its ending.
+    h.runtime.handleEvent('s1', { cwd: '/repo', currentToolCalls: [] }, {
+      type: 'system', subtype: 'task_started', task_id: 'reused', description: 'second run',
+    });
+    const second = h.runtime.handleEvent('s1', {}, stoppedReplay('reused'));
+    assert.deepStrictEqual(second, { handled: true, decision: 'inject' });
+    h.clock.advance(200);
+    assert.strictEqual(h.injections.length, 2, 'the re-run reports its own ending');
+  });
+
+  await test('the gate is keyed by session and task together', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-nudge-')), 'background-nudges.json');
+    const h = makeHarness({ settledNudgeFile: file });
+    h.runtime.handleEvent('s1', {}, stoppedReplay('shared'));
+    // Another session that happens to use the same task id still gets told.
+    assert.deepStrictEqual(h.runtime.handleEvent('s2', {}, stoppedReplay('shared')),
+      { handled: true, decision: 'inject' });
+  });
+
+  await test('the production host gets the data-root ledger without wiring it', () => {
+    // server.js names no file (it is under a line/byte ratchet), so the default
+    // resolved here IS the production wiring. If this breaks, every restart
+    // replays its stopped notifications again.
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-nudge-root-'));
+    const previous = process.env.MULTICC_DATA_DIR;
+    process.env.MULTICC_DATA_DIR = dataDir;
+    try {
+      const { runtime, clock, injections } = makeHarness({ settledNudgeFile: undefined });
+      runtime.handleEvent('s1', {}, stoppedReplay('defaulted'));
+      clock.advance(200);
+      assert.strictEqual(injections.length, 1);
+      const expected = path.join(dataDir, 'background-nudges.json');
+      assert.ok(fs.existsSync(expected), `the ledger must land in the data root (${expected})`);
+      assert.deepStrictEqual(runtime.handleEvent('s1', {}, stoppedReplay('defaulted')),
+        { handled: true, decision: 'already-settled' });
+    } finally {
+      if (previous === undefined) delete process.env.MULTICC_DATA_DIR;
+      else process.env.MULTICC_DATA_DIR = previous;
+    }
+  });
+
+  await test('an unwritable nudge ledger degrades to process-local suppression', () => {
+    // A read-only data dir must not cost the gate: the set stays authoritative
+    // in memory and the failure is reported once.
+    const h = makeHarness({ settledNudgeFile: '/proc/mcc-nudge-denied/background-nudges.json' });
+    assert.deepStrictEqual(h.runtime.handleEvent('s1', {}, stoppedReplay('denied')),
+      { handled: true, decision: 'inject' });
+    assert.deepStrictEqual(h.runtime.handleEvent('s1', {}, stoppedReplay('denied')),
+      { handled: true, decision: 'already-settled' });
+    assert.ok(h.logs.some(entry => /nudge ledger save failed/.test(entry.message)),
+      'the lost durability must be visible in the log');
   });
 
   console.log(`\n${passed} background-task runtime tests passed`);

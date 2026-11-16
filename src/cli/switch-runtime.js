@@ -10,6 +10,7 @@ const capability = require('./cli-capability');
 const { nativeSessionExists } = require('./native-session-exists');
 const { nativeVendorOf } = require('../providers/native-vendor');
 const { createCliToolsHost, OFFICIAL_INSTALL_SPECS } = require('./tools-host');
+const { mountCliSwitchHostRoute, hostFailure } = require('../routes/cli-switch-host');
 
 function call(op, input) {
   return JSON.parse(getNative().cliSwitchRuntimeRequest(op, JSON.stringify(input)));
@@ -324,20 +325,38 @@ function createCliSwitchRuntime(options) {
     options.appendEvent(session.dirId, 'session_configuration_applied', '已应用下一轮 AI 配置', sessionId);
     return true;
   }
-  function mountRoutes(app, asyncHandler) {
-    if (!app || typeof app.post !== 'function') throw new TypeError('[cli-switch-runtime] app.post is required');
-    if (typeof app.get !== 'function') throw new TypeError('[cli-switch-runtime] app.get is required');
-    if (typeof asyncHandler !== 'function') throw new TypeError('[cli-switch-runtime] asyncHandler is required');
-    app.post('/api/sessions/:id/switch-cli', asyncHandler(async (req, res) => {
-      const session = records.get(req.params.id);
-      const gate = call('manualGate', { exists: !!session, session: sessionFacts(session), body: req.body, supported: supportedClis });
-      if (gate.action === 'respond') return res.status(gate.status).json(gate.body);
-      const { targetCli, fresh } = gate;
-      if (gate.action === 'noop') {
-        sessionPersistence.mutate('http.switch-cli-noop', () => options.ensureCliStates(session));
-        options.clearAutoProviderSession?.(session.id);
-        return res.json(responseBody('noop', session, { pendingCliHandoff: cliHandoffSummary(session) }));
-      }
+  // ── the host port behind `POST /api/sessions/:id/switch-cli` ─────────────
+  //
+  // The front door answers `manualGate`'s four refusals itself. These three ops
+  // are the only facts/side effects it may ask Node for.
+
+  function hostFacts(sessionId) {
+    const session = records.get(sessionId);
+    return {
+      ok: true,
+      exists: !!session,
+      // `publicSessionAccessGuard`'s predicate, reproduced for the front door so
+      // the 404 happens before the body is parsed and before OPTIONS.
+      internalSlot: !!(session && session.taskExecutionSlot === true),
+      session: sessionFacts(session),
+      supported: supportedClis,
+    };
+  }
+
+  function hostNoop(sessionId) {
+    const session = records.get(sessionId);
+    if (!session) return hostFailure(new Error('session not found'));
+    sessionPersistence.mutate('http.switch-cli-noop', () => options.ensureCliStates(session));
+    options.clearAutoProviderSession?.(session.id);
+    return { ok: true, body: responseBody('noop', session, { pendingCliHandoff: cliHandoffSummary(session) }) };
+  }
+
+  async function hostSwitch(sessionId, targetCli, fresh) {
+    try {
+      const session = records.get(sessionId);
+      if (!session) return hostFailure(new Error('session not found'));
+      // Retired route body, verbatim: availability → ready()/observeBusy →
+      // queue → Git snapshot → ready() again → signature → prepare → commit.
       const availability = options.cliAvailabilitySummary();
       const ready = () => {
         const facts = { targetCli, available: !!availability[targetCli]?.available,
@@ -346,11 +365,11 @@ function createCliSwitchRuntime(options) {
         return stage.action === 'observeBusy' ? call('manualReady', { ...facts, busy: configurationBusy(session.id) }) : stage;
       };
       let stage = ready();
-      if (stage.action === 'respond') return res.status(stage.status).json(stage.body);
-      if (stage.action === 'queue') return res.json(queueCliSwitch(session, targetCli, fresh));
+      if (stage.action === 'respond') return { ok: true, status: stage.status, body: stage.body };
+      if (stage.action === 'queue') return { ok: true, status: 200, body: queueCliSwitch(session, targetCli, fresh) };
       const gitSnapshot = await cliSwitchGitSnapshot(session);
       stage = ready();
-      if (stage.action === 'queue') return res.json(queueCliSwitch(session, targetCli, fresh));
+      if (stage.action === 'queue') return { ok: true, status: 200, body: queueCliSwitch(session, targetCli, fresh) };
       const signature = JSON.stringify(session);
       const preparation = prepareSwitch(session, targetCli, { fresh });
       preparations.set(session.id, preparation);
@@ -359,14 +378,30 @@ function createCliSwitchRuntime(options) {
       finally { if (preparations.get(session.id) === preparation) preparations.delete(session.id); }
       if (!preparedAllowed(session.id, session, signature)) {
         const conflict = call('manualConflict', {});
-        return res.status(conflict.status).json(conflict.body);
+        return { ok: true, status: conflict.status, body: conflict.body };
       }
       const switched = sessionPersistence.mutate('http.switch-cli', () => performCliSwitch(session, targetCli, { fresh, gitSnapshot, prepared, deferEffects: true }));
       switched.publish();
       options.clearAutoProviderSession?.(session.id);
-      return res.json(responseBody('switched', session, { fromCli: switched.result.fromCli,
-        handoffId: switched.handoff.id, reusedTarget: switched.result.reused, fresh, cliAvailability: availability }));
-    }));
+      return { ok: true, status: 200, body: responseBody('switched', session, { fromCli: switched.result.fromCli,
+        handoffId: switched.handoff.id, reusedTarget: switched.result.reused, fresh, cliAvailability: availability }) };
+    } catch (error) {
+      return hostFailure(error);
+    }
+  }
+
+  function mountRoutes(app, asyncHandler) {
+    // The host port needs `app.post`; `tools.mountRoutes` still needs both verbs
+    // and the async wrapper below.
+    if (!app || typeof app.post !== 'function') throw new TypeError('[cli-switch-runtime] app.post is required');
+    if (typeof app.get !== 'function') throw new TypeError('[cli-switch-runtime] app.get is required');
+    if (typeof asyncHandler !== 'function') throw new TypeError('[cli-switch-runtime] asyncHandler is required');
+    mountCliSwitchHostRoute(app, {
+      facts: hostFacts,
+      noop: hostNoop,
+      switch: hostSwitch,
+      isLocal: options.isLocalRequest,
+    });
     tools.mountRoutes(app, asyncHandler);
   }
   return Object.freeze({ mountRoutes, startUpdateWatch: tools.startUpdateWatch, cliSwitchDefaults, cliSwitchGitSnapshot,

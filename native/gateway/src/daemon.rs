@@ -104,6 +104,30 @@ pub async fn serve(options: ServeOptions) -> i32 {
     // One router for every client connection; the per-connection upstream
     // handle is attached to each request by `serve_connection`.
     let app = Arc::new(App::from_env(&options, &policy));
+    // §8.1: `--no-node` has no child to own the access token, shutdown flag,
+    // revision or WS-ticket table, so this process owns them itself. A missing
+    // or unrepresentable token installs nothing: the auth-gated routes keep
+    // their 503 `node_runtime_absent` answer instead of accepting a default
+    // credential. `--node` never installs a local owner, so Node stays the one
+    // owner.
+    if options.node_enabled() {
+        debug_assert!(
+            !app.auth.has_local(),
+            "a --node front door must not own a second auth runtime"
+        );
+    } else {
+        match std::env::var("ACCESS_TOKEN") {
+            Ok(secret) if !secret.is_empty() => match app.auth.install_local(secret) {
+                Ok(()) => log("authentication runtime owned locally (--no-node)"),
+                Err(error) => log(&format!(
+                    "cannot install the local authentication runtime: {error}; auth-gated routes answer 503 node_runtime_absent"
+                )),
+            },
+            _ => log(
+                "no ACCESS_TOKEN for the local authentication runtime: auth-gated routes answer 503 node_runtime_absent",
+            ),
+        }
+    }
     let root = app.data_root.clone();
     match tokio::task::spawn_blocking(move || crate::app::services::Runtime::load(&root)).await {
         Ok(Ok(runtime)) => {
@@ -190,6 +214,10 @@ pub async fn serve(options: ServeOptions) -> i32 {
                     GatewaySignal::Interrupt | GatewaySignal::Terminate => {
                         if !shutting_down {
                             shutting_down = true;
+                            // `--no-node`: publish the stop in the local
+                            // snapshot before we exit, so in-flight requests
+                            // still inside the router see SERVER_SHUTTING_DOWN.
+                            app.auth.begin_shutdown();
                             if supervisor.is_some() {
                                 log("stop signal received; forwarding it to node and no longer accepting");
                             } else {
@@ -211,6 +239,8 @@ pub async fn serve(options: ServeOptions) -> i32 {
                 parent_lifeline = None;
                 if !shutting_down {
                     shutting_down = true;
+                    // Same as a stop signal: the local snapshot learns first.
+                    app.auth.begin_shutdown();
                     if supervisor.is_some() {
                         log("stdin closed by our parent; stopping node and no longer accepting");
                     } else {

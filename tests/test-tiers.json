@@ -200,6 +200,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/attachment_video_compression_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/auto_provider_config_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -582,6 +587,11 @@
     {
       "path": "app/test/model_menu_test.dart",
       "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/more_connections_entry_test.dart",
+      "tier": "other",
       "lane": "flutter"
     },
     {
@@ -3271,6 +3281,15 @@
       ]
     },
     {
+      "path": "tests/test-cron-calendar-api.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
       "path": "tests/test-cron-fanout-migration.js",
       "tier": "flow",
       "lane": "deterministic",
@@ -4300,6 +4319,15 @@
       ]
     },
     {
+      "path": "tests/test-node-surface-ledger.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:governance",
+      "entrypoints": [
+        "npm:test:governance"
+      ]
+    },
+    {
       "path": "tests/test-notification-copy.js",
       "tier": "other",
       "lane": "deterministic",
@@ -4676,6 +4704,21 @@
       ]
     },
     {
+      "path": "tests/test-provider-defaults-native-owner.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-id-validation-differential.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:rust"
+    },
+    {
       "path": "tests/test-provider-invocation.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4839,6 +4882,15 @@
       ]
     },
     {
+      "path": "tests/test-provider-settings-config.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-provider-sharing-two-ip.js",
       "tier": "flow",
       "lane": "isolated",
@@ -4854,6 +4906,15 @@
       "owner": "npm:test:state",
       "entrypoints": [
         "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-provider-writes-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
       ]
     },
     {
@@ -6952,6 +7013,15 @@
     {
       "path": "tests/test-wait-resolve-live.js",
       "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-wait-server-ready.js",
+      "tier": "other",
       "lane": "deterministic",
       "owner": "npm:test:core",
       "entrypoints": [

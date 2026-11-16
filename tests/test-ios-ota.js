@@ -166,9 +166,16 @@ test('wiring: manifest + IPA bypass auth, strangers’ binaries stay hidden, rou
   assert.ok(authSource.includes('"/ios-ota/manifest.plist"'));
   assert.ok(authSource.includes('"ipa"'));
 
+  // The `.apk`/`.ipa` allowlist guard moved into the Rust front door
+  // (native/core/src/static_assets_routes.rs, rules covered by its unit tests
+  // and the static-assets differential); the Node module only keeps the
+  // canonical files' download headers now.
+  const nativeStatic = fs.readFileSync(path.join(__dirname, '..', 'native', 'core', 'src', 'static_assets_routes.rs'), 'utf8');
+  assert.ok(nativeStatic.includes('"/multicc.apk"'));
+  assert.ok(nativeStatic.includes('"/multicc-ios.ipa"'));
+  assert.ok(nativeStatic.includes('has_binary_suffix'));
   const staticSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'static-assets.js'), 'utf8');
-  assert.ok(staticSource.includes("requestedPath !== '/multicc-ios.ipa'"));
-  assert.ok(staticSource.includes('/\\.(apk|ipa)$/i.test(requestedPath)'));
+  assert.doesNotMatch(staticSource, /requestedPath/);
 
   const systemSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'system.js'), 'utf8');
   assert.ok(systemSource.includes("app.get('/api/ios-ota-info'"));

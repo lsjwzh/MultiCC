@@ -14,6 +14,7 @@ pub mod air_routes;
 pub mod auth;
 pub mod auto_provider_routing;
 pub mod claude_models;
+pub mod cli_switch;
 pub mod directory_routes;
 pub mod docs_memory_routes;
 pub mod download;
@@ -25,6 +26,7 @@ pub mod host_ops_routes;
 pub mod host_read;
 pub mod model_catalogs;
 pub mod orchestration_routes;
+pub mod plugins;
 pub mod provider_balance;
 mod provider_balance_adapters;
 mod provider_balance_panels;
@@ -39,6 +41,7 @@ pub mod run_config_presets;
 pub mod scan;
 pub mod scoped_auth;
 pub mod secrets_vault;
+pub mod server_core;
 mod service_transport;
 pub mod services;
 pub mod session_admin;
@@ -46,6 +49,7 @@ pub mod session_git;
 pub mod session_routes;
 pub mod share_machine_routes;
 pub mod source_workspaces;
+pub mod static_assets_routes;
 pub mod subagent_defaults;
 pub mod system;
 pub mod task_routes;
@@ -159,6 +163,9 @@ pub enum Route {
     HostOps(host_ops_routes::Route),
     Orchestration(orchestration_routes::Route),
     ReleaseHistory(release_history_routes::Route),
+    StaticAssets(static_assets_routes::Route),
+    ServerCore(server_core::Route),
+    Plugins(plugins::Route),
     FilesGet,
     FilesOptions,
     Upload,
@@ -170,6 +177,7 @@ pub enum Route {
     TaskShell(task_shell::Route),
     SessionAdmin(session_admin::Route),
     SessionRoutes(session_routes::Route),
+    CliSwitch(cli_switch::Route),
     ShareMachine(share_machine_routes::Route),
     TaskRoutes(task_routes::Route),
     Push(push_routes::Route),
@@ -301,6 +309,7 @@ fn is_v1_path(path: &str) -> bool {
 pub fn claim_uri(method: &Method, uri: &axum::http::Uri) -> Option<Route> {
     claim(method, uri.path())
         .or_else(|| release_history_routes::claim_uri(method, uri).map(Route::ReleaseHistory))
+        .or_else(|| static_assets_routes::claim_uri(method, uri).map(Route::StaticAssets))
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -312,6 +321,13 @@ pub fn claim_uri(method: &Method, uri: &axum::http::Uri) -> Option<Route> {
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
     if method == Method::OPTIONS && options_allow(path).is_some() {
         return Some(Route::AutoOptions);
+    }
+    // The server-core literals `/healthz`, `/readyz`, `/metrics` and
+    // `/api/repo-operations/:operationId`. None overlaps another cluster, so
+    // the cluster answers its own OPTIONS; they are exact/single-segment
+    // matchers and can be claimed up front.
+    if let Some(route) = server_core::claim(method, path) {
+        return Some(Route::ServerCore(route));
     }
     if let Some(route) = source_workspaces::claim(method, path) {
         return Some(Route::SourceWorkspaces(route));
@@ -371,6 +387,11 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     // write half and its own literals; directory-routes is disjoint.
     if let Some(route) = session_routes::claim(method, path) {
         return Some(Route::SessionRoutes(route));
+    }
+    // Cross-CLI switching: one literal under the session guard
+    // (`POST /api/sessions/:id/switch-cli`), disjoint from the other clusters.
+    if let Some(route) = cli_switch::claim(method, path) {
+        return Some(Route::CliSwitch(route));
     }
     // Before Air: `POST /api/air/tasks/mark-achieved` is a literal this cluster
     // owns, while Air keeps `GET /api/air/tasks/:id`. Express registered the
@@ -468,6 +489,25 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
             host_read::Claim::Options(route) => Route::HostReadOptions(route),
         });
     }
+    // The static-assets rules: the three redirect families and the global
+    // `.apk`/`.ipa` guard (the query-dependent `/air` case lives in
+    // `claim_uri`). Last among the path-prefix matchers, like the retired
+    // `mountRoutes(app)` which sat after the earlier API routes; the guard is
+    // still broad, so claiming it after every literal keeps another cluster's
+    // path (if one ever ended in `.apk`) untouched.
+    if let Some(route) = static_assets_routes::claim(method, path) {
+        return Some(Route::StaticAssets(route));
+    }
+    // The plugin cluster (`src/routes/plugins.js`): the literal
+    // `POST /api/channels/recheck` (registered by `mount(app)`, after the auth
+    // gate) and `GET /plugins/:id/*` (registered after it in `server.js`). It
+    // sits after the static-assets guard on purpose: Express registered the
+    // global `.apk`/`.ipa` rule first, so a plugin file with that extension
+    // keeps the guard's 404. `/plugins/:id/*` needs its second slash
+    // (path-to-regexp), so `/plugins/x` stays unclaimed.
+    if let Some(route) = plugins::claim(method, path) {
+        return Some(Route::Plugins(route));
+    }
     let rest = path.strip_prefix("/api/")?;
     let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
     match (rest.as_str(), method.as_str()) {
@@ -528,9 +568,9 @@ pub struct App {
     pub lan_only: bool,
     pub allow_legacy_token_query: bool,
     /// `--node` was given. The authentication runtime (access token, sessions,
-    /// WS tickets, shutdown flag) lives in that Node child; `--no-node` has no
-    /// owner for it, so every route that needs the snapshot fails closed
-    /// (docs/gateway.md §8.1).
+    /// WS tickets, shutdown flag) lives in that Node child; `--no-node` owns a
+    /// local copy when `.env` supplied a usable ACCESS_TOKEN. A route that needs
+    /// the snapshot with neither owner fails closed (docs/gateway.md §8.1).
     pub node_enabled: bool,
     /// Node handled each of these requests to completion on one thread; the
     /// read-modify-write of a store must not interleave here either.
@@ -848,12 +888,13 @@ fn options(ctx: &RequestCtx, allow: &str) -> Response<Body> {
     )
 }
 
-/// `--no-node`: the honest shape of "this route needs the auth runtime the
-/// front door was started without". Same status, content type, `Connection`
+/// `--no-node` with no local authentication runtime: the honest shape of "this
+/// route needs an auth runtime and this front door has none" (no Node child and
+/// no usable `ACCESS_TOKEN` in `.env`). Same status, content type, `Connection`
 /// and `code` as the forwarded-route refusal in `crate::forward`, but the
-/// `error` names the owner of the missing state instead of pretending the
-/// request would have gone to Node. No Express headers or log line: nothing
-/// ran, exactly like the fallback refusal.
+/// `error` names the missing state instead of pretending the request would have
+/// gone to Node. No Express headers or log line: nothing ran, exactly like the
+/// fallback refusal.
 const AUTH_RUNTIME_ABSENT_BODY: &str = concat!(
     r#"{"error":"Authentication state is held by the Node runtime, which this front door was started without (--no-node).","#,
     r#""code":"node_runtime_absent"}"#
@@ -909,13 +950,15 @@ pub async fn handle(
         provider_relay::append_headers(&mut response, &headers);
         return response;
     }
-    // §8.1: every route below needs the authentication snapshot, and that
-    // state is held by the Node child. With `--no-node` there is nothing to
-    // ask: fail closed at once instead of waiting out the control-stream
-    // timeout (3s) and reporting it as a generic 503. `--node` keeps the old
-    // behavior exactly; the re-snapshots in `auth.rs` are only reachable after
-    // this point, so they need no separate guard.
-    if !app.node_enabled {
+    // §8.1: every route below needs the authentication snapshot. With `--node`
+    // it lives in the Node child; with `--no-node` the front door owns a local
+    // copy when `.env` supplied an ACCESS_TOKEN. Only when neither owner exists
+    // (no child, no valid token) does a route fail closed at once instead of
+    // waiting out the control-stream timeout (3s) and reporting it as a generic
+    // 503. `--node` keeps the old behavior exactly; the re-snapshots in
+    // `auth.rs` are only reachable after this point, so they need no separate
+    // guard.
+    if !app.node_enabled && !app.auth.has_local() {
         return auth_runtime_absent();
     }
     let snapshot = match app.auth.snapshot().await {
@@ -966,6 +1009,21 @@ pub async fn handle(
         return release_history_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host)
             .await;
     }
+    // Server core: `/healthz` and `/readyz` are public (the shared HTTP-entry
+    // exemption); `/metrics` and `/api/repo-operations` keep the ordinary gate.
+    // The cluster runs the peer allowlist itself for every path.
+    if let Route::ServerCore(route) = route {
+        return server_core::handle(&app, route, &ctx, &peer, &snapshot, host).await;
+    }
+    // Plugin UI files: Node's auth gate lets a static-extension path through
+    // without a login (`http_entry::public_path`), so this route runs the peer
+    // allowlist itself and decides the login gate from that shared rule. The
+    // recheck pair stays behind the ordinary gate below.
+    if let Route::Plugins(route) = route {
+        if plugins::is_file_route(route) {
+            return plugins::handle_file(&app, route, &ctx, &peer, &snapshot, host).await;
+        }
+    }
     if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
         return refusal;
     }
@@ -974,6 +1032,12 @@ pub async fn handle(
     // is where the retired stack parsed them).
     if let Route::Upload = route {
         return file_transfer::upload(&ctx, body).await;
+    }
+    // CLI switching runs its own `publicSessionAccessGuard` before parsing the
+    // body, exactly like the retired `app.use('/api/sessions/:id')` layer that
+    // sat in front of the global `express.json`.
+    if let Route::CliSwitch(route) = route {
+        return cli_switch::handle(route, &ctx, body, host).await;
     }
     // The ticket route sits in front of the global `express.json` with its
     // own `express.json({ limit: '4kb' })`; everything else gets the global one.
@@ -986,6 +1050,8 @@ pub async fn handle(
         Err(error) => return express::error(&ctx, error.status, error.reason),
     };
     match route {
+        Route::StaticAssets(route) => return static_assets_routes::handle(route, &ctx),
+        Route::Plugins(route) => return plugins::handle(route, &ctx, &body, &peer, host).await,
         Route::AutoOptions => return auto_options(&ctx, host).await,
         Route::ModelCatalogOptions(_)
         | Route::ProviderModelsOptions

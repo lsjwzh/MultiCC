@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
+const { waitServerReady } = require('./helpers/wait-server-ready');
 
 const ROOT = path.join(__dirname, '..');
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shutdown-'));
@@ -27,17 +28,6 @@ function freePort() {
       probe.close(() => resolve(port));
     });
   });
-}
-
-async function waitReady(base) {
-  for (let attempt = 0; attempt < 150; attempt += 1) {
-    try {
-      const response = await fetch(`${base}/readyz`);
-      if (response.status === 200) return;
-    } catch (_) {}
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error('isolated shutdown server did not become ready');
 }
 
 function openMetaSocket(port) {
@@ -68,7 +58,8 @@ function openMetaSocket(port) {
 
   let ws = null;
   try {
-    await waitReady(`http://127.0.0.1:${port}`);
+    await waitServerReady(`http://127.0.0.1:${port}`, { attempts: 150,
+      message: 'isolated shutdown server did not become ready' });
     ws = await openMetaSocket(port);
     const wsClosed = new Promise(resolve => ws.once('close', (code) => resolve(code)));
     const startedAt = Date.now();

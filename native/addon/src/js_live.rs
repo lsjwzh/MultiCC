@@ -200,6 +200,17 @@ impl<'env> LiveValue<'env> {
         })?;
         Ok(result)
     }
+    /// `value instanceof constructor`, so a rule that branched on a concrete
+    /// host class (`sessions instanceof Map`) keeps that exact test instead of
+    /// a duck-typed approximation -- an object carrying a `values` method is
+    /// not a `Map` and must take the other branch.
+    pub fn instance_of(self, constructor: Self) -> Result<bool> {
+        let mut result = false;
+        check_status!(unsafe {
+            sys::napi_instanceof(self.env, self.value, constructor.value, &mut result)
+        })?;
+        Ok(result)
+    }
     pub fn is_string(self, text: &str) -> Result<bool> {
         self.equals(self.from_value(&JsValue::string(text))?)
     }

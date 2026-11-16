@@ -11,8 +11,8 @@
 //     二进制对话）。
 //
 // 语言边界（AGENTS.md：新后端功能默认 Rust）：本文件只做协议桥接 —— 发现
-// manifest、spawn 二进制、转发 stdin/stdout JSON、挂静态文件 —— 不含业务
-// 逻辑；插件的全部行为都住在插件自己的可执行文件里，目录复制进来即安装。
+// manifest、spawn 二进制、转发 stdin/stdout JSON —— 不含业务逻辑；插件的全部
+// 行为都住在插件自己的可执行文件里，目录复制进来即安装。
 //
 // 两个来源：程序目录的 plugins/ 放内置插件（随 MultiCC 发布）；从插件列表安装的
 // 插件在 userPluginsDir（默认 ~/.multicc/plugins/），桌面版的程序目录只读。同一 id
@@ -33,6 +33,7 @@ const {
 const { createPluginInstaller } = require('../plugins/installer');
 const { createChannelHost, normalizeChannel } = require('../plugins/channel-host');
 const channelRegistry = require('../plugins/channel-registry');
+const { mountPluginsHostRoute } = require('./plugins-host');
 const { isLocalRequest: isLocalPeer } = require('../request-locality');
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -43,16 +44,6 @@ const RUN_MAX_BUFFER = 4 * 1024 * 1024;
 const INSTALL_ERROR_STATUS = {
   invalidId: 400, busy: 409, noPrevious: 409, notInstalled: 404,
   download: 502, size: 502, checksum: 502, package: 422, mismatch: 422,
-};
-
-const MIME_TYPES = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.ico': 'image/x-icon',
 };
 
 function readManifest(pluginsDir, id) {
@@ -346,37 +337,6 @@ function createPluginsRoutes(deps) {
     });
   }
 
-  function servePluginFile(req, res) {
-    const id = req.params.id;
-    const found = findManifest(id);
-    if (!found) return res.status(404).json({ error: `插件 ${id} 不存在` });
-    const relative = (req.params[0] || '').replace(/\\/g, '/');
-    if (!relative || relative.includes('..') || relative.startsWith('/')) {
-      return res.status(400).json({ error: '非法路径' });
-    }
-    const root = fs.realpathSync(found.dir);
-    let absolute;
-    try {
-      absolute = fs.realpathSync(path.join(found.dir, relative));
-    } catch (_) {
-      return res.status(404).json({ error: '文件不存在' });
-    }
-    if (!absolute.startsWith(root + path.sep)) return res.status(400).json({ error: '非法路径' });
-    // 只挂插件声明过 UI 的那棵子树（默认 ui/），插件目录里的源码、Cargo 产物不出网。
-    const uiRoot = path.join(root, path.dirname(found.manifest.ui || 'ui/index.html'));
-    if (!absolute.startsWith(uiRoot + path.sep)) return res.status(403).json({ error: '只有 UI 子树可访问' });
-    let body;
-    try {
-      body = fs.readFileSync(absolute);
-    } catch (_) {
-      return res.status(404).json({ error: '文件不存在' });
-    }
-    res.set('Content-Type', MIME_TYPES[path.extname(absolute).toLowerCase()] || 'application/octet-stream');
-    // WebView 常无视静态资源的 Cache-Control，跟主站一个策略：URL 不带指纹就禁缓存。
-    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.send(body);
-  }
-
   function mount(app) {
     app.get('/api/plugins', (req, res) => {
       const { plugins, conflicts } = scan();
@@ -412,41 +372,18 @@ function createPluginsRoutes(deps) {
       const result = await runPluginCommand(req.params.id, command, req.body.input);
       res.status(result.status).json(result.payload);
     });
-    // 常驻插件与通知渠道：是否在运行、未恢复的告警；各渠道的接收人（推送设置、钩子用）。
-    app.get('/api/channels', (req, res) => {
-      res.set('Cache-Control', 'no-store');
-      // inUse：有推送订阅或钩子指望它。插件停了而 inUse 为真，Air 要出横幅。
-      const usage = channelRegistry.usage();
-      const plugins = (channelHost ? channelHost.status() : []).map(item => {
-        if (!item.channel) return item;
-        const count = usage.filter(use => use.plugin === item.id).length;
-        return { ...item, inUse: count > 0, subscriptions: usage.filter(use => use.plugin === item.id && use.kind === 'push').length, uses: count };
-      });
-      res.json({ available: Boolean(channelHost), plugins });
-    });
-    // 插件发送前复核（方案 10.5 第 5 步）：这些任务的问题还在不在。只给本机的插件进程。
-    app.post('/api/channels/recheck', (req, res) => {
-      if (!isLocalRequest(req)) return res.status(403).json({ error: '只接受本机插件的复核请求' });
-      const items = Array.isArray(req.body && req.body.items) ? req.body.items.slice(0, 200) : [];
-      res.set('Cache-Control', 'no-store');
-      res.json({
-        items: items.filter(item => item && typeof item === 'object').map(item => {
-          const sessionId = typeof item.sessionId === 'string' ? item.sessionId.slice(0, 128) : '';
-          const category = typeof item.category === 'string' ? item.category.slice(0, 32) : '';
-          return { sessionId, category, active: channelRegistry.stillActive(sessionId, category) };
-        }),
-      });
-    });
     app.get('/api/channels/targets', async (req, res) => {
       res.set('Cache-Control', 'no-store');
       try { res.json({ channels: channelHost ? await channelHost.targets() : [] }); }
       catch (error) { res.status(500).json({ error: error.message }); }
     });
-    // 插件 UI 静态树（iframe 源）。挂在全局 auth gate 之后，与页面同等鉴权。
-    app.get('/plugins/:id/*', servePluginFile);
+    // 插件发送前复核、`GET /api/channels` 与插件 UI 静态树已由 Rust 前门独占；Node 只留回环
+    // 宿主端口（findPlugin / channelStillActive / channelsStatus，协议见
+    // src/routes/plugins-host.js）。
+    mountPluginsHostRoute(app, { findManifest, channelRegistry, channelHost, isLocalRequest });
   }
 
-  return { mount, listPlugins, scan, catalogPayload: publicPayload, runPluginCommand, servePluginFile, catalog, installer, channelHost };
+  return { mount, listPlugins, scan, catalogPayload: publicPayload, runPluginCommand, catalog, installer, channelHost };
 }
 
 module.exports = { createPluginsRoutes, pluginEntry, readManifest, resolveBinary };

@@ -496,9 +496,16 @@ const world = createWorld({
   scriptFile: process.env.PROVIDERS_DIFF_SCENARIO,
   mountDefaultsText: ${JSON.stringify(MOUNT_DEFAULTS)},
 });
-const { createProviderRoutes } = require(path.join(REPO, 'tests/helpers/legacy-provider-routes'));
+const fs = require('node:fs');
+const defaultsFile = path.join(process.env.PROVIDERS_DIFF_WORK, 'native-provider-defaults.json');
+fs.writeFileSync(defaultsFile, ${JSON.stringify(MOUNT_DEFAULTS)});
+const native = require(path.join(REPO, 'src/native/runtime')).getNative();
+const defaultsOwner = new native.RustProviderDefaultsStore(defaultsFile);
+world.deps.providerDefaultsOwner = defaultsOwner;
+const { createProviderRoutes } = require(path.join(REPO, 'src/routes/providers'));
 const routes = createProviderRoutes(world.deps);
 world.attach(routes);
+world.deps.defaultsOwner = defaultsOwner;
 const { mountProvidersHostRoute } = require(path.join(REPO, 'src/routes/providers-host'));
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -563,6 +570,25 @@ function baseScenario() {
         providerSelection: {
           mode: 'auto', maxAttempts: 2,
           candidates: [{ providerId: 'claude-1', enabled: true }, { providerId: 'claude-2', enabled: true }],
+        },
+      },
+      // Trimming claude-1 out of this pool still leaves three enabled
+      // candidates, so the detach keeps Auto mode and has to write a trimmed
+      // selection back (candidate order, the `enabled !== false` filter that
+      // keeps claude-x, the dropped claude-off, and the recomputed
+      // maxAttempts). sess-auto above leaves only one and collapses to manual,
+      // so without this session the keeps-auto branch is never exercised.
+      {
+        id: 'sess-auto3', name: 'Auto3', label: 'Auto3', cli: 'claude',
+        providerSelection: {
+          mode: 'auto', maxAttempts: 4, tier: 'balanced',
+          candidates: [
+            { providerId: 'claude-1', enabled: true },
+            { providerId: 'claude-2', enabled: true },
+            { providerId: 'claude-x' },
+            { providerId: 'claude-off', enabled: false },
+            { providerId: 'claude-3', enabled: true },
+          ],
         },
       },
       { id: 'sess-sub', name: 'Sub', label: 'Sub', cli: 'claude', provider: 'claude-2', subagent: { providerId: 'claude-1', model: 'm1' } },
@@ -865,6 +891,32 @@ main({
     add('delete force auto session', sc({
       references: [{ kind: 'main', sessionId: 'sess-auto' }],
     }), del('/api/providers/claude/claude-1?force=1'));
+    // The keeps-auto branch: the traced patch body carries the trimmed
+    // candidate list and the recomputed maxAttempts, so a drift in either rule
+    // shows up as a side-effect difference rather than a silent pass.
+    add('delete force auto pool keeps auto', sc({
+      references: [{ kind: 'main', sessionId: 'sess-auto3' }],
+    }), del('/api/providers/claude/claude-1?force=1'));
+    // A routing tier can still name the removed candidate, so a rejected
+    // trimmed pool is retried as a manual route on the first enabled one.
+    add('delete force auto pool falls back to manual', sc({
+      references: [{ kind: 'main', sessionId: 'sess-auto3' }],
+      applyPatches: { 'sess-auto3': { status: 400, body: { error: 'invalid provider' } } },
+    }), del('/api/providers/claude/claude-1?force=1'));
+    // Two references to one session are patched once, in first-appearance
+    // order, because the retired code deduplicated through a Set.
+    add('delete force dedupes one session', sc({
+      references: [
+        { kind: 'main', sessionId: 'sess-auto3' },
+        { kind: 'auto_candidate', sessionId: 'sess-auto3' },
+        { kind: 'main', sessionId: 'sess-a' },
+      ],
+    }), del('/api/providers/claude/claude-1?force=1'));
+    // A session named by a reference but gone from the table is skipped, and
+    // the provider is still deleted.
+    add('delete force missing session is skipped', sc({
+      references: [{ kind: 'main', sessionId: 'sess-ghost' }],
+    }), del('/api/providers/claude/claude-1?force=1'));
     add('delete force subagent session', sc({
       references: [{ kind: 'main', sessionId: 'sess-sub' }],
     }), del('/api/providers/claude/claude-1?force=1'));
@@ -900,6 +952,9 @@ main({
         error: '/Users/alice/z',
         extra: 1,
       },
+    }), post('/api/providers/claude/claude-1/probe', { candidates: ['m'] }));
+    add('probe utf16 truncation boundary', sc({
+      probeResult: { tested: [{ model: 'm', sample: `${'a'.repeat(239)}😀` }], accepted: ['m'] },
     }), post('/api/providers/claude/claude-1/probe', { candidates: ['m'] }));
     add('probe 20 candidates', sc(), post('/api/providers/claude/claude-1/probe', {
       candidates: Array.from({ length: 20 }, (_, index) => `model-${index}-${'x'.repeat(189)}`),

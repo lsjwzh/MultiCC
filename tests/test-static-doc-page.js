@@ -91,12 +91,9 @@ test('serving the page does not expose the docs directory or the tree above it',
   }
 });
 
-test('the static mount serves only canonical multicc.apk and blocks every stray APK name', async (t) => {
+test('the static mount keeps the canonical APK download; the stray-APK guard moved to Rust', async (t) => {
   const publicDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'multicc-apk-static-'));
   fs.writeFileSync(path.join(publicDir, 'multicc.apk'), 'complete-apk');
-  fs.writeFileSync(path.join(publicDir, 'webcc.apk'), 'wrongly-named-apk');
-  fs.mkdirSync(path.join(publicDir, 'nested'));
-  fs.writeFileSync(path.join(publicDir, 'nested', 'other.apk'), 'other-apk');
   const server = await startServer(publicDir);
   t.after(() => new Promise(resolve => server.close(() => {
     fs.rmSync(publicDir, { recursive: true, force: true });
@@ -110,11 +107,42 @@ test('the static mount serves only canonical multicc.apk and blocks every stray 
   assert.equal(available.headers['cache-control'], 'no-store, no-cache, must-revalidate');
   assert.equal(available.body, 'complete-apk');
 
-  assert.equal((await fetchPath(server, '/webcc.apk')).status, 404);
-  assert.equal((await fetchPath(server, '/nested/other.apk')).status, 404);
-  assert.equal((await fetchPath(server, '/webcc%2Eapk')).status, 404, 'encoded suffix cannot bypass the APK allowlist');
-  assert.equal((await fetchPath(server, '/nested%2Fother.apk')).status, 404, 'encoded separators cannot bypass the APK allowlist');
-
   fs.rmSync(path.join(publicDir, 'multicc.apk'));
   assert.equal((await fetchPath(server, '/multicc.apk')).status, 404);
+
+  // The `.apk`/`.ipa` guard and the three bookmark redirects (`/manage`,
+  // `/dashboard`, `/air?view=planner`) are claimed by the Rust front door
+  // (native/core/src/static_assets_routes.rs, covered by the multicc-core unit
+  // tests, native/gateway/tests/static_assets_routes.rs and the differential
+  // docs/rust-migration/differential/static-assets-routes.js). This module must
+  // no longer register any of them: mountRoutes may only install middleware
+  // (the versioned-HTML hop and the public/ static mount), never a GET route,
+  // and never a third `use` that would swallow `.apk`/`.ipa` URLs before the
+  // static mount.
+  const registrations = [];
+  const recordingApp = {
+    get(...args) { registrations.push(['get', ...args]); },
+    use(...args) { registrations.push(['use', ...args]); },
+  };
+  createStaticAssetsRoutes({ express, fs, path, publicDir: PUBLIC_DIR }).mountRoutes(recordingApp);
+  assert.deepEqual(
+    registrations.filter(([kind]) => kind === 'get'),
+    [],
+    'no bookmark redirect is registered on Node anymore',
+  );
+  assert.equal(
+    registrations.length,
+    2,
+    'only the versioned-HTML middleware and the public/ static mount are left',
+  );
+  assert.ok(registrations.every(([, handler]) => typeof handler === 'function'));
+
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'routes', 'static-assets.js'), 'utf8');
+  assert.doesNotMatch(source, /app\.get\(/, 'the redirects belong to the Rust front door');
+  assert.doesNotMatch(source, /\(apk\|ipa\)\/i/, 'the guard belongs to the Rust front door');
+  const nativeSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'native', 'core', 'src', 'static_assets_routes.rs'),
+    'utf8',
+  );
+  assert.match(nativeSource, /fn is_forbidden_binary/, 'the Rust kernel carries the guard');
 });

@@ -1,6 +1,6 @@
 //! Path matching for the orchestration and unattended cluster retired from
 //! `src/routes/{aux-goal,aux-runs,orchestration}.js` and
-//! `src/unattended/routes.js` -- 23 public routes:
+//! `src/unattended/routes.js` -- 30 public routes:
 //!
 //! * `GET  /api/aux/{status,health,history}`, `POST /api/aux/{enqueue,cancel}`
 //! * `GET|POST /api/aux/config`, `GET|POST /api/settings/goal`
@@ -12,16 +12,19 @@
 //! * `GET /api/sessions/:id/{tasks,dispatches,queue}`
 //! * `POST /api/sessions/:id/{user-input/dismiss,queue/action}`
 //! * `GET /api/v1/sessions/:id/waits`
+//! * `POST /api/sessions/:id/wait`, `POST /api/wait/:wid/resolve`,
+//!   `GET /api/sessions/:id/waits`, `DELETE /api/wait/:wid`
+//! * `POST /api/sessions/:id/run-detached`, `GET /api/sessions/:id/detached`,
+//!   `GET /api/detached/:taskId`
 //!
-//! Seven neighbours are deliberately **not** claimed here: they are the
-//! registered out-of-scope wait injector and detached set and stay on Node --
-//! `POST /api/sessions/:id/wait`, `POST /api/wait/:wid/resolve`,
-//! `GET /api/sessions/:id/waits`, `DELETE /api/wait/:wid`,
-//! `POST /api/sessions/:id/run-detached`, `GET /api/sessions/:id/detached` and
-//! `GET /api/detached/:taskId`. The one pair that is easy to confuse is the
-//! waits listing: the **v1** projection is ours, the unprefixed listing is not.
-//! [`claim`] distinguishes them by the leading `v1` segment and the tests below
-//! pin both directions.
+//! The last seven were the registered out-of-scope wait injector and detached
+//! set: they joined in a second batch, so both waits listings are now ours and
+//! the pair that used to be easy to confuse is simply two routes. They are the
+//! only ones here whose Node handler reads a request header other than
+//! `Idempotency-Key`: the wait registration builds its `callbackUrl` from
+//! `req.get('host')`, and the resolve callback accepts its token from
+//! `x-wait-token`. Both names are therefore forwarded; see the front door's
+//! `FORWARDED_HEADERS`.
 //!
 //! Matching rules are the same Express-compatible ones every cluster uses:
 //! literal segments case-insensitively, a `:param` as one non-empty segment, one
@@ -57,6 +60,13 @@ pub enum Route {
     SessionQueue,
     SessionQueueAction,
     V1SessionWaits,
+    SessionWaitPost,
+    WaitResolve,
+    SessionWaits,
+    WaitCancel,
+    RunDetached,
+    SessionDetached,
+    DetachedTask,
     Options {
         allow: &'static str,
         guard_segment: Option<usize>,
@@ -91,6 +101,13 @@ impl Route {
             Route::SessionQueue => "session-queue",
             Route::SessionQueueAction => "session-queue-action",
             Route::V1SessionWaits => "v1-session-waits",
+            Route::SessionWaitPost => "session-wait-post",
+            Route::WaitResolve => "wait-resolve",
+            Route::SessionWaits => "session-waits",
+            Route::WaitCancel => "wait-cancel",
+            Route::RunDetached => "run-detached",
+            Route::SessionDetached => "session-detached",
+            Route::DetachedTask => "detached-task",
             Route::Options { .. } => return None,
         })
     }
@@ -109,6 +126,10 @@ impl Route {
                 | Route::ScheduledMessageDelete
                 | Route::UserInputDismiss
                 | Route::SessionQueueAction
+                | Route::SessionWaitPost
+                | Route::WaitResolve
+                | Route::WaitCancel
+                | Route::RunDetached
         )
     }
 
@@ -116,13 +137,19 @@ impl Route {
     /// routes that wait for an Aux model call (`enqueue`, `goal/precheck`) hold
     /// the connection for up to minutes, and `aux/cancel` exists to interrupt
     /// exactly such a wait: serializing them would let a queued enqueue starve
-    /// its own cancel. Node never serialized them either (the handler returned
-    /// at its first `await`), so they run concurrently here too.
+    /// its own cancel. Wait and detached handlers also remain concurrent, as
+    /// they were on the public Node router before this migration.
     pub fn serializes(self) -> bool {
         self.is_write()
             && !matches!(
                 self,
-                Route::AuxEnqueue | Route::AuxCancel | Route::GoalPrecheck
+                Route::AuxEnqueue
+                    | Route::AuxCancel
+                    | Route::GoalPrecheck
+                    | Route::SessionWaitPost
+                    | Route::WaitResolve
+                    | Route::WaitCancel
+                    | Route::RunDetached
             )
     }
 
@@ -152,9 +179,15 @@ impl Route {
             | Route::UserInputDismiss
             | Route::SessionQueue
             | Route::SessionQueueAction => &[("id", 1)],
+            Route::SessionWaitPost
+            | Route::SessionWaits
+            | Route::RunDetached
+            | Route::SessionDetached => &[("id", 1)],
             Route::SessionAuxRun => &[("id", 1), ("runId", 3)],
             Route::ScheduledMessageDelete => &[("id", 1), ("messageId", 3)],
             Route::V1SessionWaits => &[("id", 2)],
+            Route::WaitResolve | Route::WaitCancel => &[("wid", 1)],
+            Route::DetachedTask => &[("taskId", 1)],
             _ => &[],
         }
     }
@@ -178,6 +211,9 @@ pub const QUERY_KEYS: &[&str] = &[
     "activeOnly",
     "recentTerminalLimit",
     "taskIds",
+    // `POST /api/wait/:wid/resolve` reads `req.query.token` first, before the
+    // `x-wait-token` header and the body's own `token`.
+    "token",
 ];
 
 /// What the retired route did with a request body before its handler ran.
@@ -247,10 +283,24 @@ static LAYERS: &[Layer] = &[
         "DELETE",
         Route::ScheduledMessageDelete,
     ),
+    layer(&["sessions", ":id", "wait"], "POST", Route::SessionWaitPost),
+    layer(&["wait", ":wid", "resolve"], "POST", Route::WaitResolve),
+    layer(&["sessions", ":id", "waits"], "GET", Route::SessionWaits),
     layer(
         &["v1", "sessions", ":id", "waits"],
         "GET",
         Route::V1SessionWaits,
+    ),
+    layer(&["wait", ":wid"], "DELETE", Route::WaitCancel),
+    layer(
+        &["sessions", ":id", "run-detached"],
+        "POST",
+        Route::RunDetached,
+    ),
+    layer(
+        &["sessions", ":id", "detached"],
+        "GET",
+        Route::SessionDetached,
     ),
     layer(&["sessions", ":id", "tasks"], "GET", Route::SessionTasks),
     layer(
@@ -269,6 +319,7 @@ static LAYERS: &[Layer] = &[
         "POST",
         Route::SessionQueueAction,
     ),
+    layer(&["detached", ":taskId"], "GET", Route::DetachedTask),
 ];
 
 /// `path` -> its segments after `/api/`, or `None` when this cluster cannot own
@@ -454,9 +505,16 @@ mod tests {
             ("GET", "/api/sessions/s1/queue", SessionQueue),
             ("POST", "/api/sessions/s1/queue/action", SessionQueueAction),
             ("GET", "/api/v1/sessions/s1/waits", V1SessionWaits),
+            ("POST", "/api/sessions/s1/wait", SessionWaitPost),
+            ("POST", "/api/wait/w1/resolve", WaitResolve),
+            ("GET", "/api/sessions/s1/waits", SessionWaits),
+            ("DELETE", "/api/wait/w1", WaitCancel),
+            ("POST", "/api/sessions/s1/run-detached", RunDetached),
+            ("GET", "/api/sessions/s1/detached", SessionDetached),
+            ("GET", "/api/detached/t1", DetachedTask),
         ];
-        assert_eq!(cases.len(), 23);
-        assert_eq!(LAYERS.len(), 23);
+        assert_eq!(cases.len(), 30);
+        assert_eq!(LAYERS.len(), 30);
         for (method, path, expected) in cases {
             assert_eq!(route(method, path), Some(expected), "{method} {path}");
         }
@@ -466,7 +524,11 @@ mod tests {
     }
 
     #[test]
-    fn v1_waits_is_ours_and_the_unprefixed_listing_stays_on_node() {
+    fn both_waits_listings_are_ours_but_stay_two_distinct_routes() {
+        // They were split across two batches and answer different DTOs (the v1
+        // projection is enveloped, the unprefixed one merges the legacy
+        // injector's rows), so the only thing that may ever merge them is this
+        // test noticing that it cannot.
         assert_eq!(
             route("GET", "/api/v1/sessions/s1/waits"),
             Some(Route::V1SessionWaits)
@@ -475,31 +537,98 @@ mod tests {
             route("HEAD", "/api/v1/sessions/s1/waits"),
             Some(Route::V1SessionWaits)
         );
-        // The out-of-scope listing: same literal tail, no `v1` segment.
-        assert_eq!(route("GET", "/api/sessions/s1/waits"), None);
-        assert_eq!(route("HEAD", "/api/sessions/s1/waits"), None);
-        assert_eq!(route("OPTIONS", "/api/sessions/s1/waits"), None);
-        assert_eq!(allow_for("/api/sessions/s1/waits"), None);
-        // Other methods on the v1 path are not ours either.
+        assert_eq!(
+            route("GET", "/api/sessions/s1/waits"),
+            Some(Route::SessionWaits)
+        );
+        assert_eq!(
+            route("HEAD", "/api/sessions/s1/waits"),
+            Some(Route::SessionWaits)
+        );
+        assert_ne!(Route::SessionWaits.op(), Route::V1SessionWaits.op());
+        // Only the v1 one is under the enveloped error DTO.
+        assert!(Route::V1SessionWaits.v1());
+        assert!(!Route::SessionWaits.v1());
+        assert_eq!(
+            allow_for("/api/sessions/s1/waits").as_deref(),
+            Some("GET,HEAD")
+        );
+        // Other methods on either path are still not ours.
         assert_eq!(route("POST", "/api/v1/sessions/s1/waits"), None);
         assert_eq!(route("DELETE", "/api/v1/sessions/s1/waits"), None);
+        assert_eq!(route("POST", "/api/sessions/s1/waits"), None);
     }
 
     #[test]
-    fn the_seven_excluded_routes_are_never_claimed() {
-        for (method, path) in [
-            ("POST", "/api/sessions/s1/wait"),
-            ("POST", "/api/wait/w1/resolve"),
-            ("GET", "/api/sessions/s1/waits"),
-            ("DELETE", "/api/wait/w1"),
-            ("POST", "/api/sessions/s1/run-detached"),
-            ("GET", "/api/sessions/s1/detached"),
-            ("GET", "/api/detached/t1"),
+    fn the_wait_and_detached_set_is_claimed_with_its_own_params() {
+        // `:wid` and `:taskId` are the only params in this cluster that are not
+        // a session id, so a copy-paste of `("id", 1)` would silently hand the
+        // host port an undefined parameter.
+        assert_eq!(Route::SessionWaitPost.params(), &[("id", 1)]);
+        assert_eq!(Route::SessionWaits.params(), &[("id", 1)]);
+        assert_eq!(Route::RunDetached.params(), &[("id", 1)]);
+        assert_eq!(Route::SessionDetached.params(), &[("id", 1)]);
+        assert_eq!(Route::WaitResolve.params(), &[("wid", 1)]);
+        assert_eq!(Route::WaitCancel.params(), &[("wid", 1)]);
+        assert_eq!(Route::DetachedTask.params(), &[("taskId", 1)]);
+        // These writes preserve the old handler concurrency and are not long polls.
+        for route in [
+            Route::SessionWaitPost,
+            Route::WaitResolve,
+            Route::WaitCancel,
+            Route::RunDetached,
         ] {
-            assert_eq!(route(method, path), None, "{method} {path}");
-            assert_eq!(route("OPTIONS", path), None, "OPTIONS {path}");
-            assert_eq!(allow_for(path), None, "{path}");
+            assert!(route.is_write(), "{route:?}");
+            assert!(!route.serializes(), "{route:?}");
+            assert!(!route.long_poll(), "{route:?}");
         }
+        for route in [
+            Route::SessionWaits,
+            Route::SessionDetached,
+            Route::DetachedTask,
+        ] {
+            assert!(!route.is_write(), "{route:?}");
+        }
+        // `/api/wait/...` and `/api/detached/...` are not session-scoped, so the
+        // public session guard must not fire on them.
+        for path in ["/api/wait/w1", "/api/wait/w1/resolve", "/api/detached/t1"] {
+            assert_eq!(guard_index(&segments(path).unwrap()), None, "{path}");
+        }
+        for path in [
+            "/api/sessions/s1/wait",
+            "/api/sessions/s1/waits",
+            "/api/sessions/s1/run-detached",
+            "/api/sessions/s1/detached",
+        ] {
+            assert_eq!(guard_index(&segments(path).unwrap()), Some(1), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_wait_and_detached_allow_headers_match_their_single_method() {
+        for (path, allow) in [
+            ("/api/sessions/s1/wait", "POST"),
+            ("/api/wait/w1/resolve", "POST"),
+            ("/api/sessions/s1/waits", "GET,HEAD"),
+            ("/api/wait/w1", "DELETE"),
+            ("/api/sessions/s1/run-detached", "POST"),
+            ("/api/sessions/s1/detached", "GET,HEAD"),
+            ("/api/detached/t1", "GET,HEAD"),
+        ] {
+            assert_eq!(allow_for(path).as_deref(), Some(allow), "{path}");
+            assert_eq!(options_share(path).as_deref(), Some(allow), "{path}");
+            assert_eq!(
+                claim("OPTIONS", path),
+                Some(Route::Options {
+                    allow: intern(allow),
+                    guard_segment: guard_index(&segments(path).unwrap()),
+                }),
+                "OPTIONS {path}"
+            );
+        }
+        // `/api/wait/:wid` and `/api/wait/:wid/resolve` are different paths: the
+        // longer one must not contribute `POST` to the shorter one's Allow.
+        assert_eq!(allow_for("/api/wait/w1").as_deref(), Some("DELETE"));
     }
 
     #[test]
@@ -713,7 +842,7 @@ mod tests {
             assert_eq!(layer.kind.body_parser(), BodyParser::Global);
             assert!(seen.insert(layer.kind.op().unwrap()), "{:?}", layer.kind);
         }
-        assert_eq!(seen.len(), 23);
+        assert_eq!(seen.len(), 30);
         assert_eq!(
             Route::Options {
                 allow: "GET,HEAD",
@@ -734,10 +863,12 @@ mod tests {
             "activeOnly",
             "recentTerminalLimit",
             "taskIds",
+            // The resolve callback's first token source.
+            "token",
         ] {
             assert!(QUERY_KEYS.contains(&key), "{key}");
         }
-        assert_eq!(QUERY_KEYS.len(), 7);
+        assert_eq!(QUERY_KEYS.len(), 8);
     }
 
     #[test]

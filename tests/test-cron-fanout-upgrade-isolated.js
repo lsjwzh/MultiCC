@@ -9,6 +9,7 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), os = requ
 const { spawn, execFileSync } = require('node:child_process');
 const { createPaths, assertTestDir } = require('../src/paths');
 const { writeJsonAtomic } = require('../src/state/store');
+const { waitServerReady } = require('./helpers/wait-server-ready');
 const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-fanout-upgrade-')));
 const data = path.join(root, 'data'), home = path.join(root, 'home'), project = path.join(root, 'project');
 for (const dir of [data, home, project]) fs.mkdirSync(dir);
@@ -74,7 +75,7 @@ async function boot(port) {
     MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100' }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => { logs = (logs + b).slice(-30000); });
   server.stderr.on('data', b => { logs = (logs + b).slice(-30000); });
-  await wait(async () => { try { return (await fetch(base + '/readyz')).ok; } catch (_) { return false; } }, 'readiness');
+  await waitServerReady(base, { attempts: 400, child: server, output: () => logs, message: 'readiness' });
 }
 async function stop() {
   if (!server || server.exitCode !== null) return;

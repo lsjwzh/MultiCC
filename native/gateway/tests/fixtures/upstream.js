@@ -264,6 +264,71 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // Host port for the plugin cluster (`src/routes/plugins.js`): the test
+  // script's `plugins` object supplies the Node-side facts.
+  //   entries           id -> { found: false } | { found: true, dir, ui }
+  //   entries[id].raw   that whole answer verbatim (malformed-shape tests)
+  //   active            one boolean per channelStillActive item
+  //   activeDown        answer { ok: false } for channelStillActive
+  //   channels          the channelsStatus answer fields ({ available, plugins,
+  //                     usage }) and `down` for { ok: false }
+  //   channelsRaw       the whole channelsStatus reply text, verbatim (so a
+  //                     test can put number spellings JSON.stringify avoids,
+  //                     such as -0, on the wire)
+  //   answer            one verbatim answer for every op
+  if (route === '/api/__host/plugins' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'plugins-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const plugins = script.plugins || {};
+      if (script.hostDown === true || plugins.hostDown === true) { req.socket.destroy(); return; }
+      if (input.op === 'channelsStatus' && typeof plugins.channelsRaw === 'string') {
+        const text = plugins.channelsRaw;
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+        return;
+      }
+      let out;
+      if (plugins.answer !== undefined) {
+        out = plugins.answer;
+      } else if (input.op === 'findPlugin') {
+        const entries = plugins.entries || {};
+        const entry = Object.prototype.hasOwnProperty.call(entries, input.id)
+          ? entries[input.id]
+          : { found: false };
+        out = entry && entry.raw !== undefined ? entry.raw : { ok: true, ...entry };
+      } else if (input.op === 'channelStillActive') {
+        const items = Array.isArray(input.items) ? input.items : [];
+        if (plugins.activeDown === true) out = { ok: false, error: { message: 'registry unavailable' } };
+        else {
+          const active = Array.isArray(plugins.active) ? plugins.active : [];
+          out = { ok: true, active: items.map((_, index) => Boolean(active[index])) };
+        }
+      } else if (input.op === 'channelsStatus') {
+        const channels = plugins.channels || {};
+        if (channels.down === true) out = { ok: false };
+        else out = {
+          ok: true,
+          available: channels.available === undefined ? false : channels.available,
+          plugins: channels.plugins === undefined ? [] : channels.plugins,
+          usage: channels.usage === undefined ? [] : channels.usage,
+        };
+      } else {
+        const text = JSON.stringify({ error: 'unknown host operation' });
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+        return;
+      }
+      const text = JSON.stringify(out);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
   // Host port for routes that need in-process Node state (docs/gateway.md §10).
   // FIXTURE_HOST_SCRIPT names a JSON file the test writes: subagent defaults,
   // the session projection, provider facts and per-session patch outcomes.
@@ -297,6 +362,33 @@ const server = http.createServer((req, res) => {
       } else {
         out = { ok: false };
       }
+      const text = JSON.stringify(out);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the cross-CLI switch (docs/gateway.md §10). The scripted
+  // answers are keyed `<op>:<sessionId>`, then `<op>`; every input is appended
+  // to cli-switch-calls.jsonl so a test can prove a refusal never reached Node.
+  if (route === '/api/__host/cli-switch' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'cli-switch-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const config = script.cliSwitch || {};
+      if (script.hostDown === true || config.hostDown === true) { req.socket.destroy(); return; }
+      const answers = config.answers || {};
+      const key = `${input.op}:${input.sessionId || ''}`;
+      let out;
+      if (Object.prototype.hasOwnProperty.call(answers, key)) out = answers[key];
+      else if (Object.prototype.hasOwnProperty.call(config, input.op)) out = config[input.op];
+      else if (input.op === 'facts') out = { ok: true, exists: false, internalSlot: false, session: null, supported: [] };
+      else if (input.op === 'noop') out = { ok: false, error: { message: 'unexpected noop' } };
+      else out = { ok: false, error: { message: 'unexpected switch' } };
       const text = JSON.stringify(out);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
       res.end(text);
@@ -901,6 +993,7 @@ const server = http.createServer((req, res) => {
       };
       const answers = providers.answers || {};
       const keys = [
+        `${input.op}:${input.appType || ''}:${input.id || ''}`,
         `${input.op}:${input.id || ''}`,
         `${input.op}:${input.cli || ''}`,
         `${input.op}:${input.targetProviderId || ''}`,
@@ -909,7 +1002,13 @@ const server = http.createServer((req, res) => {
       for (const key of keys) {
         if (Object.prototype.hasOwnProperty.call(answers, key)) return send(200, answers[key]);
       }
-      if (input.op === 'defaultsValidate') return send(200, { ok: true, valid: true, value: input.id });
+      // The two facts the Rust provider-id validator asks for. The fixture
+      // implements no rules: `normalizeId` echoes the js `String(id)` form and
+      // an unscripted lookup simply finds no provider.
+      if (input.op === 'normalizeId') {
+        return send(200, { ok: true, id: input.id == null ? null : String(input.id) });
+      }
+      if (input.op === 'providerSummary') return send(200, { ok: true, summary: null });
       if (input.op === 'defaultsPersist') return send(200, { ok: true, defaults: input.next });
       return send(400, { error: 'unknown host operation' });
     });
@@ -1588,6 +1687,56 @@ const server = http.createServer((req, res) => {
       const answer = Object.prototype.hasOwnProperty.call(ops, input.op) ? ops[input.op] : null;
       const text = JSON.stringify(answer || { ok: false, error: { message: 'unscripted push op' } });
       res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return;
+  }
+  // Host port for the server-core cluster retired from server.js and
+  // src/health.js (src/routes/server-core-host.js,
+  // native/gateway/src/app/server_core.rs). The script's `serverCore` object
+  // supplies the three answers the retired handlers built in-process:
+  // `health` ({ uptimeSeconds, ready, checks }), `metrics` (already a
+  // name -> number table) and `operations` (operationId -> object). Every call
+  // is appended to server-core-calls.jsonl so a test can assert the exact op
+  // and operationId the front door sent.
+  if (route === '/api/__host/server-core' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      fs.appendFileSync(path.join(stateDir, 'server-core-calls.jsonl'), `${JSON.stringify(input)}\n`);
+      let script = {};
+      try { script = JSON.parse(fs.readFileSync(process.env.FIXTURE_HOST_SCRIPT, 'utf8')); } catch (_) {}
+      const core = script.serverCore || {};
+      if (script.hostDown === true || core.hostDown === true) { req.socket.destroy(); return; }
+      const send = value => {
+        const text = JSON.stringify(value);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        res.end(text);
+      };
+      if (input.op === 'health') {
+        const health = core.health || { uptimeSeconds: 0, ready: false, checks: null };
+        // Pass the shapes through untouched: the front door's stale-child
+        // guard is what rejects a non-boolean `ready` (and names the 503), so
+        // coercing here would hide the very case a test wants to provoke.
+        return send({
+          ok: true,
+          uptimeSeconds: health.uptimeSeconds === undefined ? 0 : health.uptimeSeconds,
+          ready: health.ready,
+          checks: health.checks === undefined ? null : health.checks,
+        });
+      }
+      if (input.op === 'metrics') {
+        if (core.metricsDown === true) return send({ ok: false });
+        return send({ ok: true, metrics: core.metrics || {} });
+      }
+      if (input.op === 'repoOperation') {
+        const operations = core.operations || {};
+        const found = Object.prototype.hasOwnProperty.call(operations, input.operationId);
+        return send({ ok: true, operation: found ? operations[input.operationId] : null });
+      }
+      const text = JSON.stringify({ error: 'unknown host operation' });
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
       res.end(text);
     });
     return;

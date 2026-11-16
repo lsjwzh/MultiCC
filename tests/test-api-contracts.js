@@ -305,7 +305,7 @@ test('v1 compatibility baseline catches required-field, property, enum, const, a
   assert.ok(result.errors.filter(item => item.includes('ref changed')).length >= 3);
 });
 
-test('orchestration and unattended routes: host port mounted once, seven out-of-scope routes stay on the real app', () => {
+test('orchestration and unattended routes: host port mounted once without public Node routes', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   const count = (text, needle) => text.split(needle).length - 1;
   // The 23 migrated routes are answered by the Rust front door
@@ -319,14 +319,16 @@ test('orchestration and unattended routes: host port mounted once, seven out-of-
   assert.equal(/mountAuxGoalRoutes\(app\b/.test(source), false);
   assert.equal(/createAuxRunRoutes\([^)]*\)\.mountRoutes\(app\)/.test(source), false);
   assert.equal(source.includes('orchestrationRoutes.mountHostRoutes(app)'), false);
-  // Only the seven out-of-scope wait-injector / detached routes remain on the
-  // real app. GET /api/sessions/:id/waits (no v1) is among them; the v1
-  // projection is not.
-  assert.equal(count(source, 'orchestrationRoutes.mountRoutes(app)'), 1);
+  // The second batch took the wait-injector / detached set too, so the module
+  // has no public mount left at all: every one of its sixteen routes is behind
+  // the host port. A `mountRoutes` export reappearing here means a route went
+  // back onto the real app, where it would answer alongside the front door.
+  assert.equal(count(source, 'orchestrationRoutes.mountRoutes(app)'), 0);
   const orchestration = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'orchestration.js'), 'utf8');
-  const publicHalf = orchestration.slice(orchestration.indexOf('function mountRoutes(app)'));
-  const hostHalf = orchestration.slice(orchestration.indexOf('function mountHostRoutes(app)'),
-    orchestration.indexOf('function mountRoutes(app)'));
+  assert.equal(/function mountRoutes\s*\(/.test(orchestration), false,
+    'orchestration.js must not grow a public mount back');
+  assert.ok(orchestration.includes('return Object.freeze({ mountHostRoutes });'));
+  const hostHalf = orchestration.slice(orchestration.indexOf('function mountHostRoutes(app)'));
   for (const route of [
     "app.post('/api/sessions/:id/wait'",
     "app.post('/api/wait/:wid/resolve'",
@@ -335,11 +337,12 @@ test('orchestration and unattended routes: host port mounted once, seven out-of-
     "app.post('/api/sessions/:id/run-detached'",
     "app.get('/api/sessions/:id/detached'",
     "app.get('/api/detached/:taskId'",
+    "app.get('/api/v1/sessions/:id/waits'",
   ]) {
-    assert.ok(publicHalf.includes(route), `${route} must stay on the real app`);
-    assert.equal(hostHalf.includes(route), false, `${route} must not be captured`);
+    assert.ok(hostHalf.includes(route), `${route} must be captured by the host port`);
   }
-  assert.equal(publicHalf.includes("app.get('/api/v1/sessions/:id/waits'"), false);
+  // Both waits listings are ours now, but they stay two routes with two DTOs.
+  assert.ok(hostHalf.includes("app.get('/api/sessions/:id/waits'"));
   assert.ok(hostHalf.includes("app.get('/api/v1/sessions/:id/waits'"));
   for (const file of ['src/routes/aux-goal.js', 'src/routes/aux-runs.js', 'src/unattended/routes.js']) {
     assert.equal(/\bapp\s*=\s*express\(\)/.test(fs.readFileSync(path.join(ROOT, file), 'utf8')), false);
@@ -380,11 +383,12 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.doesNotMatch(source, /app\.get\(['"]\/api\/v1\/providers['"]/);
   assert.equal(sessionAdmin.includes("app.get('/api/v1/directories/:id/workspace'"), false);
   // The v1 waits projection is one of the nine orchestration routes the front door
-  // answers (mountHostRoutes, captured by the host port); the unprefixed listing
-  // and the other six wait/detached routes stay in mountRoutes on the public app.
+  // answers (mountHostRoutes, captured by the host port), and after the second
+  // batch so is every wait/detached route: mountHostRoutes is the only mount.
   assert.ok(orchestrationRoutes.includes("app.get('/api/v1/sessions/:id/waits'"));
+  assert.ok(orchestrationRoutes.includes("app.get('/api/sessions/:id/waits'"));
   assert.ok(orchestrationRoutes.includes('function mountHostRoutes(app)'));
-  assert.ok(orchestrationRoutes.includes('function mountRoutes(app)'));
+  assert.equal(/function mountRoutes\s*\(/.test(orchestrationRoutes), false);
   // The auth surface (shutdown gate, login/logout, gate middleware, exchange,
   // ws-ticket) is composed from src/routes/auth.js. The gate delegates to Rust;
   // real wait-resolve method/path authorization is covered by auth-routes.

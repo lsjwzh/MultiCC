@@ -11,6 +11,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
+const { waitServerReady } = require('./helpers/wait-server-ready');
 const { createQoderAdapter } = require('../src/cli-adapters/qoder');
 
 // ── qoder: structured API-error fields ───────────────────────────────────
@@ -75,6 +76,18 @@ if (qoderUnit.decodeEvent({ type: 'result', subtype: 'error_during_execution', i
 }
 
 const ROOT = path.join(__dirname, '..');
+
+// The directory/session clusters are answered by the Rust front door
+// (native/gateway/src/app/directory_routes.rs), so an isolated host has to start
+// the real gateway with server.js as its child instead of bare node.
+function gatewayBinary() {
+  const addon = process.env.MULTICC_RUST_ADDON
+    || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(ROOT, 'native', 'prebuilt'),
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  return path.join(path.dirname(addon),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+
 const PORT = 3994;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'qoder-chat-test';
@@ -120,11 +133,8 @@ async function api(method, route, body) {
 }
 
 async function waitForServer() {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    try { await api('GET', '/api/directories'); return; } catch (_) {}
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error('isolated Qoder server did not start');
+  await waitServerReady(BASE, { attempts: 80, intervalMs: 100, child: server,
+    output: () => stdout + stderr, message: 'isolated Qoder server did not start' });
 }
 
 function runTurn(text, timeoutMs = 10000) {
@@ -182,7 +192,7 @@ async function cleanup() {
 }
 
 (async () => {
-  server = spawn(process.execPath, ['server.js'], {
+  server = spawn(gatewayBinary(), ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
     cwd: ROOT,
     env: {
       ...process.env,

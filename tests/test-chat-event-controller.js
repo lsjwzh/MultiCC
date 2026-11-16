@@ -1962,9 +1962,15 @@ test('Flutter attachments offer the iOS photo library, not just the Files picker
   // iOS first asks which source, then routes: photos -> PHPicker, files -> FilePicker.
   assert.match(picker, /Platform\.isIOS/);
   assert.match(picker, /showModalBottomSheet/);
-  assert.match(picker, /ImagePicker\(\)\.pickImage\(\s*source:\s*ImageSource\.gallery/);
-  assert.match(picker, /FilePicker\.platform\.pickFiles\(withData:\s*true\)/);
-  assert.match(picker, /readAsBytes/);
+  // 2026-11-15 起相册分支用 pickMedia() 而不是 pickImage(source: gallery)：前者
+  // 同一个 PHPicker 里既给照片也给视频，而视频是这条路的主要用途（超限再压缩，见
+  // prepareChatAttachment）。守卫的意图不变 —— iOS 必须能走到系统相册，而不是只有
+  // Files 选择器。
+  assert.match(picker, /ImagePicker\(\)\.pickMedia\(/);
+  // 两条路径现在都按**文件路径**上传（MultipartFile.fromPath），不再把整个附件读成
+  // bytes：25MB 的视频读进内存会把手机端打爆。所以 withData 必须是 false。
+  assert.match(picker, /FilePicker\.platform\.pickFiles\(withData:\s*false\)/);
+  assert.match(picker, /MultipartFile\.fromPath\(/);
 
   // The attachment call site delegates to the shared picker and never drives
   // FilePicker directly (the direct path is what hid the photo album on iOS).

@@ -42,9 +42,11 @@ use multicc_core::local_cli_sync;
 use multicc_core::provider_misc::{self, api_meta, to_provider_dto};
 use multicc_core::provider_registry::{
     self, create_payload, defaults_updates, delete_response, detach_failed_response,
-    encode_relay_share_code, import_error_dto, invalid_defaults_error, normalize_probe_candidates,
-    plan_delete, provider_in_use_response, reassign_dry_run, reassign_precheck, reassign_target_id,
+    encode_relay_share_code, finish_provider_lookup, import_error_dto, invalid_defaults_error,
+    normalize_probe_candidates, plan_delete, provider_cli_facts_from_json, provider_id_step,
+    provider_in_use_response, reassign_dry_run, reassign_precheck, reassign_target_id,
     relay_models_of, relay_route_from_base_url, relay_share_urls, update_payload, DeletePlan,
+    ProviderIdStep,
 };
 use multicc_core::public_safety::{public_error, public_text, sanitize_public_text};
 use serde_json::{json, Map, Value};
@@ -655,6 +657,7 @@ async fn probe(ctx: &RequestCtx, body: &Value, host_port_num: u16) -> Response<B
     payload.insert("op".into(), json!("probeExec"));
     payload.insert("appType".into(), json!(app_type));
     payload.insert("id".into(), json!(id));
+    payload.insert("resultEncoding".into(), json!("json"));
     if let Some(candidates) = candidates {
         payload.insert("candidates".into(), json!(candidates));
     }
@@ -671,8 +674,21 @@ async fn probe(ctx: &RequestCtx, body: &Value, host_port_num: u16) -> Response<B
             &[],
         );
     }
-    // The host already ran sanitizeProbeResult; sanitizing twice is idempotent
-    // but would only re-normalize, so the answer is passed through as is.
+    // The host sanitizes first, then transports the exact JSON text so a lone
+    // surrogate from JS truncation does not get lost in serde_json::Value.
+    if let Some(raw) = answer.get("resultJson").and_then(Value::as_str) {
+        if multicc_core::js::json_parse(raw).is_err() {
+            return unavailable(ctx);
+        }
+        return express::send(
+            ctx,
+            200,
+            "application/json; charset=utf-8",
+            raw.as_bytes().to_vec(),
+            &[],
+        );
+    }
+    // Compatibility with older hosts and the isolated host fixtures.
     let result = answer.get("result").cloned().unwrap_or(Value::Null);
     express::json(ctx, 200, &result, &[])
 }
@@ -1189,19 +1205,66 @@ async fn defaults_put(
         Some(Value::Object(defaults)) => defaults.clone(),
         _ => Map::new(),
     };
+    // Rules ①-④ plus the `appTypesForCli` gate live in
+    // `multicc_core::provider_registry`; Node answers only the two facts those
+    // rules cannot know. `normalizeOfficialProviderId` runs before every other
+    // rule, so its host op is unconditional, while the summary lookup stays
+    // lazy and only fires when rule ⑤ is reached.
+    let vendors: Vec<String> = provider_registry::VENDOR_NATIVE_CLIS
+        .iter()
+        .map(|cli| (*cli).to_string())
+        .collect();
     for (cli, raw) in defaults_updates(body_map(body)) {
-        let Some(validated) = host(
+        let Some(normalized) = host(
             host_port_num,
-            json!({ "op": "defaultsValidate", "cli": cli, "id": raw }),
+            json!({ "op": "normalizeId", "cli": cli, "id": raw }),
         )
         .await
         else {
             return unavailable(ctx);
         };
-        if !succeeded(&validated) || validated.get("valid") != Some(&Value::Bool(true)) {
-            return express::json(ctx, 400, &invalid_defaults_error(&cli), &[]);
+        if !succeeded(&normalized) {
+            return unavailable(ctx);
         }
-        let value = validated.get("value").cloned().unwrap_or(Value::Null);
+        let id = match normalized.get("id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) => Some(text.clone()),
+            // The host may hand back any JSON value; `String(id)` is the legacy
+            // coercion every later rule used.
+            Some(other) => Some(js_string(other)),
+        };
+        let value = match provider_id_step(
+            Some(&cli),
+            id,
+            &vendors,
+            provider_registry::NATIVE_VENDOR_SUFFIX,
+            provider_registry::NATIVE_OPENCODE_PREFIX,
+        ) {
+            ProviderIdStep::Empty => Value::Null,
+            ProviderIdStep::Rejected => {
+                return express::json(ctx, 400, &invalid_defaults_error(&cli), &[]);
+            }
+            ProviderIdStep::Native(id) => Value::String(id),
+            ProviderIdStep::Lookup { pool, id } => {
+                let Some(answer) = host(
+                    host_port_num,
+                    json!({ "op": "providerSummary", "appType": pool, "id": id.clone() }),
+                )
+                .await
+                else {
+                    return unavailable(ctx);
+                };
+                if !succeeded(&answer) {
+                    return unavailable(ctx);
+                }
+                let facts = provider_cli_facts_from_json(answer.get("summary"));
+                let validated = finish_provider_lookup(Some(&cli), &id, facts.as_ref());
+                if !validated.ok {
+                    return express::json(ctx, 400, &invalid_defaults_error(&cli), &[]);
+                }
+                Value::String(validated.value.unwrap_or(id))
+            }
+        };
         next.insert(cli, value);
     }
     let Some(answer) = host(

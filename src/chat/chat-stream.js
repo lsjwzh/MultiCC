@@ -4,6 +4,7 @@ const { isMainResult } = require('../cli-adapters/result-completion');
 const { isMonitorHandoffResult } = require('./monitor-admission');
 const { createMonitorControl } = require('./monitor-control');
 const { createBackgroundHold } = require('./background-hold');
+const { decideMissingResume } = require('./missing-resume-recovery');
 const { envDigest } = require('../secrets-vault');
 
 // ── Persistent streaming CLI process per chat session ──
@@ -36,7 +37,6 @@ const { envDigest } = require('../secrets-vault');
 //     timeout. Context survives an idle-kill because we spawn with
 //     --session-id and respawn with --resume <same id>.
 
-const crypto = require('crypto');
 const { spawn } = require('child_process');
 const writerGroup = require('../workspace/writer-group');
 
@@ -189,18 +189,6 @@ function spawnProc(name, cfg) {
   return proc;
 }
 
-function isMissingResumeResult(evt) {
-  if (!evt || evt.type !== 'result' || evt.is_error !== true) return false;
-  const messages = [
-    ...(Array.isArray(evt.errors) ? evt.errors : []),
-    typeof evt.error === 'string' ? evt.error : evt.error && evt.error.message,
-    evt.result,
-  ];
-  return messages.some((message) => (
-    /No conversation found with session ID\s*:/i.test(String(message || ''))
-  ));
-}
-
 // A persisted streaming id only proves that MultiCC allocated an id; it does
 // not prove Claude still has the corresponding transcript. Claude reports a
 // missing `--resume` target as a stream-json result (not stderr / process
@@ -212,9 +200,11 @@ function isMissingResumeResult(evt) {
 // pump() holds the message in the queue until the monitor-control handshake is
 // ready — so the affected message is `s.current` only once it was dispatched,
 // otherwise it is still `s.queue[0]`. Either way it is the one to retry.
-function rotateMissingResume(name, s, target) {
+// The decision itself (is this the missing-resume answer, was this spawn a
+// resume, has anything already reached the host, is the attempt spent) belongs
+// to the Rust kernel every lane shares; this function only performs the IO.
+function rotateMissingResume(name, s, target, nextSessionId) {
   const previousSessionId = s.sessionId;
-  const nextSessionId = crypto.randomUUID();
   target.resumeRecoveryAttempt += 1;
   target.firstByteReported = false;
   s.sessionId = nextSessionId;
@@ -242,15 +232,21 @@ function recoverMissingResume(name, evt) {
   const s = sessions.get(name);
   const cur = s && s.current;
   const target = cur || (s && !s.busy ? s.queue[0] : null);
-  if (!s || !target || !s.lastSpawnWasResume || (cur && cur.eventCount !== 0)
-      || target.resumeRecoveryAttempt >= 1 || !isMissingResumeResult(evt)) return false;
+  if (!s || !target) return false;
+  const decision = decideMissingResume({
+    event: evt,
+    lastSpawnWasResume: !!s.lastSpawnWasResume,
+    forwardedEventCount: cur ? cur.eventCount : 0,
+    attempt: target.resumeRecoveryAttempt || 0,
+  });
+  if (decision.action !== 'rotate') return false;
 
   const proc = s.proc;
   if (cur) {
     s.current = null;
     s.busy = false;
   }
-  rotateMissingResume(name, s, target);
+  rotateMissingResume(name, s, target, decision.nextSessionId);
   if (cur) s.queue.unshift(cur);
 
   if (proc && proc.exitCode === null && !proc.killed) {
@@ -296,7 +292,9 @@ function onStdout(name, chunk) {
     // Self-wake queries of a held turn stream into it; their results stay internal.
     if (s.current?.hold?.held && s.current.hold.observe(evt)) continue;
     if (isMonitorHandoffResult(evt)) continue;
-    if (recoverMissingResume(name, evt)) return;
+    // Only a `result` can be the CLI's answer for a missing resume target, so
+    // every other line stays off the native boundary.
+    if (evt.type === 'result' && recoverMissingResume(name, evt)) return;
     if (s.current) s.current.eventCount += 1;
 
     // Capture the real session id if the CLI reports one (first turn / system init).
@@ -382,11 +380,18 @@ function onExit(name, code, signal, err) {
   const stderr = (s.stderrTail || '').trim();
   // Same recovery as recoverMissingResume for the case where 'exit' beat the
   // stdout result event (that handler ignores a replaced proc). Without it the
-  // respawn below would `--resume` the same dead id forever.
+  // respawn below would `--resume` the same dead id forever. The stderr tail is
+  // presented to the one classifier both lanes use, and the same decision gates
+  // it, so there is no second copy of the arithmetic here.
   const missingTarget = cur || s.queue[0];
-  if (/No conversation found with session ID/i.test(stderr) && s.lastSpawnWasResume
-      && missingTarget && (!cur || cur.eventCount === 0) && missingTarget.resumeRecoveryAttempt < 1) {
-    rotateMissingResume(name, s, missingTarget);
+  const missingDecision = missingTarget && stderr && decideMissingResume({
+    event: { type: 'result', is_error: true, errors: [stderr] },
+    lastSpawnWasResume: !!s.lastSpawnWasResume,
+    forwardedEventCount: cur ? cur.eventCount : 0,
+    attempt: missingTarget.resumeRecoveryAttempt || 0,
+  });
+  if (missingDecision && missingDecision.action === 'rotate') {
+    rotateMissingResume(name, s, missingTarget, missingDecision.nextSessionId);
     if (cur) s.queue.unshift(cur);
     setImmediate(() => pump(name));
     return;

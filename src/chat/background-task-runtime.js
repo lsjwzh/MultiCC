@@ -12,6 +12,15 @@ const { getNative } = require('../native/runtime');
 const { safeText } = require('../cli-adapters/codex-background-events.cjs');
 const { redactProviderRouteCapability } = require('../observability');
 
+// `undefined` means "host did not decide", which is the production case: the
+// data root is then the answer. `null` is a decision — no durable ledger — and
+// is honoured, which is how the test harnesses stay hermetic.
+function settledNudgeFile(deps) {
+  if (deps.settledNudgeFile !== undefined) return deps.settledNudgeFile;
+  const { createPaths } = require('../paths');
+  return createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).backgroundNudgeFile;
+}
+
 function requiredFunction(deps, name) {
   if (typeof deps[name] !== 'function') {
     throw new TypeError(`createBackgroundTaskRuntime: ${name} is required`);
@@ -44,6 +53,13 @@ function createBackgroundTaskRuntime(deps = {}) {
     mainToolUseCap: deps.mainToolUseCap,
     outputCap: deps.outputCap,
     completionWindowMs: deps.completionWindowMs,
+    // Durable replay-suppression ledger (native/core/src/background/settled.rs).
+    // Rust owns the decision, the load and the write; this only names the file,
+    // defaulting to the data root so the production host needs no wiring. A host
+    // host that passes `null` is taken at its word and keeps the suppression
+    // process-local, which is what the legacy parity differential and the unit
+    // harnesses want.
+    settledNudgeFile: settledNudgeFile(deps),
   });
 
   function log(level, message, error) {

@@ -175,6 +175,13 @@ function createPaths({ dataDir } = {}) {
     // Metadata-only, append-only vault access journal (private 0600).
     secretAuditFile: path.join(root, 'logs', 'secret-audit.jsonl'),
     taskBoardFile: path.join(root, 'task_board.json'),
+    // Which background tasks already had their completion nudge delivered
+    // (native/core/src/background/settled.rs). The Claude Code CLI replays the
+    // `stopped` notification of an agent that died without a completion record
+    // on every start, so this memory has to outlive the process that injected
+    // the first one. Derived data: deleting it costs at most one repeat nudge
+    // per remembered task.
+    backgroundNudgeFile: path.join(root, 'background-nudges.json'),
     taskShellDbFile: path.join(root, 'task-shells.sqlite'),
     // Full-text index over chat_history (src/search/index-store.js). Derived data:
     // deleting it only costs the next rebuild.

@@ -149,6 +149,23 @@ pub fn sanitize_public_text(value: Option<&str>, fallback: &str) -> String {
     from_unit_view(&cut).to_string_lossy()
 }
 
+/// Like `sanitize_public_text`, but keeps JavaScript's exact UTF-16 units.
+pub fn sanitize_public_js_text(value: Option<&JsString>, fallback: &str) -> JsString {
+    let fallback = JsString::from_rust_str(&fallback_text(fallback));
+    let Some(value) = value else { return fallback };
+    let view = to_unit_view(value);
+    if js_trim(&view).is_empty() {
+        return fallback;
+    }
+    let without_controls = control_pattern().replace_all(&view, " ");
+    let squeezed = whitespace_pattern().replace_all(&without_controls, " ");
+    let trimmed = js_trim(&squeezed);
+    if trimmed.is_empty() || contains_sensitive_view(trimmed) {
+        return fallback;
+    }
+    from_unit_view(&trimmed.chars().take(MAX_PUBLIC_TEXT).collect::<String>())
+}
+
 /// `publicText(value, fallback)`: only a string value is sanitized.
 pub fn public_text(value: Option<&Value>, fallback: &str) -> String {
     match value {

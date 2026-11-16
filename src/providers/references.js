@@ -1,58 +1,22 @@
 'use strict';
 
-function appTypeForCli(cli) {
-  if (cli === 'codex' || cli === 'codex-exp') return 'codex';
-  if (cli === 'claude' || cli === 'claude-exp' || cli === 'opencode') return 'claude';
-  return null;
-}
+// Which sessions, defaults and Aux config still point at a provider — the facts
+// a delete has to break or refuse. Every membership rule now lives in Rust
+// (`multicc_core::provider_registry::reference_*`, walked by
+// `native/addon/src/provider_registry.rs`'s `provider_find_references`): the
+// pool each `cli` draws from, the two CLIs that span both pools, what makes a
+// target poolable at all, and the Aux queue's protocol-derived pool.
+//
+// This file is the transport only. The live session table, the Rust-backed
+// defaults view and the Aux config stay in the Node process, so the addon reads
+// them here instead of the front door holding a second copy.
+//
+// Behaviour is pinned against the frozen pre-migration implementation in
+// tests/helpers/legacy-provider-references.js by tests/test-provider-references.js.
+const { getNative } = require('../native/runtime');
 
-function findProviderReferences({ appType, providerId, sessions, defaults, aux } = {}) {
-  const type = String(appType || '').trim();
-  const id = String(providerId || '').trim();
-  if (!['claude', 'codex'].includes(type) || !id) return [];
-  const references = [];
-  const values = sessions instanceof Map
-    ? sessions.values()
-    : (Array.isArray(sessions) ? sessions : []);
-
-  for (const session of values) {
-    if (!session) continue;
-    const sessionType = appTypeForCli(session.cli);
-    // OpenCode and ZCode can bind providers from either stored pool. Provider
-    // ids are globally unique, so an exact id match is sufficient for them.
-    if (session.cli !== 'opencode' && session.cli !== 'zcode' && sessionType !== type) continue;
-    if (session.provider === id) {
-      references.push(Object.freeze({
-        kind: 'main',
-        sessionId: String(session.id || ''),
-        sessionName: String(session.name || session.label || session.id || ''),
-      }));
-    }
-    if (session.providerSelection?.mode === 'auto'
-        && session.providerSelection.candidates?.some(candidate => candidate.providerId === id)) {
-      references.push(Object.freeze({
-        kind: 'auto_candidate',
-        sessionId: String(session.id || ''),
-        sessionName: String(session.name || session.label || session.id || ''),
-      }));
-    }
-    if (session.subagent && session.subagent.providerId === id) {
-      references.push(Object.freeze({
-        kind: 'subagent',
-        sessionId: String(session.id || ''),
-        sessionName: String(session.name || session.label || session.id || ''),
-      }));
-    }
-  }
-
-  if (defaults && defaults[type] === id) {
-    references.push(Object.freeze({ kind: 'default', cli: type }));
-  }
-  const auxType = aux && String(aux.protocol || '').toLowerCase() === 'openai' ? 'codex' : 'claude';
-  if (aux && aux.providerId === id && auxType === type) {
-    references.push(Object.freeze({ kind: 'aux', protocol: aux.protocol || 'anthropic' }));
-  }
-  return Object.freeze(references);
+function findProviderReferences(input = {}) {
+  return getNative().providerFindReferences(input);
 }
 
 module.exports = { findProviderReferences };

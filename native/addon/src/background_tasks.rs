@@ -13,6 +13,7 @@ use multicc_core::background::{
     coalescer::{self, Coalescer, Item, DEFAULT_WINDOW_MS},
     metadata::{MetaInput, MetaStore},
     native_tasks::{NativeOutcome, NativeStore},
+    settled::{self, SettledNudges},
     snippet,
     state::{
         is_object_like, js_max, metadata_text, or_empty, own_entries, safe_description, spread,
@@ -29,7 +30,7 @@ use napi::{
     sys, Env, Result,
 };
 use napi_derive::napi;
-use std::{cell::RefCell, collections::VecDeque, ffi::CStr};
+use std::{cell::RefCell, collections::VecDeque, ffi::CStr, path::PathBuf};
 
 /// Poll interval for a writer shadow. `tail -F` reported a line as soon as it
 /// was written; polling adds at most this much latency (documented difference).
@@ -640,19 +641,126 @@ fn split_trim_nonempty(text: &JsString) -> Vec<JsString> {
     lines
 }
 
+/// The durable "already nudged" set plus the file it is published to. Held
+/// outside [`State`] because the path is owned for the lifetime of the owner
+/// while `State` is `RefCell`-borrowed on every event.
+#[derive(Debug, Default)]
+struct SettledStore {
+    /// `None` when the host supplied no file: the set then still suppresses
+    /// replays for the life of the process, it just cannot outlive it.
+    file: Option<PathBuf>,
+    set: SettledNudges,
+    /// A failed save is reported once per owner; the in-memory set stays
+    /// authoritative so a read-only data dir degrades to the old behaviour
+    /// instead of losing the gate altogether.
+    warned: bool,
+}
+
 #[napi]
 pub struct RustBackgroundTasks {
     state: RefCell<State>,
+    settled: RefCell<SettledStore>,
 }
 
 #[napi]
 impl RustBackgroundTasks {
     #[napi(constructor)]
     pub fn new(env: Env, options: Unknown<'_>) -> Result<Self> {
-        let options = Options::from_value(&read(env, options)?);
+        let raw = read(env, options)?;
+        let options = Options::from_value(&raw);
+        // Load before the first event: the replay this gate exists for arrives
+        // right after a restart, so an empty set would let it through once more
+        // on every start.
+        let file = match raw.get("settledNudgeFile") {
+            Some(V::String(path)) if !path.is_empty() => {
+                Some(PathBuf::from(path.to_string_lossy()))
+            }
+            _ => None,
+        };
+        let set = match file.as_deref() {
+            Some(path) => match multicc_core::durable_state::load_or_recover(path) {
+                Ok(Some(document)) => SettledNudges::from_value(&document, settled::DEFAULT_CAP),
+                // A missing file is the normal first run; a corrupt one costs at
+                // most one extra nudge per remembered task, which is strictly
+                // better than refusing to start the runtime.
+                Ok(None) | Err(_) => SettledNudges::default(),
+            },
+            None => SettledNudges::default(),
+        };
         Ok(Self {
             state: RefCell::new(State::new(options)),
+            settled: RefCell::new(SettledStore {
+                file,
+                set,
+                warned: false,
+            }),
         })
+    }
+
+    /// Has a completion nudge for this pair already been delivered?
+    ///
+    /// The gate is a property of the durable ledger, so a host that names no
+    /// file keeps the pre-existing behaviour exactly: the suppression is a new,
+    /// opt-in guarantee rather than a silent change to every caller. The
+    /// legacy-parity differential relies on this (see
+    /// `tests/test-background-tasks-differential.js`).
+    fn nudge_already_settled(&self, session_key: &JsString, task_key: &JsString) -> bool {
+        let store = self.settled.borrow();
+        store.file.is_some() && store.set.is_settled(session_key, task_key)
+    }
+
+    /// Remember a delivered nudge and publish the set. The write happens once
+    /// per task (first completion), never per event.
+    fn remember_nudge(
+        &self,
+        ports: &Ports<'_>,
+        session_key: &JsString,
+        task_key: &JsString,
+        at: f64,
+    ) -> Result<()> {
+        let (document, file) = {
+            let mut store = self.settled.borrow_mut();
+            // No file, no ledger: leave the set empty so the gate above stays
+            // inert and this owner behaves exactly like the pre-Rust runtime.
+            let Some(file) = store.file.clone() else {
+                return Ok(());
+            };
+            if !store.set.record(session_key, task_key, at) {
+                return Ok(());
+            }
+            (store.set.to_value(), file)
+        };
+        if let Err(error) = multicc_core::durable_state::save(&file, "background-nudges", &document)
+        {
+            let warn = {
+                let mut store = self.settled.borrow_mut();
+                let first = !store.warned;
+                store.warned = true;
+                first
+            };
+            if warn {
+                let message = format!(
+                    "background nudge ledger save failed; replay suppression is process-local ({error})"
+                );
+                ports.log_warn(&message, ports.value(&V::Undefined)?)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Forget one pair so a genuine re-run of the same task id nudges again.
+    fn forget_nudge(&self, session_key: &JsString, task_key: &JsString) {
+        let (document, file) = {
+            let mut store = self.settled.borrow_mut();
+            let Some(file) = store.file.clone() else {
+                return;
+            };
+            if !store.set.forget(session_key, task_key) {
+                return;
+            }
+            (store.set.to_value(), file)
+        };
+        let _ = multicc_core::durable_state::save(&file, "background-nudges", &document);
     }
 
     #[napi]
@@ -838,6 +946,9 @@ impl RustBackgroundTasks {
             return Ok(handled(false));
         };
         let task_key = js_to_string(&task_id);
+        // A new run under an id that already nudged (the model reuses a label,
+        // or a dispatch is retried) must be allowed to report its own ending.
+        self.forget_nudge(session_key, &task_key);
         let tool_use_id = event.get("tool_use_id").cloned();
         let tool = find_tool(env, chat, tool_use_id.as_ref())?;
         let input = tool_input(tool.as_ref());
@@ -1417,6 +1528,24 @@ impl RustBackgroundTasks {
                 return Ok(handled_decision("live-turn"));
             }
         }
+        // A task that already settled and already had its nudge delivered must
+        // not produce a second one, however long ago that was. The CLI replays
+        // the `stopped` notification of an agent that died without a completion
+        // record on every start, and none of the guards above can see it: the
+        // dedup window is minutes while the gap is hours, `MetaStore::finish`
+        // already dropped the stale-run entry, and a replay has no preceding
+        // `task_started` to leave an `owned.delivered` flag behind. The gate is
+        // durable because the replay only ever happens after a restart.
+        //
+        // Terminal-ness comes from `ledger_status`, which `status_for_completion`
+        // already mapped into the ledger's own vocabulary, so there is no second
+        // definition of "finished" here.
+        if truthy(&task_id)
+            && settled::is_terminal(ledger_status)
+            && self.nudge_already_settled(session_key, &task_key)
+        {
+            return Ok(handled_decision("already-settled"));
+        }
         let description = match &owned {
             Some(owned) if !owned.description.is_empty() => V::String(owned.description.clone()),
             _ => V::String(safe_description(
@@ -1446,6 +1575,11 @@ impl RustBackgroundTasks {
             }
             if owned.is_some() {
                 self.mark_owned_delivered(session_key, &task_key);
+            }
+            // The nudge is in the coalescer: from here on a replay of this very
+            // completion is a duplicate, so remember it durably.
+            if truthy(&task_id) && settled::is_terminal(ledger_status) {
+                self.remember_nudge(ports, session_key, &task_key, now)?;
             }
             Ok(())
         })();

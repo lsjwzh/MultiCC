@@ -220,8 +220,13 @@ impl Gateway {
         body: Option<&[u8]>,
     ) -> Response {
         let payload = body.unwrap_or(b"");
-        let mut request =
-            format!("{method} {url} HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: host-req-1\r\n");
+        let mut request = format!("{method} {url} HTTP/1.1\r\nX-Request-Id: host-req-1\r\n");
+        if !extra
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+        {
+            request.push_str("Host: localhost\r\n");
+        }
         for (name, value) in extra {
             request.push_str(&format!("{name}: {value}\r\n"));
         }
@@ -424,14 +429,33 @@ const ROUTES: &[(&str, &str, bool, &str)] = &[
         false,
         "v1-session-waits",
     ),
+    // The wait injector and detached set, claimed by the second batch. Kept at
+    // the end so the positional assertions below keep their indices.
+    ("POST", "/api/sessions/s1/wait", true, "session-wait-post"),
+    ("POST", "/api/wait/w1/resolve", true, "wait-resolve"),
+    ("GET", "/api/sessions/s1/waits", false, "session-waits"),
+    ("DELETE", "/api/wait/w1", false, "wait-cancel"),
+    (
+        "POST",
+        "/api/sessions/s1/run-detached",
+        true,
+        "run-detached",
+    ),
+    (
+        "GET",
+        "/api/sessions/s1/detached",
+        false,
+        "session-detached",
+    ),
+    ("GET", "/api/detached/t1", false, "detached-task"),
 ];
 
-// ── the 23 routes ───────────────────────────────────────────────────────────
+// ── the 30 routes ───────────────────────────────────────────────────────────
 
 #[test]
-fn every_one_of_the_23_routes_reaches_its_op() {
+fn every_one_of_the_30_routes_reaches_its_op() {
     let gateway = Gateway::start("all-routes", json!({ "orchestration": { "ops": {} } }));
-    assert_eq!(ROUTES.len(), 23);
+    assert_eq!(ROUTES.len(), 30);
     for (method, url, has_body, _) in ROUTES {
         let body = has_body.then(|| json!({ "k": "v" }));
         let response = sent(&gateway, method, url, body);
@@ -457,6 +481,16 @@ fn every_one_of_the_23_routes_reaches_its_op() {
     assert_eq!(calls[11]["runId"], "r1");
     assert_eq!(calls[16]["messageId"], "m1");
     assert_eq!(calls[22]["id"], "s1");
+    // The second batch's own parameters: `:wid` and `:taskId` are the only ones
+    // in this cluster that are not a session id.
+    assert_eq!(calls[23]["id"], "s1");
+    assert_eq!(calls[24]["wid"], "w1");
+    assert_eq!(calls[24]["id"], Value::Null);
+    assert_eq!(calls[25]["id"], "s1");
+    assert_eq!(calls[26]["wid"], "w1");
+    assert_eq!(calls[27]["id"], "s1");
+    assert_eq!(calls[28]["id"], "s1");
+    assert_eq!(calls[29]["taskId"], "t1");
 }
 
 #[test]
@@ -596,11 +630,12 @@ fn the_query_subset_keeps_its_qs_shape() {
 }
 
 #[test]
-fn only_the_idempotency_key_header_reaches_the_host() {
+fn only_the_three_allowlisted_headers_reach_the_host() {
     let gateway = Gateway::start("headers", json!({ "orchestration": { "ops": {} } }));
     let mut headers = external();
     headers.extend([
         ("Idempotency-Key", "idem-7"),
+        ("X-Wait-Token", "wait-tok-7"),
         ("Cookie", "multicc_auth=COOKIE-CANARY"),
         ("Authorization", "Bearer BEARER-CANARY"),
     ]);
@@ -617,7 +652,17 @@ fn only_the_idempotency_key_header_reaches_the_host() {
         assert!(!raw.contains(canary), "{canary} leaked to the host: {raw}");
     }
     let calls = gateway.calls();
-    assert_eq!(calls[0]["headers"], json!({ "idempotency-key": "idem-7" }));
+    // `host` joined the allowlist with the wait injector: the registration
+    // answers a `callbackUrl` built from `req.get('host')`, and the front door
+    // forwards the client's `Host` unchanged (so does the plain forward path).
+    assert_eq!(
+        calls[0]["headers"],
+        json!({
+            "idempotency-key": "idem-7",
+            "host": "localhost",
+            "x-wait-token": "wait-tok-7",
+        })
+    );
     assert_eq!(
         calls[0]["local"], false,
         "the locality fact is the real peer's"
@@ -627,13 +672,34 @@ fn only_the_idempotency_key_header_reaches_the_host() {
         json!({ "message": "later", "delaySeconds": 5 })
     );
 
-    // No header, no key.
+    // Absent optional headers stay absent; `Host` is always on the wire.
     gateway.send(
         "POST",
         "/api/sessions/s1/queue/action",
         &json!({ "action": "retry", "confirm": true }),
     );
-    assert_eq!(gateway.calls()[1]["headers"], json!({}));
+    assert_eq!(
+        gateway.calls()[1]["headers"],
+        json!({ "host": "localhost" })
+    );
+}
+
+#[test]
+fn the_wait_registration_sees_the_clients_host_for_its_callback_url() {
+    // The retired handler built `${req.protocol}://${req.get('host')}/api/wait/
+    // <id>/resolve?token=<t>`. Dropping the header would make every callback URL
+    // point at `http://undefined/...`, which no caller could ever reach.
+    let gateway = Gateway::start("callback-host", json!({ "orchestration": { "ops": {} } }));
+    let response = gateway.exchange(
+        "POST",
+        "/api/sessions/s1/wait",
+        &[("Host", "localhost:8443")],
+        Some(b"{}"),
+    );
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    let calls = gateway.calls();
+    assert_eq!(calls[0]["op"], "session-wait-post");
+    assert_eq!(calls[0]["headers"]["host"], "localhost:8443");
 }
 
 #[test]
@@ -647,12 +713,13 @@ fn a_malformed_body_is_the_json_parser_400_and_never_reaches_the_host() {
 // ── the waits split ─────────────────────────────────────────────────────────
 
 #[test]
-fn v1_waits_is_claimed_and_the_unprefixed_listing_falls_back_to_node() {
+fn both_waits_listings_are_claimed_as_two_different_ops() {
     let gateway = Gateway::start(
         "waits-split",
         json!({
             "orchestration": { "ops": {
                 "v1-session-waits": relay(200, json!({ "waits": [], "count": 0, "apiVersion": "v1" })),
+                "session-waits": relay(200, json!({ "waits": [], "stats": { "waits": 0 } })),
             } },
         }),
     );
@@ -661,64 +728,62 @@ fn v1_waits_is_claimed_and_the_unprefixed_listing_falls_back_to_node() {
     assert_key_order(&v1.body, &["waits", "count", "apiVersion"]);
     assert_eq!(gateway.calls().len(), 1);
     assert_eq!(gateway.calls()[0]["op"], "v1-session-waits");
-    assert!(
-        !gateway.forwarded().iter().any(|url| url.contains("/waits")),
-        "{:?}",
-        gateway.forwarded()
-    );
 
-    // The unprefixed listing is out of scope: forwarded, never a host op.
+    // The unprefixed listing is ours too now, but it is a different op with a
+    // different DTO: it merges the in-process injector's rows into `stats`.
     let legacy = gateway.get("/api/sessions/s1/waits");
     assert_eq!(legacy.status, 200, "{}", legacy.body);
-    assert_eq!(gateway.calls().len(), 1, "no second host call");
+    assert_key_order(&legacy.body, &["waits", "stats"]);
+    assert_eq!(gateway.calls().len(), 2);
+    assert_eq!(gateway.calls()[1]["op"], "session-waits");
+    // Neither reaches Node's own router any more.
     assert!(
-        gateway
-            .forwarded()
-            .iter()
-            .any(|url| url == "/api/sessions/s1/waits"),
+        !gateway.forwarded().iter().any(|url| url.contains("/waits")),
         "{:?}",
         gateway.forwarded()
     );
 }
 
 #[test]
-fn the_seven_out_of_scope_routes_all_fall_back_to_node() {
-    let gateway = Gateway::start("excluded", json!({ "orchestration": { "ops": {} } }));
-    let excluded = [
-        ("POST", "/api/sessions/s1/wait"),
-        ("POST", "/api/wait/w1/resolve"),
-        ("GET", "/api/sessions/s1/waits"),
-        ("DELETE", "/api/wait/w1"),
-        ("POST", "/api/sessions/s1/run-detached"),
-        ("GET", "/api/sessions/s1/detached"),
-        ("GET", "/api/detached/t1"),
+fn the_wait_and_detached_set_is_claimed_and_never_forwarded() {
+    // These seven were the registered out-of-scope set until the second batch.
+    // Nothing on these paths may reach Node's own router any more: the module
+    // has no public mount left, so a forward would be a plain 404.
+    let gateway = Gateway::start("second-batch", json!({ "orchestration": { "ops": {} } }));
+    let claimed = [
+        ("POST", "/api/sessions/s1/wait", "session-wait-post"),
+        ("POST", "/api/wait/w1/resolve", "wait-resolve"),
+        ("GET", "/api/sessions/s1/waits", "session-waits"),
+        ("DELETE", "/api/wait/w1", "wait-cancel"),
+        ("POST", "/api/sessions/s1/run-detached", "run-detached"),
+        ("GET", "/api/sessions/s1/detached", "session-detached"),
+        ("GET", "/api/detached/t1", "detached-task"),
     ];
-    for (method, url) in excluded {
+    for (method, url, _) in claimed {
         let body = (method == "POST").then(|| json!({}));
-        sent(&gateway, method, url, body);
+        let response = sent(&gateway, method, url, body);
+        assert_eq!(response.status, 200, "{method} {url}: {}", gateway.log());
     }
-    assert!(
-        gateway.calls().is_empty(),
-        "an excluded route reached the orchestration host: {:?}",
-        gateway.calls()
+    assert_eq!(
+        ops_sent(&gateway.calls()),
+        claimed.iter().map(|row| row.2).collect::<Vec<_>>()
     );
     let forwarded = gateway.forwarded();
-    for (_, url) in excluded {
+    for (_, url, _) in claimed {
         assert!(
-            forwarded.iter().any(|seen| seen == url),
-            "{url}: {forwarded:?}"
+            !forwarded.iter().any(|seen| seen == url),
+            "{url} still reached Node: {forwarded:?}"
         );
     }
-    // OPTIONS on the unprefixed listing is Node's, not ours.
-    gateway.options("/api/sessions/s1/waits");
-    assert!(gateway.calls().is_empty());
-    assert!(
-        gateway
-            .forwarded()
-            .iter()
-            .filter(|url| *url == "/api/sessions/s1/waits")
-            .count()
-            >= 2
+    // OPTIONS on every one of them is ours as well.
+    for (_, url, _) in claimed {
+        let response = gateway.options(url);
+        assert_eq!(response.status, 200, "OPTIONS {url}: {}", gateway.log());
+    }
+    assert_eq!(
+        gateway.calls().len(),
+        claimed.len(),
+        "an OPTIONS reached the host port"
     );
 }
 
@@ -773,13 +838,13 @@ fn an_internal_execution_slot_404s_before_every_session_scoped_route() {
             );
         }
     }
-    assert_eq!(session_scoped, 13);
+    assert_eq!(session_scoped, 17);
     assert!(
         gateway.calls().is_empty(),
         "an internal slot reached the host: {:?}",
         gateway.calls()
     );
-    assert_eq!(gateway.session_admin_calls().len(), 13);
+    assert_eq!(gateway.session_admin_calls().len(), session_scoped);
 
     // `OPTIONS` is behind the same layer.
     for url in [
@@ -925,6 +990,24 @@ fn aux_enqueue_and_its_cancel_run_concurrently_but_other_writes_serialize() {
         scope.spawn(|| gateway.get("/api/sessions/s1/tasks"));
     });
     assert!(started.elapsed() < Duration::from_millis(2800));
+
+    // A slow detached start must not block a callback needed by another task.
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            gateway.send(
+                "POST",
+                "/api/sessions/s1/run-detached",
+                &json!({ "command": "true" }),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        scope.spawn(|| gateway.send("POST", "/api/wait/w1/resolve", &json!({ "token": "t" })));
+    });
+    assert!(
+        started.elapsed() < Duration::from_millis(2800),
+        "detached start blocked callback"
+    );
 }
 
 // ── failure surface ─────────────────────────────────────────────────────────

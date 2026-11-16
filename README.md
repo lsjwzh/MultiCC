@@ -635,7 +635,7 @@ env -i PATH=/usr/bin:/bin native/target/release/multicc-gateway --version
 
 # Release build for this checkout, plus the `--no-node` smoke: the front door
 # starts with no Node on PATH, answers its test-hook route, and refuses both
-# Node-forwarded routes and auth-gated native routes with 503 node_runtime_absent
+# Node-forwarded routes, and auth-gated routes without ACCESS_TOKEN, with 503 node_runtime_absent
 cargo build --locked --release --manifest-path native/Cargo.toml
 sh scripts/smoke-no-node-gateway.sh native/target/release/multicc-gateway
 
@@ -659,7 +659,7 @@ native/target/release/multicc-gateway serve --cwd "$PWD" --node "$(command -v no
 scripts/start-rust-only.sh
 ```
 
-`--node` and `--no-node` are mutually exclusive and exactly one is mandatory: a front door told neither exits 2 instead of silently picking a runtime. `scripts/start-rust-only.sh` starts this checkout with `--no-node`, using `$MULTICC_GATEWAY_BIN` or `native/target/release/multicc-gateway`. Anything the front door cannot serve without Node — every route it would forward and every native route that needs the authentication snapshot (access token, sessions, WS tickets, shutdown flag), which Node still owns — answers 503 `node_runtime_absent` instead of reaching for a Node child.
+`--node` and `--no-node` are mutually exclusive and exactly one is mandatory: a front door told neither exits 2 instead of silently picking a runtime. `scripts/start-rust-only.sh` starts this checkout with `--no-node`, using `$MULTICC_GATEWAY_BIN` or `native/target/release/multicc-gateway`. Under `--no-node` the front door owns the authentication runtime itself when `.env` supplies a usable `ACCESS_TOKEN`: it reads the token with the same rules `server.js` used and answers auth-gated native routes through the same Rust gate (`403 AUTH_REQUIRED` / `302 /login` / `200`). Without a token (missing, empty, or over the 64 KiB control-frame limit) it fails closed: auth-gated native routes answer 503 `node_runtime_absent` with the documented text, and one diagnostic line is written to stderr. Every route the front door would forward — including every `/ws/*` upgrade, so a locally minted WS ticket cannot be redeemed yet — still answers 503 `node_runtime_absent` instead of reaching for a Node child. `--node` is unchanged: the Node child remains the only authentication owner.
 
 The front door reads `.env` from `--cwd` with the same rules `server.js` used, passes `MULTICC_GATEWAY_CHILD=1` and `MULTICC_GATEWAY_INTERNAL_PORT` to the child, and writes a PROXY v1 header on every upstream connection. `--version` prints the protocol and crate version; with no arguments it prints usage and exits 2. The full contract — arguments, supervision, the `--no-node` fail-closed shape and environment variables — is in [docs/gateway.md](docs/gateway.md).
 
@@ -667,19 +667,29 @@ The writer-lease launcher is the other shipped binary: `multicc-writer exec -- <
 
 ### Node-free Docker image (Rust binaries only)
 
-`docker/task-shell/Dockerfile` has a `node-free-runtime` stage: `debian:bookworm-slim` with CA certificates plus the two Rust executables (`multicc-gateway`, `multicc-writer`). Its default command is `multicc-gateway serve --cwd /srv/multicc --no-node`: the container runs with no Node process at all, and every route it cannot serve without one — forwarded routes and auth-gated native routes alike — answers 503 `node_runtime_absent`. The build asserts there is no `node` executable, smoke-runs both binaries (`--version`, `--help`, bare gateway exit 2, bare writer exit 64) and then runs `scripts/smoke-no-node-gateway.sh` with an empty `PATH`. The image is built from the same tracked-source context the lab uses — the repository's own `.dockerignore` is fail-closed, so build it through the exporter:
+`docker/task-shell/Dockerfile` has a `node-free-runtime` stage: `debian:bookworm-slim` with CA certificates plus the two Rust executables (`multicc-gateway`, `multicc-writer`). Its default command is `multicc-gateway serve --cwd /srv/multicc --no-node`: the container runs with no Node process at all. It ships no `.env`, so it has no access token: forwarded routes (including WebSocket upgrades) and auth-gated native routes answer 503 `node_runtime_absent`. The build asserts there is no `node` executable, smoke-runs both binaries (`--version`, `--help`, bare gateway exit 2, bare writer exit 64) and then runs `scripts/smoke-no-node-gateway.sh` with an empty `PATH`. The image is built from the same tracked-source context the lab uses — the repository's own `.dockerignore` is fail-closed, so build it through the exporter:
 
 ```bash
 npm run docker:node-free   # docker build --target node-free-runtime, tag multicc-node-free:local
 docker run --rm multicc-node-free:local --version   # multicc-gateway <protocol> <crate version>
-docker run --rm -p 3000:3000 multicc-node-free:local  # default CMD: serve --no-node
+docker run -d --name mcc multicc-node-free:local    # default CMD: serve --no-node
+# Without ACCESS_TOKEN the front door binds 127.0.0.1 inside the container, so
+# `-p 3000:3000` cannot reach it. Probe it from a container that shares its network namespace:
+docker run --rm --network container:mcc curlimages/curl -s http://127.0.0.1:3000/api/anything
+# -> 503 {"error":"This route is served by the Node runtime, ...","code":"node_runtime_absent"}
+
+# With ACCESS_TOKEN (6+ characters) the default bind policy opens the IPv4 LAN, the front door
+# binds 0.0.0.0 and owns the authentication runtime itself, so a published port works:
+docker run -d --name mcc-auth -p 127.0.0.1:3000:3000 -e ACCESS_TOKEN=change-me-please multicc-node-free:local
+curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Access-Token: change-me-please' http://127.0.0.1:3000/api/claude/models  # 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/api/claude/models                                       # 403 AUTH_REQUIRED
 ```
 
 CI builds and re-runs the smoke checks for this stage in the `node-free-runtime` job of `.github/workflows/rust-kernels.yml`.
 
 ### What the Rust front door does not cover yet
 
-This is not yet a Rust-only product. The gateway owns the public port, request admission and the route groups listed in [docs/gateway.md §9](docs/gateway.md) (run-config presets, file transfer/upload/download, service routes, quota guard, subscription and limit history, token usage, model catalogs, agent resources, secrets vault, host routes, turn ledger, voice-gateway records and runtime, …). Everything else — most HTTP routes, the WebSocket hosts, static files and the chat turn coordinator — is still served by the `node server.js` upstream the gateway spawns. A Node-free start path now exists (`--no-node`, `scripts/start-rust-only.sh`, the `node-free-runtime` Docker stage and the `--no-node` CI smoke), but it only serves what needs no Node state: requests for an unmigrated route, and any native route that needs the authentication runtime (token, sessions, WS tickets and the shutdown flag are still owned by Node), fail closed with 503 `node_runtime_absent`. The complete feature set therefore still needs `--node`, and the default entry points (`./multicc`, `npm start`, the standalone launcher and the desktop shell) keep passing it. How much has moved, what remains and the acceptance criteria for removing the Node upstream are tracked in [docs/backend-rust-exit-plan.md](docs/backend-rust-exit-plan.md); the front door itself is described in [docs/gateway.md](docs/gateway.md).
+This is not yet a Rust-only product. The gateway owns the public port, request admission and the route groups listed in [docs/gateway.md §9](docs/gateway.md) (run-config presets, file transfer/upload/download, service routes, quota guard, subscription and limit history, token usage, model catalogs, agent resources, secrets vault, host routes, turn ledger, voice-gateway records and runtime, …). Everything else — most HTTP routes, the WebSocket hosts, static files and the chat turn coordinator — is still served by the `node server.js` upstream the gateway spawns. A Node-free start path now exists (`--no-node`, `scripts/start-rust-only.sh`, the `node-free-runtime` Docker stage and the `--no-node` CI smoke), but it only serves what needs no Node state: requests for an unmigrated route, and — when `.env` supplies no usable `ACCESS_TOKEN` — any native route that needs the authentication runtime, fail closed with 503 `node_runtime_absent`. With a token, the front door owns the token, WS-ticket table and shutdown flag locally and those auth-gated native routes answer normally, but forwarded routes and every `/ws/*` upgrade still need Node. The complete feature set therefore still needs `--node`, and the default entry points (`./multicc`, `npm start`, the standalone launcher and the desktop shell) keep passing it. How much has moved, what remains and the acceptance criteria for removing the Node upstream are tracked in [docs/backend-rust-exit-plan.md](docs/backend-rust-exit-plan.md); the front door itself is described in [docs/gateway.md](docs/gateway.md).
 
 **→ [Architecture](docs/architecture.md)**
 

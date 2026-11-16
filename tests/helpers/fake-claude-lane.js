@@ -79,10 +79,24 @@ function handleUser(message) {
     return;
   }
   if (scenario === 'hang') return;
-  if (scenario === 'missing-history') {
+  if (scenario === 'missing-history-after-output' && args.some(value => value.startsWith('--resume='))) {
+    // The dead target is reported only after this turn already produced
+    // output: replaying it would duplicate what the host has seen.
+    emit({ type: 'assistant', session_id: sessionId,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'partial-before-missing' }] } });
     emit({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1,
       session_id: sessionId, result: `No conversation found with session ID: ${sessionId}` });
     return;
+  }
+  if (scenario === 'missing-history' || scenario === 'missing-history-always') {
+    // Only a `--resume` spawn can lose the transcript it names: the healed
+    // replay runs with `--session-id` and must succeed. `missing-history-always`
+    // keeps failing so a spent recovery has to stay fail-closed.
+    if (scenario === 'missing-history-always' || args.some(value => value.startsWith('--resume='))) {
+      emit({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1,
+        session_id: sessionId, result: `No conversation found with session ID: ${sessionId}` });
+      return;
+    }
   }
   // Chat-events scenarios: a single prompt marker drives a shaped event stream
   // so tests/test-chat-events-isolated.js can exercise the reducer through a
@@ -196,6 +210,15 @@ input.on('line', line => {
     initialized = true;
     emit({ type: 'system', subtype: 'init', session_id: sessionId, model: 'fake',
       tools: [], permissionMode: 'bypassPermissions' });
+    if (scenario === 'missing-history-early' && args.some(value => value.startsWith('--resume='))) {
+      // The real CLI rejects a dead `--resume` target as soon as it starts, i.e.
+      // before it accepts the host's user line: recovery must not depend on the
+      // message already being on the wire.
+      emit({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1,
+        session_id: sessionId, result: `No conversation found with session ID: ${sessionId}` });
+      setTimeout(() => process.exit(0), 10);
+      return;
+    }
     for (const held of queued.splice(0)) handleUser(held);
     return;
   }

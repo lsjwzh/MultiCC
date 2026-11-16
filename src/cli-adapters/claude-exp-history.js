@@ -1,8 +1,8 @@
 'use strict';
 
-const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { probeTranscript } = require('../chat/missing-resume-recovery');
 
 // A UUID reserved before the first SDK turn is not evidence of a conversation.
 // Older hosts allocated it on WebSocket connect, then counted the source CLI's
@@ -17,22 +17,11 @@ function hasNativeHistory(record, options = {}) {
       || handoff.toCli !== 'claude-exp' || handoff.reusedTarget !== false) return true;
   if (!/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(id)) return true;
   const configDir = options.configDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  const projects = path.join(configDir, 'projects');
-  const io = options.fs || fs;
-  try {
-    // The SDK canonicalizes symlinks, hashes long paths, and supports custom
-    // project names. Search by UUID instead of duplicating that private layout.
-    for (const entry of io.readdirSync(projects, { withFileTypes: true })) {
-      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-      try { io.statSync(path.join(projects, entry.name, `${id}.jsonl`)); return true; }
-      catch (error) { if (error.code !== 'ENOENT') return true; }
-    }
-    return false;
-  } catch (error) {
-    // Only proven absence permits first-turn creation; I/O/permission errors
-    // must not turn a resume into a new conversation.
-    return error.code !== 'ENOENT';
-  }
+  // The project-directory walk (the SDK canonicalizes symlinks, hashes long
+  // paths and supports custom project names) lives in the Rust probe. Only a
+  // proven absence permits first-turn creation: I/O and permission errors read
+  // as history.
+  return probeTranscript({ sessionId: id, configDir }).evidence !== 'proven_absent';
 }
 
 module.exports = { hasNativeHistory };

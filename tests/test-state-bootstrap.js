@@ -235,7 +235,15 @@ test('production composition delegates state loading and removes legacy host hel
   assert.doesNotMatch(source, /function\s+loadPersistedState\s*\(/);
   assert.doesNotMatch(source, /function\s+ensureUltracodeWorkers\s*\(/);
   assert.match(source, /const ensureFirstRunDirectory\s*=\s*async/);
-  assert.match(source, /name:\s*'我的工作区'[\s\S]{0,120}path:\s*MULTICC_PATHS\.defaultWorkspacePath[\s\S]{0,80}create:\s*true/);
+  // 首次运行注册默认工作区。曾经的 `create: true` 参数在目录逻辑搬进
+  // src/routes/directory-host.js 后变成隐含行为（registerDefaultDirectory 自己
+  // mkdirp），所以这里钉的是「调用点给出 name + path」加「host 真的会建目录」，
+  // 而不是那个已经不存在的入参 —— 只钉入参会让这条守卫在搬迁后变成死断言。
+  assert.match(source, /name:\s*'我的工作区'[\s\S]{0,120}path:\s*MULTICC_PATHS\.defaultWorkspacePath/);
+  const directoryHost = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'directory-host.js'), 'utf8');
+  assert.match(directoryHost, /async function registerDefaultDirectory\(\{\s*name,\s*path:\s*rawPath\s*\}\)/);
+  assert.match(directoryHost, /if \(!fsPort\.exists\(resolved\)\) fsPort\.mkdirp\(resolved\)/,
+    'the default workspace must still be created when it does not exist');
   assert.match(source, /then\(ensureFirstRunDirectory\)\.then\(initWorktrees\)/,
     'readiness must create the default directory before worktrees are initialized');
 });

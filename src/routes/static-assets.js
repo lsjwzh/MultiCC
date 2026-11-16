@@ -56,51 +56,11 @@ function createStaticAssetsRoutes(rawDeps) {
   }
 
   function mountRoutes(app) {
-    // `/manage` is the stable bookmark for the Air control surface. The old
-    // dashboard document is gone — every one of its tools is an Air native
-    // panel now — so this route no longer has a legacy shell to fall back to;
-    // anything it cannot name lands on the overview rather than a 404.
-    // Both spellings share one handler so an old `/manage.html?view=provider`
-    // bookmark keeps its view instead of being flattened onto the overview.
-    app.get(['/manage', '/manage.html'], (req, res) => {
-      const requested = typeof req.query.view === 'string' ? req.query.view
-        : (req.query.focus === 'aux' ? 'aux' : 'overview');
-      const aliases = { cron: 'schedules', tasks: 'overview', planner: 'overview' };
-      const allowed = new Set([
-        'overview', 'schedules', 'docs', 'memory', 'plugins', 'settings', 'voice', 'goal', 'aux',
-        'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
-      ]);
-      const view = aliases[requested] || (allowed.has(requested) ? requested : 'overview');
-      const params = new URLSearchParams({ view });
-      if (typeof req.query.token === 'string' && req.query.token) params.set('token', req.query.token);
-      if (typeof req.query.external === 'string' && req.query.external) params.set('external', req.query.external);
-      for (const key of ['dir', 'task']) {
-        if (typeof req.query[key] === 'string' && req.query[key]) params.set(key, req.query[key]);
-      }
-      return res.redirect(`/air?${params.toString()}`);
-    });
-
-    // The standalone session dashboard is gone: its overview table was a
-    // read-only mirror of what Air's console and the App both cover, and its
-    // only inbound link was the terminal page's 📊 button. Old bookmarks land
-    // on the console rather than a 404.
-    app.get(['/dashboard', '/dashboard.html'], (req, res) => {
-      const params = new URLSearchParams({ view: 'overview' });
-      for (const key of ['dir', 'task', 'token', 'external']) {
-        if (typeof req.query[key] === 'string' && req.query[key]) params.set(key, req.query[key]);
-      }
-      return res.redirect(`/air?${params.toString()}`);
-    });
-
-    // The legacy task planner has been removed, including its embedded entry.
-    app.get(['/air', '/air.html'], (req, res, next) => {
-      if (req.query.view !== 'planner') return next();
-      const params = new URLSearchParams({ view: 'overview' });
-      for (const key of ['dir', 'task', 'token', 'external']) {
-        if (typeof req.query[key] === 'string' && req.query[key]) params.set(key, req.query[key]);
-      }
-      return res.redirect(`/air?${params.toString()}`);
-    });
+    // The three bookmark redirects (`/manage`, `/dashboard`, and
+    // `/air?view=planner`) and the `.apk`/`.ipa` guard are owned by the Rust
+    // front door now (native/gateway/src/app/static_assets_routes.rs, rules in
+    // native/core/src/static_assets_routes.rs). They are claimed after the auth
+    // gate, so an unclaimed path reaches this module exactly like before.
 
     // `GET /` 的两种重定向（无参 → /air，`?id=__aux__` → /air?view=aux）已由 Rust
     // 前门独占（native/gateway/src/app/release_history_routes.rs）。带
@@ -139,23 +99,10 @@ function createStaticAssetsRoutes(rawDeps) {
       next();
     });
 
-    // App binary distribution has exactly one public name per platform. The
-    // canonical routes are mounted before this module and either fall through
-    // for a verified local file or terminate explicitly. Never let an
-    // accidental binary such as public/webcc.apk become downloadable just
-    // because it was left in the public directory.
-    app.use((req, res, next) => {
-      let requestedPath = req.path;
-      try { requestedPath = decodeURIComponent(requestedPath); } catch (_) {}
-      if ((req.method === 'GET' || req.method === 'HEAD')
-          && requestedPath !== '/multicc.apk'
-          && requestedPath !== '/multicc-ios.ipa'
-          && /\.(apk|ipa)$/i.test(requestedPath)) {
-        res.set('Cache-Control', 'no-store');
-        return res.status(404).end();
-      }
-      next();
-    });
+    // The `.apk`/`.ipa` guard (only the canonical `/multicc.apk` and
+    // `/multicc-ios.ipa` names are downloadable) moved to the Rust front door
+    // with the redirects above; the download headers below still apply to the
+    // two canonical files this static mount is allowed to serve.
 
     app.use(express.static(_publicDir, {
       extensions: ['html'],

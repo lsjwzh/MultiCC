@@ -216,13 +216,14 @@ function fixture(options = {}) {
   // the seven out-of-scope routes that stay on the public Express app.
   const app = fakeApp();
   routes.mountHostRoutes(app);
-  routes.mountRoutes(app);
   return { app, calls, records, routes, runtime };
 }
 
 test('dependency and mount boundaries own the orchestration routes', () => {
   assert.throws(() => createOrchestrationRoutes({}), /records.get/);
   const current = fixture();
+  // The fixture mounts the host half only -- there is no public half any more,
+  // so this is the module's entire route surface.
   assert.deepEqual([...current.app.routes.keys()].sort(), [
     'DELETE /api/sessions/:id/scheduled-messages/:messageId',
     'DELETE /api/wait/:wid',
@@ -238,11 +239,14 @@ test('dependency and mount boundaries own the orchestration routes', () => {
     'POST /api/sessions/:id/wait',
     'POST /api/wait/:wid/resolve',
   ]);
-  assert.throws(() => current.routes.mountRoutes(current.app), /already mounted/);
+  // The queue trio stays conditional on its deps (this fixture has no
+  // `dismissUserInput`), exactly as before the wait/detached batch.
+  assert.equal(current.app.routes.has('POST /api/sessions/:id/user-input/dismiss'), false);
+  assert.equal(Object.keys(current.routes).length, 1);
   assert.throws(() => current.routes.mountHostRoutes(current.app), /already mounted/);
 });
 
-test('the public mount keeps only the seven out-of-scope routes; the nine migrated routes are host-only', () => {
+test('every route is host-only; the module exposes no public mount at all', () => {
   const noop = async () => ({});
   const routes = createOrchestrationRoutes({
     records: new Map(),
@@ -258,35 +262,37 @@ test('the public mount keeps only the seven out-of-scope routes; the nine migrat
     dismissUserInput: noop,
     cwdForSession() {}, resolveCwd() {}, toWaitDto() {}, withApiMeta() {}, requestContext() {}, v1Error() {},
   });
-  const publicApp = fakeApp();
   const hostApp = fakeApp();
-  routes.mountRoutes(publicApp);
   routes.mountHostRoutes(hostApp);
-  assert.deepEqual([...publicApp.routes.keys()].sort(), [
+  assert.deepEqual([...hostApp.routes.keys()].sort(), [
+    'DELETE /api/sessions/:id/scheduled-messages/:messageId',
     'DELETE /api/wait/:wid',
     'GET /api/detached/:taskId',
     'GET /api/sessions/:id/detached',
-    'GET /api/sessions/:id/waits',
-    'POST /api/sessions/:id/run-detached',
-    'POST /api/sessions/:id/wait',
-    'POST /api/wait/:wid/resolve',
-  ]);
-  assert.deepEqual([...hostApp.routes.keys()].sort(), [
-    'DELETE /api/sessions/:id/scheduled-messages/:messageId',
     'GET /api/sessions/:id/dispatches',
     'GET /api/sessions/:id/queue',
     'GET /api/sessions/:id/scheduled-messages',
     'GET /api/sessions/:id/tasks',
+    'GET /api/sessions/:id/waits',
     'GET /api/v1/sessions/:id/waits',
     'POST /api/sessions/:id/queue/action',
+    'POST /api/sessions/:id/run-detached',
     'POST /api/sessions/:id/scheduled-messages',
     'POST /api/sessions/:id/user-input/dismiss',
+    'POST /api/sessions/:id/wait',
+    'POST /api/wait/:wid/resolve',
   ]);
-  // The unprefixed waits listing stays public; only the v1 projection moved.
-  assert.ok(publicApp.routes.has('GET /api/sessions/:id/waits'));
-  assert.ok(!hostApp.routes.has('GET /api/sessions/:id/waits'));
+  // No `mountRoutes` export exists to put any of them back on a real app: a
+  // second mount would answer before the front door for whatever it holds.
+  assert.deepEqual(Object.keys(routes), ['mountHostRoutes']);
+  assert.equal(typeof routes.mountRoutes, 'undefined');
+  // Both waits listings are captured, and they remain two distinct handlers.
+  assert.ok(hostApp.routes.has('GET /api/sessions/:id/waits'));
   assert.ok(hostApp.routes.has('GET /api/v1/sessions/:id/waits'));
-  assert.ok(!publicApp.routes.has('GET /api/v1/sessions/:id/waits'));
+  assert.notEqual(
+    hostApp.routes.get('GET /api/sessions/:id/waits'),
+    hostApp.routes.get('GET /api/v1/sessions/:id/waits'),
+  );
 });
 
 test('dispatch and detached status views only load operation references', async () => {

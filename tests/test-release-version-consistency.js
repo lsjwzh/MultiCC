@@ -640,13 +640,39 @@ test('core runner covers every selected path and expands declared variants', () 
   // v1 waits 信封 id 的传递。完全 hermetic（内存世界替身、不起端口、配置文件只写
   // mkdtemp 目录），按先例 tests/test-host-ops-host.js 登记为 core deterministic。
   // 452 + 1 = 453 entries, 377 + 1 = 378 deterministic, 424 + 1 = 425 commands。
-  assert.equal(core.length, 453, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 453);
+  // 2026-11-16 provider 状态所有权迁移：tests/test-provider-defaults-native-owner.js
+  // 钉 Rust ProviderDefaultsStore 的加载/快照/原子落盘与两种写失败时序（普通默认值
+  // 保留内存更新，子任务默认值落盘失败不发布），以及与冻结旧实现的内部操作重放。
+  // 完全 hermetic（mkdtemp 临时根、无端口、无时钟/随机依赖），按先例
+  // tests/test-provider-references.js 挂进 npm:test:provider-router 的同一批次，
+  // 登记为 core deterministic。上一轮新增该测试时漏登记，CI 一直没跑到，本轮补齐。
+  // 453 + 1 = 454 entries, 378 + 1 = 379 deterministic, 425 + 1 = 426 commands。
+  // 2026-11-17 provider 写入决策下沉到 Rust（createProvider / updateProvider /
+  // deleteProvider 与 settingsConfig 组装）：新增两个差分测试，都以冻结的旧实现为
+  // oracle、同一份语料同时喂两侧并逐字节比较，完全 hermetic（内存里的记录清单与替身
+  // 官方目录，固定 uuid/时间/端口，不起端口、不碰文件系统、不读真实 provider 库）。
+  //   - tests/test-provider-settings-config.js：settingsConfig 簇（135,084 次比较）
+  //   - tests/test-provider-writes-differential.js：create/update/delete（1,862 次对拍，
+  //     含副作用调用序列比对）
+  // 两者按先例 tests/test-agent-resources-host.js 登记为 core deterministic，同时追加进
+  // npm:test:rust 的入口列表。发布计划按条目各生成一条命令（并非按 package.json 脚本合并），
+  // 所以 commands 随条目同增 2。
+  // 454 + 2 = 456 entries, 379 + 2 = 381 deterministic, 426 + 2 = 428 commands。
+  // 2026-11-16 Node 后端剩余面台账：tests/test-node-surface-ledger.js 把
+  // docs/rust-migration/node-surface-ledger.json 与 docs/backend-runtime-inventory.md 的运行时捕获
+  // 逐簇、逐层对账（路由按源文件归簇、中间件按「名字@挂载#序号」归组），并注入 6 种漂移与一种位置
+  // 整体平移来证明检查不是空转。完全 hermetic（只读入库文档与脚本，纯内存比较，无网络、无端口、
+  // 无子进程、无时钟/随机依赖），按先例 tests/test-request-locality.js 登记为 core deterministic，
+  // 挂进 npm:test:governance。同批的 tests/test-provider-id-validation-differential.js 需要原生模块，
+  // 登记为 flow isolated（npm:test:rust），不进 core 集，所以这里只 +1。
+  // 456 + 1 = 457 entries, 381 + 1 = 382 deterministic, 428 + 1 = 429 commands。
+  assert.equal(core.length, 457, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 457);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 378);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 382);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 44);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -656,8 +682,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 425,
-    '421 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 429,
+    '423 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
