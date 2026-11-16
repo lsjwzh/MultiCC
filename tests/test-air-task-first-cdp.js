@@ -1301,6 +1301,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('air-provider-cards')).gridTemplateColumns.split(' ').length`), 1);
     // 设置类那几页的动作原来铺成页头第二行（↻ 还得靠两条 :has 例外钉在右上角），
     // 现在它们跟别的工具一样住在「⋯」里 —— 页头仍然只有那一行。
+    const headerBeforeTools = await page.evaluate(`Math.round(document.getElementById('task-header').getBoundingClientRect().height)`);
     await page.evaluate(`document.getElementById('task-options').click()`);
     const settingsTools = await page.evaluate(`(()=>{const t=document.getElementById('task-tools');
       return {h:Math.round(document.getElementById('task-header').getBoundingClientRect().height),
@@ -1311,10 +1312,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // ← 回去、⋯ 更多连接、↻ 重新读、＋ 新增。
     assert.deepEqual(settingsTools.rows, ['⋯ 更多连接方式', '↻ 刷新', '＋ 添加线路'], JSON.stringify(settingsTools));
     assert.equal(settingsTools.widths.length, 1, '设置页的工具也铺成一列：' + JSON.stringify(settingsTools));
-    assert.ok(settingsTools.h <= 64, JSON.stringify(settingsTools));
+    // The mobile secondary header now includes a 44px back target and its own
+    // padding. The menu must not add a second row or change that height.
+    assert.equal(settingsTools.h, headerBeforeTools, JSON.stringify(settingsTools));
+    assert.ok(settingsTools.h <= 80, JSON.stringify(settingsTools));
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-provider-dialog').open===true`));
-    assert.equal(await page.evaluate(`document.querySelectorAll('.air-provider-create-choice section').length`), 2);
+    assert.equal(await page.evaluate(`document.querySelectorAll('.air-provider-create-choice section').length`), 3);
     assert.equal(await page.evaluate(`document.getElementById('air-provider-dialog').scrollWidth<=document.getElementById('air-provider-dialog').clientWidth`), true);
     screenshots.push(await page.screenshot('air-provider-mobile-320'));
     await page.evaluate(`document.getElementById('air-provider-close').click()`);

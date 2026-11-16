@@ -902,9 +902,12 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
   // 版本优先读实际装着的 SDK(读不到才退回 package.json 的声明值) —— 两条路径都以
   // 真实依赖为准。
   const sdkDep = require('../package.json').dependencies['@anthropic-ai/claude-agent-sdk'];
+  const binary = require('../src/cli/claude-bundled-binary').bundledClaudeCodeBinary();
+  let installedSdkVersion;
+  try { installedSdkVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(binary), 'package.json'), 'utf8')).version; } catch (_) {}
   assert.deepEqual(res.body.versions.claude.bundled, [{
     lane: 'claude', engine: 'Claude Agent SDK', kind: 'chat',
-    available: true, version: String(sdkDep).replace(/^[~^]/, ''),
+    available: true, version: installedSdkVersion || String(sdkDep).replace(/^[~^]/, ''),
     // 这个用例没有注入内置引擎的 Claude Code 版本: 基线照实报 null, 不编一个。
     cliVersion: null,
   }]);
