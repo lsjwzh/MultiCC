@@ -71,3 +71,18 @@ Node 内存态与剩余路由的真实依赖（逐文件 grep 核实，不是推
 
 - `docs/rust-migration/route-inventory.md` §7 前置件 16 写「`valid_provider_id` ①-④可进 Rust、⑤需要 store 事实与协议表」。**实际** ①-④ 规则与 ⑤ 的编排早已在 addon（`native/addon/src/provider_registry.rs` 的 `provider_validate_id`），8 个消费点共用同一个函数实例（`server.js:1609/1655/2205` 转发到 `providerRoutes.validProviderId`）。剩下留在 JS 的是 ⑤ 依赖的规则表（协议兼容表、车道→池映射、`providerSupportsCli`），本批收入 `multicc_core`。
 - 此前口径的 187 处是源码里 `app.<verb>('路径')` 字面量数，包含未挂载与测试夹具；139 是真实启动后的运行时注册数，以后以 139 这个口径为准。
+
+## 5. 前门对 Node 事实的依赖结构（2026-11-16 实测）
+
+数据来源：扫描 `native/gateway/src/app/*.rs` 中是否调用 `host_port`，以及各模块调用的 `/api/__host/*` 端口。
+
+- 前门共 56 个路由模块。**18 个纯 Rust**（零 `host_port` 调用）：`accept`、`account_subscription`、`auth`、`claude_models`、`download`、`external_workspaces`、`provider_balance_panels`、`provider_catalog_view`、`provider_limit_history`、`quota_guard`、`run_config_presets`、`scoped_auth`、`service_transport`、`services`、`source_workspaces`、`static_assets_routes`、`token_usage_global`、`uploads`。
+- **36 个经宿主端口**，约占前门路由代码的 77%（24767 / 32078 行）。最大的几个是 `session_git`（2022 行）、`providers`（1839 行，22 个 op）、`directory_routes`（1547 行）、`task_shell`（1386 行）、`session_admin`（1335 行）、`docs_memory_routes`（1289 行）。
+- 没有杠杆点：任一宿主端口最多只被 2 个模块共用（`provider-balance`、`secrets-vault`），其余每个端口只服务 1 个模块。36 个模块背后的 Node 事实互相独立，所以这是 36 次逐簇迁移，不能靠一次共用改造批量完成。
+
+由此得到的边界，请后续批次按它排期，不要把它当成一个批次的工作量：
+
+1. 鉴权运行态（前门自持）是唯一一个解锁面横跨所有簇的前置件，因为 `--no-node` 下它决定需鉴权的 Rust 路由能否应答。它不会让 36 个宿主端口簇脱离 Node。
+2. 36 个宿主端口簇各自要把 Node 独有事实（会话表、provider 存储、任务板句柄、各类运行时实例）迁成 Rust 持有，才能删掉对应宿主端口。已知的跨簇危险见 `docs/backend-rust-exit-plan.md` 与记忆中的任务板 Proxy 镜像、会话表迁移条目。
+3. 插件 71 条属于可独立发布、签名升级的插件代码（本文件第 1 节），不并入核心后端迁移；把它们搬进 Rust 会破坏插件的独立发布模型。
+4. 本节是依赖结构的实测，不是工作量估计；没有给出时间或人天数字，因为没有测量过。
