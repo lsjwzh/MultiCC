@@ -170,7 +170,7 @@ function probeAddon(file, node = process.execPath) {
       || ['start','sendUser','interrupt','setModel','getTaskOutput','stopTask','respondControl','respondControlError','closeInput','kill','stderrTail'].some(key=>typeof a.RustClaudeLane.prototype[key]!=='function')) process.exit(1);
     if(['providerEventFence','providerHostTextEnvelope'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['providerRequiredIdentity','providerPositiveInteger','providerTimeoutBudget','providerAttemptFields',
-      'providerBeginAttempt','providerAttemptSnapshot','providerFinishAttempt','providerMintPrefixedId','providerRevision','providerEncodeProxySession','providerDecodeProxySession','providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
+      'providerBeginAttempt','providerAttemptSnapshot','providerFinishAttempt','providerMintPrefixedId','providerRevision','providerEncodeProxySession','providerDecodeProxySession','providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest', 'providerTerminalValidate', 'providerTerminalSessionSegment', 'providerTerminalLookup',
       'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
       'providerForceReleaseProducers', 'providerDrainStaleProducers'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['chatApplyClaudeEvent','chatApplyAdapterEvent','chatCommitFinalPersist','chatCommitHeldAnswer',

@@ -75,9 +75,9 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
-const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { createTerminalProxyRoutes } = require('./src/providers/terminal-route');
-const { findProviderReferences } = require('./src/providers/references');
-const { createCliAdapters } = require('./src/cli-adapters');
+const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative } = require('./src/native/runtime');
+const { findProviderReferences } = require('./src/providers/references'); const { createCliAdapters } = require('./src/cli-adapters');
+
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
 const { isResidentSession, displayNameOf } = require('./src/cli/cli-capability');
@@ -1035,7 +1035,7 @@ function resolveCwd(current, arg) {
 }
 
 async function createSession(id) {
-  // Look up the persisted record (must exist — sessions are pre-created via REST now)
+  // REST creates sessions.
   const persisted = persistedSessions.get(id);
   if (!persisted) {
     throw new Error(`Session ${id} has no persisted record. Create it via /api/directories/:id/sessions first.`);
@@ -1057,12 +1057,11 @@ async function createSession(id) {
   }
 
   const provider = providerFor(persisted);
-  // Per-session provider override goes into tmux (Codex capture uses the same
-  // CODEX_HOME). The route segment is the session's proxy capability, never a bare id.
+  // tmux uses the session capability, not a raw id.
   const routeSession = terminalProxyRoutes.sessionSegment(persisted);
   const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
   const termEnv = { ...provEnv.env, ...(persisted.loginEnv || {}) }; secretsVault.applyEnvOverlay(termEnv, { source: 'terminal', sessionId: persisted.id }); // loginEnv: allowlisted login-terminal pins (sanitizeLoginEnv), e.g. CODEX_HOME=<account dir>; 保险箱条目按名注入 env（set-if-absent，见 src/secrets-vault.js）
-  // 登录终端必须走官方浏览器授权，不能被继承的 API Key 短路。
+  // 登录走官方浏览器授权，忽略继承的 API Key。
   if (persisted.loginFlow === 'commandcode-login') termEnv.COMMAND_CODE_API_KEY = '';
   if (persisted.cli === 'claude') {
     for (const k of providers.CLAUDE_ROUTING_KEYS) {
@@ -1302,7 +1301,7 @@ const livenessRuntime = createLivenessRuntime({
     sig && Number.isInteger(sig.pid) ? sig.pid : null, livenessRolloutPath(persistedSessions.get(sessionId))),
 });
 const providerAttemptRuntime = createProviderAttemptRuntime({ emit: chatBroadcast, audit: (id, event) => turnEventJournal.note(id, event), resolveProviderRevision: attempt => createProviderRevision({ cli: attempt.cli, providerId: attempt.providerId, protocol: attempt.protocol, model: attempt.model, summary: attempt.providerId === '_default_' ? null : providerRouterRuntime.getProviderSummary(undefined, attempt.providerId) }), resolveTerminalRoute: sessionId => terminalProxyRoutes.lookup(sessionId), quotaGuard });
-const terminalProxyRoutes = createTerminalProxyRoutes({ persistedSessions, persist: savePersistedSessionsBestEffort, encode: (id, token) => providerAttemptRuntime.encodeProxyRoute(id, token) }); // 终端那条托管路由的能力：存在会话记录上，跨重启有效
+const terminalNative = getNative(), terminalRoutePort = terminalNative.providerTerminalValidate({ persistedSessions, persist: savePersistedSessionsBestEffort, encode: providerAttemptRuntime.encodeProxyRoute }), terminalProxyRoutes = Object.freeze({ sessionSegment: s => terminalNative.providerTerminalSessionSegment(s, terminalRoutePort), lookup: id => terminalNative.providerTerminalLookup(id, terminalRoutePort) });
 function handleProxyUsage(event) {
   const tagged = providerAttemptRuntime.attributeProxyUsage(event);
   if (tagged.routeAttribution === 'exact' || tagged.producerBound === true

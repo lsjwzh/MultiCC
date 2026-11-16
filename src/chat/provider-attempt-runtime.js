@@ -122,7 +122,7 @@ function createProviderAttemptRuntime(options = {}) {
   const resolveProviderRevision = typeof options.resolveProviderRevision === 'function'
     ? options.resolveProviderRevision : null;
   // 终端会话（tmux 里的长活 CLI）没有回合，它的路由能力存在会话记录上，由宿主注入
-  // 一个只读反查（见 src/providers/terminal-route.js）。没有这个端口时，终端路由照旧
+  // 一个只读反查（见 native/addon/src/provider_terminal_routes.rs）。没有这个端口时，终端路由照旧
   // 按「查不到 attempt」拒绝。
   const resolveTerminalRoute = typeof options.resolveTerminalRoute === 'function'
     ? options.resolveTerminalRoute : null;
@@ -431,7 +431,7 @@ function createProviderAttemptRuntime(options = {}) {
     proxySessionId,
     resolveProxySessionId,
     // 终端那条路由（长活会话，没有回合）自己拼能力段：与 proxySessionId 同一种形状，
-    // 只是令牌来自会话记录而不是内存里的 attempt（见 src/providers/terminal-route.js）。
+    // 只是令牌来自会话记录而不是内存里的 attempt（见 native/addon/src/provider_terminal_routes.rs）。
     encodeProxyRoute: (sessionId, token) => encodeProxySessionId(clean(sessionId), clean(token)),
     snapshot: snapshotSession,
   });

@@ -61,6 +61,7 @@ pub mod provider_producers;
 pub mod provider_registry;
 pub mod provider_scrub;
 pub mod provider_settings_config;
+pub mod provider_terminal_routes;
 pub mod provider_writes;
 pub mod publication;
 pub mod quota_guard;
