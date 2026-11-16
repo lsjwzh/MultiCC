@@ -542,9 +542,9 @@ test('differential: reentrant port call matches', () => {
   assert.equal(run(applyClaudeChatEventLegacy).state, run(applyNative).state);
 });
 
-test('differential: real captured Claude traces', () => {
+test('differential: real captured Claude traces', t => {
   const root = '/tmp/claude-lane-capture/real';
-  if (!fs.existsSync(root)) return;
+  if (!fs.existsSync(root)) return t.skip('real Claude traces are not available');
   const traces = [];
   for (const entry of fs.readdirSync(root)) {
     const file = path.join(root, entry, 'trace.jsonl');
@@ -562,7 +562,8 @@ test('differential: real captured Claude traces', () => {
     }
     if (events.length) traces.push({ name: entry, events });
   }
-  assert.ok(traces.length > 0, 'expected at least one real trace');
+  // /tmp is optional developer-supplied evidence, not a repository fixture.
+  if (!traces.length) return t.skip('real Claude capture files contain no usable events');
   const rand = mulberry32(20261109);
   for (const trace of traces) {
     const scenario = makeScenario(rand);

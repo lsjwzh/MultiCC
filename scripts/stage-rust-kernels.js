@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { hasRemoteCrate, hasCdpdCrate, hasGatewayCrate, remoteBinaryName, cdpdBinaryName,
-  gatewayBinaryName, workspaceMembers, verify } = require('./build-rust-kernels');
+  gatewayBinaryName, restartBinaryName, workspaceMembers, verify } = require('./build-rust-kernels');
 
 // 和原生模块同目录的可执行件。服务端只在模块旁边找它们（远控见
 // docs/remote-screen-process.md §1，网关见 src/cdpd.js binaryPath），所以打包必须
@@ -16,6 +16,8 @@ const COMPANIONS = [
   // 独立包和桌面壳都经它启动 node（docs/gateway.md §8），三个平台都要带。
   { label: 'Rust 前门', crate: 'native/gateway', inWorkspace: hasGatewayCrate,
     binaryName: gatewayBinaryName, missing: '打包缺少 Rust 前门 multicc-gateway' },
+  { label: 'restart supervisor', crate: 'native/core', inWorkspace: repo => fs.existsSync(path.join(repo, 'native/core/src/bin/restart-supervisor.rs')),
+    binaryName: restartBinaryName, missing: 'Missing Rust restart supervisor' },
   { label: 'Windows desktop agent', crate: 'native/desktop-agent', platform: 'win32',
     inWorkspace: repo => workspaceMembers(repo).includes('desktop-agent'),
     binaryName: () => 'multicc-desktop-agent.exe', missing: 'Missing Windows desktop agent' },

@@ -192,6 +192,7 @@ rustTest('打包后的 Rust 模块可加载，错误架构不能进入安装包'
       fs.writeFileSync(path.join(dir, remoteName()), binaryHeader(process.platform, arch));
       fs.writeFileSync(path.join(dir, cdpdBinaryName(process.platform)), binaryHeader(process.platform, arch));
       fs.writeFileSync(path.join(dir, gatewayBinaryName(process.platform)), binaryHeader(process.platform, arch));
+      fs.writeFileSync(path.join(dir, process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor'), binaryHeader(process.platform, arch));
       if (process.platform === 'win32') fs.writeFileSync(path.join(dir, 'multicc-desktop-agent.exe'), binaryHeader(process.platform, arch));
     }
     const options = { repoRoot: '.', out: path.join(root, 'app-server'), logger: { log() {} } };
@@ -293,6 +294,8 @@ function fakeCargo({ failRemote = false, omitRemote = false, failCdpd = false, f
       if (!omitGateway) {
         fs.writeFileSync(path.join(release, gatewayBinaryName(process.platform)), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
       }
+    } else if (crate === 'multicc-core') {
+      fs.writeFileSync(path.join(release, process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor'), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
     } else if (!omitRemote) {
       fs.writeFileSync(path.join(release, remoteName()), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
     }
@@ -530,7 +533,7 @@ test('Rust 前门单独编译：--gateway-only 只编前门，可执行位保留
   const { calls, run } = fakeCargo();
   const result = build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
     gatewayOnly: true, run, logger: quiet });
-  assert.deepEqual(calls.map(call => call.split(' ').pop()), ['multicc-gateway']);
+  assert.deepEqual(calls.map(call => call.split(' ').pop()), ['multicc-gateway', 'multicc-core']);
   assert.equal(result.addon, null);
   assert.equal(result.gateway, path.join(fixture.out, `${process.platform}-${process.arch}`,
     gatewayBinaryName(process.platform)));
@@ -544,7 +547,7 @@ test('Rust 前门编不出来：源码路径只警告，发布路径必须报错
   const built = build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
     requireRemote: true, run: ok.run, logger: quiet });
   assert.deepEqual(ok.calls.map(call => call.split(' ').pop()),
-    ['multicc-addon', 'multicc-remote', 'multicc-cdpd', 'multicc-gateway']);
+    ['multicc-addon', 'multicc-remote', 'multicc-cdpd', 'multicc-gateway', 'multicc-core']);
   assert.equal(built.gateway, path.join(path.dirname(built.addon), gatewayBinaryName(process.platform)));
   fs.rmSync(built.gateway);
 

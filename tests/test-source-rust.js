@@ -44,6 +44,11 @@ function fixture(t) {
       fs.mkdirSync(path.dirname(bin),{recursive:true});fs.copyFileSync(process.env.TEST_RUST_GATEWAY,bin);fs.chmodSync(bin,0o755);
       process.exit(0);
     }
+    if(process.argv[process.argv.indexOf('-p')+1]==='multicc-core'){
+      const bin=path.join(process.env.CARGO_TARGET_DIR,target,'release','restart-supervisor');
+      fs.mkdirSync(path.dirname(bin),{recursive:true});fs.copyFileSync(process.env.TEST_RUST_GATEWAY,bin);fs.chmodSync(bin,0o755);
+      process.exit(0);
+    }
     const library=process.platform==='win32'?'multicc_addon.dll':process.platform==='darwin'?'libmulticc_addon.dylib':'libmulticc_addon.so';
     const dest=path.join(process.env.CARGO_TARGET_DIR,target,'release',library);
     fs.mkdirSync(path.dirname(dest),{recursive:true});
@@ -373,13 +378,13 @@ nativeTest('source start boots an isolated server with the built addon and a rep
   if (fs.existsSync(pidFile)) pid = Number(fs.readFileSync(pidFile, 'utf8'));
   assert.equal(first.status, 0, first.stderr + first.stdout);
   assert.match(first.stdout, /started behind multicc-gateway/);
-  // Two compiler runs: the addon and the front door, once each.
-  assert.ok(pid > 1); assert.equal(count(), 2);
+  // The addon, front door and restart supervisor are built once each.
+  assert.ok(pid > 1); assert.equal(count(), 3);
   const booted = path.join(root, 'booted-addon');
   for (let i = 0; i < 200 && !fs.existsSync(booted); i++) await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(probeAddon(fs.readFileSync(booted, 'utf8')), true);
   const repeated = run();
-  assert.notEqual(repeated.status, 0); assert.match(repeated.stdout, /already running/); assert.equal(count(), 2);
+  assert.notEqual(repeated.status, 0); assert.match(repeated.stdout, /already running/); assert.equal(count(), 3);
 });
 
 // ---- 远控二进制：原型开发的补编路径（可选件，失败不阻断启动） ----
@@ -403,6 +408,7 @@ test('external front door must be built from the current source even when its pr
   const fixture = remoteFixture(t, { members: ['core', 'gateway'] });
   const addonFile = write(fixture.root, 'external/multicc_core.node', 'addon');
   const binary = path.join(path.dirname(addonFile), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+  const restart = path.join(path.dirname(addonFile), process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
   const install = value => {
     fs.writeFileSync(binary, value);
     if (process.platform !== 'win32') fs.chmodSync(binary, 0o755);
@@ -413,6 +419,8 @@ test('external front door must be built from the current source even when its pr
     log() {}, gatewayVersion: () => ({ ok: true }), run: () => {
       builds += 1;
       install('current gateway');
+      fs.writeFileSync(restart, 'restart fixture');
+      if (process.platform !== 'win32') fs.chmodSync(restart, 0o755);
       writeProvenance(binary, fixture.cache.fingerprint);
       return { status: 0 };
     } };

@@ -90,7 +90,7 @@ function main(argv) {
       else passed(row.addon, `${cpu} 原生模块与 SQLite`);
       if (opts.companions && !opts.expectSigill) {
         row.companions = {};
-        for (const name of ['multicc-remote', 'multicc-cdpd', 'multicc-gateway']) {
+        for (const name of ['multicc-remote', 'multicc-cdpd', 'multicc-gateway', 'restart-supervisor']) {
           const result = emulate(path.join(opts.companions, name), ['--version']);
           row.companions[name] = result;
           passed(result, `${cpu} ${name}`);

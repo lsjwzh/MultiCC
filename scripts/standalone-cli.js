@@ -268,8 +268,45 @@ async function cmdStop(layout, env) {
 }
 
 async function cmdRestart(layout, env, args) {
-  await cmdStop(layout, env);
-  return cmdStart(layout, env, args);
+  const state = await currentState(layout, env);
+  if (!state.running) return state.starting ? 1 : cmdStart(layout, env, args);
+  const { requestRustRestart } = require(path.join(layout.appServerDir, 'src', 'server-restart'));
+  const binary = path.join(layout.appServerDir, 'native', 'prebuilt', `${layout.platform}-${layout.arch}`,
+    layout.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
+  const result = requestRustRestart({ binary, origin: state.origin, expectedPids: [state.pid], port: args.port });
+  if (result !== 0 || !args.foreground) return result;
+  return holdRestartedForeground(layout, env, binary);
+}
+
+// A detached Rust lifeline requests the existing launcher's stop if this CLI
+// disappears, including a hard kill; no second server supervisor is started.
+async function holdRestartedForeground(layout, env, binary) {
+  const data = standaloneDataDir({ env });
+  const child = spawn(binary, ['--hold'], { detached: true, windowsHide: true,
+    stdio: ['pipe', 'ignore', 'inherit'], env: { ...process.env, MULTICC_RESTART_HOLD: JSON.stringify({ node: layout.runtimeNode, launcher: layout.launcherPath, data }) } });
+  child.stdin.on('error', () => {});
+  let timer, finished = false, misses = 0;
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  const stop = () => { if (!finished) child.stdin.end(); };
+  for (const signal of signals) { try { process.on(signal, stop); } catch (_) {} }
+  return new Promise(resolve => {
+    function done(code) {
+      if (finished) return;
+      finished = true;
+      clearInterval(timer);
+      for (const signal of signals) { try { process.removeListener(signal, stop); } catch (_) {} }
+      resolve(code);
+    }
+    child.once('error', error => { process.stderr.write(`foreground guard failed: ${error.message}\n`); done(1); });
+    child.once('spawn', () => process.stdout.write('MultiCC is running in the foreground; interrupt to stop it.\n'));
+    child.once('exit', code => done(code === 0 ? 0 : 1));
+    timer = setInterval(() => {
+      let pid = 0;
+      try { pid = Number(fs.readFileSync(path.join(data, 'standalone-launcher.pid'), 'utf8').trim()); } catch (_) {}
+      if (pid > 1 && pidAlive(pid)) { misses = 0; return; }
+      if (++misses >= 3) { child.stdin.end('D'); }
+    }, 1000);
+  });
 }
 
 async function cmdStatus(layout, env, args) {

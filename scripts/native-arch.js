@@ -86,7 +86,7 @@ function nativeBinaryPlatform(file, { readBytes = 4096 } = {}) {
 // it is matched by name — an arch/OS mismatch there fails at spawn time just as
 // silently as a wrong addon does at require() time.
 const NATIVE_BINARIES = new Set(['multicc-remote', 'multicc-remote.exe', 'multicc-cdpd', 'multicc-cdpd.exe',
-  'multicc-gateway', 'multicc-gateway.exe', 'multicc-desktop-agent.exe']);
+  'multicc-gateway', 'multicc-gateway.exe', 'restart-supervisor', 'restart-supervisor.exe', 'multicc-desktop-agent.exe']);
 
 function collectNativeBinaries(root, { skipDirs = new Set(['src', 'deps', 'prebuilds']) } = {}) {
   const found = [];

@@ -18,6 +18,38 @@ pub mod host_port;
 pub mod outbound;
 pub mod proxy_header;
 
+static RESTART_GENERATION: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Capture a restart marker once before serving requests. This also supports
+/// launchd, whose static environment cannot carry a newly created generation.
+pub fn init_restart_generation(cwd: &std::path::Path) -> bool {
+    let base = std::env::current_dir().unwrap_or_else(|_| cwd.to_path_buf());
+    let root = std::env::var_os("MULTICC_DATA_DIR")
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| base.clone());
+    let root = if root.is_absolute() {
+        root
+    } else {
+        base.join(root)
+    };
+    let marker = std::fs::read_to_string(root.join(".restart-generation")).ok();
+    let valid = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 128
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    let marker = marker.map(|s| s.trim().to_owned()).filter(|s| valid(s));
+    let exact = marker.is_some();
+    let _ = RESTART_GENERATION.set(marker);
+    exact
+}
+
+pub fn restart_generation() -> Option<&'static str> {
+    RESTART_GENERATION.get().and_then(|value| value.as_deref())
+}
+
 /// Version of the front-door ⇄ Node contract. Must match the probe in
 /// `scripts/build-rust-kernels.js` and `src/gateway-child.js`.
 pub const PROTOCOL_VERSION: u32 = 12;
