@@ -4,14 +4,52 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Condvar, Mutex,
     },
     thread,
+    time::Duration,
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture {
     root: PathBuf,
     store: Arc<Store>,
+}
+
+#[derive(Default)]
+struct StartGate {
+    arrived: usize,
+    aborted: bool,
+}
+
+fn wait_for_workers(
+    gate: &(Mutex<StartGate>, Condvar),
+    workers: usize,
+    timeout: Duration,
+) -> std::result::Result<(), &'static str> {
+    let (mutex, condvar) = gate;
+    let mut state = mutex.lock().unwrap();
+    if state.aborted {
+        return Err("another worker aborted the start gate");
+    }
+    state.arrived += 1;
+    if state.arrived == workers {
+        condvar.notify_all();
+        return Ok(());
+    }
+    let (mut state, wait) = condvar
+        .wait_timeout_while(state, timeout, |state| {
+            state.arrived < workers && !state.aborted
+        })
+        .unwrap();
+    if wait.timed_out() && state.arrived < workers {
+        state.aborted = true;
+        condvar.notify_all();
+    }
+    if state.aborted {
+        Err("a worker did not reach the start gate")
+    } else {
+        Ok(())
+    }
 }
 impl Fixture {
     fn new() -> Self {
@@ -228,12 +266,28 @@ fn concurrent_workers_share_one_durable_budget() {
     let f = Fixture::new();
     let record = f.create(1.0);
     let token = get(&record, "token");
-    let proofs: Vec<_> = (0..4).map(|_| f.verify(token)).collect();
+    // Verify every password before any worker can consume the budget. Freeze
+    // the test-only proof clock so scheduler pauses cannot expire a proof while
+    // the remaining workers are being verified or waiting at the barrier.
+    let proofs: Vec<_> = (0..4)
+        .map(|_| {
+            let mut proof = f.verify(token);
+            proof.set_elapsed_for_test(Duration::ZERO);
+            proof
+        })
+        .collect();
+    let workers = proofs.len();
+    let gate = Arc::new((Mutex::new(StartGate::default()), Condvar::new()));
     let threads: Vec<_> = proofs
         .into_iter()
         .map(|proof| {
             let store = f.store.clone();
-            thread::spawn(move || store.consume_access(proof, true, 1000.0))
+            let gate = Arc::clone(&gate);
+            thread::spawn(move || {
+                wait_for_workers(&gate, workers, Duration::from_secs(60))
+                    .expect("all workers must reach the start gate");
+                store.consume_access(proof, true, 1000.0)
+            })
         })
         .collect();
     let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
@@ -242,6 +296,46 @@ fn concurrent_workers_share_one_durable_budget() {
         .into_iter()
         .filter_map(|r| r.err())
         .all(|e| e.code == "SHARE_EXHAUSTED"));
+
+    // The winner's one access must survive a new store opening, not just be
+    // visible in the original process's in-memory snapshot.
+    let reopened = Store::open_source(f.root.join("shares.json")).unwrap();
+    let shares = reopened
+        .query("listShares", &"workspace".into(), 1000.0)
+        .unwrap();
+    assert_eq!(get(&array(&shares)[0], "accessCount"), &1.0.into());
+}
+
+#[test]
+fn start_gate_aborts_when_a_worker_never_arrives() {
+    let gate = (Mutex::new(StartGate::default()), Condvar::new());
+    assert_eq!(
+        wait_for_workers(&gate, 2, Duration::from_millis(10)),
+        Err("a worker did not reach the start gate")
+    );
+    assert_eq!(
+        wait_for_workers(&gate, 2, Duration::from_secs(1)),
+        Err("another worker aborted the start gate")
+    );
+}
+
+#[test]
+fn proof_expiration_uses_a_strict_thirty_second_boundary() {
+    let f = Fixture::new();
+    let record = f.create(2.0);
+    let token = get(&record, "token");
+    let mut expired = f.verify(token);
+    expired.set_elapsed_for_test(Duration::from_secs(30));
+    assert_eq!(
+        f.store
+            .consume_access(expired, true, 1000.0)
+            .unwrap_err()
+            .code,
+        "WORKSPACE_SHARING_INTERNAL"
+    );
+    let mut valid = f.verify(token);
+    valid.set_elapsed_for_test(Duration::from_secs(30) - Duration::from_nanos(1));
+    assert!(f.store.consume_access(valid, true, 1000.0).is_ok());
 }
 
 #[test]

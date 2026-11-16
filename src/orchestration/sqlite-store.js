@@ -1,7 +1,7 @@
 'use strict';
 
-// RustOrchestrationStore is the only SQLite implementation. The JS adapter
-// retains callbacks and Proxy identity required by existing domain callers.
+// A dedicated Rust process owns SQLite. The JS adapter retains callbacks and
+// Proxy identity required by existing domain callers, never a local connection.
 const {
   OrchestrationStoreCorruptError, _cloneJson: cloneJson, _deepFreeze: deepFreeze,
 } = require('./store');

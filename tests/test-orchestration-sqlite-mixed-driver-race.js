@@ -83,7 +83,7 @@ test('experimental isolated owner preserves a concurrent external claim update',
     const fs=require('fs'),os=require('os'),path=require('path'),cp=require('child_process'),Database=require('better-sqlite3');
     const {createOrchestrationSqliteStore}=require('./src/orchestration/sqlite-store'),{createOutbox}=require('./src/outbox');
     (async()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'isolated-sqlite-claim-')),file=path.join(dir,'s.sqlite');
-      const store=createOrchestrationSqliteStore({file,experimentalOwnerBinary:process.env.MULTICC_TEST_ORCHESTRATION_OWNER});
+      const store=createOrchestrationSqliteStore({file,ownerBinary:process.env.MULTICC_TEST_ORCHESTRATION_OWNER});
       let db=new Database(file);
       db.prepare('INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence,available_at) VALUES(?,?,?,?,?,?)').run('a',JSON.stringify({id:'a',sessionId:'s',state:'pending',sequence:1,availableAt:0,attempts:0}),'s','pending',1,0);db.close();
       let wrote=false,exit,rejected=false;

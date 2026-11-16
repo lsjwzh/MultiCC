@@ -53,6 +53,50 @@ function outboxRecord(id = 'outbox-1', sequence = 1) {
   };
 }
 
+test('production owner survives foreign SQLite close and rejects a changed snapshot', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-production-owner-'));
+  const files = { sqlite: path.join(dir, 'state.sqlite') };
+  const store = createOrchestrationSqliteStore({ file: files.sqlite, now: () => 1000 });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.mutate(draft => { draft.outbox.a = outboxRecord('a'); draft.nextOutboxSequence = 2; });
+  // Closing a foreign SQLite library in the host must not release the Rust
+  // process's WAL locks. Keep the external writer independent as well.
+  new Database(files.sqlite).close();
+  const source = `const D=require(process.argv[1]);const db=new D(process.argv[2]);
+    db.prepare("UPDATE orchestration_outbox SET data_json=json_set(data_json,'$.external',7) WHERE id='a'").run();db.close();`;
+  let calls = 0;
+  await assert.rejects(store.mutate(draft => {
+    calls++;
+    const prior = draft.outbox.a;
+    const child = spawnSync(process.execPath, ['-e', source, require.resolve('better-sqlite3'), files.sqlite],
+      { encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr);
+    prior.state = 'leased';
+  }), OrchestrationSqliteConflictError);
+  assert.equal(calls, 1, 'a rejected mutation must not be replayed');
+  const saved = await store.snapshot();
+  assert.equal(saved.outbox.a.external, 7);
+  assert.equal(saved.outbox.a.state, 'pending');
+});
+
+test('production store never falls back when the Rust owner executable is missing', t => {
+  const files = tempPaths(t);
+  assert.throws(() => createOrchestrationSqliteStore({ file: files.sqlite,
+    ownerBinary: path.join(files.dir, 'missing-owner') }), /owner executable unavailable/);
+  assert.equal(fs.existsSync(files.sqlite), false);
+});
+
+test('production store rejects an incompatible owner instead of opening SQLite locally', t => {
+  const files = tempPaths(t);
+  // This is a real executable, but cannot speak the private owner protocol.
+  assert.throws(() => createOrchestrationSqliteStore({ file: files.sqlite,
+    ownerBinary: process.execPath }), /owner transport failed/);
+  assert.equal(fs.existsSync(files.sqlite), false);
+});
+
 test('migrates legacy JSON exactly into normalized private SQLite tables', async t => {
   const files = tempPaths(t);
   const legacy = createOrchestrationStore({ file: files.json, now: () => 10 });
@@ -520,9 +564,13 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     // task-shell 仓储迁移后不再经 JS 打开 SQLite：整个 store 由原生
     // RustTaskStore 承载，同属“只用 Rust、绝不碰 npm addon”的边界。
-    assert.match(source, /sqlite\/driver|RustTaskStore|RustOrchestrationStore/, `${file} must use the shared driver or the native Rust store`);
+    assert.match(source, /sqlite\/driver|RustTaskStore|createNativeStore/, `${file} must use the shared driver or the native Rust store`);
     assert.doesNotMatch(source, /require\('better-sqlite3'\)/, `${file} must not require the addon`);
   }
+  const host = fs.readFileSync(path.join(root, 'src/orchestration/native-store-host.js'), 'utf8');
+  assert.match(host, /new native\.RustIsolatedOrchestrationStore\(/);
+  assert.doesNotMatch(host, /new native\.RustOrchestrationStore\(/,
+    'the production host must never open the orchestration database in-process');
 
   // The quota compatibility facade delegates to a Node lifecycle adapter, but
   // the adapter must submit storage operations to the Rust-owned store. Keep

@@ -481,7 +481,7 @@ function createAirRuntime(rawDeps) {
       // 折出来的事实，客户端只读不推断。三个取值：
       //   route_dead — 绑了托管 provider 却没有能力令牌：那个进程里烤死的 base URL
       //                带着明文 id，每个请求都 409 proxy_route_capability_mismatch
-      //                （判据与 src/providers/terminal-route.js 的 lookup() 同一条）。
+      //                （判据与原生 terminal route lookup 同一条）。
       //                修法是重启，所以它排在最前 —— 进程在不在都改变不了这个结论。
       //   running    — 内存里还有运行时会话（tmux 活着；进程退出后 3s 内被 sweep 掉）。
       //   stopped    — 没有运行时会话：进程已退出，或服务重启后没被恢复。

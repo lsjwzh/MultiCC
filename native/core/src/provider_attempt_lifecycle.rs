@@ -371,6 +371,72 @@ impl AttemptStatus {
     }
 }
 
+/// The route phase a begin event reports. A continuation keeps the wire's
+/// `continued` even when the provider also switched: the host contract checks
+/// continuation first, then a same-turn provider/model change, then the plain
+/// initial selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BeginPhase {
+    Continued,
+    Switched,
+    Selected,
+}
+
+impl BeginPhase {
+    pub fn select(continuation: bool, switched: bool) -> Self {
+        if continuation {
+            Self::Continued
+        } else if switched {
+            Self::Switched
+        } else {
+            Self::Selected
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Continued => "continued",
+            Self::Switched => "switched",
+            Self::Selected => "selected",
+        }
+    }
+    /// The reason a begin event carries when the caller gives none. It keys
+    /// off the switch itself, not the reported phase: a continuing failover is
+    /// still a failover.
+    pub fn default_reason_code(switched: bool) -> &'static str {
+        if switched {
+            "attempt_failover"
+        } else {
+            "route_resolved"
+        }
+    }
+}
+
+/// The route phase a finish event reports, selected from the final outcome.
+/// Any outcome without a dedicated phase is a plain release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinishPhase {
+    Failed,
+    Succeeded,
+    Released,
+}
+
+impl FinishPhase {
+    pub fn select(outcome: &str) -> Self {
+        match outcome {
+            "failed" => Self::Failed,
+            "succeeded" => Self::Succeeded,
+            _ => Self::Released,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Failed => "failed",
+            Self::Succeeded => "succeeded",
+            Self::Released => "released",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -457,6 +523,38 @@ mod tests {
         assert!(!status.running());
         assert_eq!(status.outcome, "failed");
         assert_eq!(status.finished_at, Some(100.0));
+    }
+
+    #[test]
+    fn begin_phase_checks_continuation_before_a_switch() {
+        use super::BeginPhase;
+        assert_eq!(BeginPhase::select(true, true), BeginPhase::Continued);
+        assert_eq!(BeginPhase::select(true, false), BeginPhase::Continued);
+        assert_eq!(BeginPhase::select(false, true), BeginPhase::Switched);
+        assert_eq!(BeginPhase::select(false, false), BeginPhase::Selected);
+        assert_eq!(BeginPhase::Continued.as_str(), "continued");
+        assert_eq!(BeginPhase::Switched.as_str(), "switched");
+        assert_eq!(BeginPhase::Selected.as_str(), "selected");
+    }
+
+    #[test]
+    fn begin_default_reason_keys_off_the_switch_not_the_phase() {
+        use super::BeginPhase;
+        assert_eq!(BeginPhase::default_reason_code(true), "attempt_failover");
+        assert_eq!(BeginPhase::default_reason_code(false), "route_resolved");
+    }
+
+    #[test]
+    fn finish_phase_gives_unknown_outcomes_a_plain_release() {
+        use super::FinishPhase;
+        assert_eq!(FinishPhase::select("failed"), FinishPhase::Failed);
+        assert_eq!(FinishPhase::select("succeeded"), FinishPhase::Succeeded);
+        assert_eq!(FinishPhase::select("released"), FinishPhase::Released);
+        assert_eq!(FinishPhase::select("cancelled"), FinishPhase::Released);
+        assert_eq!(FinishPhase::select(""), FinishPhase::Released);
+        assert_eq!(FinishPhase::Failed.as_str(), "failed");
+        assert_eq!(FinishPhase::Succeeded.as_str(), "succeeded");
+        assert_eq!(FinishPhase::Released.as_str(), "released");
     }
 
     #[test]

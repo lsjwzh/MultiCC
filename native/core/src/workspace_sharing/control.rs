@@ -460,8 +460,11 @@ mod tests {
         for (state, expected) in [(0, 404), (2, 500), (3, 500), (1, 200), (0, 404)] {
             mode.store(state, Ordering::SeqCst);
             wire::write_chunks(&mut stream, &request).await.unwrap();
+            // Mode 3 parks the serve side until its own wire::TIMEOUT context
+            // deadline fires, so this read must allow that full wait plus
+            // full-suite scheduling slack instead of racing it at 5s.
             let encoded: String = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                wire::TIMEOUT + std::time::Duration::from_secs(10),
                 wire::read_chunks(&mut stream),
             )
             .await

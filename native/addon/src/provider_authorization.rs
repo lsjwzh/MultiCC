@@ -120,6 +120,9 @@ impl<'a> Authorization<'a> {
             if terminal {
                 self.port.from_value(&JsValue::Null)?
             } else {
+                // A port seam, not Node logic: production passes the native
+                // snapshot command, while record-mocking differentials pass a
+                // traced stand-in that can reenter.
                 self.port.get(c"snapshot")?.call_plain(&[self.record])?
             },
         )?;

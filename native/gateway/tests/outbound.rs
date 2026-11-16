@@ -155,7 +155,11 @@ async fn https_target_uses_a_connect_tunnel() {
         resolve("upstream.test", stub_port),
     );
     let url = Url::parse(&format!("https://upstream.test:{stub_port}/v1/evaluate")).unwrap();
-    let mut request = Request::get(url, Duration::from_millis(1500));
+    // The proxy stub lives in this same starved process: under parallel load
+    // a 1.5s deadline can fire before the CONNECT is even accepted, leaving
+    // the mode correct but the connects ledger empty. 5s removes the race;
+    // the round-trip itself is microseconds.
+    let mut request = Request::get(url, Duration::from_secs(5));
     request.method = reqwest::Method::POST;
     request.body = Some(b"{}".to_vec());
     let error = outbound.send(request).await.unwrap_err();
@@ -180,7 +184,9 @@ async fn http_target_uses_absolute_form_through_the_proxy() {
     );
     let url = Url::parse(&format!("http://upstream.test:{stub_port}/v1/evaluate")).unwrap();
     let reply = outbound
-        .send(Request::get(url, Duration::from_secs(2)))
+        // The full-suite runner can starve this process for over two seconds
+        // under parallel load; the proxy round-trip itself is microseconds.
+        .send(Request::get(url, Duration::from_secs(5)))
         .await
         .unwrap();
     assert_eq!(reply.status, 200);
@@ -209,7 +215,9 @@ async fn no_proxy_match_goes_direct() {
     );
     let url = Url::parse(&format!("http://upstream.test:{stub_port}/direct")).unwrap();
     let reply = outbound
-        .send(Request::get(url, Duration::from_secs(2)))
+        // Same starved-process race as above: the stub is microseconds away,
+        // the 5s deadline only guards against a wedged run.
+        .send(Request::get(url, Duration::from_secs(5)))
         .await
         .unwrap();
     assert_eq!(reply.text(), "ok");
@@ -235,7 +243,7 @@ async fn loopback_never_takes_the_proxy() {
     );
     let url = Url::parse(&format!("http://127.0.0.1:{stub_port}/local")).unwrap();
     let reply = outbound
-        .send(Request::get(url, Duration::from_secs(2)))
+        .send(Request::get(url, Duration::from_secs(5)))
         .await
         .unwrap();
     assert_eq!(reply.text(), "ok");
@@ -261,7 +269,9 @@ async fn refusal(system: SystemProxy) -> multicc_gateway::outbound::Error {
     });
     let url = Url::parse("https://upstream.test/v1/evaluate").unwrap();
     outbound
-        .send(Request::get(url, Duration::from_secs(2)))
+        // Refusal is decided before any socket work, so the deadline only
+        // needs to outlive full-suite scheduling starvation, not real I/O.
+        .send(Request::get(url, Duration::from_secs(5)))
         .await
         .unwrap_err()
 }

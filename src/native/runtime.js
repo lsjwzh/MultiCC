@@ -57,4 +57,4 @@ function runNative(operation) {
     if (active < 2) start(); else waiting.push(start);
   });
 }
-module.exports = { getNative, record, status, runNative, nativeCode };
+module.exports = { addonPath, getNative, record, status, runNative, nativeCode };

@@ -127,6 +127,7 @@ pub mod provider_request;
 pub mod provider_settings_config;
 pub mod provider_store;
 pub mod provider_writes;
+pub mod random_id;
 
 pub mod auth_control;
 pub mod auth_login_page;

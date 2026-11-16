@@ -101,6 +101,21 @@ struct Gateway {
 
 impl Gateway {
     fn start(tag: &str) -> Self {
+        // The port is probed and released before the child binds it, so a
+        // parallel full-suite run can lose that race (EADDRINUSE). Retry the
+        // whole start with a fresh port; any other failure still panics.
+        let mut last_log = String::new();
+        for _ in 0..4 {
+            match Self::try_start(tag) {
+                Ok(gateway) => return gateway,
+                Err(log) if log.contains("EADDRINUSE") => last_log = log,
+                Err(log) => panic!("gateway never became ready\n{log}"),
+            }
+        }
+        panic!("gateway never became ready\n{last_log}");
+    }
+
+    fn try_start(tag: &str) -> Result<Self, String> {
         let dir = unique(tag);
         let data = dir.join("data");
         let home = dir.join("home");
@@ -156,7 +171,7 @@ impl Gateway {
             }
         }
         let child = command.spawn().expect("spawn multicc-gateway");
-        let gateway = Self {
+        let mut gateway = Self {
             dir,
             state,
             port,
@@ -164,14 +179,18 @@ impl Gateway {
         };
         let deadline = Instant::now() + Duration::from_secs(15);
         while !gateway.state.join("ready").exists() {
-            assert!(
-                Instant::now() < deadline,
-                "gateway never became ready\n{}",
-                gateway.log()
-            );
+            // A child that already exited (for example after losing the port
+            // race) never writes ready; surface its log at once instead of
+            // waiting out the deadline.
+            if let Ok(Some(_)) = gateway.child.try_wait() {
+                return Err(gateway.log());
+            }
+            if Instant::now() >= deadline {
+                return Err(gateway.log());
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        gateway
+        Ok(gateway)
     }
 
     fn log(&self) -> String {

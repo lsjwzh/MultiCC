@@ -1,8 +1,6 @@
 'use strict';
 
-const crypto = require('node:crypto');
 const { getNative } = require('../native/runtime');
-const { isResident } = require('../cli/cli-capability');
 const {
   createExactSecretStreamRedactor, redactProviderRouteCapability, maybeRouteCapability,
 } = require('../observability');
@@ -37,18 +35,6 @@ function clean(value) {
 
 function required(value, label) {
   return getNative().providerRequiredIdentity(value, label, ProviderAttemptError);
-}
-
-function positiveInteger(value, label) {
-  return getNative().providerPositiveInteger(value, label, ProviderAttemptError);
-}
-
-// Optional per-attempt idle budget for the host-side stall watchdog. 0 (the
-// default, and what every non-Auto route passes) means "no watchdog at all".
-// Anything malformed degrades to 0 rather than throwing: a diagnostics budget
-// must never be the reason a turn cannot start.
-function stallTimeoutBudget(value) {
-  return getNative().providerTimeoutBudget(value);
 }
 
 function createProviderRevision(input = {}) {
@@ -93,42 +79,6 @@ function fenceForEvent(event) {
   return getNative().providerEventFence(event, HOST_ERROR_ENVELOPE);
 }
 
-function snapshot(record) {
-  if (!record) return null;
-  const fence = record.lifecycle.snapshot();
-  const budget = record.lifecycle.budget();
-  const status = record.lifecycle.status();
-  return Object.freeze({
-    runtimeEpoch: record.runtimeEpoch,
-    decisionId: record.decisionId,
-    routeAttemptId: record.routeAttemptId,
-    sessionId: record.sessionId,
-    turnId: record.turnId,
-    cli: record.cli,
-    providerId: record.providerId,
-    providerName: record.providerName,
-    protocol: record.protocol,
-    model: record.model,
-    providerRevision: record.providerRevision,
-    attemptNo: record.attemptNo,
-    routeGeneration: record.routeGeneration,
-    // The idle budget the proxy watchdog enforces for this physical route, and
-    // whether it has already fired. A stalled attempt is not a route to replay.
-    stallTimeoutMs: record.stallTimeoutMs,
-    requestTimeoutMs: record.requestTimeoutMs,
-    connectTimeoutMs: record.connectTimeoutMs,
-    requestDeadlineAt: budget.requestDeadlineAt ?? null,
-    requestFailures: budget.requestFailures,
-    stalled: budget.stalled,
-    ...fence,
-    safeToReplay: fence.replayFence === 'none',
-    outcome: status.outcome,
-    errorCategory: status.errorCategory ?? null,
-    selectedAt: record.selectedAt,
-    finishedAt: status.finishedAt ?? null,
-  });
-}
-
 function sameAttempt(record, reference) {
   return !!(record && reference && record.lifecycle.matches(reference));
 }
@@ -164,15 +114,15 @@ function scrubProviderSemanticStructure(event, secrets) {
 
 function createProviderAttemptRuntime(options = {}) {
   const now = typeof options.now === 'function' ? options.now : Date.now;
-  const nextId = typeof options.nextId === 'function'
-    ? options.nextId
-    : prefix => `${prefix}_${crypto.randomUUID()}`;
+  // An injected id minter is a test override channel only. Without one the
+  // Rust owner mints capabilities itself (native/addon provider_attempt_creation).
+  const nextId = typeof options.nextId === 'function' ? options.nextId : null;
   const emit = typeof options.emit === 'function' ? options.emit : null;
   const audit = typeof options.audit === 'function' ? options.audit : null;
   const resolveProviderRevision = typeof options.resolveProviderRevision === 'function'
     ? options.resolveProviderRevision : null;
   // 终端会话（tmux 里的长活 CLI）没有回合，它的路由能力存在会话记录上，由宿主注入
-  // 一个只读反查（见 src/providers/terminal-route.js）。没有这个端口时，终端路由照旧
+  // 一个只读反查（见 native/addon/src/provider_terminal_routes.rs）。没有这个端口时，终端路由照旧
   // 按「查不到 attempt」拒绝。
   const resolveTerminalRoute = typeof options.resolveTerminalRoute === 'function'
     ? options.resolveTerminalRoute : null;
@@ -191,7 +141,7 @@ function createProviderAttemptRuntime(options = {}) {
     Number.isFinite(Number(options.producerStaleGraceMs)) && Number(options.producerStaleGraceMs) > 0
       ? Number(options.producerStaleGraceMs) : 30_000));
   const runtimeEpoch = required(
-    options.runtimeEpoch || `runtime_${crypto.randomUUID()}`,
+    options.runtimeEpoch || getNative().providerMintPrefixedId('runtime'),
     'runtimeEpoch',
   );
   const currentBySession = new (getNative().RustCurrentAttempts)();
@@ -199,15 +149,16 @@ function createProviderAttemptRuntime(options = {}) {
   const proxyProducers = new (getNative().RustMainProducers)();
   const nonMainProxyProducers = new (getNative().RustNonMainProducers)();
   const streamRedactors = new Map();
-  // Live host ports only: Rust owns admission; callbacks retain the current
-  // record identity until runner, audit and quota effects move out of Node.
-  // Usage attribution and proxy outcomes (provider_outcome.rs) also read the
-  // current record table and a fresh proxyContext per lookup.
+  // Live host ports only: Rust owns admission, snapshot assembly, route event
+  // dispatch and finish coordination. The snapshot and nextId members are
+  // native commands or test overrides, never Node logic; emit/auditOnly/now
+  // stay host callbacks because the subscriber and ledger live in Node.
   const proxyPort = Object.freeze({
     runtimeEpoch, quotaGuard, resolveTerminalRoute, resolveProviderRevision,
-    snapshot, auditOnly, poisonProxyAttempt, now, producerStaleGraceMs,
+    snapshot: getNative().providerAttemptSnapshot,
+    auditOnly, poisonProxyAttempt, now, producerStaleGraceMs,
     proxyProducers, nonMainProxyProducers, ProviderAttemptError,
-    currentBySession, proxyContext,
+    currentBySession, proxyContext, nextId, emit, streamRedactors,
   });
 
   function streamRedactor(record, channel) {
@@ -294,193 +245,16 @@ function createProviderAttemptRuntime(options = {}) {
     try { audit(sessionId, Object.freeze({ ...event, ts: Number(now()) })); } catch (_) {}
   }
 
-  // Wire key `routePhase` (was `phase`): the attempt lifecycle enum used to
-  // collide with the heartbeat and auto-route enums under one key. The local
-  // argument keeps the name `phase`.
-  function emitRoute(record, phase, extra = {}) {
-    if (!emit || !record) return;
-    const fence = record.lifecycle.snapshot();
-    const event = Object.freeze({
-      type: 'provider_route_event',
-      version: 1,
-      providerRouteScope: 'attempt',
-      runtimeEpoch: record.runtimeEpoch,
-      routePhase: phase,
-      sessionId: record.sessionId,
-      turnId: record.turnId,
-      cli: record.cli,
-      decisionId: record.decisionId,
-      routeAttemptId: record.routeAttemptId,
-      routeGeneration: record.routeGeneration,
-      attemptNo: record.attemptNo,
-      providerId: record.providerId,
-      providerName: record.providerName,
-      protocol: record.protocol,
-      model: record.model,
-      providerRevision: record.providerRevision,
-      replayFence: fence.replayFence,
-      safeToReplay: fence.replayFence === 'none',
-      ts: Number(now()),
-      ...extra,
-    });
-    try { emit(record.sessionId, event); } catch (_) {}
-  }
-
   function beginAttempt(input = {}) {
-    const sessionId = required(input.sessionId, 'sessionId');
-    if (!currentBySession.beginAdmission(sessionId)) {
-      throw new ProviderAttemptError('provider attempt is still running', 'PROVIDER_ATTEMPT_IN_FLIGHT');
-    }
-    let admitted = true;
-    const releaseAdmission = () => {
-      if (!admitted) return;
-      admitted = false;
-      currentBySession.endAdmission(sessionId);
-    };
-    try {
-      return beginAttemptAdmitted(input, sessionId, releaseAdmission);
-    } finally {
-      releaseAdmission();
-    }
+    return getNative().providerBeginAttempt(currentBySession, generations, input, proxyPort);
   }
 
-  function beginAttemptAdmitted(input, sessionId, releaseAdmission) {
-    const turnId = required(input.turnId, 'turnId');
-    const cli = required(input.cli, 'cli').toLowerCase();
-    const providerId = required(input.providerId, 'providerId');
-    const providerName = clean(input.providerName) || providerId;
-    const protocol = required(input.protocol, 'protocol');
-    const model = clean(input.model);
-    const providerRevision = required(input.providerRevision, 'providerRevision');
-    const subagentProviderId = clean(input.subagentProviderId);
-    if (subagentProviderId) required(subagentProviderId, 'subagentProviderId');
-    const attemptNo = positiveInteger(input.attemptNo, 'attemptNo');
-    const continuation = input.continuation === true;
-    const previous = currentBySession.get(sessionId) || null;
-    const previousFence = previous?.lifecycle.snapshot();
-    const previousBudget = previous?.lifecycle.budget();
-    const producer = proxyProducers.getActive(sessionId);
-
-    getNative().providerDrainStaleProducers(sessionId, turnId, producer, proxyPort);
-
-    getNative().providerValidateAttemptTransition(previous, previousFence,
-      { turnId, continuation, providerId, model, protocol, attemptNo }, ProviderAttemptError);
-
-    const routeGeneration = generations.next(sessionId);
-    // This is a route capability, and for a resident lane it is scoped to the
-    // spawn contract rather than to the physical attempt. A resident child bakes
-    // its route at spawn — Claude through ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
-    // and its --model argv, codex through CODEX_HOME's managed config.toml — and
-    // the lane recycles the warm process the moment any of that changes. A
-    // capability that rotated at every attempt would therefore respawn the child
-    // on every turn and residency could never take effect. The caller that
-    // builds the spawn (provider-invocation) passes the hash of exactly what it
-    // bakes; a resident lane keeps its capability while that hash is unchanged
-    // and mints a fresh one the moment it moves (provider, revision, model,
-    // effort, agent, argv). Per-turn lanes, having no warm process to protect,
-    // still rotate at every physical attempt, and a caller that declines to
-    // prove its spawn contract gets that same rotation.
-    //
-    // Attempt identity does not rest on this token: sameAttempt() compares
-    // routeAttemptId/routeGeneration/turnId, which keep incrementing. What a
-    // stable capability gives up is only the provable staleness of an orphaned
-    // child belonging to an *earlier* attempt of the same spawn contract — such
-    // a child can now reach the proxy during a later attempt. That is
-    // attribution scope, not credential exposure: the child only ever holds this
-    // opaque capability, never a real upstream key.
-    const spawnKey = clean(input.spawnKey);
-    const proxyRouteToken = isResident(cli) && spawnKey && previous
-      && previous.proxyRouteToken && previous.spawnKey === spawnKey
-      ? previous.proxyRouteToken
-      : required(nextId('proxy-route'), 'proxyRouteToken');
-    const decisionId = previous && previous.turnId === turnId
-      ? previous.decisionId : required(nextId('route-decision'), 'decisionId');
-    const routeAttemptId = required(nextId('route-attempt'), 'routeAttemptId');
-    const record = {
-      runtimeEpoch,
-      decisionId,
-      routeAttemptId,
-      sessionId,
-      turnId,
-      cli,
-      providerId,
-      providerName,
-      protocol,
-      model,
-      providerRevision,
-      allowedSubProviderIds: Object.freeze([...new Set(
-        [providerId, subagentProviderId].filter(Boolean),
-      )]),
-      attemptNo,
-      routeGeneration,
-      proxyRouteToken,
-      spawnKey,
-      stallTimeoutMs: stallTimeoutBudget(input.stallTimeoutMs),
-      requestTimeoutMs: stallTimeoutBudget(input.requestTimeoutMs),
-      connectTimeoutMs: stallTimeoutBudget(input.connectTimeoutMs),
-      lifecycle: new (getNative().RustProviderAttemptLifecycle)(
-        continuation && previous ? previousFence.replayFence : 'none',
-        !!(continuation && previousFence?.visibleOutputObserved),
-        !!(continuation && previousFence?.toolIntentObserved),
-        !!(continuation && previousFence?.sideEffectObserved),
-        previous?.turnId === turnId ? previousBudget.requestDeadlineAt ?? null : null,
-        previous?.turnId === turnId ? previousBudget.requestFailures : 0,
-        { runtimeEpoch, routeAttemptId, routeGeneration, turnId }),
-      proxyFailure: null,
-      selectedAt: Number(now()),
-    };
-    currentBySession.set(sessionId, record);
-    // The installed record now owns the session. Event callbacks may finish it
-    // and synchronously start the next attempt, as they could before admission
-    // acquired its own guard.
-    releaseAdmission();
-    const switched = previous && previous.turnId === turnId
-      && (previous.providerId !== providerId || previous.model !== model);
-    emitRoute(record, continuation ? 'continued' : switched ? 'switched' : 'selected', switched ? {
-      fromProviderId: previous.providerId,
-      fromModel: previous.model,
-      reasonCode: clean(input.reasonCode) || 'attempt_failover',
-    } : { reasonCode: clean(input.reasonCode) || 'route_resolved' });
-    return snapshot(record);
-  }
-
+  // Snapshot assembly, staleness audit, lifecycle finalization, route event
+  // dispatch and redactor cleanup are one native command
+  // (native/addon provider_attempt_route). The frozen result and its key order
+  // are unchanged.
   function finishAttempt(reference, facts = {}) {
-    const sessionId = clean(reference && reference.sessionId);
-    const record = currentBySession.get(sessionId);
-    if (!sameAttempt(record, reference)) {
-      auditOnly(sessionId, {
-        type: 'provider_attempt_late_ignored', operation: 'finish',
-        runtimeEpoch: clean(reference && reference.runtimeEpoch) || null,
-        turnId: clean(reference && reference.turnId) || null,
-        routeAttemptId: clean(reference && reference.routeAttemptId) || null,
-        routeGeneration: Number(reference && reference.routeGeneration) || null,
-        currentRouteAttemptId: record ? record.routeAttemptId : null,
-        currentRouteGeneration: record ? record.routeGeneration : null,
-      });
-      return Object.freeze({ ok: false, code: 'stale_attempt', attempt: snapshot(record) });
-    }
-    if (!record.lifecycle.running()) {
-      auditOnly(sessionId, {
-        type: 'provider_attempt_late_ignored', operation: 'finish',
-        runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
-        routeAttemptId: record.routeAttemptId, routeGeneration: record.routeGeneration,
-        currentRouteAttemptId: record.routeAttemptId,
-        currentRouteGeneration: record.routeGeneration,
-      });
-      return Object.freeze({ ok: false, code: 'attempt_not_running', attempt: snapshot(record) });
-    }
-    const outcome = clean(facts.outcome) || 'released';
-    record.lifecycle.setOutcome(outcome);
-    const errorCategory = clean(facts.errorCategory) || null;
-    record.lifecycle.setErrorCategory(errorCategory);
-    record.lifecycle.setFinishedAt(Number(now()));
-    emitRoute(record, outcome === 'failed' ? 'failed'
-      : outcome === 'succeeded' ? 'succeeded' : 'released', {
-      errorCategory,
-      reasonCode: clean(facts.reasonCode) || null,
-    });
-    streamRedactors.delete(record.routeAttemptId);
-    return Object.freeze({ ok: true, code: null, attempt: snapshot(record) });
+    return getNative().providerFinishAttempt(currentBySession, reference, facts, proxyPort);
   }
 
   function acceptEvent(reference) {
@@ -531,7 +305,7 @@ function createProviderAttemptRuntime(options = {}) {
           fromFence: previousFence, replayFence: 'none', reasonCode: 'host_error_envelope',
         });
       }
-      return Object.freeze({ accepted: true, code: null, ...snapshot(record) });
+      return Object.freeze({ accepted: true, code: null, ...getNative().providerAttemptSnapshot(record) });
     }
     const fence = fenceForEvent(event);
     if (record.lifecycle.advance(fence)) {
@@ -542,7 +316,7 @@ function createProviderAttemptRuntime(options = {}) {
         fromFence: previousFence, replayFence: fence,
       });
     }
-    return Object.freeze({ accepted: true, code: null, ...snapshot(record) });
+    return Object.freeze({ accepted: true, code: null, ...getNative().providerAttemptSnapshot(record) });
   }
 
   function proxyContext(input = {}) {
@@ -573,7 +347,7 @@ function createProviderAttemptRuntime(options = {}) {
 
   function poisonProxyAttempt(record, reasonCode) {
     if (!record || !record.lifecycle.running()) return;
-    finishAttempt(snapshot(record), {
+    finishAttempt(getNative().providerAttemptSnapshot(record), {
       outcome: 'failed', errorCategory: 'adapter_configuration', reasonCode,
     });
   }
@@ -637,7 +411,7 @@ function createProviderAttemptRuntime(options = {}) {
   }
 
   function snapshotSession(sessionId) {
-    return snapshot(currentBySession.get(clean(sessionId)));
+    return getNative().providerAttemptSnapshot(currentBySession.get(clean(sessionId)));
   }
 
   return Object.freeze({
@@ -657,7 +431,7 @@ function createProviderAttemptRuntime(options = {}) {
     proxySessionId,
     resolveProxySessionId,
     // 终端那条路由（长活会话，没有回合）自己拼能力段：与 proxySessionId 同一种形状，
-    // 只是令牌来自会话记录而不是内存里的 attempt（见 src/providers/terminal-route.js）。
+    // 只是令牌来自会话记录而不是内存里的 attempt（见 native/addon/src/provider_terminal_routes.rs）。
     encodeProxyRoute: (sessionId, token) => encodeProxySessionId(clean(sessionId), clean(token)),
     snapshot: snapshotSession,
   });
