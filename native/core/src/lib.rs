@@ -66,6 +66,7 @@ pub mod redaction;
 pub mod release_history_routes;
 pub mod request_watch;
 pub mod retry_policy;
+pub mod restart_supervisor;
 pub mod route_options;
 pub mod run_config_presets;
 pub mod search;
