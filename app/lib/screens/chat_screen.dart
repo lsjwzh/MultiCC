@@ -1007,122 +1007,259 @@ class _ChatViewState extends State<ChatView> {
                             ),
                           ),
                         ),
-                      // The keyboard shortens this sheet without shortening its
-                      // notices. Let the notices scroll in the space left after
-                      // the header and composer, so a worktree warning cannot
-                      // push the focused input underneath the iOS keyboard.
-                      ChatNoticeScroller(
-                        keyboardVisible: keyboardVisible,
-                        children: [
-                              if (provider.sessionGone)
-                                ChatSessionGoneBanner(
-                                  onClose: () => _closeGoneSession(provider),
+                      // Keep notices and floating controls inside the transcript:
+                      // the composer below can grow, fold, or move with the keyboard.
+                      Expanded(
+                        child: ChatNoticeScroller(
+                          keyboardVisible: keyboardVisible,
+                          notices: [
+                            if (provider.sessionGone)
+                              ChatSessionGoneBanner(
+                                onClose: () => _closeGoneSession(provider),
+                              ),
+                            // 回合实时读数（服务端 liveness）：working/stalled
+                            // 才有信息量，idle/unknown 是静息态，不占位置。
+                            // 它不再单独占一行 —— 有分类条时并进同一行的状态
+                            // 药丸位（「目标 · 请求/思考中 · 8s · ✕ 取消」），
+                            // 只有没有分类条时才自己成行，免得顶部叠两条都在说
+                            // 「还在跑」的横条。
+                            if (provider.hasClassify || livenessLine)
+                              AuxClassifyBar(
+                                goal: provider.classifyGoal,
+                                phase: provider.classifyPhase,
+                                classifyState: provider.classifyState,
+                                goalState: provider.classifyGoalState
+                                    ?.toString(),
+                                stale: provider.classifyStale,
+                                liveness: livenessLine ? _liveness : null,
+                                // 显隐规则集中在 helper 里（web can-mark-done /
+                                // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
+                                onMarkTurnSucceeded:
+                                    provider.hasClassify &&
+                                        classifyActions.canMarkDone
+                                    ? () => _markTurnSucceeded(provider)
+                                    : null,
+                                onCancelTurn:
+                                    provider.hasClassify &&
+                                        classifyActions.canCancelTask
+                                    ? provider.cancel
+                                    : null,
+                                onMarkGoalAchieved: provider.hasClassify
+                                    ? () => _markGoalAchieved(provider)
+                                    : null,
+                              ),
+                            _CenteredChatLane(
+                              child: ChatRuntimeNoticePanel(
+                                apiError: provider.apiErrorPolicy,
+                                limit: provider.limitView,
+                                balance: provider.balanceView,
+                                arkUsage: provider.arkQuotaView,
+                                kimiUsage: provider.kimiQuotaView,
+                                claudeUsage: provider.claudeLimitView,
+                                qoderUsage: provider.qoderQuotaView,
+                                opencodeUsage: provider.opencodeQuotaView,
+                                codexUsage: provider.codexQuotaView,
+                                onClaudeQuotaTap: () =>
+                                    provider.handleClaudeQuotaTap(),
+                                onQoderQuotaTap: () =>
+                                    provider.handleQoderQuotaTap(),
+                                onOpenCodeQuotaTap: () =>
+                                    provider.handleOpenCodeQuotaTap(),
+                                onCodexQuotaTap: () =>
+                                    provider.handleCodexQuotaTap(),
+                                onArkQuotaTap: () =>
+                                    provider.handleArkQuotaTap(),
+                                onKimiQuotaTap: () =>
+                                    provider.handleKimiQuotaTap(),
+                                onRetry:
+                                    provider.apiErrorPolicy?.canManualRetry ==
+                                        true
+                                    ? () => _retryApiError(provider)
+                                    : null,
+                              ),
+                            ),
+                            // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
+                            // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
+                            // 谁更该先处理 —— 冲突没解决，同步就还没结束。
+                            if (_conflictFiles().isNotEmpty)
+                              WorktreeConflictBanner(
+                                files: _conflictFiles(),
+                                onHelp: () =>
+                                    _showConflictHelp(_conflictFiles()),
+                                onContinue: () => _resolveRebase('continue'),
+                                onAbort: () => _resolveRebase('abort'),
+                                onForceSync: () => _forceSyncWorktree(provider),
+                                forceSyncing: _forceSyncing,
+                              ),
+                            if (_worktreeReclaimed())
+                              WorktreeReclaimedBanner(
+                                branch: _mergeStatus?['branch']?.toString(),
+                                onForceSync: () => _forceSyncWorktree(provider),
+                                forceSyncing: _forceSyncing,
+                              )
+                            else if (_behindCount() > 0)
+                              WorktreeBehindBanner(
+                                behind: _behindCount(),
+                                baseBranch: _baseBranchName(),
+                                syncing: _syncing,
+                                onSync: () => _syncWorktree(
+                                  provider.executionSessionName,
                                 ),
-                              // 回合实时读数（服务端 liveness）：working/stalled
-                              // 才有信息量，idle/unknown 是静息态，不占位置。
-                              // 它不再单独占一行 —— 有分类条时并进同一行的状态
-                              // 药丸位（「目标 · 请求/思考中 · 8s · ✕ 取消」），
-                              // 只有没有分类条时才自己成行，免得顶部叠两条都在说
-                              // 「还在跑」的横条。
-                              if (provider.hasClassify || livenessLine)
-                                AuxClassifyBar(
-                                  goal: provider.classifyGoal,
-                                  phase: provider.classifyPhase,
-                                  classifyState: provider.classifyState,
-                                  goalState: provider.classifyGoalState?.toString(),
-                                  stale: provider.classifyStale,
-                                  liveness: livenessLine ? _liveness : null,
-                                  // 显隐规则集中在 helper 里（web can-mark-done /
-                                  // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
-                                  onMarkTurnSucceeded:
-                                      provider.hasClassify &&
-                                          classifyActions.canMarkDone
-                                      ? () => _markTurnSucceeded(provider)
-                                      : null,
-                                  onCancelTurn:
-                                      provider.hasClassify &&
-                                          classifyActions.canCancelTask
-                                      ? provider.cancel
-                                      : null,
-                                  onMarkGoalAchieved: provider.hasClassify
-                                      ? () => _markGoalAchieved(provider)
-                                      : null,
-                                ),
-                              _CenteredChatLane(
-                                child: ChatRuntimeNoticePanel(
-                                  apiError: provider.apiErrorPolicy,
-                                  limit: provider.limitView,
-                                  balance: provider.balanceView,
-                                  arkUsage: provider.arkQuotaView,
-                                  kimiUsage: provider.kimiQuotaView,
-                                  claudeUsage: provider.claudeLimitView,
-                                  qoderUsage: provider.qoderQuotaView,
-                                  opencodeUsage: provider.opencodeQuotaView,
-                                  codexUsage: provider.codexQuotaView,
-                                  onClaudeQuotaTap: () =>
-                                      provider.handleClaudeQuotaTap(),
-                                  onQoderQuotaTap: () =>
-                                      provider.handleQoderQuotaTap(),
-                                  onOpenCodeQuotaTap: () =>
-                                      provider.handleOpenCodeQuotaTap(),
-                                  onCodexQuotaTap: () =>
-                                      provider.handleCodexQuotaTap(),
-                                  onArkQuotaTap: () =>
-                                      provider.handleArkQuotaTap(),
-                                  onKimiQuotaTap: () =>
-                                      provider.handleKimiQuotaTap(),
-                                  onRetry:
-                                      provider.apiErrorPolicy?.canManualRetry ==
-                                          true
-                                      ? () => _retryApiError(provider)
-                                      : null,
+                                onForceSync: () => _forceSyncWorktree(provider),
+                                forceSyncing: _forceSyncing,
+                              ),
+                          ],
+                          // 第 4 步「第一份结果已经完成」圈的整块消息区。
+                          messageList: TourAnchor(
+                            step: 4,
+                            child: _MessageList(
+                              scrollCtrl: _scrollCtrl,
+                              highlightId: _highlightId,
+                              focusKey: _focusKey,
+                              onHighlightDone: _clearHighlight,
+                            ),
+                          ),
+                          overlays: [
+                            if (!dispatchExpanded &&
+                                provider.pendingUserInput != null &&
+                                provider.pendingUserInputCollapsed)
+                              Positioned(
+                                right: 14,
+                                bottom: 12,
+                                child: _PendingInputFab(
+                                  onTap: provider.expandPendingUserInput,
                                 ),
                               ),
-                              // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
-                              // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
-                              // 谁更该先处理 —— 冲突没解决，同步就还没结束。
-                              if (_conflictFiles().isNotEmpty)
-                                WorktreeConflictBanner(
-                                  files: _conflictFiles(),
-                                  onHelp: () =>
-                                      _showConflictHelp(_conflictFiles()),
-                                  onContinue: () => _resolveRebase('continue'),
-                                  onAbort: () => _resolveRebase('abort'),
-                                  onForceSync: () =>
-                                      _forceSyncWorktree(provider),
-                                  forceSyncing: _forceSyncing,
-                                ),
-                              if (_worktreeReclaimed())
-                                WorktreeReclaimedBanner(
-                                  branch: _mergeStatus?['branch']?.toString(),
-                                  onForceSync: () =>
-                                      _forceSyncWorktree(provider),
-                                  forceSyncing: _forceSyncing,
-                                )
-                              else if (_behindCount() > 0)
-                                WorktreeBehindBanner(
-                                  behind: _behindCount(),
-                                  baseBranch: _baseBranchName(),
-                                  syncing: _syncing,
-                                  onSync: () => _syncWorktree(
-                                    provider.executionSessionName,
+                            // 无人值守入口停在输入区上方，派发等可拖动入口为它预留空间。
+                            // 状态配色/轮次徽标见
+                            // [UnattendedFab]；点开是完整面板。
+                            if (provider.sessionName.isNotEmpty)
+                              Positioned(
+                                left: 14,
+                                bottom: 12,
+                                child: UnattendedFab(
+                                  state: provider.unattended,
+                                  onTap: () => showUnattendedSheet(
+                                    context,
+                                    provider: provider,
                                   ),
-                                  onForceSync: () =>
-                                      _forceSyncWorktree(provider),
-                                  forceSyncing: _forceSyncing,
                                 ),
-                        ],
-                      ),
-                      Expanded(
-                        // 第 4 步「第一份结果已经完成」圈的整块消息区。
-                        child: TourAnchor(
-                          step: 4,
-                          child: _MessageList(
-                            scrollCtrl: _scrollCtrl,
-                            highlightId: _highlightId,
-                            focusKey: _focusKey,
-                            onHighlightDone: _clearHighlight,
-                          ),
+                              ),
+                            // Background tasks (mobile): draggable floating dock — same
+                            // primitive as the dispatch entry, independent persistence, and
+                            // it deterministically yields to the dispatch dock's anchor on
+                            // the same side so the two icons never overlap.
+                            if (provider.hasBackgroundTaskRows)
+                              BackgroundTasksFloatingDock(
+                                key: ValueKey('bg-${provider.sessionName}'),
+                                rows: provider.backgroundTaskRows(),
+                                onDismiss: provider.dismissBackgroundTask,
+                                obstacle: _dispatchAnchor,
+                                onAnchorChanged: (sideRight, top) {
+                                  final next = FloatingDockAnchor(
+                                    sideRight: sideRight,
+                                    top: top,
+                                  );
+                                  if (_backgroundAnchor == next) return;
+                                  _backgroundAnchor = next;
+                                  // 定时发送那个球排在这两个之后，读的是本帧之前的值 —— 同
+                                  // 样的 post-frame 提醒，让它下一帧就跟上。
+                                  WidgetsBinding.instance.addPostFrameCallback((
+                                    _,
+                                  ) {
+                                    if (mounted) setState(() {});
+                                  });
+                                },
+                                leftMinBottom: provider.sessionName.isNotEmpty
+                                    ? 66
+                                    : 12,
+                                rightMinBottom: _dispatchRightReserve(provider),
+                              ),
+                            if (provider.dispatchQueue.isNotEmpty)
+                              DispatchFloatingDock(
+                                key: ValueKey(
+                                  'dispatch-${provider.sessionName}',
+                                ),
+                                entries: provider.dispatchQueue,
+                                resolveName: context
+                                    .read<SessionManager>()
+                                    .sessionDisplayName,
+                                onRefresh: provider.refreshDispatchQueue,
+                                onOpenSession: _openDispatchSession,
+                                onExpandedChanged: (expanded) {
+                                  if (mounted) {
+                                    setState(
+                                      () => _dispatchExpanded = expanded,
+                                    );
+                                  }
+                                },
+                                onAnchorChanged: (sideRight, top) {
+                                  final next = FloatingDockAnchor(
+                                    sideRight: sideRight,
+                                    top: top,
+                                  );
+                                  if (_dispatchAnchor == next) return;
+                                  _dispatchAnchor = next;
+                                  // The bg dock reads the obstacle on rebuild; nudge the view
+                                  // post-frame (never setState during a child's build) so the
+                                  // two icons re-separate promptly instead of waiting for the
+                                  // next provider notify.
+                                  WidgetsBinding.instance.addPostFrameCallback((
+                                    _,
+                                  ) {
+                                    if (mounted) setState(() {});
+                                  });
+                                },
+                                leftMinBottom: provider.sessionName.isNotEmpty
+                                    ? 66
+                                    : 12,
+                                rightMinBottom: _dispatchRightReserve(provider),
+                              ),
+                            // 定时发送的悬浮球：有待执行的消息才出现。排在最后、优先级最低，
+                            // 同侧要让位给派发和后台任务两个入口 —— 两个 anchor 一起递进去。
+                            if (_scheduledSend != null)
+                              ScheduledSendDock(
+                                key: ValueKey(
+                                  'schedule-${provider.sessionName}',
+                                ),
+                                store: _scheduledSend!,
+                                onDraft: _readComposerDraft,
+                                obstacle: _dispatchAnchor,
+                                extraObstacles: [
+                                  if (_backgroundAnchor != null)
+                                    _backgroundAnchor!,
+                                ],
+                                leftMinBottom: provider.sessionName.isNotEmpty
+                                    ? 66
+                                    : 12,
+                                rightMinBottom: _dispatchRightReserve(provider),
+                              ),
+                            // 「有可合并内容」收起后的悬浮球：与上面三个共用同一套 primitive，
+                            // 优先级最低 —— 三个球的锚点一起递进去，同侧不互相压住。
+                            if (mergeReady && _mergeHintCollapsed)
+                              MergeHintDock(
+                                key: ValueKey('merge-${provider.sessionName}'),
+                                text: _mergeStatusText(_mergeStatus),
+                                onMerge: () => _mergeCurrent(
+                                  context,
+                                  provider.executionSessionName,
+                                ),
+                                onDiff: () => showSessionDiffDialog(
+                                  context,
+                                  settings: widget.settings,
+                                  sessionId: provider.executionSessionName,
+                                ),
+                                obstacle: _dispatchAnchor,
+                                extraObstacles: [
+                                  if (_backgroundAnchor != null)
+                                    _backgroundAnchor!,
+                                ],
+                                leftMinBottom: provider.sessionName.isNotEmpty
+                                    ? 66
+                                    : 12,
+                                rightMinBottom: _dispatchRightReserve(provider),
+                              ),
+                          ],
                         ),
                       ),
                       if (widget.settings.advancedMode.value)
@@ -1164,118 +1301,6 @@ class _ChatViewState extends State<ChatView> {
                     ],
                   ),
                 ),
-                if (!dispatchExpanded &&
-                    provider.pendingUserInput != null &&
-                    provider.pendingUserInputCollapsed)
-                  Positioned(
-                    right: 14,
-                    bottom: 100,
-                    child: _PendingInputFab(
-                      onTap: provider.expandPendingUserInput,
-                    ),
-                  ),
-                // 无人值守入口：常驻在输入区左上方，和右侧那几个可拖拽的悬浮球
-                // 分居两侧，不压输入框和发送键。状态配色/轮次徽标见
-                // [UnattendedFab]；点开是完整面板。
-                if (provider.sessionName.isNotEmpty)
-                  Positioned(
-                    left: 14,
-                    bottom: 150,
-                    child: UnattendedFab(
-                      state: provider.unattended,
-                      onTap: () =>
-                          showUnattendedSheet(context, provider: provider),
-                    ),
-                  ),
-                // Background tasks (mobile): draggable floating dock — same
-                // primitive as the dispatch entry, independent persistence, and
-                // it deterministically yields to the dispatch dock's anchor on
-                // the same side so the two icons never overlap.
-                if (provider.hasBackgroundTaskRows)
-                  BackgroundTasksFloatingDock(
-                    key: ValueKey('bg-${provider.sessionName}'),
-                    rows: provider.backgroundTaskRows(),
-                    onDismiss: provider.dismissBackgroundTask,
-                    obstacle: _dispatchAnchor,
-                    onAnchorChanged: (sideRight, top) {
-                      final next = FloatingDockAnchor(
-                        sideRight: sideRight,
-                        top: top,
-                      );
-                      if (_backgroundAnchor == next) return;
-                      _backgroundAnchor = next;
-                      // 定时发送那个球排在这两个之后，读的是本帧之前的值 —— 同
-                      // 样的 post-frame 提醒，让它下一帧就跟上。
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) setState(() {});
-                      });
-                    },
-                    leftMinBottom: 96,
-                    rightMinBottom: _bgRightReserve(provider),
-                  ),
-                if (provider.dispatchQueue.isNotEmpty)
-                  DispatchFloatingDock(
-                    key: ValueKey('dispatch-${provider.sessionName}'),
-                    entries: provider.dispatchQueue,
-                    resolveName: context
-                        .read<SessionManager>()
-                        .sessionDisplayName,
-                    onRefresh: provider.refreshDispatchQueue,
-                    onOpenSession: _openDispatchSession,
-                    onExpandedChanged: (expanded) {
-                      if (mounted) setState(() => _dispatchExpanded = expanded);
-                    },
-                    onAnchorChanged: (sideRight, top) {
-                      final next = FloatingDockAnchor(
-                        sideRight: sideRight,
-                        top: top,
-                      );
-                      if (_dispatchAnchor == next) return;
-                      _dispatchAnchor = next;
-                      // The bg dock reads the obstacle on rebuild; nudge the view
-                      // post-frame (never setState during a child's build) so the
-                      // two icons re-separate promptly instead of waiting for the
-                      // next provider notify.
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) setState(() {});
-                      });
-                    },
-                    leftMinBottom: 96,
-                    rightMinBottom: _dispatchRightReserve(provider),
-                  ),
-                // 定时发送的悬浮球：有待执行的消息才出现。排在最后、优先级最低，
-                // 同侧要让位给派发和后台任务两个入口 —— 两个 anchor 一起递进去。
-                if (_scheduledSend != null)
-                  ScheduledSendDock(
-                    key: ValueKey('schedule-${provider.sessionName}'),
-                    store: _scheduledSend!,
-                    onDraft: _readComposerDraft,
-                    obstacle: _dispatchAnchor,
-                    extraObstacles: [
-                      if (_backgroundAnchor != null) _backgroundAnchor!,
-                    ],
-                    leftMinBottom: 96,
-                    rightMinBottom: _dispatchRightReserve(provider),
-                  ),
-                // 「有可合并内容」收起后的悬浮球：与上面三个共用同一套 primitive，
-                // 优先级最低 —— 三个球的锚点一起递进去，同侧不互相压住。
-                if (mergeReady && _mergeHintCollapsed)
-                  MergeHintDock(
-                    key: ValueKey('merge-${provider.sessionName}'),
-                    text: _mergeStatusText(_mergeStatus),
-                    onMerge: () =>
-                        _mergeCurrent(context, provider.executionSessionName),
-                    onDiff: () => showSessionDiffDialog(
-                      context,
-                      settings: widget.settings,
-                      sessionId: provider.executionSessionName,
-                    ),
-                    obstacle: _dispatchAnchor,
-                    extraObstacles: [
-                      if (_backgroundAnchor != null) _backgroundAnchor!,
-                    ],
-                    rightMinBottom: _dispatchRightReserve(provider),
-                  ),
                 Positioned.fill(
                   child: ChatSidePanelStack(
                     panels: _panels,
@@ -1296,26 +1321,13 @@ class _ChatViewState extends State<ChatView> {
   ScheduledSendDraft _readComposerDraft() =>
       _scheduleDraftSink.value?.call() ?? const ScheduledSendDraft(text: '');
 
-  /// Bottom clearance the dispatch dock must respect when snapped to the
-  /// right edge: the input bar always, plus the pending-input FAB when it is
-  /// visible. The background-tasks dock is no longer a fixed right-side
-  /// floater (it drifts with the user's drag; icon-vs-icon overlap is solved
-  /// by the obstacle yield), so it no longer inflates this reserve.
+  /// The transcript already excludes the composer. Only the collapsed
+  /// pending-answer button needs extra space on the right edge.
   double _dispatchRightReserve(ChatProvider provider) {
-    var reserve = 96.0;
-    final pendingFab =
-        provider.pendingUserInput != null && provider.pendingUserInputCollapsed;
-    if (pendingFab) reserve = reserve < 160.0 ? 160.0 : reserve;
-    return reserve;
-  }
-
-  /// Same, for the background-tasks dock (pending-input FAB sits right-bottom
-  /// at ~160 when collapsed).
-  double _bgRightReserve(ChatProvider provider) {
     return provider.pendingUserInput != null &&
             provider.pendingUserInputCollapsed
-        ? 160.0
-        : 96.0;
+        ? 72.0
+        : 12.0;
   }
 }
 

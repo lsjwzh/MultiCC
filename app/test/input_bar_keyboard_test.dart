@@ -6,8 +6,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/providers/chat_provider.dart';
 import 'package:multicc_app/providers/session_manager.dart';
+import 'package:multicc_app/models/dispatch_queue.dart';
 import 'package:multicc_app/services/chat_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
+import 'package:multicc_app/widgets/chat_notice_scroller.dart';
+import 'package:multicc_app/widgets/dispatch_floating_dock.dart';
 import 'package:multicc_app/widgets/input_bar.dart';
 
 class _ConnectedChatProvider extends ChatProvider {
@@ -29,11 +32,7 @@ class _ConnectedChatProvider extends ChatProvider {
   bool get isStreaming => false;
 
   @override
-  String? sendMessage(
-    String text, {
-    String? clientMsgId,
-    String? voiceRaw,
-  }) {
+  String? sendMessage(String text, {String? clientMsgId, String? voiceRaw}) {
     sent.add(text);
     return 'test-msg';
   }
@@ -51,6 +50,7 @@ Widget _host({
   required TargetPlatform platform,
   required SessionManager manager,
   required ChatProvider provider,
+  bool withDock = false,
 }) {
   return MultiProvider(
     providers: [
@@ -59,16 +59,37 @@ Widget _host({
     ],
     child: MaterialApp(
       theme: ThemeData(platform: platform),
-      home: const Scaffold(
+      home: Scaffold(
         body: Column(
           children: [
             Expanded(
-              child: ColoredBox(
-                key: Key('chat-outside-surface'),
-                color: Colors.black,
+              child: ChatNoticeScroller(
+                keyboardVisible: false,
+                notices: const [],
+                messageList: const ColoredBox(
+                  key: Key('chat-outside-surface'),
+                  color: Colors.black,
+                ),
+                overlays: [
+                  if (withDock)
+                    DispatchFloatingDock(
+                      entries: const [
+                        DispatchQueueEntry(
+                          operationId: 'layout-test',
+                          relation: 'owner',
+                          targetSessionId: 'worker',
+                          mode: 'async',
+                          queueState: 'running',
+                        ),
+                      ],
+                      resolveName: (id) => id,
+                      leftMinBottom: 12,
+                      rightMinBottom: 12,
+                    ),
+                ],
               ),
             ),
-            InputBar(),
+            const InputBar(),
           ],
         ),
       ),
@@ -79,6 +100,67 @@ Widget _host({
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => I18n.init('zh'));
+
+  for (final textScale in [1.0, 1.3]) {
+    testWidgets(
+      'Android composer clears docks through keyboard and draft resizing at scale $textScale',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(384, 854);
+        tester.platformDispatcher.textScaleFactorTestValue = textScale;
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetViewInsets);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        final settings = await _settings();
+        final manager = SessionManager(settings: settings);
+        final provider = _ConnectedChatProvider(settings: settings);
+        await tester.pumpWidget(
+          _host(
+            platform: TargetPlatform.android,
+            manager: manager,
+            provider: provider,
+            withDock: true,
+          ),
+        );
+        await tester.pump();
+
+        for (final keyboardHeight in [320.0, 380.0, 0.0]) {
+          tester.view.viewInsets = FakeViewPadding(bottom: keyboardHeight);
+          for (final draft in [
+            'one line',
+            List.filled(6, 'draft line').join('\n'),
+          ]) {
+            final input = find.byKey(const Key('chat-message-input'));
+            await tester.enterText(input, draft);
+            await tester.pump();
+            final composer = tester.getRect(find.byType(InputBar));
+            final dock = tester.getRect(
+              find.byKey(const Key('dispatch-dock-icon')),
+            );
+            final band = tester.getRect(
+              find.byKey(const Key('chat-composer-band')),
+            );
+            final card = tester.getRect(
+              find.byKey(const Key('chat-composer-card')),
+            );
+            expect(composer.bottom, 854 - keyboardHeight);
+            expect(dock.bottom, lessThanOrEqualTo(composer.top));
+            expect(dock.overlaps(band), isFalse);
+            expect(dock.overlaps(card), isFalse);
+            expect(band.bottom, card.top);
+            expect(tester.widget<TextField>(input).focusNode!.hasFocus, isTrue);
+            expect(tester.widget<TextField>(input).controller!.text, draft);
+            expect(tester.takeException(), isNull);
+          }
+        }
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        provider.dispose();
+        manager.dispose();
+      },
+    );
+  }
 
   testWidgets('iOS send hides the keyboard after dispatching the message', (
     tester,
