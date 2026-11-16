@@ -13,7 +13,7 @@ const binary = process.env.MULTICC_RESTART_TEST_BIN || path.join(
   process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
 
 function exited(child) { return new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal }))); }
-function listening(server) { return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port))); }
+function listening(server, host = '127.0.0.1') { return new Promise(resolve => server.listen(0, host, () => resolve(server.address().port))); }
 function close(server) { return new Promise(resolve => server.close(resolve)); }
 async function runCase(kind) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-restart-e2e-'));
@@ -134,11 +134,14 @@ test('foreground guard stops the launcher on EOF and can be disarmed', async () 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-for (const kind of ['same-port', 'new-port', 'wrong-instance']) {
-  test(`restart client: ${kind}`, async () => {
+const localInterface = Object.values(os.networkInterfaces()).flat().find(item => item && item.family === 'IPv4' && !item.internal
+  && (/^10\./.test(item.address) || /^192\.168\./.test(item.address) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(item.address)))?.address;
+for (const kind of ['same-port', 'new-port', 'localhost', 'localhost-new-port', 'wrong-instance', 'local-interface']) {
+  test(`restart client: ${kind}`, { skip: kind === 'local-interface' && !localInterface }, async () => {
     const old = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
     const oldExit = exited(old);
     let current = false, postCount = 0, nextServer, reservation;
+    const changingPort = kind === 'new-port' || kind === 'localhost-new-port';
     const generation = 'fixture-new-generation';
     const original = http.createServer((req, res) => {
       if (req.method === 'POST') {
@@ -148,13 +151,14 @@ for (const kind of ['same-port', 'new-port', 'wrong-instance']) {
         req.on('end', () => {
           const parsed = JSON.parse(text);
           assert.equal(parsed.expectedPid, old.pid);
-          if (kind === 'new-port') assert.equal(parsed.port, target);
+          if (kind === 'local-interface') assert.equal(req.headers['x-access-token'], 'fixture-local-token');
+          if (changingPort) assert.equal(parsed.port, target);
           res.writeHead(202, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ restartId: generation }));
-          if (kind !== 'new-port') current = true;
+          if (!changingPort) current = true;
           old.kill();
           oldExit.then(async () => {
-            if (kind === 'new-port') {
+            if (changingPort) {
               nextServer = http.createServer(ready);
               nextServer.listen(target, '127.0.0.1');
             }
@@ -163,21 +167,24 @@ for (const kind of ['same-port', 'new-port', 'wrong-instance']) {
       } else ready(req, res);
     });
     function ready(req, res) {
-      if (current || (kind === 'new-port' && req.socket.localPort === target)) res.setHeader('X-Multicc-Restart-Generation', generation);
+      if (current || (changingPort && req.socket.localPort === target)) res.setHeader('X-Multicc-Restart-Generation', generation);
       else res.setHeader('X-Multicc-Gateway-Pid', String(old.pid));
       res.setHeader('Content-Type', 'application/json');
       res.end('{"status":"ready"}');
     }
-    const port = await listening(original);
+    const host = kind === 'local-interface' ? localInterface : '127.0.0.1';
+    const port = await listening(original, host);
     let target = port;
-    if (kind === 'new-port') { reservation = net.createServer(); target = await listening(reservation); await close(reservation); }
+    if (changingPort) { reservation = net.createServer(); target = await listening(reservation); await close(reservation); }
     const child = spawn(binary, ['--request'], { stdio: ['pipe', 'pipe', 'pipe'] });
     const done = exited(child);
     const watchdog = setTimeout(() => child.kill(), 10000);
     let stderr = '';
     child.stderr.on('data', chunk => { stderr += chunk; });
     child.stdout.resume();
-    child.stdin.end(JSON.stringify({ origin: `http://127.0.0.1:${port}`, expected_pids: [kind === 'wrong-instance' ? old.pid + 1 : old.pid], port: kind === 'new-port' ? target : null }));
+    const originHost = kind.startsWith('localhost') ? 'localhost' : host;
+    child.stdin.end(JSON.stringify({ origin: `http://${originHost}:${port}`, expected_pids: [kind === 'wrong-instance' ? old.pid + 1 : old.pid], port: changingPort ? target : null,
+      token: kind === 'local-interface' ? 'fixture-local-token' : '' }));
     try {
       const result = await done;
       assert.equal(result.code, kind === 'wrong-instance' ? 1 : 0, stderr);
@@ -192,6 +199,17 @@ for (const kind of ['same-port', 'new-port', 'wrong-instance']) {
     }
   });
 }
+
+test('restart client refuses a nonlocal target without exposing its token', async () => {
+  const child = spawn(binary, ['--request'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const done = exited(child);
+  let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
+  child.stdin.end(JSON.stringify({ origin: 'http://8.8.8.8:3000', expected_pids: [123], token: 'fixture-secret-do-not-print' }));
+  const result = await done;
+  assert.notEqual(result.code, 0);
+  assert.doesNotMatch(output, /fixture-secret-do-not-print/);
+  assert.match(output, /requires a local HTTP origin/);
+});
 
 for (const kind of ['source-cli', 'standalone-cli', 'standalone-cli-new-port', 'standalone-cli-foreground']) {
   test(`real ${kind} delegates to Rust and verifies the replacement`, { skip: kind === 'source-cli' && process.platform === 'win32' }, async () => {

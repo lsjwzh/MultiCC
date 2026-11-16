@@ -12,8 +12,7 @@ function scheduleRustRestart({ spawn, rootDir, dataDir, port, targetPort = port,
   if (!addon || env.MULTICC_GATEWAY_CHILD !== '1' || oldPid !== process.ppid || !Number.isInteger(port) || port < 1 || port > 65535) {
     throw Object.assign(new Error('restart requires a verified gateway parent'), { code: 'RESTART_GATEWAY_INVALID' });
   }
-  const probeHost = host === '::1' || host === '::' ? '::1' : host === '127.0.0.1' || host === '0.0.0.0' ? '127.0.0.1' : null;
-  if (!probeHost) throw Object.assign(new Error('restart cannot safely verify this bind address'), { code: 'RESTART_BIND_UNSUPPORTED' });
+  if (typeof host !== 'string' || !host || host.length > 253) throw Object.assign(new Error('restart bind address is invalid'), { code: 'RESTART_BIND_UNSUPPORTED' });
   const dir = path.dirname(path.resolve(addon));
   const binary = path.join(dir, process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
   const gateway = path.join(dir, process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
@@ -25,7 +24,7 @@ function scheduleRustRestart({ spawn, rootDir, dataDir, port, targetPort = port,
   fs.mkdirSync(logs, { recursive: true });
   const logPath = path.join(logs, 'restart-supervisor.log');
   if (targetPort !== port && mode !== 'standalone') throw Object.assign(new Error('port changes require the standalone launcher'), { code: 'RESTART_PORT_UNSUPPORTED' });
-  const config = { mode, old_pid: oldPid, port: targetPort, probe_host: probeHost, generation,
+  const config = { mode, old_pid: oldPid, port: targetPort, current_port: port, probe_host: host, verify_initial: true, generation,
     generation_file: path.join(dataDir, '.restart-generation'), lock_file: path.join(dataDir, '.restart-supervisor.lock'),
     port_file: path.join(dataDir, '.restart-port'),
     cwd: rootDir, gateway, node: process.execPath, log_path: logPath,
@@ -70,10 +69,11 @@ function scheduleRustRestart({ spawn, rootDir, dataDir, port, targetPort = port,
 }
 
 // CLI compatibility bridge. The Rust executable performs identity checks,
-// the HTTP request, and readiness monitoring; no credentials are passed.
-function requestRustRestart({ binary, origin, expectedPids, port, run = require('node:child_process').spawnSync }) {
+// the HTTP request, and readiness monitoring. A non-loopback token is sent
+// over stdin, never in command-line arguments.
+function requestRustRestart({ binary, origin, expectedPids, port, token = '', run = require('node:child_process').spawnSync }) {
   const result = run(binary, ['--request'], {
-    input: JSON.stringify({ origin, expected_pids: expectedPids, port: port || null }),
+    input: JSON.stringify({ origin, expected_pids: expectedPids, port: port || null, token }),
     stdio: ['pipe', 'inherit', 'inherit'], encoding: 'utf8', timeout: 740000, windowsHide: true,
   });
   if (result.error) { process.stderr.write(`restart supervisor unavailable: ${result.error.message}\n`); return 1; }
@@ -229,14 +229,17 @@ if (require.main === module && process.argv[2] === '--request') {
   const config = require('./host-env').readEnvFile();
   const port = Number(process.env.PORT || config.PORT || 3000);
   const host = process.env.HOST || config.HOST || '127.0.0.1';
-  const loopback = host === '::1' || host === '::' ? '[::1]' : host === '127.0.0.1' || host === '0.0.0.0' ? '127.0.0.1' : '';
+  const net = require('node:net');
+  const probeHost = host === '::' ? '[::1]' : host === '0.0.0.0' ? '127.0.0.1'
+    : net.isIP(host) === 6 ? `[${host}]` : net.isIP(host) === 4 || /^[a-z0-9.-]+$/i.test(host) ? host : '';
   const expectedPids = String(process.env.MULTICC_RESTART_PIDS || '').split(/\s+/).map(Number).filter(n => Number.isInteger(n) && n > 1);
   const addon = process.env.MULTICC_RUST_ADDON;
-  if (!addon || !loopback || !Number.isInteger(port) || port < 1 || port > 65535 || !expectedPids.length) {
+  if (!addon || !probeHost || !Number.isInteger(port) || port < 1 || port > 65535 || !expectedPids.length) {
     process.stderr.write('Cannot verify the running MultiCC instance; restart was not requested.\n');
     process.exitCode = 1;
   } else {
     const binary = path.join(path.dirname(addon), process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
-    process.exitCode = requestRustRestart({ binary, origin: `http://${loopback}:${port}`, expectedPids });
+    process.exitCode = requestRustRestart({ binary, origin: `http://${probeHost}:${port}`, expectedPids,
+      token: process.env.ACCESS_TOKEN || config.ACCESS_TOKEN || '' });
   }
 }
