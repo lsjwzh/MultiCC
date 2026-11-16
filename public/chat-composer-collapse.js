@@ -66,6 +66,11 @@
   var live = false;
   var p = 0;              // 0 whole · 1 folded
   var frame = null;
+  // Once our own fold reaches the bottom, keep the composer open until the
+  // reader scrolls away. Otherwise its changing height moves the bottom back
+  // and forth across the threshold and reverses the animation indefinitely.
+  var bottomLock = false;
+  var lastTop = messages.scrollTop;
   var settleTimer = null;
   var snapTo = null;      // set by the settle snap, cleared on the next gesture
   var geo = { band: 0, card: 0 };
@@ -100,9 +105,10 @@
   }
 
   function wanted() {
-    if (snapTo !== null) return snapTo;
     if (pinned()) return 0;
-    if (messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 2) return 0;
+    if (messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 2) bottomLock = true;
+    if (bottomLock) return 0;
+    if (snapTo !== null) return snapTo;
     return clamp(walked() / FOLD_AT, 0, 1);
   }
 
@@ -171,6 +177,8 @@
     var folded = visible <= FOLD_HEIGHT + 6;
     pill.classList.toggle('show', folded);
     if (folded) syncPill();
+    // Opening removes room from the transcript; keep the bottom in view.
+    if (bottomLock && p > 0) messages.scrollTop = messages.scrollHeight;
   }
 
   function tick() {
@@ -203,6 +211,12 @@
 
   function onScroll() {
     if (!live) return;
+    var top = messages.scrollTop;
+    // Layout-driven clamping during expansion moves the bottom down; an
+    // upward scroll is a fresh request to leave it and may fold again.
+    if (bottomLock && top < lastTop - 1) bottomLock = false;
+    lastTop = top;
+    if (bottomLock) return;
     snapTo = null;
     kick();
     rest();
@@ -223,6 +237,7 @@
     if (frame !== null) { cancelAnimationFrame(frame); frame = null; }
     clearTimeout(settleTimer);
     p = 0;
+    bottomLock = false;
     snapTo = null;
     body.classList.remove('air-composer-fold');
     card.style.height = '';
@@ -244,8 +259,8 @@
 
   // ── Wiring ────────────────────────────────────────────────────────────────
   messages.addEventListener('scroll', onScroll, { passive: true });
-  messages.addEventListener('touchstart', function () { snapTo = null; }, { passive: true });
-  messages.addEventListener('wheel', function () { snapTo = null; }, { passive: true });
+  messages.addEventListener('touchstart', function () { bottomLock = false; snapTo = null; }, { passive: true });
+  messages.addEventListener('wheel', function () { bottomLock = false; snapTo = null; }, { passive: true });
 
   card.addEventListener('focusin', function () { snapTo = null; kick(); });
   doc.addEventListener('focusout', function () { kick(); rest(); });

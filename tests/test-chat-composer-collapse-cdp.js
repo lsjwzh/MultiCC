@@ -117,6 +117,24 @@ test('the mobile composer folds into an oval as the transcript is scrolled back'
     assert.ok(wholeClip > 30, `the band should occupy its own room at rest, got ${wholeClip}px`);
     assert.ok(s.distance <= 2, `expected to start at the bottom, got ${s.distance}px away`);
 
+    // A viewport resize caused by folding can clamp the scroller to the
+    // bottom. The composer must settle instead of reversing forever.
+    for (const distance of [40, 80, 120, 160]) {
+      await scrollToBottom();
+      await sleep(400);
+      await scrollUp(distance);
+      await sleep(900);
+      const heights = [];
+      for (let i = 0; i < 12; i++) { heights.push((await state()).card); await sleep(70); }
+      assert.ok(Math.max(...heights) - Math.min(...heights) < 1,
+        `composer must settle ${distance}px from bottom, sampled ${heights.join(', ')}`);
+    }
+    await scrollToBottom();
+    await sleep(700);
+    s = await state();
+    assert.equal(s.card, wholeCard, 'returning to the bottom must reopen the card');
+    assert.ok(s.distance <= 2, `returning to the bottom must keep the newest message visible, got ${s.distance}px`);
+
     // 2. the band goes first: it gives up room before the card loses any.
     //    Sampled mid-gesture — a drag is a stream of scroll events, and the
     //    settle snap below only fires once the gesture stops, so this is also
