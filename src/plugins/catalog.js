@@ -240,7 +240,7 @@ function verifySignature(body, signatureText, keys = CATALOG_KEYS) {
 
 function run(file, args, timeout = 3000) {
   return new Promise(resolve => {
-    execFile(file, args, { timeout, encoding: 'utf8' }, (error, stdout) => resolve(error ? '' : String(stdout).trim()));
+    execFile(file, args, { windowsHide: true, timeout, encoding: 'utf8' }, (error, stdout) => resolve(error ? '' : String(stdout).trim()));
   });
 }
 
