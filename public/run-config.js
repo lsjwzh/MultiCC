@@ -642,6 +642,36 @@
     } catch (_) { return []; }
   }
 
+  // The pill must also work before the configuration dialog has ever opened on
+  // this browser. Keep the shared catalog in memory; do not replace the local
+  // cache, which may contain presets that still need to be merged by the editor.
+  let sharedPresets = null;
+  let presetCatalogVersion = 0;
+  let presetCatalogFetch = null;
+  let presetCatalogFetchedAt = 0;
+  async function refreshPresetCatalog(request) {
+    if (presetCatalogFetch) return presetCatalogFetch;
+    if (presetCatalogFetchedAt && Date.now() - presetCatalogFetchedAt < 20000) return false;
+    const version = presetCatalogVersion;
+    presetCatalogFetch = (async () => {
+      try {
+        const result = await request('/api/run-config/presets');
+        if (version !== presetCatalogVersion || !Array.isArray(result && result.presets)) return false;
+        sharedPresets = result.presets;
+        presetCatalogFetchedAt = Date.now();
+        return true;
+      } catch (_) { return false; }
+    })();
+    try { return await presetCatalogFetch; } finally { presetCatalogFetch = null; }
+  }
+
+  function pillPresets() {
+    const local = readPresetStore();
+    if (!sharedPresets) return local;
+    const ids = new Set(sharedPresets.map(item => clean(item && item.id)).filter(Boolean));
+    return [...sharedPresets, ...local.filter(item => !ids.has(clean(item.id)))];
+  }
+
   // 认出一份预设：presetId 最可靠（预设后来改名或加减线路也还指着它）；老记录
   // 退回池子指纹；再退一步，池子是某份预设删过线路后的样子 —— 只有唯一命中才算，
   // 两份预设都包含它就宁可不说名字。
@@ -664,7 +694,7 @@
 
   function matchPresetName(selection) {
     try {
-      const hit = matchPreset(selection, readPresetStore());
+      const hit = matchPreset(selection, pillPresets());
       return hit ? clean(hit.name) : '';
     } catch (_) { return ''; }
   }
@@ -2549,6 +2579,10 @@
         const storage = scope() && scope().localStorage;
         if (!storage) return false;
         storage.setItem(PRESET_KEY, JSON.stringify(list));
+        // An in-flight read must not restore an older name after an edit.
+        presetCatalogVersion++;
+        sharedPresets = null;
+        presetCatalogFetchedAt = 0;
         return true;
       } catch (_) { return false; }
     }
@@ -3309,6 +3343,7 @@
     pillModel,
     pillText,
     presetProvenance,
+    refreshPresetCatalog,
     protocolOf,
     reorder,
     rowIssue,

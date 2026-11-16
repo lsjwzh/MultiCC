@@ -1106,6 +1106,13 @@
     for (const pill of [ai, role]) pill.disabled = !directoryId;
   }
 
+  async function refreshRunConfigPresetNames() {
+    if (await window.MultiCCRunConfig?.refreshPresetCatalog(api)) {
+      renderQuickPills();
+      renderComposerControls();
+    }
+  }
+
   function openQuickConfiguration() {
     if (!directoryId || !window.MultiCCRunConfig) return;
     const machine = window.MultiCCAirQuickMachine; const remote = machine?.selected?.() || null;
@@ -2956,6 +2963,7 @@
   document.addEventListener('visibilitychange', () => {
     if (document.hidden || stopped) { liveSync?.pause(); return; }
     liveSync?.resume();
+    void refreshRunConfigPresetNames();
     clearTimeout(timer);
     epoch++;
     void poll(epoch);
@@ -2985,5 +2993,6 @@
     window.MultiCCAirLive = liveSync;
   }
   void powerShortcuts.refresh();
+  void refreshRunConfigPresetNames();
   void poll();
 })();
