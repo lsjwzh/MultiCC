@@ -212,7 +212,7 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
     // 终端只展示适用的产品卡片，后台仍保留 chat 引擎元数据。
     // 未安装的产品保留提示，默认落在最近用过的 codex。
     const choices = await page.evaluate(`[...document.querySelectorAll('.air-config-dialog[open] .air-cli-option')].map(b=>b.dataset.cli).sort()`);
-    assert.deepEqual(choices, ['claude', 'codex', 'gemini', 'kimi', 'opencode', 'zcode'], 'CLI 卡片只展示终端适用的产品：' + JSON.stringify(choices));
+    assert.deepEqual(choices, ['claude', 'codebuddy', 'codex', 'commandcode', 'dsh', 'gemini', 'grok', 'kimi', 'opencode', 'pi', 'qoder', 'zcode'], 'CLI 卡片只展示终端适用的产品：' + JSON.stringify(choices));
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-cli-option.selected').dataset.cli`), 'codex', '默认落在最近用过的那套');
     assert.ok(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="模型"]').options.length > 1`), '模型也跟着这条线路给出来');
     // 子 agent 线路是任务轮次的东西，终端的创建接口不收它 —— 整节子 agent 不摆出来。

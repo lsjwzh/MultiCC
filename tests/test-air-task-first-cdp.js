@@ -59,11 +59,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/air'] = routes['/air.html'];
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
-  // 快照里两条家族都带上：一次性命令（`codex exec` / `claude -p`）走终端，常驻车道
-  // （codex-exp / claude-exp）走 chat —— 服务端发的就是这一整份名单，谁属于哪边由
-  // 车道自己的 kinds 列说（见 src/cli/cli-capability.js）。chat 那几个选择器要能从
-  // 这份名单里挑出常驻车道，所以 fixture 不能只有一次性那两条。
-  routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'codex-exp', 'claude', 'claude-exp'], migration: { errors: [] },
+  // The server advertises canonical lanes: codex is terminal-only, codex-exp
+  // and claude offer chat. The retired claude-exp alias is not advertised.
+  routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'codex-exp', 'claude'], migration: { errors: [] },
     // 自动回收的策略：面板照着它把「多久没用会被收走」说准，客户端不猜默认值。
     worktreePolicy: { idleMs: 86400000, intervalMs: 900000, startupDelayMs: 30000, batchSize: 16, enabled: true },
     // The list snapshot and task-entry endpoint read the same runtime in production.
@@ -702,7 +700,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     const scheduleHeadings = await page.evaluate(headingRows);
     assert.ok(scheduleHeadings.length >= 2, '定时任务弹窗开着的时刻至少该量到侧栏和弹窗两条：' + JSON.stringify(scheduleHeadings));
     assert.equal(scheduleHeadings.every(r => r.ok), true, '标题行的尾巴必须跟标题并排，不能换行：' + JSON.stringify(scheduleHeadings));
-    assert.equal(await page.evaluate(`document.getElementById('schedule-form').elements.cli.options.length`), 2);
+    assert.deepEqual(await page.evaluate(`[...document.getElementById('schedule-form').elements.cli.options].map(option=>option.value)`), ['codex-exp', 'claude']);
     await page.evaluate(`document.getElementById('schedule-close').click()`);
     screenshots.push(await page.screenshot('scheduled-air-tasks-desktop'));
     await page.evaluate(`document.querySelector('.schedule-fixed-task').click()`);
@@ -865,7 +863,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // Nothing is resolved yet for a task that does not exist, so the pill names
     // the CLI default honestly instead of inventing a route.
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · 默认线路 · 默认模型');
-    assert.equal(await page.evaluate(`document.querySelectorAll('#quick-task-form select').length`), 0, 'no second CLI/Provider copy on the panel');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#quick-task-form select:not(#quick-unattended-duration-unit)').length`), 0, 'no second CLI/Provider copy on the panel');
     assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '＋ 角色');
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, 'both pills ride the composer card');
     screenshots.push(await page.screenshot('directory-composer-desktop'));
@@ -1053,7 +1051,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // /air?view=overview 是控制台那一页的正式地址（/manage 就落在这儿）：它开在
     // 主区域里，页头换成这一页自己的标题，当前任务只是被藏起来、不卸载。
     await page.navigate('/air?view=overview');
-    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false && document.querySelectorAll('#console-content .admin-stat').length===5`));
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false && document.querySelector('#console-content #console-task-panel')!==null`));
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台', '页头是这一页自己的标题');
     assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'overview');
     assert.equal(await page.evaluate(`document.getElementById('task-layout').hidden`), true, '任务那块正文让开（不是卸载）');
@@ -1092,7 +1090,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('air-provider-count').textContent.includes('3 条线路')`), true);
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-provider-dialog').open===true`));
-    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.air-provider-create-choice strong')].map(node=>node.textContent)`), ['使用 API Key', '添加登录账号']);
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.air-provider-create-choice strong')].map(node=>node.textContent)`), ['使用 API Key', '添加登录账号', '虚拟 Provider']);
     await page.evaluate(`document.querySelector('[data-provider-key="claude"]').click()`);
     assert.equal(await page.evaluate(`document.getElementById('air-provider-form').elements.apiFormat.value`), 'anthropic');
     await page.evaluate(`document.getElementById('air-provider-close').click()`);
@@ -1292,7 +1290,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       await page.navigate('/air?view=overview');
-      assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false && document.querySelectorAll('#console-content .admin-stat').length===5`));
+      assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false && document.querySelector('#console-content #console-task-panel')!==null`));
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
       assert.equal(await page.evaluate(`document.getElementById('console-center').getBoundingClientRect().right<=innerWidth`), true);
       screenshots.push(await page.screenshot('air-console-mobile-' + width));
