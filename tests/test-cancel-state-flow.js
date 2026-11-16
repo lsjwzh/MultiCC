@@ -693,8 +693,8 @@ function routeFixture(cancelResult = { ok: true, classifyState: 'E' }) {
       return cancelResult;
     },
   });
+  // The route now registers on the host capture app, not the public app.
   orchestration.mountHostRoutes(app);
-  orchestration.mountRoutes(app);
   return { app, calls };
 }
 

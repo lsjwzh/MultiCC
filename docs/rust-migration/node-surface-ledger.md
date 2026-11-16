@@ -1,4 +1,4 @@
-# Node 后端剩余面逐簇台账（2026-11-16，132 条路由 / 31 层中间件）
+# Node 后端剩余面逐簇台账（2026-11-16，131 条路由 / 31 层中间件）
 
 机器可读底稿：`docs/rust-migration/node-surface-ledger.json`。对账命令：
 
@@ -8,28 +8,28 @@ node scripts/check-node-surface-ledger.js  # 台账与捕获逐簇、逐层对�
 node tests/test-node-surface-ledger.js     # 对账器自身的 6 种漂移用例
 ```
 
-捕获基线：指纹 `b1d3daf8659b30c8db1be880`，**132 条路由注册、31 层中间件/路由器**（`plugins-core` 的 `/api/channels/recheck` 与 `/plugins/:id/*` 迁入前门后 -2，宿主端口 +1，133 → 132）。以下历史演进保留：本日第一次捕获是 139/32（指纹 `3b8663bf…`），同日静态簇迁走 3 条路由与 1 层中间件后为 136/31；`server-core` 簇迁入前门后 4 条公开路由消失、宿主端口 +1，为 133/31；同批 `cli-switch` 簇的 `switch-cli` 迁入前门后公开路由 -1、宿主端口 +1，总数仍为 133/31（这是「迁一个簇、总数不变而构成改变」的正常形态，看 byState 而不是看总数）。中间件以「名字@挂载#序号」为键对账，不以位置号为键（位置号在任何一层增删时整体漂移）。
+捕获基线：指纹 `f2fcef87dda6853479802bef`，**131 条路由注册、31 层中间件/路由器**。`GET /api/channels` 迁入前门，复用已有宿主端口，132 → 131。此前 `plugins-core` 的 `/api/channels/recheck` 与 `/plugins/:id/*` 迁入前门后 -2，宿主端口 +1，133 → 132。本日第一次捕获是 139/32（指纹 `3b8663bf…`），静态簇迁走 3 条路由与 1 层中间件后为 136/31；`server-core` 簇迁入前门后 4 条公开路由消失、宿主端口 +1，为 133/31；同批 `cli-switch` 的 `switch-cli` 迁入前门后公开路由 -1、宿主端口 +1，总数仍为 133/31。中间件以「名字@挂载#序号」为键对账，不以位置号为键。
 
 ## 1. 「驱动到零」应当怎么读
 
-132 不是一类东西，直接归零既不可能也不应该：
+131 不是一类东西，直接归零既不可能也不应该：
 
 | 终态 | 条数 | 含义 | 能否归零 |
 |---|---:|---|---|
 | 宿主端口（`/api/__host/*`） | 35 | 路由本体已在前门，Node 只剩回环接口，提供 Node 独有事实或执行进程/文件副作用 | **不能，也不应**。这是迁移的目标形态；每迁一个簇这里 +1 |
 | 插件（`plugins/**`） | 71 | 5 个 IM bridge（wechat-ilink 15、feishu/telegram/discord/slack 各 12）+ cron 8，属可独立发布的插件代码 | 不在核心后端迁移范围 |
 | 状态已在 Rust | 6 | `src/cli/tools-host.js`：作业表、互斥、日志环、缓存、响应策略都在 `RustCliToolsRuntime`，Node 只 spawn/kill/probe | 注册上移需先决定网关是否持有子进程 |
-| 驻留 Node | 20 | 持有子进程、长连接、内存句柄或浏览器会话 | 须先拆出「状态/规则」与「句柄执行」两层 |
+| 驻留 Node | 19 | 持有子进程、长连接、内存句柄或浏览器会话 | 须先拆出「状态/规则」与「句柄执行」两层 |
 
-所以真正的衡量不是 132→0，而是**驻留 Node 的 20 条逐簇转成「状态在 Rust + Node 执行器」**。转完后 Node 的注册全部落在「宿主端口」一类。
+所以真正的衡量不是 131→0，而是**驻留 Node 的 19 条逐簇转成「状态在 Rust + Node 执行器」**。
 
-## 2. 路由簇台账（31 条核心 + 6 条状态在 Rust）
+## 2. 路由簇台账（19 条驻留 Node + 6 条状态在 Rust）
 
 | 簇 | 条数 | 终态 | 阻塞点 / 下一步 |
 |---|---:|---|---|
 | `server-core`（`/healthz` `/readyz` `/metrics` `/api/repo-operations/:id`） | 0 | 已迁前门 | 2026-11-16 四条公开路由迁入 `native/gateway/src/app/server_core.rs`，Node 只剩宿主端口 `src/routes/server-core-host.js`（并入「宿主端口」一行）。`multicc_active_turns` 改由 `owner.chatActiveTurns(streamBusyFn)` 在宿主端口内计数，Node 不再遍历 `chatSessions` |
 | `static-and-apk`（`/multicc.apk`） | 1 | 驻留 Node | 2026-11-16 `/manage` `/dashboard` `/air?view=planner` 三条重定向与 apk/ipa 路径守卫已迁前门（差分 307 请求 / 273 逐字节一致 / 34 按设计落回，三项变异均被抓到）。剩 `/multicc.apk`：有本地文件时落回 Node（`apkDistribution`），按设计不认领。versioned-HTML 与 `express.static` 仍在 `src/routes/static-assets.js`（文件读取与 send 的 ETag/Range 语义未迁，`share.js:241` 还在调 `serveHtml`） |
-| `plugins-core`（`/api/plugins*` `/api/channels*`） | 9 | 驻留 Node | `channelHost`/`installer`/`catalog` 是 Node 实例。2026-11-16 `/api/channels/recheck` 与 `/plugins/:id/*`（UI 静态树）已迁入 `native/gateway/src/app/plugins.rs`，Node 只剩宿主端口 `src/routes/plugins-host.js`（并入「宿主端口」一行）。注意 `/plugins/:id/*` 对静态扩展名按共用的 `http_entry::public_path` 免登录，不是一律过闸门（见 route-inventory.md） |
+| `plugins-core`（`/api/plugins*` `/api/channels*`） | 8 | 驻留 Node | `channelHost`/`installer`/`catalog` 是 Node 实例。`/api/channels`、`/api/channels/recheck` 与 `/plugins/:id/*` 已迁入 Rust 前门；相关事实通过既有 `src/routes/plugins-host.js` 提供。插件文件的静态扩展名按共用的 `http_entry::public_path` 免登录（见 route-inventory.md） |
 | `cli-tools`（`/api/cli/*`） | 6 | 状态在 Rust | 已是目标形态。前门接管须网关持有子进程，与「无状态 L7」冲突，保持 |
 | `cli-switch`（`switch-cli`） | 0 | 已迁前门 | 2026-11-16 迁入 `native/gateway/src/app/cli_switch.rs`，Node 只剩宿主端口 `src/routes/cli-switch-host.js`（并入「宿主端口」一行）。入口闸门在前门内直接调 `multicc_core::cli_switch_runtime::plan("manualGate")` 判掉：会话不存在 404、`aux`/`gateway` 系统会话 400、非 chat 会话 400、cli 不在支持表 400，外加 `taskExecutionSlot` 内部槽 404（早于 OPTIONS 与 body 解析）——这些分支零 Node 往返，差分实测 7/7 只调 `facts`。过闸后的 `noop`/`switch` 交 Node 执行器：`switch` 必须一次往返跑完（`signature` 与 `preparations` 是跨 `await` 的 TOCTOU 保护，拆开就破）。忙判定已走 Rust 规则 `native/core/src/active_turns.rs` |
 | `oauth-login`（`zcode/kimi` login） | 2 | 驻留 Node | 阻塞最多 5 分钟并持有登录子进程，前门已原样转发 |
@@ -51,10 +51,10 @@ Node 内存态与剩余路由的真实依赖（逐文件 grep 核实，不是推
 
 - `air-sync`：**不可单独迁**。`/api/air/sync` 与 `/api/air/page` 和 WebSocket `attach` 共享同一个串行队列、就绪状态与「重放到实时」的原子交接屏障（`air-sync-runtime.js` 的 `serial`/`ensureReady`/`attach`）；只迁 HTTP 会破坏重放不丢事件的保证。需要先把这套屏障与客户端表整体放进 Rust。
 - `static-and-apk`：已迁完规则决定响应的部分，剩 `/multicc.apk` 与文件读取（见上）。
-- `plugins-core`：`/api/channels/recheck` 与 `/plugins/:id/*` 已迁走，其余 9 条依赖 `channelHost`/`installer`/`catalog` 实例，需先拆「状态/规则」与「进程/文件执行」两层。
+- `plugins-core`：`/api/channels`、`/api/channels/recheck` 与 `/plugins/:id/*` 已迁走，其余 8 条依赖 `channelHost`/`installer`/`catalog` 实例，需先拆「状态/规则」与「进程/文件执行」两层。
 - `router-tools`：`/api/internal/router-tools/:tool` 仅回环，`/api/voice/stt` 是音频上传，未评估。
 
-## 3. 中间件台账（32 层，逐层对账）
+## 3. 中间件台账（31 层，逐层对账）
 
 | 组 | 层 | 终态 |
 |---|---:|---|

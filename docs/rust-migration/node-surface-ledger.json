@@ -2,9 +2,9 @@
   "version": 1,
   "capturedAt": "2026-11-16",
   "capture": {
-    "routes": 132,
+    "routes": 131,
     "middleware": 31,
-    "fingerprint": "b1d3daf8659b30c8db1be880"
+    "fingerprint": "f2fcef87dda6853479802bef"
   },
   "terminalStates": {
     "front-door": "公开路由由 Rust 前门独占；Node 不再注册。终态=0 条 Node 注册。",
@@ -59,12 +59,12 @@
     {
       "id": "plugins-core",
       "title": "插件管理与通道",
-      "routes": 9,
+      "routes": 8,
       "state": "node-resident",
       "files": [
         "src/routes/plugins.js"
       ],
-      "note": "channelHost/installer/catalog 是 Node 实例，剩 9 条（列表、目录、安装、卸载、回滚、运行、/api/channels 与 /api/channels/targets）。2026-11-16 /api/channels/recheck 与 /plugins/:id/*（UI 静态树）已迁入前门，Node 只剩宿主端口 src/routes/plugins-host.js（并入「宿主端口」一行）。"
+      "note": "channelHost/installer/catalog 是 Node 实例，剩 8 条（插件列表、目录、安装、卸载、回滚、运行与 /api/channels/targets）。2026-11-16 /api/channels、/api/channels/recheck 与 /plugins/:id/*（UI 静态树）已迁入前门，相关宿主端口 src/routes/plugins-host.js 并入「宿主端口」一行。"
     },
     {
       "id": "oauth-login",

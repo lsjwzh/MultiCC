@@ -284,7 +284,7 @@ test('server mounts the host port and retains no inline host read GETs', () => {
   // The mutable host plane (host-write + host-power) now rides the host-ops
   // port; server.js only builds the dependency table and asks the host to mount.
   assert.match(source, /createHostOpsHost\(\{/);
-  assert.match(hostOpsSource, /mountHostWriteRoutes\(app, hostWrite\)/);
+  assert.match(hostOpsSource, /mountHostWriteRoutes\(app, \{ \.\.\.hostWrite, isLocalRequest: req => req\.local === true \}\)/);
   assert.match(writeSource, /resolveNotifySettingsUpdates\(req\.body \|\| \{\}, current\)/);
   assert.equal(fs.existsSync(path.join(__dirname, '..', 'src', 'routes', 'host-read.js')), false);
   for (const routePath of [

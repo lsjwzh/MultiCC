@@ -69,6 +69,28 @@ if (PRINT_ADDRINUSE) {
 }
 
 const server = http.createServer((req, res) => {
+  if (req.url === '/api/__host/server-core' && req.method === 'POST') {
+    req.resume();
+    const ready = !!readyAt && Date.now() - readyAt >= READY_DELAY_MS;
+    const body = JSON.stringify({ ok: true, ready, uptimeSeconds: Math.floor(process.uptime()), checks: null });
+    res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
+    res.end(body);
+    return;
+  }
+  if (req.url === '/api/__host/host-ops' && req.method === 'POST') {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      let payload;
+      try { payload = JSON.parse(raw); } catch (_) { payload = {}; }
+      if (payload.op !== 'desktop-shutdown') return res.writeHead(404).end('{}');
+      const body = JSON.stringify({ ok: true, value: { status: 202, body: { ok: true, status: 'shutting-down' } } });
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
+      res.end(body);
+      exitSoon(0, 50);
+    });
+    return;
+  }
   if (req.url === '/readyz') {
     if (!readyAt || Date.now() - readyAt < READY_DELAY_MS) {
       res.writeHead(503).end(JSON.stringify({ status: 'not_ready' }));
@@ -113,6 +135,10 @@ process.on('SIGINT', () => exitSoon(0));
 process.on('SIGTERM', () => exitSoon(0));
 
 if (gatewayChild.isGatewayChild(process.env)) {
+  // The real gateway now requires a live auth snapshot even for /readyz.
+  // Keep the native owner reachable until this isolated fixture exits.
+  globalThis.__fixtureAuth = require('../../src/auth-security').createAuthSecurity({ secret: 'fixture-token' });
+  gatewayChild.connectAuthControl(globalThis.__fixtureAuth);
   gatewayChild.watchGatewayLifeline();
   gatewayChild.listenBehindGateway(server, { port: gatewayChild.internalPort(process.env), onListening });
 } else {

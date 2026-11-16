@@ -59,6 +59,9 @@ function harness({ windowMs = 1000 } = {}) {
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
     now: clock.now,
+    // These cases exercise the legacy coalescer in isolation; durable replay
+    // suppression is covered separately by the background runtime tests.
+    settledNudgeFile: null,
     completionWindowMs: windowMs,
     logger: { info() {}, warn: message => warnings.push(message) },
   });
