@@ -1756,6 +1756,7 @@ const serverRestartRoute = createServerRestartRoute({
   chatSessions,
   spawn,
   rootDir: __dirname,
+  dataDir: MULTICC_PATHS.root, getPort: () => PORT, getHost: () => BIND_HOST,
   getShuttingDown: () => authSecurity.shuttingDown(), desktopExit: reason => gracefulShutdown(reason),
 });
 

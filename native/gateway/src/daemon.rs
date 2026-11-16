@@ -49,7 +49,9 @@ pub async fn serve(options: ServeOptions) -> i32 {
     let port = if options.ephemeral_loopback {
         policy.host = "127.0.0.1".to_string();
         0
-    } else if policy.development {
+    } else if policy.development
+        && std::env::var("MULTICC_RESTART_EXACT_PORT").ok().as_deref() != Some("1")
+    {
         match find_available_port(i64::from(policy.port), &policy.host, 100) {
             Ok(port) => port,
             Err(message) => {

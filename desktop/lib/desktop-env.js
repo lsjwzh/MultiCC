@@ -159,6 +159,10 @@ function buildChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, runtimeNod
   env.PORT = String(port);
   env.HOST = DESKTOP_LOOPBACK_HOST;
   env.MULTICC_DATA_DIR = desktopEnv.dataRoot;
+  // The detached restart supervisor publishes one generation before the old
+  // gateway exits. Re-read it on each spawn, including crash-loop retries.
+  try { env.MULTICC_RESTART_GENERATION = fs.readFileSync(path.join(desktopEnv.dataRoot, '.restart-generation'), 'utf8').trim(); env.MULTICC_RESTART_EXACT_PORT = '1'; }
+  catch (_) { delete env.MULTICC_RESTART_GENERATION; delete env.MULTICC_RESTART_EXACT_PORT; }
   env.MULTICC_MEMORY_ROOT = desktopEnv.memoryRoot;
   env.MULTICC_ENV_FILE = desktopEnv.envFile;
   env.MULTICC_DESKTOP = '1';
