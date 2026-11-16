@@ -4,7 +4,8 @@
 //   • 只有带合法 plugin.json 的目录才算插件（plugins/bridges 这类内部目录天然不收）
 //   • command 必须在 manifest.commands 白名单里
 //   • spawn 不走 shell、stdin 喂 JSON、stdout 收一行 JSON（{ok,data} / {ok,error}）
-//   • 静态树只放行 manifest.ui 所在子树，防目录穿越
+//   • 插件 UI 静态树与 /api/channels/recheck 已由 Rust 前门独占；Node 只剩回环宿主
+//     端口 POST /api/__host/plugins（findPlugin / channelStillActive，见 plugins-host.js）
 //   • git 只跟踪 plugins/ 的内置项：复制进来的插件默认被 .gitignore 忽略
 // 桩插件用 node 脚本充当二进制 —— 真正的 Rust 插件（chrome-proxy-launcher）
 // 由自己的 cargo test 与端到端验证覆盖，CI 无需 Rust 工具链也能跑这套契约。
@@ -16,7 +17,8 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createPluginsRoutes, resolveBinary } = require('../src/routes/plugins');
+const { createPluginsRoutes, readManifest, resolveBinary } = require('../src/routes/plugins');
+const { mountPluginsHostRoute, HOST_PATH } = require('../src/routes/plugins-host');
 
 function makeStubPluginsDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-plugins-test-'));
@@ -93,10 +95,34 @@ function makeResponse() {
 function fixture() {
   const pluginsDir = makeStubPluginsDir();
   const logger = { warn() {}, info() {} };
-  const runtime = createPluginsRoutes({ pluginsDir, platform: process.platform, arch: process.arch, logger });
+  const locality = { local: true };
+  const runtime = createPluginsRoutes({
+    pluginsDir, platform: process.platform, arch: process.arch, logger,
+    isLocalRequest: () => locality.local,
+  });
   const app = fakeApp();
   runtime.mount(app);
-  return { runtime, app, pluginsDir };
+  return { runtime, app, pluginsDir, locality };
+}
+
+function hostHandler(app) {
+  const handler = app.routes.get(`POST ${HOST_PATH}`);
+  assert.equal(typeof handler, 'function', 'the plugins host port must be mounted');
+  return handler;
+}
+
+function callHost(handler, body) {
+  const response = makeResponse();
+  handler({ body }, response);
+  return response;
+}
+
+// 独立挂一份宿主端口：findManifest / stillActive 都可注入，用来锁定 op 契约本身。
+function hostOnly({ findManifest = () => null, channelRegistry = { stillActive: () => true } } = {}) {
+  const app = fakeApp();
+  const locality = { local: true };
+  mountPluginsHostRoute(app, { findManifest, channelRegistry, isLocal: () => locality.local });
+  return { app, handler: hostHandler(app), locality };
 }
 
 test('listPlugins collects only manifest-bearing plugin dirs', () => {
@@ -154,26 +180,133 @@ test('resolveBinary finds the .exe cargo writes on Windows', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('static route serves only the declared ui subtree', async () => {
-  const { runtime } = fixture();
-  const serve = (urlPath, params) => {
-    const response = makeResponse();
-    const request = {
-      params: params || { id: 'stub-demo', 0: urlPath.replace(/^\/plugins\/stub-demo\//, '') },
-    };
-    runtime.servePluginFile(request, response);
-    return response;
+test('host findPlugin reports the plugin dir and declared ui entry', () => {
+  const { app, pluginsDir } = fixture();
+  const answer = callHost(hostHandler(app), { op: 'findPlugin', id: 'stub-demo' });
+  assert.equal(answer.statusCode, 200);
+  assert.deepEqual(answer.body, {
+    ok: true, found: true, dir: path.join(pluginsDir, 'stub-demo'), ui: 'ui/index.html',
+  });
+});
+
+test('host findPlugin reports misses and malformed ids as found:false', () => {
+  const { app } = fixture();
+  const handler = hostHandler(app);
+  for (const id of ['no-such-plugin', 'bridges', '../bridges', '', 42, null, undefined]) {
+    assert.deepEqual(callHost(handler, { op: 'findPlugin', id }).body, { ok: true, found: false }, String(id));
+  }
+});
+
+test('host findPlugin defaults a missing ui and rejects a non-string truthy ui', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-plugins-ui-'));
+  const write = (id, ui) => {
+    const dir = path.join(root, id);
+    fs.mkdirSync(dir, { recursive: true });
+    const manifest = { id, engine: { type: 'command', binary: 'bin/x' }, commands: ['a'] };
+    if (ui !== undefined) manifest.ui = ui;
+    fs.writeFileSync(path.join(dir, 'plugin.json'), JSON.stringify(manifest));
   };
-  const page = serve('/plugins/stub-demo/ui/index.html');
-  assert.equal(page.statusCode, 200);
-  assert.match(page.headers['content-type'], /text\/html/);
-  assert.match(String(page.body), /stub/);
+  write('default-ui');
+  write('zero-ui', 0);
+  write('empty-ui', '');
+  write('numeric-ui', 42);
+  write('object-ui', { entry: 'panel.html' });
+  const handler = hostOnly({ findManifest: id => readManifest(root, id) }).handler;
 
-  const manifest = serve('/plugins/stub-demo/plugin.json');
-  assert.equal(manifest.statusCode, 403); // ui/ 子树之外：源码与 manifest 不出网
+  // `manifest.ui || 'ui/index.html'` 的假值语义：缺省、0、空串都走默认入口。
+  for (const id of ['default-ui', 'zero-ui', 'empty-ui']) {
+    assert.deepEqual(callHost(handler, { op: 'findPlugin', id }).body, {
+      ok: true, found: true, dir: path.join(root, id), ui: 'ui/index.html',
+    }, id);
+  }
+  // 非字符串真值在原处理器里会在 path.dirname 抛 TypeError（500）；这里显式化成 ok:false。
+  for (const id of ['numeric-ui', 'object-ui']) {
+    assert.deepEqual(callHost(handler, { op: 'findPlugin', id }).body, {
+      ok: false, error: { message: 'invalid manifest ui' },
+    }, id);
+  }
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
-  const traversal = serve('/plugins/stub-demo/ui/../../plugin.json');
-  assert.ok([400, 403].includes(traversal.statusCode), 'traversal must not be served');
+test('host channelStillActive answers one boolean per item, same length and order', () => {
+  const calls = [];
+  const handler = hostOnly({
+    channelRegistry: {
+      stillActive(sessionId, category) { calls.push([sessionId, category]); return category === 'error'; },
+    },
+  }).handler;
+  const longId = 's'.repeat(200);
+  const longCategory = 'c'.repeat(64);
+  const answer = callHost(handler, {
+    op: 'channelStillActive',
+    items: [
+      { sessionId: 's1', category: 'error' },
+      { sessionId: 's2', category: 'done' },
+      null,
+      'not-an-object',
+      [],
+      { sessionId: longId, category: longCategory },
+    ],
+  });
+  assert.deepEqual(answer.body, { ok: true, active: [true, false, false, false, false, false] });
+  // 真正的非对象项不调用 stillActive，占位 false；数组在原处理器里算对象（字段缺省
+  // 成空串）；字符串照原处理器截断（128 / 32）。
+  assert.deepEqual(calls, [['s1', 'error'], ['s2', 'done'], ['', ''], ['s'.repeat(128), 'c'.repeat(32)]]);
+});
+
+test('host channelStillActive defends non-array input with an empty answer', () => {
+  const handler = hostOnly().handler;
+  for (const items of [undefined, null, 'nope', {}, 5]) {
+    assert.deepEqual(callHost(handler, { op: 'channelStillActive', items }).body, { ok: true, active: [] }, String(items));
+  }
+  assert.deepEqual(callHost(handler, { op: 'channelStillActive', items: [] }).body, { ok: true, active: [] });
+});
+
+test('host port refuses anything but loopback and unknown ops', () => {
+  const { handler, locality } = hostOnly();
+  locality.local = false;
+  const remote = callHost(handler, { op: 'findPlugin', id: 'stub-demo' });
+  assert.equal(remote.statusCode, 404);
+  assert.deepEqual(remote.body, { error: 'not found' });
+  locality.local = true;
+  const unknown = callHost(handler, { op: 'serve-file', id: 'stub-demo' });
+  assert.equal(unknown.statusCode, 400);
+  assert.deepEqual(unknown.body, { error: 'unknown host operation' });
+});
+
+test('mounting registers the host port and retired public routes stay gone', () => {
+  const { app } = fixture();
+  // 公开 `/plugins/:id/*` 静态树与 `/api/channels/recheck` 由 Rust 前门独占；
+  // Node 只剩 9 条公开插件/渠道路由 + 1 条回环宿主端口。
+  assert.deepEqual([...app.routes.keys()].sort(), [
+    'GET /api/channels',
+    'GET /api/channels/targets',
+    'GET /api/plugins',
+    'GET /api/plugins/catalog',
+    'POST /api/__host/plugins',
+    'POST /api/plugins/:id/install',
+    'POST /api/plugins/:id/rollback',
+    'POST /api/plugins/:id/run',
+    'POST /api/plugins/:id/uninstall',
+    'POST /api/plugins/catalog/refresh',
+  ]);
+  assert.equal(app.routes.has('GET /plugins/:id/*'), false, 'the static tree moved to the front door');
+});
+
+test('host mount registers only the internal POST endpoint', () => {
+  const { app } = hostOnly();
+  assert.deepEqual([...app.routes.keys()], [`POST ${HOST_PATH}`]);
+});
+
+test('host mount validates its dependencies like the retired route did', () => {
+  assert.throws(() => mountPluginsHostRoute(null, {}), /Express/);
+  assert.throws(() => mountPluginsHostRoute(fakeApp(), {}), /findManifest/);
+  assert.throws(
+    () => mountPluginsHostRoute(fakeApp(), { findManifest: () => null }),
+    /channelRegistry\.stillActive/,
+  );
+  // stillActive 也可以直接作为函数给。
+  assert.doesNotThrow(() => mountPluginsHostRoute(fakeApp(), { findManifest: () => null, stillActive: () => true }));
 });
 
 test('run rejects malformed command and plugin ids', async () => {

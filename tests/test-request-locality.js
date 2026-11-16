@@ -157,6 +157,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/host-write.js',
     'src/routes/model-catalogs-host.js',
     'src/routes/orchestration-host.js',
+    'src/routes/plugins-host.js',
     'src/routes/plugins.js',
     'src/routes/provider-balance-host.js',
     'src/routes/provider-relay-host.js',

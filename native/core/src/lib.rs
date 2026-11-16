@@ -49,6 +49,7 @@ pub mod orchestration_retention;
 pub mod orchestration_routes;
 pub mod orchestration_store;
 pub mod outbound_proxy;
+pub mod plugin_routes;
 pub mod provider_attempt_identity;
 pub mod provider_error;
 pub mod provider_misc;

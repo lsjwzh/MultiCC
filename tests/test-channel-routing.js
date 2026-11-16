@@ -12,7 +12,7 @@
 //   • push subscription and hook hitting the same recipient for the same thing send
 //     the same dedup key, so the plugin keeps one;
 //   • the existing 「推送」 hook also reaches plugin subscriptions;
-//   • /api/channels reports inUse, and recheck says whether the problem is still there.
+//   • /api/channels reports inUse; recheck 由前门独占，宿主端口回答 channelStillActive。
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -22,6 +22,7 @@ const test = require('node:test');
 
 const registry = require('../src/plugins/channel-registry');
 const { createPluginsRoutes } = require('../src/routes/plugins');
+const { HOST_PATH: PLUGINS_HOST_PATH } = require('../src/routes/plugins-host');
 const { createChannelSubscriptions } = require('../src/push/channel-subscriptions');
 const { mountPushHostRoute, HOST_PATH } = require('../src/routes/push-host');
 const { createPushRuntime } = require('../src/push/runtime');
@@ -317,7 +318,7 @@ test('the same thing via a push subscription and a hook carries one dedup key; t
   assert.equal(env.bark.length, 1, 'and the existing channels got it as before');
 });
 
-test('/api/channels reports who relies on a channel; recheck answers whether the problem is still there', { skip: SKIP }, async t => {
+test('/api/channels reports who relies on a channel; the host port says whether the problem is still there', { skip: SKIP }, async t => {
   const env = setup(t);
   await env.ready();
   const before = await call(env.app, 'GET', '/api/channels');
@@ -327,19 +328,25 @@ test('/api/channels reports who relies on a channel; recheck answers whether the
   const after = await call(env.app, 'GET', '/api/channels');
   assert.deepEqual([after.body.plugins[0].inUse, after.body.plugins[0].subscriptions, after.body.plugins[0].uses], [true, 1, 2]);
 
-  const ask = items => call(env.app, 'POST', '/api/channels/recheck', { body: { items } });
+  // /api/channels/recheck 已由 Rust 前门独占；Node 只剩回环宿主端口，
+  // 逐个 (sessionId, category) 回答 stillActive，等长同序的布尔表。
+  const ask = items => call(env.app, 'POST', PLUGINS_HOST_PATH, { body: { op: 'channelStillActive', items } });
   let answer = await ask([{ sessionId: 's1', category: 'error' }, { sessionId: 's2', category: 'question' }, { sessionId: 's2', category: 'error' }, { sessionId: 'gone', category: 'error' }, { sessionId: 's2', category: 'done' }]);
-  assert.deepEqual(answer.body.items.map(item => item.active), [true, true, false, false, true]);
+  assert.deepEqual(answer.body, { ok: true, active: [true, true, false, false, true] });
   env.persistedSessions.get('s1').taskState.classifyState = 'P'; // the user picked it up again
   answer = await ask([{ sessionId: 's1', category: 'error' }]);
-  assert.equal(answer.body.items[0].active, false);
+  assert.equal(answer.body.active[0], false);
   // question 类别接受 W 和 D（task.needs_interaction 触发时 classifyState 已是 D）
   env.persistedSessions.get('s2').taskState.classifyState = 'D';
   answer = await ask([{ sessionId: 's2', category: 'question' }]);
-  assert.equal(answer.body.items[0].active, true);
+  assert.equal(answer.body.active[0], true);
   env.persistedSessions.get('s2').taskState.classifyState = 'W'; // restore
-  const remote = await call(env.app, 'POST', '/api/channels/recheck', { body: { items: [] }, local: false });
-  assert.equal(remote.statusCode, 403);
+  // 非数组是前门的防御缺口：宿主端口退回空表而不是抛错。
+  const notArray = await call(env.app, 'POST', PLUGINS_HOST_PATH, { body: { op: 'channelStillActive', items: 'nope' } });
+  assert.deepEqual(notArray.body, { ok: true, active: [] });
+  const remote = await call(env.app, 'POST', PLUGINS_HOST_PATH, { body: { op: 'channelStillActive', items: [] }, local: false });
+  assert.equal(remote.statusCode, 404);
+  assert.deepEqual(remote.body, { error: 'not found' });
 });
 
 test('category mapping and project names', () => {
