@@ -1593,10 +1593,17 @@ impl Runtime {
             Value::Object(map) => map,
             _ => map(),
         };
+        let was_retryable = matches!(
+            terminal.get("action"),
+            Some(Value::String(action)) if action.as_str() == "retry"
+        );
         terminal.insert("action".to_string(), text("fail_fast"));
         terminal.insert("reason".to_string(), Value::String(reason_code.to_string()));
         terminal.insert("delayMs".to_string(), Value::from(0));
         terminal.insert("retryAt".to_string(), Value::Null);
+        if was_retryable {
+            terminal.insert("poolExhausted".to_string(), Value::Bool(true));
+        }
         let from_name = turn
             .candidates
             .iter()

@@ -1964,6 +1964,13 @@ function createChatTurnEngine(deps) {
             errorCategory: apiErrorDecision?.error?.category || 'api_error',
             reasonCode: 'api_retry_scheduled',
           });
+          const poolExhausted = finalizePlan.retry?.poolExhausted === true;
+          if (poolExhausted) {
+            chatBroadcast(sessionName, {
+              type: 'system', subtype: 'warning',
+              message: 'Auto 候选池已耗尽，仍在原线路重试。',
+            });
+          }
           scheduleOwnedRetry({
             sessionName, cs, persisted, turn, runner,
             decision: finalizePlan.retry, provider: cs.cli,
