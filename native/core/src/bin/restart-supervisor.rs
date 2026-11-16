@@ -1,6 +1,6 @@
 use fs2::FileExt;
 use multicc_core::{
-    restart_probe::{probe, ProbeResult},
+    restart_probe::{gateway_pid, is_local_address, probe, ProbeResult},
     restart_process::{wait_for_exit, ProcessObserver},
     restart_supervisor::{Event, LaunchMode, State, Supervisor},
 };
@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::{
     env, fs,
     io::{self, Read, Write},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     path::PathBuf,
     process::{Child, Command, Stdio},
     thread,
@@ -20,6 +20,8 @@ struct ClientConfig {
     origin: String,
     expected_pids: Vec<u32>,
     port: Option<u16>,
+    #[serde(default)]
+    token: String,
 }
 
 #[derive(Deserialize)]
@@ -52,23 +54,36 @@ fn hold_foreground(config: HoldConfig) -> io::Result<()> {
 
 async fn request_restart(config: ClientConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mut origin = reqwest::Url::parse(&config.origin)?;
-    let host = origin.host_str().unwrap_or("");
+    let host = origin.host_str().unwrap_or("").to_owned();
+    let literal = host.trim_matches(['[', ']']).parse::<IpAddr>().ok();
+    let addresses = origin
+        .port_or_known_default()
+        .and_then(|port| (host.trim_matches(['[', ']']), port).to_socket_addrs().ok())
+        .map(|items| items.collect::<Vec<_>>())
+        .unwrap_or_default();
+    let local = !addresses.is_empty()
+        && addresses
+            .iter()
+            .all(|address| is_local_address(address.ip()));
     if origin.scheme() != "http"
-        || !matches!(host, "127.0.0.1" | "[::1]" | "::1")
+        || !local
         || !origin.username().is_empty()
         || origin.password().is_some()
-        || origin.port().is_none()
+        || origin.port_or_known_default().is_none()
     {
         return Err("restart client requires a local HTTP origin".into());
     }
     origin.set_path("/readyz");
     origin.set_query(None);
     origin.set_fragment(None);
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(3))
-        .build()?;
+        .timeout(Duration::from_secs(3));
+    if literal.is_none() {
+        builder = builder.resolve_to_addrs(&host, &addresses);
+    }
+    let client = builder.build()?;
     let initial = client.get(origin.clone()).send().await?;
     let old_pid: u32 = initial
         .headers()
@@ -86,8 +101,16 @@ async fn request_restart(config: ClientConfig) -> Result<(), Box<dyn std::error:
     if let Some(port) = config.port {
         body["port"] = serde_json::json!(port);
     }
+    // A loopback request never needs the access token. This also keeps a
+    // hostname resolver from forwarding it outside the local interface.
+    let token = if addresses.iter().all(|address| address.ip().is_loopback()) {
+        ""
+    } else {
+        config.token.as_str()
+    };
     let response = client
         .post(endpoint)
+        .header("x-access-token", token)
         .header("content-type", "application/json")
         .body(body.to_string())
         .send()
@@ -147,7 +170,11 @@ struct Config {
     old_pid: u32,
     port: u16,
     #[serde(default = "loopback")]
-    probe_host: IpAddr,
+    probe_host: String,
+    #[serde(default)]
+    current_port: Option<u16>,
+    #[serde(default)]
+    verify_initial: bool,
     generation: String,
     generation_file: PathBuf,
     #[serde(default)]
@@ -167,8 +194,8 @@ struct Config {
 fn old_timeout() -> u64 {
     80_000
 }
-fn loopback() -> IpAddr {
-    IpAddr::V4(Ipv4Addr::LOCALHOST)
+fn loopback() -> String {
+    "127.0.0.1".into()
 }
 fn ready_timeout() -> u64 {
     120_000
@@ -268,6 +295,31 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     lock.try_lock_exclusive()
         .map_err(|_| "restart already in progress")?;
     let old = ProcessObserver::open(config.old_pid)?;
+    let probe_host = match config.probe_host.as_str() {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        value => value,
+    };
+    let candidates = (probe_host, config.current_port.unwrap_or(config.port))
+        .to_socket_addrs()?
+        .filter(|address| is_local_address(address.ip()))
+        .collect::<Vec<_>>();
+    let selected = if config.verify_initial {
+        candidates.into_iter().find(|address| {
+            gateway_pid(*address, Duration::from_millis(1500))
+                .ok()
+                .flatten()
+                == Some(config.old_pid)
+        })
+    } else {
+        candidates.into_iter().next()
+    };
+    let address = SocketAddr::new(
+        selected
+            .ok_or("cannot verify the original local gateway address")?
+            .ip(),
+        config.port,
+    );
     fs::write(&config.generation_file, &config.generation)?;
     let _marker = Marker(&config.generation_file, &config.generation);
     let port_marker = format!("{}:{}", config.generation, config.port);
@@ -291,10 +343,6 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         return Err("old instance did not exit before deadline".into());
     }
     state.observe(Event::OldExited);
-    if !config.probe_host.is_loopback() {
-        return Err("restart probe host must be loopback".into());
-    }
-    let address = SocketAddr::new(config.probe_host, config.port);
     let ready_ms = if mode == LaunchMode::Background
         && config.source_launcher.is_some()
         && config.ready_timeout_ms == ready_timeout()

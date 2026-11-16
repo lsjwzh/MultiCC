@@ -11,7 +11,9 @@ const { spawn } = require('node:child_process');
 const { processTable, isGatewayRoot, sameProcess } = require('../src/server-processes');
 const isolatedHostEnv = require('./helpers/isolated-host-env');
 
-test('production restart route replaces only its isolated server and verifies readiness', { timeout: 90000 }, async () => {
+const privateIp = Object.values(os.networkInterfaces()).flat().find(item => item && item.family === 'IPv4' && !item.internal
+  && (/^10\./.test(item.address) || /^192\.168\./.test(item.address) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(item.address)))?.address;
+for (const [label, bindHost] of [['loopback', '127.0.0.1'], ['localhost', 'localhost'], ['local-interface', privateIp]]) test(`production restart route verifies readiness on ${label}`, { timeout: 90000, skip: !bindHost }, async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-real-restart-')));
   const repo = path.resolve(__dirname, '..');
   const host = path.join(root, 'host'), data = path.join(root, 'data'), home = path.join(root, 'home');
@@ -44,13 +46,13 @@ test('production restart route replaces only its isolated server and verifies re
   await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
   const port = probe.address().port;
   await new Promise(resolve => probe.close(resolve));
-  const origin = `http://127.0.0.1:${port}`;
+  const origin = `http://${bindHost}:${port}`;
   const missing = path.join(root, 'missing');
   const commands = Object.fromEntries(['CLAUDE_CMD','OPENCODE_CMD','ZCODE_CMD','QODER_CMD','KIMI_CMD','CODEBUDDY_CMD','DSH_CMD','CODEX_CMD'].map(name => [name, missing]));
   let output = '', supervisorPid = null, generation = null, replacementPid = null;
   const gateway = spawn(path.join(native, process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway'),
     ['serve', '--cwd', host, '--node', process.execPath, 'server.js'], { cwd: host, env: { ...isolatedHostEnv(), ...commands,
-      HOME: home, USERPROFILE: home, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: 'isolated-only',
+      HOME: home, USERPROFILE: home, NODE_ENV: 'test', PORT: String(port), HOST: bindHost, ACCESS_TOKEN: 'isolated-only', MULTICC_ALLOW_REMOTE: '1',
       MULTICC_RUST_ADDON: path.join(native, 'multicc_core.node'), MULTICC_DATA_DIR: data,
       MULTICC_MEMORY_ROOT: path.join(data, 'memories'), MULTICC_ENV_FILE: path.join(root, 'test.env'),
       MULTICC_RESTART_TEST_TIMEOUT_MS: '20000', MULTICC_AGENT_AUTO_INSTALL: '0',
@@ -72,7 +74,7 @@ test('production restart route replaces only its isolated server and verifies re
     }
     assert.ok(initial?.ok, `isolated server not ready: ${output.slice(-3000)}`);
     assert.equal(Number(initial.headers.get('x-multicc-gateway-pid')), gateway.pid);
-    const response = await fetch(`${origin}/api/restart`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedPid: gateway.pid }), signal: AbortSignal.timeout(10000) });
+    const response = await fetch(`${origin}/api/restart`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-access-token': 'isolated-only' }, body: JSON.stringify({ expectedPid: gateway.pid }), signal: AbortSignal.timeout(10000) });
     assert.equal(response.status, 202, await response.clone().text());
     const scheduled = await response.json();
     supervisorPid = scheduled.supervisorPid; generation = scheduled.restartId;
