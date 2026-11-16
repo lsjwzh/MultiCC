@@ -1006,7 +1006,7 @@ function withEnv(vars, fn) {
   };
 }
 
-test('restart route: desktop mode exits for supervisor respawn instead of scheduling bash', withEnv({ MULTICC_DESKTOP: '1' }, async () => {
+test('restart route: desktop waits for Rust supervisor before requesting respawn', withEnv({ MULTICC_DESKTOP: '1' }, async () => {
   const { createServerRestartRoute } = require(path.join(ROOT, 'src', 'routes', 'server-restart-route.js'));
   let exited = null;
   const spawns = [];
@@ -1015,16 +1015,17 @@ test('restart route: desktop mode exits for supervisor respawn instead of schedu
     chatSessions: new Map(),
     spawn: (...a) => { spawns.push(a); return { on: () => {}, unref: () => {} }; },
     rootDir: ROOT,
+    scheduleRestart: async () => ({ mode: 'desktop' }),
     getShuttingDown: () => false,
     desktopExit: reason => { exited = reason; },
   }).mountRoutes(app);
 
   const res = fakeRouteRes();
   handlers['POST /api/restart']({ id: 'r1' }, res);
-  await new Promise(r => setImmediate(r));
+  await new Promise(r => setTimeout(r, 350));
   assert.equal(res.statusCode, 202);
-  assert.equal(res.body.mode, 'desktop-supervised');
-  assert.equal(exited, 'desktop-restart');
+  assert.equal(res.body.mode, 'desktop');
+  assert.equal(exited, 'restart');
   assert.equal(spawns.length, 0, 'no detached /bin/bash re-launcher in desktop mode');
 
   // second call while the scheduled exit is pending → 409 debounce

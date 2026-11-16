@@ -13,7 +13,10 @@ pub enum LaunchMode {
 
 impl LaunchMode {
     fn externally_supervised(self) -> bool {
-        matches!(self, Self::Standalone | Self::Desktop)
+        matches!(
+            self,
+            Self::SourceForeground | Self::Standalone | Self::Desktop
+        )
     }
 }
 
@@ -108,8 +111,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_waits_for_old_exit_and_verified_new_readiness() {
-        let mut s = Supervisor::new(LaunchMode::SourceForeground, 2).unwrap();
+    fn background_waits_for_old_exit_and_verified_new_readiness() {
+        let mut s = Supervisor::new(LaunchMode::Background, 2).unwrap();
         assert_eq!(
             s.observe(Event::VerifiedNewInstanceReady),
             State::WaitingForOldExit
@@ -155,7 +158,11 @@ mod tests {
 
     #[test]
     fn external_supervisors_are_never_competed_with() {
-        for mode in [LaunchMode::Standalone, LaunchMode::Desktop] {
+        for mode in [
+            LaunchMode::SourceForeground,
+            LaunchMode::Standalone,
+            LaunchMode::Desktop,
+        ] {
             let mut s = Supervisor::new(mode, 3).unwrap();
             assert_eq!(
                 s.observe(Event::OldExited),

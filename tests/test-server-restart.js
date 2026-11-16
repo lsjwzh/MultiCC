@@ -107,10 +107,10 @@ test('server composition returns 202 scheduled and resets debounce on scheduling
   // checked for the factory wiring with the package-root rootDir.
   const routeSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'server-restart-route.js'), 'utf8');
   const hostSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  assert.match(routeSrc, /try\s*\{[\s\S]*?scheduleDetachedRestart\(\{[\s\S]*?rootDir\b/);
-  assert.match(routeSrc, /onFailure:[\s\S]*?_restartScheduled\s*=\s*false/);
+  assert.match(routeSrc, /try\s*\{[\s\S]*?scheduleRestart\(\{[\s\S]*?rootDir\b/);
+  assert.match(routeSrc, /\.catch\(error[\s\S]*?_restartScheduled\s*=\s*false/);
   assert.match(routeSrc, /catch\s*\(error\)[\s\S]*?_restartScheduled\s*=\s*false[\s\S]*?res\.status\(503\)/);
-  assert.match(routeSrc, /res\.status\(202\)\.json\(\{\s*ok:\s*true,\s*status:\s*'scheduled',\s*activeStreaming\s*\}\)/);
+  assert.match(routeSrc, /res\.status\(202\)\.json\(\{\s*ok:\s*true,\s*status:\s*'scheduled',\s*activeStreaming,\s*mode\s*\}\)/);
   assert.match(hostSrc, /createServerRestartRoute\(\{[\s\S]*?rootDir:\s*__dirname/);
   // Negative safety net: neither host nor route may resurrect the old shell-string form.
   const combined = hostSrc + '\n' + routeSrc;

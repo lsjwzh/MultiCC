@@ -13,7 +13,7 @@
 // `_shuttingDown`: gracefulShutdown short-circuits on `_shuttingDown`, so
 // reusing it here would abort the very shutdown we want. Once a restart is
 // scheduled we never reset it on success — the process is about to be replaced.
-const { scheduleDetachedRestart } = require('../server-restart');
+const { scheduleRustRestart } = require('../server-restart');
 
 const RESTART_FLAG_TTL_MS = 90000;
 
@@ -35,6 +35,10 @@ function createServerRestartRoute(deps) {
     chatSessions,
     spawn,
     rootDir,
+    dataDir = rootDir,
+    getPort = () => Number(process.env.PORT),
+    getHost = () => '127.0.0.1',
+    scheduleRestart = scheduleRustRestart,
     getShuttingDown,
     log = console,
     isDesktopMode = () => /^(1|true|yes|on)$/i.test(String(process.env.MULTICC_DESKTOP || '').trim()),
@@ -63,44 +67,21 @@ function createServerRestartRoute(deps) {
       for (const cs of chatSessions.values()) {
         if (cs && cs.isStreaming && (Date.now() - (cs.lastStreamAt || 0)) < 600000) activeStreaming++;
       }
-      // Desktop shell: the supervisor (not a detached bash manager) owns this
-      // process. Schedule nothing; exit gracefully right after replying and let
-      // it spawn a fresh instance against the same data dir and port.
-      if (isDesktopMode()) {
-        if (typeof desktopExit !== 'function') {
-          return res.status(503).json({ error: 'desktop restart is not wired', code: 'DESKTOP_RESTART_UNWIRED' });
-        }
-        _restartScheduled = true;
-        _restartScheduledAt = Date.now();
-        log.log('[multicc] /api/restart: desktop mode — exiting for supervisor respawn');
-        setImmediate(() => { try { desktopExit('desktop-restart'); } catch (error) {
-          log.error('[multicc] /api/restart: desktop exit failed', error && error.message);
-        } });
-        return res.status(202).json({ ok: true, status: 'scheduled', activeStreaming, mode: 'desktop-supervised' });
-      }
+      if (typeof desktopExit !== 'function') return res.status(503).json({ error: 'restart shutdown is not wired', code: 'RESTART_UNWIRED' });
       _restartScheduled = true;
       _restartScheduledAt = Date.now();
-      // Start the detached sleeper before acknowledging the request. The manager
-      // and bash preflight plus synchronous spawn must succeed; its two-second
-      // delay still gives this response time to flush before it signals us.
       const scheduledAt = _restartScheduledAt;
       try {
-        scheduleDetachedRestart({
-          spawn,
-          rootDir,
-          env: process.env,
-          log,
-          onFailure: (error) => {
-            // An old detached attempt must never clear a newer attempt's
-            // debounce. If shutdown already began there is no live API process
-            // to retry.
-            if (!getShuttingDown() && _restartScheduledAt === scheduledAt) {
-              _restartScheduled = false;
-              _restartScheduledAt = 0;
-              log.error('[multicc] /api/restart: scheduling state reset after child failure',
-                error && error.code);
-            }
-          },
+        const pending = scheduleRestart({ spawn, rootDir, dataDir, port: getPort(), host: getHost(), env: process.env });
+        pending.then(({ mode }) => {
+          res.status(202).json({ ok: true, status: 'scheduled', activeStreaming, mode });
+          setTimeout(() => { try { desktopExit('restart'); } catch (error) {
+            log.error('[multicc] /api/restart: shutdown failed', error && error.message);
+          } }, 250);
+        }).catch(error => {
+          if (_restartScheduledAt === scheduledAt) { _restartScheduled = false; _restartScheduledAt = 0; }
+          log.error('[multicc] /api/restart: could not schedule restart', error && error.message);
+          res.status(503).json({ error: 'restart could not be scheduled', code: 'RESTART_SCHEDULE_FAILED', requestId: req.id });
         });
       } catch (error) {
         if (_restartScheduledAt === scheduledAt) {
@@ -118,7 +99,7 @@ function createServerRestartRoute(deps) {
         });
       }
 
-      return res.status(202).json({ ok: true, status: 'scheduled', activeStreaming });
+      return undefined;
     });
 
     // Desktop-only clean-stop endpoint. The supervisor calls it on app quit so

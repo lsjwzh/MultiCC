@@ -65,6 +65,10 @@ function gatewayBinaryName(platform) {
   return platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway';
 }
 
+function restartBinaryName(platform) {
+  return platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor';
+}
+
 // --version 打印一行 `multicc-cdpd <协议版本> <crate 版本>`。服务端只和同协议的网关
 // 说话，编出一个对不上的二进制等于没编。三处必须一致（tests/test-cdpd.js 校验）：
 // 这里、src/cdpd.js 的 PROTOCOL_VERSION、native/cdpd/src/lib.rs 的 PROTOCOL_VERSION。
@@ -263,6 +267,15 @@ function build({ platform = process.platform, arch = process.arch,
     const file = path.resolve(out, `${platform}-${arch}`, name);
     try {
       cargo(GATEWAY_CRATE);
+      cargo('multicc-core');
+      const restartName = restartBinaryName(platform);
+      const restartSource = path.resolve(targetDir, target, 'release', restartName);
+      const restartFile = path.resolve(out, `${platform}-${arch}`, restartName);
+      verify(restartSource, platform, arch);
+      const restartTemporary = copyStaged(restartSource, restartFile, { executable: true });
+      try { fs.renameSync(restartTemporary, restartFile); }
+      finally { fs.rmSync(restartTemporary, { force: true }); }
+      produced.push({ kind: 'restart supervisor', file: restartFile });
       verify(source, platform, arch);
       const temporary = copyStaged(source, file, { executable: true });
       try {
@@ -352,6 +365,6 @@ if (require.main === module) {
 module.exports = {
   REMOTE_CRATE, CDPD_CRATE, CDPD_PROTOCOL, GATEWAY_CRATE, GATEWAY_PROTOCOL,
   build, executable, hasRemoteCrate, hasCdpdCrate, hasGatewayCrate, parseArgs, probeRemoteVersion,
-  probeCdpdVersion, probeGatewayVersion, cdpdBinaryName, gatewayBinaryName, remoteBinaryName,
+  probeCdpdVersion, probeGatewayVersion, cdpdBinaryName, gatewayBinaryName, restartBinaryName, remoteBinaryName,
   remoteBinaryPath, targetFor, verify, workspaceMembers,
 };

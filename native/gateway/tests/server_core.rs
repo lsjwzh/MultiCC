@@ -124,6 +124,7 @@ impl Gateway {
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
             )
             .env("PORT", port.to_string())
+            .env("MULTICC_RESTART_GENERATION", "fixture-generation")
             .env("ACCESS_TOKEN", TOKEN)
             .env("HOME", &home)
             .env("MULTICC_DATA_DIR", &data)
@@ -403,6 +404,10 @@ fn readyz_appends_checks_after_request_id() {
     let response = gateway.get("/readyz", &anonymous());
     assert_eq!(response.status, 200, "{}", gateway.log());
     assert_eq!(response.header("cache-control"), Some("no-store"));
+    assert_eq!(
+        response.header("x-multicc-restart-generation"),
+        Some("fixture-generation")
+    );
     let body = response.body();
     assert_eq!(
         body,
@@ -420,6 +425,10 @@ fn readyz_not_ready_is_503_and_omits_null_checks() {
     );
     let response = gateway.get("/readyz", &anonymous());
     assert_eq!(response.status, 503);
+    assert_eq!(
+        response.header("x-multicc-restart-generation"),
+        Some("fixture-generation")
+    );
     assert_eq!(
         response.body(),
         r#"{"status":"not_ready","requestId":"host-req-1"}"#

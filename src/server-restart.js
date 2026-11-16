@@ -2,6 +2,62 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+
+// Thin host bridge: the independent Rust executable owns the restart policy.
+function scheduleRustRestart({ spawn, rootDir, dataDir, port, host = '127.0.0.1', env = process.env }) {
+  const addon = env.MULTICC_RUST_ADDON || path.join(env.MULTICC_RUST_PREBUILT_DIR || path.join(rootDir, 'native', 'prebuilt'),
+    `${process.platform}-${process.arch}`, 'multicc_core.node');
+  const oldPid = Number(env.MULTICC_GATEWAY_PID);
+  if (!addon || env.MULTICC_GATEWAY_CHILD !== '1' || oldPid !== process.ppid || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw Object.assign(new Error('restart requires a verified gateway parent'), { code: 'RESTART_GATEWAY_INVALID' });
+  }
+  const probeHost = host === '::1' || host === '::' ? '::1' : host === '127.0.0.1' || host === '0.0.0.0' ? '127.0.0.1' : null;
+  if (!probeHost) throw Object.assign(new Error('restart cannot safely verify this bind address'), { code: 'RESTART_BIND_UNSUPPORTED' });
+  const dir = path.dirname(path.resolve(addon));
+  const binary = path.join(dir, process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
+  const gateway = path.join(dir, process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+  fs.accessSync(binary, fs.constants.X_OK);
+  const mode = env.MULTICC_DESKTOP === '1' ? (env.MULTICC_DESKTOP_SHELL === '1' ? 'desktop' : 'standalone')
+    : env.MULTICC_SOURCE_FOREGROUND === '1' ? 'source' : 'background';
+  const generation = crypto.randomBytes(24).toString('hex');
+  const logs = path.join(dataDir, 'logs');
+  fs.mkdirSync(logs, { recursive: true });
+  const logPath = path.join(logs, 'restart-supervisor.log');
+  const config = { mode, old_pid: oldPid, port, probe_host: probeHost, generation,
+    generation_file: path.join(dataDir, '.restart-generation'), lock_file: path.join(dataDir, '.restart-supervisor.lock'),
+    cwd: rootDir, gateway, node: process.execPath, log_path: logPath };
+  const output = fs.openSync(logPath, 'a', 0o600);
+  let child;
+  try { child = spawn(binary, [], { detached: true, cwd: rootDir, windowsHide: true,
+    stdio: ['ignore', 'pipe', output], env: { ...env, MULTICC_RESTART_CONFIG: JSON.stringify(config) } }); }
+  finally { fs.closeSync(output); }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => done(new Error('restart supervisor handshake timed out')), 10000);
+    function done(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        try { child.kill(); } catch (_) {}
+        try { if (fs.readFileSync(config.generation_file, 'utf8') === generation) fs.unlinkSync(config.generation_file); } catch (_) {}
+        return reject(error);
+      }
+      child.stdout.destroy();
+      child.unref();
+      resolve({ mode, logPath });
+    }
+    let message = '';
+    child.stdout.on('data', chunk => {
+      message += chunk.toString();
+      if (message.includes('\n')) done(message.trim() === 'READY' ? null : new Error('invalid restart supervisor handshake'));
+      if (message.length > 256) done(new Error('invalid restart supervisor handshake'));
+    });
+    child.once('error', done);
+    child.once('exit', code => done(new Error(`restart supervisor exited before handshake: ${code}`)));
+  });
+}
 
 // Use the same ./multicc restart entry as a manual restart, with a bash fallback
 // for source/archive installs that did not preserve the executable bit.
@@ -135,6 +191,7 @@ function scheduleDetachedRestart(options = {}) {
 }
 
 module.exports = {
+  scheduleRustRestart,
   BASH_PATH,
   MANAGER_NAME,
   RESTART_EXEC_COMMAND,
