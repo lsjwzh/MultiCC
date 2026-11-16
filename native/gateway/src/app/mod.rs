@@ -556,9 +556,9 @@ pub struct App {
     pub lan_only: bool,
     pub allow_legacy_token_query: bool,
     /// `--node` was given. The authentication runtime (access token, sessions,
-    /// WS tickets, shutdown flag) lives in that Node child; `--no-node` has no
-    /// owner for it, so every route that needs the snapshot fails closed
-    /// (docs/gateway.md §8.1).
+    /// WS tickets, shutdown flag) lives in that Node child; `--no-node` owns a
+    /// local copy when `.env` supplied a usable ACCESS_TOKEN. A route that needs
+    /// the snapshot with neither owner fails closed (docs/gateway.md §8.1).
     pub node_enabled: bool,
     /// Node handled each of these requests to completion on one thread; the
     /// read-modify-write of a store must not interleave here either.
@@ -876,12 +876,13 @@ fn options(ctx: &RequestCtx, allow: &str) -> Response<Body> {
     )
 }
 
-/// `--no-node`: the honest shape of "this route needs the auth runtime the
-/// front door was started without". Same status, content type, `Connection`
+/// `--no-node` with no local authentication runtime: the honest shape of "this
+/// route needs an auth runtime and this front door has none" (no Node child and
+/// no usable `ACCESS_TOKEN` in `.env`). Same status, content type, `Connection`
 /// and `code` as the forwarded-route refusal in `crate::forward`, but the
-/// `error` names the owner of the missing state instead of pretending the
-/// request would have gone to Node. No Express headers or log line: nothing
-/// ran, exactly like the fallback refusal.
+/// `error` names the missing state instead of pretending the request would have
+/// gone to Node. No Express headers or log line: nothing ran, exactly like the
+/// fallback refusal.
 const AUTH_RUNTIME_ABSENT_BODY: &str = concat!(
     r#"{"error":"Authentication state is held by the Node runtime, which this front door was started without (--no-node).","#,
     r#""code":"node_runtime_absent"}"#
@@ -937,13 +938,15 @@ pub async fn handle(
         provider_relay::append_headers(&mut response, &headers);
         return response;
     }
-    // §8.1: every route below needs the authentication snapshot, and that
-    // state is held by the Node child. With `--no-node` there is nothing to
-    // ask: fail closed at once instead of waiting out the control-stream
-    // timeout (3s) and reporting it as a generic 503. `--node` keeps the old
-    // behavior exactly; the re-snapshots in `auth.rs` are only reachable after
-    // this point, so they need no separate guard.
-    if !app.node_enabled {
+    // §8.1: every route below needs the authentication snapshot. With `--node`
+    // it lives in the Node child; with `--no-node` the front door owns a local
+    // copy when `.env` supplied an ACCESS_TOKEN. Only when neither owner exists
+    // (no child, no valid token) does a route fail closed at once instead of
+    // waiting out the control-stream timeout (3s) and reporting it as a generic
+    // 503. `--node` keeps the old behavior exactly; the re-snapshots in
+    // `auth.rs` are only reachable after this point, so they need no separate
+    // guard.
+    if !app.node_enabled && !app.auth.has_local() {
         return auth_runtime_absent();
     }
     let snapshot = match app.auth.snapshot().await {

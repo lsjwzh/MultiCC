@@ -2,7 +2,7 @@
 //! fail closed; no env-file guesses or replay of an ambiguous ticket issue.
 use multicc_core::{
     auth_control as wire,
-    auth_runtime::{Request, Response, Snapshot},
+    auth_runtime::{AuthRuntime, Request, Response, Snapshot},
     auth_security,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -62,9 +62,57 @@ impl Client {
 pub struct Bridge {
     client: Mutex<Option<Arc<Client>>>,
     generation: AtomicU64,
+    /// `--no-node`: this process owns the authentication runtime itself
+    /// (access token, shutdown flag, revision and WS tickets). It is never
+    /// installed while a Node child exists: two owners could mint tickets
+    /// from different revisions or disagree about the shutdown flag.
+    local: Mutex<Option<AuthRuntime>>,
 }
 impl Bridge {
+    /// Takes ownership of the authentication runtime for `--no-node`.
+    ///
+    /// Fails closed: an empty or oversized token installs nothing, so the
+    /// bridge keeps the "no owner" behaviour (the caller answers 503
+    /// `node_runtime_absent`). Never call this in `--node` mode.
+    pub fn install_local(&self, secret: String) -> Result<(), &'static str> {
+        if secret.is_empty() {
+            return Err("ACCESS_TOKEN is empty");
+        }
+        AuthRuntime::validate_secret(&secret)?;
+        *self.local.lock().unwrap_or_else(|e| e.into_inner()) = Some(AuthRuntime::new(secret));
+        Ok(())
+    }
+    /// Whether this process holds the authentication runtime itself.
+    pub fn has_local(&self) -> bool {
+        self.local
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+    /// `--no-node` stop: publish `shutting_down` so in-flight requests that
+    /// need a snapshot answer 503 `SERVER_SHUTTING_DOWN` before the process
+    /// exits. Returns false in `--node` mode, where Node owns the flag.
+    pub fn begin_shutdown(&self) -> bool {
+        match self
+            .local
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            Some(state) => {
+                state.shutting_down = true;
+                true
+            }
+            None => false,
+        }
+    }
     pub async fn request(&self, request: Request) -> io::Result<Response> {
+        {
+            let mut local = self.local.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(state) = local.as_mut() {
+                return Ok(state.respond(request));
+            }
+        }
         self.exchange(&request, false).await
     }
     pub async fn workspace(
@@ -274,6 +322,111 @@ mod tests {
             .await
             .is_err());
         peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_local_runtime_answers_snapshots_without_a_node_stream() {
+        let bridge = Arc::new(Bridge::default());
+        assert!(!bridge.has_local(), "--node has no local owner");
+        bridge.install_local("local-token".into()).unwrap();
+        assert!(bridge.has_local());
+        let snapshot = bridge.snapshot().await.unwrap();
+        assert_eq!(snapshot.secret, "local-token");
+        assert_eq!(snapshot.revision, 0);
+        assert!(!snapshot.shutting_down);
+        // Concurrent snapshots serialize on the local mutex: no stream, no
+        // deadlock, and every answer carries the same credential.
+        let (first, second, third) =
+            tokio::join!(bridge.snapshot(), bridge.snapshot(), bridge.snapshot());
+        for snapshot in [first, second, third] {
+            assert_eq!(snapshot.unwrap().secret, "local-token");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_local_runtime_fails_closed_on_a_missing_or_oversized_token() {
+        let bridge = Bridge::default();
+        assert!(bridge.install_local(String::new()).is_err());
+        assert!(!bridge.has_local());
+        assert!(bridge.install_local("x".repeat(wire::MAX_FRAME)).is_err());
+        assert!(!bridge.has_local());
+        // No owner: the request still goes to the (absent) Node stream and
+        // fails instead of being answered by a default credential.
+        assert!(bridge.snapshot().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn local_tickets_follow_revision_path_and_metadata_rules() {
+        let bridge = Bridge::default();
+        bridge.install_local("token".into()).unwrap();
+        let issue = |revision: u64, path: &str, metadata: serde_json::Value| Request::IssueTicket {
+            revision,
+            path: path.into(),
+            metadata,
+        };
+        let Response::Ticket {
+            ticket,
+            path,
+            expires_at,
+        } = bridge
+            .request(issue(0, "/ws/test", serde_json::json!({"requestId": "r"})))
+            .await
+            .unwrap()
+        else {
+            panic!("a fresh revision must mint a ticket")
+        };
+        assert_eq!(ticket.len(), 32);
+        assert_eq!(path, "/ws/test");
+        assert!(expires_at > 0.0);
+        // A rotated revision is stale, an off-origin path and a non-object
+        // metadata are invalid, and neither mints anything.
+        assert!(matches!(
+            bridge
+                .request(issue(1, "/ws/test", serde_json::json!({})))
+                .await
+                .unwrap(),
+            Response::Stale
+        ));
+        assert!(matches!(
+            bridge
+                .request(issue(0, "http://elsewhere.test/ws", serde_json::json!({})))
+                .await
+                .unwrap(),
+            Response::Invalid
+        ));
+        assert!(matches!(
+            bridge
+                .request(issue(
+                    0,
+                    "/ws/test",
+                    serde_json::json!(["not", "an", "object"])
+                ))
+                .await
+                .unwrap(),
+            Response::Invalid
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_shutdown_marks_the_snapshot_and_refuses_new_tickets() {
+        let bridge = Bridge::default();
+        bridge.install_local("token".into()).unwrap();
+        assert!(!bridge.snapshot().await.unwrap().shutting_down);
+        assert!(bridge.begin_shutdown());
+        assert!(bridge.snapshot().await.unwrap().shutting_down);
+        assert!(matches!(
+            bridge
+                .request(Request::IssueTicket {
+                    revision: 0,
+                    path: "/ws/test".into(),
+                    metadata: serde_json::json!({}),
+                })
+                .await
+                .unwrap(),
+            Response::Stale
+        ));
+        // `--node`: the flag belongs to the child, so this is a no-op.
+        assert!(!Bridge::default().begin_shutdown());
     }
 
     async fn actor(registration: &Registration) -> TcpStream {
