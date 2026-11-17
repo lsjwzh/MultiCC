@@ -18,6 +18,9 @@ test('real SQLite exposes the pending-queue event-loop cost of W completion', as
     await store.close({ exportRollback: false });
     fs.rmSync(dir, { recursive: true, force: true });
   });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: { requestId: 'question' }, activeTurn: null, category: 'W',
+  } });
   await store.mutate(draft => {
     draft.sessionSchedules.s = { sessionId: 's', active: { entryId: 'active', deliveryId: 'active', taskId: 'task' },
       state: 'running', classifyState: 'P' };
@@ -45,6 +48,55 @@ test('real SQLite exposes the pending-queue event-loop cost of W completion', as
   assert.equal(result.ok, true);
   assert.equal(result.schedule.queued.length, 1000);
   t.diagnostic(`1,000 pending rows: zero-delay timer waited ${delay.toFixed(1)} ms`);
+  assert.ok(delay < 750, `1,000 pending rows blocked the event loop for ${delay.toFixed(1)} ms`);
+});
+
+test('isolated Rust completion handles 1,000 queued records without stalling Node', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-complete-rust-latency-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file, now: () => 1000 });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: { requestId: 'question', taskId: 'task', resolved: false },
+    activeTurn: null, category: 'W',
+  } });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', active: { entryId: 'active', taskId: 'task' },
+      state: 'running', classifyState: 'P' };
+  });
+  const db = new Database(file);
+  try {
+    const insert = db.prepare('INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence,available_at,updated_at) VALUES(?,?,?,?,?,?,?)');
+    db.transaction(() => {
+      for (let i = 0; i < 1000; i++) {
+        const id = `q${i}`;
+        const item = { id, sessionId: 's', state: 'pending', sequence: i + 1, availableAt: 1,
+          payload: { type: 'session.work', workKind: 'task', message: 'x' } };
+        insert.run(id, JSON.stringify(item), 's', 'pending', i + 1, 1, 1);
+      }
+    })();
+  } finally { db.close(); }
+  const events = [];
+  const scheduler = createSessionWorkScheduler({ store, now: () => 1000, rustQuestionOwner: true,
+    getPendingUserInput() { throw new Error('owned questions must not be read from Node'); },
+    onEvent: event => events.push(event) });
+  const start = performance.now();
+  let delay;
+  const timer = new Promise(resolve => setTimeout(() => { delay = performance.now() - start; resolve(); }, 0));
+  const result = await scheduler.complete('s', { expectedTaskId: 'task', classifyState: 'W' });
+  await timer;
+  assert.equal(result.ok, true);
+  assert.equal(result.schedule.queued.length, 1000);
+  assert.equal(events.filter(event => event.type === 'completed').length, 1);
+  assert.ok(delay < 750, `isolated Rust completion blocked the event loop for ${delay.toFixed(1)} ms`);
+  const verify = new Database(file, { readonly: true });
+  try {
+    assert.equal(verify.prepare("SELECT count(*) AS n FROM orchestration_outbox WHERE json_extract(data_json,'$.blockedByUserInput')='question'").get().n, 1000);
+  } finally { verify.close(); }
+  t.diagnostic(`isolated Rust completion: timer ${delay.toFixed(1)} ms, total ${(performance.now() - start).toFixed(1)} ms`);
 });
 
 // Intentional failing acceptance guard until the entire W completion, including

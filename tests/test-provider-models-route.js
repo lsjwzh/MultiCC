@@ -197,3 +197,15 @@ test('payload normalization accepts arrays, data and models shapes', () => {
   assert.deepEqual(modelsFromPayload({ data: [{ model: 'c', label: 'C' }] }).map(entry => entry.model), ['c']);
   assert.deepEqual(modelsFromPayload({ models: [{ id: 'd' }] }).map(entry => entry.model), ['d']);
 });
+
+
+test('manual refresh reaches only the selected MultiCC Codex lender', async () => {
+  const fixture = providerFixture({ summary: { baseUrl: 'https://lender.test/codex-proxy/account-a' } });
+  fixture.providers.getProviderLimitTarget = () => ({ strategy: 'relay-quota', relayUrl: fixture.summary.baseUrl });
+  const urls = [];
+  const runtime = runtimeFor(fixture, async url => { urls.push(url); return response(200, { models: ['gpt-6.2-sol'] }); });
+  await runtime.listProviderModels('relay-1');
+  const result = await runtime.listProviderModels('relay-1', { refresh: true });
+  assert.deepEqual(urls, ['https://lender.test/codex-proxy/account-a/models', 'https://lender.test/codex-proxy/account-a/models?refresh=1']);
+  assert.equal(result.body.models[0].model, 'gpt-6.2-sol');
+});

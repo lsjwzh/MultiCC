@@ -8,12 +8,8 @@
 // by reference. Pure/stateless helpers are required directly from src/*.
 
 const crypto = require('crypto');
-const {
-  createTurnTimingRecorder,
-  createDeliveryProbeRegistry,
-  createTurnTimelinePort,
-  shouldReexecutePersistedDelivery,
-} = require('./turn-progress');
+const { createTurnTimingRecorder, createDeliveryProbeRegistry, createTurnTimelinePort,
+  shouldReexecutePersistedDelivery } = require('./turn-progress');
 const claudeApiError = require('./claude-api-error-message');
 const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
 const { createSessionNotices } = require('./session-notices');
@@ -47,16 +43,9 @@ const {
   sanitizeMessage: sanitizeApiErrorMessage,
   retryNotice,
 } = require('./index');
-const {
-  createProviderAttemptRuntime,
-  markHostErrorEnvelope,
-  providerAttemptFields,
-  tagProviderAttemptEvent,
-} = require('./provider-attempt-runtime');
-const {
-  createProviderInvocationFactory,
-  providerRetryRouteOptions,
-} = require('./provider-invocation');
+const { createProviderAttemptRuntime, markHostErrorEnvelope, providerAttemptFields,
+  tagProviderAttemptEvent } = require('./provider-attempt-runtime');
+const { createProviderInvocationFactory, providerRetryRouteOptions } = require('./provider-invocation');
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { createAutoRouteNotes } = require('./auto-route-notes');
 const { admissionRootCause, deliverAfterPendingMemory, createQueuedTurnPreparation } = require('./admission-progress');
@@ -695,10 +684,9 @@ function createChatTurnEngine(deps) {
     rememberActiveCliState: (record) => rememberActiveCliState(record),
     savePersistedSessions: (reason) => savePersistedSessionsBestEffort(reason),
     finishProviderAttempt: (runner, outcome, facts) => finishProviderAttempt(runner, outcome, facts),
-    recordUserInput: (evt, sessionId, turnId) => getSessionWorkHost() && recordAdapterUserInput({
-      evt, sessionId, turnId,
-      recordInput: (signal) => getSessionWorkHost().recordInput(signal),
-    }),
+    recordUserInput: (evt, sessionId, turnId) => require('./question-input-bridge').recordAdapterQuestion({ evt, sessionId, turnId, work: getSessionWorkHost(), recordAdapterUserInput, chatSessions,
+      isCurrentTurnRunner, logger, forwardFallback: (id, cs, turn, runner, text) => getNative().chatApplyAdapterDecodedEvent({ name: cs.cli }, cs, persistedSessions.get(id), id, { type: 'assistant_text', text },
+        event => forwardProviderEvent(id, cs, turn, runner, event), turn, runner, nativeChatEventPorts) }),
     consoleWarn: (...args) => console.warn(...args),
     consoleLog: (...args) => console.log(...args),
     noteReportedModel: (sessionName, model) => noteReportedModel(sessionName, model),
@@ -1266,7 +1254,9 @@ function createChatTurnEngine(deps) {
     }
     messageDurable = true;
     if (opts.userInputRequestId) {
-      const resolvedInput = userInputSignalHost.resolve(sessionName, opts.userInputRequestId);
+      const resolvedInput = typeof userInputSignalHost.resolveAsync === 'function'
+        ? await userInputSignalHost.resolveAsync(sessionName, opts.userInputRequestId)
+        : userInputSignalHost.resolve(sessionName, opts.userInputRequestId);
       if (!resolvedInput.ok) {
         preparationFailure = resolvedInput.code || 'user-input-resolution-rejected';
         throw new Error(`pending user input resolution rejected: ${preparationFailure}`);
@@ -1277,10 +1267,12 @@ function createChatTurnEngine(deps) {
       preparationFailure = messageMarked.code || 'message-proof-rejected';
       throw new Error(`turn message proof rejected: ${preparationFailure}`);
     }
-    userInputSignalHost.beginTurn(sessionName, {
+    const inputTurnOptions = {
       originContinue: originContinue && !directUserInput,
       turnId,
-    });
+    };
+    if (typeof userInputSignalHost.beginTurnAsync === 'function') await userInputSignalHost.beginTurnAsync(sessionName, inputTurnOptions);
+    else userInputSignalHost.beginTurn(sessionName, inputTurnOptions);
 
     // Reset accumulators
     cs.currentAssistantText = '';
@@ -1328,6 +1320,7 @@ function createChatTurnEngine(deps) {
     cs._sawApiError = false;
     cs._activeTurn = turn;
     cs._activeRunner = null;
+    if (typeof userInputSignalHost.activateTurnAsync === 'function') await userInputSignalHost.activateTurnAsync(sessionName);
     cs._continuationLineage = { turnId: turn.turnId, lineage: turn.lineage };
     turnProgressHeartbeat.start(sessionName, turn.turnId, { phase: 'starting' });
     // Reset the per-turn role breakdown (main vs sub) collected by the claude-proxy
@@ -2371,6 +2364,7 @@ function createChatTurnEngine(deps) {
   }
 
   async function commitAdapterResult(provider, sessionName, cs, persisted, turn, runner, forward, envelope) {
+    if (runner.pendingUserInputRecords?.length) await Promise.all(runner.pendingUserInputRecords.splice(0));
     const nativeResult = runner.pendingClaudeResult;
     if (nativeResult) {
       applyClaudeChatEvent(cs, sessionName, nativeResult, forward, turn, runner, provider.name);
@@ -2392,6 +2386,9 @@ function createChatTurnEngine(deps) {
 
   // Map both runner endings from the pure planner to host services.
   const turnFinalizationExecutor = createTurnFinalizationExecutor({
+    withQuestionSnapshot: (id, fn) => typeof userInputSignalHost?.withSnapshotAsync === 'function'
+      ? userInputSignalHost.withSnapshotAsync(id, fn) : fn(),
+    syncQuestionTurn: id => userInputSignalHost?.activateTurnAsync?.(id),
     recordRunResult: (context, resolved) => { managedContext.contextCompleted(context, resolved); return getWorkspaceAdmission?.()?.finalized(context, resolved); },
     persistAssistant(context, append) {
       return persistFinalAssistantResult(context.sessionName, context.cs, context.turn, context.runner, {
@@ -2645,7 +2642,7 @@ function createChatTurnEngine(deps) {
   }
 
   // ── Chat mode: stream-json WebSocket ──
-  function handleChatWs(ws, req, urlObj) {
+  async function handleChatWs(ws, req, urlObj) {
     const sessionName = urlObj.searchParams.get('session') || '_default';
     const shellId = urlObj.searchParams.get('shell');
     if (shellId) {
@@ -2714,6 +2711,9 @@ function createChatTurnEngine(deps) {
 
     cs.clients.add(ws);
     const stopShellWatch = shellId && taskContextHost.watchTaskShellChat(shellId, sessionName, event => sendWs(ws, event));
+    const replayGate = await require('./question-input-bridge').prepareQuestionReplay({ ws, input: userInputSignalHost,
+      sessionId: sessionName, persisted, sendWs, cleanup: () => { if (stopShellWatch) stopShellWatch(); cs.clients.delete(ws); } });
+    if (!replayGate) return;
 
     // Resolve Provider identity and the shared cumulative/daily window view from
     // the token runtime so initial WS state and post-turn broadcasts cannot drift.
@@ -2734,7 +2734,7 @@ function createChatTurnEngine(deps) {
       cli: cs.cli,
       is_streaming: cs.isStreaming,
       taskShell: taskContextHost?.requiresTaskShell?.(sessionName) === true,
-      turnId: persisted.taskState?.userInputSignalTurnId || null,
+      turnId: replayGate.turnId,
       model: persisted.model || null,
       effectiveModel: effectiveSessionModel(persisted),
       effort: persisted.effort || null,
@@ -2843,7 +2843,7 @@ function createChatTurnEngine(deps) {
       }
     } catch (_) {}
     try {
-      getSessionWorkHost().replayState(sessionName, event => sendWs(ws, event));
+      await getSessionWorkHost().replayState(sessionName, event => sendWs(ws, event));
     } catch (_) {}
     // Unattended state is replayed on every connect so the floating panel is
     // correct after a refresh even when the last change predates this socket.
@@ -2958,13 +2958,7 @@ function createChatTurnEngine(deps) {
       }
     });
 
-    ws.on('close', () => {
-      if (stopShellWatch) stopShellWatch();
-      cs.clients.delete(ws);
-      // Do NOT kill claudeProc on disconnect — it may still be streaming to other clients
-      // or the user may reconnect (lock screen, tab switch, etc.)
-      // Process is only killed on explicit cancel or new user_message
-    });
+    replayGate.finish();
   }
 
   return {

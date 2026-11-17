@@ -40,6 +40,670 @@ fn owner(file: &str) -> OwnerClient {
 }
 
 #[test]
+fn detached_draft_rejects_external_write_before_a_late_read_and_releases_state() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut owner = owner(&file);
+    let db = Database::open(&file, false, true, 5000).unwrap();
+    db.exec("INSERT INTO orchestration_waits(id,data_json,session_id,status) VALUES('w','{\"id\":\"w\",\"status\":\"pending\"}','s','pending')").unwrap();
+    let start = owner.request("beginTrackedDraft", &json!({})).unwrap();
+    let token = start["token"].as_str().unwrap();
+    owner
+        .request("detachDraftSnapshot", &json!({"token":token}))
+        .unwrap();
+    db.exec("UPDATE orchestration_waits SET data_json='{\"id\":\"w\",\"status\":\"resolved\"}',status='resolved' WHERE id='w'").unwrap();
+    let error = owner
+        .request(
+            "readTrackedDraft",
+            &json!({"token":token,"operation":"materialize",
+        "input":{"collection":"waits","key":"w"}}),
+        )
+        .unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+    let next = owner.request("beginTrackedDraft", &json!({})).unwrap();
+    owner
+        .request("discardTrackedDraft", &json!({"token":next["token"]}))
+        .unwrap();
+}
+
+#[test]
+fn read_only_draft_cannot_be_used_to_commit_without_a_footprint() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut owner = owner(&file);
+    let start = owner
+        .request("beginTrackedDraft", &json!({"readOnly":true}))
+        .unwrap();
+    let token = start["token"].as_str().unwrap();
+    owner
+        .request("detachDraftSnapshot", &json!({"token":token}))
+        .unwrap();
+    let error = owner
+        .request(
+            "commitTrackedDraft",
+            &json!({"token":token,"headerReadsTracked":true,
+        "expectedRevision":start["state"]["revision"],"state":start["state"],"changes":[]}),
+        )
+        .unwrap_err();
+    assert!(error.contains("read-only draft cannot commit"), "{error}");
+    owner
+        .request("discardTrackedDraft", &json!({"token":token}))
+        .unwrap();
+}
+
+#[test]
+fn tracked_draft_merges_only_when_read_and_query_footprints_remain_valid() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut owner = owner(&file);
+    let db = Database::open(&file, false, true, 5000).unwrap();
+    db.exec("INSERT INTO orchestration_waits(id,data_json,session_id,status) VALUES('w','{\"id\":\"w\",\"sessionId\":\"s\",\"status\":\"pending\"}','s','pending')").unwrap();
+    let start = owner.request("beginTrackedDraft", &json!({})).unwrap();
+    let token = start["token"].as_str().unwrap().to_owned();
+    owner
+        .request("materialize", &json!({"collection":"waits","key":"w"}))
+        .unwrap();
+    owner
+        .request("materialize", &json!({"collection":"extras","key":"draft"}))
+        .unwrap();
+    owner
+        .request("detachDraftSnapshot", &json!({"token":token}))
+        .unwrap();
+    let question = json!({"action":"record","sessionId":"s","expectedVersion":0,"at":1,
+        "initialState":{"pendingQuestion":null,"activeTurn":{"_activeTurn":{"turnId":"t"},
+          "isStreaming":true,"_currentTaskId":"task"},"category":{"classifyState":"W"}},
+        "signal":{"sessionId":"s","turnId":"t","requestId":"q","question":"Q"}});
+    owner
+        .request(
+            "sessionWorkQuestionExperimental",
+            &json!({"requestJson":question.to_string()}),
+        )
+        .unwrap();
+    let answer = json!({"sessionId":"s","text":"answer","hostAdmission":true,
+        "options":{"userInputRequestId":"q","clientMsgId":"tracked-answer"}});
+    let admitted = owner
+        .request(
+            "scheduleAdmit",
+            &json!({"requestJson":answer.to_string(),
+        "expectedRevision":start["state"]["revision"],"now":2}),
+        )
+        .unwrap();
+    let admitted_result: Value =
+        serde_json::from_str(admitted["resultJson"].as_str().unwrap()).unwrap();
+    assert_eq!(admitted_result["answerConsumed"]["requestId"], "q");
+    let after_answer = owner
+        .request(
+            "readTrackedDraft",
+            &json!({"token":token,"operation":"materialize",
+        "input":{"collection":"waits","key":"w"}}),
+        )
+        .unwrap();
+    assert!(after_answer["valueJson"]
+        .as_str()
+        .unwrap()
+        .contains("pending"));
+    let mut state = start["state"].clone();
+    state["updatedAt"] = json!(3);
+    let committed = owner
+        .request(
+            "commitTrackedDraft",
+            &json!({"token":token,"headerReadsTracked":true,
+        "expectedRevision":start["state"]["revision"],"state":state,
+        "changes":[{"collection":"extras","key":"draft","valueJson":"1"}]}),
+        )
+        .unwrap();
+    assert_eq!(committed["state"]["revision"], 2);
+    assert_eq!(
+        committed["state"]["nextOutboxSequence"],
+        admitted["state"]["nextOutboxSequence"]
+    );
+    assert_eq!(
+        owner
+            .request("materialize", &json!({"collection":"extras","key":"draft"}))
+            .unwrap()["valueJson"],
+        "1"
+    );
+    assert_eq!(
+        owner
+            .request(
+                "sessionWorkState",
+                &json!({"action":"read","sessionId":"s"})
+            )
+            .unwrap()["pendingQuestion"]["resolved"],
+        true
+    );
+
+    // A change to a previously read record invalidates an otherwise disjoint
+    // write, even though that write itself targets a different collection.
+    let start = owner.request("beginTrackedDraft", &json!({})).unwrap();
+    let token = start["token"].as_str().unwrap().to_owned();
+    owner
+        .request("materialize", &json!({"collection":"waits","key":"w"}))
+        .unwrap();
+    owner
+        .request(
+            "materialize",
+            &json!({"collection":"extras","key":"read-conflict"}),
+        )
+        .unwrap();
+    owner
+        .request("detachDraftSnapshot", &json!({"token":token}))
+        .unwrap();
+    let live = owner.request("begin", &json!({})).unwrap();
+    let mut live_state = live.clone();
+    live_state["revision"] = json!(live["revision"].as_u64().unwrap() + 1);
+    owner
+        .request(
+            "prepare",
+            &json!({"expectedRevision":live["revision"],"state":live_state,
+        "changes":[{"collection":"waits","key":"w","valueJson":
+          "{\"id\":\"w\",\"sessionId\":\"s\",\"status\":\"resolved\"}"}]}),
+        )
+        .unwrap();
+    owner.request("commit", &json!({})).unwrap();
+    let error = owner
+        .request(
+            "commitTrackedDraft",
+            &json!({"token":token,"headerReadsTracked":true,
+        "expectedRevision":start["state"]["revision"],"state":start["state"],
+        "changes":[{"collection":"extras","key":"read-conflict","valueJson":"1"}]}),
+        )
+        .unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+    assert_eq!(
+        owner
+            .request(
+                "materialize",
+                &json!({"collection":"extras","key":"read-conflict"})
+            )
+            .unwrap()["found"],
+        false
+    );
+
+    // A query footprint protects its whole result, including newly inserted
+    // matching rows that were absent when the draft observed the query.
+    let start = owner.request("beginTrackedDraft", &json!({})).unwrap();
+    let token = start["token"].as_str().unwrap().to_owned();
+    let baseline = owner
+        .request(
+            "selectKeys",
+            &json!({"collection":"outbox","options":{"where":{"state":"pending"}}}),
+        )
+        .unwrap();
+    owner
+        .request(
+            "materialize",
+            &json!({"collection":"extras","key":"phantom"}),
+        )
+        .unwrap();
+    owner
+        .request("detachDraftSnapshot", &json!({"token":token}))
+        .unwrap();
+    let live = owner.request("begin", &json!({})).unwrap();
+    let mut live_state = live.clone();
+    live_state["revision"] = json!(live["revision"].as_u64().unwrap() + 1);
+    live_state["nextOutboxSequence"] = json!(live["nextOutboxSequence"].as_u64().unwrap() + 1);
+    owner.request("prepare", &json!({"expectedRevision":live["revision"],"state":live_state,
+        "changes":[{"collection":"outbox","key":"phantom-entry","valueJson":
+          "{\"id\":\"phantom-entry\",\"sessionId\":\"s\",\"state\":\"pending\",\"sequence\":2,\"availableAt\":0}"}]})).unwrap();
+    owner.request("commit", &json!({})).unwrap();
+    let still_original = owner
+        .request(
+            "readTrackedDraft",
+            &json!({"token":token,"operation":"selectKeys",
+        "input":{"collection":"outbox","options":{"where":{"state":"pending"}}}}),
+        )
+        .unwrap();
+    assert_eq!(still_original, baseline);
+    let error = owner
+        .request(
+            "commitTrackedDraft",
+            &json!({"token":token,"headerReadsTracked":true,
+        "expectedRevision":start["state"]["revision"],"state":start["state"],
+        "changes":[{"collection":"extras","key":"phantom","valueJson":"1"}]}),
+        )
+        .unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+    assert_eq!(
+        owner
+            .request(
+                "materialize",
+                &json!({"collection":"extras","key":"phantom"})
+            )
+            .unwrap()["found"],
+        false
+    );
+    // Header observations are dependencies too: a revision read cannot be
+    // silently reused after another same-owner transaction commits.
+    let start = owner.request("beginTrackedDraft", &json!({})).unwrap();
+    let token = start["token"].as_str().unwrap().to_owned();
+    owner
+        .request(
+            "draftTrackHeader",
+            &json!({"token":token,"field":"revision"}),
+        )
+        .unwrap();
+    owner
+        .request(
+            "materialize",
+            &json!({"collection":"extras","key":"header-conflict"}),
+        )
+        .unwrap();
+    owner
+        .request("detachDraftSnapshot", &json!({"token":token}))
+        .unwrap();
+    let live = owner.request("begin", &json!({})).unwrap();
+    let mut live_state = live.clone();
+    live_state["revision"] = json!(live["revision"].as_u64().unwrap() + 1);
+    owner
+        .request(
+            "prepare",
+            &json!({"expectedRevision":live["revision"],"state":live_state,
+        "changes":[{"collection":"extras","key":"other","valueJson":"1"}]}),
+        )
+        .unwrap();
+    owner.request("commit", &json!({})).unwrap();
+    let error = owner
+        .request(
+            "commitTrackedDraft",
+            &json!({"token":token,"headerReadsTracked":true,
+        "expectedRevision":start["state"]["revision"],"state":start["state"],
+        "changes":[{"collection":"extras","key":"header-conflict","valueJson":"1"}]}),
+        )
+        .unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+
+    let start = owner.request("beginTrackedDraft", &json!({})).unwrap();
+    let token = start["token"].as_str().unwrap().to_owned();
+    owner
+        .request("detachDraftSnapshot", &json!({"token":token}))
+        .unwrap();
+    let error = owner
+        .request(
+            "commitTrackedDraft",
+            &json!({"token":token,"headerReadsTracked":true,
+        "expectedRevision":start["state"]["revision"],"state":start["state"],
+        "changes":[{"collection":"extras","key":"untracked-write","valueJson":"1"}]}),
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("draft write lacks captured baseline"),
+        "{error}"
+    );
+
+    let start = owner.request("beginTrackedDraft", &json!({})).unwrap();
+    let token = start["token"].as_str().unwrap().to_owned();
+    owner
+        .request(
+            "materialize",
+            &json!({"collection":"extras","key":"external-conflict"}),
+        )
+        .unwrap();
+    owner
+        .request("detachDraftSnapshot", &json!({"token":token}))
+        .unwrap();
+    let error = owner
+        .request(
+            "commitTrackedDraft",
+            &json!({"token":"wrong","headerReadsTracked":true,
+        "expectedRevision":start["state"]["revision"],"state":start["state"],"changes":[]}),
+        )
+        .unwrap_err();
+    assert!(error.contains("invalid detached draft token"), "{error}");
+    db.exec(
+        "UPDATE orchestration_waits SET data_json=json_set(data_json,'$.external',1) WHERE id='w'",
+    )
+    .unwrap();
+    let error = owner
+        .request(
+            "commitTrackedDraft",
+            &json!({"token":token,"headerReadsTracked":true,
+        "expectedRevision":start["state"]["revision"],"state":start["state"],
+        "changes":[{"collection":"extras","key":"external-conflict","valueJson":"1"}]}),
+        )
+        .unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+    assert_eq!(
+        owner
+            .request(
+                "materialize",
+                &json!({"collection":"extras","key":"external-conflict"})
+            )
+            .unwrap()["found"],
+        false
+    );
+    owner.request("close", &json!({})).unwrap();
+}
+
+#[test]
+fn detached_draft_commit_is_atomic_and_rejects_external_changes() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut owner = owner(&file);
+    let header = owner.request("begin", &json!({})).unwrap();
+    let token = owner.request("detachDraftSnapshot", &json!({})).unwrap();
+    assert_eq!(token["state"], header);
+    let request = json!({"action":"record","sessionId":"s","expectedVersion":0,"at":1,
+        "initialState":{"pendingQuestion":null,"activeTurn":{"_activeTurn":{"turnId":"t"},
+          "isStreaming":true,"_currentTaskId":"task"},"category":{"classifyState":"W"}},
+        "signal":{"sessionId":"s","turnId":"t","requestId":"q","question":"Q"}});
+    let recorded = owner
+        .request(
+            "sessionWorkQuestionExperimental",
+            &json!({"requestJson":request.to_string()}),
+        )
+        .unwrap();
+    assert_eq!(recorded["result"]["ok"], true);
+    let mut state = header.clone();
+    state["revision"] = json!(header["revision"].as_u64().unwrap() + 1);
+    state["updatedAt"] = json!(10);
+    let committed = owner.request("commitDetachedDraft", &json!({
+        "dataVersion":token["dataVersion"],"expectedRevision":header["revision"],"state":state,
+        "changes":[{"collection":"extras","key":"marker","valueJson":"\"done\""}]
+    })).unwrap();
+    assert_eq!(committed["state"]["revision"], 1);
+    assert_eq!(
+        owner
+            .request(
+                "sessionWorkState",
+                &json!({"action":"read","sessionId":"s"})
+            )
+            .unwrap()["pendingQuestion"]["requestId"],
+        "q"
+    );
+
+    // An intervening answer increments the store revision. The stale draft
+    // cannot overwrite the answer, even when both use this owner connection.
+    let header = owner.request("begin", &json!({})).unwrap();
+    let token = owner.request("detachDraftSnapshot", &json!({})).unwrap();
+    let answer = json!({"sessionId":"s","text":"answer","hostAdmission":true,
+        "options":{"userInputRequestId":"q","clientMsgId":"detached-answer"}});
+    let admitted = owner
+        .request(
+            "scheduleAdmit",
+            &json!({"requestJson":answer.to_string(),
+        "expectedRevision":header["revision"],"now":2}),
+        )
+        .unwrap();
+    let result: Value = serde_json::from_str(admitted["resultJson"].as_str().unwrap()).unwrap();
+    assert_eq!(result["answerConsumed"]["requestId"], "q");
+    let mut state = header.clone();
+    state["revision"] = json!(header["revision"].as_u64().unwrap() + 1);
+    let error = owner.request("commitDetachedDraft", &json!({
+        "dataVersion":token["dataVersion"],"expectedRevision":header["revision"],"state":state,
+        "changes":[{"collection":"extras","key":"after-answer","valueJson":"1"}]
+    })).unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+    assert_eq!(
+        owner
+            .request(
+                "sessionWorkState",
+                &json!({"action":"read","sessionId":"s"})
+            )
+            .unwrap()["pendingQuestion"]["resolved"],
+        true
+    );
+    let header = owner.request("begin", &json!({})).unwrap();
+    let token = owner.request("detachDraftSnapshot", &json!({})).unwrap();
+    let live = owner.request("begin", &json!({})).unwrap();
+    let mut live_state = live.clone();
+    live_state["revision"] = json!(live["revision"].as_u64().unwrap() + 1);
+    owner
+        .request(
+            "prepare",
+            &json!({"expectedRevision":live["revision"],"state":live_state,
+        "changes":[{"collection":"extras","key":"marker","valueJson":"\"newer\""}]}),
+        )
+        .unwrap();
+    owner.request("commit", &json!({})).unwrap();
+    let mut state = header.clone();
+    state["revision"] = json!(header["revision"].as_u64().unwrap() + 1);
+    let error = owner
+        .request(
+            "commitDetachedDraft",
+            &json!({"mergeDisjoint":true,
+        "dataVersion":token["dataVersion"],"expectedRevision":header["revision"],
+        "baseNextOutboxSequence":header["nextOutboxSequence"],"state":state,
+        "changes":[{"collection":"extras","key":"marker","beforeExists":true,
+          "beforeJson":"\"done\"","valueJson":"\"draft\""}]}),
+        )
+        .unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+    assert_eq!(
+        owner
+            .request(
+                "materialize",
+                &json!({"collection":"extras","key":"marker"})
+            )
+            .unwrap()["valueJson"],
+        "\"newer\""
+    );
+
+    let header = owner.request("begin", &json!({})).unwrap();
+    let token = owner.request("detachDraftSnapshot", &json!({})).unwrap();
+    let db = Database::open(&file, false, true, 5000).unwrap();
+    db.exec("INSERT INTO orchestration_extras(key,data_json) VALUES('external','1')")
+        .unwrap();
+    let mut state = header.clone();
+    state["revision"] = json!(header["revision"].as_u64().unwrap() + 1);
+    let error = owner.request("commitDetachedDraft", &json!({
+        "mergeDisjoint":true,"dataVersion":token["dataVersion"],"expectedRevision":header["revision"],
+        "baseNextOutboxSequence":header["nextOutboxSequence"],"state":state,
+        "changes":[{"collection":"extras","key":"stale","beforeExists":false,"valueJson":"1"}]
+    })).unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+    assert_eq!(
+        owner
+            .request("materialize", &json!({"collection":"extras","key":"stale"}))
+            .unwrap()["found"],
+        false
+    );
+    assert_eq!(
+        owner
+            .request(
+                "materialize",
+                &json!({"collection":"extras","key":"external"})
+            )
+            .unwrap()["valueJson"],
+        "1"
+    );
+    owner.request("begin", &json!({})).unwrap();
+    db.exec("UPDATE orchestration_extras SET data_json='2' WHERE key='external'")
+        .unwrap();
+    let error = owner
+        .request("detachDraftSnapshot", &json!({}))
+        .unwrap_err();
+    assert!(error.contains("snapshot changed during capture"), "{error}");
+    assert_eq!(
+        owner
+            .request(
+                "materialize",
+                &json!({"collection":"extras","key":"external"})
+            )
+            .unwrap()["valueJson"],
+        "2"
+    );
+    owner.request("close", &json!({})).unwrap();
+}
+
+#[test]
+fn session_work_state_is_versioned_and_atomic_across_owner_sessions() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut owner = owner(&file);
+    let second = owner
+        .open_session(&json!({"version":OWNER_PROTOCOL_VERSION,"file":file,"now":1,"policy":{}}))
+        .unwrap();
+    assert!(owner
+        .request(
+            "sessionWorkState",
+            &json!({"action":"read","encoding":"future","sessionId":"s"})
+        )
+        .is_err());
+    let empty = owner
+        .request_for(
+            second,
+            "sessionWorkState",
+            &json!({"action":"read","sessionId":"s"}),
+        )
+        .unwrap();
+    assert_eq!(empty["version"], 0);
+    let seed = json!({"action":"readOrInitialize","sessionId":"seeded","initial":{
+        "pendingQuestion":{"requestId":"old"},"activeTurn":null,"category":"P"}});
+    let first = owner.request("sessionWorkState", &seed).unwrap();
+    assert_eq!(first["version"], 1);
+    let other_seed = json!({"action":"readOrInitialize","sessionId":"seeded","initial":{
+        "pendingQuestion":{"requestId":"stale"},"activeTurn":null,"category":"D"}});
+    assert_eq!(
+        owner
+            .request_for(second, "sessionWorkState", &other_seed)
+            .unwrap(),
+        first
+    );
+    let update = |id: &str, version: u64, category: &str| {
+        json!({"sessionId":id,
+        "expectedVersion":version,"pendingQuestion":{"requestId":"r"},
+        "activeTurn":{"turnId":"t"},"category":category})
+    };
+    let saved = owner
+        .request(
+            "sessionWorkState",
+            &json!({"action":"write","updates":[update("s",0,"unknown-future-category")]}),
+        )
+        .unwrap();
+    assert_eq!(
+        owner
+            .request_for(
+                second,
+                "sessionWorkState",
+                &json!({"action":"read","sessionId":"s"})
+            )
+            .unwrap(),
+        saved["snapshots"][0]
+    );
+    assert!(owner
+        .request_for(
+            second,
+            "sessionWorkState",
+            &json!({"action":"write","updates":[update("new",0,"W"),update("s",0,"P")]})
+        )
+        .is_err());
+    assert_eq!(
+        owner
+            .request(
+                "sessionWorkState",
+                &json!({"action":"read","sessionId":"new"})
+            )
+            .unwrap()["version"],
+        0
+    );
+    assert_eq!(
+        owner
+            .request(
+                "sessionWorkState",
+                &json!({"action":"read","sessionId":"s"})
+            )
+            .unwrap()["category"],
+        "unknown-future-category"
+    );
+    owner.request_for(second, "close", &json!({})).unwrap();
+    owner.request("close", &json!({})).unwrap();
+    let mut reopened = OwnerClient::spawn(
+        Path::new(env!("CARGO_BIN_EXE_multicc-gateway")),
+        &json!({"version":OWNER_PROTOCOL_VERSION,"file":file,"now":1,"policy":{}}),
+        256 * 1024 * 1024,
+    )
+    .unwrap();
+    assert_eq!(
+        reopened
+            .request(
+                "sessionWorkState",
+                &json!({"action":"read","sessionId":"s"})
+            )
+            .unwrap(),
+        saved["snapshots"][0]
+    );
+    reopened.request("close", &json!({})).unwrap();
+}
+
+#[test]
+fn experimental_completion_rejects_external_writes_and_commits_in_owner() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut owner = owner(&file);
+    owner.request("sessionWorkState", &json!({"action":"readOrInitialize","encoding":"json","sessionId":"s",
+        "initial":{"pendingQuestionJson":"{\"requestId\":\"q\",\"taskId\":\"task\"}","activeTurnJson":"null","categoryJson":"null"}})).unwrap();
+    let db = Database::open(&file, false, true, 5000).unwrap();
+    db.exec("INSERT INTO orchestration_session_schedules(session_id,data_json,state) VALUES('s','{\"sessionId\":\"s\",\"state\":\"running\",\"active\":{\"entryId\":\"active\",\"taskId\":\"task\"},\"classifyState\":\"P\"}','running'); INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence) VALUES('q1','{\"id\":\"q1\",\"sessionId\":\"s\",\"state\":\"pending\",\"sequence\":1,\"payload\":{\"type\":\"session.work\",\"message\":\"hello\"},\"directRun\":true}','s','pending',1)").unwrap();
+    drop(db);
+    let token = owner
+        .request(
+            "scheduleCompleteTokenExperimental",
+            &json!({"sessionId":"s"}),
+        )
+        .unwrap();
+    let mut command = json!({"sessionId":"s","expectedRevision":token["state"]["revision"],
+        "expectedVersion":token["snapshot"]["version"],"expectedDataVersion":token["dataVersion"],
+        "at":1000,"updatedAt":1200,"expectedTaskIdJson":"\"task\"","reasonJson":"\"successful\"",
+        "classifyStateJson":"\"W\"","awaitingRequestIdJson":"\"q\""});
+    let external = Database::open(&file, false, true, 5000).unwrap();
+    external
+        .exec("INSERT INTO orchestration_extras(key,data_json) VALUES('external','{}')")
+        .unwrap();
+    drop(external);
+    assert!(owner
+        .request("scheduleCompleteExperimental", &command)
+        .unwrap_err()
+        .contains("database version conflict"));
+    let new_token = owner
+        .request(
+            "scheduleCompleteTokenExperimental",
+            &json!({"sessionId":"s"}),
+        )
+        .unwrap();
+    command["expectedDataVersion"] = new_token["dataVersion"].clone();
+    let completed = owner
+        .request("scheduleCompleteExperimental", &command)
+        .unwrap();
+    let result: Value = serde_json::from_str(completed["resultJson"].as_str().unwrap()).unwrap();
+    assert_eq!(result["schedule"]["classifyState"], "W");
+    assert_eq!(result["schedule"]["awaitingRequestId"], "q");
+    owner.request("begin", &json!({})).unwrap();
+    let item = owner
+        .request("materialize", &json!({"collection":"outbox","key":"q1"}))
+        .unwrap();
+    let value: Value = serde_json::from_str(item["valueJson"].as_str().unwrap()).unwrap();
+    assert_eq!(value["directRun"], false);
+    assert_eq!(value["blockedByUserInput"], "q");
+    owner.request("end", &json!({})).unwrap();
+    owner.request("close", &json!({})).unwrap();
+}
+
+#[test]
 fn owner_rejects_stale_transaction_after_external_commit() {
     let fixture = Fixture::new();
     let file = fixture.file();

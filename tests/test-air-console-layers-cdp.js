@@ -47,7 +47,7 @@ test('console switches between task and directory views; console, directory and 
   routes['/api/air'] = () => json({ ok: true, directories, clis: ['codex', 'claude'], migration: { errors: [] },
     tasks: everyTask, sessions: [], taskTodos: [], taskTodoIgnored: [] });
   // /api/air/sync 与 /api/air/page 由 harness 的 air-sync-fixture 用真实的读索引
-  // （src/workspace/air-read-index.js）从上面这份 /api/air 生成：分页口径就是服务端那份。
+  // （tests/helpers/legacy-air-read-index.js）从上面这份 /api/air 生成：分页口径就是服务端那份。
   for (const [index, item] of airTasks.entries()) {
     routes[`/api/air/tasks/${item.id}`] = routes[`/api/task-shell-tasks/${item.id}`] = () => json({ ok: true,
       task: item, sessionId: `task-${index}`, ownerShellId: `shell-${index}`, readOnly: false,

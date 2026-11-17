@@ -394,6 +394,120 @@ fn sigterm_stops_a_local_runtime_with_exit_code_zero() {
     );
 }
 
+/// The two public server-core probes are the only routes in that cluster whose
+/// facts a Rust-only front door owns: with no child there is no
+/// `process.uptime()` and no `serviceReady` flag to report, and the front door
+/// itself is the process a deployment probes. They must answer with *no*
+/// authentication owner too, because they never needed the snapshot.
+#[test]
+fn the_public_health_probes_answer_without_a_node_child() {
+    let gateway = Gateway::start("health-no-token", None, &[]);
+
+    let health = gateway.get("/healthz", &[]);
+    assert_eq!(health.status, 200, "{}", health.text());
+    assert_eq!(health.header("cache-control").as_deref(), Some("no-store"));
+    assert_eq!(
+        health.header("content-type").as_deref(),
+        Some("application/json; charset=utf-8")
+    );
+    let body = health.json();
+    assert_eq!(body["status"], "ok", "{}", health.text());
+    // This process's own uptime: a real number, and small enough that it cannot
+    // be a Node fact or an epoch value that leaked in.
+    let uptime = body["uptimeSeconds"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("uptimeSeconds must be a number: {}", health.text()));
+    assert!(uptime < 600, "{}", health.text());
+    assert_eq!(body["requestId"].as_str().map(str::len), Some(8));
+    // Same key order as the retired `src/health.js` response.
+    assert!(
+        health
+            .text()
+            .starts_with(r#"{"status":"ok","uptimeSeconds":"#),
+        "{}",
+        health.text()
+    );
+
+    let ready = gateway.get("/readyz", &[]);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    assert_eq!(ready.header("cache-control").as_deref(), Some("no-store"));
+    assert_eq!(
+        ready.text(),
+        format!(
+            r#"{{"status":"ready","requestId":"{}"}}"#,
+            ready.json()["requestId"].as_str().unwrap()
+        ),
+        "a readiness answer with no child carries no checks key"
+    );
+
+    // HEAD keeps the headers and drops the body, like every other route here.
+    let head = gateway.request(&api("HEAD", "/healthz", &[], ""));
+    assert_eq!(head.status, 200);
+    assert!(head.body.is_empty(), "{:?}", head.text());
+
+    // The gated half of the same cluster describes Node state, so it still
+    // fails closed on the missing authentication owner.
+    let metrics = gateway.get("/metrics", &[]);
+    assert_eq!(metrics.status, 503, "{}", metrics.text());
+    assert_eq!(metrics.text(), AUTH_ABSENT_BODY);
+    let operation = gateway.get("/api/repo-operations/op-1", &[]);
+    assert_eq!(operation.status, 503, "{}", operation.text());
+    assert_eq!(operation.text(), AUTH_ABSENT_BODY);
+    assert!(!gateway.log().contains("panicked"), "{}", gateway.log());
+}
+
+/// With a local authentication owner the probes stay public (no credential
+/// needed) and keep answering from this process, while the gated routes reach
+/// the host port that does not exist and report the cluster's own 503.
+#[test]
+fn the_health_probes_stay_public_with_a_local_auth_runtime() {
+    let gateway = Gateway::start(
+        "health-token",
+        Some(&format!("ACCESS_TOKEN={TOKEN}\n")),
+        &[],
+    );
+
+    let health = gateway.get("/healthz", &[]);
+    assert_eq!(health.status, 200, "{}", health.text());
+    assert_eq!(health.json()["status"], "ok");
+    let ready = gateway.get("/readyz", &[]);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    assert_eq!(ready.json()["status"], "ready");
+    assert!(ready.json().get("checks").is_none(), "{}", ready.text());
+
+    // A credential changes nothing for a public path.
+    let credentialed = gateway.get("/healthz", &[("X-Access-Token", TOKEN)]);
+    assert_eq!(credentialed.status, 200, "{}", credentialed.text());
+    assert_eq!(credentialed.json()["status"], "ok");
+
+    // `/metrics` is gated and its table is the child's: authorized, then 503
+    // `rust_backend_unavailable` from the absent host port.
+    let metrics = gateway.get("/metrics", &[("X-Access-Token", TOKEN)]);
+    assert_eq!(metrics.status, 503, "{}", metrics.text());
+    assert!(
+        metrics
+            .text()
+            .contains(r#""code":"rust_backend_unavailable""#),
+        "{}",
+        metrics.text()
+    );
+    // Without a credential the same gated route is refused by the gate, not by
+    // the missing host port: a non-API GET is Express's login redirect, exactly
+    // what `--node` answers (native/gateway/tests/server_core.rs
+    // `metrics_requires_authentication`).
+    let anonymous_metrics = gateway.get("/metrics", &[]);
+    assert_eq!(
+        anonymous_metrics.status,
+        302,
+        "{}",
+        anonymous_metrics.text()
+    );
+    assert!(anonymous_metrics
+        .header("location")
+        .unwrap_or_default()
+        .starts_with("/login"));
+}
+
 #[test]
 fn a_missing_access_token_keeps_the_original_refusal() {
     let gateway = Gateway::start("no-token", None, &[]);

@@ -35,6 +35,19 @@ const { createAirCardCache } = require('./air-card-cache');
 
 const HOST_PATH = '/api/__host/air';
 
+// runState 的自愈判定只认 taskState 里这几个字段作为「这一轮真的被受理过」的物证。
+// 清单的唯一来源在 native/core/src/task_domain/cards.rs，这里只读取：抄第二份的
+// 话，Rust 加一个键就会让宿主静默喂不全，规则看不到物证又不报错。进程内问一次就够。
+let runStateFactKeys = null;
+function runStateFactKeyList() {
+  if (!runStateFactKeys) {
+    const keys = taskDomain({ op: 'runStateFactKeys' });
+    if (!Array.isArray(keys) || !keys.length) throw new TypeError('[air] runStateFactKeys unavailable');
+    runStateFactKeys = keys;
+  }
+  return runStateFactKeys;
+}
+
 /** Marker meaning "this op has no dependency to run it" -> unknown operation. */
 const UNKNOWN = Symbol('unknown');
 
@@ -144,6 +157,13 @@ function refusal(error) {
 
 // Air reads canonical task records through the task-shell/board authority.
 // The client cannot mint a workspace permit, writer proof or attribution fact.
+// 没有 workspace 记录时「这张卡算落地到哪一步」的回退：planned 说的是还没落地，
+// retained 说的是有会话记录、磁盘上还留着。权威副本在 Rust（cards::base），这里
+// 的两个用处 —— taskDetail 的 resource 与快照里「要不要现问 merge 状态」的闸门
+// —— 必须与它同一条规则，所以只写一份。
+const residencyOf = (workspace, record) => workspace?.residency
+  || (record?.workspaceState === 'planned' ? 'planned' : record ? 'retained' : 'planned');
+
 function createAirRuntime(rawDeps) {
   const deps = rawDeps || {};
   // 三份清单在同一个同步段复用 Rust 已判定的可见集合，不重复序列化任务板。
@@ -229,7 +249,8 @@ function createAirRuntime(rawDeps) {
     if (!kind) return { kind: null, occurredAt: 0 };
     const sessionId = task.chatSessionId || task.sessionId || null;
     const taskState = (sessionId && deps.records.get(sessionId)?.taskState) || {};
-    const pending = taskState.pendingUserInput || null;
+    const pending = sessionId && typeof deps.pendingUserInput === 'function'
+      ? deps.pendingUserInput(sessionId) : taskState.pendingUserInput || null;
     const occurredAt = Number(taskState.endedAt)
       || Number(pending && pending.createdAt)
       || Number(taskState.lastTurnEndedAt)
@@ -272,7 +293,7 @@ function createAirRuntime(rawDeps) {
     const record = deps.records.get(sessionId);
     const workspace = index.workspaceByOwner.get(record?.workspaceOwnerSessionId || sessionId);
     const lease = workspace ? index.leaseByWorkspace.get(workspace.id) : null;
-    return { id: workspace?.id || null, residency: workspace?.residency || (record?.workspaceState === 'planned' ? 'planned' : record ? 'retained' : 'planned'),
+    return { id: workspace?.id || null, residency: residencyOf(workspace, record),
       lease: lease?.state || 'idle', capacityReason: workspace && !lease ? capacity(workspace) : null, reason: lease?.reason || null, pins: workspace?.pins || [],
       path: workspace?.path || record?.worktreePath || null, branch: workspace?.branch || record?.branch || null };
   }
@@ -338,8 +359,16 @@ function createAirRuntime(rawDeps) {
   const cardCache = deps.cardCache || createAirCardCache({
     mode: process.env.AIR_CARD_CACHE || (deps.registerSync ? 'on' : 'shadow'),
     verifyMs: envNumber('AIR_CARD_CACHE_VERIFY_MS', 60_000),
+    // 每轮最多抽查几张「已命中但久未审计」的卡（见 air-card-cache.js）。审计是
+    // 抽样，不是过期：签名没变的卡一直有效。
+    verifyBudget: envNumber('AIR_CARD_CACHE_VERIFY_BUDGET', 8),
     logger: deps.logger || null,
   });
+  // 卡片组装只有 Rust 一条路。缺了快照入口是装配错误，必须在挂载时就炸，而不是
+  // 让 4 秒一轮的热路径每次抛一遍。
+  for (const method of ['prepareAsync', 'snapshotAsync']) {
+    if (typeof cardCache[method] !== 'function') throw new TypeError(`[air] cardCache.${method}() is required`);
+  }
   async function airSnapshot(timing, options = {}) {
     // 计时永远只是读数：timing 缺省（测试直接调这个函数）时，下面两个局部函数退化成原调用。
     const lap = name => timing?.lap(name);
@@ -418,37 +447,51 @@ function createAirRuntime(rawDeps) {
       return signature == null ? signature : `${signature}:${JSON.stringify(accessOf(task) ?? null)}`;
     };
     lap('cardSignatureMs');
-    const resolve = cardCache.resolveAsync || cardCache.resolve;
-    const nativeBaseOf = t => cardFacts(t, prepared.taskDirs, recordFacts, admissionIdx, timedAdd, accessOf);
-    const resolved = await resolve(globalSignature, cards, {
-      keyOf: t => t.id, signatureOf: t => (signatureOf ? signatureOf(t) : null),
-      prune: !selected, nativeBaseOf,
-      build: t => ({ t, ...taskDomain({ op: 'cardBase', ...nativeBaseOf(t) }) }) });
-    const { entries, hits, builds } = resolved;
-    timing?.set('cardHits', hits);
-    timing?.set('cardBuilds', builds);
+    // 卡片循环整体在 Rust 内完成：这里只上送 key/签名与运行时事实，命中轮次不构造
+    // 任何底稿；Rust 判定 needed 后，才为那几张卡构造 base 回填。
     const capacity = capacityMemo();
+    const factKeys = runStateFactKeyList();
     const facts = {}, merges = {}, capacityReasons = {};
-    for (let i = 0; i < entries.length; i++) {
-      const { t, card, capacityOf } = entries[i];
+    const items = new Array(cards.length);
+    const workspaceOf = task => {
+      const sessionId = task.chatSessionId || task.sessionId || null;
+      const record = recordFacts[sessionId];
+      const workspace = admissionIdx.workspaceByOwner.get(record?.workspaceOwnerSessionId || sessionId) || null;
+      const lease = workspace ? admissionIdx.leaseByWorkspace.get(workspace.id) || null : null;
+      return { record, workspace, lease };
+    };
+    for (let i = 0; i < cards.length; i++) {
+      const t = cards[i];
+      items[i] = { key: t.id, signature: signatureOf(t) };
       for (const id of new Set([...(t.refs || []).map(ref => ref.sessionId), t.routing?.workerSessionId, t.chatSessionId].filter(Boolean))) {
         if (Object.hasOwn(facts, id)) continue;
         let runState = null;
         try { runState = deps.getSessionRunState?.(id) || null; } catch (_) {}
         const state = deps.records.get(id)?.taskState;
-        facts[id] = { taskState: state ? Object.fromEntries(['queueState', 'classifyState', 'classifyHistory',
-          'classifyUpdatedAt', 'lastTurnEndedAt', 'startedAt', 'endedAt'].map(key => [key, state[key]])) : null, runState };
+        facts[id] = { taskState: state ? Object.fromEntries(factKeys.map(key => [key, state[key]])) : null, runState };
       }
-      const record = deps.records.get(card.sessionId);
-      merges[card.id] = record && ['resident', 'retained'].includes(card.resource.residency)
+      const { record, workspace, lease } = workspaceOf(t);
+      const residency = residencyOf(workspace, record);
+      merges[t.id] = record && ['resident', 'retained'].includes(residency)
         && typeof deps.mergeStateCached === 'function'
         ? timedAdd('mergeStateMs', () => deps.mergeStateCached(deps.directories.get(record.dirId), record)) : null;
-      capacityReasons[card.id] = capacityOf ? timedAdd('capacityMs', () => capacity(capacityOf)) : null;
+      // 与 Rust 底稿同一个判据：有 workspace 且当前没有活跃租约才需要现问容量。
+      capacityReasons[t.id] = workspace && !lease
+        ? timedAdd('capacityMs', () => capacity(workspace)) : null;
       if (options.cooperative && i % 24 === 23) await new Promise(done => setImmediate(done));
     }
-    const overlayFacts = { now: projectNow, facts, merges, capacityReasons };
-    const tasks = cardCache.overlayAsync ? await cardCache.overlayAsync(resolved, overlayFacts)
-      : await taskDomainAsync({ op: 'cardOverlayBatch', entries, ...overlayFacts });
+    const resolved = await cardCache.snapshotAsync(
+      { now: projectNow, globalSignature, prune: !selected, items, facts, merges, capacityReasons },
+      needed => needed.map(index => ({ key: cards[index].id,
+        base: cardFacts(cards[index], prepared.taskDirs, recordFacts, admissionIdx, timedAdd, accessOf) })));
+    const { hits, builds, audits } = resolved;
+    timing?.set('cardHits', hits);
+    // builds = 签名真的变了，必须重建；audits = 缓存仍然有效、只是轮到抽查。
+    // 两者分开记是刻不容缓的：合在一个数字里，就无法分辨「输入在变」和「缓存
+    // 判定本身在失效」—— 这正是上一轮只能靠猜的原因。
+    timing?.set('cardBuilds', builds);
+    timing?.set('cardAudits', audits || 0);
+    const tasks = resolved.cards;
     // 无人值守模式（docs/unattended-mode.md）：任务行只带状态条需要的字段，
     // 完整状态仍走 GET /api/sessions/:id/unattended。这里必须复制而不是
     // 原地改：`held.cards` 是卡片缓存的原对象，写回去会让状态粘在缓存里。
@@ -506,6 +549,7 @@ function createAirRuntime(rawDeps) {
   // 分相位计时记录后台生产者的成本，数字不进入摘要正文。
   const reportPhases = createPhaseReporter(deps.phaseDiagnostics, { lastLogAt: 0 });
   const liveSync = deps.registerSync ? require('./air-sync-runtime').createAirSyncRuntime({
+    storageNotice: deps.storageNotice,
     build: async ids => {
       const timing = createPhaseTimer();
       const snapshot = await airSnapshot(timing, { ids, cooperative: true });

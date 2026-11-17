@@ -98,9 +98,9 @@ function createModelCatalogsHost(options = {}) {
     return state;
   }
 
-  async function codexRefresh(providerId, wait) {
+  async function codexRefresh(providerId, wait, refresh) {
     try {
-      const pending = codexRuntime().refreshProvider(providerId);
+      const pending = codexRuntime().refreshProvider(providerId, { refresh });
       if (wait) await pending;
       else pending.catch(() => {});
     } catch (_) {
@@ -126,7 +126,7 @@ function createModelCatalogsHost(options = {}) {
     }
     if (op === 'codex-refresh') {
       const providerId = typeof body.providerId === 'string' ? body.providerId : 'codex-official';
-      return codexRefresh(providerId, body.wait === true);
+      return codexRefresh(providerId, body.wait === true, body.refresh === true);
     }
     return { error: true };
   };

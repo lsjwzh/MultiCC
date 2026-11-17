@@ -1,11 +1,12 @@
 //! Streaming legacy import/export. At most one domain record is decoded at a time.
 use super::{
-    corrupt, encode, err, header, meta, private, record, schema, set_meta, table,
-    write_record_json, Result, COLLECTIONS,
+    corrupt, encode, err, header, meta, private, record, schema, session_work_state, set_meta,
+    table, write_record_json, Result, COLLECTIONS,
 };
 use crate::js::{json_stringify, JsValue};
 use rusqlite::Connection;
 use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
+use serde::Deserialize;
 use serde_json::{json, value::RawValue, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -65,6 +66,7 @@ impl<'de> Visitor<'de> for Import<'_> {
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> std::result::Result<(), M::Error> {
         let mut seen = HashSet::new();
         let mut version = None;
+        let mut work_state = None;
         while let Some(key) = map.next_key::<String>()? {
             seen.insert(key.clone());
             if COLLECTIONS.contains(&key.as_str()) {
@@ -77,6 +79,8 @@ impl<'de> Visitor<'de> for Import<'_> {
                     connection: self.connection,
                     collection: &key,
                 })?;
+            } else if key == "sessionWorkStateV1" {
+                work_state = Some(map.next_value::<Box<RawValue>>()?);
             } else {
                 let raw: Box<RawValue> = map.next_value()?;
                 let value: Value = if matches!(
@@ -105,8 +109,21 @@ impl<'de> Visitor<'de> for Import<'_> {
                 }
             }
         }
-        if !matches!(version, Some(1..=3)) {
+        if !matches!(version, Some(1..=4)) {
             return Err(M::Error::custom("unsupported orchestration state schema"));
+        }
+        if version == Some(4) {
+            let raw = work_state.ok_or_else(|| M::Error::custom("missing session work state"))?;
+            let mut de = serde_json::Deserializer::from_str(raw.get());
+            WorkRecords {
+                connection: self.connection,
+            }
+            .deserialize(&mut de)
+            .map_err(M::Error::custom)?;
+            de.end().map_err(M::Error::custom)?;
+        } else if let Some(raw) = work_state {
+            write_record_json(self.connection, "extras", "sessionWorkStateV1", raw.get())
+                .map_err(M::Error::custom)?;
         }
         for collection in COLLECTIONS {
             let reset = version == Some(1)
@@ -126,6 +143,49 @@ impl<'de> Visitor<'de> for Import<'_> {
         }
         set_meta(self.connection, "stateSchemaVersion", &json!(3)).map_err(M::Error::custom)?;
         header(self.connection).map_err(M::Error::custom)?;
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkRecord {
+    version: u64,
+    pending_question_json: String,
+    active_turn_json: String,
+    category_json: String,
+}
+struct WorkRecords<'a> {
+    connection: &'a Connection,
+}
+impl<'de> DeserializeSeed<'de> for WorkRecords<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> std::result::Result<(), D::Error> {
+        d.deserialize_map(self)
+    }
+}
+impl<'de> Visitor<'de> for WorkRecords<'_> {
+    type Value = ();
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("session work state object")
+    }
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> std::result::Result<(), M::Error> {
+        while let Some((id, state)) = map.next_entry::<String, WorkRecord>()? {
+            if id.is_empty() || state.version == 0 || state.version > 9_007_199_254_740_991 {
+                return Err(M::Error::custom("invalid session work snapshot"));
+            }
+            for raw in [
+                &state.pending_question_json,
+                &state.active_turn_json,
+                &state.category_json,
+            ] {
+                record::parse(raw).map_err(M::Error::custom)?;
+            }
+            self.connection.execute(
+                "INSERT INTO orchestration_session_work_state(session_id,version,pending_question_json,active_turn_json,category_json) VALUES(?1,?2,?3,?4,?5)",
+                rusqlite::params![id, state.version, state.pending_question_json, state.active_turn_json, state.category_json],
+            ).map_err(M::Error::custom)?;
+        }
         Ok(())
     }
 }
@@ -226,6 +286,24 @@ fn record_keys(connection: &Connection, collection: &str) -> Result<Vec<String>>
 }
 fn stream<W: Write>(connection: &Connection, writer: &mut W) -> Result<()> {
     let header = header(connection)?;
+    // A database created before the session-work owner has no work table at
+    // all; its absence means "no facts", so stream must not probe it. (The
+    // export corruption guard for an initialized-but-missing table runs in
+    // export() before this point.)
+    let has_work = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='orchestration_session_work_state')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(err)?
+        && connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM orchestration_session_work_state)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(err)?;
     let split = super::meta(connection, "databaseSchemaVersion")? == 2;
     let mut root: Vec<String> = header
         .as_object()
@@ -235,6 +313,12 @@ fn stream<W: Write>(connection: &Connection, writer: &mut W) -> Result<()> {
         .chain(COLLECTIONS.iter().map(|s| (*s).into()))
         .collect();
     root.extend(record_keys(connection, "extras")?);
+    if has_work {
+        if root.iter().any(|key| key == "sessionWorkStateV1") {
+            return Err(err("session work snapshot conflicts with legacy extra"));
+        }
+        root.push("sessionWorkStateV1".into());
+    }
     root = sorted_keys(root);
     root.dedup();
     writer.write_all(b"{").map_err(err)?;
@@ -244,7 +328,36 @@ fn stream<W: Write>(connection: &Connection, writer: &mut W) -> Result<()> {
         }
         write_json(writer, &json!(name))?;
         writer.write_all(b":").map_err(err)?;
-        if COLLECTIONS.contains(&name.as_str()) {
+        if has_work && name == "sessionWorkStateV1" {
+            let mut statement = connection.prepare("SELECT session_id,version,pending_question_json,active_turn_json,category_json FROM orchestration_session_work_state ORDER BY session_id").map_err(err)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })
+                .map_err(err)?;
+            writer.write_all(b"{").map_err(err)?;
+            for (i, row) in rows.enumerate() {
+                let (id, version, pending, active, category) = row.map_err(err)?;
+                if i > 0 {
+                    writer.write_all(b",").map_err(err)?;
+                }
+                write_json(writer, &json!(id))?;
+                writer.write_all(b":").map_err(err)?;
+                write_json(
+                    writer,
+                    &json!({"version":version,"pendingQuestionJson":pending,"activeTurnJson":active,"categoryJson":category}),
+                )?;
+            }
+            writer.write_all(b"}").map_err(err)?;
+        } else if has_work && name == "schemaVersion" {
+            write_json(writer, &json!(4))?;
+        } else if COLLECTIONS.contains(&name.as_str()) {
             let (table, key) = table(name)?;
             let source = if split {
                 super::receipts::json_source(name, None)?
@@ -313,6 +426,7 @@ pub(super) fn create(file: &Path, legacy: Option<&Path>, now: i64) -> Result<Val
             .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")
             .map_err(err)?;
         connection.execute_batch(schema::SQL).map_err(err)?;
+        session_work_state::initialize(&connection)?;
         connection.execute_batch("BEGIN IMMEDIATE").map_err(err)?;
         super::receipts::install(&connection)?;
         for (key, value) in [
@@ -376,6 +490,19 @@ pub(super) fn export(connection: &Connection, target: &Path) -> Result<Value> {
     let temp = temp_path(target);
     connection.execute_batch("BEGIN").map_err(err)?;
     let result = (|| {
+        // A version 4 export includes canonical work facts. Older readers
+        // reject that version rather than silently dropping the facts.
+        let has_table: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='orchestration_session_work_state')",
+            [], |row| row.get(0),
+        ).map_err(err)?;
+        let initialized: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM orchestration_meta WHERE key='sessionWorkStateSchema')",
+            [], |row| row.get(0),
+        ).map_err(err)?;
+        if initialized && !has_table {
+            return Err(corrupt("initialized session work state table missing"));
+        }
         let revision = meta(connection, "revision")?;
         let file = create_private(&temp)?;
         let mut out = DigestWriter {

@@ -1,6 +1,7 @@
 //! Row-owned orchestration storage. No whole-database object graph is retained.
 //! The compatibility host holds transaction-local proxies; SQLite is authority.
 mod activity;
+mod draft_cow;
 mod legacy;
 mod operation_admit;
 mod operation_running;
@@ -8,23 +9,48 @@ mod outbox_recover;
 mod query;
 mod receipts;
 mod record;
+mod schedule_admit;
+mod schedule_admit_live;
+pub mod schedule_background;
+pub mod schedule_guard;
+mod schedule_identity;
 mod schedule_metadata;
+mod schedule_recover;
 mod schedule_settle;
 mod schema;
+mod session_work_state;
 mod wait_cancel;
 
 use crate::js::{from_serde, json_stringify};
 use crate::orchestration_retention::{self, MaintenanceGuard, RetentionPolicy};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const COLLECTIONS: [&str; 5] = ["waits", "outbox", "operations", "tasks", "sessionSchedules"];
+
+// A bounded owner-side record of observations made by a detached draft. The
+// immutable in-memory draft transport is not wired to production yet.
+struct DraftFootprint {
+    token: String,
+    collecting: bool,
+    read_only: bool,
+    data_version: i64,
+    state: Value,
+    reads: Vec<(String, Value, [u8; 32])>,
+    read_keys: HashSet<(String, String)>,
+    header_reads: Vec<String>,
+    bytes: usize,
+    snapshot: draft_cow::Capture,
+}
 /// The ledger's own terminal vocabulary for a task or operation row, mirroring
 /// `TERMINAL_TASK_STATES` in `src/operation-service.js`. Anything that needs to
 /// know "did this task already settle" reads these words instead of inventing a
@@ -396,6 +422,8 @@ pub struct Store {
     pending_rows: usize,
     pending_bytes: usize,
     indexes_ready: bool,
+    scheduler_cache: Option<Arc<crate::scheduler_read_model::Cache>>,
+    draft_footprint: Option<DraftFootprint>,
 }
 impl Store {
     pub fn open(
@@ -425,6 +453,7 @@ impl Store {
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA wal_autocheckpoint=1000; PRAGMA journal_size_limit=0;").map_err(err)?;
         validate(&connection)?;
         let upgraded = receipts::upgrade(&connection)?;
+        session_work_state::initialize(&connection)?;
         private_files(&file)?;
         let mut metrics = Map::new();
         for key in [
@@ -468,7 +497,15 @@ impl Store {
             pending_rows: 0,
             pending_bytes: 0,
             indexes_ready: false,
+            scheduler_cache: None,
+            draft_footprint: None,
         })
+    }
+    pub(crate) fn attach_scheduler_cache(
+        &mut self,
+        cache: Arc<crate::scheduler_read_model::Cache>,
+    ) {
+        self.scheduler_cache = Some(cache);
     }
     fn conn(&self) -> Result<&Connection> {
         self.connection
@@ -480,17 +517,44 @@ impl Store {
         let old = self.metrics[&key].as_f64().unwrap_or(0.0);
         self.metrics.insert(key, json!(old + amount));
     }
+    fn clear_draft_footprint(&mut self) {
+        if self.draft_footprint.take().is_some() {
+            if let Some(connection) = &self.connection {
+                connection.preupdate_hook(None::<fn(rusqlite::hooks::Action, &str, &str, &rusqlite::hooks::PreUpdateCase)>);
+            }
+        }
+    }
     pub fn end(&mut self) -> Result<()> {
         // Invalidate before rollback: even a failed rollback must not leave a
         // previously issued read-model token usable.
         self.schedule_metadata_scan = None;
-        if self.active || self.pending {
-            self.conn()?.execute_batch("ROLLBACK").map_err(err)?;
+        if self
+            .draft_footprint
+            .as_ref()
+            .is_some_and(|draft| draft.collecting)
+        {
+            self.clear_draft_footprint();
         }
-        self.active = false;
-        self.pending = false;
-        self.snapshot_data_version = None;
-        Ok(())
+        // SQLite may roll a transaction back itself after some I/O failures.
+        // In that case our bookkeeping flags can still say `active`/`pending`,
+        // but issuing another ROLLBACK returns "no transaction is active".
+        // That cleanup error used to leave the flags set, making every later
+        // `begin` fail in this same method and permanently poisoning the owner.
+        // Check SQLite's actual state and clear the flags whenever the
+        // connection is back in autocommit mode; keep them only if a real
+        // transaction remains open and rollback itself failed.
+        let rollback = if self.conn()?.is_autocommit() {
+            Ok(())
+        } else {
+            self.conn()?.execute_batch("ROLLBACK").map_err(err)
+        };
+        let transaction_is_closed = self.conn()?.is_autocommit();
+        if rollback.is_ok() || transaction_is_closed {
+            self.active = false;
+            self.pending = false;
+            self.snapshot_data_version = None;
+        }
+        rollback
     }
     fn inspect(&mut self, input: &Value) -> Result<Value> {
         let collection = input["collection"]
@@ -569,6 +633,255 @@ impl Store {
         } else {
             Ok(json!({"found":false}))
         }
+    }
+
+    fn draft_footprint_read(&mut self, op: &str, input: &Value) -> Result<Value> {
+        match op {
+            "inspect" => self.inspect(input),
+            "materialize" => self.materialize(input),
+            "keys" => self.keys(input),
+            "select" | "selectKeys" | "count" => query::select(self.conn()?, input, op),
+            "sessionWorkState" if input["action"] == "read" && input["encoding"] == "json" => {
+                session_work_state::encoded_read(self.conn()?, input)
+            }
+            _ => Err(err("unsupported draft footprint read")),
+        }
+    }
+
+    fn read_tracked_draft(&mut self, input: &Value) -> Result<Value> {
+        let draft = self
+            .draft_footprint
+            .as_ref()
+            .ok_or_else(|| err("draft footprint missing"))?;
+        if draft.collecting || input["token"].as_str() != Some(draft.token.as_str()) {
+            return Err(err("invalid detached draft token"));
+        }
+        let op = input["operation"]
+            .as_str()
+            .filter(|op| {
+                matches!(
+                    *op,
+                    "inspect"
+                        | "keys"
+                        | "materialize"
+                        | "select"
+                        | "selectKeys"
+                        | "count"
+                        | "sessionWorkState"
+                )
+            })
+            .ok_or_else(|| err("invalid detached draft read"))?;
+        let read_input = input
+            .get("input")
+            .ok_or_else(|| err("detached draft input required"))?;
+        let snapshot = draft.snapshot.clone();
+        let version = draft.data_version;
+        let expected = draft.state["revision"]
+            .as_u64()
+            .ok_or_else(|| err("invalid draft revision"))?;
+        if self.active || self.pending {
+            return Err(err("detached draft read requires an idle owner connection"));
+        }
+        let current_version: i64 = self
+            .conn()?
+            .query_row("PRAGMA data_version", [], |r| r.get(0))
+            .map_err(err)?;
+        if version != current_version || !snapshot.valid() {
+            let actual = meta(self.conn()?, "revision")?.as_u64().unwrap_or(expected);
+            self.clear_draft_footprint();
+            return Err(format!("ORCHESTRATION_SQLITE_CONFLICT:{expected}:{actual}"));
+        }
+        self.conn()?.execute_batch("BEGIN").map_err(err)?;
+        let result = match snapshot.install_views(self.conn()?) {
+            Ok(tables) => {
+                let result = self
+                    .draft_footprint_read(op, read_input)
+                    .and_then(|value| self.capture_draft_read(op, read_input).map(|()| value));
+                let cleanup = draft_cow::Capture::remove_views(self.conn()?, tables).map_err(err);
+                match (result, cleanup) {
+                    (Ok(value), Ok(())) => Ok(value),
+                    (Err(error), _) | (_, Err(error)) => Err(error),
+                }
+            }
+            Err(error) => Err(err(error)),
+        };
+        let rollback = self.conn()?.execute_batch("ROLLBACK").map_err(err);
+        let after: i64 = self
+            .conn()?
+            .query_row("PRAGMA data_version", [], |r| r.get(0))
+            .map_err(err)?;
+        if version != after {
+            let actual = meta(self.conn()?, "revision")?.as_u64().unwrap_or(expected);
+            self.clear_draft_footprint();
+            return Err(format!("ORCHESTRATION_SQLITE_CONFLICT:{expected}:{actual}"));
+        }
+        if result.is_err() || rollback.is_err() {
+            self.clear_draft_footprint();
+        }
+        rollback?;
+        result
+    }
+
+    fn capture_draft_read(&mut self, op: &str, input: &Value) -> Result<()> {
+        if self
+            .draft_footprint
+            .as_ref()
+            .is_some_and(|footprint| footprint.read_only)
+        {
+            return Ok(());
+        }
+        // Record complete records for path reads. This is conservative: even
+        // an unobserved field changing forces a conflict rather than write skew.
+        let (op, input) = if op == "inspect" || (op == "keys" && input["key"].is_string()) {
+            (
+                "materialize",
+                json!({"collection":input["collection"],"key":input["key"]}),
+            )
+        } else {
+            (op, input.clone())
+        };
+        let read_key = (op.to_owned(), encode(&input)?);
+        if self
+            .draft_footprint
+            .as_ref()
+            .is_some_and(|footprint| footprint.read_keys.contains(&read_key))
+        {
+            return Ok(());
+        }
+        let result = self.draft_footprint_read(op, &input)?;
+        // A fixed-size digest validates the entire observed result without
+        // retaining a second copy of arbitrarily large message bodies.
+        let digest: [u8; 32] = Sha256::digest(encode(&result)?.as_bytes()).into();
+        let bytes = read_key
+            .0
+            .len()
+            .saturating_add(read_key.1.len())
+            .saturating_add(digest.len());
+        let footprint = self
+            .draft_footprint
+            .as_mut()
+            .ok_or_else(|| err("draft footprint missing"))?;
+        if footprint.reads.len() >= 4096 || footprint.bytes.saturating_add(bytes) > 16 * 1024 * 1024
+        {
+            return Err(err("draft footprint exceeds limit"));
+        }
+        footprint.bytes += bytes;
+        footprint.read_keys.insert(read_key);
+        footprint.reads.push((op.to_owned(), input, digest));
+        Ok(())
+    }
+
+    fn prepare_tracked_draft(&mut self, input: &Value) -> Result<Value> {
+        if self.active || self.pending {
+            return Err(err(
+                "tracked draft commit requires an idle owner connection",
+            ));
+        }
+        let tracked = self
+            .draft_footprint
+            .as_ref()
+            .ok_or_else(|| err("draft footprint missing"))?;
+        if tracked.collecting || input["token"].as_str() != Some(tracked.token.as_str()) {
+            return Err(err("invalid detached draft token"));
+        }
+        if tracked.read_only {
+            return Err(err("read-only draft cannot commit"));
+        }
+        let footprint = self
+            .draft_footprint
+            .take()
+            .ok_or_else(|| err("draft footprint missing"))?;
+        self.conn()?.preupdate_hook(
+            None::<fn(rusqlite::hooks::Action, &str, &str, &rusqlite::hooks::PreUpdateCase)>,
+        );
+        if !footprint.snapshot.valid() {
+            let expected = footprint.state["revision"].as_u64().unwrap_or(0);
+            let actual = meta(self.conn()?, "revision")?.as_u64().unwrap_or(expected);
+            return Err(format!("ORCHESTRATION_SQLITE_CONFLICT:{expected}:{actual}"));
+        }
+        let expected = footprint.state["revision"]
+            .as_u64()
+            .ok_or_else(|| err("invalid draft revision"))?;
+        let actual = meta(self.conn()?, "revision")?
+            .as_u64()
+            .ok_or_else(|| err("invalid revision"))?;
+        let conflict = || format!("ORCHESTRATION_SQLITE_CONFLICT:{expected}:{actual}");
+        let data_version: i64 = self
+            .conn()?
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .map_err(err)?;
+        if data_version != footprint.data_version
+            || actual < expected
+            || input["expectedRevision"].as_u64() != Some(expected)
+        {
+            return Err(conflict());
+        }
+        if input["headerReadsTracked"] != true {
+            return Err(err("draft header reads are not tracked"));
+        }
+        let current_header = header(self.conn()?)?;
+        for field in &footprint.header_reads {
+            if current_header[field] != footprint.state[field] {
+                return Err(conflict());
+            }
+        }
+        for (op, read_input, old) in &footprint.reads {
+            let current = self.draft_footprint_read(op, read_input)?;
+            let digest: [u8; 32] = Sha256::digest(encode(&current)?.as_bytes()).into();
+            if digest != *old {
+                return Err(conflict());
+            }
+        }
+        for entry in input["changes"]
+            .as_array()
+            .ok_or_else(|| err("changes required"))?
+        {
+            let found = footprint.reads.iter().any(|(op, read, _)| {
+                op == "materialize"
+                    && read["collection"] == entry["collection"]
+                    && read["key"] == entry["key"]
+            });
+            if !found {
+                return Err(err("draft write lacks captured baseline"));
+            }
+        }
+        let base_sequence = footprint.state["nextOutboxSequence"]
+            .as_u64()
+            .ok_or_else(|| err("invalid draft sequence"))?;
+        let requested_sequence = input["state"]["nextOutboxSequence"]
+            .as_u64()
+            .ok_or_else(|| err("invalid draft sequence"))?;
+        let actual_sequence = meta(self.conn()?, "nextOutboxSequence")?
+            .as_u64()
+            .ok_or_else(|| err("invalid sequence"))?;
+        if requested_sequence != base_sequence && actual_sequence != base_sequence {
+            return Err(conflict());
+        }
+        if input["state"]["schemaVersion"] != footprint.state["schemaVersion"] {
+            return Err(err("invalid draft schema"));
+        }
+        let mut command = input.clone();
+        command["expectedRevision"] = json!(actual);
+        command["state"]["revision"] = json!(actual
+            .checked_add(1)
+            .filter(|revision| *revision <= 9_007_199_254_740_991)
+            .ok_or_else(|| err("revision overflow"))?);
+        if requested_sequence == base_sequence {
+            command["state"]["nextOutboxSequence"] = json!(actual_sequence);
+        }
+        self.snapshot_data_version = Some(footprint.data_version);
+        if let Err(error) = self.prepare(&command) {
+            let _ = self.end();
+            return Err(error);
+        }
+        if input["prepareOnly"] == true {
+            return Ok(json!({"prepared":true}));
+        }
+        let result = self.request("commit", &json!({}));
+        if result.is_err() {
+            let _ = self.end();
+        }
+        result
     }
     fn prepare(&mut self, input: &Value) -> Result<Value> {
         let snapshot_data_version = self.snapshot_data_version;
@@ -651,7 +964,76 @@ impl Store {
         self.pending_bytes = bytes;
         Ok(json!({"prepared":true}))
     }
+
     pub fn request(&mut self, op: &str, input: &Value) -> Result<Value> {
+        if self
+            .draft_footprint
+            .as_ref()
+            .is_some_and(|draft| draft.collecting)
+            && matches!(
+                op,
+                "inspect" | "keys" | "materialize" | "select" | "selectKeys" | "count"
+            )
+            || (self
+                .draft_footprint
+                .as_ref()
+                .is_some_and(|draft| draft.collecting)
+                && op == "sessionWorkState"
+                && input["action"] == "read"
+                && input["encoding"] == "json")
+        {
+            if let Err(error) = self.capture_draft_read(op, input) {
+                self.clear_draft_footprint();
+                let _ = self.end();
+                return Err(error);
+            }
+        }
+        // A single owner shares this cache across sessions. Invalidate before
+        // any existing or unknown write command, even if the write later
+        // rolls back. Future cache-consuming commands must validate and then
+        // invalidate under their write lock before they apply a mutation.
+        if !matches!(
+            op,
+            "info"
+                | "begin"
+                | "scheduleMetadataBegin"
+                | "scheduleMetadataPage"
+                | "scheduleRecoverSnapshotExperimental"
+                | "scheduleRecoverOwnedSnapshotExperimental"
+                | "end"
+                | "inspect"
+                | "keys"
+                | "materialize"
+                | "claimMetadata"
+                | "waitCancelCheck"
+                | "scheduleSettlePlan"
+                | "operationAdmitPlan"
+                | "operationRunningPlan"
+                | "outboxRecoverPlan"
+                | "select"
+                | "selectKeys"
+                | "count"
+                | "noop"
+                | "metrics"
+                | "checkpoint"
+                | "export"
+                | "taskActivity"
+                | "close"
+                | "closeShared"
+        ) {
+            let invalidation = self
+                .scheduler_cache
+                .as_ref()
+                .map(|cache| cache.invalidate_all());
+            if let Some(Err(error)) = invalidation {
+                // A commit may already have a prepared transaction. Failure
+                // to invalidate cannot leave it live for a later command.
+                let _ = self.end();
+                return Err(err(format!(
+                    "scheduler cache invalidation failed: {error:?}"
+                )));
+            }
+        }
         match op {
             "info" => Ok(json!({"state":header(self.conn()?)?,"migration":self.migration})),
             "begin" => {
@@ -664,6 +1046,77 @@ impl Store {
                 self.active = true;
                 self.snapshot_data_version = Some(data_version);
                 header(self.conn()?)
+            }
+            "beginTrackedDraft" => {
+                if self.draft_footprint.is_some() {
+                    return Err(err("draft footprint already active"));
+                }
+                let mut random = [0_u8; 16];
+                getrandom::fill(&mut random).map_err(err)?;
+                let token = random
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                let state = self.request("begin", &json!({}))?;
+                let data_version = self
+                    .snapshot_data_version
+                    .ok_or_else(|| err("draft data version missing"))?;
+                let snapshot = draft_cow::Capture::default();
+                snapshot.install(self.conn()?);
+                self.draft_footprint = Some(DraftFootprint {
+                    token: token.clone(),
+                    collecting: true,
+                    read_only: input["readOnly"] == true,
+                    data_version,
+                    state: state.clone(),
+                    reads: Vec::new(),
+                    read_keys: HashSet::new(),
+                    header_reads: Vec::new(),
+                    bytes: 0,
+                    snapshot,
+                });
+                Ok(json!({"token":token,"state":state}))
+            }
+            "readTrackedDraft" => self.read_tracked_draft(input),
+            "draftTrackHeader" => {
+                let draft = self
+                    .draft_footprint
+                    .as_mut()
+                    .ok_or_else(|| err("draft footprint missing"))?;
+                if input["token"].as_str() != Some(draft.token.as_str()) {
+                    return Err(err("invalid draft token"));
+                }
+                if draft.read_only {
+                    return Ok(Value::Null);
+                }
+                let field = input["field"]
+                    .as_str()
+                    .filter(|field| {
+                        matches!(
+                            *field,
+                            "schemaVersion" | "revision" | "updatedAt" | "nextOutboxSequence"
+                        )
+                    })
+                    .ok_or_else(|| err("invalid draft header field"))?;
+                if !draft.header_reads.iter().any(|name| name == field) {
+                    draft.header_reads.push(field.to_owned());
+                }
+                Ok(Value::Null)
+            }
+            "discardTrackedDraft" => {
+                let draft = self
+                    .draft_footprint
+                    .as_ref()
+                    .ok_or_else(|| err("draft footprint missing"))?;
+                if input["token"].as_str() != Some(draft.token.as_str()) {
+                    return Err(err("invalid draft token"));
+                }
+                let collecting = draft.collecting;
+                self.clear_draft_footprint();
+                if collecting {
+                    self.end()?;
+                }
+                Ok(Value::Null)
             }
             "scheduleMetadataBegin" => {
                 let mut random = [0_u8; 16];
@@ -705,6 +1158,44 @@ impl Store {
                 self.end()?;
                 Ok(Value::Null)
             }
+            // A detached draft keeps its own immutable snapshot. Capture the
+            // matching SQLite identity before releasing the read transaction.
+            "detachDraftSnapshot" => {
+                if !self.active || self.pending || self.schedule_metadata_scan.is_some() {
+                    return Err(err("detached draft requires an active plain snapshot"));
+                }
+                let version = self
+                    .snapshot_data_version
+                    .ok_or_else(|| err("detached draft snapshot has no data version"))?;
+                if let Some(draft) = self.draft_footprint.as_mut() {
+                    if !draft.collecting || input["token"].as_str() != Some(draft.token.as_str()) {
+                        return Err(err("invalid draft token"));
+                    }
+                    draft.collecting = false;
+                }
+                let state = header(self.conn()?)?;
+                self.end()?;
+                let after: i64 = self
+                    .conn()?
+                    .query_row("PRAGMA data_version", [], |row| row.get(0))
+                    .map_err(err)?;
+                if version != after {
+                    let expected = self
+                        .draft_footprint
+                        .as_ref()
+                        .and_then(|draft| draft.state["revision"].as_u64());
+                    let actual = meta(self.conn()?, "revision")?.as_u64();
+                    self.clear_draft_footprint();
+                    return match expected {
+                        Some(expected) => Err(format!(
+                            "ORCHESTRATION_SQLITE_CONFLICT:{expected}:{}",
+                            actual.unwrap_or(expected)
+                        )),
+                        None => Err(err("detached draft snapshot changed during capture")),
+                    };
+                }
+                Ok(json!({"state":state,"dataVersion":version}))
+            }
             "inspect" => self.inspect(input),
             "keys" => self.keys(input),
             "materialize" => self.materialize(input),
@@ -716,6 +1207,90 @@ impl Store {
             }
             "waitCancelCheck" => wait_cancel::check(self.conn()?, input),
             "scheduleSettlePlan" => schedule_settle::plan(self.conn()?, input),
+            "sessionWorkState" if input.get("encoding").and_then(Value::as_str) == Some("json") => {
+                match input.get("action").and_then(Value::as_str) {
+                    Some("read") => session_work_state::encoded_read(self.conn()?, input),
+                    Some(
+                        action @ ("write" | "readOrInitialize" | "readOrInitializeBatch" | "patch"),
+                    ) => {
+                        if self.active || self.pending {
+                            return Err(err(
+                                "session work state requires an idle owner connection",
+                            ));
+                        }
+                        let connection = self
+                            .connection
+                            .as_mut()
+                            .ok_or_else(|| err("database closed"))?;
+                        match action {
+                            "write" => session_work_state::encoded_write(connection, input),
+                            "patch" => session_work_state::encoded_patch(connection, input),
+                            "readOrInitializeBatch" => {
+                                session_work_state::encoded_initialize_batch(connection, input)
+                            }
+                            _ => session_work_state::encoded_initialize(connection, input),
+                        }
+                    }
+                    _ => Err(err("unknown session work state action")),
+                }
+            }
+            "sessionWorkState" if input.get("encoding").is_some() => {
+                Err(err("unsupported session work state encoding"))
+            }
+            "sessionWorkState" => match input.get("action").and_then(Value::as_str) {
+                Some("read") => session_work_state::read(self.conn()?, input),
+                Some("readOrInitialize") => {
+                    if self.active || self.pending {
+                        return Err(err("session work state requires an idle owner connection"));
+                    }
+                    let connection = self
+                        .connection
+                        .as_mut()
+                        .ok_or_else(|| err("database closed"))?;
+                    session_work_state::read_or_initialize(connection, input)
+                }
+                Some("write") => {
+                    if self.active || self.pending {
+                        return Err(err("session work state requires an idle owner connection"));
+                    }
+                    let connection = self
+                        .connection
+                        .as_mut()
+                        .ok_or_else(|| err("database closed"))?;
+                    session_work_state::write(connection, input)
+                }
+                _ => Err(err("unknown session work state action")),
+            },
+            "sessionWorkQuestionExperimental" => {
+                if self.active || self.pending {
+                    return Err(err("question transition requires an idle owner connection"));
+                }
+                let connection = self
+                    .connection
+                    .as_mut()
+                    .ok_or_else(|| err("database closed"))?;
+                session_work_state::question_transition(connection, input)
+            }
+            "scheduleAdmit" => schedule_admit::commit(self, input),
+            "scheduleCompleteTokenExperimental" => {
+                schedule_admit_live::completion_token(self, input)
+            }
+            "scheduleCompleteExperimental" => schedule_admit_live::complete(self, input),
+            "scheduleRecoverSnapshotExperimental" => schedule_recover::snapshot(self),
+            "scheduleRecoverOwnedSnapshotExperimental" => schedule_recover::owned_snapshot(self),
+            "scheduleRecoverOwnedPrepareExperimental" => {
+                schedule_recover::owned_prepare(self, input)
+            }
+            "scheduleRecoverCommitExperimental" => schedule_recover::commit(self, input),
+            "scheduleRecoverOwnedCommitExperimental" => schedule_recover::owned_commit(self, input),
+            "scheduleCompleteAtomicExperimental" => {
+                schedule_admit_live::complete_atomic(self, input)
+            }
+            "scheduleCompleteFrozenExperimental" => {
+                schedule_admit_live::complete_frozen(self, input)
+            }
+            "scheduleReorderCheck" => schedule_admit_live::reorder_check(self.conn()?, input),
+            "scheduleReorder" => schedule_admit_live::reorder(self, input),
             "scheduleSettleCommit" => {
                 let result = schedule_settle::commit(self, input);
                 if result.is_err() {
@@ -777,6 +1352,31 @@ impl Store {
                 }
                 result
             }
+            // Compare the detached snapshot and apply the complete draft in a
+            // single owner command; no JavaScript callback runs while the
+            // SQLite write transaction is open.
+            "commitDetachedDraft" => {
+                if self.active || self.pending {
+                    return Err(err(
+                        "detached draft commit requires an idle owner connection",
+                    ));
+                }
+                let version = input["dataVersion"]
+                    .as_i64()
+                    .filter(|version| *version >= 0)
+                    .ok_or_else(|| err("detached draft dataVersion required"))?;
+                self.snapshot_data_version = Some(version);
+                if let Err(error) = self.prepare(input) {
+                    let _ = self.end();
+                    return Err(error);
+                }
+                let result = self.request("commit", &json!({}));
+                if result.is_err() {
+                    let _ = self.end();
+                }
+                result
+            }
+            "commitTrackedDraft" => self.prepare_tracked_draft(input),
             "scheduleMetadataPrepare" => {
                 if !self.active {
                     return Err(err("scheduler metadata snapshot is not active"));

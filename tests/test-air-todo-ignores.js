@@ -61,7 +61,7 @@ function mountFixture(tasks, pinsFile, options = {}) {
   const chatSessions = options.chatSessions || new Map();
   // 任务 / 待办 / 忽略走宿主端口；标记达成由 Rust 前门拥有，Node 只剩事实与 writer。
   const air = mountAir({
-    pinsFile, getBoard: () => board, records,
+    pinsFile, getBoard: () => board, records, pendingUserInput: options.pendingUserInput,
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     directories: new Map(), clis: ['claude'],
     shell: { taskAccess: () => ({ readOnly: false }) },
@@ -298,6 +298,50 @@ test('/api/air 快照带 taskTodoIgnored（只含有效项）：类别变化或�
   board.tasks.t1.runState = 'idle';
   delete board.tasks.t2;
   assert.deepEqual((await air.snapshot()).json.taskTodoIgnored, []);
+});
+
+test('待回答问题的忽略时间读取当前所有者，所有者不可用时不丢弃忽略', async () => {
+  const pinsFile = tempFile('air-pins.json');
+  let current = { requestId: 'new', createdAt: 2000 };
+  const { air, records } = mountFixture([task('t1', { runState: 'waiting' })], pinsFile, {
+    pendingUserInput: () => {
+      if (current instanceof Error) throw current;
+      return current;
+    },
+  });
+  records.get('s-t1').taskState = { pendingUserInput: { requestId: 'old', createdAt: 1000 } };
+  await air.ok({ op: 'todos-ignore', taskId: 't1' });
+  assert.equal(readItems(path.join(path.dirname(pinsFile), 'air-todo-ignores.json'))[0].stamp, 2000);
+  current = Object.assign(new Error('owner unavailable'), { code: 'SESSION_WORK_OWNER_UNAVAILABLE' });
+  assert.equal((await air.fail({ op: 'todos-ignore', taskId: 't1' })).code, 'SESSION_WORK_OWNER_UNAVAILABLE');
+  assert.equal(readItems(path.join(path.dirname(pinsFile), 'air-todo-ignores.json'))[0].stamp, 2000);
+  current = { requestId: 'next', createdAt: 3000 };
+  assert.deepEqual((await air.snapshot()).json.taskTodoIgnored, []);
+});
+
+// 这一条钉的是把 node CPU 钉死的那个闭环：忽略清单的剪枝要问会话状态的 owner，
+// owner 不可读时旧实现在读路径上重抛，于是整轮 /api/air 快照作废 —— 而这份辅助
+// 清单排在 1500+ 张卡之后，抛出去等于把整轮计算全扔掉，再由 air-sync 每几秒重试
+// 一次，反复全量重建。读路径必须降级（不剪枝、原样返回），写路径才 fail-closed。
+test('所有者不可读时：快照照常出，忽略不被剪掉；只有写入才 fail-closed', async () => {
+  const pinsFile = tempFile('air-pins.json');
+  let current = { requestId: 'q1', createdAt: 2000 };
+  const { air } = mountFixture([task('t1', { runState: 'waiting' })], pinsFile, {
+    pendingUserInput: () => {
+      if (current instanceof Error) throw current;
+      return current;
+    },
+  });
+  await air.ok({ op: 'todos-ignore', taskId: 't1' });
+  assert.deepEqual((await air.snapshot()).json.taskTodoIgnored, ['t1'], '先确认忽略已生效');
+
+  current = Object.assign(new Error('owner unavailable'), { code: 'SESSION_WORK_OWNER_UNAVAILABLE' });
+  const snapshot = await air.snapshot();
+  assert.equal(snapshot.json.ok, true, 'owner 不可读不该让整轮快照失败');
+  assert.deepEqual(snapshot.json.taskTodoIgnored, ['t1'], '判不出类别时不剪枝，保留用户的选择');
+  assert.equal(snapshot.json.tasks.length, 1, '卡片正文不受这份辅助清单影响');
+  assert.equal((await air.fail({ op: 'todos-ignore', taskId: 't1' })).code,
+    'SESSION_WORK_OWNER_UNAVAILABLE', '写入仍要 fail-closed');
 });
 
 test('标记达成：需要交互 → 200，快照 goalState=achieved；非交互 409、未知 404、运行中 409', async () => {

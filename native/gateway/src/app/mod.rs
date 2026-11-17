@@ -76,6 +76,27 @@ use multicc_core::network_policy::{env_enabled, NetworkPolicy};
 use crate::args::ServeOptions;
 use express::RequestCtx;
 
+fn user_home() -> PathBuf {
+    select_user_home(
+        cfg!(windows),
+        std::env::var_os("USERPROFILE"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn select_user_home(
+    windows: bool,
+    profile: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    let nonempty = |value: &std::ffi::OsString| !value.is_empty();
+    let profile = profile.filter(nonempty);
+    let home = home.filter(nonempty);
+    (if windows { profile.or(home) } else { home })
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
 /// A native route, matched the way Express matched the Node one:
 /// case-insensitive, one optional trailing slash, raw (undecoded) path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -572,6 +593,10 @@ pub struct App {
     /// local copy when `.env` supplied a usable ACCESS_TOKEN. A route that needs
     /// the snapshot with neither owner fails closed (docs/gateway.md §8.1).
     pub node_enabled: bool,
+    /// When this front door started. `--no-node` has no child whose
+    /// `process.uptime()` the server-core probes could report, so `/healthz`
+    /// answers this process's own uptime instead (`server_core::local_healthz`).
+    pub started: std::time::Instant,
     /// Node handled each of these requests to completion on one thread; the
     /// read-modify-write of a store must not interleave here either.
     store_lock: Mutex<()>,
@@ -739,6 +764,7 @@ impl App {
             lan_only: policy.lan_only,
             allow_legacy_token_query: env_enabled(&env_text("MULTICC_ALLOW_LEGACY_TOKEN_QUERY")),
             node_enabled: options.node_enabled(),
+            started: std::time::Instant::now(),
             store_lock: Mutex::new(()),
             tickets: Mutex::new(DownloadTickets::new()),
             provider_limit_history: Mutex::new(provider_limit_history::State::default()),
@@ -769,9 +795,7 @@ impl App {
             account_subscription: subscriptions,
             outbound: crate::outbound::Outbound::from_process(),
             package_root,
-            home_dir: std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default(),
+            home_dir: user_home(),
             node_cwd: physical_dir(&options.cwd),
         }
     }
@@ -959,6 +983,16 @@ pub async fn handle(
     // `auth.rs` are only reachable after this point, so they need no separate
     // guard.
     if !app.node_enabled && !app.auth.has_local() {
+        // `/healthz` and `/readyz` are public paths whose facts this process
+        // owns when there is no child (`server_core::local_healthz`), so a
+        // Rust-only start still answers a deployment's liveness and readiness
+        // probes with no authentication owner at all. Everything else keeps
+        // failing closed.
+        if let Route::ServerCore(route) = route {
+            if server_core::is_public_probe(route) {
+                return server_core::handle_public_probe(&app, route, &ctx, &peer);
+            }
+        }
         return auth_runtime_absent();
     }
     let snapshot = match app.auth.snapshot().await {
@@ -1272,6 +1306,24 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_home_uses_the_windows_profile_and_preserves_unix_home() {
+        let profile = Some(r"C:\Users\pat".into());
+        let home = Some("/home/pat".into());
+        assert_eq!(
+            select_user_home(true, profile.clone(), home.clone()),
+            PathBuf::from(r"C:\Users\pat")
+        );
+        assert_eq!(
+            select_user_home(false, profile, home.clone()),
+            PathBuf::from("/home/pat")
+        );
+        assert_eq!(
+            select_user_home(true, Some("".into()), home),
+            PathBuf::from("/home/pat")
+        );
+    }
 
     #[test]
     fn literal_paths_union_the_param_shape_methods() {

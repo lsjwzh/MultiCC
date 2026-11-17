@@ -4,13 +4,16 @@ const { boardStoreOf } = require('../native/task-domain');
 
 // 原生 token 的对象镜像与宿主回调适配。缓存判定、过期和验证规则均在 Rust。
 const MODES = new Set(['off', 'shadow', 'on']);
-function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, reportMs = 600_000,
+function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, verifyBudget = 8, reportMs = 600_000,
   logger = null, clock = Date.now, random = Math.random } = {}) {
   const addon = getNative();
   if (typeof addon.RustAirCardCache !== 'function') throw new Error('卡片缓存 Rust 接口不可用，请构建当前原生模块');
   const native = new addon.RustAirCardCache(), mirrors = new Map();
   const run = command => JSON.parse(native.run(JSON.stringify(command)));
-  const opened = run({ op: 'open', mode, verifyMs, reportMs, now: clock() });
+  // verifyMs 是「一张卡最久多久没被抽查过」，verifyBudget 是「一轮最多抽查几张」。
+  // 两者合起来才是抽样审计：只有 verifyMs 时它退化成全表定期过期，上千张卡会在
+  // 同一轮一起重建，缓存等于不存在（本次迁移前的真实行为）。
+  const opened = run({ op: 'open', mode, verifyMs, verifyBudget, reportMs, now: clock() });
   let tail = Promise.resolve();
   let pending = 0;
   let prepared = null;
@@ -45,6 +48,9 @@ function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, reportMs = 600
     }
     return { entries, hits: reply.hits, builds: reply.builds, render: { keys: reply.keys, tokens: reply.tokens, nativeRenderable: reply.nativeRenderable } };
   }
+  // 下面三个入口（resolve / resolveAsync / overlayAsync）已不在生产路径上：现行
+  // 宿主只调 prepareAsync + snapshotAsync。它们留着仅供差分的冻结 oracle
+  // （tests/helpers/legacy-air-routes.js）驱动，删掉会让迁移前后不可比。
   function resolve(globalSignature, items, options) {
     const request = plan(globalSignature, items, options);
     try {
@@ -73,6 +79,53 @@ function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, reportMs = 600
     tail = result.then(() => {}, () => {});
     return result.finally(() => { pending -= 1; });
   }
+  // 一轮快照在 Rust 内完成：先只上送 key/signature 判定 needed，再只提交 needed 的
+  // 底稿，complete/overlay/排序全部在 Rust。命中轮次不构造任何卡片，成本与旧 plan 相同。
+  function call(op, input) {
+    if (typeof native[op] !== 'function') throw new Error('卡片快照 Rust 接口不可用，请构建当前原生模块');
+    return runNative(() => native[op](JSON.stringify(input))).then(value => JSON.parse(value));
+  }
+  function snapshotAsync(command, buildBases) {
+    pending += 1;
+    const result = tail.then(async () => {
+      const planned = await call('snapshotPlanAsync', command);
+      try {
+        const bases = typeof buildBases === 'function' ? await buildBases(planned.needed || []) : [];
+        // finish 不需要 items/globalSignature/prune：complete 只认 ticket+bases，
+        // overlay 只认 keys/facts，重复上送整份签名会白白多传一轮。
+        // knownRenderToken 是「我手上已经有哪一版卡片」：排好序的整页正文由 Rust
+        // 持有，token 对得上时它只回一个 token，不再把整页序列化穿回来（判定在
+        // card_cache.rs 的 overlay）。1554 张卡实测：回传 0.60MB→0.01MB、
+        // 每轮省 6.1ms。宿主不必知道这件事，所以 token 由缓存层自己记、自己送。
+        const known = rendered ? rendered.token : undefined;
+        const facts = { now: command.now, facts: command.facts, merges: command.merges,
+          capacityReasons: command.capacityReasons,
+          knownRenderToken: command.knownRenderToken === undefined ? known : command.knownRenderToken };
+        const reply = await call('snapshotFinishAsync', { ...facts, ticket: planned.ticket, bases });
+        for (const { event, ...data } of reply.logs || []) {
+          try { (event === 'air_card_cache_mismatch' ? logger?.warn : logger?.info || logger?.log || logger?.warn)?.call(logger, event, data); } catch (_) {}
+        }
+        // 没回传正文只有一种合法解释：token 与我手上的完全一致。对不上还缺正文
+        // 就是契约被破坏，这时宁可报错，也不能把上一版卡片当成这一轮的结果发出去。
+        // 注意是 == null：Rust 侧 overlay 命中时整个 cards 键缺席，serde 取不到
+        // 的键会序列化成 null（不是 undefined），按 undefined 判会漏。
+        let cards = reply.cards;
+        if (cards == null) {
+          if (!rendered || reply.renderToken !== rendered.token) {
+            throw new Error('卡片快照未回传正文，但 renderToken 与宿主持有的不一致');
+          }
+          cards = rendered.cards;
+        }
+        rendered = { token: reply.renderToken, cards };
+        return { ...reply, cards };
+      } catch (error) {
+        try { await call('snapshotAbortAsync', { ticket: planned.ticket }); } catch (_) {}
+        throw error;
+      }
+    });
+    tail = result.then(() => {}, () => {});
+    return result.finally(() => { pending -= 1; });
+  }
   async function overlayAsync(result, facts) {
     const held = rendered;
     const command = { op: 'overlay', ...result.render, ...facts,
@@ -91,6 +144,6 @@ function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, reportMs = 600
         nativeRenderable: false, entries: result.entries })))));
     }
   }
-  return { resolve, resolveAsync, overlayAsync, prepareAsync, mode: opened.mode, stats: () => run({ op: 'stats' }) };
+  return { resolve, resolveAsync, snapshotAsync, overlayAsync, prepareAsync, mode: opened.mode, stats: () => run({ op: 'stats' }) };
 }
 module.exports = { createAirCardCache, AIR_CARD_CACHE_MODES: MODES };

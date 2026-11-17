@@ -29,7 +29,7 @@ function start() {
     addon = ensureSourceRust({ repoRoot: root });
     gateway = path.join(path.dirname(addon), windows ? 'multicc-gateway.exe' : 'multicc-gateway');
   } catch (error) { console.error(error.message); process.exit(1); }
-  const env = { ...process.env, MULTICC_RUST_ADDON: addon, MULTICC_SOURCE_FOREGROUND: '1' };
+  const env = { ...process.env, MULTICC_RUST_ADDON: addon, MULTICC_SOURCE_ROOT: root, MULTICC_SOURCE_FOREGROUND: '1' };
   delete env.MULTICC_SOURCE_DAEMON;
   const dataRoot = path.resolve(root, env.MULTICC_DATA_DIR || root);
   try { env.MULTICC_RESTART_GENERATION = fs.readFileSync(path.join(dataRoot, '.restart-generation'), 'utf8').trim(); env.MULTICC_RESTART_EXACT_PORT = '1'; }
@@ -43,7 +43,8 @@ function start() {
   });
   child.on('error', (error) => { console.error(`cannot start ${gateway}: ${error.message}`); process.exit(1); });
   child.on('exit', (code, signal) => {
-    if (!stopping && code === 0 && !signal && fs.existsSync(path.join(dataRoot, '.restart-generation'))) { setTimeout(start, 1000); return; }
+    // The detached Rust restart supervisor owns the next launch generation.
+    // Exit this wrapper so it cannot race the supervisor by starting a second gateway.
     if (daemonManaged) {
       try { if (Number(fs.readFileSync(pidFile, 'utf8')) === child.pid) fs.unlinkSync(pidFile); } catch (_) {}
     }

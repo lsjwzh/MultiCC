@@ -233,6 +233,19 @@ test('codex-refresh with wait:true waits for the refresh to resolve', async () =
   assert.deepEqual(await refresh, { ok: true });
 });
 
+test('codex-refresh forwards explicit refresh without the destructive login force', async () => {
+  const calls = [];
+  const handle = createModelCatalogsHost({ codexRuntime: {
+    refreshProvider: async (id, options) => { calls.push({ id, options }); },
+  } });
+  await handle({ op: 'codex-refresh', providerId: 'codex-official', wait: true, refresh: true });
+  await handle({ op: 'codex-refresh', providerId: 'codex-official', wait: true });
+  assert.deepEqual(calls, [
+    { id: 'codex-official', options: { refresh: true } },
+    { id: 'codex-official', options: { refresh: false } },
+  ]);
+});
+
 test('an unknown op and a non-object body answer error:true', async () => {
   const handle = createModelCatalogsHost({});
   assert.deepEqual(await handle({ op: 'nope' }), { error: true });

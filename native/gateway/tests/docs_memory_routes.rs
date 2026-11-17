@@ -43,6 +43,21 @@ const TEXT: &str = "text/plain; charset=utf-8";
 const UNAVAILABLE: &str = "文档与记忆接口尚未就绪，请更新原生模块";
 const INVALID_REL: &str = "invalid rel (must be a *.md under the memory store)";
 
+// Host facts use native absolute paths, as the real Node host does.
+fn fixture_path(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{}", path.replace('/', "\\"))
+    } else {
+        path.to_string()
+    }
+}
+
+fn path_query(path: &str) -> String {
+    path.replace('%', "%25")
+        .replace('\\', "%5C")
+        .replace(':', "%3A")
+}
+
 fn unique(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -453,7 +468,7 @@ fn docs_list_keeps_fields_and_the_host_ordering() {
         json!([1, 0]),
         json!([]),
         facts(
-            json!([Value::Null, "/p/one/"]),
+            json!([Value::Null, format!("{}/", fixture_path("/p/one"))]),
             json!([Value::Null, Value::Null]),
             json!([Value::Null, "任务甲"]),
         ),
@@ -470,7 +485,7 @@ fn docs_list_keeps_fields_and_the_host_ordering() {
             "\"taskTitle\":\"任务甲\"",
             "\"retained\":false",
             "\"permanent\":false",
-            "\"dir\":\"/p/one\"",
+            &format!("\"dir\":{}", json!(fixture_path("/p/one"))),
             "\"dirName\":\"one\"",
             "\"id\":\"d0\"",
             "\"dir\":null",
@@ -502,10 +517,8 @@ fn docs_list_keeps_fields_and_the_host_ordering() {
 #[test]
 fn docs_list_scopes_by_normalized_directory() {
     let gateway = Gateway::start("docs-scope");
-    let one =
-        json!({ "id": "d0", "title": "One", "url": "/docs/one", "kind": "page", "dir": "/p/one/" });
-    let two =
-        json!({ "id": "d1", "title": "Two", "url": "/docs/two", "kind": "page", "dir": "/p/two" });
+    let one = json!({ "id": "d0", "title": "One", "url": "/docs/one", "kind": "page", "dir": format!("{}/", fixture_path("/p/one")) });
+    let two = json!({ "id": "d1", "title": "Two", "url": "/docs/two", "kind": "page", "dir": fixture_path("/p/two") });
     gateway.world(list_world(
         json!([one, two]),
         json!([0, 1]),
@@ -516,12 +529,18 @@ fn docs_list_scopes_by_normalized_directory() {
             json!([Value::Null, Value::Null]),
         ),
     ));
-    let scoped = gateway.get("/api/docs-registry?dir=/p/one/");
+    let scoped = gateway.get(&format!(
+        "/api/docs-registry?dir={}/",
+        path_query(&fixture_path("/p/one"))
+    ));
     assert_eq!(scoped.status, 200);
     assert_eq!(scoped.json().as_array().unwrap().len(), 1);
     assert_eq!(scoped.json()[0]["id"], json!("d0"));
     // A worktree path groups under its project.
-    let worktree = gateway.get("/api/docs-registry?dir=/p/one/.multicc-worktrees/task-abc");
+    let worktree = gateway.get(&format!(
+        "/api/docs-registry?dir={}",
+        path_query(&fixture_path("/p/one/.multicc-worktrees/task-abc"))
+    ));
     assert_eq!(worktree.json().as_array().unwrap().len(), 1);
     // A scoped request that cannot be normalized answers [], never everything.
     assert_eq!(
@@ -536,11 +555,11 @@ fn docs_register_prefills_and_validates_before_the_host_write() {
     let gateway = Gateway::start("docs-register");
     gateway.world(json!({
         "docs-task-id": { "taskId": "tsk_1" },
-        "docs-dir": { "dir": "/p/one" },
+        "docs-dir": { "dir": fixture_path("/p/one") },
         "docs-register": {
             "entry": {
                 "id": "d9", "title": "T", "url": "/docs/new", "kind": "page",
-                "source": "agent", "sessionId": "s1", "taskId": "tsk_1", "dir": "/p/one",
+                "source": "agent", "sessionId": "s1", "taskId": "tsk_1", "dir": fixture_path("/p/one"),
             },
             "created": true,
         },
@@ -571,7 +590,7 @@ fn docs_register_prefills_and_validates_before_the_host_write() {
         calls[2]["entry"],
         json!({
             "title": "T", "url": "/docs/new", "sessionId": "s1",
-            "taskId": "tsk_1", "dir": "/p/one", "kind": "page", "source": "agent",
+            "taskId": "tsk_1", "dir": fixture_path("/p/one"), "kind": "page", "source": "agent",
         })
     );
     // The fact batch is built from the post-sanitize view inputs.
@@ -938,10 +957,10 @@ fn memory_file_paths_are_judged_in_rust_before_the_host_touches_the_disk() {
     // Innocent facts: only the requested `rel` differs, so a rejection here is
     // the front door's own traversal verdict, never the scripted host.
     let innocent = json!({
-        "root": "/store",
-        "resolved": "/store/a.md",
-        "rootReal": "/store",
-        "ancestorReal": "/store",
+        "root": fixture_path("/store"),
+        "resolved": fixture_path("/store/a.md"),
+        "rootReal": fixture_path("/store"),
+        "ancestorReal": fixture_path("/store"),
         "exists": true,
         "parentExists": true,
         "name": "a.md",
@@ -961,7 +980,7 @@ fn memory_file_paths_are_judged_in_rust_before_the_host_touches_the_disk() {
     for rel in bad {
         gateway.world(json!({
             "memory-resolve": innocent,
-            "memory-read": { "valid": true, "exists": true, "abs": "/store/a.md", "name": "a.md", "content": "x", "mtime": Value::Null },
+            "memory-read": { "valid": true, "exists": true, "abs": fixture_path("/store/a.md"), "name": "a.md", "content": "x", "mtime": Value::Null },
         }));
         let response = gateway.get(&format!("/api/memory/file?rel={rel}"));
         assert_eq!(response.status, 400, "rel {rel} -> {}", response.text());
@@ -983,15 +1002,15 @@ fn memory_file_paths_are_judged_in_rust_before_the_host_touches_the_disk() {
 
     // Facts-based rejections over a well-formed rel.
     let fact_cases = [
-        json!({ "root": "/store", "resolved": "/store2/a.md", "rootReal": "/store", "ancestorReal": "/store", "exists": true, "parentExists": true, "name": "a.md" }),
-        json!({ "root": "/store", "resolved": "/store", "rootReal": "/store", "ancestorReal": "/store", "exists": true, "parentExists": true, "name": "a.md" }),
-        json!({ "root": "/store", "resolved": "/store/a.md", "rootReal": Value::Null, "ancestorReal": "/store", "exists": true, "parentExists": true, "name": "a.md" }),
-        json!({ "root": "/store", "resolved": "/store/a.md", "rootReal": "/store", "ancestorReal": "/etc", "exists": true, "parentExists": true, "name": "a.md" }),
+        json!({ "root": fixture_path("/store"), "resolved": fixture_path("/store2/a.md"), "rootReal": fixture_path("/store"), "ancestorReal": fixture_path("/store"), "exists": true, "parentExists": true, "name": "a.md" }),
+        json!({ "root": fixture_path("/store"), "resolved": fixture_path("/store"), "rootReal": fixture_path("/store"), "ancestorReal": fixture_path("/store"), "exists": true, "parentExists": true, "name": "a.md" }),
+        json!({ "root": fixture_path("/store"), "resolved": fixture_path("/store/a.md"), "rootReal": Value::Null, "ancestorReal": fixture_path("/store"), "exists": true, "parentExists": true, "name": "a.md" }),
+        json!({ "root": fixture_path("/store"), "resolved": fixture_path("/store/a.md"), "rootReal": fixture_path("/store"), "ancestorReal": fixture_path("/etc"), "exists": true, "parentExists": true, "name": "a.md" }),
     ];
     for answer in fact_cases {
         gateway.world(json!({
             "memory-resolve": answer,
-            "memory-read": { "valid": true, "exists": true, "abs": "/store/a.md", "name": "a.md", "content": "x", "mtime": Value::Null },
+            "memory-read": { "valid": true, "exists": true, "abs": fixture_path("/store/a.md"), "name": "a.md", "content": "x", "mtime": Value::Null },
         }));
         assert_eq!(gateway.get("/api/memory/file?rel=a.md").status, 400);
     }
@@ -1001,7 +1020,7 @@ fn memory_file_paths_are_judged_in_rust_before_the_host_touches_the_disk() {
     gateway.world(json!({
         "memory-resolve": innocent,
         "memory-read": {
-            "valid": true, "exists": true, "abs": "/store/a.md", "name": "a.md",
+            "valid": true, "exists": true, "abs": fixture_path("/store/a.md"), "name": "a.md",
             "content": "# Hi", "mtime": "2026-01-01T00:00:00.000Z",
         },
     }));
@@ -1012,7 +1031,7 @@ fn memory_file_paths_are_judged_in_rust_before_the_host_touches_the_disk() {
         &text,
         &[
             "\"rel\":\"a.md\"",
-            "\"path\":\"/store/a.md\"",
+            &format!("\"path\":{}", json!(fixture_path("/store/a.md"))),
             "\"name\":\"a.md\"",
             "\"content\":\"# Hi\"",
             "\"size\":4",
@@ -1025,10 +1044,10 @@ fn memory_file_paths_are_judged_in_rust_before_the_host_touches_the_disk() {
     // A missing file is a 404 and never reaches the read op.
     gateway.world(json!({
         "memory-resolve": {
-            "root": "/store", "resolved": "/store/a.md", "rootReal": "/store",
-            "ancestorReal": "/store", "exists": false, "parentExists": true, "name": "a.md",
+            "root": fixture_path("/store"), "resolved": fixture_path("/store/a.md"), "rootReal": fixture_path("/store"),
+            "ancestorReal": fixture_path("/store"), "exists": false, "parentExists": true, "name": "a.md",
         },
-        "memory-read": { "valid": true, "exists": false, "abs": "/store/a.md" },
+        "memory-read": { "valid": true, "exists": false, "abs": fixture_path("/store/a.md") },
     }));
     gateway.truncate_calls();
     let missing = gateway.get("/api/memory/file?rel=a.md");
@@ -1041,8 +1060,8 @@ fn memory_file_paths_are_judged_in_rust_before_the_host_touches_the_disk() {
 fn memory_file_writes_and_deletes_validate_first() {
     let gateway = Gateway::start("memory-write");
     let facts_answer = json!({
-        "root": "/store", "resolved": "/store/a.md", "rootReal": "/store",
-        "ancestorReal": "/store", "exists": false, "parentExists": true, "name": "a.md",
+        "root": fixture_path("/store"), "resolved": fixture_path("/store/a.md"), "rootReal": fixture_path("/store"),
+        "ancestorReal": fixture_path("/store"), "exists": false, "parentExists": true, "name": "a.md",
     });
     // Content type / size gates run before any host call.
     gateway.world(json!({ "memory-resolve": facts_answer }));
@@ -1083,8 +1102,8 @@ fn memory_file_writes_and_deletes_validate_first() {
     // A missing parent folder is a 400.
     gateway.world(json!({
         "memory-resolve": {
-            "root": "/store", "resolved": "/store/deep/a.md", "rootReal": "/store",
-            "ancestorReal": "/store", "exists": false, "parentExists": false, "name": "a.md",
+            "root": fixture_path("/store"), "resolved": fixture_path("/store/deep/a.md"), "rootReal": fixture_path("/store"),
+            "ancestorReal": fixture_path("/store"), "exists": false, "parentExists": false, "name": "a.md",
         },
     }));
     gateway.truncate_calls();
@@ -1102,7 +1121,7 @@ fn memory_file_writes_and_deletes_validate_first() {
     // The happy path answers the write DTO.
     gateway.world(json!({
         "memory-resolve": facts_answer,
-        "memory-write": { "valid": true, "parentMissing": false, "abs": "/store/a.md", "mtime": "2026-01-02T00:00:00.000Z" },
+        "memory-write": { "valid": true, "parentMissing": false, "abs": fixture_path("/store/a.md"), "mtime": "2026-01-02T00:00:00.000Z" },
     }));
     gateway.truncate_calls();
     let written = gateway.put(
@@ -1116,7 +1135,7 @@ fn memory_file_writes_and_deletes_validate_first() {
         &[
             "\"ok\":true",
             "\"rel\":\"a.md\"",
-            "\"path\":\"/store/a.md\"",
+            &format!("\"path\":{}", json!(fixture_path("/store/a.md"))),
             "\"size\":4",
             "\"tokens\":",
             "\"mtime\":\"2026-01-02T00:00:00.000Z\"",

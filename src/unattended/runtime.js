@@ -154,7 +154,8 @@ function createUnattendedRuntime({
     persistState,
     getHistory: id => loadHistory(id),
     setTaskState,
-    getPendingQuestion: id => userInputSignalHost.pending(id),
+    getPendingQuestion: id => typeof userInputSignalHost.pendingAsync === 'function'
+      ? userInputSignalHost.pendingAsync(id) : userInputSignalHost.pending(id),
     getAuxQueue,
     deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
     inject: (id, text, options) => (typeof deliverInjection === 'function'

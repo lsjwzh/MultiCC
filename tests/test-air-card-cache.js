@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
 const { mountAir } = require('./helpers/air-host');
 
-function fixture({ mode = 'on', verifyMs = 60_000 } = {}) {
+function fixture({ mode = 'on', verifyMs = 60_000, verifyBudget = 8 } = {}) {
   const now = Date.now();
   const board = { tasks: {
     tsk_1: { id: 'tsk_1', title: '任务一', status: 'active', chatSessionId: 's1',
@@ -22,7 +22,7 @@ function fixture({ mode = 'on', verifyMs = 60_000 } = {}) {
     ['s2', { id: 's2', dirId: 'd1', kind: 'chat', cli: 'codex' }],
   ]);
   // 权限是任务库对卡片的唯一输入：每轮整页批量算一次，结果并进逐卡签名。
-  const state = { builds: 0, batchCalls: 0, accessCalls: 0, access: {}, runState: 'running', merge: { ahead: '0', dirty: false } };
+  const state = { builds: 0, audits: 0, batchCalls: 0, accessCalls: 0, access: {}, runState: 'running', merge: { ahead: '0', dirty: false } };
   const accessOf = t => ({ readOnly: false, status: 'active', ...state.access[t.id] });
   const logs = [];
   const logger = { warn: (event, data) => logs.push({ event, ...data }), info: (event, data) => logs.push({ event, ...data }) };
@@ -36,7 +36,7 @@ function fixture({ mode = 'on', verifyMs = 60_000 } = {}) {
     mergeStateCached: () => state.merge,
     shell: { taskAccess: t => { state.accessCalls += 1; return accessOf(t); },
       taskAccessBatch: tasks => { state.batchCalls += 1; return new Map(tasks.map(t => [t.id, accessOf(t)])); } },
-    cardCache: counted(createAirCardCache({ mode, verifyMs, logger }), state),
+    cardCache: counted(createAirCardCache({ mode, verifyMs, verifyBudget, logger }), state),
   });
   const get = async () => {
     const snapshot = await air.snapshot();
@@ -47,8 +47,11 @@ function fixture({ mode = 'on', verifyMs = 60_000 } = {}) {
 const card = (json, id) => json.tasks.find(task => task.id === id);
 // 数「这一轮真正重建了几张卡」：缓存层自己报的 builds。
 function counted(cache, state) {
+  const tally = result => { state.builds += result.builds; state.audits += result.audits || 0; return result; };
   const resolveAsync = cache.resolveAsync;
-  cache.resolveAsync = async (...args) => { const result = await resolveAsync(...args); state.builds += result.builds; return result; };
+  cache.resolveAsync = async (...args) => tally(await resolveAsync(...args));
+  const snapshotAsync = cache.snapshotAsync;
+  cache.snapshotAsync = async (...args) => tally(await snapshotAsync(...args));
   return cache;
 }
 
@@ -136,11 +139,26 @@ test('任务库的变化只让权限结果真变了的那张卡重建，不再�
   assert.equal(f.state.builds, 3, '结果稳定后继续命中');
 });
 
-test('on 档：同一份缓存最多用 verifyMs，到点现建一次并比对', async () => {
-  const f = fixture({ verifyMs: 0 });
-  await f.get(); await f.get();
-  assert.equal(f.state.builds, 4, 'verifyMs=0 等于每轮都核对');
+// 曾经每条目带 verifyMs 过期，于是一到点整表一起重建（线上 1554 张卡里 1536 张在
+// 重建，缓存等于不存在）。现在签名是唯一的有效性判据，verifyMs 只决定「多久该被
+// 抽查一次」，而抽查受 verifyBudget 封顶，且永远算命中而不是重建。
+test('on 档：到点只是该被抽查，不是失效 —— 抽查算命中且受预算封顶', async () => {
+  const f = fixture({ verifyMs: 0, verifyBudget: 8 });
+  await f.get();
+  assert.equal(f.state.builds, 2, '首轮两张卡都要现建');
+  await f.get();
+  assert.equal(f.state.builds, 2, '到点的卡不算重建');
+  assert.equal(f.state.audits, 2, '两张卡都到点，预算 8 够抽完');
   assert.equal(f.logs.filter(line => line.event === 'air_card_cache_mismatch').length, 0, '签名完整时核对不出差异');
+});
+
+test('on 档：verifyBudget=0 完全关闭抽查，签名不变就一直命中', async () => {
+  const f = fixture({ verifyMs: 0, verifyBudget: 0 });
+  await f.get();
+  assert.equal(f.state.builds, 2);
+  await f.get(); await f.get();
+  assert.equal(f.state.builds, 2, '关掉抽查后不再有任何重建');
+  assert.equal(f.state.audits, 0);
 });
 
 test('shadow 档永远现建；签名没变而内容变了时记下差异（签名漏输入的报警）', async () => {

@@ -154,6 +154,7 @@ pub mod provider_limit_policy;
 pub mod provider_limit_store;
 pub mod quota_bar_view;
 pub mod quota_routes;
+pub mod scheduler_read_model;
 pub mod session_admin;
 pub mod usage_limit_poll;
 pub mod workspace_queues;

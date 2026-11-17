@@ -2,14 +2,22 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { createSessionWorkHost } = require('../src/session-work/host');
 const { createShellWorkspaceHost } = require('../src/task-shell/workspace');
+const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/production-question-host');
 
 function fixture(options = {}) {
   const calls = [];
   let pending = null;
   let pendingWait = false;
   let schedulerState = 'running';
+  let settledClassify = null;
+  let queuedItems = Array.isArray(options.queued) ? [...options.queued] : [];
   let releaseTurnEnded = options.releaseTurnEnded || null;
   const record = { taskState: {}, ...(options.record || {}) };
   const chatState = options.chatState === undefined ? {} : options.chatState;
@@ -17,6 +25,8 @@ function fixture(options = {}) {
     status: async () => ({
       state: schedulerState,
       freezeReason: schedulerState === 'frozen' ? options.freezeReason || null : null,
+      classifyState: settledClassify,
+      queued: queuedItems,
       active: schedulerState === 'idle'
         ? null
         : {
@@ -35,10 +45,19 @@ function fixture(options = {}) {
             : {}),
         },
     }),
-    complete: async (_sessionId, options) => {
-      calls.push(['complete', options]);
+    complete: async (_sessionId, completeOptions) => {
+      calls.push(['complete', completeOptions]);
       schedulerState = 'idle';
+      settledClassify = completeOptions?.classifyState || null;
       return { ok: true };
+    },
+    // resolve({action:'retry'}) is the manual-「重试」 channel: admission of the
+    // retry entry claims the idle slot immediately, like the production owner.
+    resolve: async (_sessionId, resolveOptions) => {
+      calls.push(['resolve', resolveOptions]);
+      schedulerState = 'running';
+      settledClassify = null;
+      return { ok: true, entry: { id: 'entry-retry' } };
     },
     turnEnded: async () => {
       if (releaseTurnEnded) await releaseTurnEnded;
@@ -59,6 +78,7 @@ function fixture(options = {}) {
     tick: async () => { calls.push(['tick']); },
     admitSessionWork: async input => {
       calls.push(['admit', input]);
+      if (options.admitSessionWork) return options.admitSessionWork(input);
       return { ok: true, entry: { id: 'entry-new' } };
     },
     interruptDispatch: async (operationId, input) => {
@@ -66,12 +86,17 @@ function fixture(options = {}) {
       return { ok: true, operation: { id: operationId, status: 'interrupted' } };
     },
   };
-  const host = createSessionWorkHost({
+  const owned = options.ownerStore ? createProductionQuestionHost({ getStore: () => options.ownerStore,
+    getSession: () => chatState, getState: () => ({ ...record.taskState, pendingUserInput: pending }),
+    setState: (_id, patch) => { record.taskState = { ...record.taskState, ...patch }; } }).host : null;
+  const hostDeps = {
     runtime: () => runtime,
     getRecord: () => record,
     getChatSession: () => chatState,
     getTaskState: value => value?.taskState || {},
     pendingUserInput: () => pending,
+    userInputSignalHost: options.userInputSignalHost,
+    moveUserInput: options.moveUserInput,
     getTurnLiveness: () => options.liveness || { state: 'inactive' },
     recordUserInput: () => ({ ok: true }),
     resolveUserInput: (sessionId, requestId) => {
@@ -107,10 +132,12 @@ function fixture(options = {}) {
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
     runnerKillGraceMs: options.runnerKillGraceMs,
     log: { warn: (...args) => calls.push(['warn', ...args]) },
-  });
+  };
+  const host = owned ? createProductionWorkHost(hostDeps, owned) : createSessionWorkHost(hostDeps);
   return {
     calls,
     host,
+    owned,
     forceState,
     setClassifyState(value) { record.taskState.classifyState = value; },
     setCancelledAt(value) { record.taskState.cancelledAt = value; },
@@ -118,6 +145,128 @@ function fixture(options = {}) {
     setPendingWait(value) { pendingWait = value; },
   };
 }
+
+// Admission cases exercise the same Rust owner and SQLite transaction used by
+// production. Initial facts are explicit test inputs, not scheduler callbacks.
+async function nativeAdmissionFixture(t, { classifyState = null, pending = null,
+  state = 'running', record = {}, useOwned = false, ...options } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-host-admit-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's1', initial: {
+    pendingQuestion: pending, activeTurn: null,
+    category: { classifyState, unattended: record.unattended || null },
+  } });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s1 = {
+      sessionId: 's1', state, classifyState,
+      active: state === 'idle' ? null : { entryId: options.activeEntryId || 'entry-1',
+        ...(options.activeTaskId ? { taskId: options.activeTaskId } : {}) },
+      freezeReason: null, awaitingRequestId: null,
+    };
+  });
+  const nativeScheduler = createSessionWorkScheduler({ store });
+  const hostFixture = fixture({ ...options, record, ...(useOwned ? { ownerStore: store } : {}),
+    admitSessionWork: input => nativeScheduler.admit(input) });
+  hostFixture.forceState(state);
+  hostFixture.setClassifyState(classifyState);
+  hostFixture.setPending(pending);
+  return { ...hostFixture, store };
+}
+
+test('first production-style admission backfills and settles the existing question', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-host-first-admit-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  const scheduler = createSessionWorkScheduler({ store });
+  const h = fixture({ ownerStore: store, admitSessionWork: input => scheduler.admit(input) });
+  h.setClassifyState('W');
+  h.setPending({ requestId: 'question', taskId: 'task', turnId: 'turn', resolved: false });
+
+  // Exercise the same host inputs as production: no test-side initialization
+  // of the new Rust store and no caller-supplied initialState.
+  const result = await h.host.admit('s1', 'answer', { userInputRequestId: 'question' });
+  assert.equal(result.ok, true);
+  assert.equal(result.answerConsumed.requestId, 'question');
+  assert.equal(result.entry.payload.taskId, 'task');
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 's1' })).pendingQuestion.resolved, true);
+  assert.equal(h.host.recoveryState('s1').pendingUserInput, null);
+});
+
+test('admission logs the owner and error code without logging the message', async () => {
+  const failure = Object.assign(new Error('private user content'), { code: 'SESSION_WORK_OWNER_UNAVAILABLE' });
+  const h = fixture({ admitSessionWork: async () => { throw failure; } });
+  await assert.rejects(h.host.admit('s1', 'private user content'), error => error === failure);
+  const warning = h.calls.find(call => call[0] === 'warn');
+  assert.deepEqual(warning, ['warn', 'session_work_admission_failed', {
+    sessionId: 's1', code: 'SESSION_WORK_OWNER_UNAVAILABLE', questionOwner: 'legacy',
+  }]);
+});
+
+test('a question changed after initialization is answered using the live question owner', async t => {
+  const h = await nativeAdmissionFixture(t, { state: 'idle', classifyState: 'W', pending: {
+    requestId: 'old-question', taskId: 'old-task', resolved: false,
+  }, chatState: { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'new-task' }, useOwned: true });
+  await h.owned.resolveAsync('s1', 'old-question');
+  await h.owned.activateTurnAsync('s1');
+  assert.equal((await h.host.recordInput({ sessionId: 's1', turnId: 'turn', requestId: 'new-question', question: 'new' })).ok, true);
+  const result = await h.host.admit('s1', 'answer', { userInputRequestId: 'new-question', clientMsgId: 'new-answer' });
+  assert.equal(result.ok, true);
+  assert.equal(result.answerConsumed?.requestId, 'new-question');
+  assert.equal(result.entry.payload.taskId, 'new-task');
+  const state = await h.store.sessionWorkState({ action: 'read', sessionId: 's1' });
+  assert.equal(state.pendingQuestion.requestId, 'new-question');
+  assert.equal(state.pendingQuestion.resolved, true);
+});
+
+test('question transfer awaits the owner and refuses a replaced request', async () => {
+  const calls = [];
+  const h = fixture({ userInputSignalHost: {
+    async pendingAsync(id) { calls.push(['read', id]); return { requestId: 'old', taskId: 't', turnId: 'turn' }; },
+    async moveAsync(source, target, options) {
+      calls.push(['move', source, target, options]);
+      return { ok: false, code: 'request_id_mismatch' };
+    },
+  } });
+  const result = await h.host.moveInput('s1', 's2', { turnId: 'turn', taskId: 'next' });
+  assert.deepEqual(result, { ok: false, code: 'request_id_mismatch' });
+  assert.deepEqual(calls, [['read', 's1'], ['move', 's1', 's2', {
+    turnId: 'turn', taskId: 'next', expectedRequestId: 'old',
+  }]]);
+  assert.equal(h.calls.some(call => call[0] === 'dispatch' || call[0] === 'broadcast'), false);
+});
+
+test('dismissal uses the ordered question owner and does not classify a replaced question', async () => {
+  const calls = [];
+  const h = fixture({ userInputSignalHost: {
+    async pendingAsync(id) { calls.push(['read', id]); return { requestId: 'old', taskId: 'task' }; },
+    async resolveAsync(id, requestId, options) {
+      calls.push(['resolve', id, requestId, options]);
+      return { ok: false, code: 'request_id_mismatch' };
+    },
+  } });
+  h.forceState('idle');
+  assert.deepEqual(await h.host.dismissUserInput('s1', 'old'), { ok: false, code: 'request_id_mismatch' });
+  assert.deepEqual(calls, [['read', 's1'], ['resolve', 's1', 'old', { dismissed: true }]]);
+  assert.equal(h.calls.some(call => call[0] === 'dispatch'), false);
+});
+
+test('restart recovery reads the ordered question owner before submitting a verdict', async () => {
+  const h = fixture({ freezeReason: 'classify_running', userInputSignalHost: {
+    async pendingAsync() { return { requestId: 'owned', taskId: 'task', resolved: false }; },
+  } });
+  h.forceState('frozen');
+  assert.equal((await h.host.settleRecoveredQuestion('s1')).ok, true);
+  const verdict = h.calls.find(call => call[0] === 'dispatch');
+  assert.equal(verdict[1].requestId, 'owned');
+  assert.equal(verdict[1].state, 'W');
+});
 
 test('ZCode admission passes the full session to auth and provider-backed sessions can bypass native auth', async () => {
   let checked = null;
@@ -622,15 +771,15 @@ test('lost-boundary recovery rejects a stale task before mutating the active sch
   assert.equal(h.calls.some(call => call[0] === 'complete'), false);
 });
 
-test('chat admission waits for the closing turn to enter classify assessment', async () => {
-  const h = fixture();
+test('chat admission waits for the closing turn to enter classify assessment', async t => {
+  const h = await nativeAdmissionFixture(t);
   const closing = h.host.turnSucceeded('s1');
   const admitted = h.host.admit('s1', 'new direct message', { clientMsgId: 'client-1' });
-  await Promise.all([closing, admitted]);
+  const [, result] = await Promise.all([closing, admitted]);
   const assessingIndex = h.calls.findIndex(call => call[0] === 'assessing');
   const admitIndex = h.calls.findIndex(call => call[0] === 'admit');
   assert.ok(assessingIndex >= 0 && admitIndex > assessingIndex);
-  assert.equal(h.calls[admitIndex][1].source, 'direct');
+  assert.equal(result.entry.payload.source, 'direct');
 });
 
 test('failed turn closure is serialized before its classify verdict', async () => {
@@ -655,36 +804,32 @@ test('failed turn closure is serialized before its classify verdict', async () =
   assert.equal(h.calls.some(call => call[0] === 'freeze'), false);
 });
 
-test('only classify P stages direct input; every non-P state continues immediately', async () => {
+test('only classify P stages direct input; every non-P state continues immediately', async t => {
   for (const classifyState of ['D', 'W', 'B', 'E', null]) {
-    const h = fixture();
-    h.setClassifyState(classifyState);
-    await h.host.admit('s1', `direct ${classifyState}`, {
+    const h = await nativeAdmissionFixture(t, { classifyState });
+    const result = await h.host.admit('s1', `direct ${classifyState}`, {
       clientMsgId: `client-${classifyState}`,
     });
-    const admission = h.calls.find(call => call[0] === 'admit')[1];
+    const admission = result.entry.payload;
     assert.equal(admission.source, 'direct');
     assert.equal(admission.workKind, 'continuation', `classify ${classifyState}`);
     assert.equal(admission.activeEntryId, 'entry-1', `classify ${classifyState}`);
   }
 
-  const processing = fixture();
-  processing.setClassifyState('P');
-  await processing.host.admit('s1', 'stage during process', { clientMsgId: 'client-p' });
-  const staged = processing.calls.find(call => call[0] === 'admit')[1];
+  const processing = await nativeAdmissionFixture(t, { classifyState: 'P' });
+  const staged = (await processing.host.admit('s1', 'stage during process', { clientMsgId: 'client-p' })).entry.payload;
   assert.equal(staged.source, 'direct');
-  assert.equal(staged.workKind, null);
+  assert.equal(staged.workKind, 'task');
   assert.equal(staged.activeEntryId, null);
 });
 
-test('waiting direct input has the same immediate continuation contract for every chat CLI', async () => {
+test('waiting direct input has the same immediate continuation contract for every chat CLI', async t => {
   for (const cli of ['claude', 'codex', 'opencode']) {
-    const h = fixture({ record: { cli } });
-    h.setClassifyState('W');
-    await h.host.admit('s1', `waiting reply for ${cli}`, {
+    const h = await nativeAdmissionFixture(t, { record: { cli }, classifyState: 'W' });
+    const result = await h.host.admit('s1', `waiting reply for ${cli}`, {
       clientMsgId: `waiting-${cli}`,
     });
-    const admission = h.calls.find(call => call[0] === 'admit')[1];
+    const admission = result.entry.payload;
     assert.equal(admission.source, 'direct');
     assert.equal(admission.workKind, 'continuation', cli);
     assert.equal(admission.activeEntryId, 'entry-1', cli);
@@ -779,95 +924,102 @@ test('a live queue outranks the stale classify verdict left by the previous turn
   assert.equal(h.host.getRunState('s1'), 'succeeded');
 });
 
-test('a released W turn admits its correlated structured answer as a new control entry', async () => {
-  const h = fixture();
-  h.forceState('idle');
-  h.setClassifyState('W');
-  h.setPending({
+test('a released W turn admits its correlated structured answer as a new control entry', async t => {
+  const h = await nativeAdmissionFixture(t, { state: 'idle', classifyState: 'W', pending: {
     requestId: 'usrq-1',
     taskId: 'task-1',
     resolved: false,
-  });
+  } });
 
   const result = await h.host.admit('s1', '继续', {
     userInputRequestId: 'usrq-1',
     clientMsgId: 'client-answer',
   });
   assert.equal(result.ok, true);
-  const admission = h.calls.find(call => call[0] === 'admit')[1];
+  const admission = result.entry.payload;
   assert.equal(admission.workKind, 'answer');
   assert.equal(admission.requestId, 'usrq-1');
   assert.equal(admission.activeEntryId, null);
   assert.equal(admission.options.taskId, 'task-1');
-  assert.deepEqual(
-    h.calls.find(call => call[0] === 'resolve-user-input'),
-    ['resolve-user-input', 's1', 'usrq-1'],
-  );
+  const persisted = (await h.store.sessionWorkState({ action: 'read', sessionId: 's1' })).pendingQuestion;
+  assert.equal(persisted.resolved, true);
+  assert.deepEqual(persisted.resolvedNotification,
+    { type: 'user_input_resolved', requestId: 'usrq-1', taskId: 'task-1' });
+  assert.deepEqual(result.notification, persisted.resolvedNotification);
+  assert.equal(result.answerConsumed.requestId, 'usrq-1');
+  assert.equal(h.calls.some(call => call[0] === 'resolve-user-input'), false);
+  assert.deepEqual(h.calls.find(call => call[0] === 'broadcast' && call[2]?.type === 'user_input_resolved')?.slice(1),
+    ['s1', { type: 'user_input_resolved', requestId: 'usrq-1', taskId: 'task-1' }]);
+  const replay = await h.host.admit('s1', '继续', {
+    userInputRequestId: 'usrq-1', clientMsgId: 'client-answer',
+  });
+  assert.equal(replay.duplicate, true);
+  assert.equal(h.calls.filter(call => call[0] === 'broadcast' && call[2]?.type === 'user_input_resolved').length, 1);
 });
 
-test('a running turn durably consumes its structured answer without ordinary queue semantics', async () => {
-  const h = fixture();
-  h.setClassifyState('P');
-  h.setPending({
+test('a running turn durably consumes its structured answer without ordinary queue semantics', async t => {
+  const h = await nativeAdmissionFixture(t, { classifyState: 'P', pending: {
     requestId: 'usrq-running',
     taskId: 'task-running',
     resolved: false,
-  });
+  } });
 
   const result = await h.host.admit('s1', '选项 A', {
     userInputRequestId: 'usrq-running',
     clientMsgId: 'client-running-answer',
   });
   assert.equal(result.ok, true);
-  const admission = h.calls.find(call => call[0] === 'admit')[1];
+  const admission = result.entry.payload;
   assert.equal(admission.workKind, 'answer');
   assert.equal(admission.requestId, 'usrq-running');
   assert.equal(admission.options.taskId, 'task-running');
-  assert.deepEqual(
-    h.calls.find(call => call[0] === 'resolve-user-input'),
-    ['resolve-user-input', 's1', 'usrq-running'],
-  );
+  const persisted = (await h.store.sessionWorkState({ action: 'read', sessionId: 's1' })).pendingQuestion;
+  assert.equal(persisted.resolved, true);
+  assert.deepEqual(persisted.resolvedNotification,
+    { type: 'user_input_resolved', requestId: 'usrq-running', taskId: 'task-running' });
+  assert.deepEqual(result.notification, persisted.resolvedNotification);
+  assert.equal(result.answerConsumed.requestId, 'usrq-running');
+  assert.equal(h.calls.some(call => call[0] === 'resolve-user-input'), false);
+  assert.deepEqual(h.calls.find(call => call[0] === 'broadcast' && call[2]?.type === 'user_input_resolved')?.slice(1),
+    ['s1', { type: 'user_input_resolved', requestId: 'usrq-running', taskId: 'task-running' }]);
 });
 
-test('unattended input stays in FIFO through processing, wait and fault without consuming a question', async () => {
+test('unattended input stays in FIFO through processing, wait and fault without consuming a question', async t => {
   for (const [classifyState, source] of ['P', 'D', 'W', 'E'].flatMap(state =>
     ['direct', 'task-shell'].map(source => [state, source]))) {
-    const h = fixture({ record: { unattended: { status: 'active' } } });
-    h.setClassifyState(classifyState);
-    h.setPending({ requestId: 'auto-question', resolved: false });
+    const h = await nativeAdmissionFixture(t, { record: { unattended: { status: 'active' } },
+      classifyState, pending: { requestId: 'auto-question', resolved: false } });
     const result = await h.host.admit('s1', '下一项工作', {
       userInputRequestId: 'auto-question', clientMsgId: `queued-${classifyState}`,
       taskSource: source,
       ...(source === 'task-shell' ? { originContinue: true, taskShellControl: { intent: 'answer' } } : {}),
     });
     assert.equal(result.ok, true);
-    const admission = h.calls.find(call => call[0] === 'admit')[1];
+    const admission = result.entry.payload;
     assert.equal(admission.workKind, 'task', `${source}/${classifyState}`);
     assert.equal(admission.requestId, null, classifyState);
     assert.equal(admission.activeEntryId, null, classifyState);
     assert.equal('userInputRequestId' in admission.options, false);
     assert.equal('taskShellControl' in admission.options, false);
     assert.equal(h.calls.some(call => call[0] === 'resolve-user-input'), false);
+    assert.equal((await h.store.sessionWorkState({ action: 'read', sessionId: 's1' })).pendingQuestion.resolved, false);
   }
 });
 
-test('a stale picker correlation degrades to ordinary input instead of blocking send', async () => {
-  const h = fixture();
-  h.forceState('idle');
-  h.setClassifyState('W');
-  h.setPending({
+test('a stale picker correlation degrades to ordinary input instead of blocking send', async t => {
+  const h = await nativeAdmissionFixture(t, { state: 'idle', classifyState: 'W', pending: {
     requestId: 'usrq-current',
     taskId: 'task-current',
     resolved: false,
-  });
+  } });
 
   const result = await h.host.admit('s1', '旧选择仍作为文字发送', {
     userInputRequestId: 'usrq-stale',
     clientMsgId: 'client-stale-answer',
   });
   assert.equal(result.ok, true);
-  const admission = h.calls.find(call => call[0] === 'admit')[1];
-  assert.equal(admission.workKind, null);
+  const admission = result.entry.payload;
+  assert.equal(admission.workKind, 'task');
   assert.equal(admission.requestId, null);
   assert.equal(admission.activeEntryId, null);
   assert.equal('userInputRequestId' in admission.options, false);
@@ -980,6 +1132,111 @@ test('classify W/B/E release the active slot (no freeze); unavailable leaves ass
   const unavail = await unavailable.host.classifyUnavailable('s1', 'task-1', 'aux down');
   assert.equal(unavail.code, 'classification_deferred');
   assert.equal(unavailable.calls.some(call => call[0] === 'freeze'), false);
+});
+
+test('a watchdog-killed turn re-admits one continuation through the manual retry channel', async () => {
+  // Production gap (task-fa4f22a3, 2026-11-18): a server crash killed the
+  // Auto-handoff continuation turn; the watchdog settled the orphaned P entry
+  // as E, but the Auto provider handoff only exists for turns that died WITH
+  // an apiErrorDecision — so the promised 🔇 continuation sat in the history
+  // and never ran. The watchdog settle must re-admit one continuation itself.
+  const h = fixture();
+  await h.host.turnSucceeded('s1');
+  const classification = await h.host.classifyTransition('s1', 'task-1', {
+    state: 'E',
+    cancel: { source: 'process_watchdog', reason: 'process_watchdog', runnerStopped: true },
+  });
+  assert.equal(classification.ok, true);
+  assert.deepEqual(h.calls.find(call => call[0] === 'complete'), [
+    'complete', { expectedTaskId: 'task-1', reason: 'classified_E', classifyState: 'E' },
+  ]);
+  const retries = h.calls.filter(call => call[0] === 'resolve');
+  assert.equal(retries.length, 1);
+  assert.deepEqual(retries[0][1], {
+    action: 'retry',
+    actor: 'process_watchdog',
+    reason: 'dead_runner_auto_retry',
+    idempotencyKey: 'watchdog-retry:entry-1',
+  });
+  assert.equal(h.calls.some(call => call[0] === 'warn'
+    && call[1] === 'session_scheduler_dead_runner_auto_retry'), true);
+});
+
+test('a manual cancel or an ordinary error verdict never triggers a dead-runner retry', async () => {
+  const manual = fixture();
+  await manual.host.turnSucceeded('s1');
+  await manual.host.classifyTransition('s1', 'task-1', {
+    state: 'E',
+    cancel: { source: 'manual_cancel', reason: 'user_cancelled', runnerStopped: true },
+  });
+  assert.equal(manual.calls.some(call => call[0] === 'resolve'), false);
+
+  const ordinary = fixture();
+  await ordinary.host.turnSucceeded('s1');
+  await ordinary.host.classifyTransition('s1', 'task-1', { state: 'E' });
+  assert.equal(ordinary.calls.some(call => call[0] === 'resolve'), false);
+});
+
+test('a dead-runner retry yields to work that was queued while the cancel settled', async () => {
+  // An Auto handoff 🔇 message (or a fresh user message) admitted while the
+  // watchdog cancel was in flight already owns the continuation — retrying
+  // behind it would double the work.
+  const h = fixture({ queued: [{ entryId: 'entry-handoff' }] });
+  await h.host.turnSucceeded('s1');
+  await h.host.classifyTransition('s1', 'task-1', {
+    state: 'E',
+    cancel: { source: 'process_watchdog', reason: 'process_watchdog', runnerStopped: true },
+  });
+  assert.equal(h.calls.some(call => call[0] === 'resolve'), false);
+});
+
+test('dead-runner retries are capped per session and a D verdict resets the streak', async () => {
+  const h = fixture();
+  // Each cycle models one real turn: admitted (running) → ended (assessing) →
+  // the runner's corpse found by the watchdog → settled E.
+  const killCycle = async () => {
+    h.forceState('running');
+    await h.host.turnSucceeded('s1');
+    await h.host.classifyTransition('s1', 'task-1', {
+      state: 'E',
+      cancel: { source: 'process_watchdog', reason: 'process_watchdog', runnerStopped: true },
+    });
+  };
+  await killCycle();
+  await killCycle();
+  assert.equal(h.calls.filter(call => call[0] === 'resolve').length, 2);
+  await killCycle();
+  assert.equal(h.calls.filter(call => call[0] === 'resolve').length, 2,
+    'a crash loop must not spin: the third consecutive dead runner is not retried');
+  assert.equal(h.calls.some(call => call[0] === 'warn'
+    && call[1] === 'session_scheduler_dead_runner_retry_exhausted'), true);
+
+  // A completed (D) turn proves the lane is healthy again: the streak resets.
+  h.forceState('running');
+  await h.host.turnSucceeded('s1');
+  await h.host.classifyTransition('s1', 'task-1', { state: 'D' });
+  await killCycle();
+  assert.equal(h.calls.filter(call => call[0] === 'resolve').length, 3);
+});
+
+test('the persisted watchdog cancel stamp arms the retry only while fresh', async () => {
+  // Fallback attribution: an E settle that arrives without the cancel payload
+  // still retries when the state machine persisted the watchdog's cancelSource
+  // moments ago. cancelSource is never cleared by later turns, so a stale
+  // stamp from an old cancel must NOT retry whatever happens to settle now.
+  const fresh = fixture({
+    record: { taskState: { cancelSource: 'process_watchdog', cancelledAt: Date.now() } },
+  });
+  await fresh.host.turnSucceeded('s1');
+  await fresh.host.classifyTransition('s1', 'task-1', { state: 'E' });
+  assert.equal(fresh.calls.filter(call => call[0] === 'resolve').length, 1);
+
+  const stale = fixture({
+    record: { taskState: { cancelSource: 'process_watchdog', cancelledAt: Date.now() - 120_000 } },
+  });
+  await stale.host.turnSucceeded('s1');
+  await stale.host.classifyTransition('s1', 'task-1', { state: 'E' });
+  assert.equal(stale.calls.some(call => call[0] === 'resolve'), false);
 });
 
 test('queued insert events preserve the scheduler state in queue projections', () => {

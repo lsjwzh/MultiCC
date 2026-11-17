@@ -2,7 +2,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { evaluateAttribution } = require('../src/task-routing/eligibility');
+const { getNative } = require('../src/native/runtime');
+
+// The gate is native/core/src/task_routing.rs. The Node bridge module that used to
+// wrap this call had no production consumer and was deleted; this test calls the
+// owner through the same N-API op, with the same argument default it used.
+const native = getNative();
+const evaluateAttribution = (facts = {}) => JSON.parse(
+  native.taskRoutingRequest('evaluateAttribution', JSON.stringify(facts)));
 
 function facts() {
   return {

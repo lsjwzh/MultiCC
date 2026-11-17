@@ -13,10 +13,7 @@ pub enum LaunchMode {
 
 impl LaunchMode {
     fn externally_supervised(self) -> bool {
-        matches!(
-            self,
-            Self::SourceForeground | Self::Standalone | Self::Desktop
-        )
+        matches!(self, Self::Standalone | Self::Desktop)
     }
 }
 
@@ -158,11 +155,7 @@ mod tests {
 
     #[test]
     fn external_supervisors_are_never_competed_with() {
-        for mode in [
-            LaunchMode::SourceForeground,
-            LaunchMode::Standalone,
-            LaunchMode::Desktop,
-        ] {
+        for mode in [LaunchMode::Standalone, LaunchMode::Desktop] {
             let mut s = Supervisor::new(mode, 3).unwrap();
             assert_eq!(
                 s.observe(Event::OldExited),
@@ -177,6 +170,20 @@ mod tests {
                 State::Failed(Failure::PortOccupied)
             );
         }
+
+        let mut source = Supervisor::new(LaunchMode::SourceForeground, 3).unwrap();
+        assert_eq!(
+            source.observe(Event::OldExited),
+            State::Launch { attempt: 1 }
+        );
+        assert_eq!(
+            source.observe(Event::LaunchStarted),
+            State::WaitingForReady { attempt: 1 }
+        );
+        assert_eq!(
+            source.observe(Event::StartedProcessExited),
+            State::Launch { attempt: 2 }
+        );
     }
 
     #[test]

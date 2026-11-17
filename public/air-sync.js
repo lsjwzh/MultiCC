@@ -2,7 +2,13 @@
   'use strict';
   const number = cursor => Number(String(cursor).split(':').at(-1));
   const generation = cursor => String(cursor).split(':')[0];
-  function create({ request, getInclude = () => [], onChange = () => {}, onStatus = () => {},
+  // onIssue 默认写首页的持久化告警条（#air-sync-issue，仅 air.html 有）；测试与
+  // 其他页面可传自己的回调覆盖。
+  const defaultIssue = issue => {
+    const el = root.document && root.document.getElementById('air-sync-issue');
+    if (el) el.textContent = (issue && issue.message) || '';
+  };
+  function create({ request, getInclude = () => [], onChange = () => {}, onStatus = () => {}, onIssue = defaultIssue,
     socketUrl, Socket = root.WebSocket, random = Math.random,
     schedule = setTimeout, cancel = clearTimeout, isVisible = () => true }) {
     let snapshot = null, cursor = '', inflight = null, socket = null, connecting = false, socketDay = 0;
@@ -76,6 +82,7 @@
             }
             if (result.cursor === cursor && result.taskStats) snapshot.taskStats = result.taskStats;
           }
+          onIssue(result.issue || null);
           failures = 0; onStatus(result.degraded ? 'degraded' : socket?.readyState === 1 ? 'live' : 'connecting');
           if (before !== cursor || beforeStats !== JSON.stringify(snapshot?.taskStats)) changed();
           const missing = getInclude().slice(0, 50).filter(id => !pool.has(id));
@@ -84,6 +91,7 @@
           return current();
         } catch (error) {
           failures++; onStatus('offline');
+          if (!closed && !paused) onIssue(error);
           if (!retryTimer && !closed && !paused) retryTimer = schedule(() => { retryTimer = null; void sync().catch(() => {}); }, Math.min(30_000, 1000 * 2 ** Math.min(failures, 5)) * (0.8 + random() * 0.4));
           throw error;
         } finally {
@@ -112,7 +120,10 @@
             if (!delta(event)) { void sync().catch(() => {}); return; }
             if (before !== cursor) changed();
           }
-          if (event.type === 'air_synced') onStatus(event.degraded ? 'degraded' : 'live');
+          if (event.type === 'air_synced' || event.type === 'air_status') {
+            onIssue(event.issue || null);
+            onStatus(event.degraded ? 'degraded' : 'live');
+          }
         };
         next.onclose = () => { if (socket === next) { socket = null; onStatus('connecting'); retryConnect(); } };
         next.onerror = () => { try { next.close(); } catch (_) {} };

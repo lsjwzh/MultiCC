@@ -1,5 +1,10 @@
 'use strict';
 
+// Test oracle only (was src/workspace/air-read-index.js). Production builds the Air
+// read model through src/workspace/air-index-port.js, i.e. the Rust index; nothing in
+// src/ or server.js imports this file. It stays as the pre-migration Node baseline the
+// Air differential tests compare against.
+
 const { randomUUID, createHash } = require('node:crypto');
 const status = require('../../public/status-presentation');
 

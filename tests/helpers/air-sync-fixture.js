@@ -1,6 +1,6 @@
 'use strict';
 const { createAirSyncRuntime } = require('../../src/workspace/air-sync-runtime');
-const { createAirReadIndex } = require('../../src/workspace/air-read-index');
+const { createAirReadIndex } = require('./legacy-air-read-index');
 const { WebSocketServer } = require('ws');
 
 // 旧 UI 场景仍用完整 fixture 描述数据。通过真实读索引/同步协议提供给新版首页，

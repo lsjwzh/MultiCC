@@ -5,6 +5,7 @@
 
 use axum::body::Body;
 use axum::http::{Method, Response};
+use multicc_core::http_gate::{query_value, QueryValue};
 use multicc_core::js::serde::{js_string, truthy};
 use multicc_core::js::string::js_trim;
 use multicc_core::provider_registry::relay_models_of;
@@ -172,6 +173,12 @@ fn normalize_models(values: impl IntoIterator<Item = String>) -> Vec<String> {
     models
 }
 
+fn should_refresh(app_type: &str, method: &Method, url: &str) -> bool {
+    app_type == "codex"
+        && *method == Method::GET
+        && matches!(query_value(url, "refresh"), QueryValue::Text(value) if value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
 pub async fn handle(route: Route, ctx: &RequestCtx, host: u16) -> Response<Body> {
     if route == Route::Options {
         return super::options(ctx, "GET,HEAD");
@@ -182,10 +189,11 @@ pub async fn handle(route: Route, ctx: &RequestCtx, host: u16) -> Response<Body>
     let Some(id) = super::download::decode_uri_component(raw_id) else {
         return express::error(ctx, 400, "Failed to decode param");
     };
+    let refresh = should_refresh(app_type, &ctx.method, &ctx.original_url);
     let answer = host_port::call(
         host,
         HOST_PATH,
-        &json!({ "op": "catalogFacts", "appType": app_type, "id": id }),
+        &json!({ "op": "catalogFacts", "appType": app_type, "id": id, "refresh": refresh }),
     )
     .await;
     let Ok(facts) = answer else {
@@ -252,6 +260,35 @@ fn source_catalog(facts: &Value, app_type: &str, id: &str, now: i64) -> (u16, Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_is_explicit_and_restricted_to_codex_get() {
+        assert!(should_refresh(
+            "codex",
+            &Method::GET,
+            "/codex-proxy/a/models?refresh=1"
+        ));
+        assert!(should_refresh(
+            "codex",
+            &Method::GET,
+            "/codex-proxy/a/models?refresh=true"
+        ));
+        assert!(!should_refresh(
+            "codex",
+            &Method::GET,
+            "/codex-proxy/a/models"
+        ));
+        assert!(!should_refresh(
+            "codex",
+            &Method::HEAD,
+            "/codex-proxy/a/models?refresh=1"
+        ));
+        assert!(!should_refresh(
+            "claude",
+            &Method::GET,
+            "/claude-proxy/a/remote/models?refresh=1"
+        ));
+    }
 
     #[test]
     fn relay_model_paths_keep_express_matching_and_method_boundaries() {

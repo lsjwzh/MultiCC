@@ -3,6 +3,22 @@ use crate::NativeResult;
 use multicc_core::task_read_model::ReadModel;
 use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
 use napi_derive::napi;
+
+#[napi(object)]
+pub struct AirSummaryIssue {
+    pub code: String,
+    pub message: String,
+}
+
+#[napi]
+pub fn air_summary_issue(code: String, message: String) -> Option<AirSummaryIssue> {
+    multicc_core::air_routes::summary_issue(&code, &message).map(|(code, message)| {
+        AirSummaryIssue {
+            code: code.into(),
+            message: message.into(),
+        }
+    })
+}
 use std::{
     sync::{Arc, Mutex, MutexGuard},
     time::Instant,

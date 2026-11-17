@@ -45,13 +45,24 @@ function baseRecords() {
   };
 }
 
+// 这个替身有两个消费者，契约不同：冻结 oracle（tests/helpers/legacy-air-routes.js）
+// 走退役的 resolveAsync + overlayAsync，现行宿主走一次完成的 snapshotAsync。两边
+// 必须吐出逐字节相同的卡片，否则差分比的是替身自己的差异，而不是实现的差异 ——
+// 所以卡片只在 cardOf 里定义一次。
 function fakeCardCache(scenario) {
   const lifecycle = scenario.lifecycle || { 'dir-1': { ...EMPTY_LIFECYCLE, resident: 2, onDisk: 2, total: 2 } };
   const worktreeCounts = scenario.worktreeCounts || { 'dir-1': 2 };
+  const cardOf = t => ({ id: t.id, title: t.title, sessionId: t.sessionId, runState: null,
+    worktreeChanges: null, capacityReason: null,
+    resource: { id: `ws-${t.id}`, residency: 'retained', lease: 'idle', capacityReason: null } });
+  // snapshotAsync 只收到 key + 签名（真实实现里整行任务不过边界），卡片正文要靠
+  // 同一轮 prepareAsync 已经给出的可见集合来还原。
+  let visible = new Map();
   return {
     mode: 'off',
     async prepareAsync(input) {
       const tasks = Object.values((input.board && input.board.tasks) || {});
+      visible = new Map(tasks.map(task => [task.id, task]));
       return {
         tasks,
         globalSignature: 'air-world-1',
@@ -65,17 +76,17 @@ function fakeCardCache(scenario) {
       return {
         hits: cards.length,
         builds: 0,
-        entries: cards.map(t => ({
-          t,
-          capacityOf: null,
-          card: { id: t.id, title: t.title, sessionId: t.sessionId, runState: null,
-            worktreeChanges: null, capacityReason: null,
-            resource: { id: `ws-${t.id}`, residency: 'retained', lease: 'idle', capacityReason: null } },
-        })),
+        entries: cards.map(t => ({ t, capacityOf: null, card: cardOf(t) })),
       };
     },
     async overlayAsync(resolved) {
       return resolved.entries.map(entry => entry.card);
+    },
+    // 脚本世界里卡片是写死的，所以不需要底稿回填：按 items 的顺序吐卡，与
+    // resolveAsync + overlayAsync 的组合完全一致。
+    async snapshotAsync(command) {
+      const cards = (command.items || []).map(item => cardOf(visible.get(item.key)));
+      return { cards, hits: cards.length, builds: 0 };
     },
   };
 }

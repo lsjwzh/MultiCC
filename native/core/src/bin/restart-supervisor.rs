@@ -334,7 +334,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         return Err("old instance did not exit before deadline".into());
     }
     state.observe(Event::OldExited);
-    let ready_ms = if mode == LaunchMode::Background
+    let ready_ms = if matches!(mode, LaunchMode::Background | LaunchMode::SourceForeground)
         && config.source_launcher.is_some()
         && config.ready_timeout_ms == ready_timeout()
     {

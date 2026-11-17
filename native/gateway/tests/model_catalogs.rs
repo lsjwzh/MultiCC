@@ -424,6 +424,24 @@ fn codex_legacy_wait_refreshes_the_global_account_once() {
 }
 
 #[test]
+fn codex_explicit_refresh_reaches_the_official_account_in_both_client_paths() {
+    let gateway = Gateway::start("codex-explicit-refresh", base_script());
+    assert_eq!(
+        gateway
+            .get("/api/codex/models?providerId=codex-official&refresh=1")
+            .status,
+        200
+    );
+    assert_eq!(gateway.get("/api/codex/models?refresh=1").status, 200);
+    let calls = gateway.host_calls("model-refresh.jsonl");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["refresh"], json!(true));
+    assert_eq!(calls[0]["wait"], json!(false));
+    assert_eq!(calls[1]["refresh"], json!(true));
+    assert_eq!(calls[1]["wait"], json!(true));
+}
+
+#[test]
 fn codex_rejects_unknown_and_non_codex_providers() {
     let gateway = Gateway::start("codex-invalid", base_script());
     let missing = gateway.get("/api/codex/models?providerId=ghost");

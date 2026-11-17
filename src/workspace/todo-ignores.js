@@ -107,7 +107,10 @@ function createAirTodoIgnoreRuntime(rawDeps) {
         kind: IGNORE_KINDS.has(value.kind) ? value.kind : null,
         occurredAt: Number(value.occurredAt) > 0 ? Number(value.occurredAt) : 0,
       };
-    } catch (_) { return { kind: null, occurredAt: 0 }; }
+    } catch (error) {
+      if (error?.code === 'SESSION_WORK_OWNER_UNAVAILABLE') throw error;
+      return { kind: null, occurredAt: 0 };
+    }
   }
 
   // 任务表快照：taskId → { updatedAt, task, problem }。读不到返回 null —— 那时
@@ -149,11 +152,23 @@ function createAirTodoIgnoreRuntime(rawDeps) {
     return true;
   }
 
+  // 剪枝要判「这一次问题是哪一类、什么时候发生」，而那要问会话状态的 owner。
+  // owner 不可读时有两种正确行为，取决于调用方是读还是写：
+  //   读（/api/air 每轮都会走到）—— 不剪枝，原样返回用户写下的选择。判不出来
+  //     不等于判成「失效」，而整轮快照更不该因为这份辅助清单作废：它和卡片正文
+  //     无关，却排在 1500+ 张卡之后，抛出去就是把整轮计算全扔掉再 5 秒重试一次。
+  //     这与 pins/todos 的 knownIds() 完全同一条原则（读不到就不剪枝）。
+  //   写（toggle）—— fail-closed。写盘要以判准为前提，判不准就别落盘。
   /** 当前有效的忽略（读取时剪枝，不写盘：GET 不该有副作用）。 */
-  function effective(views = taskViews()) {
+  function effective(views = taskViews(), { strict = false } = {}) {
     // 任务表读不到时不剪枝：一次读失败不该删掉用户的选择。
     if (!views) return load();
-    return load().filter(entry => stillValid(entry, views.get(entry.taskId)));
+    try {
+      return load().filter(entry => stillValid(entry, views.get(entry.taskId)));
+    } catch (error) {
+      if (strict || error?.code !== 'SESSION_WORK_OWNER_UNAVAILABLE') throw error;
+      return load();
+    }
   }
 
   function read() { return effective().map(entry => entry.taskId); }
@@ -180,7 +195,7 @@ function createAirTodoIgnoreRuntime(rawDeps) {
       throw Object.assign(new Error('任务不存在'), { status: 404, code: 'task_not_found' });
     }
     const view = views.get(id);
-    const current = effective(views);
+    const current = effective(views, { strict: true });
     const previous = current.find(entry => entry.taskId === id);
     let next, ignored, kind;
     if (previous) {

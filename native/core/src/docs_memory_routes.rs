@@ -79,7 +79,23 @@ pub fn clean_text(value: Option<&Value>, max: usize) -> String {
 /// `path.isAbsolute` for the platform the child runs on (`path` follows
 /// `process.platform`, so the kernel must too).
 pub fn is_absolute(value: &str) -> bool {
-    std::path::Path::new(value).is_absolute()
+    if cfg!(windows) {
+        is_windows_absolute(value)
+    } else {
+        std::path::Path::new(value).is_absolute()
+    }
+}
+
+// Node's win32 path.isAbsolute also accepts rooted paths without a drive,
+// whereas Rust's Windows Path::is_absolute requires both root and prefix.
+fn is_windows_absolute(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let separator = |byte| matches!(byte, b'/' | b'\\');
+    bytes.first().copied().is_some_and(separator)
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && separator(bytes[2]))
 }
 
 /// `path.sep`.

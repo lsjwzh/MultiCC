@@ -199,7 +199,7 @@ do_start() {
   fi
   echo "Starting MultiCC..."
   cd "$SCRIPT_DIR"
-  nohup "$gateway_bin" serve --cwd "$SCRIPT_DIR" --node "$NODE" server.js >> "$OUT_LOG" 2>> "$ERR_LOG" &
+  MULTICC_SOURCE_ROOT="$SCRIPT_DIR" nohup "$gateway_bin" serve --cwd "$SCRIPT_DIR" --node "$NODE" server.js >> "$OUT_LOG" 2>> "$ERR_LOG" &
   local pid=$!
   echo $pid > "$PID_FILE"
   sleep 1
@@ -692,6 +692,7 @@ set_launchd_program() {
   fi
   args_json="$("$NODE" -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' -- \
     "$gateway_bin" serve --cwd "$SCRIPT_DIR" --node "$NODE" "$SCRIPT_DIR/server.js")" || return 1
+  plutil -replace EnvironmentVariables.MULTICC_SOURCE_ROOT -string "$SCRIPT_DIR" "$PLIST" || return 1
   plutil -replace ProgramArguments -json "$args_json" "$PLIST"
 }
 

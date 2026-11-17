@@ -7,7 +7,7 @@ const { createClaudeAdapter } = require('../../src/cli-adapters/claude');
 // Drive the real host through admission, context composition, and adapter argv.
 // Stop at buildInvocation, before any provider attempt or process can start.
 module.exports = async function prepareTurn({ record, cwd, history = [], connected = false, text = 'hello',
-  stopAtInvocation = true, hostDeps = {} }) {
+  stopAtInvocation = true, hostDeps = {}, turnOptions = {} }) {
   const noop = () => {};
   const ok = () => ({ ok: true });
   let prepared;
@@ -69,7 +69,7 @@ module.exports = async function prepareTurn({ record, cwd, history = [], connect
     } }),
     ...hostDeps,
   });
-  await engine.runChatTurn(record.id, text, { taskId: 'sdk-task' });
+  await engine.runChatTurn(record.id, text, { taskId: 'sdk-task', ...turnOptions });
   assert.ok(prepared, `host did not reach adapter invocation: ${errors.join('; ')}`);
   return prepared;
 };

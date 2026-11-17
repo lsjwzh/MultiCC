@@ -77,8 +77,7 @@ function recentTasksFor(record) {
   return recent;
 }
 
-function routingStateFor(record) {
-  const pendingInput = record?.taskState?.pendingUserInput;
+function routingStateFor(record, pendingInput = record?.taskState?.pendingUserInput) {
   if (pendingInput && pendingInput.resolved !== true) return 'waiting_user';
   const state = String(record?.taskState?.classifyState || '').trim().toUpperCase();
   return {
@@ -96,7 +95,7 @@ function routingStateFor(record) {
 // verbatim from server.js; the host injects the session registry, the live chat
 // session map, and normalizeEffort so targeting/prompt stay free of globals.
 
-function createDispatchTargeting({ records, chatSessions, normalizeEffort, isTargetBusy, boundTaskTitleFor } = {}) {
+function createDispatchTargeting({ records, chatSessions, normalizeEffort, isTargetBusy, boundTaskTitleFor, pendingUserInput } = {}) {
   if (!records || typeof records.get !== 'function' || typeof records.values !== 'function') {
     throw new TypeError('[dispatch-targeting] records must be a map-like session registry');
   }
@@ -167,7 +166,7 @@ function dispatchableSessionsFor(sessionId) {
         target.load = busy ? 'running' : 'available';
         // Host-owned workflow state is separate from physical process load.
         // Expose only the bounded enum; never leak the pending question/options.
-        target.routingState = routingStateFor(s);
+        target.routingState = pendingUserInput ? routingStateFor(s, pendingUserInput(s.id) ?? null) : routingStateFor(s);
       }
       return target;
     });

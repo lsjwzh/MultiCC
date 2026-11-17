@@ -1579,6 +1579,7 @@ test('stream events report output the bubble never shows to the speed meter', ()
     noteBlock: kind => seen.push(['block', kind]),
     noteChunk: text => seen.push(['chunk', text]),
     noteUsage: tokens => seen.push(['usage', tokens]),
+    noteOutputBoundary: () => seen.push(['boundary']),
   };
   const fixture = controllerFixture({ tokenRate });
   const generation = fixture.controller.beginGeneration();
@@ -1590,9 +1591,10 @@ test('stream events report output the bubble never shows to the speed meter', ()
   stream({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 't1', name: 'Bash' } });
   stream({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"c' } });
   stream({ type: 'message_delta', usage: { output_tokens: 42 } });
+  stream({ type: 'message_stop' });
   assert.deepEqual(seen, [
     ['request'], ['block', 'thinking'], ['chunk', 'hmm'], ['block', null],
-    ['block', 'output'], ['chunk', '{"c'], ['usage', 42],
+    ['block', 'output'], ['chunk', '{"c'], ['usage', 42], ['boundary'],
   ]);
   assert.equal(fixture.state.currentTextContent, '', 'thinking stays out of the reply text');
 
@@ -1604,6 +1606,33 @@ test('stream events report output the bubble never shows to the speed meter', ()
     type: 'tool', toolId: 'c1', tool: { name: 'shell', arguments: '{"cmd"' },
   } }, generation);
   assert.deepEqual(seen, [['chunk', 'why'], ['chunk', '{"cmd"']]);
+  seen.length = 0;
+  fixture.controller.handleEvent({ type: 'user', message: { content: [
+    { type: 'tool_result', tool_use_id: 'c1', content: 'ok' },
+  ] } }, generation);
+  assert.deepEqual(seen, [['boundary']], 'tool completion closes the previous output span');
+});
+
+test('Codex tool execution is excluded from the observed output average', () => {
+  const meterApi = require('../public/chat-token-rate');
+  let now = 1_000_000;
+  const meter = meterApi.createTokenRateMeter({ now: () => now });
+  const fixture = controllerFixture({ tokenRate: meter });
+  fixture.state.currentCli = 'codex';
+  const generation = fixture.controller.beginGeneration();
+  const send = event => fixture.controller.handleEvent(event, generation);
+  meter.begin(0);
+  send({ type: 'part_delta', delta: { type: 'reasoning', text: 'abcd'.repeat(5) } });
+  now += 1000;
+  send({ type: 'part_delta', delta: { type: 'reasoning', text: 'abcd'.repeat(5) } });
+  send({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'shell' }] } });
+  now += 120_000;
+  send({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'done' }] } });
+  send({ type: 'part_delta', delta: { type: 'reasoning', text: 'abcd'.repeat(5) } });
+  now += 1000;
+  send({ type: 'part_delta', delta: { type: 'reasoning', text: 'abcd'.repeat(5) } });
+  assert.equal(meter.snapshot().outputMs, 2000);
+  assert.equal(meter.snapshot().averageRate, 10);
 });
 
 test('Codex still consumes proxy text deltas for token-level rendering', () => {

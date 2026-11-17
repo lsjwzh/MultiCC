@@ -23,10 +23,10 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createOutbox, admitOutboxItem } = require('../src/outbox');
 const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
-const { createSessionWorkHost } = require('../src/session-work/host');
+const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/production-question-host');
 const { createUnattendedHost } = require('../src/unattended/host');
 const nativeKernel = require('../src/unattended/kernel');
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
@@ -58,16 +58,16 @@ async function until(check, label, timeoutMs = 2000) {
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-unattended-order-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let clock = 1_000;
   // Fake clock for the supervisor's durable timers; the scheduler's own
   // timestamps use the same `clock`.
   const timers = new Map();
   let timerSeq = 0;
-  const store = createOrchestrationStore({
-    file: path.join(dir, 'orchestration.json'),
+  const store = createOrchestrationSqliteStore({
+    file: path.join(dir, 'orchestration.sqlite'),
     now: () => clock,
   });
+  t.after(async () => { try { await store.close({ exportRollback: false }); } finally { fs.rmSync(dir, { recursive: true, force: true }); } });
   const outbox = createOutbox({
     store,
     now: () => clock,
@@ -83,17 +83,19 @@ function fixture(t) {
     cli: 'qoder', isStreaming: false, currentAssistantText: '',
     currentTask: { goal: 'ship it', phase: 'planning' }, _currentTaskId: null,
   };
-  let pending = null;
+  const input = createProductionQuestionHost({ getStore: () => store, getSession: () => chatState,
+    getRecord: () => record, getState: () => record.taskState,
+    setState: (_id, patch) => Object.assign(record.taskState, patch), now: () => clock }).host;
   const scheduler = createSessionWorkScheduler({
     store,
     now: () => clock,
     getClassifyState: () => record.taskState.classifyState,
-    getPendingUserInput: () => pending,
+    getPendingUserInput: id => input.pending(id),
     getUnattendedState: () => record.unattended,
   });
 
   let machine = null;
-  const sessionWorkHost = createSessionWorkHost({
+  const sessionWorkHost = createProductionWorkHost({
     runtime: () => ({
       sessionScheduler: scheduler,
       hasPending: () => false,
@@ -103,10 +105,7 @@ function fixture(t) {
     getRecord: () => record,
     getChatSession: () => chatState,
     getTaskState: value => value?.taskState || record.taskState,
-    pendingUserInput: () => pending,
     getTurnLiveness: () => ({ state: 'inactive' }),
-    recordUserInput: () => ({ ok: true }),
-    resolveUserInput: () => { pending = null; return { ok: true }; },
     broadcast: () => {},
     setTaskState: (id, patch) => { Object.assign(record.taskState, patch || {}); },
     onTaskBoardQueueEvent() {},
@@ -125,7 +124,7 @@ function fixture(t) {
     chatStream: { isAlive: () => false, status: () => ({ busy: false }), cancel() {} },
     cancelPreparation() {},
     log: { warn() {}, log() {}, info() {} },
-  });
+  }, input);
 
   // The REAL native kernel, recorded only. These tests exercise scheduler
   // ordering; the policy bytes are Rust and are exercised verbatim.
@@ -162,7 +161,7 @@ function fixture(t) {
       { role: 'user', content: 'ship it' },
       { role: 'assistant', content: 'working' },
     ],
-    getPendingQuestion: () => pending,
+    getPendingQuestion: id => input.pendingAsync(id),
     getAuxQueue: () => ({
       enqueue: async request => {
         calls.enqueue += 1;
@@ -268,9 +267,12 @@ function fixture(t) {
     assert.equal((await outbox.ack(item.id, item.leaseToken)).ok, true);
     assert.equal((await scheduler.started(item)).ok, true);
     record.taskState.classifyState = 'P';
+    await input.beginTurnAsync(SESSION, { originContinue: true });
   }
 
   async function activeTurn(text) {
+    await input.pendingAsync(SESSION);
+    await input.refreshAdmissionFactsAsync(SESSION);
     const admitted = await scheduler.admit({ sessionId: SESSION, text, idempotencyKey: text });
     const item = await claimOne();
     assert.ok(item, `active turn ${text} claimable`);
@@ -291,7 +293,11 @@ function fixture(t) {
     claimOne,
     startClaim,
     activeTurn,
-    setPending(value) { pending = value; },
+    async setPending(value) {
+      const current = await store.sessionWorkState({ action: 'read', sessionId: SESSION });
+      await store.sessionWorkState({ action: 'patch', sessionId: SESSION,
+        patch: { expectedVersion: current.version, pendingQuestion: value } });
+    },
     setClassifyState(value) { record.taskState.classifyState = value; },
     now: () => clock,
     advance(ms = 1) { clock += ms; },
@@ -306,7 +312,8 @@ function fixture(t) {
       }
       return fired;
     },
-    arm: () => unattended.start(SESSION, { goal: 'ship it', maxDurationMinutes: 90, evaluateNow: false }),
+    arm: async () => { await input.pendingAsync(SESSION); const result = await unattended.start(SESSION,
+      { goal: 'ship it', maxDurationMinutes: 90, evaluateNow: false }); await input.refreshAdmissionFactsAsync(SESSION); return result; },
   };
 }
 
@@ -320,7 +327,7 @@ test('(a) W with a pending question: the auto-answer is selected before the stag
   await h.arm();
 
   await h.activeTurn('ask the user');
-  h.setPending({ requestId: 'q1', resolved: false, createdAt: 1_002 });
+  await h.setPending({ requestId: 'q1', resolved: false, createdAt: 1_002 });
   const typed = await h.sessionWorkHost.admit(SESSION, 'typed queued work', {
     clientMsgId: 'typed', taskSource: 'task-shell', originContinue: true,
     taskShellReceiptId: 'typed', userInputRequestId: 'q1',
@@ -358,7 +365,7 @@ test('(a) W with a pending question: the auto-answer is selected before the stag
 
   // The answer's turn finishes D → the FIFO resumes in admission order.
   await h.startClaim(answer);
-  h.setPending(null);
+  await h.setPending(null);
   h.setClassifyState('D');
   await h.scheduler.complete(SESSION, { classifyState: 'D' });
 
@@ -386,7 +393,7 @@ test('a supervisor answer crosses the durable task shell and is selectable while
   const task = shell.runtime.adopt(shell.a.id, 'a');
   const pending = { taskId: task.id, requestId: 'q-shell', turnId: 'turn-shell', resolved: false };
   shell.statuses.set('a', { busy: false, turnId: pending.turnId, pending });
-  h.setPending(pending);
+  await h.setPending(pending);
   h.setClassifyState('W');
   await h.scheduler.complete(SESSION, { classifyState: 'W', awaitingRequestId: pending.requestId });
   const sent = await shell.runtime.send(shell.a.id, {
@@ -503,6 +510,101 @@ test('(c) D settle with a staged backlog defers; the backlog drains, then its ow
   assert.equal(h.calls.decide, 1, 'the last backlog settle makes the verdict');
   assert.equal(h.calls.enqueue, 1);
   assert.deepEqual(pushes, ['classic'], 'the follow-up settle produced its own outcome');
+});
+
+// Regression: a settle yielded to a FIFO entry that had already run but was never
+// dequeued. Clearing that leftover starts no turn and so produces no D settle;
+// without a recheck the active supervisor sat idle until its deadline.
+async function deferredSettleWithBacklog(h, text = 'A finished') {
+  await h.activeTurn('finish A');
+  const backlog = await h.scheduler.admit({ sessionId: SESSION, text: 'leftover', source: 'operation', idempotencyKey: 'leftover' });
+  assert.equal(backlog.queued, true);
+  h.setClassifyState('D');
+  await h.scheduler.complete(SESSION, { classifyState: 'D' });
+  const deferred = await h.unattended.onTurnEnd(SESSION, { kind: 'settle', assistantText: text, settle: 'D' });
+  assert.deepEqual(deferred, { ok: false, code: 'backlog_pending' });
+  assert.equal(h.calls.enqueue, 0);
+  return backlog;
+}
+
+async function tick(h, ms) {
+  h.advance(ms);
+  h.fireTimers();
+  await flush();
+}
+
+test('(d) a deferred settle is re-evaluated once the leftover backlog disappears without a turn', async t => {
+  const h = fixture(t);
+  await h.arm();
+  const backlog = await deferredSettleWithBacklog(h);
+  assert.equal(h.unattended.stats().backlogRechecks, 1, 'the deferral armed one recheck');
+
+  // The leftover is cleared without ever running a turn: no D settle will follow.
+  assert.equal((await h.scheduler.cancelQueued(SESSION, backlog.entry.id, { actor: 'test', reason: 'leftover' })).ok, true);
+  await tick(h, 1_000);
+  assert.equal(h.calls.enqueue, 0, 'not before the kernel delay');
+
+  await tick(h, 15_000);
+  await until(() => h.calls.enqueue === 1, 'the recheck verdict');
+  assert.equal(h.calls.decide, 1);
+  assert.equal(h.unattended.get(SESSION).rounds, 1, 'the dropped settle finally bought its round');
+  await until(async () => (await h.outbox.list({ sessionId: SESSION }))
+    .some(item => String(item.payload?.message || '').includes(TAG)), 'the continuation');
+  assert.equal(h.unattended.stats().backlogRechecks, 0);
+});
+
+test('(e) a backlog that is still queued keeps the recheck alive; a newer settle ends it', async t => {
+  const h = fixture(t);
+  await h.arm();
+  const backlog = await deferredSettleWithBacklog(h);
+
+  await tick(h, 15_000);
+  assert.equal(h.calls.enqueue, 0, 'the real backlog still owns the next verdict');
+  assert.equal(h.unattended.stats().backlogRechecks, 1, 'the recheck re-armed itself');
+
+  // The backlog runs and its own D settle evaluates, exactly as before.
+  const next = await h.claimOne();
+  assert.equal(next.id, backlog.entry.id);
+  await h.startClaim(next);
+  h.setClassifyState('D');
+  await h.scheduler.complete(SESSION, { classifyState: 'D' });
+  await h.unattended.onTurnEnd(SESSION, { kind: 'settle', assistantText: 'B finished', settle: 'D' });
+  await until(() => h.calls.enqueue === 1, 'the backlog settle verdict');
+
+  // The stale recheck must not buy a second verdict for the earlier settle.
+  await tick(h, 15_000);
+  await tick(h, 15_000);
+  assert.equal(h.calls.enqueue, 1);
+  assert.equal(h.unattended.get(SESSION).rounds, 1);
+  assert.equal(h.unattended.stats().backlogRechecks, 0);
+});
+
+test('(f) the recheck gives up after the kernel attempt cap and never evaluates a persistent backlog', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await deferredSettleWithBacklog(h);
+  assert.equal(h.unattended.stats().backlogRechecks, 1, 'the deferral armed a recheck to exhaust');
+  let ticks = 0;
+  while (h.unattended.stats().backlogRechecks > 0 && ticks < 125) {
+    await tick(h, 15_000);
+    ticks += 1;
+  }
+  assert.equal(ticks, 120, 'one tick per attempt up to the kernel cap (recheckMaxAttempts)');
+  assert.equal(h.unattended.stats().backlogRechecks, 0, 'bounded by recheckMaxAttempts');
+  assert.equal(h.calls.enqueue, 0);
+  assert.equal(h.unattended.get(SESSION).status, 'active');
+});
+
+test('(g) stopping the supervisor cancels a pending backlog recheck', async t => {
+  const h = fixture(t);
+  await h.arm();
+  const backlog = await deferredSettleWithBacklog(h);
+  assert.equal(h.unattended.stats().backlogRechecks, 1);
+  assert.equal(h.unattended.stop(SESSION).ok, true);
+  assert.equal(h.unattended.stats().backlogRechecks, 0);
+  await h.scheduler.cancelQueued(SESSION, backlog.entry.id, { actor: 'test', reason: 'leftover' });
+  await tick(h, 60_000);
+  assert.equal(h.calls.enqueue, 0, 'a stopped supervisor never rechecks');
 });
 
 test('ordinary unattended user inputs drain in FIFO before the next automatic instruction', async t => {
@@ -832,7 +934,7 @@ for (const letter of ['W', 'E']) {
     const first = await h.scheduler.admit({ sessionId: SESSION, text: '第一条', idempotencyKey: 'first' });
     const second = await h.scheduler.admit({ sessionId: SESSION, text: '第二条', source: 'operation', idempotencyKey: 'second' });
     assert.equal((await h.scheduler.reorderQueued(SESSION, second.entry.id, { toIndex: 0 })).ok, true);
-    if (letter === 'W') h.setPending({ requestId: 'q1', createdAt: 1002 });
+    if (letter === 'W') await h.setPending({ requestId: 'q1', createdAt: 1002 });
     h.setClassifyState(letter);
     await h.scheduler.complete(SESSION, { classifyState: letter, awaitingRequestId: letter === 'W' ? 'q1' : null });
     assert.equal(await h.claimOne(), null, '普通接续和 FIFO 均不能越过等待/异常');
@@ -861,7 +963,7 @@ for (const letter of ['W', 'E']) {
     await h.activeTurn('正在执行');
     const fifo = await h.scheduler.admit({ sessionId: SESSION, text: '人工补充要求', source: 'operation' });
     h.unattended.stop(SESSION);
-    if (letter === 'W') h.setPending({ requestId: 'q1', createdAt: 1002 });
+    if (letter === 'W') await h.setPending({ requestId: 'q1', createdAt: 1002 });
     h.setClassifyState(letter);
     await h.scheduler.complete(SESSION, { classifyState: letter, awaitingRequestId: letter === 'W' ? 'q1' : null });
     const resumed = await h.unattended.resume(SESSION);

@@ -146,6 +146,10 @@ function createOrchestrationRuntime({
   recoverDispatchResult = async () => null,
   replayRecoveredDispatchEffects = async () => {},
   getSessionRecoveryState = () => null,
+  getSessionRecoveryFacts = getSessionRecoveryState,
+  getSessionRecoveryStateAsync = getSessionRecoveryState,
+  ensureSessionWorkState = null,
+  rustQuestionOwner = false,
   beforeFirstTick = async () => {},
   onSchedulerEvent = () => {},
   now = Date.now,
@@ -217,12 +221,14 @@ function createOrchestrationRuntime({
   const sessionScheduler = createSessionWorkScheduler({
     store,
     now,
+    rustQuestionOwner,
+    ensureSessionWorkState,
     onEvent: onSchedulerEvent,
-    getClassifyState: sessionId => getSessionRecoveryState(sessionId)?.classifyState || null,
+    getClassifyState: sessionId => getSessionRecoveryFacts(sessionId)?.classifyState || null,
     getPendingUserInput: sessionId => getSessionRecoveryState(sessionId)?.pendingUserInput || null,
     getTurnId: sessionId => getSessionRecoveryState(sessionId)?.turnId || null,
-    getUnattendedState: sessionId => getSessionRecoveryState(sessionId)?.unattended || null,
-    getRunActive: sessionId => getSessionRecoveryState(sessionId)?.runActive ?? null,
+    getUnattendedState: sessionId => getSessionRecoveryFacts(sessionId)?.unattended || null,
+    getRunActive: sessionId => getSessionRecoveryFacts(sessionId)?.runActive ?? null,
     log,
   });
   const pendingBySession = new Map();
@@ -1016,7 +1022,7 @@ function createOrchestrationRuntime({
         }
         if (!probe || probe.known !== true || probe.handedOff !== false) {
           const acknowledged = await acknowledgeDelivery(item);
-          const recovered = getSessionRecoveryState(item.sessionId) || {};
+          const recovered = await getSessionRecoveryStateAsync(item.sessionId) || {};
           await sessionScheduler.settlePersistedDelivery(item, recovered);
           return acknowledged;
         }
@@ -1031,7 +1037,7 @@ function createOrchestrationRuntime({
       };
       // A failed preparation may change unattended to needs_human before it
       // returns. Preserve who owned this attempt before that transition.
-      const unattendedStatusAtStart = getSessionRecoveryState(item.sessionId)?.unattended?.status ?? null;
+      const unattendedStatusAtStart = (await getSessionRecoveryStateAsync(item.sessionId))?.unattended?.status ?? null;
       deliveryGuard = await Promise.resolve(beforeDeliver(descriptor));
       // Wall clock, not the injected `now`: the probe timestamp is stamped by
       // Date.now() in the turn engine, and the two must be comparable here.
@@ -1045,7 +1051,7 @@ function createOrchestrationRuntime({
         // Delivery is transport state, never FIFO/classify state. Settle the
         // transport lease first (retry budget), then release the claim so the
         // 'claim_released' broadcast carries the post-rollback FIFO snapshot.
-        const recovered = getSessionRecoveryState(item.sessionId) || {};
+        const recovered = await getSessionRecoveryStateAsync(item.sessionId) || {};
         const rejection = await rejectedDeliveryRetry(item, recovered, deliveryStartedAt, unattendedStatusAtStart);
         if (!rejection.retryable) {
           // The supervisor's fault retry is the one driver from here; a durable
@@ -1608,9 +1614,11 @@ function createOrchestrationRuntime({
     await outbox.recoverExpired();
     await refreshPending();
     await operations.interruptActiveTasks();
-    // recover() reads only stateForSession — the persisted classify/queue state.
-    // It never consulted isBusy/hasPendingWait, so they are not passed.
-    await sessionScheduler.recover({ stateForSession: getSessionRecoveryState });
+    // recover() reads only persisted classify/queue facts — never
+    // isBusy/hasPendingWait. The flat facts shape carries the session type the
+    // Rust recovery owner requires; pendingUserInput correlation arrives via
+    // the capture's pendingQuestion field only when the public state carries it.
+    await sessionScheduler.recover({ stateForSession: getSessionRecoveryFacts });
     await beforeFirstTick({ sessionScheduler, operations, outbox });
     await reconcileDispatchesOnStartup();
     await reconcileDetached();

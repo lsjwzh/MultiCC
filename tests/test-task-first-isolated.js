@@ -11,6 +11,11 @@ const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-f
 const data = path.join(root, 'data'), home = path.join(root, 'home'), project = path.join(root, 'project');
 for (const dir of [data, home, project]) fs.mkdirSync(dir);
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+// The host uses an isolated HOME, so the CI runner's global Git configuration
+// is intentionally invisible. Give this fixture its own normal Git identity.
+const gitConfig = path.join(home, '.gitconfig');
+git(home, 'config', '--file', gitConfig, 'user.name', commitPolicy.name);
+git(home, 'config', '--file', gitConfig, 'user.email', commitPolicy.email);
 git(project, 'init', '-b', 'main'); fs.writeFileSync(path.join(project, 'README.md'), 'isolated task project');
 git(project, 'add', '.'); git(project, '-c', `user.name=${commitPolicy.name}`, '-c', `user.email=${commitPolicy.email}`,
   'commit', '-m', 'test(fixture): initialize isolated task project');

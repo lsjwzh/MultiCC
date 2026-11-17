@@ -86,6 +86,11 @@ function createUnattendedHost(options = {}) {
   // unref'd). The kernel decides the delay and persists `retryAt`; this host
   // only runs the clock and injects the recovery instruction when it fires.
   const retryTimers = new Map();
+  // At most one backlog recheck per active session. A verdict that yields to the
+  // FIFO assumes the backlog produces its own D settle; a leftover entry that
+  // was already executed never does, so the kernel names a delay and an attempt
+  // cap and this host re-checks the facts when the clock fires.
+  const backlogRechecks = new Map();
 
   let cachedTag = '';
   function tag() {
@@ -158,6 +163,7 @@ function createUnattendedHost(options = {}) {
   function shutdown() {
     for (const sessionId of [...timers.keys()]) clearTimer(sessionId);
     for (const sessionId of [...retryTimers.keys()]) clearRetryTimer(sessionId);
+    for (const sessionId of [...backlogRechecks.keys()]) clearBacklogRecheck(sessionId);
   }
 
   // ── Durable fault retry timer ─────────────────────────────────────────────
@@ -243,6 +249,68 @@ function createUnattendedHost(options = {}) {
     }), 'fault');
   }
 
+  // ── Backlog recheck ───────────────────────────────────────────────────────
+
+  function settleMarker(state) {
+    return `${(state && state.lastTurnEndId) || ''}|${Number(state && state.lastSettleAt) || 0}`;
+  }
+
+  function clearBacklogRecheck(sessionId) {
+    const entry = backlogRechecks.get(sessionId);
+    if (!entry) return;
+    backlogRechecks.delete(sessionId);
+    try { clearTimeoutFn(entry.timer); } catch (_) { /* already fired */ }
+  }
+
+  // Arm after the state write that records the dropped settle, so the marker
+  // identifies exactly that settle. A decision without the kernel's recheck
+  // facts (older addon) arms nothing.
+  function armBacklogRecheck(sessionId, decision, attempt = 0) {
+    const delay = Number(decision && decision.recheckAfterMs);
+    const max = Number(decision && decision.recheckMaxAttempts);
+    if (!Number.isFinite(delay) || delay <= 0 || !Number.isFinite(max) || max <= 0) return;
+    clearBacklogRecheck(sessionId);
+    if (attempt >= max) {
+      log(`[unattended] backlog recheck gave up for ${sessionId} after ${attempt} attempts`);
+      return;
+    }
+    const state = stateOf(sessionId);
+    if (!state || state.status !== STATUS.ACTIVE) return;
+    const marker = settleMarker(state);
+    const timer = setTimeoutFn(() => {
+      if (backlogRechecks.get(sessionId)?.timer === timer) backlogRechecks.delete(sessionId);
+      void fireBacklogRecheck(sessionId, decision, marker, attempt + 1);
+    }, delay);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    backlogRechecks.set(sessionId, { timer, marker });
+  }
+
+  // The yielded settle is still the latest one, nothing is running and the
+  // backlog is gone: nobody else will evaluate it, so do it now. A running turn
+  // or a newer settle owns the next verdict and ends the recheck. A backlog that
+  // is still there keeps the recheck alive until the kernel's attempt cap.
+  async function fireBacklogRecheck(sessionId, decision, marker, attempt) {
+    const stillOwed = () => {
+      const state = stateOf(sessionId);
+      return !!state && state.status === STATUS.ACTIVE && settleMarker(state) === marker;
+    };
+    try {
+      if (!stillOwed() || expireIfDue(sessionId)) return;
+      let busy = false;
+      try { busy = isRunActive(sessionId) === true; } catch (_) { busy = false; }
+      if (busy || inFlight.has(sessionId) || stateOf(sessionId).evaluating === true) return;
+      const deferred = await evaluationDeferred(sessionId);
+      if (!stillOwed()) return;
+      if (deferred) {
+        armBacklogRecheck(sessionId, decision, attempt);
+        return;
+      }
+      await evaluate(sessionId, { reason: 'backlog_recheck' });
+    } catch (error) {
+      log(`[unattended] backlog recheck failed for ${sessionId}: ${error && error.message ? error.message : error}`);
+    }
+  }
+
   // Checked at the top of every evaluation/fault AND by the timer, so a late
   // timer can never allow another injection.
   function expireIfDue(sessionId) {
@@ -308,6 +376,7 @@ function createUnattendedHost(options = {}) {
     // admitted into the FIFO. Only withdraw after the state write landed: a
     // failed write means the pause did not happen.
     if (next && next.status !== STATUS.ACTIVE) withdrawPendingInjections(sessionId);
+    if (!next || next.status !== STATUS.ACTIVE) clearBacklogRecheck(sessionId);
     syncTimer(sessionId, next);
     syncRetryTimer(sessionId, next);
     try {
@@ -455,7 +524,7 @@ function createUnattendedHost(options = {}) {
       busy,
       backlogPending: await backlogPending(sessionId),
       classifyState: getTaskState(sessionId)?.classifyState,
-      pendingQuestion: getPendingQuestion(sessionId),
+      pendingQuestion: await getPendingQuestion(sessionId),
     });
   }
 
@@ -569,6 +638,7 @@ function createUnattendedHost(options = {}) {
     }
     clearTimer(sessionId);
     clearRetryTimer(sessionId);
+    clearBacklogRecheck(sessionId);
     if (!current || decision.noop === true) {
       // Idempotent: no state means nothing to delete or broadcast. Still drain
       // any stray supervisor bookkeeping so a late timer cannot resurrect it.
@@ -630,7 +700,7 @@ function createUnattendedHost(options = {}) {
       && typeof message.content === 'string');
   }
 
-  function evidence(sessionId, state, assistantText) {
+  async function evidence(sessionId, state, assistantText) {
     const messages = historyMessages(sessionId);
     const recent = messages.slice(-RECENT_MESSAGES).map(({ role, content }) => ({ role, content }));
     let lastOutput = '';
@@ -645,7 +715,7 @@ function createUnattendedHost(options = {}) {
       }
     }
     let pending = null;
-    try { pending = getPendingQuestion(sessionId); } catch (_) { pending = null; }
+    pending = await getPendingQuestion(sessionId);
     const pendingQuestion = pending && pending.resolved !== true && pending.requestId
       ? {
           requestId: String(pending.requestId),
@@ -691,7 +761,7 @@ function createUnattendedHost(options = {}) {
     if (expireIfDue(sessionId)) return { ok: false, code: 'expired' };
     const state = stateOf(sessionId);
     if (!state || state.status !== STATUS.ACTIVE) return { ok: false, code: 'not_active' };
-    const collected = evidence(sessionId, state, assistantText);
+    const collected = await evidence(sessionId, state, assistantText);
     let collectedLast = collected.lastOutput;
     if (!collectedLast && (reason === 'start' || reason === 'resume')) {
       collectedLast = currentAssistantText(sessionId);
@@ -754,6 +824,11 @@ function createUnattendedHost(options = {}) {
     }
     decision.nextState = nextState;
     traceDecision(sessionId, decision);
+    // The verdict yielded to a FIFO backlog: the backlog's own D settle is
+    // expected to evaluate next, but a leftover entry never produces one.
+    if (decision.action === 'none' && decision.reason === 'backlog_pending') {
+      armBacklogRecheck(sessionId, decision);
+    }
     try {
       await apply(sessionId, decision);
     } catch (error) {
@@ -1123,6 +1198,9 @@ function createUnattendedHost(options = {}) {
     if (decision && decision.nextState) {
       write(sessionId, markSettle(decision.nextState, now()));
     }
+    if (decision && decision.reason === 'backlog_pending') {
+      armBacklogRecheck(sessionId, decision);
+    }
     if (push) {
       rememberHeldPush(sessionId, push);
       releaseHeldPushes(sessionId);
@@ -1274,7 +1352,7 @@ function createUnattendedHost(options = {}) {
   }
 
   function stats() {
-    return { inFlight: inFlight.size, queued: queued.size, heldPushes: heldPushes.size, timers: timers.size, retryTimers: retryTimers.size };
+    return { inFlight: inFlight.size, queued: queued.size, heldPushes: heldPushes.size, timers: timers.size, retryTimers: retryTimers.size, backlogRechecks: backlogRechecks.size };
   }
 
   return Object.freeze({

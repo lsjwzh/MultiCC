@@ -197,6 +197,27 @@ fn apply_user_input_evidence(v: &Value) -> Value {
     out
 }
 
+fn user_input_degraded(v: &Value) -> Value {
+    let pending = &v["pendingUserInput"];
+    if !crate::js::truthy(&crate::js::from_serde(pending))
+        || pending.get("resolved") == Some(&Value::Bool(true))
+    {
+        return Value::Null;
+    }
+    let fallback = |a: &Value, b: &Value, default: &str| {
+        if crate::js::truthy(&crate::js::from_serde(a)) {
+            a.clone()
+        } else if crate::js::truthy(&crate::js::from_serde(b)) {
+            b.clone()
+        } else {
+            json!(default)
+        }
+    };
+    json!({"state":"W", "goal":fallback(&v["currentTask"]["goal"], &v["state"]["goal"], ""),
+        "phase":fallback(&v["currentTask"]["phase"], &v["state"]["phase"], "planning"),
+        "background":false,"error":false})
+}
+
 // Letter predicates, shared with the event derivation (`events.rs`) so the
 // classify letter stays the only state source; `src/classify/vocab.js`
 // mirrors them for its JS callers.
@@ -334,6 +355,7 @@ pub fn request(op: &str, input: &str) -> Result<String, String> {
         .map_err(|e| format!("classify_vocab_invalid_input: {e}"))?;
     let out = match op {
         "applyUserInputEvidence" => apply_user_input_evidence(&v),
+        "userInputDegraded" => user_input_degraded(&v),
         "goalStateForClassify" => goal_state_for(&v["result"]),
         "resolveGoalState" => resolve_goal_state(&v),
         "classifyGroupKey" => classify_group_key(&v),
@@ -488,6 +510,36 @@ mod tests {
         assert_eq!(forced["state"], "W");
         assert_eq!(forced["evidence"], "request_user_input");
         assert_eq!(forced["goal"], json!("部署修复"));
+    }
+
+    #[test]
+    fn degraded_question_result_preserves_js_fallbacks() {
+        assert_eq!(
+            req("userInputDegraded", json!({"pendingUserInput":null})),
+            Value::Null
+        );
+        assert_eq!(
+            req(
+                "userInputDegraded",
+                json!({"pendingUserInput":{"resolved":true}})
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            req(
+                "userInputDegraded",
+                json!({"pendingUserInput":{"resolved":false},
+            "state":{"goal":"legacy","phase":"verifying"},"currentTask":{"goal":"","phase":null}})
+            ),
+            json!({"state":"W","goal":"legacy","phase":"verifying","background":false,"error":false})
+        );
+        assert_eq!(
+            req(
+                "userInputDegraded",
+                json!({"pendingUserInput":{},"state":{},"currentTask":{}})
+            ),
+            json!({"state":"W","goal":"","phase":"planning","background":false,"error":false})
+        );
     }
 
     #[test]

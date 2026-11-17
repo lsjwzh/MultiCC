@@ -7,6 +7,22 @@ const test = require('node:test');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
 
+function frozenScheduler() {
+  const Module = require('node:module');
+  const filename = path.resolve(__dirname, '../src/session-work/scheduler.js');
+  const module = new Module(filename);
+  module.filename = filename;
+  module.paths = Module._nodeModulePaths(path.dirname(filename));
+  const originalRequire = module.require.bind(module);
+  module.require = id => id === './user-input'
+    ? require('./helpers/legacy-session-work-user-input') : originalRequire(id);
+  const snapshot = fs.readFileSync(path.join(__dirname, 'helpers/scheduler-before-domain-migration.js.txt'), 'utf8');
+  assert.equal(require('node:crypto').createHash('sha256').update(snapshot).digest('hex'),
+    'f2d34115aa9f3dff98bd49c19ad5d34f30a9fbeb3735b524ddf069eb0b32dbb9');
+  module._compile(snapshot, filename);
+  return module.exports.createSessionWorkScheduler;
+}
+
 function delayedMutator(store) {
   return {
     read: (...args) => store.read(...args),
@@ -21,6 +37,9 @@ async function openStore(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-worker-order-'));
   const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => 1000 });
   t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: null, activeTurn: null, category: null,
+  } });
   return store;
 }
 
@@ -35,7 +54,9 @@ test('reorder reads a dynamic index before a caller microtask changes it', async
   const run = async worker => {
     let index = 0;
     const toIndex = { valueOf() { return index; } };
-    const scheduler = createSessionWorkScheduler({ store: worker ? delayedMutator(store) : store, now: () => 1000 });
+    const scheduler = (worker ? frozenScheduler() : createSessionWorkScheduler)({
+      store: worker ? delayedMutator(store) : store, now: () => 1000,
+    });
     const result = scheduler.reorderQueued('s', 'a', { toIndex });
     queueMicrotask(() => { index = 1; });
     return result;
@@ -46,6 +67,76 @@ test('reorder reads a dynamic index before a caller microtask changes it', async
   const delayed = await run(true);
   assert.equal(delayed.unchanged, false);
   assert.equal(delayed.reordered.to, 1);
+  await seed();
+  const slicedActor = await createSessionWorkScheduler({ store, now: () => 1000 })
+    .reorderQueued('s', 'b', { toIndex: 0, actor: `${'a'.repeat(79)}😀` });
+  assert.equal(slicedActor.reordered.actor, `${'a'.repeat(79)}\ud83d`);
+  await seed();
+  const before = await store.snapshot();
+  const stateBefore = await store.sessionWorkState({ action: 'read', sessionId: 's' });
+  const throwingIndex = { valueOf() { throw new Error('index observation failed'); } };
+  const scheduler = createSessionWorkScheduler({ store, now: () => 1000 });
+  assert.equal((await scheduler.reorderQueued('s', 'missing', { toIndex: throwingIndex })).code,
+    'queued_entry_not_found');
+  await assert.rejects(scheduler.reorderQueued('s', 'b', { toIndex: throwingIndex }), /index observation failed/);
+  assert.deepEqual(await store.snapshot(), before);
+  const db = new (require('better-sqlite3'))(store.file);
+  try {
+    db.exec("CREATE TRIGGER fail_reorder BEFORE UPDATE ON orchestration_outbox BEGIN SELECT RAISE(ABORT, 'blocked reorder'); END");
+    await assert.rejects(createSessionWorkScheduler({ store, now: () => 1000 })
+      .reorderQueued('s', 'b', { toIndex: 0 }), /blocked reorder/);
+    assert.deepEqual(await store.snapshot(), before);
+    assert.deepEqual(await store.sessionWorkState({ action: 'read', sessionId: 's' }), stateBefore);
+    db.exec('DROP TRIGGER fail_reorder');
+    await store.mutate(draft => { delete draft.sessionSchedules.s; });
+    let ticks = 1100;
+    const missingSchedule = await createSessionWorkScheduler({ store, now: () => ticks += 100 })
+      .reorderQueued('s', 'a', { toIndex: 0 });
+    assert.equal(missingSchedule.unchanged, true);
+    assert.equal(missingSchedule.schedule.updatedAt, 1200);
+    assert.equal(missingSchedule.reordered.at, 1300);
+    assert.equal((await store.snapshot()).sessionSchedules.s.updatedAt, 1200);
+    await store.mutate(draft => { delete draft.sessionSchedules.s; draft.outbox.b.state = 'leased'; });
+    let guardTicks = 0;
+    const guarded = await createSessionWorkScheduler({ store, now: () => ++guardTicks })
+      .reorderQueued('s', 'b', { toIndex: throwingIndex });
+    assert.equal(guarded.code, 'queued_entry_already_claimed');
+    assert.equal(guardTicks, 1);
+    assert.equal((await store.snapshot()).sessionSchedules.s.updatedAt, 1);
+  } finally { db.close(); }
+});
+
+test('Rust reorder initializes live facts in its transaction and rolls back on failure', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-reorder-lazy-facts-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file, now: () => 1000 });
+  const db = new (require('better-sqlite3'))(file);
+  t.after(async () => {
+    try { db.close(); await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'idle', active: null };
+    draft.outbox.a = { id: 'a', sessionId: 's', sequence: 1, state: 'pending', payload: { type: 'session.work', message: 'a' } };
+    draft.outbox.b = { id: 'b', sessionId: 's', sequence: 2, state: 'pending', payload: { type: 'session.work', message: 'b' } };
+    draft.nextOutboxSequence = 3;
+  });
+  const command = { sessionId: 's', entryId: 'b', toIndex: 0, actor: 'user', now: () => 1000 };
+  await assert.rejects(store.mutateSync('scheduleReorder', command), /backfill requires a trusted snapshot/);
+  await assert.rejects(store.mutateSync('scheduleReorder', { ...command,
+    initialState: { pendingQuestion: null, category: 'W' } }), /backfill requires activeTurn/);
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 's' })).exists, false);
+  const initialState = { pendingQuestion: { requestId: 'q' }, activeTurn: null, category: 'W' };
+  db.exec("CREATE TRIGGER reject_reorder BEFORE UPDATE ON orchestration_outbox BEGIN SELECT RAISE(ABORT, 'reject lazy reorder'); END");
+  await assert.rejects(store.mutateSync('scheduleReorder', { ...command, initialState }), /reject lazy reorder/);
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 's' })).exists, false);
+  db.exec('DROP TRIGGER reject_reorder');
+  const result = await store.mutateSync('scheduleReorder', { ...command, initialState });
+  assert.equal(result.ok, true);
+  assert.equal(result.reordered.to, 0);
+  const saved = await store.sessionWorkState({ action: 'read', sessionId: 's' });
+  assert.equal(saved.version, 1);
+  assert.deepEqual(saved.pendingQuestion, initialState.pendingQuestion);
 });
 
 test('recovery reads classify facts before a caller microtask changes them', async t => {

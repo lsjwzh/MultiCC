@@ -45,6 +45,55 @@ pub struct ErrorFacts {
     pub message: Option<String>,
 }
 
+pub const DISK_FULL_ISSUE: (&str, &str) = (
+    "ENOSPC",
+    "MultiCC 服务器磁盘空间不足（ENOSPC）。请在服务器上腾出空间。",
+);
+
+/// Public Air diagnostics are selected from fixed messages. A host exception
+/// can contain paths, SQL or session content and must never be sent verbatim.
+pub fn summary_issue(code: &str, message: &str) -> Option<(&'static str, &'static str)> {
+    let kind = if code.is_empty() || code == "GenericFailure" {
+        message.split(':').next().unwrap_or("").trim()
+    } else {
+        code
+    };
+    match kind {
+        "ENOSPC" | "No space left on device" | "no space left on device" => Some(DISK_FULL_ISSUE),
+        "SQLITE_FULL" | "database or disk is full" => Some((
+            "SQLITE_FULL",
+            "数据库写入失败（SQLITE_FULL）。请检查服务器磁盘空间和数据库容量限制。",
+        )),
+        "EIO" | "disk I/O error" => Some((
+            "EIO",
+            "服务器读写磁盘失败（I/O 错误）。请检查数据目录所在磁盘。",
+        )),
+        value if value == "SQLITE_IOERR" || value.starts_with("SQLITE_IOERR_") => Some((
+            "SQLITE_IOERR",
+            "数据库读写失败（SQLITE_IOERR）。请检查数据目录所在磁盘。",
+        )),
+        "invalid_task_domain_command" => Some((
+            "invalid_task_domain_command",
+            "当前 Rust 模块不支持首页所需的命令。请用与源码匹配的模块重启 MultiCC。",
+        )),
+        "rust_backend_unavailable" | "rust_protocol_mismatch" | "air_read_protocol_unavailable" => {
+            Some((
+                "rust_backend_unavailable",
+                "首页所需的 Rust 模块未能加载。请检查模块版本并重启 MultiCC。",
+            ))
+        }
+        "SESSION_WORK_OWNER_UNAVAILABLE" => Some((
+            "SESSION_WORK_OWNER_UNAVAILABLE",
+            "会话状态暂时无法读取，首页将自动重试。",
+        )),
+        _ => None,
+    }
+}
+
+pub fn data_volume_full(root: &std::path::Path) -> bool {
+    matches!(fs2::available_space(root), Ok(0))
+}
+
 /// `res.status(error.status || 500).json({ ok: false, code: error.code ||
 /// default, message: … })`.
 ///

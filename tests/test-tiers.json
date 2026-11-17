@@ -4650,6 +4650,15 @@
       ]
     },
     {
+      "path": "tests/test-production-question-owner.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-progress-heartbeat.js",
       "tier": "core",
       "lane": "deterministic",
@@ -5118,6 +5127,15 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-recovery-state-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-redaction-native.js",
       "tier": "core",
       "lane": "deterministic",
@@ -5544,6 +5562,15 @@
     },
     {
       "path": "tests/test-scheduler-note-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-scheduler-recovery-rust.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",

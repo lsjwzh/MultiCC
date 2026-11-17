@@ -2,8 +2,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createAirReadIndex } = require('../src/workspace/air-read-index');
+const { createAirReadIndex } = require('./helpers/legacy-air-read-index');
 const { createAirSyncRuntime } = require('../src/workspace/air-sync-runtime');
+const { createAirStorageNotice } = require('../src/workspace/air-sync-issue');
 const { create } = require('../public/air-sync');
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
 
@@ -109,6 +110,82 @@ test('失败保留旧索引，恢复后继续推进', async t => {
   fail = true; await runtime.flush(); assert.equal(runtime.index.cursor(), first);
   fail = false; data = snapshot([task(1, { runState: 'succeeded' })]);
   await runtime.flush(); assert.notEqual(runtime.index.cursor(), first);
+});
+
+test('冷启动告知磁盘写满、退避不重建、模块错配另报，恢复后可读', async t => {
+  let calls = 0, failure = Object.assign(new Error('write /private/session/path'), { code: 'ENOSPC' });
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), logger: { warn() {} },
+    build: async () => { calls++; if (failure) throw new Error('save failed', { cause: failure }); return snapshot([task(1)]); } });
+  t.after(() => runtime.close());
+  await assert.rejects(runtime.ensureReady(), { status: 507, code: 'ENOSPC', message: /磁盘空间不足/ });
+  await assert.rejects(runtime.ensureReady(), error => !error.message.includes('/private') && error.code === 'ENOSPC');
+  assert.equal(calls, 1);
+  failure = new Error('invalid_task_domain_command');
+  await runtime.flush();
+  await assert.rejects(runtime.ensureReady(), { status: 503, code: 'invalid_task_domain_command', message: /模块/ });
+  failure = new Error('disk I/O error');
+  await runtime.flush();
+  await assert.rejects(runtime.ensureReady(), { status: 503, code: 'EIO' });
+  failure = null;
+  await runtime.flush();
+  await runtime.ensureReady();
+});
+
+test('已加载的首页收到持久化告警、保留任务，并在服务解除告警时清除提示', async t => {
+  const notice = createAirStorageNotice();
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), build: async () => snapshot([task(1)]),
+    storageNotice: notice.current, send: (socket, frame) => socket.onmessage({ data: JSON.stringify(frame) }) });
+  const handlers = {};
+  runtime.mount({ get: (path, handler) => { handlers[path] = handler; } }, fn => fn);
+  let socket, issue;
+  class Socket extends EventEmitter {
+    readyState = 1;
+    constructor() { super(); socket = this; }
+    close() { this.emit('close'); }
+  }
+  const client = create({ Socket, socketUrl: url => url, onIssue: next => { issue = next; },
+    request: url => handlers['/api/air/sync']({ query: Object.fromEntries(new URL(url, 'http://localhost').searchParams) }) });
+  t.after(async () => { client.close(); await runtime.close(); });
+  await client.sync();
+  await runtime.attach(socket, new URL('http://localhost/?cursor=' + runtime.index.cursor()));
+  assert.equal(notice.record(Object.assign(new Error('private SQL'), { code: 'SQLITE_FULL' })), true);
+  runtime.publishStatus();
+  assert.equal(issue.code, 'SQLITE_FULL');
+  assert.equal(client.current().tasks[0].id, '1');
+  await client.sync();
+  assert.match(issue.message, /容量限制/);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  t.mock.timers.tick(300_001);
+  runtime.publishStatus();
+  assert.equal(issue, null);
+});
+
+test('局部刷新失败只重试那几张卡，不升级成全量；重试间隔按失败次数退避', async t => {
+  const calls = [], warnings = [];
+  let fail = false, data = snapshot([task(1), task(2)]);
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(),
+    build: async ids => {
+      calls.push(ids);
+      if (fail) throw Object.assign(new Error('owner unavailable'), { code: 'SESSION_SESSION_WORK_OWNER_UNAVAILABLE' });
+      return ids ? { ...data, tasks: data.tasks.filter(task => ids.includes(task.id)) } : data;
+    },
+    logger: { warn: (event, fields) => warnings.push({ event, ...fields }) }, send() {} });
+  t.after(() => runtime.close());
+  await runtime.ensureReady();
+  assert.equal(calls[0], null, '首轮是全量');
+  await runtime.flush(); assert.equal(calls[1], null, '没有变化时走周期性全量核对');
+  fail = true; runtime.invalidate(['1']);
+  await runtime.flush();
+  assert.deepEqual(calls.at(-1), ['1'], '失败的是局部刷新');
+  assert.equal(warnings.at(-1).full, false, '不得把局部失败报成全量');
+  const firstRetry = warnings.at(-1).retryInMs;
+  fail = true; await runtime.flush();
+  assert.deepEqual(calls.at(-1), ['1'], '失败后仍然只重试这一张卡');
+  assert.ok(warnings.at(-1).retryInMs > firstRetry, '连续失败应退避');
+  fail = false; await runtime.flush();
+  assert.equal(warnings.at(-1).event, 'air_sync_refresh_failed', '成功前不重置告警计数');
+  fail = false; runtime.invalidate(['2']); await runtime.flush();
+  assert.deepEqual(calls.at(-1), ['2'], '恢复后继续按局部刷新');
 });
 
 test('事件提前唤醒周期核对；构建中再次变化会保留到下一轮', async t => {

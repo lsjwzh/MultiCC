@@ -2622,7 +2622,8 @@
     loading = true;
     let failed = false;
     try {
-      const snapshot = liveSync ? (await liveSync.sync(), { unchanged: true }) : await apiConditional('/api/air');
+      if (liveSync) { try { await liveSync.sync(); } catch { failed = true; return; } } // onIssue owns the notice.
+      const snapshot = liveSync ? { unchanged: true } : await apiConditional('/api/air');
       if (!snapshot.unchanged) {
         acceptSnapshot(snapshot);
       }

@@ -12,7 +12,7 @@ serde_json = { version = "1", features = ["raw_value", "preserve_order", "float_
 serde_stacker = "0.1"
 chrono = "0.4"
 chrono-tz = "0.10"
-rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.37", features = ["backup", "bundled", "column_decltype", "preupdate_hook", "serialize"] }
 ryu-js = "1"
 sha1 = "0.10"
 base64 = "0.22"

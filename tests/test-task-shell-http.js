@@ -14,6 +14,7 @@ const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 const { createTaskOperations } = require('../src/task-shell/task-operations');
 const { createClient } = require('../public/task-shell-client');
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
+const { createProductionQuestionHost } = require('../src/session-work/production-question-host');
 const { createQueuedTurnPreparation } = require('../src/chat/admission-progress');
 
 test('真实发送接口在模型路由和工作区准备期间已经返回，重复请求只执行一次', async t => {
@@ -27,7 +28,21 @@ test('真实发送接口在模型路由和工作区准备期间已经返回，�
   const prepare = createQueuedTurnPreparation({ prepareRouting: async (...args) => {
     routing.push(args); await routingGate;
   } });
+  const sessionState = new Map();
+  // Same composition server.js uses: the Rust store owns the initialized
+  // question snapshot, and the host observation it accepts as a backfill comes
+  // from this production question host.
+  const question = createProductionQuestionHost({
+    getStore: () => queue?.store,
+    getSession: () => ({}),
+    getState: id => sessionState.get(id) || {},
+    setState: (id, patch) => sessionState.set(id, { ...(sessionState.get(id) || {}), ...patch }),
+    onResolved: () => {}, log: () => {},
+  });
   queue = createOrchestrationRuntime({ file: `${f.file}.queue.json`, databaseFile: `${f.file}.queue.sqlite`,
+    // server.js wires the same hook (`ensureSessionWorkState`): the Rust
+    // admission owner accepts a backfill only from a trusted host observation.
+    ensureSessionWorkState: id => question.host.pendingAsync(id),
     beforeDeliver: async descriptor => { await prepare(descriptor); await workspaceGate; },
     runChatTurn: (sessionId, text, opts) => { deliveries.push({ sessionId, text, opts }); return true; },
     hasPersistedDelivery: async (sessionId, id) => deliveries.some(d => d.sessionId === sessionId && d.opts.deliveryId === id),

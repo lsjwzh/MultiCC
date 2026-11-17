@@ -326,7 +326,7 @@
           new Promise((_, reject) => { timeout = setTimeout(() => {
             if (controller) controller.abort();
             reject(new Error('model_catalog_timeout'));
-          }, 5000); }),
+          }, force ? 22000 : 5000); }),
         ]);
         const catalog = normalizeCodexCatalog(data);
         codexCatalogs.set(key, catalog);

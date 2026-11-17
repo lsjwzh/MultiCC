@@ -124,6 +124,69 @@ impl Default for RustAirCardCache {
     }
 }
 
+pub struct SnapshotJob {
+    inner: Arc<Mutex<CardCache>>,
+    input: String,
+    op: SnapshotOp,
+}
+#[derive(Clone, Copy)]
+pub enum SnapshotOp {
+    Plan,
+    Finish,
+    Abort,
+}
+impl Task for SnapshotJob {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        let inner = self.inner.clone();
+        let input = self.input.clone();
+        let op = self.op;
+        guard("TASK_DOMAIN_PANIC", move || {
+            task_domain_panic_probe(&input);
+            let mut cache = lock_cache(&inner);
+            match op {
+                SnapshotOp::Plan => cache.snapshot_plan(&input),
+                SnapshotOp::Finish => cache.snapshot_finish(&input),
+                SnapshotOp::Abort => cache.snapshot_abort(&input),
+            }
+            .map_err(napi::Error::from_reason)
+        })
+    }
+    fn resolve(&mut self, _: Env, out: String) -> Result<String> {
+        Ok(out)
+    }
+}
+#[napi]
+impl RustAirCardCache {
+    /// 一轮快照的第一段：Rust 判定哪些卡需要重建。
+    #[napi]
+    pub fn snapshot_plan_async(&self, input: String) -> AsyncTask<SnapshotJob> {
+        AsyncTask::new(SnapshotJob {
+            inner: self.inner.clone(),
+            input,
+            op: SnapshotOp::Plan,
+        })
+    }
+    /// 第二轮：宿主带回 needed 底稿，Rust 完成提交、overlay 与排序。
+    #[napi]
+    pub fn snapshot_finish_async(&self, input: String) -> AsyncTask<SnapshotJob> {
+        AsyncTask::new(SnapshotJob {
+            inner: self.inner.clone(),
+            input,
+            op: SnapshotOp::Finish,
+        })
+    }
+    #[napi]
+    pub fn snapshot_abort_async(&self, input: String) -> AsyncTask<SnapshotJob> {
+        AsyncTask::new(SnapshotJob {
+            inner: self.inner.clone(),
+            input,
+            op: SnapshotOp::Abort,
+        })
+    }
+}
+
 pub struct DomainJob {
     input: String,
 }
