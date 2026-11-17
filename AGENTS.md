@@ -9,9 +9,9 @@
 
 ## 提交身份
 
-- 本项目所有新增提交的作者（Author）与提交者（Committer）统一使用 GitHub 账号 `lsjwzh`：`lsjwzh <lsjwzh@gmail.com>`，唯一配置来源为根目录 `commit-policy.json`。
+- 本机创建的提交，其作者（Author）与提交者（Committer）统一使用 GitHub 账号 `lsjwzh`：`lsjwzh <lsjwzh@gmail.com>`，唯一配置来源为根目录 `commit-policy.json`。
 - 自动提交、合并、初始提交、快照和备份使用同一身份；不得再使用 `multicc@local`、`green@localhost` 或其他临时身份，不得被继承的 Git 作者环境变量覆盖。
-- Agent 手动提交也必须遵守该身份；合并与 CI 对新增提交同时校验作者和提交者，身份不符时停止操作。历史提交不重写，GitHub 推送认证与 Git 提交身份分别管理。
+- Agent 手动提交也必须使用该身份；合并时校验本机新增提交的作者和提交者邮箱，邮箱不符时停止操作。已获取的远端默认分支历史保留原有身份，不重写历史；CI 继续校验提交说明的英文。GitHub 推送认证与 Git 提交身份分别管理。
 
 ## 内置技能随包发布
 

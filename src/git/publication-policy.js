@@ -8,7 +8,7 @@ function native() {
   let addon;
   try { addon = getNative(); } catch (_) {}
   if (typeof addon?.validatePublicationText !== 'function' || typeof addon?.quickCommitMessage !== 'function'
-      || typeof addon?.gitCommitEnvironment !== 'function' || typeof addon?.validatePublicationRecords !== 'function') {
+      || typeof addon?.gitCommitEnvironment !== 'function' || typeof addon?.validatePublicationRange !== 'function') {
     throw new Error('提交身份与英文校验模块不可用，请构建当前版本的 Rust 模块后重试');
   }
   return addon;
@@ -24,8 +24,7 @@ function quickCommitMessage(porcelain) {
 }
 
 async function validateCommitRange(execGit, cwd, range) {
-  const records = await execGit(cwd, ['log', '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x00', range], { raw: true });
-  await native().validatePublicationRecords(cwd, String(records || ''));
+  await native().validatePublicationRange(cwd, range);
 }
 
 async function gitCommitEnvironment(cwd, args) {

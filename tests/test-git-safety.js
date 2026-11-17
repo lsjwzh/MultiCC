@@ -134,6 +134,59 @@ test('merge refuses an English commit with the wrong committer instead of rewrit
   assert.equal(await git(session.worktreePath, ['rev-parse', 'HEAD']), sourceHead);
 });
 
+test('merge preserves the identity of fetched default-branch commits while checking local commits', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-remote-identity-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify({ name: 'account', email: 'account@example.invalid' }));
+  await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
+  const session = await sessionIn(dir, 'remote-identity');
+  await execFileAsync('git', ['commit', '--allow-empty', '-m', 'fix: accept a contributor change'], {
+    cwd: session.worktreePath,
+    env: { ...process.env, GIT_AUTHOR_NAME: 'contributor', GIT_AUTHOR_EMAIL: 'contributor@example.invalid', GIT_COMMITTER_NAME: 'GitHub', GIT_COMMITTER_EMAIL: 'noreply@github.com' },
+  });
+  const remoteCommit = await git(session.worktreePath, ['rev-parse', 'HEAD']);
+  await git(dir.path, ['update-ref', 'refs/remotes/origin/main', remoteCommit]);
+  await execFileAsync('git', ['commit', '--allow-empty', '-m', 'fix: preserve local identity'], {
+    cwd: session.worktreePath,
+    env: { ...process.env, GIT_AUTHOR_NAME: 'account alias', GIT_AUTHOR_EMAIL: 'account@example.invalid', GIT_COMMITTER_NAME: 'account alias', GIT_COMMITTER_EMAIL: 'account@example.invalid' },
+  });
+  const result = await gitMergeBack(dir, session);
+  assert.equal(result.ok, true);
+  assert.equal(await git(dir.path, ['show', '-s', '--format=%an|%ae|%cn|%ce', remoteCommit]),
+    'contributor|contributor@example.invalid|GitHub|noreply@github.com');
+});
+
+test('an unrelated remote branch does not exempt an invalid local commit', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-untrusted-identity-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify({ name: 'account', email: 'account@example.invalid' }));
+  await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
+  const session = await sessionIn(dir, 'untrusted-identity');
+  await execFileAsync('git', ['commit', '--allow-empty', '-m', 'fix: retain local identity'], {
+    cwd: session.worktreePath,
+    env: { ...process.env, GIT_AUTHOR_NAME: 'bot', GIT_AUTHOR_EMAIL: 'bot@example.invalid', GIT_COMMITTER_NAME: 'bot', GIT_COMMITTER_EMAIL: 'bot@example.invalid' },
+  });
+  await git(dir.path, ['update-ref', 'refs/remotes/origin/feature', await git(session.worktreePath, ['rev-parse', 'HEAD'])]);
+  await assert.rejects(gitMergeBack(dir, session), /作者与提交者必须统一/);
+});
+
+test('a fetched default-branch commit still requires an English message', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-remote-message-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify({ name: 'account', email: 'account@example.invalid' }));
+  await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
+  const session = await sessionIn(dir, 'remote-message');
+  await execFileAsync('git', ['commit', '--allow-empty', '-m', '修复问题'], {
+    cwd: session.worktreePath,
+    env: { ...process.env, GIT_AUTHOR_NAME: 'contributor', GIT_AUTHOR_EMAIL: 'contributor@example.invalid', GIT_COMMITTER_NAME: 'GitHub', GIT_COMMITTER_EMAIL: 'noreply@github.com' },
+  });
+  await git(dir.path, ['update-ref', 'refs/remotes/origin/main', await git(session.worktreePath, ['rev-parse', 'HEAD'])]);
+  await assert.rejects(gitMergeBack(dir, session), /必须使用英文/);
+});
+
 test('merge keeps the target identity policy when the source checkout changes its policy', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-target-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));

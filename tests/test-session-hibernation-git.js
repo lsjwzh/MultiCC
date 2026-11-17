@@ -192,6 +192,22 @@ test('production wake refuses to replay non-English historical commits without r
   assert.equal(git(added.worktreePath, ['rev-parse', 'HEAD']), tip);
 });
 
+test('production wake preserves fetched remote history instead of rebasing it', async t => {
+  const dir = repo();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const added = await gitWorktreeAdd(dir, 'wake-remote-history', 'main');
+  const remote = commitFile(added.worktreePath, 'remote.txt', 'remote\n', 'fix(fixture): preserve remote history');
+  git(dir, ['update-ref', 'refs/remotes/origin/main', remote]);
+  const tip = commitFile(added.worktreePath, 'local.txt', 'local\n', 'fix(fixture): preserve local history');
+  await gitWorktreeDetach(dir, added.worktreePath, added.branch);
+  commitFile(dir, 'upstream.txt', 'advanced\n');
+  const { id, runtime, record } = wakeRuntime(t, dir, added);
+  assert.equal((await runtime.ensureAwake(id)).ok, true);
+  assert.equal(record.workspaceStateErrorCode, 'wake_sync_remote_history');
+  assert.equal(git(added.worktreePath, ['rev-parse', 'HEAD']), tip);
+  assert.equal(git(added.worktreePath, ['rev-parse', 'HEAD^']), remote);
+});
+
 test('production wake recognizes changes already absorbed by the base without losing the retained tip', async t => {
   const dir = repo();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
