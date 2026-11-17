@@ -43,6 +43,7 @@ pub struct GitPublication {
     cwd: String,
     args: Vec<String>,
     log: Option<String>,
+    range: Option<String>,
 }
 
 impl Task for GitPublication {
@@ -51,6 +52,13 @@ impl Task for GitPublication {
 
     fn compute(&mut self) -> Result<String> {
         let cwd = Path::new(&self.cwd);
+        if let Some(range) = &self.range {
+            let policy =
+                publication_identity::repository_policy(cwd).map_err(napi::Error::from_reason)?;
+            let checked = publication_identity::validate_range(cwd, range, policy.as_ref())
+                .map_err(napi::Error::from_reason)?;
+            return Ok(checked.0.to_string());
+        }
         if let Some(log) = &self.log {
             let policy =
                 publication_identity::repository_policy(cwd).map_err(napi::Error::from_reason)?;
@@ -74,6 +82,7 @@ pub fn git_commit_environment(cwd: String, args: Vec<String>) -> AsyncTask<GitPu
         cwd,
         args,
         log: None,
+        range: None,
     })
 }
 
@@ -83,5 +92,16 @@ pub fn validate_publication_records(cwd: String, log: String) -> AsyncTask<GitPu
         cwd,
         args: Vec::new(),
         log: Some(log),
+        range: None,
+    })
+}
+
+#[napi]
+pub fn validate_publication_range(cwd: String, range: String) -> AsyncTask<GitPublication> {
+    AsyncTask::new(GitPublication {
+        cwd,
+        args: Vec::new(),
+        log: None,
+        range: Some(range),
     })
 }

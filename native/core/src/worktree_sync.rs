@@ -200,17 +200,18 @@ pub fn synchronize(
     // The directory checkout is authoritative; a local commit may itself edit
     // commit-policy.json and must not choose a different replay identity.
     let policy = publication_identity::repository_policy(repo)?;
-    let log = git(
+    let (all, local) = match publication_identity::validate_range(
         worktree,
-        &[
-            "log",
-            publication_identity::LOG_FORMAT,
-            &format!("{base_oid}..HEAD"),
-        ],
-        &BTreeMap::new(),
-    )?;
-    if publication_identity::validate_records(&log, policy.as_ref()).is_err() {
-        return skip("wake_sync_publication_policy");
+        &format!("{base_oid}..HEAD"),
+        policy.as_ref(),
+    ) {
+        Ok(counts) => counts,
+        Err(_) => return skip("wake_sync_publication_policy"),
+    };
+    // Rebase would rewrite remote commits that are not already in the base.
+    // Leave them for an explicit history-preserving merge instead.
+    if all != local {
+        return skip("wake_sync_remote_history");
     }
     let env = publication_identity::command_environment(repo, &["rebase".into()])?;
     let backup = format!("refs/multicc/wake-backups/{branch}/{head}");

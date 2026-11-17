@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   publication-language:
-    name: English commit messages and unified identity
+    name: English commit messages
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,7 +22,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/publication-policy-target
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-core publication
-      - name: Validate new commit messages, authors and committers
+      - name: Validate new commit messages
         env:
           CI_POLICY_BASE: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
           CI_POLICY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}

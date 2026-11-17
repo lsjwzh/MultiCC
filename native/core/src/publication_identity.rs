@@ -150,27 +150,81 @@ pub fn validate_records(log: &str, policy: Option<&Identity>) -> Result<usize, S
             continue;
         }
         let mut next = || fields.next().ok_or("提交记录格式无效".to_owned());
-        let author_name = next()?;
+        let _author_name = next()?;
         let author_email = next()?;
-        let committer_name = next()?;
+        let _committer_name = next()?;
         let committer_email = next()?;
         let message = next()?;
         validate_english("commit", message).map_err(|e| format!("提交 {hash}：{e}"))?;
         if let Some(expected) = policy {
-            if author_name != expected.name
-                || author_email != expected.email
-                || committer_name != expected.name
-                || committer_email != expected.email
-            {
+            if author_email != expected.email || committer_email != expected.email {
                 return Err(format!(
-                    "提交 {hash} 的作者与提交者必须统一为 {} <{}>，请修正新增提交身份后重试",
-                    expected.name, expected.email
+                    "提交 {hash} 的作者与提交者必须统一使用邮箱 {}，请修正本机提交身份后重试",
+                    expected.email
                 ));
             }
         }
         checked += 1;
     }
     Ok(checked)
+}
+
+/// Validate every incoming message, but apply the repository identity only to
+/// commits outside the fetched default branch of the origin remote. A missing
+/// remote-tracking branch is not evidence of remote provenance: fail closed.
+pub fn validate_range(
+    cwd: &Path,
+    range: &str,
+    policy: Option<&Identity>,
+) -> Result<(usize, usize), String> {
+    let all = git(cwd, &["log", LOG_FORMAT, "--end-of-options", range])?;
+    let checked = validate_records(&all, None)?;
+    let default_ref = Command::new("git")
+        .current_dir(cwd)
+        .args(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| s.starts_with("refs/remotes/origin/"));
+    let candidates = default_ref.into_iter().chain([
+        "refs/remotes/origin/main".to_owned(),
+        "refs/remotes/origin/master".to_owned(),
+    ]);
+    let trusted = candidates.into_iter().find_map(|reference| {
+        let output = Command::new("git")
+            .current_dir(cwd)
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{reference}^{{commit}}"),
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let oid = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        (!oid.is_empty() && oid.bytes().all(|b| b.is_ascii_hexdigit())).then_some(oid)
+    });
+    let local = if let Some(oid) = trusted {
+        git(
+            cwd,
+            &[
+                "log",
+                LOG_FORMAT,
+                "--end-of-options",
+                range,
+                &format!("^{oid}"),
+            ],
+        )?
+    } else {
+        all
+    };
+    let local_checked = validate_records(&local, policy)?;
+    Ok((checked, local_checked))
 }
 
 #[cfg(test)]
@@ -185,9 +239,15 @@ mod tests {
         };
         let valid = "hash\0account\0account@example.invalid\0account\0account@example.invalid\0fix: restore delivery\0\n";
         assert_eq!(validate_records(valid, Some(&expected)).unwrap(), 1);
-        assert!(
-            validate_records(&valid.replacen("account\0", "bot\0", 1), Some(&expected)).is_err()
+        assert_eq!(
+            validate_records(&valid.replacen("account\0", "alias\0", 1), Some(&expected)).unwrap(),
+            1
         );
+        assert!(validate_records(
+            &valid.replacen("account@example.invalid", "bot@example.invalid", 1),
+            Some(&expected)
+        )
+        .is_err());
         assert!(validate_records(
             &valid.replace("account@example.invalid\0fix", "bot@local\0fix"),
             Some(&expected)
