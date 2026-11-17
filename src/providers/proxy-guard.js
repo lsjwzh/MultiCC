@@ -185,6 +185,10 @@ function createProviderProxyAdmission(options = {}) {
     return options.onDelta?.(delta, route);
   }
 
+  function onTransportMetrics(metrics, route) {
+    return options.onTransportMetrics?.(metrics, route);
+  }
+
   function onUsageEvent(event) {
     const context = requestContext.getStore();
     const proxyOutcome = context ? context.observation.settle(event) : null;
@@ -285,6 +289,8 @@ function createProviderProxyAdmission(options = {}) {
         ...context.attempt, roleKind: context.role, routeAttribution: 'exact',
         providerId: context.providerId || context.mainProviderId,
         status: event.status, statusCode: event.statusCode, errorCode: event.errorCode,
+        ...(Number.isFinite(event.timeoutMs) ? { timeoutMs: event.timeoutMs } : {}),
+        ...(event.errorDetail ? { errorDetail: event.errorDetail } : {}),
         // CPR reports the upstream rejection structurally (transient / window /
         // entitlement / billing). It is only advisory evidence here; the
         // attempt runtime validates and freezes it before anything persists it.
@@ -390,7 +396,7 @@ function createProviderProxyAdmission(options = {}) {
     return getProvider(appType, providerId);
   }
 
-  return Object.freeze({ app, getProvider: guardedGetProvider, getProviderAsync: guardedGetProviderAsync, onActivity, onUsageEvent, onDelta,
+  return Object.freeze({ app, getProvider: guardedGetProvider, getProviderAsync: guardedGetProviderAsync, onActivity, onUsageEvent, onDelta, onTransportMetrics,
     nativeConnectTimeoutMs, nativeConnectTimedOut, nativeStreamStarted, nativeStreamProgress, nativeStreamTimedOut });
 }
 

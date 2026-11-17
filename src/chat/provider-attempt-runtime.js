@@ -421,6 +421,7 @@ function createProviderAttemptRuntime(options = {}) {
     forceReleaseProducers,
     observeEvent,
     observeProxyDelta,
+    boundProxyAttempt,
     scrubAttemptStructure,
     scrubAttemptEvent,
     authorizeProxyRequest, authorizeProxyRequestAsync,

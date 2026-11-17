@@ -181,16 +181,44 @@ test('the exact per-request count becomes a measured rate', () => {
   assert.equal(meter.snapshot().exact.tokens, 500);
 });
 
-test('nothing is measured outside a turn, and end() hides the chip', () => {
-  const { meter } = meterAt();
+test('the whole observed turn average includes waiting and freezes at completion', () => {
+  const { c, meter } = meterAt();
   meter.noteChunk('abcd');
   meter.noteText('abcd');
   assert.equal(meter.isActive(), false);
   assert.equal(rate.describe(meter.snapshot()).text, '');
   meter.begin(0);
-  meter.noteChunk('abcd');
+  c.advance(2000);
+  meter.noteChunk('abcd'.repeat(20));
+  c.advance(8000);
+  assert.equal(meter.snapshot().averageRate, 2);
   meter.end();
-  assert.equal(rate.describe(meter.snapshot()).text, '');
+  c.advance(5000);
+  assert.equal(meter.snapshot().averageRate, 2);
+  assert.equal(rate.describe(meter.snapshot()).text, '平均 ≈2.0 tok/s');
+  meter.begin(0);
+  assert.equal(meter.snapshot().averageRate, null);
+});
+
+test('upstream averages weight observed request bytes by request duration and ignore replay or stale samples', () => {
+  const { c, meter } = meterAt();
+  meter.begin(0);
+  meter.noteTransportMetrics({ requestId: 'one', attempt: 1, bytes: 1024, elapsedMs: 1000, headersMs: 300 });
+  meter.noteTransportMetrics({ requestId: 'one', attempt: 1, bytes: 2048, elapsedMs: 2000, headersMs: 300, done: true });
+  meter.noteTransportMetrics({ requestId: 'one', attempt: 1, bytes: 4096, elapsedMs: 3000, headersMs: 300 });
+  meter.noteTransportMetrics({ requestId: 'two', attempt: 1, bytes: 2048, elapsedMs: 2000, headersMs: 600 });
+  let snap = meter.snapshot();
+  assert.equal(snap.transportRate, 1024);
+  assert.match(rate.describe(snap).text, /上游平均 1\.0 KiB\/s/);
+  assert.match(rate.describe(snap).title, /并非带宽测速/);
+  c.advance(1000);
+  assert.equal(meter.snapshot().transportRate, 4096 / 5, 'an unfinished silent request keeps accumulating time');
+  meter.noteTransportMetrics({ requestId: 'two', attempt: 1, bytes: 2048, elapsedMs: 3000, headersMs: 600, done: true });
+  meter.end();
+  snap = meter.snapshot();
+  assert.match(rate.describe(snap).text, /上游平均 819 B\/s/);
+  meter.begin(0);
+  assert.equal(meter.snapshot().transportRate, null);
 });
 
 test('describe() renders every phase with its duration and a detailed tooltip', () => {

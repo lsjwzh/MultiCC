@@ -109,21 +109,16 @@ function createApiErrorHost(options = {}) {
   const proxyFailureForAttempt = typeof options.proxyFailureForAttempt === 'function'
     ? options.proxyFailureForAttempt : null;
 
-  function proxyRejectionFor(runner) {
-    if (!proxyFailureForAttempt) return null;
-    const providerAttempt = runner?.providerAttempt;
-    if (!providerAttempt || typeof providerAttempt !== 'object') return null;
-    let failure;
-    try { failure = proxyFailureForAttempt(providerAttempt); } catch (_) { return null; }
+  function proxyRejectionFor(failure) {
     // The runtime's proxyFailure() is attempt-scoped already; the status gate
     // is repeated here because a rejection only ever describes a 429.
     if (!failure || failure.httpStatus !== 429) return null;
     return normalizeRejection(failure.rejection);
   }
 
-  function rawWithProxyRejection(raw, runner) {
+  function rawWithProxyRejection(raw, failure) {
     if (!raw || typeof raw !== 'object' || raw.rejection != null) return raw;
-    const rejection = proxyRejectionFor(runner);
+    const rejection = proxyRejectionFor(failure);
     if (!rejection) return raw;
     const nested = raw.error && typeof raw.error === 'object' ? raw.error : {};
     const hasStatus = [raw.httpStatus, raw.statusCode, raw.status,
@@ -230,7 +225,9 @@ function createApiErrorHost(options = {}) {
     const turnElapsedMs = Number.isFinite(Number(cs?.turnStartedAt))
       ? Math.max(0, observedAt - Number(cs.turnStartedAt)) : 0;
     const identity = turnProviderIdentity({ runner, persisted, cs, raw });
-    const effectiveRaw = rawWithProxyRejection(raw, runner);
+    let proxyFailure = null;
+    try { if (runner?.providerAttempt) proxyFailure = proxyFailureForAttempt?.(runner.providerAttempt) || null; } catch (_) {}
+    const effectiveRaw = rawWithProxyRejection(raw, proxyFailure);
     const decision = recordApiError(effectiveRaw, {
       // `provider` is the legacy public field and intentionally remains the
       // CLI. providerId is additive route diagnostics for this request only.
@@ -248,6 +245,7 @@ function createApiErrorHost(options = {}) {
         && identity.routeGeneration && identity.attemptNo && identity.providerRevision
         ? 'attempt' : null,
       source: raw?.source || 'process_stderr',
+      proxyFailure,
       sessionId: sessionName,
       turnId: turn?.turnId,
       attempt,

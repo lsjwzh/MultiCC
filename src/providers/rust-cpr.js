@@ -31,19 +31,20 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
     let closed = false;
     async function handle(req, res) {
       if (closed) return reply(res, 503, { error: 'Rust CPR 已关闭' });
-      let gone = !!res.destroyed, exchange, context, terminal = false, firstByte = false;
+      let gone = !!res.destroyed, exchange, context, diagnosticPlan, terminal = false, firstByte = false;
       const started = Date.now();
       const request = new native.RustProviderRequest();
       const activity = (phase, extra = {}) => {
         if (context?.sessionId) safeCall(options.onActivity, { sessionId: context.sessionId, role: context.role,
           providerId: context.providerId, providerName: context.providerName, phase, at: Date.now(), ...extra });
       };
-      function settle(status, errorCode, usage = null, statusCode, rejection) {
+      function settle(status, errorCode, usage = null, statusCode, rejection, errorDetail) {
         if (terminal || !context) return;
         terminal = true;
         if (context.sessionId) {
           const event = { ...context, eventId: randomUUID(), usage, status, statusCode, errorCode,
             ...(rejection ? { rejection } : {}),
+            ...(errorDetail ? { errorDetail } : {}),
             latencyMs: Date.now() - started, coverage: usage ? 'observed' : 'unobservable', source: 'exact' };
           safeCall(options.onUsageEvent, event);
           if (usage) safeCall(options.onUsage || options.usageSink, event);
@@ -137,6 +138,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             }
           }
           const plan = prepared.plan;
+          diagnosticPlan = plan;
           context = { sessionId: route.sessionId, providerId: route.providerId, providerName: plan.providerName || route.providerId,
             role: route.role, roleKind: route.role, agentRole: route.agentRole || null, routeName: route.routeName,
             model: plan.route.model, isStream: plan.route.isStream,
@@ -158,15 +160,17 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             input.body = stage.text;
             const updated = (await prepare(input)).plan;
             updated.proxyUrl = plan.proxyUrl;
+            diagnosticPlan = updated;
             const connectTimeoutMs = options.nativeConnectTimeoutMs?.();
             if (connectTimeoutMs !== undefined) updated.connectTimeoutMs = connectTimeoutMs;
             exchange = await native.cprCreateExchange(JSON.stringify(updated));
+            const transportId = randomUUID();
             exchanges.add(exchange);
             if (gone || closed) { exchange.abort(); return; }
             let head;
             try { head = JSON.parse(await exchange.open()); }
             catch (error) {
-              if (error?.message === 'MODEL_CONNECT_TIMEOUT') options.nativeConnectTimedOut?.();
+              if (error?.message?.startsWith('MODEL_CONNECT_TIMEOUT')) options.nativeConnectTimedOut?.();
               throw error;
             }
             if (virtual && head.rateLimit) {
@@ -200,7 +204,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
                   if (chunk.data.length && !res.write(chunk.data)) await waitWritable(res);
                   if (JSON.parse(chunk.meta).done) break;
                 }
-                settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status);
+                settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status, undefined, errorBody.detail);
                 if (!gone) res.end();
                 return;
               }
@@ -210,7 +214,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
               // 额度墙（订阅窗口/余额耗尽）在 CLI 的秒级重试里不可能成功：带 x-should-retry: false
               // 让它立刻停手；普通 429 限流仍然交给 CLI 自己退避。
               if (input.codexCredential) {
-                settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status);
+                settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status, undefined, errorBody.detail);
                 if (!gone) reply(res, head.status, JSON.parse(native.codexOfficialError(JSON.stringify({
                   status: head.status, body: detail, credential: input.codexCredential }))));
                 return;
@@ -219,7 +223,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
               let rejection;
               try { if (typeof errorBody.rejection === 'string') rejection = JSON.parse(errorBody.rejection); } catch (_) { /* 旧原生模块或损坏 JSON：不带归因。 */ }
               if (!heldAuth && !gone) res.writeHead(head.status, headers);
-              settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status, rejection);
+              settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status, rejection, errorBody.detail);
               if (!gone) res.end(errorBody.data);
               return;
             }
@@ -234,6 +238,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
               const timedOut = exchange.streamTimeoutCode();
               if (timedOut) throw new Error(timedOut);
               const meta = JSON.parse(chunk.meta);
+              if (meta.transportMetrics) safeCall(options.onTransportMetrics, { ...meta.transportMetrics, requestId: transportId, done: meta.done === true }, context);
               for (const event of meta.events) safeCall(options.onDelta, event, context);
               if (chunk.data.length) {
                 if (nativeProgress && meta.modelProgress) options.nativeStreamProgress?.();
@@ -256,15 +261,21 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
         if (['model_request_deadline', 'stream_idle_timeout', 'response_stalled_before_response'].includes(error?.message)) {
           options.nativeStreamTimedOut?.(error.message, exchange?.streamProgressed?.() === true);
         }
+        const [nativeCode] = String(error.message || '').split(': ', 1);
+        const transportCode = ['UPSTREAM_CONNECT_FAILED', 'UPSTREAM_STREAM_FAILED', 'UPSTREAM_HEADERS_TIMEOUT', 'UPSTREAM_ERROR_TIMEOUT', 'MODEL_CONNECT_TIMEOUT'].includes(nativeCode) ? nativeCode : null;
         const code = ['model_request_deadline', 'stream_idle_timeout', 'response_stalled_before_response'].includes(error.message) ? error.message
-          : error.message === 'MODEL_CONNECT_TIMEOUT' ? 'model_connect_timeout'
-          : ['CLIENT_DISCONNECTED', 'UPSTREAM_HEADERS_TIMEOUT', 'UPSTREAM_CONNECT_FAILED', 'UPSTREAM_STREAM_FAILED'].includes(error.message)
-            ? error.message : error.code === 'RUST_CPR_EGRESS_UNSUPPORTED' ? error.code : 'RUST_CPR_REQUEST_FAILED';
-        settle('error', code);
+          : nativeCode === 'MODEL_CONNECT_TIMEOUT' ? 'model_connect_timeout'
+          : transportCode || (error.message === 'CLIENT_DISCONNECTED' ? error.message
+            : error.code === 'RUST_CPR_EGRESS_UNSUPPORTED' ? error.code : 'RUST_CPR_REQUEST_FAILED');
+        let errorDetail = transportCode ? String(error.message) : (error.safeCprMessage || undefined);
+        if (!errorDetail && ['RUST_CPR_REQUEST_FAILED', 'RUST_CPR_EGRESS_UNSUPPORTED'].includes(code) && diagnosticPlan && typeof native.cprSanitizeDiagnostic === 'function') {
+          try { errorDetail = native.cprSanitizeDiagnostic(JSON.stringify({ ...diagnosticPlan, body: '' }), String(error.message || '').slice(0, 4096), code); } catch (_) { /* keep the safe fallback */ }
+        }
+        settle('error', code, null, undefined, undefined, errorDetail);
         if (gone || res.destroyed) return;
         if (res.headersSent) res.destroy();
         else reply(res, error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502,
-          { error: { type: code, message: error.safeCprMessage || (code === 'RUST_CPR_REQUEST_FAILED' ? 'Rust CPR 请求失败，请检查供应商配置' : 'Rust CPR 上游请求失败') } });
+          { error: { type: code, message: errorDetail || error.safeCprMessage || (code === 'RUST_CPR_REQUEST_FAILED' ? 'Rust CPR 请求失败，请检查供应商配置' : 'Rust CPR 上游请求失败') } });
       } finally {
         request.cancel();
         if (exchange) { await exchange.close(); exchanges.delete(exchange); }

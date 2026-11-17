@@ -22,6 +22,15 @@ pub fn cpr_request_lifecycle_version() -> u32 {
     3
 }
 
+#[napi]
+pub fn cpr_sanitize_diagnostic(plan: String, message: String, code: String) -> Result<String> {
+    let plan: plan::Plan =
+        serde_json::from_str(&plan).map_err(|_| error("Rust CPR 请求计划无效".into()))?;
+    Ok(multicc_cpr::transport::sanitize_adapter_error(
+        &plan, &message, &code,
+    ))
+}
+
 type StreamTimeoutCallback = ThreadsafeFunction<String, (), String, Status, false, true>;
 
 // Only bounded quota metadata crosses this synchronous compatibility bridge.
@@ -81,6 +90,7 @@ pub struct CprErrorBody {
     pub complete: bool,
     pub no_retry: bool,
     pub rejection: Option<String>,
+    pub detail: Option<String>,
 }
 
 #[napi]
@@ -156,6 +166,7 @@ impl RustCprExchange {
             complete: result.complete,
             no_retry: result.no_retry,
             rejection: result.rejection.map(|value| value.to_string()),
+            detail: result.detail,
         })
     }
     #[napi]

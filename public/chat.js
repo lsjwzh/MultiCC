@@ -1241,7 +1241,7 @@ function syncTokenRate() {
     paintTokenRate();
   } else {
     tokenRate.end();
-    tokenRateBar.textContent = tokenRateBar.title = '';
+    paintTokenRate();
   }
 }
 // The bar shows context and only context; the provider's token windows, the

@@ -151,7 +151,23 @@ function createProxyBroadcasters(chatBroadcast, {
       });
     } catch (_) {}
   };
-  return { onDelta, onRateLimit };
+  // The transport provides only counters; attribution and session routing
+  // reuse the same admitted-attempt fence as provider usage.
+  const onTransportMetrics = (metrics, ctx) => {
+    try {
+      if (!metrics || !ctx?.sessionId || !attemptRuntime || String(ctx.role || '').toLowerCase() !== 'main') return;
+      const attributed = attemptRuntime.boundProxyAttempt(ctx);
+      const identity = attemptIdentity(attributed);
+      if (!identity) return;
+      const { requestId, attempt, bytes, elapsedMs, headersMs, done } = metrics;
+      if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId)
+          || ![attempt, bytes, elapsedMs, headersMs].every(Number.isSafeInteger)
+          || attempt < 1 || bytes < 0 || elapsedMs < 0 || headersMs < 0) return;
+      chatBroadcast(attributed.sessionId, { type: 'provider_transport_metrics', sessionId: attributed.sessionId, ...identity,
+        requestId, attempt, bytes, elapsedMs, headersMs, done: done === true });
+    } catch (_) { /* Telemetry cannot interfere with transport. */ }
+  };
+  return { onDelta, onRateLimit, onTransportMetrics };
 }
 
 module.exports = { createProxyBroadcasters };

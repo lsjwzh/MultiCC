@@ -1465,6 +1465,7 @@ version = "0.1.0"
 dependencies = [
  "multicc-core",
  "percent-encoding",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

@@ -607,7 +607,7 @@ test('route protocol v1 isolates scoped attempts while preserving host-owned ter
     providerRouteProtocolVersion: 1,
   }, generation);
   const debugBefore = fixture.debugCalls.length;
-  for (const type of ['part_delta', 'stream_event']) {
+  for (const type of ['part_delta', 'stream_event', 'provider_transport_metrics']) {
     assert.equal(fixture.controller.handleEvent({ type, providerRouteScope: 'host' }, generation), false,
       `${type} has no legitimate host-owned form`);
   }
@@ -630,6 +630,21 @@ test('route protocol v1 isolates scoped attempts while preserving host-owned ter
     type: 'error', providerRouteScope: 'host', error: 'host failure',
   }, generation), true, 'host-scoped errors are not provider attempt frames');
   assert.equal(fixture.debugCalls.length, debugBefore + 7);
+});
+
+test('upstream metrics reach the meter only for the current provider attempt', () => {
+  const seen = [];
+  const fixture = controllerFixture({ tokenRate: { noteTransportMetrics: metric => seen.push(metric) } });
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({ type: 'system', subtype: 'init', session_id: 'strict', is_streaming: false,
+    providerRouteProtocolVersion: 1 }, generation);
+  const identity = { providerRouteScope: 'attempt', runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1',
+    routeAttemptId: 'attempt-1', routeGeneration: 1, attemptNo: 1, providerId: 'provider-a', providerRevision: 'revision-a' };
+  fixture.controller.handleEvent({ type: 'provider_route_event', version: 1, routePhase: 'selected', ...identity }, generation);
+  const metric = { type: 'provider_transport_metrics', ...identity, requestId: 'r', attempt: 1, bytes: 1024, elapsedMs: 2000, headersMs: 500 };
+  assert.equal(fixture.controller.handleEvent(metric, generation), true);
+  assert.equal(fixture.controller.handleEvent({ ...metric, routeAttemptId: 'old' }, generation), false);
+  assert.deepEqual(seen, [metric]);
 });
 
 test('route protocol v1 enforces an epoch-scoped monotonic route-generation high-water mark', () => {

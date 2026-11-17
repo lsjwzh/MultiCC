@@ -11,6 +11,24 @@ function harness() {
   return { sent, chatBroadcast };
 }
 
+test('transport metrics are routed only to an exactly bound main attempt', () => {
+  const { sent, chatBroadcast } = harness();
+  let bound = { sessionId: 'session', runtimeEpoch: 'epoch', turnId: 'turn', decisionId: 'decision',
+    routeAttemptId: 'attempt', routeGeneration: 1, attemptNo: 1, providerId: 'provider', providerRevision: 'revision' };
+  const { onTransportMetrics } = createProxyBroadcasters(chatBroadcast, { attemptRuntime: { boundProxyAttempt: () => bound } });
+  const metrics = { requestId: '12345678-1234-1234-1234-123456789abc', attempt: 1, bytes: 1024, elapsedMs: 2000, headersMs: 400, done: true };
+  const ctx = { sessionId: 'encoded', role: 'main' };
+  onTransportMetrics(metrics, ctx);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].sessionId, 'session');
+  assert.equal(sent[0].msg.bytes, 1024);
+  assert.equal(sent[0].msg.providerRouteScope, 'attempt');
+  bound = null;
+  onTransportMetrics(metrics, ctx);
+  onTransportMetrics(metrics, { ...ctx, role: 'sub' });
+  assert.equal(sent.length, 1);
+});
+
 test('onDelta broadcasts a part_delta to the originating session', () => {
   const { sent, chatBroadcast } = harness();
   const { onDelta } = createProxyBroadcasters(chatBroadcast);
@@ -257,7 +275,7 @@ test('attempt capability is consumed server-side and never becomes a client/cach
   attemptRuntime.onProxyActivity({
     sessionId: proxySessionId, providerId: 'provider-a', role: 'main', phase: 'request',
   });
-  const { onDelta, onRateLimit } = createProxyBroadcasters(chatBroadcast, {
+  const { onDelta, onRateLimit, onTransportMetrics } = createProxyBroadcasters(chatBroadcast, {
     attemptRuntime,
     recordLimit: (...args) => recorded.push(args),
     audit: (sessionId, event) => audited.push({ sessionId, event }),
@@ -270,8 +288,10 @@ test('attempt capability is consumed server-side and never becomes a client/cach
     sessionId: proxySessionId, providerId: 'provider-a', role: 'main',
     rateLimitInfo: { rateLimitType: 'five_hour', status: 'allowed', utilization: 0.1 },
   });
+  onTransportMetrics({ requestId: '12345678-1234-1234-1234-123456789abc', attempt: 1, bytes: 512, elapsedMs: 1000, headersMs: 200 },
+    { sessionId: proxySessionId, providerId: 'provider-a', role: 'main' });
 
-  assert.deepEqual(sent.map(item => item.sessionId), ['s1', 's1']);
+  assert.deepEqual(sent.map(item => item.sessionId), ['s1', 's1', 's1']);
   assert.equal(sent.every(item => item.msg.sessionId === 's1'), true);
   assert.deepEqual(recorded.map(args => args[0]), ['s1']);
   assert.equal(JSON.stringify({ sent, recorded, audited }).includes(proxySessionId), false);
@@ -283,7 +303,7 @@ test('attempt capability is consumed server-side and never becomes a client/cach
     sessionId: proxySessionId, providerId: 'provider-sub', role: 'sub',
     rateLimitInfo: { rateLimitType: 'five_hour', status: 'allowed', utilization: 0.2 },
   });
-  assert.equal(sent.length, 2, 'sub quota is provider-wide cache data, not a main-turn UI frame');
+  assert.equal(sent.length, 3, 'sub quota is provider-wide cache data, not a main-turn UI frame');
   assert.deepEqual(recorded.at(-1).slice(0, 3), [
     's1', { rateLimitType: 'five_hour', status: 'allowed', utilization: 0.2 }, 'provider-sub',
   ]);
