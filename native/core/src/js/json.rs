@@ -252,6 +252,27 @@ pub fn json_parse(input: &str) -> Result<JsValue, JsonParseError> {
     Ok(value)
 }
 
+/// Parse only selected root-object properties while validating the complete
+/// JSON document. Unselected values are skipped without allocating their
+/// strings or object trees. Duplicate and escaped keys follow `json_parse`.
+pub fn json_project_object(input: &str, fields: &[&str]) -> Result<JsValue, JsonParseError> {
+    let mut parser = Parser {
+        bytes: input.as_bytes(),
+        text: input,
+        position: 0,
+    };
+    parser.skip_whitespace();
+    if parser.peek() != Some(b'{') {
+        return json_parse(input);
+    }
+    let value = parser.project_object(fields)?;
+    parser.skip_whitespace();
+    if parser.position != parser.bytes.len() {
+        return Err(parser.error("unexpected trailing characters"));
+    }
+    Ok(value)
+}
+
 const MAX_PARSE_DEPTH: usize = 2_000;
 
 struct Parser<'a> {
@@ -482,6 +503,148 @@ impl Parser<'_> {
             return Err(self.error("expected ',' or '}'"));
         }
     }
+
+    fn project_object(&mut self, fields: &[&str]) -> Result<JsValue, JsonParseError> {
+        self.position += 1;
+        let mut entries: Vec<(JsString, JsValue)> = Vec::new();
+        self.skip_whitespace();
+        if self.eat(b'}') {
+            return Ok(JsValue::Object(entries));
+        }
+        loop {
+            self.skip_whitespace();
+            let key = self.parse_string()?;
+            self.skip_whitespace();
+            if !self.eat(b':') {
+                return Err(self.error("expected ':'"));
+            }
+            self.skip_whitespace();
+            if fields.iter().any(|name| key == *name) {
+                let value = self.parse_value(1)?;
+                if let Some(existing) = entries.iter_mut().find(|(name, _)| *name == key) {
+                    existing.1 = value;
+                } else {
+                    entries.push((key, value));
+                }
+            } else {
+                self.skip_value(1)?;
+            }
+            self.skip_whitespace();
+            if self.eat(b',') {
+                continue;
+            }
+            if self.eat(b'}') {
+                return Ok(JsValue::Object(reorder_object_keys(entries)));
+            }
+            return Err(self.error("expected ',' or '}'"));
+        }
+    }
+
+    fn skip_string(&mut self) -> Result<(), JsonParseError> {
+        if !self.eat(b'"') {
+            return Err(self.error("expected string"));
+        }
+        loop {
+            match self
+                .peek()
+                .ok_or_else(|| self.error("unterminated string"))?
+            {
+                b'"' => {
+                    self.position += 1;
+                    return Ok(());
+                }
+                b'\\' => {
+                    self.position += 1;
+                    let escape = self
+                        .peek()
+                        .ok_or_else(|| self.error("unterminated escape"))?;
+                    self.position += 1;
+                    match escape {
+                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => (),
+                        b'u' => {
+                            self.parse_hex4()?;
+                        }
+                        _ => return Err(self.error("invalid escape")),
+                    }
+                }
+                0x00..=0x1f => return Err(self.error("control character in string")),
+                _ => {
+                    let start = self.position;
+                    let end = memchr::memchr2(b'"', b'\\', &self.bytes[start..])
+                        .map(|offset| start + offset)
+                        .unwrap_or(self.bytes.len());
+                    if let Some(offset) =
+                        self.bytes[start..end].iter().position(|byte| *byte < 0x20)
+                    {
+                        self.position = start + offset;
+                        return Err(self.error("control character in string"));
+                    }
+                    self.position = end;
+                }
+            }
+        }
+    }
+
+    fn skip_value(&mut self, depth: usize) -> Result<(), JsonParseError> {
+        if depth > MAX_PARSE_DEPTH {
+            return Err(self.error("nesting too deep"));
+        }
+        match self.peek() {
+            Some(b'"') => self.skip_string(),
+            Some(b't') => self.parse_literal("true", JsValue::Bool(true)).map(|_| ()),
+            Some(b'f') => self
+                .parse_literal("false", JsValue::Bool(false))
+                .map(|_| ()),
+            Some(b'n') => self.parse_literal("null", JsValue::Null).map(|_| ()),
+            Some(b'-' | b'0'..=b'9') => self.parse_number().map(|_| ()),
+            Some(b'[') => {
+                self.position += 1;
+                self.skip_whitespace();
+                if self.eat(b']') {
+                    return Ok(());
+                }
+                loop {
+                    self.skip_whitespace();
+                    self.skip_value(depth + 1)?;
+                    self.skip_whitespace();
+                    if self.eat(b',') {
+                        continue;
+                    }
+                    if self.eat(b']') {
+                        return Ok(());
+                    }
+                    return Err(self.error("expected ',' or ']'"));
+                }
+            }
+            Some(b'{') => {
+                self.position += 1;
+                self.skip_whitespace();
+                if self.eat(b'}') {
+                    return Ok(());
+                }
+                loop {
+                    self.skip_whitespace();
+                    self.skip_string()?;
+                    self.skip_whitespace();
+                    if !self.eat(b':') {
+                        return Err(self.error("expected ':'"));
+                    }
+                    self.skip_whitespace();
+                    self.skip_value(depth + 1)?;
+                    self.skip_whitespace();
+                    if self.eat(b',') {
+                        continue;
+                    }
+                    if self.eat(b'}') {
+                        return Ok(());
+                    }
+                    return Err(self.error("expected ',' or '}'"));
+                }
+            }
+            None => Err(self.error("unexpected end of input")),
+            Some(_) => Err(self.error("unexpected character")),
+        }
+    }
 }
 
 /// `JSON.parse` creates an ordinary JS object, and ordinary objects enumerate
@@ -531,6 +694,40 @@ pub(crate) fn array_index(key: &JsString) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projection_matches_full_parse_and_validates_skipped_values() {
+        let records = [
+            r#"{"id":"a","payload":{"message":"中文😀\ud800","nested":[1,true,null,{"x":"\\\""}]},"queueOrder":1}"#,
+            r#"{"queueOrder":4,"queue\u004frder":-3,"id":"old","\u0069d":"new","other":[{},[false]]}"#,
+            r#"{"id":"\ud800","queueOrder":1e400,"message":"line\n\tend"}"#,
+            r#"{"other":null,"id":{},"queueOrder":[1,2],"2":1,"1":2}"#,
+        ];
+        for raw in records {
+            let full = json_parse(raw).unwrap();
+            let projected = json_project_object(raw, &["id", "queueOrder"]).unwrap();
+            assert_eq!(projected.get("id"), full.get("id"), "{raw}");
+            assert_eq!(projected.get("queueOrder"), full.get("queueOrder"), "{raw}");
+            assert!(projected.get("payload").is_none());
+        }
+        for raw in [
+            r#"{"id":"a","payload":"\u12"}"#,
+            r#"{"id":"a","payload":[1,]}"#,
+            r#"{"id":"a","payload":{"x":true,}}"#,
+            r#"{"id":"a","payload":"unterminated}"#,
+            r#"{"id":"a","payload":01}"#,
+            r#"{"id":"a"} trailing"#,
+        ] {
+            assert!(json_parse(raw).is_err(), "{raw}");
+            assert!(json_project_object(raw, &["id"]).is_err(), "{raw}");
+        }
+        for raw in ["null", "[1,2]", "123"] {
+            assert_eq!(
+                json_project_object(raw, &["id"]).unwrap(),
+                json_parse(raw).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn bulk_string_runs_keep_escapes_controls_and_error_positions() {

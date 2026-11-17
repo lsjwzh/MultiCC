@@ -11,6 +11,7 @@
 const assert = require('node:assert/strict');
 const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
+const http = require('node:http');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
@@ -136,7 +137,9 @@ const fs = require('node:fs');
 const readline = require('node:readline');
 const log = ${JSON.stringify(invocationLog)};
 const args = process.argv.slice(2);
-const record = event => fs.appendFileSync(log, JSON.stringify({ event, pid: process.pid, args }) + '\\n');
+const record = event => fs.appendFileSync(log, JSON.stringify({ event, pid: process.pid, args,
+  route: { baseUrl: process.env.ANTHROPIC_BASE_URL, authToken: process.env.ANTHROPIC_AUTH_TOKEN,
+    apiKey: process.env.ANTHROPIC_API_KEY, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN } }) + '\\n');
 if (args.includes('--version')) { process.stdout.write('fake-claude 9.9.9\\n'); process.exitCode = 0; }
 else {
 const sessionAt = args.indexOf('--session-id');
@@ -177,6 +180,17 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   } else if (marker.includes('SLOW_REPLAY')) {
     delta('slow:partial');
     setTimeout(() => finish('slow:done'), 2500);
+  } else if (marker === 'PING_ONE') {
+    const request = require('node:http').request(new URL('/v1/messages', process.env.ANTHROPIC_BASE_URL), {
+      method: 'POST', headers: { authorization: 'Bearer ' + process.env.ANTHROPIC_AUTH_TOKEN,
+        'content-type': 'application/json' },
+    }, response => {
+      response.resume();
+      response.on('end', () => { record('proxy-status:' + response.statusCode); delta('echo:' + marker); finish('echo:' + marker); });
+    });
+    request.on('error', error => { record('proxy-error:' + error.code); finish('echo:' + marker); });
+    request.end(JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 16,
+      messages: [{ role: 'user', content: 'fixture' }] }));
   } else {
     delta('echo:' + marker);
     finish('echo:' + marker);
@@ -185,6 +199,17 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 }
 `);
   fs.chmodSync(fakeCli, 0o755);
+
+  const upstreamRequests = [];
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      upstreamRequests.push({ url: req.url, authorization: req.headers.authorization, apiKey: req.headers['x-api-key'] });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: 'fixture', type: 'message', role: 'assistant', content: [] }));
+    });
+  });
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
 
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
@@ -199,6 +224,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     env: {
       ...isolatedHostEnv(),
       NODE_ENV: 'test',
+      ...(process.env.MULTICC_TEST_DISABLE_CODEGEN === '1'
+        ? { NODE_OPTIONS: '--disallow-code-generation-from-strings' } : {}),
       HOST: '127.0.0.1',
       PORT: String(port),
       ACCESS_TOKEN: TOKEN,
@@ -258,8 +285,13 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     const dirB = await apiOk('POST', '/api/directories', {
       name: 'Chat turn B', path: projectB, create: true,
     });
+    const provider = await apiOk('POST', '/api/providers', {
+      appType: 'claude', name: 'Isolated route', baseUrl: `http://127.0.0.1:${upstream.address().port}/fixture`,
+      authToken: 'isolated-provider-secret', model: 'claude-sonnet-4-5',
+    });
+    assert.ok(provider.id, 'isolated managed provider was created');
     const createdA = await apiOk('POST', `/api/directories/${dirA.id}/sessions`, {
-      cli: 'claude', kind: 'chat', label: 'turn-a',
+      cli: 'claude', kind: 'chat', label: 'turn-a', provider: provider.id,
     });
     const sessionA = createdA.id || createdA.sessionId;
     assert.ok(sessionA, `session A created: ${JSON.stringify(createdA)}`);
@@ -272,6 +304,18 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     sendUser(first, 'PING_ONE');
     await first.until(frames => hasText(frames, 'echo:PING_ONE'), 'assistant echo');
     await first.until(terminal, 'turn completion');
+    const launched = invocations().find(row => row.event === 'spawn');
+    assert.ok(launched, 'the provider-backed turn launched the fake CLI');
+    assert.match(launched.route.baseUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.match(launched.route.authToken || '', /^[a-f0-9]{64}$/);
+    assert.notEqual(launched.route.apiKey, 'isolated-provider-secret');
+    assert.notEqual(launched.route.authToken, 'isolated-provider-secret');
+    assert.notEqual(launched.route.oauth, 'isolated-provider-secret');
+    assert.ok(invocations().some(row => row.event === 'proxy-status:200'), 'the relay request succeeded');
+    assert.equal(upstreamRequests.length, 1, 'the managed route reached the local fixture upstream once');
+    assert.match(upstreamRequests[0].url, /\/v1\/messages$/);
+    assert.ok([upstreamRequests[0].authorization, upstreamRequests[0].apiKey].some(value =>
+      value === 'Bearer isolated-provider-secret' || value === 'isolated-provider-secret'));
     first.ws.close();
 
     // ── 2. reconnect replay: a second socket sees the live streamReplay ──
@@ -373,6 +417,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     console.error('INVOCATIONS:', invocations().map(row => row.event).join(','));
     throw error;
   } finally {
+    await new Promise(resolve => { upstream.close(resolve); upstream.closeAllConnections?.(); });
     for (const socket of sockets) {
       try { socket.terminate(); } catch (_) {}
     }

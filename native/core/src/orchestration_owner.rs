@@ -17,7 +17,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Incremented whenever owner semantics change, even if framing is unchanged.
-pub const OWNER_PROTOCOL_VERSION: u32 = 5;
+pub const OWNER_PROTOCOL_VERSION: u32 = 6;
 // serde_json's reader parser consumes individual bytes. Small frames are read
 // into a strictly bounded buffer to avoid amplifying synchronous RPC latency;
 // larger frames remain streaming and never reserve their advertised length.

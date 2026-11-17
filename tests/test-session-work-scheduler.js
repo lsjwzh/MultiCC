@@ -16,6 +16,126 @@ const {
 const { runStateForClassify } = require('../src/classify/vocab');
 const { createSessionWorkScheduler: legacyScheduler } = require('./helpers/legacy-session-work-selection');
 
+// Freeze the four still-JavaScript transitions before migrating them. Compile
+// with their original virtual filename so their relative imports keep working;
+// the actual source is a checked-in snapshot, never read from the live file.
+function loadDomainMigrationOracle(mutate = source => source) {
+  const Module = require('node:module');
+  const filename = path.resolve(__dirname, '../src/session-work/scheduler.js');
+  const snapshot = fs.readFileSync(path.join(__dirname, 'helpers/scheduler-before-domain-migration.js.txt'), 'utf8');
+  const digest = require('node:crypto').createHash('sha256').update(snapshot).digest('hex');
+  assert.equal(digest, 'f2d34115aa9f3dff98bd49c19ad5d34f30a9fbeb3735b524ddf069eb0b32dbb9');
+  const oracle = new Module(filename, module);
+  oracle.filename = filename;
+  oracle.paths = Module._nodeModulePaths(path.dirname(filename));
+  oracle._compile(mutate(snapshot), filename);
+  return oracle.exports.createSessionWorkScheduler;
+}
+
+async function exerciseDomainMigration(factory, scenario, realStore = null) {
+  let draft = {
+    nextOutboxSequence: 4,
+    sessionSchedules: { s: { sessionId: 's', state: 'running', classifyState: 'P',
+      active: { entryId: 'active', deliveryId: 'active', taskId: 'task', startedAt: 50 },
+      priorityEntryId: scenario.priority ? 'b' : null, updatedAt: 50 } },
+    outbox: Object.fromEntries(['a', 'b', 'c'].map((id, index) => [id, {
+      id, sessionId: 's', state: 'pending', sequence: index + 1, createdAt: 70 + index,
+      payload: { type: 'session.work', workKind: 'task', message: `message-${id}` },
+    }])),
+  };
+  if (realStore) {
+    await realStore.mutate(target => {
+      target.nextOutboxSequence = draft.nextOutboxSequence;
+      Object.assign(target.sessionSchedules, draft.sessionSchedules);
+      Object.assign(target.outbox, draft.outbox);
+      if (scenario.kind === 'recover' && scenario.missing) delete target.sessionSchedules.s;
+    });
+  } else if (scenario.kind === 'recover' && scenario.missing) {
+    delete draft.sessionSchedules.s;
+  }
+  const calls = [];
+  let clock = 1000;
+  const scheduler = factory({
+    store: realStore || { mutate: async fn => fn(draft), read: async fn => fn(draft) },
+    now: () => { calls.push('clock'); return clock++; },
+    getPendingUserInput: () => { calls.push('pending'); return scenario.pending ? { requestId: 'q', taskId: 'task' } : null; },
+    onEvent: event => calls.push(['event', structuredClone(event)]),
+    log: () => {},
+  });
+  let result;
+  if (scenario.kind === 'admit') {
+    result = await scheduler.admit({ sessionId: 's', text: ' text ', idempotencyKey: 'key',
+      ...(scenario.pending ? { requestId: 'q' } : {}) });
+  } else if (scenario.kind === 'complete') {
+    result = await scheduler.complete('s', { expectedTaskId: scenario.mismatch ? 'other' : 'task',
+      classifyState: scenario.classify, awaitingRequestId: 'q' });
+  } else if (scenario.kind === 'reorder') {
+    result = await scheduler.reorderQueued('s', 'c', { toIndex: scenario.index, direction: scenario.direction });
+  } else {
+    result = await scheduler.recover({ stateForSession: id => {
+      calls.push(['state', id]);
+      return { classifyState: scenario.classify, taskId: 'task', startedAt: 50, endedAt: 80 };
+    } });
+  }
+  if (realStore) {
+    const state = await realStore.snapshot();
+    draft = { nextOutboxSequence: state.nextOutboxSequence,
+      sessionSchedules: state.sessionSchedules, outbox: state.outbox };
+  }
+  return { result, draft, calls };
+}
+
+test('four scheduler transitions retain a frozen pre-migration oracle', async () => {
+  const oracle = loadDomainMigrationOracle();
+  const cases = [
+    { kind: 'admit' }, { kind: 'admit', pending: true },
+    ...['D', 'W', 'B', 'E'].map(classify => ({ kind: 'complete', classify, pending: true })),
+    { kind: 'complete', classify: 'D', mismatch: true },
+    { kind: 'reorder', index: 0 }, { kind: 'reorder', index: 0, priority: true },
+    { kind: 'reorder', direction: 'down' },
+    ...['D', 'W', 'E', 'P'].flatMap(classify => [
+      { kind: 'recover', classify }, { kind: 'recover', classify, missing: true },
+    ]),
+  ];
+  for (const scenario of cases) {
+    assert.deepEqual(await exerciseDomainMigration(createSessionWorkScheduler, scenario),
+      await exerciseDomainMigration(oracle, scenario), JSON.stringify(scenario));
+  }
+  // Prove that the oracle notices a real queue-order regression, rather than
+  // accidentally exercising the production implementation on both sides.
+  const mutant = loadDomainMigrationOracle(source => {
+    const original = "direction === 'up' ? from - 1";
+    assert.ok(source.includes(original));
+    return source.replace(original, "direction === 'up' ? from + 1");
+  });
+  const witness = { kind: 'reorder', direction: 'up' };
+  assert.notDeepEqual(await exerciseDomainMigration(createSessionWorkScheduler, witness),
+    await exerciseDomainMigration(mutant, witness));
+});
+
+test('frozen scheduler transitions agree through separate SQLite owners', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-scheduler-domain-oracle-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const oracle = loadDomainMigrationOracle();
+  const cases = [
+    { kind: 'admit', pending: true }, { kind: 'complete', classify: 'W', pending: true },
+    { kind: 'reorder', index: 0, priority: true }, { kind: 'recover', classify: 'E' },
+    { kind: 'recover', classify: 'W', missing: true },
+  ];
+  for (const [index, scenario] of cases.entries()) {
+    const stores = ['current', 'oracle'].map(name => createOrchestrationSqliteStore({
+      file: path.join(dir, `${index}-${name}.sqlite`), now: () => 2000,
+    }));
+    try {
+      const current = await exerciseDomainMigration(createSessionWorkScheduler, scenario, stores[0]);
+      const previous = await exerciseDomainMigration(oracle, scenario, stores[1]);
+      assert.deepEqual(current, previous, JSON.stringify(scenario));
+    } finally {
+      for (const store of stores) await store.close({ exportRollback: false });
+    }
+  }
+});
+
 test('SQLite input dismissal matches the legacy transition and rejects stale classifications', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-settle-'));
   const now = () => 1700;

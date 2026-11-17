@@ -37,9 +37,11 @@ for (const [label, bindHost] of [['loopback', '127.0.0.1'], ['localhost', 'local
   const native = path.join(root, 'native'); fs.mkdirSync(native);
   fs.copyFileSync(addon, path.join(native, 'multicc_core.node'));
   const target = process.env.CARGO_TARGET_DIR || path.join(repo, 'native/target');
+  const profile = process.env.MULTICC_RESTART_TEST_PROFILE || 'debug';
+  assert.ok(['debug', 'release'].includes(profile), 'unsupported Rust test profile');
   for (const name of ['multicc-gateway', 'restart-supervisor']) {
     const file = process.platform === 'win32' ? `${name}.exe` : name;
-    fs.copyFileSync(path.join(target, 'debug', file), path.join(native, file));
+    fs.copyFileSync(path.join(target, profile, file), path.join(native, file));
     if (process.platform !== 'win32') fs.chmodSync(path.join(native, file), 0o755);
   }
   const probe = net.createServer();
