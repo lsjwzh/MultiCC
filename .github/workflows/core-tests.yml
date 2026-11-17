@@ -46,6 +46,8 @@ jobs:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
           # 发布门禁：远控二进制缺了就是缺件，不许静默只打警告。
           MULTICC_REQUIRE_RUST_BUNDLE: '1'
+      - name: Build restart test executables
+        run: cargo build --locked --manifest-path native/Cargo.toml -p multicc-core -p multicc-gateway --bin restart-supervisor --bin multicc-gateway
       - name: Configure Rust module
         run: echo "MULTICC_RUST_PREBUILT_DIR=${{ runner.temp }}/multicc-rust-prebuilt" >> "$GITHUB_ENV"
       - name: Configure Git identity for isolated repositories

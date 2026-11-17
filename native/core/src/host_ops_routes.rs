@@ -863,13 +863,12 @@ mod tests {
 
     #[test]
     fn the_guard_segment_is_the_session_id_only() {
-        for path in ["/api/sessions/s1/doctor"] {
-            match route("OPTIONS", path) {
-                Some(Route::Options { guard_segment, .. }) => {
-                    assert_eq!(guard_segment, Some(1), "{path}");
-                }
-                other => panic!("{path}: {other:?}"),
+        let path = "/api/sessions/s1/doctor";
+        match route("OPTIONS", path) {
+            Some(Route::Options { guard_segment, .. }) => {
+                assert_eq!(guard_segment, Some(1), "{path}");
             }
+            other => panic!("{path}: {other:?}"),
         }
         for path in ["/api/system/env-doctor/r1", "/api/doctor/runs/r1"] {
             match route("OPTIONS", path) {

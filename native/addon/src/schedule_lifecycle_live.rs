@@ -53,6 +53,16 @@ pub fn schedule_lifecycle_live(
     {
         return Ok(fail("active_delivery_mismatch")?.raw());
     }
+    if action == "started" {
+        // A retried delivery may reuse the entry id while an older ACK is late.
+        // Compare attempts when both sides carry them; older persisted data may
+        // lack an attempt, so it retains the existing delivery-id behavior.
+        let attempt = active.get(c"attempt")?;
+        let incoming = input.get(c"attempts")?;
+        if attempt.truthy()? && incoming.truthy()? && !attempt.equals(incoming)? {
+            return Ok(fail("active_delivery_mismatch")?.raw());
+        }
+    }
     let null = draft.from_value(&V::Null)?;
     if action == "turnEnded" {
         schedule.assign(c"state", draft.from_value(&V::string("assessing"))?)?;
@@ -65,19 +75,25 @@ pub fn schedule_lifecycle_live(
         let at = clock.call_plain(&[])?.explicit_number()?;
         let at_value = draft.from_value(&V::Number(at))?;
         if action == "started" {
-            schedule.assign(c"state", draft.from_value(&V::string("running"))?)?;
-            schedule.assign(c"freezeReason", null)?;
-            schedule.assign(c"awaitingRequestId", null)?;
-            schedule.assign(c"classifyState", draft.from_value(&V::string("P"))?)?;
-            let target = schedule.get(c"active")?;
-            let started = schedule.get(c"active")?.get(c"startedAt")?;
-            target.assign(
-                c"startedAt",
-                if started.truthy()? { started } else { at_value },
-            )?;
-            schedule
-                .get(c"active")?
-                .assign(c"attempt", input.get(c"attempts")?)?;
+            // A fast turn can finish before delivery acknowledgement returns.
+            // Preserve the later state and avoid inventing a start timestamp.
+            let state = schedule.get(c"state")?;
+            let late = state.is_string("assessing")? || state.is_string("frozen")?;
+            if !late {
+                schedule.assign(c"state", draft.from_value(&V::string("running"))?)?;
+                schedule.assign(c"freezeReason", null)?;
+                schedule.assign(c"awaitingRequestId", null)?;
+                schedule.assign(c"classifyState", draft.from_value(&V::string("P"))?)?;
+                let target = schedule.get(c"active")?;
+                let started = schedule.get(c"active")?.get(c"startedAt")?;
+                target.assign(
+                    c"startedAt",
+                    if started.truthy()? { started } else { at_value },
+                )?;
+                schedule
+                    .get(c"active")?
+                    .assign(c"attempt", input.get(c"attempts")?)?;
+            }
         } else if action == "releaseClaim" {
             if schedule
                 .get(c"active")?
@@ -125,6 +141,11 @@ pub fn schedule_lifecycle_live(
     }
     let public = project.call_plain(&[schedule])?;
     let result = draft.from_value(&V::object(vec![("ok", true.into())]))?;
+    if action == "started" {
+        let state = schedule.get(c"state")?;
+        let late = state.is_string("assessing")? || state.is_string("frozen")?;
+        result.set(c"late", draft.from_value(&V::Bool(late))?)?;
+    }
     result.set(c"schedule", public)?;
     Ok(result.raw())
 }

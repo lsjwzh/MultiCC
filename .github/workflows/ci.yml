@@ -72,3 +72,74 @@ jobs:
           OPENCODE_CMD: /bin/true
           ZCODE_CMD: /bin/true
         run: npm run test:integration:isolated
+
+  browser-e2e:
+    if: github.event_name == 'workflow_dispatch'
+    name: Browser CDP end-to-end suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Build Rust runtime for browser integration
+        run: node scripts/build-rust-kernels.js
+        env:
+          MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
+          MULTICC_REQUIRE_RUST_BUNDLE: '1'
+      - name: Run all classified browser tests
+        shell: bash
+        env:
+          MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
+          CLAUDE_CMD: /bin/true
+          CODEX_CMD: /bin/true
+          OPENCODE_CMD: /bin/true
+          ZCODE_CMD: /bin/true
+        run: |
+          set -euo pipefail
+          node -e "if (!require('./tests/helpers/cdp-harness').findChromeBinary()) throw new Error('Chrome is required for CDP coverage')"
+          node <<'NODE' 2>&1 | tee "$RUNNER_TEMP/cdp-results.log"
+          const { spawnSync } = require('child_process');
+          const manifest = require('./tests/test-tiers.json');
+          const tests = manifest.tests.filter(entry => entry.lane === 'cdp').map(entry => entry.path);
+          if (!tests.length || new Set(tests).size !== tests.length) throw Error('Invalid CDP test selection');
+          console.log(`Running ${tests.length} classified CDP test files`);
+          const result = spawnSync(process.execPath, ['--test', '--test-concurrency=2', ...tests], { stdio: 'inherit' });
+          if (result.error) throw result.error;
+          process.exit(result.status ?? 1);
+          NODE
+          if grep -Eiq '# SKIP|^# skipped [1-9][0-9]*' "$RUNNER_TEMP/cdp-results.log"; then
+            echo '::error::Browser suite skipped tests; CDP coverage is incomplete'
+            exit 1
+          fi
+      - name: Preserve browser test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-report
+          path: ${{ runner.temp }}/cdp-results.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  flutter-unit:
+    if: github.event_name == 'workflow_dispatch'
+    name: Complete Flutter unit and widget suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.32.2'
+          cache: true
+      - name: Restore Flutter dependencies
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+      - name: Run complete Flutter suite
+        working-directory: app
+        run: flutter test --no-pub
