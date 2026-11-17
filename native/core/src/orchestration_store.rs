@@ -674,7 +674,11 @@ impl Store {
                     .collect::<String>();
                 let mut scan = schedule_metadata::Scan::new(token.clone(), input)?;
                 let state = self.request("begin", &json!({}))?;
-                let schedule = match schedule_metadata::schedule(self.conn()?, scan.session()) {
+                let schedule = match schedule_metadata::schedule(
+                    self.conn()?,
+                    scan.session(),
+                    scan.preparation(),
+                ) {
                     Ok(schedule) => schedule,
                     Err(error) => {
                         let _ = self.end();

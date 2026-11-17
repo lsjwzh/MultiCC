@@ -45,10 +45,8 @@ const {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired: evaluateCodexProxyConfigRequired,
 } = require('../codex/proxy-policy');
-const {
-  assertClaudeProxyEnvApplied,
-  claudeProxyEnvRequired,
-} = require('./claude-proxy-policy');
+const assertClaudeProxyEnvApplied = (...args) => getNative().assertClaudeProxyEnvApplied(...args);
+const claudeProxyEnvRequired = (...args) => getNative().claudeProxyEnvRequired(...args);
 
 const sqliteRuntime = createSqliteRuntime();
 
@@ -2139,7 +2137,7 @@ function claudeProbeRouteEnv(claudeProviderId, port) {
 // is also where the route guarantee is enforced: when the host has a local
 // endpoint for the bound provider, failing to rewrite ANTHROPIC_BASE_URL fails
 // the spawn instead of leaving the child to dial the vendor directly with
-// whatever ANTHROPIC_* it still carries. See ./claude-proxy-policy for what
+// whatever ANTHROPIC_* it still carries. See the native Claude proxy policy for what
 // counts as required — now every concrete providerId.
 //
 // Routing is unconditional. There is deliberately no host-wide "run claude

@@ -7,7 +7,7 @@ use napi::{bindgen_prelude::Unknown, sys, Env, Error, Result};
 use napi_derive::napi;
 use std::{ffi::CStr, ptr};
 
-fn object<'a>(anchor: LiveValue<'a>) -> Result<LiveValue<'a>> {
+pub(crate) fn object<'a>(anchor: LiveValue<'a>) -> Result<LiveValue<'a>> {
     anchor.from_value(&JsValue::Object(vec![]))
 }
 
@@ -18,7 +18,7 @@ fn null<'a>(anchor: LiveValue<'a>) -> Result<LiveValue<'a>> {
 /// N-API property reads require an object, but a strict JS accessor on a
 /// primitive's prototype observes the primitive as its receiver. Compile one
 /// fixed host primitive per command, only if such a read is actually needed.
-fn property<'a>(
+pub(crate) fn property<'a>(
     reader: &mut Option<LiveValue<'a>>,
     value: LiveValue<'a>,
     key: &CStr,
@@ -47,7 +47,10 @@ fn property<'a>(
     function.call_plain(&[value, key])
 }
 
-fn clean<'a>(reader: &mut Option<LiveValue<'a>>, value: LiveValue<'a>) -> Result<LiveValue<'a>> {
+pub(crate) fn clean<'a>(
+    reader: &mut Option<LiveValue<'a>>,
+    value: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
     if value.nullish()? {
         return value.from_value(&JsValue::string(""));
     }

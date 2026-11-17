@@ -305,6 +305,125 @@ fn metadata_order_projection_rejects_large_or_inconsistent_rows() {
 }
 
 #[test]
+fn opt_in_metadata_preparation_projects_large_and_split_records_without_leaking_bodies() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut store = owner(&file);
+    let db = Database::open(&file, false, true, 5000).unwrap();
+    db.exec("INSERT INTO orchestration_session_schedules(session_id,data_json,state) VALUES('s','{\"active\":{\"entryId\":\"entry\"},\"extra\":\"' || printf('%.*c',1048576,'x') || '\"}','running')").unwrap();
+    db.exec("INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence) VALUES('a','{\"id\":\"a\",\"sessionId\":\"s\",\"state\":\"pending\",\"sequence\":1,\"queueOrder\":2,\"queue\\u004frder\":7,\"message\":\"PRIVATE-' || printf('%.*c',4194304,'x') || '\"}','s','pending',1)").unwrap();
+    db.exec("INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence,body_ref) VALUES('b','{}','s','pending',2,1)").unwrap();
+    db.exec("INSERT INTO orchestration_record_bodies(collection,record_key,data_json) VALUES('outbox','b','{\"id\":\"b\",\"sessionId\":\"s\",\"state\":\"pending\",\"sequence\":2,\"queueOrder\":-1,\"message\":\"PRIVATE-SPLIT\"}')").unwrap();
+    assert!(store
+        .request(
+            "scheduleMetadataBegin",
+            &json!({"sessionId":"s","prepareLargeRecords":"true"})
+        )
+        .is_err());
+    let snapshot = store
+        .request(
+            "scheduleMetadataBegin",
+            &json!({"sessionId":"s","prepareLargeRecords":true}),
+        )
+        .unwrap();
+    assert_eq!(snapshot["schedule"]["activeDeliveryId"], "entry");
+    let pending = store
+        .request(
+            "scheduleMetadataPage",
+            &json!({"token":snapshot["token"],"limit":128}),
+        )
+        .unwrap();
+    assert_eq!(
+        pending["rows"],
+        json!([
+            {"id":"a","sequence":1,"queueOrder":7.0},
+            {"id":"b","sequence":2,"queueOrder":-1.0}
+        ])
+    );
+    assert!(!pending.to_string().contains("PRIVATE"));
+    let leased = store
+        .request(
+            "scheduleMetadataPage",
+            &json!({"token":snapshot["token"],"limit":128}),
+        )
+        .unwrap();
+    assert_eq!(leased["scanComplete"], true);
+    db.exec("UPDATE orchestration_outbox SET state='delivered' WHERE id='b'")
+        .unwrap();
+    let error = store.request("scheduleMetadataPrepare", &json!({"token":snapshot["token"],"expectedRevision":snapshot["state"]["revision"],"state":snapshot["state"],"changes":[]})).unwrap_err();
+    assert!(
+        error.starts_with("ORCHESTRATION_SQLITE_CONFLICT:"),
+        "{error}"
+    );
+    store.request("close", &json!({})).unwrap();
+}
+
+#[test]
+fn opt_in_metadata_preparation_still_rejects_oversized_and_missing_bodies() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut store = owner(&file);
+    let db = Database::open(&file, false, true, 5000).unwrap();
+    db.exec("INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence) VALUES('a','{\"id\":\"a\",\"sessionId\":\"s\",\"state\":\"pending\",\"sequence\":1,\"message\":\"' || printf('%.*c',16777216,'x') || '\"}','s','pending',1)").unwrap();
+    let snapshot = store
+        .request(
+            "scheduleMetadataBegin",
+            &json!({"sessionId":"s","prepareLargeRecords":true}),
+        )
+        .unwrap();
+    let error = store
+        .request(
+            "scheduleMetadataPage",
+            &json!({"token":snapshot["token"],"limit":1}),
+        )
+        .unwrap_err();
+    assert!(error.contains("outbox record exceeds limit"), "{error}");
+    store.request("end", &json!({})).unwrap();
+    db.exec("UPDATE orchestration_outbox SET data_json='{}',body_ref=1 WHERE id='a'")
+        .unwrap();
+    // The update trigger clears body_ref; set it afterwards to model a
+    // corrupted split record with a missing original.
+    db.exec("UPDATE orchestration_outbox SET body_ref=1 WHERE id='a'")
+        .unwrap();
+    let snapshot = store
+        .request(
+            "scheduleMetadataBegin",
+            &json!({"sessionId":"s","prepareLargeRecords":true}),
+        )
+        .unwrap();
+    assert!(store
+        .request(
+            "scheduleMetadataPage",
+            &json!({"token":snapshot["token"],"limit":1})
+        )
+        .is_err());
+    store.request("close", &json!({})).unwrap();
+}
+
+#[test]
+fn metadata_preparation_rejects_invalid_json_even_in_unprojected_payloads() {
+    let fixture = Fixture::new();
+    let file = fixture.file();
+    let mut store = owner(&file);
+    let db = Database::open(&file, false, true, 5000).unwrap();
+    db.exec("INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence) VALUES('a','{\"id\":\"a\",\"sessionId\":\"s\",\"state\":\"pending\",\"sequence\":1,\"payload\":[1,]}','s','pending',1)").unwrap();
+    let snapshot = store
+        .request(
+            "scheduleMetadataBegin",
+            &json!({"sessionId":"s","prepareLargeRecords":true}),
+        )
+        .unwrap();
+    let error = store
+        .request(
+            "scheduleMetadataPage",
+            &json!({"token":snapshot["token"],"limit":1}),
+        )
+        .unwrap_err();
+    assert!(error.starts_with("ORCHESTRATION_STORE_CORRUPT:"), "{error}");
+    store.request("close", &json!({})).unwrap();
+}
+
+#[test]
 fn metadata_scans_are_bound_to_the_owner_session() {
     let fixture = Fixture::new();
     let file = fixture.file();

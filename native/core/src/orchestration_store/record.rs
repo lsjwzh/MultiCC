@@ -1,12 +1,15 @@
 //! Lossless JSON at the per-record persistence boundary. Domain strings use
 //! UTF-16, including lone surrogates produced by ordinary JavaScript slicing.
 use super::{corrupt, err, receipts, table, Result};
-use crate::js::{from_serde, json_parse, json_stringify, to_serde, JsValue};
+use crate::js::{from_serde, json_parse, json_project_object, json_stringify, to_serde, JsValue};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 pub(super) fn parse(raw: &str) -> Result<JsValue> {
     json_parse(raw).map_err(corrupt)
+}
+pub(super) fn project(raw: &str, fields: &[&str]) -> Result<JsValue> {
+    json_project_object(raw, fields).map_err(corrupt)
 }
 pub(super) fn encode(value: &JsValue) -> Result<String> {
     json_stringify(value).ok_or_else(|| err("record is not JSON serializable"))

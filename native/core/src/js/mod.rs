@@ -30,8 +30,8 @@ pub use coerce::{
     truthy_opt,
 };
 pub use json::{
-    date_to_iso_string, json_parse, json_quote, json_quote_str, json_stringify,
-    json_stringify_or_undefined, JsonParseError,
+    date_to_iso_string, json_parse, json_project_object, json_quote, json_quote_str,
+    json_stringify, json_stringify_or_undefined, JsonParseError,
 };
 pub use number::{format_f64, js_string_to_number, number_to_string, string_to_number};
 pub use string::{

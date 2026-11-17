@@ -19,7 +19,8 @@ No production restart, configuration switch, live-data migration, commit, merge 
 
 The worktree now routes the production orchestration store through the dedicated
 Rust owner instead of selecting an in-process SQLite connection. Store addon
-protocol 11 and owner protocol 5 must be deployed together. This is an isolated
+protocol 11 and owner protocol 6 must be deployed together (the later scheduler
+metadata preparation experiment incremented the owner protocol). This is an isolated
 implementation batch: Rust checks and 175 focused tests pass, while the full npm
 acceptance still has eight failures (one unavailable trace, three raw mixed-driver
 diagnostics and four scheduler migration guards). It does not complete any

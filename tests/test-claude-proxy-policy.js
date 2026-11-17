@@ -15,10 +15,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const {
-  assertClaudeProxyEnvApplied,
-  claudeProxyEnvRequired,
-} = require('../src/providers/claude-proxy-policy');
+const { getNative } = require('../src/native/runtime');
+const assertClaudeProxyEnvApplied = (...args) => getNative().assertClaudeProxyEnvApplied(...args);
+const claudeProxyEnvRequired = (...args) => getNative().claudeProxyEnvRequired(...args);
+const legacyPolicy = require('./helpers/legacy-claude-proxy-policy');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-claude-proxy-policy-'));
 const original = {
@@ -33,6 +33,101 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 
 const providers = require('../src/providers/core');
+
+function captured(call) {
+  try { return { value: call() }; }
+  catch (error) { return { name: error.name, message: error.message, code: error.code }; }
+}
+
+test('native Claude proxy rules match the frozen implementation for live inputs', () => {
+  const values = [undefined, null, false, true, 0, 1, '', ' ', '_default_', ' _default_ ',
+    'provider', Symbol.for('provider'), 0n, [], {}, { toString: () => ' provider ' }];
+  for (const value of values) {
+    for (const options of [value, { providerId: value }]) {
+      assert.deepEqual(captured(() => claudeProxyEnvRequired(options)),
+        captured(() => legacyPolicy.claudeProxyEnvRequired(options)));
+    }
+    for (const applied of values) {
+      const options = { required: value, applied };
+      assert.deepEqual(captured(() => assertClaudeProxyEnvApplied(options)),
+        captured(() => legacyPolicy.assertClaudeProxyEnvApplied(options)));
+    }
+    assert.deepEqual(captured(() => assertClaudeProxyEnvApplied(value)),
+      captured(() => legacyPolicy.assertClaudeProxyEnvApplied(value)));
+  }
+});
+
+test('native Claude proxy rules preserve getter ordering and thrown exceptions', () => {
+  const run = (policy, scenario) => {
+    const trace = [];
+    const sentinel = new Error('getter sentinel');
+    const options = new Proxy({}, { get(_target, key) {
+      trace.push(String(key));
+      if (key === scenario) throw sentinel;
+      if (key === 'providerId') return { toString() { trace.push('toString'); return ' p '; } };
+      if (key === 'required') return false;
+      if (key === 'applied') return true;
+      return undefined;
+    } });
+    let result;
+    try { result = { value: scenario === 'providerId' || scenario === 'coerce'
+      ? policy.claudeProxyEnvRequired(options) : policy.assertClaudeProxyEnvApplied(options) }; }
+    catch (error) { result = { name: error.name, message: error.message, same: error === sentinel }; }
+    return { trace, result };
+  };
+  const native = { claudeProxyEnvRequired, assertClaudeProxyEnvApplied };
+  for (const scenario of ['providerId', 'coerce', 'required', 'applied', 'normal']) {
+    assert.deepEqual(run(native, scenario), run(legacyPolicy, scenario), scenario);
+  }
+});
+
+test('native refusal preserves strict assignment when the Error constructor is replaced', () => {
+  const run = (fn, mode) => {
+    const original = global.Error;
+    try {
+      global.Error = function(message) {
+        const value = { message };
+        return mode === 'frozen' ? Object.freeze(value) : new Proxy(value, { set: () => false });
+      };
+      return captured(() => fn({ required: true, applied: false }));
+    } finally { global.Error = original; }
+  };
+  for (const mode of ['frozen', 'proxy']) {
+    assert.deepEqual(run(assertClaudeProxyEnvApplied, mode), run(legacyPolicy.assertClaudeProxyEnvApplied, mode));
+  }
+});
+
+test('native rules preserve primitive getter receivers', () => {
+  const run = policy => {
+    const prior = Object.getOwnPropertyDescriptor(String.prototype, 'providerId');
+    const trace = [];
+    try {
+      Object.defineProperty(String.prototype, 'providerId', { configurable: true, get() {
+        trace.push([typeof this, this === 'input']);
+        return 'provider';
+      } });
+      return { result: captured(() => policy.claudeProxyEnvRequired('input')), trace };
+    } finally {
+      if (prior) Object.defineProperty(String.prototype, 'providerId', prior);
+      else delete String.prototype.providerId;
+    }
+  };
+  assert.deepEqual(run({ claudeProxyEnvRequired }), run(legacyPolicy));
+});
+
+test('native refusal works when string code generation is disabled', () => {
+  const { spawnSync } = require('node:child_process');
+  const { addonPath } = require('../src/native/runtime');
+  const code = `const assert = require('node:assert/strict');
+    const native = require(process.env.MULTICC_RUST_ADDON);
+    assert.throws(() => native.assertClaudeProxyEnvApplied({ required: true, applied: false }),
+      error => error.code === 'CLAUDE_PROXY_ENV_REQUIRED');`;
+  const child = spawnSync(process.execPath, ['--disallow-code-generation-from-strings', '-e', code], {
+    env: { ...process.env, MULTICC_RUST_ADDON: addonPath() }, encoding: 'utf8', timeout: 30000,
+  });
+  assert.equal(child.error, undefined, child.error?.message);
+  assert.equal(child.status, 0, child.stderr);
+});
 
 // Provider records reach the router either as an object or as a JSON string.
 function configOf(provider) {

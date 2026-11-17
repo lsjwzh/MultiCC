@@ -10,6 +10,9 @@ const MAX_PAGE: u64 = 128;
 const MAX_IDENTIFIER_BYTES: usize = 1024;
 const MAX_SEQUENCE: i64 = 9_007_199_254_740_991;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
+// Opt-in preparation only: this is still a synchronous owner request, not a
+// nonblocking production scheduler interface. Keep an explicit allocation cap.
+const MAX_PREPARATION_RECORD_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(super) struct Scan {
@@ -19,6 +22,7 @@ pub(super) struct Scan {
     after: Option<i64>,
     complete: bool,
     revision: Option<u64>,
+    preparation: bool,
 }
 
 fn only_fields(input: &Value, allowed: &[&str]) -> Result<()> {
@@ -37,7 +41,12 @@ impl Scan {
     }
 
     pub(super) fn new(token: String, input: &Value) -> Result<Self> {
-        only_fields(input, &["sessionId"])?;
+        only_fields(input, &["sessionId", "prepareLargeRecords"])?;
+        let preparation = match input.get("prepareLargeRecords") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            _ => return Err(err("invalid scheduler metadata preparation option")),
+        };
         let session = input["sessionId"]
             .as_str()
             .filter(|value| !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES)
@@ -49,6 +58,7 @@ impl Scan {
             after: None,
             complete: false,
             revision: None,
+            preparation,
         })
     }
 
@@ -83,7 +93,14 @@ impl Scan {
         if self.complete {
             return Err(err("scheduler metadata scan is complete"));
         }
-        let result = page(connection, &self.session, self.state, self.after, input)?;
+        let result = page(
+            connection,
+            &self.session,
+            self.state,
+            self.after,
+            input,
+            self.preparation,
+        )?;
         let state = self.state;
         if let Some(next) = result["nextSequence"].as_i64() {
             self.after = Some(next);
@@ -114,18 +131,22 @@ fn optional_id(value: Option<&JsValue>) -> Result<Option<String>> {
     Ok(Some(text))
 }
 
-pub(super) fn schedule(connection: &Connection, session: &str) -> Result<Value> {
+pub(super) fn schedule(connection: &Connection, session: &str, preparation: bool) -> Result<Value> {
     // Only one capped scheduler record is parsed, inside the read snapshot;
     // the complete record and any unrelated fields never leave Rust.
     let raw: Option<Option<String>> = connection.query_row(
         "SELECT CASE WHEN octet_length(data_json)<=?2 THEN data_json END FROM orchestration_session_schedules WHERE session_id=?1",
-        params![session, MAX_RECORD_BYTES as i64], |row| row.get(0),
+        params![session, record_limit(preparation) as i64], |row| row.get(0),
     ).optional().map_err(err)?;
     let Some(raw) = raw else {
         return Ok(json!({"exists":false,"activeDeliveryId":null,"priorityEntryId":null}));
     };
     let raw = raw.ok_or_else(|| err("scheduler metadata schedule exceeds limit"))?;
-    let value = record::parse(&raw)?;
+    let value = if preparation {
+        record::project(&raw, &["active", "priorityEntryId"])?
+    } else {
+        record::parse(&raw)?
+    };
     if !matches!(&value, JsValue::Object(_)) {
         return Err(err("scheduler metadata schedule must be an object"));
     }
@@ -139,23 +160,53 @@ pub(super) fn schedule(connection: &Connection, session: &str) -> Result<Value> 
     Ok(json!({"exists":true,"activeDeliveryId":delivery.or(entry),"priorityEntryId":priority}))
 }
 
+impl Scan {
+    pub(super) fn preparation(&self) -> bool {
+        self.preparation
+    }
+}
+
+fn record_limit(preparation: bool) -> usize {
+    if preparation {
+        MAX_PREPARATION_RECORD_BYTES
+    } else {
+        MAX_RECORD_BYTES
+    }
+}
+
 fn queue_order(
     connection: &Connection,
     id: &str,
     session: &str,
     state: &str,
     sequence: i64,
+    preparation: bool,
 ) -> Result<Option<f64>> {
-    // octet_length(column) can inspect SQLite's record header without first
-    // loading an arbitrarily large payload. A large or split active record is
-    // unsupported here; never silently use an incomplete projection.
-    let raw: Option<String> = connection.query_row(
-        "SELECT CASE WHEN body_ref=0 AND octet_length(data_json)<=?2 THEN data_json END FROM orchestration_outbox WHERE id=?1",
-        params![id, MAX_RECORD_BYTES as i64], |row| row.get(0),
-    ).map_err(err)?;
+    // Keep octet_length directly on each column so SQLite can reject an
+    // oversized value before copying it. Never fall back to the receipt when
+    // a split body is missing or malformed.
+    let projection = if preparation {
+        "CASE WHEN body_ref=0 AND octet_length(data_json)<=?2 THEN data_json WHEN body_ref=1 THEN (SELECT CASE WHEN octet_length(data_json)<=?2 THEN data_json END FROM orchestration_record_bodies WHERE collection='outbox' AND record_key=orchestration_outbox.id) END"
+    } else {
+        "CASE WHEN body_ref=0 AND octet_length(data_json)<=?2 THEN data_json END"
+    };
+    let raw: Option<String> = connection
+        .query_row(
+            &format!("SELECT {projection} FROM orchestration_outbox WHERE id=?1"),
+            params![id, record_limit(preparation) as i64],
+            |row| row.get(0),
+        )
+        .map_err(err)?;
     let raw =
         raw.ok_or_else(|| err("scheduler metadata outbox record exceeds limit or is split"))?;
-    let value = record::parse(&raw)?;
+    let value = if preparation {
+        record::project(
+            &raw,
+            &["id", "sessionId", "state", "sequence", "queueOrder"],
+        )?
+    } else {
+        record::parse(&raw)?
+    };
     let matches_text =
         |field: &str, expected: &str| value.get(field) == Some(&JsValue::string(expected));
     if !matches_text("id", id)
@@ -179,6 +230,7 @@ fn page(
     state: &str,
     after: Option<i64>,
     input: &Value,
+    preparation: bool,
 ) -> Result<Value> {
     let limit = input["limit"]
         .as_u64()
@@ -224,7 +276,7 @@ fn page(
     };
     let mut projected = Vec::with_capacity(values.len());
     for (id, sequence) in values {
-        let order = queue_order(connection, &id, session, state, sequence)?;
+        let order = queue_order(connection, &id, session, state, sequence, preparation)?;
         projected.push(json!({"id": id, "sequence": sequence, "queueOrder": order}));
     }
     Ok(json!({"rows": projected, "nextSequence": next}))
