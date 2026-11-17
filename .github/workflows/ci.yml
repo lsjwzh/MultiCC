@@ -100,6 +100,7 @@ jobs:
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
           MULTICC_TEST_CDP_LOCALE: zh-CN
+          MULTICC_H264_CDP_SUITE: relay
           CLAUDE_CMD: /bin/true
           CODEX_CMD: /bin/true
           OPENCODE_CMD: /bin/true
@@ -119,6 +120,10 @@ jobs:
           NODE
           if grep -Eiq '# SKIP|^# skipped [1-9][0-9]*' "$RUNNER_TEMP/cdp-results.log"; then
             echo '::error::Browser suite skipped tests; CDP coverage is incomplete'
+            exit 1
+          fi
+          if ! grep -Eq '^ok [0-9]+ - h264 stream:' "$RUNNER_TEMP/cdp-results.log"; then
+            echo '::error::H.264 relay browser test did not pass'
             exit 1
           fi
       - name: Preserve browser test report
@@ -192,5 +197,22 @@ jobs:
           fi
           if ! grep -Eq '(^|[[:space:]])\+[1-9][0-9]*:' "$RUNNER_TEMP/flutter-remote-screen-e2e.log"; then
             echo '::error::Remote screen integration did not complete a test'
+            exit 1
+          fi
+      - name: Run H.264 browser P2P on the real macOS host
+        shell: bash
+        env:
+          MULTICC_H264_CDP_SUITE: p2p
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          node -e "if (!require('./tests/helpers/cdp-harness').findChromeBinary()) throw new Error('Chrome is required for CDP coverage')"
+          node --test --test-reporter=tap tests/test-remote-screen-h264-cdp.js 2>&1 | tee "$RUNNER_TEMP/h264-p2p-cdp.log"
+          if grep -Eiq '# SKIP|^# skipped [1-9][0-9]*' "$RUNNER_TEMP/h264-p2p-cdp.log"; then
+            echo '::error::H.264 P2P browser coverage was skipped'
+            exit 1
+          fi
+          if ! grep -Eq '^# pass 1$' "$RUNNER_TEMP/h264-p2p-cdp.log"; then
+            echo '::error::H.264 P2P browser test did not pass exactly once'
             exit 1
           fi
