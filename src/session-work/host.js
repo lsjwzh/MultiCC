@@ -10,7 +10,6 @@ const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
 const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
 const { processAlive } = require('../session/runtime-busy');
-const unattendedKernel = require('../unattended/kernel');
 
 // Outbox id of a dispatch result (operation-service completeOperationDraft).
 const DISPATCH_RESULT_ENTRY = /^operation:[^:]+:result(?::\d+)?$/;
@@ -51,6 +50,11 @@ function createSessionWorkHost(deps = {}) {
 
   function scheduler() {
     return schedulerRuntime()?.sessionScheduler || null;
+  }
+
+  async function pendingInputAsync(sessionId) {
+    return typeof deps.userInputSignalHost?.pendingAsync === 'function'
+      ? deps.userInputSignalHost.pendingAsync(sessionId) : deps.pendingUserInput(sessionId);
   }
 
   async function admit(sessionId, text, options = {}) {
@@ -100,50 +104,27 @@ function createSessionWorkHost(deps = {}) {
     if (!runtime?.admitSessionWork || !runtime.sessionScheduler) {
       return { ok: false, code: 'scheduler_not_ready' };
     }
-    const source = options.taskSource
-      || (options.originTrigger === true ? 'trigger'
-        : options.originContinue === true ? 'continuation' : 'direct');
-    // Rust decides whether ordinary input stays in FIFO. Supervisor answers and
-    // recovery deliveries retain their existing correlation/control metadata.
-    const inputPolicy = unattendedKernel.decideTurnEnd({
-      state: sessionRecord?.unattended, kind: 'user_input', source, options,
-    });
-    const queueInput = inputPolicy?.queueInput === true;
-    const requestedRequestId = !queueInput && typeof options.userInputRequestId === 'string'
-      ? options.userInputRequestId.trim() : '';
-    const pending = requestedRequestId ? deps.pendingUserInput(sessionId) : null;
-    // requestId enriches an input with correlation; it never grants permission
-    // to send. A mismatched stale picker answer is still ordinary user text;
-    // an exact replay remains an idempotent answer even after it was resolved.
-    const requestId = !queueInput && ((pending && pending.requestId === requestedRequestId) || options.taskShellControl?.intent === 'answer')
-      ? requestedRequestId
-      : '';
-    const status = await runtime.sessionScheduler.status(sessionId);
-    const classifyState = deps.getTaskState(deps.getRecord(sessionId))?.classifyState || null;
-    // Outside unattended mode only PROCESS stages typed input. Unattended
-    // input stays in FIFO through waits/faults while recovery runs first.
-    const directContinuation = !queueInput && !requestId
-      && source === 'direct'
-      && !isProcessingLetter(classifyState)
-      && !!status?.active;
-    const admissionOptions = { ...options };
-    if (!requestId) delete admissionOptions.userInputRequestId;
-    if (queueInput) delete admissionOptions.taskShellControl;
-    if (requestId && pending?.taskId && !admissionOptions.taskId) {
-      admissionOptions.taskId = pending.taskId;
+    // The owner imports the trusted legacy state only for a missing row. The
+    // admission transaction still reads the current question itself, after this
+    // ordered initialization, and never consumes this observation as a fact.
+    // Admission correlation and answer consumption belong to the Rust owner.
+    // This host forwards the original inputs without reading live task state.
+    let admitted;
+    try {
+      if (typeof deps.userInputSignalHost?.pendingAsync === 'function') {
+        await deps.userInputSignalHost.pendingAsync(sessionId);
+      }
+      if (typeof deps.userInputSignalHost?.refreshAdmissionFactsAsync === 'function') {
+        await deps.userInputSignalHost.refreshAdmissionFactsAsync(sessionId);
+      }
+      admitted = await runtime.admitSessionWork({ sessionId, text, options, hostAdmission: true });
     }
-    const admission = {
-      sessionId,
-      text,
-      options: admissionOptions,
-      source,
-      workKind: queueInput ? 'task' : requestId ? 'answer' : directContinuation ? 'continuation' : null,
-      requestId: requestId || null,
-      activeEntryId: requestId || directContinuation ? status?.active?.entryId || null : null,
-      idempotencyKey: options.idempotencyKey
-        || options.clientMsgId || options.deliveryId || null,
-    };
-    const admitted = await runtime.admitSessionWork(admission);
+    catch (error) {
+      log.warn?.('session_work_admission_failed', {
+        sessionId, code: error?.code || 'unknown', questionOwner: typeof deps.userInputSignalHost?.pendingAsync === 'function' ? 'ordered' : 'legacy',
+      });
+      throw error;
+    }
     if (!admitted.ok) {
       deps.broadcast(sessionId, {
         type: 'error',
@@ -151,26 +132,12 @@ function createSessionWorkHost(deps = {}) {
           ? '这条回答不属于当前待确认问题，未执行。'
           : `消息入队失败：${admitted.code || 'scheduler_rejected'}`,
       });
-    } else if (requestId && !(admitted.duplicate && options.taskShellReceiptId)) {
-      // Admission is the durable consumption boundary for a structured answer.
-      // Resolving here (rather than when the next provider process happens to
-      // start) prevents reconnect/replay from showing the picker again while
-      // the crash-safe control hand-off waits for the current turn to release.
-      try {
-        const resolved = await Promise.resolve(deps.resolveUserInput(sessionId, requestId));
-        if (!resolved?.ok) {
-          log.warn?.('session_user_input_resolve_after_admission_failed', {
-            sessionId,
-            requestId,
-            code: resolved?.code || 'unknown',
-          });
-        }
-      } catch (error) {
-        log.warn?.('session_user_input_resolve_after_admission_failed', {
-          sessionId,
-          requestId,
-          error: error.message,
-        });
+    } else if (admitted.notification) {
+      // Rust committed both the settlement and its event before returning.
+      // This host only transports the event; it never resolves the question.
+      try { deps.broadcast(sessionId, admitted.notification); }
+      catch (error) {
+        log.warn?.('session_user_input_notification_failed', { sessionId, error: error.message });
       }
     }
     return admitted;
@@ -184,14 +151,19 @@ function createSessionWorkHost(deps = {}) {
   // flow after the new execution exists; the separation writer barrier has
   // already proven the source has no live writers.
   async function moveInput(sourceId, targetId, { turnId, taskId } = {}) {
-    if (typeof deps.moveUserInput !== 'function') return { ok: false, code: 'move_not_supported' };
+    if (typeof deps.moveUserInput !== 'function' && typeof deps.userInputSignalHost?.moveAsync !== 'function') {
+      return { ok: false, code: 'move_not_supported' };
+    }
     const sourceRecord = deps.getRecord(sourceId);
     if (!sourceRecord) return { ok: false, code: 'session_not_found' };
-    const pending = deps.pendingUserInput(sourceId);
+    const pending = typeof deps.userInputSignalHost?.pendingAsync === 'function'
+      ? await deps.userInputSignalHost.pendingAsync(sourceId) : deps.pendingUserInput(sourceId);
     if (!pending || pending.resolved === true) {
       return { ok: false, code: pending ? 'already_resolved' : 'no_pending_request' };
     }
-    const moved = deps.moveUserInput(sourceId, targetId, { turnId, taskId });
+    const moved = typeof deps.userInputSignalHost?.moveAsync === 'function'
+      ? await deps.userInputSignalHost.moveAsync(sourceId, targetId, { turnId, taskId, expectedRequestId: pending.requestId })
+      : deps.moveUserInput(sourceId, targetId, { turnId, taskId });
     if (!moved?.ok) return moved;
     const state = deps.getTaskState(sourceRecord) || {};
     deps.dispatchStateAction({
@@ -237,7 +209,7 @@ function createSessionWorkHost(deps = {}) {
     if (!requestId) return { ok: false, code: 'request_id_required' };
     const queue = await scheduler()?.status(sessionId);
     if (!queue) return { ok: false, code: 'scheduler_not_ready' };
-    const pending = deps.pendingUserInput(sessionId);
+    const pending = await pendingInputAsync(sessionId);
     if (!pending || pending.requestId !== requestId) {
       return { ok: false, code: pending ? 'request_id_mismatch' : 'no_pending_request' };
     }
@@ -262,7 +234,9 @@ function createSessionWorkHost(deps = {}) {
       liveness = { state: 'inactive', reason: 'unloaded_idle_session' };
     }
     if (liveness?.state !== 'inactive') return { ok: false, code: 'turn_still_active' };
-    const resolved = deps.resolveUserInput(sessionId, requestId, { dismissed: true });
+    const resolved = typeof deps.userInputSignalHost?.resolveAsync === 'function'
+      ? await deps.userInputSignalHost.resolveAsync(sessionId, requestId, { dismissed: true })
+      : await deps.resolveUserInput(sessionId, requestId, { dismissed: true });
     if (!resolved?.ok) return resolved;
     deps.dispatchStateAction({
       state: 'D', goal: state.goal || '', phase: state.phase || '',
@@ -294,7 +268,7 @@ function createSessionWorkHost(deps = {}) {
     if (!queue?.active || queue.state !== 'frozen' || queue.freezeReason !== 'classify_running') {
       return { ok: false, code: 'not_recovered_turn' };
     }
-    const pending = deps.pendingUserInput(sessionId);
+    const pending = await pendingInputAsync(sessionId);
     if (!pending || pending.resolved === true) return { ok: false, code: 'no_pending_request' };
     const taskId = queue.active.taskId || pending.taskId || null;
     if (queue.active.taskId && pending.taskId && queue.active.taskId !== pending.taskId) {
@@ -532,7 +506,7 @@ function createSessionWorkHost(deps = {}) {
         : isTerminalLetter(resultLetter) ? 'D'
           : isBackgroundLetter(resultLetter) || runtime.hasPending(sessionId) ? 'B'
             : 'W';   // W, or P-misjudged-at-turn-end → at-rest
-      const pendingInput = deps.pendingUserInput(sessionId);
+      const pendingInput = await pendingInputAsync(sessionId);
       // Queue rule: P enqueues, D drains, W/B/E leave the FIFO alone. Every
       // turn-end verdict releases the active slot via complete(); FIFO draining
       // is gated by classifyState==='D' inside selectSessionItem. No classify freeze.
@@ -567,10 +541,7 @@ function createSessionWorkHost(deps = {}) {
     return { ok: true, deferred: true, code: 'classification_deferred', taskId: taskId || null };
   }
 
-  function recoveryState(sessionId) {
-    const record = deps.getRecord(sessionId);
-    const state = deps.getTaskState(record);
-    const pendingInput = deps.pendingUserInput(sessionId);
+  function recoveryFacts(sessionId, record = deps.getRecord(sessionId), state = deps.getTaskState(record)) {
     const endedAt = Number(state.lastTurnEndedAt || state.endedAt) || null;
     // A successful gateway post-turn is already durable before classify runs.
     // If a restart lands in that narrow P window, project D only when a durable
@@ -592,6 +563,11 @@ function createSessionWorkHost(deps = {}) {
       startedAt: state.startedAt,
       endedAt,
       taskId: deps.getChatSession(sessionId)?._currentTaskId || null,
+    };
+  }
+  function projectRecoveryState(sessionId, pendingInput, signalTurnId, facts = recoveryFacts(sessionId)) {
+    return {
+      ...facts,
       // Scheduler recovery needs correlation only; question/options remain in
       // the task-state owner and are never duplicated into orchestration state.
       pendingUserInput: pendingInput && pendingInput.resolved !== true
@@ -602,8 +578,21 @@ function createSessionWorkHost(deps = {}) {
           ...(pendingInput.turnId ? { turnId: pendingInput.turnId } : {}),
         }
         : null,
-      ...(state.userInputSignalTurnId ? { turnId: state.userInputSignalTurnId } : {}),
+      ...(signalTurnId ? { turnId: signalTurnId } : {}),
     };
+  }
+  function recoveryState(sessionId) {
+    const record = deps.getRecord(sessionId);
+    const state = deps.getTaskState(record);
+    const pendingInput = deps.pendingUserInput(sessionId);
+    const signalTurnId = typeof deps.userInputSignalHost?.turnId === 'function'
+      ? deps.userInputSignalHost.turnId(sessionId) : state.userInputSignalTurnId;
+    return projectRecoveryState(sessionId, pendingInput, signalTurnId, recoveryFacts(sessionId, record, state));
+  }
+  async function recoveryStateAsync(sessionId) {
+    if (typeof deps.userInputSignalHost?.snapshotAsync !== 'function') return recoveryState(sessionId);
+    const snapshot = await deps.userInputSignalHost.snapshotAsync(sessionId);
+    return projectRecoveryState(sessionId, snapshot.pendingQuestion, snapshot.category?.userInputSignalTurnId);
   }
 
   function onSchedulerEvent(event) {
@@ -651,13 +640,12 @@ function createSessionWorkHost(deps = {}) {
     deps.onTaskBoardQueueEvent(event);
   }
 
-  function recordInput(signal) {
-    const recorded = deps.recordUserInput(signal);
+  function publishRecordedInput(signal, recorded) {
     if (recorded.ok) {
       deps.broadcast(signal.sessionId, {
         type: 'user_input_required',
         requestId: signal.requestId,
-        turnId: signal.turnId || deps.pendingUserInput(signal.sessionId)?.turnId || null,
+        turnId: signal.turnId || null,
         taskId: deps.getChatSession(signal.sessionId)?._currentTaskId || null,
         question: signal.question,
         reason: signal.reason || '',
@@ -669,9 +657,13 @@ function createSessionWorkHost(deps = {}) {
     }
     return recorded;
   }
+  function recordInput(signal) { return publishRecordedInput(signal, deps.recordUserInput(signal)); }
+  async function recordInputAsync(signal) {
+    const record = deps.userInputSignalHost?.recordAsync || deps.recordUserInput;
+    return publishRecordedInput(signal, await record(signal));
+  }
 
-  function replayState(sessionId, send) {
-    const pending = deps.pendingUserInput(sessionId);
+  function replayQuestion(sessionId, send, pending, lastResolved) {
     if (pending && pending.resolved !== true) {
       send({
         type: 'user_input_required',
@@ -691,8 +683,7 @@ function createSessionWorkHost(deps = {}) {
       // shows the stale card, so resend the settlement on (re)connect. Reading
       // the resolved pending object itself covers resolutions recorded before
       // lastResolvedUserInput existed.
-      const taskState = deps.getTaskState(deps.getRecord(sessionId)) || {};
-      const last = taskState.lastResolvedUserInput
+      const last = lastResolved
         || (pending && pending.resolved === true ? { requestId: pending.requestId, taskId: pending.taskId ?? null } : null);
       if (last && last.requestId) {
         send({
@@ -704,6 +695,8 @@ function createSessionWorkHost(deps = {}) {
         });
       }
     }
+  }
+  function replayQueue(sessionId, send) {
     Promise.resolve(scheduler()?.status(sessionId)).then(queue => {
       if (!queue) return;
       send({
@@ -716,6 +709,20 @@ function createSessionWorkHost(deps = {}) {
         active: queue.active,
       });
     }).catch(() => {});
+  }
+  function replayState(sessionId, send) {
+    const pending = deps.pendingUserInput(sessionId);
+    const last = typeof deps.userInputSignalHost?.lastResolved === 'function'
+      ? deps.userInputSignalHost.lastResolved(sessionId)
+      : (deps.getTaskState(deps.getRecord(sessionId)) || {}).lastResolvedUserInput;
+    replayQuestion(sessionId, send, pending, last);
+    replayQueue(sessionId, send);
+  }
+  async function replayStateAsync(sessionId, send) {
+    if (typeof deps.userInputSignalHost?.snapshotAsync !== 'function') return replayState(sessionId, send);
+    const snapshot = await deps.userInputSignalHost.snapshotAsync(sessionId);
+    replayQuestion(sessionId, send, snapshot.pendingQuestion, snapshot.category?.lastResolvedUserInput);
+    replayQueue(sessionId, send);
   }
 
   // ── Cancellation ──────────────────────────────────────────────────────────
@@ -1191,8 +1198,12 @@ function createSessionWorkHost(deps = {}) {
     moveInput,
     onSchedulerEvent,
     recordInput,
+    recordInputAsync,
     recoveryState,
+    recoveryStateAsync,
+    recoveryFacts,
     replayState,
+    replayStateAsync,
     resolveTask,
     dismissUserInput,
     settleRecoveredQuestion,

@@ -229,7 +229,8 @@ function createAirRuntime(rawDeps) {
     if (!kind) return { kind: null, occurredAt: 0 };
     const sessionId = task.chatSessionId || task.sessionId || null;
     const taskState = (sessionId && deps.records.get(sessionId)?.taskState) || {};
-    const pending = taskState.pendingUserInput || null;
+    const pending = sessionId && typeof deps.pendingUserInput === 'function'
+      ? deps.pendingUserInput(sessionId) : taskState.pendingUserInput || null;
     const occurredAt = Number(taskState.endedAt)
       || Number(pending && pending.createdAt)
       || Number(taskState.lastTurnEndedAt)

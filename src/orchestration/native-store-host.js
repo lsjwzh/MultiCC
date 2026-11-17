@@ -5,7 +5,9 @@
 const path = require('node:path');
 const { addonPath, getNative } = require('../native/runtime');
 const { invokeNativeCommand, commandEnvelope } = require('./native-command');
+const { OutboxConflictError } = require('../outbox');
 const { types: { isProxy, isNativeError } } = require('node:util');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { Buffer: NodeBuffer } = require('node:buffer');
 const nativeCrypto = require('node:crypto');
 const nativeCreateHash = Object.getOwnPropertyDescriptor(nativeCrypto, 'createHash')?.value;
@@ -111,6 +113,9 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   if (typeof now !== 'function') throw new TypeError('[orchestration-sqlite-store] now must be a function');
   function normalize(error) {
     const message = String(error?.message || error);
+    if (message.startsWith('OUTBOX_PAYLOAD_CONFLICT:')) {
+      return new OutboxConflictError(message.slice('OUTBOX_PAYLOAD_CONFLICT:'.length));
+    }
     const conflict = message.match(/^ORCHESTRATION_SQLITE_CONFLICT:(\d+):(\d+)$/);
     if (conflict) return new OrchestrationSqliteConflictError(file, Number(conflict[1]), Number(conflict[2]));
     if (message.startsWith('ORCHESTRATION_STORE_CORRUPT:')) return new OrchestrationStoreCorruptError(message.slice('ORCHESTRATION_STORE_CORRUPT:'.length), { file, cause: error });
@@ -178,19 +183,44 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   let knownRevision = initial.state.revision;
   let closed = false;
   let tail = Promise.resolve();
+  let queuedOperations = 0;
+  let detachedDraftActive = false;
+  const draftContext = new AsyncLocalStorage();
+  const unavailable = message => Object.assign(new Error(message), { code: 'SESSION_WORK_OWNER_UNAVAILABLE' });
   function ensureOpen() { if (closed) throw new OrchestrationSqliteError(`orchestration database is closed: ${file}`, { file }); }
   function enqueue(operation) {
-    const result = tail.then(operation, operation);
-    tail = result.then(() => undefined, () => undefined);
+    queuedOperations++;
+    const run = () => draftContext.run(undefined, operation);
+    const result = tail.then(run, run);
+    tail = result.then(() => { queuedOperations--; }, () => { queuedOperations--; });
     return result;
+  }
+  function decodeQuestionResponse(response) {
+    if (!response.snapshot) return response;
+    const decode = ({ pendingQuestionJson, activeTurnJson, categoryJson, ...rest }) => ({
+      ...rest, pendingQuestion: JSON.parse(pendingQuestionJson),
+      activeTurn: JSON.parse(activeTurnJson), category: JSON.parse(categoryJson),
+    });
+    return { ...response, snapshot: decode(response.snapshot),
+      ...(response.targetSnapshot ? { targetSnapshot: decode(response.targetSnapshot) } : {}),
+      ...(typeof response.questionJson === 'string' ? { question: JSON.parse(response.questionJson) } : {}),
+      notification: JSON.parse(response.notificationJson) };
   }
   function query(op, collection, options = {}, overrides = []) {
     if (!COLLECTIONS.includes(collection)) throw new TypeError(`unknown orchestration collection ${collection}`);
     return request(op, { collection, options, overrides });
   }
-
-  function view(header, claimMetadata = null) {
+  function view(header, claimMetadata = null, trackedToken = null) {
     let active = true;
+    let detached = false;
+    let trackHeader = true;
+    const snapshotRequest = (op, input = {}) => detached
+      ? request('readTrackedDraft', { token: trackedToken, operation: op, input })
+      : request(op, input);
+    const snapshotQuery = (op, collection, options = {}, overrides = []) => {
+      if (!COLLECTIONS.includes(collection)) throw new TypeError(`unknown orchestration collection ${collection}`);
+      return snapshotRequest(op, { collection, options, overrides });
+    };
     const paths = new Map();
     const collections = new Map();
     const claimRows = Object.create(null);
@@ -215,11 +245,11 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
         if (value !== null && typeof value === 'object') return { kind: 'object' };
         return { kind: 'value', value };
       }
-      return request('inspect', { collection, key, path });
+      return snapshotRequest('inspect', { collection, key, path });
     };
     function materialize(collection, key) {
       assertActive();
-      const result = request('materialize', { collection, key });
+      const result = snapshotRequest('materialize', { collection, key });
       return result.found ? result.value : undefined;
     }
     function valueAt(collection, key, path = [], info = inspect(collection, key, path)) {
@@ -250,7 +280,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
         },
         ownKeys() {
           assertActive();
-          const keys = request('keys', { collection, key, path });
+          const keys = snapshotRequest('keys', { collection, key, path });
           return array ? [...keys, 'length'] : keys;
         },
         getOwnPropertyDescriptor(_target, prop) {
@@ -274,7 +304,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
           return info.kind === 'missing' ? Reflect.get(target, prop, receiver) : valueAt(collection, prop, [], info);
         },
         has(_target, prop) { assertActive(); return typeof prop === 'string' && inspect(collection, prop).kind !== 'missing'; },
-        ownKeys() { assertActive(); return request('keys', { collection }); },
+        ownKeys() { assertActive(); return snapshotRequest('keys', { collection }); },
         getOwnPropertyDescriptor(_target, prop) {
           assertActive();
           if (typeof prop !== 'string' || inspect(collection, prop).kind === 'missing') return undefined;
@@ -288,8 +318,8 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       return proxy;
     }
     const methods = {
-      select(collection, options = {}) { assertActive(); return query('select', collection, options); },
-      count(collection, where = {}) { assertActive(); return query('count', collection, { where }); },
+      select(collection, options = {}) { assertActive(); return snapshotQuery('select', collection, options); },
+      count(collection, where = {}) { assertActive(); return snapshotQuery('count', collection, { where }); },
       claimSelect(leased) {
         assertActive();
         if (!claimMetadata || !leased) return null;
@@ -306,7 +336,10 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       get(target, prop, receiver) {
         assertActive();
         if (Object.hasOwn(methods, prop)) return methods[prop];
-        if (Object.hasOwn(header, prop)) return header[prop];
+        if (Object.hasOwn(header, prop)) {
+          if (trackedToken && trackHeader) request('draftTrackHeader', { token: trackedToken, field: prop });
+          return header[prop];
+        }
         if (COLLECTIONS.includes(prop)) return collectionView(prop);
         if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver);
         const info = inspect('extras', prop);
@@ -314,7 +347,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       },
       has(_target, prop) { assertActive(); return Object.hasOwn(header, prop) || COLLECTIONS.includes(prop)
         || (typeof prop === 'string' && inspect('extras', prop).kind !== 'missing'); },
-      ownKeys() { assertActive(); return [...new Set([...Object.keys(header), ...COLLECTIONS, ...request('keys', { collection: 'extras' })])]; },
+      ownKeys() { assertActive(); return [...new Set([...Object.keys(header), ...COLLECTIONS, ...snapshotRequest('keys', { collection: 'extras' })])]; },
       getOwnPropertyDescriptor(_target, prop) {
         assertActive();
         if (!(prop in root)) return undefined;
@@ -324,36 +357,66 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       deleteProperty() { assertActive(); throw new TypeError('orchestration read snapshot is immutable'); },
       defineProperty() { assertActive(); throw new TypeError('orchestration read snapshot is immutable'); },
     });
-    return { root, materialize, revoke() { active = false; paths.clear(); collections.clear(); } };
+    return { root, materialize, query: snapshotQuery,
+      detach() { if (!trackedToken) throw new TypeError('snapshot is not tracked');
+        request('detachDraftSnapshot', { token: trackedToken }); detached = true; },
+      withoutHeaderTracking(callback) { trackHeader = false; try { return callback(); } finally { trackHeader = true; } },
+      revoke() { active = false; paths.clear(); collections.clear(); } };
   }
 
   async function readOperation(selector) {
     ensureOpen();
-    const header = request('begin');
-    const snapshot = view(header);
+    const started = request('beginTrackedDraft', { readOnly: true });
+    const snapshot = view(started.state, null, started.token);
+    const context = { token: started.token, detached: false, tracked: true };
     try {
-      // Materialise before closing the transaction; leaked views are revoked.
-      const result = cloneJson(await selector(snapshot.root));
-      knownRevision = header.revision;
+      const pending = draftContext.run(context, () => selector(snapshot.root));
+      snapshot.detach();
+      context.detached = true;
+      detachedDraftActive = true;
+      // Materialise from the original row snapshot; leaked views are revoked.
+      const value = await pending;
+      detachedDraftActive = false;
+      const result = draftContext.run(context, () => cloneJson(value));
+      knownRevision = Math.max(knownRevision, started.state.revision);
       return result;
-    } finally { snapshot.revoke(); request('end'); cachedMetrics = request('metrics'); }
+    } finally {
+      detachedDraftActive = false;
+      snapshot.revoke();
+      try { request('discardTrackedDraft', { token: started.token }); } catch (_) { /* A failed read can consume it. */ }
+      cachedMetrics = request('metrics');
+    }
   }
-  async function applyMutation(mutator, predicate, skippedResult) {
+  // Every callback starts as a tracked draft: a non-async function can also
+  // return a promise. The owner releases its read transaction before await.
+  async function applyDetachedMutation(mutator, predicate, skippedResult) {
     ensureOpen();
     const expectedRevision = knownRevision;
-    const header = request('begin');
-    const snapshot = view(header);
+    const started = request('beginTrackedDraft');
+    const snapshot = view(started.state, null, started.token);
+    const context = { token: started.token, detached: false, tracked: true };
     let cow;
     try {
-      if (predicate && !predicate(snapshot.root)) {
-        return deepFreeze(cloneJson(typeof skippedResult === 'function' ? skippedResult() : skippedResult));
+      if (predicate && !draftContext.run(context, () => predicate(snapshot.root))) {
+        return deepFreeze(cloneJson(typeof skippedResult === 'function'
+          ? draftContext.run(context, skippedResult) : skippedResult));
       }
-      cow = createDraft(snapshot.root, { materialize: snapshot.materialize, query });
-      const rawResult = await mutator(cow.draft);
-      const usesDraft = cow.containsOwnedProxy(rawResult);
-      const result = usesDraft ? cloneJson(rawResult) : rawResult;
-      const change = cow.finish({ now });
-      if (!change.changed) { request('noop'); return usesDraft ? deepFreeze(result) : result; }
+      cow = createDraft(snapshot.root, { materialize: snapshot.materialize, query: snapshot.query });
+      const pending = draftContext.run(context, () => mutator(cow.draft));
+      snapshot.detach();
+      context.detached = true;
+      detachedDraftActive = true;
+      const rawResult = await pending;
+      detachedDraftActive = false;
+      const { usesDraft, result } = draftContext.run(context, () => {
+        const usesDraft = cow.containsOwnedProxy(rawResult);
+        return { usesDraft, result: usesDraft ? cloneJson(rawResult) : rawResult };
+      });
+      const change = draftContext.run(context, () => snapshot.withoutHeaderTracking(() => cow.finish({ now })));
+      if (!change.changed) return usesDraft ? deepFreeze(result) : result;
+      if (expectedRevision !== started.state.revision) {
+        throw new OrchestrationSqliteConflictError(file, expectedRevision, started.state.revision);
+      }
       change.expectedRevision = expectedRevision;
       const changes = [];
       for (const collection of COLLECTIONS) {
@@ -362,18 +425,28 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
         }
       }
       for (const [key, entry] of change.persisted.extras) changes.push({ collection: 'extras', key, deleted: entry.deleted, value: entry.value });
-      request('prepare', { expectedRevision, state: change.state, changes });
-      if (typeof hooks.beforeCommit === 'function') hooks.beforeCommit({ file, change });
-      const committed = request('commit');
+      const hasHooks = Object.keys(hooks).length > 0;
+      let committed = request('commitTrackedDraft', { token: started.token, headerReadsTracked: true,
+        expectedRevision: started.state.revision, state: change.state, changes, prepareOnly: hasHooks });
+      if (hasHooks) {
+        if (typeof hooks.beforeCommit === 'function') hooks.beforeCommit({ file, change });
+        committed = request('commit');
+      }
       knownRevision = committed.state.revision;
       if (committed.redacted && typeof hooks.afterRedactionCheckpoint === 'function') hooks.afterRedactionCheckpoint({ file, change });
       if (typeof hooks.afterCommit === 'function') hooks.afterCommit({ file, change });
       return usesDraft ? deepFreeze(result) : result;
     } catch (error) {
-      request('end');
-      knownRevision = request('info').state.revision;
+      try { request('end'); } catch (_) { /* Preserve the original failure. */ }
+      try { knownRevision = request('info').state.revision; }
+      catch (_) { /* Preserve the original error if the owner is unavailable. */ }
       throw error;
-    } finally { cow?.revoke(); snapshot.revoke(); request('end'); cachedMetrics = request('metrics'); }
+    } finally {
+      detachedDraftActive = false;
+      cow?.revoke(); snapshot.revoke();
+      try { request('discardTrackedDraft', { token: started.token }); } catch (_) { /* Commit or conflict consumed it. */ }
+      cachedMetrics = request('metrics');
+    }
   }
   function read(selector) {
     if (selector !== undefined && typeof selector !== 'function') throw new TypeError('[orchestration-sqlite-store] read selector must be a function');
@@ -381,11 +454,11 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   }
   function mutate(mutator) {
     if (typeof mutator !== 'function') throw new TypeError('[orchestration-sqlite-store] mutate requires a function');
-    return enqueue(() => applyMutation(mutator));
+    return enqueue(() => applyDetachedMutation(mutator));
   }
   function mutateIf(predicate, mutator, skippedResult) {
     if (typeof predicate !== 'function' || typeof mutator !== 'function') throw new TypeError('[orchestration-sqlite-store] mutateIf requires predicate and mutator functions');
-    return enqueue(() => applyMutation(mutator, predicate, skippedResult));
+    return enqueue(() => applyDetachedMutation(mutator, predicate, skippedResult));
   }
   // Only allowlisted synchronous Rust commands enter this transaction. Neither
   // the command result nor a user-controlled `then` is assimilated by the queue
@@ -408,7 +481,8 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
         }
         snapshot = view(header, claimMetadata);
         cow = createDraft(snapshot.root, { materialize: snapshot.materialize, query, claimMetadata });
-        const rawResult = invokeNativeCommand(name, cow.draft, args, snapshot.root);
+        const rawResult = draftContext.run({ tracked: false, detached: false },
+          () => invokeNativeCommand(name, cow.draft, args, snapshot.root));
         const usesDraft = cow.containsOwnedProxySafely(rawResult);
         const result = usesDraft ? cloneJson(rawResult) : rawResult;
         const change = cow.finish({ now });
@@ -442,10 +516,10 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
     return enqueue(() => {
       ensureOpen();
       if (typeof id === 'symbol' || (id !== null && (typeof id === 'object' || typeof id === 'function'))) {
-        return applyMutation(legacyMutation);
+        return applyDetachedMutation(legacyMutation);
       }
       const key = String(id);
-      if (key in Object.prototype) return applyMutation(legacyMutation);
+      if (key in Object.prototype) return applyDetachedMutation(legacyMutation);
       const expectedRevision = knownRevision;
       request('begin');
       try {
@@ -477,14 +551,14 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       ensureOpen();
       if (typeof id === 'symbol' || (id !== null && (typeof id === 'object' || typeof id === 'function'))
           || !patch || typeof patch !== 'object' || isProxy(patch) || Array.isArray(patch)
-          || ![Object.prototype, null].includes(Object.getPrototypeOf(patch))) return applyMutation(legacyMutation);
+          || ![Object.prototype, null].includes(Object.getPrototypeOf(patch))) return applyDetachedMutation(legacyMutation);
       const key = String(id);
-      if (key in Object.prototype) return applyMutation(legacyMutation);
+      if (key in Object.prototype) return applyDetachedMutation(legacyMutation);
       const fields = Object.getOwnPropertyDescriptors(patch);
       for (const name of ['pid', 'externalId']) {
-        if ((!fields[name] && name in patch) || (fields[name] && !Object.hasOwn(fields[name], 'value'))) return applyMutation(legacyMutation);
+        if ((!fields[name] && name in patch) || (fields[name] && !Object.hasOwn(fields[name], 'value'))) return applyDetachedMutation(legacyMutation);
         const value = fields[name]?.value;
-        if (value != null && !['string', 'number', 'boolean', 'undefined'].includes(typeof value)) return applyMutation(legacyMutation);
+        if (value != null && !['string', 'number', 'boolean', 'undefined'].includes(typeof value)) return applyDetachedMutation(legacyMutation);
       }
       const expectedRevision = knownRevision;
       request('begin');
@@ -520,7 +594,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
             || policy.id in Object.prototype || typeof policy.token !== 'string'
             || (policy.action !== 'ack' && typeof policy.reason !== 'string' && !reasonIsError)
             || (policy.action === 'fail' && typeof policy.retryable !== 'boolean')
-            || (policy.action === 'defer' && policy.delayMs > 1e15)))) return applyMutation(legacyMutation);
+            || (policy.action === 'defer' && policy.delayMs > 1e15)))) return applyDetachedMutation(legacyMutation);
       const expectedRevision = knownRevision;
       request('begin');
       try {
@@ -566,7 +640,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
           !simpleId || (policy.kind === 'detached' && typeof policy.id !== 'string') ||
           !idKey.isWellFormed() || !policy.ownerSessionId || !simpleValue(policy.ownerSessionId) ||
           !simpleValue(policy.resultSessionId))
-        return { legacy: true, value: await applyMutation(legacyMutation) };
+        return { legacy: true, value: await applyDetachedMutation(legacyMutation) };
       const expectedRevision = knownRevision;
       const header = request('begin');
       const prototypeKey = typeof policy.id !== 'symbol' && idKey in Object.prototype;
@@ -594,7 +668,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
         if (result.pending) result = await requestAdmissionAsync('operationAdmit', input, specBytes);
         if (result.legacy) {
           request('end');
-          return { legacy: true, value: await applyMutation(legacyMutation) };
+          return { legacy: true, value: await applyDetachedMutation(legacyMutation) };
         }
         if (!result.unchanged) knownRevision = request('info').state.revision;
         return result;
@@ -607,7 +681,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
     return enqueue(async () => {
       ensureOpen();
       if (typeof id !== 'string' || typeof requestId !== 'string' || id in Object.prototype) {
-        return applyMutation(legacyMutation);
+        return applyDetachedMutation(legacyMutation);
       }
       const expectedRevision = knownRevision;
       const input = { id, requestJson: JSON.stringify(requestId) };
@@ -616,7 +690,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
         const plan = request('scheduleSettlePlan', input);
         if (plan.legacy) {
           request('end');
-          return await applyMutation(legacyMutation);
+          return await applyDetachedMutation(legacyMutation);
         }
         if (!plan.pending) { request('noop'); return plan.result; }
         const result = request('scheduleSettleCommit', {
@@ -640,19 +714,202 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   return Object.freeze({
     backend: 'sqlite', file, legacyFile, migration: Object.freeze({ ...initial.migration }),
     read, mutate, mutateIf, runNativeCommandSync, snapshot: () => read(),
-    // The Rust owner makes and commits the question lifecycle decision.
-    sessionWorkQuestion(input) {
+    mutateSync(command, input) {
+      if (command !== 'scheduleReorder') throw new TypeError('unknown synchronous domain command');
+      return enqueue(async () => {
+        ensureOpen();
+        try {
+          // Match the old guard order while observing the index before the
+          // asynchronous Rust queue scan can yield to another microtask.
+          const guard = request('scheduleReorderCheck', {
+            sessionId: input.sessionId, entryId: input.entryId,
+          });
+          const ensuredAt = guard.ok || guard.scheduleObserved ? Number(input.now()) : null;
+          if (!guard.ok) {
+            if (!guard.scheduleMissing) return { ok: false, code: guard.code };
+            const initialState = input.initialState;
+            const initial = initialState === undefined ? {} : { initialStateJson: JSON.stringify(initialState) };
+            const result = await getNative().scheduleReorder(handle, {
+              sessionId: input.sessionId, entryId: input.entryId,
+              ensuredAt, at: ensuredAt, expectedRevision: knownRevision, ...initial,
+            });
+            if (result?.state?.revision != null) knownRevision = result.state.revision;
+            return typeof result?.resultJson === 'string' ? JSON.parse(result.resultJson) : result;
+          }
+          const index = Number(input.toIndex);
+          const at = Number(input.now());
+          const initialState = input.initialState;
+          const initial = initialState === undefined ? {} : { initialStateJson: JSON.stringify(initialState) };
+          const captured = { sessionId: input.sessionId, entryId: input.entryId,
+            toIndex: Number.isFinite(index) ? index : null, direction: input.direction,
+            actorJson: JSON.stringify(String(input.actor || 'user')), at, ensuredAt, ...initial };
+          const result = await getNative().scheduleReorder(handle, { ...captured, expectedRevision: knownRevision });
+          if (result?.state?.revision != null) knownRevision = result.state.revision;
+          return typeof result?.resultJson === 'string' ? JSON.parse(result.resultJson) : result;
+        } catch (error) { throw normalize(error); }
+      });
+    },
+    executeScheduleAdmit(input, admittedAt) {
       let requestJson;
       try { requestJson = JSON.stringify(input); }
       catch (error) { return Promise.reject(error); }
       return enqueue(async () => {
         ensureOpen();
-        const response = await requestAsync('sessionWorkQuestionExperimental', { requestJson });
-        if (!response.snapshot) return response;
-        const { pendingQuestionJson, activeTurnJson, categoryJson, ...rest } = response.snapshot;
-        return { ...response, snapshot: { ...rest, pendingQuestion: JSON.parse(pendingQuestionJson),
-          activeTurn: JSON.parse(activeTurnJson), category: JSON.parse(categoryJson) },
-        notification: JSON.parse(response.notificationJson) };
+        try {
+          const result = await getNative().scheduleAdmit(handle, {
+            requestJson, expectedRevision: knownRevision,
+            now: admittedAt === undefined ? Number(now()) : admittedAt,
+          });
+          if (result?.state?.revision != null) knownRevision = result.state.revision;
+          return typeof result?.resultJson === 'string'
+            ? { ...JSON.parse(result.resultJson), snapshot: result.snapshot }
+            : result;
+        } catch (error) { throw normalize(error); }
+      });
+    },
+    // Experimental synchronous transport for the same Rust admission
+    // transaction. It is not used by production while an async draft can
+    // still hold the owner connection across an await.
+    executeScheduleAdmitSync(input, admittedAt) {
+      ensureOpen();
+      if (draftContext.getStore()) throw new Error('session work admission is not allowed inside a draft callback');
+      if (queuedOperations !== 0 && !(detachedDraftActive && queuedOperations === 1)) {
+        throw new Error('session work owner has pending operations');
+      }
+      const result = request('scheduleAdmit', {
+        requestJson: JSON.stringify(input), expectedRevision: knownRevision,
+        now: admittedAt === undefined ? Number(now()) : admittedAt,
+      });
+      if (result?.state?.revision != null) knownRevision = result.state.revision;
+      return typeof result?.resultJson === 'string'
+        ? { ...JSON.parse(result.resultJson), snapshot: result.snapshot }
+        : result;
+    },
+    // Transport for the frozen completion protocol. Observation happens in
+    // this queue turn; Rust revalidates the same owner snapshot before writing.
+    executeScheduleComplete({ sessionId, expectedTaskId = null, reason = 'successful',
+      classifyState = 'D', awaitingRequestId = null, initialState, clock }) {
+      return enqueue(async () => {
+        ensureOpen();
+        const expectedRevision = knownRevision;
+        try {
+          const expectedTaskIdJson = JSON.stringify(expectedTaskId);
+          const initial = initialState === undefined ? {} : { initialStateJson: JSON.stringify(initialState) };
+          const token = request('scheduleCompleteTokenExperimental', { sessionId, expectedTaskIdJson, ...initial });
+          if (!token.guard.ok) return token.guard;
+          const at = Number(clock());
+          // The frozen mutator yields once before sampling the store clock.
+          await Promise.resolve();
+          const result = await requestAsync('scheduleCompleteExperimental', {
+            sessionId, expectedRevision, expectedVersion: token.snapshot.version,
+            expectedDataVersion: token.dataVersion, at, updatedAt: Number(now()),
+            expectedTaskIdJson, reasonJson: JSON.stringify(reason), ...initial,
+            classifyStateJson: JSON.stringify(classifyState),
+            awaitingRequestIdJson: JSON.stringify(awaitingRequestId),
+          });
+          if (result?.state?.revision != null) knownRevision = result.state.revision;
+          return typeof result?.resultJson === 'string' ? JSON.parse(result.resultJson) : result;
+        } catch (error) {
+          let actualRevision = knownRevision;
+          try { actualRevision = request('info').state.revision; knownRevision = actualRevision; }
+          catch (_) { /* Preserve the original failure if the owner has exited. */ }
+          if (String(error?.message || error) === 'schedule completion database version conflict') {
+            throw new OrchestrationSqliteConflictError(file, expectedRevision, actualRevision);
+          }
+          throw normalize(error);
+        }
+      });
+    },
+    // The Rust owner makes and commits the question lifecycle decision.
+    sessionWorkQuestion(input, backfill, prepare) {
+      let requestJson;
+      try { requestJson = JSON.stringify(input); }
+      catch (error) { return Promise.reject(error); }
+      if (backfill !== undefined && typeof backfill !== 'function') {
+        return Promise.reject(new TypeError('session work backfill must be a function'));
+      }
+      if (prepare !== undefined && typeof prepare !== 'function') {
+        return Promise.reject(new TypeError('session work preparation must be a function'));
+      }
+      return enqueue(async () => {
+        ensureOpen();
+        const captured = JSON.parse(requestJson);
+        if (prepare) Object.assign(captured, prepare(captured.sessionId));
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            return decodeQuestionResponse(await requestAsync('sessionWorkQuestionExperimental', {
+              requestJson: JSON.stringify(captured),
+            }));
+          } catch (error) {
+            if (error?.code !== 'ORCHESTRATION_SQLITE_ERROR' || !backfill) throw error;
+            if (error.message === 'question transition requires a trusted initial snapshot'
+                && !Object.hasOwn(captured, 'initialState')) {
+              captured.initialState = backfill(captured.sessionId);
+              continue;
+            }
+            if (error.message === 'question move requires a trusted target snapshot'
+                && !Object.hasOwn(captured, 'targetInitialState')) {
+              captured.targetInitialState = backfill(captured.targetSessionId);
+              continue;
+            }
+            throw error;
+          }
+        }
+        throw new Error('session_work_question_initialization_failed');
+      });
+    },
+    // Fail closed instead of overtaking an earlier queued operation. This port
+    // is experimental until callers can guarantee that ordering in production.
+    sessionWorkQuestionSync(input) {
+      ensureOpen();
+      if (draftContext.getStore()) throw unavailable('session work question writes are not allowed inside a draft callback');
+      if (queuedOperations !== 0 && !(detachedDraftActive && queuedOperations === 1)) {
+        throw unavailable('session work owner has pending operations');
+      }
+      return decodeQuestionResponse(request('sessionWorkQuestionExperimental', { requestJson: JSON.stringify(input) }));
+    },
+    // An in-flight draft can hold an older SQLite read snapshot. Do not expose
+    // it as current or overtake queued writes while this port is experimental.
+    sessionWorkStateSync(sessionId, initialState) {
+      ensureOpen();
+      const context = draftContext.getStore();
+      if (context && initialState !== undefined) {
+        throw unavailable('session work initialization is not allowed inside a draft callback');
+      }
+      if (!context && queuedOperations !== 0 && !(detachedDraftActive && queuedOperations === 1)) {
+        throw unavailable('session work owner has pending operations');
+      }
+      const initial = initialState === undefined ? {} : { initial: {
+        pendingQuestionJson: JSON.stringify(initialState.pendingQuestion),
+        activeTurnJson: JSON.stringify(initialState.activeTurn),
+        categoryJson: JSON.stringify(initialState.category),
+      } };
+      const input = {
+        action: initialState === undefined ? 'read' : 'readOrInitialize', encoding: 'json', sessionId, ...initial,
+      };
+      const response = context?.tracked && context.detached
+        ? request('readTrackedDraft', { token: context.token, operation: 'sessionWorkState', input })
+        : request('sessionWorkState', input);
+      const { pendingQuestionJson, activeTurnJson, categoryJson, ...rest } = response;
+      return { ...rest, pendingQuestion: JSON.parse(pendingQuestionJson),
+        activeTurn: JSON.parse(activeTurnJson), category: JSON.parse(categoryJson) };
+    },
+    sessionWorkStateReadOrInitialize(sessionId, backfill) {
+      if (typeof sessionId !== 'string' || typeof backfill !== 'function') {
+        return Promise.reject(new TypeError('session work read requires a session id and backfill'));
+      }
+      return enqueue(async () => {
+        ensureOpen();
+        let response = await requestAsync('sessionWorkState', { action: 'read', encoding: 'json', sessionId });
+        if (!response.exists) {
+          const initial = backfill(sessionId);
+          response = await requestAsync('sessionWorkState', { action: 'readOrInitialize', encoding: 'json', sessionId,
+            initial: { pendingQuestionJson: JSON.stringify(initial.pendingQuestion),
+              activeTurnJson: JSON.stringify(initial.activeTurn), categoryJson: JSON.stringify(initial.category) } });
+        }
+        const { pendingQuestionJson, activeTurnJson, categoryJson, ...rest } = response;
+        return { ...rest, pendingQuestion: JSON.parse(pendingQuestionJson),
+          activeTurn: JSON.parse(activeTurnJson), category: JSON.parse(categoryJson) };
       });
     },
     // Transport only: the owner validates, versions and commits this state.

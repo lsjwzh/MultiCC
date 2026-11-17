@@ -5,19 +5,25 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createOutbox } = require('../src/outbox');
 const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
 
-function fixture(t) {
+async function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-user-input-answer-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let pending = null;
   const events = [];
-  const store = createOrchestrationStore({
-    file: path.join(dir, 'orchestration.json'),
+  const store = createOrchestrationSqliteStore({
+    file: path.join(dir, 'orchestration.sqlite'),
     now: () => 1_000,
   });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's1', initial: {
+    pendingQuestion: null, activeTurn: null, category: null,
+  } });
   const outbox = createOutbox({
     store,
     now: () => 1_000,
@@ -37,7 +43,14 @@ function fixture(t) {
     events,
     outbox,
     scheduler,
-    setPending(value) { pending = value; },
+    async setPending(value) {
+      const current = await store.sessionWorkState({ action: 'read', sessionId: 's1' });
+      await store.sessionWorkState({ action: 'write', updates: [{
+        sessionId: 's1', expectedVersion: current.version, pendingQuestion: value,
+        activeTurn: current.activeTurn, category: current.category,
+      }] });
+      pending = value;
+    },
   };
 }
 
@@ -59,8 +72,8 @@ async function startClaim(h, item) {
 }
 
 test('idle request_user_input option answer starts directly and never enters public staging', async t => {
-  const h = fixture(t);
-  h.setPending({
+  const h = await fixture(t);
+  await h.setPending({
     requestId: 'usrq-idle-option',
     taskId: 'task-idle',
     resolved: false,
@@ -86,7 +99,7 @@ test('idle request_user_input option answer starts directly and never enters pub
 });
 
 test('running request_user_input answer stays off staging and outranks ordinary FIFO after release', async t => {
-  const h = fixture(t);
+  const h = await fixture(t);
   const asking = await h.scheduler.admit({
     sessionId: 's1',
     text: '正在提问',
@@ -103,7 +116,7 @@ test('running request_user_input answer stays off staging and outranks ordinary 
     source: 'direct',
     idempotencyKey: 'ordinary-message',
   });
-  h.setPending({
+  await h.setPending({
     requestId: 'usrq-running-option',
     taskId: 'task-running',
     resolved: false,
@@ -126,7 +139,7 @@ test('running request_user_input answer stays off staging and outranks ordinary 
   );
   assert.equal(await claimOne(h), null, 'the answer never overlaps the live native process');
 
-  h.setPending({
+  await h.setPending({
     requestId: 'usrq-running-option',
     taskId: 'task-running',
     resolved: true,

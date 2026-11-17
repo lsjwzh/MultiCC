@@ -485,8 +485,11 @@ function createWorkspaceAdmission(deps) {
     const permit = active.get(id); if (!permit) return;
     permit.terminal = outcome || { status: 'stopped' };
     permit.terminalAt ??= Date.now();
-    queueMicrotask(() => {
-      permit.releaseEvidence.terminal(permit.terminal.status || 'stopped', permit.attemptId, !!deps.pendingInput?.(id));
+    queueMicrotask(async () => {
+      let pending = true;
+      try { pending = !!(await (deps.pendingInputAsync || deps.pendingInput)?.(id)); }
+      catch (error) { deps.log('workspace_pending_input_unavailable', { sessionId: id, code: error.code }); }
+      permit.releaseEvidence.terminal(permit.terminal.status || 'stopped', permit.attemptId, pending);
       void drain(id, permit);
     });
   }

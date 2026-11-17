@@ -4650,6 +4650,15 @@
       ]
     },
     {
+      "path": "tests/test-production-question-owner.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-progress-heartbeat.js",
       "tier": "core",
       "lane": "deterministic",
@@ -5116,6 +5125,15 @@
       "path": "tests/test-realtime-voice.js",
       "tier": "other",
       "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-recovery-state-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
     },
     {
       "path": "tests/test-redaction-native.js",

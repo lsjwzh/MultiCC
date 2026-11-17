@@ -24,13 +24,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
-const { createUserInputSignalHost } = require('../src/classify/user-input-host');
-const { createSessionWorkHost } = require('../src/session-work/host');
+const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/production-question-host');
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 const { createTaskStateStore } = require('../src/routes/task-state-store');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
 const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createOutbox } = require('../src/outbox');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 const { classifyDisplay } = require('../src/classify/vocab');
@@ -41,7 +40,6 @@ const { recordsOf } = require('./helpers/session-records');
 
 function harness(t, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cancel-flow-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
   // One ordered log for the whole chain. Every entry carries its sequence, which
   // is what lets a test prove controller → cancel event → classify → persist →
@@ -179,10 +177,11 @@ function harness(t, options = {}) {
   });
 
   let clock = 10_000;
-  const store = createOrchestrationStore({
-    file: path.join(dir, 'orchestration.json'),
+  const store = createOrchestrationSqliteStore({
+    file: path.join(dir, 'orchestration.sqlite'),
     now: () => clock,
   });
+  t.after(async () => { try { await store.close({ exportRollback: false }); } finally { fs.rmSync(dir, { recursive: true, force: true }); } });
   let leases = 0;
   const outbox = createOutbox({ store, now: () => clock, leaseTokenFactory: () => `lease-${++leases}` });
   const scheduler = createSessionWorkScheduler({
@@ -242,13 +241,14 @@ function harness(t, options = {}) {
     appendChatMessage: () => {},
   });
 
-  const inputHost = createUserInputSignalHost({
+  const inputHost = createProductionQuestionHost({ getStore: () => store,
     getSession: id => chatSessions.get(id),
+    getRecord: id => persistedSessions.get(id),
     getState: id => taskStateStore.getTaskState(persistedSessions.get(id)),
     setState: taskStateStore.setTaskState,
     onResolved: (id, requestId) => record({ kind: 'input_resolved', id, requestId }),
-  });
-  sessionWorkHost = createSessionWorkHost({
+  }).host;
+  sessionWorkHost = createProductionWorkHost({
     runtime: () => ({
       sessionScheduler: scheduler,
       hasPending: () => false,
@@ -291,9 +291,10 @@ function harness(t, options = {}) {
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
     runnerKillGraceMs: options.runnerKillGraceMs,
     log: { warn: (...args) => record({ kind: 'warn', args }), log() {} },
-  });
+  }, inputHost);
 
   async function startTurn(text = '第一条消息') {
+    await inputHost.pendingAsync('s1');
     const admitted = await scheduler.admit({
       sessionId: 's1', text, idempotencyKey: text, options: { taskId: 'tsk-1' },
     });
@@ -768,17 +769,18 @@ test('no module outside classify writes a cancel terminal state', () => {
 test('manual question dismissal settles persisted waiting, task projection and replay without a provider invocation', async t => {
   const h = harness(t);
   await h.startTurn();
-  h.taskStateStore.setTaskState('s1', { pendingUserInput: {
-    requestId: 'old', turnId: 'turn-1', taskId: 'tsk-1', question: '历史误报', resolved: false,
-  }, classifyState: 'W' });
+  h.chatState._activeTurn = { turnId: 'turn-1' };
+  await h.inputHost.activateTurnAsync('s1');
+  assert.equal((await h.host.recordInput({ sessionId: 's1', requestId: 'old', turnId: 'turn-1', question: '历史误报' })).ok, true);
+  h.taskStateStore.setTaskState('s1', { classifyState: 'W' });
   h.chatState.isStreaming = false;
   await h.scheduler.complete('s1', { classifyState: 'W', awaitingRequestId: 'old' });
   assert.equal(h.boardTask().runState, 'waiting');
   const result = await h.host.dismissUserInput('s1', 'old');
   assert.equal(result.ok, true);
   assert.equal(h.taskState().classifyState, 'D');
-  assert.equal(h.taskState().pendingUserInput.resolved, true);
-  assert.equal(h.inputHost.lastResolved('s1').resolution, 'dismissed');
+  assert.equal((await h.inputHost.pendingAsync('s1')).resolved, true);
+  assert.equal((await h.inputHost.lastResolvedAsync('s1')).resolution, 'dismissed');
   assert.equal(h.boardTask().runState, 'succeeded');
   assert.equal(h.boardTask().status, 'active', 'question settlement is not task lifecycle completion');
   const queue = await h.scheduler.status('s1');
@@ -788,7 +790,7 @@ test('manual question dismissal settles persisted waiting, task projection and r
   assert.equal(h.events.some(e => e.kind === 'admit'), false);
   assert.equal(h.events.some(e => e.kind === 'push'), false);
   const replay = [];
-  h.host.replayState('s1', message => replay.push(message));
+  await h.host.replayState('s1', message => replay.push(message));
   assert.equal(replay.some(e => e.type === 'user_input_required'), false);
   assert.equal(replay.some(e => e.type === 'user_input_resolved' && e.requestId === 'old'), true);
 });

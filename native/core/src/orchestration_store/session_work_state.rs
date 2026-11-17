@@ -154,7 +154,7 @@ struct InitialState {
     category: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct EncodedState {
     pub(super) pending_question_json: String,
@@ -442,29 +442,36 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
         .as_str()
         .ok_or_else(|| err("question request required"))?;
     let request = record::parse(raw)?;
+    let action = field(&request, "action");
     let id = match field(&request, "sessionId") {
         JsValue::String(value) if value.is_well_formed() && !value.is_empty() => {
             value.to_string_lossy()
         }
+        _ if action == JsValue::string("move") => {
+            return Ok(json!({"result":{"ok":false,"code":"invalid_move"}}))
+        }
         _ => return Err(err("question transition requires sessionId")),
     };
-    let expected = match field(&request, "expectedVersion") {
+    let requested_version = match field(&request, "expectedVersion") {
+        JsValue::Undefined => None,
         JsValue::Number(value)
             if value.is_finite()
                 && value >= 0.0
                 && value.fract() == 0.0
                 && value <= MAX_VERSION as f64 =>
         {
-            value as u64
+            Some(value as u64)
         }
         _ => return Err(err("question transition requires expectedVersion")),
     };
-    let action = field(&request, "action");
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(err)?;
     let current = snapshot_in_write_transaction(&tx, &id)?;
-    if current["version"].as_u64() != Some(expected) {
+    let expected = current["version"]
+        .as_u64()
+        .ok_or_else(|| err("invalid session work state version"))?;
+    if requested_version.is_some_and(|version| version != expected) {
         return Err(err("session work state version conflict"));
     }
     let mut encoded = if current["exists"] == true {
@@ -508,6 +515,56 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
         value @ JsValue::String(_) => JsValue::object(vec![("classifyState", value)]),
         _ => return Err(err("invalid session work category")),
     };
+    if action == JsValue::string("patchFacts") {
+        let original = encoded.clone();
+        let original_category = category.clone();
+        if let Some(patch) = request.get("categoryPatch") {
+            let JsValue::Object(entries) = patch else {
+                return Err(err("session work category patch must be an object"));
+            };
+            for (key, value) in entries {
+                if !key.is_well_formed() {
+                    return Err(err("invalid session work category field"));
+                }
+                let key = key.to_string_lossy();
+                if !matches!(
+                    key.as_str(),
+                    "classifyState"
+                        | "goalState"
+                        | "unattended"
+                        | "runActive"
+                        | "startedAt"
+                        | "endedAt"
+                        | "lastTurnEndedAt"
+                ) {
+                    return Err(err("unsupported session work category field"));
+                }
+                put(&mut category, &key, value.clone())?;
+            }
+            if category != original_category {
+                encoded.category_json = record::encode(&category)?;
+            }
+        }
+        if let Some(active_turn) = request.get("activeTurn") {
+            if record::parse(&encoded.active_turn_json)? != *active_turn {
+                encoded.active_turn_json = record::encode(active_turn)?;
+            }
+        }
+        if current["exists"] == true
+            && encoded.pending_question_json == original.pending_question_json
+            && encoded.active_turn_json == original.active_turn_json
+            && encoded.category_json == original.category_json
+        {
+            return Ok(
+                json!({"result":{"ok":true,"changed":false},"snapshot":current,"notificationJson":"null"}),
+            );
+        }
+        let saved = write_in_transaction(&tx, &id, expected, &encoded)?;
+        tx.commit().map_err(err)?;
+        return Ok(
+            json!({"result":{"ok":true,"changed":true},"snapshot":saved,"notificationJson":"null"}),
+        );
+    }
     let at = match field(&request, "at") {
         JsValue::Number(value) if value.is_finite() => JsValue::Number(value),
         _ => return Err(err("question transition requires clock")),
@@ -517,7 +574,7 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
             JsValue::String(value) if value.is_well_formed() && !value.is_empty() => {
                 value.to_string_lossy()
             }
-            _ => return Err(err("question move requires targetSessionId")),
+            _ => return Ok(json!({"result":{"ok":false,"code":"invalid_move"}})),
         };
         if target_id == id {
             return Ok(json!({"result":{"ok":false,"code":"invalid_move"}}));
@@ -527,24 +584,37 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
                 json!({"result":{"ok":false,"code":if truthy(&pending) {"already_resolved"} else {"no_pending_request"}}}),
             );
         }
+        let expected_request = field(&request, "expectedRequestId");
+        if !matches!(expected_request, JsValue::Undefined | JsValue::Null) {
+            if !matches!(&expected_request, JsValue::String(value) if !value.is_empty()) {
+                return Err(err("invalid expected question request id"));
+            }
+            if field(&pending, "requestId") != expected_request {
+                return Ok(json!({"result":{"ok":false,"code":"request_id_mismatch"}}));
+            }
+        }
         let requested_turn = field(&request, "turnId");
         let current_turn = field(&pending, "turnId");
         if truthy(&requested_turn) && truthy(&current_turn) && requested_turn != current_turn {
             return Ok(json!({"result":{"ok":false,"code":"turn_mismatch"}}));
         }
-        let target_version = match field(&request, "targetExpectedVersion") {
+        let requested_target_version = match field(&request, "targetExpectedVersion") {
+            JsValue::Undefined => None,
             JsValue::Number(value)
                 if value.is_finite()
                     && value >= 0.0
                     && value.fract() == 0.0
                     && value <= MAX_VERSION as f64 =>
             {
-                value as u64
+                Some(value as u64)
             }
             _ => return Err(err("question move requires targetExpectedVersion")),
         };
         let target = snapshot_in_write_transaction(&tx, &target_id)?;
-        if target["version"].as_u64() != Some(target_version) {
+        let target_version = target["version"]
+            .as_u64()
+            .ok_or_else(|| err("invalid target session work state version"))?;
+        if requested_target_version.is_some_and(|version| version != target_version) {
             return Err(err("session work state version conflict"));
         }
         let mut target_encoded = if target["exists"] == true {
@@ -689,8 +759,7 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
         );
     }
     let mut notification = JsValue::Null;
-    let result;
-    if action == JsValue::string("record") {
+    let result = if action == JsValue::string("record") {
         let signal = field(&request, "signal");
         let turn_id = field(&signal, "turnId");
         let request_id = field(&signal, "requestId");
@@ -782,7 +851,7 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
                 field(&pending, "secretName"),
             )?;
         }
-        result = json!({"ok":true,"duplicate":false});
+        json!({"ok":true,"duplicate":false})
     } else if action == JsValue::string("beginTurn") {
         let continuation = field(&request, "originContinue") == JsValue::Bool(true);
         let request_id = field(&pending, "requestId");
@@ -824,7 +893,7 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
         )?;
         put(&mut category, "classifyState", JsValue::string("P"))?;
         put(&mut category, "goalState", JsValue::Null)?;
-        result = json!({"ok":true});
+        json!({"ok":true})
     } else if action == JsValue::string("resolve") {
         let requested = field(&request, "requestId");
         if !truthy(&pending) || field(&pending, "requestId") != requested {
@@ -870,10 +939,10 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
             JsValue::Number(1.0),
         )?;
         put(&mut pending, "resolvedNotification", notification.clone())?;
-        result = json!({"ok":true,"duplicate":false});
+        json!({"ok":true,"duplicate":false})
     } else {
         return Err(err("unknown question transition"));
-    }
+    };
     encoded.pending_question_json = record::encode(&pending)?;
     encoded.category_json = record::encode(&category)?;
     let saved = write_in_transaction(&tx, &id, expected, &encoded)?;
@@ -1040,6 +1109,248 @@ mod tests {
     }
 
     #[test]
+    fn question_lifecycle_can_observe_and_transition_in_one_transaction() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init(&connection);
+        let execute = |connection: &mut Connection, request: Value| {
+            question_transition(connection, &json!({"requestJson":request.to_string()}))
+        };
+        let initial = json!({"pendingQuestion":null,"activeTurn":{"_activeTurn":{"turnId":"t"},
+            "isStreaming":true,"_currentTaskId":"task"},"category":{"classifyState":"W"}});
+        let signal = |id| json!({"sessionId":"s","turnId":"t","requestId":id,"question":"Q"});
+        let create = json!({"action":"record","sessionId":"s","at":1,
+            "initialState":initial,"signal":signal("first")});
+        let result = execute(&mut connection, create.clone()).unwrap();
+        assert_eq!(result["snapshot"]["version"], 1);
+        assert_eq!(
+            execute(&mut connection, create).unwrap()["result"]["duplicate"],
+            true
+        );
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"s"})).unwrap()["version"],
+            1
+        );
+        let settled = execute(
+            &mut connection,
+            json!({"action":"resolve","sessionId":"s",
+            "at":2,"requestId":"first"}),
+        )
+        .unwrap();
+        assert_eq!(settled["snapshot"]["version"], 2);
+        let replacement = execute(
+            &mut connection,
+            json!({"action":"record","sessionId":"s",
+            "at":3,"signal":signal("second")}),
+        )
+        .unwrap();
+        assert_eq!(replacement["snapshot"]["version"], 3);
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"s"})).unwrap()["pendingQuestion"]["requestId"],
+            "second"
+        );
+        let stale = json!({"action":"resolve","sessionId":"s","expectedVersion":2,"at":4,"requestId":"second"});
+        assert!(execute(&mut connection, stale)
+            .unwrap_err()
+            .contains("version conflict"));
+        assert!(execute(
+            &mut connection,
+            json!({"action":"record","sessionId":"new","at":1,
+            "signal":{"sessionId":"new","turnId":"t","requestId":"q"}})
+        )
+        .unwrap_err()
+        .contains("trusted initial snapshot"));
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"new"})).unwrap()["exists"],
+            false
+        );
+    }
+
+    #[test]
+    fn fact_patch_preserves_current_question_and_is_idempotent() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init(&connection);
+        let execute = |connection: &mut Connection, request: Value| {
+            question_transition(connection, &json!({"requestJson":request.to_string()}))
+        };
+        let initial = json!({"pendingQuestion":{"requestId":"q","resolved":false},
+            "activeTurn":null,"category":{"classifyState":"W"}});
+        let patch = json!({"action":"patchFacts","sessionId":"s","initialState":initial,
+            "activeTurn":{"turnId":"t"},"categoryPatch":{"classifyState":"P","runActive":true}});
+        let first = execute(&mut connection, patch.clone()).unwrap();
+        assert_eq!(first["result"]["changed"], true);
+        assert_eq!(first["snapshot"]["version"], 1);
+        let replay = execute(&mut connection, patch).unwrap();
+        assert_eq!(replay["result"]["changed"], false);
+        assert_eq!(replay["snapshot"]["version"], 1);
+        execute(
+            &mut connection,
+            json!({"action":"resolve","sessionId":"s","at":1,"requestId":"q"}),
+        )
+        .unwrap();
+        let update = execute(
+            &mut connection,
+            json!({"action":"patchFacts","sessionId":"s",
+            "categoryPatch":{"classifyState":"D"}}),
+        )
+        .unwrap();
+        assert_eq!(update["snapshot"]["version"], 3);
+        let state = read(&connection, &json!({"sessionId":"s"})).unwrap();
+        assert_eq!(state["pendingQuestion"]["requestId"], "q");
+        assert_eq!(state["pendingQuestion"]["resolved"], true);
+        assert_eq!(state["category"]["classifyState"], "D");
+        execute(
+            &mut connection,
+            json!({"action":"record","sessionId":"s","at":2,
+            "liveActiveTurn":{"_activeTurn":{"turnId":"t"},"isStreaming":true},
+            "signal":{"sessionId":"s","turnId":"t","requestId":"replacement","question":"Q"}}),
+        )
+        .unwrap();
+        let after = execute(
+            &mut connection,
+            json!({"action":"patchFacts","sessionId":"s",
+            "categoryPatch":{"classifyState":"W"}}),
+        )
+        .unwrap();
+        assert_eq!(after["snapshot"]["version"], 5);
+        let state = read(&connection, &json!({"sessionId":"s"})).unwrap();
+        assert_eq!(state["pendingQuestion"]["requestId"], "replacement");
+        assert_eq!(state["pendingQuestion"]["resolved"], false);
+        assert!(execute(
+            &mut connection,
+            json!({"action":"patchFacts","sessionId":"s",
+            "expectedVersion":1,"categoryPatch":{"classifyState":"W"}})
+        )
+        .unwrap_err()
+        .contains("version conflict"));
+        assert!(execute(
+            &mut connection,
+            json!({"action":"patchFacts","sessionId":"s",
+            "categoryPatch":{"pendingQuestion":null}})
+        )
+        .unwrap_err()
+        .contains("unsupported session work category field"));
+        assert_eq!(read(&connection, &json!({"sessionId":"s"})).unwrap(), state);
+    }
+
+    #[test]
+    fn concurrent_first_questions_choose_one_owner_and_do_not_overwrite_it() {
+        use std::{
+            sync::{Arc, Barrier},
+            thread,
+            time::Duration,
+        };
+        let mut random = [0u8; 12];
+        getrandom::fill(&mut random).unwrap();
+        let file = std::env::temp_dir().join(format!(
+            "multicc-question-owner-{}.sqlite",
+            random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ));
+        let connection = Connection::open(&file).unwrap();
+        init(&connection);
+        drop(connection);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut workers = Vec::new();
+        for question in ["first", "second"] {
+            let file = file.clone();
+            let barrier = barrier.clone();
+            workers.push(thread::spawn(move || {
+                let mut connection = Connection::open(file).unwrap();
+                connection.busy_timeout(Duration::from_secs(5)).unwrap();
+                let request = json!({"action":"record","sessionId":"s","at":1,
+                    "initialState":{"pendingQuestion":null,"activeTurn":{"_activeTurn":{"turnId":"t"},
+                        "isStreaming":true},"category":null},
+                    "signal":{"sessionId":"s","turnId":"t","requestId":question,"question":"Q"}});
+                barrier.wait();
+                question_transition(&mut connection, &json!({"requestJson":request.to_string()})).unwrap()
+            }));
+        }
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(
+            results.iter().filter(|r| r["result"]["ok"] == true).count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| r["result"]["code"] == "user_input_already_pending")
+                .count(),
+            1
+        );
+        let connection = Connection::open(&file).unwrap();
+        let final_state = read(&connection, &json!({"sessionId":"s"})).unwrap();
+        assert_eq!(final_state["version"], 1);
+        let winner = final_state["pendingQuestion"]["requestId"]
+            .as_str()
+            .unwrap();
+        assert!(winner == "first" || winner == "second");
+        drop(connection);
+        std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn concurrent_fact_update_and_replacement_keep_both_changes() {
+        use std::{
+            sync::{Arc, Barrier},
+            thread,
+            time::Duration,
+        };
+        let mut random = [0u8; 12];
+        getrandom::fill(&mut random).unwrap();
+        let file = std::env::temp_dir().join(format!(
+            "multicc-question-facts-{}.sqlite",
+            random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ));
+        let mut connection = Connection::open(&file).unwrap();
+        init(&connection);
+        write(&mut connection, &json!({"updates":[{"sessionId":"s","expectedVersion":0,
+            "pendingQuestion":{"requestId":"old","resolved":true},
+            "activeTurn":{"_activeTurn":{"turnId":"t"},"isStreaming":true},"category":{"classifyState":"W"}}]})).unwrap();
+        drop(connection);
+        let barrier = Arc::new(Barrier::new(2));
+        let requests = [
+            json!({"action":"patchFacts","sessionId":"s","categoryPatch":{"classifyState":"P"}}),
+            json!({"action":"record","sessionId":"s","at":2,
+                "signal":{"sessionId":"s","turnId":"t","requestId":"new","question":"Q"}}),
+        ];
+        let workers: Vec<_> = requests
+            .into_iter()
+            .map(|request| {
+                let file = file.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    let mut connection = Connection::open(file).unwrap();
+                    connection.busy_timeout(Duration::from_secs(5)).unwrap();
+                    barrier.wait();
+                    question_transition(
+                        &mut connection,
+                        &json!({"requestJson":request.to_string()}),
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        for worker in workers {
+            assert_eq!(worker.join().unwrap()["result"]["ok"], true);
+        }
+        let connection = Connection::open(&file).unwrap();
+        let state = read(&connection, &json!({"sessionId":"s"})).unwrap();
+        assert_eq!(state["version"], 3);
+        assert_eq!(state["pendingQuestion"]["requestId"], "new");
+        assert_eq!(state["category"]["classifyState"], "P");
+        drop(connection);
+        std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
     fn question_move_commits_both_sessions_or_neither() {
         let mut connection = Connection::open_in_memory().unwrap();
         init(&connection);
@@ -1062,6 +1373,21 @@ mod tests {
         assert_eq!(
             question_transition(&mut connection, &mismatch).unwrap()["result"]["code"],
             "turn_mismatch"
+        );
+        let stale = json!({"requestJson":json!({"action":"move","sessionId":"source",
+            "expectedVersion":1,"targetSessionId":"target","targetExpectedVersion":1,
+            "expectedRequestId":"replaced","turnId":"t","at":10}).to_string()});
+        assert_eq!(
+            question_transition(&mut connection, &stale).unwrap()["result"]["code"],
+            "request_id_mismatch"
+        );
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"source"})).unwrap()["version"],
+            1
+        );
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"target"})).unwrap()["version"],
+            1
         );
         assert!(question_transition(&mut connection, &request(1, 0))
             .unwrap_err()

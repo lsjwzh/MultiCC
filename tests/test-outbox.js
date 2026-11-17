@@ -28,6 +28,43 @@ test('SQLite claim selects twice without running a queued microtask between pass
   assert.deepEqual(events, ['select-1', 'group-1', 'select-2', 'group-2', 'microtask']);
 });
 
+test('SQLite claim reads the Rust question within its synchronous owner snapshot', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-question-snapshot-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  store.sessionWorkStateSync('s', { pendingQuestion: { requestId: 'q', resolved: false },
+    activeTurn: null, category: 'W' });
+  const outbox = createOutbox({ store });
+  await outbox.enqueue({ id: 'a', sessionId: 's', payload: 'message' });
+  const seen = [];
+  const claim = outbox.claim({ workerId: 'worker', selectSessionItem(items) {
+    seen.push(store.sessionWorkStateSync('s').pendingQuestion.resolved);
+    return items[0];
+  } });
+  const resolution = store.sessionWorkQuestion({ action: 'resolve', sessionId: 's', at: 1, requestId: 'q' });
+  assert.deepEqual((await claim).map(item => item.id), ['a']);
+  assert.deepEqual(seen, [false, false]);
+  assert.equal((await resolution).result.ok, true);
+  assert.equal(store.sessionWorkStateSync('s').pendingQuestion.resolved, true);
+});
+
+test('SQLite claim does not treat an uninitialized Rust question as empty', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-question-missing-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const owner = createQuestionOwner({ getStore: () => store, liveTurn: () => null,
+    initialState: () => ({ pendingQuestion: { requestId: 'q', resolved: false }, activeTurn: null, category: 'W' }) });
+  const outbox = createOutbox({ store });
+  await outbox.enqueue({ id: 'a', sessionId: 's', payload: 'message' });
+  await assert.rejects(outbox.claim({ workerId: 'worker', selectSessionItem(items) {
+    owner.read('s');
+    return items[0];
+  } }), error => error.code === 'SESSION_WORK_OWNER_UNAVAILABLE');
+  assert.equal((await store.snapshot()).outbox.a.state, 'pending');
+  assert.equal(store.sessionWorkStateSync('s').exists, false);
+});
+
 // Acceptance regression: the legacy claim awaits its mutator before commit,
 // so this remains red until a nonblocking Rust claim commits in the same turn.
 test('SQLite claim commits before a microtask queued by its second selection', async t => {

@@ -310,8 +310,9 @@ function createTaskShellRuntime(ports) {
       const historicalTask = last && (store.get('task', last.taskId) || indexedTask(last.taskId));
       const historicalSessionId = historicalTask?.sessionId || historicalTask?.chatSessionId;
       const historyTaskId = !historicalSessionId || historicalSessionId === sessionId ? last?.taskId : null;
-      const id = task?.id || record.taskBoundTaskId || (record.taskState?.pendingUserInput
-        && !record.taskState.pendingUserInput.resolved ? record.taskState.pendingUserInput.taskId : null)
+      const pending = !task?.id && !record.taskBoundTaskId
+        ? (ports.pendingUserInput ? ports.pendingUserInput(sessionId) : record.taskState?.pendingUserInput) : null;
+      const id = task?.id || record.taskBoundTaskId || (pending && !pending.resolved ? pending.taskId : null)
         || record.taskState?.userInputSignalTaskId || historyTaskId
         || `tsk_${hash(['adopt', sessionId]).slice(0, 32)}`;
       const indexed = indexedTask(id);

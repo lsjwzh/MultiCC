@@ -89,6 +89,26 @@ test('queued successors cannot cancel an ended turn; live turns and pending ques
   assert.equal((await host.taskEntry(shell.currentTaskId)).execution.turnId, null);
 });
 
+test('task shell projects and adopts the current question from the injected owner', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-owned-question-'));
+  const record = { id: 'source', kind: 'chat', dirId: 'd1', taskState: {
+    classifyState: 'W', pendingUserInput: { taskId: 'stale', turnId: 'old', resolved: false },
+  } };
+  let question = { taskId: 'owned-task', turnId: 'owned-turn', requestId: 'q', resolved: false };
+  const host = createTaskShellHost({ file: path.join(dir, 'shell.sqlite'), records: new Map([[record.id, record]]),
+    pendingUserInput: () => question, getChatState: () => ({ isStreaming: false }), loadHistory: () => [],
+    getWorkHost: () => ({ isRunActive: () => false, getRunState: () => 'waiting' }),
+    getScheduler: () => ({ status: async () => ({ state: 'idle', classifyState: 'W', active: null, queued: [] }) }),
+    getTaskBoard: () => ({ registerShellTask: () => ({ ok: true }), getBoard: () => ({ tasks: {} }) }),
+  });
+  t.after(() => { host.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const shell = host.open(record.id);
+  assert.equal(shell.currentTaskId, 'owned-task');
+  assert.equal((await host.taskEntry('owned-task')).execution.turnId, 'owned-turn');
+  question = null;
+  assert.equal((await host.taskEntry('owned-task')).execution.turnId, null);
+});
+
 const input = (id, more = {}) => ({ text: id, clientMsgId: id, ...more });
 test('legacy transcript fork gets an independent task while source ownership and copied history stay intact', async t => {
   const f = fixture(t);

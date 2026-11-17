@@ -56,9 +56,9 @@ function createTaskShellHost(deps) {
     const record = deps.records.get(id);
     return record?.taskBoundTaskId && id === `task-${record.taskBoundTaskId.replace(/^tsk_/, '')}`;
   }
-  function currentTurn(sessionId) {
-    const record = deps.records.get(sessionId);
-    const pending = record?.taskState?.pendingUserInput;
+  const pendingInput = id => deps.pendingUserInput
+    ? deps.pendingUserInput(id) : deps.records.get(id)?.taskState?.pendingUserInput || null;
+  function currentTurn(sessionId, pending = pendingInput(sessionId)) {
     if (pending && pending.resolved !== true && pending.turnId) return pending.turnId;
     const live = deps.getChatState(sessionId);
     // A queued successor still carries the previous persisted signal ID. It
@@ -84,6 +84,7 @@ function createTaskShellHost(deps) {
       unifiedAdmission: true,
       taskFirst: true, defaultTaskRuntime: deps.defaultTaskRuntime,
       getRecord: id => deps.records.get(id),
+      pendingUserInput: pendingInput,
       onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
       onSeparationChanged: id => deps.onSeparationChanged?.(id),
       onRelationChanged: id => deps.onRelationChanged?.(id),
@@ -103,7 +104,7 @@ function createTaskShellHost(deps) {
         const record = deps.records.get(id);
         if (!host || !scheduler || !record) return { busy: true, status: 'unavailable' };
         const state = await scheduler.status(id);
-        const pending = record.taskState?.pendingUserInput;
+        const pending = deps.pendingUserInputAsync ? await deps.pendingUserInputAsync(id) : pendingInput(id);
         const taskState = record.taskState || {};
         const classifyHistory = (Array.isArray(taskState.classifyHistory) ? taskState.classifyHistory : [])
           .slice(-20).map(item => ({ at: Number(item?.at) || null,
@@ -121,7 +122,7 @@ function createTaskShellHost(deps) {
         const busy = !!state.active || !!state.queued?.length || !!(pending && !pending.resolved)
           || !['idle', 'assessing'].includes(state.state) || host.isRunActive(id);
         return { busy, status: host.getRunState(id), completed: !busy && isTerminalLetter(state.classifyState),
-          turnId: currentTurn(id), pending: pending && !pending.resolved ? pending : null,
+          turnId: currentTurn(id, pending), pending: pending && !pending.resolved ? pending : null,
           queue: { state: shortText(state.state, 40) || 'idle', freezeReason: shortText(state.freezeReason, 160) || null,
             classifyState: shortText(state.classifyState, 8) || null, active: publicActive(state.active),
             queued: (Array.isArray(state.queued) ? state.queued : []).map(publicQueueItem),
@@ -205,8 +206,9 @@ function createTaskShellHost(deps) {
       taskGraphContext: deps.taskGraphContext,
       send: (...args) => deps.deliver(...args),
       dispatch: (...args) => deps.dispatch(...args),
-      cancel: (id, turnId) => {
-        if (currentTurn(id) !== turnId) throw failure('stale_control');
+      cancel: async (id, turnId) => {
+        const pending = deps.pendingUserInputAsync ? await deps.pendingUserInputAsync(id) : pendingInput(id);
+        if (currentTurn(id, pending) !== turnId) throw failure('stale_control');
         return deps.getWorkHost().cancelActiveTurn(id, { source: 'task-shell', reason: 'user_cancelled' });
       },
     });
@@ -340,8 +342,7 @@ function createTaskShellHost(deps) {
       store,
       revisionOf: scope => taskIndex(scope.shellId).scopeRevision,
       isTurnBusy: (sessionId, turnId) => {
-        const record = deps.records.get(sessionId);
-        const pending = record?.taskState?.pendingUserInput;
+        const pending = pendingInput(sessionId);
         if (pending && pending.resolved !== true && pending.turnId === turnId) return true;
         return currentTurn(sessionId) === turnId;
       },
@@ -389,8 +390,7 @@ function createTaskShellHost(deps) {
         getRuntime().settleAttribution(sessionId, receiptId, attribution),
       restoreSettledCursor: (shellId, options) => getRuntime().restoreSettledCursor(shellId, options),
       isTurnBusy: (sessionId, turnId) => {
-        const record = deps.records.get(sessionId);
-        const pending = record?.taskState?.pendingUserInput;
+        const pending = pendingInput(sessionId);
         if (pending && pending.resolved !== true && pending.turnId === turnId) return true;
         return currentTurn(sessionId) === turnId;
       },

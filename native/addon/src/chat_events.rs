@@ -2528,3 +2528,41 @@ pub fn chat_apply_adapter_event(
         anchor,
     )
 }
+
+// Resume a decoded adapter effect after an asynchronous host operation. This
+// skips protocol completion observation, which already ran for the raw event.
+#[napi]
+#[allow(clippy::too_many_arguments)]
+pub fn chat_apply_adapter_decoded_event(
+    env: Env,
+    provider: Unknown<'_>,
+    cs: Unknown<'_>,
+    persisted: Unknown<'_>,
+    session_name: Unknown<'_>,
+    event: Unknown<'_>,
+    forward: Unknown<'_>,
+    turn: Unknown<'_>,
+    runner: Unknown<'_>,
+    ports: Unknown<'_>,
+) -> Result<()> {
+    let anchor = LiveValue::new(&env, ports);
+    let cs = LiveValue::new(&env, cs);
+    let turn = LiveValue::new(&env, turn);
+    let runner = LiveValue::new(&env, runner);
+    if !is_current(anchor, cs, turn, runner)? {
+        return Ok(());
+    }
+    apply_adapter_one(
+        &env,
+        anchor,
+        LiveValue::new(&env, event),
+        cs,
+        LiveValue::new(&env, persisted),
+        LiveValue::new(&env, session_name),
+        LiveValue::new(&env, forward),
+        turn,
+        runner,
+        LiveValue::new(&env, provider),
+        anchor,
+    )
+}

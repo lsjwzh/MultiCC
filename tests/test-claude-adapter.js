@@ -17,6 +17,35 @@ const { recordsOf } = require('./helpers/session-records');
 const SESSION_UUID = '05de20f7-563a-4d09-af34-b748c7b189ca';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+test('chat preparation awaits ordered question resolution and turn initialization', async () => {
+  let releaseResolve, enteredResolve, releaseBegin, enteredBegin;
+  const resolveGate = new Promise(resolve => { releaseResolve = resolve; });
+  const resolveStarted = new Promise(resolve => { enteredResolve = resolve; });
+  const beginGate = new Promise(resolve => { releaseBegin = resolve; });
+  const beginStarted = new Promise(resolve => { enteredBegin = resolve; });
+  const trace = [];
+  const promise = prepareTurn({ record: { id: 'ordered', cli: 'claude', model: 'opus' }, cwd: '/tmp',
+    turnOptions: { userInputRequestId: 'q' }, hostDeps: { userInputSignalHost: {
+      resolve() { throw new Error('synchronous resolution used'); },
+      beginTurn() { throw new Error('synchronous begin used'); },
+      async resolveAsync(_id, requestId) {
+        trace.push(`resolve:${requestId}`); enteredResolve(); await resolveGate; trace.push('resolved');
+        return { ok: true };
+      },
+      async beginTurnAsync(_id, options) {
+        assert.ok(options.turnId); trace.push('begin'); enteredBegin(); await beginGate; trace.push('begun');
+      },
+    } } });
+  await resolveStarted;
+  assert.deepEqual(trace, ['resolve:q']);
+  releaseResolve();
+  await beginStarted;
+  assert.deepEqual(trace, ['resolve:q', 'resolved', 'begin']);
+  releaseBegin();
+  await promise;
+  assert.deepEqual(trace, ['resolve:q', 'resolved', 'begin', 'begun']);
+});
+
 function envelope({ first = true, sessionId = SESSION_UUID, effort = 'high' } = {}) {
   return {
     contextLayers: [{ kind: 'task-context', order: 12, text: 'context\n\n' }],

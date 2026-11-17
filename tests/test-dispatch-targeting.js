@@ -121,6 +121,27 @@ test('commander (real-LLM dispatcher) sees same-dir workers, not commanders/aux/
   assert.deepEqual(ids, ['w-a']);   // same-dir worker only; not w-b (d2), not cmd2/aux/self
 });
 
+test('commander routing reads pending input from the supplied owner, including empty and unavailable results', () => {
+  const records = new Map([
+    ['cmd', { id: 'cmd', dirId: 'd1', type: 'commander' }],
+    ['worker', { id: 'worker', dirId: 'd1', type: 'chat', taskState: {
+      classifyState: 'D', pendingUserInput: { requestId: 'stale', resolved: false },
+    } }],
+  ]);
+  let pending = null;
+  const target = createDispatchTargeting({ records, chatSessions: new Map(), normalizeEffort: () => 'normal',
+    isTargetBusy: () => false, pendingUserInput: () => pending });
+  assert.equal(target.dispatchableSessionsFor('cmd')[0].routingState, 'ready');
+  pending = { requestId: 'current', resolved: false };
+  assert.equal(target.dispatchableSessionsFor('cmd')[0].routingState, 'waiting_user');
+  pending = undefined;
+  assert.equal(target.dispatchableSessionsFor('cmd')[0].routingState, 'ready');
+  const unavailable = Object.assign(new Error('owner unavailable'), { code: 'SESSION_WORK_OWNER_UNAVAILABLE' });
+  const failing = createDispatchTargeting({ records, chatSessions: new Map(), normalizeEffort: () => 'normal',
+    isTargetBusy: () => false, pendingUserInput: () => { throw unavailable; } });
+  assert.throws(() => failing.dispatchableSessionsFor('cmd'), error => error === unavailable);
+});
+
 test('commander sees bounded roles and deduplicated recent task evidence', () => {
   const records = [
     { id: 'cmd', dirId: 'd1', type: 'commander' },

@@ -533,6 +533,31 @@ test('decode shapes, stale runners and throwing ports agree', () => {
   }
 });
 
+test('an asynchronously rejected question resumes the native text effect before finalization', async () => {
+  const { recordAdapterQuestion } = require('../src/chat/question-input-bridge');
+  const run = createRun(baseScenario('codex'));
+  makePorts(run);
+  run.cs._activeTurn = run.turn;
+  run.cs._activeRunner = run.runner;
+  let release;
+  const request = new Promise(resolve => { release = resolve; });
+  const accepted = recordAdapterQuestion({ evt: { fallbackText: 'question fallback' }, sessionId: run.scenario.sessionName,
+    turnId: run.turn.turnId, work: { recordInput: () => request },
+    recordAdapterUserInput: ({ recordInput }) => recordInput().then(() => ({ ok: false, fallbackText: 'question fallback' })),
+    chatSessions: new Map([[run.scenario.sessionName, run.cs]]), isCurrentTurnRunner: run.ports.isCurrent,
+    logger: { warn() {} }, forwardFallback: (id, cs, turn, runner, text) => native.chatApplyAdapterDecodedEvent(
+      run.provider, cs, run.persisted, id, { type: 'assistant_text', text },
+      event => run.forwards.push(event), turn, runner, run.ports),
+  });
+  assert.equal(accepted.ok, true);
+  assert.equal(run.cs.currentAssistantText, '');
+  release();
+  await Promise.all(run.runner.pendingUserInputRecords);
+  assert.equal(run.cs.currentAssistantText, 'question fallback');
+  assert.equal(run.forwards[0].type, 'assistant');
+  assert.equal(run.portEffects.some(effect => effect[0] === 'completion.observe'), false);
+});
+
 test('lone surrogates and very large events keep exact bytes', () => {
   const events = [
     { type: 'assistant_text', text: '𐏿 lone', delta: true },

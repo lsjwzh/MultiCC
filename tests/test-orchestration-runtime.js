@@ -84,8 +84,8 @@ function withTimeout(promise, ms, message) {
 
 function fixture(t, overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-orchestration-runtime-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'orchestration.json');
+  const databaseFile = overrides.storeOptions?.hooks?.beforeRename ? null : path.join(dir, 'orchestration.sqlite');
   const clock = overrides.clock || { value: 10_000 };
   const history = overrides.history || new Map();
   const injections = overrides.injections || [];
@@ -99,8 +99,10 @@ function fixture(t, overrides = {}) {
     return true;
   });
   const logs = overrides.logs || [];
+  let input;
+  const recovery = overrides.getSessionRecoveryState || (() => null);
   const runtime = createOrchestrationRuntime({
-    file,
+    file, databaseFile,
     now: () => clock.value,
     runChatTurn,
     log: message => logs.push(message),
@@ -116,7 +118,8 @@ function fixture(t, overrides = {}) {
       history.get(sessionId)?.has(deliveryId) || false
     ),
     probe: overrides.probe || (async () => ''),
-    getSessionRecoveryState: overrides.getSessionRecoveryState || (() => null),
+    getSessionRecoveryState: recovery,
+    ensureSessionWorkState: id => input?.pendingAsync(id),
     beforeFirstTick: overrides.beforeFirstTick,
     beforeDeliver: overrides.beforeDeliver,
     deliverOutbox: overrides.deliverOutbox,
@@ -147,7 +150,15 @@ function fixture(t, overrides = {}) {
     waitOptions: overrides.waitOptions || {},
     storeOptions: overrides.storeOptions || {},
   });
-  return { dir, file, clock, history, injections, logs, runtime, scheduled: () => scheduled, wakeup: () => wakeup };
+  if (databaseFile) {
+    input = require('../src/session-work/production-question-host').createProductionQuestionHost({
+      getStore: () => runtime.store, getSession: id => ({ _currentTaskId: recovery(id)?.taskId || null }),
+      getState: id => { const state = recovery(id) || {}; return { ...state, pendingUserInput: state.pendingUserInput || null }; },
+      getRecord: id => ({ unattended: recovery(id)?.unattended || null }), setState: () => {}, now: () => clock.value,
+    }).host;
+  }
+  t.after(async () => { try { await runtime.dispose(); } finally { fs.rmSync(dir, { recursive: true, force: true }); } });
+  return { dir, file, databaseFile, clock, history, injections, logs, runtime, scheduled: () => scheduled, wakeup: () => wakeup };
 }
 
 test('准备阻塞时入队立即返回，其他会话和同键重试也不等待执行器', async t => {
@@ -184,7 +195,7 @@ test('回执发出后尚未启动即关闭，重建运行时仍会投递一次',
   assert.equal(h.injections.length, 0);
   const delivered = new Set();
   let count = 0;
-  const rebuilt = createOrchestrationRuntime({ file: h.file,
+  const rebuilt = createOrchestrationRuntime({ file: h.file, databaseFile: h.databaseFile,
     runChatTurn: (_sessionId, _text, opts) => { count++; delivered.add(opts.deliveryId); return true; },
     hasPersistedDelivery: async (_sessionId, id) => delivered.has(id),
     setIntervalFn: () => ({ unref() {} }), clearIntervalFn() {},
@@ -196,7 +207,7 @@ test('回执发出后尚未启动即关闭，重建运行时仍会投递一次',
     const replay = await rebuilt.admitSessionWork(spec); await rebuilt.tick();
     assert.equal(replay.duplicate, true);
     assert.equal(count, 1);
-  } finally { await rebuilt.stop(); }
+  } finally { await rebuilt.dispose(); }
 });
 
 test('external results resume a native continuation while passive notices stay passive', () => {
@@ -596,13 +607,13 @@ test('a background callback inherits the retained task lineage of the resumed se
 });
 
 test('callback resolution is durable, private and payload-idempotent', async t => {
-  const { file, runtime, injections } = fixture(t);
+  const { databaseFile, runtime, injections } = fixture(t);
   await runtime.start();
   const registered = await runtime.register({ session: 'A', mode: 'callback' });
   assert.equal(registered.status, 'pending');
   assert.equal(runtime.hasPending('A'), true);
-  assert.equal(fs.readFileSync(file, 'utf8').includes(registered.token), false);
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.readFileSync(databaseFile).includes(Buffer.from(registered.token)), false);
+  assert.equal(fs.statSync(databaseFile).mode & 0o777, 0o600);
 
   const first = await runtime.resolveCallback(registered.id, registered.token, { b: 2, a: 1 });
   const duplicate = await runtime.resolveCallback(registered.id, registered.token, { a: 1, b: 2 });
@@ -677,7 +688,7 @@ test('reconstruction closes resolve-to-inject crash and inject-to-ack crash wind
   clock.value += 101;
   const replayedInjections = [];
   const rebuilt = createOrchestrationRuntime({
-    file: first.file,
+    file: first.file, databaseFile: first.databaseFile,
     now: () => clock.value,
     runChatTurn: async (...args) => { replayedInjections.push(args); return true; },
     hasPersistedDelivery: async (sessionId, deliveryId) => sharedHistory.get(sessionId)?.has(deliveryId) || false,
@@ -691,7 +702,7 @@ test('reconstruction closes resolve-to-inject crash and inject-to-ack crash wind
   assert.equal((await rebuilt.outbox.get(lostClaim.id)).state, 'delivered');
   assert.equal(rebuilt.hasPending('A'), false);
   assert.equal((await rebuilt.sessionScheduler.status('A')).state, 'idle');
-  await rebuilt.stop();
+  await rebuilt.dispose();
 });
 
 test('dispatch delivery carries canonical task metadata into runChatTurn', async t => {
@@ -1137,7 +1148,7 @@ test('durable delay survives runtime reconstruction and delivers exactly once wh
   const injections = [];
   const history = new Map();
   const rebuilt = createOrchestrationRuntime({
-    file: first.file,
+    file: first.file, databaseFile: first.databaseFile,
     now: () => clock.value,
     runChatTurn: async (sessionId, text, opts) => {
       injections.push({ sessionId, text, opts });
@@ -1160,7 +1171,7 @@ test('durable delay survives runtime reconstruction and delivers exactly once wh
 
   await rebuilt.tick();
   assert.equal(injections.length, 1, 'resolved delay is never delivered twice');
-  await rebuilt.stop();
+  await rebuilt.dispose();
 });
 
 test('startup recovers an expired lease and stop clears the worker timer', async t => {

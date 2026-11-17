@@ -735,6 +735,9 @@ function createClassifyStateMachine(rawDeps) {
     const changedIdentity = taskId !== previousTaskId;
 
     cs._currentTaskId = taskId;
+    if (typeof getUserInputSignalHost().activateTurnAsync === 'function') {
+      await getUserInputSignalHost().activateTurnAsync(sessionName);
+    }
     if (!cs.currentTask) cs.currentTask = newCurrentTask(taskName);
     cs.currentTask.goal = taskName;
     cs.currentTask.phase = phase;

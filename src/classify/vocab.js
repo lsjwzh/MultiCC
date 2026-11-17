@@ -47,6 +47,10 @@ function applyUserInputEvidence(result, pendingUserInput) {
   return request('applyUserInputEvidence', { result, pendingUserInput });
 }
 
+function userInputDegraded(pendingUserInput, state, currentTask) {
+  return request('userInputDegraded', { pendingUserInput, state, currentTask });
+}
+
 /** 这一轮判定的「执行成功」子状态：achieved / interact / null（没有子状态）。 */
 function goalStateForClassify(result) {
   return request('goalStateForClassify', { result: result ?? null });
@@ -128,6 +132,7 @@ module.exports = {
   runStateForClassify,
   phaseLabel,
   applyUserInputEvidence,
+  userInputDegraded,
   // Letter semantics — the only sanctioned way to ask what a letter means.
   isProcessingLetter,
   isWaitForUserLetter,

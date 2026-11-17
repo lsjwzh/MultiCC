@@ -5,7 +5,7 @@ use multicc_core::js::from_serde;
 use multicc_core::orchestration_owner::{OwnerClient, OWNER_PROTOCOL_VERSION};
 use multicc_core::orchestration_retention::{MaintenanceGuard, RetentionPolicy};
 use napi::{
-    bindgen_prelude::{AsyncTask, Buffer, Unknown},
+    bindgen_prelude::{AsyncTask, Buffer, ClassInstance, Unknown},
     sys, Env, Result, ScopedTask,
 };
 use napi_derive::napi;
@@ -180,6 +180,38 @@ fn policy(options: Value) -> Result<RetentionPolicy> {
 #[napi]
 pub struct RustIsolatedOrchestrationStore {
     inner: Arc<OwnerSession>,
+}
+
+/// Submit a prepared admission to the isolated SQLite owner. Domain-level
+/// planning and replay are not migrated yet; production does not call this.
+#[napi]
+pub fn schedule_admit(
+    env: Env,
+    store: ClassInstance<'_, RustIsolatedOrchestrationStore>,
+    input: Unknown<'_>,
+) -> Result<AsyncTask<OwnerRequest>> {
+    Ok(AsyncTask::new(OwnerRequest {
+        inner: Arc::clone(&store.inner),
+        op: "scheduleAdmit".into(),
+        input: read(env, input, "scheduleAdmit")?,
+        spec: None,
+        admission: false,
+    }))
+}
+
+#[napi]
+pub fn schedule_reorder(
+    env: Env,
+    store: ClassInstance<'_, RustIsolatedOrchestrationStore>,
+    input: Unknown<'_>,
+) -> Result<AsyncTask<OwnerRequest>> {
+    Ok(AsyncTask::new(OwnerRequest {
+        inner: Arc::clone(&store.inner),
+        op: "scheduleReorder".into(),
+        input: read(env, input, "scheduleReorder")?,
+        spec: None,
+        admission: false,
+    }))
 }
 
 #[napi]
