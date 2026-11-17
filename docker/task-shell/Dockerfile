@@ -1,5 +1,7 @@
 FROM rust:1.98-bookworm AS rust-build
 WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY .cargo ./.cargo
 COPY native ./native
 RUN cargo build --locked --release --manifest-path native/Cargo.toml
