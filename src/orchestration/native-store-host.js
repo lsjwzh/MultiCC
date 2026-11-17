@@ -640,6 +640,63 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   return Object.freeze({
     backend: 'sqlite', file, legacyFile, migration: Object.freeze({ ...initial.migration }),
     read, mutate, mutateIf, runNativeCommandSync, snapshot: () => read(),
+    // The Rust owner makes and commits the question lifecycle decision.
+    sessionWorkQuestion(input) {
+      let requestJson;
+      try { requestJson = JSON.stringify(input); }
+      catch (error) { return Promise.reject(error); }
+      return enqueue(async () => {
+        ensureOpen();
+        const response = await requestAsync('sessionWorkQuestionExperimental', { requestJson });
+        if (!response.snapshot) return response;
+        const { pendingQuestionJson, activeTurnJson, categoryJson, ...rest } = response.snapshot;
+        return { ...response, snapshot: { ...rest, pendingQuestion: JSON.parse(pendingQuestionJson),
+          activeTurn: JSON.parse(activeTurnJson), category: JSON.parse(categoryJson) },
+        notification: JSON.parse(response.notificationJson) };
+      });
+    },
+    // Transport only: the owner validates, versions and commits this state.
+    // Serialize with existing commands so an unrelated draft cannot be active.
+    sessionWorkState(input) {
+      let captured;
+      try { captured = JSON.parse(JSON.stringify(input)); }
+      catch (error) { return Promise.reject(error); }
+      const encode = ({ pendingQuestion, activeTurn, category, ...rest }) => ({
+        ...rest, pendingQuestionJson: JSON.stringify(pendingQuestion),
+        activeTurnJson: JSON.stringify(activeTurn), categoryJson: JSON.stringify(category),
+      });
+      const decode = ({ pendingQuestionJson, activeTurnJson, categoryJson, ...rest }) => ({
+        ...rest, pendingQuestion: JSON.parse(pendingQuestionJson),
+        activeTurn: JSON.parse(activeTurnJson), category: JSON.parse(categoryJson),
+      });
+      try {
+        captured.encoding = 'json';
+        if (captured.action === 'readOrInitialize') captured.initial = encode(captured.initial);
+        if (captured.action === 'readOrInitializeBatch') {
+          captured.entries = captured.entries.map(({ sessionId, initial, ...rest }) => ({
+            ...rest, sessionId, initial: encode(initial),
+          }));
+        }
+        if (captured.action === 'write') captured.updates = captured.updates.map(encode);
+        if (captured.action === 'patch') {
+          if (Object.hasOwn(captured, 'initial')) captured.initial = encode(captured.initial);
+          const patch = captured.patch;
+          for (const name of ['pendingQuestion', 'activeTurn', 'category']) {
+            if (!Object.hasOwn(patch, name)) continue;
+            patch[`${name}Json`] = JSON.stringify(patch[name]);
+            delete patch[name];
+          }
+        }
+      } catch (error) { return Promise.reject(error); }
+      return enqueue(async () => {
+        ensureOpen();
+        const result = captured.action === 'readOrInitializeBatch'
+          ? await requestAsync('sessionWorkState', captured)
+          : request('sessionWorkState', captured);
+        return ['write', 'readOrInitializeBatch'].includes(captured.action)
+          ? { snapshots: result.snapshots.map(decode) } : decode(result);
+      });
+    },
     ...(Object.keys(hooks).length ? {} : { cancelWait, markRunningOperation, executeOutbox, executeOperationAdmit, settleScheduleInput }),
     select: (collection, options = {}) => read(state => state.select(collection, options)),
     count: (collection, where = {}) => read(state => state.count(collection, where)),

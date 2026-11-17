@@ -10,6 +10,7 @@ mod receipts;
 mod record;
 mod schedule_metadata;
 mod schedule_settle;
+mod session_work_state;
 mod schema;
 mod wait_cancel;
 
@@ -425,6 +426,7 @@ impl Store {
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA wal_autocheckpoint=1000; PRAGMA journal_size_limit=0;").map_err(err)?;
         validate(&connection)?;
         let upgraded = receipts::upgrade(&connection)?;
+        session_work_state::initialize(&connection)?;
         private_files(&file)?;
         let mut metrics = Map::new();
         for key in [
@@ -729,6 +731,70 @@ impl Store {
             }
             "waitCancelCheck" => wait_cancel::check(self.conn()?, input),
             "scheduleSettlePlan" => schedule_settle::plan(self.conn()?, input),
+            "sessionWorkState" if input.get("encoding").and_then(Value::as_str) == Some("json") => {
+                match input.get("action").and_then(Value::as_str) {
+                    Some("read") => session_work_state::encoded_read(self.conn()?, input),
+                    Some(
+                        action @ ("write" | "readOrInitialize" | "readOrInitializeBatch" | "patch"),
+                    ) => {
+                        if self.active || self.pending {
+                            return Err(err(
+                                "session work state requires an idle owner connection",
+                            ));
+                        }
+                        let connection = self
+                            .connection
+                            .as_mut()
+                            .ok_or_else(|| err("database closed"))?;
+                        match action {
+                            "write" => session_work_state::encoded_write(connection, input),
+                            "patch" => session_work_state::encoded_patch(connection, input),
+                            "readOrInitializeBatch" => {
+                                session_work_state::encoded_initialize_batch(connection, input)
+                            }
+                            _ => session_work_state::encoded_initialize(connection, input),
+                        }
+                    }
+                    _ => Err(err("unknown session work state action")),
+                }
+            }
+            "sessionWorkState" if input.get("encoding").is_some() => {
+                Err(err("unsupported session work state encoding"))
+            }
+            "sessionWorkState" => match input.get("action").and_then(Value::as_str) {
+                Some("read") => session_work_state::read(self.conn()?, input),
+                Some("readOrInitialize") => {
+                    if self.active || self.pending {
+                        return Err(err("session work state requires an idle owner connection"));
+                    }
+                    let connection = self
+                        .connection
+                        .as_mut()
+                        .ok_or_else(|| err("database closed"))?;
+                    session_work_state::read_or_initialize(connection, input)
+                }
+                Some("write") => {
+                    if self.active || self.pending {
+                        return Err(err("session work state requires an idle owner connection"));
+                    }
+                    let connection = self
+                        .connection
+                        .as_mut()
+                        .ok_or_else(|| err("database closed"))?;
+                    session_work_state::write(connection, input)
+                }
+                _ => Err(err("unknown session work state action")),
+            },
+            "sessionWorkQuestionExperimental" => {
+                if self.active || self.pending {
+                    return Err(err("question transition requires an idle owner connection"));
+                }
+                let connection = self
+                    .connection
+                    .as_mut()
+                    .ok_or_else(|| err("database closed"))?;
+                session_work_state::question_transition(connection, input)
+            }
             "scheduleSettleCommit" => {
                 let result = schedule_settle::commit(self, input);
                 if result.is_err() {

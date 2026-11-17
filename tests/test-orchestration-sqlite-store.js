@@ -53,6 +53,114 @@ function outboxRecord(id = 'outbox-1', sequence = 1) {
   };
 }
 
+test('session work state transport backfills once and rolls back a conflicting batch', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-session-state-'));
+  let store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  const initial = { pendingQuestion: { requestId: 'old' }, activeTurn: { turnId: 't' }, category: 'P' };
+  const seeded = await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial });
+  assert.equal(seeded.version, 1);
+  const update = (sessionId, expectedVersion, category) => ({ sessionId, expectedVersion,
+    pendingQuestion: null, activeTurn: null, category });
+  const request = { action: 'write', updates: [update('s', 1, 'future')] };
+  const pending = store.sessionWorkState(request);
+  request.updates[0].category = 'mutated after call';
+  const written = await pending;
+  assert.equal(written.snapshots[0].category, 'future');
+  assert.deepEqual(await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial }), written.snapshots[0]);
+  await assert.rejects(store.sessionWorkState({ action: 'write', updates: [update('new', 0, 'W'), update('s', 1, 'D')] }), /version conflict/);
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 'new' })).version, 0);
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 's' })).category, 'future');
+  const batchRequest = { action: 'readOrInitializeBatch', entries: [
+    { sessionId: 's', initial },
+    { sessionId: 'batch', initial: { pendingQuestion: { requestId: 'initial' }, activeTurn: null, category: 'W' } },
+  ] };
+  const pendingBatch = store.sessionWorkState(batchRequest);
+  batchRequest.entries[1].initial.pendingQuestion.requestId = 'changed-after-capture';
+  const batch = await pendingBatch;
+  assert.deepEqual(batch.snapshots[0], written.snapshots[0], 'existing canonical facts are never overwritten');
+  assert.equal(batch.snapshots[1].pendingQuestion.requestId, 'initial');
+  await assert.rejects(store.sessionWorkState({ action: 'readOrInitializeBatch', entries: [
+    { sessionId: 'new-batch', initial }, { sessionId: 'new-batch', initial },
+  ] }), /invalid session work state initialization batch/);
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 'new-batch' })).version, 0);
+  await assert.rejects(store.sessionWorkState({ action: 'readOrInitializeBatch', entries: [
+    { sessionId: 'valid-batch', initial },
+    { sessionId: 'invalid-batch', initial: { pendingQuestion: null, activeTurn: null } },
+  ] }));
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 'valid-batch' })).version, 0);
+  const unicode = { question: '\ud800', ['\udc00']: 'value' };
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 'utf16',
+    initial: { pendingQuestion: unicode, activeTurn: null, category: 'P' } });
+  assert.deepEqual((await store.sessionWorkState({ action: 'read', sessionId: 'utf16' })).pendingQuestion, unicode);
+  await store.close({ exportRollback: false });
+  store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  assert.deepEqual((await store.sessionWorkState({ action: 'read', sessionId: 'utf16' })).pendingQuestion, unicode);
+  const patched = await store.sessionWorkState({ action: 'patch', sessionId: 'utf16',
+    patch: { expectedVersion: 1, category: 'W' } });
+  assert.equal(patched.version, 2);
+  assert.equal(patched.category, 'W');
+  assert.deepEqual(patched.pendingQuestion, unicode);
+  await assert.rejects(store.sessionWorkState({ action: 'patch', sessionId: 'utf16',
+    patch: { expectedVersion: 1, activeTurn: { turnId: 'stale' } } }), /version conflict/);
+  assert.deepEqual(await store.sessionWorkState({ action: 'read', sessionId: 'utf16' }), patched);
+  await assert.rejects(store.sessionWorkState({ action: 'patch', sessionId: 'missing',
+    patch: { expectedVersion: 0, category: null } }), /not initialized/);
+  const firstPatch = await store.sessionWorkState({ action: 'patch', sessionId: 'lazy-patch',
+    initial: { pendingQuestion: { requestId: 'first' }, activeTurn: { turnId: 'turn' }, category: 'P' },
+    patch: { expectedVersion: 0, category: 'W' } });
+  assert.equal(firstPatch.version, 1);
+  assert.equal(firstPatch.category, 'W');
+  assert.deepEqual(firstPatch.pendingQuestion, { requestId: 'first' });
+  await assert.rejects(store.sessionWorkState({ action: 'patch', sessionId: 'incomplete-patch',
+    initial: { pendingQuestion: null, activeTurn: null }, patch: { expectedVersion: 0, category: 'W' } }));
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 'incomplete-patch' })).exists, false);
+  const backup = path.join(dir, 'legacy.json');
+  fs.writeFileSync(backup, 'previous backup');
+  await store.mutate(draft => { draft.sessionWorkStateV1 = { legacy: true }; });
+  await assert.rejects(store.exportLegacy(backup), /conflicts with legacy extra/);
+  assert.equal(fs.readFileSync(backup, 'utf8'), 'previous backup');
+  await store.mutate(draft => { delete draft.sessionWorkStateV1; });
+  const expectedS = await store.sessionWorkState({ action: 'read', sessionId: 's' });
+  const expectedUtf16 = await store.sessionWorkState({ action: 'read', sessionId: 'utf16' });
+  const exported = await store.exportLegacy(backup);
+  assert.equal(JSON.parse(fs.readFileSync(backup, 'utf8')).schemaVersion, 4);
+  assert.throws(() => createOrchestrationStore({ file: backup }), /unsupported orchestration state/);
+  const restored = createOrchestrationSqliteStore({ file: path.join(dir, 'restored.sqlite'), legacyFile: backup });
+  try {
+    assert.equal(restored.migration.legacyDigest, exported.digest);
+    assert.deepEqual(await restored.sessionWorkState({ action: 'read', sessionId: 's' }), expectedS);
+    assert.deepEqual(await restored.sessionWorkState({ action: 'read', sessionId: 'utf16' }), expectedUtf16);
+  } finally { await restored.close({ exportRollback: false }); }
+  const broken = JSON.parse(fs.readFileSync(backup, 'utf8'));
+  broken.sessionWorkStateV1.s.categoryJson = '{broken';
+  const brokenBackup = path.join(dir, 'broken.json');
+  fs.writeFileSync(brokenBackup, JSON.stringify(broken));
+  const brokenDb = path.join(dir, 'broken.sqlite');
+  assert.throws(() => createOrchestrationSqliteStore({ file: brokenDb, legacyFile: brokenBackup }));
+  assert.equal(fs.existsSync(brokenDb), false, 'invalid snapshots cannot publish a partial database');
+});
+
+test('an initialized session work table cannot be silently recreated after loss', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-session-state-missing-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's',
+    initial: { pendingQuestion: { requestId: 'r' }, activeTurn: null, category: 'P' } });
+  await store.close({ exportRollback: false });
+  const db = new Database(file);
+  db.exec('DROP TABLE orchestration_session_work_state');
+  db.close();
+  assert.throws(() => createOrchestrationSqliteStore({ file }), /session work state table/);
+  const verify = new Database(file, { readonly: true });
+  try { assert.equal(verify.prepare("SELECT count(*) AS count FROM sqlite_master WHERE name='orchestration_session_work_state'").get().count, 0); }
+  finally { verify.close(); }
+});
+
 test('production owner survives foreign SQLite close and rejects a changed snapshot', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-production-owner-'));
   const files = { sqlite: path.join(dir, 'state.sqlite') };
