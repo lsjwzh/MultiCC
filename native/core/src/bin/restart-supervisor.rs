@@ -240,16 +240,6 @@ fn launchd_pid(text: &str) -> Option<u32> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn launchd_output_requires_the_exact_pid_field() {
-        assert_eq!(super::launchd_pid("{\n  \"PID\" = 123;\n}"), Some(123));
-        assert_eq!(super::launchd_pid("{ \"OtherPID\" = 123; }"), None);
-        assert_eq!(super::launchd_pid("{\n  \"PID\" = bad;\n}"), None);
-    }
-}
-
 #[cfg(not(target_os = "macos"))]
 fn launchd_owns(_pid: u32) -> Result<bool, String> {
     Ok(false)
@@ -291,6 +281,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&config.lock_file)?;
     lock.try_lock_exclusive()
         .map_err(|_| "restart already in progress")?;
@@ -394,6 +385,12 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     .arg("server.js");
                 command
             };
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                // The supervised gateway is a background process with log files.
+                command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
             match command
                 .current_dir(&config.cwd)
                 .env("MULTICC_RESTART_GENERATION", &config.generation)
@@ -482,5 +479,15 @@ fn main() {
     if let Err(error) = result {
         eprintln!("restart-supervisor: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn launchd_output_requires_the_exact_pid_field() {
+        assert_eq!(super::launchd_pid("{\n  \"PID\" = 123;\n}"), Some(123));
+        assert_eq!(super::launchd_pid("{ \"OtherPID\" = 123; }"), None);
+        assert_eq!(super::launchd_pid("{\n  \"PID\" = bad;\n}"), None);
     }
 }
