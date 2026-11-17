@@ -145,6 +145,7 @@ class RepoActor {
         try {
           const identityEnv = await gitCommitEnvironment(cwd, args);
           const result = await this.execFile('git', args, {
+            windowsHide: true,
             cwd,
             encoding: 'utf8',
             timeout: execOptions.timeout || DEFAULT_TIMEOUT_MS,

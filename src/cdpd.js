@@ -118,7 +118,7 @@ function protocolOf(pong) {
 const versionCache = new Map();
 function runVersion(file) {
   return new Promise((resolve) => {
-    execFile(file, ['--version'], { encoding: 'utf8', timeout: 10_000 }, (_error, stdout) => resolve({ stdout }));
+    execFile(file, ['--version'], { windowsHide: true, encoding: 'utf8', timeout: 10_000 }, (_error, stdout) => resolve({ stdout }));
   });
 }
 async function binaryVersion(file, { run = runVersion, fileSystem = fs } = {}) {

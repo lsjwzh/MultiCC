@@ -163,6 +163,7 @@ function spawnProc(name, s) {
   let proc;
   try {
     proc = spawn(s.cmd, args, {
+      windowsHide: true,
       cwd: s.cwd,
       env: s.env && Object.keys(s.env).length ? s.env : { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
       ...writerGroup.detachedSpawn(),
