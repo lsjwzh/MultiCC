@@ -155,7 +155,6 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
-      MULTICC_DATA_DIR: ${{ runner.temp }}/multicc-remote-screen-data
       MULTICC_REQUIRE_RUST_BUNDLE: '1'
       CLAUDE_CMD: /usr/bin/true
       CODEX_CMD: /usr/bin/true
@@ -182,6 +181,8 @@ jobs:
       - name: Run the remote screen integration without skips
         working-directory: app
         shell: bash
+        env:
+          MULTICC_DATA_DIR: ${{ runner.temp }}/multicc-remote-screen-data
         run: |
           set -euo pipefail
           flutter test --no-pub --reporter expanded test/remote_screen_e2e_test.dart 2>&1 | tee "$RUNNER_TEMP/flutter-remote-screen-e2e.log"
