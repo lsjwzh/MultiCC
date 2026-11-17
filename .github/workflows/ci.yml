@@ -84,8 +84,8 @@ jobs:
       - name: Configure Git identity for isolated repositories
         shell: bash
         run: |
-          git config --global user.name "$(node -p "require('./commit-policy.json').name")"
-          git config --global user.email "$(node -p "require('./commit-policy.json').email")"
+          git config --global user.name "MultiCC Test"
+          git config --global user.email "test@multicc.invalid"
       - name: Run isolated server integration without live AI
         env:
           CLAUDE_CMD: /bin/true

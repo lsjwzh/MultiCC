@@ -143,7 +143,7 @@ function probeAddon(file, node = process.execPath) {
     const db=new a.RustDatabase(':memory:',false,false,5000);
     db.exec('CREATE TABLE smoke(x); CREATE VIRTUAL TABLE f USING fts5(x)');db.close();
     if(typeof a.syncWorktreeOnWake!=='function' || typeof a.validatePublicationText!=='function' || typeof a.quickCommitMessage!=='function'
-      || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function'
+      || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function' || typeof a.validatePublicationRange!=='function'
       || typeof a.planTaskContextRead!=='function' || typeof a.selectTaskContextRecords!=='function'
       || typeof a.rankTaskContextCandidates!=='function' || typeof a.RustTaskReadModel!=='function' || a.taskReadModelProtocolVersion?.()!==1) process.exit(1);
     if(['quotaGuardRequestValue','RustQuotaGuard'].some(key=>typeof a[key]!=='function')) process.exit(1);

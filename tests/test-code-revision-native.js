@@ -14,7 +14,7 @@ function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'code-revision-native-')));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '-b', 'main');
-  git('config', 'user.name', 'lsjwzh'); git('config', 'user.email', 'lsjwzh@gmail.com');
+  git('config', 'user.name', 'MultiCC Test'); git('config', 'user.email', 'test@multicc.invalid');
   fs.writeFileSync(path.join(root, 'base'), 'base');
   git('add', '.'); git('commit', '-m', 'test(fixture): initialize revision repository');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -99,7 +99,7 @@ test('gitlink observations retain their exact hash ordering and reject HEAD chan
   await compare(f.root);
   fs.mkdirSync(path.join(f.root, 'nested')); await compare(f.root);
   const git = (...args) => execFileSync('git', args, { cwd: path.join(f.root, 'nested'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  git('init', '-b', 'main'); git('config', 'user.name', 'lsjwzh'); git('config', 'user.email', 'lsjwzh@gmail.com');
+  git('init', '-b', 'main'); git('config', 'user.name', 'MultiCC Test'); git('config', 'user.email', 'test@multicc.invalid');
   fs.writeFileSync(path.join(f.root, 'nested/file'), 'nested'); git('add', '.'); git('commit', '-m', 'test(fixture): initialize nested repository');
   await compare(f.root);
   for (const implementation of [current, legacy]) {

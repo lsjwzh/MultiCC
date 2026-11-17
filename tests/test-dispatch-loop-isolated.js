@@ -40,7 +40,7 @@ const homeRoot = path.join(testRoot, 'home');
 fs.mkdirSync(homeRoot, { recursive: true });
 // HOME is isolated below, so the runner's global identity is not visible here.
 const gitConfig = path.join(homeRoot, '.gitconfig');
-const commitPolicy = require('../commit-policy.json');
+const commitPolicy = require('./helpers/git-test-identity');
 for (const field of ['name', 'email']) {
   execFileSync('git', ['config', '--file', gitConfig, `user.${field}`, commitPolicy[field]]);
 }

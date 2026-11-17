@@ -197,8 +197,7 @@ pub fn synchronize(
     }
     // Rebase creates commits: enforce the same language and identity policy as
     // manual publication before changing any ref. Never rewrite old messages.
-    // The directory checkout is authoritative; a local commit may itself edit
-    // commit-policy.json and must not choose a different replay identity.
+    // The directory checkout and its local Git config are authoritative.
     let policy = publication_identity::repository_policy(repo)?;
     let (all, local) = match publication_identity::validate_range(
         worktree,

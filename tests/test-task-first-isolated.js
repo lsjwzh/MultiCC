@@ -5,7 +5,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const { createPaths, assertTestDir } = require('../src/paths');
 const { writeJsonAtomic, readJson } = require('../src/state/store');
 const isolatedHostEnv = require('./helpers/isolated-host-env');
-const commitPolicy = require('../commit-policy.json');
+const commitPolicy = require('./helpers/git-test-identity');
 const accessToken = process.argv.includes('--no-token') ? '' : 'isolated-only';
 const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-first-isolated-')));
 const data = path.join(root, 'data'), home = path.join(root, 'home'), project = path.join(root, 'project');
@@ -60,7 +60,7 @@ async function api(route, body, status = 200, method) {
     }
     const modules = path.dirname(path.dirname(require.resolve('express/package.json')));
     fs.symlinkSync(modules, path.join(hostRoot, 'node_modules'), 'junction');
-    for (const name of ['package.json', 'commit-policy.json']) fs.copyFileSync(path.join(repoRoot, name), path.join(hostRoot, name));
+    fs.copyFileSync(path.join(repoRoot, 'package.json'), path.join(hostRoot, 'package.json'));
     const addon = process.env.MULTICC_RUST_ADDON || path.join(
       process.env.MULTICC_RUST_PREBUILT_DIR || path.join(repoRoot, 'native', 'prebuilt'),
       `${process.platform}-${process.arch}`, 'multicc_core.node');
