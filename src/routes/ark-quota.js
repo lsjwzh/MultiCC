@@ -67,7 +67,7 @@ function runArkcli(args) {
     execFile(
       bin.cmd,
       [...bin.prefix, ...args],
-      { timeout: TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+      { windowsHide: true, timeout: TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
       (err, stdout, stderr) => resolve({ err, stdout: stdout || '', stderr: stderr || '' }),
     );
   });
@@ -83,7 +83,7 @@ function installArkcli() {
     execFile(
       npm,
       ['install', '-g', ARKCLI_PACKAGE],
-      { timeout: INSTALL_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+      { windowsHide: true, timeout: INSTALL_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
       (err, stdout, stderr) => {
         if (err) {
           const detail = (stderr || err.message || '').trim().split('\n').slice(0, 3).join(' ');

@@ -65,7 +65,7 @@ function commandLineOwnsProfile(commandLine, profileDir) {
 
 function execFileAsync(cmd, args, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { windowsHide: true, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) { err.stderr = stderr; return reject(err); }
       resolve(stdout);
     });
@@ -236,6 +236,7 @@ function createManagedQuotaBrowser(options = {}) {
     startupTimeoutMs = STARTUP_TIMEOUT_MS,
     binary = findChromeBinary(options.platform, options.env || process.env),
     spawnChrome = (bin, args) => spawn(bin, args, {
+      windowsHide: true,
       stdio: 'ignore',
       detached: false,
       env: process.env,

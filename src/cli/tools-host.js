@@ -145,7 +145,7 @@ function createCliToolsHost(options) {
     let proc;
     try {
       const childEnv = await (options.getChildProxyEnv || getChildProxyEnv)(env);
-      proc = spawn('bash', ['-c', job.command], { env: childEnv });
+      proc = spawn('bash', ['-c', job.command], { windowsHide: true, env: childEnv });
     } catch (error) { event('spawnError', { error: String(error?.message || error) }); return job; }
     let timer = setTimeout(() => {
       const result = event('timeout');

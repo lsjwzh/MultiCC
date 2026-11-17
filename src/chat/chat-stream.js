@@ -116,6 +116,7 @@ function spawnProc(name, cfg) {
   let proc;
   try {
     proc = spawn(s.cmd, args, {
+      windowsHide: true,
       cwd: s.cwd,
       env: childEnv,
       // Group leader on POSIX: the lease is released only once the whole

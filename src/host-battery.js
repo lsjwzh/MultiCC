@@ -50,7 +50,7 @@ async function readLinux(readFile) {
 
 function createBatteryReader({
   platform = process.platform,
-  run = (cmd, args) => new Promise((resolve, reject) => execFile(cmd, args, { timeout: PROBE_TIMEOUT_MS, env: { ...process.env, LC_ALL: 'C' } },
+  run = (cmd, args) => new Promise((resolve, reject) => execFile(cmd, args, { windowsHide: true, timeout: PROBE_TIMEOUT_MS, env: { ...process.env, LC_ALL: 'C' } },
     (error, stdout) => (error ? reject(error) : resolve(stdout)))),
   readFile = fs.readFile,
   now = Date.now,

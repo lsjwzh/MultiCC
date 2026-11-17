@@ -65,7 +65,7 @@ function checkCommand(argv, autofix) {
 
 function run(argv, cwd, timeoutMs = 15000) {
   return new Promise(resolve => {
-    execFile(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' } },
+    execFile(argv[0], argv.slice(1), { windowsHide: true, cwd, timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' } },
       (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, stdout: String(stdout || ''), stderr: String(stderr || '') }));
   });
 }
