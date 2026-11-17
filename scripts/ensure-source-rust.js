@@ -8,7 +8,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { sourcePaths, sourceFingerprint, probeAddon, builtFromSource } = require('./rust-source-cache');
 const { executable, hasRemoteCrate, hasCdpdCrate, hasGatewayCrate, probeRemoteVersion, probeCdpdVersion,
-  probeGatewayVersion, remoteBinaryName, cdpdBinaryName, gatewayBinaryName } = require('./build-rust-kernels');
+  probeGatewayVersion, remoteBinaryName, cdpdBinaryName, gatewayBinaryName, restartBinaryName } = require('./build-rust-kernels');
 
 // 「🖥 屏幕」的二进制和原生模块同目录才认（Node 端查找顺序见
 // docs/remote-screen-process.md §1）。原型开发路径上它只是可选件：缺了就补编一次，
@@ -79,7 +79,8 @@ function ensureGatewayBinary({ repoRoot, addon, env, cache, log, run,
   const target = path.join(path.dirname(addon), binary);
   const relative = path.relative(cache.prebuiltDir, path.dirname(addon));
   const ownCache = relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-  const usable = () => fs.existsSync(target) && executable(target)
+  const restart = path.join(path.dirname(addon), restartBinaryName(process.platform));
+  const usable = () => fs.existsSync(restart) && executable(restart) && fs.existsSync(target) && executable(target)
     && (ownCache || builtFrom(target, cache.fingerprint)) && gatewayVersion(target).ok;
   if (usable()) return target;
   log(`未找到可用的 Rust 前门 ${target}，正在只编译 multicc-gateway…`);

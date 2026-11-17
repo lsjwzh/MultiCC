@@ -350,12 +350,38 @@ impl HyperService<Request<Incoming>> for ConnectionService {
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, request: Request<Incoming>) -> Self::Future {
+        let restart_probe = request.uri().path() == "/readyz";
         let mut request = request.map(Body::new);
         request.extensions_mut().insert(self.upstream.clone());
         let mut router = self.router.clone();
         Box::pin(async move {
             match TowerService::call(&mut router, request).await {
-                Ok(response) => Ok(response),
+                Ok(mut response) => {
+                    if restart_probe {
+                        // Local lifecycle clients must prove they reached the
+                        // gateway they discovered before sending restart.
+                        if let Ok(value) = std::process::id().to_string().parse() {
+                            response
+                                .headers_mut()
+                                .insert("x-multicc-gateway-pid", value);
+                        }
+                        if let Some(generation) = crate::restart_generation() {
+                            if !generation.is_empty()
+                                && generation.len() <= 128
+                                && generation
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                            {
+                                if let Ok(value) = generation.parse() {
+                                    response
+                                        .headers_mut()
+                                        .insert("x-multicc-restart-generation", value);
+                                }
+                            }
+                        }
+                    }
+                    Ok(response)
+                }
                 Err(never) => match never {},
             }
         })

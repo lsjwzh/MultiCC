@@ -149,6 +149,16 @@ function readEnvValues(envFile) {
 // folder holding MultiCC.app as its target. The standalone launcher uses this
 // same module and never sets the flag, so a tarball install keeps updating
 // itself through install.sh.
+function readRestartPort(dataRoot) {
+  try {
+    const generation = fs.readFileSync(path.join(dataRoot, '.restart-generation'), 'utf8').trim();
+    const marker = fs.readFileSync(path.join(dataRoot, '.restart-port'), 'utf8').trim();
+    const match = marker.match(/^([a-zA-Z0-9_-]+):([0-9]{1,5})$/);
+    const port = match && Number(match[2]);
+    return match && match[1] === generation && port >= 1 && port <= 65535 ? port : null;
+  } catch (_) { return null; }
+}
+
 function buildChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, runtimeNode, desktopShell = false }) {
   if (!Number.isInteger(port) || port <= 0) throw new TypeError('[desktop-env] port is required');
   if (!desktopEnv || !desktopEnv.dataRoot) throw new TypeError('[desktop-env] desktopEnv is required');
@@ -159,6 +169,10 @@ function buildChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, runtimeNod
   env.PORT = String(port);
   env.HOST = DESKTOP_LOOPBACK_HOST;
   env.MULTICC_DATA_DIR = desktopEnv.dataRoot;
+  // The detached restart supervisor publishes one generation before the old
+  // gateway exits. Re-read it on each spawn, including crash-loop retries.
+  try { env.MULTICC_RESTART_GENERATION = fs.readFileSync(path.join(desktopEnv.dataRoot, '.restart-generation'), 'utf8').trim(); env.MULTICC_RESTART_EXACT_PORT = '1'; }
+  catch (_) { delete env.MULTICC_RESTART_GENERATION; delete env.MULTICC_RESTART_EXACT_PORT; }
   env.MULTICC_MEMORY_ROOT = desktopEnv.memoryRoot;
   env.MULTICC_ENV_FILE = desktopEnv.envFile;
   env.MULTICC_DESKTOP = '1';
@@ -255,6 +269,7 @@ module.exports = {
   parseEnvFile,
   readEnvValues,
   buildChildEnv,
+  readRestartPort,
   ensureWritableDirs,
   prependPathEntry,
   runtimeNodeIn,

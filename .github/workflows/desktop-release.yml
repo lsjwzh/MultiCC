@@ -244,7 +244,7 @@ jobs:
             exe_suffix=""
             if [ "${{ matrix.platform }}" = windows ]; then exe_suffix=.exe; fi
             companions=("multicc-remote:remote screen" "multicc-cdpd:the browser CDP gateway"
-              "multicc-gateway:the Rust front door")
+              "multicc-gateway:the Rust front door" "restart-supervisor:the restart supervisor")
             for companion in "${companions[@]}"; do
               companion_rel="app-server/native/prebuilt/${{ matrix.native_platform }}-$arch/${companion%%:*}$exe_suffix"
               if [ ! -f "$app_resources/$companion_rel" ]; then
@@ -433,7 +433,7 @@ jobs:
           cdpd_prefix="multicc-cdpd $(node -p "require('./scripts/build-rust-kernels').CDPD_PROTOCOL") "
           gateway_prefix="multicc-gateway $(node -p "require('./scripts/build-rust-kernels').GATEWAY_PROTOCOL") "
           companions=("multicc-remote:multicc-remote 1 " "multicc-cdpd:$cdpd_prefix"
-            "multicc-gateway:$gateway_prefix")
+            "multicc-gateway:$gateway_prefix" "restart-supervisor:restart-supervisor 1 ")
           for companion in "${companions[@]}"; do
             name="${companion%%:*}"
             prefix="${companion#*:}"

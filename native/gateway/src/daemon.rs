@@ -39,6 +39,7 @@ pub async fn serve(options: ServeOptions) -> i32 {
         return 1;
     }
     let dotenv_keys = load_dotenv(Path::new("."));
+    let restart_exact_port = crate::init_restart_generation(&options.cwd);
     let mut policy = match resolve_network_policy(&current_env()) {
         Ok(policy) => policy,
         Err(message) => {
@@ -49,7 +50,10 @@ pub async fn serve(options: ServeOptions) -> i32 {
     let port = if options.ephemeral_loopback {
         policy.host = "127.0.0.1".to_string();
         0
-    } else if policy.development {
+    } else if policy.development
+        && !restart_exact_port
+        && std::env::var("MULTICC_RESTART_EXACT_PORT").ok().as_deref() != Some("1")
+    {
         match find_available_port(i64::from(policy.port), &policy.host, 100) {
             Ok(port) => port,
             Err(message) => {

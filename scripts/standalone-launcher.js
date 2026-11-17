@@ -42,7 +42,7 @@ const { findFreePort, probePort, selectPort } = require(path.join(LIB_DIR, 'port
 const { createBackendSupervisor, killProcessTree } = require(path.join(LIB_DIR, 'backend-supervisor'));
 const { reclaimOrphan, pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim'));
 const {
-  resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs, translocationGuidance, gatewayLaunch,
+  resolveDesktopEnv, buildChildEnv, readRestartPort, readEnvValues, ensureWritableDirs, translocationGuidance, gatewayLaunch,
 } = require(path.join(LIB_DIR, 'desktop-env'));
 
 const APP_DIRNAME = 'MultiCCStandalone';
@@ -598,6 +598,7 @@ function createLauncher({
       buildEnv: ({ port: childPort }) => buildStandaloneChildEnv({
         port: childPort, desktopEnv, baseEnv: env, dotenv, runtimeNode,
       }),
+      readRestartPort: () => readRestartPort(desktopEnv.dataRoot),
       fetchImpl,
       logsDir: desktopEnv.logsDir,
       runtimeInfoFile: infoFile,

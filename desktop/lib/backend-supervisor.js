@@ -69,6 +69,7 @@ function createBackendSupervisor(rawDeps) {
     command,             // the front door binary (desktop-env gatewayLaunch)
     args = [],
     buildEnv,            // ({ port, attempt }) => env object for the child
+    readRestartPort = () => null,
     fetchImpl = fetch,
     logsDir,
     runtimeInfoFile,
@@ -291,6 +292,13 @@ function createBackendSupervisor(rawDeps) {
     respawnTimer = setTimeout(() => {
       respawnTimer = null;
       if (stopRequested || state === 'stopping') return;
+      if (requestedRestart) {
+        const requested = readRestartPort();
+        if (Number.isInteger(requested) && requested >= 1 && requested <= 65535) {
+          port = requested;
+          origin = `http://${opts.host}:${port}`;
+        }
+      }
       spawnChild({ respawn: true });
     }, backoff);
   }
