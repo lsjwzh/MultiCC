@@ -291,6 +291,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&config.lock_file)?;
     lock.try_lock_exclusive()
         .map_err(|_| "restart already in progress")?;
