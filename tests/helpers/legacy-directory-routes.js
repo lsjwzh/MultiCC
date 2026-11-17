@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const stateStore = require('../../src/state/store');
 const { ensureSampleWorkspace } = require('../../src/directory/sample-workspace');
-const { validateCommitMessage, quickCommitMessage } = require('../../src/git/publication-policy');
+const { quickCommitMessage } = require('../../src/git/publication-policy');
 
 
 // UI layout — the manual, drag-and-drop order the user chose for the directory
@@ -433,7 +433,6 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
       if (ps.dirty === 0) return ok({ ok: true, committed: false, pushState: ps });
       const msg = (message ? String(message) : '').trim()
         || await quickCommitMessage(await git.statusPorcelain(d.path));
-      await validateCommitMessage(msg);
       await git.stageAll(d.path);
       await git.commit(d.path, msg);
       git.invalidatePushCache(d.path, branch);

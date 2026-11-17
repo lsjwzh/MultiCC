@@ -251,8 +251,8 @@ test('git ops: status, force-refreshed facts, staging, commit, invalidation and 
     { pushState: { available: true, hasRemote: false, ahead: 0, behind: 0, dirty: 0 } });
   assert.deepEqual(await world.host.invoke({ op: 'commit-validate', message: 'chore: tidy' }),
     { ok: true });
-  const bad = await world.host.invoke({ op: 'commit-validate', message: 'fix: x\n\n修复正文' });
-  assert.match(bad.error, /必须使用英文/);
+  assert.deepEqual(await world.host.invoke({ op: 'commit-validate', message: '修复正文' }),
+    { ok: true });
 
   const staged = [];
   world.git.stageAll = async (p) => { staged.push(['stage', p]); };

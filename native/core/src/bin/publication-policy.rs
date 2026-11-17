@@ -1,8 +1,5 @@
 use multicc_core::publication::{release_notes, validate_english};
-use multicc_core::publication_identity::{
-    repository_policy, validate_range, validate_records, LOG_FORMAT,
-};
-use std::path::Path;
+use multicc_core::publication_identity::{validate_records, LOG_FORMAT};
 use std::{env, fs, process::Command};
 
 fn git(args: &[&str]) -> Result<String, String> {
@@ -18,9 +15,9 @@ fn git(args: &[&str]) -> Result<String, String> {
 
 fn check_range(base: &str, head: &str) -> Result<(), String> {
     let range = format!("{base}..{head}");
-    let policy = repository_policy(Path::new("."))?;
-    let (checked, local) = validate_range(Path::new("."), &range, policy.as_ref())?;
-    println!("已校验 {checked} 条提交消息及 {local} 条本机提交身份");
+    let log = git(&["log", LOG_FORMAT, "--end-of-options", &range])?;
+    let checked = validate_records(&log)?;
+    println!("已校验 {checked} 条提交消息");
     Ok(())
 }
 
@@ -42,15 +39,15 @@ fn run(args: &[String]) -> Result<(), String> {
                 // the tip rather than retroactively rejecting legacy history.
                 if git(&["rev-parse", &head])?.trim() == base {
                     let log = git(&["log", "-1", LOG_FORMAT, &head])?;
-                    validate_records(&log, None)?;
+                    validate_records(&log)?;
                     println!("当前提交已通过英文消息校验");
                     return Ok(());
                 }
             }
             let range = format!("{base}..{head}");
             let log = git(&["log", LOG_FORMAT, "--end-of-options", &range])?;
-            let checked = validate_records(&log, None)?;
-            println!("已校验 {checked} 条提交消息；本机提交身份由本机提交入口校验");
+            let checked = validate_records(&log)?;
+            println!("已校验 {checked} 条提交消息");
         }
         Some("release-notes") if args.len() == 4 => {
             let changelog = fs::read_to_string(&args[2]).map_err(|_| "无法读取 CHANGELOG.md")?;

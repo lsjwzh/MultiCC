@@ -195,24 +195,18 @@ pub fn synchronize(
     if read(worktree, &["merge-base", "HEAD", &base_oid]).is_err() {
         return skip("wake_sync_unrelated_history");
     }
-    // Rebase creates commits: enforce the same language and identity policy as
-    // manual publication before changing any ref. Never rewrite old messages.
-    // The directory checkout and its local Git config are authoritative.
-    let policy = publication_identity::repository_policy(repo)?;
-    let (all, local) = match publication_identity::validate_range(
-        worktree,
-        &format!("{base_oid}..HEAD"),
-        policy.as_ref(),
-    ) {
-        Ok(counts) => counts,
-        Err(_) => return skip("wake_sync_publication_policy"),
-    };
+    // Never rewrite remote commits during an automatic rebase.
+    let (all, local) =
+        match publication_identity::count_range(worktree, &format!("{base_oid}..HEAD")) {
+            Ok(counts) => counts,
+            Err(_) => return skip("wake_sync_git_failed"),
+        };
     // Rebase would rewrite remote commits that are not already in the base.
     // Leave them for an explicit history-preserving merge instead.
     if all != local {
         return skip("wake_sync_remote_history");
     }
-    let env = publication_identity::command_environment(repo, &["rebase".into()])?;
+    let env = BTreeMap::new();
     let backup = format!("refs/multicc/wake-backups/{branch}/{head}");
     read(worktree, &["update-ref", "--create-reflog", &backup, &head])?;
     let result = git(

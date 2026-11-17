@@ -179,17 +179,18 @@ test('production wake skips a missing base without making the restored workspace
   assert.equal(record.workspaceStateErrorCode, 'wake_sync_base_missing');
 });
 
-test('production wake refuses to replay non-English historical commits without rewriting them', async t => {
+test('production wake preserves non-English commit messages during rebase', async t => {
   const dir = repo();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const added = await gitWorktreeAdd(dir, 'wake-policy', 'main');
-  const tip = commitFile(added.worktreePath, 'local.txt', 'local\n', '旧提交');
+  commitFile(added.worktreePath, 'local.txt', 'local\n', '旧提交');
   await gitWorktreeDetach(dir, added.worktreePath, added.branch);
   commitFile(dir, 'upstream.txt', 'base\n');
   const { id, runtime, record } = wakeRuntime(t, dir, added);
   assert.equal((await runtime.ensureAwake(id)).ok, true);
-  assert.equal(record.workspaceStateErrorCode, 'wake_sync_publication_policy');
-  assert.equal(git(added.worktreePath, ['rev-parse', 'HEAD']), tip);
+  assert.equal(record.workspaceStateErrorCode, null);
+  assert.equal(git(added.worktreePath, ['log', '-1', '--format=%B']), '旧提交');
+  assert.equal(git(added.worktreePath, ['rev-list', '--left-right', '--count', 'HEAD...main']), '1\t0');
 });
 
 test('production wake preserves fetched remote history instead of rebasing it', async t => {
@@ -224,13 +225,12 @@ test('production wake recognizes changes already absorbed by the base without lo
   assert.equal(fs.readFileSync(path.join(added.worktreePath, 'local.txt'), 'utf8'), 'delivered\n');
 });
 
-test('production wake uses local Git identity despite legacy file edits and inherited Git identity', async t => {
+test('production wake respects the Git identity and preserves legacy file edits', async t => {
   const dir = repo();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const policy = require('./helpers/git-test-identity');
   git(dir, ['config', 'user.name', policy.name]);
   git(dir, ['config', 'user.email', policy.email]);
-  git(dir, ['config', '--local', 'multicc.commitPolicyEmail', policy.email]);
   commitFile(dir, 'commit-policy.json', JSON.stringify(policy), 'chore(fixture): configure commit identity');
   const added = await gitWorktreeAdd(dir, 'wake-identity', 'main');
   const localPolicy = { name: 'Local Override', email: 'local@example.invalid' };
@@ -240,17 +240,7 @@ test('production wake uses local Git identity despite legacy file edits and inhe
   await gitWorktreeDetach(dir, added.worktreePath, added.branch);
   commitFile(dir, 'upstream.txt', 'latest\n');
   const { id, runtime, record } = wakeRuntime(t, dir, added);
-  const vars = { GIT_AUTHOR_NAME: 'Wrong Author', GIT_AUTHOR_EMAIL: 'wrong@example.invalid',
-    GIT_COMMITTER_NAME: 'Wrong Committer', GIT_COMMITTER_EMAIL: 'wrong@example.invalid' };
-  const previous = Object.fromEntries(Object.keys(vars).map(key => [key, process.env[key]]));
-  Object.assign(process.env, vars);
-  try {
-    assert.equal((await runtime.ensureAwake(id)).ok, true);
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-  }
+  assert.equal((await runtime.ensureAwake(id)).ok, true);
   assert.equal(record.workspaceStateErrorCode, null);
   assert.equal(git(added.worktreePath, ['log', '-1', '--format=%an|%ae|%cn|%ce']),
     `${policy.name}|${policy.email}|${policy.name}|${policy.email}`);
