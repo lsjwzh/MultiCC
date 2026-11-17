@@ -240,16 +240,6 @@ fn launchd_pid(text: &str) -> Option<u32> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn launchd_output_requires_the_exact_pid_field() {
-        assert_eq!(super::launchd_pid("{\n  \"PID\" = 123;\n}"), Some(123));
-        assert_eq!(super::launchd_pid("{ \"OtherPID\" = 123; }"), None);
-        assert_eq!(super::launchd_pid("{\n  \"PID\" = bad;\n}"), None);
-    }
-}
-
 #[cfg(not(target_os = "macos"))]
 fn launchd_owns(_pid: u32) -> Result<bool, String> {
     Ok(false)
@@ -483,5 +473,15 @@ fn main() {
     if let Err(error) = result {
         eprintln!("restart-supervisor: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn launchd_output_requires_the_exact_pid_field() {
+        assert_eq!(super::launchd_pid("{\n  \"PID\" = 123;\n}"), Some(123));
+        assert_eq!(super::launchd_pid("{ \"OtherPID\" = 123; }"), None);
+        assert_eq!(super::launchd_pid("{\n  \"PID\" = bad;\n}"), None);
     }
 }
