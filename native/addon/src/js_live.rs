@@ -187,6 +187,15 @@ impl<'env> LiveValue<'env> {
         })?;
         Ok(self.with_value(value))
     }
+    pub fn has(self, name: &CStr) -> Result<bool> {
+        let mut object = ptr::null_mut();
+        check_status!(unsafe { sys::napi_coerce_to_object(self.env, self.value, &mut object) })?;
+        let mut result = false;
+        check_status!(unsafe {
+            sys::napi_has_named_property(self.env, object, name.as_ptr(), &mut result)
+        })?;
+        Ok(result)
+    }
     pub fn optional(self, name: &CStr) -> Result<Self> {
         if self.nullish()? {
             return self.from_value(&JsValue::Undefined);

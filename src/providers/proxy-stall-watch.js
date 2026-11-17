@@ -166,7 +166,7 @@ function createProxyStallWatch(options = {}) {
     //    observes as DOWNSTREAM_DISCONNECT — a weaker cause that must never
     //    overwrite host-observed silence. It also carries the stall into the
     //    attempt runtime, which refuses to re-dial this route.
-    try { observe.settle({ status: 'error', errorCode: code }); } catch (_) {}
+    try { observe.settle({ status: 'error', errorCode: code, timeoutMs }); } catch (_) {}
     if (onStall) { try { onStall(detail); } catch (_) {} }
     // 2. Retire the route.
     finish();

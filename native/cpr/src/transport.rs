@@ -10,7 +10,7 @@ use reqwest::{
 };
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::VecDeque,
     sync::{Arc, Mutex as StdMutex, OnceLock},
     time::Duration,
 };
@@ -20,7 +20,131 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_PENDING: usize = 1024 * 1024;
 const MAX_ERROR: usize = 64 * 1024;
-static CLIENTS: OnceLock<StdMutex<HashMap<String, Client>>> = OnceLock::new();
+const MAX_CLIENTS: usize = 16;
+static CLIENTS: OnceLock<StdMutex<ClientCache<Client>>> = OnceLock::new();
+
+// Preserve the causal chain while keeping URLs and known credentials out of
+// the CLI response, session state, and logs. The structured code stays stable
+// so existing retry and timeout policies do not change.
+fn transport_error(code: &str, error: reqwest::Error, plan: &Plan) -> String {
+    let error = error.without_url();
+    format_transport_error(code, &error, plan)
+}
+
+/// Sanitize an adapter/egress failure with the same credential boundaries as
+/// the native transport, without serializing the potentially large body.
+pub fn sanitize_adapter_error(plan: &Plan, message: &str, code: &str) -> String {
+    format_transport_error(
+        if code == "RUST_CPR_EGRESS_UNSUPPORTED" {
+            code
+        } else {
+            "RUST_CPR_REQUEST_FAILED"
+        },
+        &std::io::Error::other(message.to_owned()),
+        plan,
+    )
+}
+
+fn format_transport_error(
+    code: &str,
+    error: &(dyn std::error::Error + 'static),
+    plan: &Plan,
+) -> String {
+    static URLS: OnceLock<regex::Regex> = OnceLock::new();
+    let urls = URLS
+        .get_or_init(|| regex::Regex::new(r#"(?i)\b(?:https?|socks5h?)://[^\s"'<>]+"#).unwrap());
+    let mut parts = Vec::new();
+    let mut current = Some(error);
+    while let Some(cause) = current {
+        let mut detail = cause.to_string();
+        for (name, value) in &plan.headers {
+            let lower = name.to_ascii_lowercase();
+            if [
+                "authorization",
+                "cookie",
+                "token",
+                "secret",
+                "key",
+                "account",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker))
+                && !value.is_empty()
+            {
+                detail = detail.replace(value, "[REDACTED]");
+                if let Some((_, token)) = value.split_once(' ') {
+                    if !token.is_empty() {
+                        detail = detail.replace(token, "[REDACTED]");
+                    }
+                }
+            }
+        }
+        for url in [Some(plan.url.as_str()), plan.proxy_url.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if let Ok(parsed) = reqwest::Url::parse(url) {
+                for secret in [Some(parsed.username()), parsed.password()]
+                    .into_iter()
+                    .flatten()
+                    .filter(|s| !s.is_empty())
+                {
+                    detail = detail.replace(secret, "[REDACTED]");
+                }
+            }
+        }
+        detail = urls.replace_all(&detail, "[URL]").into_owned();
+        detail = multicc_core::redaction::sanitize_message(
+            &multicc_core::js::JsString::from_rust_str(&detail),
+        )
+        .to_string_lossy();
+        if !detail.is_empty() && !parts.contains(&detail) {
+            parts.push(detail);
+        }
+        if parts.len() >= 8 {
+            break;
+        }
+        current = cause.source();
+    }
+    let detail: String = parts.join(": ").chars().take(1024).collect();
+    if detail.is_empty() {
+        code.to_owned()
+    } else {
+        format!("{code}: {detail}")
+    }
+}
+
+// Evict only the least recently used configuration. Clearing the whole cache
+// discards unrelated keep-alive connections whenever a seventeenth egress or
+// timeout configuration is encountered.
+struct ClientCache<T> {
+    entries: VecDeque<(String, T)>,
+}
+
+impl<T> Default for ClientCache<T> {
+    fn default() -> Self {
+        Self {
+            entries: VecDeque::new(),
+        }
+    }
+}
+
+impl<T: Clone> ClientCache<T> {
+    fn get(&mut self, key: &str) -> Option<T> {
+        let index = self.entries.iter().position(|(k, _)| k == key)?;
+        let entry = self.entries.remove(index)?;
+        let value = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: String, value: T) {
+        if self.entries.len() >= MAX_CLIENTS {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((key, value));
+    }
+}
 
 fn client(plan: &Plan) -> Result<Client, String> {
     client_for_proxy_timeout(plan.proxy_url.as_deref(), plan.connect_timeout_ms)
@@ -42,7 +166,7 @@ fn client_for_proxy_timeout(
         .lock()
         .map_err(|_| "Rust CPR 连接池不可用")?;
     if let Some(client) = cache.get(&key) {
-        return Ok(client.clone());
+        return Ok(client);
     }
     let mut builder = Client::builder()
         .no_proxy()
@@ -57,9 +181,6 @@ fn client_for_proxy_timeout(
     let client = builder
         .build()
         .map_err(|_| "无法初始化 Rust CPR TLS 传输")?;
-    if cache.len() >= 16 {
-        cache.clear();
-    }
     cache.insert(key, client.clone());
     Ok(client)
 }
@@ -163,6 +284,10 @@ struct State {
     attempt: usize,
     status: u16,
     headers: serde_json::Map<String, Value>,
+    dial_at: Option<Instant>,
+    headers_ms: u64,
+    received_bytes: u64,
+    metrics_at: Option<Instant>,
 }
 pub struct Chunk {
     pub data: Vec<u8>,
@@ -175,6 +300,7 @@ pub struct ErrorBody {
     pub no_retry: bool,
     /// 429 的结构化归因（瞬时限流/额度窗口/模型权益/账单），供宿主向用户解释。
     pub rejection: Option<Value>,
+    pub detail: Option<String>,
 }
 
 impl Exchange {
@@ -204,6 +330,10 @@ impl Exchange {
                 attempt: 1,
                 status: 0,
                 headers: serde_json::Map::new(),
+                dial_at: None,
+                headers_ms: 0,
+                received_bytes: 0,
+                metrics_at: None,
             }),
         })
     }
@@ -364,6 +494,10 @@ impl Exchange {
         }
     }
     async fn dial(state: &mut State, cancel: &CancellationToken) -> Result<Value, String> {
+        state.dial_at = Some(Instant::now());
+        state.headers_ms = 0;
+        state.received_bytes = 0;
+        state.metrics_at = None;
         let mut headers = HeaderMap::new();
         for (name, value) in &state.plan.headers {
             headers.insert(
@@ -382,15 +516,20 @@ impl Exchange {
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err("CLIENT_DISCONNECTED".into()),
-            result = tokio::time::timeout(Duration::from_millis(state.plan.headers_timeout_ms), request) => result.map_err(|_| "UPSTREAM_HEADERS_TIMEOUT")?.map_err(|error| {
-                if state.plan.connect_timeout_ms.is_some() && error.is_connect() && error.is_timeout() {
+            result = tokio::time::timeout(Duration::from_millis(state.plan.headers_timeout_ms), request) => result.map_err(|_| format!("UPSTREAM_HEADERS_TIMEOUT: 等待上游响应头超过 {} 毫秒", state.plan.headers_timeout_ms))?.map_err(|error| {
+                let code = if state.plan.connect_timeout_ms.is_some() && error.is_connect() && error.is_timeout() {
                     "MODEL_CONNECT_TIMEOUT"
                 } else {
                     "UPSTREAM_CONNECT_FAILED"
-                }
+                };
+                transport_error(code, error, &state.plan)
             })?,
         };
         state.status = response.status().as_u16();
+        state.headers_ms = state
+            .dial_at
+            .map(|t| t.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0);
         let mut headers = serde_json::Map::new();
         let connection: Vec<&str> = response
             .headers()
@@ -446,15 +585,17 @@ impl Exchange {
     }
     pub async fn error_body(&self) -> Result<ErrorBody, String> {
         let mut state = self.state.lock().await;
-        let response = state.response.as_mut().ok_or("Rust CPR 尚未收到上游响应")?;
         let mut out = vec![];
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
+            let response = state.response.as_mut().ok_or("Rust CPR 尚未收到上游响应")?;
             let chunk = tokio::select! {
                 biased;
                 _ = self.cancel.cancelled() => return Err("CLIENT_DISCONNECTED".into()),
-                result = tokio::time::timeout_at(deadline, response.chunk()) => result.map_err(|_| "UPSTREAM_ERROR_TIMEOUT")?.map_err(|_| "UPSTREAM_STREAM_FAILED")?,
+                result = tokio::time::timeout_at(deadline, response.chunk()) => result.map_err(|_| "UPSTREAM_ERROR_TIMEOUT: 读取上游错误响应超过 5000 毫秒")?,
             };
+            let chunk = chunk
+                .map_err(|error| transport_error("UPSTREAM_STREAM_FAILED", error, &state.plan))?;
             let Some(chunk) = chunk else { break };
             out.extend_from_slice(&chunk);
             if out.len() > MAX_ERROR {
@@ -464,6 +605,7 @@ impl Exchange {
                     complete: false,
                     no_retry: false,
                     rejection: None,
+                    detail: None,
                 });
             }
         }
@@ -478,11 +620,48 @@ impl Exchange {
         let no_retry = rejection
             .as_ref()
             .is_some_and(|result| result["kind"].as_str() != Some("transient"));
+        // Lift structured messages or explicitly plain-text errors, not HTML.
+        // The original HTTP body continues through the normal protocol path.
+        let detail = serde_json::from_slice::<Value>(&out)
+            .ok()
+            .and_then(|body| {
+                body.pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .or_else(|| body.get("message").and_then(Value::as_str))
+                    .or_else(|| body.get("error").and_then(Value::as_str))
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| {
+                        format_transport_error(
+                            "UPSTREAM_HTTP_ERROR",
+                            &std::io::Error::other(value.to_owned()),
+                            &state.plan,
+                        )
+                    })
+            })
+            .or_else(|| {
+                state
+                    .headers
+                    .get("content-type")
+                    .and_then(Value::as_str)
+                    .filter(|content_type| {
+                        content_type.to_ascii_lowercase().starts_with("text/plain")
+                    })
+                    .and_then(|_| std::str::from_utf8(&out).ok())
+                    .filter(|message| !message.trim().is_empty())
+                    .map(|message| {
+                        format_transport_error(
+                            "UPSTREAM_HTTP_ERROR",
+                            &std::io::Error::other(message.to_owned()),
+                            &state.plan,
+                        )
+                    })
+            });
         Ok(ErrorBody {
             data: out,
             complete: true,
             no_retry,
             rejection,
+            detail,
         })
     }
     pub async fn read(&self) -> Result<Chunk, String> {
@@ -505,13 +684,18 @@ impl Exchange {
             };
             let next = match next {
                 Ok(v) => v,
-                Err(_) => {
+                Err(error) => {
                     state.response = None;
                     state.done = true;
-                    return Err("UPSTREAM_STREAM_FAILED".into());
+                    return Err(transport_error(
+                        "UPSTREAM_STREAM_FAILED",
+                        error,
+                        &state.plan,
+                    ));
                 }
             };
             if let Some(bytes) = &next {
+                state.received_bytes = state.received_bytes.saturating_add(bytes.len() as u64);
                 state.observer.feed(bytes);
             } else {
                 state.observer.finish();
@@ -577,9 +761,23 @@ impl State {
         if model_progress {
             self.stream_watch.progress();
         }
+        let now = Instant::now();
+        let metrics = self.dial_at.and_then(|start| {
+            if !done
+                && self
+                    .metrics_at
+                    .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
+            {
+                return None;
+            }
+            self.metrics_at = Some(now);
+            Some(json!({"attempt":self.attempt,"bytes":self.received_bytes,
+                "elapsedMs":now.duration_since(start).as_millis().min(u64::MAX as u128) as u64,
+                "headersMs":self.headers_ms}))
+        });
         Chunk {
             data,
-            meta: json!({"done":done,"events":std::mem::take(&mut self.observer.events),"usage":self.observer.usage,"failed":self.observer.failed,"statusCode":self.status,"modelProgress":model_progress}),
+            meta: json!({"done":done,"events":std::mem::take(&mut self.observer.events),"usage":self.observer.usage,"failed":self.observer.failed,"statusCode":self.status,"modelProgress":model_progress,"transportMetrics":metrics}),
         }
     }
 }
@@ -590,6 +788,156 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
+
+    #[test]
+    fn transport_cause_preserves_os_reason_but_removes_urls_and_credentials() {
+        let plan: Plan = serde_json::from_value(json!({
+            "route": { "protocol":"claude", "providerId":"p", "mainProviderId":"p", "sessionId":"s",
+                "role":"main", "agentRole":"", "routeName":"main", "model":"m", "apiPath":"/v1/messages", "query":"", "isStream":true },
+            "providerName":"p", "url":"https://example.invalid/v1", "method":"POST",
+            "headers":{"authorization":"Bearer sample-secret-42"}, "body":"", "mode":"raw",
+            "proxyUrl":"http://proxyuser:proxypass@proxy.invalid:80"
+        })).unwrap();
+        let error = std::io::Error::other("connection refused (os error 61) https://example.invalid/path?foo=sample-secret-42 proxyuser proxypass");
+        let text = format_transport_error("UPSTREAM_CONNECT_FAILED", &error, &plan);
+        assert!(text.contains("connection refused (os error 61)"));
+        for secret in [
+            "sample-secret-42",
+            "proxyuser",
+            "proxypass",
+            "example.invalid",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "credential or URL appeared in diagnostic"
+            );
+        }
+    }
+
+    #[test]
+    fn client_cache_evicts_only_the_least_recently_used_configuration() {
+        let mut cache = ClientCache::default();
+        for i in 0..MAX_CLIENTS {
+            cache.insert(i.to_string(), i);
+        }
+        assert_eq!(cache.get("0"), Some(0));
+        cache.insert("new".into(), MAX_CLIENTS);
+        assert_eq!(cache.get("1"), None);
+        assert_eq!(cache.get("0"), Some(0));
+        for i in 2..MAX_CLIENTS {
+            assert_eq!(cache.get(&i.to_string()), Some(i));
+        }
+        assert_eq!(cache.get("new"), Some(MAX_CLIENTS));
+        assert_eq!(cache.entries.len(), MAX_CLIENTS);
+    }
+
+    #[tokio::test]
+    async fn cached_client_reuses_connection_after_seventeenth_configuration() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let stopped = Arc::new(AtomicBool::new(false));
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let server = std::thread::spawn({
+            let stopped = stopped.clone();
+            let accepted = accepted.clone();
+            move || {
+                let mut workers = Vec::new();
+                while !stopped.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            accepted.fetch_add(1, Ordering::Relaxed);
+                            workers.push(std::thread::spawn(move || {
+                                socket.set_nonblocking(false).unwrap();
+                                socket
+                                    .set_read_timeout(Some(Duration::from_secs(30)))
+                                    .unwrap();
+                                let mut request = Vec::new();
+                                let mut byte = [0];
+                                while socket.read_exact(&mut byte).is_ok() {
+                                    request.push(byte[0]);
+                                    if request.ends_with(b"\r\n\r\n") {
+                                        if socket
+                                            .write_all(
+                                                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                                            )
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                        request.clear();
+                                    }
+                                }
+                            }));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(1))
+                        }
+                        Err(error) => panic!("listener failed: {error}"),
+                    }
+                }
+                for worker in workers {
+                    worker.join().unwrap();
+                }
+            }
+        });
+        let mut cache = ClientCache::default();
+        for i in 0..MAX_CLIENTS {
+            let client = Client::builder().no_proxy().build().unwrap();
+            client
+                .get(&url)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
+            if i == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                client
+                    .get(&url)
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    accepted.load(Ordering::Relaxed),
+                    1,
+                    "fixture must support keep-alive"
+                );
+            }
+            cache.insert(i.to_string(), client);
+        }
+        let first = cache.get("0").unwrap();
+        let extra = Client::builder().no_proxy().build().unwrap();
+        extra.get(&url).send().await.unwrap().bytes().await.unwrap();
+        cache.insert("extra".into(), extra);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cache
+            .get("0")
+            .unwrap()
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted.load(Ordering::Relaxed),
+            MAX_CLIENTS + 1,
+            "the hot first configuration should reuse its existing TCP connection"
+        );
+        drop(first);
+        drop(cache);
+        stopped.store(true, Ordering::Relaxed);
+        tokio::task::spawn_blocking(move || server.join().unwrap())
+            .await
+            .unwrap();
+    }
 
     fn upstream(finish: bool) -> (Arc<Exchange>, mpsc::Receiver<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -671,9 +1019,14 @@ mod tests {
     async fn no_watch_keeps_normal_completion_and_has_no_timeout_code() {
         let (exchange, closed) = upstream(true);
         exchange.open().await.unwrap();
+        let mut received = 0;
         loop {
             let chunk = exchange.read().await.unwrap();
+            received += chunk.data.len() as u64;
             if chunk.meta["done"] == true {
+                assert_eq!(chunk.meta["transportMetrics"]["bytes"], received);
+                assert_eq!(chunk.meta["transportMetrics"]["attempt"], 1);
+                assert!(chunk.meta["transportMetrics"]["headersMs"].is_u64());
                 break;
             }
         }

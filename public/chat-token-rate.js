@@ -73,6 +73,8 @@
     let blockAt = 0;
     let requestAt = 0;
     let exact = null;
+    let endedAt = 0;
+    let transport = new Map();
 
     function prune(t) {
       while (samples.length && t - samples[0].t > WINDOW_MS) samples.shift();
@@ -100,8 +102,10 @@
         block = null;
         requestAt = 0;
         exact = null;
+        endedAt = 0;
+        transport = new Map();
       },
-      end() { active = false; samples = []; },
+      end() { if (active) endedAt = now(); active = false; samples = []; },
       isActive: () => active,
       /**
        * The visible reply buffer, read where the bubble renders it. Only its
@@ -116,6 +120,16 @@
       },
       /** Reasoning or tool-argument fragments, which never reach the text buffer. */
       noteChunk(text) { if (active) add(estimateTokens(text)); },
+      noteTransportMetrics(metric) {
+        if (!active || !metric || typeof metric.requestId !== 'string'
+          || ![metric.attempt, metric.bytes, metric.elapsedMs, metric.headersMs].every(Number.isSafeInteger)
+          || metric.attempt < 1 || metric.bytes < 0 || metric.elapsedMs < 0 || metric.headersMs < 0) return;
+        const key = `${metric.requestId}:${metric.attempt}`;
+        const previous = transport.get(key);
+        if (previous && (metric.bytes < previous.bytes || metric.elapsedMs < previous.elapsedMs || previous.done)) return;
+        transport.set(key, { bytes: metric.bytes, elapsedMs: metric.elapsedMs, headersMs: metric.headersMs,
+          done: metric.done === true, observedAt: now() });
+      },
       /** An API request started streaming (message_start). */
       noteRequest() { if (active) requestAt = now(); },
       /** A content block opened ('thinking' / other) or closed (null). */
@@ -144,7 +158,18 @@
         const ctx = context || {};
         const t = now();
         prune(t);
-        const base = { active, total, exact, ttftMs: firstAt && beganAt ? firstAt - beganAt : null };
+        const elapsedMs = beganAt ? Math.max(0, (active ? t : endedAt) - beganAt) : 0;
+        let transportBytes = 0, transportMs = 0, headersMs = null, latestObservedAt = -1;
+        for (const item of transport.values()) {
+          transportBytes += item.bytes;
+          transportMs += item.elapsedMs + (item.done ? 0 : Math.max(0, (active ? t : endedAt) - item.observedAt));
+          if (item.observedAt >= latestObservedAt) { headersMs = item.headersMs; latestObservedAt = item.observedAt; }
+        }
+        const base = { active, total, exact, elapsedMs,
+          averageRate: total > 0 && elapsedMs > 0 ? total / (elapsedMs / 1000) : null,
+          transportRate: transportMs > 0 ? transportBytes / (transportMs / 1000) : null,
+          transportBytes, transportMs, headersMs,
+          ttftMs: firstAt && beganAt ? firstAt - beganAt : null };
         if (!active) return { ...base, phase: 'idle', rate: 0, phaseMs: 0, tone: 'idle' };
         if (samples.length) {
           const windowTokens = samples.reduce((sum, sample) => sum + sample.n, 0);
@@ -188,10 +213,13 @@
   /** Snapshot → { text, tone, title } for the chip. Empty text hides it. */
   function describe(snapshot) {
     const snap = snapshot || {};
-    if (!snap.active) return { text: '', tone: 'idle', title: '' };
+    const hasAverage = Number.isFinite(snap.averageRate);
+    const hasTransport = Number.isFinite(snap.transportRate);
+    if (!snap.active && !hasAverage && !hasTransport) return { text: '', tone: 'idle', title: '' };
     const dur = FMT.formatDuration(snap.phaseMs);
     let text;
-    switch (snap.phase) {
+    switch (snap.active ? snap.phase : 'complete') {
+      case 'complete': text = ''; break;
       case 'flowing': text = tt('tokenRateFlowing', '⚡ {rate} tok/s', { rate: rateNumber(snap.rate) }); break;
       case 'tool': text = tt('tokenRateTool', '🔧 工具运行 {dur}', { dur }); break;
       case 'thinking': text = tt('tokenRateThinking', '💭 思考中 {dur}', { dur }); break;
@@ -200,7 +228,24 @@
       case 'alive': text = tt('tokenRateAlive', '⏸ AI 请求已停 {dur} · 任务执行中', { dur }); break;
       default: text = tt('tokenRatePaused', '⏸ 0 tok/s · AI 请求已停 {dur}', { dur }); break;
     }
-    const lines = [tt('tokenRateTitle', '实时输出速度（按流式文本估算，近 3 秒）')];
+    if (hasAverage) {
+      const average = tt('tokenRateAverage', '平均 ≈{rate} tok/s', { rate: rateNumber(snap.averageRate) });
+      text = text ? `${text} · ${average}` : average;
+    }
+    if (hasTransport) {
+      const speed = snap.transportRate >= 1024
+        ? `${rateNumber(snap.transportRate / 1024)} KiB/s` : `${rateNumber(snap.transportRate)} B/s`;
+      const label = tt('tokenRateTransport', '上游平均 {speed}', { speed });
+      text = text ? `${text} · ${label}` : label;
+    }
+    const lines = [snap.active
+      ? tt('tokenRateTitle', '实时输出速度（按流式文本估算，近 3 秒）')
+      : tt('tokenRateCompletedTitle', '上一轮输出统计')];
+    if (hasAverage) lines.push(tt('tokenRateAverageTitle', '平均速度为本页观察到的估算输出除以经过时间，包含等待和工具运行；刷新后重新统计。'));
+    if (hasTransport) {
+      lines.push(tt('tokenRateTransportTitle', '上游响应平均接收速率：累计解压后响应字节除以各请求耗时之和，含服务商等待和下游背压，并非带宽测速；仅统计本页收到的托管主线路样本。'));
+      if (Number.isFinite(snap.headersMs)) lines.push(tt('tokenRateHeaders', '最近请求响应头耗时 {dur}（含上游处理）', { dur: FMT.formatDuration(snap.headersMs) }));
+    }
     if (snap.total > 0) {
       lines.push(tt('tokenRateTitleTotal', '本轮已输出 ≈{total} tokens', { total: FMT.formatTokenCount(Math.round(snap.total)) }));
     }

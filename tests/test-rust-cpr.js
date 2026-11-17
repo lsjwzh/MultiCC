@@ -27,7 +27,7 @@ const responseStream = sse({ type: 'response.output_text.delta', delta: '你好'
 
 async function harness(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-cpr-'));
-  const requests = [], usage = [], activity = [], deltas = [], rates = [], outcomes = [];
+  const requests = [], usage = [], activity = [], deltas = [], rates = [], outcomes = [], transportMetrics = [];
   const upstream = http.createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     requests.push({ headers: req.headers, body, url: req.url });
@@ -46,7 +46,8 @@ async function harness(t, options = {}) {
   dataRoot: root, codexHomesDir: path.join(root, 'codex') });
   const app = express();
   const callbacks = { onUsageObserved: e => usage.push(e), onActivity: e => activity.push(e),
-    onDelta: (e, ctx) => deltas.push({ e, ctx }), onRateLimit: e => rates.push(e) };
+    onDelta: (e, ctx) => deltas.push({ e, ctx }), onRateLimit: e => rates.push(e),
+    onTransportMetrics: (e, ctx) => transportMetrics.push({ e, ctx }) };
   const protocol = options.protocol || 'claude';
   if (protocol === 'codex') app.use(express.json({ limit: '50mb' }));
   const mounted = runtime.mountProtocolProxies(app, { protocols: [protocol], ...callbacks,
@@ -62,7 +63,7 @@ async function harness(t, options = {}) {
     await Promise.allSettled(Object.values(mounted).map(m => m?.close?.()));
     await Promise.all([close(server), close(upstream)]); fs.rmSync(root, { recursive: true, force: true });
   });
-  return { base, entries, runtime, requests, usage, activity, deltas, rates, outcomes,
+  return { base, entries, runtime, requests, usage, activity, deltas, rates, outcomes, transportMetrics,
     post: (url, body, headers = {}) => fetch(base + url, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) }) };
 }
 
@@ -90,6 +91,10 @@ rustTest('Claude 模型改写、请求路径、凭据、SSE 原文和用量正�
   assert.equal(h.usage[0].tokens.input, 7); assert.equal(h.usage[0].tokens.output, 4);
   assert.deepEqual(h.activity.map(e => e.phase), ['request', 'first_byte', 'end']);
   assert.equal(h.deltas.length, 1); assert.equal(h.deltas[0].e.type, 'text');
+  const finalMetric = h.transportMetrics.find(item => item.e.done);
+  assert.equal(finalMetric.e.bytes, Buffer.byteLength(claudeStream));
+  assert.equal(finalMetric.ctx.sessionId, 'fixture');
+  assert.ok(finalMetric.e.elapsedMs >= finalMetric.e.headersMs);
 });
 
 rustTest('Claude 流尾重复输入和缓存累计快照不会重复计量，原文透传', async t => {
@@ -307,7 +312,10 @@ rustTest('统一网络策略决定 Rust 出口，策略失败不能静默直连'
   assert.deepEqual(resolutions, seen); assert.equal(h.requests.length, 0);
   unavailable = true;
   res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
-  assert.equal(res.status, 502); assert.doesNotMatch(await res.text(), /fixture-policy-unavailable/);
+  assert.equal(res.status, 502);
+  const errorBody = await res.text();
+  assert.match(errorBody, /fixture-policy-unavailable/);
+  assert.doesNotMatch(errorBody, /fixture-key|rust-cpr-fixture\.invalid/);
   assert.equal(seen.length, 1); assert.equal(h.requests.length, 0);
 });
 
@@ -415,6 +423,96 @@ rustTest('首包等待有上限，错误回调不会包含上游地址或能力�
   const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
   assert.equal(res.status, 502); const text = await res.text(); assert.match(text, /UPSTREAM_HEADERS_TIMEOUT/);
   assert.doesNotMatch(text, /test-upstream-key|127\.0\.0\.1/); assert.equal(h.usage[0].errorCode, 'UPSTREAM_HEADERS_TIMEOUT');
+});
+
+rustTest('连接被拒绝时保留系统根因并归属当前线路，不泄露地址或凭据', async t => {
+  const closedServer = http.createServer();
+  const closedUrl = await listen(closedServer);
+  await close(closedServer);
+  const h = await harness(t, {
+    authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 'turn', routeAttemptId: 'attempt' } }),
+    entries: () => ({ main: { id: 'main', settingsConfig: { env: {
+      ANTHROPIC_BASE_URL: closedUrl, ANTHROPIC_AUTH_TOKEN: 'fixture-private-key',
+    } } } }),
+  });
+  const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  const body = await response.text();
+  assert.equal(response.status, 502);
+  assert.match(body, /UPSTREAM_CONNECT_FAILED/);
+  assert.match(body, /(?:connection refused|os error 61|os error 111)/i);
+  assert.doesNotMatch(body, /fixture-private-key|127\.0\.0\.1/);
+  assert.equal(h.outcomes.length, 1);
+  assert.equal(h.outcomes[0].errorCode, 'UPSTREAM_CONNECT_FAILED');
+  assert.match(h.outcomes[0].errorDetail, /connection refused/i);
+  assert.equal(h.outcomes[0].proxyOutcome.termination, 'upstream_failure');
+});
+
+rustTest('上游流中途断开时保留读取错误，不能被下游断连覆盖', async t => {
+  const h = await harness(t, {
+    authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 'turn', routeAttemptId: 'attempt' } }),
+    upstream: (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'content-length': '1000' });
+      res.write('data: {"type":"content_block_delta","delta":{"text":"x"}}\n\n');
+      setTimeout(() => res.destroy(), 50);
+    },
+  });
+  const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  await assert.rejects(response.text());
+  assert.equal(h.outcomes.length, 1);
+  assert.equal(h.outcomes[0].errorCode, 'UPSTREAM_STREAM_FAILED');
+  assert.match(h.outcomes[0].errorDetail, /UPSTREAM_STREAM_FAILED: .+/);
+  assert.equal(h.outcomes[0].proxyOutcome.termination, 'upstream_failure');
+});
+
+rustTest('TLS 握手异常保留协议原因且不会输出上游地址', async t => {
+  const h = await harness(t, {
+    entries: url => ({ main: { id: 'main', settingsConfig: { env: {
+      ANTHROPIC_BASE_URL: url.replace('http:', 'https:'), ANTHROPIC_AUTH_TOKEN: 'fixture-tls-key',
+    } } } }),
+  });
+  const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  const body = await response.text();
+  assert.equal(response.status, 502);
+  assert.match(body, /UPSTREAM_CONNECT_FAILED: .+/);
+  assert.match(body, /(?:tls|handshake|certificate|message|connection|peer)/i);
+  assert.doesNotMatch(body, /fixture-tls-key|127\.0\.0\.1/);
+});
+
+rustTest('出口适配器异常保留脱敏后的具体原因', async t => {
+  const h = await harness(t, {
+    authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 'turn', routeAttemptId: 'attempt' } }),
+    proxy: () => ({ resolveUpstreamAgent: async () => { throw new Error('代理隧道拒绝连接，地址 https://user:secret@proxy.invalid/path'); } }),
+  });
+  const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  const body = await response.text();
+  assert.equal(response.status, 502);
+  assert.match(body, /代理隧道拒绝连接/);
+  assert.doesNotMatch(body, /proxy\.invalid|user:secret|test-upstream-key/);
+  assert.match(h.outcomes[0].errorDetail, /代理隧道拒绝连接/);
+});
+
+rustTest('供应商返回 502 时保留其错误消息并移除回显凭据', async t => {
+  const h = await harness(t, {
+    authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 'turn', routeAttemptId: 'attempt' } }),
+    upstream: (_req, res) => { res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: '网关无法连接模型节点 test-upstream-key' } })); },
+  });
+  const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  assert.equal(response.status, 502);
+  await response.text();
+  assert.equal(h.outcomes[0].proxyOutcome.termination, 'upstream_http_error');
+  assert.match(h.outcomes[0].errorDetail, /网关无法连接模型节点/);
+  assert.doesNotMatch(h.outcomes[0].errorDetail, /test-upstream-key/);
+});
+
+rustTest('供应商返回纯文本错误时保留根因', async t => {
+  const h = await harness(t, {
+    authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 'turn', routeAttemptId: 'attempt' } }),
+    upstream: (_req, res) => { res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' }); res.end('模型服务暂时不可用'); },
+  });
+  const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  assert.equal(response.status, 503); await response.text();
+  assert.match(h.outcomes[0].errorDetail, /模型服务暂时不可用/);
 });
 
 rustTest('Rust 上游 CONNECT 悬挂按当前请求连接预算退出并归因', async t => {
@@ -641,6 +739,7 @@ rustTest('Rust 官方 Codex 账号缺失时不读取全局登录，也不拨上�
 
 rustTest('Rust 官方上游错误不能把宿主 OAuth 令牌或账号传给借用方', async t => {
   const h = await harness(t, { protocol: 'codex',
+    authorize: () => ({ ok: true, attempt: { sessionId: 'session', turnId: 'turn', routeAttemptId: 'attempt' } }),
     entries: () => ({ official: { id: 'official', appType: 'codex', settingsConfig: { auth: { auth_mode: 'chatgpt' } } } }),
     proxy: upstream => ({ codexOfficialRelay: { upstreamUrl: upstream,
       readCredential: async () => ({ ok: true, accessToken: 'fixture-private-token', accountId: 'fixture-private-account' }) } }),
@@ -650,6 +749,8 @@ rustTest('Rust 官方上游错误不能把宿主 OAuth 令牌或账号传给借�
   assert.equal(response.status, 403);
   const text = await response.text();
   assert.doesNotMatch(text, /fixture-private/); assert.match(text, /REDACTED/);
+  assert.match(h.outcomes[0].errorDetail, /Denied/);
+  assert.doesNotMatch(h.outcomes[0].errorDetail, /fixture-private/);
 });
 
 rustTest('Rust Claude 指定账号没有凭据端口时明确拒绝，不查询共享登录', async t => {

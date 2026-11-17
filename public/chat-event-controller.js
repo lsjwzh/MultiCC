@@ -57,6 +57,7 @@
     api_error_policy: true,
     provider_token_stats: true,
     rate_limit_event: true,
+    provider_transport_metrics: true,
   });
   const TERMINAL_PROVIDER_ROUTE_PHASES = Object.freeze({
     failed: true,
@@ -277,7 +278,7 @@
       const scope = message.providerRouteScope;
       const routeOwnable = ATTEMPT_OWNED_EVENT_TYPES[message.type] || message.type === 'error';
       if (!routeOwnable) return true;
-      if (scope === 'host') return message.type !== 'part_delta' && message.type !== 'stream_event';
+      if (scope === 'host') return !['part_delta', 'stream_event', 'provider_transport_metrics'].includes(message.type);
       if (scope !== 'attempt') return false;
       const identity = providerRouteIdentity(message);
       if (!identity) return false;
@@ -664,6 +665,7 @@
           finalizeAssistantMsg(message.message);
           break;
       case 'part_delta': handlePartDelta(message); break;
+        case 'provider_transport_metrics': host.tokenRate?.noteTransportMetrics(message); break;
         case 'user':
           if (message.tool_use_result || message.message?.content) handleToolResult(message);
           break;

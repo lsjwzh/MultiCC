@@ -1913,7 +1913,43 @@ pub fn normalize_outcome(
 
     let sanitized_message =
         sanitize_value(&Some(message.clone()), "Upstream API request failed", 240);
-    let root_cause = sanitize_value(&Some(message.clone()), "Upstream API request failed", 2048);
+    // A CLI may replace an admitted upstream network error with its own 502
+    // or stream-disconnected wrapper. Preserve the same-attempt transport
+    // cause without changing classification or retry policy.
+    let proxy_failure = get(context, "proxyFailure").unwrap_or(JsValue::Undefined);
+    let proxy_code = get(&proxy_failure, "code");
+    let termination = get(
+        &get(&proxy_failure, "proxyOutcome").unwrap_or(JsValue::Undefined),
+        "termination",
+    );
+    let transport_failure = strict_string(&get(&proxy_failure, "source"), "proxy_response")
+        && !get(&proxy_failure, "recovered").is_some_and(|v| truthy_value(&v))
+        && ((strict_string(&termination, "upstream_failure")
+            && [
+                "UPSTREAM_CONNECT_FAILED",
+                "UPSTREAM_STREAM_FAILED",
+                "UPSTREAM_HEADERS_TIMEOUT",
+                "UPSTREAM_ERROR_TIMEOUT",
+                "RUST_CPR_REQUEST_FAILED",
+                "RUST_CPR_EGRESS_UNSUPPORTED",
+                "model_connect_timeout",
+                "response_stalled_before_response",
+                "stream_idle_timeout",
+                "model_request_deadline",
+            ]
+            .iter()
+            .any(|code| strict_string(&proxy_code, code)))
+            || (strict_string(&termination, "upstream_http_error")
+                && strict_string(&proxy_code, "UPSTREAM_HTTP_ERROR")
+                && get(&proxy_failure, "hasRootCause").is_some_and(|value| truthy_value(&value))));
+    let root_value = if transport_failure {
+        get(&proxy_failure, "message")
+            .filter(truthy_value)
+            .unwrap_or_else(|| message.clone())
+    } else {
+        message.clone()
+    };
+    let root_cause = sanitize_value(&Some(root_value), "Upstream API request failed", 2048);
     let param = {
         let sanitized = sanitize_value(
             &pick_truthy(&[

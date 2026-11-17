@@ -793,6 +793,35 @@ test('the runtime itself scopes the merge to the live attempt', () => {
   assert.equal(staleRunner.error.rejection, null);
 });
 
+test('same-attempt upstream network cause survives a generic CLI 502 and stale attempts cannot supply it', () => {
+  const runtime = createProviderAttemptRuntime({ now: () => 1_000 });
+  const attempt = runtime.beginAttempt({ sessionId: 'session-1', turnId: 'turn-1', cli: 'claude',
+    providerId: 'provider-a', providerName: 'Provider A', protocol: 'claude', model: 'm',
+    providerRevision: 'revision-a', attemptNo: 1 });
+  runtime.observeProxyOutcome({ ...attempt, roleKind: 'main', routeAttribution: 'exact', status: 'error',
+    errorCode: 'UPSTREAM_CONNECT_FAILED', errorDetail: 'UPSTREAM_CONNECT_FAILED: connection refused (os error 61)',
+    proxyOutcome: { version: 1, requestId: 'request-a', requestKind: 'inference', termination: 'upstream_failure', httpStatus: null } });
+  const run = candidate => rejectionHost(value => runtime.proxyFailure(value)).evaluateTurnApiError({
+    sessionName: 'session-1', cs: {}, persisted: { cli: 'claude' }, turn: { turnId: 'turn-1' },
+    runner: { providerAttempt: candidate }, raw: { source: 'claude_result', message: 'API Error: 502 Bad Gateway', httpStatus: 502 }, attempt: 0 });
+  assert.match(run(attempt).error.rootCause, /connection refused \(os error 61\)/);
+  assert.doesNotMatch(run({ ...attempt, routeAttemptId: 'old' }).error.rootCause, /connection refused/);
+});
+
+test('the upstream HTTP error message survives a generic CLI wrapper', () => {
+  const runtime = createProviderAttemptRuntime({ now: () => 1_000 });
+  const attempt = runtime.beginAttempt({ sessionId: 'session-1', turnId: 'turn-1', cli: 'claude',
+    providerId: 'provider-a', providerName: 'Provider A', protocol: 'claude', model: 'm',
+    providerRevision: 'revision-a', attemptNo: 1 });
+  runtime.observeProxyOutcome({ ...attempt, roleKind: 'main', routeAttribution: 'exact', status: 'error',
+    statusCode: 502, errorCode: 'UPSTREAM_HTTP_ERROR', errorDetail: 'UPSTREAM_HTTP_ERROR: 模型节点不可用',
+    proxyOutcome: { version: 1, requestId: 'request-a', requestKind: 'inference', termination: 'upstream_http_error', httpStatus: 502 } });
+  const result = rejectionHost(value => runtime.proxyFailure(value)).evaluateTurnApiError({
+    sessionName: 'session-1', cs: {}, persisted: { cli: 'claude' }, turn: { turnId: 'turn-1' },
+    runner: { providerAttempt: attempt }, raw: { source: 'claude_result', message: 'API Error: 502 Bad Gateway', httpStatus: 502 }, attempt: 0 });
+  assert.match(result.error.rootCause, /模型节点不可用/);
+});
+
 // ── 429s the proxy never attributed are still parked for Auto ───────────────
 // handleProxyOutcome() records only the 429 of a request the Rust proxy could
 // attribute exactly. A 429 the CLI reports afterwards used to leave no trace,

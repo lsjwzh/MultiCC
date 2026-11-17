@@ -1,5 +1,5 @@
-/* Live speed chip next to the context line (chat-token-rate.js). Only present
-   while a turn streams; green while output flows, amber/red once the quiet is
+/* Speed chip next to the context line (chat-token-rate.js). Retains the last
+   observed turn average; green while output flows, amber/red once the quiet is
    longer than anything a tool, a think or a slow first token explains. */
 #token-rate-bar {
   display: inline-block;
@@ -14,3 +14,6 @@
 #token-rate-bar[data-tone="flowing"] { color: var(--chat-success); }
 #token-rate-bar[data-tone="warning"] { color: var(--chat-warning); border-color: currentColor; }
 #token-rate-bar[data-tone="danger"] { color: var(--chat-danger); border-color: currentColor; }
+@media (max-width: 760px) {
+  #token-rate-bar { white-space: normal; overflow-wrap: anywhere; }
+}

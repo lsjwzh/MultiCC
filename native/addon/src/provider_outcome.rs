@@ -508,14 +508,57 @@ pub fn provider_observe_proxy_outcome(
         failure.set(c"rejection", rejection)?;
     }
     failure.set(c"code", failure_code)?;
-    let message = match http_status {
-        Some(status) => format!("upstream HTTP {status}"),
-        None if terminated(outcome, "downstream_disconnect")? => {
-            "downstream response connection closed".to_string()
-        }
-        None => "upstream request failed".to_string(),
+    let timeout_ms = if event.has(c"timeoutMs")? {
+        event.get(c"timeoutMs")?.number_value()?
+    } else {
+        None
     };
-    failure.set(c"message", text(port, &message)?)?;
+    let message = match (
+        failure_code
+            .string()?
+            .map(|s| s.to_string_lossy())
+            .as_deref(),
+        timeout_ms,
+    ) {
+        (
+            Some(
+                code @ ("model_connect_timeout"
+                | "response_stalled_before_response"
+                | "stream_idle_timeout"
+                | "model_request_deadline"),
+            ),
+            Some(ms),
+        ) if ms.is_finite() && ms >= 0.0 => {
+            let reason = match code {
+                "model_connect_timeout" => "连接上游超时",
+                "response_stalled_before_response" => "上游在首个有效响应前长时间无进展",
+                "stream_idle_timeout" => "上游流长时间无进展",
+                _ => "上游请求超过总时限",
+            };
+            format!("{code}: {reason}（{ms:.0} 毫秒）")
+        }
+        _ => match http_status {
+            Some(status) => format!("upstream HTTP {status}"),
+            None if terminated(outcome, "downstream_disconnect")? => {
+                "downstream response connection closed".to_string()
+            }
+            None => "upstream request failed".to_string(),
+        },
+    };
+    let detail = if event.has(c"errorDetail")?
+        && (terminated(outcome, "upstream_failure")? || terminated(outcome, "upstream_http_error")?)
+    {
+        let detail = event.get(c"errorDetail")?;
+        if detail.string()?.is_some() {
+            failure.set(c"hasRootCause", boolean(port, true)?)?;
+            sanitize(detail, text(port, &message)?, number(port, 2048.0)?)?
+        } else {
+            text(port, &message)?
+        }
+    } else {
+        text(port, &message)?
+    };
+    failure.set(c"message", detail)?;
     failure.set(c"observedAt", number(port, now(port)?)?)?;
     if outcome.truthy()? {
         failure.set(c"proxyOutcome", outcome)?;
