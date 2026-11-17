@@ -10,7 +10,7 @@ const {
   isProcessingLetter, isWaitForUserLetter, isTerminalLetter, isAbnormalLetter,
   isOutcomeLetter,
 } = require('../../src/classify/vocab');
-const { isUserTypedWork } = require('../../src/session-work/user-input');
+const { isUserTypedWork } = require('./legacy-session-work-user-input');
 const unattendedKernel = require('../../src/unattended/kernel');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);

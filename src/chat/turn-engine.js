@@ -18,9 +18,8 @@ const claudeApiError = require('./claude-api-error-message');
 const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
 const { createSessionNotices } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
-const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
-const { getNative } = require('../native/runtime');
+const { getNative, deliveryClassForItem } = require('../native/runtime');
 const writerGroup = require('../workspace/writer-group');
 const {
   TurnRequestError,
@@ -816,8 +815,8 @@ function createChatTurnEngine(deps) {
     // delivery router writes them to history directly); the exemption below
     // is the belt to that router's braces for any future caller that invokes
     // runChatTurn with a non-task delivery.
-    if (opts?.deliveryClass === DELIVERY_CLASS.NOTICE
-        || opts?.deliveryClass === DELIVERY_CLASS.RESULT) {
+    if (opts?.deliveryClass === 'notice'
+        || opts?.deliveryClass === 'result') {
       opts = { ...opts, taskId: undefined, taskShellReceiptId: undefined };
     }
     const shellGuard = taskContextHost?.guardAdmission?.(sessionName, text, opts);
@@ -2114,7 +2113,7 @@ function createChatTurnEngine(deps) {
     // Route by delivery class (provenance decided at the outbox boundary),
     // not by re-inferring the message's nature from individual fields.
     const deliveryClass = opts?.deliveryClass || deliveryClassForItem(item);
-    if (deliveryClass === DELIVERY_CLASS.NOTICE) {
+    if (deliveryClass === 'notice') {
       // A system notice (e.g. task.interrupted) is written into chat history
       // for the human to see. It never starts a native turn and never passes
       // the task admission guards — routing it through runChatTurn got it

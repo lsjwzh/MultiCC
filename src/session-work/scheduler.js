@@ -10,7 +10,6 @@ const {
   isProcessingLetter, isWaitForUserLetter, isTerminalLetter, isAbnormalLetter,
   isOutcomeLetter,
 } = require('../classify/vocab');
-const { isUserTypedWork } = require('./user-input');
 const { getNative } = require('../native/runtime');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
@@ -571,7 +570,7 @@ function createSessionWorkScheduler({
       // box: the Air task page admits with source 'task-shell', and while it was
       // excluded here its user's messages were selectable in no state but D —
       // an E verdict parked them forever. See session-work/user-input.js.
-      const directMessage = isUserTypedWork(payload) || CONTROL_KINDS.has(inferredKind);
+      const directMessage = getNative().sessionWorkIsUserTyped(payload) || CONTROL_KINDS.has(inferredKind);
       if (draft.outbox[admitted.item.id]
           && directMessage) {
         draft.outbox[admitted.item.id].directRun = true;
