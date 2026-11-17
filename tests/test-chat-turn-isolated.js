@@ -114,7 +114,7 @@ const terminal = frames => frames.some(frame =>
   const home = path.join(root, 'home');
   fs.mkdirSync(home);
   const gitConfig = path.join(home, '.gitconfig');
-  const commitPolicy = require('../commit-policy.json');
+  const commitPolicy = require('./helpers/git-test-identity');
   for (const field of ['name', 'email']) {
     execFileSync('git', ['config', '--file', gitConfig, `user.${field}`, commitPolicy[field]]);
   }

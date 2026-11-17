@@ -224,12 +224,13 @@ test('production wake recognizes changes already absorbed by the base without lo
   assert.equal(fs.readFileSync(path.join(added.worktreePath, 'local.txt'), 'utf8'), 'delivered\n');
 });
 
-test('production wake uses directory commit-policy despite local policy edits and inherited Git identity', async t => {
+test('production wake uses local Git identity despite legacy file edits and inherited Git identity', async t => {
   const dir = repo();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const policy = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'commit-policy.json'), 'utf8'));
+  const policy = require('./helpers/git-test-identity');
   git(dir, ['config', 'user.name', policy.name]);
   git(dir, ['config', 'user.email', policy.email]);
+  git(dir, ['config', '--local', 'multicc.commitPolicyEmail', policy.email]);
   commitFile(dir, 'commit-policy.json', JSON.stringify(policy), 'chore(fixture): configure commit identity');
   const added = await gitWorktreeAdd(dir, 'wake-identity', 'main');
   const localPolicy = { name: 'Local Override', email: 'local@example.invalid' };

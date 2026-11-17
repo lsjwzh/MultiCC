@@ -45,6 +45,24 @@ async function sessionIn(dir, id) {
   return { id, dirId: dir.id, worktreePath: added.worktreePath, branch: added.branch };
 }
 
+async function configureIdentity(dir, identity) {
+  await git(dir.path, ['config', '--local', 'user.name', identity.name]);
+  await git(dir.path, ['config', '--local', 'user.email', identity.email]);
+  await git(dir.path, ['config', '--local', 'multicc.commitPolicyEmail', identity.email]);
+}
+
+test('without a local policy, another repository uses its own Git identity', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-own-identity-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  await fsp.writeFile(path.join(dir.path, 'app.js'), 'module.exports = 2;\n');
+  // A cloned legacy file must not impose another person's identity.
+  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify({ name: 'Previous Owner', email: 'previous@example.invalid' }));
+  await gitWorktreeCommitAll(dir.path, 'fix: preserve the owner identity');
+  assert.equal(await git(dir.path, ['log', '-1', '--format=%an|%ae|%cn|%ce']),
+    'MultiCC Test|test@multicc.local|MultiCC Test|test@multicc.local');
+});
+
 test('commit-all refuses a non-English body before staging or moving HEAD', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-english-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
@@ -94,12 +112,12 @@ test('missing Rust publication support fails closed instead of accepting uncheck
   assert.equal(result.stderr, '');
 });
 
-test('project policy fixes both author and committer despite local, environment and CLI overrides', async t => {
+test('local policy fixes author and committer despite environment and CLI overrides', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-commit-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
   const expected = { name: 'account', email: 'account@example.invalid' };
-  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify(expected));
+  await configureIdentity(dir, expected);
   await fsp.writeFile(path.join(dir.path, 'app.js'), 'module.exports = 2;\n');
   await gitRun(dir.path, ['add', '-A']);
   await gitRun(dir.path, ['-c', 'user.name=bot', '-c', 'user.email=bot@local', 'commit', '-m', 'fix: preserve queued messages'], {
@@ -120,7 +138,7 @@ test('merge refuses an English commit with the wrong committer instead of rewrit
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
   const policy = { name: 'account', email: 'account@example.invalid' };
-  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify(policy));
+  await configureIdentity(dir, policy);
   await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
   const baseHead = await git(dir.path, ['rev-parse', 'HEAD']);
   const session = await sessionIn(dir, 'wrong-committer');
@@ -138,7 +156,7 @@ test('merge preserves the identity of fetched default-branch commits while check
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-remote-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
-  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify({ name: 'account', email: 'account@example.invalid' }));
+  await configureIdentity(dir, { name: 'account', email: 'account@example.invalid' });
   await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
   const session = await sessionIn(dir, 'remote-identity');
   await execFileAsync('git', ['commit', '--allow-empty', '-m', 'fix: accept a contributor change'], {
@@ -161,7 +179,7 @@ test('an unrelated remote branch does not exempt an invalid local commit', async
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-untrusted-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
-  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify({ name: 'account', email: 'account@example.invalid' }));
+  await configureIdentity(dir, { name: 'account', email: 'account@example.invalid' });
   await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
   const session = await sessionIn(dir, 'untrusted-identity');
   await execFileAsync('git', ['commit', '--allow-empty', '-m', 'fix: retain local identity'], {
@@ -176,7 +194,7 @@ test('a fetched default-branch commit still requires an English message', async 
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-remote-message-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
-  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify({ name: 'account', email: 'account@example.invalid' }));
+  await configureIdentity(dir, { name: 'account', email: 'account@example.invalid' });
   await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
   const session = await sessionIn(dir, 'remote-message');
   await execFileAsync('git', ['commit', '--allow-empty', '-m', '修复问题'], {
@@ -187,20 +205,18 @@ test('a fetched default-branch commit still requires an English message', async 
   await assert.rejects(gitMergeBack(dir, session), /必须使用英文/);
 });
 
-test('merge keeps the target identity policy when the source checkout changes its policy', async t => {
+test('a tracked legacy policy cannot override the local Git identity', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-target-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
-  await fsp.writeFile(path.join(dir.path, 'commit-policy.json'), JSON.stringify({ name: 'account', email: 'account@example.invalid' }));
+  await configureIdentity(dir, { name: 'account', email: 'account@example.invalid' });
   await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
-  const baseHead = await git(dir.path, ['rev-parse', 'HEAD']);
   const session = await sessionIn(dir, 'changed-policy');
   await fsp.writeFile(path.join(session.worktreePath, 'commit-policy.json'), JSON.stringify({ name: 'bot', email: 'bot@example.invalid' }));
   await gitWorktreeCommitAll(session.worktreePath, 'chore: change project commit identity');
   const sourceHead = await git(session.worktreePath, ['rev-parse', 'HEAD']);
-  await assert.rejects(gitMergeBack(dir, session), /作者与提交者必须统一/);
-  assert.equal(await git(dir.path, ['rev-parse', 'HEAD']), baseHead);
-  assert.equal(await git(session.worktreePath, ['rev-parse', 'HEAD']), sourceHead);
+  assert.equal(await git(session.worktreePath, ['show', '-s', '--format=%ae|%ce', sourceHead]), 'account@example.invalid|account@example.invalid');
+  assert.equal((await gitMergeBack(dir, session)).ok, true);
 });
 
 test('write operations treat a reclaimed worktree as unavailable without spawning git', async () => {

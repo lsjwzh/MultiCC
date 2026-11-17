@@ -10,7 +10,7 @@ const { execFileSync } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const current = require('../src/task-routing/code-revision');
 const legacy = require('../tests/helpers/legacy-code-revision');
-const identity = require('../commit-policy.json');
+const identity = { name: 'MultiCC Test', email: 'test@multicc.invalid' };
 
 async function main() {
   const temporary = process.argv[2] ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-release-bench-'));
