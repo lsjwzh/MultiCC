@@ -58,6 +58,7 @@ test('tag releases use the manifest core tier instead of the legacy full suite',
   const installGate = pkg.scripts && pkg.scripts['test:install'];
   const releaseGate = pkg.scripts && pkg.scripts['test:release'];
   assert.match(String(coreGate || ''), /npm run test:tiers:check/);
+  assert.match(String(coreGate || ''), /cargo build .*--bin restart-supervisor --bin multicc-gateway/);
   assert.match(String(coreGate || ''), /node scripts\/run-test-tier\.js core/);
   assert.equal(installGate, 'npm run test:release:clean-install');
   assert.equal(releaseGate, 'npm run test:release:core && npm run test:install');
@@ -666,14 +667,16 @@ test('core runner covers every selected path and expands declared variants', () 
   // 挂进 npm:test:governance。同批的 tests/test-provider-id-validation-differential.js 需要原生模块，
   // 登记为 flow isolated（npm:test:rust），不进 core 集，所以这里只 +1。
   // 456 + 1 = 457 entries, 381 + 1 = 382 deterministic, 428 + 1 = 429 commands。
-  assert.equal(core.length, 457, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 457);
+  // Restart supervisor and real-server checks use isolated processes and the
+  // debug binaries built by test:release:core before the manifest runner.
+  assert.equal(core.length, 459, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 459);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
   assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 382);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 44);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 46);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
@@ -682,8 +685,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 429,
-    '423 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 431,
+    '425 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
@@ -724,12 +727,12 @@ test('desktop Rust paths are initialized after runner allocation', () => {
   }
 });
 
-test('release publishing uses validated English notes from the tagged changelog', () => {
+test('release publishing extracts notes from the tagged changelog without a language gate', () => {
   const workflow = read('.github/workflows/desktop-release.yml');
   assert.doesNotMatch(workflow, /--generate-notes/);
-  assert.match(workflow, /publication-policy -- release-notes "\$GITHUB_REF_NAME" CHANGELOG\.md/);
+  assert.match(workflow, /--bin release-notes -- "\$GITHUB_REF_NAME" CHANGELOG\.md/);
   assert.match(workflow, /gh release create[^\n]+--notes-file "\$RUNNER_TEMP\/release-notes\.md"/);
   assert.match(workflow, /gh release edit[^\n]+--notes-file "\$RUNNER_TEMP\/release-notes\.md"/);
-  assert.match(read('.github/workflows/core-tests.yml'), /publication-policy -- release-notes/);
-  assert.match(read('.github/workflows/ci.yml'), /publication-policy -- ci-commits/);
+  assert.match(read('.github/workflows/core-tests.yml'), /--bin release-notes --/);
+  assert.doesNotMatch(read('.github/workflows/ci.yml'), /publication-policy|ci-commits/);
 });

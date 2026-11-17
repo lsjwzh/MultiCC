@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const stateStore = require('../../src/state/store');
 const { ensureSampleWorkspace } = require('../../src/directory/sample-workspace');
-const { quickCommitMessage } = require('../../src/git/publication-policy');
+const { quickCommitMessage } = require('../../src/git/default-commit-message');
 
 
 // UI layout — the manual, drag-and-drop order the user chose for the directory

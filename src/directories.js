@@ -218,10 +218,7 @@ function dirReasonFix(reason) {
   // matching command pre-filled instead of a one-shot endpoint, because the
   // install command depends on the host's package manager.
   if (reason.includes('spawn git ENOENT')) return 'fix-git-missing';
-  // The Rust commit gate (native/core/src/publication_identity.rs) words three
-  // failures: the suffixed one (unset) and the invalid one are about the
-  // identity, while the bare "无法读取 Git 提交身份配置" means git itself could
-  // not be spawned.
+  // Continue to recognize identity errors reported by older installations.
   if (reason.includes('请设置 user.name 和 user.email') || reason.includes('Git 提交身份配置无效')) {
     return 'fix-git-identity';
   }

@@ -210,7 +210,7 @@ function createDirectoryHost(rawDeps = {}) {
     const dir = findDir(id);
     if (!dir) return { error: 'directory not found' };
     try {
-      const { quickCommitMessage } = require('../git/publication-policy');
+      const { quickCommitMessage } = require('../git/default-commit-message');
       return { message: await quickCommitMessage(await git.statusPorcelain(dir.path)) };
     } catch (e) {
       return { error: e.message };

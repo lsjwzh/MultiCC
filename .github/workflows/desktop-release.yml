@@ -577,10 +577,10 @@ jobs:
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
-      - name: Prepare canonical English release notes
+      - name: Prepare release notes
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/publication-policy-target
-        run: cargo run --locked --quiet --manifest-path native/Cargo.toml -p multicc-core --bin publication-policy -- release-notes "$GITHUB_REF_NAME" CHANGELOG.md "$RUNNER_TEMP/release-notes.md"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/release-notes-target
+        run: cargo run --locked --quiet --manifest-path native/Cargo.toml -p multicc-core --bin release-notes -- "$GITHUB_REF_NAME" CHANGELOG.md "$RUNNER_TEMP/release-notes.md"
 
       - name: 校验发布标签与主分支
         shell: bash

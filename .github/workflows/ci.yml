@@ -9,27 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  publication-language:
-    name: English commit messages
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Test publication policy
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/publication-policy-target
-        run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-core publication
-      - name: Validate new commit messages
-        env:
-          CI_POLICY_BASE: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
-          CI_POLICY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          CI_POLICY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          CARGO_TARGET_DIR: ${{ runner.temp }}/publication-policy-target
-        run: cargo run --locked --quiet --manifest-path native/Cargo.toml -p multicc-core --bin publication-policy -- ci-commits
-
   deterministic:
     name: Node ${{ matrix.node }} deterministic + storage runtime smoke
     runs-on: ubuntu-latest
