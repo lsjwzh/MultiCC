@@ -46,8 +46,7 @@ const ROOT_PACKAGE_MANAGERS = new Set(['dnf', 'yum', 'apt', 'apk', 'pacman', 'zy
 // Ordered by preference within each family; the first one present on PATH wins.
 const LINUX_PM_ORDER = Object.freeze(['dnf', 'yum', 'apt-get', 'apk', 'pacman', 'zypper', 'brew']);
 const DEFAULT_IDENTITY = Object.freeze({ name: 'multicc', email: 'multicc@local' });
-// Mirrors validate() in native/core/src/publication_identity.rs: a value the
-// commit gate rejects must not show as configured here.
+// Historical behavior retained as the differential test fixture.
 const BAD_IDENTITY_CHARS = /[\u0000-\u001f\u007f-\u009f<>]/;
 
 function homeDir() {

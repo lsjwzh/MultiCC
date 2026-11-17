@@ -1,7 +1,7 @@
 //! Best-effort synchronization before a restored workspace is handed to a runner.
 //! The caller holds the repository actor lease for the entire operation.
 
-use crate::publication_identity;
+use crate::git_history;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -196,11 +196,10 @@ pub fn synchronize(
         return skip("wake_sync_unrelated_history");
     }
     // Never rewrite remote commits during an automatic rebase.
-    let (all, local) =
-        match publication_identity::count_range(worktree, &format!("{base_oid}..HEAD")) {
-            Ok(counts) => counts,
-            Err(_) => return skip("wake_sync_git_failed"),
-        };
+    let (all, local) = match git_history::count_range(worktree, &format!("{base_oid}..HEAD")) {
+        Ok(counts) => counts,
+        Err(_) => return skip("wake_sync_git_failed"),
+    };
     // Rebase would rewrite remote commits that are not already in the base.
     // Leave them for an explicit history-preserving merge instead.
     if all != local {
