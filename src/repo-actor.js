@@ -5,7 +5,6 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
-const { gitCommitEnvironment } = require('./git/publication-policy');
 const portableGit = require('./portable-git');
 
 // Everything that runs git in this process resolves a bare `git` through PATH,
@@ -143,7 +142,6 @@ class RepoActor {
       const execGit = async (cwd, args, execOptions = {}) => {
         progress('git', { cwd, args: [...args] });
         try {
-          const identityEnv = await gitCommitEnvironment(cwd, args);
           const result = await this.execFile('git', args, {
             windowsHide: true,
             cwd,
@@ -152,7 +150,7 @@ class RepoActor {
             maxBuffer: execOptions.maxBuffer || DEFAULT_MAX_BUFFER,
             killSignal: 'SIGKILL',
             // PATH is read per call: the one-click git install extends it at runtime.
-            env: { ...NONINTERACTIVE_ENV, PATH: process.env.PATH, ...(execOptions.env || {}), ...identityEnv },
+            env: { ...NONINTERACTIVE_ENV, PATH: process.env.PATH, ...(execOptions.env || {}) },
           });
           return execOptions.raw === true ? String(result.stdout || '') : String(result.stdout || '').trim();
         } catch (error) {

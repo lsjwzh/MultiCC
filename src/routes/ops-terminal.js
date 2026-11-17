@@ -46,9 +46,6 @@ const ROOT_PACKAGE_MANAGERS = new Set(['dnf', 'yum', 'apt', 'apk', 'pacman', 'zy
 // Ordered by preference within each family; the first one present on PATH wins.
 const LINUX_PM_ORDER = Object.freeze(['dnf', 'yum', 'apt-get', 'apk', 'pacman', 'zypper', 'brew']);
 const DEFAULT_IDENTITY = Object.freeze({ name: 'multicc', email: 'multicc@local' });
-// Mirrors validate() in native/core/src/publication_identity.rs: a value the
-// commit gate rejects must not show as configured here.
-const BAD_IDENTITY_CHARS = /[\u0000-\u001f\u007f-\u009f<>]/;
 
 function homeDir() {
   return process.env.HOME || process.env.USERPROFILE || undefined;
@@ -117,7 +114,7 @@ async function execShell(command) {
 }
 
 const firstLine = (result) => (result.code === 0 ? String(result.stdout || '').trim().split('\n')[0].trim() : '');
-const identityPartValid = (value, isEmail) => !!value && !BAD_IDENTITY_CHARS.test(value) && (!isEmail || value.includes('@'));
+const identityPartValid = value => !!value;
 
 // Node's Windows process adapter: pass the executable and argv separately.
 // cmd.exe reparses quotes around Program Files paths and can report a working

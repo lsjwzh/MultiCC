@@ -90,13 +90,13 @@ test('passwordless sudo turns the install into a runnable non-interactive comman
     'every step of a chained install is elevated');
 });
 
-test('identity validity mirrors the Rust commit gate, not mere presence', async () => {
+test('identity status reports configured values without imposing an email format', async () => {
   const noAt = await env(linuxHost({ email: 'ops' }));
-  assert.equal(noAt.identity.valid, false, 'an email without @ is rejected by publication_identity.rs');
-  assert.equal(noAt.suggestions.identity, 'git config --global user.email "multicc@local"', 'only the bad half is replaced');
+  assert.equal(noAt.identity.valid, true);
+  assert.equal(noAt.suggestions.identity, null);
   const angle = await env(linuxHost({ name: 'ops <bot>' }));
-  assert.equal(angle.identity.valid, false);
-  assert.equal(angle.suggestions.identity, 'git config --global user.name "multicc"');
+  assert.equal(angle.identity.valid, true);
+  assert.equal(angle.suggestions.identity, null);
   const unset = await env(linuxHost({ name: null }));
   assert.equal(unset.identity.valid, false);
 });

@@ -365,13 +365,7 @@ function createDirectoryHost(rawDeps = {}) {
         return commitDefaultMessage(body.id);
 
       case 'commit-validate':
-        try {
-          const { validateCommitMessage } = require('../git/publication-policy');
-          await validateCommitMessage(String(body.message));
-          return { ok: true };
-        } catch (e) {
-          return { error: e.message };
-        }
+        return { ok: true };
 
       case 'commit-run':
         return commitRun(body.id, body.message);

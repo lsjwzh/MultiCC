@@ -48,7 +48,6 @@ async function sessionIn(dir, id) {
 async function configureIdentity(dir, identity) {
   await git(dir.path, ['config', '--local', 'user.name', identity.name]);
   await git(dir.path, ['config', '--local', 'user.email', identity.email]);
-  await git(dir.path, ['config', '--local', 'multicc.commitPolicyEmail', identity.email]);
 }
 
 test('without a local policy, another repository uses its own Git identity', async t => {
@@ -63,56 +62,61 @@ test('without a local policy, another repository uses its own Git identity', asy
     'MultiCC Test|test@multicc.local|MultiCC Test|test@multicc.local');
 });
 
-test('commit-all refuses a non-English body before staging or moving HEAD', async t => {
+test('Git accepts a configured email without an additional MultiCC format check', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-configured-email-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  await git(dir.path, ['config', 'user.email', 'local-account']);
+  await gitRun(dir.path, ['commit', '--allow-empty', '-m', 'fix: use the configured Git email']);
+  assert.equal(await git(dir.path, ['log', '-1', '--format=%ae|%ce']), 'local-account|local-account');
+});
+
+test('commit-all preserves a user-provided non-English message', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-english-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
-  const before = await git(dir.path, ['rev-parse', 'HEAD']);
   await fsp.writeFile(path.join(dir.path, 'app.js'), 'module.exports = 2;\n');
-  await assert.rejects(gitWorktreeCommitAll(dir.path, 'fix(chat): restore delivery\n\n中文正文'), /必须使用英文/);
-  assert.equal(await git(dir.path, ['rev-parse', 'HEAD']), before);
-  assert.equal(await git(dir.path, ['diff', '--cached', '--name-only']), '');
-  assert.equal(await gitWorktreeCommitAll(dir.path, 'fix(chat): restore delivery\n\nPreserve queued messages.'), true);
+  assert.equal(await gitWorktreeCommitAll(dir.path, '修复消息\n\n中文正文'), true);
+  assert.equal(await git(dir.path, ['log', '-1', '--format=%B']), '修复消息\n\n中文正文');
 });
 
-test('merge-back checks agent-authored messages and leaves both worktrees intact on rejection', async t => {
+test('merge-back accepts agent-authored messages in any language', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-merge-english-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
   const session = await sessionIn(dir, 'english-guard');
-  const baseHead = await git(dir.path, ['rev-parse', 'HEAD']);
   await fsp.writeFile(path.join(session.worktreePath, 'app.js'), 'module.exports = 2;\n');
   await git(session.worktreePath, ['add', '-A']);
-  // Deliberate invalid fixture: raw Agent Git calls do not use the host helper.
-  await git(session.worktreePath, ['commit', '-m', 'fix(chat): restore delivery\n\n中文正文']);
+  await git(session.worktreePath, ['commit', '-m', '修复消息\n\n中文正文']);
   const sourceHead = await git(session.worktreePath, ['rev-parse', 'HEAD']);
-  await fsp.writeFile(path.join(session.worktreePath, 'pending.txt'), 'pending\n');
-  await assert.rejects(gitMergeBack(dir, session), /必须使用英文/);
-  assert.equal(await git(dir.path, ['rev-parse', 'HEAD']), baseHead);
-  assert.equal(await git(session.worktreePath, ['rev-parse', 'HEAD']), sourceHead);
-  assert.equal(await fsp.readFile(path.join(session.worktreePath, 'pending.txt'), 'utf8'), 'pending\n');
+  assert.equal((await gitMergeBack(dir, session)).ok, true);
+  assert.equal(await git(dir.path, ['show', '-s', '--format=%B', sourceHead]), '修复消息\n\n中文正文');
 });
 
-test('an empty incoming commit message cannot bypass the English guard', async t => {
+test('merge-back preserves an existing empty-message commit', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-empty-message-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
   const session = await sessionIn(dir, 'empty-message');
   await git(session.worktreePath, ['commit', '--allow-empty', '--allow-empty-message', '-m', '']);
-  await assert.rejects(gitMergeBack(dir, session), /不能为空/);
+  assert.equal((await gitMergeBack(dir, session)).ok, true);
 });
 
-test('missing Rust publication support fails closed instead of accepting unchecked text', async () => {
-  const script = `require('./src/git/publication-policy').validateCommitMessage('fix: restore delivery')
-    .then(() => process.exit(2), error => { if (!error.message.includes('校验模块不可用')) process.exit(3); });`;
-  const result = await execFileAsync(process.execPath, ['-e', script], {
+test('a user-provided commit message works without the default message generator', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-no-message-generator-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  await fsp.writeFile(path.join(dir.path, 'app.js'), 'module.exports = 2;\n');
+  const script = `require('./src/git/service').gitWorktreeCommitAll(process.argv[1], '本地提交')
+    .then(ok => process.exit(ok ? 0 : 2), () => process.exit(3));`;
+  const result = await execFileAsync(process.execPath, ['-e', script, dir.path], {
     cwd: path.resolve(__dirname, '..'),
     env: { ...process.env, MULTICC_RUST_ADDON: path.join(os.tmpdir(), 'missing-publication-addon.node') },
   });
   assert.equal(result.stderr, '');
 });
 
-test('local policy fixes author and committer despite environment and CLI overrides', async t => {
+test('Git identity follows explicit environment and command options', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-commit-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
@@ -124,35 +128,35 @@ test('local policy fixes author and committer despite environment and CLI overri
     env: { GIT_AUTHOR_NAME: 'leaked', GIT_AUTHOR_EMAIL: 'leaked@local', GIT_COMMITTER_NAME: 'leaked', GIT_COMMITTER_EMAIL: 'leaked@local' },
   });
   assert.equal(await git(dir.path, ['log', '-1', '--format=%an|%ae|%cn|%ce']),
-    'account|account@example.invalid|account|account@example.invalid');
+    'leaked|leaked@local|leaked|leaked@local');
+  await gitRun(dir.path, ['-c', 'user.name=bot', '-c', 'user.email=bot@local', 'commit', '--allow-empty', '-m', 'fix: preserve Git arguments']);
+  assert.equal(await git(dir.path, ['log', '-1', '--format=%an|%ae|%cn|%ce']), 'bot|bot@local|bot|bot@local');
   const session = await sessionIn(dir, 'identity-merge');
   await fsp.writeFile(path.join(session.worktreePath, 'app.js'), 'module.exports = 3;\n');
   const result = await gitMergeBack(dir, session);
   assert.equal(result.ok, true);
-  const identities = await git(dir.path, ['log', '-2', '--format=%an|%ae|%cn|%ce']);
-  assert.deepEqual(identities.split('\n'), Array(2).fill('account|account@example.invalid|account|account@example.invalid'));
+  const identity = await git(dir.path, ['log', '-1', '--format=%an|%ae|%cn|%ce']);
+  assert.equal(identity, 'account|account@example.invalid|account|account@example.invalid');
 });
 
-test('merge refuses an English commit with the wrong committer instead of rewriting history', async t => {
+test('merge preserves different author and committer identities', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-reject-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
   const policy = { name: 'account', email: 'account@example.invalid' };
   await configureIdentity(dir, policy);
   await gitWorktreeCommitAll(dir.path, 'chore: configure project commit identity');
-  const baseHead = await git(dir.path, ['rev-parse', 'HEAD']);
   const session = await sessionIn(dir, 'wrong-committer');
   await execFileAsync('git', ['commit', '--allow-empty', '-m', 'fix: preserve queued messages'], {
     cwd: session.worktreePath,
     env: { ...process.env, GIT_AUTHOR_NAME: 'account', GIT_AUTHOR_EMAIL: 'account@example.invalid', GIT_COMMITTER_NAME: 'bot', GIT_COMMITTER_EMAIL: 'bot@local' },
   });
   const sourceHead = await git(session.worktreePath, ['rev-parse', 'HEAD']);
-  await assert.rejects(gitMergeBack(dir, session), /作者与提交者必须统一/);
-  assert.equal(await git(dir.path, ['rev-parse', 'HEAD']), baseHead);
-  assert.equal(await git(session.worktreePath, ['rev-parse', 'HEAD']), sourceHead);
+  assert.equal((await gitMergeBack(dir, session)).ok, true);
+  assert.equal(await git(dir.path, ['show', '-s', '--format=%ae|%ce', sourceHead]), 'account@example.invalid|bot@local');
 });
 
-test('merge preserves the identity of fetched default-branch commits while checking local commits', async t => {
+test('merge preserves fetched and local commit identities', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-remote-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
@@ -175,7 +179,7 @@ test('merge preserves the identity of fetched default-branch commits while check
     'contributor|contributor@example.invalid|GitHub|noreply@github.com');
 });
 
-test('an unrelated remote branch does not exempt an invalid local commit', async t => {
+test('merge does not reject local commits because of their identity', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-untrusted-identity-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
@@ -187,10 +191,10 @@ test('an unrelated remote branch does not exempt an invalid local commit', async
     env: { ...process.env, GIT_AUTHOR_NAME: 'bot', GIT_AUTHOR_EMAIL: 'bot@example.invalid', GIT_COMMITTER_NAME: 'bot', GIT_COMMITTER_EMAIL: 'bot@example.invalid' },
   });
   await git(dir.path, ['update-ref', 'refs/remotes/origin/feature', await git(session.worktreePath, ['rev-parse', 'HEAD'])]);
-  await assert.rejects(gitMergeBack(dir, session), /作者与提交者必须统一/);
+  assert.equal((await gitMergeBack(dir, session)).ok, true);
 });
 
-test('a fetched default-branch commit still requires an English message', async t => {
+test('a fetched default-branch commit may use a non-English message', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-remote-message-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
@@ -202,7 +206,7 @@ test('a fetched default-branch commit still requires an English message', async 
     env: { ...process.env, GIT_AUTHOR_NAME: 'contributor', GIT_AUTHOR_EMAIL: 'contributor@example.invalid', GIT_COMMITTER_NAME: 'GitHub', GIT_COMMITTER_EMAIL: 'noreply@github.com' },
   });
   await git(dir.path, ['update-ref', 'refs/remotes/origin/main', await git(session.worktreePath, ['rev-parse', 'HEAD'])]);
-  await assert.rejects(gitMergeBack(dir, session), /必须使用英文/);
+  assert.equal((await gitMergeBack(dir, session)).ok, true);
 });
 
 test('a tracked legacy policy cannot override the local Git identity', async t => {
