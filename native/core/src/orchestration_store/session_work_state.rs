@@ -494,7 +494,14 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
     };
     validate_encoded(&encoded)?;
     let mut pending = record::parse(&encoded.pending_question_json)?;
-    let active = record::parse(&encoded.active_turn_json)?;
+    let stored_active = record::parse(&encoded.active_turn_json)?;
+    // Until turn ownership moves to this store, the synchronous caller must be
+    // able to provide the live turn it observed for the record guard. Do not
+    // silently replace the separately owned active-turn snapshot here.
+    let active = request
+        .get("liveActiveTurn")
+        .cloned()
+        .unwrap_or(stored_active);
     let mut category = match record::parse(&encoded.category_json)? {
         value @ JsValue::Object(_) => value,
         JsValue::Null => JsValue::Object(vec![]),
@@ -505,6 +512,182 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
         JsValue::Number(value) if value.is_finite() => JsValue::Number(value),
         _ => return Err(err("question transition requires clock")),
     };
+    if action == JsValue::string("move") {
+        let target_id = match field(&request, "targetSessionId") {
+            JsValue::String(value) if value.is_well_formed() && !value.is_empty() => {
+                value.to_string_lossy()
+            }
+            _ => return Err(err("question move requires targetSessionId")),
+        };
+        if target_id == id {
+            return Ok(json!({"result":{"ok":false,"code":"invalid_move"}}));
+        }
+        if !truthy(&pending) || field(&pending, "resolved") == JsValue::Bool(true) {
+            return Ok(
+                json!({"result":{"ok":false,"code":if truthy(&pending) {"already_resolved"} else {"no_pending_request"}}}),
+            );
+        }
+        let requested_turn = field(&request, "turnId");
+        let current_turn = field(&pending, "turnId");
+        if truthy(&requested_turn) && truthy(&current_turn) && requested_turn != current_turn {
+            return Ok(json!({"result":{"ok":false,"code":"turn_mismatch"}}));
+        }
+        let target_version = match field(&request, "targetExpectedVersion") {
+            JsValue::Number(value)
+                if value.is_finite()
+                    && value >= 0.0
+                    && value.fract() == 0.0
+                    && value <= MAX_VERSION as f64 =>
+            {
+                value as u64
+            }
+            _ => return Err(err("question move requires targetExpectedVersion")),
+        };
+        let target = snapshot_in_write_transaction(&tx, &target_id)?;
+        if target["version"].as_u64() != Some(target_version) {
+            return Err(err("session work state version conflict"));
+        }
+        let mut target_encoded = if target["exists"] == true {
+            serde_json::from_value::<EncodedState>(json!({
+                "pendingQuestionJson":target["pendingQuestionJson"], "activeTurnJson":target["activeTurnJson"],
+                "categoryJson":target["categoryJson"]
+            })).map_err(err)?
+        } else {
+            let initial = field(&request, "targetInitialState");
+            if !matches!(initial, JsValue::Object(_)) {
+                return Err(err("question move requires a trusted target snapshot"));
+            }
+            let required = |name: &str| -> Result<String> {
+                record::encode(
+                    initial
+                        .get(name)
+                        .ok_or_else(|| err(format!("target snapshot requires {name}")))?,
+                )
+            };
+            EncodedState {
+                pending_question_json: required("pendingQuestion")?,
+                active_turn_json: required("activeTurn")?,
+                category_json: required("category")?,
+            }
+        };
+        validate_encoded(&target_encoded)?;
+        let target_pending = record::parse(&target_encoded.pending_question_json)?;
+        if truthy(&target_pending) && field(&target_pending, "resolved") != JsValue::Bool(true) {
+            return Ok(json!({"result":{"ok":false,"code":"target_already_pending"}}));
+        }
+        let mut target_category = match record::parse(&target_encoded.category_json)? {
+            value @ JsValue::Object(_) => value,
+            JsValue::Null => JsValue::Object(vec![]),
+            value @ JsValue::String(_) => JsValue::object(vec![("classifyState", value)]),
+            _ => return Err(err("invalid session work category")),
+        };
+        let original = pending.clone();
+        let request_id = field(&pending, "requestId");
+        let source_task = nullish(field(&pending, "taskId"));
+        put(&mut pending, "resolved", JsValue::Bool(true))?;
+        put(&mut pending, "resolvedAt", at.clone())?;
+        put(&mut pending, "resolution", JsValue::string("moved"))?;
+        put(
+            &mut pending,
+            "movedToSessionId",
+            JsValue::string(&target_id),
+        )?;
+        put(
+            &mut category,
+            "lastResolvedUserInput",
+            JsValue::object(vec![
+                ("requestId", request_id.clone()),
+                ("at", at.clone()),
+                ("taskId", source_task.clone()),
+                ("resolution", JsValue::string("moved")),
+            ]),
+        )?;
+        put(
+            &mut category,
+            "userInputSignalVersion",
+            JsValue::Number(1.0),
+        )?;
+        let task = field(&request, "taskId");
+        let selected_task = if truthy(&task) {
+            task
+        } else {
+            or_null(field(&original, "taskId"))
+        };
+        let reason = field(&original, "reason");
+        let options = field(&original, "options");
+        let created_at = field(&original, "createdAt");
+        let mut moved = JsValue::object(vec![
+            ("requestId", request_id.clone()),
+            ("turnId", or_null(current_turn.clone())),
+            ("taskId", selected_task),
+            ("question", field(&original, "question")),
+            (
+                "reason",
+                if truthy(&reason) {
+                    reason
+                } else {
+                    JsValue::string("")
+                },
+            ),
+            (
+                "options",
+                if matches!(options, JsValue::Array(_)) {
+                    options
+                } else {
+                    JsValue::Array(vec![])
+                },
+            ),
+            (
+                "allowMultiple",
+                JsValue::Bool(field(&original, "allowMultiple") == JsValue::Bool(true)),
+            ),
+            (
+                "createdAt",
+                if truthy(&created_at) {
+                    created_at
+                } else {
+                    at.clone()
+                },
+            ),
+            ("resolved", JsValue::Bool(false)),
+            ("movedFromSessionId", JsValue::string(&id)),
+        ]);
+        let secret = field(&original, "secretName");
+        if field(&original, "inputType") == JsValue::string("secret") && truthy(&secret) {
+            put(&mut moved, "inputType", JsValue::string("secret"))?;
+            put(
+                &mut moved,
+                "secretName",
+                JsValue::String(js_to_string(&secret)),
+            )?;
+        }
+        if truthy(&current_turn) {
+            put(&mut target_category, "userInputSignalTurnId", current_turn)?;
+        }
+        put(
+            &mut target_category,
+            "userInputSignalVersion",
+            JsValue::Number(1.0),
+        )?;
+        put(&mut target_category, "classifyState", JsValue::string("W"))?;
+        encoded.pending_question_json = record::encode(&pending)?;
+        encoded.category_json = record::encode(&category)?;
+        target_encoded.pending_question_json = record::encode(&moved)?;
+        target_encoded.category_json = record::encode(&target_category)?;
+        let saved = write_in_transaction(&tx, &id, expected, &encoded)?;
+        let target_saved = write_in_transaction(&tx, &target_id, target_version, &target_encoded)?;
+        let notification = record::encode(&JsValue::object(vec![
+            ("type", JsValue::string("user_input_resolved")),
+            ("requestId", request_id),
+            ("taskId", source_task),
+            ("resolution", JsValue::string("moved")),
+        ]))?;
+        tx.commit().map_err(err)?;
+        return Ok(
+            json!({"result":{"ok":true},"snapshot":saved,"targetSnapshot":target_saved,
+            "notificationJson":notification,"questionJson":record::encode(&original)?}),
+        );
+    }
     let mut notification = JsValue::Null;
     let result;
     if action == JsValue::string("record") {
@@ -854,6 +1037,87 @@ mod tests {
     fn update(id: &str, version: u64, category: Value) -> Value {
         json!({"sessionId":id,"expectedVersion":version,"pendingQuestion":{"requestId":"r"},
             "activeTurn":{"turnId":"t"},"category":category})
+    }
+
+    #[test]
+    fn question_move_commits_both_sessions_or_neither() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init(&connection);
+        write(&mut connection, &json!({"updates":[
+            {"sessionId":"source","expectedVersion":0,"pendingQuestion":{
+                "requestId":"q","turnId":"t","taskId":"old","question":"Q",
+                "options":["yes"],"createdAt":5,"resolved":false},"activeTurn":null,"category":"W"},
+            {"sessionId":"target","expectedVersion":0,"pendingQuestion":null,"activeTurn":null,"category":null}
+        ]})).unwrap();
+        let request = |source_version: u64, target_version: u64| {
+            json!({"requestJson":json!({
+            "action":"move","sessionId":"source","expectedVersion":source_version,
+            "targetSessionId":"target","targetExpectedVersion":target_version,
+            "turnId":"t","taskId":"new","at":10
+        }).to_string()})
+        };
+        let mismatch = json!({"requestJson":json!({"action":"move","sessionId":"source",
+            "expectedVersion":1,"targetSessionId":"target","targetExpectedVersion":0,
+            "turnId":"other","at":10}).to_string()});
+        assert_eq!(
+            question_transition(&mut connection, &mismatch).unwrap()["result"]["code"],
+            "turn_mismatch"
+        );
+        assert!(question_transition(&mut connection, &request(1, 0))
+            .unwrap_err()
+            .contains("version conflict"));
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"source"})).unwrap()["version"],
+            1
+        );
+        connection
+            .execute(
+                "UPDATE orchestration_session_work_state SET version=?1 WHERE session_id='target'",
+                [MAX_VERSION],
+            )
+            .unwrap();
+        assert!(question_transition(&mut connection, &request(1, MAX_VERSION)).is_err());
+        let source = read(&connection, &json!({"sessionId":"source"})).unwrap();
+        assert_eq!(source["version"], 1);
+        assert_eq!(source["pendingQuestion"]["resolved"], false);
+        connection
+            .execute(
+                "UPDATE orchestration_session_work_state SET version=1 WHERE session_id='target'",
+                [],
+            )
+            .unwrap();
+        let result = question_transition(&mut connection, &request(1, 1)).unwrap();
+        assert_eq!(result["result"]["ok"], true);
+        let source = read(&connection, &json!({"sessionId":"source"})).unwrap();
+        let target = read(&connection, &json!({"sessionId":"target"})).unwrap();
+        assert_eq!(source["pendingQuestion"]["resolution"], "moved");
+        assert_eq!(
+            source["category"]["lastResolvedUserInput"]["requestId"],
+            "q"
+        );
+        assert_eq!(target["pendingQuestion"]["requestId"], "q");
+        assert_eq!(target["pendingQuestion"]["taskId"], "new");
+        assert_eq!(target["pendingQuestion"]["movedFromSessionId"], "source");
+        assert_eq!(target["category"]["userInputSignalTurnId"], "t");
+        assert_eq!(target["category"]["classifyState"], "W");
+        assert_eq!(
+            (source["version"].as_u64(), target["version"].as_u64()),
+            (Some(2), Some(2))
+        );
+        let notice: Value =
+            serde_json::from_str(result["notificationJson"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            notice,
+            json!({"type":"user_input_resolved","requestId":"q",
+            "taskId":"old","resolution":"moved"})
+        );
+        // The source guard runs before target lookup, like the legacy host.
+        let replay = question_transition(&mut connection, &request(2, 1)).unwrap();
+        assert_eq!(replay["result"]["code"], "already_resolved");
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"target"})).unwrap(),
+            target
+        );
     }
 
     #[test]
