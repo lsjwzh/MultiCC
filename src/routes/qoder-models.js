@@ -68,7 +68,7 @@ function listQoderModels(callback, opts = {}) {
     return setImmediate(() => callback(null, cache.models, 'cache'));
   }
   const bin = resolveQoderBin();
-  execFile(bin, ['--list-models'], { timeout: QODER_TIMEOUT_MS, maxBuffer: 256 * 1024 }, (err, stdout) => {
+  execFile(bin, ['--list-models'], { windowsHide: true, timeout: QODER_TIMEOUT_MS, maxBuffer: 256 * 1024 }, (err, stdout) => {
     const models = err ? [] : parseQoderStdout(stdout);
     if (models.length) {
       cache = { at: Date.now(), models };

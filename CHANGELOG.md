@@ -18,6 +18,8 @@ All notable changes to MultiCC are documented in this file.
 - Ignore the local provider limit cache migration lock when checking repository changes.
 - Open the newly created provider-limit cache with write access when flushing it, avoiding Windows access-denied failures.
 
+- Hide the console window of background child processes on Windows. Node's `spawn`/`execFile` default to `windowsHide: false`, so each CLI launch, git invocation and version probe flashed a console window onto the desktop and stole no focus but remained visible; the host CLI spawn in `router-tool-host.js` is the path an ordinary turn takes, which made the flashes track normal usage. Set `windowsHide: true` on the Windows-relevant background spawns, covering the Claude and Codex CLI launch, repository git access, CDP, Qoder, Ark and model-list probes, doctor checks, the bash tools host, battery and tunnel helpers. POSIX-only `/bin/sh` helpers, the macOS agent provisioner and interactive login flows are left unchanged, since a login window must stay visible.
+
 ## v2.21.0 — Relay balances, terminal provider sync, and resilient presets (2026-11-13)
 
 - Discover balance APIs on supported third-party relay panels, including new-api, sub2api, legacy billing endpoints, and the common user-balance endpoint. Cache the detected panel and distinguish account balances from token balances. Unlimited-token markers and HTML error pages are not reported as usable balances.

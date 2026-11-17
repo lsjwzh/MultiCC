@@ -25,7 +25,7 @@ function createGitTrackPort({ run } = {}) {
   const exec = run || ((dirPath, relPath) => new Promise((resolve) => {
     execFile(
       'git', ['-C', dirPath, 'ls-files', '--', relPath],
-      { encoding: 'utf8', timeout: 10000 },
+      { windowsHide: true, encoding: 'utf8', timeout: 10000 },
       (error, stdout, stderr) => resolve({ error, stdout, stderr }),
     );
   }));

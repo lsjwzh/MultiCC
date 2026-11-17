@@ -55,7 +55,7 @@ const clip = (text, max = OUT_MAX) => {
 
 function execArgv(argv, cwd) {
   return new Promise(resolve => {
-    execFile(argv[0], argv.slice(1), { cwd, timeout: 15000, maxBuffer: 1024 * 1024,
+    execFile(argv[0], argv.slice(1), { windowsHide: true, cwd, timeout: 15000, maxBuffer: 1024 * 1024,
       env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' } },
     (err, stdout, stderr) => resolve({ code: err ? (typeof err.code === 'number' ? err.code : 127) : 0,
       stdout: String(stdout || ''), stderr: String(stderr || '') || (err && !stderr ? err.message : '') }));

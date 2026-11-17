@@ -281,7 +281,7 @@ function createRouterToolHost({
       // Group leader on POSIX: the writer lease taken before this spawn is
       // released only once the child's whole process group is gone, covering
       // background descendants the CLI spawns without telling the host.
-      proc = spawn(command, args, { cwd, env, ...writerGroup.detachedSpawn(), stdio: ['ignore', 'pipe', 'pipe'] });
+      proc = spawn(command, args, { cwd, env, windowsHide: true, ...writerGroup.detachedSpawn(), stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
       processCapability?.revoke();
       throw error;

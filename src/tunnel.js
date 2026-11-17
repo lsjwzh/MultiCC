@@ -432,7 +432,7 @@ function probe(url) {
 
 function execShell(cmd, args) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 20000 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { windowsHide: true, timeout: 20000 }, (err, stdout, stderr) => {
       resolve({ ok: !err, code: err ? err.code : 0, stdout: stdout || '', stderr: stderr || (err && err.message) || '' });
     });
   });
