@@ -148,3 +148,48 @@ jobs:
       - name: Run complete Flutter suite
         working-directory: app
         run: flutter test --no-pub
+
+  flutter-remote-screen-e2e:
+    if: github.event_name == 'workflow_dispatch'
+    name: macOS Flutter remote screen end-to-end
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      MULTICC_DATA_DIR: ${{ runner.temp }}/multicc-remote-screen-data
+      MULTICC_REQUIRE_RUST_BUNDLE: '1'
+      CLAUDE_CMD: /usr/bin/true
+      CODEX_CMD: /usr/bin/true
+      OPENCODE_CMD: /usr/bin/true
+      ZCODE_CMD: /usr/bin/true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.32.2'
+          cache: true
+      - run: npm ci
+      - name: Restore Flutter dependencies
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+      - name: Build the current source runtime
+        run: node scripts/ensure-source-rust.js
+      - name: Run the remote screen integration without skips
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --reporter expanded test/remote_screen_e2e_test.dart 2>&1 | tee "$RUNNER_TEMP/flutter-remote-screen-e2e.log"
+          if grep -Eq '(^|[[:space:]])~[1-9][0-9]*([[:space:]:]|$)|\[SKIP\]' "$RUNNER_TEMP/flutter-remote-screen-e2e.log"; then
+            echo '::error::Remote screen integration was skipped'
+            exit 1
+          fi
+          if ! grep -Eq '(^|[[:space:]])\+[1-9][0-9]*:' "$RUNNER_TEMP/flutter-remote-screen-e2e.log"; then
+            echo '::error::Remote screen integration did not complete a test'
+            exit 1
+          fi
