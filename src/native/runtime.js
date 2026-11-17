@@ -4,6 +4,8 @@ const path = require('node:path');
 let loadedPath = null;
 let loaded = null;
 let loadError = null;
+let deliveryOwner = null;
+let deliveryAddon = null;
 const counts = { search: 0, usage: 0 };
 
 function addonPath() {
@@ -29,6 +31,15 @@ function getNative() {
   }
   if (!loaded) throw new Error('rust_backend_unavailable');
   return loaded;
+}
+// Shared instance preserves the original lookup identity for inherited accessors.
+function deliveryClassForItem(item) {
+  const addon = getNative();
+  if (deliveryAddon !== addon) {
+    deliveryOwner = new addon.RustDeliveryClassifier(null);
+    deliveryAddon = addon;
+  }
+  return deliveryOwner.classify(item);
 }
 function record(feature) { if (feature in counts) counts[feature] += 1; }
 function status() { return { loaded: !!loaded, loadError, ...counts }; }
@@ -57,4 +68,4 @@ function runNative(operation) {
     if (active < 2) start(); else waiting.push(start);
   });
 }
-module.exports = { addonPath, getNative, record, status, runNative, nativeCode };
+module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem };

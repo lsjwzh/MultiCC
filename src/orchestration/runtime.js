@@ -18,11 +18,10 @@ const { createOrchestrationStore } = require('./store');
 const { createOrchestrationSqliteStore } = require('./sqlite-store');
 const { createOutbox } = require('../outbox');
 const { createWaitService } = require('../wait/service');
-const { deliveryClassForItem } = require('./delivery-classes');
 const { createSessionWorkScheduler } = require('../session-work/scheduler');
 const { isWaitForUserLetter } = require('../classify/vocab');
 const { deliveryRetryDecision } = require('../unattended/kernel');
-const { isUserTypedWork } = require('../session-work/user-input');
+const { getNative, deliveryClassForItem } = require('../native/runtime');
 const {
   TERMINAL_OPERATION_STATES,
   TERMINAL_TASK_STATES,
@@ -845,7 +844,7 @@ function createOrchestrationRuntime({
         // The scheduler's admission rule and this flag must agree on who typed
         // the message; they used to answer it separately and drifted (the task
         // page's messages reached a turn here, but were never selectable at E).
-        directUserInput: isUserTypedWork(payload),
+        directUserInput: getNative().sessionWorkIsUserTyped(payload),
         userInputRequestId: payload.requestId || undefined,
       };
     }
@@ -1095,7 +1094,7 @@ function createOrchestrationRuntime({
           status: 'failed', error: error.code || 'delivery_failed', retryable: false,
         });
       }
-      if (settled?.deadLetter && isUserTypedWork(item.payload)) {
+      if (settled?.deadLetter && getNative().sessionWorkIsUserTyped(item.payload)) {
         // A message the human typed has just become undeliverable for good. The
         // claim release above already dropped its queue card, so from here the
         // only trace left would be lastError and the log line below — say it in
@@ -1210,7 +1209,7 @@ function createOrchestrationRuntime({
       try { heldForBackgroundTurn = heldForBackground(sessionId) === true; } catch (_) { heldForBackgroundTurn = false; }
     }
     const wedged = (reason === 'session_busy' || reason === 'delivery_locked')
-      && isUserTypedWork(item.payload)
+      && getNative().sessionWorkIsUserTyped(item.payload)
       && (!runActive || heldForBackgroundTurn);
     if (!wedged) { blockedDelivery.delete(sessionId); return; }
     let state = blockedDelivery.get(sessionId);

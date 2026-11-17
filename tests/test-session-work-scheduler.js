@@ -15,6 +15,58 @@ const {
 } = require('../src/session-work/scheduler');
 const { runStateForClassify } = require('../src/classify/vocab');
 const { createSessionWorkScheduler: legacyScheduler } = require('./helpers/legacy-session-work-selection');
+const { isUserTypedWork: legacyUserTyped } = require('./helpers/legacy-session-work-user-input');
+const { getNative } = require('../src/native/runtime');
+
+test('user input classification preserves legacy values, lazy reads and errors', () => {
+  const classify = payload => getNative().sessionWorkIsUserTyped(payload);
+  const values = [undefined, null, false, 0, NaN, '', 1, 'x', Symbol('x'), 1n,
+    {}, { type: 'other', source: 'direct' },
+    { type: 'session.work', source: 'direct' },
+    ...[undefined, null, false, 0, '', 'receipt', {}, [], 1n].map(receipt => ({
+      type: 'session.work', source: 'task-shell', options: { taskShellReceiptId: receipt },
+    })),
+    { type: 'session.work', source: 'task-shell', options: null },
+    { type: 'session.work', source: 'machine', options: { taskShellReceiptId: 'receipt' } },
+  ];
+  for (const value of values) assert.equal(classify(value), legacyUserTyped(value));
+
+  for (const variant of ['direct', 'task-shell', 'other', 'throws']) {
+    const run = fn => {
+      const reads = [];
+      const payload = {
+        get type() { reads.push('type'); return 'session.work'; },
+        get source() { reads.push('source'); if (variant === 'throws') throw new Error('source failed'); return variant; },
+        get options() { reads.push('options'); return { get taskShellReceiptId() { reads.push('receipt'); return 'id'; } }; },
+      };
+      try { return { value: fn(payload), reads }; }
+      catch (error) { return { error: error.message, reads }; }
+    };
+    assert.deepEqual(run(classify), run(legacyUserTyped), variant);
+  }
+  for (const variant of ['changing-source', 'throwing-options', 'throwing-receipt']) {
+    const run = fn => {
+      const reads = [];
+      let sources = 0;
+      const payload = {
+        get type() { reads.push('type'); return 'session.work'; },
+        get source() { reads.push('source'); return variant === 'changing-source' && ++sources === 1 ? 'other' : 'task-shell'; },
+        get options() {
+          reads.push('options');
+          if (variant === 'throwing-options') throw new Error('options failed');
+          return { get taskShellReceiptId() {
+            reads.push('receipt');
+            if (variant === 'throwing-receipt') throw new Error('receipt failed');
+            return 'id';
+          } };
+        },
+      };
+      try { return { value: fn(payload), reads }; }
+      catch (error) { return { error: error.message, reads }; }
+    };
+    assert.deepEqual(run(classify), run(legacyUserTyped), variant);
+  }
+});
 
 // Freeze the four still-JavaScript transitions before migrating them. Compile
 // with their original virtual filename so their relative imports keep working;
@@ -28,6 +80,9 @@ function loadDomainMigrationOracle(mutate = source => source) {
   const oracle = new Module(filename, module);
   oracle.filename = filename;
   oracle.paths = Module._nodeModulePaths(path.dirname(filename));
+  const originalRequire = oracle.require.bind(oracle);
+  oracle.require = id => id === './user-input'
+    ? require('./helpers/legacy-session-work-user-input') : originalRequire(id);
   oracle._compile(mutate(snapshot), filename);
   return oracle.exports.createSessionWorkScheduler;
 }

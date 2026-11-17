@@ -6,7 +6,72 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
-const { DELIVERY_CLASS, deliveryClassForItem } = require('../src/orchestration/delivery-classes');
+const { DELIVERY_CLASS } = require('./helpers/legacy-delivery-classes');
+const { deliveryClassForItem } = require('../src/native/runtime');
+const { deliveryClassForItem: legacyDeliveryClass } = require('./helpers/legacy-delivery-classes');
+
+test('delivery classes match frozen legacy lookup, lazy reads and exceptions', () => {
+  const inputs = [null, undefined, false, 0, 'x', {},
+    ...['task.interrupted', 'wait.result', 'wait.callback', 'wait.resolved', 'detached.result',
+      'dispatch.result', 'dispatch.request', 'session.work', 'unknown', 'constructor', '__proto__',
+      undefined, null, 1, true, Symbol.for('delivery-test')].map(type => ({ payload: { type } })),
+    { payload: { type: 'session.work', source: 'direct' } },
+    { payload: { type: 'session.work', source: 'task-shell' } },
+  ];
+  for (const input of inputs) assert.equal(deliveryClassForItem(input), legacyDeliveryClass(input));
+
+  for (const mode of ['known', 'unknown', 'changing', 'throws-type', 'throws-source', 'coerce', 'throws-coerce']) {
+    const run = fn => {
+      const reads = [];
+      let count = 0;
+      const item = { get payload() {
+        reads.push('payload');
+        return {
+          get type() {
+            reads.push('type'); count++;
+            if (mode === 'throws-type') throw new Error('type failed');
+            if (mode === 'known') return 'wait.result';
+            if (mode === 'changing') return count === 1 ? 'unknown' : 'session.work';
+            if (mode === 'coerce' || mode === 'throws-coerce') return { toString() {
+              reads.push('coerce');
+              if (mode === 'throws-coerce') throw new Error('coerce failed');
+              return 'wait.result';
+            } };
+            return mode === 'unknown' ? 'unknown' : 'session.work';
+          },
+          get source() {
+            reads.push('source');
+            if (mode === 'throws-source') throw new Error('source failed');
+            return 'direct';
+          },
+        };
+      } };
+      try { return { value: fn(item), reads }; }
+      catch (error) { return { error: error.message, reads }; }
+    };
+    assert.deepEqual(run(deliveryClassForItem), run(legacyDeliveryClass), mode);
+  }
+  const key = '__multicc_delivery_accessor_test__';
+  let receiver;
+  Object.defineProperty(Object.prototype, key, { configurable: true, get() {
+    const same = !receiver || receiver === this;
+    receiver = this;
+    return same ? 'inherited' : 'changed';
+  } });
+  try {
+    for (const fn of [legacyDeliveryClass, deliveryClassForItem]) {
+      receiver = null;
+      assert.equal(fn({ payload: { type: key } }), 'inherited');
+      assert.equal(fn({ payload: { type: key } }), 'inherited');
+    }
+  } finally { delete Object.prototype[key]; }
+  Object.defineProperty(Object.prototype, key, { configurable: true, get() { throw new Error('inherited failed'); } });
+  try {
+    for (const fn of [legacyDeliveryClass, deliveryClassForItem]) {
+      assert.throws(() => fn({ payload: { type: key } }), /inherited failed/);
+    }
+  } finally { delete Object.prototype[key]; }
+});
 
 function withTimeout(promise, ms, message) {
   let timer = null;

@@ -10,6 +10,26 @@ use std::{
     ptr,
 };
 
+/// Match the live host predicate without serializing its potentially proxied
+/// payload. In particular `source` is read twice on the task-shell path.
+#[napi]
+pub fn session_work_is_user_typed(env: Env, payload: Unknown<'_>) -> Result<bool> {
+    let payload = L::new(&env, payload);
+    if !payload.truthy()? || !payload.get(c"type")?.is_string("session.work")? {
+        return Ok(false);
+    }
+    if payload.get(c"source")?.is_string("direct")? {
+        return Ok(true);
+    }
+    if !payload.get(c"source")?.is_string("task-shell")? {
+        return Ok(false);
+    }
+    payload
+        .get(c"options")?
+        .optional(c"taskShellReceiptId")?
+        .truthy()
+}
+
 fn kind<'a>(item: L<'a>) -> Result<L<'a>> {
     let transfer = item.optional(c"turnLineage")?.optional(c"workKind")?;
     if transfer.truthy()? {
