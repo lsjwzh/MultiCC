@@ -559,6 +559,7 @@ function createTaskShellRuntime(ports) {
       const receipt = { id: receiptId, shellId: s.id, taskId: task.id, fingerprint, payload,
         roleSnapshotId: payload.intent === 'work' ? roles.snapshot(task.id) : controlRole || queuedRole || roles.snapshot(task.id),
         taskIdentityLocked: delivery.taskIdentityLocked === true,
+        ...(delivery.supervisorAnswer === true ? { supervisorAnswer: true } : {}),
         taskMetadata: delivery.taskMetadata || null,
         dispatch: delivery.dispatch || null,
         cursorVersion: payload.intent === 'work' ? (currentShell.cursorVersion || 0) + 1 : currentShell.cursorVersion || 0,
@@ -626,6 +627,8 @@ function createTaskShellRuntime(ports) {
           taskContextSeed: '',
           taskShellAutoClassify: p.intent === 'work' && p.newTask !== true && !receipt.taskIdentityLocked && !taskActions.ownerOf(task)?.standalone,
           ...(p.intent === 'answer' ? { userInputRequestId: p.requestId } : {}),
+          ...(p.intent === 'answer' && receipt.supervisorAnswer === true
+            ? { unattendedSystem: true, unattendedRecovery: true, system: true } : {}),
           ...(p.intent === 'steer' || ['continue', 'queued'].includes(receipt.decision) ? { originContinue: true } : {}),
         });
       }
@@ -659,7 +662,10 @@ function createTaskShellRuntime(ports) {
   }
   async function sendInput(shellId, raw, delivery = {}) {
     const s = shell(shellId), payload = normalize(raw, !!delivery.dispatch);
-    const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`, fingerprint = hash(delivery.dispatch ? [payload, delivery.dispatch] : payload);
+    if (delivery.supervisorAnswer === true && payload.intent !== 'answer') throw failure('invalid_control');
+    const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`;
+    const fingerprint = hash(delivery.dispatch ? [payload, delivery.dispatch]
+      : delivery.supervisorAnswer === true ? [payload, { supervisorAnswer: true }] : payload);
     let receipt = store.get('receipt', id);
     if (receipt && receipt.fingerprint !== fingerprint) throw failure('idempotency_conflict');
     if (flights.has(id)) return flights.get(id);
@@ -813,7 +819,8 @@ function createTaskShellRuntime(ports) {
     const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
     if (!receipt || receipt.shellId !== s.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
     return sendInput(s.id, receipt.payload, { taskIdentityLocked: receipt.taskIdentityLocked,
-      taskMetadata: receipt.taskMetadata, dispatch: receipt.dispatch });
+      taskMetadata: receipt.taskMetadata, dispatch: receipt.dispatch,
+      supervisorAnswer: receipt.supervisorAnswer === true });
   }
   // Undoing an accepted identity change puts the shell cursor back where it
   // was. It refuses once another turn has moved the cursor: that turn was

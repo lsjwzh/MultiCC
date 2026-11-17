@@ -12,6 +12,33 @@ const { createShellWorkspaceHost, sharedWorkspace } = require('../src/task-shell
 const { verifySnapshot } = require('../src/task-shell/context');
 const { createTaskShellHost } = require('../src/task-shell/host');
 
+test('host passes the supervisor answer origin into its durable task-shell receipt', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-supervisor-answer-'));
+  const record = { id: 'source', kind: 'chat', cli: 'codex', dirId: 'd1', taskState: { classifyState: 'W' } };
+  const deliveries = [];
+  const host = createTaskShellHost({
+    file: path.join(dir, 'shell.sqlite'), records: new Map([[record.id, record]]),
+    getChatState: () => ({ isStreaming: false }), loadHistory: () => [],
+    getWorkHost: () => ({ isRunActive: () => false, getRunState: () => 'waiting' }),
+    getScheduler: () => ({ status: async () => ({ state: 'idle', classifyState: 'W', active: null, queued: [] }) }),
+    getTaskBoard: () => ({ registerShellTask: () => ({ ok: true }), getBoard: () => ({ tasks: {} }) }),
+    deliver: async (id, text, options) => { deliveries.push({ id, text, options }); return { ok: true }; },
+  });
+  t.after(() => { host.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const shell = host.open(record.id);
+  record.taskState.pendingUserInput = {
+    taskId: shell.currentTaskId, turnId: 'question-turn', requestId: 'question-id', resolved: false,
+  };
+  const sent = await host.sendFromSession(record.id, '🔇[无人值守 Unattended] yes', {
+    clientMsgId: 'supervisor-answer', userInputRequestId: 'question-id', unattendedSystem: true, system: true,
+  });
+  assert.equal(sent.ok, true);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].options.userInputRequestId, 'question-id');
+  assert.equal(deliveries[0].options.unattendedSystem, true);
+  assert.equal(deliveries[0].options.unattendedRecovery, true);
+});
+
 test('queued successors cannot cancel an ended turn; live turns and pending questions retain exact controls', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-control-'));
   const record = { id: 'source', kind: 'chat', cli: 'codex', dirId: 'd1',

@@ -376,6 +376,31 @@ test('(a) W with a pending question: the auto-answer is selected before the stag
   assert.equal(await h.claimOne(), null, 'the FIFO is fully drained');
 });
 
+test('a supervisor answer crosses the durable task shell and is selectable while W waits', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await h.activeTurn('ask through task shell');
+  const shell = require('./helpers/task-shell').fixture(t, {
+    send: (_id, text, options) => h.sessionWorkHost.admit(SESSION, text, options),
+  });
+  const task = shell.runtime.adopt(shell.a.id, 'a');
+  const pending = { taskId: task.id, requestId: 'q-shell', turnId: 'turn-shell', resolved: false };
+  shell.statuses.set('a', { busy: false, turnId: pending.turnId, pending });
+  h.setPending(pending);
+  h.setClassifyState('W');
+  await h.scheduler.complete(SESSION, { classifyState: 'W', awaitingRequestId: pending.requestId });
+  const sent = await shell.runtime.send(shell.a.id, {
+    clientMsgId: 'auto-shell-answer', text: '🔇[无人值守 Unattended] option B',
+    intent: 'answer', taskId: task.id, turnId: pending.turnId, requestId: pending.requestId,
+  }, { supervisorAnswer: true });
+  assert.equal(sent.ok, true);
+  const answer = await h.claimOne();
+  assert.ok(answer, 'the answer must not remain behind its own pending question');
+  assert.equal(answer.payload.workKind, 'answer');
+  assert.equal(answer.payload.requestId, pending.requestId);
+  assert.equal(answer.payload.options.unattendedSystem, true);
+});
+
 test('(b) E fault: the supervisor fault-continue is selectable before a staged FIFO', async t => {
   const h = fixture(t);
   await h.arm();

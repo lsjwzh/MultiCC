@@ -279,6 +279,64 @@ test('a rejected answer releases its reservation so the question can still be an
   assert.equal(retry.taskId, a.taskId);
 });
 
+test('a supervisor answer keeps its trusted origin through the durable shell receipt', async t => {
+  const f = fixture(t);
+  const first = await f.runtime.send(f.a.id, input('one'));
+  const task = f.store.get('task', first.taskId);
+  const pending = { taskId: first.taskId, requestId: 'q-auto', turnId: 'turn-auto', question: 'Choose' };
+  f.statuses.set(task.sessionId, { busy: true, turnId: pending.turnId, pending });
+  const request = input('auto-answer', first.taskId,
+    { intent: 'answer', requestId: pending.requestId, turnId: pending.turnId });
+  const answer = await f.runtime.send(f.a.id, request, { supervisorAnswer: true });
+  const receipt = f.store.get('receipt', answer.receiptId);
+  assert.equal(receipt.supervisorAnswer, true);
+  const opts = f.sends.at(-1).opts;
+  assert.equal(opts.userInputRequestId, pending.requestId);
+  assert.equal(opts.unattendedSystem, true);
+  assert.equal(opts.unattendedRecovery, true);
+  assert.equal(opts.system, true);
+  const policy = require('../src/unattended/kernel').decideTurnEnd({
+    state: { status: 'active' }, kind: 'user_input', source: 'task-shell', options: opts,
+  });
+  assert.notEqual(policy.queueInput, true, 'automatic answer must not become ordinary queued work');
+  await assert.rejects(f.runtime.send(f.a.id, request), { code: 'idempotency_conflict' });
+  const other = { ...pending, requestId: 'q-user' };
+  f.statuses.set(task.sessionId, { busy: true, turnId: other.turnId, pending: other });
+  await f.runtime.send(f.a.id, input('user-answer', first.taskId, {
+    intent: 'answer', requestId: other.requestId, turnId: other.turnId,
+    unattendedSystem: true, supervisorAnswer: true,
+  }));
+  assert.equal(f.sends.at(-1).opts.unattendedSystem, undefined,
+    'client-supplied receipt fields cannot claim the trusted supervisor origin');
+});
+
+test('a supervisor answer retains its origin after a failed delivery and receipt retry', async t => {
+  let reject = true;
+  const seen = [];
+  const f = fixture(t, { send: async (_id, _text, opts) => {
+    if (!opts.userInputRequestId) return { ok: true };
+    seen.push(opts);
+    return reject ? { ok: false, code: 'temporary_failure' } : { ok: true };
+  } });
+  const first = await f.runtime.send(f.a.id, input('one'));
+  const task = f.store.get('task', first.taskId);
+  const pending = { taskId: first.taskId, requestId: 'q-retry', turnId: 'turn-retry' };
+  f.statuses.set(task.sessionId, { busy: true, turnId: pending.turnId, pending });
+  await assert.rejects(f.runtime.send(f.a.id, input('auto-retry', first.taskId,
+    { intent: 'answer', requestId: pending.requestId, turnId: pending.turnId }),
+  { supervisorAnswer: true }), { code: 'temporary_failure' });
+  const receipt = f.store.list('receipt').find(row => row.payload.clientMsgId === 'auto-retry');
+  assert.equal(receipt.supervisorAnswer, true);
+  reject = false;
+  await f.runtime.retry(f.a.id, receipt.id);
+  assert.equal(seen.length, 2);
+  for (const options of seen) {
+    assert.equal(options.unattendedSystem, true);
+    assert.equal(options.userInputRequestId, pending.requestId);
+    assert.equal(options.idempotencyKey, receipt.id);
+  }
+});
+
 test('F01 F03: creation failure and restart retain target and error; same-key retry repairs', async t => {
   let fail = true;
   const f = fixture(t, { createExecution: async task => {

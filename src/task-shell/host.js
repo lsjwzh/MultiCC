@@ -257,7 +257,8 @@ function createTaskShellHost(deps) {
         taskSource: options.taskSource,
         taskText: options.taskText || text,
       })
-      : await rt.send(shell.id, payload);
+      : await rt.send(shell.id, payload, options.unattendedSystem === true && payload.intent === 'answer'
+        ? { supervisorAnswer: true } : {});
     return { ...result, chatId: result.sessionId, targetSessionId: result.sessionId,
       shellId: shell.id, url: `/air?task=${encodeURIComponent(result.taskId)}${shell.dirId ? `&dir=${encodeURIComponent(shell.dirId)}` : ''}` };
   }
