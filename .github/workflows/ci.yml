@@ -86,6 +86,10 @@ jobs:
           node-version: 22.x
           cache: npm
       - run: npm ci
+      - name: Install browser video test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - name: Build Rust runtime for browser integration
         run: node scripts/build-rust-kernels.js
         env:
@@ -95,6 +99,7 @@ jobs:
         shell: bash
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
+          MULTICC_TEST_CDP_LOCALE: zh-CN
           CLAUDE_CMD: /bin/true
           CODEX_CMD: /bin/true
           OPENCODE_CMD: /bin/true

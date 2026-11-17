@@ -29,6 +29,12 @@ class _StubQuotaService extends QuotaService {
   bool failProviderBalance = false;
 
   @override
+  Future<Map<String, dynamic>?> fetchProviderLimitSnapshot(
+    String appType,
+    String providerId,
+  ) async => null;
+
+  @override
   Future<Map<String, dynamic>?> fetchArkQuota(String? baseUrl) {
     arkBaseUrls.add(baseUrl);
     final gate = arkGates[baseUrl ?? ''];
@@ -295,6 +301,11 @@ void main() {
           model: 'gpt-test',
         ),
       );
+      // Let the official provider query begin before switching identities.
+      // Otherwise the cache lookup may still be pending when the revision
+      // changes, correctly cancelling its now-stale balance request.
+      await Future<void>.delayed(Duration.zero);
+      expect(quota.providerBalanceCalls, ['codex:official']);
       provider.applyProviderSwitch(
         const SessionCliConfig(
           cli: SessionCli.codex,
@@ -312,6 +323,41 @@ void main() {
       expect(provider.limitView?.text, 'Borrowed · 1wk 65%');
     },
   );
+
+  test('rapid provider switch ignores the pending old snapshot lookup', () async {
+    final s = await settings();
+    final quota = _StubQuotaService(s);
+    final provider = ChatProvider(
+      settings: s,
+      sessionName: 'test-session',
+      sessionCwd: '/tmp/x',
+      quotaService: quota,
+    );
+    addTearDown(provider.dispose);
+
+    provider.applyCliConfig(
+      const SessionCliConfig(
+        cli: SessionCli.codex,
+        provider: 'official',
+        providerBaseUrl: '',
+        model: 'gpt-test',
+      ),
+    );
+    provider.applyProviderSwitch(
+      const SessionCliConfig(
+        cli: SessionCli.codex,
+        provider: 'borrowed',
+        providerBaseUrl: 'https://relay.example/codex-proxy/official',
+        model: 'gpt-test',
+      ),
+    );
+    for (var i = 0; i < 3; i++) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(quota.providerBalanceCalls, ['codex:borrowed']);
+    expect(provider.codexQuotaView, isNull);
+    expect(provider.limitView?.text, 'Borrowed · 1wk 65%');
+  });
 
   test(
     'Codex limit bar follows direct and Official Provider identity',

@@ -5666,28 +5666,6 @@
       ]
     },
     {
-      "path": "tests/test-restart-real-server-isolated.js",
-      "tier": "core",
-      "lane": "isolated",
-      "owner": "npm:test:restart",
-      "entrypoints": [
-        "npm:test:restart",
-        "npm:test:native",
-        "npm:test:gateway"
-      ]
-    },
-    {
-      "path": "tests/test-restart-supervisor-isolated.js",
-      "tier": "core",
-      "lane": "isolated",
-      "owner": "npm:test:restart",
-      "entrypoints": [
-        "npm:test:restart",
-        "npm:test:native",
-        "npm:test:gateway"
-      ]
-    },
-    {
       "path": "tests/test-server-restart.js",
       "tier": "flow",
       "lane": "deterministic",

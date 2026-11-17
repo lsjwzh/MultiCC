@@ -323,9 +323,12 @@ async function createCdpHarness(options = {}) {
     // navigator.language 来自宿主系统（macOS 上 --lang 也压不住），中文开发机上
     // 凡是验「非中文系统默认英文」的用例都会自己变红。acceptLanguage 是唯一能改
     // navigator.language 的那条路，Intl 另由 setLocaleOverride 管。
-    if (options.locale) {
-      await send('Emulation.setUserAgentOverride', { userAgent: DESKTOP_UA, acceptLanguage: options.locale });
-      try { await send('Emulation.setLocaleOverride', { locale: options.locale }); } catch (_) {}
+    // A CI suite may choose a deterministic default while a test can still
+    // override it explicitly (for example, to exercise English fallback).
+    const locale = options.locale || process.env.MULTICC_TEST_CDP_LOCALE;
+    if (locale) {
+      await send('Emulation.setUserAgentOverride', { userAgent: DESKTOP_UA, acceptLanguage: locale });
+      try { await send('Emulation.setLocaleOverride', { locale }); } catch (_) {}
     }
 
     const harness = {
