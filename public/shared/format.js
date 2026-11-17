@@ -134,6 +134,15 @@
     return `${scaled.toFixed(digits)}${space ? ' ' : ''}${unit}`;
   }
 
+  /** Preserve the live throughput chip's precision and binary unit labels. */
+  function formatByteRate(bytesPerSecond) {
+    const value = Number(bytesPerSecond) || 0;
+    const inKibibytes = value >= BYTE_BASE;
+    const scaled = inKibibytes ? value / BYTE_BASE : value;
+    const number = scaled >= 10 ? String(Math.round(scaled)) : scaled.toFixed(1);
+    return `${number} ${inKibibytes ? 'KiB/s' : 'B/s'}`;
+  }
+
   // ── Relative time ─────────────────────────────────────────────────────────
   // One threshold table, walked top to bottom. `maxSeconds` is exclusive; the
   // last tier is unbounded. `divisor` turns elapsed seconds into the unit the
@@ -348,6 +357,7 @@
     finiteNumber,
     groupedNumber,
     formatBytes,
+    formatByteRate,
     formatRelativeTime,
     formatDuration,
     formatPercent,

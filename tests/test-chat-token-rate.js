@@ -221,6 +221,14 @@ test('upstream averages weight observed request bytes by request duration and ig
   assert.equal(meter.snapshot().transportRate, null);
 });
 
+test('upstream byte rates retain precision and binary unit boundaries', () => {
+  const text = transportRate => rate.describe({ active: false, transportRate }).text;
+  assert.match(text(4.25), /4\.3 B\/s/);
+  assert.match(text(1023), /1023 B\/s/);
+  assert.match(text(1024), /1\.0 KiB\/s/);
+  assert.match(text(15360), /15 KiB\/s/);
+});
+
 test('describe() renders every phase with its duration and a detailed tooltip', () => {
   const base = { active: true, total: 1234, ttftMs: 2100, exact: { tokens: 812, ms: 14000, rate: 58 } };
   const flowing = rate.describe({ ...base, phase: 'flowing', rate: 42.4, tone: 'flowing' });

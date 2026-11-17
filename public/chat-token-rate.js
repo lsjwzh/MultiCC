@@ -233,8 +233,7 @@
       text = text ? `${text} · ${average}` : average;
     }
     if (hasTransport) {
-      const speed = snap.transportRate >= 1024
-        ? `${rateNumber(snap.transportRate / 1024)} KiB/s` : `${rateNumber(snap.transportRate)} B/s`;
+      const speed = FMT.formatByteRate(snap.transportRate);
       const label = tt('tokenRateTransport', '上游平均 {speed}', { speed });
       text = text ? `${text} · ${label}` : label;
     }

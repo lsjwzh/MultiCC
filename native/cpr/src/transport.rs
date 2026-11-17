@@ -940,8 +940,16 @@ mod tests {
     }
 
     fn upstream(finish: bool) -> (Arc<Exchange>, mpsc::Receiver<()>) {
+        let (exchange, _, closed) = upstream_with_ready(finish);
+        (exchange, closed)
+    }
+
+    fn upstream_with_ready(
+        finish: bool,
+    ) -> (Arc<Exchange>, mpsc::Receiver<()>, mpsc::Receiver<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
         let (closed_tx, closed_rx) = mpsc::channel();
         std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
@@ -970,6 +978,7 @@ mod tests {
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n", frame.len()).unwrap();
             socket.write_all(frame).unwrap();
             socket.write_all(b"\r\n").unwrap();
+            let _ = ready_tx.send(());
             if finish {
                 socket.write_all(b"0\r\n\r\n").unwrap();
             } else {
@@ -989,6 +998,7 @@ mod tests {
         });
         (
             Arc::new(Exchange::new(plan.to_string()).unwrap()),
+            ready_rx,
             closed_rx,
         )
     }
@@ -1039,8 +1049,11 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_stops_the_watch_without_fabricating_a_timeout() {
-        let (exchange, closed) = upstream(false);
+        let (exchange, ready, closed) = upstream_with_ready(false);
         exchange.open().await.unwrap();
+        tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(2)).unwrap())
+            .await
+            .unwrap();
         exchange.start_stream_watch(200, 200, 500, false).unwrap();
         let watch = tokio::spawn({
             let exchange = exchange.clone();
@@ -1079,7 +1092,7 @@ mod tests {
 
     #[tokio::test]
     async fn stopped_stream_watch_cannot_be_restarted_on_the_same_exchange() {
-        let (exchange, closed) = upstream(false);
+        let (exchange, ready, closed) = upstream_with_ready(false);
         exchange.open().await.unwrap();
         exchange.start_stream_watch(500, 500, 0, false).unwrap();
         let watch = tokio::spawn({
@@ -1089,6 +1102,12 @@ mod tests {
         exchange.stop_stream_watch();
         assert!(exchange.start_stream_watch(500, 500, 0, false).is_err());
         assert_eq!(watch.await.unwrap(), None);
+        // Keep the peer open until the fixture has written its first frame.
+        // Otherwise the test can close the exchange while the fixture is
+        // writing headers, producing an unrelated BrokenPipe panic.
+        tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(2)).unwrap())
+            .await
+            .unwrap();
         exchange.close().await;
         tokio::task::spawn_blocking(move || closed.recv_timeout(Duration::from_secs(2)).unwrap())
             .await

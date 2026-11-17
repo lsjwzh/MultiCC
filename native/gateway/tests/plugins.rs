@@ -134,6 +134,24 @@ impl Tree {
             std::os::unix::fs::symlink(root.join("demo/ui/app.js"), root.join("demo/ui/alias.js"))
                 .unwrap();
         }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(
+                root.join("outside.txt"),
+                root.join("demo/ui/escape.txt"),
+            )
+            .expect("the Windows runner must permit file symlinks");
+            std::os::windows::fs::symlink_file(
+                root.join("demo/secret.txt"),
+                root.join("demo/ui/to-secret.txt"),
+            )
+            .expect("the Windows runner must permit file symlinks");
+            std::os::windows::fs::symlink_file(
+                root.join("demo/ui/app.js"),
+                root.join("demo/ui/alias.js"),
+            )
+            .expect("the Windows runner must permit file symlinks");
+        }
         Self { root }
     }
 
