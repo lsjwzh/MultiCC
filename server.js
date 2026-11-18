@@ -121,7 +121,6 @@ const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLi
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { mountScanHistoryHostRoute } = require('./src/routes/scan-history-host');
-const { mountApkDownload } = require('./src/routes/system');
 const { createReleaseHistoryHost } = require('./src/routes/release-history-host');
 const { mountSystemHostRoute } = require('./src/routes/system-host');
 const { createApkDistribution } = require('./src/apk-distribution');
@@ -1900,7 +1899,6 @@ fleetSharingRuntime = createFleetSharing({ sharesFile: MULTICC_PATHS.fleetShares
   authSecurity,
 });
 
-mountApkDownload(app, { apkDistribution, iosOta }); // 本地文件时 next() 落到 express.static。
 mountSystemHostRoute(app, {
   fs,
   path,
@@ -2229,12 +2227,9 @@ mountZcodeAuthLoginRoute(app); mountKimiAuthLoginRoute(app);
 // is claimed first; auth is bypassed via the capability <id> (see middleware).
 artifacts.mount(app);
 
-// Static assets (src/routes/static-assets.js): the `/` root redirect, the
-// versioned-HTML middleware (cache-busting `?v=<mtime>` rewrite for embedded
-// WebViews) and the express.static mount for public/ (with .apk download
-// headers). Mounted at exactly the point where these handlers used to live so
-// middleware ordering — and therefore behaviour — is unchanged.
-staticAssetsRuntime.mountRoutes(app);
+// 静态资源（public/ 的 express.static、版本化 HTML 中间件、`GET /` 重定向和
+// .apk/.ipa 守卫）已由 Rust 前门独占，这里不再注册任何静态处理器；
+// `staticAssetsRuntime` 只剩 `serveHtml`，给宿主端口上的分享页用。
 
 // Display state is independent from canonical messages and native CLI transcripts.
 const CHAT_HISTORY_SOFT_CAP = 10000;

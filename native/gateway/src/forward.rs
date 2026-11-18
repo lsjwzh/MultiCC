@@ -253,24 +253,43 @@ async fn host_port_probe(Extension(upstream): Extension<UpstreamHandle>) -> Resp
 async fn dispatch(
     Extension(upstream): Extension<UpstreamHandle>,
     Extension(app): Extension<Arc<App>>,
-    request: Request<Body>,
+    mut request: Request<Body>,
 ) -> Response<Body> {
     if let Some(route) = crate::app::claim_uri(request.method(), request.uri()) {
         let host = upstream.state.port.load(Ordering::SeqCst);
-        return crate::app::handle(app, route, request, upstream.state.client, host).await;
+        return crate::app::handle(app, route, request, upstream.state.client, host, upstream).await;
     }
-    let air_read = request.method() == hyper::Method::GET
-        && matches!(request.uri().path(), "/api/air/sync" | "/api/air/page");
-    forward(
-        upstream,
-        request,
-        air_read.then_some(app.data_root.as_path()),
-    )
-    .await
+    // The `public/` static web root is claimed last and only when the two
+    // retired layers actually resolve a response, because `serve-static`'s
+    // `fallthrough: true` turned everything else into a plain `next()` that
+    // still has to reach Node. The resolution rides the request so the
+    // filesystem is read once.
+    if let Some(resolved) = crate::app::static_web_root::claim(
+        &app,
+        request.method(),
+        request.uri(),
+        request.headers(),
+    ) {
+        let host = upstream.state.port.load(Ordering::SeqCst);
+        request.extensions_mut().insert(resolved);
+        return crate::app::handle(
+            app,
+            crate::app::Route::StaticWebRoot,
+            request,
+            upstream.state.client,
+            host,
+            upstream,
+        )
+        .await;
+    }
+    forward(upstream, request, None).await
 }
 
 /// §6: the fallback. Streams the request to Node and the response back.
-async fn forward(
+/// `pub(crate)` so a claimed route whose retired handler itself ended in
+/// `next()` (the APK download's local-file branch) can finish the request the
+/// same way after its own successors decline it.
+pub(crate) async fn forward(
     upstream: UpstreamHandle,
     mut request: Request<Body>,
     air_root: Option<&std::path::Path>,

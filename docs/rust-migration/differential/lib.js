@@ -70,14 +70,16 @@ function send(port, { method, url, headers = {}, body }, timeoutMs = REQUEST_TIM
   });
 }
 
-function view(res) {
+function view(res, extra = []) {
   let body = res.body;
   if (res.headers['content-encoding'] === 'gzip') body = zlib.gunzipSync(body);
   // A generated request id is random on both sides.
   const text = body.toString('utf8')
     .replace(/"requestId":"[0-9a-f]{8}","correlationId":"[0-9a-f]{8}"/, '"requestId":"<rand>","correlationId":"<rand>"');
   const headers = {};
-  for (const name of COMPARED) {
+  // A spec may compare more headers than the shared list: the static web root
+  // lives or dies on Accept-Ranges / Last-Modified / Content-Range.
+  for (const name of COMPARED.concat(extra)) {
     let v = res.headers[name];
     if ((name === 'x-multicc-request-id' || name === 'x-correlation-id') && /^[0-9a-f]{8}$/.test(v || '')) v = '<rand>';
     if (v !== undefined) headers[name] = v;
@@ -144,7 +146,7 @@ async function freePort() {
 
 /**
  * spec: { name, mount(app, ctx), corpus(ctx) -> [[name, request]], stores: [relative file],
- *         seed?(dataRoot), gatewayEnv?: {} }
+ *         seed?(dataRoot), gatewayEnv?: {}, ready?(port) }
  * argv: <repo> <multicc-gateway> <addon with the route's napi exports, if any>
  */
 async function run(spec, argv = process.argv.slice(2)) {
@@ -192,6 +194,13 @@ async function run(spec, argv = process.argv.slice(2)) {
   try {
     step = 'waiting for the gateway';
     await waitFor(gwPort);
+    // `/healthz` is answered by the gateway itself, before its Node child has
+    // the host port listening: a spec whose claimed routes call back into the
+    // child would race a 503 `rust_backend_unavailable` window without this.
+    if (spec.ready) {
+      step = 'waiting for the gateway child';
+      await spec.ready(gwPort);
+    }
     ctx.cookie = authSecurity.createCookie();
     let same = 0;
     const diffs = [];
@@ -217,7 +226,7 @@ async function run(spec, argv = process.argv.slice(2)) {
           throw new Error(`${step}: ${error.message}`);
         }
         if (hooks.capture) hooks.capture(raw, side);
-        let v = view(raw);
+        let v = view(raw, spec.headers || []);
         v.body = normalizeText(v.body, work);
         if (spec.normalizeView) v = spec.normalizeView(v, side) || v;
         if (hooks.normalize) v = hooks.normalize(v, side) || v;

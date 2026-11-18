@@ -60,9 +60,13 @@ const MANAGE_PATHS = ['/manage', '/manage.html'];
 const DASH_PATHS = ['/dashboard', '/dashboard.html'];
 const AIR_PATHS = ['/air', '/air.html'];
 
+// `/multicc.apk` in any casing is claimed earlier by the release-history
+// cluster (the retired `mountApkDownload` sat in front of this module), so it
+// lives in the release-history corpus; every other `.apk`/`.ipa` spelling is
+// this guard's.
 const GUARD_NAMES = [
   '/x.apk', '/x.APK', '/x.ipa', '/a.b.ipa', '/nested/other.apk', '/plugins/x/y.apk',
-  '/x%2Eapk', '/%61pk.APK', '/MULTICC.APK', '/multicc-ios.IPA', '/nested%2Fother.apk',
+  '/x%2Eapk', '/%61pk.APK', '/multicc-ios.IPA', '/nested%2Fother.apk',
   '/x%zz.apk', '/a.b.c.apk', '/dir/x.apk?download=1', '/.apk', '/ipa.IPA',
   '/x.apk?token=t', '/x.ipa?dir=d', '/a/b/c/d.ipa', '/public/webcc.apk',
 ];
@@ -185,17 +189,20 @@ function corpus() {
       rust: isRustForward,
     },
   );
-  for (const url of ['/multicc.apk', '/multicc-ios.ipa']) {
+  // `/multicc-ios.ipa` has no route anywhere; `/multicc.apk` (and its case
+  // and trailing-slash variants) is the release-history cluster's, so its
+  // fallbacks moved to that corpus with it.
+  for (const url of ['/multicc-ios.ipa']) {
     fallback(`fallback:GET ${url}`, { method: 'GET', url, headers: HDR });
     fallback(`fallback:HEAD ${url}`, { method: 'HEAD', url, headers: HDR });
   }
   for (const url of [
     '/x.apk/', '/foo.apk.txt', '/x.apx', '/apk', '/manage//', '/manage/extra',
-    '/dashboardextra', '/air/extra', '/manage.htmlx', '/multicc.apk/',
+    '/dashboardextra', '/air/extra', '/manage.htmlx',
   ]) {
     fallback(`fallback:edge ${url}`, { method: 'GET', url, headers: HDR });
   }
-  for (const url of ['/x.apk/', '/multicc.apk/']) {
+  for (const url of ['/x.apk/']) {
     fallback(`fallback:edge HEAD ${url}`, { method: 'HEAD', url, headers: HDR });
   }
 
@@ -272,7 +279,6 @@ const REQUIRED = [
   'claimed:guard GET /plugins/x/y.apk',
   'claimed:guard GET /nested%2Fother.apk',
   'claimed:guard GET /x%2Eapk',
-  'claimed:guard GET /MULTICC.APK',
   'claimed:options /manage',
   'claimed:options /air',
   'fallback:/air',
@@ -281,7 +287,6 @@ const REQUIRED = [
   'fallback:POST /manage',
   'fallback:DELETE /y.ipa',
   'fallback:OPTIONS /x.apk (no route layers)',
-  'fallback:GET /multicc.apk',
   'fallback:GET /multicc-ios.ipa',
   'fallback:edge /x.apk/',
   'fallback:edge /foo.apk.txt',

@@ -183,9 +183,10 @@ test('wiring: manifest + IPA bypass auth, strangers’ binaries stay hidden, rou
 
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.ok(serverSource.includes("require('./src/ios-ota').createIosOta"));
-  // 真实 app 上只剩 /multicc.apk（express.static 的流式 sendFile 无法在前门拆分）；
-  // 其余三条与 ios-udid 的三条经 release-history 宿主端口。
-  assert.ok(serverSource.includes('mountApkDownload(app, { apkDistribution, iosOta })'));
+  // 发布资产一条都不在真实 app 上了：`/multicc.apk` 的三种出口（本地文件
+  // fellThrough / 302 / 空 404）与其余三条、ios-udid 的三条都经 release-history
+  // 宿主端口，本地文件由前门的 static_web_root 用同一套 send 引擎发出。
+  assert.doesNotMatch(serverSource, /mountApkDownload/);
   assert.ok(serverSource.includes("require('./src/routes/release-history-host')"));
   assert.ok(serverSource.includes('createReleaseHistoryHost({ chatHistory: chatHistoryRuntime'));
 });

@@ -2,9 +2,17 @@
 
 // FROZEN ORACLE — the source below is `git show HEAD:src/routes/static-assets.js`,
 // captured before the three redirect families and the `.apk`/`.ipa` guard were
-// retired into native/core/src/static_assets_routes.rs. It is loaded only by
-// docs/rust-migration/differential/static-assets-routes.js; nothing re-reads
+// retired into native/core/src/static_assets_routes.rs. Nothing re-reads
 // `git show` at run time, so the oracle cannot drift with later edits.
+//
+// Loaded by:
+//   docs/rust-migration/differential/static-assets-routes.js  (the redirect rules)
+//   docs/rust-migration/differential/static-web-root.js       (the serving half)
+//   tests/test-static-doc-page.js, tests/test-task-first-entry.js,
+//   tests/test-chat-share-view-cdp.js — serving left Node entirely
+//   (native/gateway/src/app/static_web_root.rs), so a Node-level test of a
+//   `public/` URL has to run against this copy; the differentials above are
+//   what prove the front door reproduces it byte for byte.
 //
 // Static asset serving: the `/` root redirect, the versioned-HTML middleware
 // (cache-busting `?v=<mtime>` rewrite for embedded WebViews), and the

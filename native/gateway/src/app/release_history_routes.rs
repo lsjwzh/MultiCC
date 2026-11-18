@@ -1,6 +1,6 @@
 //! The release-asset, iOS OTA and chat-history route cluster retired from
 //! `src/routes/system.js`, `src/ios-udid.js`, `src/routes/chat-history.js` and
-//! `src/routes/static-assets.js` -- the ten routes listed in
+//! `src/routes/static-assets.js` -- the eleven routes listed in
 //! [`multicc_core::release_history_routes`].
 //!
 //! Path matching, parameter decoding, the automatic `OPTIONS` answer, the
@@ -17,9 +17,12 @@
 //! answer the retired Express handler produced -- so the public contract stays
 //! byte-identical.
 //!
-//! `GET /multicc.apk` is deliberately not claimed: with a local file it falls
-//! through to `express.static` (a streamed `sendFile`), so the route cannot be
-//! split in the front door; it keeps running on Node.
+//! `GET /multicc.apk` is claimed like the rest of the cluster, but only its
+//! decision is the host's: a usable local file made the retired handler call
+//! `next()` into `express.static`, and that mount is
+//! [`super::static_web_root`] now, so the host reports `fellThrough` and the
+//! file is streamed here with the same engine. The 302 and the bare 404 are
+//! relayed like any other answer.
 //!
 //! Authentication. The OTA fetchers are not browsers: `itms-services` cannot log
 //! in and the Apple device posts its signed reply from the phone. The exemptions
@@ -42,7 +45,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::{Method, Response, Uri};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, Response, Uri};
 use base64::Engine;
 use multicc_core::auth_runtime::Snapshot;
 use multicc_core::http_gate::{self, error_dto, is_private_network_address, query_value};
@@ -260,6 +263,7 @@ pub async fn handle(
     peer: &str,
     snapshot: &Snapshot,
     host: u16,
+    upstream: crate::forward::UpstreamHandle,
 ) -> Response<Body> {
     // Node's `gate('peer')` runs for every path, public ones included.
     if app.lan_only && !is_private_network_address(peer) {
@@ -366,10 +370,106 @@ pub async fn handle(
     payload.insert("requestId".into(), Value::String(ctx.ids.0.clone()));
     payload.insert("correlationId".into(), Value::String(ctx.ids.1.clone()));
 
-    match call(ctx, host, Value::Object(payload)).await {
-        Ok(answer) => relay(ctx, answer),
-        Err(response) => response,
+    let answer = match call(ctx, host, Value::Object(payload)).await {
+        Ok(answer) => answer,
+        Err(response) => return response,
+    };
+    if route == Route::ApkDownload {
+        return apk_download(app, ctx, answer, upstream).await;
     }
+    relay(ctx, answer)
+}
+
+/// `GET|HEAD /multicc.apk`. The retired handler had three outcomes, and only
+/// one of them wrote a response itself:
+///
+/// * a usable local `public/multicc.apk` -> `next()`, which dropped the
+///   request back into the chain: the `.apk`/`.ipa` guard first (a case
+///   variant of the name dies there with its bare no-store 404), then
+///   `express.static`'s streamed `sendFile` (Range / ETag / Last-Modified,
+///   plus the download headers), and whatever neither resolved still reached
+///   Node (a trailing-slash spelling never matched the guard and is no file).
+///   The guard is [`super::static_assets_routes`], the static mount is
+///   [`super::static_web_root`], and the last step is the same forward every
+///   unclaimed request takes.
+/// * a verified release -> `res.redirect(302, url)` after two `res.set`s.
+/// * every other state -> `res.set('Cache-Control', 'no-store')` + a bare 404.
+async fn apk_download(
+    app: &Arc<App>,
+    ctx: &RequestCtx,
+    answer: Value,
+    upstream: crate::forward::UpstreamHandle,
+) -> Response<Body> {
+    if answer.get("fellThrough") == Some(&Value::Bool(true)) {
+        if let Ok(uri) = Uri::try_from(ctx.original_url.as_str()) {
+            if let Some(route) = super::static_assets_routes::claim(&ctx.method, uri.path()) {
+                return super::static_assets_routes::handle(route, ctx);
+            }
+            // Only the upgrade check reads the headers, and an upgrade never
+            // reached the retired Express chain.
+            let mut headers = HeaderMap::new();
+            if ctx.headers.get("upgrade").is_some() {
+                headers.insert(
+                    axum::http::header::UPGRADE,
+                    HeaderValue::from_static("websocket"),
+                );
+            }
+            if let Some(resolved) =
+                super::static_web_root::claim(app, &ctx.method, &uri, &headers)
+            {
+                return super::static_web_root::handle(app, ctx, Some(&resolved)).await;
+            }
+        }
+        return crate::forward::forward(upstream, forward_request(ctx), None).await;
+    }
+    if let Some(redirect) = answer.get("redirect").and_then(Value::as_object) {
+        let status = redirect
+            .get("status")
+            .and_then(Value::as_u64)
+            .unwrap_or(302) as u16;
+        let location = redirect
+            .get("location")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let reason = if status == 301 {
+            "Moved Permanently"
+        } else {
+            "Found"
+        };
+        let mut response = express::redirect_status(ctx, location, status, reason);
+        // The two `res.set` calls the handler made before redirecting.
+        for (name, value) in relay_headers(&answer) {
+            if let (Ok(name), Ok(value)) = (
+                axum::http::HeaderName::try_from(name),
+                axum::http::HeaderValue::try_from(value),
+            ) {
+                response.headers_mut().insert(name, value);
+            }
+        }
+        return response;
+    }
+    relay(ctx, answer)
+}
+
+/// The request as [`crate::forward::forward`] would have received it, rebuilt
+/// after `express.json` consumed it: the body is gone, and the hop-by-hop
+/// headers with it.
+fn forward_request(ctx: &RequestCtx) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(ctx.method.clone())
+        .uri(ctx.original_url.as_str());
+    for name in ctx.headers.names() {
+        if matches!(
+            name,
+            "connection" | "content-length" | "transfer-encoding" | "upgrade"
+        ) {
+            continue;
+        }
+        if let Some(value) = ctx.headers.get(name) {
+            builder = builder.header(name, value);
+        }
+    }
+    builder.body(Body::empty()).expect("static request parts")
 }
 
 #[cfg(test)]
@@ -386,7 +486,12 @@ mod tests {
             claim(&Method::POST, "/ios-ota/udid/callback/t"),
             Some(Route::UdidCallback)
         );
-        assert_eq!(claim(&Method::GET, "/multicc.apk"), None);
+        assert_eq!(
+            claim(&Method::GET, "/multicc.apk"),
+            Some(Route::ApkDownload)
+        );
+        assert_eq!(claim(&Method::HEAD, "/multicc.apk"), Some(Route::ApkDownload));
+        assert_eq!(claim(&Method::POST, "/multicc.apk"), None);
         assert_eq!(claim(&Method::GET, "/"), None);
     }
 
@@ -409,7 +514,11 @@ mod tests {
             options_share("/ios-ota/manifest.plist").as_deref(),
             Some("GET,HEAD")
         );
-        assert_eq!(options_share("/multicc.apk"), None);
+        assert_eq!(
+            options_share("/multicc.apk").as_deref(),
+            Some("GET,HEAD")
+        );
+        assert_eq!(options_share("/multicc-ios.ipa"), None);
     }
 
     #[test]

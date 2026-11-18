@@ -80,6 +80,7 @@ pub mod share_machine_routes;
 pub mod sqlite;
 pub mod state_file;
 pub mod static_assets_routes;
+pub mod static_web;
 pub mod subagent_defaults;
 pub mod subscription;
 pub mod subscription_cache;

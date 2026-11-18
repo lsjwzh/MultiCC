@@ -1,7 +1,10 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
 const express = require('express'), fs = require('node:fs'), path = require('node:path');
-const { createStaticAssetsRoutes } = require('../src/routes/static-assets');
+// 静态服务已迁入 Rust 前门（static_web_root.rs），Node 侧没有产品路径可跑；
+// 这里用冻结的退休模块在真实 public/ 树上断言同一份契约，前门与它逐字节一致
+// 由 docs/rust-migration/differential/static-web-root.js 证明。
+const { createStaticAssetsRoutes } = require('./helpers/legacy-static-assets-routes');
 const { mountAir } = require('./helpers/air-host');
 
 test('public conversation bookmarks resolve through tasks; Air owns the only chat entry', async t => {
@@ -10,14 +13,13 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
-  // `/manage`、`/dashboard` 与 `/air?view=planner` 的重定向已由 Rust 前门独占
-  // （native/core/src/static_assets_routes.rs；Node 侧注册已删除）。这里只断言
-  // Node 不再用 302 认领它们，剩下的 versioned-HTML 入口仍在 Node 上。
-  for (const url of ['/manage', '/dashboard', '/air?view=planner']) {
-    const response = await fetch(base + url, { redirect: 'manual' });
-    assert.notEqual(response.status, 302, `${url} 归 Rust 前门，Node 不再重定向`);
-    assert.equal(response.headers.get('location'), null, url);
-  }
+  // `/manage`、`/dashboard`、`/air?view=planner` 的重定向，以及整个静态服务，
+  // 都已由 Rust 前门独占。Node 侧的产品模块现在一条注册都不剩 —— 这里直接按
+  // 导出面断言，比在冻结副本上看状态码更不容易被绕过。
+  const production = require('../src/routes/static-assets')
+    .createStaticAssetsRoutes({ publicDir: path.resolve(__dirname, '../public') });
+  assert.deepEqual(Object.keys(production), ['serveHtml']);
+  assert.equal(typeof production.mountRoutes, 'undefined');
   for (const url of ['/manage-task-planner.js', '/manage-task-planner.css']) {
     assert.equal((await fetch(base + url)).status, 404, url);
   }

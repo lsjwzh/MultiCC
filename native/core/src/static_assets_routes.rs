@@ -28,6 +28,8 @@
 use url::form_urlencoded;
 
 use crate::http_gate::{query_value, QueryValue};
+use crate::http_send::Header;
+use crate::static_web::{self, decode_uri_component};
 
 /// The allowlist `allowed.has(requested)` is checked against.
 pub const ALLOWED_VIEWS: [&str; 17] = [
@@ -260,26 +262,6 @@ pub fn air_planner_redirect(query: &QueryView) -> Option<String> {
         .then(|| overview_redirect(query, &["dir", "task", "token", "external"]))
 }
 
-/// `decodeURIComponent(text)`, `None` where it throws (a stray `%`, a bad
-/// escape, or bytes that are not UTF-8).
-fn decode_uri_component(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let nibble = |byte: u8| (byte as char).to_digit(16).map(|digit| digit as u8);
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let high = bytes.get(index + 1).copied().and_then(nibble)?;
-            let low = bytes.get(index + 2).copied().and_then(nibble)?;
-            out.push(high << 4 | low);
-            index += 3;
-        } else {
-            out.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
 
 /// `/\.(apk|ipa)$/i`.
 fn has_binary_suffix(path: &str) -> bool {
@@ -295,9 +277,377 @@ pub fn is_forbidden_binary(path: &str) -> bool {
     requested != "/multicc.apk" && requested != "/multicc-ios.ipa" && has_binary_suffix(&requested)
 }
 
+// ---------------------------------------------------------------------------
+// The versioned-HTML middleware (`src/routes/static-assets.js`)
+// ---------------------------------------------------------------------------
+
+/// The four documents the retired middleware answered with `task-entry.html`.
+const TASK_ENTRY_PATHS: [&str; 4] = ["chat", "chat.html", "task-shell", "task-shell.html"];
+
+/// What the retired `app.use((req, res, next) => …)` middleware would do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionedPlan {
+    /// `next()`: not a GET, an undecodable path, an escaping candidate, or no
+    /// candidate file. The `express.static` mount is next in line.
+    Skip,
+    /// The chat/task-shell hop: `public/task-entry.html`, always rendered.
+    TaskEntry,
+    /// This `public/`-relative candidate, rendered when it is a regular file.
+    Candidate { relative: String },
+}
+
+/// `req.query.air === '1'` plus a non-empty `task` or `session`: the one case
+/// where `chat.html` stays the canonical renderer instead of hopping.
+fn air_chat_renderer(rel: &str, query: &QueryView) -> bool {
+    query.string("air").as_deref() == Some("1")
+        && ["chat", "chat.html"].contains(&rel)
+        && ["task", "session"]
+            .iter()
+            .any(|key| query.truthy_string(key).is_some())
+}
+
+/// The middleware's decision for `GET <path>`; callers must not run it for any
+/// other method (the retired handler's first line was `req.method !== 'GET'`).
+pub fn versioned_plan(path: &str, query: &QueryView) -> VersionedPlan {
+    let Some(decoded) = decode_uri_component(path) else {
+        return VersionedPlan::Skip;
+    };
+    let rel = decoded.trim_start_matches('/');
+    if TASK_ENTRY_PATHS.contains(&rel) && !air_chat_renderer(rel, query) {
+        return VersionedPlan::TaskEntry;
+    }
+    let candidate = if rel.is_empty() || rel == "/" {
+        "index.html".to_string()
+    } else if rel.ends_with(".html") {
+        rel.to_string()
+    } else {
+        format!("{rel}.html")
+    };
+    // `path.resolve(publicDir, c)` followed by the `startsWith(publicDir + sep)`
+    // containment test: a candidate that leaves the root failed the `if` and
+    // fell through to the static mount.
+    let resolved = static_web::normalize(&candidate);
+    if resolved.starts_with('/') || resolved.starts_with("..") || resolved == "." {
+        return VersionedPlan::Skip;
+    }
+    VersionedPlan::Candidate { relative: resolved }
+}
+
+/// The document name the `TaskEntry` hop renders.
+pub const TASK_ENTRY_FILE: &str = "task-entry.html";
+
+/// JS `\s`.
+fn is_js_space(value: char) -> bool {
+    matches!(value,
+        '\u{9}' | '\u{a}' | '\u{b}' | '\u{c}' | '\u{d}' | '\u{20}' | '\u{a0}' | '\u{1680}'
+        | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}'
+        | '\u{3000}' | '\u{feff}')
+}
+
+/// The attribute prefix `((?:src|href)\s*=\s*["'])`, matched at `start`.
+/// Returns the index just past the opening quote.
+fn attribute_prefix(chars: &[char], start: usize) -> Option<usize> {
+    let name: String = chars
+        .get(start..(start + 4).min(chars.len()))?
+        .iter()
+        .collect();
+    let lower = name.to_ascii_lowercase();
+    let mut index = if lower.starts_with("src") {
+        start + 3
+    } else if lower.starts_with("href") {
+        start + 4
+    } else {
+        return None;
+    };
+    while chars.get(index).copied().is_some_and(is_js_space) {
+        index += 1;
+    }
+    if chars.get(index).copied() != Some('=') {
+        return None;
+    }
+    index += 1;
+    while chars.get(index).copied().is_some_and(is_js_space) {
+        index += 1;
+    }
+    match chars.get(index) {
+        Some('"') | Some('\'') => Some(index + 1),
+        _ => None,
+    }
+}
+
+/// `((?:src|href)\s*=\s*["'])(?!https?:)(?!\/\/)([^"'?#]+\.)(js|css)(["'])` →
+/// `$1$2$3?v=<mtime>$4`, the cache-busting rewrite for embedded WebViews.
+///
+/// `mtime` receives the asset's `public/`-relative name (group 2 + group 3) and
+/// returns its raw `stat.mtimeMs`, or `None` where `statSync` threw — in which
+/// case the match is kept verbatim, exactly like the retired `catch`.
+pub fn version_html(html: &str, mtime: &dyn Fn(&str) -> Option<f64>) -> String {
+    let chars: Vec<char> = html.chars().collect();
+    let forbidden = |value: char| matches!(value, '"' | '\'' | '?' | '#');
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0usize;
+    let mut at = 0usize;
+    while at < chars.len() {
+        let Some(value_start) = attribute_prefix(&chars, at) else {
+            at += 1;
+            continue;
+        };
+        let rest: String = chars[value_start..].iter().collect();
+        let lower_rest = rest.to_ascii_lowercase();
+        if lower_rest.starts_with("http:")
+            || lower_rest.starts_with("https:")
+            || lower_rest.starts_with("//")
+        {
+            at += 1;
+            continue;
+        }
+        let mut run_end = value_start;
+        while chars.get(run_end).copied().is_some_and(|c| !forbidden(c)) {
+            run_end += 1;
+        }
+        // Group 4 is a quote, and a quote is the only thing that can end the
+        // run and still match.
+        let quote = match chars.get(run_end) {
+            Some('"') => '"',
+            Some('\'') => '\'',
+            _ => {
+                at += 1;
+                continue;
+            }
+        };
+        let run: String = chars[value_start..run_end].iter().collect();
+        let lower_run = run.to_ascii_lowercase();
+        // `([^"'?#]+\.)(js|css)`: at least one character, then the dot.
+        let extension_len = if lower_run.ends_with(".js") && run.chars().count() >= 4 {
+            2
+        } else if lower_run.ends_with(".css") && run.chars().count() >= 5 {
+            3
+        } else {
+            at += 1;
+            continue;
+        };
+        let split = run.chars().count() - extension_len;
+        let name: String = run.chars().take(split).collect();
+        let extension: String = run.chars().skip(split).collect();
+        let prefix: String = chars[at..value_start].iter().collect();
+        let head: String = chars[cursor..at].iter().collect();
+        out.push_str(&head);
+        match mtime(&run) {
+            Some(mtime_ms) => {
+                let stamp = crate::js::number::number_to_string(mtime_ms.floor());
+                out.push_str(&prefix);
+                out.push_str(&name);
+                out.push_str(&extension);
+                out.push_str("?v=");
+                out.push_str(&stamp);
+                out.push(quote);
+            }
+            None => {
+                let whole: String = chars[at..=run_end].iter().collect();
+                out.push_str(&whole);
+            }
+        }
+        cursor = run_end + 1;
+        at = cursor;
+    }
+    out.extend(chars[cursor..].iter());
+    out
+}
+
+/// The retired mount's `setHeaders` hook: the two canonical release binaries
+/// are the only `.apk`/`.ipa` names the guard lets through, and both are sent
+/// as a no-store attachment. The order is the hook's `res.set` order, which is
+/// the order Node writes them.
+pub fn download_headers(path: &str) -> Vec<Header> {
+    let named = |content_type: &str, filename: &str| {
+        vec![
+            Header::new("Content-Type", content_type),
+            Header::new(
+                "Content-Disposition",
+                &format!("attachment; filename=\"{filename}\""),
+            ),
+            Header::new("Cache-Control", "no-store, no-cache, must-revalidate"),
+            Header::new("Pragma", "no-cache"),
+            Header::new("Expires", "0"),
+        ]
+    };
+    if path.ends_with(".apk") {
+        return named("application/vnd.android.package-archive", "multicc.apk");
+    }
+    if path.ends_with(".ipa") {
+        return named("application/octet-stream", "multicc-ios.ipa");
+    }
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Measured against the real `html.replace(/…/gi, …)` with the same stub
+    /// mtimes (node_modules/express is the oracle; see the probe in the
+    /// commit message). Every pair below is the JS output byte for byte.
+    #[test]
+    fn version_html_matches_the_retired_regexp() {
+        let mtime = |name: &str| match name {
+            "air.css" => Some(111.0),
+            "a.js" => Some(222.0),
+            "x/y.js" => Some(333.0),
+            "A.JS" => Some(444.0),
+            "deep.min.js" => Some(555.0),
+            _ => None,
+        };
+        let cases: [(&str, &str); 24] = [
+            (r#"<link href="air.css">"#, r#"<link href="air.css?v=111">"#),
+            (
+                r#"<script src="a.js"></script>"#,
+                r#"<script src="a.js?v=222"></script>"#,
+            ),
+            (
+                r#"<script src='a.js'></script>"#,
+                r#"<script src='a.js?v=222'></script>"#,
+            ),
+            (r#"<script src = "a.js">"#, r#"<script src = "a.js?v=222">"#),
+            (
+                "<script src\t=\n\"a.js\">",
+                "<script src\t=\n\"a.js?v=222\">",
+            ),
+            (r#"<script src="x/y.js">"#, r#"<script src="x/y.js?v=333">"#),
+            (r#"<script src="A.JS">"#, r#"<script src="A.JS?v=444">"#),
+            (
+                r#"<script src="deep.min.js">"#,
+                r#"<script src="deep.min.js?v=555">"#,
+            ),
+            // The two negative lookaheads and the protocol-relative form.
+            (
+                r#"<script src="https://cdn/a.js">"#,
+                r#"<script src="https://cdn/a.js">"#,
+            ),
+            (
+                r#"<script src="http://cdn/a.js">"#,
+                r#"<script src="http://cdn/a.js">"#,
+            ),
+            (
+                r#"<script src="//cdn/a.js">"#,
+                r#"<script src="//cdn/a.js">"#,
+            ),
+            // `?` and `#` end the value run, so an already-versioned or
+            // fragment URL never matches.
+            (r#"<script src="a.js?v=1">"#, r#"<script src="a.js?v=1">"#),
+            (r#"<script src="a.js#frag">"#, r#"<script src="a.js#frag">"#),
+            // A missing file keeps the match verbatim (the retired `catch`).
+            (
+                r#"<script src="unknown.js">"#,
+                r#"<script src="unknown.js">"#,
+            ),
+            // No word boundary: `data-src` matches at its `src`.
+            (
+                r#"<div data-src="a.js">"#,
+                r#"<div data-src="a.js?v=222">"#,
+            ),
+            // The quotes need not match each other.
+            (r#"<script src="a.js'>"#, r#"<script src="a.js?v=222'>"#),
+            // `[^"'?#]+\.` needs a character before the dot.
+            (r#"<script src=".js">"#, r#"<script src=".js">"#),
+            (r#"<script src="a.mjs">"#, r#"<script src="a.mjs">"#),
+            (
+                r#"<link href="air.css"><script src="a.js">"#,
+                r#"<link href="air.css?v=111"><script src="a.js?v=222">"#,
+            ),
+            (r#"<script src="">"#, r#"<script src="">"#),
+            (r#"<script src="a.jsx">"#, r#"<script src="a.jsx">"#),
+            (r#"<a href="a.css">x</a>"#, r#"<a href="a.css">x</a>"#),
+            (r#"<script SRC="a.js">"#, r#"<script SRC="a.js?v=222">"#),
+            // An unterminated value has no group 4.
+            (r#"<script src="a.js"#, r#"<script src="a.js"#),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(version_html(input, &mtime), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn version_html_floors_the_mtime_like_math_floor() {
+        let mtime = |_: &str| Some(1_763_000_000_123.9);
+        assert_eq!(
+            version_html(r#"<link href="air.css">"#, &mtime),
+            r#"<link href="air.css?v=1763000000123">"#
+        );
+    }
+
+    #[test]
+    fn versioned_plan_follows_the_retired_middleware() {
+        let plan = |target: &str| versioned_plan(path_of(target), &QueryView::new(target));
+        assert_eq!(plan("/"), VersionedPlan::Candidate { relative: "index.html".to_string() });
+        assert_eq!(plan("/air"), VersionedPlan::Candidate { relative: "air.html".to_string() });
+        assert_eq!(plan("/air.html"), VersionedPlan::Candidate { relative: "air.html".to_string() });
+        assert_eq!(
+            plan("/docs/guide"),
+            VersionedPlan::Candidate { relative: "docs/guide.html".to_string() }
+        );
+        // The chat/task-shell hop, and the one `?air=1` exception to it.
+        assert_eq!(plan("/chat"), VersionedPlan::TaskEntry);
+        assert_eq!(plan("/chat.html"), VersionedPlan::TaskEntry);
+        assert_eq!(plan("/task-shell"), VersionedPlan::TaskEntry);
+        assert_eq!(plan("/task-shell.html"), VersionedPlan::TaskEntry);
+        assert_eq!(plan("/chat.html?air=1"), VersionedPlan::TaskEntry);
+        assert_eq!(plan("/chat.html?air=1&task="), VersionedPlan::TaskEntry);
+        assert_eq!(plan("/chat.html?air=0&task=t1"), VersionedPlan::TaskEntry);
+        assert_eq!(
+            plan("/chat.html?air=1&task=t1"),
+            VersionedPlan::Candidate { relative: "chat.html".to_string() }
+        );
+        assert_eq!(
+            plan("/chat?air=1&session=s1"),
+            VersionedPlan::Candidate { relative: "chat.html".to_string() }
+        );
+        // An array `air` is not the string '1'; the hop stands.
+        assert_eq!(plan("/chat?air=1&air=1&task=t1"), VersionedPlan::TaskEntry);
+        // An undecodable path and an escaping candidate both fall through.
+        assert_eq!(plan("/%"), VersionedPlan::Skip);
+        assert_eq!(plan("/../etc/passwd"), VersionedPlan::Skip);
+        assert_eq!(plan("/a/../../etc"), VersionedPlan::Skip);
+        // Leading slashes are stripped, not normalised away.
+        assert_eq!(
+            plan("//air"),
+            VersionedPlan::Candidate { relative: "air.html".to_string() }
+        );
+    }
+
+    fn path_of(target: &str) -> &str {
+        match target.find('?') {
+            Some(cut) => &target[..cut],
+            None => target,
+        }
+    }
+
+    #[test]
+    fn download_headers_cover_only_the_two_release_binaries() {
+        let names: Vec<String> = download_headers("/p/multicc.apk")
+            .iter()
+            .map(|header| header.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Content-Type",
+                "Content-Disposition",
+                "Cache-Control",
+                "Pragma",
+                "Expires"
+            ]
+        );
+        let ipa = download_headers("/p/multicc-ios.ipa");
+        assert_eq!(
+            String::from_utf8_lossy(&ipa[0].value),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&ipa[1].value),
+            "attachment; filename=\"multicc-ios.ipa\""
+        );
+        assert!(download_headers("/p/air.css").is_empty());
+    }
 
     fn manage(url: &str) -> String {
         manage_redirect(&QueryView::new(url))
