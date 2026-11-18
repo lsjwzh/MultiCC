@@ -396,6 +396,20 @@ bridges can be removed when the Rust host owns session admission and supervisor 
 
 `hasQueuedDeliveries` 只提供积压事实；是否推迟判定由 Rust 结合等待/异常状态决定。
 
+#### Backlog recheck
+
+推迟判定（`backlog_pending`，无论发生在回合结束的 `decide_turn_end` 还是 Aux 返回后的
+`decide`）假设积压里的消息会自己跑出一个 D 并触发下一次判定。当积压项其实是已经执行过、
+却没有出队的残留项时，它被清掉不会产生任何回合，值守就停在 `active` 且无人再判定。
+因此两条推迟路径都返回 `recheckAfterMs`（15 s）与 `recheckMaxAttempts`（120），宿主据此
+挂一个内存定时器（每会话最多一个，不持久化；重启由启动对账接管）。定时器触发时逐项复核：
+
+- 被推迟的 settle 仍是最新一次（`lastTurnEndId` + `lastSettleAt` 未变），且仍是 `active`；
+- 没有回合在跑、没有判定在途（回合自己的 settle 会负责下一次判定）；
+- 积压已消失：满足则补一次判定；积压仍在则重新计时，直到次数用尽后停止并写日志。
+
+暂停/停止/清除/关停会清掉定时器。内核没有给出这两个字段（旧 addon）时宿主不挂定时器。
+
 ### Fault (E) continuation and backoff
 
 After the API-error policy has finished with an E (its own scheduled retry → do nothing),
@@ -469,7 +483,7 @@ second time).
 | End type (fact) | Kernel action |
 | --- | --- |
 | D settle, no staged backlog (`settle:'D'`) | `evaluate` (Aux verdict) |
-| D settle, staged backlog (`backlogPending`) | `none` / `backlog_pending` — defer; release held push |
+| D settle, staged backlog (`backlogPending`) | `none` / `backlog_pending` — defer; release held push; carries `recheckAfterMs` / `recheckMaxAttempts` (see Backlog recheck) |
 | W settle (`settle:'W'`, pending question) | `evaluate` — the Aux answers the question |
 | E fault, API policy scheduled its retry (`retryScheduled`) | `none` / `policy_retry` |
 | E fault (rules path) or host-interrupted turn, recoverable category | `fault_continue` (delay 0) or `fault_wait` with persisted `retryAt`; never a streak cap |

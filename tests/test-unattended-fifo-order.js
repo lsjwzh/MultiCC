@@ -512,6 +512,101 @@ test('(c) D settle with a staged backlog defers; the backlog drains, then its ow
   assert.deepEqual(pushes, ['classic'], 'the follow-up settle produced its own outcome');
 });
 
+// Regression: a settle yielded to a FIFO entry that had already run but was never
+// dequeued. Clearing that leftover starts no turn and so produces no D settle;
+// without a recheck the active supervisor sat idle until its deadline.
+async function deferredSettleWithBacklog(h, text = 'A finished') {
+  await h.activeTurn('finish A');
+  const backlog = await h.scheduler.admit({ sessionId: SESSION, text: 'leftover', source: 'operation', idempotencyKey: 'leftover' });
+  assert.equal(backlog.queued, true);
+  h.setClassifyState('D');
+  await h.scheduler.complete(SESSION, { classifyState: 'D' });
+  const deferred = await h.unattended.onTurnEnd(SESSION, { kind: 'settle', assistantText: text, settle: 'D' });
+  assert.deepEqual(deferred, { ok: false, code: 'backlog_pending' });
+  assert.equal(h.calls.enqueue, 0);
+  return backlog;
+}
+
+async function tick(h, ms) {
+  h.advance(ms);
+  h.fireTimers();
+  await flush();
+}
+
+test('(d) a deferred settle is re-evaluated once the leftover backlog disappears without a turn', async t => {
+  const h = fixture(t);
+  await h.arm();
+  const backlog = await deferredSettleWithBacklog(h);
+  assert.equal(h.unattended.stats().backlogRechecks, 1, 'the deferral armed one recheck');
+
+  // The leftover is cleared without ever running a turn: no D settle will follow.
+  assert.equal((await h.scheduler.cancelQueued(SESSION, backlog.entry.id, { actor: 'test', reason: 'leftover' })).ok, true);
+  await tick(h, 1_000);
+  assert.equal(h.calls.enqueue, 0, 'not before the kernel delay');
+
+  await tick(h, 15_000);
+  await until(() => h.calls.enqueue === 1, 'the recheck verdict');
+  assert.equal(h.calls.decide, 1);
+  assert.equal(h.unattended.get(SESSION).rounds, 1, 'the dropped settle finally bought its round');
+  await until(async () => (await h.outbox.list({ sessionId: SESSION }))
+    .some(item => String(item.payload?.message || '').includes(TAG)), 'the continuation');
+  assert.equal(h.unattended.stats().backlogRechecks, 0);
+});
+
+test('(e) a backlog that is still queued keeps the recheck alive; a newer settle ends it', async t => {
+  const h = fixture(t);
+  await h.arm();
+  const backlog = await deferredSettleWithBacklog(h);
+
+  await tick(h, 15_000);
+  assert.equal(h.calls.enqueue, 0, 'the real backlog still owns the next verdict');
+  assert.equal(h.unattended.stats().backlogRechecks, 1, 'the recheck re-armed itself');
+
+  // The backlog runs and its own D settle evaluates, exactly as before.
+  const next = await h.claimOne();
+  assert.equal(next.id, backlog.entry.id);
+  await h.startClaim(next);
+  h.setClassifyState('D');
+  await h.scheduler.complete(SESSION, { classifyState: 'D' });
+  await h.unattended.onTurnEnd(SESSION, { kind: 'settle', assistantText: 'B finished', settle: 'D' });
+  await until(() => h.calls.enqueue === 1, 'the backlog settle verdict');
+
+  // The stale recheck must not buy a second verdict for the earlier settle.
+  await tick(h, 15_000);
+  await tick(h, 15_000);
+  assert.equal(h.calls.enqueue, 1);
+  assert.equal(h.unattended.get(SESSION).rounds, 1);
+  assert.equal(h.unattended.stats().backlogRechecks, 0);
+});
+
+test('(f) the recheck gives up after the kernel attempt cap and never evaluates a persistent backlog', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await deferredSettleWithBacklog(h);
+  assert.equal(h.unattended.stats().backlogRechecks, 1, 'the deferral armed a recheck to exhaust');
+  let ticks = 0;
+  while (h.unattended.stats().backlogRechecks > 0 && ticks < 125) {
+    await tick(h, 15_000);
+    ticks += 1;
+  }
+  assert.equal(ticks, 120, 'one tick per attempt up to the kernel cap (recheckMaxAttempts)');
+  assert.equal(h.unattended.stats().backlogRechecks, 0, 'bounded by recheckMaxAttempts');
+  assert.equal(h.calls.enqueue, 0);
+  assert.equal(h.unattended.get(SESSION).status, 'active');
+});
+
+test('(g) stopping the supervisor cancels a pending backlog recheck', async t => {
+  const h = fixture(t);
+  await h.arm();
+  const backlog = await deferredSettleWithBacklog(h);
+  assert.equal(h.unattended.stats().backlogRechecks, 1);
+  assert.equal(h.unattended.stop(SESSION).ok, true);
+  assert.equal(h.unattended.stats().backlogRechecks, 0);
+  await h.scheduler.cancelQueued(SESSION, backlog.entry.id, { actor: 'test', reason: 'leftover' });
+  await tick(h, 60_000);
+  assert.equal(h.calls.enqueue, 0, 'a stopped supervisor never rechecks');
+});
+
 test('ordinary unattended user inputs drain in FIFO before the next automatic instruction', async t => {
   const h = fixture(t);
   await h.arm();
