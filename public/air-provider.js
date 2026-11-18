@@ -256,7 +256,7 @@
         <div id="air-provider-create-choice" class="air-provider-create-choice">
           <section><strong>${t('airProviderAddByKey')}</strong><span>${t('airProviderAddByKeyDesc')}</span><div><button type="button" data-provider-key="claude">Claude · Anthropic</button><button type="button" data-provider-key="codex">Codex · OpenAI</button></div></section>
           <section><strong>${t('airProviderAddAccount')}</strong><span>${t('airProviderAddAccountDesc')}</span><div><button type="button" data-provider-account="claude">Claude</button><button type="button" data-provider-account="codex">Codex</button></div></section>
-          <section><strong>虚拟 Provider</strong><span>组合相同 CLI 的线路，自动切换并共享。</span><div><button type="button" data-provider-virtual>创建组合</button></div></section>
+          <section><strong>${t('airProviderVirtual')}</strong><span>${t('airProviderVirtualDesc')}</span><div><button type="button" data-provider-virtual>${t('airProviderVirtualCreate')}</button></div></section>
         </div>
         <div id="air-provider-api-fields">
         <p id="air-provider-official-hint" class="air-migration-note" hidden>${t('airProviderOfficialLockedHint')}</p>
@@ -1205,7 +1205,7 @@
     for (const [value, label] of protocols) { const tab = button(label, () => setProtocol(value), 'air-provider-tab'); tab.dataset.protocol = value; tabs.append(tab); }
     const importButton = button(t('airProviderImportFromCcSwitch'), importProviders); importButton.id = 'air-provider-import';
     toolbar.append(tabs, importButton);
-    toolbar.append(button('＋ 虚拟 Provider', () => root.MultiCCVirtualProvider?.open({ providers: data?.providers || [], api: context.api, onSaved: load })));
+    toolbar.append(button(`＋ ${t('airProviderVirtual')}`, () => root.MultiCCVirtualProvider?.open({ providers: data?.providers || [], api: context.api, onSaved: load })));
     const cards = make('div', null, 'air-provider-cards'); cards.id = 'air-provider-cards';
     const advanced = make('section', null, 'air-provider-advanced'); advanced.id = 'air-provider-advanced'; advanced.hidden = !advancedOpen;
     const note = make('div', null, 'air-migration-note'); note.append(make('strong', t('airProviderAdvancedTitle')), make('span', t('airProviderAdvancedBody')));
