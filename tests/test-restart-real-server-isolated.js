@@ -30,7 +30,8 @@ for (const [label, bindHost] of [['loopback', '127.0.0.1'], ['localhost', 'local
     else fs.copyFileSync(source, path.join(scripts, name));
   }
   fs.copyFileSync(path.join(repo, 'scripts/start-gateway.js'), path.join(scripts, 'start-gateway.js'));
-  fs.writeFileSync(path.join(scripts, 'ensure-source-rust.js'), 'exports.ensureSourceRust=()=>process.env.MULTICC_RUST_ADDON;');
+  fs.writeFileSync(path.join(scripts, 'ensure-source-rust.js'),
+    'exports.ensureSourceRust=()=>process.env.MULTICC_RUST_ADDON;exports.addonForSourceChild=()=>process.env.MULTICC_RUST_ADDON;');
   fs.copyFileSync(path.join(repo, 'package.json'), path.join(host, 'package.json'));
   fs.symlinkSync(path.dirname(path.dirname(require.resolve('express/package.json'))), path.join(host, 'node_modules'), 'junction');
   const addon = process.env.MULTICC_RUST_ADDON || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.join(repo, 'native/prebuilt'), `${process.platform}-${process.arch}`, 'multicc_core.node');

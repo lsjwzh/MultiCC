@@ -13,6 +13,7 @@
 // `multicc-gateway --version`, scripts/build-rust-kernels.js, and here.
 
 const net = require('node:net');
+const path = require('node:path');
 
 const GATEWAY_PROTOCOL = 12;
 const INTERNAL_HOST = '127.0.0.1';
@@ -36,7 +37,11 @@ function isGatewayChild(env = process.env, ppid = process.ppid) {
 // MULTICC_SOURCE_ROOT 只是接力标记，读完即删，不许再传给孙进程。
 function applySourceAddonEnv(sourceRoot, env = process.env) {
   if (isGatewayChild(env) && env.MULTICC_SOURCE_ROOT === sourceRoot && env.MULTICC_DESKTOP !== '1') {
-    env.MULTICC_RUST_ADDON = require('../scripts/ensure-source-rust').addonForSourceChild(sourceRoot);
+    // Resolve through the SERVED root, not this module's realpath: tests copy
+    // server.js into a fixture host and symlink src/, so a module-relative
+    // require would escape the fixture and load the real ensure-source-rust.
+    env.MULTICC_RUST_ADDON = require(path.join(sourceRoot, 'scripts', 'ensure-source-rust'))
+      .addonForSourceChild(sourceRoot);
   }
   delete env.MULTICC_SOURCE_ROOT;
 }
