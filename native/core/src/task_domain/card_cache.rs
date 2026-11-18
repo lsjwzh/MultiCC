@@ -103,9 +103,81 @@ impl CardCache {
     fn add(&mut self, key: &str, n: usize) {
         self.stats[key] = json!(self.stats[key].as_u64().unwrap_or(0) + n as u64);
     }
+    /// 一轮快照的第一段：只上送 key/signature，由 Rust 决定哪些卡需要重建。
+    /// 命中时宿主不再构造任何底稿，成本与旧路径的 plan 相同。
+    pub fn snapshot_plan(&mut self, input: &str) -> Result<String, String> {
+        let v: Value =
+            crate::json_lenient::from_str(input).map_err(|_| "invalid_air_snapshot_input")?;
+        let items = v["items"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let plan = self.exec(&json!({
+            "op":"plan",
+            "globalSignature":v["globalSignature"],
+            "now":num(&v["now"]),
+            "prune":v["prune"],
+            "items":items.iter().map(|item| json!({
+                "key":item["key"],
+                "signature":item["signature"]
+            })).collect::<Vec<_>>()
+        }))?;
+        Ok(json!({
+            "ticket":plan["ticket"],
+            "needed":plan["needed"],
+            "hits":items.len().saturating_sub(array(&plan["needed"]).len())
+        })
+        .to_string())
+    }
+    /// 第二轮：宿主只带 needed 的底稿回来；complete、overlay、排序都在 Rust 内完成。
+    pub fn snapshot_finish(&mut self, input: &str) -> Result<String, String> {
+        let v: Value =
+            crate::json_lenient::from_str(input).map_err(|_| "invalid_air_snapshot_input")?;
+        let now = num(&v["now"]);
+        let built = v["bases"]
+            .as_array()
+            .map(|bases| {
+                bases
+                    .iter()
+                    .map(|item| json!({"base":item["base"]}))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let complete =
+            self.exec(&json!({"op":"complete","ticket":v["ticket"],"built":built,"now":now}))?;
+        let native_renderable = complete["nativeRenderable"] == true;
+        let overlay = self.exec(&json!({
+            "op":"overlay",
+            "now":now,
+            "facts":v["facts"],
+            "merges":v["merges"],
+            "capacityReasons":v["capacityReasons"],
+            "knownRenderToken":v["knownRenderToken"],
+            "keys":complete["keys"],
+            "tokens":complete["tokens"],
+            "nativeRenderable":complete["nativeRenderable"],
+            "entries":if native_renderable { Value::Null } else { complete["entries"].clone() }
+        }))?;
+        Ok(json!({
+            "cards":overlay["cards"],
+            "tokens":complete["tokens"],
+            "hits":complete["hits"],
+            "builds":complete["builds"],
+            "logs":complete["logs"],
+            "renderToken":overlay["token"]
+        })
+        .to_string())
+    }
+    /// 宿主在 plan 与 finish 之间失败时丢弃 ticket，避免占满待办队列。
+    pub fn snapshot_abort(&mut self, input: &str) -> Result<String, String> {
+        let v: Value =
+            crate::json_lenient::from_str(input).map_err(|_| "invalid_air_snapshot_input")?;
+        self.exec(&json!({"op":"abort","ticket":v["ticket"]}))?;
+        Ok("null".into())
+    }
     pub fn run(&mut self, input: &str) -> Result<String, String> {
         let v: Value =
             crate::json_lenient::from_str(input).map_err(|_| "invalid_card_cache_input")?;
+        Ok(self.exec(&v)?.to_string())
+    }
+    fn exec(&mut self, v: &Value) -> Result<Value, String> {
         let now = num(&v["now"]);
         let result = match text(&v["op"]) {
             "open" => {
@@ -231,7 +303,7 @@ impl CardCache {
                 if plan.version != self.version {
                     return Err("card_cache_version_changed".into());
                 }
-                let built = array(&v["built"]);
+                let built = v["built"].as_array().map(Vec::as_slice).unwrap_or(&[]);
                 if built.len() != plan.needed.len() {
                     return Err("card_cache_incomplete_build".into());
                 }
@@ -323,6 +395,6 @@ impl CardCache {
             }
             _ => return Err("invalid_card_cache_command".into()),
         };
-        Ok(result.to_string())
+        Ok(result)
     }
 }

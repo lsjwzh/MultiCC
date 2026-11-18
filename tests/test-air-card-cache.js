@@ -49,6 +49,10 @@ const card = (json, id) => json.tasks.find(task => task.id === id);
 function counted(cache, state) {
   const resolveAsync = cache.resolveAsync;
   cache.resolveAsync = async (...args) => { const result = await resolveAsync(...args); state.builds += result.builds; return result; };
+  const snapshotAsync = cache.snapshotAsync;
+  if (typeof snapshotAsync === 'function') {
+    cache.snapshotAsync = async (...args) => { const result = await snapshotAsync(...args); state.builds += result.builds; return result; };
+  }
   return cache;
 }
 

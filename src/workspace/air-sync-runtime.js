@@ -4,11 +4,12 @@ const { createAirIndex } = require('./air-index-port');
 // One producer supplies host-authorized cards. The Rust index owns summaries;
 // this host owns socket lifetimes and the atomic replay-to-live handoff.
 function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], send,
-  logger = console, reconcileMs = 30_000, debounceMs = 100, index = createAirIndex(), maxPending = 64 }) {
+  logger = console, reconcileMs = 30_000, debounceMs = 100, index = createAirIndex(), maxPending = 64,
+  retryBaseMs = 5_000, retryMaxMs = 60_000 }) {
   if (!Number.isInteger(maxPending) || maxPending < 1 || maxPending > 256) throw Error('invalid_air_queue_limit');
   const clients = new Map(), attaching = new Set();
   let stopped = false, inFlight = null, timer = null, dueAt = Infinity, full = true, dirty = new Set(), metaDirty = false;
-  let lastError = null, checkedAt = 0, retryAt = 0, tail = Promise.resolve(), pending = 0, closePromise;
+  let lastError = null, checkedAt = 0, retryAt = 0, failures = 0, tail = Promise.resolve(), pending = 0, closePromise;
   const unavailable = code => Object.assign(new Error('首页摘要暂不可用，请稍后重试'), { status: 503, code });
   function serial(operation, internal = false) {
     if (stopped) return Promise.reject(unavailable('air_closed'));
@@ -61,6 +62,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
     if (inFlight) return inFlight;
     clearTimeout(timer); timer = null; dueAt = Infinity;
     const all = full || !index.isReady() || (!dirty.size && !metaDirty), ids = [...dirty];
+    const metaOnly = !all && !ids.length;
     full = false; dirty.clear(); metaDirty = false;
     inFlight = (async () => {
       try {
@@ -70,12 +72,22 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
         // The producer has one reserved queue slot, so a full read queue cannot
         // prevent commits forever. Builds remain outside the handoff barrier.
         await serial(() => applyAndPublish(snapshot, { partial: !all, removed: all ? [] : ids.filter(id => !present.has(id)) }), true);
+        checkedAt = Date.now(); lastError = null; retryAt = 0; failures = 0;
       } catch (error) {
-        full = true; lastError = error; retryAt = Date.now() + 5000;
-        logger.warn?.('air_sync_refresh_failed', { code: error?.code || 'refresh_failed' });
+        lastError = error;
+        // 局部失败只重试这几张卡；只有全量/元数据档失败才需要下一轮全量核对。
+        // 退避按失败次数翻倍，避免 owner 暂时不可用时每 5 秒重建一次全部卡片。
+        failures += 1;
+        retryAt = Date.now() + Math.min(retryMaxMs, retryBaseMs * 2 ** Math.min(failures - 1, 4));
+        if (all) full = true;
+        else if (metaOnly) metaDirty = true;
+        else for (const id of ids) dirty.add(id);
+        logger.warn?.('air_sync_refresh_failed', { code: error?.code || 'refresh_failed', failures,
+          retryInMs: Math.max(0, retryAt - Date.now()), full: all });
       } finally {
         inFlight = null;
-        schedule(lastError ? 5000 : (full || dirty.size || metaDirty ? debounceMs : reconcileMs));
+        schedule(lastError ? Math.max(0, retryAt - Date.now())
+          : (full || dirty.size || metaDirty ? debounceMs : reconcileMs));
       }
     })();
     return inFlight;
