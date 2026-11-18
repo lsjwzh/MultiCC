@@ -999,6 +999,7 @@ impl Store {
                 | "scheduleMetadataBegin"
                 | "scheduleMetadataPage"
                 | "scheduleRecoverSnapshotExperimental"
+                | "scheduleRecoverOwnedSnapshotExperimental"
                 | "end"
                 | "inspect"
                 | "keys"
@@ -1276,7 +1277,9 @@ impl Store {
             }
             "scheduleCompleteExperimental" => schedule_admit_live::complete(self, input),
             "scheduleRecoverSnapshotExperimental" => schedule_recover::snapshot(self),
+            "scheduleRecoverOwnedSnapshotExperimental" => schedule_recover::owned_snapshot(self),
             "scheduleRecoverCommitExperimental" => schedule_recover::commit(self, input),
+            "scheduleRecoverOwnedCommitExperimental" => schedule_recover::owned_commit(self, input),
             "scheduleCompleteAtomicExperimental" => {
                 schedule_admit_live::complete_atomic(self, input)
             }
