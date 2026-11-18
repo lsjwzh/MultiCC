@@ -89,6 +89,13 @@ const MAX_PENDING_OPTIONS: usize = 12;
 const MAX_PENDING_OPTION_CHARS: usize = 300;
 const MAX_PROMPT_HISTORY: usize = HISTORY_MAX;
 
+/// 判定因 FIFO 积压让位后，宿主复查队列的间隔与最多次数。
+/// 让位假设「积压里的消息会自己跑出一个 D 再触发判定」；当积压项其实是
+/// 已执行过却没出队的残留项时，它被清掉后不会再有回合结束事件，会话就此停住。
+/// 复查只在积压消失且没有回合在跑时补一次判定，次数用尽后交还给人工。
+const BACKLOG_RECHECK_MS: i64 = 15_000;
+const BACKLOG_RECHECK_MAX_ATTEMPTS: i64 = 120;
+
 /// The fault-E instruction. It deliberately only asks to resume and verify;
 /// redoing side effects is exactly what a retry must not do blindly.
 const FAULT_INSTRUCTION: &str = "The previous turn was interrupted by an upstream fault. Resume from \
@@ -712,7 +719,9 @@ fn decide_inner(input: &str) -> Result<String, String> {
         let mut next = state.clone();
         next["evaluating"] = json!(false);
         return Ok(json!({ "nextState": next, "action": "none", "message": "",
-            "reason": "backlog_pending" })
+            "reason": "backlog_pending",
+            "recheckAfterMs": BACKLOG_RECHECK_MS,
+            "recheckMaxAttempts": BACKLOG_RECHECK_MAX_ATTEMPTS })
         .to_string());
     }
     let rounds = int_value(field(&state, "rounds")).unwrap_or(0).max(0);
@@ -1122,6 +1131,8 @@ pub fn decide_turn_end(input: &str) -> Result<String, String> {
                     "action": "none",
                     "message": "",
                     "reason": "backlog_pending",
+                    "recheckAfterMs": BACKLOG_RECHECK_MS,
+                    "recheckMaxAttempts": BACKLOG_RECHECK_MAX_ATTEMPTS,
                     "nextState": next_state,
                     "resetFaults": reset_faults,
                 })
@@ -2471,6 +2482,42 @@ mod tests {
         }));
         assert_eq!(out["action"], json!("none"));
         assert_eq!(out["reason"], json!("backlog_pending"));
+        assert_eq!(out["recheckAfterMs"], json!(BACKLOG_RECHECK_MS));
+        assert_eq!(
+            out["recheckMaxAttempts"],
+            json!(BACKLOG_RECHECK_MAX_ATTEMPTS)
+        );
+    }
+
+    #[test]
+    fn a_verdict_dropped_for_backlog_asks_the_host_to_recheck() {
+        // 回归：判定返回时队列里还有一条已执行过的残留项，判定被丢弃；残留项被清掉后
+        // 不会再有回合结束事件，宿主必须得到复查参数才能补一次判定。
+        let out = decide_json(json!({
+            "state": active_state(3), "now": 500, "workPending": true,
+            "verdict": { "verdict": "continue", "reason": "r", "nextInstruction": "next" },
+        }));
+        assert_eq!(out["action"], json!("none"));
+        assert_eq!(out["reason"], json!("backlog_pending"));
+        assert_eq!(out["recheckAfterMs"], json!(BACKLOG_RECHECK_MS));
+        assert_eq!(
+            out["recheckMaxAttempts"],
+            json!(BACKLOG_RECHECK_MAX_ATTEMPTS)
+        );
+        assert_eq!(
+            out["nextState"]["rounds"],
+            json!(3),
+            "a dropped verdict burns no round"
+        );
+        assert_eq!(out["nextState"]["evaluating"], json!(false));
+
+        // 没有积压时不要求复查。
+        let normal = decide_json(json!({
+            "state": active_state(3), "now": 500, "workPending": false,
+            "verdict": { "verdict": "continue", "reason": "r", "nextInstruction": "next" },
+        }));
+        assert_eq!(normal["action"], json!("inject"));
+        assert!(normal.get("recheckAfterMs").is_none());
     }
 
     #[test]
