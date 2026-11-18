@@ -2,7 +2,7 @@
 
 const path = require('node:path'), os = require('node:os');
 const { Worker, parentPort, workerData, isMainThread } = require('node:worker_threads');
-const { createAirReadIndex } = require('../../src/workspace/air-read-index');
+const { createAirReadIndex } = require('../../tests/helpers/legacy-air-read-index');
 const { databaseConstructor } = require('../../src/sqlite/driver');
 const { IncrementalModel } = require('./node-model');
 const { project } = require('./fixtures');

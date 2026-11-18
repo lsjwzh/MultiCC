@@ -667,15 +667,28 @@ test('core runner covers every selected path and expands declared variants', () 
   // 挂进 npm:test:governance。同批的 tests/test-provider-id-validation-differential.js 需要原生模块，
   // 登记为 flow isolated（npm:test:rust），不进 core 集，所以这里只 +1。
   // 456 + 1 = 457 entries, 381 + 1 = 382 deterministic, 428 + 1 = 429 commands。
+  // 2026-11-18 调度恢复所有权收尾复核：+3 core deterministic，三个都是本任务前几批
+  // 随代码入库却漏同步这几个数字的登记，门禁因此在 main 上红在 462 !== 459。逐个审过
+  // 都留在发布 tier（都已挂进 npm:test:core 的 `node --test` 批次）：
+  //   - tests/test-production-question-owner.js：server.js 必须用生产问题宿主 +
+  //     Rust 调度器的组合装配（源码断言），以及宿主在真实 addon 下的取证顺序；
+  //   - tests/test-recovery-state-differential.js：recoveryState 投影与冻结的迁前
+  //     实现逐字段对拍（旧实现按原 import base 加载，不走当前 Rust 路径）；
+  //   - tests/test-scheduler-recovery-rust.js（本批补登记）：Rust 恢复所有者在同一
+  //     版本化 SQLite 事务内读取、校验并提交分类状态与活动任务 id，含版本冲突整体回滚。
+  // 三者只在 mkdtemp 临时目录里开 SQLite 文件、按需起本仓内的原生所有者可执行文件
+  // （与先例 tests/test-orchestration-canonical-native.js 同一模式），不绑端口、不碰
+  // 真实数据根、无网络、无时钟/随机依赖，是 hermetic 的。
+  // 459 + 3 = 462 entries, 382 + 3 = 385 deterministic, 431 + 3 = 434 commands。
   // Restart supervisor and real-server checks use isolated processes and the
   // debug binaries built by test:release:core before the manifest runner.
-  assert.equal(core.length, 459, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 459);
+  assert.equal(core.length, 462, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 462);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 382);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 385);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 46);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -685,8 +698,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 431,
-    '425 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 434,
+    '431 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

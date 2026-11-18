@@ -2386,9 +2386,9 @@ function createChatTurnEngine(deps) {
 
   // Map both runner endings from the pure planner to host services.
   const turnFinalizationExecutor = createTurnFinalizationExecutor({
-    withQuestionSnapshot: (id, fn) => typeof userInputSignalHost.withSnapshotAsync === 'function'
+    withQuestionSnapshot: (id, fn) => typeof userInputSignalHost?.withSnapshotAsync === 'function'
       ? userInputSignalHost.withSnapshotAsync(id, fn) : fn(),
-    syncQuestionTurn: id => userInputSignalHost.activateTurnAsync?.(id),
+    syncQuestionTurn: id => userInputSignalHost?.activateTurnAsync?.(id),
     recordRunResult: (context, resolved) => { managedContext.contextCompleted(context, resolved); return getWorkspaceAdmission?.()?.finalized(context, resolved); },
     persistAssistant(context, append) {
       return persistFinalAssistantResult(context.sessionName, context.cs, context.turn, context.runner, {

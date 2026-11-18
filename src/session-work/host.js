@@ -589,8 +589,8 @@ function createSessionWorkHost(deps = {}) {
       if (transition?.ok) {
         clearClassificationRetry(sessionId);
         await runtime.tick();
-        if (classifyState === 'D') deadRunnerRetries.delete(sessionId);
-        else if (classifyState === 'E') {
+        if (isTerminalLetter(classifyState)) deadRunnerRetries.delete(sessionId);
+        else if (isAbnormalLetter(classifyState)) {
           await maybeRetryDeadRunner(sessionId, result, transitionEntryId);
         }
       }

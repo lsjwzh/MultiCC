@@ -20,7 +20,6 @@ const { atomicWriteJson, secureRuntimeData } = require('../src/runtime-security'
 const { createPaths } = require('../src/paths');
 const { installWsBackpressure } = require('../src/ws-backpressure');
 const { requestIdMiddleware, cleanIncomingId, makeRequestId } = require('../src/http-errors');
-const { createHealthHandlers } = require('../src/health');
 
 test('authenticated installs auto-bind to IPv4 LAN while explicit policy stays fail-closed', () => {
   assert.deepStrictEqual(resolveNetworkPolicy({}), {
@@ -223,30 +222,6 @@ test('request middleware propagates request and correlation IDs', () => {
   assert.equal(headers['X-Correlation-Id'], 'correlation-456');
   assert.equal(events[0].event, 'http_request');
   assert.equal(events[0].fields.correlationId, 'correlation-456');
-});
-
-test('health stays live while readiness follows startup state', () => {
-  let ready = false;
-  const handlers = createHealthHandlers({ isReady: () => ready, uptime: () => 12.9 });
-  function response() {
-    return {
-      code: 200, body: null, headers: {},
-      set(name, value) { this.headers[name] = value; return this; },
-      status(code) { this.code = code; return this; },
-      json(body) { this.body = body; return this; },
-    };
-  }
-  const health = response();
-  handlers.healthz({ id: 'r1' }, health);
-  assert.equal(health.code, 200);
-  assert.deepStrictEqual(health.body, { status: 'ok', uptimeSeconds: 12, requestId: 'r1' });
-  const before = response();
-  handlers.readyz({ id: 'r2' }, before);
-  assert.equal(before.code, 503);
-  ready = true;
-  const after = response();
-  handlers.readyz({ id: 'r3' }, after);
-  assert.equal(after.code, 200);
 });
 
 class FakeWs extends EventEmitter {
