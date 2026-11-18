@@ -170,6 +170,39 @@ test('queued turn start reads the task only when its owner slot runs', async t =
   assert.equal(saved.activeTurn._currentTaskId, 'queued-task');
 });
 
+test('first turn backfill refreshes task facts after the owner reports a missing row', async t => {
+  const f = fixture(t, null);
+  let taskId = 'before-backfill';
+  let scheduled = false;
+  Object.defineProperty(f.session, '_currentTaskId', { configurable: true, get() {
+    if (!scheduled) {
+      scheduled = true;
+      queueMicrotask(() => { taskId = 'after-backfill'; });
+    }
+    return taskId;
+  } });
+  await f.input.beginTurnAsync('s', { turnId: 'turn' });
+  const saved = await f.input.snapshotAsync('s');
+  assert.equal(saved.category.classifyState, 'P');
+  assert.equal(saved.activeTurn._currentTaskId, 'after-backfill');
+});
+
+test('first unattended refresh retries with facts read after the missing-row response', async t => {
+  const f = fixture(t, null);
+  let status = 'before-backfill';
+  let scheduled = false;
+  Object.defineProperty(f.record, 'unattended', { configurable: true, get() {
+    if (!scheduled) {
+      scheduled = true;
+      queueMicrotask(() => { status = 'after-backfill'; });
+    }
+    return { status };
+  } });
+  await f.input.refreshAdmissionFactsAsync('s');
+  const saved = await f.input.snapshotAsync('s');
+  assert.equal(saved.category.unattended.status, 'after-backfill');
+});
+
 test('admission reads the current unattended state without copying stale question fields', async t => {
   const f = fixture(t, { requestId: 'q', turnId: 'turn', taskId: 'task', resolved: false });
   await f.input.pendingAsync('s');

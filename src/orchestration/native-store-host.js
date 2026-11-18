@@ -834,8 +834,11 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       return enqueue(async () => {
         ensureOpen();
         const captured = JSON.parse(requestJson);
-        if (prepare) Object.assign(captured, prepare(captured.sessionId));
         for (let attempt = 0; attempt < 3; attempt++) {
+          // A missing-row response crosses an async boundary before the trusted
+          // backfill is read. Refresh host facts on each retry so the first
+          // commit cannot overwrite that backfill with an older observation.
+          if (prepare) Object.assign(captured, prepare(captured.sessionId));
           try {
             return decodeQuestionResponse(await requestAsync('sessionWorkQuestionExperimental', {
               requestJson: JSON.stringify(captured),

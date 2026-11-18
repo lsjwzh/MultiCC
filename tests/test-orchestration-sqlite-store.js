@@ -506,7 +506,7 @@ for (const variant of ['promise-returning callback', 'async callback with hooks'
   });
 }
 
-test('synchronous question creation survives a detached draft with a queued operation', async t => {
+test('question creation waits behind a detached draft and an earlier queued operation', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-question-overlap-queued-'));
   const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => 10 });
   t.after(async () => {
@@ -516,27 +516,36 @@ test('synchronous question creation survives a detached draft with a queued oper
   let release, started;
   const gate = new Promise(resolve => { release = resolve; });
   const ready = new Promise(resolve => { started = resolve; });
+  const order = [];
   const first = store.mutate(async draft => {
     started();
     await gate;
     draft.firstMarker = true;
+    order.push('first');
   });
   await ready;
-  const second = store.mutate(draft => { draft.secondMarker = true; });
+  const second = store.mutate(draft => { draft.secondMarker = true; order.push('second'); });
+  const input = { action: 'record', sessionId: 's', at: 1,
+    initialState: { pendingQuestion: null,
+      activeTurn: { _activeTurn: { turnId: 't' }, isStreaming: true }, category: null },
+    signal: { sessionId: 's', turnId: 't', requestId: 'q', question: 'Q' } };
+  let pending;
   try {
-    const created = store.sessionWorkQuestionSync({ action: 'record', sessionId: 's', at: 1,
-      initialState: { pendingQuestion: null,
-        activeTurn: { _activeTurn: { turnId: 't' }, isStreaming: true }, category: null },
-      signal: { sessionId: 's', turnId: 't', requestId: 'q', question: 'Q' } });
-    assert.equal(created.result.ok, true);
-    assert.equal(store.sessionWorkStateSync('s').pendingQuestion.requestId, 'q');
-    const answered = store.sessionWorkQuestionSync({ action: 'resolve', sessionId: 's', requestId: 'q', at: 2 });
-    assert.equal(answered.result.ok, true);
+    assert.throws(() => store.sessionWorkQuestionSync(input), /owner has pending operations/);
+    pending = store.sessionWorkQuestion(input).then(result => { order.push('question'); return result; });
+    await Promise.resolve();
+    assert.deepEqual(order, []);
   } finally {
     release();
     await Promise.all([first, second]);
   }
-  assert.equal(store.sessionWorkStateSync('s').pendingQuestion.resolved, true);
+  const created = await pending;
+  assert.equal(created.result.ok, true);
+  assert.deepEqual(order, ['first', 'second', 'question']);
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 's' })).pendingQuestion.requestId, 'q');
+  const answered = await store.sessionWorkQuestion({ action: 'resolve', sessionId: 's', requestId: 'q', at: 2 });
+  assert.equal(answered.result.ok, true);
+  assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 's' })).pendingQuestion.resolved, true);
 });
 
 test('question writes cannot join a draft during its synchronous commit hook', async t => {
