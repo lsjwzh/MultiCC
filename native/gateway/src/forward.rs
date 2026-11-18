@@ -259,11 +259,22 @@ async fn dispatch(
         let host = upstream.state.port.load(Ordering::SeqCst);
         return crate::app::handle(app, route, request, upstream.state.client, host).await;
     }
-    forward(upstream, request).await
+    let air_read = request.method() == hyper::Method::GET
+        && matches!(request.uri().path(), "/api/air/sync" | "/api/air/page");
+    forward(
+        upstream,
+        request,
+        air_read.then_some(app.data_root.as_path()),
+    )
+    .await
 }
 
 /// §6: the fallback. Streams the request to Node and the response back.
-async fn forward(upstream: UpstreamHandle, mut request: Request<Body>) -> Response<Body> {
+async fn forward(
+    upstream: UpstreamHandle,
+    mut request: Request<Body>,
+    air_root: Option<&std::path::Path>,
+) -> Response<Body> {
     // §8.1: with `--no-node` there is nothing to wait for, so the refusal is
     // immediate (no 100ms retry loop, no upstream-wait window). This covers
     // ordinary HTTP and WebSocket upgrades alike: the upgrade request is a
@@ -276,8 +287,35 @@ async fn forward(upstream: UpstreamHandle, mut request: Request<Body>) -> Respon
     let client_upgrade = hyper::upgrade::on(&mut request);
     let mut response = match upstream.send(request).await {
         Ok(response) => response,
-        Err(ForwardError::Unavailable) => return error_response(StatusCode::SERVICE_UNAVAILABLE),
-        Err(ForwardError::Failed) => return error_response(StatusCode::BAD_GATEWAY),
+        Err(failure) => {
+            // Node may have died before it could report a failed write. Only
+            // diagnose exhaustion here when the data volume has zero bytes available.
+            if let Some(root) = air_root {
+                let root = root.to_owned();
+                if tokio::task::spawn_blocking(move || {
+                    multicc_core::air_routes::data_volume_full(&root)
+                })
+                .await
+                .unwrap_or(false)
+                {
+                    let (code, message) = multicc_core::air_routes::DISK_FULL_ISSUE;
+                    return Response::builder()
+                        .status(StatusCode::INSUFFICIENT_STORAGE)
+                        .header("content-type", "application/json")
+                        .header("cache-control", "no-store")
+                        .header("connection", "close")
+                        .body(Body::from(
+                            serde_json::json!({"ok":false,"code":code,"message":message})
+                                .to_string(),
+                        ))
+                        .expect("static Air storage response");
+                }
+            }
+            return error_response(match failure {
+                ForwardError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+                ForwardError::Failed => StatusCode::BAD_GATEWAY,
+            });
+        }
     };
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
         // §6: both sides upgraded; join the raw byte streams and let the

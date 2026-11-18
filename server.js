@@ -377,7 +377,13 @@ logger.info('provider_router_runtime', {
 });
 installConsoleRedaction(console);
 secureRuntimeData(MULTICC_PATHS);
+const airStorageNotice = require('./src/workspace/air-sync-issue').createAirStorageNotice();
+let airSyncForDiagnostics;
+function reportStorageIssue(error) {
+  if (airStorageNotice.record(error)) airSyncForDiagnostics?.publishStatus();
+}
 stateStore.setFailureReporter((error, meta) => {
+  reportStorageIssue(error);
   metrics.inc('multicc_persistence_failures_total');
   logger.error('persistence_failure', { ...meta, error: error && error.message });
 });
@@ -743,6 +749,7 @@ const sessionPersistence = createSessionPersistence({
   retryDelayMs: Math.max(50, Number(process.env.MULTICC_SESSION_PERSISTENCE_RETRY_MS) || 500),
   maxRetries: 3,
   onFailure: ({ error, mode, source, attempt, dirty }) => {
+    reportStorageIssue(error);
     metrics.inc('multicc_session_persistence_failures_total');
     logger.error('session_persistence_failure', {
       mode, source, attempt, dirty, error: error && error.message,
@@ -2596,7 +2603,8 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   },
 });
 
-require('./src/workspace/air-routes').mountAirRoutes(app, {
+airSyncForDiagnostics = require('./src/workspace/air-routes').mountAirRoutes(app, {
+  storageNotice: airStorageNotice.current,
   admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
   logger, send: sendWs, subscribe: workspaceRuntime.subscribe, registerSync: workspaceRuntime.setAirSync,
   records: persistedSessions, pendingUserInput,

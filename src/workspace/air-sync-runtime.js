@@ -1,16 +1,40 @@
 'use strict';
 const { createAirIndex } = require('./air-index-port');
+const { describeAirIssue } = require('./air-sync-issue');
 
 // One producer supplies host-authorized cards. The Rust index owns summaries;
 // this host owns socket lifetimes and the atomic replay-to-live handoff.
 function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], send,
   logger = console, reconcileMs = 30_000, debounceMs = 100, index = createAirIndex(), maxPending = 64,
-  retryBaseMs = 5_000, retryMaxMs = 60_000 }) {
+  retryBaseMs = 5_000, retryMaxMs = 60_000, storageNotice = () => null }) {
   if (!Number.isInteger(maxPending) || maxPending < 1 || maxPending > 256) throw Error('invalid_air_queue_limit');
   const clients = new Map(), attaching = new Set();
   let stopped = false, inFlight = null, timer = null, dueAt = Infinity, full = true, dirty = new Set(), metaDirty = false;
   let lastError = null, checkedAt = 0, retryAt = 0, failures = 0, tail = Promise.resolve(), pending = 0, closePromise;
   const unavailable = code => Object.assign(new Error('首页摘要暂不可用，请稍后重试'), { status: 503, code });
+  let publishedIssueCode = null;
+  function currentIssue() {
+    // Persistence reports can arrive independently of a failed refresh. Keep
+    // an observed write failure visible even when the session owner is busy.
+    return storageNotice() || lastError;
+  }
+  function statusFields() {
+    const issue = currentIssue();
+    return { degraded: !!issue, ...(issue ? { issue } : {}) };
+  }
+  function publishStatus() {
+    if (stopped) return;
+    const fields = statusFields();
+    const code = fields.issue?.code || null;
+    if (code === publishedIssueCode) return;
+    publishedIssueCode = code;
+    for (const socket of clients.keys()) {
+      if (socket.readyState === 1) {
+        try { send(socket, { type: 'air_status', ...fields }); }
+        catch (_) { try { socket.close?.(); } catch (_) {} }
+      }
+    }
+  }
   function serial(operation, internal = false) {
     if (stopped) return Promise.reject(unavailable('air_closed'));
     if (!internal && pending >= maxPending) return Promise.reject(unavailable('air_busy'));
@@ -74,7 +98,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
         await serial(() => applyAndPublish(snapshot, { partial: !all, removed: all ? [] : ids.filter(id => !present.has(id)) }), true);
         checkedAt = Date.now(); lastError = null; retryAt = 0; failures = 0;
       } catch (error) {
-        lastError = error;
+        lastError = describeAirIssue(error);
         // 局部失败只重试这几张卡；只有全量/元数据档失败才需要下一轮全量核对。
         // 退避按失败次数翻倍，避免 owner 暂时不可用时每 5 秒重建一次全部卡片。
         failures += 1;
@@ -87,6 +111,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
           retryInMs: Math.max(0, retryAt - Date.now()), full: all });
       } finally {
         inFlight = null;
+        publishStatus();
         schedule(lastError ? Math.max(0, retryAt - Date.now())
           : (full || dirty.size || metaDirty ? debounceMs : reconcileMs));
       }
@@ -95,8 +120,15 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
   }
   async function ensureReady() {
     if (stopped) throw unavailable('air_closed');
-    if (!index.isReady()) await (inFlight || flush());
-    if (stopped || !index.isReady()) throw unavailable(stopped ? 'air_closed' : 'air_warming');
+    if (!index.isReady() && (inFlight || Date.now() >= retryAt)) await (inFlight || flush());
+    if (stopped) throw unavailable('air_closed');
+    if (!index.isReady()) {
+      const issue = currentIssue();
+      if (issue) throw Object.assign(new Error(issue.message), {
+        code: issue.code, status: ['ENOSPC', 'SQLITE_FULL'].includes(issue.code) ? 507 : 503,
+      });
+      throw unavailable('air_warming');
+    }
   }
   const unsubscribe = subscribe?.((dirId, event) => {
     if (['task_board_update', 'task_state', 'status', 'summary', 'session_queue_status', 'session_configuration_applied',
@@ -122,7 +154,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
       if (response.reset) send(socket, { type: 'air_reset', cursor: response.cursor });
       else {
         for (const event of response.events) send(socket, { ...event, taskStats: response.taskStats });
-        send(socket, { type: 'air_synced', cursor: response.cursor, checkedAt, degraded: !!lastError });
+        send(socket, { type: 'air_synced', cursor: response.cursor, checkedAt, ...statusFields() });
       }
       clients.set(socket, day);
     })).catch(() => { try { if (socket.readyState === 1) socket.close(1013, '首页摘要正在准备'); } catch (_) {} }).finally(() => attaching.delete(socket));
@@ -137,7 +169,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
       const q = req.query || {}, day = Number(q.dayStart) || 0;
       return serial(async () => ({ ...(q.cursor ? await readSync(q.cursor, day)
         : await index.bootstrap({ include: String(q.include || '').split(',').filter(Boolean), dayStart: day })),
-      checkedAt, degraded: !!lastError }));
+      checkedAt, ...statusFields() }));
     }));
     app.get('/api/air/page', route(async req => {
       const q = req.query || {};
@@ -147,7 +179,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
     }));
   }
   schedule(0);
-  return { index, ensureReady, invalidate, attach, mount, flush, query,
+  return { index, ensureReady, invalidate, attach, mount, flush, query, publishStatus,
     serialized: () => query('serialized'),
     close() {
       if (closePromise) return closePromise;

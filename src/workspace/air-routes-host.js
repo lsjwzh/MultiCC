@@ -549,6 +549,7 @@ function createAirRuntime(rawDeps) {
   // 分相位计时记录后台生产者的成本，数字不进入摘要正文。
   const reportPhases = createPhaseReporter(deps.phaseDiagnostics, { lastLogAt: 0 });
   const liveSync = deps.registerSync ? require('./air-sync-runtime').createAirSyncRuntime({
+    storageNotice: deps.storageNotice,
     build: async ids => {
       const timing = createPhaseTimer();
       const snapshot = await airSnapshot(timing, { ids, cooperative: true });
