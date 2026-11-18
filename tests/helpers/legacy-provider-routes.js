@@ -14,10 +14,46 @@ const { officialAccountIdFromProvider } = require('../../src/official-accounts')
 const { detachProviderReferences } = require('./legacy-provider-force-detach');
 const { isValidIp } = require('../../src/providers/egress-ip');
 const { reassignProviderSessions } = require('../../src/provider-reassign');
-const { encodeRelayShareCode, relayModelsOf } = require('../../src/providers/relay-share-code');
 const { parseCredential, relayRouteFromBaseUrl } = require('../../src/providers/relay-share-store');
 const { nativeVendorOf } = require('../../src/providers/native-vendor');
 const { CLAUDE_MODELS_FALLBACK } = require('../../src/claude-models');
+
+// Frozen copy of the retired src/providers/relay-share-code.js. The live
+// encoder is native/core/src/provider_registry.rs; this baseline must stay
+// byte-identical to the Node implementation it replaced.
+const CODE_PREFIX = 'mcrelay1.';
+
+// Public model metadata only: the importer must start on a model the source
+// actually serves (Codex Official has no model in config.toml).
+function relayModelsOf(summary) {
+  const source = summary || {};
+  const models = [...new Set([
+    source.model,
+    ...(Array.isArray(source.modelOptions) ? source.modelOptions : []),
+  ].map(value => String(value || '').trim())
+    .filter(value => value && value.length <= 256))];
+  // A Claude official account stores no canonical model id, so its share code
+  // would carry no models at all and the importer would probe a hardcoded,
+  // possibly retired default. Hand over the CLI-known current set instead.
+  if (!models.length && source.isOfficial === true && source.appType === 'claude') {
+    return CLAUDE_MODELS_FALLBACK.map(entry => entry.model).slice(0, 100);
+  }
+  return models.slice(0, 100);
+}
+
+function encodeRelayShareCode({ name, appType, baseUrl, models, relayShareId, authToken }) {
+  const list = Array.isArray(models) ? models : [];
+  return CODE_PREFIX + Buffer.from(JSON.stringify({
+    v: 2,
+    kind: 'multicc-relay',
+    name,
+    appType,
+    baseUrl,
+    ...(list[0] ? { model: list[0], models: list } : {}),
+    relayShareId,
+    authToken,
+  }), 'utf8').toString('base64url');
+}
 
 // A borrowed Claude line carries no canonical ANTHROPIC_MODEL: its share code
 // only names a relay endpoint, so the provider summary is alias-only with an

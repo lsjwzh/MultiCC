@@ -1,6 +1,6 @@
 'use strict';
 
-const { isTerminalGateway } = require('./terminal-target-policy');
+const { getNative } = require('../native/runtime');
 const { sanitizePublicText } = require('../session-dto');
 const { labelWithCode } = require('../classify/task-short-code');
 
@@ -128,7 +128,7 @@ function dispatchableSessionsFor(sessionId) {
     // A terminal gateway is an execution detail, not a second worker choice.
     // The Commander selects the stable terminal id only after explicit user
     // targeting; dispatchToSession then reuses this gateway automatically.
-    .filter(s => !isTerminalGateway(records, s))
+    .filter(s => !getNative().dispatchIsTerminalGateway(records, s))
     .slice(0, 30)
     .map(s => {
       const activeChat = chatSessions.get(s.id);

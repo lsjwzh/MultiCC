@@ -19,7 +19,6 @@ const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-r
 const { createApiErrorPolicyRuntime } = require('../src/chat/api-error-policy');
 const { failoverSafety } = require('../src/chat/auto-provider-policy');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
-const { resolveAutoStallTimeoutMs } = require('../src/chat/auto-stall-timeout');
 
 // ---------------------------------------------------------------------------
 // Harnesses
@@ -672,17 +671,17 @@ test('all chat sessions carry the idle budget, with a compatible Auto override',
   const auto = { id: 's1', providerSelection: { mode: 'auto', candidates: [] } };
   const manual = { id: 's2', providerSelection: { mode: 'manual', candidates: [] } };
   const bare = { id: 's3' };
-  assert.equal(resolveAutoStallTimeoutMs(auto, {}), 300_000);
-  assert.equal(resolveAutoStallTimeoutMs(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' }), 45_000);
-  assert.equal(resolveAutoStallTimeoutMs(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '0' }), 0);
-  assert.equal(resolveAutoStallTimeoutMs(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '-1' }), 0);
-  assert.equal(resolveAutoStallTimeoutMs(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '1000' }), 15_000,
+  assert.equal(stallBudget(auto, {}), 300_000);
+  assert.equal(stallBudget(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' }), 45_000);
+  assert.equal(stallBudget(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '0' }), 0);
+  assert.equal(stallBudget(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '-1' }), 0);
+  assert.equal(stallBudget(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '1000' }), 15_000,
     'a short budget is clamped up to the reviewed floor');
-  assert.equal(resolveAutoStallTimeoutMs(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '99999999' }), 600_000,
+  assert.equal(stallBudget(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: '99999999' }), 600_000,
     'a long budget is clamped down to the reviewed ceiling');
-  assert.equal(resolveAutoStallTimeoutMs(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: 'nonsense' }), 300_000);
-  assert.equal(resolveAutoStallTimeoutMs(manual, { MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' }), 300_000);
-  assert.equal(resolveAutoStallTimeoutMs(bare, {}), 300_000);
+  assert.equal(stallBudget(auto, { MULTICC_AUTO_STALL_TIMEOUT_MS: 'nonsense' }), 300_000);
+  assert.equal(stallBudget(manual, { MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' }), 300_000);
+  assert.equal(stallBudget(bare, {}), 300_000);
 });
 
 // 公共请求策略回归：虚拟时钟只推进请求时间，不启动真实模型或生产服务。
@@ -708,6 +707,9 @@ function virtualClock() {
 }
 
 const { resolveModelRequestPolicy } = require('../src/chat/model-request-policy');
+// The retired `auto-stall-timeout` host entry point only forwarded here, so
+// the stall budget is read straight off the Rust-owned policy value.
+const stallBudget = (session, env) => resolveModelRequestPolicy(session, env).stallTimeoutMs;
 const { recoverModelTimeout } = require('../src/chat/model-timeout-recovery');
 const { withModelConnectWatch } = require('../src/providers/model-connect-watch');
 const { createModelStreamProgress } = require('../src/providers/model-stream-progress');
