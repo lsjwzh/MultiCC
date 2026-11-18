@@ -99,12 +99,12 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
     await page.navigate('/air?dir=d1&view=settings');
     const settingsTitle = await T('airSettingsCenter');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent===${JSON.stringify(settingsTitle)}`), '先落在设置中心');
-    const groupTitle = await T('airAdminGroupConnect');
+    const groupTitle = await T('airSettingsMobile');
     assert.equal(await page.evaluate(`(() => {
       const card = [...document.querySelectorAll('.air-setting-card')]
         .find(c => c.querySelector('strong').textContent === ${JSON.stringify(await T('airBridges'))});
       return card ? card.closest('.air-settings-group').querySelector('h3').textContent : null;
-    })()`), groupTitle, '消息桥接挂在设置中心的「连接与通知」那一组');
+    })()`), groupTitle, '消息桥接挂在设置中心的「手机与通知」那一组');
 
     // 记账版 EventSource：必须在进面板之前装上（进面板就会建连接）。
     await page.evaluate(`(() => {

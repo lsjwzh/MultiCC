@@ -184,28 +184,23 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   let closed = false;
   let tail = Promise.resolve();
   let queuedOperations = 0;
-  let queuedDraftMutations = 0;
   let detachedDraftActive = false;
-  let detachedMutationActive = false;
   const draftContext = new AsyncLocalStorage();
   const unavailable = message => Object.assign(new Error(message), { code: 'SESSION_WORK_OWNER_UNAVAILABLE' });
   function ensureOpen() { if (closed) throw new OrchestrationSqliteError(`orchestration database is closed: ${file}`, { file }); }
-  function enqueue(operation, draftMutation = false) {
+  function enqueue(operation) {
     queuedOperations++;
-    if (draftMutation) queuedDraftMutations++;
     const run = () => draftContext.run(undefined, operation);
     const result = tail.then(run, run);
-    const done = () => { queuedOperations--; if (draftMutation) queuedDraftMutations--; };
+    const done = () => { queuedOperations--; };
     tail = result.then(done, done);
     return result;
   }
-  // A detached mutation owns no live SQLite transaction. Question state lives
-  // outside its tracked draft, so a synchronous question operation can run
-  // while only draft mutations are queued. An earlier ordered command must
-  // still finish first; in particular, never overtake a queued question.
+  // A detached draft owns no live SQLite transaction, so a synchronous
+  // question operation can proceed only while that draft is the sole queued
+  // operation. Never overtake another operation already waiting behind it.
   function canAccessDetachedQuestion() {
-    return detachedDraftActive && (queuedOperations === 1
-      || (detachedMutationActive && queuedOperations === queuedDraftMutations));
+    return detachedDraftActive && queuedOperations === 1;
   }
   function decodeQuestionResponse(response) {
     if (!response.snapshot) return response;
@@ -418,9 +413,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       snapshot.detach();
       context.detached = true;
       detachedDraftActive = true;
-      detachedMutationActive = true;
       const rawResult = await pending;
-      detachedMutationActive = false;
       detachedDraftActive = false;
       const { usesDraft, result } = draftContext.run(context, () => {
         const usesDraft = cow.containsOwnedProxy(rawResult);
@@ -456,7 +449,6 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       catch (_) { /* Preserve the original error if the owner is unavailable. */ }
       throw error;
     } finally {
-      detachedMutationActive = false;
       detachedDraftActive = false;
       cow?.revoke(); snapshot.revoke();
       try { request('discardTrackedDraft', { token: started.token }); } catch (_) { /* Commit or conflict consumed it. */ }
@@ -469,11 +461,11 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
   }
   function mutate(mutator) {
     if (typeof mutator !== 'function') throw new TypeError('[orchestration-sqlite-store] mutate requires a function');
-    return enqueue(() => applyDetachedMutation(mutator), true);
+    return enqueue(() => applyDetachedMutation(mutator));
   }
   function mutateIf(predicate, mutator, skippedResult) {
     if (typeof predicate !== 'function' || typeof mutator !== 'function') throw new TypeError('[orchestration-sqlite-store] mutateIf requires predicate and mutator functions');
-    return enqueue(() => applyDetachedMutation(mutator, predicate, skippedResult), true);
+    return enqueue(() => applyDetachedMutation(mutator, predicate, skippedResult));
   }
   // Only allowlisted synchronous Rust commands enter this transaction. Neither
   // the command result nor a user-controlled `then` is assimilated by the queue
