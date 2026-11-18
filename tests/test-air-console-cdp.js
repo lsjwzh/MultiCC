@@ -373,7 +373,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
 
     // /manage 那条老入口照旧可用：落在控制台那一页上，地址就是它自己的地址
     await page.navigate('/air?view=overview');
-    assert.ok(await consoleShown(page));
+    assert.ok(await page.waitFor(`new URLSearchParams(location.search).get('view')==='overview' && document.getElementById('console-center').hidden===false`), '导航后控制台完成显示');
     assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'overview', 'view=overview 是这一页的正式地址');
     assert.equal(await page.evaluate(`location.search.includes('task=')`), false, '这一页不是某个任务的任务页');
     await page.navigate('/air?dir=d1&task=tsk_here');
