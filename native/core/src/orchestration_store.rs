@@ -484,13 +484,26 @@ impl Store {
         // Invalidate before rollback: even a failed rollback must not leave a
         // previously issued read-model token usable.
         self.schedule_metadata_scan = None;
-        if self.active || self.pending {
-            self.conn()?.execute_batch("ROLLBACK").map_err(err)?;
+        // SQLite may roll a transaction back itself after some I/O failures.
+        // In that case our bookkeeping flags can still say `active`/`pending`,
+        // but issuing another ROLLBACK returns "no transaction is active".
+        // That cleanup error used to leave the flags set, making every later
+        // `begin` fail in this same method and permanently poisoning the owner.
+        // Check SQLite's actual state and clear the flags whenever the
+        // connection is back in autocommit mode; keep them only if a real
+        // transaction remains open and rollback itself failed.
+        let rollback = if self.conn()?.is_autocommit() {
+            Ok(())
+        } else {
+            self.conn()?.execute_batch("ROLLBACK").map_err(err)
+        };
+        let transaction_is_closed = self.conn()?.is_autocommit();
+        if rollback.is_ok() || transaction_is_closed {
+            self.active = false;
+            self.pending = false;
+            self.snapshot_data_version = None;
         }
-        self.active = false;
-        self.pending = false;
-        self.snapshot_data_version = None;
-        Ok(())
+        rollback
     }
     fn inspect(&mut self, input: &Value) -> Result<Value> {
         let collection = input["collection"]

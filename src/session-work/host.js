@@ -429,12 +429,46 @@ function createSessionWorkHost(deps = {}) {
   // await the *same* transition, so a cancel never replies (or reconciles the
   // projection) while the scheduler mutation is still half-applied.
   const pendingTransitions = new Map();
+  // Retry only the Rust-owned durable transition. Verdict selection and FIFO
+  // semantics remain unchanged; a transient owner/SQLite failure must not
+  // strand this same assessing entry until the next service restart.
+  const classificationRetries = new Map();
+
+  function clearClassificationRetry(sessionId) {
+    const retry = classificationRetries.get(sessionId);
+    if (retry?.timer) clearTimeout(retry.timer);
+    classificationRetries.delete(sessionId);
+  }
+
+  function retryClassificationTransition(sessionId, taskId, result, options, entryId) {
+    if (!entryId) return;
+    const prior = classificationRetries.get(sessionId);
+    if (prior && prior.entryId !== entryId) clearClassificationRetry(sessionId);
+    const current = classificationRetries.get(sessionId);
+    const attempts = (current?.attempts || 0) + 1;
+    const delayMs = Math.min(60_000, 1_000 * (2 ** Math.min(attempts - 1, 6)));
+    const retry = { entryId, attempts, timer: null };
+    retry.timer = setTimeout(() => {
+      if (classificationRetries.get(sessionId) !== retry) return;
+      retry.timer = null;
+      classifyTransition(sessionId, taskId, result, {
+        ...options,
+        _retryEntryId: entryId,
+      }).catch(() => {});
+    }, delayMs);
+    retry.timer.unref?.();
+    classificationRetries.set(sessionId, retry);
+    log.warn?.('session_scheduler_classification_retry_scheduled', {
+      sessionId, entryId, attempt: attempts, delayMs,
+    });
+  }
 
   // Classify is the only semantic gate for the interaction FIFO. The scheduler
   // persists ordering and active correlation, then applies exactly one of
   // D/W/B/E/P here. Liveness may confirm a missing runner boundary, but it never
   // chooses a verdict or completes work by itself.
   function classifyTransition(sessionId, taskId, result = {}, options = {}) {
+    if (!options._retryEntryId) clearClassificationRetry(sessionId);
     const operation = runClassifyTransition(sessionId, taskId, result, options);
     if (sessionId) {
       pendingTransitions.set(sessionId, operation);
@@ -450,10 +484,16 @@ function createSessionWorkHost(deps = {}) {
     const runtime = schedulerRuntime();
     const target = runtime?.sessionScheduler;
     if (!target || !sessionId) return { ok: false, code: 'scheduler_not_ready' };
+    let transitionEntryId = options._retryEntryId || null;
     try {
       const closing = turnClosures.get(sessionId);
       if (closing) await closing;
       let current = await target.status(sessionId);
+      if (options._retryEntryId && current?.active?.entryId !== options._retryEntryId) {
+        clearClassificationRetry(sessionId);
+        return { ok: false, code: 'stale_classification' };
+      }
+      transitionEntryId = current?.active?.entryId || transitionEntryId;
       // Slots claimed before dispatch.result stopped lending its payload as
       // lineage still carry the DISPATCHED task's id (persisted across
       // restarts). That id is not an owner of this session's turn, so the
@@ -462,6 +502,7 @@ function createSessionWorkHost(deps = {}) {
       if (DISPATCH_RESULT_ENTRY.test(String(current?.active?.entryId || ''))) taskId = null;
       const currentTaskId = current?.active?.taskId || null;
       if (taskId && currentTaskId && taskId !== currentTaskId) {
+        clearClassificationRetry(sessionId);
         return { ok: false, code: 'active_task_mismatch' };
       }
       if (current?.active
@@ -480,6 +521,7 @@ function createSessionWorkHost(deps = {}) {
         return target.settleUserInput(sessionId, result.requestId);
       }
       if (!current?.active || !['assessing', 'frozen'].includes(current.state)) {
+        clearClassificationRetry(sessionId);
         return { ok: false, code: 'stale_classification' };
       }
       const expectedTaskId = taskId || current.active.taskId || null;
@@ -503,13 +545,17 @@ function createSessionWorkHost(deps = {}) {
         completeOptions.awaitingRequestId = pendingInput.requestId;
       }
       const transition = await target.complete(sessionId, completeOptions);
-      if (transition?.ok) await runtime.tick();
+      if (transition?.ok) {
+        clearClassificationRetry(sessionId);
+        await runtime.tick();
+      }
       return transition;
     } catch (error) {
       log.warn?.('session_scheduler_classification_transition_failed', {
         sessionId,
         error: error.message,
       });
+      retryClassificationTransition(sessionId, taskId, result, options, transitionEntryId);
       return { ok: false, code: 'classification_transition_failed' };
     }
   }
