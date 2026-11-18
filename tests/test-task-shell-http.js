@@ -36,6 +36,7 @@ test('真实发送接口在模型路由和工作区准备期间已经返回，�
     getStore: () => queue?.store,
     getSession: () => ({}),
     getState: id => sessionState.get(id) || {},
+    getRecord: id => f.records.get(id),
     setState: (id, patch) => sessionState.set(id, { ...(sessionState.get(id) || {}), ...patch }),
     onResolved: () => {}, log: () => {},
   });

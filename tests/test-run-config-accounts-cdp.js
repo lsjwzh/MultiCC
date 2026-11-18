@@ -131,6 +131,7 @@ test('Command Code: add an account inline, save the pick, delete it back to the 
     assert.ok(await page.waitFor('window.MultiCCRunConfig && window.MultiCCChatAiConfig'));
     await page.evaluate(`window.MultiCCRunConfig.open({ sessionId: 'acct', configuration: { cli: 'commandcode', model: 'deepseek/deepseek-v4-flash' } }, ['commandcode', 'claude-exp'], () => {})`);
     assert.ok(await page.waitFor(`${visible('.rc-account')} && !document.querySelector('.air-config-dialog[open] .rc-account').disabled`), 'account row shows for Command Code');
+    assert.ok(await page.waitFor(`JSON.stringify(${optionTexts}) === ${JSON.stringify(JSON.stringify(['=本机 CLI 登录（默认）', '__add_account__=＋ 添加账户…']))}`), 'account choices finish loading');
     assert.deepEqual(await page.evaluate(optionTexts), ['=本机 CLI 登录（默认）', '__add_account__=＋ 添加账户…']);
     assert.equal(await page.evaluate(visible('.rc-account-delete')), false, 'nothing to delete on the local login');
 

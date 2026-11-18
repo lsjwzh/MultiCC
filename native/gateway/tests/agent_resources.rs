@@ -69,6 +69,23 @@ struct Gateway {
 
 impl Gateway {
     fn start(tag: &str, script: Value) -> Self {
+        let mut last_log = String::new();
+        for attempt in 0..6 {
+            match Self::start_once(&format!("{tag}-{attempt}"), &script) {
+                Ok(gateway) => return gateway,
+                Err((log, retryable)) => {
+                    last_log = log;
+                    if !retryable {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        panic!("gateway never became ready\n{last_log}");
+    }
+
+    fn start_once(tag: &str, script: &Value) -> Result<Self, (String, bool)> {
         let dir = unique(tag);
         let data = dir.join("data");
         let home = dir.join("home");
@@ -119,7 +136,7 @@ impl Gateway {
             }
         }
         let child = command.spawn().expect("spawn multicc-gateway");
-        let gateway = Self {
+        let mut gateway = Self {
             dir,
             state,
             port,
@@ -127,14 +144,17 @@ impl Gateway {
         };
         let deadline = Instant::now() + Duration::from_secs(15);
         while !gateway.state.join("ready").exists() {
-            assert!(
-                Instant::now() < deadline,
-                "gateway never became ready\n{}",
-                gateway.log()
-            );
+            if let Ok(Some(status)) = gateway.child.try_wait() {
+                let log = gateway.log();
+                let retryable = log.contains("EADDRINUSE");
+                return Err((format!("{log}\nchild exited: {status}"), retryable));
+            }
+            if Instant::now() >= deadline {
+                return Err((gateway.log(), false));
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        gateway
+        Ok(gateway)
     }
 
     fn log(&self) -> String {

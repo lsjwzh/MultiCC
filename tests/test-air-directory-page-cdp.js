@@ -204,6 +204,7 @@ test('the directory home shares one scroll layer, shows a compact sticky heading
     assert.equal(page2.prevOff, false);
     await page.evaluate(`document.getElementById('directory-task-next').click()`);
     assert.ok(await page.waitFor(`document.getElementById('directory-task-page').textContent==='第 3 / 3 页'`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length === 5`), '等待第三页数据加载');
     assert.equal(await page.evaluate(`document.querySelectorAll('#directory-task-list .directory-task-row').length`), 5, '45 = 20 + 20 + 5');
     assert.equal(await page.evaluate(`document.getElementById('directory-task-next').disabled`), true, '最后一页没有下一页');
     assert.equal(await page.evaluate(`document.getElementById('directory-task-prev').disabled`), false, '还能退回去');
