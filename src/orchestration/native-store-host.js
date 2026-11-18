@@ -715,6 +715,30 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
     backend: 'sqlite', file, legacyFile, migration: Object.freeze({ ...initial.migration }),
     read, mutate, mutateIf, runNativeCommandSync, snapshot: () => read(),
     mutateSync(command, input) {
+      if (command === 'scheduleRecoverOwned') {
+        return enqueue(async () => {
+          ensureOpen();
+          try {
+            let prepared = request('scheduleRecoverOwnedPrepareExperimental', { entries: [] });
+            if (prepared.sessions.length > 0) {
+              // Observe the host facts inside this queue turn: a caller microtask
+              // queued after recover() must not change the captured classification.
+              const entries = prepared.sessions.map(sessionId => input.capture(sessionId));
+              prepared = request('scheduleRecoverOwnedPrepareExperimental', { entries });
+              if (prepared.sessions.length > 0) {
+                throw new Error(`schedule recovery backfill refused: ${prepared.sessions.join(', ')}`);
+              }
+            }
+            const committed = request('scheduleRecoverOwnedCommitExperimental', {
+              expectedRevision: prepared.state.revision,
+              expectedDataVersion: prepared.dataVersion,
+              at: input.at, updatedAt: input.updatedAt, facts: prepared.facts,
+            });
+            if (committed?.state?.revision != null) knownRevision = committed.state.revision;
+            return committed;
+          } catch (error) { throw normalize(error); }
+        });
+      }
       if (command !== 'scheduleReorder') throw new TypeError('unknown synchronous domain command');
       return enqueue(async () => {
         ensureOpen();

@@ -1278,6 +1278,9 @@ impl Store {
             "scheduleCompleteExperimental" => schedule_admit_live::complete(self, input),
             "scheduleRecoverSnapshotExperimental" => schedule_recover::snapshot(self),
             "scheduleRecoverOwnedSnapshotExperimental" => schedule_recover::owned_snapshot(self),
+            "scheduleRecoverOwnedPrepareExperimental" => {
+                schedule_recover::owned_prepare(self, input)
+            }
             "scheduleRecoverCommitExperimental" => schedule_recover::commit(self, input),
             "scheduleRecoverOwnedCommitExperimental" => schedule_recover::owned_commit(self, input),
             "scheduleCompleteAtomicExperimental" => {

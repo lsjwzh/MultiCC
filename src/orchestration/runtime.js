@@ -1614,9 +1614,11 @@ function createOrchestrationRuntime({
     await outbox.recoverExpired();
     await refreshPending();
     await operations.interruptActiveTasks();
-    // recover() reads only stateForSession — the persisted classify/queue state.
-    // It never consulted isBusy/hasPendingWait, so they are not passed.
-    await sessionScheduler.recover({ stateForSession: getSessionRecoveryState });
+    // recover() reads only persisted classify/queue facts — never
+    // isBusy/hasPendingWait. The flat facts shape carries the session type the
+    // Rust recovery owner requires; pendingUserInput correlation arrives via
+    // the capture's pendingQuestion field only when the public state carries it.
+    await sessionScheduler.recover({ stateForSession: getSessionRecoveryFacts });
     await beforeFirstTick({ sessionScheduler, operations, outbox });
     await reconcileDispatchesOnStartup();
     await reconcileDetached();
