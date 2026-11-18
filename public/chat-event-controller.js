@@ -1129,7 +1129,7 @@
             }
           }
           break;
-        case 'message_stop': break;
+        case 'message_stop': host.tokenRate?.noteOutputBoundary?.(); break;
         default: break;
       }
       return true;
@@ -1143,6 +1143,7 @@
       settleThinkingCards();
       for (const result of (Array.isArray(content) ? content : [content])) {
         if (result.type !== 'tool_result') continue;
+        host.tokenRate?.noteOutputBoundary?.();
         for (const tool of state.currentToolCards.values()) {
           if (tool.id !== result.tool_use_id) continue;
           const text = typeof result.content === 'string' ? result.content
@@ -1209,6 +1210,7 @@
           host.renderCurrentText?.();
           host.maybeScrollToBottom?.();
         } else if ((isCodexCli(state.currentCli) || state.currentCli === 'commandcode') && block.type === 'tool_use' && block.id) {
+          host.tokenRate?.noteOutputBoundary?.();
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
           let tool = findCurrentToolCardById(block.id);
           if (!tool) {

@@ -75,6 +75,20 @@
     let exact = null;
     let endedAt = 0;
     let transport = new Map();
+    let transportRequest = null;
+    let outputSegment = null;
+    let measuredTokens = 0;
+    let outputMs = 0;
+
+    // Only spans with at least two distinct output timestamps can measure a
+    // rate. Never divide by a tool, prefill or post-output idle interval.
+    function finishOutputSegment() {
+      if (outputSegment && outputSegment.last > outputSegment.first) {
+        measuredTokens += outputSegment.tokens;
+        outputMs += outputSegment.last - outputSegment.first;
+      }
+      outputSegment = null;
+    }
 
     function prune(t) {
       while (samples.length && t - samples[0].t > WINDOW_MS) samples.shift();
@@ -84,6 +98,11 @@
       const t = now();
       samples.push({ t, n: tokens });
       total += tokens;
+      if (!outputSegment) outputSegment = { first: t, last: t, tokens };
+      else {
+        outputSegment.last = Math.max(outputSegment.last, t);
+        outputSegment.tokens += tokens;
+      }
       if (!firstAt) firstAt = t;
       lastAt = t;
       prune(t);
@@ -104,8 +123,12 @@
         exact = null;
         endedAt = 0;
         transport = new Map();
+        transportRequest = null;
+        outputSegment = null;
+        measuredTokens = 0;
+        outputMs = 0;
       },
-      end() { if (active) endedAt = now(); active = false; samples = []; },
+      end() { if (active) { endedAt = now(); finishOutputSegment(); } active = false; samples = []; },
       isActive: () => active,
       /**
        * The visible reply buffer, read where the bubble renders it. Only its
@@ -127,11 +150,15 @@
         const key = `${metric.requestId}:${metric.attempt}`;
         const previous = transport.get(key);
         if (previous && (metric.bytes < previous.bytes || metric.elapsedMs < previous.elapsedMs || previous.done)) return;
+        if (transportRequest && transportRequest !== key && !previous) finishOutputSegment();
+        if (!previous) transportRequest = key;
         transport.set(key, { bytes: metric.bytes, elapsedMs: metric.elapsedMs, headersMs: metric.headersMs,
           done: metric.done === true, observedAt: now() });
       },
       /** An API request started streaming (message_start). */
-      noteRequest() { if (active) requestAt = now(); },
+      noteRequest() { if (active) { finishOutputSegment(); requestAt = now(); } },
+      /** A request or tool boundary ends the current measured output span. */
+      noteOutputBoundary() { if (active) finishOutputSegment(); },
       /** A content block opened ('thinking' / other) or closed (null). */
       noteBlock(kind) {
         if (!active) return;
@@ -142,11 +169,12 @@
       noteUsage(outputTokens) {
         if (!active || !requestAt) return;
         const tokens = Number(outputTokens);
-        const ms = now() - requestAt;
+        const ms = outputSegment ? outputSegment.last - outputSegment.first : 0;
         if (Number.isFinite(tokens) && tokens > 0 && ms >= 500) {
           exact = { tokens, ms, rate: tokens / (ms / 1000) };
         }
         requestAt = 0;
+        finishOutputSegment();
       },
       /**
        * @param {{toolRunning?:boolean, toolSince?:number, toolEndedAt?:number, bgRunning?:boolean}} context
@@ -162,11 +190,15 @@
         let transportBytes = 0, transportMs = 0, headersMs = null, latestObservedAt = -1;
         for (const item of transport.values()) {
           transportBytes += item.bytes;
-          transportMs += item.elapsedMs + (item.done ? 0 : Math.max(0, (active ? t : endedAt) - item.observedAt));
+          transportMs += item.elapsedMs;
           if (item.observedAt >= latestObservedAt) { headersMs = item.headersMs; latestObservedAt = item.observedAt; }
         }
+        const openMs = outputSegment ? outputSegment.last - outputSegment.first : 0;
+        const measuredMs = outputMs + openMs;
+        const countedTokens = measuredTokens + (openMs > 0 ? outputSegment.tokens : 0);
         const base = { active, total, exact, elapsedMs,
-          averageRate: total > 0 && elapsedMs > 0 ? total / (elapsedMs / 1000) : null,
+          outputMs: measuredMs,
+          averageRate: countedTokens > 0 && measuredMs > 0 ? countedTokens / (measuredMs / 1000) : null,
           transportRate: transportMs > 0 ? transportBytes / (transportMs / 1000) : null,
           transportBytes, transportMs, headersMs,
           ttftMs: firstAt && beganAt ? firstAt - beganAt : null };
@@ -240,9 +272,9 @@
     const lines = [snap.active
       ? tt('tokenRateTitle', '实时输出速度（按流式文本估算，近 3 秒）')
       : tt('tokenRateCompletedTitle', '上一轮输出统计')];
-    if (hasAverage) lines.push(tt('tokenRateAverageTitle', '平均速度为本页观察到的估算输出除以经过时间，包含等待和工具运行；刷新后重新统计。'));
+    if (hasAverage) lines.push(tt('tokenRateAverageTitle', '平均：估算输出量除以各段首尾输出间隔；不计工具与请求间等待，单时间点片段不计入。刷新后重计。'));
     if (hasTransport) {
-      lines.push(tt('tokenRateTransportTitle', '上游响应平均接收速率：累计解压后响应字节除以各请求耗时之和，含服务商等待和下游背压，并非带宽测速；仅统计本页收到的托管主线路样本。'));
+      lines.push(tt('tokenRateTransportTitle', '上游平均：解压后响应字节除以已观测请求时长，不计请求间工具时间；含请求内等待及背压，仅计本页托管主线路，并非带宽测速。'));
       if (Number.isFinite(snap.headersMs)) lines.push(tt('tokenRateHeaders', '最近请求响应头耗时 {dur}（含上游处理）', { dur: FMT.formatDuration(snap.headersMs) }));
     }
     if (snap.total > 0) {
@@ -252,7 +284,7 @@
       lines.push(tt('tokenRateTitleFirst', '首字耗时 {dur}', { dur: FMT.formatDuration(snap.ttftMs) }));
     }
     if (snap.exact) {
-      lines.push(tt('tokenRateTitleExact', '上个请求实测 {rate} tok/s（{tokens} tokens / {dur}）', {
+      lines.push(tt('tokenRateTitleExact', '上个请求输出 {tokens} tokens，按观测输出时间约 {rate} tok/s（{dur}）', {
         rate: rateNumber(snap.exact.rate),
         tokens: FMT.formatTokenCount(snap.exact.tokens),
         dur: FMT.formatDuration(snap.exact.ms),
