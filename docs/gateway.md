@@ -5038,6 +5038,45 @@ stub 子进程要先加载原生模块、建读模型，才监听内部端口；
 
 ### 61.6 范围之外（仍在 Node）
 
-artifacts 的 `express.static` 双 root（`src/artifacts.js`，`X-Content-Type-Options` /
-`?download=1` attachment 语义）、`/voice-gateway/web` 反代层、share 页 HTML 的 Express 渲染，
+`/voice-gateway/web` 反代层、share 页 HTML 的 Express 渲染，
 以及一切非 GET/HEAD 方法到静态路径的请求（转发 Node）。
+
+## 62. `/artifacts` 双 root 迁入前门（2026-11-19）
+
+退役对象：`src/artifacts.js` 的 `mount(app)` 与 `server.js` 里的 `artifacts.mount(app)`——
+`app.use('/artifacts', headers, ...servedRoots().map(root => express.static(root, options)))`。
+迁移后 Node 不再注册任何静态处理器，中间件 29 → 26（`headers@/artifacts` 加两个
+`serveStatic@/artifacts`），公开路由数不变（该挂载本来就不计入 128）。`src/artifacts.js` 只留
+目录常量、`MULTICC_ARTIFACTS_DIR` 注入（技能发现，`tests/test-runtime-governance.js` 钉住）、
+`servedRoots`（docs-registry / task-shell 读取）与启动清理。
+
+### 62.1 语义（实现在 `native/gateway/src/app/artifacts.rs`）
+
+| 项 | 规则 |
+|---|---|
+| root 与顺序 | 主根 `<MULTICC_DATA_DIR>/artifacts`，其后 legacy `~/.multicc/artifacts`（只读），两者相同时去重；按顺序逐根探测，先命中者胜（主根遮蔽 legacy 同名文件） |
+| 挂载匹配 | 大小写不敏感（`/ARTIFACTS/...` 也命中，与 Express 一致）；`/artifacts` 裸路径剥成 `/`；`/artifactsfoo` 不是前缀；只认领 GET/HEAD，带 `Upgrade` 头的请求不认领 |
+| 解析 | 复用 `multicc_core::static_web::path_plan` 与 `static_web_root::probe`；**没有 `extensions` 重试**（与 `public/` 根不同）；`index.html`；目录无尾斜杠 → 301（原始 `http` 响应，带 `Content-Security-Policy`、`X-Content-Type-Options`） |
+| 隐藏文件 | `dotfiles: 'ignore'` 是显式选项，规则和 `public/` 根（未设选项，send 的 legacy 规则：只看**最后一段**）不同：**任一**归一化后长度 > 1 且以 `.` 开头的路径段都 404 并穿透到下一层。`/artifacts/<id>/.hidden/bar.txt` 在 Node 上穿透、在 `public/` 根上会被服务；差分首轮就是靠这一条抓到的 |
+| 响应头 | 文件响应一律 `Cache-Control: no-store, must-revalidate` 与 `X-Content-Type-Options: nosniff`；`http_send::plan_with_preset` 先放这两个预置头，默认头只在未设置时补 |
+| `?download=1` / `?dl=1` | 值必须**恰好**是字符串 `1`（按 `qs` 解析：重复键、`download[]=1` 解析成数组，不触发；编码过的键 `%64ownload=1` 触发；`+` 解成空格）。文件名 = `path.basename(req.path) \|\| 'download'`（先去尾斜杠，保留原始 percent 编码），再删 `"`、CR、LF。该中间件在 `static` 之前运行，所以 **301 与 500 响应同样带 `Content-Disposition`** |
+| 错误 | 404 类穿透；`locked.txt`（chmod 000）等其它 stat 错误是 500，经 `download::error_after_send` 落成与 Node 同形的错误页；412/416 同走该路径 |
+
+### 62.2 接线与闸门
+
+- **认领最先**：`forward.rs` 的 `dispatch` 里 `artifacts::claim` 排在 `claim_uri` 之前。双因素：Node 里 `artifacts.mount` 先于一切静态层；全局 `.apk/.ipa` 守卫（`static_assets_routes`）会认领任何 `.apk/.ipa` 路径，若 artifacts 在后，`/artifacts/<id>/app.apk` 会被守卫截成 404。未命中 artifacts 的请求继续走 `public/` 根与旧链，同构。
+- **pre-gate 自裁决**（`Route::Artifacts` 无 payload，解析结果以请求扩展 `Resolved` 携带，文件系统只读一次）：先 peer（`lan_only` 且对端非私网 → 403，与 Node `gate('peer')` 对所有路径生效一致），再 `http_entry::public_path` 命中则跳过通用闸门，否则走 `app.gate`。能力令牌 `<id>` 的免登录正则大小写**敏感**，而挂载点大小写不敏感，所以 `/ARTIFACTS/<id>/x` 能被服务但不享受免登录——Node 同样如此。该分支放在 auth-runtime-absent 早退之后，与 `ServerCore` 同级。
+- 已知且未改的差异：`Route::StaticWebRoot` 分支在通用闸门**之后**，远程匿名请求会被 `LoginRedirect`，这是上一批（§61）已接受的差异，本批不动。
+
+### 62.3 验证
+
+- Rust：`native/gateway/tests/artifacts.rs` 17 条集成测试（真实三棵树：主根、legacy 根、`public/`；裸 TCP 请求、`forwarded()` 日志断言），涵盖双根遮蔽、`download` 系、目录 301、隐藏文件穿透、500 与转发形态。`cargo clippy --workspace --all-targets -- -D warnings` 通过。
+- 差分 `docs/rust-migration/differential/artifacts-root.js`（冻结甲骨文 `tests/helpers/legacy-artifacts-routes.js`，**两侧读同一棵树**，避免 mtime 不一致）：63 案，same 45/45、按设计落回 18/18。唯一的行为差异是 `fallback:GET /artifacts/?download=1`——miss 时 Node 的 404 带 `Content-Disposition`（中间件先于 miss 运行），Rust 转发后由 Node 自己应答，不再带。一个 404 页面顶着 `attachment` 头是旧链的副产物，不复刻。
+- 三项变异（root 顺序颠倒、隐藏文件规则改成只看末段、去掉 `nosniff`）全部被语料抓到（退出码 1）。
+- 同批回归：`static-web-root.js` 172/172 + 31/31、`static-assets-routes.js` 271/271 + 30/30（三项变异仍被抓）、`release-history-routes.js` 162/162 + 2/2，认领顺序前移后数字不变。
+- 台账：`docs/backend-runtime-inventory.md` 重捕获 128/26（指纹 `c5890742b80f537374f1a24e`）；`node-surface-ledger` 的 `static-and-artifacts` 组 4 → 1，只剩 `voice-gateway web`；`check-node-surface-ledger` 与 `test-node-surface-ledger` 通过。
+- 行长闸：`server.js` 3087 → 3086 行、166235 → 166200 字节，`check-source-line-budget` 棘轮同步下调。
+
+### 62.4 范围之外
+
+`/voice-gateway/web` 反代层、share 页 HTML 的 Express 渲染；`servedRoots` 在 Node 里仍供 docs-registry / task-shell 读取（路径常量，不是路由）。

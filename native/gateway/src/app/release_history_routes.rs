@@ -255,6 +255,10 @@ async fn callback_body(ctx: &RequestCtx, body: Body) -> Result<Value, Response<B
     }
 }
 
+// The eighth argument is the upstream handle a `fellThrough` decision needs to
+// continue down the retired chain; the other seven are the shared pre-gate
+// inputs every arm in this file already took.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     app: &Arc<App>,
     route: Route,

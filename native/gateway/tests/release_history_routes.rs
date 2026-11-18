@@ -984,13 +984,18 @@ fn a_root_with_a_terminal_session_query_falls_back_to_node() {
 }
 
 #[test]
-fn the_apk_download_is_not_claimed_and_falls_back_to_node() {
+fn the_apk_download_asks_the_host_then_falls_back_to_node() {
+    // The front door claims `/multicc.apk` and asks the `apk-download` op; a host
+    // that answers `next()` (the unscripted fixture) lets the retired chain
+    // continue, which with no `public/multicc.apk` ends in the forward.
     let gateway = Gateway::start("apk-file", world(json!({})));
     let response = gateway.get("/multicc.apk");
     assert_eq!(response.status, 200, "{}", gateway.log());
     assert_eq!(response.body, "ok");
     assert!(gateway.forwarded("GET", "/multicc.apk"));
-    assert!(gateway.calls().is_empty());
+    let calls = gateway.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0]["op"], "apk-download");
 }
 
 // ── The device reply's four raw-body states ────────────────────────────────

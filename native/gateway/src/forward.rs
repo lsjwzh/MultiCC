@@ -255,6 +255,28 @@ async fn dispatch(
     Extension(app): Extension<Arc<App>>,
     mut request: Request<Body>,
 ) -> Response<Body> {
+    // `/artifacts` was mounted before every other static layer in Node
+    // (`artifacts.mount(app)` ahead of the public/ static mount), so its
+    // claim runs first here: the global `.apk`/`.ipa` guard inside
+    // `claim_uri` must never see an artifact download, and a miss in both
+    // artifact roots still falls through to the public/ root below, exactly
+    // like the retired chain. The resolution rides the request so the
+    // filesystem is read once.
+    if let Some(resolved) =
+        crate::app::artifacts::claim(&app, request.method(), request.uri(), request.headers())
+    {
+        let host = upstream.state.port.load(Ordering::SeqCst);
+        request.extensions_mut().insert(resolved);
+        return crate::app::handle(
+            app,
+            crate::app::Route::Artifacts,
+            request,
+            upstream.state.client,
+            host,
+            upstream,
+        )
+        .await;
+    }
     if let Some(route) = crate::app::claim_uri(request.method(), request.uri()) {
         let host = upstream.state.port.load(Ordering::SeqCst);
         return crate::app::handle(app, route, request, upstream.state.client, host, upstream).await;
