@@ -593,6 +593,10 @@ pub struct App {
     /// local copy when `.env` supplied a usable ACCESS_TOKEN. A route that needs
     /// the snapshot with neither owner fails closed (docs/gateway.md §8.1).
     pub node_enabled: bool,
+    /// When this front door started. `--no-node` has no child whose
+    /// `process.uptime()` the server-core probes could report, so `/healthz`
+    /// answers this process's own uptime instead (`server_core::local_healthz`).
+    pub started: std::time::Instant,
     /// Node handled each of these requests to completion on one thread; the
     /// read-modify-write of a store must not interleave here either.
     store_lock: Mutex<()>,
@@ -760,6 +764,7 @@ impl App {
             lan_only: policy.lan_only,
             allow_legacy_token_query: env_enabled(&env_text("MULTICC_ALLOW_LEGACY_TOKEN_QUERY")),
             node_enabled: options.node_enabled(),
+            started: std::time::Instant::now(),
             store_lock: Mutex::new(()),
             tickets: Mutex::new(DownloadTickets::new()),
             provider_limit_history: Mutex::new(provider_limit_history::State::default()),
@@ -978,6 +983,16 @@ pub async fn handle(
     // `auth.rs` are only reachable after this point, so they need no separate
     // guard.
     if !app.node_enabled && !app.auth.has_local() {
+        // `/healthz` and `/readyz` are public paths whose facts this process
+        // owns when there is no child (`server_core::local_healthz`), so a
+        // Rust-only start still answers a deployment's liveness and readiness
+        // probes with no authentication owner at all. Everything else keeps
+        // failing closed.
+        if let Route::ServerCore(route) = route {
+            if server_core::is_public_probe(route) {
+                return server_core::handle_public_probe(&app, route, &ctx, &peer);
+            }
+        }
         return auth_runtime_absent();
     }
     let snapshot = match app.auth.snapshot().await {

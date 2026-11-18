@@ -13,9 +13,14 @@
 //! retired Express stack (src/routes/auth.js). The peer allowlist runs for every
 //! path first, public ones included.
 //!
-//! Every fact behind these routes lives in the Node child: process uptime, the
-//! readiness flags (`serviceReady`, the shutdown flag, the commander-migration
-//! snapshot), the merged metrics table and the repo-actor operation status. They
+//! Under `--node` every fact behind these routes lives in the Node child:
+//! process uptime, the readiness flags (`serviceReady`, the shutdown flag, the
+//! commander-migration snapshot), the merged metrics table and the repo-actor
+//! operation status. Under `--no-node` there is no child to ask and the front
+//! door *is* the service, so the two public probes answer from this process's
+//! own facts (`local_healthz` / `local_readyz`); `/metrics` and
+//! `/api/repo-operations` still describe Node state and keep failing closed.
+//! The host-port facts they
 //! cross one host port, `POST /api/__host/server-core`
 //! (`src/routes/server-core-host.js`); this module validates the DTO, renders the
 //! response and reproduces Express's headers. `/metrics` is sorted and serialized
@@ -187,6 +192,75 @@ pub fn render_metrics(table: &Map<String, Value>) -> String {
     out
 }
 
+/// The two public probes and their automatic OPTIONS answer: everything this
+/// cluster can serve with no authentication snapshot and no Node child.
+pub fn is_public_probe(route: Route) -> bool {
+    matches!(
+        route,
+        Route::Healthz | Route::Readyz | Route::Options { public: true }
+    )
+}
+
+/// `--no-node` with no authentication owner at all (no child, no usable
+/// `ACCESS_TOKEN`). Node's `gate('peer')` ran for public paths too, so the peer
+/// allowlist still decides first; the probes then answer from this process.
+pub fn handle_public_probe(
+    app: &Arc<App>,
+    route: Route,
+    ctx: &RequestCtx,
+    peer: &str,
+) -> Response<Body> {
+    if app.lan_only && !is_private_network_address(peer) {
+        return express::json(
+            ctx,
+            403,
+            &http_gate::public_peer_rejected_dto(&ctx.ids),
+            &[],
+        );
+    }
+    match route {
+        Route::Healthz => local_healthz(app, ctx),
+        Route::Readyz => local_readyz(ctx),
+        // `claim` only ever pairs the public flag with these three routes.
+        _ => super::options(ctx, "GET,HEAD"),
+    }
+}
+
+/// `--no-node`: the front door is the whole service, so the uptime it reports
+/// is its own. The retired handler rendered `Math.floor(process.uptime())`,
+/// which floors exactly like `as_secs`, and the response shape and key order
+/// stay the ones `src/health.js` produced.
+fn local_healthz(app: &Arc<App>, ctx: &RequestCtx) -> Response<Body> {
+    express::json(
+        ctx,
+        200,
+        &json!({
+            "status": "ok",
+            "uptimeSeconds": app.started.elapsed().as_secs(),
+            "requestId": &ctx.ids.0,
+        }),
+        &[("Cache-Control", "no-store")],
+    )
+}
+
+/// `--no-node`: a bound, serving front door is ready. There is no Node
+/// `serviceReady` flag, shutdown flag or commander-migration snapshot to
+/// describe, so the optional `checks` key stays absent — the exact shape
+/// `src/health.js` produced when `readinessDetails()` returned nothing.
+/// The stop path stops accepting before it exits, so this never has to report
+/// `not_ready` for a shutdown that is already refusing connections.
+fn local_readyz(ctx: &RequestCtx) -> Response<Body> {
+    express::json(
+        ctx,
+        200,
+        &json!({
+            "status": "ready",
+            "requestId": &ctx.ids.0,
+        }),
+        &[("Cache-Control", "no-store")],
+    )
+}
+
 /// The host's `{ op: "health" }` answer, or the standard 503 when the child is
 /// absent or answers a shape this route cannot trust.
 async fn health_facts(host: u16) -> Option<Value> {
@@ -326,6 +400,11 @@ pub async fn handle(
         }
     }
     match route {
+        // `--no-node`: the host port that owns these facts does not exist, so
+        // the probes answer from this process instead of the cluster's 503.
+        // `--node` keeps asking the child, byte for byte.
+        Route::Healthz if !app.node_enabled => local_healthz(app, ctx),
+        Route::Readyz if !app.node_enabled => local_readyz(ctx),
         Route::Healthz => healthz(ctx, host).await,
         Route::Readyz => readyz(ctx, host).await,
         Route::Metrics => metrics(ctx, host).await,

@@ -426,7 +426,12 @@ fn codex_legacy_wait_refreshes_the_global_account_once() {
 #[test]
 fn codex_explicit_refresh_reaches_the_official_account_in_both_client_paths() {
     let gateway = Gateway::start("codex-explicit-refresh", base_script());
-    assert_eq!(gateway.get("/api/codex/models?providerId=codex-official&refresh=1").status, 200);
+    assert_eq!(
+        gateway
+            .get("/api/codex/models?providerId=codex-official&refresh=1")
+            .status,
+        200
+    );
     assert_eq!(gateway.get("/api/codex/models?refresh=1").status, 200);
     let calls = gateway.host_calls("model-refresh.jsonl");
     assert_eq!(calls.len(), 2);

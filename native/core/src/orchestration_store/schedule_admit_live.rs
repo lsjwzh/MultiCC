@@ -2068,6 +2068,10 @@ mod completion_tests {
             .unwrap();
         command["expectedRevision"] = next["state"]["revision"].clone();
         command["expectedDataVersion"] = next["dataVersion"].clone();
+        // Production pairs the version from the freshest token snapshot
+        // (native-store-host.js passes token.snapshot.version); reusing the
+        // stale version from the first token trips the optimistic guard.
+        command["expectedVersion"] = next["snapshot"]["version"].clone();
         command["classifyStateJson"] = json!("\"future\"");
         let response = store
             .request("scheduleCompleteExperimental", &command)

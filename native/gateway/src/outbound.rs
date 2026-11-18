@@ -39,6 +39,46 @@ const MAX_REDIRECTS: usize = 20;
 const MAX_CLIENTS: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The OS root store read is a one-time, process-wide cost (seconds on a
+/// cold macOS keychain) that reqwest would otherwise charge to whichever
+/// request first builds a client — inside that request's deadline. Node
+/// never pays root-store setup inside a request budget, so the load lives
+/// here: once per process, off the blocking pool, before any timer starts.
+static NATIVE_ROOTS: tokio::sync::OnceCell<std::sync::Arc<Vec<reqwest::Certificate>>> =
+    tokio::sync::OnceCell::const_new();
+
+fn load_native_roots() -> Result<std::sync::Arc<Vec<reqwest::Certificate>>, Kind> {
+    let load = rustls_native_certs::load_native_certs();
+    let mut roots = Vec::with_capacity(load.certs.len());
+    let mut invalid = 0_usize;
+    for cert in load.certs {
+        // reqwest skips entries the parser rejects the same way.
+        match reqwest::Certificate::from_der(cert.as_ref()) {
+            Ok(cert) => roots.push(cert),
+            Err(_) => invalid += 1,
+        }
+    }
+    // reqwest fails the client build only when every entry is unusable.
+    if roots.is_empty() && invalid > 0 {
+        return Err(Kind::Network(
+            "outbound client: zero valid certificates found in native root store".to_string(),
+        ));
+    }
+    Ok(std::sync::Arc::new(roots))
+}
+
+async fn native_roots() -> Result<std::sync::Arc<Vec<reqwest::Certificate>>, Kind> {
+    NATIVE_ROOTS
+        .get_or_try_init(|| async {
+            match tokio::task::spawn_blocking(load_native_roots).await {
+                Ok(result) => result,
+                Err(join) => Err(Kind::Network(format!("native root load: {join}"))),
+            }
+        })
+        .await
+        .map(std::sync::Arc::clone)
+}
+
 /// Node's `error.multiccProxyMode` values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -255,6 +295,11 @@ impl Outbound {
         } else {
             Mode::Discovery
         };
+        // Warm the process-wide root store outside the request budget; after
+        // the first call this is a cache hit.
+        if let Err(kind) = native_roots().await {
+            return Err(Error::new(mode, kind));
+        }
         let outcome =
             tokio::time::timeout(request.timeout, self.exchange(&request, &mut mode)).await;
         match outcome {
@@ -278,7 +323,7 @@ impl Outbound {
                 *mode = Mode::from_config(&config);
                 outbound_proxy::proxy_of(&config, &url)
             };
-            let client = self.client(&proxy)?;
+            let client = self.client(&proxy).await?;
             let mut builder = client.request(method.clone(), url.clone());
             for (name, value) in &headers {
                 builder = builder.header(name, value);
@@ -380,7 +425,7 @@ impl Outbound {
     /// One client per exit (direct or one proxy URL). Direct is explicit:
     /// `.no_proxy()` also disables reqwest's own system-proxy discovery, so
     /// the only decision is the one made above.
-    fn client(&self, proxy: &str) -> Result<Client, Kind> {
+    async fn client(&self, proxy: &str) -> Result<Client, Kind> {
         let key = if proxy.is_empty() {
             "direct".to_string()
         } else {
@@ -394,10 +439,17 @@ impl Outbound {
         {
             return Ok(client.clone());
         }
+        let roots = native_roots().await?;
         let mut builder = Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(CONNECT_TIMEOUT);
+            .connect_timeout(CONNECT_TIMEOUT)
+            // The shared process store replaces reqwest's per-build keychain
+            // read; the trust set is identical.
+            .tls_built_in_native_certs(false);
+        for certificate in roots.iter() {
+            builder = builder.add_root_certificate(certificate.clone());
+        }
         for (host, address) in &self.resolve {
             builder = builder.resolve(host, *address);
         }

@@ -286,13 +286,24 @@ fn record_keys(connection: &Connection, collection: &str) -> Result<Vec<String>>
 }
 fn stream<W: Write>(connection: &Connection, writer: &mut W) -> Result<()> {
     let header = header(connection)?;
+    // A database created before the session-work owner has no work table at
+    // all; its absence means "no facts", so stream must not probe it. (The
+    // export corruption guard for an initialized-but-missing table runs in
+    // export() before this point.)
     let has_work = connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM orchestration_session_work_state)",
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='orchestration_session_work_state')",
             [],
             |row| row.get::<_, bool>(0),
         )
-        .map_err(err)?;
+        .map_err(err)?
+        && connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM orchestration_session_work_state)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(err)?;
     let split = super::meta(connection, "databaseSchemaVersion")? == 2;
     let mut root: Vec<String> = header
         .as_object()
