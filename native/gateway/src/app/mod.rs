@@ -76,6 +76,27 @@ use multicc_core::network_policy::{env_enabled, NetworkPolicy};
 use crate::args::ServeOptions;
 use express::RequestCtx;
 
+fn user_home() -> PathBuf {
+    select_user_home(
+        cfg!(windows),
+        std::env::var_os("USERPROFILE"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn select_user_home(
+    windows: bool,
+    profile: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    let nonempty = |value: &std::ffi::OsString| !value.is_empty();
+    let profile = profile.filter(nonempty);
+    let home = home.filter(nonempty);
+    (if windows { profile.or(home) } else { home })
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
 /// A native route, matched the way Express matched the Node one:
 /// case-insensitive, one optional trailing slash, raw (undecoded) path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -769,9 +790,7 @@ impl App {
             account_subscription: subscriptions,
             outbound: crate::outbound::Outbound::from_process(),
             package_root,
-            home_dir: std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default(),
+            home_dir: user_home(),
             node_cwd: physical_dir(&options.cwd),
         }
     }
@@ -1272,6 +1291,24 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_home_uses_the_windows_profile_and_preserves_unix_home() {
+        let profile = Some(r"C:\Users\pat".into());
+        let home = Some("/home/pat".into());
+        assert_eq!(
+            select_user_home(true, profile.clone(), home.clone()),
+            PathBuf::from(r"C:\Users\pat")
+        );
+        assert_eq!(
+            select_user_home(false, profile, home.clone()),
+            PathBuf::from("/home/pat")
+        );
+        assert_eq!(
+            select_user_home(true, Some("".into()), home),
+            PathBuf::from("/home/pat")
+        );
+    }
 
     #[test]
     fn literal_paths_union_the_param_shape_methods() {

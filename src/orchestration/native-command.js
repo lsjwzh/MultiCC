@@ -12,9 +12,6 @@ function invokeNativeCommand(name, draft, args, snapshot = draft) {
   switch (name) {
     case 'waitResolve': exportName = 'waitResolveLive'; break;
     case 'outboxClaim': exportName = 'outboxClaimLive'; break;
-    case 'scheduleComplete': exportName = 'scheduleCompleteLive'; break;
-    case 'scheduleAdmit': exportName = 'scheduleAdmitLive'; break;
-    case 'scheduleRecover': exportName = 'scheduleRecoverLive'; break;
     default: throw new TypeError('unknown synchronous orchestration command');
   }
   const native = getNative();

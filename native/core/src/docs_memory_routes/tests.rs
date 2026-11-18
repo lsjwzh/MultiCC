@@ -7,6 +7,16 @@ fn text(value: &str) -> Value {
 }
 
 #[test]
+fn windows_absolute_paths_follow_node_win32_semantics() {
+    for path in [r"\foo", "/foo", r"C:\foo", "C:/foo", r"\\server\share"] {
+        assert!(is_windows_absolute(path), "{path:?}");
+    }
+    for path in ["", "foo", "C:foo", "C:", "1:/foo"] {
+        assert!(!is_windows_absolute(path), "{path:?}");
+    }
+}
+
+#[test]
 fn clean_text_strips_control_units_then_trims_and_slices_utf16() {
     assert_eq!(clean_text(Some(&text(" a\u{0000}b\u{001f} ")), 200), "ab");
     assert_eq!(clean_text(Some(&Value::from(7)), 10), "");

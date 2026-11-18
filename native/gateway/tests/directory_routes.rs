@@ -427,11 +427,19 @@ fn the_literal_order_route_wins_for_put_and_patch_order_is_the_404() {
 #[test]
 fn fs_list_keeps_the_home_and_above_verdict() {
     let gateway = Gateway::start("fs-list");
-    for (real_base, real_home) in [
-        ("/home/me", "/home/me"),
-        ("/home", "/home/me"),
-        ("/", "/home/me"),
-    ] {
+    let (root, home_parent, home, sibling, work) = if cfg!(windows) {
+        (
+            r"C:\",
+            r"C:\home",
+            r"C:\home\me",
+            r"C:\home\me2",
+            r"C:\work",
+        )
+    } else {
+        ("/", "/home", "/home/me", "/home/me2", "/work")
+    };
+    for real_base in [home, home_parent, root] {
+        let real_home = home;
         gateway.world(json!({
             "browse-facts": {
                 "base": real_base, "prefix": "", "baseIsDir": true, "parentIsDir": false,
@@ -453,8 +461,8 @@ fn fs_list_keeps_the_home_and_above_verdict() {
     }
     gateway.world(json!({
         "browse-facts": {
-            "base": "/work", "prefix": "", "baseIsDir": true, "parentIsDir": false,
-            "parent": "/", "realBase": "/work", "realHome": "/home/me",
+            "base": work, "prefix": "", "baseIsDir": true, "parentIsDir": false,
+            "parent": root, "realBase": work, "realHome": home,
         },
         "browse-read": { "entries": [], "order": [] },
     }));
@@ -465,8 +473,8 @@ fn fs_list_keeps_the_home_and_above_verdict() {
     // A sibling of $HOME is not an ancestor: `/home/me2` must stay selectable.
     gateway.world(json!({
         "browse-facts": {
-            "base": "/home/me2", "prefix": "", "baseIsDir": true, "parentIsDir": false,
-            "parent": "/home", "realBase": "/home/me2", "realHome": "/home/me",
+            "base": sibling, "prefix": "", "baseIsDir": true, "parentIsDir": false,
+            "parent": home_parent, "realBase": sibling, "realHome": home,
         },
         "browse-read": { "entries": [], "order": [] },
     }));
