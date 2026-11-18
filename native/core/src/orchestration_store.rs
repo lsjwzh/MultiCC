@@ -15,6 +15,7 @@ pub mod schedule_background;
 pub mod schedule_guard;
 mod schedule_identity;
 mod schedule_metadata;
+mod schedule_recover;
 mod schedule_settle;
 mod schema;
 mod session_work_state;
@@ -997,6 +998,7 @@ impl Store {
                 | "begin"
                 | "scheduleMetadataBegin"
                 | "scheduleMetadataPage"
+                | "scheduleRecoverSnapshotExperimental"
                 | "end"
                 | "inspect"
                 | "keys"
@@ -1273,6 +1275,8 @@ impl Store {
                 schedule_admit_live::completion_token(self, input)
             }
             "scheduleCompleteExperimental" => schedule_admit_live::complete(self, input),
+            "scheduleRecoverSnapshotExperimental" => schedule_recover::snapshot(self),
+            "scheduleRecoverCommitExperimental" => schedule_recover::commit(self, input),
             "scheduleCompleteAtomicExperimental" => {
                 schedule_admit_live::complete_atomic(self, input)
             }

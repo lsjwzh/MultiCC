@@ -227,7 +227,7 @@ fn schedule_classify(schedule: &JsValue) -> JsValue {
         "D"
     })
 }
-fn queue_rows(
+pub(super) fn queue_rows(
     connection: &rusqlite::Connection,
     session: &str,
     schedule: &JsValue,
@@ -262,7 +262,7 @@ fn queue_rows(
     rows.sort_by(|a, b| compare(a, b, &priority));
     Ok(rows)
 }
-fn public_schedule(
+pub(super) fn public_schedule(
     connection: &rusqlite::Connection,
     schedule: &JsValue,
     queue: &[JsValue],
