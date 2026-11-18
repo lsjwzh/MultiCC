@@ -1,5 +1,6 @@
 //! The Air task-board route cluster retired from `src/workspace/air-routes.js`:
 //!
+//! * `GET|HEAD /api/air/sync` / `GET|HEAD /api/air/page`
 //! * `GET|HEAD /api/air`
 //! * `POST     /api/air/worktrees/reclaim`
 //! * `GET|HEAD /api/air/resolve`
@@ -53,6 +54,8 @@ const HOST_PATH: &str = "/api/__host/air";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Route {
+    SyncGet,
+    PageGet,
     SnapshotGet,
     ReclaimPost,
     ResolveGet,
@@ -89,6 +92,18 @@ struct Layer {
 /// Registration order of the retired `mountAirRoutes`, so a request that
 /// matches several layers is answered by the first one Express tried.
 static LAYERS: &[Layer] = &[
+    // The retired composition mounted the live-sync pair (air-sync-runtime.js)
+    // before app.get('/api/air').
+    Layer {
+        segs: &[Lit("air"), Lit("sync")],
+        method: "GET",
+        kind: Route::SyncGet,
+    },
+    Layer {
+        segs: &[Lit("air"), Lit("page")],
+        method: "GET",
+        kind: Route::PageGet,
+    },
     Layer {
         segs: &[Lit("air")],
         method: "GET",
@@ -413,6 +428,35 @@ async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Resp
                 &[("Allow", allow.as_str())],
             )
         }
+        // The retired handlers read `req.query` with qs shapes; each key is
+        // extracted here and the host replays the retired coercion verbatim
+        // (air-sync-runtime.js syncHttp/pageHttp). Keys absent from the query
+        // are omitted, which the host reads back as `undefined`.
+        Route::SyncGet => {
+            let mut fields = Vec::new();
+            push_optional(&mut fields, "dayStart", q_value(ctx, "dayStart"));
+            push_optional(&mut fields, "cursor", q_value(ctx, "cursor"));
+            push_optional(&mut fields, "include", q_value(ctx, "include"));
+            finish(
+                ctx,
+                call(ctx, host, payload("sync", fields), AIR, false).await,
+            )
+        }
+        Route::PageGet => {
+            let mut fields = Vec::new();
+            // The retired `{ ...req.query, visits, ids }` spread: every key the
+            // page projection validates or reads. Unknown keys never reached
+            // the reader, so they are not forwarded.
+            for key in [
+                "status", "sort", "dirId", "query", "dayStart", "limit", "page", "visits", "ids",
+            ] {
+                push_optional(&mut fields, key, q_value(ctx, key));
+            }
+            finish(
+                ctx,
+                call(ctx, host, payload("page", fields), AIR, false).await,
+            )
+        }
         Route::SnapshotGet => {
             let mut fields = Vec::new();
             push_optional(
@@ -664,6 +708,10 @@ mod tests {
     fn claims_match_the_retired_express_routes() {
         let get = Method::GET;
         let post = Method::POST;
+        assert_eq!(claim(&get, "/api/air/sync"), Some(Route::SyncGet));
+        assert_eq!(claim(&Method::HEAD, "/api/air/sync"), Some(Route::SyncGet));
+        assert_eq!(claim(&get, "/api/air/page"), Some(Route::PageGet));
+        assert_eq!(claim(&Method::HEAD, "/api/air/page"), Some(Route::PageGet));
         assert_eq!(claim(&get, "/api/air"), Some(Route::SnapshotGet));
         assert_eq!(claim(&Method::HEAD, "/api/air"), Some(Route::SnapshotGet));
         assert_eq!(
@@ -708,10 +756,9 @@ mod tests {
     }
 
     #[test]
-    fn the_sync_and_page_routes_stay_in_node() {
+    fn the_unregistered_methods_and_paths_stay_in_node() {
         for path in ["/api/air/sync", "/api/air/page"] {
-            assert_eq!(claim(&Method::GET, path), None, "{path}");
-            assert_eq!(claim(&Method::OPTIONS, path), None, "{path}");
+            assert_eq!(claim(&Method::POST, path), None, "{path}");
         }
         assert_eq!(claim(&Method::DELETE, "/api/air"), None);
         assert_eq!(claim(&Method::PUT, "/api/air/pins"), None);
@@ -742,6 +789,8 @@ mod tests {
     #[test]
     fn options_allow_is_the_registration_order_union() {
         assert_eq!(allow("/api/air"), "GET,HEAD");
+        assert_eq!(allow("/api/air/sync"), "GET,HEAD");
+        assert_eq!(allow("/api/air/page"), "GET,HEAD");
         assert_eq!(allow("/api/air/tasks/tsk_1"), "GET,HEAD");
         assert_eq!(allow("/api/air/worktrees/reclaim"), "POST");
         assert_eq!(allow("/api/air/tasks"), "POST");
@@ -749,7 +798,12 @@ mod tests {
         assert_eq!(allow("/api/air/todos"), "GET,HEAD,POST");
         assert_eq!(allow("/api/air/pins/toggle"), "POST");
         assert_eq!(allow("/api/air/todos/ignore"), "POST");
-        assert_eq!(allow_for("/api/air/sync"), None);
+        // sync/page are claimed now; a path under /api/air that nothing claims
+        // still contributes no Allow, so the front-door union leaves it to Node.
+        assert_eq!(allow_for("/api/air/sync"), Some("GET,HEAD".to_string()));
+        assert_eq!(allow_for("/api/air/page"), Some("GET,HEAD".to_string()));
+        assert_eq!(allow_for("/api/air/nope"), None);
+        assert_eq!(allow_for("/api/air/sync/extra"), None);
     }
 
     #[test]

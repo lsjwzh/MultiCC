@@ -5,12 +5,17 @@
 // fixed by the scenario so the migration differential can compare the legacy
 // Node handlers against the Rust front door byte for byte.
 //
-// The scenario has two halves:
+// The scenario has three halves:
 //
 //   answers   keyed by port operation (`taskEntry:<id>`, `reclaim`, …). Each is
 //             `{ value }` or `{ throw: { code, status, message } }`.
 //   records / board / directories / admission / shellTasks / clis
 //             the fixed board state the snapshot and the detail view read.
+//   sync      truthy installs `registerSync`, so the host (and the frozen
+//             oracle) create the live-sync runtime whose syncHttp/pageHttp are
+//             the retired /api/air/sync and /api/air/page handlers. Absent by
+//             default: the air-routes differential deliberately takes the
+//             direct snapshot path.
 //
 // Every stateful call the handlers make on those ports is recorded in
 // `effects.calls`, which is what the differential compares per case (a route
@@ -135,6 +140,9 @@ function buildDeps(rawScenario) {
     clis: scenario.clis || [{ id: 'claude', name: 'Claude' }, { id: 'codex', name: 'Codex' }],
     getBoard: () => board,
     hibernation,
+    // Only the air-sync differential sets scenario.sync; everywhere else the
+    // key stays absent so `deps.registerSync` keeps the summary runtime off.
+    ...(scenario.sync ? { registerSync: () => {} } : {}),
     sessions: new Map(),
     pinsFile: nodePath.join(dir, 'air-pins.json'),
     todosFile: nodePath.join(dir, 'air-todos.json'),

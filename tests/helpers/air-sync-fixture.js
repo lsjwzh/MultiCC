@@ -14,9 +14,13 @@ function installAirSyncFixture(routes, server) {
       return JSON.parse(Buffer.isBuffer(spec.body) ? spec.body.toString() : spec.body);
     }, send: (socket, frame) => socket.send(JSON.stringify(frame)),
   });
-  runtime.mount({ get: (path, handler) => { routes[path] = async ({ url }) => ({
-    headers: { 'content-type': 'application/json' }, body: JSON.stringify(await handler({ query: Object.fromEntries(url.searchParams) })),
-  }); } }, fn => fn);
+  // 公开注册已迁 Rust 前门；fixture 直挂处理器原体（q 的形状与 req.query 一致）。
+  const wire = run => async ({ url }) => ({
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(await run(Object.fromEntries(url.searchParams))),
+  });
+  routes['/api/air/sync'] = wire(query => runtime.syncHttp(query));
+  routes['/api/air/page'] = wire(query => runtime.pageHttp(query));
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://fixture');

@@ -30,18 +30,24 @@ test('真实 HTTP/WS：1277 张卡、20 客户端、重连补齐、健康检查�
   const base = `http://127.0.0.1:${server.address().port}`;
   async function get(path) { const start = performance.now(); const r = await fetch(base + path); const body = await r.text();
     assert.equal(r.status, 200, body); requests.push({ path, ms: performance.now() - start, bytes: Buffer.byteLength(body) }); return JSON.parse(body); }
-  // 全量快照现在走宿主端口：正文与 ETag 由宿主从同一份摘要序列化，前门比对 If-None-Match。
+  // 全量快照与 sync/page 现在都走宿主端口：/api/air/sync、/api/air/page 的公开
+  // 注册已迁 Rust 前门，这里直接打宿主操作；正文形状与退役路由完全一致。
   async function post(path, payload) {
+    const start = performance.now();
     const response = await fetch(base + path, { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    const body = await response.json();
+    const text = await response.text();
+    requests.push({ path: `/api/air/${payload.op}`, ms: performance.now() - start, bytes: Buffer.byteLength(text) });
+    const body = JSON.parse(text);
     assert.equal(response.status, 200, JSON.stringify(body));
     assert.equal(body.ok, true, JSON.stringify(body));
     return body.value;
   }
+  const syncGet = query => post('/api/__host/air', { op: 'sync', ...query });
+  const pageGet = query => post('/api/__host/air', { op: 'page', ...query });
   const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable(); t.after(() => loop.disable());
   assert.equal(runtime.index.backend, 'rust');
-  const bootstrap = await get('/api/air/sync'); assert.equal(bootstrap.taskStats.all.total, 1277);
+  const bootstrap = await syncGet(); assert.equal(bootstrap.taskStats.all.total, 1277);
   assert.ok(bootstrap.tasks.length <= 30); assert.equal(reads, 1277);
   const clients = await Promise.all(Array.from({ length: 20 }, async () => {
     const ws = new WebSocket(base.replace('http:', 'ws:') + '/ws/meta?air=1&cursor=' + bootstrap.cursor);
@@ -54,7 +60,7 @@ test('真实 HTTP/WS：1277 张卡、20 客户端、重连补齐、健康检查�
   const latencies = [];
   await Promise.all(Array.from({ length: 8 }, async (_, client) => {
     for (let i = 0; i < 20; i++) {
-      const page = await get('/api/air/page?status=all&page=' + ((client + i) % 64 + 1)); assert.ok(page.tasks.length <= 20);
+      const page = await pageGet({ status: 'all', page: String((client + i) % 64 + 1) }); assert.ok(page.tasks.length <= 20);
       const start = performance.now(); await get('/healthz'); latencies.push(performance.now() - start);
       if (!client) await ping();
     }
@@ -74,7 +80,7 @@ test('真实 HTTP/WS：1277 张卡、20 客户端、重连补齐、健康检查�
     }
     assert.equal(ws.frames.find(e => e.type === 'air_delta').tasks[0].title, '推送后的任务');
   }
-  const recovered = await get('/api/air/sync?cursor=' + bootstrap.cursor);
+  const recovered = await syncGet({ cursor: bootstrap.cursor });
   assert.equal(recovered.events[0].tasks[0].title, '推送后的任务');
   const replay = new WebSocket(base.replace('http:', 'ws:') + '/ws/meta?air=1&cursor=' + bootstrap.cursor);
   const frame = once(replay, 'message'); await once(replay, 'open');

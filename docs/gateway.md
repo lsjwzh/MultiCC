@@ -188,7 +188,7 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 | `GET/HEAD/OPTIONS /api/sessions/:id/{merge-status,diff,diff/files,diff/file}`、`GET/HEAD/OPTIONS /api/git/{log,commit-files,commit-diff,directory-file-diff,directory-status}`、`GET/HEAD/OPTIONS /api/task-board/tasks/:taskId/diff/{files,file}`、`POST/OPTIONS /api/task-board/tasks/:taskId/{merge,cleanup-worktree}`、`POST/OPTIONS /api/sessions/:id/{merge,sync,rebase}` | `src/routes/session-git.js` 的 16 条路由（1387 → 540 行）；merge-state 的进程内缓存与后台刷新泵、`isWorktreeActive`、`autoCommitTurn`、session Map 查找与 `isChatStateBusy` 留在 Node，宿主端口为 `src/routes/session-git-host.js` | `native/gateway/src/app/session_git.rs` + `multicc_core::session_git`：路径与参数校验、`git -z` 输出解析（numstat/name-status/show）、diff 截断（UTF-16 语义）、DTO 键序、错误码映射、merge/sync/rebase/cleanup 决策树、逐路由 OPTIONS `Allow` 与写路由串行化（`app.session_git_write`）；`git` 子进程、会话表、merge-state 缓存与广播经 `/api/__host/session-git` 的 14 个 op 回调，前门绝不 spawn git | 117/117 请求逐字节一致；117 个用例的副作用（`appendEvent`/`workspaceBroadcast`/`chatBroadcast` 的调用序列与参数）逐个一致 |
 | `GET/HEAD/OPTIONS /api/task-shell-tasks/:taskId`、`GET/HEAD/OPTIONS /api/task-shell-tasks/:taskId/{history,artifacts}`、`POST/OPTIONS /api/task-shell-tasks/:taskId/{fork,messages}`、`GET/HEAD/OPTIONS /api/task-shells/config`、`GET/HEAD/OPTIONS /api/sessions/:sessionId/{context,task-separation}`、`POST/OPTIONS /api/sessions/:sessionId/task-separation/:suggestionId`、`GET/HEAD/OPTIONS /api/task-shells/:shellId`、`GET/HEAD/OPTIONS /api/task-shells/:shellId/{chat,history,task-index,artifacts,task-operations,task-continuations,attribution-decisions,relations}`、`GET/HEAD/OPTIONS /api/task-shells/:shellId/tasks/:taskId`、`POST/OPTIONS /api/task-shells`、`POST/OPTIONS /api/task-shells/:shellId/task-operations`、`POST/OPTIONS /api/task-shells/:shellId/task-operations/preview`、`GET/HEAD/OPTIONS /api/task-operations/:operationId`、`POST/OPTIONS /api/task-operations/:operationId/{cancel,undo}`、`POST/OPTIONS /api/task-shells/:shellId/attribution-decisions/:decisionId/{accept,dismiss,defer,undo}`、`POST/OPTIONS /api/task-shells/:shellId/tasks/:taskId/independent-continue`、`GET/HEAD/OPTIONS /api/task-continuations/:continuationId`、`POST/OPTIONS /api/task-continuations/:continuationId/{apply,cancel,retry}`、`POST/OPTIONS /api/task-shells/:shellId/relations`、`POST/OPTIONS /api/task-shells/:shellId/relations/remove`、`DELETE/OPTIONS /api/task-shells/:shellId`、`POST/OPTIONS /api/task-shells/:shellId/{links,select-target,messages}`、`POST/OPTIONS /api/task-shells/:shellId/tasks/resolve`、`POST/OPTIONS /api/task-shells/:shellId/receipts/:receiptId/retry` | `src/task-shell/routes.js` 的 42 条路由（172 → 48 行）；SQLite 任务库、records Map、WS 客户端、聊天历史、task-operations/attribution/independent/relations 运行态与 artifact 采集（8s 合并缓存）留在 Node，宿主端口为 `src/routes/task-shell-host.js` | `native/gateway/src/app/task_shell.rs` + `multicc_core::task_shell`：路径匹配与参数解码、逐路由 OPTIONS `Allow`、`pageTaskHistory` 分页、DTO 键序、`{ok:true,…}` 包装、`cleanError` 脱敏与错误信封、写路由串行化（`app.task_shell_write`）；40 个宿主 op 经 `/api/__host/task-shell` 回调，前门不碰 SQLite、WS 或子进程 | 67/67 请求逐字节一致；67 个用例的副作用（runtime / task-operations / attribution / independent / relations / artifact 端口的调用序列与参数）逐个一致 |
 | `GET/HEAD/OPTIONS /api/v1/sessions`、`GET/HEAD/OPTIONS /api/v1/sessions/:id`、`GET/HEAD/OPTIONS /api/v1/directories/:id/workspace`、`GET/HEAD/OPTIONS /api/sessions`、`GET/HEAD/PATCH/DELETE/OPTIONS /api/sessions/:id`、`POST/OPTIONS /api/sessions/:id/{reclassify,mark-task-done,mark-goal-achieved}`、`POST/OPTIONS /api/reclassify-all`、`GET/HEAD/POST/OPTIONS /api/directories/:id/sessions`、`GET/HEAD/OPTIONS /api/directories/:id/workspace`、`POST/OPTIONS /api/debug/classify/:id`、`GET/HEAD/OPTIONS /api/debug/classify-test-cases` | `src/routes/session-admin.js` 的 13 条路由（629 → 211 行）；会话/目录 Map、`readSessionRuntime`、`sessionView`、`getTaskState`/`setTaskState`、`dispatchStateAction`、`runClassifyNow`、转录读取与 AI 助手队列留在 Node，宿主端口为 `src/routes/session-admin-host.js`（316 行） | `native/gateway/src/app/session_admin.rs` + `multicc_core::session_admin`：路径与参数解码、guarded 404 的两种形态、三套 presenter 的键序、裁剪与过滤语义、reclassify-all 决策树、调试分类校验阶梯与排序、逐路由 OPTIONS `Allow`、写路由串行化（`app.session_admin_write`）；18 个宿主 op 经 `/api/__host/session-admin` 回调，前门不碰 Map、分类状态、广播或转录 | 79/79 请求逐字节一致；79 个用例的副作用（`runClassifyNow`/`dispatchStateAction`/`setTaskState` 的调用序列与参数）逐个一致 |
-| `GET/HEAD/OPTIONS /api/air`、`POST/OPTIONS /api/air/worktrees/reclaim`、`GET/HEAD/OPTIONS /api/air/resolve`、`POST/OPTIONS /api/air/tasks`、`GET/HEAD/OPTIONS /api/air/tasks/:id`、`GET/HEAD/OPTIONS /api/air/tasks/:id/open`、`POST/OPTIONS /api/air/tasks/:id/delivery/reconcile`、`POST/OPTIONS /api/air/tasks/:id/roles`、`GET/HEAD/OPTIONS /api/air/pins`、`POST/OPTIONS /api/air/pins`、`POST/OPTIONS /api/air/pins/toggle`、`GET/HEAD/OPTIONS /api/air/todos`、`POST/OPTIONS /api/air/todos`、`POST/OPTIONS /api/air/todos/toggle`、`POST/OPTIONS /api/air/todos/ignore` | `src/workspace/air-routes.js` 的 15 条路由（624 → 34 行，只剩挂载点）；快照组装与凭据脱敏、任务读写（create/detail/open/reconcile/roles）、pin/todo 落盘与存在性剪枝、liveSync 摘要（`/api/air/sync`、`/api/air/page`）留在 Node，宿主端口为 `src/workspace/air-routes-host.js`（16 个 op） | `native/gateway/src/app/air_routes.rs` + `multicc_core::air_routes`：路径匹配与参数解码、`{ ok: … }` 信封（`taskPins`/`taskTodos`/`taskIgnoredTodos`/`roleBindings`/`publications`）、404/409/500 与 `task_ids_required` 400 映射、逐路由 OPTIONS `Allow`/`HEAD`、`GET /api/air` 与任务详情的弱 ETag + `If-None-Match` → 304；快照正文与 ETag 由宿主定稿，前门只决定 200/304 并原样发出 | 62/62 请求逐字节一致；62 个用例的副作用（宿主 op 的调用序列与参数、pin/todo 落盘内容）逐个一致 |
+| `GET/HEAD/OPTIONS /api/air`、`GET/HEAD/OPTIONS /api/air/sync`、`GET/HEAD/OPTIONS /api/air/page`、`POST/OPTIONS /api/air/worktrees/reclaim`、`GET/HEAD/OPTIONS /api/air/resolve`、`POST/OPTIONS /api/air/tasks`、`GET/HEAD/OPTIONS /api/air/tasks/:id`、`GET/HEAD/OPTIONS /api/air/tasks/:id/open`、`POST/OPTIONS /api/air/tasks/:id/delivery/reconcile`、`POST/OPTIONS /api/air/tasks/:id/roles`、`GET/HEAD/OPTIONS /api/air/pins`、`POST/OPTIONS /api/air/pins`、`POST/OPTIONS /api/air/pins/toggle`、`GET/HEAD/OPTIONS /api/air/todos`、`POST/OPTIONS /api/air/todos`、`POST/OPTIONS /api/air/todos/toggle`、`POST/OPTIONS /api/air/todos/ignore` | `src/workspace/air-routes.js` 的 15 条路由（624 → 34 行，只剩挂载点）与 `src/workspace/air-sync-runtime.js` 的 `mount()` 里的 2 条摘要路由（`/api/air/sync`、`/api/air/page`，共 17 条；`mount()` 已删，处理器原体搬成 `syncHttp`/`pageHttp`）；快照组装与凭据脱敏、任务读写（create/detail/open/reconcile/roles）、pin/todo 落盘与存在性剪枝、liveSync 摘要运行时留在 Node，宿主端口为 `src/workspace/air-routes-host.js`（17 个 op，新增 `sync`/`page`） | `native/gateway/src/app/air_routes.rs` + `multicc_core::air_routes`：路径匹配与参数解码、`{ ok: … }` 信封（`taskPins`/`taskTodos`/`taskIgnoredTodos`/`roleBindings`/`publications`）、404/409/500 与 `task_ids_required` 400 映射、逐路由 OPTIONS `Allow`/`HEAD`、`GET /api/air` 与任务详情的弱 ETag + `If-None-Match` → 304；快照正文与 ETag 由宿主定稿，前门只决定 200/304 并原样发出 | air-routes：62/62 请求逐字节一致；62 个用例的副作用（宿主 op 的调用序列与参数、pin/todo 落盘内容）逐个一致。air-sync-routes（新增，`docs/rust-migration/differential/air-sync-routes.js`）：39/39 请求逐字节一致，37 个转发给宿主端口的 body 与退役处理器收到的 `req.query` 经契约折叠后逐个一致（见下方 sync/page 小节） |
 | `GET/HEAD/OPTIONS /api/pricing/{status,lookup,search}`、`POST/OPTIONS /api/pricing/refresh`、`GET/HEAD/OPTIONS /api/{opencode,qoder,codex,ark,kimi,claude,aliyun}/quota`、`POST/OPTIONS /api/{opencode,qoder,ark,kimi,claude,aliyun}/quota/login`、`POST/OPTIONS /api/ark/quota/install`、`GET/HEAD/OPTIONS /api/qoder/quota/cookies`、`GET/HEAD/OPTIONS /api/quota/bars/{idle,state}`、`POST/OPTIONS /api/quota/bars/refresh` | `src/routes/pricing.js` 与 `src/routes/quota-bars.js`（已删）；七个厂商模块只剩 fetcher（244/237/118/213/356/541/147 行），宿主端口 `src/routes/quota-host.js`（351 行，22 个 op） | `native/gateway/src/app/quota_routes.rs` + `multicc_core::quota_routes`（额度条渲染复用 `multicc_core::quota_bar_view`）：路径与参数校验、`?models=` 解析与三条 400、`?limit=` 的 parseInt 与封顶、`force` 两种拼写、各厂商 status→HTTP 树、信封键序、额度条 TTL/就绪/并发语义、逐路由 OPTIONS `Allow` 与写路由串行化（`app.quota_write`）；价格表、九个厂商抓取、登录窗、arkcli、额度条进程内缓存、Claude 用量队列与 5h live 窗、两个记账经 `/api/__host/quota` 回调 | 137/137 请求逐字节一致；137 个用例的副作用（价格表查询、各厂商 fetch、登录窗、arkcli spawn/install、缓存读写、Claude 用量队列与 live 窗、`recordVendor`/`recordClaude`）调用序列逐个一致（见 §45） |
 | `GET/HEAD/OPTIONS /api/events/catalog`、`GET/HEAD/OPTIONS /api/events/recent`、`GET/HEAD/OPTIONS /api/event-triggers`、`GET/HEAD/OPTIONS /api/event-rules`、`POST/OPTIONS /api/event-rules`、`PUT/OPTIONS /api/event-rules/:id`、`DELETE/OPTIONS /api/event-rules/:id`、`POST/OPTIONS /api/events/test`、`GET/HEAD/OPTIONS /api/sessions/:id/triggers`、`POST/OPTIONS /api/sessions/:id/triggers`、`PUT/OPTIONS /api/sessions/:id/triggers/:tid`、`DELETE/OPTIONS /api/sessions/:id/triggers/:tid`、`POST/OPTIONS /api/sessions/:id/triggers/:tid/test`、`GET/HEAD/OPTIONS /api/annotation-live`、`POST/OPTIONS /api/annotation-live` | `src/events/routes.js`（已删）；`src/triggers/index.js` 与 `src/annotation-live.js` 只剩运行时（事件环、规则表读写、`fireTrigger`/`reconcileSession`、`appendEvent`、cron 校验、渠道注册表、annotation-live.json 热加载与 HTTP 转发），宿主端口为 `src/routes/events-host.js`（18 个 op） | `native/gateway/src/app/event_routes.rs` + `multicc_core::event_routes`（规则校验复用 `multicc_core::events`）：路径匹配与参数解码、`publicSessionAccessGuard` 的两种 404 形态（复用 `session_admin` 的 `guard_facts`/`guarded_404`）、逐路由 OPTIONS `Allow`、recent 的 `limit` 解释与 1..200 封顶、规则/触发器的校验决策树与 id/旧戳生成、`/api/events/test` 的已发射类型表与 goal 裁剪、annotation-live 的 payload 归一化与 `{config,targets}`/`{ok,relayed,results}` 键序、写路由串行化（`app.event_write`）；18 个宿主 op 经 `/api/__host/events` 回调，前门绝不碰事件环、会话 Map、cron 或渠道插件 | 81/81 请求逐字节一致；81 个用例的副作用（`hub.emit`、规则表持久化、渠道核对、cron 校验、`mutate`/`appendEvent`/`chatBroadcast`/`chat:run`）调用序列逐个一致（见 §46） |
 | `GET/HEAD/POST/OPTIONS /api/docs-registry`、`PATCH/DELETE/OPTIONS /api/docs-registry/:id`、`POST/OPTIONS /api/docs-registry/:id/{start,stop}`、`GET/HEAD/OPTIONS /api/docs-registry/:id/log`、`GET/HEAD/OPTIONS /api/memory/{graph,tree}`、`GET/PUT/DELETE/OPTIONS /api/memory/file`、`GET/PUT/OPTIONS /api/directories/:id/memo`、`POST/OPTIONS /api/directories/:id/memo/send`、`GET/HEAD/OPTIONS /api/directories/:id/events` | `src/docs-registry.js` 7 条（472 → 494 行，只剩注册表内存表、artifact 依赖图与 servedRoots、服务 spawn/kill/probe/日志）、`src/routes/memory-browser.js` 5 条（897 → 849 行，只剩目录扫描、realpath 事实、文件读写与广播）、`src/memo/router.js`（已删，控制器在 `src/memo/`，经宿主端口回调）、`src/notes-store.js` 1 条（144 → 138 行，只剩事件环与 JSONL）；宿主端口 `src/routes/docs-memory-host.js`（250 行，23 个 op） | `native/gateway/src/app/docs_memory_routes.rs` + `multicc_core::docs_memory_routes`：路径匹配与参数解码、逐路由 OPTIONS `Allow`（`/api/directories/:id/memo` 与 session-admin 的 `/sessions`、`/workspace` 共存）、HEAD、弱 ETag/304 与 gzip、docs 列表的 `?dir` 归一化与 view 排序、POST 的预填（session → 目录、worktree 折叠、artifact URL）、PATCH 的 sanitize 与 `updatedAt`、`/api/memory/file` 的 rel 形态与真实路径穿越判定、graph/tree DTO 键序与截断、memo 的三条 400/404/413 校验、事件日志的 404 信封；服务进程、记忆库扫描与文件写入、memo 投递、事件环与目录 Map 经 `/api/__host/docs-memory` 的 23 个 op 回调 | 94/94 请求逐字节一致；94 个用例的副作用（服务 spawn/kill 序列、`runTurn` 投递、记忆库文件落盘与广播）逐个一致（见 §47） |
@@ -4898,3 +4898,68 @@ Node 侧的公开注册删除，只留回环宿主端口 `src/routes/cli-switch-
 其中 7 条入口拒绝全部只调 `facts`、零执行副作用，2 条内部槽同样只调 `facts`。三项变异
 （拒绝文案、`Allow` 列表、把 OPTIONS 提前到守卫之前）均被抓到：前两项 23/24，第三项 23/24
 且内部槽 facts-only 降为 1/2。
+
+## 60. air 摘要两条路由 `/api/air/sync`、`/api/air/page` 迁入前门（HTTP 路由域第 1 提交）
+
+退役对象：`src/workspace/air-sync-runtime.js` 的 `mount(app, route)`，它在公开 app 上注册
+`GET /api/air/sync` 与 `GET /api/air/page`。迁移后公开注册消失，前门独占这两条路径
+（GET、HEAD；OPTIONS 并入 `Allow: GET,HEAD`；POST 等其它方法不认领，仍落到 Node 的 404）。
+
+### 60.1 边界
+
+| 在前门（`native/gateway/src/app/air_routes.rs`） | 在 Node 宿主（`air-routes-host.js` → `air-sync-runtime.js`） |
+|---|---|
+| 路径与方法认领、HEAD 映射 GET、OPTIONS 并集 | `syncHttp(q)` / `pageHttp(q)`：退役处理器的原体，逐字搬入 |
+| 按键抽取 query（qs 形状：缺省 / 字符串 / 重复键数组 / 对象） | `Number(q.dayStart) || 0`、`String(q.include || '').split(',').filter(Boolean)` 等全部 JS 强制转换 |
+| 错误信封 `{ ok:false, code, message }`、状态码、`error.status` 为假则不带 message | 读索引的串行化、`air_busy`/`air_closed`、首发发布等待 |
+| 弱 ETag、`If-None-Match` → 304、/api JSON gzip、HEAD 剥体保留 Content-Length | 摘要正文与游标（随机 epoch）的产生 |
+
+宿主端口只多两个 op：`POST /api/__host/air` 的 `{ op:'sync', dayStart?, cursor?, include? }` 与
+`{ op:'page', status?, sort?, dirId?, query?, dayStart?, limit?, page?, visits?, ids? }`。前门
+**不做任何强制转换**：值以 `req.query` 的 JSON 同形（字符串、数组、`{}`）原样交给宿主，缺省的键整个省略
+（宿主读回 `undefined`，与退役 `req.query` 一致）。因此强制转换语义是 byte-exact by construction，而不是
+在 Rust 里重写一遍。
+
+### 60.2 两个看似可疑、实际安全的折叠
+
+- **qs 对象折叠成 `{}`**（`cursor[x]=1`）。宿主侧对它的全部使用是 `String(x)`（得 `'[object Object]'`）、
+  `Number(x)`（得 `NaN`）和类型校验（只看是不是 object），都不依赖内容。差分用 `sync an object cursor
+  folds like qs` 钉住。
+- **page 只转发九个键**（`status sort dirId query dayStart limit page visits ids`）。退役的
+  `{...req.query, visits, ids}` 会带上任意未知键，但读模型的 `page` 只校验、读取这九个键，未知键只进入
+  内部 memo 的 cache key，外部不可观测。差分用 `page unknown keys stay home` 钉住。
+
+### 60.3 宿主 JS 里保留的极端行为
+
+`visits` 先 `String(...).slice(0, 10_000)`（按 UTF-16 单元截断）再 `JSON.parse`，失败得 `{}`；`ids` 缺省为
+`null`、空串为 `[]`、重复键为列表。这些在 `tests/test-air-sync.js` 里有运行时级钉住（`syncHttp`/`pageHttp` 强制转换矩阵、
+`air_closed`、`air_busy`），不依赖前门。
+
+### 60.4 验证
+
+- Rust：`native/gateway/src/app/air_routes.rs` 单测（认领矩阵、OPTIONS 并集、POST 不认领）与
+  `native/gateway/tests/air_routes.rs` 集成测试（qs 形状转发、503 `air_busy` 带 message、无 status 的 500
+  `Request failed`、HEAD 剥体、`If-None-Match` → 304）。
+- Node：`tests/test-air-sync.js` 22/22（新增 3 个）；`tests/test-air-sync-http.js` 经宿主端口 op 走通。
+  冻结 oracle `tests/helpers/legacy-air-routes.js` 里用冻结注册替换了对 `liveSync.mount` 的调用，处理器原体不变。
+- 差分 `docs/rust-migration/differential/air-sync-routes.js`（新增）：**39/39 请求逐字节一致**，37 个转发给宿主端口的 body 与退役
+  处理器收到的 `req.query` 经契约折叠后逐个一致。世界是 40 张卡（`tk-a`、`tk-b` 加 `tk-001..tk-038`），使 `include` 把首屏
+  30 张之外的卡带进来、`page` 的分页与 `ids` 收窄都能在应答字节里被看见；`finalize` 对这些存在性做了断言。
+  `cursor` 与 `checkedAt` 是每进程值（随机 epoch、墙钟），归一化掩码后比较；游标按侧捕获并穿线到后续用例，
+  断言宿主收到的正是该侧发出的那个。
+- 变异验证：让退役 oracle 吞掉 `include` 后，差分在三层同时变红（4 个应答字节差异、2 条存在性断言、转发体比对）；
+  oracle 随后逐字节还原（`cmp`）。
+
+### 60.5 差分 harness 的启动竞态（既有缺陷，已在两处修正）
+
+stub 子进程要先加载原生模块、建读模型，才监听内部端口；而 `lib.js` 只等前门端口。机器负载高时，首批触达宿主端口的用例会遇上
+被拒绝的连接，前门按设计回 503 `rust_backend_unavailable`，差分便报出一串与行为无关的差异。实测：同一份既有 `air-routes.js`
+在负载 7–11 时先后得到 50/62 与 55/62，加入就绪门后连续两次 62/62。
+
+修法只在 `air-sync-routes.js` 与 `air-routes.js` 两个文件内：stub 在 `listen` 回调里写就绪标记，每个用例在 Rust 一侧的 `before`
+钩子里先等待该标记（60 秒上限）。没有改任何用例或断言。其它差分文件有同样的潜在竞态，本批次未触碰。
+
+### 60.6 范围之外（仍在 Node）
+
+`POST/PUT/PATCH/DELETE` 到这两条路径、`/api/air/*` 下其它未认领路径，以及 `liveSync` 的 WebSocket 订阅（`/ws/meta?air=1`，`attach()`）都留在 Node，
+后者属于下一阻塞域（WS 宿主）。

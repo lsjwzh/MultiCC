@@ -163,23 +163,25 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
     await ensureReady();
     return serial(() => index[method](...args));
   }
-  function mount(app, route) {
-    app.get('/api/air/sync', route(async req => {
-      await ensureReady();
-      const q = req.query || {}, day = Number(q.dayStart) || 0;
-      return serial(async () => ({ ...(q.cursor ? await readSync(q.cursor, day)
-        : await index.bootstrap({ include: String(q.include || '').split(',').filter(Boolean), dayStart: day })),
-      checkedAt, ...statusFields() }));
-    }));
-    app.get('/api/air/page', route(async req => {
-      const q = req.query || {};
-      let visits = {};
-      try { visits = JSON.parse(String(q.visits || '{}').slice(0, 10_000)); } catch (_) {}
-      return query('page', { ...q, visits, ids: q.ids === undefined ? null : String(q.ids).split(',').filter(Boolean) });
-    }));
+  // GET /api/air/sync 与 GET /api/air/page 的处理器原体：公开注册已迁到
+  // Rust 前门（native/gateway/src/app/air_routes.rs），前门按 qs 语义抽取
+  // 查询键后经宿主端口调进来；这里的入参 q 就是原 req.query 的同形 JSON。
+  // 两条都是只读：route() 对 GET 不做失效，错误信封规则由宿主端口与内核
+  // error_body 复刻。
+  async function syncHttp(q = {}) {
+    await ensureReady();
+    const day = Number(q.dayStart) || 0;
+    return serial(async () => ({ ...(q.cursor ? await readSync(q.cursor, day)
+      : await index.bootstrap({ include: String(q.include || '').split(',').filter(Boolean), dayStart: day })),
+    checkedAt, ...statusFields() }));
+  }
+  async function pageHttp(q = {}) {
+    let visits = {};
+    try { visits = JSON.parse(String(q.visits || '{}').slice(0, 10_000)); } catch (_) {}
+    return query('page', { ...q, visits, ids: q.ids === undefined ? null : String(q.ids).split(',').filter(Boolean) });
   }
   schedule(0);
-  return { index, ensureReady, invalidate, attach, mount, flush, query, publishStatus,
+  return { index, ensureReady, invalidate, attach, syncHttp, pageHttp, flush, query, publishStatus,
     serialized: () => query('serialized'),
     close() {
       if (closePromise) return closePromise;

@@ -1,6 +1,6 @@
 #![recursion_limit = "256"]
 
-//! Integration coverage for the 15 Air task-board routes retired from
+//! Integration coverage for the 17 Air task-board routes retired from
 //! `src/workspace/air-routes.js` and answered by the Rust front door
 //! (`native/gateway/src/app/air_routes.rs`). The Node process here is only the
 //! protocol fixture: it answers `POST /api/__host/air` from
@@ -283,10 +283,16 @@ fn refused(code: &str, status: i64, message: &str) -> Value {
 const SNAPSHOT_BODY: &str =
     r#"{"b":1.5,"ok":true,"tasks":[{"id":"tsk_1","extra":null}],"a":[1,2]}"#;
 const DETAIL_BODY: &str = r#"{"ok":true,"task":{"id":"tsk_1"},"roleBindings":null}"#;
+const SYNC_BODY: &str = r#"{"events":[],"cursor":"epoch:1","taskStats":{"all":{"total":2}},"checkedAt":0,"degraded":false}"#;
+const PAGE_BODY: &str = r#"{"ok":true,"revision":1,"page":1,"pages":1,"total":0,"tasks":[]}"#;
 
 /// One scripted answer per host op, keyed the way the fixture resolves them.
 fn world() -> Value {
     let ops = json!({
+        "sync": ok(json!({"events": [], "cursor": "epoch:1",
+            "taskStats": {"all": {"total": 2}}, "checkedAt": 0, "degraded": false})),
+        "page": ok(json!({"ok": true, "revision": 1, "page": 1, "pages": 1,
+            "total": 0, "tasks": []})),
         "snapshot": ok(json!({"body": SNAPSHOT_BODY, "etag": "W/\"snap-1\""})),
         "reclaim": ok(json!({"kind": "reclaimed",
             "result": {"ok": true, "considered": 3, "hibernated": 2}})),
@@ -435,6 +441,98 @@ fn resolve_forwards_the_query_and_builds_the_redirect_url() {
     let miss = empty.get("/api/air/resolve");
     assert_eq!(miss.status, 200);
     assert_eq!(miss.body, "{\"ok\":true,\"url\":\"/air\"}");
+}
+
+#[test]
+fn sync_and_page_forward_the_query_with_qs_shapes() {
+    let gateway = Gateway::start("sync-page", world());
+
+    // Bare bootstrap: no query keys reach the host.
+    let bootstrap = gateway.get("/api/air/sync");
+    assert_eq!(bootstrap.status, 200);
+    assert_eq!(bootstrap.body, SYNC_BODY);
+    assert_eq!(
+        bootstrap.header("content-type"),
+        Some("application/json; charset=utf-8")
+    );
+    let call = gateway.calls().pop().unwrap();
+    assert_eq!(call["op"], "sync");
+    assert!(call.get("dayStart").is_none());
+    assert!(call.get("cursor").is_none());
+    assert!(call.get("include").is_none());
+
+    // Scalar keys forward as strings.
+    gateway.get("/api/air/sync?dayStart=5&cursor=epoch%3A1&include=a%2Cb");
+    let call = gateway.calls().pop().unwrap();
+    assert_eq!(call["dayStart"], "5");
+    assert_eq!(call["cursor"], "epoch:1");
+    assert_eq!(call["include"], "a,b");
+
+    // qs repeats stay arrays; bracket objects collapse the way the retired
+    // handlers' String/Object coercions saw them (an opaque object).
+    gateway.get("/api/air/sync?dayStart=1&dayStart=2&cursor[x]=1");
+    let call = gateway.calls().pop().unwrap();
+    assert_eq!(call["dayStart"], json!(["1", "2"]));
+    assert_eq!(call["cursor"], json!({}));
+
+    // Page: every key the projection validates or reads forwards; unknown
+    // keys never reached the reader through the retired spread either.
+    let page = gateway.get(
+        "/api/air/page?status=all&page=2&limit=20&query=x&dirId=d1&sort=visit&dayStart=0&ids=a&ids=b&visits=%7B%22a%22%3A1%7D&foo=bar",
+    );
+    assert_eq!(page.status, 200);
+    assert_eq!(page.body, PAGE_BODY);
+    let call = gateway.calls().pop().unwrap();
+    assert_eq!(call["op"], "page");
+    assert_eq!(call["status"], "all");
+    assert_eq!(call["page"], "2");
+    assert_eq!(call["limit"], "20");
+    assert_eq!(call["ids"], json!(["a", "b"]));
+    assert_eq!(call["visits"], "{\"a\":1}");
+    assert!(
+        call.get("foo").is_none(),
+        "unknown keys never reached the reader"
+    );
+}
+
+#[test]
+fn sync_and_page_refusals_head_and_freshness_follow_the_cluster_rules() {
+    let mut script = world();
+    script["air"]["ops"]["sync"] = refused("air_busy", 503, "busy");
+    let gateway = Gateway::start("sync-refused", script);
+    let busy = gateway.get("/api/air/sync");
+    assert_eq!(busy.status, 503);
+    assert_eq!(
+        busy.body,
+        "{\"ok\":false,\"code\":\"air_busy\",\"message\":\"busy\"}"
+    );
+
+    // No status: the generic 500 envelope, the host message never leaks.
+    let mut script = world();
+    script["air"]["ops"]["page"] =
+        json!({ "ok": false, "error": { "message": "read_model_invalid_options" } });
+    let gateway = Gateway::start("page-refused", script);
+    let failed = gateway.get("/api/air/page");
+    assert_eq!(failed.status, 500);
+    assert_eq!(
+        failed.body,
+        "{\"ok\":false,\"code\":\"air_request_failed\",\"message\":\"Request failed\"}"
+    );
+
+    // HEAD runs the GET handler and strips only the body.
+    let gateway = Gateway::start("sync-head", world());
+    let get = gateway.get("/api/air/sync");
+    let head = gateway.head("/api/air/sync");
+    assert_eq!(head.status, 200);
+    assert_eq!(head.body, "");
+    assert_eq!(head.header("content-length"), get.header("content-length"));
+    assert_eq!(head.header("etag"), get.header("etag"));
+
+    // The res.json freshness check applies to these reads too.
+    let etag = get.header("etag").unwrap().to_string();
+    let fresh = gateway.get_with("/api/air/sync", &[("If-None-Match", &etag)]);
+    assert_eq!(fresh.status, 304);
+    assert_eq!(fresh.body, "");
 }
 
 #[test]
@@ -705,8 +803,14 @@ fn options_and_head_follow_the_express_automation() {
             .header("allow"),
         Some("POST")
     );
-    // /api/air/sync and /api/air/page are still Node routes.
-    assert_eq!(gateway.options("/api/air/sync").header("allow"), None);
+    assert_eq!(
+        gateway.options("/api/air/sync").header("allow"),
+        Some("GET,HEAD")
+    );
+    assert_eq!(
+        gateway.options("/api/air/page").header("allow"),
+        Some("GET,HEAD")
+    );
     assert!(
         gateway.calls().is_empty(),
         "OPTIONS never reaches the host port"

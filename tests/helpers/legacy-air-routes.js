@@ -501,7 +501,13 @@ function mountAirRoutes(app, deps) {
         task.sessionId === id || task.chatSessionId === id || core.taskRunSessionIds(task).includes(id)).map(task => task.id);
     },
   }) : null;
-  if (liveSync) { liveSync.mount(app, route); deps.registerSync(liveSync); }
+  if (liveSync) {
+    // 冻结 air-sync-runtime 退役前的 mount() 注册形状；处理器原体就是运行时
+    // 的 syncHttp/pageHttp（逐字搬入），query 管道与 route() 包装保持不变。
+    app.get('/api/air/sync', route(async req => liveSync.syncHttp(req.query || {})));
+    app.get('/api/air/page', route(async req => liveSync.pageHttp(req.query || {})));
+    deps.registerSync(liveSync);
+  }
   let airBuildsInFlight = 0;
   app.get('/api/air', route(async (req, res) => {
     const timing = createPhaseTimer();
