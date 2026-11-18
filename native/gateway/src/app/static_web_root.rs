@@ -62,14 +62,14 @@ const INDEX: &str = "index.html";
 const EXTENSION: &str = "html";
 
 /// `fs.statSync` as the two retired layers read it.
-enum Entry {
+pub(super) enum Entry {
     File,
     Directory,
     /// The error's `err.code` and the status `send`'s `onStatError` gives it.
     Error(&'static str, u16),
 }
 
-fn probe(path: &Path) -> Entry {
+pub(super) fn probe(path: &Path) -> Entry {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_dir() => Entry::Directory,
         Ok(_) => Entry::File,

@@ -1288,7 +1288,8 @@ const server = http.createServer((req, res) => {
   // native/gateway/src/app/release_history_routes.rs). `releaseHistory.ops`
   // maps `<op>:<token|id>` (then `<op>`) to the `{ status, body | contentType +
   // body | bare, headers }` (or `{ threw, ... }`) the retired handler produced;
-  // the fallback is `{ status: 200, body: { ok: true, op } }`. `delayMs` holds
+  // the fallback is `{ status: 200, body: { ok: true, op } }` (`apk-download`:
+  // `{ fellThrough: true }`). `delayMs` holds
   // every answer back so a test can observe interleaving; `rawAnswer` replaces
   // the whole reply text (a malformed host); `hostDown` drops the socket. Every
   // payload is appended to release-history-calls.jsonl, and each request logs a
@@ -1315,7 +1316,11 @@ const server = http.createServer((req, res) => {
         } else {
           const value = own(ops, scoped) ? ops[scoped]
             : own(ops, input.op) ? ops[input.op]
-              : { status: 200, body: { ok: true, op: input.op } };
+              // `/multicc.apk` is claimed by the front door since 2026-11-19 and asks
+              // this op first; an unscripted host answers the common local case,
+              // `next()`, which the front door continues down the retired chain.
+              : input.op === 'apk-download' ? { fellThrough: true }
+                : { status: 200, body: { ok: true, op: input.op } };
           text = JSON.stringify({ ok: true, value });
         }
         fs.appendFileSync(events, `${JSON.stringify({ phase: 'end', op: input.op, at: Date.now() })}\n`);

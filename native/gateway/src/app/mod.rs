@@ -11,6 +11,7 @@ pub mod account_routes;
 pub mod account_subscription;
 pub mod agent_resources;
 pub mod air_routes;
+pub mod artifacts;
 pub mod auth;
 pub mod auto_provider_routing;
 pub mod claude_models;
@@ -190,6 +191,10 @@ pub enum Route {
     /// `static_web_root::claim` and travels as a [`static_web_root::Resolved`]
     /// request extension, so this variant carries no payload.
     StaticWebRoot,
+    /// The dual-root `/artifacts` static mount. Like [`Route::StaticWebRoot`],
+    /// the resolution happens in `artifacts::claim` and travels as an
+    /// [`artifacts::Resolved`] request extension.
+    Artifacts,
     ServerCore(server_core::Route),
     Plugins(plugins::Route),
     FilesGet,
@@ -1056,6 +1061,19 @@ pub async fn handle(
     // The cluster runs the peer allowlist itself for every path.
     if let Route::ServerCore(route) = route {
         return server_core::handle(&app, route, &ctx, &peer, &snapshot, host).await;
+    }
+    // Temp artifacts: `/artifacts/<id>` is a capability path the Node gate
+    // lets through (`http_entry::public_path`), so this cluster runs the peer
+    // check itself and skips the ordinary gate only for those public shapes.
+    if let Route::Artifacts = route {
+        return artifacts::handle(
+            &app,
+            &ctx,
+            &peer,
+            &snapshot,
+            parts.extensions.get::<artifacts::Resolved>(),
+        )
+        .await;
     }
     // Plugin UI files: Node's auth gate lets a static-extension path through
     // without a login (`http_entry::public_path`), so this route runs the peer

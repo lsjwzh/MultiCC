@@ -2222,10 +2222,9 @@ require('./src/quota/quota-self-heal').wireQuotaSelfHeal({ app, providers, limit
 mountZcodeAuthRoutes(accountRoutesHost.app); mountKimiAuthRoutes(accountRoutesHost.app);
 mountZcodeAuthLoginRoute(app); mountKimiAuthLoginRoute(app);
 
-// Temp artifacts produced by the multicc-artifact skill (served from
-// ~/.multicc/artifacts). Mounted before the public static handler so /artifacts
-// is claimed first; auth is bypassed via the capability <id> (see middleware).
-artifacts.mount(app);
+// Temp artifacts are served by the Rust front door's dual-root static mount
+// (docs/gateway.md §62); the capability <id> bypass lives in
+// http_entry::public_path. Only the startup cleanup below reads this module.
 
 // 静态资源（public/ 的 express.static、版本化 HTML 中间件、`GET /` 重定向和
 // .apk/.ipa 守卫）已由 Rust 前门独占，这里不再注册任何静态处理器；

@@ -67,6 +67,10 @@ test('server resolves pins from the docs registry for every artifact cleanup tic
   assert.match(source, /artifact_cleanup_pin_read_failed/);
   assert.match(source, /cleanupArtifacts\(\);/);
   assert.match(source, /setInterval\(\(\) => cleanupArtifacts\(\), 6 \* 3600 \* 1000\)/);
+  // The `/artifacts` serving chain retired to the Rust front door's dual-root
+  // static mount (docs/gateway.md §62): the server must not register the old
+  // mount again. The cleanup timer above is all that still uses this module.
+  assert.doesNotMatch(source, /artifacts\.mount\(/);
 });
 
 test('permanent artifacts keep transitive, relative and declared intermediates without retaining unrelated tasks', t => {
