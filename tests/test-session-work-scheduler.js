@@ -641,13 +641,19 @@ test('Rust lifecycle transitions preserve active ownership and queue projection'
   }
 });
 
-test('late delivery acknowledgement cannot rewind assessment or frozen work', async () => {
+test('late delivery acknowledgement cannot rewind assessment or frozen work', async t => {
   for (const state of ['assessing', 'frozen']) {
-    const draft = { outbox: {}, sessionSchedules: { s: { sessionId: 's', state: 'starting',
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-late-ack-'));
+    const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => 1000 });
+    t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+    const initial = { sessionId: 's', state: 'starting',
       active: { entryId: 'entry', deliveryId: 'delivery', taskId: 'task', startedAt: null },
-      classifyState: 'P', freezeReason: null, awaitingRequestId: null } } };
+      classifyState: 'P', freezeReason: null, awaitingRequestId: null };
+    await store.mutate(draft => { draft.sessionSchedules.s = initial; });
+    await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+      pendingQuestion: null, activeTurn: null, category: null,
+    } });
     const events = [];
-    const store = { mutate: async fn => fn(draft), read: async fn => fn(draft) };
     const scheduler = createSessionWorkScheduler({ store, now: () => 1000, onEvent: e => events.push(e) });
     assert.equal((await scheduler.turnEnded('s')).ok, true);
     if (state === 'frozen') {
@@ -658,11 +664,12 @@ test('late delivery acknowledgement cannot rewind assessment or frozen work', as
     const result = await scheduler.started({ id: 'delivery', sessionId: 's', attempts: 2 });
     assert.equal(result.ok, true);
     assert.equal(result.late, true);
-    assert.equal(draft.sessionSchedules.s.state, state);
-    assert.equal(draft.sessionSchedules.s.active.startedAt, null);
-    assert.equal(draft.sessionSchedules.s.active.attempt, undefined);
-    assert.equal(draft.sessionSchedules.s.freezeReason, state === 'frozen' ? 'waiting' : null);
-    assert.equal(draft.sessionSchedules.s.awaitingRequestId, state === 'frozen' ? 'request' : null);
+    const schedule = (await store.snapshot()).sessionSchedules.s;
+    assert.equal(schedule.state, state);
+    assert.equal(schedule.active.startedAt, null);
+    assert.equal(schedule.active.attempt, undefined);
+    assert.equal(schedule.freezeReason, state === 'frozen' ? 'waiting' : null);
+    assert.equal(schedule.awaitingRequestId, state === 'frozen' ? 'request' : null);
     assert.equal(events.some(e => e.type === 'started'), false);
     const completed = await scheduler.complete('s', { expectedTaskId: 'task', classifyState: 'D' });
     assert.equal(completed.ok, true);
