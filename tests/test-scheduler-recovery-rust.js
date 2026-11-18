@@ -194,9 +194,14 @@ test('owned recovery rejects a stale snapshot after a versioned fact update', as
     /recovery fact version conflict/);
   assert.equal((await store.snapshot()).sessionSchedules.s.state, 'running');
   const fresh = await owner.requestAsync('scheduleRecoverOwnedSnapshotExperimental', {});
-  await owner.requestAsync('scheduleRecoverOwnedCommitExperimental', {
+  const freshArgs = {
     ...args, expectedRevision: fresh.state.revision, expectedDataVersion: fresh.dataVersion, facts: fresh.facts,
-  });
+  };
+  await assert.rejects(owner.requestAsync('scheduleRecoverOwnedCommitExperimental', {
+    ...freshArgs, facts: fresh.facts.map(fact => ({ ...fact, classifyState: 'D' })),
+  }), /only session id and version/);
+  assert.equal((await store.snapshot()).sessionSchedules.s.state, 'running');
+  await owner.requestAsync('scheduleRecoverOwnedCommitExperimental', freshArgs);
   const saved = (await store.snapshot()).sessionSchedules.s;
   assert.equal(saved.state, 'frozen');
   assert.equal(saved.freezeReason, 'classify_waiting');

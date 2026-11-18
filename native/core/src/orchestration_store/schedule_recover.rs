@@ -428,6 +428,18 @@ fn commit_impl(
     if store.active || store.pending {
         return Err(err("schedule recovery requires an idle owner connection"));
     }
+    if require_owned
+        && input.as_object().is_none_or(|object| {
+            object.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "expectedRevision" | "expectedDataVersion" | "at" | "updatedAt" | "facts"
+                )
+            })
+        })
+    {
+        return Err(err("unsupported owned recovery parameter"));
+    }
     let expected_revision = input["expectedRevision"]
         .as_u64()
         .ok_or_else(|| err("expectedRevision required"))?;
@@ -479,6 +491,15 @@ fn commit_impl(
     let mut events = Vec::new();
     let mut changed = false;
     for (index, fact) in facts.iter().enumerate() {
+        if require_owned
+            && fact.as_object().is_none_or(|object| {
+                object
+                    .keys()
+                    .any(|key| key != "sessionId" && key != "expectedVersion")
+            })
+        {
+            return Err(err("owned recovery accepts only session id and version"));
+        }
         let session = fact["sessionId"]
             .as_str()
             .ok_or_else(|| err("invalid recovery session"))?;
@@ -701,8 +722,31 @@ mod tests {
         let current = owned_snapshot(&mut store).unwrap();
         command["facts"] = current["facts"].clone();
         command["expectedDataVersion"] = current["dataVersion"].clone();
-        // Even a tampered transport value cannot replace the owner's state.
-        command["facts"][0]["stateJson"] = json!("{\"classifyState\":\"D\"}");
+        // Reject injected facts even after an earlier session has been processed;
+        // the transaction must roll that earlier session back as well.
+        let mut tampered = command.clone();
+        tampered["facts"][1]["stateJson"] = json!("{\"classifyState\":\"D\"}");
+        assert!(owned_commit(&mut store, &tampered)
+            .unwrap_err()
+            .contains("only session id and version"));
+        let mut direct_classification = command.clone();
+        direct_classification["facts"][1]["classifyState"] = json!("D");
+        assert!(owned_commit(&mut store, &direct_classification)
+            .unwrap_err()
+            .contains("only session id and version"));
+        let unchanged =
+            super::super::record::get_json(store.conn().unwrap(), "sessionSchedules", "s", &[])
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&unchanged).unwrap()["state"],
+            "running"
+        );
+        let mut injected = command.clone();
+        injected["classifyState"] = json!("D");
+        assert!(owned_commit(&mut store, &injected)
+            .unwrap_err()
+            .contains("unsupported owned recovery parameter"));
         owned_commit(&mut store, &command).unwrap();
         let saved =
             super::super::record::get_json(store.conn().unwrap(), "sessionSchedules", "s", &[])
