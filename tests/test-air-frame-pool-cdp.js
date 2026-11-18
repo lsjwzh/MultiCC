@@ -61,7 +61,7 @@ const frameState = `(() => {
 
 const clickTask = title => `(() => {
   const button = [...document.querySelectorAll('#tasks button')]
-    .find(candidate => candidate.querySelector('strong')?.textContent === ${JSON.stringify(title)});
+    .find(candidate => candidate.querySelector('strong')?.firstChild?.textContent === ${JSON.stringify(title)});
   if (!button) return false;
   button.click();
   return true;

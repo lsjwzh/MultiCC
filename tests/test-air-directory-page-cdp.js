@@ -99,7 +99,7 @@ test('the directory home shares one scroll layer, shows a compact sticky heading
       }; })()`);
     assert.equal(merged.cardHidden, false, '有 git 状态就该露出来');
     assert.equal(merged.wtHidden, false, '这个目录有 worktree 生命周期数据');
-    assert.equal(merged.wtParent, 'directory-git', 'worktree 那块必须长在 git 卡里面');
+    assert.equal(merged.wtParent, 'directory-git-body', 'worktree 必须位于 Git 卡的可折叠内容中');
     assert.equal(merged.wtInCard, true);
     assert.equal(merged.wtIsColumnChild, false, '不能再是首页那一列的独立一张卡');
     assert.equal(merged.cardHeadings, 1, '一张卡一个抬头');

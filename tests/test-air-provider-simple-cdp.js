@@ -113,6 +113,8 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     await page.navigate('/air?view=provider&dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('.air-provider-card').length===4`));
     assert.ok(await page.waitFor(`document.querySelector('[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-subscription').textContent.includes('下次续费：')`));
+    assert.ok(await page.waitFor(`document.querySelector('[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-subscription').textContent.includes('2030')`),
+      '独立账号的订阅查询完成后显示续费日期');
     const subscriptionText = await page.evaluate(`[...document.querySelectorAll('.air-provider-subscription')].map(node=>node.textContent)`);
     assert.match(subscriptionText[0], /已关闭自动续费/);
     assert.match(subscriptionText[1], /上游未提供日期/);

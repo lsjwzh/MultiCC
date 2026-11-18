@@ -97,7 +97,8 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
 
     // ── ① 从设置中心第二组进去：原生面板，不嵌旧 manage 页 ────────────────
     await page.navigate('/air?dir=d1&view=settings');
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心'`), '先落在设置中心');
+    const settingsTitle = await T('airSettingsCenter');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent===${JSON.stringify(settingsTitle)}`), '先落在设置中心');
     const groupTitle = await T('airAdminGroupConnect');
     assert.equal(await page.evaluate(`(() => {
       const card = [...document.querySelectorAll('.air-setting-card')]

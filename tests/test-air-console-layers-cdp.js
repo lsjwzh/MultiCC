@@ -98,7 +98,7 @@ test('console switches between task and directory views; console, directory and 
     assert.ok(await page.waitFor(`document.querySelectorAll('#console-task-list > *').length === 50`, { timeoutMs: 10000 }), '切回最近：又从第一页开始');
 
     // ── ② 目录看法 ───────────────────────────────────────────────────────
-    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#console-view-switch [role=tab]')].map(b => b.textContent)`), ['按任务', '按目录']);
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#console-view-switch [role=tab]')].map(b => b.textContent)`), ['按任务', '按目录', '多电脑']);
     await page.evaluate(`document.getElementById('console-view-dirs').click()`);
     assert.deepEqual(await view(), { view: 'dirs', selected: ['dirs'], flow: false, dirs: true }, '目录看法只留目录网格');
     assert.equal(await page.evaluate(`document.getElementById('console-home-search').placeholder`), '搜索名称或路径', '搜索框改搜目录');
