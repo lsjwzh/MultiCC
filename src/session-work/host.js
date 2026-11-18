@@ -437,6 +437,73 @@ function createSessionWorkHost(deps = {}) {
     });
   }
 
+  // The Auto provider handoff only exists for turns that died WITH an API
+  // error verdict (apiErrorDecision → prepareHandoff). A runner killed from
+  // outside — server crash, OOM, gateway respawn — leaves no error to decide
+  // on: the processing watchdog settles the orphaned P entry as E and the
+  // queued/promised continuation (e.g. an Auto handoff message) silently never
+  // runs. This is the gap behind "已中断，将由 X 接续" broadcasts that nobody
+  // followed up. When an E settle carries the watchdog's cancel source and
+  // nobody else has queued follow-up work, re-admit ONE continuation through
+  // the same resolve({action:'retry'}) channel the manual 「重试」 button uses.
+  // Bounded twice over: a deterministic idempotency key per dead entry, and a
+  // per-session streak cap reset on the next D, so a crash loop cannot spin.
+  // (JS glue over the existing Rust-backed resolve/admit path — the watchdog
+  // is host-side by nature; no new Rust state machine is introduced.)
+  const DEAD_RUNNER_RETRY_MAX_STREAK = 2;
+  const DEAD_RUNNER_CANCEL_FRESH_MS = 60_000;
+  const deadRunnerRetries = new Map();
+
+  function isWatchdogKill(sessionId, result) {
+    if (result?.cancel?.source === 'process_watchdog') return true;
+    // Fallback for E settles that arrive without the cancel payload (e.g. the
+    // classify state machine already persisted the watchdog's attribution).
+    // cancelSource is never cleared by later turns, so require a fresh
+    // cancelledAt — a stale stamp from an old cancel must not retry new work.
+    const state = deps.getTaskState(deps.getRecord(sessionId)) || {};
+    if (state.cancelSource !== 'process_watchdog') return false;
+    const cancelledAt = Number(state.cancelledAt || 0);
+    return cancelledAt > 0 && Date.now() - cancelledAt <= DEAD_RUNNER_CANCEL_FRESH_MS;
+  }
+
+  async function maybeRetryDeadRunner(sessionId, result, deadEntryId) {
+    try {
+      if (!isWatchdogKill(sessionId, result)) return;
+      if (result?.cancel?.runnerStopped === false) return;
+      const runtime = schedulerRuntime();
+      const target = runtime?.sessionScheduler;
+      if (!target) return;
+      // Re-read AFTER the settle: an Auto handoff or a user message admitted
+      // while the cancel was in flight already owns the continuation.
+      const fresh = await target.status(sessionId);
+      if (!isAbnormalLetter(fresh?.classifyState)) return;
+      if (fresh?.active || (fresh?.queued || []).length > 0) return;
+      const streak = (deadRunnerRetries.get(sessionId) || 0) + 1;
+      if (streak > DEAD_RUNNER_RETRY_MAX_STREAK) {
+        log.warn?.('session_scheduler_dead_runner_retry_exhausted', {
+          sessionId, entryId: deadEntryId, streak,
+        });
+        return;
+      }
+      const retried = await target.resolve(sessionId, {
+        action: 'retry',
+        actor: 'process_watchdog',
+        reason: 'dead_runner_auto_retry',
+        idempotencyKey: `watchdog-retry:${deadEntryId || sessionId}`,
+      });
+      if (retried?.ok && !retried.duplicate) {
+        deadRunnerRetries.set(sessionId, streak);
+        log.warn?.('session_scheduler_dead_runner_auto_retry', {
+          sessionId, entryId: deadEntryId, streak,
+        });
+      }
+    } catch (error) {
+      log.warn?.('session_scheduler_dead_runner_retry_failed', {
+        sessionId, entryId: deadEntryId, error: error?.message,
+      });
+    }
+  }
+
   // Classify is the only semantic gate for the interaction FIFO. The scheduler
   // persists ordering and active correlation, then applies exactly one of
   // D/W/B/E/P here. Liveness may confirm a missing runner boundary, but it never
@@ -522,6 +589,10 @@ function createSessionWorkHost(deps = {}) {
       if (transition?.ok) {
         clearClassificationRetry(sessionId);
         await runtime.tick();
+        if (classifyState === 'D') deadRunnerRetries.delete(sessionId);
+        else if (classifyState === 'E') {
+          await maybeRetryDeadRunner(sessionId, result, transitionEntryId);
+        }
       }
       return transition;
     } catch (error) {

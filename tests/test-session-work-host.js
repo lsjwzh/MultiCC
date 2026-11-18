@@ -16,6 +16,8 @@ function fixture(options = {}) {
   let pending = null;
   let pendingWait = false;
   let schedulerState = 'running';
+  let settledClassify = null;
+  let queuedItems = Array.isArray(options.queued) ? [...options.queued] : [];
   let releaseTurnEnded = options.releaseTurnEnded || null;
   const record = { taskState: {}, ...(options.record || {}) };
   const chatState = options.chatState === undefined ? {} : options.chatState;
@@ -23,6 +25,8 @@ function fixture(options = {}) {
     status: async () => ({
       state: schedulerState,
       freezeReason: schedulerState === 'frozen' ? options.freezeReason || null : null,
+      classifyState: settledClassify,
+      queued: queuedItems,
       active: schedulerState === 'idle'
         ? null
         : {
@@ -41,10 +45,19 @@ function fixture(options = {}) {
             : {}),
         },
     }),
-    complete: async (_sessionId, options) => {
-      calls.push(['complete', options]);
+    complete: async (_sessionId, completeOptions) => {
+      calls.push(['complete', completeOptions]);
       schedulerState = 'idle';
+      settledClassify = completeOptions?.classifyState || null;
       return { ok: true };
+    },
+    // resolve({action:'retry'}) is the manual-「重试」 channel: admission of the
+    // retry entry claims the idle slot immediately, like the production owner.
+    resolve: async (_sessionId, resolveOptions) => {
+      calls.push(['resolve', resolveOptions]);
+      schedulerState = 'running';
+      settledClassify = null;
+      return { ok: true, entry: { id: 'entry-retry' } };
     },
     turnEnded: async () => {
       if (releaseTurnEnded) await releaseTurnEnded;
@@ -1119,6 +1132,111 @@ test('classify W/B/E release the active slot (no freeze); unavailable leaves ass
   const unavail = await unavailable.host.classifyUnavailable('s1', 'task-1', 'aux down');
   assert.equal(unavail.code, 'classification_deferred');
   assert.equal(unavailable.calls.some(call => call[0] === 'freeze'), false);
+});
+
+test('a watchdog-killed turn re-admits one continuation through the manual retry channel', async () => {
+  // Production gap (task-fa4f22a3, 2026-11-18): a server crash killed the
+  // Auto-handoff continuation turn; the watchdog settled the orphaned P entry
+  // as E, but the Auto provider handoff only exists for turns that died WITH
+  // an apiErrorDecision — so the promised 🔇 continuation sat in the history
+  // and never ran. The watchdog settle must re-admit one continuation itself.
+  const h = fixture();
+  await h.host.turnSucceeded('s1');
+  const classification = await h.host.classifyTransition('s1', 'task-1', {
+    state: 'E',
+    cancel: { source: 'process_watchdog', reason: 'process_watchdog', runnerStopped: true },
+  });
+  assert.equal(classification.ok, true);
+  assert.deepEqual(h.calls.find(call => call[0] === 'complete'), [
+    'complete', { expectedTaskId: 'task-1', reason: 'classified_E', classifyState: 'E' },
+  ]);
+  const retries = h.calls.filter(call => call[0] === 'resolve');
+  assert.equal(retries.length, 1);
+  assert.deepEqual(retries[0][1], {
+    action: 'retry',
+    actor: 'process_watchdog',
+    reason: 'dead_runner_auto_retry',
+    idempotencyKey: 'watchdog-retry:entry-1',
+  });
+  assert.equal(h.calls.some(call => call[0] === 'warn'
+    && call[1] === 'session_scheduler_dead_runner_auto_retry'), true);
+});
+
+test('a manual cancel or an ordinary error verdict never triggers a dead-runner retry', async () => {
+  const manual = fixture();
+  await manual.host.turnSucceeded('s1');
+  await manual.host.classifyTransition('s1', 'task-1', {
+    state: 'E',
+    cancel: { source: 'manual_cancel', reason: 'user_cancelled', runnerStopped: true },
+  });
+  assert.equal(manual.calls.some(call => call[0] === 'resolve'), false);
+
+  const ordinary = fixture();
+  await ordinary.host.turnSucceeded('s1');
+  await ordinary.host.classifyTransition('s1', 'task-1', { state: 'E' });
+  assert.equal(ordinary.calls.some(call => call[0] === 'resolve'), false);
+});
+
+test('a dead-runner retry yields to work that was queued while the cancel settled', async () => {
+  // An Auto handoff 🔇 message (or a fresh user message) admitted while the
+  // watchdog cancel was in flight already owns the continuation — retrying
+  // behind it would double the work.
+  const h = fixture({ queued: [{ entryId: 'entry-handoff' }] });
+  await h.host.turnSucceeded('s1');
+  await h.host.classifyTransition('s1', 'task-1', {
+    state: 'E',
+    cancel: { source: 'process_watchdog', reason: 'process_watchdog', runnerStopped: true },
+  });
+  assert.equal(h.calls.some(call => call[0] === 'resolve'), false);
+});
+
+test('dead-runner retries are capped per session and a D verdict resets the streak', async () => {
+  const h = fixture();
+  // Each cycle models one real turn: admitted (running) → ended (assessing) →
+  // the runner's corpse found by the watchdog → settled E.
+  const killCycle = async () => {
+    h.forceState('running');
+    await h.host.turnSucceeded('s1');
+    await h.host.classifyTransition('s1', 'task-1', {
+      state: 'E',
+      cancel: { source: 'process_watchdog', reason: 'process_watchdog', runnerStopped: true },
+    });
+  };
+  await killCycle();
+  await killCycle();
+  assert.equal(h.calls.filter(call => call[0] === 'resolve').length, 2);
+  await killCycle();
+  assert.equal(h.calls.filter(call => call[0] === 'resolve').length, 2,
+    'a crash loop must not spin: the third consecutive dead runner is not retried');
+  assert.equal(h.calls.some(call => call[0] === 'warn'
+    && call[1] === 'session_scheduler_dead_runner_retry_exhausted'), true);
+
+  // A completed (D) turn proves the lane is healthy again: the streak resets.
+  h.forceState('running');
+  await h.host.turnSucceeded('s1');
+  await h.host.classifyTransition('s1', 'task-1', { state: 'D' });
+  await killCycle();
+  assert.equal(h.calls.filter(call => call[0] === 'resolve').length, 3);
+});
+
+test('the persisted watchdog cancel stamp arms the retry only while fresh', async () => {
+  // Fallback attribution: an E settle that arrives without the cancel payload
+  // still retries when the state machine persisted the watchdog's cancelSource
+  // moments ago. cancelSource is never cleared by later turns, so a stale
+  // stamp from an old cancel must NOT retry whatever happens to settle now.
+  const fresh = fixture({
+    record: { taskState: { cancelSource: 'process_watchdog', cancelledAt: Date.now() } },
+  });
+  await fresh.host.turnSucceeded('s1');
+  await fresh.host.classifyTransition('s1', 'task-1', { state: 'E' });
+  assert.equal(fresh.calls.filter(call => call[0] === 'resolve').length, 1);
+
+  const stale = fixture({
+    record: { taskState: { cancelSource: 'process_watchdog', cancelledAt: Date.now() - 120_000 } },
+  });
+  await stale.host.turnSucceeded('s1');
+  await stale.host.classifyTransition('s1', 'task-1', { state: 'E' });
+  assert.equal(stale.calls.some(call => call[0] === 'resolve'), false);
 });
 
 test('queued insert events preserve the scheduler state in queue projections', () => {
