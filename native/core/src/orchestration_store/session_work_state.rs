@@ -530,6 +530,7 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
                 if !matches!(
                     key.as_str(),
                     "classifyState"
+                        | "recoveryRecordType"
                         | "goalState"
                         | "unattended"
                         | "runActive"
@@ -538,6 +539,11 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
                         | "lastTurnEndedAt"
                 ) {
                     return Err(err("unsupported session work category field"));
+                }
+                if key == "recoveryRecordType"
+                    && !matches!(value, JsValue::String(_) | JsValue::Null)
+                {
+                    return Err(err("invalid recovery session type"));
                 }
                 put(&mut category, &key, value.clone())?;
             }

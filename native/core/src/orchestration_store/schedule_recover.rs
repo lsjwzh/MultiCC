@@ -3,9 +3,45 @@
 use super::{err, Result};
 use crate::js::{js_to_number, truthy, JsValue};
 
+/// Match the live SQLite draft's session key order and its outbox query order.
+fn ordered_sessions(db: &rusqlite::Connection) -> Result<Vec<String>> {
+    let mut query = db
+        .prepare("SELECT session_id FROM orchestration_session_schedules ORDER BY session_id")
+        .map_err(err)?;
+    let mut sessions = query
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(err)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(err)?;
+    drop(query);
+    // A Proxy's ownKeys trap preserves this order even for numeric-looking keys.
+    let mut seen: std::collections::HashSet<String> = sessions.iter().cloned().collect();
+    let mut query = db.prepare("SELECT session_id FROM orchestration_outbox WHERE state IN ('pending','leased') ORDER BY id").map_err(err)?;
+    let rows = query
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(err)?;
+    for session in rows {
+        let session = session.map_err(err)?;
+        if seen.insert(session.clone()) {
+            sessions.push(session);
+        }
+    }
+    Ok(sessions)
+}
+
 /// Candidate session identities and version from one read snapshot. This is
 /// experimental: invoking it synchronously from Node can block its event loop.
 pub(super) fn snapshot(store: &mut super::Store) -> Result<serde_json::Value> {
+    snapshot_impl(store, false)
+}
+
+/// Experimental owner-only snapshot. It refuses missing migration facts rather
+/// than silently consulting the legacy Node process or inventing a verdict.
+pub(super) fn owned_snapshot(store: &mut super::Store) -> Result<serde_json::Value> {
+    snapshot_impl(store, true)
+}
+
+fn snapshot_impl(store: &mut super::Store, owned: bool) -> Result<serde_json::Value> {
     use super::header;
     use serde_json::json;
     if store.active || store.pending {
@@ -18,35 +54,31 @@ pub(super) fn snapshot(store: &mut super::Store) -> Result<serde_json::Value> {
     db.execute_batch("BEGIN").map_err(err)?;
     let result = (|| {
         let state = header(db)?;
-        let mut query = db
-            .prepare("SELECT session_id FROM orchestration_session_schedules ORDER BY session_id")
-            .map_err(err)?;
-        let mut sessions = query
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(err)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(err)?;
-        drop(query);
-        // The production draft is a Proxy: its ownKeys trap preserves the
-        // SQLite key order, including numeric-looking property names.
-        let mut seen: std::collections::HashSet<String> = sessions.iter().cloned().collect();
-        let mut query = db.prepare("SELECT id, session_id FROM orchestration_outbox WHERE state IN ('pending','leased')").map_err(err)?;
-        let mut rows = query
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(err)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(err)?;
-        // draft.select() orders keys using Rust String/SQLite UTF-8 order,
-        // rather than JavaScript's UTF-16 string comparison.
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
-        for (_, session) in rows {
-            if seen.insert(session.clone()) {
-                sessions.push(session);
+        let sessions = ordered_sessions(db)?;
+        let mut facts = Vec::new();
+        if owned {
+            for session in &sessions {
+                let current = super::session_work_state::snapshot_encoded(db, session)?;
+                if current["exists"] != true {
+                    return Err(err("recovery requires owned session facts"));
+                }
+                let category = super::record::parse(
+                    current["categoryJson"]
+                        .as_str()
+                        .ok_or_else(|| err("invalid owned recovery category"))?,
+                )?;
+                let active = super::record::parse(
+                    current["activeTurnJson"]
+                        .as_str()
+                        .ok_or_else(|| err("invalid owned recovery turn"))?,
+                )?;
+                // The write transaction reads the authoritative values itself;
+                // only the identity and version cross the protocol boundary.
+                owned_facts(&category, &active)?;
+                facts.push(json!({"sessionId": session, "expectedVersion": current["version"]}));
             }
         }
-        Ok((state, sessions))
+        Ok((state, sessions, facts))
     })();
     if result.is_err() {
         let _ = db.execute_batch("ROLLBACK");
@@ -59,8 +91,12 @@ pub(super) fn snapshot(store: &mut super::Store) -> Result<serde_json::Value> {
     if before != after {
         return Err(err("schedule recovery database version conflict"));
     }
-    let (state, sessions) = result?;
-    Ok(json!({"state":state,"dataVersion":after,"sessions":sessions}))
+    let (state, sessions, facts) = result?;
+    Ok(if owned {
+        json!({"state":state,"dataVersion":after,"facts":facts})
+    } else {
+        json!({"state":state,"dataVersion":after,"sessions":sessions})
+    })
 }
 
 fn field(value: &JsValue, key: &str) -> JsValue {
@@ -75,6 +111,50 @@ fn fallback(value: JsValue, other: JsValue) -> JsValue {
     } else {
         other
     }
+}
+
+/// The subset of recoveryFacts read by the Rust transition. The session type
+/// must be explicitly transferred to the owner; old rows do not contain it.
+fn owned_facts(category: &JsValue, active: &JsValue) -> Result<JsValue> {
+    let JsValue::Object(_) = category else {
+        return Err(err("recovery requires an owned category"));
+    };
+    let record_type = category
+        .get("recoveryRecordType")
+        .ok_or_else(|| err("recovery requires owned session type"))?;
+    if !matches!(record_type, JsValue::String(_) | JsValue::Null) {
+        return Err(err("invalid owned session type"));
+    }
+    if !matches!(active, JsValue::Object(_) | JsValue::Null) {
+        return Err(err("invalid owned recovery turn"));
+    }
+    let ended = js_to_number(&fallback(
+        field(category, "lastTurnEndedAt"),
+        field(category, "endedAt"),
+    ));
+    let ended = if ended.is_nan() || ended == 0.0 {
+        JsValue::Null
+    } else if ended.is_finite() {
+        JsValue::Number(ended)
+    } else {
+        return Err(err("non-finite owned recovery timestamp"));
+    };
+    let class = field(category, "classifyState");
+    let class =
+        if is(record_type, "gateway") && (is(&class, "P") || is(&class, "C")) && truthy(&ended) {
+            JsValue::string("D")
+        } else {
+            class
+        };
+    Ok(JsValue::object(vec![
+        ("classifyState", class),
+        ("startedAt", field(category, "startedAt")),
+        ("endedAt", ended),
+        (
+            "taskId",
+            fallback(field(active, "_currentTaskId"), JsValue::Null),
+        ),
+    ]))
 }
 fn put(value: &mut JsValue, key: &str, new_value: JsValue) -> Result<()> {
     let JsValue::Object(fields) = value else {
@@ -326,6 +406,22 @@ pub(super) fn commit(
     store: &mut super::Store,
     input: &serde_json::Value,
 ) -> Result<serde_json::Value> {
+    commit_impl(store, input, false)
+}
+
+/// Owned facts always require a version check, even if the caller omitted it.
+pub(super) fn owned_commit(
+    store: &mut super::Store,
+    input: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    commit_impl(store, input, true)
+}
+
+fn commit_impl(
+    store: &mut super::Store,
+    input: &serde_json::Value,
+    require_owned: bool,
+) -> Result<serde_json::Value> {
     use super::{header, meta, record, schedule_admit_live, set_meta, write_record_json};
     use rusqlite::TransactionBehavior;
     use serde_json::json;
@@ -374,21 +470,61 @@ pub(super) fn commit(
             .map_err(err)?;
         rows.collect::<std::result::Result<_, _>>().map_err(err)?
     };
+    let ordered = if require_owned {
+        Some(ordered_sessions(&tx)?)
+    } else {
+        None
+    };
     let mut seen = std::collections::HashSet::new();
     let mut events = Vec::new();
     let mut changed = false;
-    for fact in facts {
+    for (index, fact) in facts.iter().enumerate() {
         let session = fact["sessionId"]
             .as_str()
             .ok_or_else(|| err("invalid recovery session"))?;
+        if ordered
+            .as_ref()
+            .is_some_and(|ids| ids.get(index).map(String::as_str) != Some(session))
+        {
+            return Err(err("owned recovery session order mismatch"));
+        }
         if !seen.insert(session.to_owned()) {
             return Err(err("duplicate recovery session"));
         }
-        let observed = record::parse(
-            fact["stateJson"]
-                .as_str()
-                .ok_or_else(|| err("invalid recovery fact"))?,
-        )?;
+        if require_owned && fact.get("expectedVersion").is_none() {
+            return Err(err("owned recovery fact version required"));
+        }
+        let mut owned_observed = None;
+        if let Some(expected) = fact.get("expectedVersion") {
+            let expected = expected
+                .as_u64()
+                .ok_or_else(|| err("invalid recovery fact version"))?;
+            let current = super::session_work_state::snapshot_encoded(&tx, session)?;
+            if current["exists"] != true || current["version"].as_u64() != Some(expected) {
+                return Err(err("recovery fact version conflict"));
+            }
+            if require_owned {
+                let category = record::parse(
+                    current["categoryJson"]
+                        .as_str()
+                        .ok_or_else(|| err("invalid owned recovery category"))?,
+                )?;
+                let active = record::parse(
+                    current["activeTurnJson"]
+                        .as_str()
+                        .ok_or_else(|| err("invalid owned recovery turn"))?,
+                )?;
+                owned_observed = Some(owned_facts(&category, &active)?);
+            }
+        }
+        let observed = match owned_observed {
+            Some(value) => value,
+            None => record::parse(
+                fact["stateJson"]
+                    .as_str()
+                    .ok_or_else(|| err("invalid recovery fact"))?,
+            )?,
+        };
         let schedule = record::get_json(&tx, "sessionSchedules", session, &[])?
             .map(|raw| record::parse(&raw))
             .transpose()?;
@@ -452,6 +588,132 @@ mod tests {
     use serde_json::json;
     fn v(value: serde_json::Value) -> JsValue {
         crate::js::from_serde(&value)
+    }
+
+    #[test]
+    fn owned_facts_project_gateway_completion_and_refuse_missing_type() {
+        let active = v(json!({"_currentTaskId":"task"}));
+        let category = v(json!({"recoveryRecordType":"gateway", "classifyState":"P",
+            "startedAt":50, "lastTurnEndedAt":70}));
+        let projected = owned_facts(&category, &active).unwrap();
+        assert_eq!(field(&projected, "classifyState"), JsValue::string("D"));
+        assert_eq!(field(&projected, "endedAt"), JsValue::Number(70.0));
+        assert_eq!(field(&projected, "taskId"), JsValue::string("task"));
+        let waiting = v(json!({"recoveryRecordType":"gateway", "classifyState":"W", "endedAt":70}));
+        assert_eq!(
+            field(
+                &owned_facts(&waiting, &JsValue::Null).unwrap(),
+                "classifyState"
+            ),
+            JsValue::string("W")
+        );
+        assert!(owned_facts(&v(json!({"classifyState":"P"})), &active).is_err());
+    }
+
+    #[test]
+    fn owned_recovery_rejects_same_connection_fact_changes() {
+        let mut random = [0_u8; 12];
+        getrandom::fill(&mut random).unwrap();
+        let name = random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let dir = std::env::temp_dir().join(format!("multicc-owned-recovery-{name}"));
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("state.sqlite");
+        let mut store =
+            super::super::Store::open(file.to_str().unwrap(), None, 1, RetentionPolicy::default())
+                .unwrap();
+        super::super::write_record_json(
+            store.conn().unwrap(),
+            "sessionSchedules",
+            "s",
+            &json!({"sessionId":"s", "state":"running", "classifyState":"P",
+                "active":{"entryId":"e", "taskId":"t", "startedAt":50}})
+            .to_string(),
+        )
+        .unwrap();
+        super::super::write_record_json(
+            store.conn().unwrap(),
+            "sessionSchedules",
+            "z",
+            &json!({"sessionId":"z", "state":"idle", "active":null}).to_string(),
+        )
+        .unwrap();
+        assert!(owned_snapshot(&mut store)
+            .unwrap_err()
+            .contains("owned session facts"));
+        let connection = store.connection.as_mut().unwrap();
+        super::super::session_work_state::read_or_initialize(connection, &json!({"sessionId":"s",
+            "initial":{"pendingQuestion":null,"activeTurn":{"_currentTaskId":"t"},
+                "category":{"recoveryRecordType":"gateway","classifyState":"P","startedAt":50,"endedAt":70}}})).unwrap();
+        super::super::session_work_state::read_or_initialize(
+            store.connection.as_mut().unwrap(),
+            &json!({"sessionId":"z", "initial":{"pendingQuestion":null,"activeTurn":null,
+                "category":{"recoveryRecordType":null,"classifyState":null}}}),
+        )
+        .unwrap();
+        let captured = owned_snapshot(&mut store).unwrap();
+        let mut command = json!({"expectedRevision":captured["state"]["revision"],
+            "expectedDataVersion":captured["dataVersion"], "at":100, "updatedAt":101,
+            "facts":captured["facts"]});
+        let mut missing_version = command.clone();
+        missing_version["facts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("expectedVersion");
+        assert!(owned_commit(&mut store, &missing_version)
+            .unwrap_err()
+            .contains("fact version required"));
+        let mut reordered = command.clone();
+        reordered["facts"].as_array_mut().unwrap().reverse();
+        assert!(owned_commit(&mut store, &reordered)
+            .unwrap_err()
+            .contains("session order mismatch"));
+        let invalid = json!({"action":"patchFacts", "sessionId":"s",
+            "categoryPatch":{"recoveryRecordType":42}})
+        .to_string();
+        assert!(super::super::session_work_state::question_transition(
+            store.connection.as_mut().unwrap(),
+            &json!({"requestJson":invalid}),
+        )
+        .unwrap_err()
+        .contains("invalid recovery session type"));
+        let patch = json!({"action":"patchFacts", "sessionId":"s",
+            "categoryPatch":{"recoveryRecordType":"worker", "classifyState":"W"}})
+        .to_string();
+        super::super::session_work_state::question_transition(
+            store.connection.as_mut().unwrap(),
+            &json!({"requestJson":patch}),
+        )
+        .unwrap();
+        assert!(owned_commit(&mut store, &command)
+            .unwrap_err()
+            .contains("recovery fact version conflict"));
+        let unchanged =
+            super::super::record::get_json(store.conn().unwrap(), "sessionSchedules", "s", &[])
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&unchanged).unwrap()["state"],
+            "running"
+        );
+        let current = owned_snapshot(&mut store).unwrap();
+        command["facts"] = current["facts"].clone();
+        command["expectedDataVersion"] = current["dataVersion"].clone();
+        // Even a tampered transport value cannot replace the owner's state.
+        command["facts"][0]["stateJson"] = json!("{\"classifyState\":\"D\"}");
+        owned_commit(&mut store, &command).unwrap();
+        let saved =
+            super::super::record::get_json(store.conn().unwrap(), "sessionSchedules", "s", &[])
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&saved).unwrap()["freezeReason"],
+            "classify_waiting"
+        );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

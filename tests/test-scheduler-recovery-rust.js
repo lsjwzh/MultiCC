@@ -15,6 +15,14 @@ function ownerBinary() {
     process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
 }
 
+function projectRecoveryEvent(event) {
+  return { type: event.type, sessionId: event.sessionId,
+    entryId: event.entryId || null, taskId: event.taskId || null,
+    queued: event.queued == null ? null : event.queued, queuedItems: event.queuedItems || [],
+    freezeReason: event.type === 'frozen' ? (event.reason || event.freezeReason) : null,
+    classifyState: event.classifyState || null, turnOutcome: event.turnOutcome || null };
+}
+
 function frozenScheduler() {
   const Module = require('node:module');
   const filename = path.resolve(__dirname, '../src/session-work/scheduler.js');
@@ -57,12 +65,7 @@ test('experimental Rust recovery transaction agrees with frozen scheduler state'
       });
       const events = decodeRecoveryEvents(actual.resultJson);
       assert.deepEqual({ ok: true, changes: events.length }, reference, JSON.stringify(scenario));
-      const project = event => ({ type: event.type, sessionId: event.sessionId,
-        entryId: event.entryId || null, taskId: event.taskId || null,
-        queued: event.queued == null ? null : event.queued, queuedItems: event.queuedItems || [],
-        freezeReason: event.type === 'frozen' ? (event.reason || event.freezeReason) : null,
-        classifyState: event.classifyState || null, turnOutcome: event.turnOutcome || null });
-      assert.deepEqual(events.map(project), emitted.map(project), JSON.stringify(scenario));
+      assert.deepEqual(events.map(projectRecoveryEvent), emitted.map(projectRecoveryEvent), JSON.stringify(scenario));
       const [ours, theirs] = await Promise.all(stores.map(store => store.snapshot()));
       assert.deepEqual(ours.sessionSchedules, theirs.sessionSchedules, JSON.stringify(scenario));
       assert.deepEqual(ours.outbox, theirs.outbox, JSON.stringify(scenario));
@@ -103,4 +106,98 @@ test('Rust recovery snapshot observes session facts in the same order as the liv
   });
   assert.deepEqual(rustOrder, observed);
   assert.deepEqual(observed, ['10', '2', '\ue000', '𐀀', 'out-1', 'out-2']);
+});
+
+test('experimental recovery reads owned facts and matches the frozen scheduler', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-owned-recovery-diff-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cases = [
+    { type: 'gateway', classify: 'P', expected: 'D' },
+    { type: 'gateway', classify: 'C', expected: 'D' },
+    { type: 'worker', classify: 'P', expected: 'P' },
+    { type: 'gateway', classify: 'W', expected: 'W' },
+    { type: 'gateway', classify: 'D', expected: 'D' },
+    { type: 'worker', classify: 'E', expected: 'E' },
+    { type: null, classify: null, expected: null },
+  ];
+  for (const [i, scenario] of cases.entries()) {
+    const stores = ['rust', 'oracle'].map(name => createOrchestrationSqliteStore({
+      file: path.join(root, `${i}-${name}.sqlite`), now: () => 2000, ownerBinary: ownerBinary(),
+    }));
+    let owner;
+    try {
+      for (const store of stores) await store.mutate(draft => {
+        draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
+          active: { entryId: 'active', taskId: 'task', startedAt: 50 }, updatedAt: 50 };
+        draft.outbox.a = { id: 'a', sessionId: 's', sequence: 1, state: 'pending',
+          payload: { type: 'session.work', message: 'queued' } };
+        draft.nextOutboxSequence = 2;
+      });
+      owner = new (getNative().RustIsolatedOrchestrationStore)(stores[0].file, null, 2000,
+        { env: {}, policy: {} }, ownerBinary());
+      owner.request('sessionWorkState', { action: 'readOrInitialize', sessionId: 's', initial: {
+        pendingQuestion: null, activeTurn: { _currentTaskId: 'task' },
+        category: { recoveryRecordType: scenario.type, classifyState: scenario.classify,
+          startedAt: 50, endedAt: 70 },
+      } });
+      const events = [];
+      const oracle = frozenScheduler()({ store: stores[1], now: () => 1000, onEvent: event => events.push(event) });
+      const reference = await oracle.recover({ stateForSession: () => ({
+        classifyState: scenario.expected, startedAt: 50, endedAt: 70, taskId: 'task',
+      }) });
+      const snapshot = await owner.requestAsync('scheduleRecoverOwnedSnapshotExperimental', {});
+      assert.equal(Object.hasOwn(snapshot.facts[0], 'stateJson'), false);
+      const result = await owner.requestAsync('scheduleRecoverOwnedCommitExperimental', {
+        expectedRevision: snapshot.state.revision, expectedDataVersion: snapshot.dataVersion,
+        at: 1000, updatedAt: 2000, facts: snapshot.facts,
+      });
+      const recoveredEvents = decodeRecoveryEvents(result.resultJson);
+      assert.deepEqual({ ok: true, changes: recoveredEvents.length }, reference);
+      const [actual, expected] = await Promise.all(stores.map(store => store.snapshot()));
+      assert.deepEqual(actual.sessionSchedules, expected.sessionSchedules, JSON.stringify(scenario));
+      assert.deepEqual(actual.outbox, expected.outbox, JSON.stringify(scenario));
+      assert.deepEqual(recoveredEvents.map(projectRecoveryEvent), events.map(projectRecoveryEvent), JSON.stringify(scenario));
+    } finally {
+      if (owner) owner.request('close', {});
+      for (const store of stores) await store.close({ exportRollback: false });
+    }
+  }
+});
+
+test('owned recovery rejects a stale snapshot after a versioned fact update', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-owned-recovery-version-'));
+  const store = createOrchestrationSqliteStore({
+    file: path.join(root, 'state.sqlite'), now: () => 2000, ownerBinary: ownerBinary(),
+  });
+  let owner;
+  t.after(async () => {
+    try { if (owner) owner.request('close', {}); await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
+      active: { entryId: 'active', taskId: 'task', startedAt: 50 }, updatedAt: 50 };
+  });
+  owner = new (getNative().RustIsolatedOrchestrationStore)(store.file, null, 2000,
+    { env: {}, policy: {} }, ownerBinary());
+  await owner.requestAsync('sessionWorkState', { action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: null, activeTurn: { _currentTaskId: 'task' },
+    category: { recoveryRecordType: 'gateway', classifyState: 'P', startedAt: 50, endedAt: 70 },
+  } });
+  const captured = await owner.requestAsync('scheduleRecoverOwnedSnapshotExperimental', {});
+  const update = { action: 'patchFacts', sessionId: 's',
+    categoryPatch: { recoveryRecordType: 'worker', classifyState: 'W' } };
+  await owner.requestAsync('sessionWorkQuestionExperimental', { requestJson: JSON.stringify(update) });
+  const args = { expectedRevision: captured.state.revision, expectedDataVersion: captured.dataVersion,
+    at: 1000, updatedAt: 2000, facts: captured.facts };
+  await assert.rejects(owner.requestAsync('scheduleRecoverOwnedCommitExperimental', args),
+    /recovery fact version conflict/);
+  assert.equal((await store.snapshot()).sessionSchedules.s.state, 'running');
+  const fresh = await owner.requestAsync('scheduleRecoverOwnedSnapshotExperimental', {});
+  await owner.requestAsync('scheduleRecoverOwnedCommitExperimental', {
+    ...args, expectedRevision: fresh.state.revision, expectedDataVersion: fresh.dataVersion, facts: fresh.facts,
+  });
+  const saved = (await store.snapshot()).sessionSchedules.s;
+  assert.equal(saved.state, 'frozen');
+  assert.equal(saved.freezeReason, 'classify_waiting');
 });
