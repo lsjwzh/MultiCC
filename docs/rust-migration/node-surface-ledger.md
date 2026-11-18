@@ -1,4 +1,4 @@
-# Node 后端剩余面逐簇台账（2026-11-19，128 条路由 / 29 层中间件）
+# Node 后端剩余面逐簇台账（2026-11-19，128 条路由 / 26 层中间件）
 
 机器可读底稿：`docs/rust-migration/node-surface-ledger.json`。对账命令：
 
@@ -8,7 +8,7 @@ node scripts/check-node-surface-ledger.js  # 台账与捕获逐簇、逐层对�
 node tests/test-node-surface-ledger.js     # 对账器自身的 6 种漂移用例
 ```
 
-捕获基线：**128 条路由注册、29 层中间件/路由器**。2026-11-19 `static-and-apk` 簇清零（`/multicc.apk` 迁入前门，判定走既有宿主端口 op，公开注册 -1）且版本化 HTML 与 `express.static` 两层中间件随 `static_web_root` 退役，129/31 → 128/29；2026-11-18 `air-sync` 两条迁入前门（复用既有宿主端口），131 → 129。更早：2026-11-16 `GET /api/channels` 迁入前门 132 → 131，`plugins-core` 的 `/api/channels/recheck` 与 `/plugins/:id/*` 迁入前门后 -2、宿主端口 +1，133 → 132；当日第一次捕获是 139/32（指纹 `3b8663bf…`），静态簇迁走 3 条路由与 1 层中间件后为 136/31；`server-core` 簇迁入前门后 4 条公开路由消失、宿主端口 +1，为 133/31；同批 `cli-switch` 的 `switch-cli` 迁入前门后公开路由 -1、宿主端口 +1，总数仍为 133/31。中间件以「名字@挂载#序号」为键对账，不以位置号为键。
+捕获基线：**128 条路由注册、26 层中间件/路由器**。2026-11-19 `static-and-apk` 簇清零（`/multicc.apk` 迁入前门，判定走既有宿主端口 op，公开注册 -1）且版本化 HTML 与 `express.static` 两层中间件随 `static_web_root` 退役，129/31 → 128/29；同日 `/artifacts` 双 root 的三层中间件（headers + 两个 serveStatic）随前门 `artifacts.rs` 退役（见 docs/gateway.md §62），128/29 → 128/26；2026-11-18 `air-sync` 两条迁入前门（复用既有宿主端口），131 → 129。更早：2026-11-16 `GET /api/channels` 迁入前门 132 → 131，`plugins-core` 的 `/api/channels/recheck` 与 `/plugins/:id/*` 迁入前门后 -2、宿主端口 +1，133 → 132；当日第一次捕获是 139/32（指纹 `3b8663bf…`），静态簇迁走 3 条路由与 1 层中间件后为 136/31；`server-core` 簇迁入前门后 4 条公开路由消失、宿主端口 +1，为 133/31；同批 `cli-switch` 的 `switch-cli` 迁入前门后公开路由 -1、宿主端口 +1，总数仍为 133/31。中间件以「名字@挂载#序号」为键对账，不以位置号为键。
 
 ## 1. 「驱动到零」应当怎么读
 
@@ -63,7 +63,7 @@ Node 内存态与剩余路由的真实依赖（逐文件 grep 核实，不是推
 | `session-and-proxy-guards`（publicSessionAccessGuard ×2、providerProxyGuard ×2） | 4 | publicSessionAccessGuard 依赖会话归属；providerProxyGuard 依赖 attempt 能力令牌表。留 Node 直到对应表落 Rust |
 | `protocol-proxy-mounts`（/claude-proxy、/codex-proxy、unmatched） | 3 | CPR 协议代理入口，SSE 不可在此 gzip |
 | `machines-and-parsers`（machines 跨站拦截 + raw/json 局部解析 + 全局 `express.json(50mb)`） | 4 | 随承载它们的 Node 路由一并退役 |
-| `static-and-artifacts`（artifacts ×3、voice-gateway web） | 4 | versioned-HTML 与 `express.static` 两层已于 2026-11-19 随 `static_web_root` 退役；apk/ipa 路径守卫那一层已于 2026-11-16 迁入前门。剩 artifacts 双 root 与 voice-gateway web |
+| `static-and-artifacts`（voice-gateway web） | 1 | artifacts 双 root 三层（headers + 两个 serveStatic）已于 2026-11-19 随前门 `artifacts.rs` 退役（docs/gateway.md §62）；versioned-HTML 与 `express.static` 两层同日随 `static_web_root` 退役；apk/ipa 路径守卫那一层已于 2026-11-16 迁入前门。只剩 voice-gateway web |
 | `bridges-and-remote`（IM bridge router ×5、remote-screen） | 6 | 插件/远控 |
 | `terminal-error`（safeErrorHandler） | 1 | 必须最后一个，Node 路由归零时才能删 |
 

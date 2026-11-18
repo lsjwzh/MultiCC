@@ -43,7 +43,7 @@
     - quota-guard GET/PUT（`src/routes/quota-guard.js`）。
 11. **codex 协议代理** — `server.js:1357`（必须在全局 JSON parser 之后，见上一行注释）。
 12. **中段批量 API** — `server.js:1515` `GET /api/v1/providers`，`server.js:1528` run-config presets，`server.js:1535` `app.use(directoryModule.router)`，`server.js:1552` `app.use(memoModule.router)`，随后到 `server.js:2197` 之间的 session-/task-/provider-/quota-/voice-/oauth 等路由逐个挂载。
-13. **artifacts** — `server.js:2206`（`src/artifacts.js:43-64`），注释明确“在 public static 之前认领 `/artifacts`”。
+13. **artifacts** — 2026-11-19 起 Node 不再注册（原 `artifacts.mount(app)` 与 `src/artifacts.js` 的 `mount` 已删；双 root 静态、`?download=1` attachment 中间件由前门 `native/gateway/src/app/artifacts.rs` 独占，认领排在所有静态层之前，语义见 docs/gateway.md §62）。`src/artifacts.js` 只剩目录常量、`servedRoots` 与启动清理。
 14. **静态资源** — 2026-11-19 起 Node 不再注册（原 `src/routes/static-assets.js` 的挂载已删；public/ 静态、版本化 HTML、二进制守卫全部由前门 `static_web_root` / `static_assets_routes` 独占，应答语义见本文件 §3）。
 15. **IM bridges** — `server.js:2340` `app.use('/api/wechat', wechatBridge.router)`；`server.js:2352` feishu；`server.js:2364-2370` 循环挂 telegram/discord/slack（每个 `bridge.router`）。
 16. **push / scan / air / orchestration / WS / triggers / events / 尾部管理面** — `server.js:2390` push，`server.js:2506` scan 宿主端口（`/api/scan/history` 本身已由前门独占，这里只挂 `/api/__host/scan-history`），`server.js:2529` air，`server.js:2722` orchestration，`server.js:2744` WS connection router，`server.js:2803` triggers，`server.js:2804` events host，`server.js:2842` 一行挂 cron、docs-registry、secrets-vault、annotation-live、remote-screen、plugins。
@@ -80,7 +80,7 @@
 - **scoped grants**：`x-multicc-machine-grant`（machines 授权，`server.js:399`）与 `x-multicc-fleet-token` / `x-multicc-fleet-grant`（fleet sharing 授权）。`authorizeScopedRequest` 由两者 OR 组成；异常时 fail closed（`auth.js:269-274`）。带 `x-multicc-machine-grant` 的请求不会走普通 `isAuthenticated`（`auth.js:275`）。
 - **share token**：`/share/:token` 与 `/api/share/:token/{auth,session,entry,history}` 自行校验 share token/password（`auth.js:231-235`）；`/ws/chat?share=` 用同一 share 记录（`connection-router.js:107-119`）。
 - **fleet share**：`/fleet-share/fleet_share_*`、`POST /api/fleet-shares/fleet_share_*/import`、同前缀 `ws-ticket` 豁免 ACCESS_TOKEN（`auth.js:239-243`）。
-- **artifact capability**：`/artifacts/<id>[/...]`，`<id>` 是不可猜能力令牌，免登录（`auth.js:247`；正则同步注释在 `src/artifacts.js:32-33`）。
+- **artifact capability**：`/artifacts/<id>[/...]`，`<id>` 是不可猜能力令牌，免登录（`auth.js:247`；Rust 侧唯一源是 `native/core/src/http_entry.rs` 的 `public_path`，前门 `artifacts.rs` 在 pre-gate 分支里用它跳过通用闸门）。
 - **download capability**：`GET /api/download` + `download_ticket` 校验通过即免登录（`auth.js:251-253`）。
 
 ### 2.4 本机请求判定（request-locality）
@@ -149,7 +149,7 @@
 4. **HTML 入口改写** — 在前门 `static_web_root` 内：GET 请求按路径找 `public/<rel>.html`（无扩展优先 `.html`）；`chat`、`chat.html`、`task-shell`、`task-shell.html` 在**不带** `?air=1&task=…`/`session=…` 时改送 `task-entry.html`；其它命中文件走版本化重写，未命中转发 Node。
 5. **二进制白名单** — 在前门 `static_assets_routes`：除 `/multicc.apk`、`/multicc-ios.ipa` 外，任何 `.apk`/`.ipa` 都 404 且 no-store，防止误放进 `public/` 的包被下载。白名单只对**精确小写**名字放行：`/MULTICC.APK` 等大小写变体一律守卫 404（即使本地有文件）；`/multicc.apk/` 尾斜杠不匹配守卫的 `$` 锚，穿透转发 Node。
 6. **SPA fallback** — **没有**。未命中的路径由前门转发 Node，落到 Express 默认 404。
-7. **artifacts** — `src/artifacts.js:43-64`：`app.use('/artifacts', headers, ...servedRoots().map(express.static))`；root 依次是 `MULTICC_DATA_DIR/artifacts` 与 `~/.multicc/artifacts`（legacy 只读）；`index: 'index.html'`、`dotfiles: 'ignore'`、`Cache-Control: no-store, must-revalidate`、`X-Content-Type-Options: nosniff`；`?download=1`/`?dl=1` 加 `Content-Disposition: attachment`，文件名取 basename 并去掉引号/CRLF（`:46-51`）。
+7. **artifacts** — 2026-11-19 已迁前门 `native/gateway/src/app/artifacts.rs`（退休前形态：`app.use('/artifacts', headers, ...servedRoots().map(express.static))`）；root 依次是 `MULTICC_DATA_DIR/artifacts` 与 `~/.multicc/artifacts`（legacy 只读）；`index: 'index.html'`、`dotfiles: 'ignore'`、`Cache-Control: no-store, must-revalidate`、`X-Content-Type-Options: nosniff`；`?download=1`/`?dl=1` 加 `Content-Disposition: attachment`，文件名取 basename 并去掉引号/CRLF。
 8. **`/api/download`** — `src/routes/file-transfer.js:79-93`：`path` 必填；先按字面路径 `statSync`，失败再做一次 percent-decode 重试（处理 Markdown 双重编码，`:67-77`）；目录 400；`inline=1` 用 `res.sendFile`，否则 `res.download`。**没有根目录限制**（可以下载任意绝对路径），安全性完全依赖 auth / download ticket。
 9. **`/api/files`、`/api/upload`、`/api/uploads/*`** — 2026-11-11 全部由前门独占：`/api/files`、`/api/upload` → `native/gateway/src/app/file_transfer.rs`（会话表与 ICU 排序经 `src/routes/file-transfer-host.js` 宿主端口），`/api/uploads/stats`、`/api/uploads/cleanup` → `app/uploads.rs`。原 `src/routes/file-transfer.js` 与 `src/upload-middleware.js` 的聊天上传半已删除，`src/upload-middleware.js` 只剩 voice 上传（25 MiB、并发 4、临时文件 200 个/512 MiB 的常量仍与 voice 共用）。
 10. **service worker** — `public/sw.js`：`push` 显示通知（默认 URL `/manage`，`waiting`/`completed` 有 action），`notificationclick` 聚焦已有窗口或打开目标（`:69-100`），`pushsubscriptionchange` 重订阅。无离线缓存策略（虽然定义了 `CACHE_NAME`）。
@@ -216,7 +216,7 @@
 |---|---:|---:|---|---|---|
 | `server.js` | 7 | 2990 | GET '/healthz' @428<br>GET '/readyz' @429<br>GET '/metrics' @430<br>GET '/api/repo-operations/:operationId' @643<br>GET '/api/v1/providers' @1515<br>USE '/api/wechat' @2340<br>USE '/api/feishu' @2352 | 胶水 | 胶水 |
 | `src/annotation-live.js` | 0 | 113 | 2026-11-15 两条公开路由已由前门独占（`native/gateway/src/app/event_routes.rs` + `multicc_core::event_routes`，见 docs/gateway.md §9）：payload 归一化（`sessionId`/`src` 强制字符串、width/height 走 `Number`、a/b 缺省 null、`{config,targets}` 与 `{ok,relayed,results}` 键序）、逐路由 OPTIONS `Allow` 与 HEAD 进 Rust；annotation-live.json 热加载、JS 正则匹配、remote-screen 内置处理器与 8s 超时 HTTP 转发留在本文件，经 `src/routes/events-host.js` 的 `annotation-get`/`annotation-relay` op 回调 | a | ✅ 已迁 |
-| `src/artifacts.js` | 1 | 127 | USE '/artifacts' @64 | b | T0 |
+| `src/artifacts.js` | 0 | 99 | 2026-11-19 `/artifacts` 双 root 静态与 `?download=1` attachment 中间件已由前门独占（`native/gateway/src/app/artifacts.rs`，规则 `multicc_core::static_web`，见 docs/gateway.md §62）；`mount` 与 `server.js` 的注册已删。留在本文件的只有目录常量、`MULTICC_ARTIFACTS_DIR` 注入（技能发现）、`servedRoots`（docs-registry / task-shell 读取）与启动清理 | a | ✅ 已迁 |
 | `src/cli/switch-runtime.js` | 7 | 1391 | POST '/api/sessions/:id/switch-cli' @1145<br>GET '/api/cli/install-specs' @1211<br>POST '/api/cli/:cli/install' @1239<br>GET '/api/cli/install-status/:jobId' @1273<br>GET '/api/cli/versions' @1291<br>POST '/api/cli/:cli/unpin' @1300<br>POST '/api/cli/:cli/upgrade' @1342 | a,b,c | T2 |
 | `src/codex/official-relay.js` | 1 | 655 | POST `${proxyPath}/:providerId/responses` @643 | d | T0 |
 | `src/directory/controller.js` | 0 | 0 | 2026-11-15 整文件删除：13 条路由已由前门独占（`GET/HEAD /api/fs/list`、`GET/POST /api/directories`、`PUT /api/directories/order`、`PATCH|DELETE /api/directories/:id`、`POST /api/directories/:id/push`、`GET /api/directories/:id/uncommitted`、`POST /api/directories/:id/commit`、`POST /api/onboarding/sample-workspace`、`GET /api/ui-layout`、`PUT /api/ui-layout/dir-order`、`PUT /api/ui-layout/session-order/:dirId` → `native/gateway/src/app/directory_routes.rs` + `multicc_core::directory_routes`，见 docs/gateway.md §48）：路径匹配与参数解码、逐路由 OPTIONS `Allow`（字面量 `order` 胜过 `:id`、裸 PATCH 不吞尾段）、`/api/fs/list` 的 HOME 及祖先不可选判定（判定落在宿主 realpath 事实上）、browse 的前缀补全/点文件过滤/localeCompare 排序与 200 条封顶、目录 DTO 键序与 24 个计数回退、`uncommitted` 的 porcelain 解析、`order` 合并、layout 的剪枝与 `updatedAt` 盖章、错误码与错误信封、写路由串行化进 Rust；git 子进程（push/commit/status/validate）、目录创建与 sample 文件落盘、fs 扫描、会话表与事件环、目录注册表与 `directories.json` 读写、`ui-layout.json` 存盘留在宿主端口 `src/routes/directory-host.js`（38 个 op） | a,b,c | ✅ 已迁 |
@@ -387,7 +387,7 @@
 
 | Tier | 文件数 | 注册数 | Node 行数 | 说明 |
 |---|---:|---:|---:|---|
-| T0 | 8 | 17 | 1,624 | 纯静态/只读配置/Rust 薄桥；`system.js` 318→92 行（2026-11-19 起零公开注册，`/multicc.apk` 进前门，见 docs/gateway.md §61）、`static-assets.js` 184→54（同日整簇迁完，只剩 `serveHtml` 薄桥）、`artifacts.js` 127、`provider-limit-history.js` 91、`scan.js` 34（2026-11-12 删除）、`account-subscription.js` 50、`rust-cpr.js` 290、`official-relay.js` 655 |
+| T0 | 8 | 16 | 1,596 | 纯静态/只读配置/Rust 薄桥；`system.js` 318→92 行（2026-11-19 起零公开注册，`/multicc.apk` 进前门，见 docs/gateway.md §61）、`static-assets.js` 184→54（同日整簇迁完，只剩 `serveHtml` 薄桥）、`artifacts.js` 127→99（同日 `/artifacts` 双 root 迁入前门，只剩目录常量与启动清理，见 docs/gateway.md §62）、`provider-limit-history.js` 91、`scan.js` 34（2026-11-12 删除）、`account-subscription.js` 50、`rust-cpr.js` 290、`official-relay.js` 655 |
 | T1 | 49 | 163 | 13,469 | 只依赖持久化状态（JSON/SQLite/JSONL）或外部网络；不含 session/turn 内存态 |
 | T2 | 51 | 382 | 18,836 | 依赖 Node 内存态（session Map、WS clients、waiter/dispatch/job Map、缓存），或插件运行态 |
 | 胶水 | 1 | 7 | 2,990 | `server.js` 组合根与 health/metrics |
@@ -432,7 +432,7 @@
 
 不建议先动的组：
 
-- `static-assets` + `artifacts` 虽然是 T0，但 HTML `?v=mtime` 重写、`/chat` → `task-entry.html` 的跳转、`.apk/.ipa` 白名单都必须逐字节一致；放到 Rust 静态服务稳定后再搬，或整体交给 gateway 的静态层一次性替换。
+- `static-assets` + `artifacts`（两者均已于 2026-11-19 迁入前门，本条为迁移前的排序理由，保留备查）虽然是 T0，但 HTML `?v=mtime` 重写、`/chat` → `task-entry.html` 的跳转、`.apk/.ipa` 白名单都必须逐字节一致；放到 Rust 静态服务稳定后再搬，或整体交给 gateway 的静态层一次性替换。
 - `auth` 是所有组的公共前置件（见第 7 节）；不能单独“迁移 auth 路由”，必须和它保护的组一起换。
 - `session-*`、`task-shell`、`air`、`orchestration`、`voice`、`plugins`、bridges 全部依赖 Node 内存态或子进程，属于 T2 尾部。
 
@@ -460,7 +460,7 @@
 | 7 | WS / download ticket | WS：24B base64url、sha256 key、30s、一次性（含错 scope）；download：同格式但可复用、绑定 canonical target；2048 上限 | `src/auth-security.js:119-183`；签发接口 `src/routes/auth.js:312-351` |
 | 8 | body parser 与大小上限 | 顺序敏感：`/api/internal/router-tools` 768kb、`/api/machines` 16kb、`/api/machines/:id/proxy` 48mb raw、tickets 4kb、`/login` urlencoded、全局 `/api` 50mb（1353 之后才生效）、上传 25MiB/1 file/0 fields/2 parts/并发 4 | `server.js:1353`；`src/router-tool-host.js:118`；`src/machines.js:42,53`；`src/routes/auth.js:194,312,336`；`src/upload-middleware.js:10-22` |
 | 9 | JSON gzip | 仅 `/api/*`、非 HEAD、`application/json`、≥1024B、非 204/304、无既有编码；`Vary: Accept-Encoding`；异步压缩 | `src/http/json-compression.js:28-60` |
-| 10 | 静态/HTML 重写 —— **2026-11-19 前门已接管 public/ 一半**（`native/gateway/src/app/static_web_root.rs` + `multicc_core::static_web`；`?v=<mtime>` 重写唯一源 `multicc_core::static_assets_routes::version_html`；重定向与白名单 2026-11-16 已进前门）。artifacts 的 `express.static` 双 root 仍挂 Node | `src/routes/static-assets.js`（54 行薄桥）；`src/artifacts.js:43-64` |
+| 10 | 静态/HTML 重写 —— **2026-11-19 前门已接管 public/ 与 artifacts 两部分**（`native/gateway/src/app/static_web_root.rs` + `multicc_core::static_web`；`?v=<mtime>` 重写唯一源 `multicc_core::static_assets_routes::version_html`；重定向与白名单 2026-11-16 已进前门）。artifacts 的 `express.static` 双 root 同日也已进前门（`native/gateway/src/app/artifacts.rs`，docs/gateway.md §62），Node 不再注册任何静态处理器 | `src/routes/static-assets.js`（54 行薄桥）；`src/artifacts.js`（99 行，仅目录常量与启动清理） |
 | 11 | 文件下载语义 | `path` 字面优先 + percent-decode 回退；目录 400；`inline=1` 内联；无根目录限制 | `src/routes/file-transfer.js:67-93` |
 | 12 | WS 生命周期 | 30s ping/3 次 miss；shutdown 1012；peer 4003；ticket 校验顺序；share token 只对 `/ws/chat`；internal slot 拒绝 | `src/ws/connection-router.js:8-12, 51-200` |
 | 13 | upgrade 分发 | `serviceRoutes.handleUpgrade` → `/voice-gateway/web` 反代 → `wss`；顺序不可换 | `src/voice/host.js:128-131`；`src/routes/voice-gateway-proxy.js:157-166`；`src/service-routes.js:140-147` |
