@@ -20,7 +20,7 @@ const {
   validate,
   validateOpenApiDocument,
   validateSchemaDocument,
-} = require('../src/contract-validator');
+} = require('./helpers/contract-validator');
 const { toSessionDto } = require('../src/session-dto');
 const { gatewayDto } = require('../src/voice/gateway');
 

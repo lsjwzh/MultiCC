@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createAirReadIndex } = require('../src/workspace/air-read-index');
+const { createAirReadIndex } = require('./helpers/legacy-air-read-index');
 const { createAirSyncRuntime } = require('../src/workspace/air-sync-runtime');
 const { createAirStorageNotice } = require('../src/workspace/air-sync-issue');
 const { create } = require('../public/air-sync');

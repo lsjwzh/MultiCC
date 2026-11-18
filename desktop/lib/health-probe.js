@@ -2,8 +2,10 @@
 
 // Readiness gate for the desktop shell. The window must not show the web UI
 // (or a misleading "Connecting…" error) before the server reports /readyz 200
-// — the same signal CI/process managers use (src/health.js: readyz flips to
-// 200 only once serviceReady && !shuttingDown && commander migration settled).
+// — the same signal CI/process managers use (the route is owned by the Rust
+// front door, native/gateway/src/app/server_core.rs: under --node readyz flips
+// to 200 only once the child reports serviceReady && !shuttingDown && the
+// commander migration settled; under --no-node a serving front door is ready).
 
 const DEFAULT_READY_PATH = '/readyz';
 

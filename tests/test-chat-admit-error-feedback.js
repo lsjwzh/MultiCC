@@ -126,7 +126,7 @@ test('dispatch recovery scans the live history view', () => {
   probe.assertOnlyRead();
 });
 
-test('chat websocket session creation reads the live history view', () => {
+test('chat websocket session creation reads the live history view', async () => {
   const shared = [
     { role: 'user', content: 'hello' },
     { role: 'assistant', content: 'older reply' },
@@ -146,7 +146,7 @@ test('chat websocket session creation reads the live history view', () => {
     viewChatHistory: probe.viewChatHistory,
     loadChatHistory: probe.loadChatHistory,
   }));
-  assert.throws(
+  await assert.rejects(
     () => engine.handleChatWs({}, {}, new URL('http://localhost/ws/chat?session=s1')),
     error => error === capture,
   );

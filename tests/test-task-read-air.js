@@ -3,7 +3,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { createTaskReadModel } = require('../src/native/task-read-model');
 const { getNative } = require('../src/native/runtime');
-const { createAirReadIndex } = require('../src/workspace/air-read-index');
+const { createAirReadIndex } = require('./helpers/legacy-air-read-index');
 const { fixtures, project } = require('./helpers/task-read-model');
 const { create: createClient } = require('../public/air-sync');
 let addon = null;

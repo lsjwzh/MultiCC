@@ -24,6 +24,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
+const { createProductionQuestionHost } = require('../src/session-work/production-question-host');
 const {
   createHeldTurnInjection, spawnContractFacts, spawnContractOf, isDirectUserTyped,
 } = require('../src/chat/held-turn-injection');
@@ -222,8 +223,22 @@ function runtimeFixture(t, overrides = {}) {
   const clock = { value: 10_000 };
   const history = new Map();
   const calls = { injected: [], delivered: [], prepared: 0, noticed: [] };
-  const runtime = createOrchestrationRuntime({
+  const sessionState = new Map();
+  let runtime;
+  // Admission is Rust-owned (tests/test-scheduler-admit-rust-required.js pins
+  // that), so this fixture runs the production store and the production
+  // question host that supplies the trusted backfill, like server.js does.
+  const question = createProductionQuestionHost({
+    getStore: () => runtime?.store,
+    getSession: () => ({}),
+    getState: id => sessionState.get(id) || {},
+    setState: (id, patch) => sessionState.set(id, { ...(sessionState.get(id) || {}), ...patch }),
+    onResolved: () => {}, log: () => {},
+  });
+  runtime = createOrchestrationRuntime({
     file: path.join(dir, 'orchestration.json'),
+    databaseFile: path.join(dir, 'orchestration.sqlite'),
+    ensureSessionWorkState: id => question.host.pendingAsync(id),
     now: () => clock.value,
     onSchedulerEvent: () => {},
     runChatTurn: async (sessionId, text, opts) => {

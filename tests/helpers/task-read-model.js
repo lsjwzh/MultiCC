@@ -1,7 +1,7 @@
 'use strict';
 // Test oracle only: the existing Air read index and production row cache remain
 // the Node baseline. New product projection/query rules live in Rust.
-const { createAirReadIndex } = require('../../src/workspace/air-read-index');
+const { createAirReadIndex } = require('./legacy-air-read-index');
 
 function project(task, overlays = {}) {
   const last = (task.refs || []).reduce((n, ref) => Math.max(n, Number(ref?.ts) || 0), 0)
