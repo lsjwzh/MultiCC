@@ -110,13 +110,6 @@ function taskIdForItem(item) {
   return item?.turnLineage?.taskId || ownPayload(item)?.taskId || null;
 }
 
-function originDispatchIdForItem(item) {
-  return item?.turnLineage?.originDispatchId
-    || item?.payload?.originDispatchId
-    || (item?.payload?.type === 'dispatch.request' ? item.payload.operationId : null)
-    || null;
-}
-
 // The sender's own correlation id, when the entry came from a client send.
 // Deliveries without one (cron, dispatch, auto-continue) are not somebody's
 // typed message, and clients must not invent a bubble for them.
@@ -168,10 +161,6 @@ function compareQueued(priorityEntryId) {
 // client-supplied index means the same entry on both sides of the wire.
 function visibleQueue(queue) {
   return queue.filter(item => !isUserInputAnswer(item));
-}
-
-function activeTaskId(schedule) {
-  return schedule?.active?.taskId || null;
 }
 
 function classifyStateForSchedule(schedule) {

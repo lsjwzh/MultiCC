@@ -27,19 +27,8 @@ pub(super) fn snapshot(store: &mut super::Store) -> Result<serde_json::Value> {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(err)?;
         drop(query);
-        sessions.sort_by(|a, b| {
-            let index = |s: &str| {
-                s.parse::<u32>()
-                    .ok()
-                    .filter(|n| *n != u32::MAX && n.to_string() == s)
-            };
-            match (index(a), index(b)) {
-                (Some(a), Some(b)) => a.cmp(&b),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.encode_utf16().cmp(b.encode_utf16()),
-            }
-        });
+        // The production draft is a Proxy: its ownKeys trap preserves the
+        // SQLite key order, including numeric-looking property names.
         let mut seen: std::collections::HashSet<String> = sessions.iter().cloned().collect();
         let mut query = db.prepare("SELECT id, session_id FROM orchestration_outbox WHERE state IN ('pending','leased')").map_err(err)?;
         let mut rows = query
@@ -49,7 +38,9 @@ pub(super) fn snapshot(store: &mut super::Store) -> Result<serde_json::Value> {
             .map_err(err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(err)?;
-        rows.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+        // draft.select() orders keys using Rust String/SQLite UTF-8 order,
+        // rather than JavaScript's UTF-16 string comparison.
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
         for (_, session) in rows {
             if seen.insert(session.clone()) {
                 sessions.push(session);
@@ -461,6 +452,50 @@ mod tests {
     use serde_json::json;
     fn v(value: serde_json::Value) -> JsValue {
         crate::js::from_serde(&value)
+    }
+
+    #[test]
+    fn snapshot_preserves_sqlite_key_order_for_schedule_and_outbox() {
+        let mut random = [0_u8; 12];
+        getrandom::fill(&mut random).unwrap();
+        let name = random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let dir = std::env::temp_dir().join(format!("multicc-recovery-order-{name}"));
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("state.sqlite");
+        let mut store =
+            super::super::Store::open(file.to_str().unwrap(), None, 1, RetentionPolicy::default())
+                .unwrap();
+        for id in ["\u{e000}", "𐀀", "10", "2"] {
+            super::super::write_record_json(
+                store.conn().unwrap(),
+                "sessionSchedules",
+                id,
+                &json!({"sessionId":id,"state":"idle","active":null}).to_string(),
+            )
+            .unwrap();
+        }
+        for (sequence, (id, session)) in [("out-\u{e000}", "out-1"), ("out-𐀀", "out-2")]
+            .into_iter()
+            .enumerate()
+        {
+            super::super::write_record_json(
+                store.conn().unwrap(),
+                "outbox",
+                id,
+                &json!({"id":id,"sessionId":session,"state":"pending","sequence":sequence+1})
+                    .to_string(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            snapshot(&mut store).unwrap()["sessions"],
+            json!(["10", "2", "\u{e000}", "𐀀", "out-1", "out-2"])
+        );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn missing_schedule_only_freezes_for_non_outcomes() {

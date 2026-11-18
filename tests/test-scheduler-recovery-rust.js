@@ -10,6 +10,11 @@ const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-
 const { addonPath, getNative } = require('../src/native/runtime');
 const { decodeRecoveryEvents } = require('../src/session-work/recovery-transport');
 
+function ownerBinary() {
+  return process.env.MULTICC_TEST_ORCHESTRATION_OWNER || path.join(path.dirname(addonPath()),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+
 function frozenScheduler() {
   const Module = require('node:module');
   const filename = path.resolve(__dirname, '../src/session-work/scheduler.js');
@@ -29,9 +34,11 @@ test('experimental Rust recovery transaction agrees with frozen scheduler state'
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const cases = ['D', 'W', 'B', 'E', 'P'].flatMap(classify => [false, true].map(missing => ({ classify, missing })));
   for (const [i, scenario] of cases.entries()) {
-    const stores = ['rust', 'oracle'].map(name => createOrchestrationSqliteStore({ file: path.join(root, `${i}-${name}.sqlite`), now: () => 2000 }));
+    const stores = ['rust', 'oracle'].map(name => createOrchestrationSqliteStore({
+      file: path.join(root, `${i}-${name}.sqlite`), now: () => 2000, ownerBinary: ownerBinary(),
+    }));
     const owner = new (getNative().RustIsolatedOrchestrationStore)(stores[0].file, null, 2000,
-      { env: {}, policy: {} }, path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway'));
+      { env: {}, policy: {} }, ownerBinary());
     try {
       for (const store of stores) await store.mutate(draft => {
         if (!scenario.missing) draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P', active: { entryId: 'active', taskId: 'task', startedAt: 50 }, updatedAt: 50 };
@@ -64,4 +71,36 @@ test('experimental Rust recovery transaction agrees with frozen scheduler state'
       for (const store of stores) await store.close({ exportRollback: false });
     }
   }
+});
+
+test('Rust recovery snapshot observes session facts in the same order as the live SQLite scheduler', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-recovery-order-diff-'));
+  const store = createOrchestrationSqliteStore({
+    file: path.join(root, 'state.sqlite'), now: () => 2000, ownerBinary: ownerBinary(),
+  });
+  let owner;
+  t.after(async () => {
+    try { if (owner) owner.request('close', {}); await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  await store.mutate(draft => {
+    for (const sessionId of ['\ue000', '𐀀', '10', '2']) {
+      draft.sessionSchedules[sessionId] = { sessionId, state: 'idle', active: null };
+    }
+    let sequence = 0;
+    for (const [id, sessionId] of [['out-\ue000', 'out-1'], ['out-𐀀', 'out-2']]) {
+      draft.outbox[id] = { id, sessionId, state: 'pending', sequence: ++sequence,
+        payload: { type: 'session.work' } };
+    }
+    draft.nextOutboxSequence = 3;
+  });
+  owner = new (getNative().RustIsolatedOrchestrationStore)(store.file, null, 2000,
+    { env: {}, policy: {} }, ownerBinary());
+  const rustOrder = owner.request('scheduleRecoverSnapshotExperimental', {}).sessions;
+  const observed = [];
+  await frozenScheduler()({ store, now: () => 1000 }).recover({
+    stateForSession: sessionId => { observed.push(sessionId); return null; },
+  });
+  assert.deepEqual(rustOrder, observed);
+  assert.deepEqual(observed, ['10', '2', '\ue000', '𐀀', 'out-1', 'out-2']);
 });
