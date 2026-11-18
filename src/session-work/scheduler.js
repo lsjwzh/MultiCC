@@ -1,10 +1,5 @@
 'use strict';
 
-const crypto = require('crypto');
-const {
-  admitOutboxItem,
-  normalizeJson,
-} = require('../outbox');
 const {
   turnOutcomeForClassify, runStateForClassify, CLASSIFY_STATES,
   isProcessingLetter, isWaitForUserLetter, isTerminalLetter, isAbnormalLetter,
@@ -84,15 +79,6 @@ const MAX_PUBLIC_MESSAGE_LENGTH = 20_000;
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
-
-function compactJson(value) {
-  const out = {};
-  for (const [key, child] of Object.entries(value || {})) {
-    if (child !== undefined) out[key] = child;
-  }
-  return normalizeJson(out);
-}
-
 
 function workKind(item) {
   const transferredKind = item?.turnLineage?.workKind;
@@ -320,13 +306,12 @@ function withActiveInput(active, item) {
 function createSessionWorkScheduler({
   store,
   now = Date.now,
-  cryptoImpl = crypto,
   onEvent = () => {},
   getClassifyState = null,
   getPendingUserInput = null,
-  getTurnId = null,
   getUnattendedState = null,
   getRunActive = null,
+  ensureSessionWorkState = null,
   log = () => {},
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
@@ -381,6 +366,7 @@ function createSessionWorkScheduler({
         const state = getClassifyState(sessionId);
         return CLASSIFY_STATES.has(state) ? state : null;
       } catch (error) {
+        if (error?.code === 'SESSION_WORK_OWNER_UNAVAILABLE') throw error;
         log(`[session-work] classify read failed for ${sessionId}: ${error.message}`);
         return null;
       }
@@ -402,6 +388,7 @@ function createSessionWorkScheduler({
         createdAt: Number(pending.createdAt) || null,
       };
     } catch (error) {
+      if (error?.code === 'SESSION_WORK_OWNER_UNAVAILABLE') throw error;
       log(`[session-work] pending user input read failed for ${sessionId}: ${error.message}`);
       return null;
     }
@@ -434,170 +421,12 @@ function createSessionWorkScheduler({
       classify: id => canonicalClassifyState(id, schedule), unattended: getUnattendedState });
   }
 
-  function stableEntryId(sessionId, key, payload) {
-    const identity = key
-      ? `key:${key}`
-      : `new:${cryptoImpl.randomUUID()}:${JSON.stringify(payload).length}`;
-    const suffix = cryptoImpl.createHash('sha256')
-      .update(`${sessionId}\0${identity}`, 'utf8')
-      .digest('hex')
-      .slice(0, 40);
-    return `session-work:${suffix}`;
-  }
-
-
-  async function admit({
-    sessionId,
-    text,
-    options = {},
-    source = null,
-    workKind: requestedKind = null,
-    requestId = null,
-    activeEntryId = null,
-    idempotencyKey = null,
-  } = {}) {
-    const cleanSessionId = String(sessionId || '').trim();
-    const cleanText = String(text || '').trim();
-    if (!cleanSessionId) throw new TypeError('session work requires sessionId');
-    if (!cleanText) throw new TypeError('session work requires text');
-    const inferredKind = requestedKind
-      || (requestId ? 'answer'
-        : options.retry ? 'retry'
-          : options.originContinue === true ? 'continuation' : 'task');
-    if (inferredKind !== 'task' && !CONTROL_KINDS.has(inferredKind)) {
-      throw new TypeError(`invalid session work kind: ${inferredKind}`);
+  async function admit(input = {}) {
+    if (ensureSessionWorkState) await ensureSessionWorkState(input.sessionId);
+    if (typeof store.executeScheduleAdmit !== 'function') {
+      throw new Error('session_work_admission_owner_unavailable');
     }
-    const normalizedOptions = compactJson(options);
-    const payload = compactJson({
-      type: 'session.work',
-      workKind: inferredKind,
-      message: cleanText,
-      options: normalizedOptions,
-      source: source || options.taskSource || (options.originTrigger ? 'trigger' : 'direct'),
-      taskId: options.taskId || null,
-      // Omit the empty compatibility field so a pre-upgrade admission replay
-      // with the same idempotency key keeps the exact historical payload hash.
-      originDispatchId: options.originDispatchId || undefined,
-      requestId: requestId || null,
-      activeEntryId: activeEntryId || null,
-    });
-    const key = idempotencyKey
-      || options.deliveryId || options.clientMsgId || options.requestId || null;
-    const id = stableEntryId(cleanSessionId, key, payload);
-    const result = await store.mutate(draft => {
-      const at = Number(now());
-      const schedule = ensure(draft, cleanSessionId, at);
-      if (options.taskShellReceiptId) {
-        const existing = draft.outbox[id];
-        if (existing) {
-          // A shell receipt already fixed the task/text/options before this
-          // second durable boundary. Do not reinterpret it using a new active
-          // turn or a question which has since been answered.
-          if (existing.payload?.options?.taskShellReceiptId !== options.taskShellReceiptId
-            || existing.payload.message !== cleanText || existing.payload.taskId !== options.taskId
-            || JSON.stringify(existing.payload.options) !== JSON.stringify(normalizedOptions)) {
-            return { ok: false, code: 'idempotency_conflict' };
-          }
-          return { ok: true, duplicate: true, shellReplay: true, entry: clone(existing), queued: false,
-            position: 0, schedule: publicSchedule(schedule, queueForDraft(draft, cleanSessionId), draft) };
-        }
-        const control = options.taskShellControl;
-        if (control) {
-          const question = canonicalPendingUserInput(cleanSessionId);
-          // An answer belongs to the turn that asked. A background continuation
-          // keeps the open question but advances the signal turn, so the signal
-          // turn alone would reject every answer after one such continuation.
-          const turnMatches = !!control.turnId && (getTurnId?.(cleanSessionId) === control.turnId
-            || (control.intent === 'answer' && !!question?.turnId && question.turnId === control.turnId));
-          if (!turnMatches
-            || (control.intent === 'answer' && (!question || question.requestId !== requestId || question.taskId !== options.taskId))) {
-            return { ok: false, code: 'stale_control' };
-          }
-        }
-      }
-      const pendingInput = inferredKind === 'answer'
-        ? canonicalPendingUserInput(cleanSessionId) : null;
-      // An unresolved structured request is the authoritative correlation
-      // proof for an answer. The asking provider turn may already have released
-      // its physical active slot, and a legacy/recovery window may not yet have
-      // copied requestId into the scheduler mirror. Do not confuse that missing
-      // execution slot with "no logical task": the pending request owns the
-      // continuation. Standalone legacy callers without the canonical port keep
-      // the old classify/awaitingRequestId fallback.
-      const pendingAnswerMatches = typeof getPendingUserInput === 'function'
-        ? pendingInput?.requestId === requestId
-        : !isTerminalLetter(classifyStateForSchedule(schedule))
-          && (!schedule.awaitingRequestId || schedule.awaitingRequestId === requestId);
-      const correlatedAnswer = inferredKind === 'answer'
-        && !!requestId
-        && pendingAnswerMatches;
-      if (CONTROL_KINDS.has(inferredKind)) {
-        // active is an execution lease, not an admission permission. Control
-        // inputs remain valid messages after the previous -p process exits.
-        // Exact request/task correlation is retained when available, but stale
-        // correlation never rejects or drops user input.
-        if (schedule.active) {
-          // An answer is its own control turn even when submitted before the
-          // asking turn finishes; do not inherit that entry into ownership.
-          payload.activeEntryId = inferredKind === 'answer'
-            ? null
-            : schedule.active.entryId;
-          if (!payload.taskId && schedule.active.taskId) payload.taskId = schedule.active.taskId;
-          if (!payload.originDispatchId && schedule.active.originDispatchId) {
-            payload.originDispatchId = schedule.active.originDispatchId;
-          }
-        } else {
-          if (correlatedAnswer) {
-            // Repair correlation metadata only. Classify remains the sole owner
-            // of business state; this input simply starts the next native turn.
-            schedule.awaitingRequestId = requestId;
-            if (!payload.taskId && pendingInput?.taskId) payload.taskId = pendingInput.taskId;
-          }
-        }
-      }
-      const admitted = admitOutboxItem(draft, {
-        id,
-        sessionId: cleanSessionId,
-        payload,
-        source: { type: 'session-admission', kind: inferredKind },
-        now: at,
-      });
-      // Typed/control inputs carry directRun across the P boundary. Selection
-      // still blocks them while classify is P, then starts the oldest one as
-      // soon as classify leaves P. The tag does not rewrite FIFO sequence.
-      //
-      // "Typed" has to mean every surface a human types on, not just the chat
-      // box: the Air task page admits with source 'task-shell', and while it was
-      // excluded here its user's messages were selectable in no state but D —
-      // an E verdict parked them forever. See session-work/user-input.js.
-      const directMessage = getNative().sessionWorkIsUserTyped(payload) || CONTROL_KINDS.has(inferredKind);
-      if (draft.outbox[admitted.item.id]
-          && directMessage) {
-        draft.outbox[admitted.item.id].directRun = true;
-      }
-      const specialAnswer = isUserInputAnswer(admitted.item);
-      if (specialAnswer && draft.outbox[admitted.item.id]?.state === 'pending') {
-        // The answer resumes the currently waiting interaction and therefore
-        // outranks unrelated user work already staged behind that interaction.
-        schedule.priorityEntryId = admitted.item.id;
-      }
-      schedule.updatedAt = at;
-      const queue = queueForDraft(draft, cleanSessionId);
-      const selected = selectSessionItem(queue, draft, at);
-      return {
-        ok: true,
-        duplicate: admitted.idempotent,
-        entry: clone(admitted.item),
-        // While the asking native process is still releasing, the answer can be
-        // pending internally for crash safety. Product/API semantics remain a
-        // direct structured response: it never enters the ordinary waiting FIFO.
-        queued: specialAnswer ? false : selected?.id !== admitted.item.id,
-        position: specialAnswer
-          ? 0
-          : queue.findIndex(item => item.id === admitted.item.id) + 1,
-        schedule: publicSchedule(schedule, queue, draft),
-      };
-    });
+    const result = await store.executeScheduleAdmit(input, Number(now()));
     if (result.ok && !result.shellReplay) {
       const queuedItems = result.queued
         ? result.schedule.queued
@@ -605,11 +434,11 @@ function createSessionWorkScheduler({
       emit('queued', {
         message: result.entry.payload?.message || null,
         clientMsgId: result.entry.payload?.options?.clientMsgId || null,
-        sessionId: cleanSessionId,
+        sessionId: result.entry.sessionId,
         entryId: result.entry.id,
         taskId: result.entry.payload?.taskId || null,
         source: result.entry.payload?.source || 'direct',
-        workKind: inferredKind,
+        workKind: result.entry.payload?.workKind || 'task',
         duplicate: result.duplicate,
         queued: result.queued,
         queuePosition: result.queued ? result.position || null : null,
@@ -623,6 +452,7 @@ function createSessionWorkScheduler({
   }
 
   async function claim(item) {
+    if (ensureSessionWorkState) await ensureSessionWorkState(item.sessionId);
     const result = await store.mutate(draft => getNative().scheduleClaimLive(
       draft, item, now, schedule => publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft)));
     if (result.ok) emit('claimed', {
@@ -712,63 +542,11 @@ function createSessionWorkScheduler({
     classifyState = 'D',
     awaitingRequestId = null,
   } = {}) {
-    const result = await store.mutate(draft => {
-      const schedule = draft.sessionSchedules[sessionId];
-      if (!schedule?.active) return { ok: false, code: 'no_active_task' };
-      if (expectedTaskId && activeTaskId(schedule) && expectedTaskId !== activeTaskId(schedule)) {
-        return { ok: false, code: 'active_task_mismatch' };
-      }
-      const at = Number(now());
-      const completed = clone(schedule.active);
-      schedule.active = null;
-      schedule.state = 'idle';
-      schedule.freezeReason = null;
-      schedule.awaitingRequestId = !isTerminalLetter(classifyState) && awaitingRequestId
-        ? String(awaitingRequestId)
-        : null;
-      if (schedule.priorityEntryId === completed.entryId) schedule.priorityEntryId = null;
-      // classifyState is the LETTER (D/W/B/E). This releases the active slot for
-      // every letter, but only D drains the FIFO (selectSessionItem): W/B are
-      // real waits, and E leaves the queue staged — an error in one request must
-      // not auto-start the work the user staged behind it.
-      schedule.classifyState = CLASSIFY_STATES.has(classifyState) ? classifyState : 'D';
-      schedule.classifyStateAt = at;
-      // A turn ending on an unanswered question must not let work staged while
-      // it ran fire ahead of the user's answer. directRun exists for messages
-      // admitted while the session is ALREADY at rest; items that merely headed
-      // the FIFO when the question landed hold at rest until the user acts.
-      // Shell user messages are typed as continuations too; that transport
-      // kind does not authorize them to bypass an unanswered question.
-      const pending = canonicalPendingUserInput(sessionId);
-      if (isWaitForUserLetter(schedule.classifyState) && pending) {
-        const pendingItems = typeof draft.select === 'function'
-          ? draft.select('outbox', { where: { sessionId, state: 'pending' } })
-          : Object.values(draft.outbox || {});
-        for (const item of pendingItems) {
-          if (item && item.sessionId === sessionId && item.state === 'pending'
-              && !(isUserInputAnswer(item) && item.payload.requestId === pending.requestId)
-              && item.userInputOverrideId !== pending.requestId) {
-            item.directRun = false;
-            item.blockedByUserInput = pending.requestId;
-          }
-        }
-      }
-      schedule.lastDecision = {
-        action: completed.supersededByEntryId ? 'superseded' : 'complete',
-        reason: completed.supersededByEntryId ? 'superseded_by_immediate_insert' : reason,
-        entryId: completed.entryId,
-        taskId: completed.taskId || null,
-        originDispatchId: completed.originDispatchId || null,
-        supersededByEntryId: completed.supersededByEntryId || null,
-        at,
-      };
-      schedule.updatedAt = at;
-      return {
-        ok: true,
-        advanced: true,
-        completed,
-        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft),
-      };
+    if (typeof store.executeScheduleComplete !== 'function') {
+      throw new Error('session_work_completion_owner_unavailable');
+    }
+    const result = await store.executeScheduleComplete({
+      sessionId, expectedTaskId, reason, classifyState, awaitingRequestId, clock: now,
     });
     // The explicit turn outcome travels WITH the scheduler bookkeeping event.
     // `completed` means only that the active slot was released; it is never a
@@ -940,72 +718,8 @@ function createSessionWorkScheduler({
   } = {}) {
     const cleanEntryId = String(entryId || '').trim();
     if (!cleanEntryId) throw new TypeError('queued reorder requires entryId');
-    const result = await store.mutate(draft => {
-      const item = draft.outbox[cleanEntryId];
-      if (!item || item.sessionId !== sessionId) {
-        return { ok: false, code: 'queued_entry_not_found' };
-      }
-      const schedule = ensure(draft, sessionId, Number(now()));
-      const activeIds = new Set([
-        schedule.active?.entryId,
-        schedule.active?.deliveryId,
-      ].filter(Boolean));
-      // Same guard set as cancel: an entry the scheduler already claimed is
-      // executing, and its order is no longer the user's to set.
-      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
-        return { ok: false, code: 'queued_entry_already_claimed' };
-      }
-      if (item.state !== 'pending') {
-        return { ok: false, code: 'queued_entry_not_pending' };
-      }
-      const queue = visibleQueue(queueForDraft(draft, sessionId));
-      const from = queue.findIndex(candidate => candidate.id === cleanEntryId);
-      if (from < 0) return { ok: false, code: 'queued_entry_not_found' };
-      const requestedIndex = Number(toIndex);
-      const requested = direction === 'up' ? from - 1
-        : direction === 'down' ? from + 1
-          : Number.isFinite(requestedIndex) ? Math.trunc(requestedIndex) : from;
-      const to = Math.max(0, Math.min(queue.length - 1, requested));
-      const at = Number(now());
-      if (to === from) {
-        return {
-          ok: true,
-          unchanged: true,
-          reordered: {
-            entryId: cleanEntryId,
-            from,
-            to,
-            actor: String(actor || 'user').slice(0, 80),
-            at,
-          },
-          schedule: publicSchedule(schedule, queue || [], draft),
-        };
-      }
-      const reordered = queue.slice();
-      reordered.splice(from, 1);
-      reordered.splice(to, 0, item);
-      reordered.forEach((candidate, index) => {
-        candidate.queueOrder = index;
-        candidate.updatedAt = at;
-      });
-      schedule.updatedAt = at;
-      const next = visibleQueue(queueForDraft(draft, sessionId));
-      return {
-        ok: true,
-        unchanged: false,
-        // Report where the entry actually landed, not where it was asked to go.
-        // A promoted ("执行中") head is pinned first by the comparator, so a
-        // request to overtake it cannot be honoured and the client has to be
-        // told the real position rather than have its own request echoed back.
-        reordered: {
-          entryId: cleanEntryId,
-          from,
-          to: next.findIndex(candidate => candidate.id === cleanEntryId),
-          actor: String(actor || 'user').slice(0, 80),
-          at,
-        },
-        schedule: publicSchedule(schedule, next, draft),
-      };
+    const result = await store.mutateSync('scheduleReorder', {
+      sessionId, entryId: cleanEntryId, toIndex, direction, actor, now,
     });
     if (result.ok && !result.unchanged) {
       emit('queued_reordered', {

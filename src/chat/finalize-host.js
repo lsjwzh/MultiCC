@@ -53,8 +53,18 @@ function createTurnFinalizationExecutor(rawPorts) {
   // call) is the only way the final-answer fsync can be confirmed before usage,
   // classification and scheduler completion run.
   async function execute(plan, rawContext = {}) {
-    const prepared = native.chatExecuteTurnFinalization(plan, rawContext, ports, runtime);
-    if (!prepared || prepared.pending !== true) return prepared;
+    let syncTurn;
+    const prepare = () => {
+      const value = native.chatExecuteTurnFinalization(plan, rawContext, ports, runtime);
+      if (value?.pending !== true && typeof ports.syncQuestionTurn === 'function') syncTurn = ports.syncQuestionTurn(rawContext.sessionName);
+      return value;
+    };
+    const prepared = typeof ports.withQuestionSnapshot === 'function'
+      ? await ports.withQuestionSnapshot(rawContext.sessionName, prepare) : prepare();
+    if (!prepared || prepared.pending !== true) {
+      if (syncTurn) await syncTurn;
+      return prepared;
+    }
     let persisted = false;
     let fault;
     try {
@@ -64,9 +74,17 @@ function createTurnFinalizationExecutor(rawPorts) {
       // 保持与同步端口抛错完全一致的可见行为。
       fault = error;
     }
-    return native.chatCommitTurnFinalization(
-      prepared.plan, rawContext, ports, runtime, persisted === true, fault, prepared.sourcePlan,
-    );
+    const commit = () => {
+      const value = native.chatCommitTurnFinalization(
+        prepared.plan, rawContext, ports, runtime, persisted === true, fault, prepared.sourcePlan,
+      );
+      if (typeof ports.syncQuestionTurn === 'function') syncTurn = ports.syncQuestionTurn(rawContext.sessionName);
+      return value;
+    };
+    const result = typeof ports.withQuestionSnapshot === 'function'
+      ? await ports.withQuestionSnapshot(rawContext.sessionName, commit) : commit();
+    if (syncTurn) await syncTurn;
+    return result;
   }
   return Object.freeze({ execute });
 }

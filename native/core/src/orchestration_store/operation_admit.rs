@@ -16,7 +16,7 @@ fn wall_millis(planning: bool) -> f64 {
     }
 }
 
-fn canonical(value: &JsValue) -> Result<String> {
+pub(super) fn canonical(value: &JsValue) -> Result<String> {
     match value {
         JsValue::Object(entries) => {
             let mut sorted: Vec<_> = entries.iter().collect();
@@ -38,7 +38,7 @@ fn canonical(value: &JsValue) -> Result<String> {
         _ => record::encode(value),
     }
 }
-fn digest(text: &str) -> String {
+pub(super) fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 fn put(fields: &mut Vec<(JsString, JsValue)>, name: &str, value: JsValue) {

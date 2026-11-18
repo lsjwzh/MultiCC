@@ -53,27 +53,45 @@ function tracedOptions(values, trace) {
   }, ownKeys(target) { trace.push('options:keys'); return Reflect.ownKeys(target); },
   getOwnPropertyDescriptor(target, key) { trace.push(`options:descriptor:${String(key)}`); return Reflect.getOwnPropertyDescriptor(target, key); } });
 }
-test('session admission preserves stable IDs, normalized payload and input getter order', async t => {
+test('session admission preserves stable IDs and payload while observing real Rust transport inputs', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-admit-baseline-'));
   const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => 100 });
   t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: null, activeTurn: null, category: null,
+  } });
   const cases = [
     { sessionId: ' s ', text: ' hello ', options: {}, idempotencyKey: 'key' },
     { sessionId: 's', text: 'message\ud83d', options: { taskId: 't', originDispatchId: 'o', retry: true } },
     { sessionId: 's', text: 'hello', options: { originContinue: true, taskSource: 'task-shell', taskShellReceiptId: 'receipt' } },
     { sessionId: 's', text: 'hello', options: { requestId: 'r', nested: { b: 2, a: 1 } }, requestId: 'r' },
   ];
-  for (const value of cases) {
+  const legacyReads = [
+    ['options:retry', 'options:originContinue', 'options:keys', 'options:taskSource', 'options:originTrigger', 'options:taskId', 'options:originDispatchId', 'hash:sha256', 'update:utf8', 'digest:hex'],
+    ['options:retry', 'options:keys', 'options:descriptor:taskId', 'options:taskId', 'options:descriptor:originDispatchId', 'options:originDispatchId', 'options:descriptor:retry', 'options:retry', 'options:taskSource', 'options:originTrigger', 'options:taskId', 'options:originDispatchId', 'options:deliveryId', 'options:clientMsgId', 'options:requestId', 'uuid', 'hash:sha256', 'update:utf8', 'digest:hex'],
+    ['options:retry', 'options:originContinue', 'options:keys', 'options:descriptor:originContinue', 'options:originContinue', 'options:descriptor:taskSource', 'options:taskSource', 'options:descriptor:taskShellReceiptId', 'options:taskShellReceiptId', 'options:taskSource', 'options:taskId', 'options:originDispatchId', 'options:deliveryId', 'options:clientMsgId', 'options:requestId', 'uuid', 'hash:sha256', 'update:utf8', 'digest:hex'],
+    ['options:keys', 'options:descriptor:requestId', 'options:requestId', 'options:descriptor:nested', 'options:nested', 'options:taskSource', 'options:originTrigger', 'options:taskId', 'options:originDispatchId', 'options:deliveryId', 'options:clientMsgId', 'options:requestId', 'hash:sha256', 'update:utf8', 'digest:hex'],
+  ];
+  for (const [index, value] of cases.entries()) {
     const expectedTrace = [];
     const expectedOptions = tracedOptions(structuredClone(value.options), expectedTrace);
     const expected = legacyPrepare({ ...value, options: expectedOptions }, customCrypto(expectedTrace));
+    assert.deepEqual(expectedTrace, legacyReads[index]);
+    const transportTrace = [];
+    JSON.stringify({ ...value, options: tracedOptions(structuredClone(value.options), transportTrace) });
     const trace = [];
     const options = tracedOptions(structuredClone(value.options), trace);
     const scheduler = createSessionWorkScheduler({ store, now: () => 100, cryptoImpl: customCrypto(trace) });
     const result = await scheduler.admit({ ...value, options });
-    assert.equal(result.entry.id, expected.id);
+    if (value.idempotencyKey || value.options.requestId) {
+      assert.equal(result.entry.id, expected.id);
+    } else {
+      assert.match(result.entry.id, /^session-work:[0-9a-f]{40}$/);
+      const another = await scheduler.admit(value);
+      assert.notEqual(another.entry.id, result.entry.id, 'unkeyed admissions use distinct Rust-generated identities');
+    }
     assert.deepEqual(result.entry.payload, expected.payload);
-    assert.deepEqual(trace.slice(0, expectedTrace.length), expectedTrace);
+    assert.deepEqual(trace, transportTrace, 'input getters run in JSON serialization order before Rust owns the request');
   }
 });
 
@@ -83,6 +101,12 @@ test('session admission keeps SQLite schedule and outbox atomic under retries an
   const store = createOrchestrationSqliteStore({ file, now: () => 100 });
   const db = new Database(file);
   t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: null, activeTurn: null, category: null,
+  } });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 'other', initial: {
+    pendingQuestion: { requestId: 'rollback-question', resolved: false }, activeTurn: null, category: 'W',
+  } });
   const scheduler = createSessionWorkScheduler({ store, now: () => 100 });
   const spec = { sessionId: 's', text: 'hello', idempotencyKey: 'key', options: { taskId: 't' } };
   const first = await scheduler.admit(spec);
@@ -96,7 +120,10 @@ test('session admission keeps SQLite schedule and outbox atomic under retries an
   assert.deepEqual(await store.snapshot(), before);
   await assert.rejects(scheduler.admit({ ...spec, text: 'different' }), error => error.code === 'OUTBOX_PAYLOAD_CONFLICT');
   assert.deepEqual(await store.snapshot(), before);
+  const workBefore = await store.sessionWorkState({ action: 'read', sessionId: 'other' });
   db.exec("CREATE TRIGGER fail_admit BEFORE INSERT ON orchestration_outbox BEGIN SELECT RAISE(ABORT,'blocked admission'); END");
-  await assert.rejects(scheduler.admit({ sessionId: 'other', text: 'new', idempotencyKey: 'new' }), /blocked admission/);
+  await assert.rejects(scheduler.admit({ sessionId: 'other', text: 'new', idempotencyKey: 'new',
+    requestId: 'rollback-question' }), /blocked admission/);
   assert.deepEqual(await store.snapshot(), before);
+  assert.deepEqual(await store.sessionWorkState({ action: 'read', sessionId: 'other' }), workBefore);
 });

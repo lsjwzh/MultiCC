@@ -1,0 +1,284 @@
+'use strict';
+
+const crypto = require('crypto');
+const { applyUserInputEvidence } = require('./vocab');
+
+// Bounds mirror the MCP request_user_input tool (router-tool-runtime) so a signal
+// synthesized from a CLI's built-in ask tool is sanitized identically.
+const MAX_QUESTION_LENGTH = 16 * 1024;
+const MAX_REASON_LENGTH = 4 * 1024;
+const MAX_OPTION_LENGTH = 512;
+const MAX_OPTIONS = 12;
+const SECRET_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+
+function sanitizeOptions(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of value) {
+    const text = String(raw == null ? '' : raw).trim().slice(0, MAX_OPTION_LENGTH);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= MAX_OPTIONS) break;
+  }
+  return out;
+}
+
+// Build a request_user_input signal from an adapter-decoded ask event (e.g.
+// codex's built-in AskUserQuestion). This lands a non-MCP ask on the SAME
+// structured waiting path (pendingUserInput → waiting → interactive options) as
+// the MCP tool, instead of silently degrading to plain text. Returns null when
+// there is no usable question text. requestId shape ("usrq-<hash>") matches the
+// MCP path so dedup/resolve behave identically.
+function buildAdapterUserInputSignal(
+  { sessionId, turnId, question, reason, options, allowMultiple } = {},
+  cryptoImpl = crypto,
+) {
+  const q = String(question == null ? '' : question).trim().slice(0, MAX_QUESTION_LENGTH);
+  if (!q) return null;
+  const r = String(reason == null ? '' : reason).trim().slice(0, MAX_REASON_LENGTH);
+  const opts = sanitizeOptions(options);
+  const multi = allowMultiple === true && opts.length >= 2;
+  const requestId = `usrq-${cryptoImpl.createHash('sha256')
+    .update([sessionId, turnId, q, r, opts.join('\0'), multi]
+      .map((v) => String(v == null ? '' : v)).join('\0'), 'utf8')
+    .digest('hex').slice(0, 24)}`;
+  return {
+    requestId,
+    sessionId: String(sessionId || ''),
+    turnId: String(turnId || ''),
+    question: q,
+    reason: r,
+    options: opts,
+    allowMultiple: multi,
+  };
+}
+
+// Record an adapter ask event as a structured waiting signal via the provided
+// recordInput port (server wires it to sessionWorkHost.recordInput, the same
+// port the MCP tool uses). On any failure it returns the event's fallbackText so
+// the caller can degrade to a plain-text passthrough — the question is never lost.
+function recordAdapterUserInput({ evt, sessionId, turnId, recordInput } = {}) {
+  const signal = buildAdapterUserInputSignal({
+    sessionId,
+    turnId,
+    question: evt?.question,
+    reason: evt?.reason,
+    options: evt?.options,
+    allowMultiple: evt?.allowMultiple,
+  });
+  const rec = signal && typeof recordInput === 'function' ? recordInput(signal) : null;
+  const ok = !!(rec && rec.ok === true);
+  return {
+    ok,
+    requestId: ok ? signal.requestId : null,
+    fallbackText: ok ? '' : (evt?.fallbackText || ''),
+  };
+}
+
+const USER_INPUT_SIGNAL_PROMPT = Object.freeze([
+  '[Waiting for a user answer] When you are about to end the turn with a blocking question (a missing user decision, confirmation, choice, or required information means the task cannot safely continue), you must first call the MultiCC MCP tool wait_for_user_answer; the old name request_user_input exists only for compatibility.',
+  'The tool may appear as multicc_router.wait_for_user_answer or mcp__multicc_router__wait_for_user_answer. After a successful call, present the same question and options to the user as the final reply of this turn, then end the turn without running further tools.',
+  'Do not call it when you can reasonably continue with the information you have. Ordinary suggestions, optional follow-up work, and polite rhetorical questions do not require waiting for the user.',
+]);
+
+function buildCodexUserInputConstraint(enabled = true) {
+  if (!enabled) return '';
+  return [
+    '[MultiCC environment constraints]',
+    '- The Codex built-in request_user_input / AskUserQuestion tools are unavailable in this non-interactive execution environment.',
+    '- Before ending a turn with a blocking question, you must call the MultiCC MCP tool wait_for_user_answer (it may appear as mcp__multicc_router__wait_for_user_answer); do not call the Codex built-in tool of the same name.',
+    '- After the tool returns, present the same question as the final reply and end the turn; do not call it when you can safely and reasonably continue.',
+    '[End of MultiCC environment constraints]',
+  ].join('\n');
+}
+
+function createUserInputSignalHost({
+  getSession,
+  getState,
+  setState,
+  now = Date.now,
+  log = () => {},
+  // Fired once when a wait_user request is actually consumed (resolved). The
+  // server wires this to a session-wide broadcast so EVERY open window tears down
+  // its prompt — not just the one that answered. Duplicate resolves do not fire.
+  onResolved = () => {},
+} = {}) {
+  for (const [name, value] of Object.entries({ getSession, getState, setState })) {
+    if (typeof value !== 'function') {
+      throw new TypeError(`[user-input-signal] ${name} port is required`);
+    }
+  }
+
+  function pending(sessionId) {
+    return getState(sessionId)?.pendingUserInput || null;
+  }
+
+  function lastResolved(sessionId) {
+    return getState(sessionId)?.lastResolvedUserInput || null;
+  }
+
+  function record(signal = {}) {
+    const sessionId = String(signal.sessionId || '');
+    const turnId = String(signal.turnId || '');
+    const session = getSession(sessionId);
+    if (!session?._activeTurn || session._activeTurn.turnId !== turnId || !session.isStreaming) {
+      return { ok: false, code: 'turn_not_active' };
+    }
+    const existing = pending(sessionId);
+    if (existing?.requestId === signal.requestId) return { ok: true, duplicate: true };
+    if (existing && existing.resolved !== true) {
+      return { ok: false, code: 'user_input_already_pending' };
+    }
+    setState(sessionId, {
+      pendingUserInput: {
+        requestId: signal.requestId,
+        turnId,
+        taskId: session._currentTaskId || null,
+        question: signal.question,
+        reason: signal.reason || '',
+        options: Array.isArray(signal.options) ? signal.options : [],
+        allowMultiple: signal.allowMultiple === true,
+        // Secret-mode requests render a password input in the client and the
+        // answer is stored via POST /api/secrets — the value never becomes a
+        // chat message. Non-secret requests keep inputType absent for backward
+        // compatibility with older clients.
+        ...(signal.inputType === 'secret' && SECRET_NAME_RE.test(String(signal.secretName || ''))
+          ? { inputType: 'secret', secretName: String(signal.secretName) }
+          : {}),
+        createdAt: now(),
+        resolved: false,
+      },
+      userInputSignalVersion: 1,
+    });
+    log(`[multicc/classify] ${sessionId} request_user_input recorded request=${signal.requestId} turn=${turnId}`);
+    return { ok: true, duplicate: false };
+  }
+
+  function beginTurn(sessionId, { originContinue = false, turnId } = {}) {
+    const current = getState(sessionId) || {};
+    const stale = current.pendingUserInput;
+    // A fresh turn supersedes an unanswered question: the user chose to drive
+    // on. Fire the same broadcast a resolve fires so every open window tears
+    // the card down instead of inviting an answer to a question that no longer
+    // exists — flagged superseded so clients can render the difference.
+    if (!originContinue && stale && stale.resolved !== true && stale.requestId) {
+      log(`[multicc/classify] ${sessionId} request_user_input superseded by new turn request=${stale.requestId}`);
+      onResolved(sessionId, stale.requestId, stale.taskId ?? null, { superseded: true });
+    }
+    const supersededNow = !originContinue && stale && stale.resolved !== true && stale.requestId;
+    return setState(sessionId, {
+      pendingUserInput: originContinue ? current.pendingUserInput || null : null,
+      // Survives the nulling above: replayState uses it to tell a
+      // late-reconnecting client that its stale card was already settled.
+      lastResolvedUserInput: supersededNow
+        ? { requestId: stale.requestId, at: now(), superseded: true }
+        : current.lastResolvedUserInput || null,
+      userInputSignalVersion: 1,
+      userInputSignalTurnId: turnId || null,
+      classifyState: 'P',
+      // 同上：问出去的那一刻，上一次 D 判定的「达成目标/需要交互」已经不成立了。
+      goalState: null,
+    });
+  }
+
+  function apply(sessionId, result) {
+    return applyUserInputEvidence(result, pending(sessionId));
+  }
+
+  function resolve(sessionId, requestId, { dismissed = false } = {}) {
+    const current = pending(sessionId);
+    if (!current || current.requestId !== requestId) {
+      return { ok: false, code: current ? 'request_id_mismatch' : 'no_pending_request' };
+    }
+    if (current.resolved === true) return { ok: true, duplicate: true };
+    setState(sessionId, {
+      pendingUserInput: {
+        ...current,
+        resolved: true,
+        resolvedAt: now(),
+        ...(dismissed ? { resolution: 'dismissed', resolvedBy: 'user' } : {}),
+      },
+      lastResolvedUserInput: { requestId, at: now(), taskId: current.taskId ?? null,
+        ...(dismissed ? { resolution: 'dismissed', resolvedBy: 'user' } : {}) },
+      userInputSignalVersion: 1,
+    });
+    log(`[multicc/classify] ${sessionId} request_user_input resolved request=${requestId}`);
+    onResolved(sessionId, requestId, current.taskId ?? null, dismissed ? { resolution: 'dismissed' } : undefined);
+    return { ok: true, duplicate: false };
+  }
+
+  // Task separation moves the judged turn's open question to the task the turn
+  // now lives in. The source settles as resolved(resolution:'moved') — the same
+  // broadcast a normal resolve fires, so every open source window tears the
+  // card down — and the target session adopts the still-unanswered request
+  // verbatim (same requestId, same turnId), so its replay shows the card and
+  // admission correlates the answer as the continuation of the asking turn.
+  // record()'s active-turn guard is bypassed deliberately: the target has no
+  // live turn yet; the unanswered question itself is the durable artifact
+  // being transferred. turnId is also mirrored into userInputSignalTurnId so
+  // the scheduler's getTurnId (which reads recoveryState.turnId) correlates
+  // the shell answer path on a session that has not run a turn of its own yet.
+  function move(sourceId, targetId, { turnId, taskId } = {}) {
+    if (!sourceId || !targetId || sourceId === targetId) return { ok: false, code: 'invalid_move' };
+    const current = pending(sourceId);
+    if (!current || current.resolved === true) {
+      return { ok: false, code: current ? 'already_resolved' : 'no_pending_request' };
+    }
+    if (turnId && current.turnId && current.turnId !== turnId) return { ok: false, code: 'turn_mismatch' };
+    const targetPending = pending(targetId);
+    if (targetPending && targetPending.resolved !== true) return { ok: false, code: 'target_already_pending' };
+    setState(sourceId, {
+      pendingUserInput: { ...current, resolved: true, resolvedAt: now(),
+        resolution: 'moved', movedToSessionId: String(targetId) },
+      lastResolvedUserInput: { requestId: current.requestId, at: now(),
+        taskId: current.taskId ?? null, resolution: 'moved' },
+      userInputSignalVersion: 1,
+    });
+    log(`[multicc/classify] ${sourceId} request_user_input moved to ${targetId} request=${current.requestId}`);
+    onResolved(sourceId, current.requestId, current.taskId ?? null, { resolution: 'moved' });
+    setState(targetId, {
+      pendingUserInput: {
+        requestId: current.requestId,
+        turnId: current.turnId || null,
+        taskId: taskId || current.taskId || null,
+        question: current.question,
+        reason: current.reason || '',
+        options: Array.isArray(current.options) ? current.options : [],
+        allowMultiple: current.allowMultiple === true,
+        ...(current.inputType === 'secret' && current.secretName
+          ? { inputType: 'secret', secretName: String(current.secretName) } : {}),
+        createdAt: current.createdAt || now(),
+        resolved: false,
+        movedFromSessionId: String(sourceId),
+      },
+      ...(current.turnId ? { userInputSignalTurnId: current.turnId } : {}),
+      userInputSignalVersion: 1,
+      classifyState: 'W',
+    });
+    return { ok: true, requestId: current.requestId, question: current };
+  }
+
+  function degradedResult(sessionId, currentTask) {
+    if (!pending(sessionId) || pending(sessionId).resolved === true) return null;
+    const state = getState(sessionId) || {};
+    return {
+      state: 'W',
+      goal: currentTask?.goal || state.goal || '',
+      phase: currentTask?.phase || state.phase || 'planning',
+      background: false,
+      error: false,
+    };
+  }
+
+  return Object.freeze({ apply, beginTurn, degradedResult, lastResolved, move, pending, record, resolve });
+}
+
+module.exports = {
+  USER_INPUT_SIGNAL_PROMPT,
+  buildCodexUserInputConstraint,
+  buildAdapterUserInputSignal,
+  recordAdapterUserInput,
+  createUserInputSignalHost,
+};

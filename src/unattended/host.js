@@ -455,7 +455,7 @@ function createUnattendedHost(options = {}) {
       busy,
       backlogPending: await backlogPending(sessionId),
       classifyState: getTaskState(sessionId)?.classifyState,
-      pendingQuestion: getPendingQuestion(sessionId),
+      pendingQuestion: await getPendingQuestion(sessionId),
     });
   }
 
@@ -630,7 +630,7 @@ function createUnattendedHost(options = {}) {
       && typeof message.content === 'string');
   }
 
-  function evidence(sessionId, state, assistantText) {
+  async function evidence(sessionId, state, assistantText) {
     const messages = historyMessages(sessionId);
     const recent = messages.slice(-RECENT_MESSAGES).map(({ role, content }) => ({ role, content }));
     let lastOutput = '';
@@ -645,7 +645,7 @@ function createUnattendedHost(options = {}) {
       }
     }
     let pending = null;
-    try { pending = getPendingQuestion(sessionId); } catch (_) { pending = null; }
+    pending = await getPendingQuestion(sessionId);
     const pendingQuestion = pending && pending.resolved !== true && pending.requestId
       ? {
           requestId: String(pending.requestId),
@@ -691,7 +691,7 @@ function createUnattendedHost(options = {}) {
     if (expireIfDue(sessionId)) return { ok: false, code: 'expired' };
     const state = stateOf(sessionId);
     if (!state || state.status !== STATUS.ACTIVE) return { ok: false, code: 'not_active' };
-    const collected = evidence(sessionId, state, assistantText);
+    const collected = await evidence(sessionId, state, assistantText);
     let collectedLast = collected.lastOutput;
     if (!collectedLast && (reason === 'start' || reason === 'resume')) {
       collectedLast = currentAssistantText(sessionId);

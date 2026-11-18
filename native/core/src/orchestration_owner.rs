@@ -14,10 +14,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Incremented whenever owner semantics change, even if framing is unchanged.
-pub const OWNER_PROTOCOL_VERSION: u32 = 6;
+pub const OWNER_PROTOCOL_VERSION: u32 = 29;
 // serde_json's reader parser consumes individual bytes. Small frames are read
 // into a strictly bounded buffer to avoid amplifying synchronous RPC latency;
 // larger frames remain streaming and never reserve their advertised length.
@@ -424,7 +425,7 @@ pub fn serve<R: Read, W: Write>(reader: R, mut writer: W, max_bytes: u64) -> io:
         Ok(lease) => lease,
         Err(error) => return reply(&mut writer, Err(error)),
     };
-    let store = match Store::open(
+    let mut store = match Store::open(
         &open.file,
         open.legacy_file.as_deref(),
         open.now,
@@ -433,6 +434,12 @@ pub fn serve<R: Read, W: Write>(reader: R, mut writer: W, max_bytes: u64) -> io:
         Ok(store) => store,
         Err(error) => return reply(&mut writer, Err(error)),
     };
+    let scheduler_cache = Arc::new(crate::scheduler_read_model::Cache::new(
+        128,
+        16_384,
+        8 * 1024 * 1024,
+    ));
+    store.attach_scheduler_cache(Arc::clone(&scheduler_cache));
     let opened_identity = MaintenanceGuard::lock_path(database).map_err(io::Error::other)?;
     if opened_identity != identity {
         return reply(
@@ -470,12 +477,20 @@ pub fn serve<R: Read, W: Write>(reader: R, mut writer: W, max_bytes: u64) -> io:
                 next_session = id
                     .checked_add(1)
                     .ok_or("ORCHESTRATION_SQLITE_ERROR:owner sessions exhausted")?;
-                let store = Store::open(
+                // Opening a session can run schema/receipt upgrades. Discard
+                // cached builds before that write path, including on failure.
+                scheduler_cache.invalidate_all().map_err(|error| {
+                    format!(
+                        "ORCHESTRATION_SQLITE_ERROR:scheduler cache invalidation failed: {error:?}"
+                    )
+                })?;
+                let mut store = Store::open(
                     &open.file,
                     open.legacy_file.as_deref(),
                     open.now,
                     open.policy,
                 )?;
+                store.attach_scheduler_cache(Arc::clone(&scheduler_cache));
                 stores.insert(id, store);
                 Ok(json!(id))
             })();

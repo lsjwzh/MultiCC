@@ -36,9 +36,12 @@ pub(crate) fn read(env: Env, value: Unknown<'_>, op: &str) -> Result<Value> {
         }
         Ok(())
     }
-    if let JsValue::Object(root) = &mut value {
-        if matches!(op, "prepare" | "select" | "selectKeys" | "count") {
-            let name = if op == "prepare" {
+    fn pack_operation(root: &mut Vec<(JsString, JsValue)>, op: &str) -> Result<()> {
+        if matches!(
+            op,
+            "prepare" | "commitTrackedDraft" | "select" | "selectKeys" | "count"
+        ) {
+            let name = if matches!(op, "prepare" | "commitTrackedDraft") {
                 "changes"
             } else {
                 "overrides"
@@ -76,6 +79,31 @@ pub(crate) fn read(env: Env, value: Unknown<'_>, op: &str) -> Result<Value> {
             .find(|(key, _)| key == &JsString::from("options"))
         {
             pack(options, "where", "whereJson")?;
+        }
+        Ok(())
+    }
+    if let JsValue::Object(root) = &mut value {
+        if op == "readTrackedDraft" {
+            let operation = root.iter().find_map(|(key, value)| {
+                if key == &JsString::from("operation") {
+                    if let JsValue::String(value) = value {
+                        Some(value.to_string_lossy())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+            if let (Some(operation), Some((_, JsValue::Object(input)))) = (
+                operation,
+                root.iter_mut()
+                    .find(|(key, _)| key == &JsString::from("input")),
+            ) {
+                pack_operation(input, &operation)?;
+            }
+        } else {
+            pack_operation(root, op)?;
         }
     }
     // Only identifiers/options remain here. Domain strings, including sliced

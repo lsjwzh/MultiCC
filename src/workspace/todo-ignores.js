@@ -107,7 +107,10 @@ function createAirTodoIgnoreRuntime(rawDeps) {
         kind: IGNORE_KINDS.has(value.kind) ? value.kind : null,
         occurredAt: Number(value.occurredAt) > 0 ? Number(value.occurredAt) : 0,
       };
-    } catch (_) { return { kind: null, occurredAt: 0 }; }
+    } catch (error) {
+      if (error?.code === 'SESSION_WORK_OWNER_UNAVAILABLE') throw error;
+      return { kind: null, occurredAt: 0 };
+    }
   }
 
   // 任务表快照：taskId → { updatedAt, task, problem }。读不到返回 null —— 那时

@@ -61,7 +61,7 @@ function mountFixture(tasks, pinsFile, options = {}) {
   const chatSessions = options.chatSessions || new Map();
   // 任务 / 待办 / 忽略走宿主端口；标记达成由 Rust 前门拥有，Node 只剩事实与 writer。
   const air = mountAir({
-    pinsFile, getBoard: () => board, records,
+    pinsFile, getBoard: () => board, records, pendingUserInput: options.pendingUserInput,
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     directories: new Map(), clis: ['claude'],
     shell: { taskAccess: () => ({ readOnly: false }) },
@@ -297,6 +297,25 @@ test('/api/air 快照带 taskTodoIgnored（只含有效项）：类别变化或�
   // t1 不再出错、t2 被删：都掉下来。
   board.tasks.t1.runState = 'idle';
   delete board.tasks.t2;
+  assert.deepEqual((await air.snapshot()).json.taskTodoIgnored, []);
+});
+
+test('待回答问题的忽略时间读取当前所有者，所有者不可用时不丢弃忽略', async () => {
+  const pinsFile = tempFile('air-pins.json');
+  let current = { requestId: 'new', createdAt: 2000 };
+  const { air, records } = mountFixture([task('t1', { runState: 'waiting' })], pinsFile, {
+    pendingUserInput: () => {
+      if (current instanceof Error) throw current;
+      return current;
+    },
+  });
+  records.get('s-t1').taskState = { pendingUserInput: { requestId: 'old', createdAt: 1000 } };
+  await air.ok({ op: 'todos-ignore', taskId: 't1' });
+  assert.equal(readItems(path.join(path.dirname(pinsFile), 'air-todo-ignores.json'))[0].stamp, 2000);
+  current = Object.assign(new Error('owner unavailable'), { code: 'SESSION_WORK_OWNER_UNAVAILABLE' });
+  assert.equal((await air.fail({ op: 'todos-ignore', taskId: 't1' })).code, 'SESSION_WORK_OWNER_UNAVAILABLE');
+  assert.equal(readItems(path.join(path.dirname(pinsFile), 'air-todo-ignores.json'))[0].stamp, 2000);
+  current = { requestId: 'next', createdAt: 3000 };
   assert.deepEqual((await air.snapshot()).json.taskTodoIgnored, []);
 });
 

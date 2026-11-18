@@ -196,7 +196,8 @@ const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLa
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
 const { installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
 const { createTaskStateStore } = require('./src/routes/task-state-store');
-const { recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
+const { recordAdapterUserInput } = require('./src/classify/user-input-host');
+const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/production-question-host');
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/chat/host-prompts');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
@@ -218,7 +219,6 @@ const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runt
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost } = require('./src/task-context-host');
 const { createUnattendedRuntime } = require('./src/unattended/runtime');
-const { createSessionWorkHost } = require('./src/session-work/host');
 const {
   normalizeTurnRequest,
   planTurnAdmission,
@@ -949,7 +949,7 @@ function cwdForSession(session) {
 const {
   dispatchTargetHintFor,
   buildDispatchContextPrompt,
-} = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort, isTargetBusy: dispatchTargetBusy, boundTaskTitleFor: id => taskBoardRuntime?.getBoard()?.tasks?.[id]?.title || '' });
+} = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort, isTargetBusy: dispatchTargetBusy, pendingUserInput, boundTaskTitleFor: id => taskBoardRuntime?.getBoard()?.tasks?.[id]?.title || '' });
 
 // Gateway/dispatch orchestration (src/dispatch/gateway-host.js): the gateway
 // system prompt, confirm/cancel control, dispatch admission and the turn-end
@@ -2113,11 +2113,11 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   onAttributionChanged: (id, detail) => chatBroadcast(id, {
     ...(detail && typeof detail === 'object' ? detail : {}), type: 'task_attribution_updated' }),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
-  loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime, appendHistory: (id, m) => chatHistoryRuntime.appendMessage(id, m), hideHistory: (...args) => chatHistoryRuntime.hideMessages(...args),
+  loadHistory: viewChatHistory, getTaskBoard: () => taskBoardRuntime, appendHistory: (id, m) => chatHistoryRuntime.appendMessage(id, m), hideHistory: (...args) => chatHistoryRuntime.hideMessages(...args),
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
-  recentEvents: dirId => recentEvents(dirId),
+  recentEvents, pendingUserInput, pendingUserInputAsync: id => userInputSignalHost.pendingAsync(id),
   deliver: (...args) => taskContextHost.deliverSessionMessage(...args), dispatch: (...args) => dispatchToSession(...args),
   persistRecords: (source, fn) => sessionPersistence.mutate(source, fn), closeExecution: id => chatStream.closeAndWait(id), resetChatState: id => chatSessions.delete(id),
   hasBackground: id => backgroundTaskRuntime.hasProcessBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
@@ -2426,8 +2426,8 @@ const pushRuntime = createPushRuntime({
   now: Date.now,
   logger: console,
 });
-// Host port for the push cluster: the Rust front door owns those 18 routes;
-// Node is asked only for the in-process Maps, device stores and real sends.
+// Push routes are owned by the Rust front door.
+// The host supplies device stores and sends.
 mountPushHostRoute(app, { push, logger: console });
 const pushOnOutput = pushRuntime.onOutput;
 const pushOnInput = pushRuntime.onInput;
@@ -2435,17 +2435,17 @@ const triggerPush = pushRuntime.notify;
 const cleanupPushMonitor = pushRuntime.cleanup;
 
 // ── Task state persistence (step ①): src/routes/task-state-store.js ─────────
-// The declarations stay: hosts wired above receive these two functions before
-// this line runs (hoisting), and every caller reaches the one tested store.
+// Hoisted wrappers share the task-state store.
 const taskStates = createTaskStateStore({
   persistedSessions, chatBroadcast, workspaceBroadcast, bus,
 });
 function getTaskState(persisted) { return taskStates.getTaskState(persisted); }
-function setTaskState(sessionId, patch, opts) { return taskStates.setTaskState(sessionId, patch, opts); }
-const userInputSignalHost = createUserInputSignalHost(
-  { getSession: id => chatSessions.get(id), getState: id => getTaskState(persistedSessions.get(id)),
+function setTaskState(sessionId, patch, opts) { return taskStates.setTaskState(sessionId, patch, opts); } function pendingUserInput(id) { return userInputSignalHost.pending(id); }
+const productionQuestion = createProductionQuestionHost(
+  { getStore: () => orchestrationRuntime?.store, getSession: id => chatSessions.get(id), getRecord: id => persistedSessions.get(id), getState: id => getTaskState(persistedSessions.get(id)),
     setState: setTaskState, log: message => console.log(message),
     onResolved: (id, requestId, taskId, extra) => chatBroadcast(id, { type: 'user_input_resolved', requestId, taskId: taskId ?? null, ...(extra || {}) }) });
+const userInputSignalHost = productionQuestion.host;
 
 // ── Unattended mode supervisor (docs/unattended-mode.md; decisions in Rust) ──
 const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions: savePersistedSessionsBestEffort,
@@ -2462,15 +2462,12 @@ const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions
     try { return await chatTurnEngine.autoProviderRuntime.retryNotBeforeAsync(session); } catch (_) { return null; }
   },
   getTaskState: id => getTaskState(persistedSessions.get(id)), getSchedulerStatus: id => (orchestrationRuntime ? orchestrationRuntime.sessionScheduler.status(id) : null), listSessionIds: () => [...persistedSessions.keys()] });
-sessionWorkHost = createSessionWorkHost({
+sessionWorkHost = createProductionWorkHost({
   runtime: () => orchestrationRuntime,
   getRecord: id => persistedSessions.get(id),
   getChatSession: id => chatSessions.get(id),
   getTaskState,
-  pendingUserInput: id => userInputSignalHost.pending(id),
   getTurnLiveness: id => livenessRuntime.ownership(id),
-  recordUserInput: signal => userInputSignalHost.record(signal),
-  resolveUserInput: (id, requestId, options) => userInputSignalHost.resolve(id, requestId, options), moveUserInput: (s, t, o) => userInputSignalHost.move(s, t, o),
   broadcast: chatBroadcast,
   setTaskState,
   onTaskBoardQueueEvent: event => taskBoardRuntime.onQueueEvent(event),
@@ -2507,7 +2504,7 @@ sessionWorkHost = createSessionWorkHost({
     }
   },
   log: logger,
-});
+}, userInputSignalHost);
 
 // Rust reads the scan ring via this host.
 mountScanHistoryHostRoute(app, { scanHistory, maxPasses: SCAN_HISTORY_MAX_PASSES });
@@ -2572,7 +2569,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   reapBackground: (id, opts) => backgroundTaskRuntime.reapSessionShadows(id, opts),
   backgroundSilence: id => backgroundTaskRuntime.backgroundSilenceMs(id),
   updateCwd: (id, cwd) => { const state = chatSessions.get(id); if (state) state.cwd = cwd; },
-  pendingInput: id => userInputSignalHost.pending(id), loadHistory: id => viewChatHistory(id),
+  pendingInput: id => userInputSignalHost.pending(id), pendingInputAsync: id => userInputSignalHost.pendingAsync(id), loadHistory: id => viewChatHistory(id),
   budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2), staleUncertainMs: Number(process.env.MULTICC_WORKSPACE_STALE_UNCERTAIN_MS || 300000), stuckBlockedMs: Number(process.env.MULTICC_WORKSPACE_STUCK_BLOCKED_MS || 1800000), stuckSilenceMs: Number(process.env.MULTICC_WORKSPACE_STUCK_SILENCE_MS || 600000) },
   log: (event, data) => logger.warn(event, data),
   // P4 交付蒸馏：merge 回执 published 后把交付记录写进任务级记忆。
@@ -2597,7 +2594,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
 require('./src/workspace/air-routes').mountAirRoutes(app, {
   admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
   logger, send: sendWs, subscribe: workspaceRuntime.subscribe, registerSync: workspaceRuntime.setAirSync,
-  records: persistedSessions,
+  records: persistedSessions, pendingUserInput,
   // 运行时那张表（不是落盘的那张）：终端行要说准「进程还在不在、多久没动」，只有它
   // 知道。按引用传，所以每轮快照读到的都是当下的事实。
   sessions,
@@ -2716,9 +2713,9 @@ bus.on('chat:run', (sessionName, text, opts) => {
 });
 services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 
-// Delivery into a turn a resident Claude lane is still holding open for its
-// background work (see src/chat/held-turn-injection.js). Facts only — the
-// decision lives in Rust and the write lives in the chat stream backends.
+// Delivery into a held Claude turn.
+// Rust decides eligibility; chat streams own writes.
+// See src/chat/held-turn-injection.js.
 const heldTurnInjection = require('./src/chat/held-turn-injection').createHeldTurnInjection({
   getRecord: id => persistedSessions.get(id),
   chatStream,
@@ -2740,20 +2737,18 @@ orchestrationRuntime = createOrchestrationRuntime({
   heldTurnInjectable: heldTurnInjection.canInject,
   heldForBackground: id => { try { return chatStream.heldTurn(id)?.held === true; } catch (_) { return false; } },
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
-  // A typed message that dead-letters — or that cannot even start — must not vanish silently (src/chat/session-notices.js).
+  // Surface lost or stalled deliveries.
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox, ...require('./src/chat/session-notices').createSessionNotices({ appendChatMessage: appendChatMessage, chatBroadcast }),
   probe: chatTurnEngine.probeExplicitWait,
   detachedAdapter: detached,
   recoverDispatchResult: chatTurnEngine.recoverDispatchOperation,
   replayRecoveredDispatchEffects: () => {},
-  // Only a task-bound session takes the workspace key on delivery, so only it
-  // can collide with an admission that is holding that key while awaiting this
-  // tick. Answering before the claim keeps that collision a one-tick skip
-  // instead of a worker-wide deadlock (see orchestration-runtime processOutbox).
+  // Check task-bound workspace locks before claiming delivery.
   isDeliveryLocked: sid => !!persistedSessions.get(sid)?.taskBoundTaskId
     && !!sessionHibernationRuntime?.isLocked?.(taskShellHost.workspaceGroup(sid)),
   beforeDeliver: async descriptor => { await chatTurnEngine.prepareQueuedTurn(descriptor); return workspaceAdmission.beforeDeliver(descriptor); },
-  getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
+  getSessionRecoveryState: id => sessionWorkHost.recoveryState(id), getSessionRecoveryFacts: id => sessionWorkHost.recoveryFacts(id),
+  getSessionRecoveryStateAsync: id => sessionWorkHost.recoveryStateAsync(id), ensureSessionWorkState: id => userInputSignalHost.pendingAsync(id), rustQuestionOwner: true,
   onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); },
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
@@ -2789,7 +2784,7 @@ const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persi
 const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, createTask: input => taskShellHost.createTask(input), orchestrationRuntime, taskBoard: taskBoardRuntime,
-  recordUserInput: signal => sessionWorkHost.recordInput(signal), listSecrets: () => secretsVault.list(), secretTools: createSecretTools({ vault: secretsVault, resolveSessionCwd: id => { const rec = persistedSessions.get(id); return rec ? cwdForSession(rec) : null; } }),
+  recordUserInput: signal => sessionWorkHost.recordInputAsync(signal), listSecrets: () => secretsVault.list(), secretTools: createSecretTools({ vault: secretsVault, resolveSessionCwd: id => { const rec = persistedSessions.get(id); return rec ? cwdForSession(rec) : null; } }),
   cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts), onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission, imageBridge: createOfficialImageBridgeRuntime({ paths: MULTICC_PATHS, resolveSessionCwd: cwdForSession, providers, officialAccounts, registerArtifact: docsRegistry.register, codexCommand: cliCommands.codex }), getTaskContext: (context, query) => taskShellHost.refillContext(context.sessionId, { ...query, receiptId: context.requestId }) });
 
 waitInjector.init({
@@ -3005,6 +3000,7 @@ app.use(safeErrorHandler(logger));
   // Gate readiness on quota initialization and repository recovery.
   await providerLimitCache.ready();
   await startupRepoReady;
+  for (const id of persistedSessions.keys()) await userInputSignalHost.pendingAsync(id);
   workspaceAdmission.initialize();
   await orchestrationRuntime.start();
   // Replay restart-settled turns once (watchdog/startup recovery may have written E+cancelledAt

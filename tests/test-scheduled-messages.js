@@ -72,7 +72,14 @@ test('scheduled message stays durable without becoming a blocking wait, then del
 });
 
 test('a due message joins the ordinary FIFO while the session has an active turn', async t => {
-  const { runtime, clock, injections, schedulerEvents } = createFixture(t);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-scheduled-sqlite-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { runtime, clock, injections, schedulerEvents } = createFixture(t, {
+    dir, databaseFile: path.join(dir, 'orchestration.sqlite'),
+  });
+  await runtime.store.sessionWorkState({ action: 'readOrInitialize', sessionId: 'session-A', initial: {
+    pendingQuestion: null, activeTurn: null, category: null,
+  } });
   await runtime.admitSessionWork({
     sessionId: 'session-A', text: '正在执行的任务', idempotencyKey: 'active-turn',
   });

@@ -109,6 +109,13 @@ emit({ type: 'turn.started' });
 emit({ type: 'item.started', item: { id: 'i1', type: 'command_execution', command: 'echo hi' } });
 emit({ type: 'item.completed', item: { id: 'i1', type: 'command_execution', aggregated_output: 'hi\\n', exit_code: 0 } });
 emit({ type: 'item.completed', item: { id: 'i2', type: 'agent_message', text: 'HELLO_FROM_CODEX' } });
+const fs = require('node:fs');
+const marker = require('node:path').join(__dirname, 'question-asked');
+if (!fs.existsSync(marker)) {
+  fs.writeFileSync(marker, 'asked');
+  emit({ type: 'item.completed', item: { type: 'function_call', name: 'AskUserQuestion',
+    arguments: JSON.stringify({ questions: [{ question: 'Which environment?', options: [{ label: 'test' }, { label: 'prod' }] }] }) } });
+}
 emit({ type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 2 } });
 process.stdout.write('', () => process.exit(0));
 `, { mode: 0o755 });
@@ -210,6 +217,20 @@ process.stdout.write('', () => process.exit(0));
       await socket.until(frames => hasText(frames, lane.toolText), `${lane.cli} tool result`);
       await socket.until(frames => frames.some(frame =>
         frame?.type === 'assistant' && JSON.stringify(frame).includes('tool_use')), `${lane.cli} tool card`);
+      if (lane.cli === 'codex') {
+        await socket.until(frames => frames.some(frame => frame.type === 'user_input_required'), 'owned question');
+        const question = socket.frames.find(frame => frame.type === 'user_input_required');
+        assert.match(question.question, /Which environment/);
+        await waitIdle(sessionId);
+        const reconnect = await connect(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(sessionId)}&token=${TOKEN}`);
+        sockets.push(reconnect.ws);
+        await reconnect.until(frames => frames.some(frame => frame.type === 'user_input_required' && frame.requestId === question.requestId), 'replayed question');
+        reconnect.send({ type: 'user_message', text: 'test', taskShell: true, turnId: question.turnId,
+          userInputRequestId: question.requestId, clientMsgId: randomUUID() });
+        await reconnect.until(frames => frames.some(frame => frame.type === 'user_input_resolved' && frame.requestId === question.requestId), 'resolved question');
+        await reconnect.until(frames => hasText(frames, 'HELLO_FROM_CODEX'), 'answer turn output');
+        reconnect.ws.close();
+      }
       await waitIdle(sessionId);
       socket.ws.close();
     }

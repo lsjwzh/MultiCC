@@ -69,12 +69,12 @@ function recordAdapterUserInput({ evt, sessionId, turnId, recordInput } = {}) {
     allowMultiple: evt?.allowMultiple,
   });
   const rec = signal && typeof recordInput === 'function' ? recordInput(signal) : null;
-  const ok = !!(rec && rec.ok === true);
-  return {
-    ok,
-    requestId: ok ? signal.requestId : null,
-    fallbackText: ok ? '' : (evt?.fallbackText || ''),
+  const outcome = result => {
+    const ok = !!(result && result.ok === true);
+    return { ok, requestId: ok ? signal.requestId : null,
+      fallbackText: ok ? '' : (evt?.fallbackText || '') };
   };
+  return rec && typeof rec.then === 'function' ? rec.then(outcome) : outcome(rec);
 }
 
 const USER_INPUT_SIGNAL_PROMPT = Object.freeze([
@@ -117,6 +117,10 @@ function createUserInputSignalHost({
 
   function lastResolved(sessionId) {
     return getState(sessionId)?.lastResolvedUserInput || null;
+  }
+
+  function turnId(sessionId) {
+    return getState(sessionId)?.userInputSignalTurnId || null;
   }
 
   function record(signal = {}) {
@@ -272,7 +276,7 @@ function createUserInputSignalHost({
     };
   }
 
-  return Object.freeze({ apply, beginTurn, degradedResult, lastResolved, move, pending, record, resolve });
+  return Object.freeze({ apply, beginTurn, degradedResult, lastResolved, move, pending, record, resolve, turnId });
 }
 
 module.exports = {

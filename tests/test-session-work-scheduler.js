@@ -4,6 +4,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
@@ -16,7 +17,7 @@ const {
 const { runStateForClassify } = require('../src/classify/vocab');
 const { createSessionWorkScheduler: legacyScheduler } = require('./helpers/legacy-session-work-selection');
 const { isUserTypedWork: legacyUserTyped } = require('./helpers/legacy-session-work-user-input');
-const { getNative } = require('../src/native/runtime');
+const { addonPath, getNative } = require('../src/native/runtime');
 
 test('user input classification preserves legacy values, lazy reads and errors', () => {
   const classify = payload => getNative().sessionWorkIsUserTyped(payload);
@@ -113,7 +114,7 @@ async function exerciseDomainMigration(factory, scenario, realStore = null) {
   const scheduler = factory({
     store: realStore || { mutate: async fn => fn(draft), read: async fn => fn(draft) },
     now: () => { calls.push('clock'); return clock++; },
-    getPendingUserInput: () => { calls.push('pending'); return scenario.pending ? { requestId: 'q', taskId: 'task' } : null; },
+    getPendingUserInput: () => { calls.push('pending'); return scenario.pending ? { requestId: scenario.questionId || 'q', taskId: 'task' } : null; },
     onEvent: event => calls.push(['event', structuredClone(event)]),
     log: () => {},
   });
@@ -140,6 +141,42 @@ async function exerciseDomainMigration(factory, scenario, realStore = null) {
   return { result, draft, calls };
 }
 
+async function exerciseRustDomainMigration(scenario) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-domain-oracle-rust-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => 2000 });
+  try {
+    await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+      pendingQuestion: scenario.pending ? { requestId: 'q', taskId: 'task' } : null,
+      activeTurn: null, category: null,
+    } });
+    const observed = await exerciseDomainMigration(createSessionWorkScheduler, scenario, store);
+    return { ...observed, workState: await store.sessionWorkState({ action: 'read', sessionId: 's' }) };
+  } finally {
+    await store.close({ exportRollback: false });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function assertAdmissionMatchesOracle(current, previous, scenario) {
+  const { snapshot, notification, answerConsumed, ...result } = current.result;
+  assert.deepEqual(answerConsumed, scenario.pending ? { requestId: 'q', taskId: 'task', at: 1000 } : null);
+  assert.deepEqual(notification, scenario.pending
+    ? { type: 'user_input_resolved', requestId: 'q', taskId: 'task' } : null);
+  assert.deepEqual(JSON.parse(snapshot.pendingQuestionJson), scenario.pending
+    ? { requestId: 'q', taskId: 'task', resolved: true, resolvedAt: 1000, resolvedNotification: notification } : null);
+  assert.equal(snapshot.version, 2);
+  assert.deepEqual(current.workState, {
+    sessionId: 's', exists: true, version: snapshot.version,
+    pendingQuestion: JSON.parse(snapshot.pendingQuestionJson),
+    activeTurn: JSON.parse(snapshot.activeTurnJson), category: JSON.parse(snapshot.categoryJson),
+  });
+  assert.equal(current.calls.filter(call => call === 'pending').length, 0);
+  assert.equal(previous.calls.filter(call => call === 'pending').length, scenario.pending ? 2 : 1);
+  assert.deepEqual({ result, draft: current.draft, calls: current.calls }, {
+    ...previous, calls: previous.calls.filter(call => call !== 'pending'),
+  }, JSON.stringify(scenario));
+}
+
 test('four scheduler transitions retain a frozen pre-migration oracle', async () => {
   const oracle = loadDomainMigrationOracle();
   const cases = [
@@ -153,8 +190,14 @@ test('four scheduler transitions retain a frozen pre-migration oracle', async ()
     ]),
   ];
   for (const scenario of cases) {
-    assert.deepEqual(await exerciseDomainMigration(createSessionWorkScheduler, scenario),
-      await exerciseDomainMigration(oracle, scenario), JSON.stringify(scenario));
+    const current = await exerciseRustDomainMigration(scenario);
+    const previous = await exerciseDomainMigration(oracle, scenario);
+    if (scenario.kind === 'admit') assertAdmissionMatchesOracle(current, previous, scenario);
+    else {
+      const { workState, ...comparable } = current;
+      assert.deepEqual(comparable, scenario.kind === 'complete'
+        ? { ...previous, calls: previous.calls.filter(call => call !== 'pending') } : previous, JSON.stringify(scenario));
+    }
   }
   // Prove that the oracle notices a real queue-order regression, rather than
   // accidentally exercising the production implementation on both sides.
@@ -164,7 +207,8 @@ test('four scheduler transitions retain a frozen pre-migration oracle', async ()
     return source.replace(original, "direction === 'up' ? from + 1");
   });
   const witness = { kind: 'reorder', direction: 'up' };
-  assert.notDeepEqual(await exerciseDomainMigration(createSessionWorkScheduler, witness),
+  const { workState, ...actual } = await exerciseRustDomainMigration(witness);
+  assert.notDeepEqual(actual,
     await exerciseDomainMigration(mutant, witness));
 });
 
@@ -182,13 +226,340 @@ test('frozen scheduler transitions agree through separate SQLite owners', async 
       file: path.join(dir, `${index}-${name}.sqlite`), now: () => 2000,
     }));
     try {
+      await stores[0].sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+        pendingQuestion: scenario.pending ? { requestId: 'q', taskId: 'task' } : null,
+        activeTurn: null, category: null,
+      } });
       const current = await exerciseDomainMigration(createSessionWorkScheduler, scenario, stores[0]);
       const previous = await exerciseDomainMigration(oracle, scenario, stores[1]);
-      assert.deepEqual(current, previous, JSON.stringify(scenario));
+      if (scenario.kind === 'admit') {
+        current.workState = await stores[0].sessionWorkState({ action: 'read', sessionId: 's' });
+        assertAdmissionMatchesOracle(current, previous, scenario);
+      }
+      else assert.deepEqual(current, scenario.kind === 'complete'
+        ? { ...previous, calls: previous.calls.filter(call => call !== 'pending') } : previous, JSON.stringify(scenario));
     } finally {
       for (const store of stores) await store.close({ exportRollback: false });
     }
   }
+});
+
+test('experimental Rust completion matches frozen state and results through the isolated owner', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-complete-domain-diff-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const oracle = loadDomainMigrationOracle();
+  const cases = [
+    ...['D', 'W', 'B', 'E', 'P', 'future'].flatMap(classify => [
+      { kind: 'complete', classify, pending: true },
+      { kind: 'complete', classify, pending: false },
+    ]),
+    { kind: 'complete', classify: 'W', pending: true, mismatch: true },
+  ];
+  for (const [index, scenario] of cases.entries()) {
+    const file = path.join(dir, `${index}.sqlite`);
+    const store = createOrchestrationSqliteStore({ file, now: () => 2000 });
+    const native = new (getNative().RustIsolatedOrchestrationStore)(file, null, 2000,
+      { env: {}, policy: {} }, path.join(path.dirname(addonPath()),
+        process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway'));
+    try {
+      await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+        pendingQuestion: scenario.pending ? { requestId: 'q', taskId: 'task' } : null,
+        activeTurn: null, category: null,
+      } });
+      const experimental = ({ now }) => ({
+        async complete(sessionId, { expectedTaskId = null, reason = 'successful',
+          classifyState = 'D', awaitingRequestId = null } = {}) {
+          const expectedTaskIdJson = JSON.stringify(expectedTaskId);
+          const token = native.request('scheduleCompleteTokenExperimental', { sessionId, expectedTaskIdJson });
+          if (!token.guard.ok) return token.guard;
+          const response = await native.requestAsync('scheduleCompleteExperimental', {
+            sessionId, expectedRevision: token.state.revision, expectedVersion: token.snapshot.version,
+            expectedDataVersion: token.dataVersion, at: Number(now()), updatedAt: 2000,
+            expectedTaskIdJson, reasonJson: JSON.stringify(reason),
+            classifyStateJson: JSON.stringify(classifyState), awaitingRequestIdJson: JSON.stringify(awaitingRequestId),
+          });
+          return JSON.parse(response.resultJson);
+        },
+      });
+      const actual = await exerciseDomainMigration(experimental, scenario, store);
+      const previous = await exerciseDomainMigration(oracle, scenario);
+      assert.deepEqual({ result: actual.result, draft: actual.draft },
+        { result: previous.result, draft: previous.draft }, JSON.stringify(scenario));
+      assert.deepEqual(actual.calls, scenario.mismatch ? [] : ['clock']);
+      assert.equal(previous.calls.filter(call => call === 'pending').length, scenario.mismatch ? 0 : 1);
+      assert.equal(previous.calls.filter(call => Array.isArray(call) && call[0] === 'event').length,
+        scenario.mismatch ? 0 : 1);
+    } finally {
+      native.request('close', {});
+      await store.close({ exportRollback: false });
+    }
+  }
+});
+
+test('scheduler with a Rust question owner matches frozen completion outcomes', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-owned-complete-diff-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const oracle = loadDomainMigrationOracle();
+  const scenarios = [
+    ...['D', 'W', 'B', 'E', 'P', 'future'].flatMap(classify => [
+      { kind: 'complete', classify, pending: true },
+      { kind: 'complete', classify, pending: false },
+    ]),
+    { kind: 'complete', classify: 'W', pending: true, mismatch: true },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    const store = createOrchestrationSqliteStore({ file: path.join(dir, `${index}.sqlite`), now: () => 2000 });
+    try {
+      await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+        pendingQuestion: scenario.pending ? { requestId: 'q', taskId: 'task' } : null,
+        activeTurn: null, category: null,
+      } });
+      const actual = await exerciseDomainMigration(options => createSessionWorkScheduler({
+        ...options, rustQuestionOwner: true,
+      }), scenario, store);
+      const previous = await exerciseDomainMigration(oracle, scenario);
+      assert.deepEqual({ result: actual.result, draft: actual.draft },
+        { result: previous.result, draft: previous.draft }, JSON.stringify(scenario));
+      assert.deepEqual(actual.calls, previous.calls.filter(call => call !== 'pending'), JSON.stringify(scenario));
+    } finally { await store.close({ exportRollback: false }); }
+  }
+});
+
+test('Rust completion owners match frozen state after a prior external question update', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-atomic-complete-diff-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const oracle = loadDomainMigrationOracle();
+  const cases = [
+    ...['D', 'W', 'B', 'E', 'P', 'future'].flatMap(classify => [
+      { kind: 'complete', classify, pending: true },
+      { kind: 'complete', classify, pending: false },
+    ]),
+    { kind: 'complete', classify: 'W', pending: true, questionId: 'external-question' },
+  ];
+  const runs = ['scheduleCompleteAtomicExperimental', 'scheduleCompleteFrozenExperimental']
+    .flatMap(op => cases.map((scenario, index) => ({ op, scenario, index })));
+  runs.push(...[...cases, { kind: 'complete', classify: 'W', pending: true, mismatch: true }]
+    .map((scenario, index) => ({ op: 'bridge', scenario, index })));
+  for (const { op, scenario, index } of runs) {
+    const file = path.join(dir, `${op}-${index}.sqlite`);
+    const store = createOrchestrationSqliteStore({ file, now: () => 2000 });
+    const native = new (getNative().RustIsolatedOrchestrationStore)(file, null, 2000,
+      { env: {}, policy: {} }, path.join(path.dirname(addonPath()),
+        process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway'));
+    try {
+      await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+        pendingQuestion: scenario.pending ? { requestId: 'q', taskId: 'task' } : null,
+        activeTurn: null, category: null,
+      } });
+      if (scenario.questionId) {
+        native.request('sessionWorkState', { action: 'patch', encoding: 'json', sessionId: 's',
+          patch: { expectedVersion: 1, pendingQuestionJson: JSON.stringify({
+            requestId: scenario.questionId, taskId: 'task',
+          }) } });
+      }
+      const atomic = ({ now }) => ({
+        async complete(sessionId, { expectedTaskId = null, reason = 'successful',
+          classifyState = 'D', awaitingRequestId = null } = {}) {
+          if (op === 'bridge') {
+            return store.executeScheduleComplete({ sessionId, expectedTaskId, reason,
+              classifyState, awaitingRequestId, clock: now });
+          }
+          const response = await native.requestAsync(op, {
+            sessionId, at: Number(now()), updatedAt: 2000,
+            expectedTaskIdJson: JSON.stringify(expectedTaskId), reasonJson: JSON.stringify(reason),
+            classifyStateJson: JSON.stringify(classifyState), awaitingRequestIdJson: JSON.stringify(awaitingRequestId),
+          });
+          return JSON.parse(response.resultJson);
+        },
+      });
+      const actual = await exerciseDomainMigration(atomic, scenario, store);
+      const previous = await exerciseDomainMigration(oracle, scenario);
+      assert.deepEqual({ result: actual.result, draft: actual.draft },
+        { result: previous.result, draft: previous.draft }, `${op}: ${JSON.stringify(scenario)}`);
+      assert.deepEqual(actual.calls, scenario.mismatch ? [] : ['clock']);
+      assert.equal(previous.calls.filter(call => call === 'pending').length, scenario.mismatch ? 0 : 1);
+      assert.equal(previous.calls.filter(call => Array.isArray(call) && call[0] === 'event').length,
+        scenario.mismatch ? 0 : 1);
+    } finally {
+      native.request('close', {});
+      await store.close({ exportRollback: false });
+    }
+  }
+});
+
+test('frozen completion rejects an external SQLite write during its observation callback', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-frozen-complete-race-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file, now: () => 2000 });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
+      active: { entryId: 'active', taskId: 'task' } };
+    draft.outbox.a = { id: 'a', sessionId: 's', state: 'pending', sequence: 1,
+      payload: { type: 'session.work', message: 'queued' } };
+    draft.nextOutboxSequence = 2;
+  });
+  let observations = 0;
+  const scheduler = loadDomainMigrationOracle()({ store, now: () => 1000,
+    getPendingUserInput() {
+      observations++;
+      const script = `const D = require(process.argv[1]);
+        const db = new D(process.argv[2]);
+        db.prepare("UPDATE orchestration_outbox SET data_json=json_set(data_json,'$.external',7) WHERE id='a'").run();
+        db.close();`;
+      const child = spawnSync(process.execPath, ['-e', script, require.resolve('better-sqlite3'), file],
+        { encoding: 'utf8', timeout: 10000 });
+      assert.equal(child.status, 0, child.stderr);
+      return { requestId: 'q', taskId: 'task' };
+    },
+  });
+  await assert.rejects(scheduler.complete('s', { expectedTaskId: 'task', classifyState: 'W' }),
+    error => error.code === 'ORCHESTRATION_SQLITE_CONFLICT');
+  assert.equal(observations, 1);
+  const state = await store.snapshot();
+  assert.equal(state.sessionSchedules.s.active.entryId, 'active');
+  assert.equal(state.outbox.a.external, 7);
+  assert.equal(state.outbox.a.blockedByUserInput, undefined);
+});
+
+test('Rust completion bridge preserves rollback after an external write during observation', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-complete-race-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file, now: () => 2000 });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: { requestId: 'q', taskId: 'task' }, activeTurn: null, category: null,
+  } });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
+      active: { entryId: 'active', taskId: 'task' } };
+    draft.outbox.a = { id: 'a', sessionId: 's', state: 'pending', sequence: 1,
+      payload: { type: 'session.work', message: 'queued' } };
+    draft.nextOutboxSequence = 2;
+  });
+  let observations = 0;
+  await assert.rejects(store.executeScheduleComplete({ sessionId: 's', expectedTaskId: 'task',
+    classifyState: 'W', clock() {
+      observations++;
+      const script = `const D = require(process.argv[1]);
+        const db = new D(process.argv[2]);
+        db.prepare("UPDATE orchestration_outbox SET data_json=json_set(data_json,'$.external',7) WHERE id='a'").run();
+        db.close();`;
+      const child = spawnSync(process.execPath, ['-e', script, require.resolve('better-sqlite3'), file],
+        { encoding: 'utf8', timeout: 10000 });
+      assert.equal(child.status, 0, child.stderr);
+      return 1000;
+    } }), error => error.code === 'ORCHESTRATION_SQLITE_CONFLICT');
+  assert.equal(observations, 1);
+  const state = await store.snapshot();
+  assert.equal(state.sessionSchedules.s.active.entryId, 'active');
+  assert.equal(state.outbox.a.external, 7);
+  assert.equal(state.outbox.a.blockedByUserInput, undefined);
+});
+
+test('Rust completion rejects a question replaced by another owner session during observation', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-owned-question-race-'));
+  const file = path.join(dir, 'state.sqlite');
+  const schedulerStore = createOrchestrationSqliteStore({ file, now: () => 2000 });
+  const questionStore = createOrchestrationSqliteStore({ file, now: () => 2000 });
+  t.after(async () => {
+    try {
+      await questionStore.close({ exportRollback: false });
+      await schedulerStore.close({ exportRollback: false });
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  const activeTurn = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'task' };
+  await schedulerStore.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: { requestId: 'old', taskId: 'task', turnId: 'turn', resolved: false },
+    activeTurn, category: 'W',
+  } });
+  await schedulerStore.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
+      active: { entryId: 'active', taskId: 'task' } };
+  });
+  let calls = 0;
+  const scheduler = createSessionWorkScheduler({ store: schedulerStore, rustQuestionOwner: true,
+    now() {
+      if (calls++ === 0) {
+        assert.equal(questionStore.sessionWorkQuestionSync({ action: 'resolve', sessionId: 's',
+          at: 10, requestId: 'old' }).result.ok, true);
+        assert.equal(questionStore.sessionWorkQuestionSync({ action: 'record', sessionId: 's',
+          at: 11, liveActiveTurn: activeTurn,
+          signal: { sessionId: 's', turnId: 'turn', requestId: 'new', question: 'Q' } }).result.ok, true);
+      }
+      return 1000;
+    },
+  });
+  await assert.rejects(scheduler.complete('s', { expectedTaskId: 'task', classifyState: 'W' }),
+    error => error.code === 'ORCHESTRATION_SQLITE_CONFLICT');
+  assert.equal((await schedulerStore.snapshot()).sessionSchedules.s.active.entryId, 'active');
+  assert.equal(questionStore.sessionWorkStateSync('s').pendingQuestion.requestId, 'new');
+});
+
+test('a missing Rust question snapshot fails closed inside a scheduler draft', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-question-uninitialized-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
+      active: { entryId: 'active', taskId: 'task' } };
+  });
+  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const owner = createQuestionOwner({ getStore: () => store, now: () => 10, liveTurn: () => null,
+    initialState: () => ({ pendingQuestion: { requestId: 'q', taskId: 'task' },
+      activeTurn: null, category: 'W' }) });
+  const scheduler = createSessionWorkScheduler({ store, now: () => 10,
+    getPendingUserInput: id => owner.read(id).pendingQuestion });
+  await assert.rejects(scheduler.complete('s', { expectedTaskId: 'task', classifyState: 'W' }),
+    error => error.code === 'ORCHESTRATION_SQLITE_ERROR' && /trusted snapshot/.test(error.message));
+  assert.equal((await store.snapshot()).sessionSchedules.s.active.entryId, 'active');
+  assert.equal(store.sessionWorkStateSync('s').exists, false);
+  assert.equal(owner.read('s').pendingQuestion.requestId, 'q');
+  assert.equal((await scheduler.complete('s', { expectedTaskId: 'task', classifyState: 'W' })).ok, true);
+});
+
+test('frozen recovery rejects an external SQLite write during classify observation', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-frozen-recover-race-'));
+  const file = path.join(dir, 'state.sqlite');
+  const store = createOrchestrationSqliteStore({ file, now: () => 2000 });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
+      active: { entryId: 'active', taskId: 'task', startedAt: 50 } };
+    draft.outbox.a = { id: 'a', sessionId: 's', state: 'pending', sequence: 1,
+      payload: { type: 'session.work', message: 'queued' } };
+    draft.nextOutboxSequence = 2;
+  });
+  let observations = 0;
+  const scheduler = loadDomainMigrationOracle()({ store, now: () => 1000 });
+  await assert.rejects(scheduler.recover({ stateForSession() {
+    observations++;
+    const script = `const D = require(process.argv[1]);
+      const db = new D(process.argv[2]);
+      db.prepare("UPDATE orchestration_outbox SET data_json=json_set(data_json,'$.external',7) WHERE id='a'").run();
+      db.close();`;
+    const child = spawnSync(process.execPath, ['-e', script, require.resolve('better-sqlite3'), file],
+      { encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr);
+    return { classifyState: 'W', taskId: 'task' };
+  } }), error => error.code === 'ORCHESTRATION_SQLITE_CONFLICT');
+  assert.equal(observations, 1);
+  const state = await store.snapshot();
+  assert.equal(state.sessionSchedules.s.state, 'running');
+  assert.equal(state.sessionSchedules.s.classifyState, 'P');
+  assert.equal(state.outbox.a.external, 7);
 });
 
 test('SQLite input dismissal matches the legacy transition and rejects stale classifications', async t => {
@@ -434,12 +805,25 @@ test('runStateForFreezeReason maps each freeze reason to a truthful runState', (
 
 function fixture(t, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-session-scheduler-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let clock = options.now || 1_000;
-  const store = createOrchestrationStore({
-    file: path.join(dir, 'orchestration.json'),
+  const store = createOrchestrationSqliteStore({
+    file: path.join(dir, 'orchestration.sqlite'),
     now: () => clock,
   });
+  t.after(async () => {
+    try { await ready; }
+    finally {
+      try { await store.close({ exportRollback: false }); }
+      finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    }
+  });
+  // These are new test sessions; their initial state is known explicitly.
+  // Later changes must use the Rust snapshot writer rather than a host closure.
+  const ready = Promise.all(['s1', 's2', 'callback', 'failed', 'waiting', 'stale', 'legacy', 'slot-1'].map(sessionId =>
+    store.sessionWorkState({ action: 'readOrInitialize', sessionId, initial: {
+      pendingQuestion: null, activeTurn: null, category: null, ...options.initialState,
+    } })));
+  ready.catch(() => {});
   const outbox = createOutbox({
     store,
     now: () => clock,
@@ -462,6 +846,17 @@ function fixture(t, options = {}) {
     outbox,
     scheduler,
     events,
+    ready,
+    async updateState(patch, sessionId = 's1') {
+      await ready;
+      const current = await store.sessionWorkState({ action: 'read', sessionId });
+      const { snapshots } = await store.sessionWorkState({ action: 'write', updates: [{
+        sessionId, expectedVersion: current.version,
+        pendingQuestion: current.pendingQuestion, activeTurn: current.activeTurn,
+        category: current.category, ...patch,
+      }] });
+      return snapshots[0];
+    },
     advance(ms = 1) { clock += ms; },
   };
 }
@@ -485,16 +880,21 @@ async function startClaim(harness, item) {
 }
 
 test('task-shell controls reject stale turns atomically; an admitted answer replays after the next turn', async t => {
-  let turn = 'turn1', pending = { requestId: 'q1', taskId: 'task1' };
-  const f = fixture(t, { getTurnId: () => turn, getPendingUserInput: () => pending });
+  const f = fixture(t, { initialState: {
+    activeTurn: { turnId: 'turn1' }, pendingQuestion: { requestId: 'q1', taskId: 'task1' },
+  } });
   const input = { sessionId: 's1', text: 'yes', requestId: 'q1', workKind: 'answer', idempotencyKey: 'r1',
     options: { taskId: 'task1', taskShellReceiptId: 'r1', taskShellControl: { intent: 'answer', turnId: 'turn1' } } };
   const first = await f.scheduler.admit(input);
   assert.equal(first.ok, true);
-  turn = 'turn2'; pending = { requestId: 'q2', taskId: 'task1' };
+  await f.updateState({ activeTurn: { turnId: 'turn2' }, pendingQuestion: { requestId: 'q2', taskId: 'task1' } });
+  const beforeReplay = await f.store.snapshot();
+  const workBeforeReplay = await f.store.sessionWorkState({ action: 'read', sessionId: 's1' });
   const replay = await f.scheduler.admit({ ...input, requestId: null });
   assert.equal(replay.ok, true); assert.equal(replay.duplicate, true);
   assert.equal(replay.entry.id, first.entry.id);
+  assert.deepEqual(await f.store.snapshot(), beforeReplay);
+  assert.deepEqual(await f.store.sessionWorkState({ action: 'read', sessionId: 's1' }), workBeforeReplay);
   const stale = await f.scheduler.admit({ ...input, idempotencyKey: 'r2', options: { ...input.options, taskShellReceiptId: 'r2' } });
   assert.equal(stale.ok, false); assert.equal(stale.code, 'stale_control');
   assert.equal((await f.outbox.list()).length, 1);
@@ -504,7 +904,7 @@ test('an answer stays correlated after a background continuation advances the si
   // The asking turn was turn1; a background-result continuation kept the open
   // question but moved the signal turn to turn2. The answer targets turn1.
   const pending = { requestId: 'q1', taskId: 'task1', turnId: 'turn1' };
-  const f = fixture(t, { getTurnId: () => 'turn2', getPendingUserInput: () => pending });
+  const f = fixture(t, { initialState: { activeTurn: { turnId: 'turn2' }, pendingQuestion: pending } });
   const answer = await f.scheduler.admit({ sessionId: 's1', text: 'A', requestId: 'q1', workKind: 'answer', idempotencyKey: 'r1',
     options: { taskId: 'task1', taskShellReceiptId: 'r1', taskShellControl: { intent: 'answer', turnId: 'turn1' } } });
   assert.equal(answer.ok, true);
@@ -651,6 +1051,7 @@ test('released W with an unanswered question holds staged work until the user ac
   await startClaim(h, await claimOne(h));
   const b = await h.scheduler.admit({ sessionId: 's1', text: 'B', idempotencyKey: 'B' });
   assert.equal(b.queued, true);
+  await h.updateState({ pendingQuestion: pending });
 
   // A ends on an unanswered question: B must not fire ahead of the answer —
   // otherwise the fresh turn's beginTurn discards the pending question and the
@@ -682,6 +1083,7 @@ test('an unanswered question parks shell continuations before and after the ask,
     options: { originContinue: true, taskShellReceiptId: 'receipt-before' }, idempotencyKey: 'before' });
   h.advance();
   pending = { requestId: 'login', createdAt: 1002, resolved: false };
+  await h.updateState({ pendingQuestion: pending });
   h.advance();
   const after = await h.scheduler.admit({ sessionId: 's1', text: 'update description', source: 'task-shell',
     options: { originContinue: true, taskShellReceiptId: 'receipt-after' }, idempotencyKey: 'after' });
@@ -920,6 +1322,9 @@ test('canonical pending request admits option and free-text answers despite a st
       getClassifyState: () => 'D',
       getPendingUserInput: () => ({ requestId, taskId, resolved: false }),
     });
+    await h.store.sessionWorkState({ action: 'readOrInitialize', sessionId: `s-${suffix}`, initial: {
+      pendingQuestion: { requestId, taskId, resolved: false }, activeTurn: null, category: 'D',
+    } });
     const answer = await h.scheduler.admit({
       sessionId: `s-${suffix}`,
       text,
@@ -1494,6 +1899,7 @@ test('canonical classify makes only P stage direct chat input', async t => {
   });
   await startClaim(h, await claimOne(h));
   classify.set('s1', 'P');
+  await h.updateState({ category: 'P' });
   const staged = await h.scheduler.admit({
     sessionId: 's1', text: 'typed during process', source: 'direct',
     idempotencyKey: 'staged',
@@ -1504,6 +1910,7 @@ test('canonical classify makes only P stage direct chat input', async t => {
   // The scheduler's persisted mirror is still P here. Canonical E must win and
   // make the newly typed continuation immediately deliverable.
   classify.set('s1', 'E');
+  await h.updateState({ category: 'E' });
   const immediate = await h.scheduler.admit({
     sessionId: 's1',
     text: 'typed after API error',
