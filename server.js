@@ -1,12 +1,8 @@
 'use strict';
 
 // Capture private gateway bootstrap before modules spawn any descendants.
-const { connectAuthControl, isGatewayChild } = require('./src/gateway-child');
-
-if (isGatewayChild() && process.env.MULTICC_SOURCE_ROOT === __dirname && process.env.MULTICC_DESKTOP !== '1') {
-  process.env.MULTICC_RUST_ADDON = require('./scripts/ensure-source-rust').addonForSourceChild(__dirname);
-}
-delete process.env.MULTICC_SOURCE_ROOT;
+const { connectAuthControl, applySourceAddonEnv } = require('./src/gateway-child');
+applySourceAddonEnv(__dirname);
 
 {
   const [major, minor] = process.versions.node.split('.').map(Number);
@@ -377,16 +373,8 @@ logger.info('provider_router_runtime', {
 });
 installConsoleRedaction(console);
 secureRuntimeData(MULTICC_PATHS);
-const airStorageNotice = require('./src/workspace/air-sync-issue').createAirStorageNotice();
-let airSyncForDiagnostics;
-function reportStorageIssue(error) {
-  if (airStorageNotice.record(error)) airSyncForDiagnostics?.publishStatus();
-}
-stateStore.setFailureReporter((error, meta) => {
-  reportStorageIssue(error);
-  metrics.inc('multicc_persistence_failures_total');
-  logger.error('persistence_failure', { ...meta, error: error && error.message });
-});
+const airStorageNotice = require('./src/workspace/air-storage-notice');
+airStorageNotice.installStateStoreReporter(stateStore, { metrics, logger });
 const networkPolicy = resolveNetworkPolicy(process.env);
 const app = express();
 app.locals.observability = observability;
@@ -748,13 +736,7 @@ const sessionPersistence = createSessionPersistence({
   root: MULTICC_PATHS.root,
   retryDelayMs: Math.max(50, Number(process.env.MULTICC_SESSION_PERSISTENCE_RETRY_MS) || 500),
   maxRetries: 3,
-  onFailure: ({ error, mode, source, attempt, dirty }) => {
-    reportStorageIssue(error);
-    metrics.inc('multicc_session_persistence_failures_total');
-    logger.error('session_persistence_failure', {
-      mode, source, attempt, dirty, error: error && error.message,
-    });
-  },
+  onFailure: airStorageNotice.sessionPersistenceOnFailure({ metrics, logger }),
   onState: ({ dirty, retryAttempt, retryScheduled }) => {
     metrics.set('multicc_session_persistence_dirty', dirty ? 1 : 0);
     metrics.set('multicc_session_persistence_retry_attempt', retryAttempt);
@@ -2603,8 +2585,8 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   },
 });
 
-airSyncForDiagnostics = require('./src/workspace/air-routes').mountAirRoutes(app, {
-  storageNotice: airStorageNotice.current,
+const airSync = require('./src/workspace/air-routes').mountAirRoutes(app, {
+  storageNotice: airStorageNotice.storageNotice,
   admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
   logger, send: sendWs, subscribe: workspaceRuntime.subscribe, registerSync: workspaceRuntime.setAirSync,
   records: persistedSessions, pendingUserInput,
@@ -2620,6 +2602,7 @@ airSyncForDiagnostics = require('./src/workspace/air-routes').mountAirRoutes(app
   effectiveEffort: effectiveSessionEffort, mergeStateCached,
   serializeSubagent, getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle', cronSessionIds: () => cronTasks.sessionIds(),
 });
+airStorageNotice.bindPublisher(() => airSync.publishStatus());
 
 const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
 

@@ -90,7 +90,9 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
   assert.match(source, /if \(conditional && response\.status === 304\) return \{ ok: true, unchanged: true \}/);
   // 通用 api() 不能带条件请求：别的 GET 调用方收到「没变」会当成空数据。
   assert.match(source, /const apiConditional = path => request\(path, \{ method: 'GET', body: undefined, conditional: true \}\);/);
-  assert.match(source, /liveSync \? \(await liveSync\.sync\(\)/);
+  // live 时走 liveSync.sync() 而不是条件请求；sync 失败由 onIssue 挂持久告警，
+  // 本轮按失败收尾而不是把异常抛给外层当 304 处理。
+  assert.match(source, /if \(liveSync\) \{ try \{ await liveSync\.sync\(\); \} catch \{ failed = true; return; \} \}/);
   assert.match(source, /const path = `\/api\/air\/tasks\/\$\{encodeURIComponent\(selected\)\}`;/);
   assert.match(source, /const result = await apiConditional\(path\);/);
   // 「没变」的前提是上一次那份正文还在手上。entry 会被 navigate / popstate /
