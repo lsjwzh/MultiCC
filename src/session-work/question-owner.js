@@ -64,7 +64,7 @@ function createQuestionOwner({ getStore, initialState, liveTurn, now = Date.now 
     record: signal => transition('record', String(signal.sessionId || ''), {
       signal, liveActiveTurn: liveTurn(String(signal.sessionId || '')),
     }),
-    beginTurn: (sessionId, { originContinue = false, turnId } = {}) => transition('beginTurn', sessionId, { originContinue, turnId }),
+    beginTurn: (sessionId, { originContinue = false, turnId } = {}) => transition('beginTurn', sessionId, { originContinue, turnId, activeTurn: liveTurn(sessionId) }),
     resolve: (sessionId, requestId, { dismissed = false } = {}) => transition('resolve', sessionId, { requestId, dismissed }),
     patchFacts: (sessionId, { categoryPatch, activeTurn } = {}) => transition('patchFacts', sessionId, { categoryPatch, activeTurn }),
     move: (sessionId, targetSessionId, { turnId, taskId, expectedRequestId } = {}) => transition('move', sessionId, {
@@ -74,8 +74,11 @@ function createQuestionOwner({ getStore, initialState, liveTurn, now = Date.now 
     // when its slot runs; a Node observation taken before an await can be stale.
     recordAsync: signal => transitionAsync('record', String(signal.sessionId || ''), { signal }),
     resolveAsync: (sessionId, requestId, { dismissed = false } = {}) => transitionAsync('resolve', sessionId, { requestId, dismissed }),
-    beginTurnAsync: (sessionId, { originContinue = false, turnId } = {}) => transitionAsync('beginTurn', sessionId, { originContinue, turnId }),
+    beginTurnAsync: (sessionId, { originContinue = false, turnId } = {}) => transitionAsync('beginTurn', sessionId, { originContinue, turnId },
+      () => ({ activeTurn: liveTurn(sessionId) })),
     patchFactsAsync: (sessionId, { categoryPatch, activeTurn } = {}) => transitionAsync('patchFacts', sessionId, { categoryPatch, activeTurn }),
+    refreshTurnAsync: (sessionId, readTurn) => transitionAsync('patchFacts', sessionId, {},
+      () => ({ activeTurn: readTurn() })),
     refreshUnattendedAsync: (sessionId, readUnattended) => transitionAsync('patchFacts', sessionId, {},
       () => ({ categoryPatch: { unattended: readUnattended() || null } })),
     moveAsync: (sessionId, targetSessionId, { turnId, taskId, expectedRequestId } = {}) => transitionAsync('move', sessionId, {

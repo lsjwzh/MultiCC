@@ -859,6 +859,12 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
         }
         json!({"ok":true,"duplicate":false})
     } else if action == JsValue::string("beginTurn") {
+        if let Some(turn) = request.get("activeTurn") {
+            if !matches!(turn, JsValue::Object(_) | JsValue::Null) {
+                return Err(err("invalid session work active turn"));
+            }
+            encoded.active_turn_json = record::encode(turn)?;
+        }
         let continuation = field(&request, "originContinue") == JsValue::Bool(true);
         let request_id = field(&pending, "requestId");
         let superseded = !continuation
@@ -1168,6 +1174,42 @@ mod tests {
         assert_eq!(
             read(&connection, &json!({"sessionId":"new"})).unwrap()["exists"],
             false
+        );
+    }
+
+    #[test]
+    fn begin_turn_commits_classification_and_active_task_together() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init(&connection);
+        read_or_initialize(
+            &mut connection,
+            &json!({"sessionId":"s","initial":{
+            "pendingQuestion":null,"activeTurn":{"_currentTaskId":"old"},
+            "category":{"classifyState":"W"}}}),
+        )
+        .unwrap();
+        let request = json!({"action":"beginTurn","sessionId":"s","expectedVersion":1,
+            "at":2,"turnId":"turn","activeTurn":{"_currentTaskId":"new"}});
+        let execute = |connection: &mut Connection, value: &Value| {
+            question_transition(connection, &json!({"requestJson":value.to_string()}))
+        };
+        let saved = execute(&mut connection, &request).unwrap();
+        assert_eq!(saved["snapshot"]["version"], 2);
+        let current = read(&connection, &json!({"sessionId":"s"})).unwrap();
+        assert_eq!(current["category"]["classifyState"], "P");
+        assert_eq!(current["activeTurn"]["_currentTaskId"], "new");
+        assert!(execute(&mut connection, &request)
+            .unwrap_err()
+            .contains("version conflict"));
+        let mut invalid = request.clone();
+        invalid["expectedVersion"] = json!(2);
+        invalid["activeTurn"] = json!(7);
+        assert!(execute(&mut connection, &invalid)
+            .unwrap_err()
+            .contains("invalid session work active turn"));
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"s"})).unwrap(),
+            current
         );
     }
 
