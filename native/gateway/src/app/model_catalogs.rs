@@ -395,12 +395,17 @@ pub async fn codex(
     // old client: it waits for the global catalog. Everything else kicks one
     // background refresh (never awaited) and answers from the current catalog,
     // with `refreshing` telling the picker whether that kick is still running.
-    let mut poll_only = !sync && flag(&query_text(ctx, "poll"));
+    let refresh = flag(&query_text(ctx, "refresh"));
+    let mut poll_only = !sync && flag(&query_text(ctx, "poll")) && !refresh;
     if !sync && query_absent(ctx, "providerId") && query_absent(ctx, "poll") {
+        let mut request = json!({ "op": "codex-refresh", "providerId": "codex-official", "wait": true });
+        if refresh {
+            request["refresh"] = Value::Bool(true);
+        }
         let Some(answer) = host_port::call_with(
             host_port_num,
             HOST_PATH,
-            &json!({ "op": "codex-refresh", "providerId": "codex-official", "wait": true }),
+            &request,
             LEGACY_REFRESH_TIMEOUT,
         )
         .await
@@ -413,13 +418,17 @@ pub async fn codex(
         poll_only = true;
     }
     if !poll_only {
+        let mut request = json!({
+            "op": "codex-refresh",
+            "providerId": value_or_empty(state.get("id")),
+            "wait": false,
+        });
+        if refresh {
+            request["refresh"] = Value::Bool(true);
+        }
         let Some(answer) = host(
             host_port_num,
-            json!({
-                "op": "codex-refresh",
-                "providerId": value_or_empty(state.get("id")),
-                "wait": false,
-            }),
+            request,
         )
         .await
         else {
