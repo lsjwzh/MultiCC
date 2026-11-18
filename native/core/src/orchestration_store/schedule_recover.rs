@@ -670,9 +670,23 @@ mod tests {
         assert!(owned_commit(&mut store, &reordered)
             .unwrap_err()
             .contains("session order mismatch"));
-        super::super::session_work_state::write(store.connection.as_mut().unwrap(), &json!({"updates":[{
-            "sessionId":"s","expectedVersion":1,"pendingQuestion":null,"activeTurn":{"_currentTaskId":"t"},
-            "category":{"recoveryRecordType":"gateway","classifyState":"W","startedAt":50,"endedAt":70}}]})).unwrap();
+        let invalid = json!({"action":"patchFacts", "sessionId":"s",
+            "categoryPatch":{"recoveryRecordType":42}})
+        .to_string();
+        assert!(super::super::session_work_state::question_transition(
+            store.connection.as_mut().unwrap(),
+            &json!({"requestJson":invalid}),
+        )
+        .unwrap_err()
+        .contains("invalid recovery session type"));
+        let patch = json!({"action":"patchFacts", "sessionId":"s",
+            "categoryPatch":{"recoveryRecordType":"worker", "classifyState":"W"}})
+        .to_string();
+        super::super::session_work_state::question_transition(
+            store.connection.as_mut().unwrap(),
+            &json!({"requestJson":patch}),
+        )
+        .unwrap();
         assert!(owned_commit(&mut store, &command)
             .unwrap_err()
             .contains("recovery fact version conflict"));

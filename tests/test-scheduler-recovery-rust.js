@@ -163,3 +163,41 @@ test('experimental recovery reads owned facts and matches the frozen scheduler',
     }
   }
 });
+
+test('owned recovery rejects a stale snapshot after a versioned fact update', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-owned-recovery-version-'));
+  const store = createOrchestrationSqliteStore({
+    file: path.join(root, 'state.sqlite'), now: () => 2000, ownerBinary: ownerBinary(),
+  });
+  let owner;
+  t.after(async () => {
+    try { if (owner) owner.request('close', {}); await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  await store.mutate(draft => {
+    draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
+      active: { entryId: 'active', taskId: 'task', startedAt: 50 }, updatedAt: 50 };
+  });
+  owner = new (getNative().RustIsolatedOrchestrationStore)(store.file, null, 2000,
+    { env: {}, policy: {} }, ownerBinary());
+  await owner.requestAsync('sessionWorkState', { action: 'readOrInitialize', sessionId: 's', initial: {
+    pendingQuestion: null, activeTurn: { _currentTaskId: 'task' },
+    category: { recoveryRecordType: 'gateway', classifyState: 'P', startedAt: 50, endedAt: 70 },
+  } });
+  const captured = await owner.requestAsync('scheduleRecoverOwnedSnapshotExperimental', {});
+  const update = { action: 'patchFacts', sessionId: 's',
+    categoryPatch: { recoveryRecordType: 'worker', classifyState: 'W' } };
+  await owner.requestAsync('sessionWorkQuestionExperimental', { requestJson: JSON.stringify(update) });
+  const args = { expectedRevision: captured.state.revision, expectedDataVersion: captured.dataVersion,
+    at: 1000, updatedAt: 2000, facts: captured.facts };
+  await assert.rejects(owner.requestAsync('scheduleRecoverOwnedCommitExperimental', args),
+    /recovery fact version conflict/);
+  assert.equal((await store.snapshot()).sessionSchedules.s.state, 'running');
+  const fresh = await owner.requestAsync('scheduleRecoverOwnedSnapshotExperimental', {});
+  await owner.requestAsync('scheduleRecoverOwnedCommitExperimental', {
+    ...args, expectedRevision: fresh.state.revision, expectedDataVersion: fresh.dataVersion, facts: fresh.facts,
+  });
+  const saved = (await store.snapshot()).sessionSchedules.s;
+  assert.equal(saved.state, 'frozen');
+  assert.equal(saved.freezeReason, 'classify_waiting');
+});
