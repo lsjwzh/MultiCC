@@ -4,13 +4,16 @@ const { boardStoreOf } = require('../native/task-domain');
 
 // 原生 token 的对象镜像与宿主回调适配。缓存判定、过期和验证规则均在 Rust。
 const MODES = new Set(['off', 'shadow', 'on']);
-function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, reportMs = 600_000,
+function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, verifyBudget = 8, reportMs = 600_000,
   logger = null, clock = Date.now, random = Math.random } = {}) {
   const addon = getNative();
   if (typeof addon.RustAirCardCache !== 'function') throw new Error('卡片缓存 Rust 接口不可用，请构建当前原生模块');
   const native = new addon.RustAirCardCache(), mirrors = new Map();
   const run = command => JSON.parse(native.run(JSON.stringify(command)));
-  const opened = run({ op: 'open', mode, verifyMs, reportMs, now: clock() });
+  // verifyMs 是「一张卡最久多久没被抽查过」，verifyBudget 是「一轮最多抽查几张」。
+  // 两者合起来才是抽样审计：只有 verifyMs 时它退化成全表定期过期，上千张卡会在
+  // 同一轮一起重建，缓存等于不存在（本次迁移前的真实行为）。
+  const opened = run({ op: 'open', mode, verifyMs, verifyBudget, reportMs, now: clock() });
   let tail = Promise.resolve();
   let pending = 0;
   let prepared = null;
@@ -45,6 +48,9 @@ function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, reportMs = 600
     }
     return { entries, hits: reply.hits, builds: reply.builds, render: { keys: reply.keys, tokens: reply.tokens, nativeRenderable: reply.nativeRenderable } };
   }
+  // 下面三个入口（resolve / resolveAsync / overlayAsync）已不在生产路径上：现行
+  // 宿主只调 prepareAsync + snapshotAsync。它们留着仅供差分的冻结 oracle
+  // （tests/helpers/legacy-air-routes.js）驱动，删掉会让迁移前后不可比。
   function resolve(globalSignature, items, options) {
     const request = plan(globalSignature, items, options);
     try {
