@@ -6,6 +6,7 @@ const {
   isOutcomeLetter,
 } = require('../classify/vocab');
 const { getNative } = require('../native/runtime');
+const { decodeRecoveryEvents } = require('./recovery-transport');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
@@ -204,6 +205,30 @@ function recoveredSuccessProven(schedule, recoveredState = {}) {
     && Number.isFinite(activeStartedAt) && activeStartedAt > 0
     && Number.isFinite(recoveredEndedAt) && recoveredEndedAt >= activeStartedAt
     && taskMatches;
+}
+
+// Translate one synchronous host observation into the trusted capture the Rust
+// recovery owner may import for a session whose facts it does not hold yet.
+// Only the listed durable facts cross the boundary, and every fact the owner
+// already recorded wins over this capture.
+function recoveryCapture(sessionId, observed) {
+  const source = observed && typeof observed === 'object' ? observed : {};
+  const category = {};
+  for (const key of ['classifyState', 'startedAt', 'endedAt', 'lastTurnEndedAt',
+    'unattended', 'userInputSignalTurnId', 'recoveryRecordType']) {
+    if (source[key] !== undefined) category[key] = source[key];
+  }
+  if (category.recoveryRecordType === undefined) category.recoveryRecordType = null;
+  const taskId = source.taskId === undefined ? null : source.taskId;
+  return {
+    sessionId,
+    initial: {
+      pendingQuestionJson: JSON.stringify(
+        source.pendingUserInput === undefined ? null : source.pendingUserInput),
+      activeTurnJson: JSON.stringify(taskId == null ? null : { _currentTaskId: taskId }),
+      categoryJson: JSON.stringify(category),
+    },
+  };
 }
 
 function newSchedule(sessionId, at) {
@@ -814,10 +839,13 @@ function createSessionWorkScheduler({
     });
   }
 
-  async function recover({
-    stateForSession = () => null,
-  } = {}) {
-    const events = await store.mutate(draft => {
+  // Legacy in-draft recovery for stores without the synchronous Rust command
+  // bridge (test doubles and the frozen worker-race harness). The production
+  // SQLite store takes the owner path, which observes and commits inside one
+  // queue turn; this fallback keeps the old observable behaviour — including
+  // its await-before-observe race — for stores that cannot offer that.
+  function legacyRecover(stateForSession) {
+    return store.mutate(draft => {
       const at = Number(now());
       const changes = [];
       const sessionIds = new Set([
@@ -1001,6 +1029,30 @@ function createSessionWorkScheduler({
       }
       return changes;
     });
+  }
+
+  async function recover({
+    stateForSession = () => null,
+  } = {}) {
+    let events;
+    if (typeof store.mutateSync === 'function') {
+      // Sample the recovery clock before any host observation, in the order the
+      // frozen pre-migration scheduler used. The Rust owner then reads,
+      // validates and commits every classification and active task fact inside
+      // one versioned SQLite transaction. The capture callback below is the
+      // only host read, and it runs inside the same queue turn as the commit,
+      // so a caller microtask queued after recover() cannot change the
+      // observed classification.
+      const at = Number(now());
+      const committed = await store.mutateSync('scheduleRecoverOwned', {
+        at,
+        updatedAt: at,
+        capture: sessionId => recoveryCapture(sessionId, stateForSession(sessionId)),
+      });
+      events = decodeRecoveryEvents(committed.resultJson);
+    } else {
+      events = await legacyRecover(stateForSession);
+    }
     const summaries = new Map((await queueSummaries(events.map(event => event.sessionId)))
       .map(summary => [summary.sessionId, summary]));
     for (const event of events) emit(event.type, {

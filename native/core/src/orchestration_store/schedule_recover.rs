@@ -156,6 +156,169 @@ fn owned_facts(category: &JsValue, active: &JsValue) -> Result<JsValue> {
         ),
     ]))
 }
+/// One trusted startup capture for a session whose recovery facts the owner
+/// does not hold yet.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TrustedCapture {
+    session_id: String,
+    initial: super::session_work_state::EncodedState,
+}
+
+/// True when the stored row already carries facts this kernel can project.
+fn owned(current: &serde_json::Value) -> Result<bool> {
+    if current["exists"] != true {
+        return Ok(false);
+    }
+    let category = super::record::parse(
+        current["categoryJson"]
+            .as_str()
+            .ok_or_else(|| err("invalid owned recovery category"))?,
+    )?;
+    let active = super::record::parse(
+        current["activeTurnJson"]
+            .as_str()
+            .ok_or_else(|| err("invalid owned recovery turn"))?,
+    )?;
+    Ok(owned_facts(&category, &active).is_ok())
+}
+
+/// Fill only the facts the owner does not hold. Every recorded stored value
+/// wins, so a trusted capture can complete a legacy row but never replace a
+/// classification the owner already decided. A null stored turn is not a
+/// decision: the owner never recorded one, so the capture may supply the task.
+fn completed_facts(
+    current: &serde_json::Value,
+    trusted: &super::session_work_state::EncodedState,
+) -> Result<Option<super::session_work_state::EncodedState>> {
+    use super::record;
+    let stored = record::parse(
+        current["categoryJson"]
+            .as_str()
+            .ok_or_else(|| err("invalid owned recovery category"))?,
+    )?;
+    let mut category = match stored {
+        JsValue::Object(_) => stored,
+        // A legacy row stored the classify letter by itself. Keep that letter
+        // and read the remaining facts from the trusted capture.
+        JsValue::String(_) => JsValue::object(vec![("classifyState", stored)]),
+        JsValue::Null => JsValue::Object(vec![]),
+        _ => return Ok(None),
+    };
+    if let JsValue::Object(fields) = record::parse(&trusted.category_json)? {
+        for (name, value) in fields {
+            let name = name.to_string_lossy();
+            if category.get(&name).is_none() {
+                put(&mut category, &name, value)?;
+            }
+        }
+    }
+    let stored_turn = record::parse(
+        current["activeTurnJson"]
+            .as_str()
+            .ok_or_else(|| err("invalid owned recovery turn"))?,
+    )?;
+    let captured_turn = record::parse(&trusted.active_turn_json)?;
+    let active_turn_json =
+        if stored_turn == JsValue::Null && matches!(captured_turn, JsValue::Object(_)) {
+            record::encode(&captured_turn)?
+        } else {
+            current["activeTurnJson"]
+                .as_str()
+                .ok_or_else(|| err("invalid owned recovery turn"))?
+                .to_owned()
+        };
+    let state = super::session_work_state::EncodedState {
+        pending_question_json: current["pendingQuestionJson"]
+            .as_str()
+            .ok_or_else(|| err("invalid pending question"))?
+            .to_owned(),
+        active_turn_json,
+        category_json: record::encode(&category)?,
+    };
+    let active = record::parse(&state.active_turn_json)?;
+    if owned_facts(&record::parse(&state.category_json)?, &active).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(state))
+}
+
+/// Report the sessions whose recovery facts the owner does not hold, and import
+/// the trusted captures the caller was asked for in the previous round. No
+/// classification crosses the boundary in either direction: the caller learns
+/// only identities, and an owned fact is never overwritten. The returned facts
+/// name every owned row in snapshot order with the version the commit step must
+/// revalidate, so the caller never performs a second read before committing.
+pub(super) fn owned_prepare(
+    store: &mut super::Store,
+    input: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    use super::session_work_state;
+    use rusqlite::TransactionBehavior;
+    use serde_json::json;
+    if store.active || store.pending {
+        return Err(err("schedule recovery requires an idle owner connection"));
+    }
+    let captures: Vec<TrustedCapture> = match input.get("entries") {
+        None => Vec::new(),
+        Some(value) => serde_json::from_value(value.clone()).map_err(err)?,
+    };
+    let mut trusted = std::collections::HashMap::new();
+    for capture in &captures {
+        if capture.session_id.is_empty()
+            || trusted
+                .insert(capture.session_id.as_str(), &capture.initial)
+                .is_some()
+        {
+            return Err(err("invalid recovery backfill batch"));
+        }
+    }
+    let db = store
+        .connection
+        .as_mut()
+        .ok_or_else(|| err("database closed"))?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(err)?;
+    let mut missing = Vec::new();
+    let mut facts = Vec::new();
+    for session in ordered_sessions(&tx)? {
+        let current = session_work_state::snapshot_encoded(&tx, &session)?;
+        if owned(&current)? {
+            facts.push(json!({"sessionId": session, "expectedVersion": current["version"]}));
+            continue;
+        }
+        let Some(capture) = trusted.get(session.as_str()) else {
+            missing.push(session);
+            continue;
+        };
+        let imported = if current["exists"] == true {
+            let Some(state) = completed_facts(&current, capture)? else {
+                missing.push(session);
+                continue;
+            };
+            let version = current["version"]
+                .as_u64()
+                .ok_or_else(|| err("invalid session work version"))?;
+            session_work_state::write_in_transaction(&tx, &session, version, &state)?
+        } else {
+            let initialized =
+                session_work_state::initialize_in_transaction(&tx, &session, capture)?;
+            if !owned(&initialized)? {
+                missing.push(session);
+                continue;
+            }
+            initialized
+        };
+        facts.push(json!({"sessionId": session, "expectedVersion": imported["version"]}));
+    }
+    let state = super::header(&tx)?;
+    let data_version: i64 = tx
+        .query_row("PRAGMA data_version", [], |row| row.get(0))
+        .map_err(err)?;
+    tx.commit().map_err(err)?;
+    Ok(json!({"sessions":missing,"facts":facts,"state":state,"dataVersion":data_version}))
+}
 fn put(value: &mut JsValue, key: &str, new_value: JsValue) -> Result<()> {
     let JsValue::Object(fields) = value else {
         return Err(err("invalid recovery schedule"));
@@ -428,6 +591,18 @@ fn commit_impl(
     if store.active || store.pending {
         return Err(err("schedule recovery requires an idle owner connection"));
     }
+    if require_owned
+        && input.as_object().is_none_or(|object| {
+            object.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "expectedRevision" | "expectedDataVersion" | "at" | "updatedAt" | "facts"
+                )
+            })
+        })
+    {
+        return Err(err("unsupported owned recovery parameter"));
+    }
     let expected_revision = input["expectedRevision"]
         .as_u64()
         .ok_or_else(|| err("expectedRevision required"))?;
@@ -479,6 +654,15 @@ fn commit_impl(
     let mut events = Vec::new();
     let mut changed = false;
     for (index, fact) in facts.iter().enumerate() {
+        if require_owned
+            && fact.as_object().is_none_or(|object| {
+                object
+                    .keys()
+                    .any(|key| key != "sessionId" && key != "expectedVersion")
+            })
+        {
+            return Err(err("owned recovery accepts only session id and version"));
+        }
         let session = fact["sessionId"]
             .as_str()
             .ok_or_else(|| err("invalid recovery session"))?;
@@ -701,8 +885,31 @@ mod tests {
         let current = owned_snapshot(&mut store).unwrap();
         command["facts"] = current["facts"].clone();
         command["expectedDataVersion"] = current["dataVersion"].clone();
-        // Even a tampered transport value cannot replace the owner's state.
-        command["facts"][0]["stateJson"] = json!("{\"classifyState\":\"D\"}");
+        // Reject injected facts even after an earlier session has been processed;
+        // the transaction must roll that earlier session back as well.
+        let mut tampered = command.clone();
+        tampered["facts"][1]["stateJson"] = json!("{\"classifyState\":\"D\"}");
+        assert!(owned_commit(&mut store, &tampered)
+            .unwrap_err()
+            .contains("only session id and version"));
+        let mut direct_classification = command.clone();
+        direct_classification["facts"][1]["classifyState"] = json!("D");
+        assert!(owned_commit(&mut store, &direct_classification)
+            .unwrap_err()
+            .contains("only session id and version"));
+        let unchanged =
+            super::super::record::get_json(store.conn().unwrap(), "sessionSchedules", "s", &[])
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&unchanged).unwrap()["state"],
+            "running"
+        );
+        let mut injected = command.clone();
+        injected["classifyState"] = json!("D");
+        assert!(owned_commit(&mut store, &injected)
+            .unwrap_err()
+            .contains("unsupported owned recovery parameter"));
         owned_commit(&mut store, &command).unwrap();
         let saved =
             super::super::record::get_json(store.conn().unwrap(), "sessionSchedules", "s", &[])
@@ -712,6 +919,120 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&saved).unwrap()["freezeReason"],
             "classify_waiting"
         );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn owned_prepare_lists_unowned_facts_and_fills_only_absent_values() {
+        let mut random = [0_u8; 12];
+        getrandom::fill(&mut random).unwrap();
+        let name = random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let dir = std::env::temp_dir().join(format!("multicc-recovery-prepare-{name}"));
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("state.sqlite");
+        let mut store =
+            super::super::Store::open(file.to_str().unwrap(), None, 1, RetentionPolicy::default())
+                .unwrap();
+        for id in ["a", "b", "c"] {
+            super::super::write_record_json(
+                store.conn().unwrap(),
+                "sessionSchedules",
+                id,
+                &json!({"sessionId":id,"state":"running","classifyState":"P",
+                    "active":{"entryId":id,"taskId":"t","startedAt":50}})
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let none = json!({});
+        let first = owned_prepare(&mut store, &none).unwrap();
+        assert_eq!(first["sessions"], json!(["a", "b", "c"]));
+        assert_eq!(first["facts"], json!([]));
+        assert!(first["state"]["revision"].is_number());
+        assert!(first["dataVersion"].is_number());
+        // A legacy row predates the session type: its classification is owned,
+        // the missing fact is not.
+        super::super::session_work_state::read_or_initialize(
+            store.connection.as_mut().unwrap(),
+            &json!({"sessionId":"a","initial":{"pendingQuestion":null,
+                "activeTurn":{"_currentTaskId":"t"},"category":{"classifyState":"W"}}}),
+        )
+        .unwrap();
+        // Another legacy row never recorded a turn at all.
+        super::super::session_work_state::read_or_initialize(
+            store.connection.as_mut().unwrap(),
+            &json!({"sessionId":"c","initial":{"pendingQuestion":null,
+                "activeTurn":null,"category":{"classifyState":"P"}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            owned_prepare(&mut store, &none).unwrap()["sessions"],
+            json!(["a", "b", "c"])
+        );
+        let capture = |id: &str, class: &str| {
+            json!({"sessionId":id,"initial":{"pendingQuestionJson":"null",
+                "activeTurnJson":"{\"_currentTaskId\":\"other\"}",
+                "categoryJson":json!({"recoveryRecordType":"gateway","classifyState":class,
+                    "startedAt":10,"endedAt":70}).to_string()}})
+        };
+        assert!(owned_prepare(
+            &mut store,
+            &json!({"entries":[capture("a", "D"), capture("a", "D")]})
+        )
+        .unwrap_err()
+        .contains("invalid recovery backfill batch"));
+        let filled_a = owned_prepare(&mut store, &json!({"entries":[capture("a", "D")]})).unwrap();
+        assert_eq!(filled_a["sessions"], json!(["b", "c"]));
+        assert_eq!(
+            filled_a["facts"],
+            json!([{"sessionId":"a","expectedVersion":2}])
+        );
+        let filled =
+            super::super::session_work_state::snapshot_encoded(store.conn().unwrap(), "a").unwrap();
+        let category: serde_json::Value =
+            serde_json::from_str(filled["categoryJson"].as_str().unwrap()).unwrap();
+        assert_eq!(category["classifyState"], "W");
+        assert_eq!(category["recoveryRecordType"], "gateway");
+        assert_eq!(category["endedAt"], 70);
+        assert_eq!(filled["version"], 2);
+        // The recorded turn is owned as well; a capture cannot replace its task.
+        assert_eq!(
+            filled["activeTurnJson"].as_str().unwrap(),
+            "{\"_currentTaskId\":\"t\"}"
+        );
+        // A null stored turn was never recorded: the trusted capture supplies it.
+        let filled_c = owned_prepare(&mut store, &json!({"entries":[capture("c", "P")]})).unwrap();
+        assert_eq!(filled_c["sessions"], json!(["b"]));
+        let turn_c =
+            super::super::session_work_state::snapshot_encoded(store.conn().unwrap(), "c").unwrap();
+        assert_eq!(
+            turn_c["activeTurnJson"].as_str().unwrap(),
+            "{\"_currentTaskId\":\"other\"}"
+        );
+        let category_c: serde_json::Value =
+            serde_json::from_str(turn_c["categoryJson"].as_str().unwrap()).unwrap();
+        assert_eq!(category_c["classifyState"], "P");
+        assert_eq!(category_c["recoveryRecordType"], "gateway");
+        let filled_b = owned_prepare(&mut store, &json!({"entries":[capture("b", "E")]})).unwrap();
+        assert_eq!(filled_b["sessions"], json!([]));
+        assert_eq!(
+            filled_b["facts"],
+            json!([{"sessionId":"a","expectedVersion":2},{"sessionId":"b","expectedVersion":1},
+                {"sessionId":"c","expectedVersion":2}])
+        );
+        // An already owned session ignores a later capture entirely.
+        let ignored = owned_prepare(&mut store, &json!({"entries":[capture("a", "P")]})).unwrap();
+        assert_eq!(ignored["sessions"], json!([]));
+        assert_eq!(ignored["facts"], filled_b["facts"]);
+        let unchanged =
+            super::super::session_work_state::snapshot_encoded(store.conn().unwrap(), "a").unwrap();
+        assert_eq!(unchanged["version"], 2);
+        let captured = owned_snapshot(&mut store).unwrap();
+        assert_eq!(captured["facts"].as_array().unwrap().len(), 3);
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }

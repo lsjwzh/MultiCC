@@ -4,8 +4,8 @@ const { createQuestionOwner } = require('./question-owner');
 const { createUserInputOwnedHost } = require('../classify/user-input-owned-host');
 const { createSessionWorkHost } = require('./host');
 
-// Production composition. The legacy fields are consulted only for the first
-// durable snapshot; after initialization the Rust store is the sole owner.
+// Production question composition. The Rust store owns the initialized
+// question snapshot; classification and turn facts still have other writers.
 function createProductionQuestionHost({ getStore, getSession, getState, getRecord = () => null, setState, onResolved, log, now } = {}) {
   const liveTurn = id => {
     const session = getSession(id);
@@ -15,11 +15,13 @@ function createProductionQuestionHost({ getStore, getSession, getState, getRecor
   };
   const owner = createQuestionOwner({ getStore, liveTurn, ...(now ? { now } : {}), initialState(id) {
     const { pendingUserInput = null, ...category } = getState(id) || {};
+    const record = getRecord(id);
     return { pendingQuestion: pendingUserInput, activeTurn: liveTurn(id),
-      category: { ...category, unattended: getRecord(id)?.unattended || null } };
+      category: { ...category, unattended: record?.unattended || null,
+        recoveryRecordType: typeof record?.type === 'string' ? record.type : null } };
   } });
   const base = createUserInputOwnedHost({ owner, getState, setState, onResolved, log });
-  const host = Object.freeze({ ...base, activateTurnAsync: id => owner.patchFactsAsync(id, { activeTurn: liveTurn(id) }),
+  const host = Object.freeze({ ...base, activateTurnAsync: id => owner.refreshTurnAsync(id, () => liveTurn(id)),
     refreshAdmissionFactsAsync: id => owner.refreshUnattendedAsync(id, () => getRecord(id)?.unattended) });
   return { owner, host };
 }

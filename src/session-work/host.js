@@ -634,11 +634,19 @@ function createSessionWorkHost(deps = {}) {
       startedAt: state.startedAt,
       endedAt,
       taskId: deps.getChatSession(sessionId)?._currentTaskId || null,
+      // The session type never crosses into the public recoveryState
+      // projection; the Rust recovery owner requires it to project gateway
+      // completions exactly like recoveredClassify above.
+      recoveryRecordType: typeof record?.type === 'string' ? record.type : null,
     };
   }
   function projectRecoveryState(sessionId, pendingInput, signalTurnId, facts = recoveryFacts(sessionId)) {
+    // The session type is recovery-owner bookkeeping only; the public
+    // recoveryState projection keeps its pre-owner shape byte-identical.
+    const publicFacts = { ...facts };
+    delete publicFacts.recoveryRecordType;
     return {
-      ...facts,
+      ...publicFacts,
       // Scheduler recovery needs correlation only; question/options remain in
       // the task-state owner and are never duplicated into orchestration state.
       pendingUserInput: pendingInput && pendingInput.resolved !== true

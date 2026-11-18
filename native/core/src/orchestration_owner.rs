@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Incremented whenever owner semantics change, even if framing is unchanged.
-pub const OWNER_PROTOCOL_VERSION: u32 = 30;
+pub const OWNER_PROTOCOL_VERSION: u32 = 33;
 // serde_json's reader parser consumes individual bytes. Small frames are read
 // into a strictly bounded buffer to avoid amplifying synchronous RPC latency;
 // larger frames remain streaming and never reserve their advertised length.
