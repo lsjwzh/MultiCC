@@ -82,7 +82,8 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
         if (all) full = true;
         else if (metaOnly) metaDirty = true;
         else for (const id of ids) dirty.add(id);
-        logger.warn?.('air_sync_refresh_failed', { code: error?.code || 'refresh_failed', failures,
+        logger.warn?.('air_sync_refresh_failed', { code: error?.code || 'refresh_failed',
+          reason: String(error?.message || error || 'unknown').slice(0, 500), failures,
           retryInMs: Math.max(0, retryAt - Date.now()), full: all });
       } finally {
         inFlight = null;
