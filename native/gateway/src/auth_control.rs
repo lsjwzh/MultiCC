@@ -440,6 +440,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn redemption_uses_the_same_owner_across_the_control_stream() {
+        let bridge = Arc::new(Bridge::default());
+        let registration = bridge.open().unwrap();
+        let mut stream = actor(&registration).await;
+        let peer = tokio::spawn(async move {
+            let mut state = AuthRuntime::new("token".into());
+            for _ in 0..3 {
+                let request = wire::read(&mut stream).await.unwrap();
+                wire::write(&mut stream, &state.respond(request))
+                    .await
+                    .unwrap();
+            }
+        });
+        let Response::Ticket { ticket, .. } = bridge
+            .request(Request::IssueTicket {
+                revision: 0,
+                path: "/ws/chat".into(),
+                metadata: serde_json::json!({"requestId": "r"}),
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("ticket refused")
+        };
+        let redeem = || Request::ConsumeTicket {
+            ticket: ticket.clone(),
+            path: "/ws/chat".into(),
+        };
+        let Response::Redeemed { metadata, path, .. } = bridge.request(redeem()).await.unwrap()
+        else {
+            panic!("ticket not redeemed")
+        };
+        assert_eq!(path, "/ws/chat");
+        assert_eq!(metadata, serde_json::json!({"requestId": "r"}));
+        assert!(matches!(
+            bridge.request(redeem()).await.unwrap(),
+            Response::Invalid
+        ));
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn simultaneous_redemptions_have_one_winner() {
+        let bridge = Arc::new(Bridge::default());
+        bridge.install_local("token".into()).unwrap();
+        let Response::Ticket { ticket, .. } = bridge
+            .request(Request::IssueTicket {
+                revision: 0,
+                path: "/ws/chat".into(),
+                metadata: serde_json::json!({}),
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("ticket refused")
+        };
+        let mut tasks = Vec::new();
+        for _ in 0..12 {
+            let bridge = Arc::clone(&bridge);
+            let ticket = ticket.clone();
+            tasks.push(tokio::spawn(async move {
+                bridge
+                    .request(Request::ConsumeTicket {
+                        ticket,
+                        path: "/ws/chat".into(),
+                    })
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut winners = 0;
+        for task in tasks {
+            match task.await.unwrap() {
+                Response::Redeemed { .. } => winners += 1,
+                Response::Invalid => {}
+                _ => panic!("unexpected redemption result"),
+            }
+        }
+        assert_eq!(winners, 1);
+    }
+
+    #[tokio::test]
     async fn forged_proof_cannot_install_an_authentication_owner() {
         let bridge = Arc::new(Bridge::default());
         let registration = bridge.open().unwrap();
