@@ -98,7 +98,7 @@ test('console switches between task and directory views; console, directory and 
     assert.ok(await page.waitFor(`document.querySelectorAll('#console-task-list > *').length === 50`, { timeoutMs: 10000 }), '切回最近：又从第一页开始');
 
     // ── ② 目录看法 ───────────────────────────────────────────────────────
-    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#console-view-switch [role=tab]')].map(b => b.textContent)`), ['按任务', '按目录']);
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#console-view-switch [role=tab]')].map(b => b.textContent)`), ['按任务', '按目录', '多电脑']);
     await page.evaluate(`document.getElementById('console-view-dirs').click()`);
     assert.deepEqual(await view(), { view: 'dirs', selected: ['dirs'], flow: false, dirs: true }, '目录看法只留目录网格');
     assert.equal(await page.evaluate(`document.getElementById('console-home-search').placeholder`), '搜索名称或路径', '搜索框改搜目录');
@@ -160,7 +160,7 @@ test('console switches between task and directory views; console, directory and 
     assert.equal((await view()).view, 'tasks');
     assert.equal(await page.evaluate(`localStorage.getItem('air:console-view')`), 'tasks');
 
-    // ── 手机：底部三项，「项目」= 目录看法，页内 tab 藏起来 ───────────────
+    // ── 手机：底部三项，「项目」= 目录看法，多电脑入口仍可通过页内 tab 访问 ──
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
     // 旧的「最近任务」页地址落到控制台。
     await page.navigate('/air?view=recent');
@@ -168,7 +168,8 @@ test('console switches between task and directory views; console, directory and 
     assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'overview');
     const nav = () => page.evaluate(`[...document.querySelectorAll('[data-mobile-view]')].map(b => b.textContent + (b.classList.contains('active') ? '*' : ''))`);
     assert.deepEqual(await nav(), ['▦控制台*', '◷定时任务', '▤项目'], '底部三项，控制台亮着');
-    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('console-view-switch')).display`), 'none', '手机上页内 tab 藏起来');
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('console-view-switch')).display`), 'flex', '手机上保留多电脑入口');
+    assert.equal(await page.evaluate(`document.getElementById('console-view-machines')?.textContent`), '多电脑');
     assert.ok(await page.waitFor(`document.querySelectorAll('#console-task-list > *').length === 50`, { timeoutMs: 10000 }), '手机控制台同一份不截条数的清单');
     await page.screenshot('04-mobile-console');
     await page.evaluate(`document.querySelector('[data-mobile-view="dirs"]').click()`);

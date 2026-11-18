@@ -113,6 +113,8 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     await page.navigate('/air?view=provider&dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('.air-provider-card').length===4`));
     assert.ok(await page.waitFor(`document.querySelector('[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-subscription').textContent.includes('下次续费：')`));
+    assert.ok(await page.waitFor(`document.querySelector('[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-subscription').textContent.includes('2030')`),
+      '独立账号的订阅查询完成后显示续费日期');
     const subscriptionText = await page.evaluate(`[...document.querySelectorAll('.air-provider-subscription')].map(node=>node.textContent)`);
     assert.match(subscriptionText[0], /已关闭自动续费/);
     assert.match(subscriptionText[1], /上游未提供日期/);
@@ -151,10 +153,13 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     t.diagnostic(await page.screenshot('air-provider-quota-desktop'));
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     assert.equal(await page.evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-card') !== null`), '切换手机布局后 Provider 卡片重新就绪');
     await page.evaluate(`document.querySelector('.air-provider-card').scrollIntoView({block:'start'})`);
     t.diagnostic(await page.screenshot('air-provider-quota-mobile'));
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-limit') !== null`), '切回桌面布局后额度卡片重新就绪');
     await page.evaluate(`Date.now=()=>${now + 1800000};window.__quotaTicks.forEach(fn=>fn())`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-limit')?.textContent === '5h 55% 1.5h · 1wk 64% 2d 23h · 更新于 31 分钟前'`), '等待额度时间更新');
     assert.equal(await page.evaluate(`document.querySelector('.air-provider-limit').textContent`),
       '5h 55% 1.5h · 1wk 64% 2d 23h · 更新于 31 分钟前');
 

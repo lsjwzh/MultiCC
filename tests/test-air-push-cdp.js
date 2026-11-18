@@ -136,8 +136,11 @@ test('the Air push panel is native: masked Bark placeholder, exact POST bodies, 
     assert.ok(await page.waitFor(`document.querySelector('#admin-content .air-push-page') !== null`), '点进去落在推送面板上');
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), await tr('airAdminPush'),
       '页头标题走的是 air.js adminHeadings 里那个 key，不是 mode 名');
-    assert.equal(await page.evaluate(`document.getElementById('task-breadcrumb').textContent`), await tr('airCrumbSettings'),
-      '面包屑说的是设置中心这一类');
+    assert.equal(await page.evaluate(`document.getElementById('task-breadcrumb').textContent`),
+      `${await tr('airSettingsCenter')} / ${await tr('airAdminPush')}`,
+      '面包屑同时显示返回设置入口和当前推送面板');
+    assert.equal(await page.evaluate(`document.querySelector('#task-breadcrumb button')?.textContent`),
+      await tr('airSettingsCenter'), '面包屑保留返回设置的按钮');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0, '原生面板里没有旧 manage 的 iframe');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content iframe').length`), 0, '面板正文里一个 iframe 都不该有');
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');

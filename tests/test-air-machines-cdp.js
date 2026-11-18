@@ -56,7 +56,7 @@ test('real console keeps the entry sidebar and remote frame scoped through refre
     await page.evaluate('document.querySelectorAll(".machine-tabs button")[1].click()');
     assert.ok(await page.waitFor('document.querySelector(".machine-panel")?.textContent.includes("远程目录")'));
     await page.evaluate('document.querySelector(".machine-directory").click()');
-    assert.ok(await page.waitFor('document.querySelector(".machine-frame")?.contentWindow.MultiCCMachineScope?.id === "machine_remote"'));
+    assert.ok(await page.waitFor('document.querySelector(".machine-frame")?.contentWindow.MultiCCMachineScope?.id === "machine_remote" && document.querySelector(".machine-frame")?.contentDocument?.body'));
     await page.evaluate(`const doc = document.querySelector('.machine-frame').contentDocument; const save = doc.createElement('button'); save.id = 'target-save-probe'; save.textContent = '保存'; doc.body.append(save);`);
     assert.ok(await page.waitFor('document.querySelector(".machine-frame").contentDocument.getElementById("target-save-probe")?.textContent === "保存到 工作电脑"'));
     assert.ok(await page.waitFor('document.querySelector(".machine-frame").contentDocument.querySelector("a[data-i18n=airLogout]")?.href.includes("machine=machine_remote")'));

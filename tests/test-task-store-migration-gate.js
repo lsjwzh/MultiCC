@@ -53,7 +53,7 @@ test('闸门：不需要迁移时零开销；空间不足自动重试直到成�
 function freePort() {
   return new Promise(resolve => { const s = net.createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 }
-// 子进程里跑闸门：假原生模块的迁移同步阻塞主线程 1.5 秒、期间写进度文件。
+// 子进程里跑闸门：假原生模块写进度文件，成功场景等待测试确认进度后再结束。
 function runChild(t, port, file, mode) {
   const script = `
     const fs = require('fs');
@@ -63,7 +63,11 @@ function runChild(t, port, file, mode) {
     runTaskStoreMigrationGate({ file: ${JSON.stringify(file)}, port: ${port}, host: '0.0.0.0', logger: { info() {}, error() {} },
       addon: { taskStoreMigrationPending: () => true, migrateTaskStore: () => {
         write({ phase: 'rewrite', done: 50, total: 100 });
-        block(1500);
+        if (${JSON.stringify(mode)} === 'ok') {
+          const deadline = Date.now() + 10000;
+          while (!fs.existsSync(${JSON.stringify(file)} + '.release') && Date.now() < deadline) block(30);
+          if (!fs.existsSync(${JSON.stringify(file)} + '.release')) throw new Error('test release timed out');
+        } else block(1500);
         if (${JSON.stringify(mode)} === 'fail') { write({ phase: 'failed', error: 'boom: broken' }); throw new Error('boom: broken'); }
         return '{}';
       } } });
@@ -87,9 +91,14 @@ test('闸门：迁移期间端口回 503 + 进度（接口 JSON、浏览器进�
   const child = runChild(t, port, path.join(dir, 'shell.sqlite'), 'ok');
   let out = '';
   child.stdout.on('data', d => { out += d; });
-  const ready = await poll(`http://127.0.0.1:${port}/readyz`);
+  let ready, body;
+  for (let i = 0; i < 100; i++) {
+    ready = await poll(`http://127.0.0.1:${port}/readyz`);
+    body = JSON.parse(ready.text);
+    if (body.migration.percent === 47) break;
+    await new Promise(r => setTimeout(r, 30));
+  }
   assert.equal(ready.status, 503);
-  const body = JSON.parse(ready.text);
   assert.equal(body.phase, 'data-migration');
   assert.equal(body.migration.state, 'running');
   assert.equal(body.migration.percent, 47);
@@ -97,7 +106,8 @@ test('闸门：迁移期间端口回 503 + 进度（接口 JSON、浏览器进�
   assert.equal(html.status, 503);
   assert.match(html.text, /正在升级任务数据/);
   assert.match(html.text, /fetch\('\/readyz'/, '页面轮询就绪状态，连不上时继续等而不是停在错误页');
-  await new Promise(resolve => child.stdout.on('data', () => out.includes('listening') && resolve()));
+  fs.writeFileSync(path.join(dir, 'shell.sqlite.release'), '');
+  if (!out.includes('listening')) await new Promise(resolve => child.stdout.on('data', () => out.includes('listening') && resolve()));
   assert.equal((await poll(`http://127.0.0.1:${port}/readyz`)).text, 'real', '正式服务拿到了同一个端口');
 });
 

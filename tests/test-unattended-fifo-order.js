@@ -545,7 +545,8 @@ test('(d) a deferred settle is re-evaluated once the leftover backlog disappears
   assert.equal(h.calls.enqueue, 0, 'not before the kernel delay');
 
   await tick(h, 15_000);
-  await until(() => h.calls.enqueue === 1, 'the recheck verdict');
+  await until(() => h.calls.enqueue === 1 && h.calls.decide === 1
+    && h.unattended.get(SESSION).rounds === 1, 'the completed recheck verdict');
   assert.equal(h.calls.decide, 1);
   assert.equal(h.unattended.get(SESSION).rounds, 1, 'the dropped settle finally bought its round');
   await until(async () => (await h.outbox.list({ sessionId: SESSION }))

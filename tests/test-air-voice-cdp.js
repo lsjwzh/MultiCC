@@ -145,11 +145,12 @@ test('the Air voice panel is native: qwen block reuses the legacy module, refine
     await page.evaluate(`[...document.querySelectorAll('.air-setting-card')]
       .find(card => card.querySelector('strong').textContent === ${JSON.stringify(voiceCardName)}).click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent === ${JSON.stringify(await label('airAdminVoice'))}`), '点进去落在语音设置页');
-    assert.equal(await text('#task-breadcrumb'), await label('airCrumbSettings'), '面包屑说的是设置中心这一类');
+    assert.equal(await text('#task-breadcrumb'), `${await label('airSettingsCenter')} / ${await label('airAdminVoice')}`, '面包屑显示返回设置入口与当前面板');
+    assert.equal(await text('#task-breadcrumb button'), await label('airSettingsCenter'), '面包屑保留返回设置的按钮');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0, '原生面板里没有旧 manage 的 iframe');
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].map(b => b.textContent.replace(/\\s+/g,''))`),
-      ['←返回设置中心', '↻刷新'], '工具条是面板自己的（返回设置中心 / 刷新）');
+      ['↻刷新'], '面板工具条保留刷新');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-voice-card').length`), 4, '四块都在：全局语音 / ASR / 精修 / Whisper');
     assert.ok(calls().some(call => call === 'GET /api/settings/voice'), '打开面板打了 GET /api/settings/voice');
     await page.screenshot('00-voice-native-desktop');

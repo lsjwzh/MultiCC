@@ -69,12 +69,14 @@ COPY --from=rust-build /build/native/target/release/libmulticc_addon.so /tmp/mul
 COPY --from=rust-build /build/native/target/release/multicc-remote /tmp/multicc-remote
 COPY --from=rust-build /build/native/target/release/multicc-cdpd /tmp/multicc-cdpd
 COPY --from=rust-build /build/native/target/release/multicc-gateway /tmp/multicc-gateway
+COPY --from=rust-build /build/native/target/release/restart-supervisor /tmp/restart-supervisor
 RUN arch="$(uname -m)"; case "$arch" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac; \
     mkdir -p "native/prebuilt/linux-$arch" && mv /tmp/multicc-core.node "native/prebuilt/linux-$arch/multicc_core.node" && \
     cp /tmp/multicc-remote "native/prebuilt/linux-$arch/multicc-remote" && \
     cp /tmp/multicc-cdpd "native/prebuilt/linux-$arch/multicc-cdpd" && \
     cp /tmp/multicc-gateway "native/prebuilt/linux-$arch/multicc-gateway" && \
-    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd" "native/prebuilt/linux-$arch/multicc-gateway"
+    cp /tmp/restart-supervisor "native/prebuilt/linux-$arch/restart-supervisor" && \
+    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd" "native/prebuilt/linux-$arch/multicc-gateway" "native/prebuilt/linux-$arch/restart-supervisor"
 RUN chown -R node:node /candidate
 USER node
 ENV NODE_ENV=test ASR_LOCAL=off MULTICC_CHROME_BIN=/usr/bin/chromium
@@ -91,13 +93,15 @@ COPY --from=rust-build /build/native/target/release/multicc-remote /tmp/multicc-
 COPY --from=rust-build /build/native/target/release/multicc-cdpd /tmp/multicc-cdpd
 COPY --from=rust-build /build/native/target/release/multicc-gateway /tmp/multicc-gateway
 COPY --from=rust-build /build/native/target/release/multicc-writer /tmp/multicc-writer
+COPY --from=rust-build /build/native/target/release/restart-supervisor /tmp/restart-supervisor
 RUN arch="$(uname -m)"; case "$arch" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac; \
     mkdir -p "native/prebuilt/linux-$arch" && mv /tmp/multicc-core.node "native/prebuilt/linux-$arch/multicc_core.node" && \
     cp /tmp/multicc-remote "native/prebuilt/linux-$arch/multicc-remote" && \
     cp /tmp/multicc-cdpd "native/prebuilt/linux-$arch/multicc-cdpd" && \
     cp /tmp/multicc-gateway "native/prebuilt/linux-$arch/multicc-gateway" && \
+    cp /tmp/restart-supervisor "native/prebuilt/linux-$arch/restart-supervisor" && \
     cp /tmp/multicc-writer "native/prebuilt/linux-$arch/multicc-writer" && \
-    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd" "native/prebuilt/linux-$arch/multicc-gateway" "native/prebuilt/linux-$arch/multicc-writer"
+    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd" "native/prebuilt/linux-$arch/multicc-gateway" "native/prebuilt/linux-$arch/restart-supervisor" "native/prebuilt/linux-$arch/multicc-writer"
 RUN chmod +x docker/task-shell/fake-codex.js \
     && mkdir -p /var/lib/multicc \
     && chown -R node:node /opt/multicc /var/lib/multicc

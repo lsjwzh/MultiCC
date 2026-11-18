@@ -12,6 +12,42 @@ fn backup(file: &Path, index: usize) -> PathBuf {
     name.into()
 }
 
+// Keep the primary in place until the new primary is atomically installed.
+// Renaming it to bak1 first leaves an observable missing-file window.
+fn rotate_backups(file: &Path, rotate: usize) {
+    for index in (1..=rotate).rev() {
+        let source = if index == 1 {
+            file.to_path_buf()
+        } else {
+            backup(file, index - 1)
+        };
+        let destination = backup(file, index);
+        if !source.exists() {
+            continue;
+        }
+        let rotated = if index == 1 {
+            fs::read(&source).ok().is_some_and(|bytes| {
+                crate::state_file::write_bytes_atomic_traced(&destination, &bytes, 0o600, 0o700)
+                    .is_ok()
+            })
+        } else {
+            fs::rename(&source, &destination).is_ok()
+        };
+        if !rotated {
+            // Rotation remains best effort; never log state-file contents.
+            eprintln!("[multicc/state-store] backup rotation failed");
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if fs::set_permissions(&destination, fs::Permissions::from_mode(0o600)).is_err() {
+                eprintln!("[multicc/state-store] backup permission update failed");
+            }
+        }
+    }
+}
+
 /// Why a state file could not be read as payload. The caller owns the user
 /// facing message because it knows the target path; this keeps the same
 /// information the Node `CorruptedStateError` carried (`file`, `raw`).
@@ -218,33 +254,40 @@ pub fn save_compact_with(
         0o600,
         0o700,
         || {
-            for index in (1..=rotate).rev() {
-                let source = if index == 1 {
-                    file.to_path_buf()
-                } else {
-                    backup(file, index - 1)
-                };
-                let destination = backup(file, index);
-                if source.exists() {
-                    // Match StateStore: failed backup rotation does not suppress a
-                    // successful primary write. Never include payloads in warnings.
-                    if fs::rename(&source, &destination).is_err() {
-                        eprintln!("[multicc/state-store] backup rotation failed");
-                        continue;
-                    }
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        if fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))
-                            .is_err()
-                        {
-                            eprintln!("[multicc/state-store] backup permission update failed");
-                        }
-                    }
-                }
-            }
+            rotate_backups(file, rotate);
             Ok(())
         },
     )
     .map_err(|_| "STATE_WRITE_FAILED: state write failed".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn rotation_keeps_primary_readable_and_preserves_backup_order() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "multicc-state-rotation-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sessions.json");
+        fs::write(&file, b"current").unwrap();
+        fs::write(backup(&file, 1), b"previous").unwrap();
+        fs::write(backup(&file, 2), b"older").unwrap();
+
+        rotate_backups(&file, 3);
+
+        assert_eq!(fs::read(&file).unwrap(), b"current");
+        assert_eq!(fs::read(backup(&file, 1)).unwrap(), b"current");
+        assert_eq!(fs::read(backup(&file, 2)).unwrap(), b"previous");
+        assert_eq!(fs::read(backup(&file, 3)).unwrap(), b"older");
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

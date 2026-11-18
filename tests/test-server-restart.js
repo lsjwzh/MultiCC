@@ -13,7 +13,34 @@ const {
   preflightRestart,
   writeRestartScript,
   scheduleDetachedRestart,
+  requestRustRestart,
 } = require('../src/server-restart');
+
+test('restart request asynchronously sends its configuration over stdin and returns the exit status', async () => {
+  const child = new EventEmitter();
+  child.stdin = new EventEmitter();
+  let input;
+  child.stdin.end = value => { input = JSON.parse(value); };
+  let executable, argumentsUsed, optionsUsed;
+  const result = requestRustRestart({ binary: '/fixture/supervisor', origin: 'http://127.0.0.1:3000',
+    expectedPids: [42], port: 3000, token: 'fixture-token', spawn: (binary, args, options) => {
+      executable = binary; argumentsUsed = args; optionsUsed = options; return child;
+    } });
+  assert.equal(executable, '/fixture/supervisor');
+  assert.deepEqual(argumentsUsed, ['--request']);
+  assert.deepEqual(optionsUsed.stdio, ['pipe', 'inherit', 'inherit']);
+  assert.deepEqual(input, { origin: 'http://127.0.0.1:3000', expected_pids: [42], port: 3000, token: 'fixture-token' });
+  child.emit('close', 0);
+  assert.equal(await result, 0);
+
+  const failedChild = new EventEmitter();
+  failedChild.stdin = new EventEmitter();
+  failedChild.stdin.end = () => {};
+  const failed = requestRustRestart({ binary: '/fixture/supervisor', origin: 'http://127.0.0.1:3000',
+    expectedPids: [42], spawn: () => failedChild });
+  failedChild.emit('close', 7);
+  assert.equal(await failed, 7, 'the caller receives a failed supervisor exit status');
+});
 
 function createReadableManager() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-restart-contract-'));

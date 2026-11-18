@@ -61,6 +61,11 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      // Tool cards are nested under the collapsed work-progress summary.
+      // Expand it before locating either a card header or its output.
+      await tester.tap(find.byKey(const ValueKey('basic-tool-summary')));
+      await tester.pumpAndSettle();
+
       if (expandWith != null) {
         await tester.tap(expandWith.first);
         await tester.pumpAndSettle();

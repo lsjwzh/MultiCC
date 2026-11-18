@@ -67,11 +67,21 @@ pub fn start(file: PathBuf, session: String) -> Result<BackgroundScan> {
     // identity observation; they do not atomically exclude adversarial renames.
     let anchor = File::open(&file).map_err(err)?;
     schedule_identity::anchor_matches(&anchor, &file)?;
-    WORKERS
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-            (n < MAX_WORKERS).then_some(n + 1)
-        })
-        .map_err(|_| err("scheduler background worker capacity exceeded"))?;
+    let mut workers = WORKERS.load(Ordering::Acquire);
+    loop {
+        if workers >= MAX_WORKERS {
+            return Err(err("scheduler background worker capacity exceeded"));
+        }
+        match WORKERS.compare_exchange_weak(
+            workers,
+            workers + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(current) => workers = current,
+        }
+    }
     let permit = Permit;
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);

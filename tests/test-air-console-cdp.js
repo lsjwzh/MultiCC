@@ -373,7 +373,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
 
     // /manage 那条老入口照旧可用：落在控制台那一页上，地址就是它自己的地址
     await page.navigate('/air?view=overview');
-    assert.ok(await consoleShown(page));
+    assert.ok(await page.waitFor(`new URLSearchParams(location.search).get('view')==='overview' && document.getElementById('console-center').hidden===false`), '导航后控制台完成显示');
     assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'overview', 'view=overview 是这一页的正式地址');
     assert.equal(await page.evaluate(`location.search.includes('task=')`), false, '这一页不是某个任务的任务页');
     await page.navigate('/air?dir=d1&task=tsk_here');
@@ -503,6 +503,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     await page.evaluate(`dispatchEvent(new KeyboardEvent('keydown',{key:'k',metaKey:true}))`);
     assert.ok(await page.waitFor(`document.getElementById('palette').hidden===false`));
     await page.evaluate(`(() => { const i=document.getElementById('palette-input'); i.value='结算'; i.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('#palette-results button').length === 1 && document.getElementById('palette-results').textContent.includes('结算页金额四舍五入错误')`));
     const hits = await page.evaluate(`[...document.querySelectorAll('#palette-results button')].map(el=>el.innerText.replace(/\\n/g,' · '))`);
     assert.equal(hits.length, 1, JSON.stringify(hits));
     assert.ok(hits[0].includes('结算页金额四舍五入错误') && hits[0].includes('North · 商城'), '命中任务时一并说清它在哪个目录');
@@ -513,6 +514,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.ok(dirHits[0].includes('North · 商城') && dirHits[0].includes('/projects/storefront'), '同一个入口也能按路径搜目录');
     // 清空输入回到「目录在前、任务在后」的完整列表：↑↓ 换的是选择，Enter 进的是选中的那一个。
     await page.evaluate(`(() => { const i=document.getElementById('palette-input'); i.value=''; i.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('#palette-results button').length === 7`), '等待完整搜索结果加载');
     assert.equal(await page.evaluate(`document.querySelectorAll('#palette-results button').length`), 7, '3 个目录 + 4 个任务，一个列表');
     assert.equal(await page.evaluate(`document.querySelectorAll('#palette-results button')[0].classList.contains('active')`), true);
     await page.evaluate(`dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown'}))`);
@@ -607,6 +609,7 @@ test('the directory task list keeps its filters, shares page scrolling, paginate
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===12`));
     await page.evaluate(`localStorage.setItem('air:task-visited-at', JSON.stringify({t8:9000,t3:8000}))`);
     await page.navigate('/air?dir=d1');
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===12`));
     assert.equal(await page.evaluate(`document.querySelector('#directory-task-list strong').textContent`), '目录任务 1', '默认按最后消息，而不是 updatedAt');
     assert.equal(await page.evaluate(`document.querySelector('#directory-task-sort [data-sort="message"]').getAttribute('aria-pressed')`), 'true');
     await page.evaluate(`document.querySelector('#directory-task-sort [data-sort="visit"]').click()`);
@@ -786,6 +789,7 @@ test('console prioritizes pending tasks and keeps filters and a complete attenti
     assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '6', '徽标 = 等我处理总数');
     await page.screenshot('06-console-waiting');
     await page.evaluate(`document.querySelector('#console-task-filters [data-filter="error"]').click()`);
+    assert.ok(await page.waitFor(`JSON.stringify(${listed}) === ${JSON.stringify(JSON.stringify(['出错：图谱回填', '出错：兼容矩阵', '出错：导出失败重试']))}`), '等待异常筛选结果按时间排序');
     assert.deepEqual(await page.evaluate(listed), ['出错：图谱回填', '出错：兼容矩阵', '出错：导出失败重试'], '「异常」单独一格，只列出错的，最早的在前');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#console-task-list .mc-status-label')].map(el=>el.textContent)`),
       ['执行异常', '执行异常', '执行异常']);

@@ -55,6 +55,7 @@ function build({ replayFence = 'visible_output', onPersist = noop, onUsage = noo
     recordDurableTurnUsage: (...args) => { onUsage(...args); return true; },
     modelAttributionField: () => ({}), turnTimingsField: () => ({}), usageLimitPoller: { onTurnComplete: noop },
     logger: { warn: noop, info: noop, error: noop }, chatBroadcast: noop, loadChatHistory: () => [],
+    userInputSignalHost: { withSnapshotAsync: async (_id, fn) => fn(), activateTurnAsync: async () => {} },
     taskContextHost: { turnOptions: o => o, restore: () => null }, savePersistedSessionsBestEffort: noop,
     cancelClassify: noop, emitTurnOutcome: noop, runDurablePostTurn: noop,
     classifyTurnEnd: (cs, sessionName, entry) => classified.push(entry),

@@ -192,8 +192,15 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
     queuedOperations++;
     const run = () => draftContext.run(undefined, operation);
     const result = tail.then(run, run);
-    tail = result.then(() => { queuedOperations--; }, () => { queuedOperations--; });
+    const done = () => { queuedOperations--; };
+    tail = result.then(done, done);
     return result;
+  }
+  // A detached draft owns no live SQLite transaction, so a synchronous
+  // question operation can proceed only while that draft is the sole queued
+  // operation. Never overtake another operation already waiting behind it.
+  function canAccessDetachedQuestion() {
+    return detachedDraftActive && queuedOperations === 1;
   }
   function decodeQuestionResponse(response) {
     if (!response.snapshot) return response;
@@ -885,12 +892,12 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
         throw new Error('session_work_question_initialization_failed');
       });
     },
-    // Fail closed instead of overtaking an earlier queued operation. This port
-    // is experimental until callers can guarantee that ordering in production.
+    // Do not overtake an earlier ordered command. Detached draft-only work is
+    // checked separately because question state is not part of that draft.
     sessionWorkQuestionSync(input) {
       ensureOpen();
       if (draftContext.getStore()) throw unavailable('session work question writes are not allowed inside a draft callback');
-      if (queuedOperations !== 0 && !(detachedDraftActive && queuedOperations === 1)) {
+      if (queuedOperations !== 0 && !canAccessDetachedQuestion()) {
         throw unavailable('session work owner has pending operations');
       }
       return decodeQuestionResponse(request('sessionWorkQuestionExperimental', { requestJson: JSON.stringify(input) }));
@@ -903,7 +910,7 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
       if (context && initialState !== undefined) {
         throw unavailable('session work initialization is not allowed inside a draft callback');
       }
-      if (!context && queuedOperations !== 0 && !(detachedDraftActive && queuedOperations === 1)) {
+      if (!context && queuedOperations !== 0 && !canAccessDetachedQuestion()) {
         throw unavailable('session work owner has pending operations');
       }
       const initial = initialState === undefined ? {} : { initial: {

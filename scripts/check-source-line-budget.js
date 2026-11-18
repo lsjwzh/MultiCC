@@ -773,10 +773,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 10452 lines / 679072 bytes, plus livenessAwaitingRetry x2 locales.
     // +11 bilingual keys (cronView*/cronCal*): the cron panel's calendar view
     // (public/air-cron-calendar.js). Regenerated: 10474 lines / 679943 bytes.
-    // Existing main-branch generated blob; keep this bound exact.
-    maxLines: 10500,
-    // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 682347,
+    // Three bilingual virtual-provider labels; bound matches the generated catalog.
+    maxLines: 10506,
+    maxBytes: 682646,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

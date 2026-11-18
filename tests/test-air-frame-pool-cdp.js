@@ -61,7 +61,7 @@ const frameState = `(() => {
 
 const clickTask = title => `(() => {
   const button = [...document.querySelectorAll('#tasks button')]
-    .find(candidate => candidate.querySelector('strong')?.textContent === ${JSON.stringify(title)});
+    .find(candidate => candidate.querySelector('strong')?.firstChild?.textContent === ${JSON.stringify(title)});
   if (!button) return false;
   button.click();
   return true;
@@ -268,8 +268,10 @@ test('Air mounts a brand new conversation frame inside the content area, never o
     assert.equal(opened.frameParent, 'chat-layer', '第一帧就该住在对话浮层里');
     assert.equal(opened.insideContent, true, `浮层永远在 #task-content 之内：${JSON.stringify(opened)}`);
 
-    // ② 点侧栏那张工作目录卡回目录：当前帧被交回池子（id 摘掉、藏起来）
+    // ② 从目录切换器选当前目录：当前帧被交回池子（id 摘掉、藏起来）
     await page.evaluate(`document.getElementById('library').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#directory-flyout:not([hidden]) [data-dir-id="d1"]')`), '目录切换器打开');
+    await page.evaluate(`document.querySelector('#directory-flyout [data-dir-id="d1"]').click()`);
     assert.ok(await page.waitFor(`!document.getElementById('conversation') && document.getElementById('task-title').textContent === 'MultiCC'`),
       '回目录后当前帧应该已经交回池子：id 摘掉，#conversation 暂时不在页面上');
 

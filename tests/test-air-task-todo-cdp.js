@@ -186,10 +186,10 @@ test('needs-me and manual-to-do stay separate, and one state-driven action repla
     // 就地取消忽略：异常计数不变，它重新回到等我处理。
     await clickRowAction('炸了的活');
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===2`));
-    assert.deepEqual(ignores, []);
     assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('已取消忽略')`));
+    assert.deepEqual(ignores, []);
     await pick('needs');
-    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===6`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===6 && [...document.querySelectorAll('#directory-task-list .directory-task-row strong')].some(el => el.textContent === '炸了的活')`));
     assert.ok((await titles()).includes('炸了的活'), '取消忽略后回到等我处理');
 
     // ── 忽略等待 + 从全部记录里取回 ─────────────────────────────────────
@@ -399,8 +399,12 @@ test('the directory needs-me card matches needsMe and ignored errors stay in the
       '取消忽略后异常清单仍是两条');
     // 它重新回到等我处理：等回答 + 两条出错 + 手动待办 = 4。
     await page.evaluate(`(() => { const s=document.getElementById('directory-task-status'); s.value='needs'; s.dispatchEvent(new Event('change')); })()`);
-    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===4`));
-    assert.ok((await titles()).includes('忽略掉的出错'), '取消忽略后回到等我处理');
+    const restoredTitles = await page.waitFor(`(() => {
+      const names = [...document.querySelectorAll('#directory-task-list .directory-task-row strong')].map(el => el.textContent).sort();
+      return document.getElementById('directory-task-status').value === 'needs'
+        && JSON.stringify(names) === ${JSON.stringify(JSON.stringify(['忽略掉的出错', '炸了的活', '空闲的活', '等人回答的活'].sort()))} ? names : null;
+    })()`);
+    assert.deepEqual(restoredTitles, ['忽略掉的出错', '炸了的活', '空闲的活', '等人回答的活'].sort(), '取消忽略后完整列表与等我处理一致');
     assert.deepEqual(await page.evaluate('window.__errors'), []);
   });
 });

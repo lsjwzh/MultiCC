@@ -85,7 +85,11 @@ run('原生更新失败保留已发布快照与游标，恢复后完整重试', 
   t.after(() => runtime.close()); await runtime.ensureReady(); assert.equal(runtime.index.backend, 'rust');
   const before = runtime.index.cursor(), socket = new Socket(); await runtime.attach(socket, url(before)); socket.frames.length = 0;
   data = snapshot([task('tsk_a', { runState: {} })]); await runtime.flush();
-  assert.equal(runtime.index.cursor(), before); assert.equal(socket.frames.length, 0);
+  assert.equal(runtime.index.cursor(), before);
+  assert.deepEqual(socket.frames.map(frame => frame.type), ['air_status']);
+  assert.equal(socket.frames[0].degraded, true);
   data = snapshot([task('tsk_a', { runState: 'error' })]); await runtime.flush();
-  assert.equal(socket.frames.at(-1).tasks[0].runState, 'error'); assert.notEqual(runtime.index.cursor(), before);
+  const delta = socket.frames.find(frame => frame.type === 'air_delta');
+  assert.equal(delta.tasks[0].runState, 'error'); assert.notEqual(runtime.index.cursor(), before);
+  assert.deepEqual(socket.frames.at(-1), { type: 'air_status', degraded: false });
 });

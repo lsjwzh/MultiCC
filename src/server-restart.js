@@ -72,13 +72,24 @@ function scheduleRustRestart({ spawn, rootDir, dataDir, port, targetPort = port,
 // CLI compatibility bridge. The Rust executable performs identity checks,
 // the HTTP request, and readiness monitoring. A non-loopback token is sent
 // over stdin, never in command-line arguments.
-function requestRustRestart({ binary, origin, expectedPids, port, token = '', run = require('node:child_process').spawnSync }) {
-  const result = run(binary, ['--request'], {
-    input: JSON.stringify({ origin, expected_pids: expectedPids, port: port || null, token }),
-    stdio: ['pipe', 'inherit', 'inherit'], encoding: 'utf8', timeout: 740000, windowsHide: true,
+function requestRustRestart({ binary, origin, expectedPids, port, token = '', spawn = require('node:child_process').spawn }) {
+  return new Promise(resolve => {
+    let child;
+    try { child = spawn(binary, ['--request'], { stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true }); }
+    catch (error) { process.stderr.write(`restart supervisor unavailable: ${error.message}\n`); resolve(1); return; }
+    let settled = false;
+    const timer = setTimeout(() => { try { child.kill(); } catch (_) {} finish(1); }, 740000);
+    function finish(status) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(status);
+    }
+    child.once('error', error => { process.stderr.write(`restart supervisor unavailable: ${error.message}\n`); finish(1); });
+    child.once('close', code => finish(code === 0 ? 0 : (code || 1)));
+    child.stdin.once('error', () => { try { child.kill(); } catch (_) {} finish(1); });
+    child.stdin.end(JSON.stringify({ origin, expected_pids: expectedPids, port: port || null, token }));
   });
-  if (result.error) { process.stderr.write(`restart supervisor unavailable: ${result.error.message}\n`); return 1; }
-  return result.status === 0 ? 0 : (result.status || 1);
 }
 
 // Use the same ./multicc restart entry as a manual restart, with a bash fallback
@@ -240,7 +251,7 @@ if (require.main === module && process.argv[2] === '--request') {
     process.exitCode = 1;
   } else {
     const binary = path.join(path.dirname(addon), process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
-    process.exitCode = requestRustRestart({ binary, origin: `http://${probeHost}:${port}`, expectedPids,
-      token: process.env.ACCESS_TOKEN || config.ACCESS_TOKEN || '' });
+    requestRustRestart({ binary, origin: `http://${probeHost}:${port}`, expectedPids,
+      token: process.env.ACCESS_TOKEN || config.ACCESS_TOKEN || '' }).then(code => { process.exitCode = code; });
   }
 }

@@ -548,6 +548,28 @@ test('question creation waits behind a detached draft and an earlier queued oper
   assert.equal((await store.sessionWorkState({ action: 'read', sessionId: 's' })).pendingQuestion.resolved, true);
 });
 
+test('a queued question operation cannot be overtaken during a detached mutation', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-question-ordered-queued-'));
+  const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite'), now: () => 10 });
+  t.after(async () => {
+    try { await store.close({ exportRollback: false }); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { started = resolve; });
+  const first = store.mutate(async draft => { started(); await gate; draft.firstMarker = true; });
+  await ready;
+  const queued = store.sessionWorkState({ action: 'read', sessionId: 's' });
+  try {
+    assert.throws(() => store.sessionWorkQuestionSync({}), /owner has pending operations/);
+    assert.throws(() => store.sessionWorkStateSync('s'), /owner has pending operations/);
+  } finally {
+    release();
+    await Promise.all([first, queued]);
+  }
+});
+
 test('question writes cannot join a draft during its synchronous commit hook', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-question-commit-hook-'));
   let hookError;

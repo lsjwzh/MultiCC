@@ -146,16 +146,35 @@ pub fn resolve_plugin_file(relative_raw: &str) -> Result<String, PluginFileError
 /// falsy in JS and falls back the same way.
 pub fn ui_root(root: &Path, ui: &str) -> PathBuf {
     let ui = if ui.is_empty() { DEFAULT_UI } else { ui };
+    #[cfg(windows)]
+    let ui = ui.replace('\\', "/");
+    #[cfg(windows)]
+    let ui = ui.as_str();
     let dir = dirname(ui);
+    #[cfg(windows)]
+    {
+        // `canonicalize` returns native, often verbatim, Windows paths. Do not
+        // run the POSIX string normalizer over the drive or UNC prefix.
+        let mut result = root.to_path_buf();
+        for component in dir.split('/') {
+            match component {
+                "" | "." => {}
+                ".." => {
+                    result.pop();
+                }
+                value => result.push(value),
+            }
+        }
+        result
+    }
+    #[cfg(not(windows))]
     PathBuf::from(join(root.to_string_lossy().as_ref(), &dir))
 }
 
-/// `absolute.startsWith(root + path.sep)`. A byte prefix on the lossy UTF-8
-/// form, because Node's strings are the lossy form too. Note this excludes
-/// `root` itself: the UI directory is not a file inside the UI subtree.
+/// The target must be a descendant, not the UI directory itself or a sibling
+/// with a shared string prefix. Native path components handle platform separators.
 pub fn within(root: &Path, absolute: &Path) -> bool {
-    let prefix = format!("{}{}", root.to_string_lossy(), std::path::MAIN_SEPARATOR);
-    absolute.to_string_lossy().starts_with(&prefix)
+    absolute != root && absolute.starts_with(root)
 }
 
 /// `MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream'`.
@@ -260,11 +279,13 @@ fn dirname(path: &str) -> String {
 }
 
 /// `path.posix.join(base, rest)`.
+#[cfg(not(windows))]
 fn join(base: &str, rest: &str) -> String {
     normalize(&format!("{base}/{rest}"))
 }
 
 /// `path.posix.normalize`.
+#[cfg(not(windows))]
 fn normalize(input: &str) -> String {
     if input.is_empty() {
         return ".".to_string();
@@ -674,6 +695,18 @@ mod tests {
         assert_eq!(ui_root(root, ""), root.join("ui"));
         // A trailing slash has no entry, so `dirname` is `.`.
         assert_eq!(ui_root(root, "ui/"), root.to_path_buf());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_windows_ui_paths_preserve_containment() {
+        let root = Path::new(r"\\?\C:\plugins\demo");
+        let ui = ui_root(root, r"ui\index.html");
+        assert_eq!(ui, root.join("ui"));
+        assert!(within(&ui, &root.join(r"ui\index.html")));
+        assert!(!within(&ui, &root.join("ui")));
+        assert!(!within(&ui, &root.join(r"ui-sibling\index.html")));
+        assert!(!within(&ui, &root.join("secret.txt")));
     }
 
     #[test]

@@ -97,13 +97,14 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
 
     // ── ① 从设置中心第二组进去：原生面板，不嵌旧 manage 页 ────────────────
     await page.navigate('/air?dir=d1&view=settings');
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心'`), '先落在设置中心');
-    const groupTitle = await T('airAdminGroupConnect');
+    const settingsTitle = await T('airSettingsCenter');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent===${JSON.stringify(settingsTitle)}`), '先落在设置中心');
+    const groupTitle = await T('airSettingsMobile');
     assert.equal(await page.evaluate(`(() => {
       const card = [...document.querySelectorAll('.air-setting-card')]
         .find(c => c.querySelector('strong').textContent === ${JSON.stringify(await T('airBridges'))});
       return card ? card.closest('.air-settings-group').querySelector('h3').textContent : null;
-    })()`), groupTitle, '消息桥接挂在设置中心的「连接与通知」那一组');
+    })()`), groupTitle, '消息桥接挂在设置中心的「手机与通知」那一组');
 
     // 记账版 EventSource：必须在进面板之前装上（进面板就会建连接）。
     await page.evaluate(`(() => {
@@ -125,7 +126,8 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0, '原生面板里没有旧 manage 的 iframe');
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].map(b => b.textContent.replace(/\\s+/g,''))`),
-      ['←返回设置中心', '↻刷新'], '工具条是面板自己的（返回设置中心 / 刷新）');
+      ['↻刷新'], '面板工具条保留刷新');
+    assert.equal(await page.evaluate(`document.getElementById('page-back').hidden`), false, '统一导航保留返回入口');
     assert.equal(await text('#admin-content .air-bridges .admin-panel h3'), await T('airBridgesTitle'), '面板抬头走 t()');
     assert.equal(await text('#admin-content .air-bridges-intro'), await T('airBridgesIntro'), '面板说明走 t()');
 
@@ -158,13 +160,13 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
     assert.ok(apiCalls().some(c => c === 'GET /api/telegram/config'), 'config 是按平台的接口读的');
 
     // ── ④ 读取结果真画进了对应元素 ───────────────────────────────────────
-    // 飞书：configured → 药丸被切成「已配置」那一份；gateway.cli=codex → 药丸写 codex、
+    // 飞书：configured → 药丸被切成「已配置」那一份；gateway.cli=codex → 药丸显示产品名 Codex、
     // 创建按钮让位给打开/重置/销毁，单选也跟着切到 codex。
     // 「已配置」这个措辞由复用模块自己决定（现在也用 t()），所以不去抄字面量：
     // 断①不再是未配置那一份文案，②模块给已配置态写的内联色出现了（骨架里没有内联色）。
     assert.ok(await until(async () => (await inlineColor('fs-cfg-state')) !== ''), '飞书凭证已配置画进了状态药丸（已配置态的内联色上去了）');
     assert.notEqual(await text('#fs-cfg-state'), await T('airBridgesStateUnconfigured'), '飞书药丸不再是「未配置」那一份文案');
-    assert.equal(await text('#fs-gw-state'), 'codex', '飞书 Gateway 会话写着当前 CLI（这是数据，不是文案）');
+    assert.equal(await text('#fs-gw-state'), 'Codex', '飞书 Gateway 会话显示当前 CLI 的产品名');
     // 「露出来」只看 display 是不是 none —— manage-bridges.js 切显隐用的就是
     // el.style.display = ''|'none'，具体是 inline-block 还是 block 由布局决定
     // （这三个按钮在 .sc-footer 里是 flex item，会被块化）。
@@ -237,10 +239,10 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
       { created: 4, closed: 2, live: 2 }, '刷新把两个在跑的平台各重连一次，活着的连接数不涨');
 
     // ── ⑦ 离开再进来：上一轮那几条 EventSource 必须被关掉 ────────────────
-    // 切走（工具条的「返回设置中心」）—— 这一刻面板并没有义务关连接（契约是「重建骨架
+    // 切走（统一导航的返回按钮）—— 这一刻面板并没有义务关连接（契约是「重建骨架
     // 之前先 disconnect」），但计数不能自己长起来：没有重连、没有多余的 SSE 请求。
-    await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].find(b => b.textContent.includes('返回设置中心')).click()`);
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心'`), '回到设置中心');
+    await page.evaluate(`document.getElementById('page-back').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent===${JSON.stringify(settingsTitle)}`), '回到设置中心');
     const afterLeave = await esState();
     await new Promise(r => setTimeout(r, 700));
     assert.deepEqual(await esState(), afterLeave, '离开后连接数不再增长（没有漏出来的重连循环）');

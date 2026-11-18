@@ -24,6 +24,10 @@ const { installFakeRemote } = require('./helpers/remote-screen-node-harness');
 const REQ_KEY = 0x4b;   // 网页播放端请求关键帧的单字节（线协议，跟 Rust 侧一致）
 
 const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
+// CI runs the relay on Linux and the real host's P2P path on macOS. An
+// unset selector preserves the ordinary local invocation of both tests.
+const suite = process.env.MULTICC_H264_CDP_SUITE || 'all';
+if (!['all', 'relay', 'p2p'].includes(suite)) throw new Error(`invalid H.264 CDP suite: ${suite}`);
 const W = 320, H = 240;
 
 function encodeClip(dir) {
@@ -121,7 +125,7 @@ async function fakeAgentAndRelay(t, WebSocketServer) {
   return { wsUrl, received };
 }
 
-test('h264 stream: fake agent → multicc-remote → Node forwarder → Chrome decodes frames and sends RFB input back',
+if (suite !== 'p2p') test('h264 stream: fake agent → multicc-remote → Node forwarder → Chrome decodes frames and sends RFB input back',
   { skip: !hasFfmpeg || !findChromeBinary() ? 'needs ffmpeg and Chrome' : false, timeout: 60000 }, async t => {
     let WebSocketServer;
     try { ({ WebSocketServer } = require('ws')); } catch { t.skip('ws module not installed'); return; }
@@ -212,7 +216,7 @@ test('h264 stream: fake agent → multicc-remote → Node forwarder → Chrome d
 // 隧道 → Node 转发层 → multicc-remote 的 H.264 桥。桥发 rtc-hello，Chrome 出 offer，
 // DataChannel 打开后帧改走直连。验：transport 变 p2p、直连后仍解出新帧、画面亮。
 // MULTICC_REMOTE_STUN 置空 = 只用本机候选，不连外部 STUN。
-test('h264 p2p cdp: Chrome ⇄ real multicc-remote over the test harness decodes frames on the DataChannel',
+if (suite !== 'relay') test('h264 p2p cdp: Chrome ⇄ real multicc-remote over the test harness decodes frames on the DataChannel',
   { skip: !hasFfmpeg || !findChromeBinary() ? 'needs ffmpeg and Chrome' : false, timeout: 180000 }, async t => {
     const { startHarness } = require('./helpers/remote-screen-e2e-harness');
     const saved = { stun: process.env.MULTICC_REMOTE_STUN, bin: process.env.MULTICC_REMOTE_BIN };

@@ -439,11 +439,11 @@ rustTest('连接被拒绝时保留系统根因并归属当前线路，不泄露�
   const body = await response.text();
   assert.equal(response.status, 502);
   assert.match(body, /UPSTREAM_CONNECT_FAILED/);
-  assert.match(body, /(?:connection refused|os error 61|os error 111)/i);
+  assert.match(body, /(?:connection refused|actively refused|os error (?:61|111|10061))/i);
   assert.doesNotMatch(body, /fixture-private-key|127\.0\.0\.1/);
   assert.equal(h.outcomes.length, 1);
   assert.equal(h.outcomes[0].errorCode, 'UPSTREAM_CONNECT_FAILED');
-  assert.match(h.outcomes[0].errorDetail, /connection refused/i);
+  assert.match(h.outcomes[0].errorDetail, /(?:connection refused|actively refused|os error (?:61|111|10061))/i);
   assert.equal(h.outcomes[0].proxyOutcome.termination, 'upstream_failure');
 });
 

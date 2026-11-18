@@ -41,7 +41,7 @@ const windowLimit = { kind: 'window', fetchedAt: now - 60_000, updatedAt: now - 
     summary: { windows: [{ window: '5h', usedPercent: 30, resetMs: now + 2 * 3600_000 }] } }) };
 const balanceLimit = { kind: 'balance', fetchedAt: now - 120_000, updatedAt: now - 120_000, stale: false,
   bar: providerLimitBar({ kind: 'balance', fetchedAt: now - 120_000, summary: { total: 42.5, currency: 'CNY', available: true } }) };
-const provider = (id, name, limit) => ({ id, name, appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude-exp'],
+const provider = (id, name, limit) => ({ id, name, appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude', 'claude-exp'],
   model: 'glm-5', modelOptions: ['glm-5'], limit });
 routes['/api/providers'] = () => json({ providers: [
   provider('glm', 'GLM 套餐', windowLimit),

@@ -105,7 +105,7 @@ const chatHeaderStateGeometry = `(() => {
 // 侧栏里那一行任务；点它就是「换台」。
 const clickTask = title => `(() => {
   const button = [...document.querySelectorAll('#tasks button')]
-    .find(candidate => candidate.querySelector('strong')?.textContent === ${JSON.stringify(title)});
+    .find(candidate => candidate.querySelector('strong')?.firstChild?.textContent === ${JSON.stringify(title)});
   if (!button) return false;
   button.click();
   return true;

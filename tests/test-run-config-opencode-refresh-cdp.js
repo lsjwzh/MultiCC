@@ -195,7 +195,7 @@ test('qoder model picker: 刷新模型 bypasses both caches and repaints live id
 // 空目录是一个完整结果；添加线路不能因它不断发请求、替换搜索框和点击目标。
 const pickerProviders = Array.from({ length: 18 }, (_, i) => ({
   id: `picker-${i}`, name: `测试线路 ${i}`, appType: 'claude', apiFormat: 'anthropic',
-  compatibleClis: ['claude-exp'], model: 'model-a', modelOptions: ['model-a'],
+  compatibleClis: ['claude', 'claude-exp'], model: 'model-a', modelOptions: ['model-a'],
 }));
 const pickerFixture = modelRoute => ({ ...routes,
   'GET /api/providers': () => json({ providers: pickerProviders, defaults: {} }),

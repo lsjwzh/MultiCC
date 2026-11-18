@@ -12,6 +12,7 @@ const WebSocket = require('ws');
 const { randomUUID } = require('crypto');
 const { assertTestDir } = require('../src/paths');
 const isolatedHostEnv = require('./helpers/isolated-host-env');
+const gitIdentity = require('./helpers/git-test-identity');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -40,6 +41,8 @@ const claudeCountFile = path.join(tmpRoot, 'claude-invocations');
 fs.mkdirSync(project, { recursive: true });
 fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(home, { recursive: true });
+fs.writeFileSync(path.join(home, '.gitconfig'),
+  `[user]\n\tname = ${gitIdentity.name}\n\temail = ${gitIdentity.email}\n`);
 fs.writeFileSync(fakeCli, `#!/usr/bin/env node
 const fs = require('fs');
 const readline = require('readline');

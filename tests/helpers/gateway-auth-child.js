@@ -86,18 +86,45 @@ if (process.env.MULTICC_TEST_SOURCE_ROUTES === '1') {
     directories, sessions: sourceSessions, pageFile: path.join(process.env.MULTICC_TEST_PACKAGE_ROOT, 'public/fleet-share.html'),
     logger: { error() {} }, authSecurity: security, issueWsTicket: (p, m) => security.issueWsTicket(p, m),
   }).sharing;
-  app.patch('/api/sessions/:id', (req, res) => {
+  const patchSession = (req, res) => {
     const current = sourceSessions.get(req.params.id);
     if (!current) return res.status(404).json({ error: 'Session not found' });
     const updated = { ...current, label: String(req.body.label || current.label) };
     sourceSessions.set(req.params.id, updated); res.json(updated);
-  });
-  app.post('/api/directories/:id/sessions', (req, res) => {
+  };
+  const createSession = (req, res) => {
     const id = `remote-created-${sourceSessions.size + 1}`;
     const created = { id, dirId: req.params.id, label: String(req.body.label || id), cli: 'codex', kind: 'chat' };
     sourceSessions.set(id, created); res.json(created);
-  });
+  };
+  app.patch('/api/sessions/:id', patchSession);
+  app.post('/api/directories/:id/sessions', createSession);
   app.get('/api/git/log', (req, res) => res.json({ dirId: req.query.dirId, commits: [] }));
+  if (gateway.isGatewayChild()) {
+    // The public Rust front door owns these routes. Supply the same local-only
+    // host contracts that the real Node child provides, rather than relying on
+    // the public fixture routes that the front door no longer forwards to.
+    const sessionRoutes = require('../../src/routes/session-routes-host').createSessionRoutesHost();
+    sessionRoutes.app.patch('/api/sessions/:id', patchSession);
+    sessionRoutes.app.post('/api/directories/:id/sessions', createSession);
+    sessionRoutes.mountRoute(app, { isLocal: isLocalRequest });
+    app.post('/api/__host/session-admin', (req, res) => {
+      if (!isLocalRequest(req)) return res.status(404).json({ error: 'not found' });
+      if (req.body.op !== 'guard-record') return res.status(400).json({ error: 'unknown host operation' });
+      const record = sourceSessions.get(String(req.body.id || '')) || null;
+      return res.json({ record, internal: record?.taskExecutionSlot === true, taskStateWritable: true });
+    });
+    app.post('/api/__host/session-git', (req, res) => {
+      if (!isLocalRequest(req)) return res.status(404).json({ error: 'not found' });
+      if (req.body.op === 'lookup') {
+        const dir = directories.get(req.body.dirId) || null;
+        return res.json({ session: null, dir, sessionWorktreeExists: false, dirPathExists: !!dir });
+      }
+      if (req.body.op === 'git' && req.body.repo === directories.get('fleet-source')?.path
+          && req.body.args?.[0] === 'log') return res.json({ ok: true, stdout: '' });
+      return res.status(400).json({ error: 'unknown host operation' });
+    });
+  }
 }
 if (process.env.MULTICC_TEST_EXTERNAL_ROUTES === '1' && process.env.MULTICC_TEST_SOURCE_ROUTES !== '1' && !gateway.isGatewayChild()) {
   require('./legacy-workspace-routes').mountFleetSharingRoutes(app, {
