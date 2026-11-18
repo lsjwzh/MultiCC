@@ -306,7 +306,7 @@ test('the Air task graph panel is native: id skeleton, drawn canvas, live intera
     const graphCallsBeforeReentry = graphCalls.length;
     await page.evaluate(`document.getElementById('page-back').click()`);
     assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`), '返回控制台回到控制台那一页');
-    await page.evaluate(`[...document.querySelectorAll('.admin-tool-card')].find(c => c.textContent.includes(t('airAdminPanelTaskgraph'))).click()`);
+    await page.evaluate(`document.querySelector('[data-air-view="taskgraph"]').click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#tg-graph-svg .tg-node').length === ${nodes.length}`), '再进来画布照样画出来');
     assert.deepEqual(await page.evaluate(`(() => {
       const canvas = document.getElementById('tg-graph-canvas');

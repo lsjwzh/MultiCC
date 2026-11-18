@@ -50,9 +50,8 @@ function buildRoutes() {
   }
   routes['/air'] = routes['/air.html'];
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
-  // clis 是服务端的 SUPPORTED_CHAT_CLIS（src/cli-switch.js）：既有 chat 车道
-  // （claude-exp / codex-exp），也有那两条 offered:false 的一次性车道。定时规则跑的是
-  // chat，所以新建时的线路选择按共享 CLI 目录筛过之后剩下的正是前两条。
+  // 模拟服务端的 CLI 列表：Claude 的 chat 车道现为 claude，claude-exp 是旧别名；
+  // codex 是一次性车道，codex-exp 是 Codex 的 chat 车道。
   routes['/api/air'] = () => json({ ok: true, directories: DIRECTORIES, clis: ['claude', 'claude-exp', 'codex', 'codex-exp'], migration: { errors: [] }, tasks: [], sessions: [] });
   routes['/api/settings/access-token'] = () => json({ hasToken: true, canEdit: false });
   routes['/api/providers'] = () => json({ available: false, providers: [], defaults: {} });
@@ -230,7 +229,7 @@ test('the directory home opens its own scheduled rules in an in-page sheet', asy
     assert.equal(created.length, 1);
     const draft = JSON.parse(created[0].body);
     assert.equal(draft.dirId, 'd1', '新建落在当前目录');
-    assert.ok(['claude-exp', 'codex-exp'].includes(draft.cli), `新建只给 chat 车道，默认第一条：${JSON.stringify(draft)}`);
+    assert.equal(draft.cli, 'claude', '新建默认使用第一条 Claude chat 车道');
     assert.ok(draft.cron === '0 7 * * *' && draft.name === '早间巡检' && draft.enabled === true, JSON.stringify(draft));
     assert.ok(await page.waitFor(`document.querySelectorAll('#dir-schedule-list .schedule-card').length === 3`), '新建的规则出现在这一层（它自己重读）');
     await page.screenshot('sheet-after-create.png');

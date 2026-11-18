@@ -113,15 +113,16 @@ test('push settings list plugin-channel recipients and write subscriptions throu
     assert.equal(await page.evaluate(`document.querySelector('#air-plugin-channels .pc-group-head a').getAttribute('href')`), WECHAT.ui);
 
     // 打开「接收」：POST 订阅，body 带插件、接收人、默认两类。
-    await page.evaluate(`document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"] .pc-row-actions input').click()`);
+    await page.evaluate(`window.__oldChannelRow = document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"]'); window.__oldChannelRow.querySelector('.pc-row-actions input').click()`);
     const posts = () => page.requests.filter(r => r.method === 'POST' && r.path === '/api/push/channel-subscriptions').map(r => JSON.parse(r.body));
     assert.ok(await until(() => posts().length === 1));
     assert.deepEqual(posts()[0], { plugin: WECHAT.id, target: 't-me', categories: ['question', 'error'], enabled: true });
     // 再勾「完成」：类别按固定顺序提交，开关保持开着。
-    assert.ok(await page.waitFor(`document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"] .pc-row-actions input').checked === true`));
-    await page.evaluate(`document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"] .pc-cats input[value=done]').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"]') !== window.__oldChannelRow && document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"] .pc-row-actions input')?.checked === true`));
+    await page.evaluate(`window.__oldChannelRow = document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"]'); window.__oldChannelRow.querySelector('.pc-cats input[value=done]').click()`);
     assert.ok(await until(() => posts().length === 2));
     assert.deepEqual(posts()[1], { plugin: WECHAT.id, target: 't-me', categories: ['done', 'question', 'error'], enabled: true });
+    assert.ok(await page.waitFor(`document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"]') !== window.__oldChannelRow && document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"] .pc-cats input[value=done]')?.checked === true`));
 
     // 测试：回执里的投递编号写出来。
     await page.evaluate(`document.querySelector('#air-plugin-channels .pc-row[data-target="t-me"] button').click()`);

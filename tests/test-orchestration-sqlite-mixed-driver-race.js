@@ -15,7 +15,7 @@ function isolated(source) {
 }
 const writer = `const fs=require('fs'),Database=require('better-sqlite3');const file=fs.readFileSync(0,'utf8');const db=new Database(file);db.prepare("UPDATE t SET x=7 WHERE id=1").run();db.close();`;
 
-test('raw SQLite data_version changes after a short external writer even after a second driver closes', () => {
+test('diagnose data_version after a second in-process SQLite driver closes', t => {
   const result = isolated(`
     const fs=require('fs'),os=require('os'),path=require('path'),cp=require('child_process');
     const Better=require('better-sqlite3'),{DatabaseSync}=require('node:sqlite');
@@ -31,27 +31,33 @@ test('raw SQLite data_version changes after a short external writer even after a
   `);
   assert.equal(result.exit, 0);
   assert.equal(result.value, 7);
-  assert.notEqual(result.after, result.before, 'external commit must invalidate the reader version');
+  // Independent SQLite libraries can lose POSIX locks when either closes a
+  // descriptor. Keep this reproducer as diagnostic evidence, not a claim
+  // that all SQLite builds/platforms must exhibit the same failure.
+  t.diagnostic(`mixed-driver data_version: ${result.before} -> ${result.after}`);
 });
 
-test('Rust store rejects an external writer after another in-process SQLite driver closes', () => {
+test('isolated Rust owner rejects an external writer after a Node SQLite driver closes', () => {
   const update = `const fs=require('fs'),Database=require('better-sqlite3');const file=fs.readFileSync(0,'utf8');const db=new Database(file);db.prepare("UPDATE orchestration_outbox SET data_json=json_set(data_json,'$.external',7) WHERE id='a'").run();db.close();`;
   const result = isolated(`
     const fs=require('fs'),os=require('os'),path=require('path'),cp=require('child_process'),Database=require('better-sqlite3');
-    const {getNative}=require('./src/native/runtime');
+    const {getNative,addonPath}=require('./src/native/runtime');
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mixed-sqlite-rust-')),file=path.join(dir,'s.sqlite');
-    const h=new (getNative().RustOrchestrationStore)(file,null,1000,{env:{},policy:{}});
+    const bin=process.env.MULTICC_TEST_ORCHESTRATION_OWNER||path.join(path.dirname(addonPath()),process.platform==='win32'?'multicc-gateway.exe':'multicc-gateway');
+    const h=new (getNative().RustIsolatedOrchestrationStore)(file,null,1000,{env:{},policy:{}},bin);
+    if(!h.ownerProcessId || h.ownerProcessId===process.pid) throw new Error('store must use a separate owner process');
     let db=new Database(file);db.prepare('INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence,available_at) VALUES(?,?,?,?,?,?)').run('a',JSON.stringify({id:'a',sessionId:'s',state:'pending',sequence:1,availableAt:0,attempts:0}),'s','pending',1,0);db.close();
     const head=h.request('begin',{}), prior=JSON.parse(h.request('materialize',{collection:'outbox',key:'a'}).valueJson);
     const child=cp.spawnSync(process.execPath,['-e',${JSON.stringify(update)}],{input:file,encoding:'utf8',timeout:5000});
-    let rejected=false;try { h.request('prepare',{expectedRevision:head.revision,state:{...head,revision:head.revision+1},changes:[{collection:'outbox',key:'a',value:{...prior,state:'leased'}}]});h.request('commit',{}); }
-    catch(e){rejected=true;h.request('end',{});} h.request('close',{});
+    let rejection='';try { h.request('prepare',{expectedRevision:head.revision,state:{...head,revision:head.revision+1},changes:[{collection:'outbox',key:'a',value:{...prior,state:'leased'}}]});h.request('commit',{}); }
+    catch(e){rejection=String(e.message);h.request('end',{});} h.request('close',{});
     db=new Database(file,{readonly:true});const row=JSON.parse(db.prepare("SELECT data_json FROM orchestration_outbox WHERE id='a'").get().data_json);db.close();
-    fs.rmSync(dir,{recursive:true,force:true});console.log(JSON.stringify({exit:child.status,rejected,external:row.external??null,state:row.state}));
+    fs.rmSync(dir,{recursive:true,force:true});console.log(JSON.stringify({exit:child.status,rejection,external:row.external??null,state:row.state}));
   `);
   assert.equal(result.exit, 0);
-  assert.equal(result.rejected, true, 'the stale write must be rejected');
+  assert.match(result.rejection, /ORCHESTRATION_SQLITE_CONFLICT/, 'the stale write must be rejected as a conflict');
   assert.equal(result.external, 7, 'the external commit must remain intact');
+  assert.equal(result.state, 'pending', 'the rejected write must not alter the row');
 });
 
 

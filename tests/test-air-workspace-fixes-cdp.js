@@ -18,7 +18,8 @@ test('Air directory memo, cross-directory completion and AutoCommit controls', a
   }
   routes['/air'] = routes['/air.html'];
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
-  const stock = { id: 'stock', dirId: 'd2', title: '库存同步', status: 'active', runState: 'running', updatedAt: 1000 };
+  // 侧栏按消息/更新时间排序：先让跨目录任务排在 30 条以外，再用完成事件把它推到前面。
+  const stock = { id: 'stock', dirId: 'd2', title: '库存同步', status: 'active', runState: 'running', updatedAt: 800 };
   const tasks = [stock, ...Array.from({ length: 32 }, (_, i) => ({ id: 't' + i, dirId: 'd1', title: 'Task ' + i,
     status: 'active', runState: 'idle', updatedAt: 900 - i }))];
   routes['/api/air'] = () => json({ ok: true, directories: [
@@ -57,10 +58,12 @@ test('Air directory memo, cross-directory completion and AutoCommit controls', a
       ['/memo.html?dirId=d1', '/memo.html?dirId=d2']);
     assert.equal(await page.evaluate(`(()=>{window.open=url=>window.memoOpened=url;document.getElementById('directory-memo').click();return window.memoOpened})()`), '/memo.html?dirId=d1');
     stock.runState = 'succeeded'; stock.updatedAt = 1100;
+    stock.attention = { kind: 'completed', at: 1100 };
     await page.evaluate(`document.getElementById('refresh').click()`);
     assert.ok(await page.waitFor(`document.querySelector('#tasks > button')?.dataset.task === 'stock'`));
     assert.equal(await page.evaluate(`document.querySelector('#tasks > button').classList.contains('unseen')`), true);
-    assert.equal(await page.evaluate(`document.querySelector('#tasks > button').textContent.includes('执行成功')`), true);
+    assert.ok(await page.evaluate(`document.querySelector('#tasks > button .mc-status')?.getAttribute('aria-label')?.includes('执行成功')`),
+      '无文字徽标仍向辅助技术报告执行成功');
     assert.equal(await page.evaluate(`document.querySelectorAll('#tasks > button').length`), 30);
     await page.screenshot('directory-memo-and-unread-completion.png');
 

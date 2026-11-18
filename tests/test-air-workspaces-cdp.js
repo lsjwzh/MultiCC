@@ -153,6 +153,7 @@ test('the Air workspaces panel is native: one overview read, guarded sweep, hone
     await page.evaluate(`document.getElementById('air-ws-sweep-orphans').click()`);
     await settle(sweepCalls, 2);
     assert.ok(sweepCalls[1].includes('orphans=1'), '「清扫＋孤儿对账」要把 orphans=1 带上，否则跟上一颗没区别');
+    assert.ok(await page.waitFor(`document.getElementById('air-ws-sweep')?.disabled === false`), '对账完成后才开始下一次清扫');
 
     // ── ⑦ 清扫失败：那句话必须留着并染红，而且不复读 ──────────────────────
     sweepError = 'hibernation runtime not ready';

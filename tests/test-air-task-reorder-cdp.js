@@ -1,19 +1,7 @@
 'use strict';
 
-// 侧栏「最近任务」点开一条之后，它怎么排到最前面 —— 这一组量的是过程，不只是结果。
-//
-// 用户的意见是「太生硬」：卡片一按就闪到顶上，中间没有交代。现在分两拍 —— 先抬起
-// （is-lifting），REORDER_LIFT_MS 之后才换位，换位那一拍所有挪了窝的行用 FLIP 演出来
-// （is-reordering / is-flying）。「一拍」和「两拍」的区别只有 DOM 里什么时候出现哪个
-// 类、行此刻被摆在哪儿说了算，所以必须真浏览器：
-//   ① 抬起那一拍里顺序必须还没变、卡片还站在它原来那一格（一变就是又回到瞬间跳上去）；
-//   ② 第二拍要真的滞后（时间差是 REORDER_LIFT_MS 的量级，不是 0），而且它接到的是
-//      「把自己从原位动到新槽」这条指令（在飞的那张的 transition 声明的是 transform，
-//      时长跟 duration 同量级）——「从原位出发」那半截的几何由单测钉住；这里不断
-//      computed transform：插值中读到的值取决于这一刻有没有出帧，读不稳；
-//   ③ 列表滚到中下部时顶端槽位在屏幕外：卡片改成就地在原来那一格淡掉
-//      （is-collapsing + rect 不动），且 scrollTop 一动不动 —— 换位是这份列表自己的
-//      家务事，不许把用户正看着的那一段顶回顶部。
+// 最近任务按最后消息时间排序，点击只记录访问，不改变列表顺序。
+// 真浏览器检查点击反馈会收尾、无位移时不产生换位动画，并保持滚动位置。
 //
 // 采样从 Node 侧拉（而不是页内 MutationObserver / rAF）：后台 target 的观察者回调会
 // 被 Chromium 攒着不投递，实测只有前两拍记得下来、收尾那一笔丢了。逐次 Runtime.evaluate
@@ -151,18 +139,17 @@ const clickAndRead = id => `(() => {
     first: list.querySelector(':scope > button[data-task]').dataset.task };
 })()`;
 
-test('点击侧栏任务：先抬起、隔一拍再动画换位；列表滚到中下部时只就地抽掉，滚动位置不动', async t => {
+test('点击侧栏任务保持消息时间顺序和滚动位置，并清理点击反馈', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const routes = buildRoutes();
   const screenshotDir = process.env.MULTICC_AIR_REORDER_QA_DIR || path.join(os.tmpdir(), 'multicc-air-reorder-qa');
 
   await withCdpHarness({ routes, screenshotDir }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
-    // 侧栏「最近任务」只列未读 + 打开过的（不再拿当前目录的任务填空位）：把这些任务
-    // 预先记成「打开过」，顺序就是 TASKS 的顺序。只在还没记过时写，后面的点击照常改它。
+    // 预置访问记录，验证点击更新访问记录不会改变按消息时间排列的侧栏。
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.getItem('air:recent-tasks')||localStorage.setItem('air:recent-tasks',${JSON.stringify(JSON.stringify(TASKS.map(task => task.id)))})` });
     await page.navigate('/air?dir=d1');
-    assert.ok(await page.waitFor(`document.querySelectorAll('#tasks > button[data-task]').length === ${TASKS.length}`), '侧栏把打开过的任务列出来');
+    assert.ok(await page.waitFor(`document.querySelectorAll('#tasks > button[data-task]').length === ${TASKS.length}`), '侧栏列出近期任务');
     const start = await page.evaluate(SNAPSHOT);
     assert.ok(start.order.length === TASKS.length && start.order[0] === 't1', `起点顺序要可预期：${JSON.stringify(start.order)}`);
     assert.ok(start.rows[0].top >= start.bandTop, '起点没滚动，第一条在带子里');
@@ -170,7 +157,7 @@ test('点击侧栏任务：先抬起、隔一拍再动画换位；列表滚到�
       return list.scrollHeight > list.clientHeight + 100; })()`);
     assert.ok(scrolled, '列表要真的能滚，否则「滚动位置不许被顶回去」无从量起');
 
-    // ── 第一拍：在顶端点开第 4 条（它上面还有三条要给它让位） ─────────────
+    // ── 第一拍：在顶端点开第 4 条 ───────────────────────────────────────
     const target = start.order[3];
     const targetTop = (start.rows.find(row => row.id === target) || {}).top;
     await page.evaluate(INSTALL_SPY);
@@ -190,25 +177,20 @@ test('点击侧栏任务：先抬起、隔一拍再动画换位；列表滚到�
 
     const liftMs = play.t - clickAt;
     assert.ok(liftMs >= 120 && liftMs <= 900, `两拍之间要真的隔一下，不是点下去就换位（实测 ${Math.round(liftMs)}ms）`);
-    assert.equal(play.liftId, target, '换位那一拍要认出抬起来的是哪一张');
-    assert.equal(play.flight, true, '列表在顶端：这一张该飞上去');
-    assert.equal(play.beforeOrder[0], start.order[0], '动画的起点是换位前那份顺序（先量旧位置，再 FLIP）');
-    assert.equal(play.afterOrder[0], target, '换位之后它在第一位');
-    const moved = play.rows.filter(row => row.id !== target && classes(row).includes('is-reordering'));
-    assert.ok(moved.length >= 3, `它原来上面那三行要一起让位：${JSON.stringify(moved.map(row => row.id))}`);
-    const flying = rowOf(play.rows, target);
-    assert.ok(classes(flying).includes('is-flying'), `要让这张从原位飞上去：${JSON.stringify(flying)}`);
-    assert.ok(Math.abs(flying.top - targetTop) <= 1, `飞行前它得先站回原来那一格：${flying.top} vs ${targetTop}`);
-    assert.match(flying.inlineTransition, /^transform (\d+)ms/, `它接到的是一条 transform 过渡：${JSON.stringify(flying.inlineTransition)}`);
-    assert.ok(Number(flying.inlineTransition.match(/^transform (\d+)ms/)[1]) >= 150, '过渡时长要看得见过程，不能一帧到位');
+    assert.equal(play.liftId, target, '反馈收尾时认出被点击的任务');
+    assert.equal(play.flight, true, '列表顶端槽位可见');
+    assert.equal(play.beforeOrder[0], start.order[0], '反馈收尾前的顺序不变');
+    assert.deepEqual(play.afterOrder, start.order, '点击本身不改变按消息时间排列的顺序');
+    assert.ok(play.rows.every(row => !classes(row).includes('is-flying') && !classes(row).includes('is-reordering')),
+      '没有位移时不应出现换位动画');
 
     assert.ok(await page.waitFor(`!document.querySelector('#tasks .is-lifting, #tasks .is-reordering, #tasks .is-flying, #tasks .is-collapsing')`),
       '两拍跑完要把类的痕迹收干净');
     const settledTop = await page.evaluate(SNAPSHOT);
-    assert.equal(settledTop.order[0], target, '收尾时它就在第一位');
+    assert.deepEqual(settledTop.order, start.order, '收尾后仍保持消息时间顺序');
     assert.equal(settledTop.rows.length, TASKS.length, '换位不该弄丢行');
     assert.equal(await page.evaluate(`JSON.parse(localStorage.getItem('air:recent-tasks') || '[]')[0]`), target,
-      '「打开过」的记录也要真的落下去（顺序的真相只有这一份）');
+      '打开记录仍需落盘，以便其他入口使用');
 
     // ── 第二拍：滚到中下部再点一条 ─────────────────────────────────────────
     const mid = await page.evaluate(`(() => { const list = document.getElementById('tasks');
@@ -223,7 +205,7 @@ test('点击侧栏任务：先抬起、隔一拍再动画换位；列表滚到�
         firstTop: Math.round(rows[0].getBoundingClientRect().top), visible: inside.length }; })()`);
     assert.ok(mid.id && mid.index >= 4, `滚下去之后要有一条能点的、上面还剩好几条：${JSON.stringify(mid)}`);
     assert.ok(mid.scrollTop > 100 && mid.top >= mid.bandTop, `这一屏要真的滚下去了，而且点的那条看得见：${JSON.stringify(mid)}`);
-    assert.ok(mid.firstTop < mid.bandTop, `它要去的那个槽位（第一条）此刻在带子上沿以外，否则这条就不是「就地抽掉」那条路：${JSON.stringify(mid)}`);
+    assert.ok(mid.firstTop < mid.bandTop, `顶端槽位此刻在带子上沿以外：${JSON.stringify(mid)}`);
 
     const midBeat = await page.evaluate(clickAndRead(mid.id));
     assert.ok(midBeat, '中下部这一条也要点得到');
@@ -235,24 +217,19 @@ test('点击侧栏任务：先抬起、隔一拍再动画换位；列表滚到�
     await page.screenshot('02-reorder-scrolled');
 
     assert.equal(midPlay.liftId, mid.id);
-    assert.equal(midPlay.flight, false, '顶端槽位在屏幕外：不飞，就地收掉');
-    assert.equal(midPlay.afterOrder[0], mid.id, '顶部那份顺序要真的换了');
-    const faded = rowOf(midPlay.rows, mid.id);
-    assert.ok(classes(faded).includes('is-collapsing'), `就地收掉的是它：${JSON.stringify(faded)}`);
-    assert.ok(Math.abs(faded.top - mid.top) <= 2, `淡出必须发生在它原来那一格：点击时 top=${mid.top}，散场时 top=${faded.top}`);
-    assert.equal(faded.inlineOpacity, '0', '它是淡掉的，不是瞬间没的');
-    assert.ok(/^translate/.test(faded.inlineTransform), '位置那半截留在原来那一格，只让透明度走');
-    assert.ok(/^opacity / .test(faded.inlineTransition), `接到的是一条透明度过渡：${JSON.stringify(faded.inlineTransition)}`);
+    assert.equal(midPlay.flight, false, '顶端槽位在屏幕外');
+    assert.deepEqual(midPlay.afterOrder, start.order, '中下部点击也不改变消息时间顺序');
+    assert.ok(midPlay.rows.every(row => !classes(row).includes('is-collapsing')), '没有位移时不应淡出任务');
     assert.ok(Math.abs(midPlay.scrollTop - mid.scrollTop) <= 2,
       `换位当口的滚动位置也不许动：${midPlay.scrollTop} vs ${mid.scrollTop}`);
 
     assert.ok(await page.waitFor(`!document.querySelector('#tasks .is-lifting, #tasks .is-reordering, #tasks .is-flying, #tasks .is-collapsing')`),
       '第二组两拍也要收干净');
     const after = await page.evaluate(SNAPSHOT);
-    assert.equal(after.order[0], mid.id, '顶部那份顺序要真的换了');
+    assert.deepEqual(after.order, start.order, '点击完成后保持原有顺序');
     assert.ok(Math.abs(after.scrollTop - mid.scrollTop) <= 2,
       `滚动位置要停在原地，不能被顶回顶部：前 ${mid.scrollTop} → 后 ${after.scrollTop}`);
-    assert.ok(rowOf(after.rows, mid.id).top < after.bandTop, '它落在屏幕外的顶端槽位里 —— 抽掉的是看得见的那一张，插入是默默的');
+    assert.ok(Math.abs(rowOf(after.rows, mid.id).top - mid.top) <= 2, '点击的任务保持在原来位置');
 
     // ── 还有个反例：这一列不只给点击用 ─────────────────────────────────────
     // 轮询、开控制台、切目录这些入口都会重画这份列表。「保持在当前位置」是这次要的

@@ -127,14 +127,14 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
 
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
 
-    // ── ① 从控制台的工具格进去：原生面板，不嵌旧 manage 页 ──────────────────
+    // ── ① 从工具导航进去：原生面板，不嵌旧 manage 页 ──────────────────────
     await page.navigate('/air?dir=d1&view=overview');
     assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`), '控制台那一页打开');
     const T = {
       memory: await label('airAdminPanelMemory'),
-      backToConsole: await label('airAdminBackToConsole'),
       refresh: await label('airAdminRefresh'),
       title: await label('memoryGraph'),
+      heading: await label('airMemoryGraph'),
       tabGraph: await label('airMemoryTabGraph'),
       tabTree: await label('airMemoryTabTree'),
       hint: await label('airMemoryGraphHint'),
@@ -155,13 +155,13 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
     // 之后，缩放/复位才有确定的结果可比 —— 这不是绕开被测代码，loadMemoryGraph 的
     // 「预热出图」那条路本来就是同步的。
     await page.evaluate(`window.requestAnimationFrame = () => 0`);
-    await page.evaluate(`[...document.querySelectorAll('.admin-tool-card')]
-      .find(card => card.querySelector('strong')?.textContent === ${JSON.stringify(T.memory)}).click()`);
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent === ${JSON.stringify(T.title)}`), '点进去落在记忆图谱页');
+    await page.evaluate(`document.querySelector('[data-air-view="memory"]').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent === ${JSON.stringify(T.heading)}`), '点进去落在记忆图谱页');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0, '原生面板里没有旧 manage 的 iframe');
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].map(b => b.textContent.replace(/\\s+/g,''))`),
-      ['←' + T.backToConsole, '↻' + T.refresh], '工具条是面板自己的（返回控制台 / 刷新），不是旧页面的');
+      ['↻' + T.refresh], '工具条保留面板刷新，而不是旧页面的工具条');
+    assert.equal(await page.evaluate(`document.getElementById('page-back').hidden`), false, '统一导航保留返回入口');
     assert.equal(await page.evaluate(`document.getElementById('console-center').hidden`), true, '换页时控制台那一页让开');
     assert.equal(await text('.air-memory-title span'), T.title, '标题沿用旧页那个 key');
     assert.equal(await text('#mem-tabs .mtab.active'), '🕸 ' + T.tabGraph, '默认落在图谱 tab');
@@ -210,7 +210,7 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
 
     // ── ④ 面板工具条的「刷新」按当前 tab 重拉 ──────────────────────────────
     const graphsBefore = callsOf('GET /api/memory/graph');
-    await page.evaluate(`document.querySelectorAll('#admin-actions button')[1].click()`);
+    await page.evaluate(`document.querySelector('#admin-actions button').click()`);
     assert.ok(await waitForCallCount('GET /api/memory/graph', graphsBefore + 1), '还在图谱 tab 时，刷新就是再拉一次图谱');
     assert.ok(await page.waitFor(`document.querySelectorAll('#mem-graph-svg .mem-node').length === 3`), '重拉之后画布又画好了');
     assert.deepEqual(memoryCalls(), ['GET /api/memory/graph', 'GET /api/memory/graph']);
@@ -226,7 +226,7 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
     // 切到树状之后再按刷新：这次重拉的该是树（同样要等次数涨上去 —— 切 tab 那一次
     // 已经把「最后一条是树」摆好了，比尾巴形状等于白比）。
     const treesBefore = callsOf('GET /api/memory/tree');
-    await page.evaluate(`document.querySelectorAll('#admin-actions button')[1].click()`);
+    await page.evaluate(`document.querySelector('#admin-actions button').click()`);
     assert.ok(await waitForCallCount('GET /api/memory/tree', treesBefore + 1), '树状 tab 上的刷新重拉树');
     assert.ok(await page.waitFor(`document.querySelectorAll('#mem-tree .mt-file').length === 4`), '重拉之后树又画好了');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#mem-tree .mt-body.open')].length`), 3,
@@ -258,7 +258,7 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
 
     await page.evaluate(`(() => { document.getElementById('mem-file-ta').value = ${JSON.stringify(ALPHA_NEXT)};
       document.getElementById('mem-file-save').click(); })()`);
-    assert.ok(await page.waitFor(`document.getElementById('mem-file-msg').textContent.length > 0`), '保存后有回执');
+    assert.ok(await page.waitFor(`document.getElementById('mem-file-msg').textContent === '✓ 已保存 · ~123 tokens'`), '保存完成后显示回执');
     assert.deepEqual(puts, [{ rel: ALPHA_REL, content: ALPHA_NEXT }], '写的是真接口，body 就这两项');
     assert.equal(await text('#mem-file-msg'), '✓ 已保存 · ~123 tokens',
       '回执是 memory-controller.js 内部拼的（不走 t()），按原样比');

@@ -399,7 +399,7 @@ test('the directory needs-me card matches needsMe and ignored errors stay in the
       '取消忽略后异常清单仍是两条');
     // 它重新回到等我处理：等回答 + 两条出错 + 手动待办 = 4。
     await page.evaluate(`(() => { const s=document.getElementById('directory-task-status'); s.value='needs'; s.dispatchEvent(new Event('change')); })()`);
-    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===4`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===4 && [...document.querySelectorAll('#directory-task-list .directory-task-row strong')].some(el => el.textContent === '忽略掉的出错')`));
     assert.ok((await titles()).includes('忽略掉的出错'), '取消忽略后回到等我处理');
     assert.deepEqual(await page.evaluate('window.__errors'), []);
   });

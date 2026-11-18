@@ -160,13 +160,13 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
     assert.ok(apiCalls().some(c => c === 'GET /api/telegram/config'), 'config 是按平台的接口读的');
 
     // ── ④ 读取结果真画进了对应元素 ───────────────────────────────────────
-    // 飞书：configured → 药丸被切成「已配置」那一份；gateway.cli=codex → 药丸写 codex、
+    // 飞书：configured → 药丸被切成「已配置」那一份；gateway.cli=codex → 药丸显示产品名 Codex、
     // 创建按钮让位给打开/重置/销毁，单选也跟着切到 codex。
     // 「已配置」这个措辞由复用模块自己决定（现在也用 t()），所以不去抄字面量：
     // 断①不再是未配置那一份文案，②模块给已配置态写的内联色出现了（骨架里没有内联色）。
     assert.ok(await until(async () => (await inlineColor('fs-cfg-state')) !== ''), '飞书凭证已配置画进了状态药丸（已配置态的内联色上去了）');
     assert.notEqual(await text('#fs-cfg-state'), await T('airBridgesStateUnconfigured'), '飞书药丸不再是「未配置」那一份文案');
-    assert.equal(await text('#fs-gw-state'), 'codex', '飞书 Gateway 会话写着当前 CLI（这是数据，不是文案）');
+    assert.equal(await text('#fs-gw-state'), 'Codex', '飞书 Gateway 会话显示当前 CLI 的产品名');
     // 「露出来」只看 display 是不是 none —— manage-bridges.js 切显隐用的就是
     // el.style.display = ''|'none'，具体是 inline-block 还是 block 由布局决定
     // （这三个按钮在 .sc-footer 里是 flex item，会被块化）。

@@ -9,7 +9,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const Database = require('better-sqlite3');
-const { getNative } = require('../src/native/runtime');
+const { getNative, addonPath } = require('../src/native/runtime');
 
 async function stopChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -18,10 +18,13 @@ async function stopChild(child) {
   await exited;
 }
 
-test('Rust connection sees a short-lived external writer transaction consistently', t => {
+test('isolated Rust owner sees a short-lived external writer transaction consistently', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestration-wal-mixed-'));
   const file = path.join(dir, 'db.sqlite');
-  const store = new (getNative().RustOrchestrationStore)(file, null, 1000, { env: {}, policy: {} });
+  const binary = process.env.MULTICC_TEST_ORCHESTRATION_OWNER || path.join(path.dirname(addonPath()),
+    process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+  const store = new (getNative().RustIsolatedOrchestrationStore)(file, null, 1000, { env: {}, policy: {} }, binary);
+  assert.ok(store.ownerProcessId > 0 && store.ownerProcessId !== process.pid, 'the SQLite owner must be a separate process');
   t.after(() => { store.request('close', {}); fs.rmSync(dir, { recursive: true, force: true }); });
   const seed = new Database(file);
   seed.prepare('INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence,available_at,updated_at) VALUES(?,?,?,?,?,?,?)')
