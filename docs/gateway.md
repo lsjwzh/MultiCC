@@ -4963,3 +4963,81 @@ stub 子进程要先加载原生模块、建读模型，才监听内部端口；
 
 `POST/PUT/PATCH/DELETE` 到这两条路径、`/api/air/*` 下其它未认领路径，以及 `liveSync` 的 WebSocket 订阅（`/ws/meta?air=1`，`attach()`）都留在 Node，
 后者属于下一阻塞域（WS 宿主）。
+
+## 61. public/ 静态根、版本化 HTML 与 `/multicc.apk` 迁入前门（2026-11-19）
+
+退役对象：真实 app 上的整个静态资源挂载——`src/routes/static-assets.js` 的
+`mountRoutes`（版本化 HTML 中间件与 `express.static(public/)` 两层）与
+`src/routes/system.js` 的 `mountApkDownload`（`GET /multicc.apk`）。迁移后 Node 不再注册任何
+静态处理器，公开注册 129 → 128、中间件 31 → 29；`static-assets.js` 只剩 `serveHtml` 薄桥
+（share 页仍由宿主端口的 Express 渲染），重写规则唯一源是
+`multicc_core::static_assets_routes::version_html`，Node 经原生模块调用它，没有第二份正则。
+
+### 61.1 边界
+
+| 在前门 | 在 Node 宿主 |
+|---|---|
+| `multicc_core::static_web`：serve-static/send 的解析规则（percent-decode、归一化、UP_PATH 拒绝、隐藏文件 `dotfiles:'ignore'`、`index.html`、`extensions:['html']`、目录尾斜杠 301、`encodeUrl` 重定向目标） | `apk-download` op 的判定：本地 `public/multicc.apk` 存在性、发布资产 GitHub 核验状态（`apkDistribution`/`iosOta` 实例） |
+| `native/gateway/src/app/static_web_root.rs`：真实 fs 解析与应答（200 / 206 / 304 / 301 / 412 / 416 / 500），`http_send::plan_with_preset` 的 `setHeaders` 钩子（`.apk` → `application/vnd.android.package-archive` + attachment + no-store，`.ipa` → `application/octet-stream` + attachment + no-store） | share 页的 HTML 渲染（`serveSharePage` 调 `serveHtml` 薄桥） |
+| 版本化 HTML 重写（`version_html`：`?v=<mtimeMs>`、no-store/no-cache/Pragma 三头）、`chat`/`task-shell` 入口的 `task-entry.html` 改写 | — |
+
+`static_web_root` 接在认领链**末端**：通用 claim、`release_history_routes`、`static_assets_routes`
+都放弃之后才解析 public/，解析不出可服务目标的请求原样转发 Node——与退休
+`express.static` 的 `fallthrough: true` 一致，没有 SPA fallback。
+
+### 61.2 `/multicc.apk` 的认领与 `fellThrough` 三段委托
+
+这条路径改由 `release_history_routes` 认领（簇内第 11 条），但只有**判定**是宿主的：
+宿主 op 返回本地文件 / 已核验发布 / 其余三态。已核验发布 → 前门 302（宿主只传
+`{ status, location }`，正文由 `express::redirect_status` 在前门渲染）；其余 → 带
+`Cache-Control: no-store` 的空 404；本地文件 → 宿主 `next()`（捕获成 `fellThrough`），前门
+按退休中间件链顺序续走：
+
+1. `static_assets_routes` 的 apk/ipa 守卫：除**精确小写** `/multicc.apk` 外的任何
+   `.apk`/`.ipa` URL 一律裸 404 no-store（`/MULTICC.APK` 等大小写变体即使有本地文件也 404，
+   尾斜杠 `/multicc.apk/` 不匹配守卫的 `$` 锚）；
+2. `static_web_root`：守卫放行后由前门把本地文件发出去（与直接 GET 同一套引擎）；
+3. 都放弃 → 统一 `forward` 到 Node（退休链里就是落到后续中间件）。
+
+差分曾在这里抓到真 bug：第一版把 `fellThrough` 直通 `serve_file`，`/MULTICC.APK` 在
+「本地有文件」场景下 rust 200 / node 404——守卫被绕过了。三段委托让守卫语义只有一个出处。
+
+### 61.3 宿主契约的新形状
+
+`release-history` 捕获器补两种退休处理器出口：`res.redirect([status], url)` 折叠成
+`{ redirect: { status, location } }`（Express 的正文依赖 `Accept`，所以只有决策过线），
+以及裸 `next()` 置 `fellThrough: true`——前门必须能把它和一次真正的 200 区分开，
+否则本地文件分支会变成空 200。`forward` 因此改为 `pub(crate)`，并让
+`app::handle` 带上 `UpstreamHandle`：被认领路由的退役处理器以 `next()` 收尾时，
+请求按统一转发路径结束（复用同一连接、同一 PROXY 头），头序与逐字节形状不变。
+
+### 61.4 验证
+
+- Rust：`static_web` 内核单测（解析矩阵、条件请求、Range）、`static_assets_routes`
+  的 `version_html` 用例、`release_history_routes` 的认领/Allow 用例（簇 11 条）；
+  `native/gateway/tests/static_web_root.rs` 集成测试 723 行（真实 public/ 树、符号链接、
+  条件与 Range 请求、`.apk/.ipa` 头、目录重定向）。cargo workspace 全量见提交说明。
+- 差分（指纹 `4a3d811ddcbbf4d9b4b68e90`，同一产物连跑）：
+  - `release-history-routes.js`：164 案，same 162/162、按设计差异 2/2（均为既有
+    host-unreachable 形态）。新增钉：`/MULTICC.APK` 有本地文件时两侧 404 no-store、
+    `/multicc.apk/` 尾斜杠两侧都穿透转发、OPTIONS `Allow: GET,HEAD`。
+  - `static-assets-routes.js`：301 案，same 271/271、按设计落回 30/30，三项变异全被抓到
+    （apk 变体语料移入 release-history 簇后回归）。
+  - `static-web-root.js`（新增）：203 案，same 172/172、按设计落回 31/31，覆盖
+    Range / 条件请求 / URL 编码 / 尾斜杠 / 隐藏文件 / 符号链接。
+- 台账：`docs/backend-runtime-inventory.md` 重捕获 128/29；`node-surface-ledger` 的
+  `static-and-apk` 簇清零、`air-sync` 补登 11-18 清零、中间件 `static-and-artifacts` 组 6 → 4，
+  `check-node-surface-ledger` 归零。
+
+### 61.5 差分 harness 的就绪钩子（通用化）
+
+§60.5 的竞态（`/healthz` 由前门自答、先于宿主端口就绪）本批通用化：`lib.js` 的 spec 支持
+`ready?(port)`，在等完前门端口后调用；`release-history-routes.js` 用它探测 `/api/apk-info`
+返回非 503 才开跑（APK 语料在文件最前，原来首轮 N 条 503 `rust_backend_unavailable`，
+失败数随负载抖动 14→12）。其它带宿主端口的语料可按需接入，未逐一改。
+
+### 61.6 范围之外（仍在 Node）
+
+artifacts 的 `express.static` 双 root（`src/artifacts.js`，`X-Content-Type-Options` /
+`?download=1` attachment 语义）、`/voice-gateway/web` 反代层、share 页 HTML 的 Express 渲染，
+以及一切非 GET/HEAD 方法到静态路径的请求（转发 Node）。
