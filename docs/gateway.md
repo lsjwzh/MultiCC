@@ -127,6 +127,7 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 
 - **二选一**：两者都不给 → 退出码 2，stderr `[multicc-gateway] serve needs --no-node (Rust-only, unmigrated routes fail closed) or --node <node executable>`；同时给 → 退出码 2 并指出冲突；`--no-node` 之后还带脚本或参数（含 `--` 之后的裸 token）→ 退出码 2。没有静默默认值。
 - **不 spawn 任何子进程**：不构造 supervisor、不设置 `MULTICC_GATEWAY_CHILD`、不开内部端口。公开端口照旧绑定（含开发模式顺延与 `--ephemeral-loopback`）、`.env` 照旧读取、原生路由的代码与 Express 语义照常参与匹配。**鉴权运行态（访问令牌、关停标志、revision、WS 票据表）在 `--no-node` 下由前门进程自己持有**：启动时按与 `server.js` 相同的 `.env` 规则（`--cwd/.env` + 进程环境，已存在的非空环境变量优先）读取 `ACCESS_TOKEN`，交给进程内的 `multicc_core::auth_runtime::AuthRuntime`；需要该快照的原生路由因此照常应答，闸门规则与 `--node` 是同一份 Rust 实现。`ACCESS_TOKEN` 缺失、为空或超出私有控制帧上限（64 KiB）时 **fail-closed**：不安装本地实例，行为与旧版一致——这些路由不等 3 秒控制流超时，立即返回下面「需鉴权的 Rust 路由」那条 503，并在 stderr 写一行诊断；不会用空 token 或默认 token 放行。`--node` **永不**安装本地实例：Node 子进程仍是唯一持有者，避免两个持有者对 revision、票据和关停标志产生分叉。只有不需要鉴权快照的原生路由（如 `MULTICC_GATEWAY_TEST_ROUTES` 的探针）在没有 token 时才会真正应答。包根与数据根仍按 `--cwd` 推导，脚本名取缺省 `server.js`（文件本身不需要存在）。
+- **两条公开健康探针由前门自答**：`GET|HEAD /healthz` 与 `/readyz` 是 §8.1 下唯一「事实本来就属于本进程」的 server-core 路由——没有子进程就没有 `process.uptime()`、没有 `serviceReady` 标志，被部署探测的就是前门自己。`--no-node` 时它们不再走宿主端口，而是由 `native/gateway/src/app/server_core.rs` 的 `local_healthz` / `local_readyz` 作答：`{"status":"ok","uptimeSeconds":<前门自身 uptime，向下取整>,"requestId":…}` 与 `{"status":"ready","requestId":…}`（没有子进程就没有 `checks` 可抄，这个键按退役实现 `readinessDetails()` 返回空时的形状省略），响应头仍是 `Cache-Control: no-store`。**没有 `ACCESS_TOKEN` 也照答**：这两条路径本来就不需要鉴权快照，所以它们在「无 Node 子进程且无本地鉴权运行态」时跳过那条 fail-closed 分支（局域网对端白名单照旧先跑）。同簇的 `/metrics` 与 `/api/repo-operations/:operationId` 描述的是 Node 的事实（合并指标表、仓储 actor 进度），仍旧立即 503。`--node` 行为逐字节不变：照旧问子进程的宿主端口。
 - **落 Node 的请求立即失败关闭**：所有 fallback（含 WebSocket 升级）**不进入** §6 的 30 秒等待窗口，直接回：
 
   ```
@@ -2322,6 +2323,13 @@ Known differences against the retired Node handlers:
 - The GitHub fetch's 15s deadline covers the whole request (connect, headers
   and body), where Node's `{ timeout: 15000 }` was socket inactivity — a
   slow-but-progressing body no longer resets the clock.
+- The deadline starts only after the process-wide native root store is warm:
+  reqwest reads the OS keychain on every client build (5-7s measured on a
+  cold macOS keychain), which the first outbound request used to pay inside
+  its own budget. The roots now load once per process on the blocking pool
+  ahead of any request timer, and every client is built from that shared
+  store (`tls_built_in_native_certs(false)` + explicit roots), keeping the
+  trust set identical. Node never charged root-store setup to a request.
 - The git fallback still runs through `repo-actor` (it owns the
   runtime-patched PATH, the non-interactive env and the per-repo queue) via the
   host port; only the concurrency observed by `version-check` callers changes:

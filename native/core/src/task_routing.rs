@@ -1,6 +1,8 @@
 //! Task routing policy — the attribution mode ladder and the R2 attribution
 //! eligibility gate, migrated verbatim from `src/task-routing/attribution-mode.js`
-//! and `src/task-routing/eligibility.js`.
+//! and the retired `src/task-routing/eligibility.js` (its JS bridge had no
+//! production consumer left and was deleted; `tests/test-task-attribution-
+//! eligibility.js` now pins this owner through the N-API op directly).
 //!
 //! Attribution mode: the classify verdict says what a turn *looks* like; the
 //! mode says what the host may do about it (off / shadow / suggest / auto).

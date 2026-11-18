@@ -398,18 +398,16 @@ pub async fn codex(
     let refresh = flag(&query_text(ctx, "refresh"));
     let mut poll_only = !sync && flag(&query_text(ctx, "poll")) && !refresh;
     if !sync && query_absent(ctx, "providerId") && query_absent(ctx, "poll") {
-        let mut request = json!({ "op": "codex-refresh", "providerId": "codex-official", "wait": true });
+        let mut request =
+            json!({ "op": "codex-refresh", "providerId": "codex-official", "wait": true });
         if refresh {
             request["refresh"] = Value::Bool(true);
         }
-        let Some(answer) = host_port::call_with(
-            host_port_num,
-            HOST_PATH,
-            &request,
-            LEGACY_REFRESH_TIMEOUT,
-        )
-        .await
-        .ok() else {
+        let Some(answer) =
+            host_port::call_with(host_port_num, HOST_PATH, &request, LEGACY_REFRESH_TIMEOUT)
+                .await
+                .ok()
+        else {
             return unavailable(ctx);
         };
         if answer.get("error") == Some(&Value::Bool(true)) {
@@ -426,12 +424,7 @@ pub async fn codex(
         if refresh {
             request["refresh"] = Value::Bool(true);
         }
-        let Some(answer) = host(
-            host_port_num,
-            request,
-        )
-        .await
-        else {
+        let Some(answer) = host(host_port_num, request).await else {
             return unavailable(ctx);
         };
         if answer.get("error") == Some(&Value::Bool(true)) {
