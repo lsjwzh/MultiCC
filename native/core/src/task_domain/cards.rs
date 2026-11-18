@@ -69,6 +69,19 @@ pub fn attention(v: &Value) -> Value {
     };
     json!({"task":task,"changed":changed})
 }
+/// 「这个会话到底有没有真的跑过一轮」只由这几个 taskState 字段作证（见 run_state
+/// 的自愈判定）。宿主每轮要为上千张卡裁剪 taskState 投影，裁错一个键就会让规则
+/// 看不到物证、把从未受理的轮次报成「执行中」，而且不报错。所以清单只在这里定义
+/// 一份，宿主通过 `op: "runStateFactKeys"` 读取，不许两边各抄一份。
+pub const RUN_STATE_FACT_KEYS: [&str; 7] = [
+    "queueState",
+    "classifyState",
+    "classifyHistory",
+    "classifyUpdatedAt",
+    "lastTurnEndedAt",
+    "startedAt",
+    "endedAt",
+];
 pub fn run_state(t: &Value, facts: &Value, now: f64) -> Value {
     if t["runState"] != "running" && t["runState"] != "queued" {
         return t.get("runState").cloned().unwrap_or(Value::Null);
@@ -83,17 +96,7 @@ pub fn run_state(t: &Value, facts: &Value, now: f64) -> Value {
         .collect::<Vec<_>>();
     let has_turn = ids.iter().any(|id| {
         let state = &facts[id]["taskState"];
-        [
-            "queueState",
-            "classifyState",
-            "classifyHistory",
-            "classifyUpdatedAt",
-            "lastTurnEndedAt",
-            "startedAt",
-            "endedAt",
-        ]
-        .iter()
-        .any(|k| {
+        RUN_STATE_FACT_KEYS.iter().any(|k| {
             let v = &state[k];
             if let Some(a) = v.as_array() {
                 !a.is_empty()

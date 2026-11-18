@@ -149,6 +149,8 @@ fn run_value(v: &Value) -> Result<Value, String> {
             json!(cards)
         }
         "runState" => cards::run_state(&v["task"], &v["facts"], num(&v["now"])),
+        // 宿主裁剪 taskState 投影时要用的键清单（唯一来源在 cards.rs）。
+        "runStateFactKeys" => json!(cards::RUN_STATE_FACT_KEYS),
         "attention" => cards::attention(v),
         "capacity" => {
             let count = array(&v["tasks"])
