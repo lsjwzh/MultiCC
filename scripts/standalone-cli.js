@@ -273,7 +273,7 @@ async function cmdRestart(layout, env, args) {
   const { requestRustRestart } = require(path.join(layout.appServerDir, 'src', 'server-restart'));
   const binary = path.join(layout.appServerDir, 'native', 'prebuilt', `${layout.platform}-${layout.arch}`,
     layout.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor');
-  const result = requestRustRestart({ binary, origin: state.origin, expectedPids: [state.pid], port: args.port });
+  const result = await requestRustRestart({ binary, origin: state.origin, expectedPids: [state.pid], port: args.port });
   if (result !== 0 || !args.foreground) return result;
   return holdRestartedForeground(layout, env, binary);
 }

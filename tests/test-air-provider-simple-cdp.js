@@ -157,7 +157,9 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     await page.evaluate(`document.querySelector('.air-provider-card').scrollIntoView({block:'start'})`);
     t.diagnostic(await page.screenshot('air-provider-quota-mobile'));
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-limit') !== null`), '切回桌面布局后额度卡片重新就绪');
     await page.evaluate(`Date.now=()=>${now + 1800000};window.__quotaTicks.forEach(fn=>fn())`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-limit')?.textContent === '5h 55% 1.5h · 1wk 64% 2d 23h · 更新于 31 分钟前'`), '等待额度时间更新');
     assert.equal(await page.evaluate(`document.querySelector('.air-provider-limit').textContent`),
       '5h 55% 1.5h · 1wk 64% 2d 23h · 更新于 31 分钟前');
 

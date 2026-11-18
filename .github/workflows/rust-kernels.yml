@@ -37,6 +37,7 @@ jobs:
         run: |
           cargo fmt --all --manifest-path native/Cargo.toml --check
           cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path native/Cargo.toml -p multicc-core durable_state::tests
           cargo test --locked --manifest-path native/Cargo.toml -p multicc-core native_session_guard::tests
           cargo test --locked --manifest-path native/Cargo.toml -p multicc-core --lib windows_absolute_paths_follow_node_win32_semantics
           cargo test --locked --manifest-path native/Cargo.toml -p multicc-cpr

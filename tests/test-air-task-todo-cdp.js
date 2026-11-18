@@ -186,8 +186,8 @@ test('needs-me and manual-to-do stay separate, and one state-driven action repla
     // 就地取消忽略：异常计数不变，它重新回到等我处理。
     await clickRowAction('炸了的活');
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===2`));
-    assert.deepEqual(ignores, []);
     assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('已取消忽略')`));
+    assert.deepEqual(ignores, []);
     await pick('needs');
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===6 && [...document.querySelectorAll('#directory-task-list .directory-task-row strong')].some(el => el.textContent === '炸了的活')`));
     assert.ok((await titles()).includes('炸了的活'), '取消忽略后回到等我处理');
