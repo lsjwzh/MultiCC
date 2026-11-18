@@ -120,16 +120,18 @@ test('the directory home opens its own scheduled rules in an in-page sheet', asy
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?dir=d1');
     assert.ok(await page.waitFor(`document.getElementById('directory-schedules')?.hidden === false`));
+    assert.ok(await page.waitFor(`document.getElementById('directory-delete')?.hidden === false`));
 
-    // 入口在工具条最右、紧挨着「本目录产物」，说的清自己是干什么的。
+    // 定时任务紧挨产物，删除入口位于其后并贴住右边界。
     assert.deepEqual(await page.evaluate(`(() => {
       const entry = document.getElementById('directory-schedules');
       const previous = entry.previousElementSibling;
       const bar = document.querySelector('.directory-toolbar').getBoundingClientRect();
-      return { afterArtifacts: previous?.id === 'directory-artifacts', label: entry.textContent.trim(),
-        title: entry.title, right: Math.round(bar.right - entry.getBoundingClientRect().right) };
-    })()`), { afterArtifacts: true, label: '⏰ 定时任务', title: '查看本目录的定时任务', right: 0 },
-    '入口接在「本目录产物」后面，贴住工具条右边界');
+      const remove = document.getElementById('directory-delete');
+      return { afterArtifacts: previous?.id === 'directory-artifacts', beforeDelete: entry.nextElementSibling === remove,
+        label: entry.textContent.trim(), title: entry.title, right: Math.round(bar.right - remove.getBoundingClientRect().right) };
+    })()`), { afterArtifacts: true, beforeDelete: true, label: '⏰ 定时任务', title: '查看本目录的定时任务', right: 0 },
+    '入口接在「本目录产物」后面，删除入口贴住工具条右边界');
 
     // 点开就是页内弹层：真 modal（top layer），标题带目录名。
     await click(page, `document.getElementById('directory-schedules')`);
@@ -284,29 +286,30 @@ test('on a phone the sheet rises from the bottom and the toolbar wraps', async t
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
     await page.navigate('/air?dir=d1');
     assert.ok(await page.waitFor(`document.getElementById('directory-schedules')?.hidden === false`));
+    assert.ok(await page.waitFor(`document.getElementById('directory-delete')?.hidden === false`));
 
-    // 工具条换行：切换器独占一行，三颗入口在第二行平分，谁都不越出容器（也不横滚）。
+    // 工具条换行：切换器独占一行，四颗入口在第二行平分，谁都不越出容器（也不横滚）。
     const bar = await page.evaluate(`(() => {
       const bar = document.querySelector('.directory-toolbar');
       const box = bar.getBoundingClientRect();
       const of = id => document.getElementById(id).getBoundingClientRect();
       const mode = document.getElementById('directory-mode').getBoundingClientRect();
-      const rows = ['directory-memo', 'directory-artifacts', 'directory-schedules'].map(of);
+      const rows = ['directory-memo', 'directory-artifacts', 'directory-schedules', 'directory-delete'].map(of);
       const widths = rows.map(r => r.width);
       return { overflow: Math.round(document.documentElement.scrollWidth - window.innerWidth),
         wrapped: mode.bottom <= rows[0].top + 1,
         width: Math.round(bar.scrollWidth - bar.clientWidth),
         inside: rows.every(r => r.left >= box.left - 1 && r.right <= box.right + 1),
         equal: Math.max(...widths) - Math.min(...widths) <= 1,
-        thirds: widths.every(w => Math.abs(w - (box.width - 16) / 3) <= 2),
+        quarters: widths.every(w => Math.abs(w - (box.width - 24) / 4) <= 2),
         h: Math.round(rows[0].height), barW: Math.round(box.width) };
     })()`);
     assert.equal(bar.overflow, 0, `页面不横滚：${JSON.stringify(bar)}`);
     assert.equal(bar.width, 0, `工具条自己不横滚：${JSON.stringify(bar)}`);
     assert.equal(bar.wrapped, true, `切换器独占一行：${JSON.stringify(bar)}`);
-    assert.equal(bar.inside, true, `三颗入口都在工具条里：${JSON.stringify(bar)}`);
-    assert.equal(bar.equal, true, `三颗一样宽：${JSON.stringify(bar)}`);
-    assert.equal(bar.thirds, true, `每颗各占这一行的三分之一（两个 gap 之外）：${JSON.stringify(bar)}`);
+    assert.equal(bar.inside, true, `四颗入口都在工具条里：${JSON.stringify(bar)}`);
+    assert.equal(bar.equal, true, `四颗一样宽：${JSON.stringify(bar)}`);
+    assert.equal(bar.quarters, true, `每颗各占这一行的四分之一（三个 gap 之外）：${JSON.stringify(bar)}`);
     await page.screenshot('mobile-entry.png');
 
     // 弹层从底部升起：左右贴边、贴着屏幕下沿、上面两角圆、个头不超过 88dvh。

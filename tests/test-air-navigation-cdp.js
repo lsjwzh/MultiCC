@@ -150,7 +150,8 @@ test('手机底部导航三项：控制台（含不截条数的清单）/ 定时
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('[data-mobile-view]')].map(x=>x.dataset.mobileView)`), ['tasks', 'schedules', 'dirs']);
     assert.equal(await page.evaluate(`(() => {const tabs=[...document.querySelectorAll('[data-mobile-view]')].map(x=>x.getBoundingClientRect());return tabs.every(x=>Math.abs(x.top-tabs[0].top)<1) && tabs[2].right<=innerWidth;})()`), true);
     assert.equal(await page.evaluate(`document.querySelector('[data-mobile-view="tasks"]').classList.contains('active')`), true);
-    assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#console-view-switch')).display`), 'none', '页内 tab 由底部两项承担');
+    assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#console-view-switch')).display`), 'flex', '页内 tab 保留多电脑入口');
+    assert.equal(await page.evaluate(`document.querySelector('#console-view-machines')?.textContent`), '多电脑');
     await page.evaluate(`document.querySelector('[data-mobile-view="dirs"]').click()`);
     assert.ok(await page.waitFor(`document.querySelector('#console-home')?.dataset.view === 'dirs'`), '「项目」= 控制台目录看法');
     assert.equal(await page.evaluate(`document.querySelector('[data-mobile-view="dirs"]').classList.contains('active')`), true);

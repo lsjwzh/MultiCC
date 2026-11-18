@@ -126,7 +126,8 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0, '原生面板里没有旧 manage 的 iframe');
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].map(b => b.textContent.replace(/\\s+/g,''))`),
-      ['←返回设置中心', '↻刷新'], '工具条是面板自己的（返回设置中心 / 刷新）');
+      ['↻刷新'], '面板工具条保留刷新');
+    assert.equal(await page.evaluate(`document.getElementById('page-back').hidden`), false, '统一导航保留返回入口');
     assert.equal(await text('#admin-content .air-bridges .admin-panel h3'), await T('airBridgesTitle'), '面板抬头走 t()');
     assert.equal(await text('#admin-content .air-bridges-intro'), await T('airBridgesIntro'), '面板说明走 t()');
 
@@ -238,10 +239,10 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
       { created: 4, closed: 2, live: 2 }, '刷新把两个在跑的平台各重连一次，活着的连接数不涨');
 
     // ── ⑦ 离开再进来：上一轮那几条 EventSource 必须被关掉 ────────────────
-    // 切走（工具条的「返回设置中心」）—— 这一刻面板并没有义务关连接（契约是「重建骨架
+    // 切走（统一导航的返回按钮）—— 这一刻面板并没有义务关连接（契约是「重建骨架
     // 之前先 disconnect」），但计数不能自己长起来：没有重连、没有多余的 SSE 请求。
-    await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].find(b => b.textContent.includes('返回设置中心')).click()`);
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心'`), '回到设置中心');
+    await page.evaluate(`document.getElementById('page-back').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent===${JSON.stringify(settingsTitle)}`), '回到设置中心');
     const afterLeave = await esState();
     await new Promise(r => setTimeout(r, 700));
     assert.deepEqual(await esState(), afterLeave, '离开后连接数不再增长（没有漏出来的重连循环）');

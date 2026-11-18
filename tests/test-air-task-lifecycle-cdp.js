@@ -82,7 +82,7 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
     await page.evaluate(`(()=>{const input=document.querySelector('.rename-task-dialog input');input.value='手动命名的任务';input.form.requestSubmit();})()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title')?.textContent==='手动命名的任务'`), 'renamed title painted');
     assert.deepEqual(renameCalls, [{ title: '手动命名的任务' }]);
-    assert.equal(await page.evaluate(`document.querySelector('#tasks button.selected strong')?.textContent`), '手动命名的任务', 'sidebar title updated too');
+    assert.equal(await page.evaluate(`document.querySelector('#tasks button.selected strong')?.firstChild?.textContent`), '手动命名的任务', 'sidebar title updated too');
     // 后台 CDP 标签的 dialog close 事件需要推进一帧（下方移动弹窗同理）。
     await page.screenshot('rename-dialog-close-frame');
     assert.ok(await page.waitFor(`document.querySelectorAll('.rename-task-dialog').length===0`), 'rename dialog removed');

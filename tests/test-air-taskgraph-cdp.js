@@ -155,8 +155,8 @@ test('the Air task graph panel is native: id skeleton, drawn canvas, live intera
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0, '原生面板里没有旧 manage 的 iframe');
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].map(b => b.textContent.replace(/\\s+/g,''))`),
-      ['←' + await page.evaluate(`t('airAdminBackToConsole')`), '↻' + await page.evaluate(`t('airAdminRefresh')`)],
-      '工具条是面板自己的（返回控制台 / 刷新），不是旧页面的');
+      ['↻' + await page.evaluate(`t('airAdminRefresh')`)], '面板工具条保留刷新');
+    assert.equal(await page.evaluate(`document.getElementById('page-back').hidden`), false, '统一导航保留返回入口');
     // 骨架自己的文案：先取 t() 再比，别把中文写进断言。
     assert.equal(await text('.air-taskgraph-desc'), await page.evaluate(`t('airTaskgraphDesc')`), '说明段走 t()');
     assert.equal(await text('#tg-graph-hint'), await page.evaluate(`t('airTaskgraphHint')`), '画布常驻提示走 t()');
@@ -304,7 +304,7 @@ test('the Air task graph panel is native: id skeleton, drawn canvas, live intera
     // 用户点开这一页时画布还不存在，后面再进来自然也没人绑。
     await page.evaluate(`window.__firstCanvas = document.getElementById('tg-graph-canvas')`);
     const graphCallsBeforeReentry = graphCalls.length;
-    await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].find(b => b.textContent.includes('返回控制台')).click()`);
+    await page.evaluate(`document.getElementById('page-back').click()`);
     assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`), '返回控制台回到控制台那一页');
     await page.evaluate(`[...document.querySelectorAll('.admin-tool-card')].find(c => c.textContent.includes(t('airAdminPanelTaskgraph'))).click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#tg-graph-svg .tg-node').length === ${nodes.length}`), '再进来画布照样画出来');

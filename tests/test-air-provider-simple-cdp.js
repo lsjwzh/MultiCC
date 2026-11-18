@@ -153,6 +153,7 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     t.diagnostic(await page.screenshot('air-provider-quota-desktop'));
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     assert.equal(await page.evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-card') !== null`), '切换手机布局后 Provider 卡片重新就绪');
     await page.evaluate(`document.querySelector('.air-provider-card').scrollIntoView({block:'start'})`);
     t.diagnostic(await page.screenshot('air-provider-quota-mobile'));
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });

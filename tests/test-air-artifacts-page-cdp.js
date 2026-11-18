@@ -61,22 +61,24 @@ test('the directory artifacts entry sits with the memo and opens its own page', 
     await page.navigate('/air?dir=d1');
     // 入口是模块自己插进去的，且与「备忘」同进同出。
     assert.ok(await page.waitFor(`document.getElementById('directory-artifacts')?.hidden === false`));
-    // 排版：备忘与产物成组贴住工具条右边界（以前 space-between 把三个孩子摊成左中右
-    // 三点，备忘孤零零悬在正中），视图切换还留在左边。
+    assert.ok(await page.waitFor(`document.getElementById('directory-delete')?.hidden === false`));
+    // 四个目录入口相邻成组，删除入口贴住右边界，视图切换留在左侧。
     const bar = await page.evaluate(`(() => {
       const memo = document.getElementById('directory-memo'), art = document.getElementById('directory-artifacts');
       const mode = document.getElementById('directory-mode');
       const box = document.querySelector('.directory-toolbar').getBoundingClientRect();
       const m = memo.getBoundingClientRect(), a = art.getBoundingClientRect(), s = mode.getBoundingClientRect();
-      const end = (document.getElementById('directory-schedules') || art).getBoundingClientRect();
-      return { paired: memo.nextElementSibling === art, gap: Math.round(a.left - m.right),
+      const schedule = document.getElementById('directory-schedules'), remove = document.getElementById('directory-delete');
+      const end = remove.getBoundingClientRect();
+      return { paired: memo.nextElementSibling === art && art.nextElementSibling === schedule && schedule.nextElementSibling === remove,
+        gap: Math.round(a.left - m.right),
         groupRight: Math.round(box.right - end.right), memoLeft: Math.round(m.left - box.left),
-        modeLeft: Math.round(s.left - box.left), barWidth: Math.round(box.width) };
+        modeRight: Math.round(s.right - box.left), modeLeft: Math.round(s.left - box.left), barWidth: Math.round(box.width) };
     })()`);
     assert.equal(bar.paired, true, `产物入口要紧挨着备忘：${JSON.stringify(bar)}`);
-    assert.ok(bar.groupRight <= 2, `备忘、产物、定时任务这一组贴住工具条右边界：${JSON.stringify(bar)}`);
+    assert.ok(bar.groupRight <= 2, `四个目录入口贴住工具条右边界：${JSON.stringify(bar)}`);
     assert.ok(bar.gap >= 0 && bar.gap <= 12, `两颗之间只有一个 gap：${JSON.stringify(bar)}`);
-    assert.ok(bar.memoLeft > bar.barWidth / 2, `备忘被推回右半边，不再居中悬着：${JSON.stringify(bar)}`);
+    assert.ok(bar.memoLeft >= bar.modeRight, `入口组不得覆盖视图切换：${JSON.stringify(bar)}`);
     assert.ok(bar.modeLeft < bar.barWidth / 2, `视图切换还留在左边：${JSON.stringify(bar)}`);
     // 目录页里不再有内联面板：点了是开一页（URL 带目录 id）。
     assert.equal(await page.evaluate(`document.getElementById('directory-artifacts-panel') === null`), true);

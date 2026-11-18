@@ -65,6 +65,9 @@ test('the Air workspaces panel is native: one overview read, guarded sweep, hone
   routes['/api/settings/power'] = () => json({ available: false });
 
   await withCdpHarness({ routes, screenshotDir: shots }, async page => {
+    // The fixture's expected wall-clock strings are in Shanghai time; pin the
+    // browser timezone so CI and developer machines render the same instant.
+    await page.send('Emulation.setTimezoneOverride', { timezoneId: 'Asia/Shanghai' });
     const overviewReads = () => page.requests.filter(r => r.method === 'GET' && r.path === '/api/workspaces/overview').length;
     const text = selector => page.evaluate(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`);
     const t = key => page.evaluate(`t(${JSON.stringify(key)})`);
