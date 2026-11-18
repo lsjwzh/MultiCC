@@ -219,7 +219,6 @@ test('a retry after write/row failure never writes stdin twice (H2)', async () =
 // ── the delivery worker: claim only what the predicate would take ───────────
 function runtimeFixture(t, overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-held-inject-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const clock = { value: 10_000 };
   const history = new Map();
   const calls = { injected: [], delivered: [], prepared: 0, noticed: [] };
@@ -271,6 +270,9 @@ function runtimeFixture(t, overrides = {}) {
     notifyStuckDelivery: notice => calls.noticed.push(notice),
     setIntervalFn: () => ({ unref() {} }),
     clearIntervalFn() {},
+  });
+  t.after(async () => {
+    try { await runtime.dispose(); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
   return { runtime, calls, clock };
 }
