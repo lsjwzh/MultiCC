@@ -1955,14 +1955,14 @@ pub struct Header {
 }
 
 impl Header {
-    fn new(name: &str, value: &str) -> Self {
+    pub fn new(name: &str, value: &str) -> Self {
         Header {
             name: name.to_string(),
             value: value.as_bytes().to_vec(),
         }
     }
 
-    fn bytes(name: &str, value: Vec<u8>) -> Self {
+    pub fn bytes(name: &str, value: Vec<u8>) -> Self {
         Header {
             name: name.to_string(),
             value,
@@ -2303,6 +2303,46 @@ pub fn plan(
     header: &dyn Fn(&str) -> Option<String>,
     attachment: bool,
 ) -> SendPlan {
+    let preset = if attachment {
+        vec![Header::bytes(
+            "Content-Disposition",
+            attachment_disposition(path),
+        )]
+    } else {
+        Vec::new()
+    };
+    plan_with_preset(path, stat, method, header, &preset)
+}
+
+/// Whether a header name is already on the response (`res.getHeader` is
+/// case-insensitive).
+fn already_set(headers: &[Header], name: &str) -> bool {
+    headers
+        .iter()
+        .any(|field| field.name.eq_ignore_ascii_case(name))
+}
+
+/// The value currently on the response, as JS would read it back.
+fn current_value(headers: &[Header], name: &str) -> String {
+    headers
+        .iter()
+        .find(|field| field.name.eq_ignore_ascii_case(name))
+        .map(|field| String::from_utf8_lossy(&field.value).into_owned())
+        .unwrap_or_default()
+}
+
+/// [`plan`] for a mount whose `serve-static` `setHeaders` hook already set
+/// headers. The hook runs as send's `'headers'` event, i.e. before every send
+/// default, and each default is guarded by "not already set" — so a preset
+/// name wins, and the conditional/range checks read the preset's `ETag` and
+/// `Last-Modified` through `res.getHeader`.
+pub fn plan_with_preset(
+    path: &str,
+    stat: &FileStat,
+    method: &str,
+    header: &dyn Fn(&str) -> Option<String>,
+    preset: &[Header],
+) -> SendPlan {
     // send's legacy dotfile branch with `root: null` and `hidden: false`:
     // only the last path part decides, and it yields `404` before any header.
     let last_part = match path.rfind(is_separator) {
@@ -2317,22 +2357,25 @@ pub fn plan(
     }
 
     let mtime = node_mtime(stat);
-    let last_modified = utc_string(mtime);
-    let etag_value = etag(stat);
-    let media_type = content_type(path);
 
-    let mut headers = Vec::new();
-    if attachment {
-        headers.push(Header::bytes(
-            "Content-Disposition",
-            attachment_disposition(path),
-        ));
+    let mut headers: Vec<Header> = preset.to_vec();
+    if !already_set(&headers, "Accept-Ranges") {
+        headers.push(Header::new("Accept-Ranges", "bytes"));
     }
-    headers.push(Header::new("Accept-Ranges", "bytes"));
-    headers.push(Header::new("Cache-Control", "public, max-age=0"));
-    headers.push(Header::new("Last-Modified", &last_modified));
-    headers.push(Header::new("ETag", &etag_value));
-    headers.push(Header::new("Content-Type", &media_type));
+    if !already_set(&headers, "Cache-Control") {
+        headers.push(Header::new("Cache-Control", "public, max-age=0"));
+    }
+    if !already_set(&headers, "Last-Modified") {
+        headers.push(Header::new("Last-Modified", &utc_string(mtime)));
+    }
+    if !already_set(&headers, "ETag") {
+        headers.push(Header::new("ETag", &etag(stat)));
+    }
+    if !already_set(&headers, "Content-Type") {
+        headers.push(Header::new("Content-Type", &content_type(path)));
+    }
+    let last_modified = current_value(&headers, "Last-Modified");
+    let etag_value = current_value(&headers, "ETag");
 
     let if_match = header("if-match");
     let if_unmodified_since = header("if-unmodified-since");
@@ -2700,6 +2743,101 @@ mod tests {
             .iter()
             .map(|h| (h.name.as_str(), String::from_utf8(h.value.clone()).unwrap()))
             .collect()
+    }
+
+    /// The retired `express.static(public, { setHeaders })` hook for a `.apk`:
+    /// five `res.set` calls before send's defaults, measured against the real
+    /// mount. The hook's names win and keep their insertion order.
+    #[test]
+    fn plan_with_preset_lets_the_set_headers_hook_win() {
+        let stat = FileStat {
+            size: 6,
+            mtime_ms: 1_700_000_000_000.0,
+        };
+        let preset = vec![
+            Header::new("Content-Type", "application/vnd.android.package-archive"),
+            Header::new("Content-Disposition", "attachment; filename=\"multicc.apk\""),
+            Header::new("Cache-Control", "no-store, no-cache, must-revalidate"),
+            Header::new("Pragma", "no-cache"),
+            Header::new("Expires", "0"),
+        ];
+        let plan = plan_with_preset("/p/multicc.apk", &stat, "GET", &no_headers, &preset);
+        let SendPlan::File {
+            status,
+            headers,
+            content_length,
+            ..
+        } = plan
+        else {
+            panic!("expected a file response");
+        };
+        assert_eq!(status, 200);
+        assert_eq!(content_length, 6);
+        assert_eq!(
+            headers
+                .iter()
+                .map(|field| (
+                    field.name.as_str(),
+                    String::from_utf8_lossy(&field.value).into_owned()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "Content-Type",
+                    "application/vnd.android.package-archive".to_string()
+                ),
+                (
+                    "Content-Disposition",
+                    "attachment; filename=\"multicc.apk\"".to_string()
+                ),
+                (
+                    "Cache-Control",
+                    "no-store, no-cache, must-revalidate".to_string()
+                ),
+                ("Pragma", "no-cache".to_string()),
+                ("Expires", "0".to_string()),
+                ("Accept-Ranges", "bytes".to_string()),
+                ("Last-Modified", utc_string(1_700_000_000_000.0)),
+                ("ETag", etag(&stat)),
+                ("Content-Length", "6".to_string()),
+            ]
+        );
+    }
+
+    /// A conditional request still reads the response's own ETag, and the 304
+    /// strip keeps the hook's non-content headers.
+    #[test]
+    fn plan_with_preset_keeps_the_hook_headers_on_304() {
+        let stat = FileStat {
+            size: 6,
+            mtime_ms: 1_700_000_000_000.0,
+        };
+        let preset = vec![
+            Header::new("Content-Type", "application/octet-stream"),
+            Header::new("Content-Disposition", "attachment; filename=\"a.ipa\""),
+            Header::new("Pragma", "no-cache"),
+        ];
+        let tag = etag(&stat);
+        let header = header_of(&[("if-none-match", tag.as_str())]);
+        let plan = plan_with_preset("/p/a.ipa", &stat, "GET", &header, &preset);
+        let SendPlan::NotModified { status, headers } = plan else {
+            panic!("expected a 304");
+        };
+        assert_eq!(status, 304);
+        assert_eq!(
+            headers
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Content-Disposition",
+                "Pragma",
+                "Accept-Ranges",
+                "Cache-Control",
+                "Last-Modified",
+                "ETag"
+            ]
+        );
     }
 
     #[test]

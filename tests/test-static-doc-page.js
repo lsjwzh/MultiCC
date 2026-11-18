@@ -4,10 +4,16 @@
 // browser, so its URL is a contract: it lives under public/ and is served by the
 // ordinary static-asset mount, not by a bespoke docs route.
 //
-// This test boots an isolated express instance on an ephemeral port with the
-// real `createStaticAssetsRoutes` — the production code path — and asserts both
-// halves of that contract: the page is reachable, and serving it did not turn
-// public/docs/ into a browsable directory or a traversal foothold.
+// Serving moved into the Rust front door
+// (native/gateway/src/app/static_web_root.rs), so the production path for a
+// `public/` URL is no longer reachable from Node. This test keeps the contract
+// where it can still be executed end to end over the real tree: it boots the
+// FROZEN oracle (tests/helpers/legacy-static-assets-routes.js, the module as it
+// was before anything was retired out of it) and asserts the page is reachable
+// and that serving it did not turn public/docs/ into a browsable directory or a
+// traversal foothold. That the front door reproduces the oracle byte for byte
+// — including these URLs — is what
+// docs/rust-migration/differential/static-web-root.js proves.
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -16,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
-const { createStaticAssetsRoutes } = require('../src/routes/static-assets');
+const { createStaticAssetsRoutes } = require('./helpers/legacy-static-assets-routes');
 
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 const DOC_PATH = '/docs/classify-state-machine-architecture';
@@ -114,28 +120,14 @@ test('the static mount keeps the canonical APK download; the stray-APK guard mov
   // `/dashboard`, `/air?view=planner`) are claimed by the Rust front door
   // (native/core/src/static_assets_routes.rs, covered by the multicc-core unit
   // tests, native/gateway/tests/static_assets_routes.rs and the differential
-  // docs/rust-migration/differential/static-assets-routes.js). This module must
-  // no longer register any of them: mountRoutes may only install middleware
-  // (the versioned-HTML hop and the public/ static mount), never a GET route,
-  // and never a third `use` that would swallow `.apk`/`.ipa` URLs before the
-  // static mount.
-  const registrations = [];
-  const recordingApp = {
-    get(...args) { registrations.push(['get', ...args]); },
-    use(...args) { registrations.push(['use', ...args]); },
-  };
-  createStaticAssetsRoutes({ express, fs, path, publicDir: PUBLIC_DIR }).mountRoutes(recordingApp);
-  assert.deepEqual(
-    registrations.filter(([kind]) => kind === 'get'),
-    [],
-    'no bookmark redirect is registered on Node anymore',
-  );
-  assert.equal(
-    registrations.length,
-    2,
-    'only the versioned-HTML middleware and the public/ static mount are left',
-  );
-  assert.ok(registrations.every(([, handler]) => typeof handler === 'function'));
+  // docs/rust-migration/differential/static-assets-routes.js), and serving moved
+  // with them (static_web_root.rs). The production module must now register
+  // nothing at all: no route, no middleware, not even a factory that could
+  // install a second static implementation behind the front door's back.
+  const production = require('../src/routes/static-assets');
+  const runtime = production.createStaticAssetsRoutes({ publicDir: PUBLIC_DIR });
+  assert.deepEqual(Object.keys(runtime), ['serveHtml']);
+  assert.equal(typeof runtime.mountRoutes, 'undefined');
 
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'routes', 'static-assets.js'), 'utf8');
   assert.doesNotMatch(source, /app\.get\(/, 'the redirects belong to the Rust front door');

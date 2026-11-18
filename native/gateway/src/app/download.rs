@@ -173,7 +173,7 @@ pub async fn download(app: &App, ctx: &RequestCtx) -> Response<Body> {
 
 /// The `code` an fs error carries (`err.code`), and the status send's
 /// `onStatError` gives it.
-fn fs_error(error: &std::io::Error) -> (u16, &'static str) {
+pub(super) fn fs_error(error: &std::io::Error) -> (u16, &'static str) {
     let raw = error.raw_os_error().unwrap_or(0);
     let name_too_long = if cfg!(target_os = "linux") { 36 } else { 63 };
     match raw {
@@ -216,7 +216,7 @@ fn find<'a>(headers: &'a [Header], name: &str) -> Option<&'a Header> {
 /// response that already carries send's headers. `res.json` keeps the file's
 /// Content-Type (re-charset to utf-8) and its ETag; Content-Length is the
 /// JSON's.
-fn error_after_send(
+pub(super) fn error_after_send(
     ctx: &RequestCtx,
     status: u16,
     code: Option<&str>,
@@ -296,6 +296,16 @@ pub(super) async fn send_file(ctx: &RequestCtx, path: &str, attachment: bool) ->
     let stat = file_stat(&meta);
     let header = |name: &str| ctx.headers.get(name).map(str::to_string);
     let plan = http_send::plan(path, &stat, ctx.method.as_str(), &header, attachment);
+    write_plan(ctx, path, plan).await
+}
+
+/// Writes a [`SendPlan`] out: the 200/206 stream, the 304, or
+/// `safeErrorHandler` on the headers send had already set.
+pub(super) async fn write_plan(
+    ctx: &RequestCtx,
+    path: &str,
+    plan: SendPlan,
+) -> Response<Body> {
     match plan {
         SendPlan::Error { status, headers } => {
             let detail = match status {

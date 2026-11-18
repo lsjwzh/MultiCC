@@ -7,12 +7,14 @@
 //! * `GET /ios-ota/udid/result/:token`, `POST /ios-ota/udid/callback/:token`
 //! * `DELETE /api/sessions/:id/messages/:msgId`
 //! * `GET /api/sessions/:id/history`, `GET /api/sessions/:id/context-level`
+//! * `GET /multicc.apk` -- only the decision travels (see [`Route::ApkDownload`])
 //! * `GET /` -- only the two redirect answers (see [`root_redirect`])
 //!
-//! `GET /multicc.apk` is **not** claimed: with a local file it falls through to
-//! `express.static` (a streamed `sendFile` with Range/ETag/Last-Modified), and
-//! only the no-local-file branches are a plain redirect or 404, so the route
-//! cannot be split without a mid-handler forward. It stays on Node.
+//! `GET /multicc.apk` is claimed here, but the local-file branch is not a
+//! host answer: the retired handler's `next()` landed in `express.static`,
+//! so the host reports the fall-through and the gateway streams the file
+//! itself through its static web root (Range/ETag/Last-Modified). Only the
+//! redirect and the bare 404 are ordinary host answers.
 //!
 //! Matching rules are the same Express-compatible ones every cluster uses:
 //! literal segments case-insensitively (the exact-case `api` prefix excepted:
@@ -43,6 +45,10 @@ pub enum Route {
     MessageDelete,
     History,
     ContextLevel,
+    /// `GET|HEAD /multicc.apk`. The host decides local-file / redirect /
+    /// missing; a local file is streamed by the static web root, which is why
+    /// this route could only move once that mount did.
+    ApkDownload,
     /// `GET|HEAD /` when the redirect decision is made (no host fact).
     Root,
     Options {
@@ -64,6 +70,7 @@ impl Route {
             Route::MessageDelete => "message-delete",
             Route::History => "history",
             Route::ContextLevel => "context-level",
+            Route::ApkDownload => "apk-download",
             Route::Root | Route::Options { .. } => return None,
         })
     }
@@ -88,6 +95,10 @@ impl Route {
         }
     }
 }
+
+/// `src/apk-distribution.js`'s `APK_NAME`: the one local file name the
+/// download route may stream out of `public/`.
+pub const APK_NAME: &str = "multicc.apk";
 
 /// The query keys the chat-history handlers read.
 pub const QUERY_KEYS: &[&str] = &["historyScope", "before", "around", "limit", "plan"];
@@ -137,6 +148,7 @@ static LAYERS: &[Layer] = &[
         "GET",
         Route::ContextLevel,
     ),
+    layer(&["multicc.apk"], "GET", Route::ApkDownload),
     layer(&[], "GET", Route::Root),
 ];
 
@@ -365,6 +377,7 @@ mod tests {
             ("DELETE", "/api/sessions/s1/messages/m1", MessageDelete),
             ("GET", "/api/sessions/s1/history", History),
             ("GET", "/api/sessions/s1/context-level", ContextLevel),
+            ("GET", "/multicc.apk", ApkDownload),
         ];
         assert_eq!(LAYERS.len(), cases.len() + 1);
         for (method, path, expected) in cases {
@@ -378,9 +391,17 @@ mod tests {
     }
 
     #[test]
-    fn multicc_apk_and_the_other_static_routes_stay_on_node() {
+    fn multicc_apk_is_claimed_for_the_download_decision() {
+        assert_eq!(route("GET", "/multicc.apk"), Some(Route::ApkDownload));
+        assert_eq!(route("HEAD", "/multicc.apk"), Some(Route::ApkDownload));
+        assert_eq!(route("GET", "/MULTICC.APK"), Some(Route::ApkDownload));
+        assert_eq!(route("GET", "/multicc.apk/"), Some(Route::ApkDownload));
+        assert_eq!(route("POST", "/multicc.apk"), None);
+    }
+
+    #[test]
+    fn the_other_static_routes_stay_on_node() {
         for path in [
-            "/multicc.apk",
             "/multicc-ios.ipa",
             "/manage",
             "/dashboard",
@@ -515,13 +536,13 @@ mod tests {
             ("/api/sessions/s1/messages/m1", "DELETE"),
             ("/api/sessions/s1/history", "GET,HEAD"),
             ("/api/sessions/s1/context-level", "GET,HEAD"),
+            ("/multicc.apk", "GET,HEAD"),
             ("/", "GET,HEAD"),
         ];
         for (path, allow) in measured {
             assert_eq!(allow_for(path).as_deref(), Some(allow), "{path}");
             assert_eq!(options_share(path).as_deref(), Some(allow), "{path}");
         }
-        assert_eq!(allow_for("/multicc.apk"), None);
         assert_eq!(allow_for("/api/sessions/s1"), None);
     }
 

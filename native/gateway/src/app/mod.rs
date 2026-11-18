@@ -50,6 +50,7 @@ pub mod session_routes;
 pub mod share_machine_routes;
 pub mod source_workspaces;
 pub mod static_assets_routes;
+pub mod static_web_root;
 pub mod subagent_defaults;
 pub mod system;
 pub mod task_routes;
@@ -185,6 +186,10 @@ pub enum Route {
     Orchestration(orchestration_routes::Route),
     ReleaseHistory(release_history_routes::Route),
     StaticAssets(static_assets_routes::Route),
+    /// The `public/` static web root. The filesystem resolution happens in
+    /// `static_web_root::claim` and travels as a [`static_web_root::Resolved`]
+    /// request extension, so this variant carries no payload.
+    StaticWebRoot,
     ServerCore(server_core::Route),
     Plugins(plugins::Route),
     FilesGet,
@@ -940,6 +945,7 @@ pub async fn handle(
     request: Request<Body>,
     client: SocketAddr,
     host: u16,
+    upstream: crate::forward::UpstreamHandle,
 ) -> Response<Body> {
     if let Route::ExternalWorkspaces(route) = route {
         return external_workspaces::handle(app, route, request, client).await;
@@ -1040,8 +1046,10 @@ pub async fn handle(
     // Release assets / iOS OTA / chat history: the OTA fetchers cannot log in, so
     // this cluster decides gate-or-not itself from the shared HTTP-entry rule.
     if let Route::ReleaseHistory(route) = route {
-        return release_history_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host)
-            .await;
+        return release_history_routes::handle(
+            &app, route, &ctx, body, &peer, &snapshot, host, upstream,
+        )
+        .await;
     }
     // Server core: `/healthz` and `/readyz` are public (the shared HTTP-entry
     // exemption); `/metrics` and `/api/repo-operations` keep the ordinary gate.
@@ -1085,6 +1093,16 @@ pub async fn handle(
     };
     match route {
         Route::StaticAssets(route) => return static_assets_routes::handle(route, &ctx),
+        // The retired `express.static(public/)` mount and the versioned-HTML
+        // middleware in front of it, both resolved before the claim.
+        Route::StaticWebRoot => {
+            return static_web_root::handle(
+                &app,
+                &ctx,
+                parts.extensions.get::<static_web_root::Resolved>(),
+            )
+            .await
+        }
         Route::Plugins(route) => return plugins::handle(route, &ctx, &body, &peer, host).await,
         Route::AutoOptions => return auto_options(&ctx, host).await,
         Route::ModelCatalogOptions(_)

@@ -2,11 +2,9 @@
 
 const crypto = require('crypto');
 const secretAudit = require('./secret-audit');
-const {
-  explicitlyNamesTerminal,
-  isTerminalGateway,
-  terminalForRecord,
-} = require('./dispatch/terminal-target-policy');
+// The terminal-target rules live in Rust (`native/addon/src/terminal_target.rs`);
+// only the live record map stays in Node and is passed in as a port.
+const { getNative } = require('./native/runtime');
 
 const TERMINAL_OPERATION_STATES = new Set([
   'completed', 'failed', 'interrupted', 'cancelled',
@@ -313,8 +311,8 @@ function createRouterToolRuntime({
     if (target.type === 'aux' || target.type === 'gateway' || target.type === 'commander') {
       throw new RouterToolError('invalid_target', 'target must be a non-system worker session');
     }
-    if (isTerminalGateway(records, target)) {
-      const terminal = terminalForRecord(records, target);
+    if (getNative().dispatchIsTerminalGateway(records, target)) {
+      const terminal = getNative().dispatchTerminalForRecord(records, target);
       throw new RouterToolError(
         'terminal_gateway_not_direct_target',
         `select terminal session ${terminal.id} instead of its execution gateway`,
@@ -328,7 +326,7 @@ function createRouterToolRuntime({
         409,
       );
     }
-    if (target.kind !== 'chat' && !explicitlyNamesTerminal(context.userText, target)) {
+    if (target.kind !== 'chat' && !getNative().dispatchExplicitlyNamesTerminal(context.userText, target)) {
       throw new RouterToolError(
         'terminal_target_not_explicitly_requested',
         'the originating user message must name the exact terminal session id or complete label',

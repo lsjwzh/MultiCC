@@ -103,6 +103,9 @@ function writeAsset(file, content) {
   fs.utimesSync(file, FIXED_TIME, FIXED_TIME);
 }
 
+/** send's stat ETag for the seeded apk: 20 bytes at the pinned mtime. */
+const APK_ETAG = `W/"${(20).toString(16)}-${FIXED_TIME.getTime().toString(16)}"`;
+
 /** `scene` -> files: apk 'none'|'local', ipa 'none'|'bare'|'full'. */
 function setScene(root, scene) {
   const pub = path.join(root, 'public');
@@ -353,9 +356,25 @@ function corpus(ctx) {
   add('apk-info with mixed case', () => get('/api/Apk-Info'));
   add('apk-info with a query', () => get('/api/apk-info?x=1&y=2'));
   add('multicc.apk without a local file', () => get('/multicc.apk'));
+  // The retired `app.get('/multicc.apk')` matched case-insensitively and
+  // non-strictly, so the claim has to carry both spellings to the host op.
+  add('multicc.apk with mixed case', () => get('/MULTICC.APK'));
+  add('multicc.apk with a trailing slash', () => get('/multicc.apk/'));
   add('apk-info with a local file', () => get('/api/apk-info'), { scene: { apk: 'local' } });
-  add('multicc.apk with a local file falls through', () => get('/multicc.apk'));
+  add('multicc.apk with a local file is streamed', () => get('/multicc.apk'));
+  // The handler's next() landed in the `.apk` guard, which only exempts the
+  // exact lowercase name: a case variant dies there even with a usable file.
+  add('MULTICC.APK with a local file hits the binary guard', () => get('/MULTICC.APK'));
+  add('HEAD MULTICC.APK with a local file hits the binary guard', () => head('/MULTICC.APK'));
+  // ...and a trailing slash matched neither the guard nor a file, so the
+  // retired chain passed the request on; the front door forwards it too.
+  add('multicc.apk with a trailing slash and a local file falls through', () => get('/multicc.apk/'));
   add('HEAD multicc.apk with a local file', () => head('/multicc.apk'));
+  add('multicc.apk range', () => get('/multicc.apk', { ...HDR, Range: 'bytes=2-5' }));
+  add('multicc.apk multi range is a plain 200', () => get('/multicc.apk', { ...HDR, Range: 'bytes=0-1,4-5' }));
+  add('multicc.apk conditional', () => get('/multicc.apk', { ...HDR, 'If-None-Match': APK_ETAG }));
+  add('multicc.apk precondition failure', () => get('/multicc.apk', { ...HDR, 'If-Match': '"nope"' }));
+  add('multicc.apk unsatisfiable range', () => get('/multicc.apk', { ...HDR, Range: 'bytes=999-' }));
   add('POST apk-info is not a route', () => post('/api/apk-info', '{}', { ...HDR, 'Content-Type': 'application/json' }));
   add('apk-info with an extra segment is not a route', () => get('/api/apk-info/extra'));
   // ── iOS OTA info and manifest ─────────────────────────────────────────────
@@ -517,7 +536,7 @@ function corpus(ctx) {
     ['apk-info', '/api/apk-info'], ['ios-ota-info', '/api/ios-ota-info'], ['manifest', '/ios-ota/manifest.plist'],
     ['profile', '/ios-ota/udid.mobileconfig'], ['result', '/ios-ota/udid/result/abc'],
     ['delete', '/api/sessions/s1/messages/m1'], ['history', '/api/sessions/s1/history'],
-    ['context-level', '/api/sessions/s1/context-level'],
+    ['context-level', '/api/sessions/s1/context-level'], ['apk download', '/multicc.apk'],
   ]) add(`OPTIONS ${name}`, () => options(url));
   add('OPTIONS history of an internal slot', () => options('/api/sessions/internal1/history'));
   add('OPTIONS delete of an internal slot', () => options('/api/sessions/internal1/messages/m1'));
@@ -613,7 +632,22 @@ function finalize({ views, nodeData, gwData, work }) {
   expect('apk-info without a local file', 200, '"source":null');
   expect('apk-info with a local file', 200, '"source":"local"');
   expect('multicc.apk without a local file', 404);
-  expect('multicc.apk with a local file falls through', 599, 'forwarded:GET /multicc.apk');
+  expect('multicc.apk with a local file is streamed', 200, 'APK-BYTES-0123456789');
+  header('multicc.apk with a local file is streamed', 'content-disposition', 'attachment; filename="multicc.apk"');
+  header('multicc.apk with a local file is streamed', 'cache-control', 'no-store, no-cache, must-revalidate');
+  header('multicc.apk with a local file is streamed', 'accept-ranges', 'bytes');
+  expect('HEAD multicc.apk with a local file', 200, '');
+  expect('multicc.apk range', 206, 'K-BY');
+  header('multicc.apk range', 'content-range', 'bytes 2-5/20');
+  expect('multicc.apk multi range is a plain 200', 200, 'APK-BYTES-0123456789');
+  expect('multicc.apk conditional', 304);
+  expect('multicc.apk precondition failure', 412);
+  expect('multicc.apk unsatisfiable range', 416);
+  header('multicc.apk unsatisfiable range', 'content-range', 'bytes */20');
+  expect('MULTICC.APK with a local file hits the binary guard', 404, '');
+  header('MULTICC.APK with a local file hits the binary guard', 'cache-control', 'no-store');
+  expect('HEAD MULTICC.APK with a local file hits the binary guard', 404, '');
+  expect('multicc.apk with a trailing slash and a local file falls through', 599, 'forwarded:GET /multicc.apk/');
   expect('ios-ota-info without an ipa', 200, '"exists":false');
   expect('ios-ota-info with a full sidecar', 200, '"installable":true');
   expect('manifest without an ipa', 404);
@@ -847,7 +881,7 @@ function main() {
       fs.writeFileSync(path.join(transcriptDir, 'cli-s1.jsonl'), `${lines.join('\n')}\n`);
       if (!initialHistory.size) initialHistory = treeOf(path.join(dir, path.relative(dir, history.root)));
     },
-    mount(app, { repo: repoPath, work, dataRoot }) {
+    mount(app, { repo: repoPath, work, dataRoot, express }) {
       workPath = work;
       nodeRoot = path.join(work, 'node-root');
       gwRoot = path.join(work, 'gw');
@@ -875,10 +909,19 @@ function main() {
       legacy.system(); // keep the frozen module loaded for its route handlers above
       world.udid.mountRoutes(app);
       world.chat.mountRoutes(app);
-      // static-assets mounts far more than `GET /`; only that root redirect is in scope.
-      const only = { get: (route, ...handlers) => { if (route === '/') app.get(route, ...handlers); }, use() {} };
+      // `GET /multicc.apk` with a usable local file was a `next()` into the
+      // retired `express.static` mount, so the oracle has to carry that mount
+      // for real; the front door serves the same file through
+      // static_web_root.rs. `writeAsset` pins both sides' mtime, so the stat
+      // ETag and Last-Modified are identical by construction. The redirect
+      // families this module also registered are another cluster's differential
+      // (static-assets-routes.js); only `GET /` is in scope here.
+      const only = {
+        get: (route, ...handlers) => { if (route === '/') app.get(route, ...handlers); },
+        use: (...args) => app.use(...args),
+      };
       legacy.staticAssets().createStaticAssetsRoutes({
-        express: { static: () => (_req, _res, next) => next() }, fs, path, publicDir: path.join(work, 'public-unused'),
+        express, fs, path, publicDir: path.join(nodeRoot, 'public'),
       }).mountRoutes(only);
       app.use((req, res, next) => (req.method === 'OPTIONS' ? next() : res.status(599).send(`forwarded:${req.method} ${req.url}`)));
       upstreamText = upstream(repoPath, gwRoot, work);
@@ -888,8 +931,24 @@ function main() {
       MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON,
       MULTICC_RUST_PREBUILT_DIR: process.env.MULTICC_RUST_PREBUILT_DIR,
     }),
+    // `/healthz` is the gateway's own; the claimed routes here need the Node
+    // child's host port, which comes up later. `/api/apk-info` is public,
+    // read-only and host-backed, so it doubles as the readiness probe.
+    async ready(port) {
+      const { send } = require('./lib');
+      for (let i = 0; i < 200; i++) {
+        try {
+          const res = await send(port, { method: 'GET', url: '/api/apk-info', headers: { Host: 'localhost' } }, 2_000);
+          if (res.status !== 503) return;
+        } catch (_) { /* the child is not listening yet */ }
+        await new Promise(r => setTimeout(r, 25));
+      }
+      throw new Error('gateway host port did not come up');
+    },
     normalize: scrub,
     normalizeView,
+    // The streamed `/multicc.apk` lives on these.
+    headers: ['accept-ranges', 'last-modified', 'content-range', 'pragma', 'expires'],
     corpus,
     finalize,
   });

@@ -1,32 +1,32 @@
 'use strict';
 
-// Static asset serving: the `/` root redirect, the versioned-HTML middleware
-// (cache-busting `?v=<mtime>` rewrite for embedded WebViews), and the
-// express.static mount for public/ (with the .apk download headers).
+// 本模块曾经注册三样东西：`GET /` 的重定向、版本化 HTML 中间件（给内嵌 WebView
+// 的 `?v=<mtime>` 缓存击穿）和 public/ 的 `express.static` 挂载（含 .apk/.ipa 下载
+// 头）。三样都已由 Rust 前门独占：
 //
-// Extracted verbatim from server.js. Behaviour — including mount order — is
-// preserved exactly: mountStaticAssets(app) must be called at the same point in
-// the middleware chain where these handlers used to live (after the auth gate
-// and artifacts mount, before the remaining API routes).
+//   GET|HEAD  /manage /dashboard /air?view=planner  native/.../static_assets_routes.rs
+//   GET|HEAD  *.{apk,ipa} 守卫                       同上
+//   GET|HEAD  /                                      native/.../release_history_routes.rs
+//   GET       <任意>  版本化 HTML 中间件              native/.../static_web_root.rs
+//   GET|HEAD  <任意>  express.static(public/)         同上
+//
+// 所以这里没有 `mountRoutes` 了，Node 侧也没有第二份静态实现可以静默兜底。
+// 留下的只有 `serveHtml`：`/share/:token` 页面仍由宿主端口上的 Express 渲染
+// （src/routes/share.js 的 `serveSharePage`），它需要同一套响应形状。重写规则本身
+// 只有一份，在 `multicc_core::static_assets_routes::version_html`，这里经原生模块
+// 调用它 —— 不留两份正则和两份 mtime 查表。
 
 function createStaticAssetsRoutes(rawDeps) {
   const deps = rawDeps || {};
-  const { express, fs, path, publicDir } = deps;
+  const { publicDir } = deps;
 
-  if (!express || typeof express.static !== 'function') {
-    throw new TypeError('[static-assets] express (with static) is required');
-  }
-  if (!fs || typeof fs.readFile !== 'function' || typeof fs.statSync !== 'function') {
-    throw new TypeError('[static-assets] fs is required');
-  }
-  if (!path || typeof path.join !== 'function' || typeof path.resolve !== 'function') {
-    throw new TypeError('[static-assets] path is required');
-  }
   if (typeof publicDir !== 'string' || !publicDir) {
     throw new TypeError('[static-assets] publicDir is required');
   }
 
   const _publicDir = publicDir;
+  // 可注入只为测试；生产恒走原生模块（没有 Node 版重写规则）。
+  const native = deps.native || require('../native/runtime');
 
   // Cache-busting for embedded WebViews: rewrite local <script src="x.js"> /
   // <link href="x.css"> in served HTML to "x.js?v=<mtime>", and send the HTML
@@ -39,93 +39,16 @@ function createStaticAssetsRoutes(rawDeps) {
   // share route serves this same document for a recipient, and a second writer
   // would silently lose the cache-busting that keeps their WebView current.
   function _serveVersionedHtml(absPath, res) {
-    fs.readFile(absPath, 'utf8', (err, html) => {
-      if (err) { res.status(500).end(); return; }
-      const out = html.replace(
-        /((?:src|href)\s*=\s*["'])(?!https?:)(?!\/\/)([^"'?#]+\.)(js|css)(["'])/gi,
-        (m, pre, name, ext, q) => {
-          try {
-            const mt = Math.floor(fs.statSync(path.join(_publicDir, name + ext)).mtimeMs);
-            return `${pre}${name}${ext}?v=${mt}${q}`;
-          } catch (_) { return m; }
-        });
-      res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.set('Pragma', 'no-cache');
-      res.type('text/html').send(out);
-    });
+    const out = native.staticVersionedHtml(absPath, _publicDir);
+    // `fs.readFile` 失败（含不可读文件）时原生侧回 null，等于退休实现的
+    // `res.status(500).end()`。
+    if (out === null || out === undefined) { res.status(500).end(); return; }
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.type('text/html').send(out);
   }
 
-  function mountRoutes(app) {
-    // The three bookmark redirects (`/manage`, `/dashboard`, and
-    // `/air?view=planner`) and the `.apk`/`.ipa` guard are owned by the Rust
-    // front door now (native/gateway/src/app/static_assets_routes.rs, rules in
-    // native/core/src/static_assets_routes.rs). They are claimed after the auth
-    // gate, so an unclaimed path reaches this module exactly like before.
-
-    // `GET /` 的两种重定向（无参 → /air，`?id=__aux__` → /air?view=aux）已由 Rust
-    // 前门独占（native/gateway/src/app/release_history_routes.rs）。带
-    // `?id=`/`?newid=`/`?cwd=` 的根路径是终端会话 URL，前门不认领，落到下面的
-    // versioned-HTML 中间件 —— 与原来 `next()` 的去向完全一致。
-
-    app.use((req, res, next) => {
-      if (req.method !== 'GET') return next();
-      let rel;
-      try { rel = decodeURIComponent(req.path).replace(/^\/+/, ''); } catch (_) { return next(); }
-      // Session URLs are bookmarks to tasks, never a second conversation UI.
-      // Air is the sole exception: its task workspace embeds the canonical
-      // full chat renderer and only changes its layout/theme. This explicit
-      // flag cannot turn an ordinary public chat bookmark back into a second
-      // top-level conversation surface.
-      const airChatRenderer = req.query.air === '1'
-        && ['chat', 'chat.html'].includes(rel)
-        && ['task', 'session'].some(key => typeof req.query[key] === 'string' && req.query[key].length > 0);
-      // The standalone task shell document is gone: its `board=1` renderer was
-      // never reachable from any link, and its remaining bookmarks are covered
-      // by the same task-entry hop the chat bookmarks already use
-      // (task-entry.html → /api/air/resolve → /air?task=…).
-      if (['chat', 'chat.html', 'task-shell', 'task-shell.html'].includes(rel) && !airChatRenderer) {
-        return _serveVersionedHtml(path.join(_publicDir, 'task-entry.html'), res);
-      }
-      const cands = !rel || rel === '/' ? ['index.html']
-        : rel.endsWith('.html') ? [rel]
-        : [rel + '.html'];
-      for (const c of cands) {
-        const fp = path.resolve(_publicDir, c);
-        if ((fp === _publicDir || fp.startsWith(_publicDir + path.sep))
-            && fs.existsSync(fp) && fs.statSync(fp).isFile()) {
-          return _serveVersionedHtml(fp, res);
-        }
-      }
-      next();
-    });
-
-    // The `.apk`/`.ipa` guard (only the canonical `/multicc.apk` and
-    // `/multicc-ios.ipa` names are downloadable) moved to the Rust front door
-    // with the redirects above; the download headers below still apply to the
-    // two canonical files this static mount is allowed to serve.
-
-    app.use(express.static(_publicDir, {
-      extensions: ['html'],
-      setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.apk')) {
-          res.set('Content-Type', 'application/vnd.android.package-archive');
-          res.set('Content-Disposition', 'attachment; filename="multicc.apk"');
-          res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-          res.set('Pragma', 'no-cache');
-          res.set('Expires', '0');
-        }
-        if (filePath.endsWith('.ipa')) {
-          res.set('Content-Type', 'application/octet-stream');
-          res.set('Content-Disposition', 'attachment; filename="multicc-ios.ipa"');
-          res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-          res.set('Pragma', 'no-cache');
-          res.set('Expires', '0');
-        }
-      },
-    }));
-  }
-
-  return { mountRoutes, serveHtml: _serveVersionedHtml };
+  return { serveHtml: _serveVersionedHtml };
 }
 
 module.exports = { createStaticAssetsRoutes };

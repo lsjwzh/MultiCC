@@ -16,7 +16,9 @@ const path = require('node:path');
 const http = require('node:http');
 const express = require('express');
 
-const { createStaticAssetsRoutes } = require('../src/routes/static-assets');
+// 浏览器要能取到 public/ 下的 js/css，而静态服务已迁入 Rust 前门；这个视图
+// 测试用冻结的退休模块当静态服务器，断言的是分享页的渲染结果。
+const { createStaticAssetsRoutes } = require('./helpers/legacy-static-assets-routes');
 const { mountShareRoutes } = require('../src/routes/share');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 

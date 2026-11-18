@@ -1,6 +1,6 @@
 'use strict';
 
-// 宿主端口：发布资产、iOS OTA 与聊天历史的 10 条公开路由已由 Rust 前门独占。
+// 宿主端口：发布资产、iOS OTA 与聊天历史的 11 条公开路由已由 Rust 前门独占。
 //
 //   GET|HEAD  /api/apk-info                          (routes/system.js)
 //   GET|HEAD  /api/ios-ota-info
@@ -12,6 +12,7 @@
 //   GET|HEAD  /api/sessions/:id/history
 //   GET|HEAD  /api/sessions/:id/context-level
 //   GET|HEAD  /                                      (routes/static-assets.js)
+//   GET|HEAD  /multicc.apk                           (routes/system.js)
 //
 // 路径匹配、参数解码、查询子集、Express 自动 OPTIONS、会话准入守卫（内部执行
 // 槽）、鉴权豁免、设备回传的 express.raw 分帧与限额都在
@@ -19,13 +20,15 @@
 // native/core/src/release_history_routes.rs。`GET /` 整条在前门答完（一次重定向
 // 决策，不需要任何宿主事实），所以它没有 op。
 //
-// 这里只剩 Node 独有的事实与副作用：APK/IPA 随包文件读取、manifest 与
+// 这里只剩 Node 独有的事实与副作用：APK/IPA 随包文件读取、GitHub 发布查询、manifest 与
 // .mobileconfig 渲染、一次性 UDID 令牌表与 `openssl cms` 校验、会话记录表、
 // 聊天记录存储与原生历史运行时。
 //
-// `GET /multicc.apk` 刻意不迁：有本地文件时它 `next()` 落到 express.static 的
-// 流式 sendFile（Range/ETag/Last-Modified），无法在前门拆分，仍挂在真实 app 上
-// （routes/system.js 的 `mountApkDownload`）。
+// `GET /multicc.apk` 的三种出口里只有两种自己写响应：可用的本地
+// `public/multicc.apk` 走 `next()` 落到 express.static 的流式 sendFile，已核验的
+// 发布走 302，其余状态是带 `Cache-Control: no-store` 的空 404。那个 static 挂载
+// 现在是前门的 `static_web_root`，所以这条路由也迁了过来：`next()` 被捕获成
+// `fellThrough`，前门用同一套引擎把本地文件发出去。
 //
 // 处理器仍按退休时的样子写 `res.set/status/type/json/send/end/sendStatus`；这里
 // 的捕获器把它们变成 `{ status, body, contentType, bare, headers }`，前门原样
@@ -57,6 +60,7 @@ const OPS = {
   'message-delete': { method: 'DELETE', path: '/api/sessions/:id/messages/:msgId', params: ['id', 'msgId'] },
   'history': { method: 'GET', path: '/api/sessions/:id/history', params: ['id'] },
   'context-level': { method: 'GET', path: '/api/sessions/:id/context-level', params: ['id'] },
+  'apk-download': { method: 'GET', path: '/multicc.apk', params: [] },
 };
 
 /** 一个只记录路由的 Express 替身：退休模块在它上面注册，按 (method, 模板) 取用。 */
@@ -160,6 +164,16 @@ function runHandler(handler, req) {
         finish();
         return res;
       },
+      // `res.redirect([status], url)`. Express's own body depends on the
+      // caller's `Accept` (`res.format`), so only the decision travels; the
+      // front door renders it with `express::redirect_status`.
+      redirect(first, second) {
+        const hasStatus = typeof first === 'number';
+        reply.status = hasStatus ? first : 302;
+        reply.redirect = { status: reply.status, location: String(hasStatus ? second : first) };
+        finish();
+        return res;
+      },
     };
     const next = (error) => {
       if (error) {
@@ -168,6 +182,9 @@ function runHandler(handler, req) {
         reject(error);
         return;
       }
+      // 退休处理器调 `next()` 等于"我不写响应，交给后面的中间件"。前门必须能分辨
+      // 它和一次真正的 200，否则 `/multicc.apk` 的本地文件分支会变成空 200。
+      reply.fellThrough = true;
       finish();
     };
     try {
@@ -281,11 +298,15 @@ function createReleaseHistoryHost(deps = {}) {
   const app = createCaptureApp(handlers);
   // 原挂载顺序（server.js）：system（含它挂的 UDID 三条）在前，chat-history 在后。
   // 顺序只影响 Express 的 Allow 并集，这里同样保留。
-  require('./system').mountSystemHostRoutes(app, {
+  const system = require('./system');
+  system.mountSystemHostRoutes(app, {
     apkDistribution,
     iosOta,
     iosUdid: deps.iosUdid,
   });
+  // 退休时它挂在真实 app 上（server.js），在 express.static 之前；那个 static
+  // 挂载迁入前门后，这条路由只剩"本地文件 / 302 / 404"的判定，捕获在这里。
+  system.mountApkDownload(app, { apkDistribution, iosOta });
   chatHistory.mountRoutes(app);
 
   function mountRoute(expressApp, options = {}) {

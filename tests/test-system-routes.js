@@ -428,7 +428,7 @@ test('zero-byte, directory, malformed manifest, and invalid package versions fai
   }
 });
 
-test('the real app keeps only /multicc.apk; the rest mount on the release-history host port', async () => {
+test('every release-asset route mounts on the release-history host port, none on the real app', async () => {
   const paths = [];
   const apkDistribution = {
     async info() { return { exists: false, localExists: false, source: null }; },
@@ -442,10 +442,17 @@ test('the real app keeps only /multicc.apk; the rest mount on the release-histor
     get(route, handler) { paths.push(['GET', route, typeof handler]); },
     post(route, handler) { paths.push(['POST', route, typeof handler]); },
   };
-  // 真实 app：只有 /multicc.apk。有本地文件时它 `next()` 落到 express.static 的
-  // 流式 sendFile（Range/ETag/Last-Modified），所以无法在前门拆分。
+  // `/multicc.apk` 也迁到了宿主端口：它的本地文件分支 `next()` 落到
+  // express.static 的流式 sendFile，而那个 static 挂载现在是前门的
+  // static_web_root，所以 `next()` 被捕获成 fellThrough 由前门发文件。
   mountApkDownload(recorder, { apkDistribution, iosOta });
   assert.deepEqual(paths, [['GET', '/multicc.apk', 'function']]);
+  // server.js 不再把它挂到真实 app 上。
+  const serverEntry = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.doesNotMatch(serverEntry, /mountApkDownload/);
+  const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'release-history-host.js'), 'utf8');
+  assert.match(hostSource, /system\.mountApkDownload\(app, \{ apkDistribution, iosOta \}\)/);
+  assert.match(hostSource, /'apk-download': \{ method: 'GET', path: '\/multicc\.apk', params: \[\] \}/);
 
   // 捕获应用（release-history 宿主端口）：其余三条 + ios-udid 的三条。
   paths.length = 0;
@@ -463,10 +470,10 @@ test('the real app keeps only /multicc.apk; the rest mount on the release-histor
     // 系统操作簇迁到 Rust 前门，改由 src/routes/host-ops-host.js 的捕获应用
     // 挂载；下面用源码断言把这条边界钉住，避免新的高权限路由悄悄回到这里。
   ]);
-  // 已迁的六条不得同时回到真实 app（双轨守卫）。
+  // 已迁的七条不得同时回到真实 app（双轨守卫）。`/multicc.apk` 也在其中了。
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.doesNotMatch(serverSource, /mountSystemHostRoutes\(app/);
-  assert.match(serverSource, /mountApkDownload\(app/);
+  assert.doesNotMatch(serverSource, /mountApkDownload\(app/);
   const systemSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'system.js'), 'utf8');
   const hostOpsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-ops-host.js'), 'utf8');
   assert.doesNotMatch(systemSource, /createDeveloperToolsRoutes|createMacosPrivacyRoutes|createOpsTerminalRoutes/);

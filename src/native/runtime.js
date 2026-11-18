@@ -68,4 +68,10 @@ function runNative(operation) {
     if (active < 2) start(); else waiting.push(start);
   });
 }
-module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem };
+// 版本化 HTML 重写：规则只有 Rust 一份（multicc_core::static_assets_routes），
+// 分享页在宿主端口上渲染时经这里调用。读文件失败回 null = 退休实现的 500。
+function staticVersionedHtml(file, publicDir) {
+  return getNative().staticVersionedHtml(file, publicDir) ?? null;
+}
+module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
+  staticVersionedHtml };

@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "capturedAt": "2026-11-16",
+  "capturedAt": "2026-11-19",
   "capture": {
-    "routes": 131,
-    "middleware": 31,
-    "fingerprint": "f2fcef87dda6853479802bef"
+    "routes": 128,
+    "middleware": 29,
+    "fingerprint": "4a3d811ddcbbf4d9b4b68e90"
   },
   "terminalStates": {
     "front-door": "公开路由由 Rust 前门独占；Node 不再注册。终态=0 条 Node 注册。",
@@ -100,12 +100,12 @@
     {
       "id": "air-sync",
       "title": "Air 同步与页面",
-      "routes": 2,
-      "state": "node-resident",
+      "routes": 0,
+      "state": "front-door",
       "files": [
         "src/workspace/air-sync-runtime.js"
       ],
-      "note": "/api/air/sync、/api/air/page。实测不引用 chatSessions/persistedSessions；依赖 air-sync-runtime 的工作区运行态快照。"
+      "note": "2026-11-18 /api/air/sync、/api/air/page 迁入前门，mount() 已删；工作区运行态快照经既有 /api/__host/air 宿主端口的 sync/page op 提供（docs/gateway.md §60）。"
     },
     {
       "id": "server-core",
@@ -120,12 +120,12 @@
     {
       "id": "static-and-apk",
       "title": "APK 下载",
-      "routes": 1,
-      "state": "node-resident",
+      "routes": 0,
+      "state": "front-door",
       "files": [
         "src/routes/system.js"
       ],
-      "note": "2026-11-16：/manage /dashboard /air?view=planner 三条重定向与 apk/ipa 路径守卫迁入前门（native/gateway/src/app/static_assets_routes.rs + multicc_core::static_assets_routes，差分 docs/rust-migration/differential/static-assets-routes.js，307 请求/273 逐字节一致/34 按设计落回）。剩 GET /multicc.apk：有本地文件时落回 Node（apkDistribution），按设计不认领。versioned-HTML 与 express.static 仍在 src/routes/static-assets.js，文件读取与 send 语义未迁。"
+      "note": "2026-11-19 清零：GET /multicc.apk 由前门认领（native/gateway/src/app/release_history_routes.rs 的 ApkDownload），判定经既有 release-history 宿主端口的 apk-download op；fellThrough（本地文件）由前门按退休链续走守卫、static_web_root 发文件、转发 Node（docs/gateway.md §61）。同批 versioned-HTML 与 express.static(public/) 迁入 native/gateway/src/app/static_web_root.rs（规则 multicc_core::static_web），真实 app 不再注册任何静态处理器；src/routes/static-assets.js 只剩 serveHtml 薄桥（share 页用，重写规则唯一源 multicc_core::static_assets_routes::version_html）。system.js 的 mountApkDownload 改挂 release-history-host 捕获应用。"
     },
     {
       "id": "router-tools",
@@ -140,7 +140,7 @@
     }
   ],
   "middleware": {
-    "total": 31,
+    "total": 29,
     "keyFormat": "<name>@<mount>#<同名同挂载的出现序号>；位置号易变不作键",
     "groups": [
       {
@@ -198,16 +198,14 @@
       },
       {
         "id": "static-and-artifacts",
-        "count": 6,
+        "count": 4,
         "layers": [
           "<anonymous>@/voice-gateway/web#1",
           "headers@/artifacts#1",
           "serveStatic@/artifacts#1",
-          "serveStatic@/artifacts#2",
-          "<anonymous>@/#3",
-          "serveStatic@/#1"
+          "serveStatic@/artifacts#2"
         ],
-        "terminal": "artifacts、versioned-HTML、express.static、voice-gateway web；apk/ipa 路径守卫与 /manage /dashboard /air?view=planner 重定向已于 2026-11-16 迁入前门"
+        "terminal": "artifacts 双 root 与 voice-gateway web；versioned-HTML 与 express.static 两层已于 2026-11-19 随 static_web_root 退役，apk/ipa 路径守卫与 /manage /dashboard /air?view=planner 重定向已于 2026-11-16 迁入前门"
       },
       {
         "id": "bridges-and-remote",
