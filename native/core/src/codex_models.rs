@@ -44,6 +44,8 @@ struct Input {
     env: HashMap<String, String>,
     #[serde(default)]
     force: bool,
+    #[serde(default)]
+    refresh: bool,
 }
 #[derive(Default)]
 struct Entry {
@@ -425,7 +427,7 @@ fn refresh_with_timeout(input_json: &str, timeout: Duration) -> Result<String, S
     let e = entry(&input.home);
     let generation = e.generation.load(Ordering::SeqCst);
     let _gate = e.gate.lock().unwrap();
-    if !input.force && e.generation.load(Ordering::SeqCst) != generation {
+    if !input.force && !input.refresh && e.generation.load(Ordering::SeqCst) != generation {
         return Ok(
             serde_json::to_string(&e.value.lock().unwrap().clone().unwrap_or_else(empty)).unwrap(),
         );
@@ -454,6 +456,7 @@ fn refresh_with_timeout(input_json: &str, timeout: Duration) -> Result<String, S
         let v = version(&input, deadline)?;
         attempted_version = v.clone();
         if !input.force
+            && !input.refresh
             && e.failure
                 .lock()
                 .unwrap()
@@ -464,7 +467,7 @@ fn refresh_with_timeout(input_json: &str, timeout: Duration) -> Result<String, S
             throttled = true;
             return Ok(());
         }
-        if !input.force && fresh(&c, &v, now()) {
+        if !input.force && !input.refresh && fresh(&c, &v, now()) {
             c.source = "account_cache".into();
             return Ok(());
         }
@@ -635,6 +638,29 @@ for line in sys.stdin:
         assert!(!a.home.join("multicc_models_catalog.json").exists());
         let c: Catalog = serde_json::from_str(&peek(b.home.to_str().unwrap())).unwrap();
         assert_eq!(c.models[0].model, "b");
+    }
+    #[test]
+    fn explicit_refresh_bypasses_fresh_cache_and_preserves_old_on_failure() {
+        let f = Fixture::new();
+        let first = f.run(json!({}), false);
+        let mut input: Value =
+            serde_json::from_str(&f.input(json!({"MODEL":"new-model"}), false)).unwrap();
+        input["refresh"] = json!(true);
+        let refreshed: Catalog =
+            serde_json::from_str(&refresh(&input.to_string()).unwrap()).unwrap();
+        assert_eq!(refreshed.models[0].model, "new-model");
+        assert_ne!(first.models[0].model, refreshed.models[0].model);
+        assert_eq!(f.calls(), 2);
+        let original = fs::read(f.home.join("multicc_models_catalog.json")).unwrap();
+        let mut fail: Value = serde_json::from_str(&f.input(json!({"FAIL":"1"}), false)).unwrap();
+        fail["refresh"] = json!(true);
+        let result: Catalog = serde_json::from_str(&refresh(&fail.to_string()).unwrap()).unwrap();
+        assert_eq!(result.models[0].model, "new-model");
+        assert!(result.stale);
+        assert_eq!(
+            fs::read(f.home.join("multicc_models_catalog.json")).unwrap(),
+            original
+        );
     }
     #[test]
     fn failure_preserves_disk_and_throttles() {
