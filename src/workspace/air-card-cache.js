@@ -73,6 +73,36 @@ function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, reportMs = 600
     tail = result.then(() => {}, () => {});
     return result.finally(() => { pending -= 1; });
   }
+  // 一轮快照在 Rust 内完成：先只上送 key/signature 判定 needed，再只提交 needed 的
+  // 底稿，complete/overlay/排序全部在 Rust。命中轮次不构造任何卡片，成本与旧 plan 相同。
+  function call(op, input) {
+    if (typeof native[op] !== 'function') throw new Error('卡片快照 Rust 接口不可用，请构建当前原生模块');
+    return runNative(() => native[op](JSON.stringify(input))).then(value => JSON.parse(value));
+  }
+  function snapshotAsync(command, buildBases) {
+    pending += 1;
+    const result = tail.then(async () => {
+      const planned = await call('snapshotPlanAsync', command);
+      try {
+        const bases = typeof buildBases === 'function' ? await buildBases(planned.needed || []) : [];
+        // finish 不需要 items/globalSignature/prune：complete 只认 ticket+bases，
+        // overlay 只认 keys/facts，重复上送整份签名会白白多传一轮。
+        const facts = { now: command.now, facts: command.facts, merges: command.merges,
+          capacityReasons: command.capacityReasons, knownRenderToken: command.knownRenderToken };
+        const reply = await call('snapshotFinishAsync', { ...facts, ticket: planned.ticket, bases });
+        for (const { event, ...data } of reply.logs || []) {
+          try { (event === 'air_card_cache_mismatch' ? logger?.warn : logger?.info || logger?.log || logger?.warn)?.call(logger, event, data); } catch (_) {}
+        }
+        rendered = { token: reply.renderToken, cards: reply.cards };
+        return reply;
+      } catch (error) {
+        try { await call('snapshotAbortAsync', { ticket: planned.ticket }); } catch (_) {}
+        throw error;
+      }
+    });
+    tail = result.then(() => {}, () => {});
+    return result.finally(() => { pending -= 1; });
+  }
   async function overlayAsync(result, facts) {
     const held = rendered;
     const command = { op: 'overlay', ...result.render, ...facts,
@@ -91,6 +121,6 @@ function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, reportMs = 600
         nativeRenderable: false, entries: result.entries })))));
     }
   }
-  return { resolve, resolveAsync, overlayAsync, prepareAsync, mode: opened.mode, stats: () => run({ op: 'stats' }) };
+  return { resolve, resolveAsync, snapshotAsync, overlayAsync, prepareAsync, mode: opened.mode, stats: () => run({ op: 'stats' }) };
 }
 module.exports = { createAirCardCache, AIR_CARD_CACHE_MODES: MODES };

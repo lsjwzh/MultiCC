@@ -341,6 +341,21 @@ function createAirRuntime(rawDeps) {
     verifyMs: envNumber('AIR_CARD_CACHE_VERIFY_MS', 60_000),
     logger: deps.logger || null,
   });
+  // 兼容路径：注入的缓存对象没有 Rust 快照入口时，仍按旧的逐卡 build + overlay 执行。
+  // 生产默认走 snapshotAsync（一次调用完成整个循环）。
+  async function legacyCardLoop({ cardCache, cards, prepared, admissionIdx, recordFacts, accessOf,
+    signatureOf, globalSignature, facts, merges, capacityReasons, prune }) {
+    const resolve = cardCache.resolveAsync || cardCache.resolve;
+    const nativeBaseOf = t => cardFacts(t, prepared.taskDirs, recordFacts, admissionIdx, (name, fn) => fn(), accessOf);
+    const resolved = await resolve(globalSignature, cards, {
+      keyOf: t => t.id, signatureOf: t => signatureOf(t), prune, nativeBaseOf,
+      build: t => ({ t, ...taskDomain({ op: 'cardBase', ...nativeBaseOf(t) }) }) });
+    const overlayFacts = { now: Date.now(), facts, merges, capacityReasons };
+    const tasks = cardCache.overlayAsync
+      ? await cardCache.overlayAsync(resolved, overlayFacts)
+      : await taskDomainAsync({ op: 'cardOverlayBatch', entries: resolved.entries, ...overlayFacts });
+    return { ...resolved, cards: tasks };
+  }
   async function airSnapshot(timing, options = {}) {
     // 计时永远只是读数：timing 缺省（测试直接调这个函数）时，下面两个局部函数退化成原调用。
     const lap = name => timing?.lap(name);
@@ -419,19 +434,21 @@ function createAirRuntime(rawDeps) {
       return signature == null ? signature : `${signature}:${JSON.stringify(accessOf(task) ?? null)}`;
     };
     lap('cardSignatureMs');
-    const resolve = cardCache.resolveAsync || cardCache.resolve;
-    const nativeBaseOf = t => cardFacts(t, prepared.taskDirs, recordFacts, admissionIdx, timedAdd, accessOf);
-    const resolved = await resolve(globalSignature, cards, {
-      keyOf: t => t.id, signatureOf: t => (signatureOf ? signatureOf(t) : null),
-      prune: !selected, nativeBaseOf,
-      build: t => ({ t, ...taskDomain({ op: 'cardBase', ...nativeBaseOf(t) }) }) });
-    const { entries, hits, builds } = resolved;
-    timing?.set('cardHits', hits);
-    timing?.set('cardBuilds', builds);
+    // 卡片循环整体在 Rust 内完成：这里只上送 key/签名与运行时事实，命中轮次不构造
+    // 任何底稿；Rust 判定 needed 后，才为那几张卡构造 base 回填。
     const capacity = capacityMemo();
     const facts = {}, merges = {}, capacityReasons = {};
-    for (let i = 0; i < entries.length; i++) {
-      const { t, card, capacityOf } = entries[i];
+    const items = new Array(cards.length);
+    const workspaceOf = task => {
+      const sessionId = task.chatSessionId || task.sessionId || null;
+      const record = recordFacts[sessionId];
+      const workspace = admissionIdx.workspaceByOwner.get(record?.workspaceOwnerSessionId || sessionId) || null;
+      const lease = workspace ? admissionIdx.leaseByWorkspace.get(workspace.id) || null : null;
+      return { record, workspace, lease };
+    };
+    for (let i = 0; i < cards.length; i++) {
+      const t = cards[i];
+      items[i] = { key: t.id, signature: signatureOf(t) };
       for (const id of new Set([...(t.refs || []).map(ref => ref.sessionId), t.routing?.workerSessionId, t.chatSessionId].filter(Boolean))) {
         if (Object.hasOwn(facts, id)) continue;
         let runState = null;
@@ -440,16 +457,28 @@ function createAirRuntime(rawDeps) {
         facts[id] = { taskState: state ? Object.fromEntries(['queueState', 'classifyState', 'classifyHistory',
           'classifyUpdatedAt', 'lastTurnEndedAt', 'startedAt', 'endedAt'].map(key => [key, state[key]])) : null, runState };
       }
-      const record = deps.records.get(card.sessionId);
-      merges[card.id] = record && ['resident', 'retained'].includes(card.resource.residency)
+      const { record, workspace, lease } = workspaceOf(t);
+      const residency = workspace?.residency
+        || (record?.workspaceState === 'planned' ? 'planned' : record ? 'retained' : 'planned');
+      merges[t.id] = record && ['resident', 'retained'].includes(residency)
         && typeof deps.mergeStateCached === 'function'
         ? timedAdd('mergeStateMs', () => deps.mergeStateCached(deps.directories.get(record.dirId), record)) : null;
-      capacityReasons[card.id] = capacityOf ? timedAdd('capacityMs', () => capacity(capacityOf)) : null;
+      // 与 Rust 底稿同一个判据：有 workspace 且当前没有活跃租约才需要现问容量。
+      capacityReasons[t.id] = workspace && !lease
+        ? timedAdd('capacityMs', () => capacity(workspace)) : null;
       if (options.cooperative && i % 24 === 23) await new Promise(done => setImmediate(done));
     }
-    const overlayFacts = { now: projectNow, facts, merges, capacityReasons };
-    const tasks = cardCache.overlayAsync ? await cardCache.overlayAsync(resolved, overlayFacts)
-      : await taskDomainAsync({ op: 'cardOverlayBatch', entries, ...overlayFacts });
+    const resolved = cardCache.snapshotAsync
+      ? await cardCache.snapshotAsync(
+        { now: projectNow, globalSignature, prune: !selected, items, facts, merges, capacityReasons },
+        needed => needed.map(index => ({ key: cards[index].id,
+          base: cardFacts(cards[index], prepared.taskDirs, recordFacts, admissionIdx, timedAdd, accessOf) })))
+      : await legacyCardLoop({ cardCache, cards, prepared, admissionIdx, recordFacts, accessOf,
+        signatureOf, globalSignature, facts, merges, capacityReasons, prune: !selected });
+    const { hits, builds } = resolved;
+    timing?.set('cardHits', hits);
+    timing?.set('cardBuilds', builds);
+    const tasks = resolved.cards;
     // 无人值守模式（docs/unattended-mode.md）：任务行只带状态条需要的字段，
     // 完整状态仍走 GET /api/sessions/:id/unattended。这里必须复制而不是
     // 原地改：`held.cards` 是卡片缓存的原对象，写回去会让状态粘在缓存里。

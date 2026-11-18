@@ -111,6 +111,34 @@ test('失败保留旧索引，恢复后继续推进', async t => {
   await runtime.flush(); assert.notEqual(runtime.index.cursor(), first);
 });
 
+test('局部刷新失败只重试那几张卡，不升级成全量；重试间隔按失败次数退避', async t => {
+  const calls = [], warnings = [];
+  let fail = false, data = snapshot([task(1), task(2)]);
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(),
+    build: async ids => {
+      calls.push(ids);
+      if (fail) throw Object.assign(new Error('owner unavailable'), { code: 'SESSION_SESSION_WORK_OWNER_UNAVAILABLE' });
+      return ids ? { ...data, tasks: data.tasks.filter(task => ids.includes(task.id)) } : data;
+    },
+    logger: { warn: (event, fields) => warnings.push({ event, ...fields }) }, send() {} });
+  t.after(() => runtime.close());
+  await runtime.ensureReady();
+  assert.equal(calls[0], null, '首轮是全量');
+  await runtime.flush(); assert.equal(calls[1], null, '没有变化时走周期性全量核对');
+  fail = true; runtime.invalidate(['1']);
+  await runtime.flush();
+  assert.deepEqual(calls.at(-1), ['1'], '失败的是局部刷新');
+  assert.equal(warnings.at(-1).full, false, '不得把局部失败报成全量');
+  const firstRetry = warnings.at(-1).retryInMs;
+  fail = true; await runtime.flush();
+  assert.deepEqual(calls.at(-1), ['1'], '失败后仍然只重试这一张卡');
+  assert.ok(warnings.at(-1).retryInMs > firstRetry, '连续失败应退避');
+  fail = false; await runtime.flush();
+  assert.equal(warnings.at(-1).event, 'air_sync_refresh_failed', '成功前不重置告警计数');
+  fail = false; runtime.invalidate(['2']); await runtime.flush();
+  assert.deepEqual(calls.at(-1), ['2'], '恢复后继续按局部刷新');
+});
+
 test('事件提前唤醒周期核对；构建中再次变化会保留到下一轮', async t => {
   let observer, finish, builds = 0;
   let data = snapshot([task(1)]);
