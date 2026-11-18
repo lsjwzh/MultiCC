@@ -2,7 +2,13 @@
   'use strict';
   const number = cursor => Number(String(cursor).split(':').at(-1));
   const generation = cursor => String(cursor).split(':')[0];
-  function create({ request, getInclude = () => [], onChange = () => {}, onStatus = () => {}, onIssue = () => {},
+  // onIssue 默认写首页的持久化告警条（#air-sync-issue，仅 air.html 有）；测试与
+  // 其他页面可传自己的回调覆盖。
+  const defaultIssue = issue => {
+    const el = root.document && root.document.getElementById('air-sync-issue');
+    if (el) el.textContent = (issue && issue.message) || '';
+  };
+  function create({ request, getInclude = () => [], onChange = () => {}, onStatus = () => {}, onIssue = defaultIssue,
     socketUrl, Socket = root.WebSocket, random = Math.random,
     schedule = setTimeout, cancel = clearTimeout, isVisible = () => true }) {
     let snapshot = null, cursor = '', inflight = null, socket = null, connecting = false, socketDay = 0;

@@ -31,6 +31,16 @@ function isGatewayChild(env = process.env, ppid = process.ppid) {
     && String((env && env.MULTICC_GATEWAY_PID) || '').trim() === String(ppid);
 }
 
+// 源码树上 gateway 重拉 Node 子进程时，把 addon 指到按当前源码新构建的那份
+// （否则子进程沿用 spawn 时的旧模块）。server.js 行长棘轮不许涨，这段判定住在这里；
+// MULTICC_SOURCE_ROOT 只是接力标记，读完即删，不许再传给孙进程。
+function applySourceAddonEnv(sourceRoot, env = process.env) {
+  if (isGatewayChild(env) && env.MULTICC_SOURCE_ROOT === sourceRoot && env.MULTICC_DESKTOP !== '1') {
+    env.MULTICC_RUST_ADDON = require('../scripts/ensure-source-rust').addonForSourceChild(sourceRoot);
+  }
+  delete env.MULTICC_SOURCE_ROOT;
+}
+
 // Capture before any CLI/provider child starts; never leave the control
 // capability in process.env where descendants could inherit it.
 const authBootstrap = isGatewayChild() ? {
@@ -254,6 +264,7 @@ function watchGatewayLifeline({ env = process.env, stdin = process.stdin, logger
 
 module.exports = {
   GATEWAY_PROTOCOL,
+  applySourceAddonEnv,
   connectAuthControl,
   connectWorkspaceControl,
   MAX_HEADER_BYTES,

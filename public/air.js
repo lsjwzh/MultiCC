@@ -2622,10 +2622,7 @@
     loading = true;
     let failed = false;
     try {
-      if (liveSync) {
-        try { await liveSync.sync(); }
-        catch { failed = true; return; } // onIssue owns the persistent summary notice.
-      }
+      if (liveSync) { try { await liveSync.sync(); } catch { failed = true; return; } } // onIssue owns the notice.
       const snapshot = liveSync ? { unchanged: true } : await apiConditional('/api/air');
       if (!snapshot.unchanged) {
         acceptSnapshot(snapshot);
@@ -2987,7 +2984,6 @@
     liveSync = window.MultiCCAirSync.create({
       request: path => api(path), getInclude: () => [taskId, ...recentTaskIds].filter(Boolean),
       onChange: value => { if (value) acceptSnapshot(value); },
-      onIssue: issue => { $('air-sync-issue').textContent = issue?.message || ''; },
       isVisible: () => !document.hidden,
       socketUrl: path => window.multiccWsUrl(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${path}`),
       onStatus: status => {
