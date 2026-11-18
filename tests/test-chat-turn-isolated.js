@@ -301,6 +301,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     const first = await connect(wsUrl);
     sockets.push(first.ws);
     await waitUntil(() => first.frames.length > 0, 'no initial chat frame');
+    first.send({ type: 'ping' });
+    await first.until(frames => frames.some(frame => frame.type === 'pong'), 'chat pong');
     sendUser(first, 'PING_ONE');
     await first.until(frames => hasText(frames, 'echo:PING_ONE'), 'assistant echo');
     await first.until(terminal, 'turn completion');

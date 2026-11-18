@@ -230,6 +230,84 @@ test('Rust authentication: VM collects runtime cycles through callbacks and tick
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('control handoff callback does not retain VM ticket owners', () => {
+  const result = spawnSync(process.execPath, ['--expose-gc', '-e', `
+    const { createAuthSecurity } = require('./src/auth-security');
+    const assert = require('node:assert/strict');
+    (async () => {
+      let weak;
+      (() => {
+        const owner = {};
+        owner.auth = createAuthSecurity({ secret: 'fixture' });
+        owner.auth.issueWsTicket('/ws/chat', { owner });
+        owner.auth.connectGateway(1, 'x'.repeat(43));
+        weak = new WeakRef(owner);
+      })();
+      for (let i = 0; i < 30; i++) { await new Promise(r => setImmediate(r)); global.gc(); }
+      assert.equal(weak.deref(), undefined);
+    })().catch(e => { console.error(e); process.exitCode = 1; });
+  `], { cwd: require('node:path').join(__dirname, '..'), encoding: 'utf8', timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('private control redeems VM-held machine metadata once and fails closed', { timeout: 15000 }, async t => {
+  const net = require('node:net');
+  const { once } = require('node:events');
+  const server = net.createServer();
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const capability = crypto.randomBytes(32).toString('base64url');
+  const auth = native.createAuthSecurity({ secret: 'fixture' });
+  const connected = once(server, 'connection');
+  auth.connectGateway(server.address().port, capability);
+  const [socket] = await connected;
+  t.after(() => { socket.destroy(); server.close(); });
+  let buffer = Buffer.alloc(0);
+  const frames = [];
+  const waiting = [];
+  socket.on('data', chunk => {
+    buffer = Buffer.concat([buffer, chunk]);
+    while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32BE(0)) {
+      const size = buffer.readUInt32BE(0);
+      const value = JSON.parse(buffer.subarray(4, 4 + size));
+      buffer = buffer.subarray(4 + size);
+      if (waiting.length) waiting.shift()(value); else frames.push(value);
+    }
+  });
+  const read = () => frames.length ? Promise.resolve(frames.shift()) : new Promise(resolve => waiting.push(resolve));
+  const write = value => {
+    const body = Buffer.from(JSON.stringify(value));
+    const length = Buffer.alloc(4); length.writeUInt32BE(body.length);
+    socket.write(Buffer.concat([length, body]));
+  };
+  const sign = text => crypto.createHmac('sha256', capability).update(text).digest('base64url');
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  write(nonce);
+  assert.equal(await read(), sign(`child:${nonce}`));
+  write(sign(`parent:${nonce}`));
+  const redeem = async (ticket, path) => { write({ op: 'consume_ticket', ticket, path }); return read(); };
+  const metadata = { machineId: '机-1', upstream: { url: 'ws://10.0.0.1/ws/chat?ticket=secret',
+    addresses: [{ address: '10.0.0.1', family: 4 }] } };
+  const issued = auth.issueWsTicket('/ws/machines/机-1', metadata);
+  const response = await redeem(issued.ticket, issued.path);
+  assert.equal(response.kind, 'redeemed');
+  assert.equal(JSON.stringify(response.metadata), JSON.stringify(metadata));
+  assert.equal(response.path, issued.path);
+  assert.equal(response.expires_at, issued.expiresAt);
+  assert.deepEqual(await redeem(issued.ticket, issued.path), { kind: 'invalid' });
+  const wrong = auth.issueWsTicket('/ws/chat', { requestId: 'r' });
+  assert.deepEqual(await redeem(wrong.ticket, '/ws/other'), { kind: 'invalid' });
+  assert.deepEqual(await redeem(wrong.ticket, '/ws/chat'), { kind: 'invalid' });
+  const cyclic = {}; cyclic.self = cyclic;
+  const bad = auth.issueWsTicket('/ws/chat', cyclic);
+  assert.deepEqual(await redeem(bad.ticket, '/ws/chat'), { kind: 'invalid' });
+  const large = auth.issueWsTicket('/ws/chat', { payload: 'x'.repeat(65480) });
+  assert.deepEqual(await redeem(large.ticket, '/ws/chat'), { kind: 'invalid' });
+  const good = auth.issueWsTicket('/ws/chat', { requestId: 'still-alive' });
+  assert.equal((await redeem(good.ticket, '/ws/chat')).metadata.requestId, 'still-alive');
+  assert.equal(auth.ticketCount(), 0);
+});
+
 test('Rust authentication: real HTTP login, cookie exchange and ticket endpoints match Node', async t => {
   const express = require('express');
   async function server(api, factory) {

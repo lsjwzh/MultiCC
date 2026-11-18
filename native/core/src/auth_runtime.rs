@@ -10,6 +10,17 @@ pub enum Metadata {
     Native(crate::js::JsValue),
 }
 
+/// A consumed host slot must be resolved on the JS thread; it is never a wire
+/// response and cannot be redeemed a second time while the handoff is pending.
+pub enum Redemption {
+    Ready(Response),
+    Host {
+        slot: u64,
+        path: String,
+        expires_at: f64,
+    },
+}
+
 pub struct AuthRuntime {
     pub secret: String,
     pub shutting_down: bool,
@@ -129,43 +140,56 @@ impl AuthRuntime {
 
     /// The addon's `consume_ws_ticket` rules for a ticket redeemed over the wire:
     /// the record leaves the table before the clock and scope checks, so a
-    /// wrong-scope or expired attempt still spends it. Only wire metadata
-    /// crosses the stream. Native workspace-sharing metadata is converted to
-    /// JSON only when it survives the conversion without loss; a ticket whose
-    /// metadata lives in the JS VM is spent and refused, never handed over
-    /// half-formed.
+    /// wrong-scope or expired attempt still spends it. Native workspace-sharing
+    /// metadata crosses as JSON only when the conversion is lossless. This
+    /// synchronous entry refuses VM-held metadata; the addon uses the separate
+    /// host handoff below to resolve it on the JS thread.
     pub fn consume_ticket(&mut self, ticket: &str, path: &str, now: f64) -> Response {
+        match self.consume_ticket_for_host(ticket, path, now) {
+            Redemption::Ready(response) => response,
+            Redemption::Host { slot, .. } => {
+                self.retire(Metadata::Host(slot));
+                Response::Invalid
+            }
+        }
+    }
+
+    pub fn consume_ticket_for_host(&mut self, ticket: &str, path: &str, now: f64) -> Redemption {
         if ticket.is_empty() {
-            return Response::Invalid;
+            return Redemption::Ready(Response::Invalid);
         }
         let Some(scope) = auth::normalize_ws_path(path) else {
-            return Response::Invalid;
+            return Redemption::Ready(Response::Invalid);
         };
         let Some(record) = self.tickets.take(ticket) else {
-            return Response::Invalid;
+            return Redemption::Ready(Response::Invalid);
         };
+        if record.expires_at <= now || record.path != scope {
+            self.retire(record.metadata);
+            return Redemption::Ready(Response::Invalid);
+        }
         let metadata = match record.metadata {
             Metadata::Wire(value) => Some(value),
             Metadata::Native(value) => {
                 let encoded = crate::js::serde::to_serde(&value);
                 (crate::js::serde::from_serde(&encoded) == value).then_some(encoded)
             }
-            other => {
-                self.retire(other);
-                None
+            Metadata::Host(slot) => {
+                return Redemption::Host {
+                    slot,
+                    path: record.path,
+                    expires_at: record.expires_at,
+                };
             }
         };
-        if record.expires_at <= now || record.path != scope {
-            return Response::Invalid;
-        }
-        match metadata {
+        Redemption::Ready(match metadata {
             Some(metadata) => Response::Redeemed {
                 path: record.path,
                 expires_at: record.expires_at,
                 metadata,
             },
             None => Response::Invalid,
-        }
+        })
     }
 
     /// Native callers share the existing ticket table without a JSON round trip.

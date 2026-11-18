@@ -17,6 +17,7 @@ pub mod chat_finalize_execution;
 pub mod chat_history_index;
 pub mod chat_runtime;
 pub mod chat_turn_lifecycle;
+pub mod chat_ws_control;
 pub mod classify_vocab;
 pub mod cli_capability;
 pub mod cli_switch;

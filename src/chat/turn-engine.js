@@ -2857,17 +2857,16 @@ function createChatTurnEngine(deps) {
     ws.on('message', async (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
-        // Heartbeat is always allowed.
-        if (msg.type === 'ping') {
+        // Native policy keeps heartbeat before the share permission gate.
+        const controlAction = getNative().chatWsControlAction(typeof msg.type === 'string' ? msg.type : '',
+          typeof ws._sharePerm === 'string' ? ws._sharePerm : '');
+        if (controlAction === 'pong') {
           try { sendWs(ws, { type: 'pong' }); } catch (_) {}
           return;
         }
         // ── Share-scope gate ──
-        // view  = read-only: drop everything except ping.
-        // operate = read-write: allow user_message/cancel/typing, but block
-        //   admin/destructive ops (clear_history, etc.) — shares never get those.
-        if (ws._sharePerm === 'view') return;
-        if (ws._sharePerm === 'operate' && !['user_message', 'cancel', 'typing'].includes(msg.type)) return;
+        // View is read-only; operate permits user_message/cancel/typing only.
+        if (controlAction === 'ignore') return;
         if ((taskContextHost?.requiresTaskShell?.(sessionName) || taskContextHost?.ownsTaskShell?.(sessionName)) && msg.type !== 'typing') {
           // The task-shell entry is where this gate sends users, so its own display
           // controls (clear display / rotate native context) must get through.

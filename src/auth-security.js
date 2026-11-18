@@ -6,6 +6,18 @@ const { getNative } = require('./native/runtime');
 const COOKIE_VERSION = 1;
 const DEFAULT_COOKIE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_TICKET_TTL_MS = 30 * 1000;
+// Keep the callback's lexical scope separate from the owner. The native
+// control task retains this function; only the facade retains the anchor.
+function ticketMetadataReader(anchor) {
+  const weak = new WeakRef(anchor);
+  return (_error, slot) => {
+    const slots = weak.deref()?.slots;
+    if (!slots || !Object.hasOwn(slots, slot)) return null;
+    const value = slots[slot];
+    delete slots[slot];
+    try { return JSON.stringify(value) || null; } catch { return null; }
+  };
+}
 function createAuthSecurity(options) {
   // The VM must see callback/metadata references to collect cycles. Rust owns
   // the slots and their lifecycle; this anchor contains no auth decisions.
@@ -17,7 +29,7 @@ function createAuthSecurity(options) {
     setAccessToken: value => runtime.setAccessToken(value),
     shuttingDown: () => runtime.shuttingDown(),
     setShuttingDown: value => runtime.setShuttingDown(value),
-    connectGateway: (port, capability) => runtime.connectGateway(port, capability),
+    connectGateway: (port, capability) => runtime.connectGateway(port, capability, ticketMetadataReader(anchor)),
     connectWorkspaceGateway: (owner, ...args) => owner.connectGateway(...args, runtime),
     createCookie: () => runtime.createCookie(),
     verifyCookie: cookie => runtime.verifyCookie(cookie),
