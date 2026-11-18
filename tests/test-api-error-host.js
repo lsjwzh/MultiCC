@@ -141,6 +141,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
       state._activeTurn === turn && state._activeRunner === runner,
     assistantCheckpointKey: () => null,
     getChatHistoryRuntime: () => ({ clearIncrementalSave: noop }),
+    userInputSignalHost: { withSnapshotAsync: async (_id, fn) => fn(), activateTurnAsync: async () => {} },
     setSessionStatus: noop,
     getSessionWorkHost: () => ({ turnFailed: noop, turnSucceeded: noop }),
     runDurablePostTurn: noop,

@@ -203,7 +203,8 @@ test('Fleet sharing works from a LAN-bound source to a loopback-bound target', a
     'the Fleet capability cannot mutate a session outside its source Fleet');
   const gitLog = await requestJson(`${proxyBase}/api/git/log?dirId=fleet-source&limit=50`);
   assert.equal(gitLog.response.status, 200);
-  assert.equal(gitLog.body.dirId, 'fleet-source', 'the existing Git-tree API is reused through Fleet scope');
+  assert.equal(gitLog.body.repoPath, '/private/source-repository', 'the existing Git-tree API is scoped to the source repository');
+  assert.deepEqual(gitLog.body.commits, [], 'the source Git host returned its empty history');
   const deniedOtherGit = await requestJson(`${proxyBase}/api/git/log?dirId=other-fleet&limit=50`);
   assert.equal(deniedOtherGit.response.status, 403);
 

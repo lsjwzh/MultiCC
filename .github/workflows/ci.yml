@@ -118,7 +118,7 @@ jobs:
           if (result.error) throw result.error;
           process.exit(result.status ?? 1);
           NODE
-          if grep -Eiq '# SKIP|^# skipped [1-9][0-9]*' "$RUNNER_TEMP/cdp-results.log"; then
+          if grep -Eiq '#[[:space:]]+SKIP([[:space:]]|$)|^# skipped [1-9][0-9]*' "$RUNNER_TEMP/cdp-results.log"; then
             echo '::error::Browser suite skipped tests; CDP coverage is incomplete'
             exit 1
           fi
@@ -208,7 +208,7 @@ jobs:
           command -v ffmpeg >/dev/null || brew install ffmpeg
           node -e "if (!require('./tests/helpers/cdp-harness').findChromeBinary()) throw new Error('Chrome is required for CDP coverage')"
           node --test --test-reporter=tap tests/test-remote-screen-h264-cdp.js 2>&1 | tee "$RUNNER_TEMP/h264-p2p-cdp.log"
-          if grep -Eiq '# SKIP|^# skipped [1-9][0-9]*' "$RUNNER_TEMP/h264-p2p-cdp.log"; then
+          if grep -Eiq '#[[:space:]]+SKIP([[:space:]]|$)|^# skipped [1-9][0-9]*' "$RUNNER_TEMP/h264-p2p-cdp.log"; then
             echo '::error::H.264 P2P browser coverage was skipped'
             exit 1
           fi

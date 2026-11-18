@@ -231,8 +231,9 @@ function runtimeFixture(t, overrides = {}) {
     getStore: () => runtime?.store,
     getSession: () => ({}),
     getState: id => sessionState.get(id) || {},
+    getRecord: () => ({ unattended: null }),
     setState: (id, patch) => sessionState.set(id, { ...(sessionState.get(id) || {}), ...patch }),
-    onResolved: () => {}, log: () => {},
+    onResolved: () => {}, log: () => {}, now: () => clock.value,
   });
   runtime = createOrchestrationRuntime({
     file: path.join(dir, 'orchestration.json'),
