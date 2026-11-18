@@ -174,30 +174,74 @@ test('the exact per-request count becomes a measured rate', () => {
   const { c, meter } = meterAt();
   meter.begin(0);
   meter.noteRequest();
+  c.advance(5000);                      // first-token latency is not generation time
+  meter.noteChunk('abcd');
   c.advance(10_000);
+  meter.noteChunk('abcd');
   meter.noteUsage(500);
   assert.deepEqual(meter.snapshot().exact, { tokens: 500, ms: 10_000, rate: 50 });
   meter.noteUsage(900);                  // no request open: ignored
   assert.equal(meter.snapshot().exact.tokens, 500);
 });
 
-test('the whole observed turn average includes waiting and freezes at completion', () => {
+test('average counts output spans, excludes tool and request gaps, and freezes at completion', () => {
   const { c, meter } = meterAt();
   meter.noteChunk('abcd');
   meter.noteText('abcd');
   assert.equal(meter.isActive(), false);
   assert.equal(rate.describe(meter.snapshot()).text, '');
   meter.begin(0);
+  meter.noteRequest();
+  c.advance(20_000);                   // waiting for first output
+  meter.noteChunk('abcd'.repeat(10));
   c.advance(2000);
-  meter.noteChunk('abcd'.repeat(20));
-  c.advance(8000);
-  assert.equal(meter.snapshot().averageRate, 2);
+  meter.noteChunk('abcd'.repeat(10));
+  meter.noteOutputBoundary();
+  c.advance(120_000);                  // tool execution and idle gap
+  meter.noteRequest();
+  c.advance(10_000);                   // next request's first-token wait
+  meter.noteChunk('abcd'.repeat(10));
+  c.advance(2000);
+  meter.noteChunk('abcd'.repeat(10));
+  assert.equal(meter.snapshot().outputMs, 4000);
+  assert.equal(meter.snapshot().averageRate, 10);
   meter.end();
   c.advance(5000);
-  assert.equal(meter.snapshot().averageRate, 2);
-  assert.equal(rate.describe(meter.snapshot()).text, '平均 ≈2.0 tok/s');
+  assert.equal(meter.snapshot().averageRate, 10);
+  assert.equal(rate.describe(meter.snapshot()).text, '平均 ≈10 tok/s');
   meter.begin(0);
   assert.equal(meter.snapshot().averageRate, null);
+});
+
+test('unmeasurable single chunks do not inflate later measured output spans', () => {
+  const { c, meter } = meterAt();
+  meter.begin(0);
+  meter.noteChunk('abcd'.repeat(100));
+  meter.noteOutputBoundary();
+  c.advance(60000);
+  meter.noteChunk('abcd'.repeat(5));
+  c.advance(1000);
+  meter.noteChunk('abcd'.repeat(5));
+  assert.equal(meter.snapshot().total, 110);
+  assert.equal(meter.snapshot().averageRate, 10);
+});
+
+test('new upstream requests separate output spans even without message_start', () => {
+  const { c, meter } = meterAt();
+  const metric = (requestId, done = false) => ({ requestId, attempt: 1, bytes: 100, elapsedMs: 1000, headersMs: 100, done });
+  meter.begin(0);
+  meter.noteTransportMetrics(metric('first'));
+  meter.noteChunk('abcd'.repeat(5));
+  c.advance(1000);
+  meter.noteChunk('abcd'.repeat(5));
+  meter.noteTransportMetrics(metric('first', true));
+  c.advance(120000);
+  meter.noteTransportMetrics(metric('second'));
+  meter.noteChunk('abcd'.repeat(5));
+  c.advance(1000);
+  meter.noteChunk('abcd'.repeat(5));
+  assert.equal(meter.snapshot().outputMs, 2000);
+  assert.equal(meter.snapshot().averageRate, 10);
 });
 
 test('upstream averages weight observed request bytes by request duration and ignore replay or stale samples', () => {
@@ -212,7 +256,7 @@ test('upstream averages weight observed request bytes by request duration and ig
   assert.match(rate.describe(snap).text, /上游平均 1\.0 KiB\/s/);
   assert.match(rate.describe(snap).title, /并非带宽测速/);
   c.advance(1000);
-  assert.equal(meter.snapshot().transportRate, 4096 / 5, 'an unfinished silent request keeps accumulating time');
+  assert.equal(meter.snapshot().transportRate, 1024, 'an absent sample cannot extend a request into tool time');
   meter.noteTransportMetrics({ requestId: 'two', attempt: 1, bytes: 2048, elapsedMs: 3000, headersMs: 600, done: true });
   meter.end();
   snap = meter.snapshot();
@@ -238,7 +282,7 @@ test('describe() renders every phase with its duration and a detailed tooltip', 
     '实时输出速度（按流式文本估算，近 3 秒）',
     '本轮已输出 ≈1.2k tokens',
     '首字耗时 2.1s',
-    '上个请求实测 58 tok/s（812 tokens / 14s）',
+    '上个请求输出 812 tokens，按观测输出时间约 58 tok/s（14s）',
   ].join('\n'));
   assert.equal(rate.describe({ ...base, phase: 'flowing', rate: 4.25 }).text, '⚡ 4.3 tok/s');
   assert.equal(rate.describe({ ...base, phase: 'tool', phaseMs: 12000 }).text, '🔧 工具运行 12s');
