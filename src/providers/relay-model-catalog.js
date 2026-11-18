@@ -126,7 +126,7 @@ function createProviderRelayModelCatalogRuntime(options = {}) {
 
   // The gateway owns the public catalog DTO. This bridge exposes only the
   // live provider projection and the account runtime's last-known snapshot.
-  async function sourceCatalogFacts(appType, id) {
+  async function sourceCatalogFacts(appType, id, options = {}) {
     const summary = providers.getProviderSummary(appType, id);
     if (!summary) return { summary: null, catalog: null };
     let catalog = null;
@@ -136,6 +136,9 @@ function createProviderRelayModelCatalogRuntime(options = {}) {
           ? providers.getProvider(appType, id) : summary;
         const managed = !!(record && (record.activeAccountId && record.activeAccountId !== 'global'
           || require('../official-accounts').officialAccountIdFromProvider(record)));
+        if (options.refresh === true && typeof codexModelsRuntime.refreshProvider === 'function') {
+          try { await codexModelsRuntime.refreshProvider(record, { refresh: true }); } catch (_) { /* Keep the account snapshot. */ }
+        }
         catalog = typeof codexModelsRuntime.peekProvider === 'function'
           ? codexModelsRuntime.peekProvider(record)
           : !managed && typeof codexModelsRuntime.peek === 'function' ? codexModelsRuntime.peek() : null;

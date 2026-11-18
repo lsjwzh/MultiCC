@@ -127,8 +127,9 @@ async function requestModels(fetchImpl, endpoint, headers, timeoutMs) {
   }
 }
 
-async function fetchProviderModels(fetchImpl, summary, apiKey, timeoutMs) {
-  const endpoint = modelsEndpointFor(summary && summary.baseUrl);
+async function fetchProviderModels(fetchImpl, summary, apiKey, timeoutMs, refreshRelay) {
+  let endpoint = modelsEndpointFor(summary && summary.baseUrl);
+  if (endpoint && refreshRelay) endpoint += '?refresh=1';
   if (!endpoint || typeof fetchImpl !== 'function') return [];
   let { res } = await requestModels(fetchImpl, endpoint, authHeaders(summary, apiKey), timeoutMs);
   // A stale/expired key must not hide a gateway that serves its catalog
@@ -186,9 +187,19 @@ function createProviderModelsRuntime(options = {}) {
       return { status: 200, body: fallbackBody(summary) };
     }
 
+    // Only MultiCC's scoped Codex relay understands the refresh flag. Never
+    // attach it to arbitrary third-party providers.
+    let refreshRelay = false;
+    if (refresh && provider.appType === 'codex') {
+      try {
+        const target = providers.getProviderLimitTarget(provider.appType, provider.id);
+        refreshRelay = target?.strategy === 'relay-quota'
+          && String(target.relayUrl || '').replace(/\/+$/, '') === String(summary.baseUrl || '').replace(/\/+$/, '');
+      } catch (_) { /* ordinary gateway */ }
+    }
     let models = [];
     try {
-      models = await fetchProviderModels(fetchImpl, summary, tokenFor(provider), timeoutMs);
+      models = await fetchProviderModels(fetchImpl, summary, tokenFor(provider), refreshRelay ? 18000 : timeoutMs, refreshRelay);
     } catch (_) { models = []; }
     if (models.length) {
       // Cache the upstream identity too: editing the base URL invalidates the

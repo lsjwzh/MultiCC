@@ -165,3 +165,35 @@ test('启动恢复仅异步加载账号各自持久化目录，不调用 CLI 发
   assert.deepEqual(loaded, [`/accounts/${A}`, `/accounts/${B}`, '/global-codex']);
   assert.deepEqual(runtime.peekProvider(records[0]).models, [{ model: 'model-a' }]);
 });
+
+
+test('borrower refresh requests a non-destructive discovery for the shared account only', async () => {
+  const { runtime, records, calls } = setup();
+  const record = records[0];
+  const relay = createProviderRelayModelCatalogRuntime({
+    providers: { getProviderSummary: () => ({ ...record, isOfficial: true, modelOptions: [] }),
+      getProvider: () => record, listProviders: () => [], getProviderLimitTarget() {}, updateProviderRelayModelCatalog() {} },
+    codexModelsRuntime: runtime,
+  });
+  const result = await relay.sourceCatalogFacts('codex', record.id, { refresh: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].home, `/accounts/${A}`);
+  assert.equal(calls[0].refresh, true);
+  assert.equal(calls[0].force, false);
+  assert.equal(result.catalog.models[0].model, `model-${A}`);
+});
+
+test('manual refresh queues behind an ordinary in-flight discovery', async () => {
+  const releases = [], calls = [];
+  const { runtime, records } = setup({ getNative: () => ({
+    codexModelsPeek: () => JSON.stringify({ models: [] }),
+    codexModelsRefresh: input => { calls.push(JSON.parse(input)); return new Promise(resolve => releases.push(resolve)); },
+  }) });
+  const first = runtime.refreshProvider(records[0]);
+  const second = runtime.refreshProvider(records[0], { refresh: true });
+  while (!releases.length) await new Promise(resolve => setImmediate(resolve));
+  releases.shift()(JSON.stringify({ models: [] })); await first;
+  while (!releases.length) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls.map(call => call.refresh), [false, true]);
+  releases.shift()(JSON.stringify({ models: [] })); await second;
+});

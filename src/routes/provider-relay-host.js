@@ -34,7 +34,7 @@ function mountProviderRelayHostRoute(app, { authRuntime, modelCatalogRuntime, is
         return res.json(await authRuntime.admitGatewayRequest(request));
       }
       if (body.op === 'catalogFacts') {
-        return res.json(await modelCatalogRuntime.sourceCatalogFacts(body.appType, body.id));
+        return res.json(await modelCatalogRuntime.sourceCatalogFacts(body.appType, body.id, { refresh: body.refresh === true }));
       }
       return res.status(400).json({ error: 'unknown host operation' });
     } catch (_) {

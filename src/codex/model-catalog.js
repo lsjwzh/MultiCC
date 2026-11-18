@@ -82,11 +82,12 @@ function createCodexAccountModelCatalogRuntime(options = {}) {
     const ticket = refreshOptions._ticket || (explicitForce ? Symbol('login-refresh') : invalidating.get(home));
     if (explicitForce && !refreshOptions._ticket) invalidating.set(home, ticket);
     const force = explicitForce || invalidating.has(home);
+    const refresh = refreshOptions.refresh === true;
     const active = pending.get(home);
     if (active) {
       // 登录写入新凭据后必须执行强制刷新，不能吞掉之前启动的普通目录读取。
-      if (explicitForce) {
-        return active.promise.then(() => refreshProvider(provider, { ...refreshOptions, force: true, _ticket: ticket }));
+      if (explicitForce || (refresh && !active.refresh && !active.force)) {
+        return active.promise.then(() => refreshProvider(provider, { ...refreshOptions, _ticket: ticket }));
       }
       return active.promise;
     }
@@ -98,7 +99,7 @@ function createCodexAccountModelCatalogRuntime(options = {}) {
         env, logger: { log() {}, warn() {} },
       }).codex;
       const result = JSON.parse(await runNative(() => addon.codexModelsRefresh(JSON.stringify({
-        home, cliBin, env, force,
+        home, cliBin, env, force, refresh,
       }))));
       nativeCompleted = true;
       return result;
@@ -108,7 +109,7 @@ function createCodexAccountModelCatalogRuntime(options = {}) {
       pending.delete(home);
       if (force && nativeCompleted && invalidating.get(home) === ticket) invalidating.delete(home);
     });
-    pending.set(home, { promise, force });
+    pending.set(home, { promise, force, refresh });
     return promise;
   }
   async function loadProvider(value) {
