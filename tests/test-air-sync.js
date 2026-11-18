@@ -135,8 +135,8 @@ test('已加载的首页收到持久化告警、保留任务，并在服务解�
   const notice = createAirStorageNotice();
   const runtime = createAirSyncRuntime({ index: createAirReadIndex(), build: async () => snapshot([task(1)]),
     storageNotice: notice.current, send: (socket, frame) => socket.onmessage({ data: JSON.stringify(frame) }) });
-  const handlers = {};
-  runtime.mount({ get: (path, handler) => { handlers[path] = handler; } }, fn => fn);
+  // /api/air/sync 的公开注册已迁 Rust 前门；这里直调处理器原体。
+  const handlers = { '/api/air/sync': ({ query }) => runtime.syncHttp(query || {}) };
   let socket, issue;
   class Socket extends EventEmitter {
     readyState = 1;
@@ -342,4 +342,96 @@ test('未挂到任务板的会话事件只重算元数据；工作区级事件�
   observer('d', { type: 'workspace_state' });
   await runtime.flush();
   assert.deepEqual(builtIds.at(-1), null, '无会话指向的事件保持全量');
+});
+
+// /api/air/sync 与 /api/air/page 的公开注册迁到 Rust 前门后，处理器原体是
+// runtime.syncHttp/pageHttp；这里钉住原 req.query 上的全部 JS 强制转换。
+test('syncHttp：dayStart/cursor/include 的退役强制转换逐条保持', async t => {
+  const calls = [];
+  const index = {
+    isReady: () => true, cursor: () => 'c0',
+    publish: async () => ({ event: null, stats: [] }),
+    sync: async (since, day) => { calls.push(['sync', since, day]); return { events: [], cursor: 'c1' }; },
+    bootstrap: async options => { calls.push(['bootstrap', options]); return { cursor: 'c0', taskStats: { all: { total: 0 } } }; },
+    close: async () => {},
+  };
+  const runtime = createAirSyncRuntime({ index, build: async () => snapshot([]), send: () => {}, logger: { warn() {} } });
+  t.after(() => runtime.close());
+  await runtime.syncHttp({});
+  assert.deepEqual(calls.pop(), ['bootstrap', { include: [], dayStart: 0 }]);
+  await runtime.syncHttp({ dayStart: '5', include: 'a,b,,c' });
+  assert.deepEqual(calls.pop(), ['bootstrap', { include: ['a', 'b', 'c'], dayStart: 5 }]);
+  // Number(['5']) === 5，Number(['5','6']) 与 Number({}) 都是 NaN → ||0
+  await runtime.syncHttp({ dayStart: ['5'] });
+  assert.deepEqual(calls.pop(), ['bootstrap', { include: [], dayStart: 5 }]);
+  await runtime.syncHttp({ dayStart: ['5', '6'], include: ['x', 'y'] });
+  assert.deepEqual(calls.pop(), ['bootstrap', { include: ['x', 'y'], dayStart: 0 }]);
+  await runtime.syncHttp({ dayStart: { a: 1 } });
+  assert.deepEqual(calls.pop(), ['bootstrap', { include: [], dayStart: 0 }]);
+  // String({}) === '[object Object]'，切分后是一个元素
+  await runtime.syncHttp({ include: {} });
+  assert.deepEqual(calls.pop(), ['bootstrap', { include: ['[object Object]'], dayStart: 0 }]);
+  // cursor truthy → readSync 臂；since 原样进 index.sync（String 强转在读索引适配层里）
+  await runtime.syncHttp({ cursor: 'c9', dayStart: '7' });
+  assert.deepEqual(calls.pop(), ['sync', 'c9', 7]);
+  await runtime.syncHttp({ cursor: ['a', 'b'] });
+  assert.deepEqual(calls.pop(), ['sync', ['a', 'b'], 0]);
+  // 空字符串 cursor 是 falsy → bootstrap 臂
+  await runtime.syncHttp({ cursor: '' });
+  assert.deepEqual(calls.pop(), ['bootstrap', { include: [], dayStart: 0 }]);
+  // 响应合成：结果展开 + checkedAt + statusFields
+  const reply = await runtime.syncHttp({ cursor: 'c9' });
+  assert.equal(reply.cursor, 'c1');
+  assert.equal(typeof reply.checkedAt, 'number');
+  assert.equal(reply.degraded, false);
+  calls.pop();
+});
+
+test('pageHttp：visits 的截断解析与 ids 的 undefined/空串/列表形状', async t => {
+  const calls = [];
+  const index = {
+    isReady: () => true, cursor: () => 'c0',
+    publish: async () => ({ event: null, stats: [] }),
+    page: async options => { calls.push(['page', options]); return { ok: true, tasks: [] }; },
+    close: async () => {},
+  };
+  const runtime = createAirSyncRuntime({ index, build: async () => snapshot([]), send: () => {}, logger: { warn() {} } });
+  t.after(() => runtime.close());
+  // 未知键照原样透传（退役的 {...req.query, ...} 展开语义）
+  await runtime.pageHttp({ status: 'all', foo: 'ignored' });
+  assert.deepEqual(calls.pop(), ['page', { status: 'all', foo: 'ignored', visits: {}, ids: null }]);
+  await runtime.pageHttp({ ids: '' });
+  assert.deepEqual(calls.pop(), ['page', { ids: [], visits: {} }]);
+  await runtime.pageHttp({ ids: ['a', 'b'], visits: '{"x":2}' });
+  assert.deepEqual(calls.pop(), ['page', { ids: ['a', 'b'], visits: { x: 2 } }]);
+  await runtime.pageHttp({ visits: 'not-json' });
+  assert.deepEqual(calls.pop(), ['page', { visits: {}, ids: null }]);
+  // String(['a','b']) === 'a,b' 不是 JSON → {}；String({}) 同理
+  await runtime.pageHttp({ visits: ['a', 'b'] });
+  assert.deepEqual(calls.pop(), ['page', { visits: {}, ids: null }]);
+  // 10000 个 UTF-16 单元处截断：切断代理对后 JSON 必坏 → {}
+  await runtime.pageHttp({ visits: `{"ok":"${'𐐷'.repeat(4999)}"}` });
+  assert.deepEqual(calls.pop(), ['page', { visits: {}, ids: null }]);
+});
+
+test('syncHttp/pageHttp：关闭后是 air_closed，串行队列满时是 air_busy', async t => {
+  const closed = createAirSyncRuntime({ index: { isReady: () => true, close: async () => {} },
+    build: async () => snapshot([]), send: () => {}, logger: { warn() {} } });
+  await closed.close();
+  await assert.rejects(closed.syncHttp({}), e => e.status === 503 && e.code === 'air_closed');
+  await assert.rejects(closed.pageHttp({}), e => e.status === 503 && e.code === 'air_closed');
+
+  let release; const gate = new Promise(r => { release = r; });
+  const index = {
+    isReady: () => true, cursor: () => 'c',
+    publish: async () => ({ event: null, stats: [] }),
+    sync: async () => { await gate; return { events: [], cursor: 'c' }; },
+    close: async () => {},
+  };
+  const runtime = createAirSyncRuntime({ index, build: async () => snapshot([]), send: () => {}, maxPending: 1, logger: { warn() {} } });
+  t.after(() => runtime.close());
+  await runtime.flush();
+  const first = runtime.syncHttp({ cursor: 'c' });
+  await assert.rejects(runtime.syncHttp({ cursor: 'c' }), e => e.status === 503 && e.code === 'air_busy');
+  release(); await first;
 });

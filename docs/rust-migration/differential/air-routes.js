@@ -57,6 +57,15 @@ let buildDeps = null;
 let legacyBag = null;
 let legacy = null;
 let upstreamText = '';
+let readyPath = '';
+
+async function childReady() {
+  const deadline = Date.now() + 60_000;
+  while (!fs.existsSync(readyPath)) {
+    if (Date.now() > deadline) throw new Error('the stub child never became ready');
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
 // The ETag a case handed back on the Node side, keyed by case, plus each
 // case's predecessor. A conditional request must use the SAME validator for
 // both sides; reading `capturedEtag` while building would hand the Rust side
@@ -119,6 +128,16 @@ function add(name, buildRequest, buildScenario, extra = {}) {
   if (!scenario.answers) scenario.answers = {};
   const hooks = useScenario(scenario);
   for (const [hook, fn] of Object.entries(extra)) hooks[hook] = fn;
+  // The stub child loads the native addon before it listens. Under load that
+  // outlasts the gateway's own start, and the first cases that reach the host
+  // port would meet a refused connection and the front door's 503 fallback
+  // (a harness race, not a behaviour difference). Hold the Rust side of every
+  // case until the stub has written its listening marker.
+  const before = hooks.before;
+  hooks.before = async side => {
+    if (side.name === 'rust') await childReady();
+    if (before) await before(side);
+  };
   pending.push([name, () => buildRequest(tag), hooks]);
 }
 
@@ -349,7 +368,8 @@ const listener = net.createServer({ pauseOnConnect: true }, socket => {
   socket.on('data', onData);
   socket.resume();
 });
-listener.listen(Number(process.env.MULTICC_GATEWAY_INTERNAL_PORT), '127.0.0.1');
+listener.listen(Number(process.env.MULTICC_GATEWAY_INTERNAL_PORT), '127.0.0.1',
+  () => fs.writeFileSync(process.env.STUB_READY, 'ready'));
 `;
 }
 
@@ -363,6 +383,7 @@ main({
     process.env.MULTICC_DATA_DIR = work;
     worldPath = path.join(work, 'air-world.json');
     effectsPath = path.join(work, 'air-effects.ndjson');
+    readyPath = path.join(work, 'stub-ready');
     fs.writeFileSync(effectsPath, '');
     fs.writeFileSync(worldPath, JSON.stringify({ case: 'initial', answers: {} }));
     const helper = require(path.join(repo, 'tests/helpers/air-scripted-world'));
@@ -381,6 +402,7 @@ main({
     MULTICC_DATA_DIR: work,
     STUB_WORLD: worldPath,
     STUB_EFFECTS: effectsPath,
+    STUB_READY: readyPath,
   }),
   corpus,
   finalize({ work, views }) {

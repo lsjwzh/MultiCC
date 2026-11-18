@@ -2,12 +2,13 @@
 
 // Test harness for the Air host port.
 //
-// The 15 public /api/air routes are owned by the Rust front door now
+// The 17 public /api/air routes are owned by the Rust front door now
 // (native/gateway/src/app/air_routes.rs, rules in native/core/src/air_routes.rs):
 // path matching, parameter decoding, If-None-Match → 304, the `{ ok: … }`
 // envelope, error statuses and OPTIONS/HEAD no longer run in Node. `mountAirRoutes`
-// only wires the loopback host port (POST /api/__host/air) plus the liveSync
-// summary routes (/api/air/sync, /api/air/page).
+// only wires the loopback host port (POST /api/__host/air); the liveSync summary
+// routes (/api/air/sync, /api/air/page) answer through the same port as the
+// `sync` / `page` ops.
 //
 // Node tests therefore drive one host operation at a time and read back the
 // envelope the retired `route()` catch arm used to build:
@@ -16,7 +17,8 @@
 //   refusal  -> HTTP 200 { ok: false, error: { code, status?, message } }
 //
 // The wire contract (status codes, ETag/304, key order) is covered by
-// native/gateway/tests/air_routes.rs and docs/rust-migration/differential/air-routes.js.
+// native/gateway/tests/air_routes.rs and docs/rust-migration/differential/air-routes.js
+// (the sync/page pair: docs/rust-migration/differential/air-sync-routes.js).
 const assert = require('node:assert/strict');
 const { createAirRuntime, HOST_PATH } = require('../../src/workspace/air-routes-host');
 

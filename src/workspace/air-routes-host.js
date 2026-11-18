@@ -174,21 +174,16 @@ function createAirRuntime(rawDeps) {
     try { return { taskPins: pins().read(), taskTodos: todos().read(), taskTodoIgnored: todoIgnores().read() }; }
     finally { taskSnapshot = previous; }
   }
-  // 处理器可以直接写完响应（条件请求就是如此），也可以照旧返回一个对象。
-  const route = fn => async (req, res) => {
-    try {
-      const result = await fn(req, res);
-      if (!res.headersSent && result !== undefined) res.json(result);
-      // 这些写操作（创建任务、绑定角色、补投递……）只影响快照元数据或不进入快照，
-      // 任务卡变化由各自领域事件（task_board_update/task_state）带过来；这里按元数据
-      // 档失效，别把每次创建/点选都升级成 1284 张卡的全量重建。reclaim 例外：它在
-      // 自己的处理器里显式要求全量。
-      if (req.method && req.method !== 'GET') liveSync?.invalidate([]);
-    } catch (error) {
-      if (res.headersSent || res.writableEnded) return;
-      res.status(error.status || 500).json({ ok: false, code: error.code || 'air_request_failed', message: error.status ? error.message : 'Request failed' });
-    }
-  };
+  // 原 route() 包装的错误信封（error.status||500 / error.code||'air_request_failed' /
+  // status 为真才带 message）现在由 refusal() 提供事实、内核 error_body 定稿；
+  // 写操作的元数据档失效由 handle() 的 ROUTE_WRITES/FINALLY_WRITES 复刻。
+  // sync/page 是只读操作：原实现里 GET 不失效、错误直接进信封。
+  function requireLiveSync() {
+    if (liveSync) return liveSync;
+    // 生产恒有 registerSync；这个拒绝面只在宿主缺注册时出现，对齐运行时的
+    // air_closed 形状（前门的 rust_backend_unavailable 覆盖宿主不在的情况）。
+    throw Object.assign(new Error('首页摘要暂不可用，请稍后重试'), { status: 503, code: 'air_closed' });
+  }
   // Pin 住的任务（页头顶上那排「齐刘海」/ 手机侧栏的置顶）。落盘位置默认跟
   // sessions.json 同一个数据目录，宿主也可以自己指一个（测试就是这样给的）。
   // 懒建：没碰过 pin 的实例不该为它做任何磁盘动作。
@@ -728,6 +723,16 @@ function createAirRuntime(rawDeps) {
         return todos().toggle(body.taskId);
       case 'todos-ignore':
         return todoIgnores().toggle(body.taskId);
+      // 已迁前门的两条只读摘要：处理器原体在 liveSync.syncHttp/pageHttp，
+      // q 是前门按 qs 语义抽好的查询键（缺键 = 原 req.query 里的 undefined）。
+      case 'sync': {
+        const { op: _, ...q } = body;
+        return requireLiveSync().syncHttp(q);
+      }
+      case 'page': {
+        const { op: _, ...q } = body;
+        return requireLiveSync().pageHttp(q);
+      }
       default:
         return UNKNOWN;
     }
@@ -754,7 +759,9 @@ function createAirRuntime(rawDeps) {
   }
 
   function mount(app) {
-    if (liveSync) { liveSync.mount(app, route); deps.registerSync(liveSync); }
+    // /api/air/sync 与 /api/air/page 已迁 Rust 前门；宿主进程只保留回环宿主
+    // 端口与 registerSync 登记，公开挂载不再出现（防静默回退）。
+    if (liveSync) deps.registerSync(liveSync);
     app.post(HOST_PATH, (req, res) => {
       // 只认回环。前门转发到内网端口时写的是真实对端地址，远端客户端在这里就被挡住。
       if (!(deps.isLocal || require('../request-locality').isLocalRequest)(req)) {
