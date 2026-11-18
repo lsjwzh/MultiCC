@@ -627,6 +627,87 @@ mod tests {
         );
     }
 
+    /// 走一遍宿主的真实两段式（plan → complete → overlay），返回 overlay 的原始回复。
+    /// knownRenderToken 为 None 时模拟「宿主手上没有任何版本」。
+    fn finish(
+        cache: &mut CardCache,
+        now: f64,
+        items: &[(&str, &str)],
+        known: Option<u64>,
+    ) -> Value {
+        let plan = cache
+            .exec(&json!({
+                "op":"plan","globalSignature":"g","now":now,"prune":true,
+                "items":items.iter().map(|(k, s)| json!({"key":k,"signature":s})).collect::<Vec<_>>()
+            }))
+            .expect("plan");
+        let built = array(&plan["needed"])
+            .iter()
+            .map(|i| {
+                let (key, sig) = items[i.as_u64().unwrap() as usize];
+                // 正文必须随签名变，否则重建出的卡和旧版字节相同、render_token 不会
+                // 翻新 —— 真实宿主的卡片内容本来就由签名覆盖的字段决定。
+                json!({"entry":{"card":{"id":key,"sig":sig},"t":{"id":key}},"random":1})
+            })
+            .collect::<Vec<_>>();
+        let complete = cache
+            .exec(&json!({"op":"complete","ticket":plan["ticket"],"built":built,"now":now}))
+            .expect("complete");
+        let native_renderable = complete["nativeRenderable"] == true;
+        cache
+            .exec(&json!({
+                "op":"overlay","now":now,"facts":{},"merges":{},"capacityReasons":{},
+                "knownRenderToken":match known { Some(t) => json!(t), None => Value::Null },
+                "keys":complete["keys"],"tokens":complete["tokens"],
+                "nativeRenderable":complete["nativeRenderable"],
+                "entries":if native_renderable { Value::Null } else { complete["entries"].clone() }
+            }))
+            .expect("overlay")
+    }
+
+    // 排好序的整页正文由 Rust 持有。宿主说得出自己手上是哪一版时，整页就不该再
+    // 序列化穿过边界一次 —— 1554 张卡实测回传 0.60MB→0.01MB、该阶段省约 40%。
+    #[test]
+    fn a_matching_render_token_withholds_the_whole_page() {
+        let mut cache = opened(60_000.0, 0);
+        let items = [("a", "s"), ("b", "s")];
+        let first = finish(&mut cache, 0.0, &items, None);
+        let token = first["token"].as_u64().expect("首轮必须给出 token");
+        assert_eq!(
+            array(&first["cards"]).len(),
+            2,
+            "宿主手上没有版本时要回传整页"
+        );
+
+        let again = finish(&mut cache, 1_000.0, &items, Some(token));
+        assert_eq!(
+            again["token"].as_u64(),
+            Some(token),
+            "正文没变，token 不该变"
+        );
+        assert!(
+            again.get("cards").is_none(),
+            "token 对得上就不该再回传整页正文，实际回了：{:?}",
+            again.get("cards")
+        );
+    }
+
+    #[test]
+    fn a_stale_render_token_still_gets_the_whole_page() {
+        let mut cache = opened(60_000.0, 0);
+        let items = [("a", "s"), ("b", "s")];
+        let first = finish(&mut cache, 0.0, &items, None);
+        let token = first["token"].as_u64().unwrap();
+        // 卡片正文真的变了：token 必须翻新，并且整页回传，否则宿主会把上一版当本轮结果。
+        let changed = finish(&mut cache, 1_000.0, &[("a", "s2"), ("b", "s")], Some(token));
+        assert_ne!(
+            changed["token"].as_u64(),
+            Some(token),
+            "正文变了 token 必须翻新"
+        );
+        assert_eq!(array(&changed["cards"]).len(), 2, "token 过期必须回传整页");
+    }
+
     // runState 的物证键清单只许有一份：宿主按它裁剪 taskState 投影，少一个键会让
     // 规则看不到物证却不报错。
     #[test]
