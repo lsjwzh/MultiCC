@@ -173,9 +173,22 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
   return file;
 }
 
+// A gateway can outlive an update to the checkout. Every replacement Node
+// child reads server.js from disk, so select its addon from that same revision.
+function addonForSourceChild(repoRoot, env = process.env) {
+  const cache = sourcePaths(repoRoot, env);
+  const inherited = env.MULTICC_RUST_ADDON && path.resolve(env.MULTICC_RUST_ADDON);
+  const current = path.join(cache.prebuiltDir, `${process.platform}-${process.arch}`, 'multicc_core.node');
+  if (inherited === current && fs.existsSync(current)) return current;
+  if (inherited && builtFromSource(inherited, cache.fingerprint)) return inherited;
+  // A failed build must not fall back to the incompatible inherited addon.
+  return ensureSourceRust({ repoRoot, paths: () => cache,
+    env: { ...env, MULTICC_RUST_ADDON: '', MULTICC_RUST_PREBUILT_DIR: '' } });
+}
+
 if (require.main === module) {
   try { const file = ensureSourceRust(); if (file) process.stdout.write(file + '\n'); }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 
-module.exports = { ensureRemoteBinary, ensureCdpdBinary, ensureGatewayBinary, ensureSourceRust };
+module.exports = { ensureRemoteBinary, ensureCdpdBinary, ensureGatewayBinary, ensureSourceRust, addonForSourceChild };

@@ -29,7 +29,7 @@ function start() {
     addon = ensureSourceRust({ repoRoot: root });
     gateway = path.join(path.dirname(addon), windows ? 'multicc-gateway.exe' : 'multicc-gateway');
   } catch (error) { console.error(error.message); process.exit(1); }
-  const env = { ...process.env, MULTICC_RUST_ADDON: addon, MULTICC_SOURCE_FOREGROUND: '1' };
+  const env = { ...process.env, MULTICC_RUST_ADDON: addon, MULTICC_SOURCE_ROOT: root, MULTICC_SOURCE_FOREGROUND: '1' };
   delete env.MULTICC_SOURCE_DAEMON;
   const dataRoot = path.resolve(root, env.MULTICC_DATA_DIR || root);
   try { env.MULTICC_RESTART_GENERATION = fs.readFileSync(path.join(dataRoot, '.restart-generation'), 'utf8').trim(); env.MULTICC_RESTART_EXACT_PORT = '1'; }

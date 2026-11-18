@@ -1,7 +1,12 @@
 'use strict';
 
 // Capture private gateway bootstrap before modules spawn any descendants.
-const { connectAuthControl } = require('./src/gateway-child');
+const { connectAuthControl, isGatewayChild } = require('./src/gateway-child');
+
+if (isGatewayChild() && process.env.MULTICC_SOURCE_ROOT === __dirname && process.env.MULTICC_DESKTOP !== '1') {
+  process.env.MULTICC_RUST_ADDON = require('./scripts/ensure-source-rust').addonForSourceChild(__dirname);
+}
+delete process.env.MULTICC_SOURCE_ROOT;
 
 {
   const [major, minor] = process.versions.node.split('.').map(Number);
