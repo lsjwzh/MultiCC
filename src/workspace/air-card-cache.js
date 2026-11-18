@@ -93,14 +93,31 @@ function createAirCardCache({ mode = 'shadow', verifyMs = 60_000, verifyBudget =
         const bases = typeof buildBases === 'function' ? await buildBases(planned.needed || []) : [];
         // finish 不需要 items/globalSignature/prune：complete 只认 ticket+bases，
         // overlay 只认 keys/facts，重复上送整份签名会白白多传一轮。
+        // knownRenderToken 是「我手上已经有哪一版卡片」：排好序的整页正文由 Rust
+        // 持有，token 对得上时它只回一个 token，不再把整页序列化穿回来（判定在
+        // card_cache.rs 的 overlay）。1554 张卡实测：回传 0.60MB→0.01MB、
+        // 每轮省 6.1ms。宿主不必知道这件事，所以 token 由缓存层自己记、自己送。
+        const known = rendered ? rendered.token : undefined;
         const facts = { now: command.now, facts: command.facts, merges: command.merges,
-          capacityReasons: command.capacityReasons, knownRenderToken: command.knownRenderToken };
+          capacityReasons: command.capacityReasons,
+          knownRenderToken: command.knownRenderToken === undefined ? known : command.knownRenderToken };
         const reply = await call('snapshotFinishAsync', { ...facts, ticket: planned.ticket, bases });
         for (const { event, ...data } of reply.logs || []) {
           try { (event === 'air_card_cache_mismatch' ? logger?.warn : logger?.info || logger?.log || logger?.warn)?.call(logger, event, data); } catch (_) {}
         }
-        rendered = { token: reply.renderToken, cards: reply.cards };
-        return reply;
+        // 没回传正文只有一种合法解释：token 与我手上的完全一致。对不上还缺正文
+        // 就是契约被破坏，这时宁可报错，也不能把上一版卡片当成这一轮的结果发出去。
+        // 注意是 == null：Rust 侧 overlay 命中时整个 cards 键缺席，serde 取不到
+        // 的键会序列化成 null（不是 undefined），按 undefined 判会漏。
+        let cards = reply.cards;
+        if (cards == null) {
+          if (!rendered || reply.renderToken !== rendered.token) {
+            throw new Error('卡片快照未回传正文，但 renderToken 与宿主持有的不一致');
+          }
+          cards = rendered.cards;
+        }
+        rendered = { token: reply.renderToken, cards };
+        return { ...reply, cards };
       } catch (error) {
         try { await call('snapshotAbortAsync', { ticket: planned.ticket }); } catch (_) {}
         throw error;
