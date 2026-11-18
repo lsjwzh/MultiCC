@@ -28,7 +28,8 @@ function scheduleRustRestart({ spawn, rootDir, dataDir, port, targetPort = port,
     generation_file: path.join(dataDir, '.restart-generation'), lock_file: path.join(dataDir, '.restart-supervisor.lock'),
     port_file: path.join(dataDir, '.restart-port'),
     cwd: rootDir, gateway, node: process.execPath, log_path: logPath,
-    source_launcher: mode === 'background' ? path.join(rootDir, 'scripts', 'start-gateway.js') : null };
+    source_launcher: ['background', 'source'].includes(mode)
+      ? path.join(rootDir, 'scripts', 'start-gateway.js') : null };
   if (env.NODE_ENV === 'test' && env.MULTICC_RESTART_TEST_TIMEOUT_MS) {
     const timeout = Number(env.MULTICC_RESTART_TEST_TIMEOUT_MS);
     if (Number.isInteger(timeout) && timeout >= 100 && timeout <= 30000) {

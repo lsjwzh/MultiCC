@@ -30,6 +30,7 @@ async function runCase(kind) {
     const config = { mode: kind === 'success' ? 'background' : ['source', 'desktop', 'standalone'].includes(kind) ? kind : 'standalone', old_pid: old.pid, port,
       generation: 'test-generation', generation_file: path.join(dir, 'generation'), lock_file: path.join(dir, 'lock'),
       cwd: dir, gateway, node: process.execPath, log_path: path.join(dir, 'restart.log'),
+      source_launcher: kind === 'source' ? fixture : undefined,
       old_timeout_ms: kind === 'old' ? 200 : 3000, ready_timeout_ms: kind === 'timeout' ? 400 : 3000 };
     worker = spawn(binary, [], { env: { ...process.env, MULTICC_RESTART_CONFIG: JSON.stringify(config),
       PORT: String(port), FIXTURE_NODE: process.execPath, FIXTURE_SCRIPT: fixture, PID_FILE: path.join(dir, 'pid') }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -42,7 +43,7 @@ async function runCase(kind) {
       workerExit.then(({ code }) => reject(new Error(`early exit ${code}: ${stderr}`)));
     });
     if (kind !== 'old') { old.kill(); await oldExit; }
-    if (['source', 'desktop', 'standalone'].includes(kind)) {
+    if (['desktop', 'standalone'].includes(kind)) {
       server = http.createServer((req, res) => { res.setHeader('X-Multicc-Restart-Generation', config.generation); res.end('{"status":"ready"}'); });
       await new Promise(resolve => server.listen(port, '127.0.0.1', resolve));
     }
@@ -50,7 +51,7 @@ async function runCase(kind) {
     if (fs.existsSync(path.join(dir, 'pid'))) newPid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
     if (kind === 'success' || ['source', 'desktop', 'standalone'].includes(kind)) {
       assert.equal(result.code, 0, stderr);
-      if (kind !== 'success') assert.equal(newPid, undefined, 'external supervisor owns the new process');
+      if (['desktop', 'standalone'].includes(kind)) assert.equal(newPid, undefined, 'external supervisor owns the new process');
     }
     else {
       assert.notEqual(result.code, 0, stderr);

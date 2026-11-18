@@ -43,7 +43,8 @@ function start() {
   });
   child.on('error', (error) => { console.error(`cannot start ${gateway}: ${error.message}`); process.exit(1); });
   child.on('exit', (code, signal) => {
-    if (!stopping && code === 0 && !signal && fs.existsSync(path.join(dataRoot, '.restart-generation'))) { setTimeout(start, 1000); return; }
+    // The detached Rust restart supervisor owns the next launch generation.
+    // Exit this wrapper so it cannot race the supervisor by starting a second gateway.
     if (daemonManaged) {
       try { if (Number(fs.readFileSync(pidFile, 'utf8')) === child.pid) fs.unlinkSync(pidFile); } catch (_) {}
     }
