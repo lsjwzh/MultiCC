@@ -120,8 +120,20 @@ native 测试的 319 项通过，重启场景另行以 release 程序验证；�
 
 ## 后续优先顺序
 
-1. 调度准入、完成、队列重排和恢复：统一 Rust 所有权，保留同步观察、
-   并发、持久化顺序及崩溃恢复；现有静态门禁仍未通过。
+1. 调度准入、完成、队列重排和恢复：**已完成（2026-11-19 复核）**。四个入口的
+   决策与事务都在 Rust：准入 `schedule_admit_live`、完成 `schedule_settle_live`、
+   重排 `schedule_admit_live::reorder`、恢复 `schedule_lifecycle_live`；Node 侧
+   `src/orchestration/native-store-host.js` 只剩串行化队列、JSON 编组与时钟端口，
+   按原守卫顺序调用，不做调度决策。实测门禁全绿：
+   `test-scheduler-admit-rust-required` 3、`test-scheduler-complete-rust-required` 3、
+   `test-scheduler-recovery-rust` 4、`test-scheduler-complete-order` 3、
+   `test-scheduler-insert-native` 4、`test-scheduler-note-native` 3、
+   `test-scheduler-worker-order` 5、`test-session-work-scheduler` 73、
+   `test-session-work-host` 64、`test-migrated-command-ownership` 2，合计 164 项 0 失败。
+   本文件此前一直写着「现有静态门禁仍未通过」，那是 2026-11-17 的状态，在 11-18
+   恢复所有权收尾后就已过期；该说法已据实订正。
+   `src/session-work/scheduler.js`（1,108 行）与 `host.js`（1,294 行）仍在 Node，
+   但承载的是宿主副作用与事件广播，不是调度状态所有权。
 2. 聊天回合与会话所有权：迁移 `turn-engine` 的状态机和效果协调，
    补齐取消、重试、后台任务、完成和恢复的真实事件样本。
 3. 状态与持久化：逐个迁移会话记录、任务运行态和仍在 Node 的领域
@@ -148,5 +160,5 @@ native 测试的 319 项通过，重启场景另行以 release 程序验证；�
 
 调度器第一阶段已冻结四个迁前入口并建立内存和独立 SQLite 所有者对拍；
 实验性元数据读取可显式准备至多 16 MiB 的记录，详见
-`scheduler-read-model-next.md`。这不构成非阻塞读模型，四个调度入口及
-对应的所有权门禁仍未迁完。
+`scheduler-read-model-next.md`。这仍不构成非阻塞读模型；但四个调度入口本身
+及其所有权门禁已在 2026-11-19 复核中全部通过（证据见上文第 1 条）。
