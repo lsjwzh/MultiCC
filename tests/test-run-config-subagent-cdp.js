@@ -362,7 +362,8 @@ test('existing session: an own sub-agent route on the same family survives a CLI
     assert.ok(await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"'));
     await openSession(page, { cli: 'claude-exp', provider: 'p-main', model: 'claude-opus',
       subagent: { providerId: 'p-main', model: 'claude-opus' }, cliAccounts: {} });
-    assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}) !== null`));
+    assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))})?.value === 'p-main' &&
+      document.querySelector(${JSON.stringify(inDialog('.rc-sub-model'))})?.value === 'claude-opus'`), '已有线路和模型加载完成');
     assert.equal((await text(page, '.rc-sub-state')).trim(), '已单独设置');
 
     // 旧 claude-exp 会话选择唯一的 Claude：单独设置的线路不能被家族默认盖掉。

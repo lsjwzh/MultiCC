@@ -308,13 +308,21 @@ function sendWsMessage(port, sessionId, text) {
     // ── D1 + S3: master dispatches → slave returns completed → master gets result
     const d1 = await sendWsMessage(port, master.id, 'dispatch a task to the slave');
 
-    const slaveEntry = await waitUntil(() => {
-      if (!fs.existsSync(slaveLog)) return null;
-      const lines = fs.readFileSync(slaveLog, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
-      // Version probes (`fake-cli.js --version`) are logged too; the dispatched
-      // turn is the first record carrying a real prompt.
-      return lines.find(entry => entry.prompt && entry.prompt !== '--version') || null;
-    }, 'D1: slave did not receive the dispatched message');
+    let slaveEntry;
+    try {
+      slaveEntry = await waitUntil(() => {
+        if (!fs.existsSync(slaveLog)) return null;
+        const lines = fs.readFileSync(slaveLog, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
+        // Version probes (`fake-cli.js --version`) are logged too; the dispatched
+        // turn is the first record carrying a real prompt.
+        return lines.find(entry => entry.prompt && entry.prompt !== '--version') || null;
+      }, 'D1: slave did not receive the dispatched message');
+    } catch (error) {
+      // Fixed flags only: prompts and router responses may contain private data.
+      error.message += ` (masterTurnEnded=${d1.ok}, masterTimedOut=${d1.error === 'timeout'}, `
+        + `receiptSeen=${d1.assistantText.includes('MASTER_RESULT:')}, slaveLogExists=${fs.existsSync(slaveLog)})`;
+      throw error;
+    }
 
     if (NEW_TASK) {
       slave.id = slaveEntry.sessionId;
