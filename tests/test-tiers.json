@@ -2641,6 +2641,15 @@
       ]
     },
     {
+      "path": "tests/test-chat-ws-conformance.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
       "path": "tests/test-chat.js",
       "tier": "other",
       "lane": "live"
