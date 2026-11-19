@@ -177,6 +177,8 @@ function probeAddon(file, node = process.execPath) {
     if(['chatApplyClaudeEvent','chatApplyAdapterEvent','chatCommitFinalPersist','chatCommitHeldAnswer',
       'chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
       'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.chatWsControlAction!=='function' || a.chatWsControlAction('ping','view')!=='pong'
+      || a.chatWsControlAction('clear_history','operate')!=='ignore') process.exit(1);
     if(typeof a.RustChatHistory!=='function' || typeof a.RustChatHistory.prototype.run!=='function'
       || typeof a.chatHistoryCleanThinkingBlocks!=='function') process.exit(1);
     if(typeof a.RustChatHistoryRepository!=='function' || typeof a.RustChatHistoryRepository.prototype.run!=='function'

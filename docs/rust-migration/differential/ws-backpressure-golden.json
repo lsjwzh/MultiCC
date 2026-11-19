@@ -1,0 +1,2014 @@
+{
+  "defaults": {
+    "highWaterBytes": 1048576,
+    "maxQueueBytes": 2097152,
+    "maxQueueMessages": 4096,
+    "maxCongestionMs": 15000,
+    "retryMs": 25,
+    "maxFrameBytes": 8388608
+  },
+  "coalesceTypes": [
+    "aux_history",
+    "aux_init",
+    "meta_snapshot",
+    "provider_token_stats",
+    "role_token_stats",
+    "session_status",
+    "snapshot",
+    "task_state"
+  ],
+  "cases": [
+    {
+      "name": "one frame flushes, drains and reports depth",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "hello"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 5,
+          "sha": "2cf24dba5fb0a30e",
+          "options": null
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": null
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": false,
+          "congested": false,
+          "closed": false
+        }
+      ]
+    },
+    {
+      "name": "a second frame waits for the in-flight callback",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "one"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "two"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 3,
+          "sha": "7692c3ad3540bb80",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "stats",
+          "queueBytes": 3,
+          "queueMessages": 1,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": null
+        },
+        {
+          "e": "send",
+          "bytes": 3,
+          "sha": "3fc4ccfe745870e2",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 1,
+          "error": null
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": false,
+          "congested": false,
+          "closed": false
+        }
+      ]
+    },
+    {
+      "name": "coalescing replaces a queued snapshot in place",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":\"d1\",\"value\":1}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":\"d1\",\"value\":2}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":\"d2\",\"value\":3}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "complete",
+          "error": null
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_messages_coalesced_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 2,
+          "set": true
+        },
+        {
+          "e": "stats",
+          "queueBytes": 84,
+          "queueMessages": 2,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": null
+        },
+        {
+          "e": "send",
+          "bytes": 42,
+          "sha": "c0c3724a7180c287",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 2,
+          "error": null
+        },
+        {
+          "e": "send",
+          "bytes": 42,
+          "sha": "fc855252c0a3bb8a",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 3,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "coalescing keys fall back through sessionId, role and empty",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"task_state\",\"sessionId\":\"s1\"}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"role_token_stats\",\"role\":\"main\"}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"aux_init\"}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"task_state\",\"sessionId\":\"s1\",\"again\":true}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"aux_init\",\"again\":true}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 2,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 3,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_messages_coalesced_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_messages_coalesced_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "stats",
+          "queueBytes": 124,
+          "queueMessages": 3,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        }
+      ]
+    },
+    {
+      "name": "non-coalescing payloads keep their own slots",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"chat_delta\",\"dirId\":\"d1\"}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{not json"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"dirId\":\"d1\"}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "buffer",
+            "fill": "q",
+            "length": 8
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "view",
+            "fill": "v",
+            "length": 8
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 2,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 3,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 4,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 5,
+          "set": true
+        },
+        {
+          "e": "stats",
+          "queueBytes": 73,
+          "queueMessages": 5,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        }
+      ]
+    },
+    {
+      "name": "a numeric coalescing field stringifies like the template literal",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":7}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":7,\"newer\":true}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":\"7\"}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_messages_coalesced_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_messages_coalesced_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "stats",
+          "queueBytes": 31,
+          "queueMessages": 1,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        }
+      ]
+    },
+    {
+      "name": "a single frame over maxFrameBytes disconnects with 1013",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "fill": "x",
+            "length": 8388609
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "after"
+          },
+          "bounded": true,
+          "callback": true
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_overflows_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "queue_overflow",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "bufferedAmount": 0
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "callback",
+          "index": 1,
+          "error": "WebSocket send queue overflow"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": true,
+          "congested": false,
+          "closed": true
+        },
+        {
+          "e": "callback",
+          "index": 2,
+          "error": "WebSocket backpressure transport closed"
+        }
+      ]
+    },
+    {
+      "name": "accumulated bytes over the ceiling disconnect",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "fill": "x",
+            "length": 8388608
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "fill": "x",
+            "length": 2097152
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "tip"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 2,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_overflows_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "queue_overflow",
+          "queueBytes": 10485760,
+          "queueMessages": 2,
+          "bufferedAmount": 0
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "callback",
+          "index": 3,
+          "error": "WebSocket send queue overflow"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 10485760,
+          "queueMessages": 2,
+          "sending": true,
+          "congested": false,
+          "closed": true
+        }
+      ]
+    },
+    {
+      "name": "the message count cap applies to live sends only",
+      "limits": {
+        "maxQueueMessages": 3
+      },
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "a"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "b"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "c"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 2,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 3,
+          "set": true
+        },
+        {
+          "e": "stats",
+          "queueBytes": 3,
+          "queueMessages": 3,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        }
+      ]
+    },
+    {
+      "name": "sendImmediate skips the count cap but not the byte cap",
+      "limits": {
+        "maxQueueMessages": 2
+      },
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "a"
+          },
+          "bounded": false,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "b"
+          },
+          "bounded": false,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "c"
+          },
+          "bounded": false,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "fill": "x",
+            "length": 8388609
+          },
+          "bounded": false,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 2,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 3,
+          "set": true
+        },
+        {
+          "e": "stats",
+          "queueBytes": 3,
+          "queueMessages": 3,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_overflows_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "queue_overflow",
+          "queueBytes": 3,
+          "queueMessages": 3,
+          "bufferedAmount": 0
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "callback",
+          "index": 4,
+          "error": "WebSocket send queue overflow"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 3,
+          "queueMessages": 3,
+          "sending": true,
+          "congested": false,
+          "closed": true
+        }
+      ]
+    },
+    {
+      "name": "high water retries then disconnects on the congestion timeout",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "buffered",
+          "bytes": 1048576
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "queued"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "timer"
+        },
+        {
+          "op": "advance",
+          "ms": 14999
+        },
+        {
+          "op": "timer"
+        },
+        {
+          "op": "advance",
+          "ms": 1
+        },
+        {
+          "op": "timer"
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_high_water_events_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "schedule",
+          "ms": 25
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_high_water_events_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "schedule",
+          "ms": 25
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_high_water_events_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "schedule",
+          "ms": 25
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_high_water_events_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "high_water_timeout",
+          "queueBytes": 6,
+          "queueMessages": 1,
+          "bufferedAmount": 1048576
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 6,
+          "queueMessages": 1,
+          "sending": false,
+          "congested": true,
+          "closed": true
+        }
+      ]
+    },
+    {
+      "name": "dropping below high water resumes and clears the congestion mark",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "buffered",
+          "bytes": 1048586
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "queued"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "advance",
+          "ms": 5
+        },
+        {
+          "op": "timer"
+        },
+        {
+          "op": "buffered",
+          "bytes": 0
+        },
+        {
+          "op": "timer"
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_high_water_events_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "schedule",
+          "ms": 25
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_high_water_events_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "schedule",
+          "ms": 25
+        },
+        {
+          "e": "send",
+          "bytes": 6,
+          "sha": "d36be6494248ee06",
+          "options": null
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        },
+        {
+          "e": "callback",
+          "index": 1,
+          "error": null
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": false,
+          "congested": false,
+          "closed": false
+        }
+      ]
+    },
+    {
+      "name": "a send error disconnects and reports it to the caller",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "complete",
+          "error": "boom"
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "after"
+          },
+          "bounded": true,
+          "callback": true
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": "boom"
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "send_error",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "bufferedAmount": 0
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": false,
+          "congested": false,
+          "closed": true
+        },
+        {
+          "e": "callback",
+          "index": 1,
+          "error": "WebSocket backpressure transport closed"
+        }
+      ]
+    },
+    {
+      "name": "a throwing transport disconnects as send_throw",
+      "limits": {},
+      "ops": [
+        {
+          "op": "throwNext",
+          "message": "socket gone"
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": "socket gone"
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "send_throw",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "bufferedAmount": 0
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": false,
+          "congested": false,
+          "closed": true
+        }
+      ]
+    },
+    {
+      "name": "the close event clears the queue without a 1013",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "queued"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "closeEvent"
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "after"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "timer"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": true,
+          "congested": false,
+          "closed": true
+        },
+        {
+          "e": "callback",
+          "index": 2,
+          "error": "WebSocket backpressure transport closed"
+        }
+      ]
+    },
+    {
+      "name": "send options ride the queue to the transport",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "buffer",
+            "fill": "z",
+            "length": 4
+          },
+          "bounded": true,
+          "callback": true,
+          "options": {
+            "binary": true
+          }
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":\"d9\"}"
+          },
+          "bounded": true,
+          "callback": true,
+          "options": {
+            "binary": true
+          }
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":\"d9\",\"newer\":true}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "complete",
+          "error": null
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 2,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_messages_coalesced_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "stats",
+          "queueBytes": 49,
+          "queueMessages": 2,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": null
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "2d6ccd34ad7af363",
+          "options": {
+            "binary": true
+          }
+        },
+        {
+          "e": "callback",
+          "index": 1,
+          "error": null
+        },
+        {
+          "e": "send",
+          "bytes": 45,
+          "sha": "01af49985731d279",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 3,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "the two-argument send form treats options as the callback",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "two-arg"
+          },
+          "bounded": true,
+          "callback": true,
+          "callbackAsOptions": true
+        },
+        {
+          "op": "complete",
+          "error": "late failure"
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 7,
+          "sha": "e49bf092648d6383",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": "late failure"
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "send_error",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "bufferedAmount": 0
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": false,
+          "congested": false,
+          "closed": true
+        }
+      ]
+    },
+    {
+      "name": "a disconnect cancels the pending retry timer",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "complete",
+          "error": null
+        },
+        {
+          "op": "buffered",
+          "bytes": 1048576
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "queued"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "fill": "x",
+            "length": 8388609
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_high_water_events_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "schedule",
+          "ms": 25
+        },
+        {
+          "e": "stats",
+          "queueBytes": 6,
+          "queueMessages": 1,
+          "sending": false,
+          "congested": true,
+          "closed": false
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_overflows_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "cancel"
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "queue_overflow",
+          "queueBytes": 6,
+          "queueMessages": 1,
+          "bufferedAmount": 1048576
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "callback",
+          "index": 2,
+          "error": "WebSocket send queue overflow"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 6,
+          "queueMessages": 1,
+          "sending": false,
+          "congested": true,
+          "closed": true
+        }
+      ]
+    },
+    {
+      "name": "a throwing close falls back to terminate",
+      "limits": {},
+      "ops": [
+        {
+          "op": "closeThrows"
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "complete",
+          "error": "boom"
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "callback",
+          "index": 0,
+          "error": "boom"
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_backpressure_disconnects_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "log",
+          "event": "ws_backpressure_disconnect",
+          "reason": "send_error",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "bufferedAmount": 0
+        },
+        {
+          "e": "close",
+          "code": 1013,
+          "reason": "slow client; reconnect to resync"
+        },
+        {
+          "e": "terminate"
+        },
+        {
+          "e": "stats",
+          "queueBytes": 0,
+          "queueMessages": 0,
+          "sending": false,
+          "congested": false,
+          "closed": true
+        }
+      ]
+    },
+    {
+      "name": "coalescing an oversize frame into a queued slot still overflows",
+      "limits": {},
+      "ops": [
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "lead"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":\"d1\",\"value\":1}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "send",
+          "data": {
+            "kind": "text",
+            "value": "{\"type\":\"snapshot\",\"dirId\":\"d1\",\"pad\":\"pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"}"
+          },
+          "bounded": true,
+          "callback": true
+        },
+        {
+          "op": "stats"
+        }
+      ],
+      "effects": [
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "send",
+          "bytes": 4,
+          "sha": "e3456bc1f4d270f4",
+          "options": null
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_queue_depth",
+          "amount": 1,
+          "set": true
+        },
+        {
+          "e": "metric",
+          "name": "multicc_ws_messages_coalesced_total",
+          "amount": 1,
+          "set": false
+        },
+        {
+          "e": "stats",
+          "queueBytes": 105,
+          "queueMessages": 1,
+          "sending": true,
+          "congested": false,
+          "closed": false
+        }
+      ]
+    }
+  ]
+}

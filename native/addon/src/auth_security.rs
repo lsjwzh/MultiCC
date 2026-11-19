@@ -4,7 +4,7 @@
 //! a weak handle to it, so callback/metadata cycles can be collected by V8.
 //! No RefCell borrow is held while calling JavaScript.
 use crate::js_live::LiveValue as V;
-use multicc_core::auth_runtime::{AuthRuntime, Metadata};
+use multicc_core::auth_runtime::{AuthRuntime, Metadata, Redemption, Request, Response};
 use multicc_core::{
     auth_security as core,
     js::{JsString, JsValue},
@@ -16,6 +16,15 @@ use std::{
     ptr,
     sync::{Arc, Mutex},
 };
+
+type TicketMetadataReader = napi::threadsafe_function::ThreadsafeFunction<
+    String,
+    Option<String>,
+    String,
+    napi::Status,
+    true,
+    true,
+>;
 
 struct Held {
     env: sys::napi_env,
@@ -225,9 +234,15 @@ impl RustAuthSecurity {
             .unwrap_or_else(|e| e.into_inner())
             .shutting_down = value;
     }
-    /// The connection is private, asynchronous, and never enters the JS VM.
+    /// The authenticated stream stays native. Consumed VM-held metadata is
+    /// retrieved asynchronously on the JS thread through a weak host port.
     #[napi]
-    pub fn connect_gateway(&self, port: u32, capability: String) -> Result<()> {
+    pub fn connect_gateway(
+        &self,
+        port: u32,
+        capability: String,
+        metadata_reader: TicketMetadataReader,
+    ) -> Result<()> {
         if !self.owned_secret
             || port == 0
             || port > 65535
@@ -254,11 +269,63 @@ impl RustAuthSecurity {
                     ) {
                         // Idle reads have no timer. A partial frame is bounded
                         // by the peer's request deadline, which closes the stream.
-                        while let Ok(request) = wire::read(&mut stream).await {
-                            let response = state
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .respond(request);
+                        while let Ok(request) = wire::read::<Request>(&mut stream).await {
+                            let redemption = {
+                                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                                match request {
+                                    Request::ConsumeTicket { ticket, path } => state
+                                        .consume_ticket_for_host(
+                                            &ticket,
+                                            &path,
+                                            multicc_core::auth_runtime::now_ms(),
+                                        ),
+                                    other => Redemption::Ready(state.respond(other)),
+                                }
+                            };
+                            let response = match redemption {
+                                Redemption::Ready(response) => response,
+                                Redemption::Host {
+                                    slot,
+                                    path,
+                                    expires_at,
+                                } => {
+                                    let result = tokio::time::timeout(
+                                        wire::TIMEOUT,
+                                        metadata_reader.call_async(Ok(slot.to_string())),
+                                    )
+                                    .await;
+                                    let metadata = result
+                                        .ok()
+                                        .and_then(|r| r.ok())
+                                        .flatten()
+                                        .filter(|text| text.len() <= wire::MAX_FRAME)
+                                        .and_then(|text| {
+                                            serde_json::from_str::<serde_json::Value>(&text).ok()
+                                        })
+                                        .filter(|value| value.is_object());
+                                    if let Some(metadata) = metadata {
+                                        let response = Response::Redeemed {
+                                            path,
+                                            expires_at,
+                                            metadata,
+                                        };
+                                        if serde_json::to_vec(&response)
+                                            .is_ok_and(|bytes| bytes.len() <= wire::MAX_FRAME)
+                                        {
+                                            response
+                                        } else {
+                                            Response::Invalid
+                                        }
+                                    } else {
+                                        // Safe even if a timed-out callback later deletes the slot.
+                                        state
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .retire(Metadata::Host(slot));
+                                        Response::Invalid
+                                    }
+                                }
+                            };
                             if !matches!(
                                 tokio::time::timeout(
                                     wire::TIMEOUT,

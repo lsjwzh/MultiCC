@@ -26,7 +26,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -67,11 +67,6 @@ fn unique(tag: &str) -> PathBuf {
         "multicc-gateway-docs-memory-{}-{tag}-{nanos}",
         std::process::id()
     ))
-}
-
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
 }
 
 struct Response {
@@ -133,13 +128,13 @@ impl Gateway {
             json!({ "docsMemory": { "ops": {} } }).to_string(),
         )
         .unwrap();
-        let port = free_port();
         let log = fs::File::create(dir.join("gateway.log")).unwrap();
         let mut command = Command::new(GATEWAY_BIN);
         command
             .arg("serve")
             .arg("--cwd")
             .arg(&dir)
+            .arg("--ephemeral-loopback")
             .arg("--node")
             .arg(std::env::var("MULTICC_TEST_NODE").unwrap_or_else(|_| "node".to_string()))
             .arg("server.js")
@@ -148,7 +143,6 @@ impl Gateway {
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
             )
-            .env("PORT", port.to_string())
             .env("ACCESS_TOKEN", TOKEN)
             .env("HOME", &home)
             .env("TZ", "UTC")
@@ -174,18 +168,32 @@ impl Gateway {
             }
         }
         let child = command.spawn().expect("spawn multicc-gateway");
-        let gateway = Self {
+        let mut gateway = Self {
             dir,
             state,
-            port,
+            port: 0,
             child,
         };
         let deadline = Instant::now() + Duration::from_secs(15);
-        while !gateway.state.join("ready").exists() {
+        while gateway.port == 0 || !gateway.state.join("ready").exists() {
+            let log = gateway.log();
+            if let Some(port) = log.lines().find_map(|line| {
+                let rest = line.split_once("listening on 127.0.0.1:")?.1;
+                rest.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            }) {
+                gateway.port = port;
+            }
+            if let Some(status) = gateway.child.try_wait().unwrap() {
+                panic!("gateway exited early ({status})\n{log}");
+            }
             assert!(
                 Instant::now() < deadline,
                 "gateway never became ready\n{}",
-                gateway.log()
+                log
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -274,9 +282,7 @@ impl Gateway {
         if let Some(body) = body {
             request.extend_from_slice(body.as_bytes());
         }
-        // The gateway's port is probed and released before it binds, so a
-        // parallel run can briefly steer a fresh connection at another
-        // listener that resets it. Replay only when nothing was read.
+        // Retry a transient reset only when nothing was read.
         let mut raw = Vec::new();
         for attempt in 0..4 {
             let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect gateway");

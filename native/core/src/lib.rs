@@ -17,6 +17,7 @@ pub mod chat_finalize_execution;
 pub mod chat_history_index;
 pub mod chat_runtime;
 pub mod chat_turn_lifecycle;
+pub mod chat_ws_control;
 pub mod classify_vocab;
 pub mod cli_capability;
 pub mod cli_switch;
@@ -143,6 +144,7 @@ pub mod relay_shares;
 pub mod session_records;
 pub mod state_tx;
 pub mod workspace_sharing;
+pub mod ws_backpressure;
 
 pub mod air_routes;
 pub mod api_contract;

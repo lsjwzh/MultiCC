@@ -170,5 +170,23 @@ ok(DEFAULTS.maxQueueMessages > 500,
   ok(ws.closes.some(c => c.code === 1013), 'congestion timer still disconnects a genuinely stuck client on replay path');
 }
 
+// ── The frozen differential oracle must not drift ──
+// native/core/src/ws_backpressure.rs is compared against
+// docs/rust-migration/differential/ws-backpressure-golden.json, which is
+// generated from tests/helpers/legacy-ws-backpressure.js. If this module
+// changes without that copy and that corpus being regenerated, the Rust owner
+// silently stops describing production. Regenerate with:
+//   cp src/ws-backpressure.js tests/helpers/legacy-ws-backpressure.js
+//   node docs/rust-migration/differential/ws-backpressure-oracle.js > \
+//     docs/rust-migration/differential/ws-backpressure-golden.json
+{
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const live = fs.readFileSync(path.join(__dirname, '../src/ws-backpressure.js'));
+  const frozen = fs.readFileSync(path.join(__dirname, 'helpers/legacy-ws-backpressure.js'));
+  ok(Buffer.compare(live, frozen) === 0,
+    'the frozen differential oracle is a byte copy of src/ws-backpressure.js');
+}
+
 console.log(`\n== ws-backpressure unit: ${pass} passed, ${fail} failed ==`);
 process.exit(fail ? 1 : 0);

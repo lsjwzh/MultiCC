@@ -158,3 +158,73 @@ pub fn error_dto(input: &V, ids: &(String, String)) -> V {
     }
     V::Object(fields)
 }
+
+/// `createWsEnvelope` for JSON-representable values crossing the gateway
+/// boundary. `None` corresponds to the host throwing for an invalid payload or
+/// a null context. The original key positions are retained when overwritten.
+pub fn ws_envelope(payload: &V, context: &V) -> Option<V> {
+    if !matches!(payload, V::Object(_))
+        || !matches!(get(payload, "type"), V::String(_))
+        || matches!(context, V::Null)
+    {
+        return None;
+    }
+    let mut envelope = payload.clone();
+    crate::quota_guard::set(&mut envelope, "apiVersion", V::string("v1"));
+    let request = get(context, "requestId");
+    if crate::js::truthy(request) {
+        crate::quota_guard::set(
+            &mut envelope,
+            "requestId",
+            if valid(request, 128, true) {
+                request.clone()
+            } else {
+                V::string("unknown")
+            },
+        );
+    }
+    let correlation = get(context, "correlationId");
+    if crate::js::truthy(correlation) {
+        let current_request = get(&envelope, "requestId");
+        let fallback = if crate::js::truthy(current_request) {
+            current_request.clone()
+        } else {
+            V::string("unknown")
+        };
+        crate::quota_guard::set(
+            &mut envelope,
+            "correlationId",
+            if valid(correlation, 128, true) {
+                correlation.clone()
+            } else {
+                fallback
+            },
+        );
+    }
+    Some(envelope)
+}
+
+#[cfg(test)]
+mod ws_envelope_tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    #[test]
+    fn matches_frozen_node_envelope_bytes() {
+        let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../docs/rust-migration/differential/ws-envelope-golden.json"
+        ))
+        .unwrap();
+        assert!(cases.len() >= 20);
+        for (index, case) in cases.iter().enumerate() {
+            let payload = crate::js::json_parse(case["payload"].as_str().unwrap()).unwrap();
+            let context = crate::js::json_parse(case["context"].as_str().unwrap()).unwrap();
+            let actual =
+                ws_envelope(&payload, &context).and_then(|value| crate::js::json_stringify(&value));
+            let expected = case["response"]
+                .as_str()
+                .map(|encoded| String::from_utf8(STANDARD.decode(encoded).unwrap()).unwrap());
+            assert_eq!(actual, expected, "oracle case {index}");
+        }
+    }
+}

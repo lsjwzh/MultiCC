@@ -10,6 +10,17 @@ pub enum Metadata {
     Native(crate::js::JsValue),
 }
 
+/// A consumed host slot must be resolved on the JS thread; it is never a wire
+/// response and cannot be redeemed a second time while the handoff is pending.
+pub enum Redemption {
+    Ready(Response),
+    Host {
+        slot: u64,
+        path: String,
+        expires_at: f64,
+    },
+}
+
 pub struct AuthRuntime {
     pub secret: String,
     pub shutting_down: bool,
@@ -34,6 +45,13 @@ pub enum Request {
         path: String,
         metadata: Value,
     },
+    /// Redeem a one-use ticket for `path`. The gateway is the only consumer of
+    /// the paths it hosts itself; Node keeps redeeming through the addon for
+    /// the rest, so a path must never be consumed on both sides.
+    ConsumeTicket {
+        ticket: String,
+        path: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -44,6 +62,12 @@ pub enum Response {
         ticket: String,
         path: String,
         expires_at: f64,
+    },
+    /// Metadata that can cross the private control stream.
+    Redeemed {
+        path: String,
+        expires_at: f64,
+        metadata: Value,
     },
     Stale,
     Invalid,
@@ -108,7 +132,64 @@ impl AuthRuntime {
                 }
                 self.issue_ticket(revision, &path, Metadata::Wire(metadata))
             }
+            Request::ConsumeTicket { ticket, path } => {
+                self.consume_ticket(&ticket, &path, now_ms())
+            }
         }
+    }
+
+    /// The addon's `consume_ws_ticket` rules for a ticket redeemed over the wire:
+    /// the record leaves the table before the clock and scope checks, so a
+    /// wrong-scope or expired attempt still spends it. Native workspace-sharing
+    /// metadata crosses as JSON only when the conversion is lossless. This
+    /// synchronous entry refuses VM-held metadata; the addon uses the separate
+    /// host handoff below to resolve it on the JS thread.
+    pub fn consume_ticket(&mut self, ticket: &str, path: &str, now: f64) -> Response {
+        match self.consume_ticket_for_host(ticket, path, now) {
+            Redemption::Ready(response) => response,
+            Redemption::Host { slot, .. } => {
+                self.retire(Metadata::Host(slot));
+                Response::Invalid
+            }
+        }
+    }
+
+    pub fn consume_ticket_for_host(&mut self, ticket: &str, path: &str, now: f64) -> Redemption {
+        if ticket.is_empty() {
+            return Redemption::Ready(Response::Invalid);
+        }
+        let Some(scope) = auth::normalize_ws_path(path) else {
+            return Redemption::Ready(Response::Invalid);
+        };
+        let Some(record) = self.tickets.take(ticket) else {
+            return Redemption::Ready(Response::Invalid);
+        };
+        if record.expires_at <= now || record.path != scope {
+            self.retire(record.metadata);
+            return Redemption::Ready(Response::Invalid);
+        }
+        let metadata = match record.metadata {
+            Metadata::Wire(value) => Some(value),
+            Metadata::Native(value) => {
+                let encoded = crate::js::serde::to_serde(&value);
+                (crate::js::serde::from_serde(&encoded) == value).then_some(encoded)
+            }
+            Metadata::Host(slot) => {
+                return Redemption::Host {
+                    slot,
+                    path: record.path,
+                    expires_at: record.expires_at,
+                };
+            }
+        };
+        Redemption::Ready(match metadata {
+            Some(metadata) => Response::Redeemed {
+                path: record.path,
+                expires_at: record.expires_at,
+                metadata,
+            },
+            None => Response::Invalid,
+        })
     }
 
     /// Native callers share the existing ticket table without a JSON round trip.
@@ -175,6 +256,144 @@ mod tests {
         state.shutting_down = true;
         assert!(matches!(state.respond(issue(1)), Response::Stale));
         assert_eq!(state.tickets.len(), 0);
+    }
+
+    #[test]
+    fn a_ticket_is_redeemed_once_with_its_wire_metadata() {
+        let mut state = AuthRuntime::new("s".into());
+        let mint = |state: &mut AuthRuntime, path: &str| {
+            let Response::Ticket { ticket, .. } = state.respond(Request::IssueTicket {
+                revision: 0,
+                path: path.into(),
+                metadata: json!({"machineId":"m1","upstream":{"path":"/ws/x"}}),
+            }) else {
+                panic!("ticket refused")
+            };
+            ticket
+        };
+        let consume = |state: &mut AuthRuntime, ticket: &str, path: &str| {
+            state.respond(Request::ConsumeTicket {
+                ticket: ticket.into(),
+                path: path.into(),
+            })
+        };
+        let ticket = mint(&mut state, "/ws/machines/m1");
+        let Response::Redeemed {
+            path,
+            expires_at,
+            metadata,
+        } = consume(&mut state, &ticket, "/ws/machines/m1")
+        else {
+            panic!("not redeemed")
+        };
+        assert_eq!(path, "/ws/machines/m1");
+        assert!(expires_at > now_ms());
+        assert_eq!(metadata["machineId"], "m1");
+        // One use: the second attempt, with the right path, finds nothing.
+        assert!(matches!(
+            consume(&mut state, &ticket, "/ws/machines/m1"),
+            Response::Invalid
+        ));
+        // A wrong-scope attempt still spends the ticket.
+        let ticket = mint(&mut state, "/ws/machines/m1");
+        assert!(matches!(
+            consume(&mut state, &ticket, "/ws/machines/m2"),
+            Response::Invalid
+        ));
+        assert!(matches!(
+            consume(&mut state, &ticket, "/ws/machines/m1"),
+            Response::Invalid
+        ));
+        // Empty and malformed inputs fail closed without touching the table.
+        let spare = mint(&mut state, "/ws/machines/m1");
+        assert!(matches!(
+            consume(&mut state, "", "/ws/machines/m1"),
+            Response::Invalid
+        ));
+        assert!(matches!(
+            consume(&mut state, &spare, "https://elsewhere.example/ws"),
+            Response::Invalid
+        ));
+        assert_eq!(state.tickets.len(), 1);
+    }
+
+    #[test]
+    fn an_expired_ticket_is_spent_and_refused() {
+        let mut state = AuthRuntime::new("s".into());
+        let Response::Ticket { ticket, .. } = state.respond(Request::IssueTicket {
+            revision: 0,
+            path: "/ws/machines/m1".into(),
+            metadata: json!({}),
+        }) else {
+            panic!("ticket refused")
+        };
+        let late = now_ms() + auth::TICKET_TTL_MS as f64 + 1.0;
+        assert!(matches!(
+            state.consume_ticket(&ticket, "/ws/machines/m1", late),
+            Response::Invalid
+        ));
+        assert_eq!(state.tickets.len(), 0);
+    }
+
+    #[test]
+    fn native_workspace_scope_is_redeemed_over_the_wire() {
+        let mut state = AuthRuntime::new("s".into());
+        let Response::Ticket { ticket, .. } = state.issue_ticket(
+            0,
+            "/ws/chat",
+            Metadata::Native(crate::js::JsValue::object(vec![(
+                "fleetSessionId",
+                "session-1".into(),
+            )])),
+        ) else {
+            panic!("ticket refused")
+        };
+        let Response::Redeemed { metadata, .. } =
+            state.consume_ticket(&ticket, "/ws/chat", now_ms())
+        else {
+            panic!("native scope was not redeemed")
+        };
+        assert_eq!(metadata, json!({"fleetSessionId":"session-1"}));
+    }
+
+    #[test]
+    fn lossy_native_scope_is_rejected_instead_of_changed() {
+        use crate::js::{JsString, JsValue};
+        let mut state = AuthRuntime::new("s".into());
+        let scope = JsValue::String(JsString::from_units(vec![0xd800]));
+        let Response::Ticket { ticket, .. } = state.issue_ticket(
+            0,
+            "/ws/chat",
+            Metadata::Native(JsValue::object(vec![("fleetSessionId", scope)])),
+        ) else {
+            panic!("ticket refused")
+        };
+        assert!(matches!(
+            state.consume_ticket(&ticket, "/ws/chat", now_ms()),
+            Response::Invalid
+        ));
+        assert_eq!(state.tickets.len(), 0);
+    }
+
+    #[test]
+    fn a_vm_held_ticket_is_spent_retired_and_never_redeemed_over_the_wire() {
+        let mut state = AuthRuntime::new("s".into());
+        state.tickets.insert(
+            "host-ticket",
+            "/ws/machines/m1".into(),
+            now_ms() + 60_000.0,
+            Metadata::Host(7),
+        );
+        assert!(matches!(
+            state.respond(Request::ConsumeTicket {
+                ticket: "host-ticket".into(),
+                path: "/ws/machines/m1".into()
+            }),
+            Response::Invalid
+        ));
+        assert_eq!(state.tickets.len(), 0);
+        // The slot goes back to the VM through the same retirement list.
+        assert_eq!(state.retired, vec![7]);
     }
 
     #[test]

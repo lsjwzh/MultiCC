@@ -113,6 +113,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
   };`);
   assert.equal(probeAddon(addon), true, 'the real addon must pass the durable audit probe');
   assert.equal(probeAddon(wrapper), false, 'an exported function alone cannot pass preflight');
+  const staleChatWs = write(root, 'stale-chat-ws.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), chatWsControlAction: undefined
+  };`);
+  assert.equal(probeAddon(staleChatWs), false, 'a stale addon cannot silently drop chat messages');
   const oldOrchestration = write(root, 'old-orchestration.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), orchestrationStoreProtocol: () => 1
   };`);

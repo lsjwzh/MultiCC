@@ -1674,3 +1674,27 @@ test('close facts judge a recovered Codex disconnect only after the durable appe
   const derive = source.indexOf('const { hasTurnOutput, recoveredCodexDisconnect, diag, kind } = deriveCloseTurnFacts');
   assert.ok(commit >= 0 && derive > commit, 'close facts are derived after the pending append settles');
 });
+
+test('chat WS share gate matches the retired policy and detects unsafe mutations', () => {
+  const { getNative } = require('../src/native/runtime');
+  const reference = (type, permission) => {
+    if (type === 'ping') return 'pong';
+    if (permission === 'view') return 'ignore';
+    if (permission === 'operate' && !['user_message', 'cancel', 'typing'].includes(type)) return 'ignore';
+    return 'continue';
+  };
+  const types = ['ping', 'user_message', 'cancel', 'typing', 'clear_history', '', 'PING', 'other'];
+  const permissions = ['', 'view', 'operate', 'other'];
+  const native = getNative();
+  const corpus = permissions.flatMap(permission => types.map(type => ({ type, permission })));
+  for (const { type, permission } of corpus) {
+    assert.equal(native.chatWsControlAction(type, permission), reference(type, permission), `${permission}/${type}`);
+  }
+  const mutations = [
+    ({ type, permission }) => permission === 'view' ? 'ignore' : reference(type, permission),
+    ({ type, permission }) => permission === 'operate' && type === 'clear_history' ? 'continue' : reference(type, permission),
+  ];
+  for (const mutation of mutations) {
+    assert.ok(corpus.some(input => mutation(input) !== reference(input.type, input.permission)), 'corpus catches mutation');
+  }
+});

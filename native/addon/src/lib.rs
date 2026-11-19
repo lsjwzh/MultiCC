@@ -25,6 +25,7 @@ pub mod chat_history_repository;
 pub mod chat_history_runtime;
 pub mod chat_turn_effects;
 pub mod chat_turn_lifecycle;
+pub mod chat_ws_control;
 pub mod classify_vocab;
 pub mod claude_lane;
 pub mod cli_capability;
