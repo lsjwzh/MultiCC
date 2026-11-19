@@ -16,6 +16,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createSessionLifecycleRuntime } = require('../src/routes/session-lifecycle');
+const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 function fakeApp() {
   const routes = new Map();
@@ -43,6 +44,9 @@ function fixture({
   const persistedSessions = new Map();
   if (chat) chatSessions.set('s1', chat);
   if (persisted) persistedSessions.set('s1', persisted);
+  // A real native replay buffer + client membership: the restart reset and the
+  // delete cascade drive the same RustWsHost the product drives.
+  const { hub, attach } = createTestChatHub();
 
   const chatStream = {
     status: () => (streamStatus === undefined
@@ -102,6 +106,7 @@ function fixture({
     cleanupPushMonitor: () => {},
     getSessionGitRuntime: () => ({}),
     codexRolloutGuard,
+    replay: hub,
   });
   runtime.mountRoutes(app);
 
@@ -113,7 +118,7 @@ function fixture({
   assert.ok(relocateHandler, 'relocate route is mounted');
   return {
     handler, deleteHandler, relocateHandler, runtime,
-    calls, events, chatSessions, persistedSessions,
+    calls, events, chatSessions, persistedSessions, hub, attach,
   };
 }
 
@@ -122,7 +127,6 @@ function liveChatSession() {
     cli: 'claude',
     isStreaming: true,
     claudeProc: { kill() { this.killed = true; }, killed: false },
-    streamReplay: [{ type: 'assistant' }],
     lineBuf: 'half a json line',
     currentAssistantText: 'partial reply',
     currentToolCalls: [{ name: 'Bash' }],
@@ -188,15 +192,17 @@ test('restart-spawn reaps live background work exactly once before destroying th
 test('restart-spawn clears the runtime state the stream module does not own', async () => {
   const chat = liveChatSession();
   const proc = chat.claudeProc;
-  const { handler } = fixture({
+  const { handler, hub } = fixture({
     chat, persisted: { id: 's1', kind: 'chat', dirId: 'd1', cli: 'claude' },
   });
+  hub.push('s1', { type: 'assistant' });
+  assert.equal(hub.size('s1'), 1, 'precondition: a buffered frame exists');
   await invoke(handler, { params: { id: 's1' } });
 
   assert.equal(chat.isStreaming, false, 'a stale isStreaming keeps rejecting delivery as session-busy');
   assert.equal(chat.claudeProc, null);
   assert.equal(proc.killed, true, 'the non-stream child process is signalled too');
-  assert.deepEqual(chat.streamReplay, []);
+  assert.equal(hub.size('s1'), 0, 'the native replay buffer is cleared');
   assert.equal(chat.lineBuf, '');
   assert.equal(chat.currentAssistantText, '');
   assert.deepEqual(chat.currentToolCalls, []);
@@ -250,7 +256,12 @@ test('restart-spawn still tears down when the work host is absent', async () => 
 
 test('chat-only DELETE terminalizes and reaps background work before signalling the child', async () => {
   const chat = liveChatSession();
-  const { deleteHandler, calls } = fixture({ chat, backgroundActive: true });
+  const { deleteHandler, calls, hub, attach } = fixture({ chat, backgroundActive: true });
+  // The delete cascade terminates every live member of the chat session before
+  // forgetting it; the membership is the native hub's, not `chat.clients`.
+  const { id: connId, socket } = attach({});
+  hub.join('s1', connId);
+  assert.equal(hub.clientCount('s1'), 1, 'precondition: one member is attached');
   const res = await invoke(deleteHandler, { params: { id: 's1' } });
   assert.equal(res.statusCode, 200);
   assert.deepEqual(calls, [
@@ -258,6 +269,9 @@ test('chat-only DELETE terminalizes and reaps background work before signalling 
     'reap:s1:session_delete',
     'close:s1',
   ]);
+  assert.equal(socket.terminated, true, 'every member socket is terminated');
+  assert.equal(hub.clientCount('s1'), 0, 'the session membership is forgotten');
+  assert.equal(hub.size('s1'), 0);
 });
 
 test('relocate blocks live background work unless forced, then reaps it before closing the old stream', async () => {

@@ -57,6 +57,9 @@ function createCliSwitchRuntime(options) {
     'cliAvailabilitySummary', 'sessionProviderName', 'sessionProviderBaseUrl',
     'effectiveSessionModel',
     'effectiveSessionEffort', 'serializeSubagent',
+    // The /ws/chat replay buffer is native state behind the replay hub now; the
+    // CLI reset clears it there instead of writing a dead `streamReplay` field.
+    'clearReplay',
   ]) requireFunction(options, name);
 
   const chatSessions = options.chatSessions;
@@ -162,7 +165,13 @@ function createCliSwitchRuntime(options) {
     if (plan.refreshCwd && typeof options.cwdForSession === 'function') {
       try { const cwd = options.cwdForSession(session); if (cwd) chat.cwd = cwd; } catch (_) {}
     }
-    Object.assign(chat, plan.fields);
+    // `resetPlan.fields` still carries `streamReplay: []`, but the replay buffer
+    // is native state behind src/chat/replay-hub.js — assigning it would create a
+    // dead property that forks the real buffer. Strip it and clear through the hub.
+    const fields = plan.fields && typeof plan.fields === 'object' ? { ...plan.fields } : {};
+    delete fields.streamReplay;
+    Object.assign(chat, fields);
+    options.clearReplay(session.id);
   }
   async function prepareSwitch(session, targetCli, switchOptions = {}) {
     const target = JSON.parse(JSON.stringify(session));

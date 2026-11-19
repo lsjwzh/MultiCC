@@ -35,7 +35,7 @@ function integrated(t) {
   });
   const context = createTaskContextHost({
     getTaskShells: () => ({ ...f.runtime, accepts: () => true }),
-    getState: () => null, append: () => true, emitClients() {},
+    getState: () => null, append: () => true, emitSession() {},
     getTaskBoard: () => ({}), containsDelivery: () => false, classifyDisplay() {},
     randomUUID: () => 'test-id', getRecord: id => f.records.get(id), runTurn() {},
   });

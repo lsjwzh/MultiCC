@@ -51,7 +51,6 @@ const { createAutoRouteNotes } = require('./auto-route-notes');
 const { admissionRootCause, deliverAfterPendingMemory, createQueuedTurnPreparation } = require('./admission-progress');
 const { createAutoProviderHandoff } = require('./auto-provider-handoff');
 const { redactProviderRouteCapability } = require('../observability');
-const { createWsEnvelope } = require('../api-contract');
 const { taskIdForShortCode } = require('../classify/task-short-code');
 const { taskStateSeed } = require('./task-state-seed');
 const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../message-composer');
@@ -342,6 +341,10 @@ function createChatTurnEngine(deps) {
     scheduleIncrementalSave,
     chatBroadcast,
     sendWs,
+    // Native /ws/chat replay buffer + live-client membership facade. Required:
+    // the engine no longer owns `streamReplay`/`clients`, so a missing hub would
+    // silently drop every reconnect frame.
+    replay,
     // Turn event journal (#110): absent only in unit tests that never
     // exercise the reconnect replay.
     turnEventJournal = null,
@@ -378,6 +381,13 @@ function createChatTurnEngine(deps) {
     turnTimeline: injectedTurnTimeline = null,
     deliveryProbeRegistry: injectedDeliveryProbeRegistry = null,
   } = deps;
+
+  if (!replay || typeof replay.push !== 'function' || typeof replay.clear !== 'function'
+      || typeof replay.size !== 'function' || typeof replay.burst !== 'function'
+      || typeof replay.join !== 'function' || typeof replay.leave !== 'function'
+      || typeof replay.clientsOf !== 'function') {
+    throw new TypeError('[chat-turn-engine] deps.replay (native chat replay hub) is required');
+  }
 
   // Fire-and-forget transcript notices. `say()` catches its own append
   // rejection and always resolves, so callers that cannot await are safe.
@@ -465,8 +475,7 @@ function createChatTurnEngine(deps) {
     const tagged = tagProviderAttemptEvent(attemptRuntime.scrubAttemptEvent(observed, event), observed);
     cs.lastStreamAt = Date.now();
     turnProgressHeartbeat.touchVisible(sessionName, turn.turnId);
-    cs.streamReplay.push(tagged);
-    if (cs.streamReplay.length > 500) cs.streamReplay.shift();
+    replay.push(sessionName, tagged);
     chatBroadcast(sessionName, tagged);
     return true;
   }
@@ -1171,7 +1180,7 @@ function createChatTurnEngine(deps) {
       const csCli = persisted.cli || 'claude';
       const hist = initialHistory || viewChatHistory(sessionName);
       cs = {
-        clients: new Set(),
+        clients: replay.clientsOf(sessionName),
         claudeProc: null,
         lineBuf: '',
         cli: csCli,
@@ -1181,7 +1190,6 @@ function createChatTurnEngine(deps) {
         currentToolCalls: [],
         currentCost: null,
         isStreaming: false,
-        streamReplay: [],
         _classifyTimer: null,
         _classifyTaskId: null,
         _currentTaskId: taskContextHost.restore(hist),
@@ -1306,7 +1314,7 @@ function createChatTurnEngine(deps) {
     preparationStateActivated = true;
     cs.turnStartedAt = Date.now(); turnTimeline.startTurn(sessionName, cs);  // durationMs + trajectory origin
     cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
-    cs.streamReplay = [];
+    replay.clear(sessionName);
     cs._resultSaved = false;
     // Adapter CLIs (opencode/zcode/qoder/kimi) have no native message_start
     // passthrough like claude's stream-json, so the browser's isStreaming would
@@ -1935,7 +1943,7 @@ function createChatTurnEngine(deps) {
           cs.chatTurnCount = 0;
           cs.isStreaming = true;
           cs.lastStreamAt = Date.now();  // watchdog: fresh baseline for the retry spawn (turnStartedAt may be >10min old)
-          cs.streamReplay = [];
+          replay.clear(sessionName);
           cs._codexTransportError = '';
           const fallbackInvocation = prepareRetryAttempt({
             bareText: promptText, firstTurn: true, reasonCode: 'fresh_retry', ...currentRouteOptions(),
@@ -2416,6 +2424,7 @@ function createChatTurnEngine(deps) {
     broadcast: chatBroadcast,
     timelineField: turnTimeline.field,
     cancelClassify,
+    clearReplay: sessionName => replay.clear(sessionName),
     clearIncrementalSave: sessionName => getChatHistoryRuntime().clearIncrementalSave(sessionName),
     setStatus(sessionName, status) {
       setSessionStatus(sessionName, { status, currentFile: null });
@@ -2691,7 +2700,7 @@ function createChatTurnEngine(deps) {
       }
       const history = viewChatHistory(sessionName);
       cs = {
-        clients: new Set(),
+        clients: replay.clientsOf(sessionName),
         claudeProc: null,   // (kept name for backwards compat in rest of handler; holds any cli child proc)
         lineBuf: '',
         cli,
@@ -2701,7 +2710,6 @@ function createChatTurnEngine(deps) {
         currentToolCalls: [],
         currentCost: null,
         isStreaming: false,
-        streamReplay: [],
         _classifyTimer: null,
         _classifyTaskId: null,
         _currentTaskId: taskContextHost.restore(history),
@@ -2709,10 +2717,13 @@ function createChatTurnEngine(deps) {
       chatSessions.set(sessionName, cs);
     }
 
-    cs.clients.add(ws);
+    if (Number.isInteger(ws._multiccConnId)) replay.join(sessionName, ws._multiccConnId);
     const stopShellWatch = shellId && taskContextHost.watchTaskShellChat(shellId, sessionName, event => sendWs(ws, event));
     const replayGate = await require('./question-input-bridge').prepareQuestionReplay({ ws, input: userInputSignalHost,
-      sessionId: sessionName, persisted, sendWs, cleanup: () => { if (stopShellWatch) stopShellWatch(); cs.clients.delete(ws); } });
+      sessionId: sessionName, persisted, sendWs, cleanup: () => {
+        if (stopShellWatch) stopShellWatch();
+        if (Number.isInteger(ws._multiccConnId)) replay.leave(sessionName, ws._multiccConnId);
+      } });
     if (!replayGate) return;
 
     // Resolve Provider identity and the shared cumulative/daily window view from
@@ -2791,31 +2802,21 @@ function createChatTurnEngine(deps) {
       // receive duplicate events that would create a second bubble.
       if (replayMessages.length > 0) {
         const lastMsg = replayMessages[replayMessages.length - 1];
-        if (lastMsg.role === 'assistant' && cs.isStreaming && cs.streamReplay.length > 0) {
-          cs.streamReplay = [];
+        if (lastMsg.role === 'assistant' && cs.isStreaming && replay.size(sessionName) > 0) {
+          replay.clear(sessionName);
         }
       }
     }
 
     // If a stream is in progress, replay buffered events so reconnected client
-    // catches up. This is a synchronous burst of up to streamReplay.length
-    // (capped at 500) frames — it must bypass the backpressure MESSAGE-count cap
-    // via sendImmediate(), or the burst trips queue_overflow → 1013 close → the
-    // client reconnects → re-floods → infinite reconnect loop (the bug that hit
-    // long streaming turns). sendImmediate still honours the byte cap + congestion
-    // timer, so a genuinely slow client is still protected. Falls back to sendWs
-    // if backpressure isn't installed (defensive; it always is here).
-    if (cs.isStreaming && cs.streamReplay.length > 0) {
-      const bp = ws._multiccBackpressure;
-      for (const evt of cs.streamReplay) {
-        try {
-          if (bp && typeof bp.sendImmediate === 'function') {
-            bp.sendImmediate(JSON.stringify(createWsEnvelope(evt)));
-          } else {
-            sendWs(ws, evt);
-          }
-        } catch (_) {}
-      }
+    // catches up. The native burst sends up to 500 buffered frames (the replay
+    // buffer cap) in order — it must bypass the backpressure MESSAGE-count cap,
+    // or the burst trips queue_overflow → 1013 close → the client reconnects →
+    // re-floods → infinite reconnect loop (the bug that hit long streaming
+    // turns). The native send still honours the byte cap + congestion timer, so
+    // a genuinely slow client is still protected.
+    if (cs.isStreaming && replay.size(sessionName) > 0 && Number.isInteger(ws._multiccConnId)) {
+      replay.burst(ws._multiccConnId, sessionName);
     }
 
     // On (re)connect, push the authoritative live background-task set so the

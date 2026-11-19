@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const { createChatTurnEngine } = require('../../src/chat/turn-engine');
 const { createClaudeAdapter } = require('../../src/cli-adapters/claude');
+const { createTestChatHub } = require('./native-chat-hub');
 
 // Drive the real host through admission, context composition, and adapter argv.
 // Stop at buildInvocation, before any provider attempt or process can start.
@@ -12,6 +13,7 @@ module.exports = async function prepareTurn({ record, cwd, history = [], connect
   const ok = () => ({ ok: true });
   let prepared;
   const errors = [];
+  const { hub } = createTestChatHub();
   const adapter = createClaudeAdapter({
     resolveSessionWireModel: value => value,
     claudeDefaultModel: () => null,
@@ -19,10 +21,11 @@ module.exports = async function prepareTurn({ record, cwd, history = [], connect
     normalizeEffort: () => null,
   });
   const engine = createChatTurnEngine({
+    replay: hub,
     persistedSessions: new Map([[record.id, record]]),
     chatSessions: new Map(connected ? [[record.id, {
       cli: record.cli, chatTurnCount: history.filter(m => m.role === 'assistant').length,
-      clients: new Set(), cwd,
+      clients: hub.clientsOf(record.id), cwd,
     }]] : []),
     taskContextHost: {
       turnOptions: opts => opts, restore: () => null,

@@ -16,6 +16,7 @@ const assert = require('node:assert/strict');
 const { createChatTurnEngine, deliverAfterPendingMemory } = require('../src/chat/turn-engine');
 const { createSessionNotices } = require('../src/chat/session-notices');
 const { createQueuedTurnPreparation } = require('../src/chat/admission-progress');
+const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 const noop = () => {};
 
@@ -42,6 +43,7 @@ function historyProbe(shared) {
 function baseEngineDeps(overrides = {}) {
   return {
     getExperimentalTuiChatRuntime: () => null,
+    replay: createTestChatHub().hub,
     isShuttingDown: () => false,
     cwdForSession: () => '/tmp',
     savePersistedSessionsBestEffort: () => {},
@@ -184,6 +186,7 @@ function makeEngine({ hostAdmit } = {}) {
   const warns = [];
   const engine = createChatTurnEngine({
     getExperimentalTuiChatRuntime: () => null,
+    replay: createTestChatHub().hub,
     persistedSessions: new Map([['s1', { id: 'x', kind: 'chat', cli: 'codex' }]]),
     chatSessions: new Map(),
     getSessionWorkHost: () => ({ admit: hostAdmit }),
@@ -200,6 +203,7 @@ test('task-shell admission can prepare Jev with the persisted session before its
   const calls = [];
   const engine = createChatTurnEngine({
     getExperimentalTuiChatRuntime: () => null,
+    replay: createTestChatHub().hub,
     persistedSessions: new Map([['s1', session]]),
     chatSessions: new Map(),
     autoProviderRuntime: { prepareAdmission: args => { calls.push(args); return Promise.resolve(); } },
@@ -221,6 +225,7 @@ test('admitChatWork with no work host emits an error frame and returns scheduler
   const broadcasts = [];
   const engine = createChatTurnEngine({
     getExperimentalTuiChatRuntime: () => null,
+    replay: createTestChatHub().hub,
     persistedSessions: new Map([['s1', { id: 'x', kind: 'chat', cli: 'codex' }]]),
     chatSessions: new Map(),
     getSessionWorkHost: () => null,

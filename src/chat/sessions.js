@@ -27,12 +27,17 @@ function entriesOf(sessions) {
   return ownerOf(sessions).chatEntries();
 }
 
+function forgetKey(slot, key) {
+  if (slot.forget) slot.forget(key);
+  for (const observer of slot.observers) observer(key);
+}
+
 class ChatSessionMap extends Map {
   // eslint-disable-next-line no-useless-constructor
   constructor(shared) {
     super();
     if (!shared || !shared.native) throw new TypeError('chat session owner is required');
-    owners.set(this, { native: shared.native, forget: null });
+    owners.set(this, { native: shared.native, forget: null, observers: [] });
   }
 
   get size() { return ownerOf(this).chatSize(); }
@@ -48,22 +53,26 @@ class ChatSessionMap extends Map {
   // `setForgetHook` and src/chat/turn-progress.js.
   delete(key) {
     const removed = ownerOf(this).chatDelete(key);
-    if (removed) {
-      const slot = owners.get(this);
-      if (slot.forget) slot.forget(key);
-    }
+    if (removed) forgetKey(owners.get(this), key);
     return removed;
   }
   clear() {
     const keys = entriesOf(this).map(entry => entry[0]);
     ownerOf(this).chatClear();
     const slot = owners.get(this);
-    if (slot.forget) for (const key of keys) slot.forget(key);
+    for (const key of keys) forgetKey(slot, key);
   }
   /// Hook invoked with the session name after it leaves the table (server wires
   /// it to the turn-progress owner). Without a hook, behaviour is unchanged.
   setForgetHook(fn) {
     owners.get(this).forget = typeof fn === 'function' ? fn : null;
+    return this;
+  }
+  /// Additional observers of the same event, for owners that key their own
+  /// per-session state by session name (the native replay buffer and client
+  /// membership). Unlike `setForgetHook` these accumulate.
+  onForget(fn) {
+    if (typeof fn === 'function') owners.get(this).observers.push(fn);
     return this;
   }
   keys() { return entriesOf(this).map(entry => entry[0])[Symbol.iterator](); }
@@ -81,4 +90,9 @@ function createChatSessions(shared) {
   return new ChatSessionMap(shared);
 }
 
-module.exports = { ChatSessionMap, createChatSessions, chatSessionsOwner };
+// The replay buffer and client membership live next to the table they follow:
+// `createChatReplayRuntime` builds the native WS host + replay hub and ties
+// the hub's per-session state to this table's forget path.
+const { createChatReplayRuntime } = require('./replay-hub');
+
+module.exports = { ChatSessionMap, createChatSessions, chatSessionsOwner, createChatReplayRuntime };

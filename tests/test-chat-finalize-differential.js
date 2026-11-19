@@ -365,6 +365,10 @@ async function executionHarness(owner, input, options = {}) {
     },
     broadcast(session, event) { record('broadcast', [session, event]); },
     cancelClassify(cs) { assert.equal(cs, context.cs); record('cancel', []); },
+    // The legacy oracle clears `cs.streamReplay` inline for this effect; the
+    // native executor asks the host. Mirror the observable state exactly and do
+    // not add a call entry (the legacy side records none).
+    clearReplay(session) { assert.equal(session, context.sessionName); context.cs.streamReplay = []; },
     clearIncrementalSave(session) { record('clear', [session]); },
     setStatus(session, status) { record('status', [session, status]); },
     completeSessionTurn(session) {

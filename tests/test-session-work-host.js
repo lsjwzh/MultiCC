@@ -10,6 +10,7 @@ const { createShellWorkspaceHost } = require('../src/task-shell/workspace');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
 const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/production-question-host');
+const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 function fixture(options = {}) {
   const calls = [];
@@ -131,6 +132,10 @@ function fixture(options = {}) {
     zcodeAuth: options.zcodeAuth || { ensureZcodeAuth: () => ({ ok: true }) },
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
     runnerKillGraceMs: options.runnerKillGraceMs,
+    // The cancel path clears the session's native replay buffer. The stub here
+    // is only used by fixtures that never cancel; the cancel fixture injects a
+    // real rust-backed hub.
+    replay: options.replay || { clear() {} },
     log: { warn: (...args) => calls.push(['warn', ...args]) },
   };
   const host = owned ? createProductionWorkHost(hostDeps, owned) : createSessionWorkHost(hostDeps);
@@ -337,13 +342,14 @@ function fakeChild(diesOn = 'SIGTERM') {
 
 function cancelFixture(overrides = {}, fixtureOptions = {}) {
   const child = fakeChild(fixtureOptions.diesOn === undefined ? 'SIGTERM' : fixtureOptions.diesOn);
+  const { hub } = createTestChatHub();
+  hub.push('s1', { type: 'assistant' });
   const state = {
     cli: 'codex',
     claudeProc: child,
     isStreaming: true,
     currentAssistantText: '',
     currentToolCalls: [],
-    streamReplay: ['partial'],
     _activeRunner: {},
     _currentTaskId: 'task-1',
     ...overrides,
@@ -355,11 +361,11 @@ function cancelFixture(overrides = {}, fixtureOptions = {}) {
       set() { /* the runner wins */ },
     });
   }
-  return { child, state, h: fixture({ ...fixtureOptions, chatState: state }) };
+  return { child, state, hub, h: fixture({ ...fixtureOptions, chatState: state, replay: hub }) };
 }
 
 test('cancel stops the runner and submits one structured E result to classify â€” it never writes state itself', async () => {
-  const { child, state, h } = cancelFixture();
+  const { child, state, hub, h } = cancelFixture();
   const result = await h.host.cancelActiveTurn('s1', { operationId: 'op-1' });
 
   // Runner side effects: process/transport only.
@@ -368,7 +374,7 @@ test('cancel stops the runner and submits one structured E result to classify â€
   ]);
   assert.equal(child.signal, 'SIGTERM');
   assert.equal(state.isStreaming, false);
-  assert.deepEqual(state.streamReplay, []);
+  assert.equal(hub.size('s1'), 0, 'the native replay buffer is cleared');
 
   // The controller/host performs NO direct business-state write. The only
   // task-state writes allowed are the scheduler's queue projections; classify

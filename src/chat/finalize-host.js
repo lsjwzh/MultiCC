@@ -8,6 +8,7 @@ const REQUIRED_PORTS = Object.freeze([
   'commitUsage',
   'broadcast',
   'cancelClassify',
+  'clearReplay',
   'clearIncrementalSave',
   'setStatus',
   'completeSessionTurn',

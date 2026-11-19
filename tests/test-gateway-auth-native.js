@@ -152,6 +152,48 @@ test('Rust WS probe fans out within one session and isolates other sessions', { 
   assert.equal((await otherPong)[0].toString(), '{"type":"pong","apiVersion":"v1"}', 'cross-session broadcast leaked or pong changed');
   assert.equal(other.events.includes(expected), false, 'cross-session broadcast leaked');
 });
+
+test('Rust chat hub probe replays before live delivery and isolates sessions', { timeout: 30000 }, async t => {
+  const { port } = await start(t, true, { testRoutes: true });
+  const sockets = [];
+  t.after(() => sockets.forEach(socket => socket.terminate()));
+  async function connect(session) {
+    const issued = JSON.parse((await request(port, 'POST', '/fixture/issue-probe')).body);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/__gateway_test/ws?hub=1&ticket=${issued.ticket}&session=${session}`);
+    sockets.push(socket);
+    const events = [];
+    socket.on('message', data => events.push(data.toString()));
+    await once(socket, 'open');
+    return { socket, events };
+  }
+  async function waitFor(client, length) {
+    for (let n = 0; n < 500 && client.events.length < length; n += 1) await delay(10);
+    assert.ok(client.events.length >= length, `expected ${length} frames, got ${client.events.length}`);
+  }
+  const first = await connect('a');
+  first.socket.send('{"type":"ping"}');
+  await waitFor(first, 1);
+  first.socket.send('{"type":"test_replay"}');
+  first.socket.send('{"type":"test_replay"}');
+  await waitFor(first, 3);
+  const second = await connect('a');
+  second.socket.send('{"type":"ping"}');
+  await waitFor(second, 3);
+  assert.deepEqual(second.events.slice(0, 3), [
+    '{"type":"test_replay","apiVersion":"v1"}',
+    '{"type":"test_replay","apiVersion":"v1"}',
+    '{"type":"pong","apiVersion":"v1"}',
+  ]);
+  const other = await connect('b');
+  other.socket.send('{"type":"ping"}');
+  await waitFor(other, 1);
+  assert.deepEqual(other.events, ['{"type":"pong","apiVersion":"v1"}']);
+  first.socket.send('{"type":"test_replay"}');
+  await waitFor(second, 4);
+  assert.equal(second.events[3], '{"type":"test_replay","apiVersion":"v1"}');
+  assert.equal(other.events.length, 1);
+});
+
 function normalize(response) {
   const headers = { ...response.headers };
   for (const key of ['date', 'connection', 'keep-alive']) delete headers[key];

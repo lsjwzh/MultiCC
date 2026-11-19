@@ -51,11 +51,19 @@ function createSessionLifecycleRuntime(rawDeps) {
     cwdForSession,
     cleanupPushMonitor,
     getSessionGitRuntime,
+    // Native /ws/chat replay buffer + live-client membership. The hub owns the
+    // per-session frames and members (src/chat/replay-hub.js); these routes only
+    // clear or drop them.
+    replay,
     // Optional: restart-spawn uses it to release the scheduler slot through the
     // canonical cancel. Deliberately not in the required list below — every
     // other route here predates it and must keep composing without it.
     getSessionWorkHost,
   } = deps;
+
+  if (!replay || typeof replay.clear !== 'function' || typeof replay.drop !== 'function') {
+    throw new TypeError('[session-lifecycle] replay hub is required');
+  }
 
   // restart-spawn force-archives the codex rollout of the restarted session so
   // the respawn builds a fresh thread instead of resuming possibly-wedged
@@ -261,7 +269,7 @@ function createSessionLifecycleRuntime(rawDeps) {
         if (session) { await tmuxKillSession(id); for (const client of session.clients || []) try { client.terminate(); } catch (_) {} }
         if (chat) terminalizeProviderAttempt(chat, 'session_delete');
         reapInterruptedBackgroundTasks(id, 'session_delete');
-        if (chat) { if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {} chatStream().close(id); for (const client of chat.clients || []) try { client.terminate(); } catch (_) {} }
+        if (chat) { if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {} chatStream().close(id); replay.drop(id); }
         sessions.delete(id);
         chatSessions.delete(id);
       }
@@ -419,7 +427,7 @@ function createSessionLifecycleRuntime(rawDeps) {
         if (cs.claudeProc) { try { cs.claudeProc.kill('SIGTERM'); } catch (_) {} }
         cs.claudeProc = null;
         cs.isStreaming = false;
-        cs.streamReplay = [];
+        replay.clear(id);
         cs.lineBuf = '';
         cs.currentAssistantText = '';
         cs.currentToolCalls = [];

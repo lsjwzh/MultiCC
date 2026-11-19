@@ -146,6 +146,9 @@ function createProviderLogWatchdog(deps = {}) {
       throw new TypeError(`[provider-log-watchdog] ${name} must be a function`);
     }
   }
+  if (!deps.replay || typeof deps.replay.push !== 'function') {
+    throw new TypeError('[provider-log-watchdog] replay must be a chat replay hub');
+  }
   // Optional side channel into the persistent provider-limit cache; best-effort.
   const recordLimit = typeof deps.recordLimit === 'function' ? deps.recordLimit : null;
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
@@ -254,21 +257,11 @@ function createProviderLogWatchdog(deps = {}) {
       }
       const bar = windowEventBar(normalizeWindowEvent(limitInfo, at), at);
       const limitEvt = { type: 'rate_limit_event', sessionId, rate_limit_info: limitInfo, bar };
-      try {
-        if (Array.isArray(cs.streamReplay)) {
-          cs.streamReplay.push(limitEvt);
-          if (cs.streamReplay.length > 500) cs.streamReplay.shift();
-        }
-      } catch (_) {}
+      try { deps.replay.push(sessionId, limitEvt); } catch (_) {}
       deps.broadcast(sessionId, limitEvt);
     }
     const evt = { type: 'error', error: `${provider.label} 出错：${sanitized}` };
-    try {
-      if (Array.isArray(cs.streamReplay)) {
-        cs.streamReplay.push(evt);
-        if (cs.streamReplay.length > 500) cs.streamReplay.shift();
-      }
-    } catch (_) {}
+    try { deps.replay.push(sessionId, evt); } catch (_) {}
     deps.broadcast(sessionId, evt);
     logger.warn('provider_log_error_surfaced', {
       sessionId, provider: record.cli, run: hit.run || null,

@@ -23,6 +23,7 @@ use tokio_tungstenite::{
 
 use crate::{
     app::App,
+    ws_chat_hub::ChatHub,
     ws_handshake,
     ws_registry::{Frame, Registry},
 };
@@ -66,6 +67,7 @@ fn dispatch_probe(registry: &Registry, id: u64, bytes: &[u8]) -> bool {
 pub async fn handle(
     Extension(app): Extension<Arc<App>>,
     Extension(registry): Extension<Arc<Registry>>,
+    Extension(hub): Extension<Arc<ChatHub>>,
     mut request: Request<Body>,
 ) -> Response<Body> {
     let header = |name| request.headers().get(name).and_then(|v| v.to_str().ok());
@@ -112,12 +114,15 @@ pub async fn handle(
                 .map(|(_, value)| value.into_owned())
         })
         .unwrap_or_default();
+    let use_hub = request.uri().query().is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .any(|(key, value)| key == "hub" && value == "1")
+    });
     let upgrade = hyper::upgrade::on(&mut request);
     tokio::spawn(async move {
         let Ok(upgraded) = upgrade.await else { return };
-        let socket =
+        let mut socket =
             WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
-        let (mut writer, mut reader) = socket.split();
         let authorized = matches!(
             app.auth
                 .request(AuthRequest::ConsumeTicket {
@@ -128,7 +133,7 @@ pub async fn handle(
             Ok(AuthResponse::Redeemed { .. })
         );
         if !authorized {
-            let _ = writer
+            let _ = socket
                 .send(Message::Close(Some(CloseFrame {
                     code: CloseCode::Library(4003),
                     reason: "Forbidden".into(),
@@ -136,6 +141,11 @@ pub async fn handle(
                 .await;
             return;
         }
+        if use_hub {
+            serve_hub_probe(socket, hub, session).await;
+            return;
+        }
+        let (mut writer, mut reader) = socket.split();
         let Some(mut connection) = registry.register_session(session, 64, 1024 * 1024) else {
             return;
         };
@@ -180,4 +190,69 @@ pub async fn handle(
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .body(Body::empty())
         .expect("handshake response")
+}
+
+/// Exercises the ordered hub on the test route only; no production chat
+/// authentication, history or turn orchestration is implemented here.
+async fn serve_hub_probe(
+    socket: WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
+    hub: Arc<ChatHub>,
+    session: String,
+) {
+    let Some(mut attached) = hub.attach(&session, 64, 1024 * 1024) else {
+        return;
+    };
+    let (mut writer, mut reader) = socket.split();
+    for event in &attached.replay {
+        let Ok(text) = String::from_utf8(event.to_vec()) else {
+            return;
+        };
+        if writer.send(Message::Text(text.into())).await.is_err() {
+            return;
+        }
+    }
+    loop {
+        tokio::select! {
+            biased;
+            changed = attached.connection.overflow.changed() => {
+                if changed.is_err() { break; }
+                if *attached.connection.overflow.borrow() {
+                    let _ = writer.send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Again, reason: "slow client; reconnect to resync".into(),
+                    }))).await;
+                    break;
+                }
+            },
+            incoming = reader.next() => match incoming {
+                Some(Ok(Message::Text(text))) => {
+                    let parsed = multicc_core::js::json_parse(&text);
+                    let kind = parsed.ok().and_then(|v| match v.get("type") {
+                        Some(multicc_core::js::JsValue::String(value)) => Some(value.to_string_lossy()),
+                        _ => None,
+                    }).unwrap_or_default();
+                    if kind == "test_replay" {
+                        hub.publish(&session, probe_event("test_replay"), true);
+                    } else if kind == "ping" {
+                        let _ = hub.send(attached.connection.id, Frame::Text(probe_event("pong")));
+                    }
+                },
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {},
+            },
+            queued = attached.connection.receiver.recv() => match queued {
+                Some(queued) => match queued.frame {
+                    Frame::Text(bytes) => {
+                        let Ok(text) = String::from_utf8(bytes.to_vec()) else { break };
+                        if writer.send(Message::Text(text.into())).await.is_err() { break; }
+                    },
+                    Frame::Binary(bytes) => if writer.send(Message::Binary(bytes)).await.is_err() { break; },
+                    Frame::Close { code, reason } => {
+                        let _ = writer.send(Message::Close(Some(CloseFrame { code: code.into(), reason: reason.into() }))).await;
+                        break;
+                    }
+                },
+                None => break,
+            }
+        }
+    }
 }

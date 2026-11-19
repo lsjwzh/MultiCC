@@ -2,8 +2,8 @@
 
 const { randomUUID } = require('node:crypto');
 const { WebSocket } = require('ws');
-const { getNative } = require('../native/runtime');
 const { installNativeQueue } = require('./native-queue');
+const { createWsHost } = require('./ws-host');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 
 const WS_PING_INTERVAL_MS = 30_000;
@@ -53,9 +53,9 @@ function mountWsConnectionRouter(wss, deps) {
   // (what used to be a WeakMap), the heartbeat windows and the per-connection
   // send queue all live in Rust. Node keeps the timer cadence and the raw
   // socket transport through these ports.
-  const wsHostAnchor = {};
-  const wsHost = new (getNative().RustWsHost)(wsHostAnchor);
-  Object.defineProperty(wsHost, Symbol('ws host anchor'), { value: wsHostAnchor });
+  // The composition root may hand in the host (the chat replay hub shares it);
+  // a router mounted on its own builds a private one.
+  const wsHost = deps.wsHost || createWsHost();
   // Per-connection port views created by installNativeQueue, keyed by the
   // host's connection id; the schedule port looks them up to fire the retry
   // timer against the right `sendFrame` closure.
@@ -82,6 +82,9 @@ function mountWsConnectionRouter(wss, deps) {
     backpressureLog(socket, event, fields) {
       try { logger.warn(event, { ...fields, correlationId: socket._correlationId }); } catch (_) {}
     },
+    // The native session fan-out and replay burst address one connection's
+    // `sendFrame` view through this lookup instead of holding JS sockets.
+    connPort(id) { return connPortsById.get(id); },
     heartbeatTimeout(fields, socket, missedPongs) {
       try {
         logger.warn('ws_pong_timeout', { ...fields, correlationId: socket._correlationId, missedPongs });
@@ -89,6 +92,7 @@ function mountWsConnectionRouter(wss, deps) {
     },
     now: () => Date.now(),
   };
+  wsHost.bindPorts(wsPorts);
 
   wss.on('connection', async (ws, req) => {
     const urlObj = new URL(req.url, 'http://localhost');
@@ -110,6 +114,8 @@ function mountWsConnectionRouter(wss, deps) {
     };
     const connectedAt = Date.now();
     const connId = wsHost.attach(ws, fields, nativeSocket, connectedAt);
+    // The chat handler joins this connection to its session by id.
+    Object.defineProperty(ws, '_multiccConnId', { value: connId, configurable: true });
     // Install before dispatch: every WS route needs protocol-level liveness.
     ws.on('pong', () => {
       try { wsHost.onPong(connId); } catch (_) {}

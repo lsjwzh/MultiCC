@@ -25,6 +25,7 @@ function createHarness(options = {}) {
     },
     broadcast(sessionName, event) { calls.push(['broadcast', event.type, event.error || null]); },
     cancelClassify() { calls.push(['cancel-classify']); },
+    clearReplay() { calls.push(['clear-replay']); },
     clearIncrementalSave() { calls.push(['clear-timer']); },
     setStatus(sessionName, status) { calls.push(['status', status]); },
     completeSessionTurn() { calls.push(['complete-session-turn']); },

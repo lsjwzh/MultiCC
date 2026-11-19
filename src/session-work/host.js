@@ -944,7 +944,9 @@ function createSessionWorkHost(deps = {}) {
       }
     }
     state.isStreaming = false;
-    state.streamReplay = [];
+    // The replay buffer is native state behind the replay hub (src/chat/replay-hub.js);
+    // clearing the chat state's retired `streamReplay` array would fork it.
+    deps.replay.clear(sessionId);
     // Persisting the partial reply is transcript bookkeeping, not status, and it
     // is guarded by the in-flight map above so a double cancel cannot write the
     // same partial twice.

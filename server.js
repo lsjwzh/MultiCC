@@ -109,7 +109,7 @@ const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session/persistence');
 const { createSessionRecords } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');
-const { createChatSessions } = require('./src/chat/sessions');
+const { createChatSessions, createChatReplayRuntime } = require('./src/chat/sessions');
 const { createDirectoryTable } = require('./src/directory/records');
 const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
@@ -268,15 +268,12 @@ const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS); const turnLedgerRuntime = require('./src/turn-ledger/runtime').createTurnLedgerRuntime({ dataDir: MULTICC_PATHS.root, codexCmd: () => cliCommands.codex }).start(); // 终端轮次账本：hook→spool→TurnLedger，影子模式只观测不接管状态
 const auxRunLog = createAuxRunLog({ dir: MULTICC_PATHS.auxRunsDir, log: (event, detail) => console.warn(`[multicc/aux-run-log] ${event}`, detail) });
-// One native owner holds the live chat-session table, the persisted session
-// table, the directory table and the per-session turn runtime store. It is
-// created here (before anything reads `chatSessions`) and configured below once
-// the data paths are known.
+// One native owner holds the live chat-session, persisted-session and directory
+// tables and the turn runtime store; created before anything reads them.
 const stateOwner = createStateOwner();
-const chatSessions = createChatSessions(stateOwner);
-// One Rust owner for the turn-progress state machines (heartbeat cadence, turn
-// timing, per-session model timeline, delivery probes). Wired below into the
-// heartbeat, the engine, the liveness runtime and the two persistence hosts.
+const chatSessions = createChatSessions(stateOwner); const { wsHost, chatReplay } = createChatReplayRuntime(chatSessions);
+// One Rust owner for the turn-progress state machines (heartbeat, timing, model
+// timeline, delivery probes), wired below into the engine and its hosts.
 const turnProgress = createTurnProgress();
 chatSessions.setForgetHook(turnProgress.forgetSession);
 let chatHistoryRuntime = null;
@@ -823,7 +820,7 @@ async function destroySessionCascade(s, d, opts = {}) {
     assignKillReason(chat._activeRunner, 'session_delete'); if (chat._activeRunner?.providerAttempt) providerAttemptRuntime.finishAttempt(chat._activeRunner.providerAttempt, { outcome: 'failed', errorCategory: 'cancelled', reasonCode: 'session_delete' }); backgroundTaskRuntime.reapSessionShadows(s.id, { reason: 'session_delete' });
     if (chat.claudeProc) try { chat.claudeProc.kill('SIGTERM'); } catch (_) {}
     chatStream.close(s.id);
-    for (const client of chat.clients || []) try { client.terminate(); } catch (_) {}
+    chatReplay.drop(s.id);
     chatSessions.delete(s.id);
   }
   backgroundTaskRuntime.stopSession(s.id);
@@ -1566,7 +1563,7 @@ mountSessionCreateRoutes(sessionRoutesHost.app, {
 
 // Cross-CLI switching: one native state per CLI + a visible, bounded handoff
 // checkpoint. Provider lookups/chat stream resolve lazily (built below).
-const cliSwitchRuntime = createCliSwitchRuntime({
+const cliSwitchRuntime = createCliSwitchRuntime({ clearReplay: chatReplay.clear,
   records: persistedSessions,
   sessionPersistence,
   supportedClis: SUPPORTED_CHAT_CLIS,
@@ -1715,7 +1712,7 @@ sessionGitRuntime.mountRoutes(app);
 // Handler logic lives in src/routes/session-lifecycle.js; only host wiring
 // stays here. The whole-server POST /api/restart below deliberately remains
 // inline — its detached-scheduler debounce is host process state.
-const sessionLifecycleRuntime = createSessionLifecycleRuntime({
+const sessionLifecycleRuntime = createSessionLifecycleRuntime({ replay: chatReplay,
   sessions, chatSessions, persistedSessions, directories, invalidSessions,
   sessionPersistence,
   getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, reapBackgroundTasks: (id, reason) => backgroundTaskRuntime?.reapSessionShadows(id, { reason }) || 0,
@@ -1848,7 +1845,7 @@ const sessionDelivery = require('./src/session/delivery').createSessionDelivery(
 });
 const authHealth = require('./src/claude-auth/refresh-health').createRefreshHealthStore({ root: OFFICIAL_ACCOUNTS_ROOT, logger }); const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger, health: authHealth, healthKey: 'claude-cli' });
 const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore({ onCredentialWritten: id => limitRecorder.releaseProviderFailure({ providerId: require('./src/providers/official-catalog').accountProviderId('claude', id) }) }); const cliLogin = require('./src/official-accounts-cli-login').createCliLoginDetector({ accounts: officialAccounts }); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountRefresh = require('./src/claude-auth/accounts-refresh').createClaudeAccountRefreshSupervisor({ accounts: officialAccounts, logger, health: authHealth }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger, exclusive: claudeAccountRefresh.exclusive, onNeedsRefresh: id => claudeAccountRefresh.checkAccount(id, 'read-miss') }); cliLogin.start(); claudeAccountRefresh.start(); // each own-token account is refreshed by the claude CLI under its own CLAUDE_CONFIG_DIR // the CLI's own login is only detected (panel reminder), never copied: a copy would share its single-use refresh token // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
-const apiErrorHost = createApiErrorHost({
+const apiErrorHost = createApiErrorHost({ replay: chatReplay,
   policy: apiErrorPolicy, logger, persistedSessions, setTaskState, chatBroadcast,
   setSessionStatus, isShuttingDown: () => authSecurity.shuttingDown(),
   clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
@@ -2077,7 +2074,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
 });
 const taskSearchRuntime = createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), messages: messageSearchRuntime, logger }); messageSearchRuntime().start();
 const taskContextHost = createTaskContextHost({
-  getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
+  getState: sessionId => chatSessions.get(sessionId), emitSession: chatReplay.broadcast,
   append: (id, m) => chatHistoryRuntime.appendMessage(id, m),
   getTaskBoard: () => taskBoardRuntime, getTaskShells: () => taskShellHost, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
@@ -2345,7 +2342,7 @@ const subscribeDispatchProgress = createDispatchProgressSubscription({
   bus,
   cliOf: id => persistedSessions.get(id)?.cli || '',
   activeTurnOf: id => chatSessions.get(id)?._activeTurn,
-  streamReplayOf: id => chatSessions.get(id)?.streamReplay,
+  streamReplayOf: chatReplay.events,
 });
 
 // Usage-limit poller — a turn's own provider only; Claude readings are manual-refresh (see src/chat/usage-limit-wiring.js).
@@ -2450,7 +2447,7 @@ const unattendedHost = createUnattendedRuntime({ persistedSessions, saveSessions
     try { return await chatTurnEngine.autoProviderRuntime.retryNotBeforeAsync(session); } catch (_) { return null; }
   },
   getTaskState: id => getTaskState(persistedSessions.get(id)), getSchedulerStatus: id => (orchestrationRuntime ? orchestrationRuntime.sessionScheduler.status(id) : null), listSessionIds: () => [...persistedSessions.keys()] });
-sessionWorkHost = createProductionWorkHost({
+sessionWorkHost = createProductionWorkHost({ replay: chatReplay,
   runtime: () => orchestrationRuntime,
   getRecord: id => persistedSessions.get(id),
   getChatSession: id => chatSessions.get(id),
@@ -2604,7 +2601,7 @@ const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirror
 // stream-json WebSocket handler and the orchestration wait-injector helpers.
 // Late/reassigned host bindings are injected as getters; stable containers,
 // hoisted functions and early consts by reference.
-const chatTurnEngine = createChatTurnEngine({
+const chatTurnEngine = createChatTurnEngine({ replay: chatReplay,
   getBackgroundTaskRuntime: () => backgroundTaskRuntime,
   getSessionWorkHost: () => sessionWorkHost,
   getChatHistoryRuntime: () => chatHistoryRuntime,
@@ -2767,7 +2764,7 @@ const stalledTurnRecovery = createStalledTurnRecovery({
   autoCancel: process.env.MULTICC_STALLED_AUTO_CANCEL === '1',
   cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), logger,
 });
-const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persistedSessions.entries(), getChatSession: id => chatSessions.get(id),
+const providerLogWatchdog = createProviderLogWatchdog({ replay: chatReplay, listRecords: () => persistedSessions.entries(), getChatSession: id => chatSessions.get(id),
   broadcast: (id, evt) => chatBroadcast(id, evt), cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
   intervalMs: envNumber(process.env.MULTICC_PROVIDER_LOG_INTERVAL_MS), minSilenceMs: envNumber(process.env.MULTICC_PROVIDER_LOG_MIN_SILENCE_MS), logger,
   recordLimit: limitRecorder.recordSession });
@@ -2814,7 +2811,7 @@ orchestrationHost.mountRoute(app);
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive
 // live behind one transport boundary. Mutable auth/shutdown state stays lazy.
-mountWsConnectionRouter(wss, { machines,
+mountWsConnectionRouter(wss, { machines, wsHost,
   metrics,
   logger,
   share,
@@ -2940,7 +2937,7 @@ cronTasks.init({
 tunnel.init();
 
 // Graceful shutdown and service timers live in src/host-lifecycle.js; mutable host state stays lazy via accessors.
-const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostLifecycle({
+const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostLifecycle({ replay: chatReplay,
   isResidentSession,
   getShuttingDown: () => authSecurity.shuttingDown(),
   setShuttingDown: v => authSecurity.setShuttingDown(v),

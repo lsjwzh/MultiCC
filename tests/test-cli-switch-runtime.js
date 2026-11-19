@@ -39,7 +39,7 @@ function createHarness(overrides = {}) {
   const chat = overrides.chat === false ? null : {
     cli: 'claude', chatTurnCount: 4, isStreaming: false, claudeProc: null,
     lineBuf: 'partial', currentAssistantText: 'partial', currentToolCalls: [{ id: 1 }],
-    currentCost: 1, streamReplay: ['event'], _adapterError: 'old',
+    currentCost: 1, _adapterError: 'old',
     _activeRunner: null, _activeTurn: { id: 'turn' },
     _continuationLineage: { id: 'lineage' }, _resultSaved: true, _sawApiError: true,
   };
@@ -87,6 +87,8 @@ function createHarness(overrides = {}) {
     getChatStream: () => stream,
     hasLiveBackgroundTasks: () => overrides.backgroundActive === true,
     cancelClassify: () => effects.push('cancel-classify'),
+    // The CLI reset clears the session's native replay buffer through the hub.
+    clearReplay: overrides.clearReplay || (id => effects.push(`clear-replay:${id}`)),
     planAutoCliSwitch: overrides.planAutoCliSwitch,
     pendingAutoCliSwitch: overrides.pendingAutoCliSwitch,
     clearAutoProviderSession: overrides.clearAutoProviderSession,
