@@ -50,6 +50,16 @@ app.post('/fixture/issue-probe', (_req, res) => {
   value.callback = () => {}; value.self = value; value.upstream.addresses[0].self = value;
   res.json(security.issueWsTicket('/__gateway_test/ws', value));
 });
+// Mints the real `/ws/machines/<id>` admission a paired machine would get,
+// with the upstream pinned to a local fake peer the test controls.
+app.post('/fixture/issue-machine', express.json(), (req, res) => {
+  const { machineId, scopeMachineId, url, addresses } = req.body;
+  // The scope and the metadata id are separate inputs so a test can mint the
+  // one combination the admission rule exists for: a ticket valid for this
+  // path whose machine id belongs to a different machine.
+  const scope = `/ws/machines/${scopeMachineId || machineId}`;
+  res.json(security.issueWsTicket(scope, { machineId, upstream: { url, addresses } }));
+});
 app.post('/fixture/consume', express.json(), (req, res) => res.json(security.consumeWsTicket(req.body.ticket, req.body.path)));
 const serviceFixture = process.env.MULTICC_TEST_SERVICE_ROUTES === '1' && !gateway.isGatewayChild();
 const legacyServices = serviceFixture ? require('./legacy-service-routes').createServiceRoutes({

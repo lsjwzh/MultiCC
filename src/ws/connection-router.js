@@ -149,8 +149,6 @@ function mountWsConnectionRouter(wss, deps) {
       installNativeQueue(ws, wsHost, connId, wsPorts, connPortsById);
     }
 
-    if (require('./machines').bridgeMachineSocket(ws, urlObj, { authSecurity })) return;
-
     // A valid share token replaces normal auth only for its scoped chat.
     let sharePerm = null;
     if (urlObj.pathname === '/ws/chat' && urlObj.searchParams.get('share')) {

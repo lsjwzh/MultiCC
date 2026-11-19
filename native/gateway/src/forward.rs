@@ -253,6 +253,23 @@ async fn host_port_probe(Extension(upstream): Extension<UpstreamHandle>) -> Resp
         .expect("static host-port probe response")
 }
 
+/// The condition under which Node's HTTP server emitted its `upgrade` event.
+fn is_websocket_upgrade(headers: &hyper::HeaderMap) -> bool {
+    let has_upgrade = headers
+        .get("upgrade")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| !value.trim().is_empty());
+    let connection_token = headers
+        .get("connection")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+        });
+    has_upgrade && connection_token
+}
+
 /// §8: a route the front door owns is answered here; everything else, and
 /// every other method on those paths, goes to Node exactly as before.
 async fn dispatch(
@@ -260,6 +277,22 @@ async fn dispatch(
     Extension(app): Extension<Arc<App>>,
     mut request: Request<Body>,
 ) -> Response<Body> {
+    // The machines WS bridge is terminated here, so it is claimed before any
+    // HTTP layer. Only a real upgrade is claimed: Node's `upgrade` event fired
+    // on `Upgrade` + a `Connection: upgrade` token, and a plain GET on the
+    // same path fell through to Express exactly as it still falls through to
+    // Node here.
+    if crate::ws_machines::claims(request.uri().path()) && is_websocket_upgrade(request.headers()) {
+        // §8.1: with no Node child and no locally owned authentication
+        // runtime there is nobody who can redeem the ticket, so the refusal
+        // stays the immediate `node_runtime_absent` every other
+        // Node-dependent route answers — not a 101 followed by a close frame
+        // once the control wire times out.
+        if upstream.node_absent() && !app.auth.has_local() {
+            return forward(upstream, request, None).await;
+        }
+        return crate::ws_machines::handle(app, request).await;
+    }
     // `/artifacts` was mounted before every other static layer in Node
     // (`artifacts.mount(app)` ahead of the public/ static mount), so its
     // claim runs first here: the global `.apk`/`.ipa` guard inside
