@@ -7244,6 +7244,15 @@
       ]
     },
     {
+      "path": "tests/test-ws-machines-differential.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-zcode-app-server-mapping.js",
       "tier": "core",
       "lane": "deterministic",

@@ -132,9 +132,14 @@ native 测试的 319 项通过，重启场景另行以 release 程序验证；�
 5. 前门依赖的宿主端口、中间件、静态文件、WS/SSE：按具体事实和
    持有的句柄逐簇迁移，不以单纯删除路由注册代表完成。
    WS 部分的进度（2026-11-19）：共享连接路由的连接注册、心跳判定与每连接发送
-   队列已由 addon 的 `RustWsHost` 持有，`src/ws-backpressure.js` 已删除；仍在
-   Node 的是 WS upgrade 终结与 `/ws/chat` 回合引擎状态（快照/重放/聊天编排），
-   详见 `ws-host-registry-2026-11-19.md`。
+   队列已由 addon 的 `RustWsHost` 持有，`src/ws-backpressure.js` 已删除；
+   详见 `ws-host-registry-2026-11-19.md`。同日第一条**生产** WS 路径
+   `/ws/machines/<id>` 的升级终结已迁入前门（`native/gateway/src/ws_machines.rs`
+   与 `ws_tls.rs`），`src/ws/machines.js` 与连接路由分支已删除，8 项逐字节差分
+   与 5 个变异通过，详见 `ws-machines-cutover-2026-11-19.md`；该路径是 9 类 WS 中
+   唯一零共享状态的一条，`wss://` 的真实 TLS 握手尚未本地实测。仍在 Node 的是
+   `/ws/chat` 的 upgrade 终结与回合引擎状态（快照/重放/聊天编排）以及其余 WS
+   路径的连接注册。
 6. CLI、浏览器、音频及外部 SDK 集成：迁移业务和状态，按平台保留
    必要兼容桥；插件的独立发布模型另行处理。
 

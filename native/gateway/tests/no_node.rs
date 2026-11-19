@@ -305,6 +305,27 @@ fn a_no_node_front_door_serves_rust_routes_and_fails_node_routes_closed() {
     assert!(!log.contains("cannot start"));
 }
 
+/// The machines bridge is terminated by the front door, but redeeming its
+/// one-use ticket still needs an authentication owner. With neither a Node
+/// child nor a local token the refusal must stay the immediate HTTP 503, not
+/// an accepted upgrade that only fails once the control wire times out.
+#[test]
+fn the_machines_ws_bridge_fails_closed_without_an_authentication_owner() {
+    let gateway = Gateway::start("ws-machines");
+    let started = Instant::now();
+    let upgrade = gateway.request(
+        "GET /ws/machines/m1?ticket=nope HTTP/1.1\r\nHost: test\r\nConnection: Upgrade\r\n\
+         Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+    );
+    assert_node_absent(&upgrade, "machines websocket upgrade");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the refusal must not wait for a control-wire timeout: {:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn a_claimed_route_that_needs_the_node_auth_runtime_fails_closed_at_once() {
     let gateway = Gateway::start("auth-runtime");
