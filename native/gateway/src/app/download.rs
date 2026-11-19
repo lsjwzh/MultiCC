@@ -301,11 +301,7 @@ pub(super) async fn send_file(ctx: &RequestCtx, path: &str, attachment: bool) ->
 
 /// Writes a [`SendPlan`] out: the 200/206 stream, the 304, or
 /// `safeErrorHandler` on the headers send had already set.
-pub(super) async fn write_plan(
-    ctx: &RequestCtx,
-    path: &str,
-    plan: SendPlan,
-) -> Response<Body> {
+pub(super) async fn write_plan(ctx: &RequestCtx, path: &str, plan: SendPlan) -> Response<Body> {
     match plan {
         SendPlan::Error { status, headers } => {
             let detail = match status {

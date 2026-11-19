@@ -13,7 +13,7 @@ const isolatedHostEnv = require('./helpers/isolated-host-env');
 
 const privateIp = Object.values(os.networkInterfaces()).flat().find(item => item && item.family === 'IPv4' && !item.internal
   && (/^10\./.test(item.address) || /^192\.168\./.test(item.address) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(item.address)))?.address;
-for (const [label, bindHost] of [['loopback', '127.0.0.1'], ['localhost', 'localhost'], ['local-interface', privateIp]]) test(`production restart route verifies readiness on ${label}`, { timeout: 90000, skip: !bindHost }, async () => {
+for (const [label, bindHost] of [['loopback', '127.0.0.1'], ['localhost', 'localhost'], ['local-interface', privateIp]]) test(`production restart route verifies readiness on ${label}`, { timeout: 90000, skip: !bindHost }, async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-real-restart-')));
   const repo = path.resolve(__dirname, '..');
   const host = path.join(root, 'host'), data = path.join(root, 'data'), home = path.join(root, 'home');
@@ -64,6 +64,12 @@ for (const [label, bindHost] of [['loopback', '127.0.0.1'], ['localhost', 'local
   gateway.stdout.on('data', chunk => { output += chunk; });
   gateway.stderr.on('data', chunk => { output += chunk; });
   const oldExit = new Promise(resolve => gateway.once('exit', resolve));
+  // Report only a fixed phase name; child output may contain private data.
+  // A timeout otherwise reports no indication which await is still pending.
+  let phase = 'initial readiness';
+  const phaseTimer = setInterval(() => t.diagnostic(`restart fixture pending: ${phase}`), 10000);
+  phaseTimer.unref();
+  t.after(() => clearInterval(phaseTimer));
   async function ready() {
     try { return await fetch(`${origin}/readyz`, { signal: AbortSignal.timeout(1500) }); } catch (_) { return null; }
   }
@@ -77,11 +83,13 @@ for (const [label, bindHost] of [['loopback', '127.0.0.1'], ['localhost', 'local
     }
     assert.ok(initial?.ok, `isolated server not ready: ${output.slice(-3000)}`);
     assert.equal(Number(initial.headers.get('x-multicc-gateway-pid')), gateway.pid);
+    phase = 'restart request';
     const response = await fetch(`${origin}/api/restart`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-access-token': 'isolated-only' }, body: JSON.stringify({ expectedPid: gateway.pid }), signal: AbortSignal.timeout(10000) });
     assert.equal(response.status, 202, await response.clone().text());
     const scheduled = await response.json();
     supervisorPid = scheduled.supervisorPid; generation = scheduled.restartId;
     assert.ok(supervisorPid > 1 && generation);
+    phase = 'replacement readiness';
     let replacement;
     for (let i = 0; i < 350; i++) {
       replacement = await ready();
@@ -95,8 +103,10 @@ for (const [label, bindHost] of [['loopback', '127.0.0.1'], ['localhost', 'local
       `replacement not ready; restart log: ${fs.existsSync(path.join(data, 'logs/restart-supervisor.log')) ? fs.readFileSync(path.join(data, 'logs/restart-supervisor.log'), 'utf8').slice(-3000) : output.slice(-3000)}`);
     assert.equal((await replacement.json()).status, 'ready');
     assert.equal(Number(fs.readFileSync(path.join(host, '.multicc.pid'), 'utf8')), replacementPid);
+    phase = 'old gateway exit';
     await oldExit;
   } finally {
+    phase = 'fixture cleanup';
     // The worker is bounded to 20 seconds in this disposable test. Let it
     // finish before enumerating only gateways whose cwd is this unique root.
     const marker = path.join(data, '.restart-generation');

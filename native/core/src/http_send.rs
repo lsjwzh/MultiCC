@@ -2756,7 +2756,10 @@ mod tests {
         };
         let preset = vec![
             Header::new("Content-Type", "application/vnd.android.package-archive"),
-            Header::new("Content-Disposition", "attachment; filename=\"multicc.apk\""),
+            Header::new(
+                "Content-Disposition",
+                "attachment; filename=\"multicc.apk\"",
+            ),
             Header::new("Cache-Control", "no-store, no-cache, must-revalidate"),
             Header::new("Pragma", "no-cache"),
             Header::new("Expires", "0"),

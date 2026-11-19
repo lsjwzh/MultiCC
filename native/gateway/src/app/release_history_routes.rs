@@ -418,8 +418,7 @@ async fn apk_download(
                     HeaderValue::from_static("websocket"),
                 );
             }
-            if let Some(resolved) =
-                super::static_web_root::claim(app, &ctx.method, &uri, &headers)
+            if let Some(resolved) = super::static_web_root::claim(app, &ctx.method, &uri, &headers)
             {
                 return super::static_web_root::handle(app, ctx, Some(&resolved)).await;
             }
@@ -494,7 +493,10 @@ mod tests {
             claim(&Method::GET, "/multicc.apk"),
             Some(Route::ApkDownload)
         );
-        assert_eq!(claim(&Method::HEAD, "/multicc.apk"), Some(Route::ApkDownload));
+        assert_eq!(
+            claim(&Method::HEAD, "/multicc.apk"),
+            Some(Route::ApkDownload)
+        );
         assert_eq!(claim(&Method::POST, "/multicc.apk"), None);
         assert_eq!(claim(&Method::GET, "/"), None);
     }
@@ -518,10 +520,7 @@ mod tests {
             options_share("/ios-ota/manifest.plist").as_deref(),
             Some("GET,HEAD")
         );
-        assert_eq!(
-            options_share("/multicc.apk").as_deref(),
-            Some("GET,HEAD")
-        );
+        assert_eq!(options_share("/multicc.apk").as_deref(), Some("GET,HEAD"));
         assert_eq!(options_share("/multicc-ios.ipa"), None);
     }
 

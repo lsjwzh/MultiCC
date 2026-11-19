@@ -10,6 +10,9 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
   if (!Number.isInteger(maxPending) || maxPending < 1 || maxPending > 256) throw Error('invalid_air_queue_limit');
   const clients = new Map(), attaching = new Set();
   let stopped = false, inFlight = null, timer = null, dueAt = Infinity, full = true, dirty = new Set(), metaDirty = false;
+  // Metadata writes and the Rust projection have separate lifetimes. Reads
+  // started after an acknowledged write must not return the old projection.
+  let metadataVersion = 0, publishedMetadataVersion = 0;
   let lastError = null, checkedAt = 0, retryAt = 0, failures = 0, tail = Promise.resolve(), pending = 0, closePromise;
   const unavailable = code => Object.assign(new Error('首页摘要暂不可用，请稍后重试'), { status: 503, code });
   let publishedIssueCode = null;
@@ -57,7 +60,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
   function invalidate(ids) {
     if (stopped) return;
     if (!ids) full = true;
-    else if (!ids.length) metaDirty = true;
+    else if (!ids.length) { metaDirty = true; metadataVersion++; }
     else for (const id of ids) dirty.add(id);
     schedule();
   }
@@ -87,6 +90,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
     clearTimeout(timer); timer = null; dueAt = Infinity;
     const all = full || !index.isReady() || (!dirty.size && !metaDirty), ids = [...dirty];
     const metaOnly = !all && !ids.length;
+    const metadataAtStart = metadataVersion;
     full = false; dirty.clear(); metaDirty = false;
     inFlight = (async () => {
       try {
@@ -96,6 +100,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
         // The producer has one reserved queue slot, so a full read queue cannot
         // prevent commits forever. Builds remain outside the handoff barrier.
         await serial(() => applyAndPublish(snapshot, { partial: !all, removed: all ? [] : ids.filter(id => !present.has(id)) }), true);
+        publishedMetadataVersion = Math.max(publishedMetadataVersion, metadataAtStart);
         checkedAt = Date.now(); lastError = null; retryAt = 0; failures = 0;
       } catch (error) {
         lastError = describeAirIssue(error);
@@ -130,6 +135,21 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
       throw unavailable('air_warming');
     }
   }
+  async function ensureMetadataCurrent() {
+    const required = metadataVersion;
+    const deadline = Date.now() + 2000;
+    while (publishedMetadataVersion < required) {
+      if (stopped || lastError || Date.now() >= deadline) throw unavailable('air_refresh_pending');
+      let timeout;
+      const completed = await Promise.race([
+        flush().then(() => true),
+        new Promise(resolve => { timeout = setTimeout(() => resolve(false), Math.max(1, deadline - Date.now())); }),
+      ]).finally(() => clearTimeout(timeout));
+      if (!completed || stopped || (lastError && publishedMetadataVersion < required)) {
+        throw unavailable('air_refresh_pending');
+      }
+    }
+  }
   const unsubscribe = subscribe?.((dirId, event) => {
     if (['task_board_update', 'task_state', 'status', 'summary', 'session_queue_status', 'session_configuration_applied',
       'session_created', 'session_deleted', 'session_renamed', 'merge_state', 'workspace_state'].includes(event?.type)) {
@@ -144,7 +164,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
   function attach(socket, url) {
     attaching.add(socket);
     socket.once('close', () => { clients.delete(socket); attaching.delete(socket); });
-    return ensureReady().then(() => serial(async () => {
+    return ensureReady().then(ensureMetadataCurrent).then(() => serial(async () => {
       if (stopped || socket.readyState !== 1) return;
       const day = Number(url.searchParams.get('dayStart')) || 0;
       const response = await readSync(url.searchParams.get('cursor'), day);
@@ -161,6 +181,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
   }
   async function query(method, ...args) {
     await ensureReady();
+    await ensureMetadataCurrent();
     return serial(() => index[method](...args));
   }
   // GET /api/air/sync 与 GET /api/air/page 的处理器原体：公开注册已迁到
@@ -170,6 +191,7 @@ function createAirSyncRuntime({ build, subscribe, taskIdsForSession = () => [], 
   // error_body 复刻。
   async function syncHttp(q = {}) {
     await ensureReady();
+    await ensureMetadataCurrent();
     const day = Number(q.dayStart) || 0;
     return serial(async () => ({ ...(q.cursor ? await readSync(q.cursor, day)
       : await index.bootstrap({ include: String(q.include || '').split(',').filter(Boolean), dayStart: day })),

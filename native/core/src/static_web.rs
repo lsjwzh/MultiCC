@@ -334,9 +334,7 @@ fn collapse_leading_slashes(path: &str) -> String {
 /// `serve-static`'s directory `Location`: `req.originalUrl`'s pathname with a
 /// trailing slash, the query/fragment kept verbatim, then `encodeUrl`.
 pub fn directory_location(original_url: &str) -> String {
-    let cut = original_url
-        .find(['?', '#'])
-        .unwrap_or(original_url.len());
+    let cut = original_url.find(['?', '#']).unwrap_or(original_url.len());
     let (pathname, rest) = original_url.split_at(cut);
     encode_url(&format!(
         "{}{rest}",
@@ -413,8 +411,14 @@ mod tests {
         assert_eq!(path_plan("/a%00b"), PathPlan::Fallthrough { status: 400 });
         // `..` escapes are 403, and the normalized form is what decides.
         assert_eq!(path_plan("/../etc"), PathPlan::Fallthrough { status: 403 });
-        assert_eq!(path_plan("/a/../../etc"), PathPlan::Fallthrough { status: 403 });
-        assert_eq!(path_plan("/%2e%2e/etc"), PathPlan::Fallthrough { status: 403 });
+        assert_eq!(
+            path_plan("/a/../../etc"),
+            PathPlan::Fallthrough { status: 403 }
+        );
+        assert_eq!(
+            path_plan("/%2e%2e/etc"),
+            PathPlan::Fallthrough { status: 403 }
+        );
         // `/a/b/../..` normalizes to `.`, whose last segment is a dot: 404.
         // A dot in the last segment is ignored; an intermediate one is served.
         assert_eq!(path_plan("/.env"), PathPlan::Fallthrough { status: 404 });
@@ -424,7 +428,10 @@ mod tests {
                 relative: ".hidden/bar.txt".to_string()
             }
         );
-        assert_eq!(path_plan("/pub/.secret"), PathPlan::Fallthrough { status: 404 });
+        assert_eq!(
+            path_plan("/pub/.secret"),
+            PathPlan::Fallthrough { status: 404 }
+        );
         // Measured against the real packages: `/a/..` and `/.` normalize to `.`,
         // a single-character segment that `containsDotFile` does not count, so
         // they resolve to the root directory (which redirects) instead of
