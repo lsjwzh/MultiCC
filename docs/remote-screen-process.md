@@ -89,7 +89,7 @@ Rust 端的路由与 JSON 形状与迁移前（已删除）的 Node 实现完全
    上游连上之前客户端发来的消息先排队（上限 1 MB，超出以 1013 关闭）。
 3. 关闭互相传递：一端关闭，另一端用同一个关闭码和原因关闭；
    1005、1006 这类不能主动发送的关闭码，换成 1011。
-4. 背压：客户端真实积压 = `bufferedAmount` + 连接握手时装的 `installWsBackpressure` 队列
+4. 背压：客户端真实积压 = `bufferedAmount` + 连接握手时由 `RustWsHost` 装的发送队列
    （`ws._multiccBackpressure.stats().queueBytes`，没装就当 0）。两者之和 > 64 KB 时暂停读上游，
    降到 16 KB 以下再恢复（暂停期间每 15 ms 查一次）。只看 `bufferedAmount` 会漏掉背压层里
    还没写进 socket 的那一大截，慢客户端就会晚暂停。
