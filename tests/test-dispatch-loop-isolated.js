@@ -46,6 +46,7 @@ for (const field of ['name', 'email']) {
 }
 const slaveLog = path.join(testRoot, 'slave-prompts.jsonl');
 const invocationLog = path.join(testRoot, 'cli-invocations.jsonl');
+const dispatchStageLog = path.join(testRoot, 'dispatch-stages.jsonl');
 fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(project, { recursive: true });
 
@@ -77,6 +78,8 @@ async function main() {
   }) + '\\n');
 
   if (label.includes('master')) {
+    const recordStage = (stage, status = null) => fs.appendFileSync(${JSON.stringify(dispatchStageLog)},
+      JSON.stringify({ stage, status }) + '\\n');
     const args = process.argv.slice(2);
     const prompt = String(args[args.length - 1] || '');
     if (prompt.includes('dispatch 结果回流')) {
@@ -93,6 +96,7 @@ async function main() {
         // fleet list). A real master discovers an existing worker the same way
         // — through the board card that owns it — so look there, with a bounded
         // wait for the adoption that the Air producer triggers.
+        recordStage('search_started');
         for (let attempt = 0; attempt < 50 && !slave; attempt += 1) {
           const snap = await fetch(base + '/api/air', { headers });
           if (snap.ok) {
@@ -102,6 +106,7 @@ async function main() {
           }
           if (!slave) await new Promise(resolve => setTimeout(resolve, 200));
         }
+        recordStage(slave ? 'slave_found' : 'slave_missing');
         if (!slave) throw new Error('no slave found');
       }
       const mode = prompt.includes('FAIL_MODE') ? 'failed' : 'completed';
@@ -112,9 +117,11 @@ async function main() {
           mode: 'async',
         },
       };
+      recordStage('dispatch_started');
       const res = await fetch(base + '/api/internal/router-tools/dispatch_master', {
         method: 'POST', headers, body: JSON.stringify(body),
       });
+      recordStage('dispatch_response', res.status);
       const result = await res.json();
       const text = 'MASTER_RESULT:' + JSON.stringify(result.result || result);
       process.stdout.write(JSON.stringify({
@@ -319,8 +326,15 @@ function sendWsMessage(port, sessionId, text) {
       }, 'D1: slave did not receive the dispatched message');
     } catch (error) {
       // Fixed flags only: prompts and router responses may contain private data.
+      let stages = [];
+      try { stages = fs.readFileSync(dispatchStageLog, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse); } catch (_) {}
+      const lastStage = stages.at(-1);
+      const stage = ['search_started', 'slave_found', 'slave_missing', 'dispatch_started', 'dispatch_response'].includes(lastStage?.stage)
+        ? lastStage.stage : 'unrecorded';
+      const status = Number.isInteger(lastStage?.status) ? lastStage.status : null;
       error.message += ` (masterTurnEnded=${d1.ok}, masterTimedOut=${d1.error === 'timeout'}, `
-        + `receiptSeen=${d1.assistantText.includes('MASTER_RESULT:')}, slaveLogExists=${fs.existsSync(slaveLog)})`;
+        + `receiptSeen=${d1.assistantText.includes('MASTER_RESULT:')}, slaveLogExists=${fs.existsSync(slaveLog)}, `
+        + `stage=${stage}, status=${status})`;
       throw error;
     }
 
