@@ -1,0 +1,132 @@
+[
+  {
+    "payload": "{\"type\":\"pong\"}",
+    "context": "{}",
+    "response": "eyJ0eXBlIjoicG9uZyIsImFwaVZlcnNpb24iOiJ2MSJ9"
+  },
+  {
+    "payload": "{\"type\":\"event\",\"text\":\"hello\"}",
+    "context": "{}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJ0ZXh0IjoiaGVsbG8iLCJhcGlWZXJzaW9uIjoidjEifQ=="
+  },
+  {
+    "payload": "{\"type\":\"\",\"apiVersion\":\"old\"}",
+    "context": "{}",
+    "response": "eyJ0eXBlIjoiIiwiYXBpVmVyc2lvbiI6InYxIn0="
+  },
+  {
+    "payload": "{\"type\":\"event\",\"apiVersion\":\"old\",\"requestId\":\"old\"}",
+    "context": "{\"requestId\":\"new\",\"correlationId\":\"corr:1\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJyZXF1ZXN0SWQiOiJuZXciLCJjb3JyZWxhdGlvbklkIjoiY29ycjoxIn0="
+  },
+  {
+    "payload": "{\"type\":\"event\",\"requestId\":\"old\"}",
+    "context": "{\"correlationId\":\"bad id\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJyZXF1ZXN0SWQiOiJvbGQiLCJhcGlWZXJzaW9uIjoidjEiLCJjb3JyZWxhdGlvbklkIjoib2xkIn0="
+  },
+  {
+    "payload": "{\"type\":\"event\",\"requestId\":{\"nested\":1}}",
+    "context": "{\"correlationId\":\"bad id\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJyZXF1ZXN0SWQiOnsibmVzdGVkIjoxfSwiYXBpVmVyc2lvbiI6InYxIiwiY29ycmVsYXRpb25JZCI6eyJuZXN0ZWQiOjF9fQ=="
+  },
+  {
+    "payload": "{\"type\":\"event\",\"requestId\":0}",
+    "context": "{\"correlationId\":\"bad id\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJyZXF1ZXN0SWQiOjAsImFwaVZlcnNpb24iOiJ2MSIsImNvcnJlbGF0aW9uSWQiOiJ1bmtub3duIn0="
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":\"bad id\",\"correlationId\":\"bad id\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJyZXF1ZXN0SWQiOiJ1bmtub3duIiwiY29ycmVsYXRpb25JZCI6InVua25vd24ifQ=="
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":\"ok:1\",\"correlationId\":\"bad id\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJyZXF1ZXN0SWQiOiJvazoxIiwiY29ycmVsYXRpb25JZCI6Im9rOjEifQ=="
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":false,\"correlationId\":\"ok:1\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJjb3JyZWxhdGlvbklkIjoib2s6MSJ9"
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":0,\"correlationId\":0}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEifQ=="
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":true,\"correlationId\":true}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJyZXF1ZXN0SWQiOiJ1bmtub3duIiwiY29ycmVsYXRpb25JZCI6InVua25vd24ifQ=="
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":[],\"correlationId\":{}}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJyZXF1ZXN0SWQiOiJ1bmtub3duIiwiY29ycmVsYXRpb25JZCI6InVua25vd24ifQ=="
+  },
+  {
+    "payload": "{\"type\":\"event\",\"2\":\"b\",\"1\":\"a\",\"extra\":\"x\"}",
+    "context": "{}",
+    "response": "eyIxIjoiYSIsIjIiOiJiIiwidHlwZSI6ImV2ZW50IiwiZXh0cmEiOiJ4IiwiYXBpVmVyc2lvbiI6InYxIn0="
+  },
+  {
+    "payload": "{\"type\":\"event\",\"emoji\":\"😀\",\"lone\":\"\\ud800\"}",
+    "context": "{}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJlbW9qaSI6IvCfmIAiLCJsb25lIjoiXHVkODAwIiwiYXBpVmVyc2lvbiI6InYxIn0="
+  },
+  {
+    "payload": "{\"type\":\"event\",\"n\":1e400,\"z\":-0}",
+    "context": "{}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJuIjpudWxsLCJ6IjowLCJhcGlWZXJzaW9uIjoidjEifQ=="
+  },
+  {
+    "payload": "{\"type\":\"event\",\"__proto__\":{\"x\":1}}",
+    "context": "{}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJfX3Byb3RvX18iOnsieCI6MX0sImFwaVZlcnNpb24iOiJ2MSJ9"
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJyZXF1ZXN0SWQiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9"
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJyZXF1ZXN0SWQiOiJ1bmtub3duIn0="
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "{\"requestId\":\"中文\"}",
+    "response": "eyJ0eXBlIjoiZXZlbnQiLCJhcGlWZXJzaW9uIjoidjEiLCJyZXF1ZXN0SWQiOiJ1bmtub3duIn0="
+  },
+  {
+    "payload": "{\"type\":\"event\"}",
+    "context": "null",
+    "response": null
+  },
+  {
+    "payload": "{\"other\":1}",
+    "context": "{}",
+    "response": null
+  },
+  {
+    "payload": "{\"type\":null}",
+    "context": "{}",
+    "response": null
+  },
+  {
+    "payload": "null",
+    "context": "{}",
+    "response": null
+  },
+  {
+    "payload": "[]",
+    "context": "{}",
+    "response": null
+  },
+  {
+    "payload": "\"text\"",
+    "context": "{}",
+    "response": null
+  }
+]

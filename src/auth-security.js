@@ -15,7 +15,22 @@ function ticketMetadataReader(anchor) {
     if (!slots || !Object.hasOwn(slots, slot)) return null;
     const value = slots[slot];
     delete slots[slot];
-    try { return JSON.stringify(value) || null; } catch { return null; }
+    try {
+      // Cross-process ticket consumers need only these admission fields and
+      // the machine transport destination. Other VM values may be cyclic or
+      // retain live callbacks and must not cross the boundary.
+      const projected = {};
+      for (const key of ['machineId', 'machineGrantId', 'fleetSessionId', 'fleetDirectoryId', 'requestId', 'correlationId']) {
+        if (Object.hasOwn(value, key)) projected[key] = value[key];
+      }
+      if (Object.hasOwn(value, 'upstream')) {
+        const upstream = value.upstream;
+        const addresses = upstream?.addresses;
+        projected.upstream = upstream == null ? upstream : { url: upstream.url,
+          addresses: Array.isArray(addresses) ? addresses.map(entry => ({ address: entry?.address, family: entry?.family })) : addresses };
+      }
+      return JSON.stringify(projected);
+    } catch { return null; }
   };
 }
 function createAuthSecurity(options) {

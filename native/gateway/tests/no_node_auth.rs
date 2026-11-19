@@ -34,6 +34,72 @@ const AUTH_ABSENT_BODY: &str = concat!(
 );
 const TOKEN: &str = "local-secret-123";
 
+#[tokio::test]
+async fn test_only_rust_ws_probe_upgrades_redeems_and_dispatches_once() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{protocol::frame::coding::CloseCode, Message};
+
+    let gateway = Gateway::start("ws-probe", Some("ACCESS_TOKEN=local-secret-123\n"), &[]);
+    let ticket = gateway.request(&api(
+        "POST",
+        "/api/auth/ws-ticket",
+        &[
+            ("Content-Type", "application/json"),
+            ("X-Access-Token", TOKEN),
+        ],
+        r#"{"path":"/__gateway_test/ws"}"#,
+    ));
+    assert_eq!(ticket.status, 200, "{}", ticket.text());
+    let ticket = ticket.json()["ticket"].as_str().unwrap().to_owned();
+    // A malformed handshake is rejected before the one-use ticket is spent.
+    let invalid = gateway.request(&format!(
+        "GET /__gateway_test/ws?ticket={ticket} HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    ));
+    assert_eq!(invalid.status, 400);
+    let url = format!(
+        "ws://127.0.0.1:{}/__gateway_test/ws?ticket={ticket}",
+        gateway.port
+    );
+    let (mut socket, response) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    assert_eq!(response.status(), 101);
+    socket
+        .send(Message::Text(r#"{"type":"ping"}"#.into()))
+        .await
+        .unwrap();
+    let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        message.into_text().unwrap().as_str(),
+        r#"{"type":"pong","apiVersion":"v1"}"#
+    );
+    socket.close(None).await.unwrap();
+    // A second socket can upgrade, but the same ticket cannot authorize it.
+    let (mut replay, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(5), replay.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(closed, Message::Close(Some(frame)) if frame.code == CloseCode::Library(4003))
+    );
+}
+
+#[test]
+fn rust_ws_probe_is_not_registered_without_the_test_flag() {
+    let gateway = Gateway::start(
+        "ws-probe-disabled",
+        Some("ACCESS_TOKEN=local-secret-123\n"),
+        &[("MULTICC_GATEWAY_TEST_ROUTES", "0")],
+    );
+    let response = gateway.request("GET /__gateway_test/ws HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+    assert_eq!(response.status, 503);
+    assert_eq!(response.text(), NODE_ABSENT_BODY);
+}
+
 fn unique(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

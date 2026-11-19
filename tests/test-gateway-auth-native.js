@@ -27,13 +27,14 @@ function request(port, method, url, headers = {}, body = '') {
     req.on('error', reject); req.end(bytes);
   });
 }
-async function start(t, native) {
+async function start(t, native, { testRoutes = false } = {}) {
   const probe = net.createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
   const port = probe.address().port; await new Promise(r => probe.close(r));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-auth-gateway-'));
   const env = { ...process.env, PORT: String(port), HOST: '127.0.0.1', MULTICC_ENV_FILE: path.join(dir, '.env'),
     MULTICC_DATA_DIR: dir, MULTICC_GATEWAY_BACKOFF_SCALE: '0.01', MULTICC_RUST_ADDON: addonPath };
   for (const key of Object.keys(env)) if (key.startsWith('MULTICC_GATEWAY_') && key !== 'MULTICC_GATEWAY_BACKOFF_SCALE') delete env[key];
+  if (testRoutes) env.MULTICC_GATEWAY_TEST_ROUTES = '1';
   const child = spawn(native ? binary : process.execPath, native ? ['serve', '--cwd', dir, '--node', process.execPath, '--stdin-lifeline', '--', fixture] : [fixture],
     { cwd: dir, env, stdio: ['pipe', 'pipe', 'pipe'] });
   let logs = ''; child.stdout.on('data', c => { logs += c; }); child.stderr.on('data', c => { logs += c; });
@@ -48,6 +49,109 @@ async function start(t, native) {
   }
   throw new Error(`fixture did not start: ${logs}`);
 }
+
+test('Rust WS probe consumes a cyclic VM-held ticket from the child owner', { timeout: 30000 }, async t => {
+  const { port } = await start(t, true, { testRoutes: true });
+  const issue = await request(port, 'POST', '/fixture/issue-probe');
+  assert.equal(issue.status, 200);
+  const ticket = JSON.parse(issue.body).ticket;
+  const url = `ws://127.0.0.1:${port}/__gateway_test/ws?ticket=${ticket}`;
+  const socket = new WebSocket(url);
+  const message = once(socket, 'message');
+  await once(socket, 'open');
+  socket.send('{"type":"ping"}');
+  assert.equal((await message)[0].toString(), '{"type":"pong","apiVersion":"v1"}');
+  socket.close();
+  await once(socket, 'close');
+  const replay = new WebSocket(url);
+  const closed = once(replay, 'close');
+  await once(replay, 'open');
+  assert.equal((await closed)[0], 4003);
+  const state = JSON.parse((await request(port, 'GET', '/fixture/state')).body);
+  assert.equal(state.count, 0);
+  assert.equal(state.hits.some(path => path === '/__gateway_test/ws'), false);
+  const wrong = JSON.parse((await request(port, 'POST', '/fixture/issue')).body);
+  const other = new WebSocket(`ws://127.0.0.1:${port}/__gateway_test/ws?ticket=${wrong.ticket}`);
+  const wrongClose = once(other, 'close');
+  await once(other, 'open');
+  assert.equal((await wrongClose)[0], 4003);
+  const consumed = await request(port, 'POST', '/fixture/consume', { 'content-type': 'application/json' },
+    JSON.stringify({ ticket: wrong.ticket, path: '/ws/test' }));
+  assert.equal(JSON.parse(consumed.body), null, 'a wrong-scope redemption still spends the child ticket');
+});
+
+test('Rust WS probe emits the same ping response frame bytes as Node ws', { timeout: 30000 }, async t => {
+  const { port } = await start(t, true, { testRoutes: true });
+  const oracle = http.createServer();
+  const wss = new WebSocket.Server({ noServer: true });
+  oracle.on('upgrade', (req, socket, head) => wss.handleUpgrade(req, socket, head, ws => {
+    ws.on('message', raw => {
+      try { if (JSON.parse(raw.toString()).type === 'ping') ws.send('{"type":"pong","apiVersion":"v1"}'); } catch {}
+    });
+  }));
+  oracle.listen(0, '127.0.0.1'); await once(oracle, 'listening');
+  t.after(() => new Promise(resolve => oracle.close(resolve)));
+  const probe = (targetPort, targetPath, opcode, payloadText) => new Promise((resolve, reject) => {
+    const socket = net.createConnection(targetPort, '127.0.0.1');
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error('raw WS frame timed out')); }, 5000);
+    let data = Buffer.alloc(0), upgraded = false;
+    socket.once('error', error => { clearTimeout(timer); reject(error); });
+    socket.once('connect', () => socket.write(`GET ${targetPath} HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+    socket.on('data', chunk => {
+      data = Buffer.concat([data, chunk]);
+      if (!upgraded) {
+        const end = data.indexOf('\r\n\r\n');
+        if (end < 0) return;
+        if (!data.subarray(0, end).toString().startsWith('HTTP/1.1 101 ')) {
+          clearTimeout(timer); socket.destroy(); reject(new Error('upgrade rejected')); return;
+        }
+        data = data.subarray(end + 4); upgraded = true;
+        const payload = Buffer.from(payloadText), mask = Buffer.from([3, 5, 7, 11]);
+        const masked = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]));
+        socket.write(Buffer.concat([Buffer.from([0x80 | opcode, 0x80 | payload.length]), mask, masked]));
+      }
+      if (data.length < 2) return;
+      const length = data[1] & 0x7f;
+      if (length >= 126 || data.length < length + 2) return;
+      clearTimeout(timer); socket.destroy(); resolve(data.subarray(0, length + 2));
+    });
+  });
+  for (const [opcode, payload] of [[1, '{"type":"ping"}'], [2, '{"type":"ping"}'],
+    [1, '{"type":"ping","extra":"\\ud800"}'], [2, '{"type":"ping","extra":1e400}']]) {
+    const issued = JSON.parse((await request(port, 'POST', '/fixture/issue-probe')).body);
+    const rust = await probe(port, `/__gateway_test/ws?ticket=${issued.ticket}`, opcode, payload);
+    const node = await probe(oracle.address().port, '/ws/chat', opcode, payload);
+    assert.deepEqual(rust, node, `opcode ${opcode}`);
+  }
+});
+
+test('Rust WS probe fans out within one session and isolates other sessions', { timeout: 30000 }, async t => {
+  const { port } = await start(t, true, { testRoutes: true });
+  const sockets = [];
+  t.after(() => sockets.forEach(socket => socket.terminate()));
+  async function connect(session) {
+    const issued = JSON.parse((await request(port, 'POST', '/fixture/issue-probe')).body);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/__gateway_test/ws?ticket=${issued.ticket}&session=${session}`);
+    sockets.push(socket);
+    const events = [];
+    socket.on('message', data => events.push(data.toString()));
+    await once(socket, 'open');
+    const ready = once(socket, 'message');
+    socket.send('{"type":"ping"}');
+    assert.equal((await ready)[0].toString(), '{"type":"pong","apiVersion":"v1"}');
+    return { socket, events };
+  }
+  const a = await connect('session-a'), sibling = await connect('session-a'), other = await connect('session-b');
+  const aEvent = once(a.socket, 'message'), siblingEvent = once(sibling.socket, 'message');
+  a.socket.send('{"type":"test_broadcast"}');
+  const expected = '{"type":"test_broadcast","apiVersion":"v1"}';
+  assert.equal((await aEvent)[0].toString(), expected);
+  assert.equal((await siblingEvent)[0].toString(), expected);
+  const otherPong = once(other.socket, 'message');
+  other.socket.send('{"type":"ping"}');
+  assert.equal((await otherPong)[0].toString(), '{"type":"pong","apiVersion":"v1"}', 'cross-session broadcast leaked or pong changed');
+  assert.equal(other.events.includes(expected), false, 'cross-session broadcast leaked');
+});
 function normalize(response) {
   const headers = { ...response.headers };
   for (const key of ['date', 'connection', 'keep-alive']) delete headers[key];

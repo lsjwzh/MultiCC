@@ -288,10 +288,14 @@ test('private control redeems VM-held machine metadata once and fails closed', {
   const redeem = async (ticket, path) => { write({ op: 'consume_ticket', ticket, path }); return read(); };
   const metadata = { machineId: '机-1', upstream: { url: 'ws://10.0.0.1/ws/chat?ticket=secret',
     addresses: [{ address: '10.0.0.1', family: 4 }] } };
+  metadata.callback = () => {};
+  metadata.self = metadata;
+  metadata.upstream.addresses[0].self = metadata;
   const issued = auth.issueWsTicket('/ws/machines/机-1', metadata);
   const response = await redeem(issued.ticket, issued.path);
   assert.equal(response.kind, 'redeemed');
-  assert.equal(JSON.stringify(response.metadata), JSON.stringify(metadata));
+  assert.deepEqual(response.metadata, { machineId: metadata.machineId,
+    upstream: { url: metadata.upstream.url, addresses: [{ address: '10.0.0.1', family: 4 }] } });
   assert.equal(response.path, issued.path);
   assert.equal(response.expires_at, issued.expiresAt);
   assert.deepEqual(await redeem(issued.ticket, issued.path), { kind: 'invalid' });
@@ -299,9 +303,9 @@ test('private control redeems VM-held machine metadata once and fails closed', {
   assert.deepEqual(await redeem(wrong.ticket, '/ws/other'), { kind: 'invalid' });
   assert.deepEqual(await redeem(wrong.ticket, '/ws/chat'), { kind: 'invalid' });
   const cyclic = {}; cyclic.self = cyclic;
-  const bad = auth.issueWsTicket('/ws/chat', cyclic);
+  const bad = auth.issueWsTicket('/ws/chat', { fleetSessionId: cyclic });
   assert.deepEqual(await redeem(bad.ticket, '/ws/chat'), { kind: 'invalid' });
-  const large = auth.issueWsTicket('/ws/chat', { payload: 'x'.repeat(65480) });
+  const large = auth.issueWsTicket('/ws/chat', { requestId: 'x'.repeat(65480) });
   assert.deepEqual(await redeem(large.ticket, '/ws/chat'), { kind: 'invalid' });
   const good = auth.issueWsTicket('/ws/chat', { requestId: 'still-alive' });
   assert.equal((await redeem(good.ticket, '/ws/chat')).metadata.requestId, 'still-alive');

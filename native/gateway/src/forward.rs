@@ -221,7 +221,12 @@ pub fn native_routes(app: Arc<App>) -> Router {
     if std::env::var("MULTICC_GATEWAY_TEST_ROUTES").ok().as_deref() == Some("1") {
         router = router
             .route(TEST_ROUTE, get(|| async { TEST_ROUTE_BODY }))
-            .route(HOST_PORT_TEST_ROUTE, get(host_port_probe));
+            .route(HOST_PORT_TEST_ROUTE, get(host_port_probe))
+            .route(
+                crate::ws_probe::PATH,
+                axum::routing::any(crate::ws_probe::handle),
+            )
+            .layer(Extension(Arc::new(crate::ws_registry::Registry::default())));
     }
     router.fallback(dispatch).layer(Extension(app))
 }

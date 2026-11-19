@@ -1,0 +1,149 @@
+[
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "response": "SFRUUC8xLjEgMTAxIFN3aXRjaGluZyBQcm90b2NvbHMNClVwZ3JhZGU6IHdlYnNvY2tldA0KQ29ubmVjdGlvbjogVXBncmFkZQ0KU2VjLVdlYlNvY2tldC1BY2NlcHQ6IHMzcFBMTUJpVHhhUTlrWUd6emhaUmJLK3hPbz0NCg0K"
+  },
+  {
+    "method": "GET",
+    "upgrade": "WebSocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "chat, superchat",
+    "response": "SFRUUC8xLjEgMTAxIFN3aXRjaGluZyBQcm90b2NvbHMNClVwZ3JhZGU6IHdlYnNvY2tldA0KQ29ubmVjdGlvbjogVXBncmFkZQ0KU2VjLVdlYlNvY2tldC1BY2NlcHQ6IHMzcFBMTUJpVHhhUTlrWUd6emhaUmJLK3hPbz0NClNlYy1XZWJTb2NrZXQtUHJvdG9jb2w6IGNoYXQNCg0K"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "8",
+    "response": "SFRUUC8xLjEgMTAxIFN3aXRjaGluZyBQcm90b2NvbHMNClVwZ3JhZGU6IHdlYnNvY2tldA0KQ29ubmVjdGlvbjogVXBncmFkZQ0KU2VjLVdlYlNvY2tldC1BY2NlcHQ6IHMzcFBMTUJpVHhhUTlrWUd6emhaUmJLK3hPbz0NCg0K"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13.0",
+    "response": "SFRUUC8xLjEgMTAxIFN3aXRjaGluZyBQcm90b2NvbHMNClVwZ3JhZGU6IHdlYnNvY2tldA0KQ29ubmVjdGlvbjogVXBncmFkZQ0KU2VjLVdlYlNvY2tldC1BY2NlcHQ6IHMzcFBMTUJpVHhhUTlrWUd6emhaUmJLK3hPbz0NCg0K"
+  },
+  {
+    "method": "POST",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "response": "SFRUUC8xLjEgNDA1IE1ldGhvZCBOb3QgQWxsb3dlZA0KQ29ubmVjdGlvbjogY2xvc2UNCkNvbnRlbnQtVHlwZTogdGV4dC9odG1sDQpDb250ZW50LUxlbmd0aDogMTkNCg0KSW52YWxpZCBIVFRQIG1ldGhvZA=="
+  },
+  {
+    "method": "GET",
+    "upgrade": "not-websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAyMg0KDQpJbnZhbGlkIFVwZ3JhZGUgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAyMg0KDQpJbnZhbGlkIFVwZ3JhZGUgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "version": "13",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiA0Mw0KDQpNaXNzaW5nIG9yIGludmFsaWQgU2VjLVdlYlNvY2tldC1LZXkgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "bad",
+    "version": "13",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiA0Mw0KDQpNaXNzaW5nIG9yIGludmFsaWQgU2VjLVdlYlNvY2tldC1LZXkgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiA0Nw0KU2VjLVdlYlNvY2tldC1WZXJzaW9uOiAxMywgOA0KDQpNaXNzaW5nIG9yIGludmFsaWQgU2VjLVdlYlNvY2tldC1WZXJzaW9uIGhlYWRlcg=="
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "12",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiA0Nw0KU2VjLVdlYlNvY2tldC1WZXJzaW9uOiAxMywgOA0KDQpNaXNzaW5nIG9yIGludmFsaWQgU2VjLVdlYlNvY2tldC1WZXJzaW9uIGhlYWRlcg=="
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAzNw0KDQpJbnZhbGlkIFNlYy1XZWJTb2NrZXQtUHJvdG9jb2wgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": " chat",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAzNw0KDQpJbnZhbGlkIFNlYy1XZWJTb2NrZXQtUHJvdG9jb2wgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "chat ",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAzNw0KDQpJbnZhbGlkIFNlYy1XZWJTb2NrZXQtUHJvdG9jb2wgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "chat,,other",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAzNw0KDQpJbnZhbGlkIFNlYy1XZWJTb2NrZXQtUHJvdG9jb2wgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "chat, chat",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAzNw0KDQpJbnZhbGlkIFNlYy1XZWJTb2NrZXQtUHJvdG9jb2wgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "chat;other",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAzNw0KDQpJbnZhbGlkIFNlYy1XZWJTb2NrZXQtUHJvdG9jb2wgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "chat\tother",
+    "response": "SFRUUC8xLjEgNDAwIEJhZCBSZXF1ZXN0DQpDb25uZWN0aW9uOiBjbG9zZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNCkNvbnRlbnQtTGVuZ3RoOiAzNw0KDQpJbnZhbGlkIFNlYy1XZWJTb2NrZXQtUHJvdG9jb2wgaGVhZGVy"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "chat,other",
+    "response": "SFRUUC8xLjEgMTAxIFN3aXRjaGluZyBQcm90b2NvbHMNClVwZ3JhZGU6IHdlYnNvY2tldA0KQ29ubmVjdGlvbjogVXBncmFkZQ0KU2VjLVdlYlNvY2tldC1BY2NlcHQ6IHMzcFBMTUJpVHhhUTlrWUd6emhaUmJLK3hPbz0NClNlYy1XZWJTb2NrZXQtUHJvdG9jb2w6IGNoYXQNCg0K"
+  },
+  {
+    "method": "GET",
+    "upgrade": "websocket",
+    "key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "version": "13",
+    "protocol": "chat, other",
+    "response": "SFRUUC8xLjEgMTAxIFN3aXRjaGluZyBQcm90b2NvbHMNClVwZ3JhZGU6IHdlYnNvY2tldA0KQ29ubmVjdGlvbjogVXBncmFkZQ0KU2VjLVdlYlNvY2tldC1BY2NlcHQ6IHMzcFBMTUJpVHhhUTlrWUd6emhaUmJLK3hPbz0NClNlYy1XZWJTb2NrZXQtUHJvdG9jb2w6IGNoYXQNCg0K"
+  }
+]

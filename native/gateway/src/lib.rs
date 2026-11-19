@@ -17,6 +17,9 @@ pub mod forward;
 pub mod host_port;
 pub mod outbound;
 pub mod proxy_header;
+pub mod ws_handshake;
+pub mod ws_probe;
+pub mod ws_registry;
 
 static RESTART_GENERATION: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 

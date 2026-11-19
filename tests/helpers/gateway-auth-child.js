@@ -44,6 +44,12 @@ app.post('/fixture/rotate', express.text(), (req, res) => { security.setAccessTo
 app.post('/fixture/shutdown', (req, res) => { security.setShuttingDown(true); res.end('ok'); });
 app.post('/fixture/crash', (req, res) => { res.end('ok'); setTimeout(() => process.exit(1), 20); });
 app.post('/fixture/issue', (_req, res) => res.json(security.issueWsTicket('/ws/test', { source: 'host' })));
+app.post('/fixture/issue-probe', (_req, res) => {
+  const value = { machineId: 'fixture', upstream: { url: 'ws://192.0.2.1/ws/chat',
+    addresses: [{ address: '192.0.2.1', family: 4 }] } };
+  value.callback = () => {}; value.self = value; value.upstream.addresses[0].self = value;
+  res.json(security.issueWsTicket('/__gateway_test/ws', value));
+});
 app.post('/fixture/consume', express.json(), (req, res) => res.json(security.consumeWsTicket(req.body.ticket, req.body.path)));
 const serviceFixture = process.env.MULTICC_TEST_SERVICE_ROUTES === '1' && !gateway.isGatewayChild();
 const legacyServices = serviceFixture ? require('./legacy-service-routes').createServiceRoutes({
