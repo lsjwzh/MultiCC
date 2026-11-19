@@ -5125,3 +5125,43 @@ Node `createWsEnvelope` 语料校验字段顺序、ID 回退和特殊字符的�
 桥除外；congestedAt 时间戳改为 congested 布尔，无消费方）。六项 addon/JS 真实代码
 变异全部被测试捕获。仍未迁：WS 升级终结（`/ws/*` 在 `--no-node` 下仍 503
 `node_runtime_absent`）与 `/ws/chat` 的回合引擎状态（快照/重放/聊天编排）。
+
+## 64. `/ws/machines/<id>` 的升级终结迁入前门（2026-11-19）
+
+第一条由前门自己终结的**生产** WS 路径。9 类 WS 里只有它零共享状态：桥只持有一条
+客户端 socket 和一条上游 socket，不碰快照、重放、回合或跨连接注册表。
+
+认领只针对真升级（`Upgrade` + `Connection: upgrade` 令牌，与 Node `upgrade` 事件
+同条件），位置在任何 HTTP 层之前；同路径的普通 GET 仍照旧落到 Node。握手复用
+`ws_handshake::plan`（与 `ws` 的 no-server 监听器同字节），因此畸形升级在票据被
+花掉之前就以 HTTP 响应拒绝。随后 101 已经发出，所以准入失败是 WS 关闭帧而非
+HTTP 状态码——与被删模块在 `connection` 事件里 `ws.close(4003, …)` 的形状一致。
+
+票据经 `auth_control` 的 `ConsumeTicket` 消费，VM 持有的 metadata 走既有的有界
+交接；准入三条＝有 `machineId`、路径等于 `/ws/machines/<machineId>`、至少一个
+钉住地址。上游按票据给出的地址依次拨号，整个拨号（TCP、TLS、WS 握手）共享一个
+10s 预算，对应 `handshakeTimeout: 10000`；`wss://` 的 TLS 在
+`native/gateway/src/ws_tls.rs`，信任策略与 `crate::outbound` 相同（系统根 +
+`NODE_EXTRA_CA_CERTS`），按 URL 主机名校验证书而非按钉住地址。上游拨号期间到达的
+客户端帧入队并计字节，越过 1 MiB 即失败；任一方向发送前检查目标在线且在飞字节
+不超 8 MiB。失败＝丢上游 + 客户端 1011 `电脑实时连接中断`；上游关闭＝客户端
+`code === 4003 ? 4003 : 1012`，**文案恒为** `电脑连接已关闭`（只换码不换文案，
+初版实现把文案也换了，被差分抓出并修正）。
+
+客户端方向的帧仍走 `ws_backpressure` 内核：共享路由本来就给每条 socket 装了发送
+包装器，不带这套规则就不是字节等价。`bufferedAmount` 映射为写入任务未完成那一帧
+的字节数；内核最多一帧在飞，与 Node 包装器在 `flush()` 时刻的量法一致。
+
+差分 `tests/test-ws-machines-differential.js` 8 项通过（两侧共用假对端与同一原始
+socket 客户端，比对握手状态行、每帧 opcode 与载荷 sha、关闭码与原因），变异脚本
+`docs/rust-migration/differential/ws-machines-mutations.py` 基线通过且 5 个变异全被
+捕获。`src/ws/machines.js` 已删除，冻结对照 `tests/helpers/legacy-ws-machines.js`
+与原件 SHA-256 同为 `239bbad4a6dd66e96c0fefdf874a5fbdd70920b3c06e9be92f5a01343cb9d451`。
+
+`--no-node` 且没有本地 auth 所有者时，这条路径不认领，仍由 `forward` 立即答
+503 `node_runtime_absent`（`native/gateway/tests/no_node.rs` 有守卫并断言它不
+等控制线超时）；带本地 token 时票据无法铸造，因而是正常的 4003 拒绝。
+
+未覆盖：`wss://` 没有真实 TLS 握手的本地差分（本仓无可复用的本地 TLS WS 服务
+夹具）；多地址按票据顺序串行尝试而非 Happy Eyeballs 交错（客户端可见字节无差别，
+首地址黑洞时建连延迟特性不同）。仍未迁：`/ws/chat` 的升级终结与回合引擎状态。

@@ -4746,3 +4746,62 @@ Rust 全量 68 目标 / 2103 通过 / 0 失败。
 ### Provider attempt creation command (2026-11-16, worktree only)
 
 The complete `beginAttempt` creation command now runs in Rust, reusing the existing identity, transition, producer and CLI capability kernels. It installs the captured record before releasing admission and invoking event callbacks; direct table operations and lifecycle construction avoid repeated native method dispatch and JSON serialization. The Node runtime shrinks by 127 net lines, but still owns snapshot/event delivery and remaining lifecycle coordination, so this does not complete chat orchestration or Node production exit. See [the module inventory, retained host scope and verification](rust-migration/provider-attempt-creation.md). No commit, merge, live configuration change or restart was performed.
+
+## `/ws/machines/<id>` 的升级终结迁入前门（2026-11-19）
+
+E 段（WebSocket 与进程管理）的第一条**生产**路径。前门自己完成握手、消费一次性
+票据、拨号配对电脑并双向转发；`src/ws/machines.js` 与 `src/ws/connection-router.js`
+里的分支在同一改动里删除。
+
+### 为什么从这条开始
+
+9 类 WS 里只有它零共享状态：桥只持有一条客户端 socket 和一条上游 socket，不碰
+快照、重放、回合或跨连接注册表。其余路径必须先把「状态/规则」与「句柄执行」
+拆开才能前移，这一条不需要。
+
+### 归属
+
+- `native/gateway/src/ws_machines.rs`：认领 `/ws/machines/` 前缀且仅认领真升级
+  （`Upgrade` + `Connection: upgrade`，与 Node `upgrade` 事件同条件）；握手沿用
+  `ws_handshake::plan`（与 `ws` 的 no-server 监听器同字节）；票据经
+  `auth_control` 的 `ConsumeTicket` 消费，VM 持有的 metadata 走既有的有界交接
+  （`src/auth-security.js` 的投影只放出 `machineId` 与 `upstream`）；准入三条＝
+  有 `machineId`、路径等于 `/ws/machines/<machineId>`、至少一个钉住地址。
+- `native/gateway/src/ws_tls.rs`：`wss://` 的 TLS 客户端，信任策略与
+  `crate::outbound` 一致（系统根 + `NODE_EXTRA_CA_CERTS`），按 URL 主机名校验
+  证书而不是按钉住地址；根库一次性读取，不计入拨号预算。
+- `native/gateway/Cargo.toml` 把已有的传递依赖 `tokio-rustls` 声明为直接依赖
+  （`tokio-tungstenite` 的 `MaybeTlsStream::Rustls` 要它的 TLS feature，为不动
+  锁文件改用自有的装箱流类型）。`Cargo.lock` 只多一行依赖声明，无新包无版本变动。
+
+### 被删模块外的那条规则
+
+共享连接路由在 machines 分支之前给每条 socket 装了 `src/ws/native-queue.js`，
+所以客户端方向的帧一直经过 `multicc_core::ws_backpressure`。Rust 侧以同样的默认
+上限运行同一内核，否则不是字节等价。`bufferedAmount` 映射为写入任务未完成那一
+帧的字节数；内核最多一帧在飞，与 Node 包装器在 `flush()` 时刻的量法一致。
+
+### 差分与验证
+
+`tests/test-ws-machines-differential.js` 8 项通过：两侧共用一个假对端与同一个
+原始 socket 客户端，比对握手状态行、每帧 opcode 与载荷 sha、关闭码与原因。
+覆盖双向转发（文本/二进制/跨字节中文）、上游关闭 → 1012、上游 4003 透传、
+票据作用域内但机器 id 不符 → 4003、无钉住地址 → 4003、一次性票据不可重放、
+畸形握手先拒且不花票据、同路径普通 GET 仍由 Node 应答、9 MiB 上游帧 → 内核 1013。
+差分抓到一处真实缺陷并修正：上游 4003 时 Node 只换码不换文案。
+`docs/rust-migration/differential/ws-machines-mutations.py` 基线通过且 5 个变异
+全部被捕获。门禁：网关 917/0、严格 clippy 通过、`test-ws-connection-router` 22、
+`test-gateway-auth-native` 6、`test-ws-backpressure` 15、`test-ws-host-differential` 37、
+行长棘轮与剩余面台账通过；新测试已登记进 `test:security`。
+
+### 限制
+
+`wss://` 只验证了代码路径，没有真实 TLS 握手的本地差分（本仓无可复用的本地 TLS
+WS 服务夹具）。多个钉住地址按票据顺序串行尝试并共享 10s 预算，Node 用的是
+`net.connect` 的 Happy Eyeballs；客户端可见字节观察不到差别，首地址黑洞时的建连
+延迟特性不同。本批不代表真实配对电脑的端到端验收。
+
+### 这不改变整体状态
+
+`/ws/chat` 的升级终结与回合引擎（`src/chat/turn-engine.js` 2,998 行）仍在 Node，
+仍是阻塞项 4；默认入口仍要拉起 Node 子进程。

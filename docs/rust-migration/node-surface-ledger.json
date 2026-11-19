@@ -8,8 +8,8 @@
   },
   "websocket": {
     "state": "in-progress",
-    "registrationOwner": "node",
-    "note": "Rust 单次票据消费和 VM 票据有界交接已实现；聊天消息的 ping / share 权限门槛已进入 Rust。仅测试路径已验证同会话广播及跨会话隔离；生产 WS 升级、连接、聊天状态与快照/重放仍由 Node 持有。发送侧背压与合并规则已有 Rust 内核并与冻结 Node 实现逐效果对照，但 Node 仍运行自己的包装器。尚无完整逐字节 WS 差分或宿主切换。capture 只记录 HTTP 路由与中间件，不含 WS。"
+    "registrationOwner": "node-except-machines",
+    "note": "Rust 单次票据消费和 VM 票据有界交接已实现；聊天消息的 ping / share 权限门槛已进入 Rust。发送侧背压与合并规则已有 Rust 内核，生产 /ws/chat 的每条 socket 已由 addon 的 RustWsHost 持有，src/ws-backpressure.js 已删除。2026-11-19：第一条生产 WS 路径 /ws/machines/<id> 的升级终结已迁入前门（native/gateway/src/ws_machines.rs + ws_tls.rs），src/ws/machines.js 与连接路由分支已删除，8 项逐字节差分与 5 个变异通过；wss:// 真实 TLS 握手未经本地实测。仍在 Node 的是 /ws/chat 的升级终结、聊天状态与快照/重放，以及其余 WS 路径的连接注册。capture 只记录 HTTP 路由与中间件，不含 WS。"
   },
   "terminalStates": {
     "front-door": "公开路由由 Rust 前门独占；Node 不再注册。终态=0 条 Node 注册。",
