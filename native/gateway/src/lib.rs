@@ -17,6 +17,7 @@ pub mod forward;
 pub mod host_port;
 pub mod outbound;
 pub mod proxy_header;
+pub mod ws_chat_hub;
 pub mod ws_handshake;
 pub mod ws_machines;
 pub mod ws_probe;

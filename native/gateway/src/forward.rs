@@ -226,6 +226,7 @@ pub fn native_routes(app: Arc<App>) -> Router {
                 crate::ws_probe::PATH,
                 axum::routing::any(crate::ws_probe::handle),
             )
+            .layer(Extension(Arc::new(crate::ws_chat_hub::ChatHub::default())))
             .layer(Extension(Arc::new(crate::ws_registry::Registry::default())));
     }
     router.fallback(dispatch).layer(Extension(app))
