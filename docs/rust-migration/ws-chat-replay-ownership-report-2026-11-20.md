@@ -147,9 +147,27 @@ Node 文件与理由，见「保留的 Node」一节。
 如 `tests/helpers/legacy-chat-replay-buffer.js`）、`scripts/`（116 个）、`docs/rust-migration/differential/`
 （捕获脚本、corpus、变异脚本）。删除它们会让「基线通过、变异必红」的证据无法复现。
 
+## 阶段更新：前门终结 `/ws/chat` 客户端 socket（2026-11-20）
+
+在重放缓冲与连接集合迁出之后，本阶段把 `/ws/chat` 的升级握手和客户端 socket 的所有权移进前门进程，
+聊天引擎经一条私有、互证能力令牌的回环通道把每个客户端看成虚拟 socket。完整协议、语义对齐清单、
+测试明细与边界见 `ws-chat-front-door-stage-2026-11-20.md`，部署层说明见 `docs/gateway.md` §65。
+
+| 项目 | 状态 | 证据 |
+|---|---|---|
+| 前门握手并持有客户端 socket（帧传输、控制帧、关闭握手、异常断开） | 已完成 | `native/gateway/tests/ws_chat.rs` 15 项，真前门加真 Node 通道客户端 |
+| 前门到 Node 的聊天通道（帧语法、互证握手、有界队列、按代重建） | 已完成 | core 7 项语料钉住；`tests/test-gateway-chat-bridge.js` 23 项；`test-gateway-child.js` 15 项 |
+| 客户端可见契约不变 | 已完成 | 冻结的 19 个场景逐场景一致；去掉通道接线后变红 |
+| 变异证明 | 已完成 | 本阶段 9 个自写变异全部抓出；既有 ws-handshake 3 个、ws-machines 5 个、chat-ws-conformance 5 个，基线通过且全部抓出 |
+| 全量门禁 | 通过 | governance、state、core、security、`test:integration:isolated` 退出码 0；`cargo test --workspace` 2591/0；workspace clippy `-D warnings` 通过 |
+| 准入与鉴权、会话历史、回合编排迁成 Rust 所有者 | **未做** | 仍在 Node；前门只终结 socket，不回答这些事实 |
+| 重放缓冲写侧与 `cs.clients` 搬到前门进程 | **未做** | 仍在 addon 内的 `RustWsHost`；依赖上一行的事实先有 Rust 所有者 |
+| `--no-node` 下 `/ws/chat` 真实可用 | **未达成** | 仍立即答 `503 node_runtime_absent`，`no_node.rs` 守卫未变 |
+| 切 `--no-node`、删除 Node 源码、`package.json`、`node_modules` | **未做** | 前提是 128 条路由全部对齐，目前不成立 |
+
 ## 下一步
 
-1. 把 `/ws/chat` 升级终结接入前门：票据消费、鉴权与 share 校验、会话历史、回合编排需要 Rust 所有者，`ws_chat_hub` 才能脱离测试探针。
+1. `/ws/chat` 的升级终结已在前门（见上节）。剩下的是让前门独立回答 Node 仍持有的事实：票据消费、鉴权与 share 校验、会话历史、回合编排需要 Rust 所有者，`ws_chat_hub` 才能脱离测试探针，`--no-node` 下 `/ws/chat` 才不再 503。
 2. 按上表逐类迁出 128 条路由与其余 `/ws/*`。每迁一类，同提交删除对应 Node 实现并补逐字节差分。
 3. 单独治理「改 `.rs` 后首轮安全段冷编译」的门禁行为，并清理 7 个文件的 rustfmt 既有欠账。
 4. 用户手动重启后，在真实数据根上验收 `/ws/chat` 重连重放。本次所有证据都在隔离数据根上，没有触碰运行中的生产实例。

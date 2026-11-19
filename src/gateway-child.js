@@ -73,6 +73,60 @@ function connectWorkspaceControl(owner, directoryReader, contextReader, authSecu
   sourceBootstrap.capability = '';
 }
 
+// The chat bridge: the front door terminates every /ws/chat client socket and
+// hands each one to the chat engine here as a virtual socket over this stream.
+// The capability stays in this closure (the stream is re-dialled if it drops),
+// never in process.env where descendants could inherit it.
+const chatBootstrap = isGatewayChild() ? {
+  port: Number(process.env.MULTICC_GATEWAY_CHAT_PORT),
+  capability: process.env.MULTICC_GATEWAY_CHAT_CAPABILITY || '',
+} : null;
+delete process.env.MULTICC_GATEWAY_CHAT_PORT;
+delete process.env.MULTICC_GATEWAY_CHAT_CAPABILITY;
+function startChatBridge({
+  wss, logger = console, bootstrap = chatBootstrap,
+  connect = require('./ws/gateway-chat-bridge').connectChatBridge,
+} = {}) {
+  if (!bootstrap || !Number.isInteger(bootstrap.port) || bootstrap.port <= 0 || !bootstrap.capability) return null;
+  let stopped = false;
+  let handle = null;
+  let timer = null;
+  let delay = 100;
+  const schedule = () => {
+    if (stopped || timer) return;
+    timer = setTimeout(() => { timer = null; attempt(); }, delay);
+    if (timer.unref) timer.unref();
+    delay = Math.min(delay * 2, 2000);
+  };
+  const attempt = async () => {
+    try {
+      handle = await connect({
+        port: bootstrap.port,
+        capability: bootstrap.capability,
+        wss,
+        logger,
+        onConnection: (ws, req) => wss.emit('connection', ws, req),
+        onLost: error => {
+          logger.warn?.('chat_bridge_lost', { error: String((error && error.message) || error) });
+          schedule();
+        },
+      });
+      delay = 100;
+    } catch (error) {
+      logger.warn?.('chat_bridge_connect_failed', { error: String((error && error.message) || error) });
+      schedule();
+    }
+  };
+  attempt();
+  return {
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      if (handle) handle.end();
+    },
+  };
+}
+
 // Returns the loopback port the front door reserved for this process, or null
 // when unset/invalid. Callers fail closed rather than guessing a port.
 function internalPort(env = process.env) {
@@ -272,6 +326,7 @@ module.exports = {
   applySourceAddonEnv,
   connectAuthControl,
   connectWorkspaceControl,
+  startChatBridge,
   MAX_HEADER_BYTES,
   HEADER_TIMEOUT_MS,
   isGatewayChild,

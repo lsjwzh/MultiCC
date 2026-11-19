@@ -167,6 +167,7 @@ pub async fn serve(options: ServeOptions) -> i32 {
             dotenv_keys,
             Arc::clone(&app.auth),
             Arc::clone(&app.source_workspaces),
+            Arc::clone(&app.chat),
         )
     });
     if let Some(supervisor) = supervisor.as_mut() {
@@ -383,6 +384,7 @@ fn reserve_other_internal_port(previous: u16) -> io::Result<u16> {
 struct Node {
     _auth: crate::auth_control::Registration,
     _source: crate::auth_control::Registration,
+    _chat: crate::chat_bridge::Registration,
     child: Child,
     started: Instant,
     /// Node's stdin. Never written: it only has to stay open. Whenever this
@@ -405,6 +407,7 @@ struct Supervisor<'a> {
     dotenv_keys: Vec<String>,
     auth: Arc<crate::auth_control::Bridge>,
     source: Arc<crate::auth_control::Bridge>,
+    chat: Arc<crate::chat_bridge::ChatBridge>,
 }
 
 impl<'a> Supervisor<'a> {
@@ -415,6 +418,7 @@ impl<'a> Supervisor<'a> {
         dotenv_keys: Vec<String>,
         auth: Arc<crate::auth_control::Bridge>,
         source: Arc<crate::auth_control::Bridge>,
+        chat: Arc<crate::chat_bridge::ChatBridge>,
     ) -> Self {
         // No child exists yet: any value will do until `start` reserves one.
         Self {
@@ -428,6 +432,7 @@ impl<'a> Supervisor<'a> {
             dotenv_keys,
             auth,
             source,
+            chat,
         }
     }
 
@@ -481,6 +486,14 @@ impl<'a> Supervisor<'a> {
                 return;
             }
         };
+        let chat = match self.chat.open() {
+            Ok(chat) => chat,
+            Err(_) => {
+                log("cannot bind chat bridge channel");
+                self.restart_at = Some(Instant::now() + Duration::from_millis(500));
+                return;
+            }
+        };
         match spawn_node(
             self.options,
             self.public_port,
@@ -488,6 +501,7 @@ impl<'a> Supervisor<'a> {
             &self.dotenv_keys,
             &auth,
             &source,
+            &chat,
         ) {
             Ok(mut child) => {
                 log(&format!(
@@ -499,6 +513,7 @@ impl<'a> Supervisor<'a> {
                 self.node = Some(Node {
                     _auth: auth,
                     _source: source,
+                    _chat: chat,
                     child,
                     started: Instant::now(),
                     lifeline,
@@ -572,6 +587,7 @@ fn spawn_node(
     dotenv_keys: &[String],
     auth: &crate::auth_control::Registration,
     source: &crate::auth_control::Registration,
+    chat: &crate::chat_bridge::Registration,
 ) -> io::Result<Child> {
     let Some(node) = options.node.as_deref() else {
         return Err(io::Error::other("node runtime disabled (--no-node)"));
@@ -589,6 +605,8 @@ fn spawn_node(
         .env("MULTICC_GATEWAY_AUTH_CAPABILITY", &auth.capability)
         .env("MULTICC_GATEWAY_SOURCE_PORT", source.port.to_string())
         .env("MULTICC_GATEWAY_SOURCE_CAPABILITY", &source.capability)
+        .env("MULTICC_GATEWAY_CHAT_PORT", chat.port.to_string())
+        .env("MULTICC_GATEWAY_CHAT_CAPABILITY", &chat.capability)
         .env("MULTICC_GATEWAY_INTERNAL_PORT", internal_port.to_string())
         .env("MULTICC_GATEWAY_PID", std::process::id().to_string())
         .env("PORT", public_port.to_string())

@@ -10,6 +10,7 @@ pub mod auto_provider_runtime;
 pub mod auto_provider_selection_key;
 pub mod background;
 pub mod background_hold;
+pub mod chat_bridge;
 pub mod chat_connect_replay;
 pub mod chat_context_rotation;
 pub mod chat_events;

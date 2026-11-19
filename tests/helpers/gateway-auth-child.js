@@ -161,7 +161,10 @@ wss.on('connection', (ws, req) => {
   if (!metadata) return ws.close(4003, 'denied');
   ws.send(JSON.stringify(metadata)); ws.close(1000);
 });
-process.on('SIGINT', () => { wss.close(); server.close(); setTimeout(() => process.exit(0), 20); });
+// The front door terminates /ws/chat itself, so a gateway child receives those
+// clients as virtual sockets over the chat bridge, exactly like the real server.
+const chatBridge = gateway.isGatewayChild() ? gateway.startChatBridge({ wss, logger: { warn() {}, error() {} } }) : null;
+process.on('SIGINT', () => { if (chatBridge) chatBridge.stop(); wss.close(); server.close(); setTimeout(() => process.exit(0), 20); });
 gateway.watchGatewayLifeline();
 if (gateway.isGatewayChild()) gateway.listenBehindGateway(server, { port: gateway.internalPort() });
 else server.listen(Number(process.env.PORT), '127.0.0.1');

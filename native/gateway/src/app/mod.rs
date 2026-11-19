@@ -596,6 +596,9 @@ pub struct App {
         std::sync::OnceLock<Arc<multicc_core::workspace_sharing::external::Runtime>>,
     pub auth: Arc<crate::auth_control::Bridge>,
     pub source_workspaces: Arc<crate::auth_control::Bridge>,
+    /// The private stream that hands `/ws/chat` client sockets to the chat
+    /// engine in the Node child (`chat_bridge.rs`).
+    pub chat: Arc<crate::chat_bridge::ChatBridge>,
     pub lan_only: bool,
     pub allow_legacy_token_query: bool,
     /// `--node` was given. The authentication runtime (access token, sessions,
@@ -771,6 +774,7 @@ impl App {
             external_workspaces: std::sync::OnceLock::new(),
             auth: Arc::new(crate::auth_control::Bridge::default()),
             source_workspaces: Arc::new(crate::auth_control::Bridge::default()),
+            chat: Arc::new(crate::chat_bridge::ChatBridge::default()),
             lan_only: policy.lan_only,
             allow_legacy_token_query: env_enabled(&env_text("MULTICC_ALLOW_LEGACY_TOKEN_QUERY")),
             node_enabled: options.node_enabled(),

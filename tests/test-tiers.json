@@ -3718,6 +3718,15 @@
       ]
     },
     {
+      "path": "tests/test-gateway-chat-bridge.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-gateway-child.js",
       "tier": "core",
       "lane": "isolated",

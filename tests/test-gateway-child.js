@@ -21,6 +21,7 @@ const {
   listenBehindGateway,
   watchGatewayLifeline,
   raiseSigint,
+  startChatBridge,
 } = require('../src/gateway-child');
 const { isLocalRequest, isPrivateRequestPeer } = require('../src/request-locality');
 
@@ -355,4 +356,48 @@ test('on Windows a lost lifeline runs the SIGINT handlers in-process instead of 
     process.removeListener('SIGINT', handler);
   }
   assert.deepEqual(seen, ['SIGINT']);
+});
+
+test('the chat bridge starter does nothing without a front-door bootstrap', () => {
+  const connect = () => { throw new Error('must not connect'); };
+  assert.equal(startChatBridge({ wss: {}, connect, bootstrap: null }), null);
+  assert.equal(startChatBridge({ wss: {}, connect, bootstrap: { port: NaN, capability: 'c' } }), null);
+  assert.equal(startChatBridge({ wss: {}, connect, bootstrap: { port: 9, capability: '' } }), null);
+});
+
+test('the chat bridge starter delivers sockets as connections and redials after a loss', async () => {
+  const dials = [];
+  const events = [];
+  const wss = { emit: (...args) => events.push(args) };
+  const warnings = [];
+  const handles = [];
+  const connect = async options => {
+    dials.push(options);
+    if (dials.length === 1) throw new Error('front door not ready');
+    const handle = { ended: false, end() { this.ended = true; }, options };
+    handles.push(handle);
+    return handle;
+  };
+  const starter = startChatBridge({
+    wss, connect, logger: { warn: (...args) => warnings.push(args), error() {} },
+    bootstrap: { port: 4321, capability: 'cap' },
+  });
+  assert.ok(starter);
+  await sleep(450);
+  assert.equal(dials.length, 2, 'a failed dial is retried');
+  assert.equal(dials[1].port, 4321);
+  assert.equal(dials[1].capability, 'cap');
+  assert.equal(dials[1].wss, wss);
+  dials[1].onConnection('socket', 'request');
+  assert.deepEqual(events, [['connection', 'socket', 'request']]);
+  // A lost stream is dialled again, with the same capability.
+  dials[1].onLost(new Error('reset'));
+  await sleep(250);
+  assert.equal(dials.length, 3, 'a lost stream is redialled');
+  assert.ok(warnings.some(([name]) => name === 'chat_bridge_connect_failed'));
+  assert.ok(warnings.some(([name]) => name === 'chat_bridge_lost'));
+  starter.stop();
+  assert.equal(handles[handles.length - 1].ended, true, 'stop ends the live stream');
+  await sleep(600);
+  assert.equal(dials.length, 3, 'nothing is dialled after stop');
 });
