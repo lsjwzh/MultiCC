@@ -687,16 +687,27 @@ test('core runner covers every selected path and expands declared variants', () 
   // injected clock/scheduler, no ports or network), registered core
   // deterministic under npm:test:security.
   // 462 + 1 = 463 entries, 385 + 1 = 386 deterministic, 434 + 1 = 435 commands。
+  // 2026-11-19 /ws/machines cutover: tests/test-ws-machines-differential.js
+  // drives the frozen Node bridge (tests/helpers/legacy-ws-machines.js) and
+  // the Rust front door against one fake peer through the same raw socket and
+  // compares the client-visible bytes (handshake status line, every frame's
+  // opcode and payload digest, close code and reason). It spawns the gateway
+  // binary and a Node fixture on ephemeral loopback ports, so it follows the
+  // precedent tests/test-gateway-auth-native.js and is registered core
+  // ISOLATED (not deterministic) under npm:test:security: no real data root,
+  // no network beyond loopback, no clock or randomness dependency.
+  // 463 + 1 = 464 entries, 386 deterministic unchanged, 46 + 1 = 47 isolated,
+  // 435 + 1 = 436 commands。
   // Restart supervisor and real-server checks use isolated processes and the
   // debug binaries built by test:release:core before the manifest runner.
-  assert.equal(core.length, 463, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 463);
+  assert.equal(core.length, 464, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 464);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
   assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 386);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 46);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 47);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
@@ -705,8 +716,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 435,
-    '432 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 436,
+    '433 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
