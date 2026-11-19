@@ -124,6 +124,13 @@ function fakeLogger() {
       DEFAULT_TOTAL_BUDGET_MS, FINAL_FLUSH_RESERVE_MS, CLOSER_RESERVE_MS,
     } = require('../src/shutdown');
     ok(Number.isFinite(killTimeout) && killTimeout > 0, 'ecosystem.config.js declares kill_timeout');
+    // The pm2 definition must start the Rust front door's launcher. A bare
+    // `server.js` binds the public port itself and lacks every migrated route.
+    const script = (/script:\s*'([^']+)'/.exec(ecosystem) || [])[1];
+    ok(script === 'scripts/start-gateway.js',
+      `ecosystem.config.js starts the front door launcher, not bare Node (got ${script})`);
+    ok(fs.existsSync(path.join(__dirname, '..', script || 'missing')),
+      'the launcher named by ecosystem.config.js exists');
     ok(DEFAULT_TOTAL_BUDGET_MS < killTimeout - 3_000,
       `total shutdown budget ${DEFAULT_TOTAL_BUDGET_MS}ms keeps margin under kill_timeout ${killTimeout}ms`);
     ok(DEFAULT_TOTAL_BUDGET_MS >= FINAL_FLUSH_RESERVE_MS + CLOSER_RESERVE_MS,
