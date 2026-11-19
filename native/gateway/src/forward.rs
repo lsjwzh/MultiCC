@@ -130,6 +130,12 @@ impl UpstreamHandle {
         self.state.node_absent
     }
 
+    /// The client's address and this front door's local address: the two
+    /// addresses of the PROXY line, and what the chat bridge reports to Node.
+    pub(crate) fn addresses(&self) -> (SocketAddr, SocketAddr) {
+        (self.state.client, self.state.local)
+    }
+
     /// Forwards `request` over this connection's upstream connection, opening
     /// one (or a replacement) when needed.
     async fn send(&self, request: Request<Body>) -> Result<Response<Incoming>, ForwardError> {
@@ -294,6 +300,16 @@ async fn dispatch(
         }
         return crate::ws_machines::handle(app, request).await;
     }
+    // The chat socket is terminated here too. With no Node child there is no
+    // chat engine to hand the socket to, so the refusal is the same immediate
+    // `node_runtime_absent` as for every other Node-dependent request.
+    if crate::ws_chat::claims(request.uri().path()) && is_websocket_upgrade(request.headers()) {
+        if upstream.node_absent() {
+            return forward(upstream, request, None).await;
+        }
+        let (peer, local) = upstream.addresses();
+        return crate::ws_chat::handle(app, peer, local, request).await;
+    }
     // `/artifacts` was mounted before every other static layer in Node
     // (`artifacts.mount(app)` ahead of the public/ static mount), so its
     // claim runs first here: the global `.apk`/`.ipa` guard inside
@@ -431,7 +447,7 @@ fn node_runtime_absent() -> Response<Body> {
 /// §6: the synthetic answer when Node cannot be reached (503) or accepted the
 /// connection but not the request (502). `Connection: close` tears the client
 /// connection down afterwards.
-fn error_response(status: StatusCode) -> Response<Body> {
+pub(crate) fn error_response(status: StatusCode) -> Response<Body> {
     let mut builder = Response::builder()
         .status(status)
         .header("connection", "close");

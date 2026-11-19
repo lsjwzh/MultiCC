@@ -5,6 +5,7 @@ const { WebSocket } = require('ws');
 const { installNativeQueue } = require('./native-queue');
 const { createWsHost } = require('./ws-host');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
+const { startChatBridge } = require('../gateway-child');
 
 const WS_PING_INTERVAL_MS = 30_000;
 const SESSIONLESS_WS_PATHS = new Set([
@@ -412,7 +413,11 @@ function mountWsConnectionRouter(wss, deps) {
     // by their own native owner.
     workspaceRuntime.tickHeartbeat?.();
   }, WS_PING_INTERVAL_MS);
+  // Under the front door every /ws/chat client socket reaches this router as a
+  // virtual socket from the chat bridge, through the same 'connection' event.
+  const chatBridge = startChatBridge({ wss, logger });
   wss.on('close', () => {
+    if (chatBridge) chatBridge.stop();
     clearInterval(wsPingInterval);
     try { wsHost.close(wsPorts); } catch (_) {}
     connPortsById.clear();

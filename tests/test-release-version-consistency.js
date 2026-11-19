@@ -708,16 +708,31 @@ test('core runner covers every selected path and expands declared variants', () 
   //    the frozen golden -> core ISOLATED under npm:test:integration:isolated.
   // 464 + 2 = 466 entries, 386 + 1 = 387 deterministic, 47 + 1 = 48 isolated,
   // 436 + 2 = 438 commands。
+  // 2026-11-20 client-visible /ws/chat contract (upgrade status, frame order and
+  // key sets, exact small frames, close code/reason) frozen from the Node-terminated
+  // implementation: tests/test-chat-ws-conformance.js re-runs the real gateway +
+  // Node server + fake CLI capture on an isolated root and compares it with
+  // docs/rust-migration/differential/chat-ws-conformance-golden.json -> core
+  // ISOLATED under npm:test:integration:isolated; no real data root, loopback only.
+  // 466 + 1 = 467 entries, 387 deterministic unchanged, 48 + 1 = 49 isolated,
+  // 438 + 1 = 439 commands。
+  // 2026-11-20 the Node end of the /ws/chat bridge (src/ws/gateway-chat-bridge.js):
+  // tests/test-gateway-chat-bridge.js checks its codec against the byte corpus the
+  // Rust module generates and drives the virtual socket against a scripted front
+  // door on loopback ports it opens itself -> core deterministic under
+  // npm:test:security.
+  // 467 + 1 = 468 entries, 387 + 1 = 388 deterministic, 49 isolated unchanged,
+  // 439 + 1 = 440 commands。
   // Restart supervisor and real-server checks use isolated processes and the
   // debug binaries built by test:release:core before the manifest runner.
-  assert.equal(core.length, 466, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 466);
+  assert.equal(core.length, 468, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 468);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 387);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 48);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 388);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 49);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
@@ -726,8 +741,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 438,
-    '435 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 440,
+    '437 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

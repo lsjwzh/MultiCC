@@ -1,0 +1,1166 @@
+{
+  "capturedAt": "2026-11-19",
+  "note": "Client-visible /ws/chat contract of the Node-terminated implementation: upgrade status, frame sequence, frame key sets, exact small frames and close code/reason. Regenerate only to record an intended contract change.",
+  "scenarios": [
+    {
+      "name": "admit-local-no-credentials",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": []
+    },
+    {
+      "name": "deny-external-no-credentials",
+      "upgrade": 101,
+      "close": {
+        "code": 4003,
+        "reason": "Forbidden"
+      },
+      "closedBy": "server",
+      "sequence": [],
+      "interleaved": {},
+      "keys": {},
+      "exact": []
+    },
+    {
+      "name": "admit-external-legacy-token",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": []
+    },
+    {
+      "name": "deny-external-wrong-token",
+      "upgrade": 101,
+      "close": {
+        "code": 4003,
+        "reason": "Forbidden"
+      },
+      "closedBy": "server",
+      "sequence": [],
+      "interleaved": {},
+      "keys": {},
+      "exact": []
+    },
+    {
+      "name": "admit-external-ticket",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": []
+    },
+    {
+      "name": "deny-external-ticket-reuse",
+      "upgrade": 101,
+      "close": {
+        "code": 4003,
+        "reason": "Forbidden"
+      },
+      "closedBy": "server",
+      "sequence": [],
+      "interleaved": {},
+      "keys": {},
+      "exact": []
+    },
+    {
+      "name": "deny-external-ticket-other-path",
+      "upgrade": 101,
+      "close": {
+        "code": 4003,
+        "reason": "Forbidden"
+      },
+      "closedBy": "server",
+      "sequence": [],
+      "interleaved": {},
+      "keys": {},
+      "exact": []
+    },
+    {
+      "name": "share-view-ignores-user-message",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        },
+        {
+          "type": "@user_message",
+          "count": 1
+        },
+        {
+          "type": "@ping",
+          "count": 1
+        },
+        {
+          "type": "pong",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "pong": [
+          "apiVersion",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": [
+        {
+          "type": "pong",
+          "apiVersion": "v1"
+        }
+      ]
+    },
+    {
+      "name": "deny-share-operate-without-cookie",
+      "upgrade": 101,
+      "close": {
+        "code": 4003,
+        "reason": "Forbidden"
+      },
+      "closedBy": "server",
+      "sequence": [],
+      "interleaved": {},
+      "keys": {},
+      "exact": []
+    },
+    {
+      "name": "share-operate-routes-user-message",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        },
+        {
+          "type": "@typing",
+          "count": 1
+        },
+        {
+          "type": "@clear_history",
+          "count": 1
+        },
+        {
+          "type": "@ping",
+          "count": 1
+        },
+        {
+          "type": "pong",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "pong": [
+          "apiVersion",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": [
+        {
+          "type": "pong",
+          "apiVersion": "v1"
+        }
+      ]
+    },
+    {
+      "name": "deny-share-unknown-token",
+      "upgrade": 101,
+      "close": {
+        "code": 4003,
+        "reason": "Forbidden"
+      },
+      "closedBy": "server",
+      "sequence": [],
+      "interleaved": {},
+      "keys": {},
+      "exact": []
+    },
+    {
+      "name": "deny-share-other-session",
+      "upgrade": 101,
+      "close": {
+        "code": 4003,
+        "reason": "Forbidden"
+      },
+      "closedBy": "server",
+      "sequence": [],
+      "interleaved": {},
+      "keys": {},
+      "exact": []
+    },
+    {
+      "name": "session-missing",
+      "upgrade": 101,
+      "close": {
+        "code": 1005,
+        "reason": ""
+      },
+      "closedBy": "server",
+      "sequence": [
+        {
+          "type": "error",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "error": [
+          "apiVersion",
+          "code",
+          "error",
+          "type"
+        ]
+      },
+      "exact": [
+        {
+          "type": "error",
+          "code": "session_not_found",
+          "error": "Chat session \"no-such-session\" does not exist. Create it via the dashboard first.",
+          "apiVersion": "v1"
+        }
+      ]
+    },
+    {
+      "name": "session-parameter-absent",
+      "upgrade": 101,
+      "close": {
+        "code": 1005,
+        "reason": ""
+      },
+      "closedBy": "server",
+      "sequence": [
+        {
+          "type": "error",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "error": [
+          "apiVersion",
+          "code",
+          "error",
+          "type"
+        ]
+      },
+      "exact": [
+        {
+          "type": "error",
+          "code": "session_not_found",
+          "error": "Chat session \"_default\" does not exist. Create it via the dashboard first.",
+          "apiVersion": "v1"
+        }
+      ]
+    },
+    {
+      "name": "ping-pong",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        },
+        {
+          "type": "@ping",
+          "count": 1
+        },
+        {
+          "type": "pong",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "pong": [
+          "apiVersion",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": [
+        {
+          "type": "pong",
+          "apiVersion": "v1"
+        }
+      ]
+    },
+    {
+      "name": "ignored-client-frames",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        },
+        {
+          "type": "@malformed-json",
+          "count": 1
+        },
+        {
+          "type": "@unknown-type",
+          "count": 1
+        },
+        {
+          "type": "@typing",
+          "count": 1
+        },
+        {
+          "type": "@ping",
+          "count": 1
+        },
+        {
+          "type": "error",
+          "count": 1
+        },
+        {
+          "type": "pong",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "error": [
+          "apiVersion",
+          "code",
+          "error",
+          "type",
+          "url"
+        ],
+        "pong": [
+          "apiVersion",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": [
+        {
+          "type": "error",
+          "code": "task_shell_route_required",
+          "error": "请从任务会话入口发送消息或操作任务。",
+          "url": "/chat.html?session=<task-id>",
+          "apiVersion": "v1"
+        },
+        {
+          "type": "pong",
+          "apiVersion": "v1"
+        }
+      ]
+    },
+    {
+      "name": "user-message-without-task-shell",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        },
+        {
+          "type": "@user_message",
+          "count": 1
+        },
+        {
+          "type": "error",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "error": [
+          "apiVersion",
+          "code",
+          "error",
+          "type",
+          "url"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": [
+        {
+          "type": "error",
+          "code": "task_shell_route_required",
+          "error": "请从任务会话入口发送消息或操作任务。",
+          "url": "/chat.html?session=<task-id>",
+          "apiVersion": "v1"
+        }
+      ]
+    },
+    {
+      "name": "turn-complete",
+      "flow": true,
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "@user_message",
+          "count": 1
+        },
+        {
+          "type": "task_shell_routed",
+          "count": 1
+        },
+        {
+          "type": "stream_start",
+          "count": 1
+        },
+        {
+          "type": "stream_event",
+          "count": 1
+        },
+        {
+          "type": "assistant",
+          "count": 1
+        },
+        {
+          "type": "result",
+          "count": 1
+        },
+        {
+          "type": "result/success",
+          "count": 1
+        },
+        {
+          "type": "stream_end",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "assistant": [
+          "apiVersion",
+          "attemptNo",
+          "cli",
+          "decisionId",
+          "message",
+          "providerId",
+          "providerRevision",
+          "providerRouteProtocolVersion",
+          "providerRouteScope",
+          "routeAttemptId",
+          "routeGeneration",
+          "runtimeEpoch",
+          "taskId",
+          "turnId",
+          "type"
+        ],
+        "result": [
+          "apiVersion",
+          "attemptNo",
+          "cli",
+          "contextTrace",
+          "decisionId",
+          "durationMs",
+          "is_error",
+          "modelAttribution",
+          "num_turns",
+          "providerId",
+          "providerRevision",
+          "providerRouteProtocolVersion",
+          "providerRouteScope",
+          "result",
+          "routeAttemptId",
+          "routeGeneration",
+          "runtimeEpoch",
+          "session_id",
+          "subtype",
+          "taskId",
+          "timeline",
+          "turnId",
+          "type",
+          "usage"
+        ],
+        "stream_end": [
+          "apiVersion",
+          "taskId",
+          "type"
+        ],
+        "stream_event": [
+          "apiVersion",
+          "attemptNo",
+          "cli",
+          "decisionId",
+          "event",
+          "providerId",
+          "providerRevision",
+          "providerRouteProtocolVersion",
+          "providerRouteScope",
+          "routeAttemptId",
+          "routeGeneration",
+          "runtimeEpoch",
+          "taskId",
+          "turnId",
+          "type"
+        ],
+        "stream_start": [
+          "apiVersion",
+          "taskId",
+          "turnId",
+          "type"
+        ],
+        "task_shell_routed": [
+          "apiVersion",
+          "clientMsgId",
+          "decision",
+          "ok",
+          "receiptId",
+          "sessionId",
+          "shellId",
+          "taskId",
+          "type"
+        ]
+      },
+      "exact": [
+        {
+          "type": "task_shell_routed",
+          "ok": true,
+          "taskId": "<tsk_id>",
+          "sessionId": "<task-id>",
+          "receiptId": "<sr_id>",
+          "decision": "continue",
+          "shellId": "<sh_id>",
+          "clientMsgId": "<uuid>",
+          "apiVersion": "v1"
+        }
+      ]
+    },
+    {
+      "name": "turn-cancelled",
+      "flow": true,
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "@user_message",
+          "count": 1
+        },
+        {
+          "type": "task_shell_routed",
+          "count": 1
+        },
+        {
+          "type": "stream_start",
+          "count": 1
+        },
+        {
+          "type": "stream_event",
+          "count": 1
+        },
+        {
+          "type": "@cancel",
+          "count": 1
+        },
+        {
+          "type": "stream_end",
+          "count": 1
+        },
+        {
+          "type": "task_shell_routed",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "stream_end": [
+          "apiVersion",
+          "taskId",
+          "type"
+        ],
+        "stream_event": [
+          "apiVersion",
+          "attemptNo",
+          "cli",
+          "decisionId",
+          "event",
+          "providerId",
+          "providerRevision",
+          "providerRouteProtocolVersion",
+          "providerRouteScope",
+          "routeAttemptId",
+          "routeGeneration",
+          "runtimeEpoch",
+          "taskId",
+          "turnId",
+          "type"
+        ],
+        "stream_start": [
+          "apiVersion",
+          "taskId",
+          "turnId",
+          "type"
+        ],
+        "task_shell_routed": [
+          "apiVersion",
+          "clientMsgId",
+          "decision",
+          "ok",
+          "receiptId",
+          "sessionId",
+          "shellId",
+          "taskId",
+          "type"
+        ]
+      },
+      "exact": [
+        {
+          "type": "task_shell_routed",
+          "ok": true,
+          "taskId": "<tsk_id>",
+          "sessionId": "<task-id>",
+          "receiptId": "<sr_id>",
+          "decision": "continue",
+          "shellId": "<sh_id>",
+          "clientMsgId": "<uuid>",
+          "apiVersion": "v1"
+        },
+        {
+          "type": "task_shell_routed",
+          "ok": true,
+          "taskId": "<tsk_id>",
+          "sessionId": "<task-id>",
+          "receiptId": "<sr_id>",
+          "decision": "cancel",
+          "shellId": "<sh_id>",
+          "clientMsgId": "<uuid>",
+          "apiVersion": "v1"
+        }
+      ]
+    }
+  ]
+}

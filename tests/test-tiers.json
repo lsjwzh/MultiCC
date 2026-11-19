@@ -2641,6 +2641,15 @@
       ]
     },
     {
+      "path": "tests/test-chat-ws-conformance.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
       "path": "tests/test-chat.js",
       "tier": "other",
       "lane": "live"
@@ -3703,6 +3712,15 @@
       "path": "tests/test-gateway-auth-native.js",
       "tier": "core",
       "lane": "isolated",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-gateway-chat-bridge.js",
+      "tier": "core",
+      "lane": "deterministic",
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"
