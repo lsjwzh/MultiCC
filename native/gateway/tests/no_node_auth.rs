@@ -197,6 +197,21 @@ impl Gateway {
         Self::read_log(&self.dir)
     }
 
+    /// `start` returns as soon as the listening line exists, but the
+    /// local-authentication line is written after the router is built. A test
+    /// that asserts on a startup line before issuing any request has to wait
+    /// for it instead of racing the daemon's own log order.
+    fn wait_for_log(&self, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let log = self.log();
+            if log.contains(needle) || Instant::now() >= deadline {
+                return log;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn connect(&self) -> TcpStream {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -351,7 +366,7 @@ fn assert_auth_required(response: &Response, what: &str) {
 #[test]
 fn a_local_access_token_answers_the_same_auth_shapes_as_node() {
     let gateway = Gateway::start("local-token", Some(&format!("ACCESS_TOKEN={TOKEN}\n")), &[]);
-    let log = gateway.log();
+    let log = gateway.wait_for_log("authentication runtime owned locally (--no-node)");
     assert!(
         log.contains("authentication runtime owned locally (--no-node)"),
         "missing the local-runtime log line:\n{log}"
