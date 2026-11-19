@@ -731,6 +731,9 @@ window.MULTICC_I18N_CATALOG = {
     "cliNotInstalledSuffix": "（未安装）",
     "cliSessionResumedSuffix": "，已恢复该 CLI 的原会话",
     "cliSwitched": "CLI 已从 {from} 切换到 {to}{resumed}；下一条消息会携带上下文交接。",
+    "cliSubagentRouteDropped": "子 agent 线路已随之清除：{family} 家族没有默认子 agent 线路，子任务改为跟随主线路。如需单独线路，可在 AI 配置里重新设置。",
+    "cliSubagentRouteReplaced": "子 agent 线路已改为 {line} · {model}（{family} 家族默认）。",
+    "cliSubagentRouteApplied": "子 agent 线路已应用 {family} 家族默认：{line} · {model}。",
     "taskInProgress": "任务进行中",
     "taskCompleted": "任务完成",
     "waitingAction": "等待操作",
@@ -5249,7 +5252,11 @@ window.MULTICC_I18N_CATALOG = {
     "airUnattendedDraftWarn": "建议先完善：{issues}",
     "airUnattendedDraftWarnShort": "目标需要更明确",
     "airUnattendedDraftFailed": "预检失败",
-    "airUnattendedGoalRequired": "请先填写目标或任务正文"
+    "airUnattendedGoalRequired": "请先填写目标或任务正文",
+    "runConfigGlobalFamilyNone": "{family}：未设置（新任务随主线路）",
+    "runConfigGlobalFamilyRoute": "{family}：{line} · {model}",
+    "runConfigGlobalFamilyMissing": "{family}：{id} · {model}（线路已不可用）",
+    "runConfigClearFamilyDone": "已清除 {family} 家族默认，{n} 个任务恢复随主"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -5982,6 +5989,9 @@ window.MULTICC_I18N_CATALOG = {
     "cliNotInstalledSuffix": " (not installed)",
     "cliSessionResumedSuffix": "; resumed the original session for that CLI",
     "cliSwitched": "CLI switched from {from} to {to}{resumed}. The next message will include a context handoff.",
+    "cliSubagentRouteDropped": "The inherited sub-agent route was dropped: the {family} family has no sub-agent default, so sub-agents now follow the main line. Set one again in the AI config if needed.",
+    "cliSubagentRouteReplaced": "The sub-agent route was replaced with the {family} family default: {line} · {model}.",
+    "cliSubagentRouteApplied": "The {family} family default sub-agent route now applies: {line} · {model}.",
     "taskInProgress": "Task in progress",
     "taskCompleted": "Task completed",
     "waitingAction": "Action Required",
@@ -10500,6 +10510,10 @@ window.MULTICC_I18N_CATALOG = {
     "airUnattendedDraftWarn": "Consider improving: {issues}",
     "airUnattendedDraftWarnShort": "the goal needs more detail",
     "airUnattendedDraftFailed": "Precheck failed",
-    "airUnattendedGoalRequired": "Enter a goal or the task text first"
+    "airUnattendedGoalRequired": "Enter a goal or the task text first",
+    "runConfigGlobalFamilyNone": "{family}: not set (new tasks follow the main line)",
+    "runConfigGlobalFamilyRoute": "{family}: {line} · {model}",
+    "runConfigGlobalFamilyMissing": "{family}: {id} · {model} (line unavailable)",
+    "runConfigClearFamilyDone": "{family} family default cleared; {n} tasks follow the main line again"
   }
 };

@@ -164,9 +164,13 @@ const MIGRATION_DEBT = Object.freeze({
   // 169362 字节：行数回落一行、字节因跳过逻辑多 376，按实测重登记。
   // Reconcile the existing main-branch blob without editing the frontend;
   // these exact limits preserve the ratchet for subsequent changes.
+  // 2026-11-19 The sub-agent global row split into two family rows (Claude
+  // Code / Codex) and the lane switch now announces inherited-route changes;
+  // measured 3377 lines / 172087 bytes, ratchet up. The model-field
+  // extraction target is unchanged.
   'public/run-config.js': Object.freeze({
-    ceiling: 3357,
-    byteCeiling: 170907,
+    ceiling: 3377,
+    byteCeiling: 172087,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
@@ -781,8 +785,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +11 bilingual keys (cronView*/cronCal*): the cron panel's calendar view
     // (public/air-cron-calendar.js). Regenerated: 10474 lines / 679943 bytes.
     // Three bilingual virtual-provider labels; bound matches the generated catalog.
-    maxLines: 10506,
-    maxBytes: 682646,
+    // +8 bilingual keys (cliSubagentRouteDropped/Replaced/Applied,
+    // airUnattendedGoalRequired, runConfigGlobalFamilyNone/Route/Missing,
+    // runConfigClearFamilyDone): the two sub-agent family rows and the lane
+    // switch route-change notice. Regenerated: 10520 lines / 684175 bytes.
+    maxLines: 10520,
+    maxBytes: 684175,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

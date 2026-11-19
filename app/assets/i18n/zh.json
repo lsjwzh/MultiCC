@@ -729,6 +729,9 @@
   "cliNotInstalledSuffix": "（未安装）",
   "cliSessionResumedSuffix": "，已恢复该 CLI 的原会话",
   "cliSwitched": "CLI 已从 {from} 切换到 {to}{resumed}；下一条消息会携带上下文交接。",
+  "cliSubagentRouteDropped": "子 agent 线路已随之清除：{family} 家族没有默认子 agent 线路，子任务改为跟随主线路。如需单独线路，可在 AI 配置里重新设置。",
+  "cliSubagentRouteReplaced": "子 agent 线路已改为 {line} · {model}（{family} 家族默认）。",
+  "cliSubagentRouteApplied": "子 agent 线路已应用 {family} 家族默认：{line} · {model}。",
   "taskInProgress": "任务进行中",
   "taskCompleted": "任务完成",
   "waitingAction": "等待操作",
@@ -5247,5 +5250,9 @@
   "airUnattendedDraftWarn": "建议先完善：{issues}",
   "airUnattendedDraftWarnShort": "目标需要更明确",
   "airUnattendedDraftFailed": "预检失败",
-  "airUnattendedGoalRequired": "请先填写目标或任务正文"
+  "airUnattendedGoalRequired": "请先填写目标或任务正文",
+  "runConfigGlobalFamilyNone": "{family}：未设置（新任务随主线路）",
+  "runConfigGlobalFamilyRoute": "{family}：{line} · {model}",
+  "runConfigGlobalFamilyMissing": "{family}：{id} · {model}（线路已不可用）",
+  "runConfigClearFamilyDone": "已清除 {family} 家族默认，{n} 个任务恢复随主"
 }

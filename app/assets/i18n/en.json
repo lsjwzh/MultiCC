@@ -729,6 +729,9 @@
   "cliNotInstalledSuffix": " (not installed)",
   "cliSessionResumedSuffix": "; resumed the original session for that CLI",
   "cliSwitched": "CLI switched from {from} to {to}{resumed}. The next message will include a context handoff.",
+  "cliSubagentRouteDropped": "The inherited sub-agent route was dropped: the {family} family has no sub-agent default, so sub-agents now follow the main line. Set one again in the AI config if needed.",
+  "cliSubagentRouteReplaced": "The sub-agent route was replaced with the {family} family default: {line} · {model}.",
+  "cliSubagentRouteApplied": "The {family} family default sub-agent route now applies: {line} · {model}.",
   "taskInProgress": "Task in progress",
   "taskCompleted": "Task completed",
   "waitingAction": "Action Required",
@@ -5247,5 +5250,9 @@
   "airUnattendedDraftWarn": "Consider improving: {issues}",
   "airUnattendedDraftWarnShort": "the goal needs more detail",
   "airUnattendedDraftFailed": "Precheck failed",
-  "airUnattendedGoalRequired": "Enter a goal or the task text first"
+  "airUnattendedGoalRequired": "Enter a goal or the task text first",
+  "runConfigGlobalFamilyNone": "{family}: not set (new tasks follow the main line)",
+  "runConfigGlobalFamilyRoute": "{family}: {line} · {model}",
+  "runConfigGlobalFamilyMissing": "{family}: {id} · {model} (line unavailable)",
+  "runConfigClearFamilyDone": "{family} family default cleared; {n} tasks follow the main line again"
 }

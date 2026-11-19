@@ -151,7 +151,8 @@ dialog .air-config-field input { margin-top: 7px; }
 .rc-sub-sync-status.is-ready { color: #1a7a55; }
 .rc-sub-sync-status.is-error { color: #b34128; }
 .rc-sub-state.is-global { color: #0d63c4; background: #e7f1fd; }
-.rc-sub-global { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 8px; color: #47688a; font-size: 10.5px; line-height: 1.5; }
+.rc-sub-global-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.rc-sub-global { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: #47688a; font-size: 10.5px; line-height: 1.5; }
 .rc-sub-global-text { flex: 1 1 200px; min-width: 0; }
 .rc-sub-global button { padding: 3px 10px; font-size: 10.5px; }
 .rc-sub-global.is-confirm { padding: 8px 10px; border-radius: 10px; color: #8a4b12; background: #fff6ea; }

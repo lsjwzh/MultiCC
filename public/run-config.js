@@ -1477,14 +1477,24 @@
     subSyncLabel.append(subSyncBox, subSyncText);
     const subSyncStatus = el(doc, 'p', 'rc-sub-sync-status');
     subSyncStatus.setAttribute('role', 'status');
-    // 全局默认一行：现值 +「清除」（显隐由 paintGlobal 管）。清除先 dry run 说清会恢复几个任务，再二次确认。
-    const subGlobal = el(doc, 'div', 'rc-sub-global');
-    const subGlobalText = el(doc, 'span', 'rc-sub-global-text');
-    const subClear = el(doc, 'button', 'rc-sub-clear', tt('runConfigClearGlobal', '清除'));
-    const subClearConfirm = el(doc, 'button', 'rc-sub-clear-confirm', tt('runConfigClearConfirm', '确认清除'));
-    const subClearCancel = el(doc, 'button', 'rc-sub-clear-cancel', tt('runConfigCancel', '取消'));
-    subClear.type = subClearConfirm.type = subClearCancel.type = 'button';
-    subGlobal.append(subGlobalText, subClear, subClearConfirm, subClearCancel);
+    // 家族默认两行：Claude Code / Codex 各自一行，现值 +「清除」。之前只画当前任务
+    // 所属家族的那一份 —— 用户设完 Claude Code 的默认后，Codex 家族仍为空这件事在
+    // 界面上完全不可见（「全局默认」的措辞还加深了「一次设置全生效」的误会）。两行
+    // 同构，确认态（清除的 dry run）只落在发起的那一行。
+    const subGlobal = el(doc, 'div', 'rc-sub-global-list');
+    const subGlobalRows = {};
+    for (const family of ['claude', 'codex']) {
+      const row = el(doc, 'div', 'rc-sub-global');
+      row.dataset.family = family;
+      const text = el(doc, 'span', 'rc-sub-global-text');
+      const clear = el(doc, 'button', 'rc-sub-clear', tt('runConfigClearGlobal', '清除'));
+      const confirm = el(doc, 'button', 'rc-sub-clear-confirm', tt('runConfigClearConfirm', '确认清除'));
+      const cancel = el(doc, 'button', 'rc-sub-clear-cancel', tt('runConfigCancel', '取消'));
+      clear.type = confirm.type = cancel.type = 'button';
+      row.append(text, clear, confirm, cancel);
+      subGlobal.append(row);
+      subGlobalRows[family] = { row, text, clear, confirm, cancel };
+    }
     subSection.append(subHead, subWhy, subGuide, subRow, subHint, subSyncLabel, subSyncStatus, subGlobal);
     fixedSection.append(fixedHead, cliGrid, lineRow, accountField, effortField, fixedStatus);
     form.append(fixedSection);
@@ -2215,7 +2225,7 @@
       if (!set && subSyncBox.checked) resetSyncPreview();
       subSyncBox.disabled = subSyncUnavailable || !set;
       paintSyncStatus();
-      paintGlobal(family);
+      paintGlobal();
       queueSyncPreview();
       maybeShowSubGuide();
     }
@@ -2229,24 +2239,29 @@
       subSyncStatus.classList.toggle('is-error', !!summary && summary.tone === 'error');
     }
 
-    // 「全局默认」一行：现值 +「清除」；确认态换成 dry run 的说明 +「确认清除 / 取消」。
-    // 线路名要在目录里查，当前 CLI 的目录里没有就背景补拉一次。
-    function paintGlobal(family) {
-      const lane = family || subagentFamily(subCli());
-      const route = lane ? subDefaults[lane] : null;
-      const provider = route && findProviderAnywhere(route.providerId);
-      if (route && !provider) ensureFamilyCatalog(lane);
-      const confirming = !!subClearPlan;
-      subGlobal.classList.toggle('is-confirm', confirming);
-      show(subClear, !confirming && !!route);
-      show(subClearConfirm, confirming);
-      show(subClearCancel, confirming);
-      subClear.disabled = subClearBusy || subSyncUnavailable;
-      subClearConfirm.disabled = subClearCancel.disabled = subClearBusy;
-      subGlobalText.textContent = confirming ? clearSummary(subClearPlan)
-        : !route ? tt('runConfigGlobalNone', '全局默认：未设置（新任务随主线路）')
-          : provider ? tt('runConfigGlobalRoute', '全局默认：{line} · {model}', { line: provider.name || provider.id, model: route.model })
-            : tt('runConfigGlobalMissing', '全局默认：{id} · {model}（线路已不可用）', { id: route.providerId, model: route.model });
+    // 「家族默认」两行：各自现值 +「清除」；确认态（清除的 dry run 说明 +
+    // 「确认清除 / 取消」）只落在发起的那一行。线路名要在目录里查，当前 CLI 的
+    // 目录里没有就背景补拉一次。
+    function paintGlobal() {
+      for (const lane of ['claude', 'codex']) {
+        const refs = subGlobalRows[lane];
+        if (!refs) continue;
+        const route = subDefaults[lane];
+        const provider = route && findProviderAnywhere(route.providerId);
+        if (route && !provider) ensureFamilyCatalog(lane);
+        const confirming = !!subClearPlan && subClearPlan.family === lane;
+        refs.row.classList.toggle('is-confirm', confirming);
+        show(refs.clear, !confirming && !!route);
+        show(refs.confirm, confirming);
+        show(refs.cancel, confirming);
+        refs.clear.disabled = subClearBusy || subSyncUnavailable;
+        refs.confirm.disabled = refs.cancel.disabled = subClearBusy;
+        const familyName = subagentFamilyLabel(lane);
+        refs.text.textContent = confirming ? clearSummary(subClearPlan)
+          : !route ? tt('runConfigGlobalFamilyNone', '{family}：未设置（新任务随主线路）', { family: familyName })
+            : provider ? tt('runConfigGlobalFamilyRoute', '{family}：{line} · {model}', { family: familyName, line: provider.name || provider.id, model: route.model })
+              : tt('runConfigGlobalFamilyMissing', '{family}：{id} · {model}（线路已不可用）', { family: familyName, id: route.providerId, model: route.model });
+      }
     }
 
     // 勾上「同步」后 300ms 的 dry run：同一个选择只问一次；选择/主线路变了才重问。
@@ -2298,15 +2313,16 @@
       subNotice = { tone: 'error', text: tt('runConfigClearFailed', '清除失败：{error}', { error: (cause && cause.message) || String(cause) }) };
     }
 
-    // 清除全局默认分两步：先 dry run 说清会恢复几个、几个不受影响（subClearPlan），确认后才真的清 ——
-    // 跟随全局的任务由服务端恢复随主，单独设置的不动。
-    async function clearGlobal(confirmed) {
-      const cli = subCli();
-      const family = subagentFamily(cli);
+    // 清除家族默认分两步：先 dry run 说清会恢复几个、几个不受影响（subClearPlan），
+    // 确认后才真的清 —— 跟随默认的任务由服务端恢复随主，单独设置的不动。两个家族
+    // 各走各的（family 参数）：清 Claude Code 不碰 Codex，反之亦然。
+    async function clearGlobal(confirmed, family = subagentFamily(subCli())) {
       if (!family || subClearBusy || subSyncUnavailable || closed) return;
+      const cli = subagentFamilyCli(family);
+      if (!cli) return;
       subClearBusy = true;
       subNotice = null;
-      paintGlobal(family);
+      paintGlobal();
       try {
         const result = await request('/api/subagent-defaults/sync', { cli, subagent: null, dryRun: !confirmed });
         if (closed) return;
@@ -2314,11 +2330,12 @@
         subClearPlan = confirmed ? null : { family: (result && result.family) || family, counts };
         if (confirmed) {
           if (result && result.defaults) applySyncedDefaults(result.defaults);
-          subNotice = { tone: 'ready', text: tt('runConfigClearDone', '已清除全局子 agent，{n} 个任务恢复随主',
-            { n: (Number(counts.applied) || 0) + (Number(counts.deferred) || 0) }) };
-          // 这个任务（或草稿）本来跟着全局默认走、这次也没动过下拉：服务端已把它恢复随主，界面跟上，
-          // 免得之后点保存又把旧线路当成单独设置存回去。
-          if (subagentFollowsGlobal()) { subagentSeed = null; subagentSeedAuto = false; renderSub(true); }
+          subNotice = { tone: 'ready', text: tt('runConfigClearFamilyDone', '已清除 {family} 家族默认，{n} 个任务恢复随主',
+            { family: subagentFamilyLabel(family), n: (Number(counts.applied) || 0) + (Number(counts.deferred) || 0) }) };
+          // 清的是当前任务所属家族、且这个任务（或草稿）本来跟着默认走、这次也没动过
+          // 下拉：服务端已把它恢复随主，界面跟上，免得之后点保存又把旧线路当成单独
+          // 设置存回去。清另一家族时本任务不在影响面里，界面不动。
+          if (family === subagentFamily(subCli()) && subagentFollowsGlobal()) { subagentSeed = null; subagentSeedAuto = false; renderSub(true); }
         }
       } catch (cause) {
         if (closed) return;
@@ -2326,7 +2343,7 @@
         noteSubagentFailure(cause);
       } finally {
         subClearBusy = false;
-        if (!closed) { paintSyncStatus(); paintGlobal(family); }
+        if (!closed) { paintSyncStatus(); paintGlobal(); }
       }
     }
 
@@ -3218,9 +3235,12 @@
         paintSyncStatus();
       }
     };
-    subClear.onclick = () => { clearGlobal(false); };
-    subClearConfirm.onclick = () => { clearGlobal(true); };
-    subClearCancel.onclick = () => { subClearPlan = null; paintGlobal(); };
+    for (const family of ['claude', 'codex']) {
+      const refs = subGlobalRows[family];
+      refs.clear.onclick = () => { clearGlobal(false, family); };
+      refs.confirm.onclick = () => { clearGlobal(true, family); };
+      refs.cancel.onclick = () => { subClearPlan = null; paintGlobal(); };
+    }
     form.onsubmit = async event => {
       event.preventDefault();
       if (loading) return;

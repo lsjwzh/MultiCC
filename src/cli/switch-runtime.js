@@ -88,12 +88,20 @@ function createCliSwitchRuntime(options) {
     return { busy: call('busy', { chatBusy: isChatStateBusy(cs), streamBusy: stream?.busy,
       streamQueued: stream?.queued }), cs, stream };
   }
-  function followSubagentDefault(target) {
+  // 返回继承路由的变化（{from,to,family} 或 null）：切换提示（switchNotice/switchEvent
+  // 的 subagentChange）靠它说明「子任务改走主线路 / 改走目标家族默认」。自设路由
+  // keep 不变 = null。from/to 上补 name（provider 目录显示名）让前端直接可读。
+  // before 由调用方在 activateCliState 之前捕获传入：activate 会用目标车道的
+  // lane 快照覆盖 session.subagent，切换前正在生效的路由只在 activate 前可见。
+  function followSubagentDefault(target, before) {
+    if (before === undefined) {
+      before = target.subagent && typeof target.subagent === 'object' ? { ...target.subagent } : null;
+    }
     const facts = { cli: target.cli, provider: target.provider, subagent: target.subagent,
       ephemeral: target.ephemeral, loginFlow: target.loginFlow,
       bindings: typeof options.validProviderId === 'function' && typeof options.getProviders === 'function' };
     let candidate = call('subagentCandidate', facts);
-    if (candidate.action === 'keep') return;
+    if (candidate.action === 'keep') return null;
     let providers;
     if (candidate.action === 'defaults') {
       const providerDefaults = options.getProviderDefaults() || {};
@@ -111,6 +119,23 @@ function createCliSwitchRuntime(options) {
     target.subagent = next;
     const lane = target.cliStates?.[target.cli];
     if (lane) lane.subagent = next ? { ...next } : null;
+    const after = next && typeof next === 'object' ? { ...next } : null;
+    const sameRoute = (!before && !after)
+      || (!!before && !!after && before.providerId === after.providerId && before.model === after.model);
+    if (sameRoute) return null;
+    const nameOf = (route) => {
+      if (!route || typeof providers?.getProvider !== 'function') return null;
+      const family = target.cli === 'codex' || target.cli === 'codex-exp' ? 'codex' : 'claude';
+      try {
+        const entry = providers.getProvider(family, route.providerId);
+        return (entry && (entry.name || entry.label)) || null;
+      } catch (_) { return null; }
+    };
+    return {
+      family: target.cli === 'codex' || target.cli === 'codex-exp' ? 'codex' : 'claude',
+      from: before ? { providerId: before.providerId, model: before.model, name: nameOf(before) } : null,
+      to: after ? { providerId: after.providerId, model: after.model, name: nameOf(after) } : null,
+    };
   }
   function cliSwitchDefaults(cli) {
     const plan = call('defaults', { cli, providerDefaults: options.getProviderDefaults() || {} });
@@ -158,9 +183,10 @@ function createCliSwitchRuntime(options) {
     const checkpoint = options.buildHandoffCheckpoint({ session, fromCli, toCli: targetCli,
       history: options.getHistory(session.id),
       git: switchOptions.gitSnapshot || { branch: session.branch || null, head: null, changes: [] }, now });
+    const subagentBeforeSwitch = session.subagent && typeof session.subagent === 'object' ? { ...session.subagent } : null;
     const result = options.activateCliState(session, targetCli, { fresh: switchOptions.fresh === true,
       defaults: cliSwitchDefaults(targetCli), nativeSessionExists: () => switchOptions.prepared.nativeSessionExists, now });
-    followSubagentDefault(session);
+    const subagentChange = followSubagentDefault(session, subagentBeforeSwitch);
     if (result.staleNativeSessionId) console.warn(`[multicc/cli-switch] [${session.id}] ${targetCli} native session ${result.staleNativeSessionId} no longer exists; switching without reuse`);
     const handoff = call('handoff', { id: handoffIdFactory(), fromCli, targetCli, checkpoint, reused: result.reused });
     session.pendingCliHandoff = handoff;
@@ -169,7 +195,8 @@ function createCliSwitchRuntime(options) {
       options.getChatStream().close(session.id);
       resetChatRuntimeForCli(chatSessions.get(session.id), session);
       const notice = call('switchNotice', { session: sessionFacts(session), fromCli, targetCli,
-        handoffId: handoff.id, reused: result.reused, fresh: switchOptions.fresh === true, forced: switchOptions.forced === true, now });
+        handoffId: handoff.id, reused: result.reused, fresh: switchOptions.fresh === true,
+        forced: switchOptions.forced === true, now, subagentChange });
       if (notice.forced) options.chatBroadcast(session.id, notice.forced);
       const failed = error => (options.logger || console).warn?.('chat_cli_switch_notice_persist_failed',
         { sessionId: session.id, fromCli, toCli: targetCli, message: error?.message || String(error) });
@@ -181,7 +208,7 @@ function createCliSwitchRuntime(options) {
       } catch (error) { failed(error); }
       options.appendEvent(session.dirId, 'session_cli_changed', notice.eventText, session.id);
       options.chatBroadcast(session.id, call('switchEvent', { ...viewFacts(session), fromCli, targetCli,
-        handoffId: handoff.id, reused: result.reused, fresh: switchOptions.fresh === true }));
+        handoffId: handoff.id, reused: result.reused, fresh: switchOptions.fresh === true, subagentChange }));
       if (session.dirId) options.workspaceBroadcast(session.dirId, notice.workspace);
     };
     if (!switchOptions.deferEffects) publish();
