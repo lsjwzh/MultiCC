@@ -1,0 +1,2576 @@
+{
+  "cases": [
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 0,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 1,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": true,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "clear_buffer"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": false,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 0,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        }
+      ],
+      "bufferAfter": 0
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 1,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 1
+        }
+      ],
+      "bufferAfter": 1
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": false,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": false
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    },
+    {
+      "facts": {
+        "replayMessages": 3,
+        "lastMessageIsAssistant": false,
+        "isStreaming": true,
+        "bufferedEvents": 12,
+        "hasTokenUsage": true,
+        "hasTaskStateSeed": true
+      },
+      "steps": [
+        {
+          "type": "chat_history"
+        },
+        {
+          "type": "task_state_seed"
+        },
+        {
+          "type": "replay_burst",
+          "frames": 12
+        }
+      ],
+      "bufferAfter": 12
+    }
+  ]
+}
