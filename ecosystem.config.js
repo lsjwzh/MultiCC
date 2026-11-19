@@ -1,7 +1,12 @@
 module.exports = {
   apps: [{
     name: 'multicc',
-    script: 'server.js',
+    // The Rust front door must own the public port. A bare `server.js` binds it
+    // itself and silently lacks every route that moved into the front door
+    // (docs/gateway.md section 9), so pm2 starts the same launcher as
+    // `npm start`: it spawns multicc-gateway, which supervises Node behind it
+    // and forwards SIGINT/SIGTERM for the graceful drain below.
+    script: 'scripts/start-gateway.js',
     cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',
