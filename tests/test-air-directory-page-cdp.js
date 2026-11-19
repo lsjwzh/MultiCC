@@ -80,6 +80,7 @@ test('the directory home shares one scroll layer, shows a compact sticky heading
 
     // ── 一张卡：git 那行 + worktree 那行 ──────────────────────────────────
     assert.ok(await page.waitFor(`document.getElementById('directory-worktree-body').children.length>0`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-git .directory-git-chip').length>=2 && document.querySelector('#directory-git .directory-git-actions button')`), 'Git 状态须加载完成');
     const merged = await page.evaluate(`(() => {
       const card = document.getElementById('directory-git');
       const wt = document.getElementById('directory-worktrees');
