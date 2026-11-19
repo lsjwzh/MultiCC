@@ -161,6 +161,8 @@
 
 ### 4.1 WS
 
+迁移进行中：单次票据可经 Rust 私有控制流消费；VM 槽位需在 Node 线程取出并限长序列化，无法序列化时拒绝。聊天消息的 ping 与 share 权限门槛已进入 Rust；发送侧背压/合并规则也已有 Rust 内核（`ws_backpressure`，Node 仍运行自己那份，未委托）。WS 升级和下列所有连接宿主仍在 Node，完整帧差分和切换尚未完成。
+
 单一 upgrade dispatcher：`src/voice/host.js:128-131` 调 `wireUpgrade(server, wss, webProxy, serviceRoutes)`（`src/routes/voice-gateway-proxy.js:157-166`）。顺序：`serviceRoutes.handleUpgrade`（`/services/*`）→ `/voice-gateway/web` 的 HTTP/WS 反代 → 其余交给 `wss.handleUpgrade`，再进 `src/ws/connection-router.js`。
 
 `wss` 由 `server.js:450` `new WebSocket.Server({ noServer: true })` 创建。

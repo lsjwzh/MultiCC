@@ -6,6 +6,11 @@
     "middleware": 26,
     "fingerprint": "c5890742b80f537374f1a24e"
   },
+  "websocket": {
+    "state": "in-progress",
+    "registrationOwner": "node",
+    "note": "Rust 单次票据消费和 VM 票据有界交接已实现；聊天消息的 ping / share 权限门槛已进入 Rust。仅测试路径已验证同会话广播及跨会话隔离；生产 WS 升级、连接、聊天状态与快照/重放仍由 Node 持有。发送侧背压与合并规则已有 Rust 内核并与冻结 Node 实现逐效果对照，但 Node 仍运行自己的包装器。尚无完整逐字节 WS 差分或宿主切换。capture 只记录 HTTP 路由与中间件，不含 WS。"
+  },
   "terminalStates": {
     "front-door": "公开路由由 Rust 前门独占；Node 不再注册。终态=0 条 Node 注册。",
     "host-port": "路由本体已在前门；Node 只剩 POST /api/__host/<domain> 回环接口，提供 Node 独有事实或执行进程/文件副作用。这是目标形态，不是待消除项。",

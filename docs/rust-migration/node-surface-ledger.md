@@ -10,6 +10,8 @@ node tests/test-node-surface-ledger.js     # 对账器自身的 6 种漂移用�
 
 捕获基线：**128 条路由注册、26 层中间件/路由器**。2026-11-19 `static-and-apk` 簇清零（`/multicc.apk` 迁入前门，判定走既有宿主端口 op，公开注册 -1）且版本化 HTML 与 `express.static` 两层中间件随 `static_web_root` 退役，129/31 → 128/29；同日 `/artifacts` 双 root 的三层中间件（headers + 两个 serveStatic）随前门 `artifacts.rs` 退役（见 docs/gateway.md §62），128/29 → 128/26；2026-11-18 `air-sync` 两条迁入前门（复用既有宿主端口），131 → 129。更早：2026-11-16 `GET /api/channels` 迁入前门 132 → 131，`plugins-core` 的 `/api/channels/recheck` 与 `/plugins/:id/*` 迁入前门后 -2、宿主端口 +1，133 → 132；当日第一次捕获是 139/32（指纹 `3b8663bf…`），静态簇迁走 3 条路由与 1 层中间件后为 136/31；`server-core` 簇迁入前门后 4 条公开路由消失、宿主端口 +1，为 133/31；同批 `cli-switch` 的 `switch-cli` 迁入前门后公开路由 -1、宿主端口 +1，总数仍为 133/31。中间件以「名字@挂载#序号」为键对账，不以位置号为键。
 
+WS 不包含在上述 HTTP 捕获数中。WS 宿主迁移仍在进行：Rust 已支持单次票据消费、VM 票据有界交接和聊天消息的 ping / share 权限门槛，测试路径已验证同会话广播与跨会话隔离；生产升级、连接、聊天状态及快照/重放仍由 Node 持有，完整逐字节 WS 差分与宿主切换尚未完成。发送侧的背压/合并规则已有 Rust 内核 `ws_backpressure` 并与冻结 Node 实现逐效果对照（见 docs/gateway.md §63），但 Node 仍运行自己的那份包装器，尚未改为委托。
+
 ## 1. 「驱动到零」应当怎么读
 
 128 不是一类东西，直接归零既不可能也不应该：

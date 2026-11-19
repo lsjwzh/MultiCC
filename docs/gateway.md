@@ -5080,3 +5080,33 @@ stub 子进程要先加载原生模块、建读模型，才监听内部端口；
 ### 62.4 范围之外
 
 `/voice-gateway/web` 反代层、share 页 HTML 的 Express 渲染；`servedRoots` 在 Node 里仍供 docs-registry / task-shell 读取（路径常量，不是路由）。
+
+## 63. WS 宿主迁移（进行中）
+
+票据仍由唯一的 `AuthRuntime` 管理：私有控制流可原子消费路径绑定的一次性票据。
+VM 引用先摘除票据，再经弱引用回调在 Node 线程取出并删除槽位，序列化结果受 64 KiB
+控制帧上限约束；不可序列化或超限时拒绝，不重试。此 Node 代码仅负责 VM 值交接，
+因为 JS 引用不能直接跨进程；待票据元数据的所有生产者均由 Rust 持有后可删除该桥。
+聊天消息的 ping 与 share 权限门槛由 `chat_ws_control` 判定，心跳仍先于权限检查。
+机器票据的 VM 交接仅投影授权及目标地址所需字段，因而无关的回调与循环引用不会
+阻止连接信息交接；无法序列化的必需字段仍拒绝。尚未接线的 `ws_handshake` 规划器
+已与 Node `ws` 生成的 20 组握手响应逐字节对照，三项真实代码变异被语料捕获；
+`ws_registry` 提供按会话索引的连接、隔离广播及可配置的消息数和字节数限额。仅在
+`MULTICC_GATEWAY_TEST_ROUTES=1` 时注册的 `/__gateway_test/ws` 已在真实监听器上将
+握手、票据消费、连接注册表和 ping 分发串起来；两种输入帧的 pong 字节与 Node
+`ws` 对照一致；多连接测试确认同一会话扇出与跨会话隔离。它是隔离探针，不处理
+生产聊天连接。JSON 可表示的 WS 事件信封由 Rust `api_contract::ws_envelope` 生成；
+Node `createWsEnvelope` 语料校验字段顺序、ID 回退和特殊字符的逐字节行为。
+发送侧的队列规则也已有 Rust 所有者：`ws_backpressure` 复刻 `src/ws-backpressure.js`
+的全部可观测决策——按 JSON `type` 的合并键、2 MiB 队列上限加 8 MiB 单帧上限的天花板、
+4096 条消息的活发送闸（replay 路径豁免）、1 MiB 高水位与 15 秒拥塞计时，以及 1013
+「slow client; reconnect to resync」关闭，连 metric 与 log 行的顺序都一致。时钟、重试
+定时器和 `bufferedAmount` 由调用方提供，内核本身无副作用。这一层是任何 WS 宿主迁移
+的前置件：共享连接路由对每条非原生 socket 都装了这个包装器，`/ws/machines` 这种看似
+无状态的桥接也会因此按 JSON type 合并帧。对照语料
+`docs/rust-migration/differential/ws-backpressure-golden.json` 由冻结实现
+`tests/helpers/legacy-ws-backpressure.js` 生成，20 组场景共 175 个效果逐一对齐，
+八项真实代码变异均被捕获。
+
+这些只是前置工作：WS 升级、连接注册、聊天状态、快照/重放仍由 Node 承担；Node 侧仍
+运行自己的那份发送包装器（尚未改为委托给内核），完整的帧级差分和宿主切换尚未完成。
