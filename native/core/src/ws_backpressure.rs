@@ -1,9 +1,12 @@
 //! The WebSocket send wrapper: queue, coalescing, congestion and the 1013 cut.
 //!
-//! `src/ws-backpressure.js` sits in front of `ws.send` on every socket the
-//! shared connection router owns, so a Rust WebSocket host cannot be
-//! byte-compatible without these rules: a slow client is disconnected on the
-//! same frame, with the same close code and the same metric and log lines.
+//! The addon's `RustWsHost` puts this kernel in front of `ws.send` on every
+//! socket the shared connection router owns (the production module
+//! `src/ws-backpressure.js` is retired; the frozen copy
+//! `tests/helpers/legacy-ws-backpressure.js` remains the differential
+//! oracle), so a Rust WebSocket host stays byte-compatible with what clients
+//! always saw: a slow client is disconnected on the same frame, with the same
+//! close code and the same metric and log lines.
 //!
 //! The kernel is pure. The caller supplies the clock (`set_now`), the retry
 //! timer (`fire_timer`) and the socket through [`Transport`]; every decision

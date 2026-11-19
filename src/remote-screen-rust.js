@@ -416,7 +416,7 @@ function stopBackpressurePoll(session) {
   session.poll = null;
 }
 
-// 客户端侧真实积压 = ws 传输层队列 + installWsBackpressure 自己攒的队列。
+// 客户端侧真实积压 = ws 传输层队列 + 原生 WS 宿主（RustWsHost）为这条连接攒的发送队列。
 // 只看 bufferedAmount 会漏掉更早的一大截：连接握手时 connection-router 就给每条
 // WS 装了背压层，`ws.send` 先落进它自己的队列（没写进 socket 的字节不计入
 // bufferedAmount）。漏算的结果是慢客户端迟迟不暂停上游，几秒的旧画面全排在

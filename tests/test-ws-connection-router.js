@@ -441,3 +441,32 @@ test('air=1 meta stays on the shared router policy', async t => {
   assert.equal(air.terminations, 1);
   assert.deepEqual(attached, ['meta']);
 });
+
+// The shared router's per-connection queue is the Rust host behind
+// installNativeQueue. Pin the observable surface here so the registry swap
+// cannot silently change what downstream code (remote-screen, the machines
+// bridge) reads off the socket.
+test('the native queue exposes live stats while attached and a closed tombstone after detach', async t => {
+  const h = harness(t);
+  const ws = await h.connect('/ws/chat?session=chat');
+  const api = ws._multiccBackpressure;
+  assert.equal(typeof api.sendImmediate, 'function');
+  assert.equal(typeof api.flush, 'function');
+  assert.equal(typeof api.stats, 'function');
+  assert.deepEqual(api.stats(), {
+    queueBytes: 0, queueMessages: 0, sending: false, congested: false, closed: false,
+  });
+  assert.ok(!('congestedAt' in api.stats()), 'the registry reports a boolean, not a timestamp');
+
+  // A send through the patched ws.send completes synchronously against the
+  // fake transport and leaves the queue empty.
+  ws.send(JSON.stringify({ type: 'ping' }));
+  assert.deepEqual(api.stats(), {
+    queueBytes: 0, queueMessages: 0, sending: false, congested: false, closed: false,
+  });
+
+  ws.finishClose();
+  assert.deepEqual(api.stats(), {
+    queueBytes: 0, queueMessages: 0, sending: false, congested: false, closed: true,
+  }, 'detach turns stats into the closed tombstone instead of throwing');
+});

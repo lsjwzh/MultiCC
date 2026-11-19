@@ -18,7 +18,7 @@ const {
 } = require('../src/observability');
 const { atomicWriteJson, secureRuntimeData } = require('../src/runtime-security');
 const { createPaths } = require('../src/paths');
-const { installWsBackpressure } = require('../src/ws-backpressure');
+const { installWsBackpressure } = require('./helpers/legacy-ws-backpressure');
 const { requestIdMiddleware, cleanIncomingId, makeRequestId } = require('../src/http-errors');
 
 test('authenticated installs auto-bind to IPv4 LAN while explicit policy stays fail-closed', () => {

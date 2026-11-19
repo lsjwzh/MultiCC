@@ -680,15 +680,22 @@ test('core runner covers every selected path and expands declared variants', () 
   // （与先例 tests/test-orchestration-canonical-native.js 同一模式），不绑端口、不碰
   // 真实数据根、无网络、无时钟/随机依赖，是 hermetic 的。
   // 459 + 3 = 462 entries, 382 + 3 = 385 deterministic, 431 + 3 = 434 commands。
+  // 2026-11-19 WS host stage: tests/test-ws-host-differential.js drives the
+  // frozen legacy send-queue oracle and the RustWsHost through the same op
+  // stream (9 directed cases + a seeded fuzz) and compares the transport,
+  // effect and callback streams byte for byte. Fully hermetic (fake sockets,
+  // injected clock/scheduler, no ports or network), registered core
+  // deterministic under npm:test:security.
+  // 462 + 1 = 463 entries, 385 + 1 = 386 deterministic, 434 + 1 = 435 commands。
   // Restart supervisor and real-server checks use isolated processes and the
   // debug binaries built by test:release:core before the manifest runner.
-  assert.equal(core.length, 462, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 462);
+  assert.equal(core.length, 463, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 463);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 385);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 386);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 46);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -698,8 +705,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 434,
-    '431 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 435,
+    '432 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

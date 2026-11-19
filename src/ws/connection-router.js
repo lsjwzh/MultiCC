@@ -2,11 +2,11 @@
 
 const { randomUUID } = require('node:crypto');
 const { WebSocket } = require('ws');
-const { installWsBackpressure } = require('../ws-backpressure');
+const { getNative } = require('../native/runtime');
+const { installNativeQueue } = require('./native-queue');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 
 const WS_PING_INTERVAL_MS = 30_000;
-const WS_MAX_MISSED_PONGS = 3;
 const SESSIONLESS_WS_PATHS = new Set([
   '/ws/voice', '/ws/tts', '/ws/workspace', '/ws/meta', '/ws/aux', '/ws/remote-screen',
 ]);
@@ -48,55 +48,91 @@ function mountWsConnectionRouter(wss, deps) {
     path,
     os,
   } = deps;
-  const connections = new WeakMap();
+
+  // One native owner for every connection this router accepts: the registry
+  // (what used to be a WeakMap), the heartbeat windows and the per-connection
+  // send queue all live in Rust. Node keeps the timer cadence and the raw
+  // socket transport through these ports.
+  const wsHostAnchor = {};
+  const wsHost = new (getNative().RustWsHost)(wsHostAnchor);
+  Object.defineProperty(wsHost, Symbol('ws host anchor'), { value: wsHostAnchor });
+  // Per-connection port views created by installNativeQueue, keyed by the
+  // host's connection id; the schedule port looks them up to fire the retry
+  // timer against the right `sendFrame` closure.
+  const connPortsById = new Map();
+  const wsPorts = {
+    ping(socket) { socket.ping(); },
+    terminate(socket) { socket.terminate(); },
+    // A synchronous throw crosses back into the kernel as the close failure
+    // that falls back to `terminate` — do not catch here.
+    close(socket, code, reason) { socket.close(code, reason); },
+    schedule(id, ms) {
+      const timer = setTimeout(() => {
+        const connPorts = connPortsById.get(id);
+        if (!connPorts) return;
+        try { wsHost.flushClient(id, connPorts); } catch (_) {}
+      }, ms);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+      return timer;
+    },
+    cancelSchedule(timer) { clearTimeout(timer); },
+    metric(name, value, op) {
+      try { op === 'set' ? metrics.set(name, value) : metrics.inc(name, value); } catch (_) {}
+    },
+    backpressureLog(socket, event, fields) {
+      try { logger.warn(event, { ...fields, correlationId: socket._correlationId }); } catch (_) {}
+    },
+    heartbeatTimeout(fields, socket, missedPongs) {
+      try {
+        logger.warn('ws_pong_timeout', { ...fields, correlationId: socket._correlationId, missedPongs });
+      } catch (_) {}
+    },
+    now: () => Date.now(),
+  };
 
   wss.on('connection', async (ws, req) => {
     const urlObj = new URL(req.url, 'http://localhost');
     // `/ws/workspace` and `/ws/meta` (unless it is the Air protocol) are owned
     // by the native subscription owner: it owns the liveness window and the
-    // send queue for those sockets. Every other path keeps the shared router
-    // heartbeat and backpressure below.
+    // send queue for those sockets. They still register here so the registry
+    // and the close log see every socket in one place.
     const nativeSocket = workspaceRuntime.ownsSocket?.(urlObj) === true;
     const addressedSessionId = urlObj.pathname === '/ws/chat'
       ? urlObj.searchParams.get('session')
       : SESSIONLESS_WS_PATHS.has(urlObj.pathname) ? null : urlObj.searchParams.get('id');
     const addressedDirectoryId = urlObj.pathname === '/ws/workspace'
       ? urlObj.searchParams.get('dirId') : null;
-    const heartbeat = {
-      pendingPong: false,
-      missedPongs: 0,
-      timedOut: false,
-      connectedAt: Date.now(),
-      native: nativeSocket,
-      fields: {
-        connectionId: randomUUID(),
-        path: urlObj.pathname, // Never log query strings containing auth credentials.
-        sessionId: addressedSessionId,
-        directoryId: addressedDirectoryId,
-      },
+    const fields = {
+      connectionId: randomUUID(),
+      path: urlObj.pathname, // Never log query strings containing auth credentials.
+      sessionId: addressedSessionId,
+      directoryId: addressedDirectoryId,
     };
-    connections.set(ws, heartbeat);
+    const connectedAt = Date.now();
+    const connId = wsHost.attach(ws, fields, nativeSocket, connectedAt);
     // Install before dispatch: every WS route needs protocol-level liveness.
     ws.on('pong', () => {
-      heartbeat.pendingPong = false;
-      heartbeat.missedPongs = 0;
+      try { wsHost.onPong(connId); } catch (_) {}
     });
     ws.once('close', (code, reason) => {
       // The router's listener runs before the runtime's detach listener, so the
       // native heartbeat record is still available for this log line.
-      const nativeStats = heartbeat.native ? workspaceRuntime.socketStats?.(ws) : null;
+      const nativeStats = nativeSocket ? workspaceRuntime.socketStats?.(ws) : null;
+      const record = (() => {
+        try { return wsHost.detach(connId, wsPorts); } catch (_) { return null; }
+      })();
+      connPortsById.delete(connId);
       logger.info('ws_connection_closed', {
-        ...heartbeat.fields,
+        ...fields,
         correlationId: ws._correlationId,
         code,
         reason: reason.toString(),
-        durationMs: Math.max(0, Date.now() - heartbeat.connectedAt),
+        durationMs: Math.max(0, Date.now() - connectedAt),
         // Same handshake flags used by ws 8.x to populate CloseEvent.wasClean.
         wasClean: ws._closeFrameReceived === true && ws._closeFrameSent === true,
-        heartbeatTimedOut: nativeStats ? nativeStats.timedOut === true : heartbeat.timedOut,
-        missedPongs: nativeStats ? nativeStats.missedPongs : heartbeat.missedPongs,
+        heartbeatTimedOut: nativeStats ? nativeStats.timedOut === true : record?.timedOut === true,
+        missedPongs: nativeStats ? nativeStats.missedPongs : (record?.missedPongs ?? 0),
       });
-      connections.delete(ws);
     });
     if (getShuttingDown()) {
       ws.close(1012, 'server shutting down');
@@ -107,13 +143,10 @@ function mountWsConnectionRouter(wss, deps) {
       ws.close(4003, 'Direct public access disabled');
       return;
     }
-    // The native owner installs its own send queue for the two workspace
-    // hosts; patching `ws.send` here as well would duplicate the queue.
+    // The native workspace owner installs its own send queue for the two
+    // workspace hosts; patching `ws.send` here as well would duplicate it.
     if (!nativeSocket) {
-      installWsBackpressure(ws, {
-        onMetric: (name, value, op) => op === 'set' ? metrics.set(name, value) : metrics.inc(name, value),
-        onLog: (event, fields) => logger.warn(event, { ...fields, correlationId: ws._correlationId }),
-      });
+      installNativeQueue(ws, wsHost, connId, wsPorts, connPortsById);
     }
 
     if (require('./machines').bridgeMachineSocket(ws, urlObj, { authSecurity })) return;
@@ -192,10 +225,10 @@ function mountWsConnectionRouter(wss, deps) {
       return ttsService.handleTtsWs(ws, req);
     }
     if (urlObj.pathname === '/ws/workspace') {
-      return workspaceRuntime.attachWorkspace(ws, urlObj, heartbeat.fields);
+      return workspaceRuntime.attachWorkspace(ws, urlObj, fields);
     }
     if (urlObj.pathname === '/ws/meta') {
-      return workspaceRuntime.attachMeta(ws, urlObj, heartbeat.fields);
+      return workspaceRuntime.attachMeta(ws, urlObj, fields);
     }
     if (urlObj.pathname === '/ws/remote-screen') {
       if (!remoteScreenRfb) { ws.close(1010, 'remote screen unavailable'); return; }
@@ -366,31 +399,20 @@ function mountWsConnectionRouter(wss, deps) {
   });
 
   const wsPingInterval = setInterval(() => {
-    wss.clients.forEach(client => {
-      const heartbeat = connections.get(client);
-      if (!heartbeat || heartbeat.native) return;
-      if (client.readyState !== WebSocket.OPEN || heartbeat.timedOut) return;
-      // Count completed unanswered windows, not the first ping itself. Three
-      // missed windows allow ~90s after that ping for a delayed relay pong.
-      if (heartbeat.pendingPong) heartbeat.missedPongs += 1;
-      if (heartbeat.missedPongs >= WS_MAX_MISSED_PONGS) {
-        heartbeat.timedOut = true;
-        logger.warn('ws_pong_timeout', {
-          ...heartbeat.fields,
-          correlationId: client._correlationId,
-          missedPongs: heartbeat.missedPongs,
-        });
-        client.terminate();
-        return;
-      }
-      heartbeat.pendingPong = true;
-      client.ping();
-    });
-    // One shared cadence, but the workspace sockets' windows and timeout are
-    // decided (and acted on) by the native owner.
+    // One shared cadence; every window decision (ping, miss count, the ~90s
+    // terminate) is native. A port failure must not kill the sweep.
+    try { wsHost.tick(wsPorts); } catch (error) {
+      logger.warn('ws_heartbeat_tick_failed', { error: String((error && error.message) || error) });
+    }
+    // The workspace sockets' windows and timeout are decided (and acted on)
+    // by their own native owner.
     workspaceRuntime.tickHeartbeat?.();
   }, WS_PING_INTERVAL_MS);
-  wss.on('close', () => clearInterval(wsPingInterval));
+  wss.on('close', () => {
+    clearInterval(wsPingInterval);
+    try { wsHost.close(wsPorts); } catch (_) {}
+    connPortsById.clear();
+  });
   return { wsPingInterval };
 }
 
