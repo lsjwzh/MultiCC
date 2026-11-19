@@ -6,6 +6,7 @@ const { installNativeQueue } = require('./native-queue');
 const { createWsHost } = require('./ws-host');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { startChatBridge } = require('../gateway-child');
+const { getNative } = require('../native/runtime');
 
 const WS_PING_INTERVAL_MS = 30_000;
 const SESSIONLESS_WS_PATHS = new Set([
@@ -141,86 +142,105 @@ function mountWsConnectionRouter(wss, deps) {
         missedPongs: nativeStats ? nativeStats.missedPongs : (record?.missedPongs ?? 0),
       });
     });
-    if (getShuttingDown()) {
-      ws.close(1012, 'server shutting down');
-      return;
+    // Admission is decided in Rust. `multicc_core::ws_admission` owns the
+    // ordered gate sequence -- shutdown, public peer, share token, one-use
+    // ticket, machine grant, fleet scope, the legacy credentials, the final
+    // auth denial and the internal-slot refusal -- together with the metrics,
+    // the deprecation warning, the socket annotations and the position of the
+    // send queue. Node owns the facts and carries the plan out.
+    //
+    // Every fact below is a pure read, so they are all collected before the
+    // decision. The credential checks are guarded on that credential having
+    // been sent at all rather than on its opt-in flag, and the kernel owns the
+    // conjunction they used to sit in. The two lookups that must not happen
+    // speculatively ask the kernel first: the share table is consulted only
+    // for a chat socket presenting a `share` parameter, and the one-use ticket
+    // is consumed only when admission actually reaches the auth phase.
+    const cookies = parseCookies(req.headers.cookie);
+    const shareParam = urlObj.searchParams.get('share') || '';
+    const tokenParam = urlObj.searchParams.get('token');
+    const authCookie = cookies.multicc_auth || null;
+    const facts = {
+      shuttingDown: !!getShuttingDown(),
+      peerAllowed: !!isRequestPeerAllowed(req),
+      path: urlObj.pathname,
+      shareParam,
+      sessionParam: urlObj.searchParams.get('session'),
+      addressedSessionId,
+      addressedDirectoryId,
+      shareAccess: null,
+      local: !!isLocalRequest(req),
+      accessToken: !!getAccessToken(),
+      hasTicketParam: urlObj.searchParams.has('ticket'),
+      ticket: null,
+      allowLegacyWsCookie: !!allowLegacyWsCookie,
+      allowLegacyWsToken: !!allowLegacyWsToken,
+      authCookie: !!authCookie,
+      cookieValid: !!(authCookie && authSecurity?.verifyCookie?.(authCookie)),
+      tokenValid: !!(tokenParam && authSecurity?.verifyAccessToken?.(tokenParam)),
+      machinesPresent: !!machines,
+      machineActive: false,
+      ip: req.socket.remoteAddress ?? null,
+      sessionInternalSlot: !!(addressedSessionId
+        && isInternalExecutionSlot(persistedSessions.get(addressedSessionId))),
+      nativeSocket,
+    };
+    // Both lookups are gated by the kernel, which owns the conditions they
+    // used to sit under. The JS-side parameter check in front of each is a
+    // necessary condition the kernel re-checks, not a second copy of the rule.
+    if (shareParam && getNative().wsAdmissionNeedsShareRecord(JSON.stringify(facts))) {
+      facts.shareAccess = share.access(shareParam, { cookies }) || null;
     }
-    if (!isRequestPeerAllowed(req)) {
-      metrics.inc('multicc_ws_public_peer_rejected_total');
-      ws.close(4003, 'Direct public access disabled');
-      return;
+    if (facts.hasTicketParam
+        && getNative().wsAdmissionNeedsTicket(JSON.stringify(facts))) {
+      facts.ticket = authSecurity?.consumeWsTicket?.(urlObj.searchParams.get('ticket'),
+        urlObj.pathname) || null;
+      facts.machineActive = !!(facts.ticket?.machineGrantId
+        && machines?.active(facts.ticket.machineGrantId));
     }
-    // The native workspace owner installs its own send queue for the two
-    // workspace hosts; patching `ws.send` here as well would duplicate it.
-    if (!nativeSocket) {
-      installNativeQueue(ws, wsHost, connId, wsPorts, connPortsById);
-    }
-
-    // A valid share token replaces normal auth only for its scoped chat.
-    let sharePerm = null;
-    if (urlObj.pathname === '/ws/chat' && urlObj.searchParams.get('share')) {
-      const access = share.access(urlObj.searchParams.get('share'), {
-        cookies: parseCookies(req.headers.cookie),
-      });
-      if (access && access.sessionId === urlObj.searchParams.get('session')) {
-        sharePerm = access.access;
+    let admitted = false;
+    let closed = false;
+    for (const step of JSON.parse(getNative().wsAdmissionPlan(JSON.stringify(facts)))) {
+      if (step.op === 'metric') { metrics.inc(step.name); continue; }
+      if (step.op === 'installSendQueue') {
+        installNativeQueue(ws, wsHost, connId, wsPorts, connPortsById);
+        continue;
       }
-      if (!sharePerm) {
-        ws.close(4003, 'Forbidden');
-        return;
+      if (step.op === 'machineGrant') { ws._machineGrantId = step.value; continue; }
+      if (step.op === 'correlationId') {
+        // A ticket with neither identity left `ws._correlationId` undefined,
+        // which the close log omits rather than reporting as null.
+        ws._correlationId = step.value === null ? undefined : step.value;
+        continue;
       }
-    }
-
-    // External clients exchange HTTP auth for a one-use, path-bound ticket.
-    if (!sharePerm) {
-      const ip = req.socket.remoteAddress;
-      const local = isLocalRequest(req);
-      const cookies = parseCookies(req.headers.cookie);
-      const accessToken = getAccessToken();
-      const ticket = urlObj.searchParams.has('ticket') && authSecurity?.consumeWsTicket?.(urlObj.searchParams.get('ticket'), urlObj.pathname);
-      const legacyCookie = accessToken && allowLegacyWsCookie && cookies.multicc_auth
-        && authSecurity.verifyCookie(cookies.multicc_auth);
-      const legacyToken = accessToken && allowLegacyWsToken
-        && authSecurity.verifyAccessToken(urlObj.searchParams.get('token'));
-      if (ticket?.machineGrantId) {
-        if (!machines?.active(ticket.machineGrantId)) { ws.close(4003, '电脑授权已撤销'); return; }
-        ws._machineGrantId = ticket.machineGrantId;
-      }
-      if (ticket) ws._correlationId = ticket.correlationId || ticket.requestId;
-      if (ticket && ((ticket.fleetSessionId && ticket.fleetSessionId !== addressedSessionId)
-          || (ticket.fleetDirectoryId && ticket.fleetDirectoryId !== addressedDirectoryId))) {
-        metrics.inc('multicc_ws_fleet_scope_denied_total');
-        ws.close(4003, 'Forbidden');
-        return;
-      }
-      if (legacyCookie || legacyToken) {
-        metrics.inc('multicc_ws_legacy_auth_total');
+      if (step.op === 'legacyWarning') {
         logger.warn('legacy_ws_auth', {
-          path: urlObj.pathname,
-          mode: legacyToken ? 'query' : 'cookie',
-          ip,
+          path: step.path,
+          mode: step.mode,
+          ip: step.ip === null ? undefined : step.ip,
         });
+        continue;
       }
-      if (!local && (!accessToken || (!ticket && !legacyCookie && !legacyToken))) {
-        metrics.inc('multicc_ws_auth_denied_total');
-        ws.close(4003, 'Forbidden');
-        return;
+      if (step.op === 'sharePermission') { ws._sharePerm = step.value; continue; }
+      if (step.op === 'sessionMissing') {
+        sendWs(ws, {
+          type: 'error',
+          error: 'Session does not exist.',
+          data: 'Session does not exist.\r\n',
+        });
+        continue;
       }
+      if (step.op === 'close') {
+        // A null code is `ws.close()` with no arguments: an empty close frame.
+        if (step.code === null) ws.close(); else ws.close(step.code, step.reason);
+        closed = true;
+        break;
+      }
+      if (step.op === 'accept') admitted = true;
     }
-
-    if (addressedSessionId
-        && isInternalExecutionSlot(persistedSessions.get(addressedSessionId))) {
-      sendWs(ws, {
-        type: 'error',
-        error: 'Session does not exist.',
-        data: 'Session does not exist.\r\n',
-      });
-      ws.close();
-      return;
-    }
+    if (closed || !admitted) return;
 
     if (urlObj.pathname === '/ws/chat') {
-      ws._sharePerm = sharePerm;
       return handleChatWs(ws, req, urlObj);
     }
     if (urlObj.pathname === '/ws/voice') {

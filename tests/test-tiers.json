@@ -7253,6 +7253,15 @@
       ]
     },
     {
+      "path": "tests/test-ws-admission-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-ws-backpressure.js",
       "tier": "core",
       "lane": "deterministic",

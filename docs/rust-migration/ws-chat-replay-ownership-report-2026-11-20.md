@@ -165,9 +165,28 @@ Node 文件与理由，见「保留的 Node」一节。
 | `--no-node` 下 `/ws/chat` 真实可用 | **未达成** | 仍立即答 `503 node_runtime_absent`，`no_node.rs` 守卫未变 |
 | 切 `--no-node`、删除 Node 源码、`package.json`、`node_modules` | **未做** | 前提是 128 条路由全部对齐，目前不成立 |
 
+## 阶段更新：`/ws/chat` 准入与鉴权迁成 Rust 所有者（2026-11-20）
+
+在前门终结 socket 之后，本阶段把每条 WebSocket 连接的准入判定从 `src/ws/connection-router.js`
+的内联块搬进 `multicc_core::ws_admission`。完整有序闸门序列、事实采集边界、测试与变异明细、
+以及踩到的变异脚本坑，见 `ws-chat-admission-stage-2026-11-20.md`。
+
+| 项目 | 状态 | 证据 |
+|---|---|---|
+| 准入与鉴权判定成为 Rust 所有者（九道闸门的顺序、计数器、遗留警告、socket 标注、发送队列安装位） | 已完成 | 内核 5 项；1080 例语料逐例一致 |
+| 一次性票据不被投机消耗 | 已完成 | `needs_ticket` 与 `plan` 同一条分享规则；两项内核不变量测试 + 接线差分逐例核对消耗次数 |
+| 分享表只为带 `share` 参数的 chat socket 查 | 已完成 | `needs_share_record`；既有 `test-ws-connection-router.js` 的该契约仍绿（22/22） |
+| 接线逐例差分 | 已完成 | `tests/test-ws-admission-differential.js` 用真路由驱动 800 例；另 280 例是 URL 表达不出的 id 组合，由内核语料覆盖 |
+| 变异证明 | 见下方门禁小节 | `ws-admission-mutations.py` 27 个变异 |
+| 会话历史迁成 Rust 所有者 | **未做** | 仍在 Node；不依赖回合编排，是建议的下一刀 |
+| 回合编排迁成 Rust 所有者 | **未做** | `src/chat/` + `src/session-work/` 共 16,996 行；Claude SDK 车道依赖 Node 包 `@anthropic-ai/claude-agent-sdk` 0.3.325，无 Rust 等价物 |
+| 重放缓冲写侧与 `cs.clients` 搬到前门进程 | **未做** | 已在 addon 的 `RustWsHost`，但写入方仍是 Node 的 turn engine |
+| `--no-node` 下 `/ws/chat` 真实可用 | **未达成** | `forward.rs` 的 `node_absent()` 分支未改，仍答 `503 node_runtime_absent` |
+| 切 `--no-node`、删除 Node 源码与依赖 | **未做** | 前提不成立 |
+
 ## 下一步
 
-1. `/ws/chat` 的升级终结已在前门（见上节）。剩下的是让前门独立回答 Node 仍持有的事实：票据消费、鉴权与 share 校验、会话历史、回合编排需要 Rust 所有者，`ws_chat_hub` 才能脱离测试探针，`--no-node` 下 `/ws/chat` 才不再 503。
+1. 升级终结与准入鉴权都已是 Rust 所有者（见上两节）。剩下的是会话历史与回合编排：按依赖顺序先做会话历史读取（连接后 `chat_history` / `task_state` 两帧的来源，不依赖回合编排），再做回合编排本身，而那一步必须先决定 Claude SDK 车道怎么办——它依赖一个 Node 包。只有这两项都有 Rust 所有者，`ws_chat_hub` 才能脱离测试探针，`--no-node` 下 `/ws/chat` 才不再 503。
 2. 按上表逐类迁出 128 条路由与其余 `/ws/*`。每迁一类，同提交删除对应 Node 实现并补逐字节差分。
 3. 单独治理「改 `.rs` 后首轮安全段冷编译」的门禁行为，并清理 7 个文件的 rustfmt 既有欠账。
 4. 用户手动重启后，在真实数据根上验收 `/ws/chat` 重连重放。本次所有证据都在隔离数据根上，没有触碰运行中的生产实例。
