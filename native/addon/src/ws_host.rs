@@ -19,6 +19,7 @@ use crate::{
     js_live::LiveValue as L,
 };
 use multicc_core::{
+    chat_replay_buffer::Sessions,
     js::JsValue as V,
     workspace_sockets::{Heartbeat, HeartbeatTick},
     ws_backpressure::{Effect, Limits, Options, Payload, Transport, Wrapper},
@@ -305,9 +306,27 @@ impl Transport for JsTransport<'_, '_> {
 pub struct RustWsHost {
     state: RefCell<State>,
     values: Values,
+    /// Per-session replay buffer and ordered client membership for `/ws/chat`.
+    /// Frames are the already-encoded wire text; clients are connection ids.
+    chat: RefCell<Sessions<String, u64>>,
+    /// The router's shared ports, bound once so session fan-out and the
+    /// replay burst can address connections without a port argument.
+    ports: RefCell<Option<Value>>,
 }
 
 impl RustWsHost {
+    /// The router's shared ports, bound by `bind_ports`.
+    fn shared_ports<'e>(&self, env: &'e Env) -> Result<L<'e>> {
+        let value = self.ports.borrow().clone();
+        let Some(value) = value else {
+            return Err(napi::Error::from_reason(
+                "ws host ports are not bound (call bindPorts first)",
+            ));
+        };
+        let anchor = self.values.anchor(env)?;
+        self.values.read(env, anchor, &value)
+    }
+
     fn socket<'e>(&self, env: &'e Env, id: u64) -> Result<Option<L<'e>>> {
         let value = {
             self.state
@@ -538,6 +557,8 @@ impl RustWsHost {
         Ok(Self {
             state: RefCell::new(State::default()),
             values: Values::new(L::new(&env, anchor))?,
+            chat: RefCell::new(Sessions::default()),
+            ports: RefCell::new(None),
         })
     }
 
@@ -578,6 +599,8 @@ impl RustWsHost {
         self.values.drain(&env)?;
         let port = L::new(&env, port);
         let conn = { self.state.borrow_mut().connections.remove(&(id as u64)) };
+        // A closed socket never stays a member of any chat session.
+        self.chat.borrow_mut().detach(&(id as u64));
         let Some(conn) = conn else {
             let anchor = self.values.anchor(&env)?;
             let null = anchor.from_value(&V::Null)?;
@@ -648,6 +671,200 @@ impl RustWsHost {
         port: Unknown<'_>,
     ) -> Result<()> {
         self.enqueue(env, id as u64, data, options, callback, port, false)
+    }
+
+    /// Bind the router's shared ports once. Session fan-out and the replay
+    /// burst address connections through `ports.connPort(id)` (that
+    /// connection's `sendFrame` view) and `ports.terminate(socket)`.
+    #[napi]
+    pub fn bind_ports(&self, env: Env, ports: Unknown<'_>) -> Result<()> {
+        self.values.drain(&env)?;
+        let value = self.values.capture(&env, L::new(&env, ports))?;
+        *self.ports.borrow_mut() = Some(value);
+        self.values.drain(&env)?;
+        Ok(())
+    }
+
+    /// Append one encoded frame to the session's replay buffer (500-frame
+    /// FIFO cap).
+    #[napi]
+    pub fn replay_push(&self, session: String, frame: String) {
+        self.chat.borrow_mut().session(&session).push(frame);
+    }
+
+    /// `cs.streamReplay = []`.
+    #[napi]
+    pub fn replay_clear(&self, session: String) {
+        if let Some(entry) = self.chat.borrow_mut().get_mut(&session) {
+            entry.clear_replay();
+        }
+    }
+
+    #[napi]
+    pub fn replay_len(&self, session: String) -> u32 {
+        self.chat
+            .borrow()
+            .get(&session)
+            .map_or(0, |entry| entry.replay().len() as u32)
+    }
+
+    /// The buffered frames in order (diagnostics and the dispatch progress
+    /// reducer; the live burst never crosses into JavaScript).
+    #[napi]
+    pub fn replay_frames(&self, session: String) -> Vec<String> {
+        self.chat
+            .borrow()
+            .get(&session)
+            .map(|entry| entry.replay().iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// `cs.clients.add(ws)`: idempotent, keeps the original position.
+    #[napi]
+    pub fn client_join(&self, session: String, id: u32) {
+        self.chat.borrow_mut().session(&session).join(u64::from(id));
+    }
+
+    /// `cs.clients.delete(ws)`.
+    #[napi]
+    pub fn client_leave(&self, session: String, id: u32) {
+        if let Some(entry) = self.chat.borrow_mut().get_mut(&session) {
+            entry.leave(&u64::from(id));
+        }
+    }
+
+    /// `cs.clients.clear()`.
+    #[napi]
+    pub fn client_clear(&self, session: String) {
+        if let Some(entry) = self.chat.borrow_mut().get_mut(&session) {
+            entry.clear_clients();
+        }
+    }
+
+    /// `cs.clients.size`.
+    #[napi]
+    pub fn client_count(&self, session: String) -> u32 {
+        self.chat
+            .borrow()
+            .get(&session)
+            .map_or(0, |entry| entry.clients().len() as u32)
+    }
+
+    #[napi]
+    pub fn client_ids(&self, session: String) -> Vec<u32> {
+        self.chat
+            .borrow()
+            .get(&session)
+            .map(|entry| entry.clients().iter().map(|id| *id as u32).collect())
+            .unwrap_or_default()
+    }
+
+    /// A chat session is being created or destroyed: empty its buffer and
+    /// drop its membership without touching the sockets.
+    #[napi]
+    pub fn session_reset(&self, session: String) {
+        self.chat.borrow_mut().remove(&session);
+    }
+
+    /// Session destroy: terminate every client in membership order (a throwing
+    /// terminate is swallowed), then forget the whole session. Returns how
+    /// many clients were terminated.
+    #[napi]
+    pub fn session_drop(&self, env: Env, session: String) -> Result<u32> {
+        self.values.drain(&env)?;
+        let removed = self.chat.borrow_mut().remove(&session);
+        let Some(removed) = removed else {
+            return Ok(0);
+        };
+        if removed.clients().is_empty() {
+            return Ok(0);
+        }
+        let ports = self.shared_ports(&env)?;
+        let mut terminated = 0;
+        for id in removed.clients() {
+            let Some(socket) = self.socket(&env, *id)? else {
+                continue;
+            };
+            call_catch(ports, c"terminate", &[socket])?;
+            terminated += 1;
+        }
+        self.values.drain(&env)?;
+        Ok(terminated)
+    }
+
+    /// `broadcastTo` over one chat session: send the frame to every member
+    /// whose socket is OPEN, in membership order. A throwing send is swallowed
+    /// and does not stop the rest. Returns how many sends were attempted.
+    #[napi]
+    pub fn fan_out(&self, env: Env, session: String, frame: String) -> Result<u32> {
+        self.values.drain(&env)?;
+        let members: Vec<u64> = self
+            .chat
+            .borrow()
+            .get(&session)
+            .map(|entry| entry.clients().to_vec())
+            .unwrap_or_default();
+        if members.is_empty() {
+            return Ok(0);
+        }
+        let ports = self.shared_ports(&env)?;
+        let mut attempted = 0;
+        for id in members {
+            let Some(socket) = self.socket(&env, id)? else {
+                continue;
+            };
+            if socket.get(c"readyState")?.number()? != 1.0 {
+                continue;
+            }
+            attempted += 1;
+            let connection_ports = call(ports, c"connPort", &[number(ports, id as f64)?])?;
+            let data = ports.from_value(&V::string(&frame))?;
+            let undefined = ports.from_value(&V::Undefined)?;
+            ports.catch(|| {
+                self.enqueue_live(&env, id, data, undefined, undefined, connection_ports, true)
+            })?;
+        }
+        self.values.drain(&env)?;
+        Ok(attempted)
+    }
+
+    /// The reconnect replay burst: every buffered frame, in order, through the
+    /// send path that bypasses the message-count tripwire (the byte cap and
+    /// congestion timer still apply). A throwing send is swallowed per frame.
+    #[napi]
+    pub fn replay_burst(&self, env: Env, id: u32, session: String) -> Result<u32> {
+        self.values.drain(&env)?;
+        let frames: Vec<String> = self
+            .chat
+            .borrow()
+            .get(&session)
+            .map(|entry| entry.replay().iter().cloned().collect())
+            .unwrap_or_default();
+        if frames.is_empty() {
+            return Ok(0);
+        }
+        let id = u64::from(id);
+        let ports = self.shared_ports(&env)?;
+        let connection_ports = call(ports, c"connPort", &[number(ports, id as f64)?])?;
+        let mut sent = 0;
+        for frame in frames {
+            let data = ports.from_value(&V::string(&frame))?;
+            let undefined = ports.from_value(&V::Undefined)?;
+            ports.catch(|| {
+                self.enqueue_live(
+                    &env,
+                    id,
+                    data,
+                    undefined,
+                    undefined,
+                    connection_ports,
+                    false,
+                )
+            })?;
+            sent += 1;
+        }
+        self.values.drain(&env)?;
+        Ok(sent)
     }
 
     /// Transport completion reported by the `sendFrame` port.
@@ -876,11 +1093,32 @@ impl RustWsHost {
         port: Unknown<'_>,
         bounded: bool,
     ) -> Result<()> {
-        self.values.drain(&env)?;
-        let data = L::new(&env, data);
-        let options_live = L::new(&env, options);
-        let callback_live = L::new(&env, callback);
-        let port = L::new(&env, port);
+        self.enqueue_live(
+            &env,
+            id,
+            L::new(&env, data),
+            L::new(&env, options),
+            L::new(&env, callback),
+            L::new(&env, port),
+            bounded,
+        )
+    }
+
+    /// `enqueue` over values that are already live, so native callers (the
+    /// session fan-out and the replay burst) share the exact send path the
+    /// patched `ws.send` uses.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_live<'e>(
+        &'e self,
+        env: &'e Env,
+        id: u64,
+        data: L<'e>,
+        options_live: L<'e>,
+        callback_live: L<'e>,
+        port: L<'e>,
+        bounded: bool,
+    ) -> Result<()> {
+        self.values.drain(env)?;
         let payload = classify(data)?;
         let options = parse_options(options_live)?;
         // `ws.send(data, callback)` re-splits exactly like the retired wrapper.
@@ -909,7 +1147,7 @@ impl RustWsHost {
             return Ok(());
         }
         let handle = if has_callback {
-            let value = self.values.capture(&env, callback_live)?;
+            let value = self.values.capture(env, callback_live)?;
             let mut state = self.state.borrow_mut();
             // `known` above settled existence; the entry cannot leave between
             // two host calls on one thread.
@@ -924,11 +1162,11 @@ impl RustWsHost {
         } else {
             None
         };
-        self.with_wrapper(&env, port, id, |wrapper, transport| {
+        self.with_wrapper(env, port, id, |wrapper, transport| {
             wrapper.enqueue(payload, options, handle, bounded, transport);
             Ok(())
         })?;
-        self.values.drain(&env)?;
+        self.values.drain(env)?;
         Ok(())
     }
 }

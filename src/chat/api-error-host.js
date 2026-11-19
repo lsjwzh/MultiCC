@@ -72,6 +72,7 @@ function createApiErrorHost(options = {}) {
     policy,
     logger,
     persistedSessions,
+    replay,
     setTaskState,
     chatBroadcast,
     setSessionStatus,
@@ -91,6 +92,9 @@ function createApiErrorHost(options = {}) {
   }
   if (!logger || !persistedSessions) {
     throw new TypeError('api error host dependency missing: object port');
+  }
+  if (!replay || typeof replay.clear !== 'function') {
+    throw new TypeError('api error host dependency missing: replay');
   }
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const setTimeoutFn = typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout;
@@ -401,7 +405,7 @@ function createApiErrorHost(options = {}) {
       cs._adapterError = null;
       cs._sawApiError = false;
       cs._codexTransportError = '';
-      cs.streamReplay = [];
+      replay.clear(sessionName);
       setSessionStatus(sessionName, { status: 'thinking', currentFile: null });
       logger.info('api_error_retry_started', {
         sessionId: sessionName,

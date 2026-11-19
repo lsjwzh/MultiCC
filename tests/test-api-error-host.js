@@ -6,6 +6,7 @@ const { createApiErrorHost } = require('../src/chat/api-error-host');
 const { createApiErrorPolicyRuntime, detectErrorEnvelope, decideApiErrorPolicy } = require('../src/chat/api-error-policy');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 function decision(overrides = {}) {
   return {
@@ -60,6 +61,7 @@ function harness(options = {}) {
       error(event, fields) { logs.push({ event, fields }); },
     },
     persistedSessions: records,
+    replay: createTestChatHub().hub,
     setTaskState: (sessionId, patch, writeOptions) => {
       taskWrites.push({ sessionId, patch, writeOptions });
     },
@@ -124,6 +126,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
     getExperimentalTuiChatRuntime: () => null,
     persistedSessions: new Map(),
     chatSessions: new Map(),
+    replay: createTestChatHub().hub,
     logger: { warn: noop, info: noop, error: noop },
     chatBroadcast: (sessionId, payload) => finalizerBroadcasts.push({ sessionId, payload }),
     cancelClassify: noop,
@@ -691,6 +694,7 @@ function rejectionHost(proxyFailureForAttempt, now = 1_000_000) {
     policy,
     logger: { info() {}, warn() {}, error() {} },
     persistedSessions: new Map(),
+    replay: createTestChatHub().hub,
     setTaskState() {},
     chatBroadcast() {},
     setSessionStatus() {},
@@ -840,6 +844,7 @@ function rateLimitHost(options = {}) {
     policy,
     logger: { info() {}, warn() {}, error() {} },
     persistedSessions: new Map(),
+    replay: createTestChatHub().hub,
     setTaskState() {},
     chatBroadcast() {},
     setSessionStatus() {},

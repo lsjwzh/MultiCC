@@ -12,6 +12,7 @@ const { processSpawnArgs } = require('../src/chat/process-spawn-args');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { hasNativeHistory } = require('../src/cli-adapters/claude-exp-history');
 const prepareTurn = require('./helpers/claude-turn');
+const { createTestChatHub } = require('./helpers/native-chat-hub');
 const { recordsOf } = require('./helpers/session-records');
 
 const SESSION_UUID = '05de20f7-563a-4d09-af34-b748c7b189ca';
@@ -181,10 +182,12 @@ test('native bridge maps MultiCC options without making a live request', async (
 async function prepareIdentity({ cli = 'claude', connected = true, nativeId = null, reject = false } = {}) {
   const noop = () => {};
   const record = { id: 'sdk-identity-test', kind: 'chat', cli, cliSessionId: nativeId };
-  const chat = { cli, chatTurnCount: nativeId ? 1 : 0, clients: new Set() };
+  const { hub } = createTestChatHub();
+  const chat = { cli, chatTurnCount: nativeId ? 1 : 0, clients: hub.clientsOf(record.id) };
   const saved = [];
   let preparedId;
   const engine = createChatTurnEngine({
+    replay: hub,
     persistedSessions: new Map([[record.id, record]]),
     chatSessions: new Map(connected ? [[record.id, chat]] : []),
     taskContextHost: { turnOptions: opts => opts, restore: () => null },

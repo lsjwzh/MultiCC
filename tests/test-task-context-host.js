@@ -33,7 +33,7 @@ function fixture(overrides = {}) {
       if (message.clientMsgId) deliveries.add(`${sessionId}:${message.clientMsgId}`);
       return true;
     },
-    emitClients: (clients, event) => events.push({ clients, event }),
+    emitSession: (sessionId, event) => events.push({ sessionId, event }),
     getTaskBoard: () => board,
     containsDelivery: (sessionId, id) => deliveries.has(`${sessionId}:${id}`),
     classifyDisplay: state => ({ cardStatus: state === 'D' ? 'succeeded' : 'running' }),

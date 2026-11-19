@@ -16,6 +16,7 @@ const { createBackgroundHold } = require('../src/chat/background-hold');
 const { isMainResult } = require('../src/cli-adapters/result-completion');
 const { detectErrorEnvelope } = require('../src/chat/api-error-policy');
 const { apiErrorMessageOf } = require('../src/chat/claude-api-error-message');
+const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 const noop = () => {};
 const ENVELOPE = "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.";
@@ -29,12 +30,14 @@ function build({ replayFence = 'visible_output', onPersist = noop, onUsage = noo
   });
   const persisted = { id: 'sess', cli: 'claude', model: 'opus' };
   const chatSessions = new Map();
+  const { hub } = createTestChatHub();
   const writes = [], decisions = [], classified = [], forwarded = [];
   const attempt = { cli: 'claude', runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1',
     routeAttemptId: 'attempt-1', routeGeneration: 1, attemptNo: 1, providerId: 'provider-1',
     providerRevision: 'revision-1', sessionId: 'sess' };
   const engine = createChatTurnEngine({
     persistedSessions: new Map([['sess', persisted]]), chatSessions,
+    replay: hub,
     isCurrentTurnRunner: (cs, turn, runner) => cs._activeTurn === turn && cs._activeRunner === runner,
     providerAttemptRuntime: {
       scrubAttemptStructure: (_r, e) => e, scrubAttemptEvent: (_r, e) => e,
@@ -71,8 +74,8 @@ function build({ replayFence = 'visible_output', onPersist = noop, onUsage = noo
     clearSessionApiErrorState: noop, recordApiSuccess: noop, codexUsageHost: { complete: noop },
     assistantCheckpointKey: () => 'checkpoint-1', getPort: () => 3000,
   });
-  const cs = { cli: 'claude', clients: new Set(), chatTurnCount: 0, currentAssistantText: '',
-    currentToolCalls: [], currentCost: null, streamReplay: [], turnStartedAt: Date.now(), isStreaming: true };
+  const cs = { cli: 'claude', clients: hub.clientsOf('sess'), chatTurnCount: 0, currentAssistantText: '',
+    currentToolCalls: [], currentCost: null, turnStartedAt: Date.now(), isStreaming: true };
   const turn = { turnId: 'turn-1', sessionId: 'sess' };
   const runner = { runnerId: 'stream_1', completionOutcome: null, pendingClaudeResult: null,
     completion: createAdapterCompletion(adapter), providerAttempt: attempt, sawApiError: false,

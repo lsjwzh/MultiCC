@@ -123,6 +123,8 @@ function fixture(t) {
     appendMessage() { return true; },
     chatStream: { isAlive: () => false, status: () => ({ busy: false }), cancel() {} },
     cancelPreparation() {},
+    // The cancel path clears the session's native replay buffer through the hub.
+    replay: { clear() {} },
     log: { warn() {}, log() {}, info() {} },
   }, input);
 

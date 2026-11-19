@@ -68,10 +68,16 @@ function createHostLifecycle(deps) {
     sessionPersistence,
     qwenAudioSupervisor,
     sessionHibernationRuntime,
+    // Native /ws/chat replay buffer + client membership. Clearing a session's
+    // live members is a native operation now; `cs.clients` is a read-only facade.
+    replay,
     log = console,
   } = deps;
   if (typeof finishProviderAttempt !== 'function') {
     throw new TypeError('[host-lifecycle] finishProviderAttempt is required');
+  }
+  if (!replay || typeof replay.clearClients !== 'function') {
+    throw new TypeError('[host-lifecycle] replay hub is required');
   }
   // Tests inject a small cap; production keeps the fixed shutdown budget.
   const partialFlushTimeoutMs = Number.isFinite(deps.chatFlushTimeoutMs)
@@ -230,7 +236,7 @@ function createHostLifecycle(deps) {
         try { cs.claudeProc.kill('SIGTERM'); } catch (_) {}
         cs.claudeProc = null;
       }
-      if (cs && cs.clients) cs.clients.clear();
+      if (cs && cs.clients) replay.clearClients(name);
     }
     // Reaping consumes live shadows first; stopAll then clears correlation
     // state and any orphan session not represented in chatSessions.

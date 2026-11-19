@@ -2363,6 +2363,24 @@
       ]
     },
     {
+      "path": "tests/test-chat-replay-hub.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-replay-wiring-capture.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
       "path": "tests/test-chat-runtime-native.js",
       "tier": "core",
       "lane": "deterministic",

@@ -22,7 +22,7 @@ function createTaskContextHost(options = {}) {
   const {
     getState,
     append,
-    emitClients,
+    emitSession,
     getTaskBoard,
     containsDelivery,
     classifyDisplay,
@@ -36,7 +36,7 @@ function createTaskContextHost(options = {}) {
     noteUnattendedUserMessage = null,
   } = options;
   for (const [name, value] of Object.entries({
-    getState, append, emitClients, getTaskBoard,
+    getState, append, emitSession, getTaskBoard,
     containsDelivery, classifyDisplay, randomUUID, getRecord, runTurn,
   })) {
     if (typeof value !== 'function') throw new TypeError(`[task-context-host] ${name} port required`);
@@ -131,7 +131,7 @@ function createTaskContextHost(options = {}) {
     const event = state._currentTaskId && scoped?.taskId == null
       ? { ...scoped, taskId: state._currentTaskId }
       : scoped;
-    emitClients(state.clients, event);
+    emitSession(sessionId, event);
   }
 
   function runState(classifyState) {

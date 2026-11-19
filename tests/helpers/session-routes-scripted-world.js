@@ -397,6 +397,16 @@ function buildDeps(initialScenario = {}) {
         return answer('codexGuard') || { action: 'none' };
       },
     },
+    // The /ws/chat replay buffer + live membership are native state behind the
+    // replay hub. This world registers no sockets, so clearing/dropping a session
+    // is unobservable to the differential — exactly like the retired oracle's
+    // no-op `terminate()` on its fake string clients.
+    replay: {
+      clear() {},
+      drop() {},
+      reset() {},
+      clearClients() {},
+    },
   };
 
   // ── apply ────────────────────────────────────────────────────────────────

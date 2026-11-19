@@ -120,6 +120,9 @@ function createDeps({ timeline = [], errors = [], sessionPersistenceStop } = {})
     sessionPersistence: {
       stop: sessionPersistenceStop || (() => timeline.push('session-persistence-stopped')),
     },
+    // The native chat replay hub: shutdown clears each session's live members
+    // through it instead of mutating the retired `cs.clients` Set.
+    replay: { clearClients: () => {} },
     qwenAudioSupervisor: { stopAll: () => timeline.push('audio-stopped') },
     log: {
       log: message => timeline.push(`log:${message}`),

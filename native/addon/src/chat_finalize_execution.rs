@@ -93,10 +93,11 @@ impl<'a> Host<'a> {
             "cancel-classify" => {
                 self.port(c"cancelClassify", &[cs])?;
             }
-            "clear-stream-replay" => cs.assign(
-                c"streamReplay",
-                context.from_value(&JsValue::Array(vec![]))?,
-            )?,
+            // The replay buffer is owned by the native chat session table, not
+            // by a property of `cs`: ask the host port to empty this session's.
+            "clear-stream-replay" => {
+                self.port(c"clearReplay", &[session])?;
+            }
             "report-empty-retry-failure" => {
                 let tail = or(context.get(c"stderrTail")?, empty)?
                     .clean_text()?

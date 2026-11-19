@@ -35,6 +35,7 @@ const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 const { classifyDisplay } = require('../src/classify/vocab');
 const { createSessionPersistence } = require('../src/session/persistence');
 const { recordsOf } = require('./helpers/session-records');
+const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 // ── Harness ────────────────────────────────────────────────────────────────
 
@@ -118,12 +119,15 @@ function harness(t, options = {}) {
     isStreaming: true,
     currentAssistantText: '',
     currentToolCalls: [],
-    streamReplay: ['partial'],
     _activeRunner: { providerAttempt },
     _currentTaskId: 'tsk-1',
     currentTask: { goal: '重构取消链路', phase: 'implement' },
   };
   const chatSessions = new Map([['s1', chatState]]);
+  // A real native replay buffer: the cancel path must clear it through the hub,
+  // not by mutating a chat-state array.
+  const { hub } = createTestChatHub();
+  hub.push('s1', { type: 'assistant' });
 
   // The Aux queue is classify's LLM input channel. A cancel has to reach it too:
   // the judgement admitted for the killed turn must be dropped, and the trailing
@@ -288,6 +292,7 @@ function harness(t, options = {}) {
     cancelPreparation: (sessionId, reason) => record({ kind: 'cancel_preparation', sessionId, reason }),
     chatStream: { isAlive: () => false, cancel() {} },
     zcodeAuth: { ensureZcodeAuth: () => ({ ok: true }) },
+    replay: hub,
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
     runnerKillGraceMs: options.runnerKillGraceMs,
     log: { warn: (...args) => record({ kind: 'warn', args }), log() {} },
@@ -310,7 +315,7 @@ function harness(t, options = {}) {
   }
 
   return {
-    dir, events, record, kinds, firstIndex, inputHost,
+    dir, events, record, kinds, firstIndex, inputHost, hub,
     persistedSessions, chatSessions, chatState, child, classify, auxJobs,
     taskStateStore, taskBoard, scheduler, outbox,
     get host() { return sessionWorkHost; },
@@ -343,6 +348,7 @@ test('manual cancel: controller → cancel event → classify → persist → br
   // (a) The runner really stopped — a cancel that only repaints the UI is a lie.
   assert.equal(h.child.kills, 1);
   assert.equal(h.chatState.isStreaming, false);
+  assert.equal(h.hub.size('s1'), 0, 'the cancel clears the native replay buffer');
   const attemptFinish = h.events.find(event => event.kind === 'provider_attempt_finish');
   assert.equal(attemptFinish.attempt, providerAttempt);
   assert.equal(h.chatState._activeRunner, null);

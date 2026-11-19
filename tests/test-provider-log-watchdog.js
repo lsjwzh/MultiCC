@@ -9,6 +9,7 @@ const {
   parseResetDelayMs,
   opencodeRateLimitInfoFromError,
 } = require('../src/chat/provider-log-watchdog');
+const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 // Regression suite for the provider-log watchdog: opencode swallows provider
 // stream errors (quota/auth/billing) into its own log — no stdout event, empty
@@ -33,13 +34,13 @@ function logLine({ ts, level = 'INFO', run = 'aaaa1111', message, sessionId = ''
 function fixture(options = {}) {
   const at = options.at ?? AT;
   const turnStart = options.turnStart ?? at - 40_000;
+  const { hub } = createTestChatHub();
   const cs = options.cs ?? {
     isStreaming: true,
     turnStartedAt: turnStart,
     lastStreamAt: options.lastStreamAt ?? turnStart,
     cwd: options.cwd ?? '/work/session',
     cli: 'opencode',
-    streamReplay: [],
     _activeTurn: { turnId: options.turnId ?? 'turn_1' },
     _activeRunner: {},
   };
@@ -51,6 +52,7 @@ function fixture(options = {}) {
   const broadcasts = [];
   const cancelCalls = [];
   const watchdog = createProviderLogWatchdog({
+    replay: hub,
     listRecords: () => new Map([['s1', record]]).entries(),
     getChatSession: () => cs,
     broadcast: (id, evt) => broadcasts.push([id, evt]),
@@ -63,11 +65,11 @@ function fixture(options = {}) {
     minSilenceMs: options.minSilenceMs ?? 20_000,
     logger: { warn() {} },
   });
-  return { watchdog, cs, record, broadcasts, cancelCalls, at, turnStart };
+  return { watchdog, cs, record, broadcasts, cancelCalls, at, turnStart, hub };
 }
 
 test('quota error without stdout/exit is surfaced once and the turn is stopped for finalization', async () => {
-  const { watchdog, cs, broadcasts, cancelCalls, at } = fixture({
+  const { watchdog, cs, broadcasts, cancelCalls, at, hub } = fixture({
     logTail: logLine({ ts: AT - 9_000, level: 'ERROR', message: 'stream error', sessionId: 'ses_native1', error: QUOTA_ERROR }),
   });
   const { results } = await watchdog.sweep();
@@ -103,7 +105,11 @@ test('quota error without stdout/exit is surfaced once and the turn is stopped f
   assert.ok(cs._adapterError.includes('Weekly usage limit reached'));
   assert.equal(cs._activeRunner.sawApiError, true);
   assert.equal(cs._activeRunner.apiErrorRaw.source, 'opencode_log');
-  assert.equal(cs.streamReplay.at(-1).type, 'error');
+  // Both surfaced frames were also buffered for reconnect replay.
+  const buffered = hub.events('s1');
+  assert.equal(buffered.length, 2);
+  assert.equal(buffered[0].type, 'rate_limit_event');
+  assert.equal(buffered.at(-1).type, 'error');
 });
 
 test('errors of other native sessions are ignored', async () => {
@@ -201,6 +207,7 @@ test('non-opencode, aux and gateway sessions are never scanned', async () => {
   const claudeRecord = { id: 's2', kind: 'chat', type: 'chat', cli: 'claude', cliSessionId: 'x' };
   const broadcasts = [];
   const watchdog = createProviderLogWatchdog({
+    replay: createTestChatHub().hub,
     listRecords: () => new Map([
       ['s2', claudeRecord],
       ['s3', { id: 's3', kind: 'chat', type: 'aux', cli: 'opencode' }],
