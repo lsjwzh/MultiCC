@@ -120,10 +120,17 @@ impl Registry {
         {
             return None;
         }
-        let id = self
-            .next
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .ok()?;
+        let mut id = self.next.load(Ordering::Relaxed);
+        loop {
+            let next = id.checked_add(1)?;
+            match self
+                .next
+                .compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => break,
+                Err(current) => id = current,
+            }
+        }
         let (sender, receiver) = mpsc::channel(messages);
         let (overflow, overflow_receiver) = watch::channel(false);
         let entry = Entry {
@@ -304,6 +311,28 @@ mod tests {
         registry.next.store(u64::MAX, Ordering::Relaxed);
         assert!(registry.register(1, 1).is_none());
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn concurrent_registrations_allocate_unique_ids() {
+        let registry = Arc::new(Registry::default());
+        let ids = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    let registry = Arc::clone(&registry);
+                    scope.spawn(move || {
+                        (0..64)
+                            .map(|_| registry.register(1, 1).unwrap().id)
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap())
+                .collect::<std::collections::HashSet<_>>()
+        });
+        assert_eq!(ids.len(), 8 * 64);
     }
 
     #[tokio::test]
