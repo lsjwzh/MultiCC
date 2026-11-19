@@ -657,6 +657,20 @@
             to: host.cliMeta?.[message.cli]?.label || message.cli,
             resumed: message.reusedTarget ? tr('cliSessionResumedSuffix') : '',
           }));
+          // 继承的子 agent 路由随切换被改（清除 / 换成目标家族默认 / 从无到有）：
+          // 沉默地改变计费线路曾是用户陷阱，这里明说。family 的显示名与 CLI 标签同源。
+          if (message.subagentChange && typeof message.subagentChange === 'object') {
+            const change = message.subagentChange;
+            const familyLabel = change.family === 'codex'
+              ? (host.cliMeta?.codex?.label || 'Codex')
+              : (host.cliMeta?.claude?.label || 'Claude Code');
+            if (change.from && !change.to) {
+              host.addSystemMsg?.('⇄ ' + tr('cliSubagentRouteDropped', { family: familyLabel }));
+            } else if (change.to) {
+              host.addSystemMsg?.('⇄ ' + tr(change.from ? 'cliSubagentRouteReplaced' : 'cliSubagentRouteApplied',
+                { family: familyLabel, line: change.to.name || change.to.providerId || '', model: change.to.model || '' }));
+            }
+          }
           host.loadSessionModel?.();
           break;
         case 'stream_event': handleStreamEvent(message.event, expectedGeneration); break;

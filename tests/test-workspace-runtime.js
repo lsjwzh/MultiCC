@@ -300,8 +300,8 @@ test('production composition delegates workspace/meta ownership to the runtime',
   );
   assert.match(source, /createWorkspaceRuntime\s*\(\s*\{/);
   assert.match(source, /mountWsConnectionRouter\(wss,/);
-  assert.match(wsRouter, /workspaceRuntime\.attachWorkspace\(ws, urlObj, heartbeat\.fields\)/);
-  assert.match(wsRouter, /workspaceRuntime\.attachMeta\(ws, urlObj, heartbeat\.fields\)/);
+  assert.match(wsRouter, /workspaceRuntime\.attachWorkspace\(ws, urlObj, fields\)/);
+  assert.match(wsRouter, /workspaceRuntime\.attachMeta\(ws, urlObj, fields\)/);
   assert.match(wsRouter, /workspaceRuntime\.ownsSocket\?\.\(urlObj\)/);
   assert.doesNotMatch(source, /function\s+workspaceBroadcast\s*\(/);
   assert.doesNotMatch(source, /function\s+handleWorkspaceWs\s*\(/);

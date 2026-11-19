@@ -249,15 +249,20 @@ test('draft defaults prefill the global route (follows global) and follow family
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'p-cheap'`), '草稿要用家族默认预填');
     assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-model'))}).value`), 'claude-haiku');
     assert.equal((await text(page, '.rc-sub-state')).trim(), '跟随全局默认');
-    assert.match(await text(page, '.rc-sub-global-text'), /全局默认：便宜线路 · claude-haiku/);
-    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-clear'))}).hidden`), false, '有全局默认就给「清除」');
+    assert.match(await text(page, '.rc-sub-global[data-family="claude"] .rc-sub-global-text'), /Claude Code：便宜线路 · claude-haiku/);
+    // UX 回归：两个家族的默认必须同时列出 —— 之前只画当前家族，设完 Claude Code
+    // 后 Codex 仍为空这件事在界面上不可见。
+    assert.match(await text(page, '.rc-sub-global[data-family="codex"] .rc-sub-global-text'), /Codex：Codex 便宜线路 · gpt-5-mini/);
+    assert.equal(await page.evaluate(`document.querySelectorAll(${JSON.stringify(inDialog('.rc-sub-global'))}).length`), 2, '两个家族各一行');
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-global[data-family="claude"] .rc-sub-clear'))}).hidden`), false, '有默认就给「清除」');
 
     // 换到 codex 家族：默认跟着换成 codex 那一份。
     await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="codex-exp"]'))}).click()`);
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'x-cheap'`), '换家族要换成新家族的默认');
     assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-model'))}).value`), 'gpt-5-mini');
     assert.match(await text(page, '.rc-sub-sync'), /同步给所有没单独设置子 agent 的 Codex 任务/);
-    assert.match(await text(page, '.rc-sub-global-text'), /全局默认：Codex 便宜线路 · gpt-5-mini/);
+    assert.match(await text(page, '.rc-sub-global[data-family="codex"] .rc-sub-global-text'), /Codex：Codex 便宜线路 · gpt-5-mini/);
+    assert.match(await text(page, '.rc-sub-global[data-family="claude"] .rc-sub-global-text'), /Claude Code：便宜线路 · claude-haiku/, '换家族后另一行也还在');
     // 切回 claude 家族也一样。
     await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude"]'))}).click()`);
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'p-cheap'`));
@@ -490,27 +495,31 @@ test('clear global default: dry run → cancel or confirm; following-global draf
     // 第一下只做 dry run，说清会恢复几个、几个不受影响；取消就什么都不改。
     await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-clear'))}).click()`);
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-clear-confirm'))}).hidden === false`));
-    assert.deepEqual(syncCalls, [{ cli: 'claude-exp', subagent: null, dryRun: true }]);
-    assert.equal((await text(page, '.rc-sub-global-text')).trim(),
+    assert.deepEqual(syncCalls, [{ cli: 'claude', subagent: null, dryRun: true }]);
+    assert.equal((await text(page, '.rc-sub-global[data-family="claude"] .rc-sub-global-text')).trim(),
       '清除后 4 个跟随全局的 Claude Code 任务恢复随主，新建任务也不再默认使用；单独设置过的 5 个不受影响。');
-    assert.equal(await visible('.rc-sub-clear'), false);
+    // 确认态只落在发起的 claude 行；codex 行保持现值。
+    assert.match(await text(page, '.rc-sub-global[data-family="codex"] .rc-sub-global-text'), /Codex：Codex 便宜线路 · gpt-5-mini/);
+    assert.equal(await visible('.rc-sub-global[data-family="claude"] .rc-sub-clear'), false);
     await sleep(200);
     const clearShot = saveShot(await page.screenshot('subagent-clear-web'), '/tmp/subagent-clear-web.png');
     console.log('Clear screenshot:', clearShot);
     await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-clear-cancel'))}).click()`);
     assert.equal(await visible('.rc-sub-clear-confirm'), false);
     assert.equal(await visible('.rc-sub-clear'), true);
-    assert.match(await text(page, '.rc-sub-global-text'), /全局默认：便宜线路 · claude-haiku/);
+    assert.match(await text(page, '.rc-sub-global[data-family="claude"] .rc-sub-global-text'), /Claude Code：便宜线路 · claude-haiku/);
     assert.equal(syncCalls.length, 1, '取消不发真的清除');
 
     // 再来一次并确认：真的清除；这份草稿本来跟着全局默认，界面回到随主，保存也按随主存。
     await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-clear'))}).click()`);
     assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-clear-confirm'))}).hidden === false`));
     await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-clear-confirm'))}).click()`);
-    assert.ok(await page.waitFor(`/全局默认：未设置/.test(document.querySelector(${JSON.stringify(inDialog('.rc-sub-global-text'))}).textContent)`));
-    assert.deepEqual(syncCalls.at(-1), { cli: 'claude-exp', subagent: null, dryRun: false });
-    assert.match(await text(page, '.rc-sub-sync-status'), /已清除全局子 agent，4 个任务恢复随主/);
-    assert.equal(await visible('.rc-sub-clear'), false, '没有全局默认就不摆清除');
+    assert.ok(await page.waitFor(`/Claude Code：未设置/.test(document.querySelector(${JSON.stringify(inDialog('.rc-sub-global[data-family="claude"] .rc-sub-global-text'))}).textContent)`));
+    assert.deepEqual(syncCalls.at(-1), { cli: 'claude', subagent: null, dryRun: false });
+    assert.match(await text(page, '.rc-sub-sync-status'), /已清除 Claude Code 家族默认，4 个任务恢复随主/);
+    assert.equal(await visible('.rc-sub-global[data-family="claude"] .rc-sub-clear'), false, '没有默认就不摆清除');
+    // codex 行不受 claude 清除影响，仍显示自己的默认。
+    assert.match(await text(page, '.rc-sub-global[data-family="codex"] .rc-sub-global-text'), /Codex：Codex 便宜线路 · gpt-5-mini/);
     assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value`), '');
     assert.equal((await text(page, '.rc-sub-state')).trim(), '跟随主线路');
     await page.evaluate(`document.querySelector('.air-config-dialog[open] form').requestSubmit()`);

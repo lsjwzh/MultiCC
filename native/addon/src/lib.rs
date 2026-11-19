@@ -234,3 +234,4 @@ pub mod workspace_queues;
 pub mod workspace_sharing;
 pub mod workspace_sockets;
 mod workspace_state;
+pub mod ws_host;

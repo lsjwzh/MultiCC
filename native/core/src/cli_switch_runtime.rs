@@ -185,10 +185,39 @@ pub fn plan(op: &str, input: &Value) -> Result<Value, String> {
                 "handoffId": input["handoffId"], "reusedTarget": input["reused"], "fresh": yes(input, "fresh") }).as_object().unwrap().clone());
             session_view(input, &mut chat);
             chat.remove("agent");
+            // 继承的子 agent 路由在切换时被改（清掉或换成目标家族默认）时透传给
+            // 前端：只认 {from,to} 对象，其余形状（null/缺失）= 没变化。
+            let change = input.get("subagentChange").filter(|v| v.is_object());
+            if let Some(change) = change {
+                chat.insert("subagentChange".into(), change.clone());
+            }
             if op == "switchEvent" {
                 return Ok(Value::Object(chat));
             }
-            json!({ "message": { "role": "system", "content": format!("CLI switched from {from} to {to}. A structured handoff checkpoint will be delivered with the next message."),
+            let mut content = format!("CLI switched from {from} to {to}. A structured handoff checkpoint will be delivered with the next message.");
+            if let Some(change) = change {
+                let from_route = change.get("from").filter(|v| v.is_object());
+                let to_route = change.get("to").filter(|v| v.is_object());
+                match (from_route, to_route) {
+                    (Some(_), None) => content.push_str(
+                        " The inherited sub-agent route was dropped: the new lane's family has no sub-agent default, so sub-agents now follow the main line."),
+                    (_, Some(route)) => {
+                        // js_to_string 把缺省 name 变成 "undefined"：只有真实名字才用，否则回退 providerId。
+                        let raw_name = route.get("name").and_then(Value::as_str).unwrap_or("");
+                        let label = if raw_name.trim().is_empty() { text(route.get("providerId")) } else { raw_name.trim().to_string() };
+                        let model = text(route.get("model"));
+                        if from_route.is_some() {
+                            content.push_str(&format!(
+                                " The inherited sub-agent route was replaced with the new lane's family default ({label}, model {model})."));
+                        } else {
+                            content.push_str(&format!(
+                                " Sub-agents now use the new lane's family default route ({label}, model {model})."));
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+            json!({ "message": { "role": "system", "content": content,
                 "ts": input["now"], "cliSwitch": { "handoffId": input["handoffId"], "fromCli": from, "toCli": to, "reusedTarget": input["reused"] } },
                 "eventText": format!("{}: {from} → {to}", text(Some(&fallback(&input["session"], "label", value(&input["session"], "id"))))),
                 "chat": chat, "workspace": { "type": "session_cli_changed", "sessionId": input["session"]["id"], "cli": to },
@@ -467,5 +496,51 @@ mod tests {
         assert!(p["toProviderId"].is_null());
         let p = plan("consume", &json!({ "handoff": { "status": "pending", "fromCli": "claude", "toCli": "codex" }, "nowIso": "now" })).unwrap();
         assert!(p["event"].get("reason").is_none());
+    }
+    #[test]
+    fn switch_notice_surfaces_subagent_route_change() {
+        let base = json!({ "fromCli": "claude", "targetCli": "codex", "handoffId": "h1",
+            "reused": false, "session": { "id": "s1", "label": "demo" }, "now": 0 });
+        // 无变化：chat 不带字段，文案保持原样
+        let notice = plan("switchNotice", &base).unwrap();
+        assert!(notice["chat"].get("subagentChange").is_none());
+        assert_eq!(notice["message"]["content"],
+            "CLI switched from claude to codex. A structured handoff checkpoint will be delivered with the next message.");
+        // 继承路由被清：说明改走主线路
+        let mut cleared = base.clone();
+        cleared["subagentChange"] = json!({ "family": "codex",
+            "from": { "providerId": "p1", "model": "opus", "name": "DeepSeek Flash" }, "to": null });
+        let notice = plan("switchNotice", &cleared).unwrap();
+        assert!(notice["message"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("inherited sub-agent route was dropped"));
+        assert_eq!(notice["chat"]["subagentChange"]["from"]["providerId"], "p1");
+        // 换成目标家族默认：带名字与模型
+        let mut replaced = base.clone();
+        replaced["subagentChange"] = json!({ "family": "codex",
+            "from": { "providerId": "p1", "model": "opus" },
+            "to": { "providerId": "p2", "model": "deepseek-v4-flash", "name": "DeepSeek" } });
+        let notice = plan("switchNotice", &replaced).unwrap();
+        assert!(notice["message"]["content"].as_str().unwrap().contains(
+            "replaced with the new lane's family default (DeepSeek, model deepseek-v4-flash)"
+        ));
+        // 从无到有（原随主，目标家族有默认）
+        let mut applied = base.clone();
+        applied["subagentChange"] = json!({ "family": "codex", "from": null,
+            "to": { "providerId": "p2", "model": "m2" } });
+        let notice = plan("switchNotice", &applied).unwrap();
+        assert!(notice["message"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Sub-agents now use the new lane's family default route (p2, model m2)"));
+        // switchEvent 透传同一字段
+        let event = plan("switchEvent", &replaced).unwrap();
+        assert_eq!(event["subagentChange"]["to"]["providerId"], "p2");
+        // 畸形（非对象）输入视为无变化
+        let mut malformed = base.clone();
+        malformed["subagentChange"] = json!("cleared");
+        let notice = plan("switchNotice", &malformed).unwrap();
+        assert!(notice["chat"].get("subagentChange").is_none());
     }
 }

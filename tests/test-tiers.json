@@ -7235,6 +7235,15 @@
       ]
     },
     {
+      "path": "tests/test-ws-host-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-zcode-app-server-mapping.js",
       "tier": "core",
       "lane": "deterministic",

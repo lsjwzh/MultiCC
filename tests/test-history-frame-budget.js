@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { fitHistoryFrame } = require('../src/chat/history-frame-budget');
-const { DEFAULTS, installWsBackpressure } = require('../src/ws-backpressure');
+const { DEFAULTS, installWsBackpressure } = require('./helpers/legacy-ws-backpressure');
 
 const big = n => 'x'.repeat(n);
 const bytes = messages => Buffer.byteLength(JSON.stringify(messages));

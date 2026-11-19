@@ -664,7 +664,7 @@ share-scoped access); same close codes/reasons; snapshot
 `{type,dirId,sessions,events,queues,apiVersion}` and
 `{type,fleet,apiVersion}` with identical key order; same replay cursor and
 event payload bytes; the shared 30s router clock drives the native heartbeat
-(`missed >= 3` → terminate); and the frozen `src/ws-backpressure.js` thresholds
+(`missed >= 3` → terminate); and the `ws_backpressure` kernel thresholds (formerly `src/ws-backpressure.js`)
 are reproduced (1 MiB high water, 2 MiB queue + 8 MiB frame ceiling, 4096
 messages, 15s congestion timeout, 25ms retry, 1013 `slow client; reconnect to
 resync`). `air=1` meta keeps the air protocol and therefore the router's own
@@ -675,8 +675,9 @@ Deleted Node logic: the runtime's `clients`/`metaClients`/`observers`/`status`/
 implementations (the frozen 297-line oracle is
 `tests/helpers/legacy-workspace-runtime.js`); the notes-store `eventRing`
 (last-200 array, JSONL adapter retained); and the router's per-workspace-socket
-heartbeat/backpressure installation. `src/ws-backpressure.js` still serves
-every other WS path unchanged.
+heartbeat/backpressure installation. As of 2026-11-19 `src/ws-backpressure.js`
+is deleted too: every other WS path registers in the addon's `RustWsHost` (see
+`docs/rust-migration/ws-host-registry-2026-11-19.md`).
 
 Remaining adapters and why: WS admission, tickets, locality and `heartbeat.fields`
 stay in the router because they gate all WS hosts; the 30s loop stays there and

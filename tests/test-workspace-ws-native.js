@@ -12,7 +12,7 @@ const test = require('node:test');
 
 const { createWorkspaceRuntime, prepareFrame } = require('../src/workspace/runtime');
 const { createWsEnvelope } = require('../src/api-contract');
-const { installWsBackpressure, DEFAULTS } = require('../src/ws-backpressure');
+const { installWsBackpressure, DEFAULTS } = require('./helpers/legacy-ws-backpressure');
 const legacyWorkspace = require('./helpers/legacy-workspace-runtime').createWorkspaceRuntime;
 const { createNotesStore } = require('../src/notes-store');
 

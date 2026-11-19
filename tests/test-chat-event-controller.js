@@ -2272,3 +2272,40 @@ test('Command Code 原生工具事件实时显示日志并完成', () => {
   fixture.controller.handleEvent({type:'user',message:{content:[{type:'tool_result',tool_use_id:'command-tool',content:'127.0.0.1 localhost'}]}},generation);
   assert.ok(Number.isFinite(fixture.state.currentToolCards.get('id:command-tool').endedAt));
 });
+
+test('cli_switched announces an inherited sub-agent route change in plain words', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  const base = { type: 'cli_switched', cli: 'codex', fromCli: 'claude', handoffId: 'h1', reusedTarget: false };
+  const systemTexts = () => fixture.calls
+    .filter(call => Array.isArray(call) && call[0] === 'system').map(call => call[1]);
+
+  // 继承路由被清（目标家族无默认）：必须明说计费线路变了，不再沉默。
+  fixture.controller.handleEvent({ ...base, subagentChange: {
+    family: 'codex', from: { providerId: 'p1', model: 'opus', name: 'DeepSeek Flash' }, to: null,
+  } }, generation);
+  assert.ok(systemTexts().some(text => /子 agent 线路已随之清除/.test(text) && /Codex 家族没有默认/.test(text)),
+    `清除提示缺失：${JSON.stringify(systemTexts())}`);
+
+  // 换成目标家族默认：带线路名与模型。
+  fixture.calls.length = 0;
+  fixture.controller.handleEvent({ ...base, subagentChange: {
+    family: 'codex', from: { providerId: 'p1', model: 'opus' },
+    to: { providerId: 'p2', model: 'deepseek-v4-flash', name: 'DeepSeek' },
+  } }, generation);
+  assert.ok(systemTexts().some(text => /子 agent 线路已改为 DeepSeek · deepseek-v4-flash（Codex 家族默认）/.test(text)),
+    `换线提示缺失：${JSON.stringify(systemTexts())}`);
+
+  // 从无到有：原随主，切过去后应用家族默认。
+  fixture.calls.length = 0;
+  fixture.controller.handleEvent({ ...base, subagentChange: {
+    family: 'codex', from: null, to: { providerId: 'p2', model: 'm2', name: 'DeepSeek' },
+  } }, generation);
+  assert.ok(systemTexts().some(text => /子 agent 线路已应用 Codex 家族默认：DeepSeek · m2/.test(text)),
+    `应用提示缺失：${JSON.stringify(systemTexts())}`);
+
+  // 没有 subagentChange（路由没变或旧服务端）：只剩切换本身那一条，不多话。
+  fixture.calls.length = 0;
+  fixture.controller.handleEvent(base, generation);
+  assert.equal(systemTexts().length, 1);
+});

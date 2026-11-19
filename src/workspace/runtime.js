@@ -2,7 +2,11 @@
 
 const { getNative } = require('../native/runtime');
 const { createWsEnvelope } = require('../api-contract');
-const { DEFAULTS: BACKPRESSURE_DEFAULTS, byteLength, coalesceKey } = require('../ws-backpressure');
+
+// The retry cadence and the coalescing rule come from the same Rust kernel
+// that owns the shared router's queues, so there is exactly one copy.
+const BACKPRESSURE_DEFAULTS = Object.freeze(getNative().wsBackpressureLimits());
+const coalesceKey = data => getNative().wsCoalesceKey(data);
 
 const initial = getNative().sessionStateInitial();
 const EMPTY_STATUS = Object.freeze({ status: initial.status, currentFile: null,
@@ -25,10 +29,11 @@ function assertDependencies(options) {
 }
 
 // Encoded once per broadcast, exactly like `sendWs` did. Everything after this
-// point is native queueing and fan-out.
+// point is native queueing and fan-out. `data` is always a serialized string
+// here, so the retired `byteLength` reduces to `Buffer.byteLength`.
 function prepareFrame(payload) {
   const data = JSON.stringify(createWsEnvelope(payload));
-  return { data, bytes: byteLength(data), key: coalesceKey(data) };
+  return { data, bytes: Buffer.byteLength(data), key: coalesceKey(data) };
 }
 
 function createWorkspaceRuntime(options) {

@@ -1,5 +1,7 @@
 'use strict';
-// Unit tests for src/ws-backpressure.js — focused on the reconnect-replay
+// Unit tests for the frozen send-queue policy (the byte copy of the deleted
+// src/ws-backpressure.js kept as the differential oracle) — focused on the
+// reconnect-replay
 // regression: a synchronous burst of many small frames (stream replay of an
 // in-progress turn) must NOT trip the message-count overflow guard and close
 // the socket with 1013, because that caused an infinite reconnect loop
@@ -8,7 +10,7 @@
 // Fully deterministic: a manual send-completion queue and an injected scheduler
 // mean no real timers/microtasks are left pending, so the process exits cleanly.
 
-const { installWsBackpressure, DEFAULTS } = require('../src/ws-backpressure');
+const { installWsBackpressure, DEFAULTS } = require('./helpers/legacy-ws-backpressure');
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -173,19 +175,19 @@ ok(DEFAULTS.maxQueueMessages > 500,
 // ── The frozen differential oracle must not drift ──
 // native/core/src/ws_backpressure.rs is compared against
 // docs/rust-migration/differential/ws-backpressure-golden.json, which is
-// generated from tests/helpers/legacy-ws-backpressure.js. If this module
-// changes without that copy and that corpus being regenerated, the Rust owner
-// silently stops describing production. Regenerate with:
-//   cp src/ws-backpressure.js tests/helpers/legacy-ws-backpressure.js
+// generated from tests/helpers/legacy-ws-backpressure.js. If the oracle
+// changes without that corpus being regenerated, the Rust owner silently
+// stops describing the production it replaced. Regenerate with:
 //   node docs/rust-migration/differential/ws-backpressure-oracle.js > \
 //     docs/rust-migration/differential/ws-backpressure-golden.json
 {
+  // The production module was deleted when the Rust WS host took over; the
+  // frozen oracle exercised above is the only JavaScript copy now. Recreating
+  // the file would re-introduce the dual implementation this removed.
   const fs = require('node:fs');
   const path = require('node:path');
-  const live = fs.readFileSync(path.join(__dirname, '../src/ws-backpressure.js'));
-  const frozen = fs.readFileSync(path.join(__dirname, 'helpers/legacy-ws-backpressure.js'));
-  ok(Buffer.compare(live, frozen) === 0,
-    'the frozen differential oracle is a byte copy of src/ws-backpressure.js');
+  ok(!fs.existsSync(path.join(__dirname, '../src/ws-backpressure.js')),
+    'src/ws-backpressure.js stays deleted; the frozen oracle is the only JS copy');
 }
 
 console.log(`\n== ws-backpressure unit: ${pass} passed, ${fail} failed ==`);

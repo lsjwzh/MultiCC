@@ -218,7 +218,8 @@ impl<V> Replay<V> {
     }
 }
 
-/// Limits mirror `src/ws-backpressure.js` `DEFAULTS`.
+/// Limits mirror the `DEFAULTS` of the retired `src/ws-backpressure.js`
+/// (frozen copy: `tests/helpers/legacy-ws-backpressure.js`).
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub high_water_bytes: usize,

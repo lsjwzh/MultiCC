@@ -97,7 +97,7 @@ function createHarness(overrides = {}) {
     },
     appendMessage: (_id, message) => effects.push(`message:${message.cliSwitch.handoffId}`),
     appendEvent: (_dirId, type) => effects.push(`event:${type}`),
-    chatBroadcast: (_id, event) => effects.push(`chat:${event.type}`),
+    chatBroadcast: overrides.chatBroadcast || ((_id, event) => effects.push(`chat:${event.type}`)),
     workspaceBroadcast: (_dirId, event) => effects.push(`workspace:${event.type}`),
     saveBestEffort: source => effects.push(`save:${source}`),
     cliAvailabilitySummary: overrides.cliAvailabilitySummary || (() => overrides.availability || {
@@ -513,6 +513,80 @@ test('a lane switch puts a never-set sub-agent route on the destination family d
   // must not leak into it, and the Codex lane keeps following the main line.
   await h.invoke({ body: { cli: 'codex-exp' } });
   assert.equal(h.session.subagent, null);
+});
+
+test('a lane switch announces an inherited sub-agent route change in the chat broadcast', async () => {
+  // 广播事件体是前端「子 agent 线路变更」系统消息的唯一来源：这里钉住
+  // subagentChange 的 from/to/family/name 四种形状，防回归成沉默切换。
+  const broadcasts = [];
+  const harnessWith = (session, defaults) => subagentDefaultsHarness(session, defaults, {
+    chatBroadcast: (_id, event) => broadcasts.push(event),
+    getProviders: () => ({
+      codexProviderProxyable: () => true,
+      getProvider: (_family, id) => ({ id, name: `name:${id}` }),
+    }),
+  });
+  const switchedEvent = () => broadcasts.filter(event => event.type === 'cli_switched').pop();
+
+  // 从无到有：原随主，切到 claude-exp 后应用 claude 家族默认
+  broadcasts.length = 0;
+  const applied = harnessWith(codexTask(), { claude: { providerId: 'p-ds', model: 'opus' }, codex: null });
+  await applied.invoke({ body: { cli: 'claude-exp' } });
+  assert.deepEqual(switchedEvent().subagentChange, {
+    family: 'claude', from: null,
+    to: { providerId: 'p-ds', model: 'opus', name: 'name:p-ds' },
+  });
+
+  // 继承路由被清：claude → codex，codex 家族没有默认
+  broadcasts.length = 0;
+  await applied.invoke({ body: { cli: 'codex-exp' } });
+  assert.deepEqual(switchedEvent().subagentChange, {
+    family: 'codex',
+    from: { providerId: 'p-ds', model: 'opus', name: 'name:p-ds' },
+    to: null,
+  });
+
+  // 换成目标家族默认：claude(p-ds) → codex(p-cx)
+  broadcasts.length = 0;
+  const replaced = harnessWith(
+    { ...codexTask(), cli: 'claude', provider: 'claude-provider',
+      subagent: { providerId: 'p-ds', model: 'opus', inherited: true } },
+    { claude: { providerId: 'p-ds', model: 'opus' }, codex: { providerId: 'p-cx', model: 'deepseek-v4-flash' } });
+  await replaced.invoke({ body: { cli: 'codex-exp' } });
+  assert.deepEqual(switchedEvent().subagentChange, {
+    family: 'codex',
+    from: { providerId: 'p-ds', model: 'opus', name: 'name:p-ds' },
+    to: { providerId: 'p-cx', model: 'deepseek-v4-flash', name: 'name:p-cx' },
+  });
+
+  // 自设路由跨家族切换：目标车道没有这份记忆，生效路由从 own 变回随主 ——
+  // 计费的线路真的变了，同样要明说（keep 保留的是「切回该车道」时的记忆）。
+  broadcasts.length = 0;
+  const own = { providerId: 'p-own', model: 'sonnet' };
+  const kept = harnessWith(
+    { ...codexTask(), cli: 'claude', provider: 'claude-provider', subagent: own },
+    { claude: { providerId: 'p-ds', model: 'opus' }, codex: null });
+  await kept.invoke({ body: { cli: 'codex-exp' } });
+  assert.deepEqual(switchedEvent().subagentChange, {
+    family: 'codex',
+    from: { providerId: 'p-own', model: 'sonnet', name: 'name:p-own' },
+    to: null,
+  });
+
+  // 切换前后路由恰好相同（两家族默认同一条）：生效线路没变，不说话
+  broadcasts.length = 0;
+  const sameRoute = harnessWith(
+    { ...codexTask(), cli: 'claude', provider: 'claude-provider',
+      subagent: { providerId: 'p-ds', model: 'opus', inherited: true } },
+    { claude: { providerId: 'p-ds', model: 'opus' }, codex: { providerId: 'p-ds', model: 'opus' } });
+  await sameRoute.invoke({ body: { cli: 'codex-exp' } });
+  assert.equal(Object.prototype.hasOwnProperty.call(switchedEvent(), 'subagentChange'), false);
+
+  // 本来就都随主（null → null）：也不说话
+  broadcasts.length = 0;
+  const plain = harnessWith(codexTask(), { claude: null, codex: null });
+  await plain.invoke({ body: { cli: 'claude-exp' } });
+  assert.equal(Object.prototype.hasOwnProperty.call(switchedEvent(), 'subagentChange'), false);
 });
 
 test('a lane switch keeps a route the user picked and drops a stale or invalid default', async () => {

@@ -1285,16 +1285,20 @@ WebSocket/观察者投递、游标选择、provider 与聊天编排/历史持久
 legacy cookie/token、本地/对端与 share 作用域检查）；关闭码/原因相同；快照
 `{type,dirId,sessions,events,queues,apiVersion}` 与
 `{type,fleet,apiVersion}` 的键序相同；重放游标和事件负载字节相同；共享的 30 秒
-路由时钟驱动原生心跳（`missed >= 3` 即终止）；冻结的 `src/ws-backpressure.js`
-阈值原样复现（1 MiB 高水位、2 MiB 队列 + 8 MiB 单帧上限、4096 条消息、15 秒
-拥塞超时、25ms 重试、1013 `slow client; reconnect to resync`）。`air=1` meta 仍走
+路由时钟驱动原生心跳（`missed >= 3` 即终止）；`ws_backpressure` 内核阈值原样
+复现已删除的 `src/ws-backpressure.js`（1 MiB 高水位、2 MiB 队列 + 8 MiB 单帧
+上限、4096 条消息、15 秒拥塞超时、25ms 重试、1013
+`slow client; reconnect to resync`）。`air=1` meta 仍走
 air 自己的协议，因此继续使用共享路由的心跳和背压。
 
 删除的 Node 逻辑：运行时里的 `clients`/`metaClients`/`observers`/`status`/
 `summaries`/`queueStatuses` 表及其 attach/广播/心跳/队列实现（冻结旧实现为
 `tests/helpers/legacy-workspace-runtime.js`，297 行）；`notes-store.js` 的
 `eventRing`（200 条数组，JSONL 适配保留）；以及路由里针对这两个宿主的
-心跳/背压安装。`src/ws-backpressure.js` 继续服务其他所有 WS 路径。
+心跳/背压安装。2026-11-19 起 `src/ws-backpressure.js` 本身也已删除：其余所有
+WS 路径的连接注册、心跳判定与每连接发送队列由共享连接路由里的 `RustWsHost`
+（`native/addon/src/ws_host.rs` + `src/ws/native-queue.js`）承担，冻结 oracle
+`tests/helpers/legacy-ws-backpressure.js` 是唯一留存的 JS 副本（仅供差分对照）。
 
 保留的适配及原因：WS 准入、ticket、本地性和 `heartbeat.fields` 留在路由，因为
 它们约束所有 WS 宿主；30 秒循环仍留在路由，每个窗口调用一次 `tickHeartbeat()`；
@@ -5097,9 +5101,10 @@ VM 引用先摘除票据，再经弱引用回调在 Node 线程取出并删除�
 `ws` 对照一致；多连接测试确认同一会话扇出与跨会话隔离。它是隔离探针，不处理
 生产聊天连接。JSON 可表示的 WS 事件信封由 Rust `api_contract::ws_envelope` 生成；
 Node `createWsEnvelope` 语料校验字段顺序、ID 回退和特殊字符的逐字节行为。
-发送侧的队列规则也已有 Rust 所有者：`ws_backpressure` 复刻 `src/ws-backpressure.js`
-的全部可观测决策——按 JSON `type` 的合并键、2 MiB 队列上限加 8 MiB 单帧上限的天花板、
-4096 条消息的活发送闸（replay 路径豁免）、1 MiB 高水位与 15 秒拥塞计时，以及 1013
+发送侧的队列规则也有 Rust 所有者：`ws_backpressure` 复刻已删除的
+`src/ws-backpressure.js` 的全部可观测决策——按 JSON `type` 的合并键、2 MiB
+队列上限加 8 MiB 单帧上限的天花板、4096 条消息的活发送闸（replay 路径豁免）、
+1 MiB 高水位与 15 秒拥塞计时，以及 1013
 「slow client; reconnect to resync」关闭，连 metric 与 log 行的顺序都一致。时钟、重试
 定时器和 `bufferedAmount` 由调用方提供，内核本身无副作用。这一层是任何 WS 宿主迁移
 的前置件：共享连接路由对每条非原生 socket 都装了这个包装器，`/ws/machines` 这种看似
@@ -5108,5 +5113,15 @@ Node `createWsEnvelope` 语料校验字段顺序、ID 回退和特殊字符的�
 `tests/helpers/legacy-ws-backpressure.js` 生成，20 组场景共 175 个效果逐一对齐，
 八项真实代码变异均被捕获。
 
-这些只是前置工作：WS 升级、连接注册、聊天状态、快照/重放仍由 Node 承担；Node 侧仍
-运行自己的那份发送包装器（尚未改为委托给内核），完整的帧级差分和宿主切换尚未完成。
+2026-11-19 宿主切换已落地：共享连接路由（`src/ws/connection-router.js`）不再保留
+任何 JS 簿记，每条连接（含 `/ws/chat`、终端、语音、`/ws/aux`、`/ws/machines` 桥与
+`air=1` meta）都注册进 addon 的 `RustWsHost`——连接注册表（原 WeakMap）、心跳窗口
+判定（ping/miss/terminate）与每连接发送队列（`src/ws/native-queue.js` 安装的
+`ws.send` 补丁）全部由内核决定，Node 只剩定时器节奏、传输与日志/指标端口。
+`src/ws-backpressure.js` 已删除，`src/workspace/runtime.js` 的 prepareFrame 也改从
+内核读取限额与合并键。整帧差分 `tests/test-ws-host-differential.js` 以冻结 oracle
+为基准跑 9 组定向用例加 40 种子×200 步模糊，传输流/效果流/回调流各自逐字节一致
+（已复核并钉住的差异：detach 丢弃在飞 completion 的回调——旧词法闭包仍会调的幂等
+桥除外；congestedAt 时间戳改为 congested 布尔，无消费方）。六项 addon/JS 真实代码
+变异全部被测试捕获。仍未迁：WS 升级终结（`/ws/*` 在 `--no-node` 下仍 503
+`node_runtime_absent`）与 `/ws/chat` 的回合引擎状态（快照/重放/聊天编排）。
