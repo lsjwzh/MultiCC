@@ -91,6 +91,9 @@ test('console switches between task and directory views; console, directory and 
     assert.equal(await page.evaluate(`document.getElementById('console-task-more').hidden`), true, '没有下一页了');
     assert.equal(await listCount(), 73);
     // 换筛选格：清单按新口径重来，攒下的后续页作废。
+    // 用户要先滚回筛选格才能点击；CDP 的程序化 click 不会移动视口，
+    // 否则加载更多按钮仍在视口附近，观察器会立刻加载第二页。
+    await page.evaluate(`document.getElementById('console-center').scrollTop = 0`);
     await page.evaluate(`document.querySelector('#console-task-filters [data-filter="running"]').click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#console-task-list > *').length === 1`, { timeoutMs: 10000 }), '进行中只剩一条');
     assert.equal(await page.evaluate(`document.querySelector('#console-task-filters [aria-pressed="true"]').dataset.filter`), 'running');

@@ -20,6 +20,7 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
   const listed = () => [{ ...entry.task, dirId: entry.task.dirId || 'd1', updatedAt: Date.now(), resource: entry.resource }];
   const statusCalls = [], renameCalls = [], relocateCalls = [], deleteCalls = [];
   let refuseUnverifiable = true;
+  let deleted = false;
 
   for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
     routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)),
@@ -32,7 +33,7 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
   routes['/api/air'] = () => json({ ok: true, directories, clis: ['codex', 'claude'], migration: { errors: [] },
-    tasks: deleteCalls.length ? [] : listed(), sessions: [] });
+    tasks: deleted ? [] : listed(), sessions: [] });
   routes['/api/air/tasks/tsk_a'] = routes['/api/task-shell-tasks/tsk_a'] = () => json(entry);
   routes['/api/air/resolve'] = () => json({ ok: true, url: '/air?task=tsk_a&dir=d1' });
   routes['/api/settings/access-token'] = () => json({ hasToken: true, canEdit: false });
@@ -67,6 +68,7 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
     }
     if (!value?.force) return { ...json({ ok: false, error: 'task_workspace_dirty',
       reasons: ['task_workspace_dirty', 'task_workspace_unmerged'] }), status: 409 };
+    deleted = true;
     return json({ ok: true, deleted: true, taskIds: ['tsk_a'] });
   };
 
