@@ -39,13 +39,18 @@ const MODEL_ID_RE = /(?<![\w-])claude-(opus|sonnet|haiku|fable)-(\d+)(?:[.-](\d{
 // [1m] variant for get a 1M row — fable/haiku/sonnet-5 have none).
 const CLAUDE_MODELS_FALLBACK = Object.freeze([
   { model: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)' },
+  { model: 'claude-opus-5-5', label: 'Opus 5.5' },
   { model: 'claude-opus-5', label: 'Opus 5' },
   { model: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M context)' },
   { model: 'claude-opus-4-8', label: 'Opus 4.8' },
+  { model: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
   { model: 'claude-sonnet-5', label: 'Sonnet 5' },
   { model: 'claude-sonnet-4-6[1m]', label: 'Sonnet 4.6 (1M context)' },
   { model: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { model: 'claude-fable-5-2', label: 'Fable 5.2' },
+  { model: 'claude-fable-5-1', label: 'Fable 5.1' },
   { model: 'claude-fable-5', label: 'Fable 5' },
+  { model: 'claude-haiku-5-5', label: 'Haiku 5.5' },
   { model: 'claude-haiku-4-5', label: 'Haiku 4.5' },
 ]);
 

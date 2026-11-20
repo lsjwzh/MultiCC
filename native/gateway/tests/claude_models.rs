@@ -339,16 +339,17 @@ fn claude_models_replays_golden_cases() {
     replay(&gateway, &golden, "cases");
     assert_cache_file(&gateway, &golden);
 
-    // The Node reader only needs the ids; the fixture list is the drift guard
-    // shared with tests/test-claude-models-fallback.js.
+    // The bundle fixture represents an older CLI than the static fallback.
     let ids = parse_models(&fs::read_to_string(gateway.cache_file()).unwrap());
-    let expected: Vec<String> = golden["fallback"]
+    let response: Value =
+        serde_json::from_str(golden["cases"][0]["body"].as_str().unwrap()).unwrap();
+    let expected: Vec<String> = response["models"]
         .as_array()
         .unwrap()
         .iter()
         .map(|entry| entry["model"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(ids, expected, "extracted ids vs fallback mirror");
+    assert_eq!(ids, expected, "extracted ids vs bundle response");
 }
 
 #[test]

@@ -32,15 +32,20 @@ pub const MAX_IDS: usize = 500;
 pub const CACHE_FILE_NAME: &str = "claude-models-cache.json";
 const FAMILY_WINDOW: usize = 2;
 const FAMILIES: [&str; 4] = ["opus", "sonnet", "fable", "haiku"];
-const FALLBACK: [(&str, &str); 9] = [
+const FALLBACK: [(&str, &str); 14] = [
     ("claude-opus-5[1m]", "Opus 5 (1M context)"),
+    ("claude-opus-5-5", "Opus 5.5"),
     ("claude-opus-5", "Opus 5"),
     ("claude-opus-4-8[1m]", "Opus 4.8 (1M context)"),
     ("claude-opus-4-8", "Opus 4.8"),
+    ("claude-sonnet-5-5", "Sonnet 5.5"),
     ("claude-sonnet-5", "Sonnet 5"),
     ("claude-sonnet-4-6[1m]", "Sonnet 4.6 (1M context)"),
     ("claude-sonnet-4-6", "Sonnet 4.6"),
+    ("claude-fable-5-2", "Fable 5.2"),
+    ("claude-fable-5-1", "Fable 5.1"),
     ("claude-fable-5", "Fable 5"),
+    ("claude-haiku-5-5", "Haiku 5.5"),
     ("claude-haiku-4-5", "Haiku 4.5"),
 ];
 

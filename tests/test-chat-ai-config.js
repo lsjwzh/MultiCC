@@ -592,6 +592,16 @@ function loadModelsModule({ store = {}, responses = [] } = {}) {
   return { win: context.window, calls, store };
 }
 
+test('Claude offline model choices include the current model ids', () => {
+  const { win } = loadModelsModule();
+  const choices = new Map(win.CLAUDE_MODEL_OPTIONS.map(({ value, label }) => [value, label]));
+  assert.equal(choices.get('claude-opus-5-5'), 'Opus 5.5');
+  assert.equal(choices.get('claude-sonnet-5-5'), 'Sonnet 5.5');
+  assert.equal(choices.get('claude-fable-5-2'), 'Fable 5.2');
+  assert.equal(choices.get('claude-fable-5-1'), 'Fable 5.1');
+  assert.equal(choices.get('claude-haiku-5-5'), 'Haiku 5.5');
+});
+
 test('every dynamic-catalog loader has the same force contract', async () => {
   const at = Date.now();
   const cases = [
