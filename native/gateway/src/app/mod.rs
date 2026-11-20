@@ -38,6 +38,7 @@ pub mod push_routes;
 pub mod quota_guard;
 pub mod quota_routes;
 pub mod release_history_routes;
+pub mod remote_screen;
 pub mod run_config_presets;
 pub mod scan;
 pub mod scoped_auth;
