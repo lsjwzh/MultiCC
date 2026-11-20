@@ -766,13 +766,18 @@ extension SessionKindX on SessionKind {
 /// Keep in sync with CLAUDE_MODEL_OPTIONS in public/shared/models.js.
 const kClaudeModelOptions = <MapEntry<String, String>>[
   MapEntry('', '默认（跟随 Claude 设置）'),
+  MapEntry('claude-opus-5-5', 'Opus 5.5'),
   MapEntry('claude-opus-5', 'Opus 5'),
   MapEntry('claude-opus-5[1m]', 'Opus 5 (1M context)'),
   MapEntry('claude-opus-4-8', 'Opus 4.8'),
+  MapEntry('claude-sonnet-5-5', 'Sonnet 5.5'),
   MapEntry('claude-sonnet-5', 'Sonnet 5'),
   MapEntry('claude-sonnet-4-6', 'Sonnet 4.6'),
+  MapEntry('claude-fable-5-2', 'Fable 5.2'),
+  MapEntry('claude-fable-5-1', 'Fable 5.1'),
   MapEntry('claude-fable-5', 'Fable 5'),
   MapEntry('claude-fable-5[1m]', 'Fable 5 (1M context)'),
+  MapEntry('claude-haiku-5-5', 'Haiku 5.5'),
   MapEntry('claude-haiku-4-5-20251001', 'Haiku 4.5'),
 ];
 

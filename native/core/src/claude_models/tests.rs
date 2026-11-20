@@ -562,10 +562,14 @@ fn cache_at_is_stamped_after_the_scan() {
 #[test]
 fn fallback_matches_the_node_constant() {
     let ids = fallback_ids();
-    assert_eq!(ids.len(), 9);
+    assert_eq!(ids.len(), 14);
     assert_eq!(ids[0], "claude-opus-5[1m]");
-    assert_eq!(ids[8], "claude-haiku-4-5");
-    assert_eq!(fallback_models()[3].label, "Opus 4.8");
+    assert_eq!(ids.last(), Some(&"claude-haiku-4-5"));
+    assert!(ids.contains(&"claude-opus-5-5"));
+    assert!(ids.contains(&"claude-fable-5-2"));
+    assert!(fallback_models()
+        .iter()
+        .any(|model| model.label == "Opus 4.8"));
     assert_eq!(
         cache_document(&Cache {
             at_ms: 1,

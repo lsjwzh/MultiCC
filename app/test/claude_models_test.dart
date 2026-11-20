@@ -13,6 +13,11 @@ void main() {
     expect(
       ids,
       containsAll(<String>[
+        'claude-opus-5-5',
+        'claude-sonnet-5-5',
+        'claude-fable-5-2',
+        'claude-fable-5-1',
+        'claude-haiku-5-5',
         'claude-opus-5',
         'claude-opus-5[1m]',
         'claude-opus-4-8',
