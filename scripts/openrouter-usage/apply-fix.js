@@ -22,9 +22,15 @@ function repairSources({ fetch, index }) {
   fetch = replaceOnce(fetch,
     "execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', path.join(__dirname, 'chrome-page.jxa.js'), pid, 'refresh'],",
     "execFileSync(process.execPath, [path.join(__dirname, 'browser-source.js')],", 'browser gateway bridge');
-  fetch = replaceOnce(fetch,
-    '主 Chrome 页面取数失败或超时，请检查目标图表页面与浏览器脚本权限',
-    '浏览器网关取数失败或超时，请检查主 Chrome 连接和上游页面', 'browser gateway error');
+  const isolatedError = '隔离浏览器取数失败或超时，请检查隔离环境是否运行和上游页面';
+  if (!fetch.includes(isolatedError)) {
+    fetch = replaceOnce(fetch,
+      '主 Chrome 页面取数失败或超时，请检查目标图表页面与浏览器脚本权限',
+      '浏览器网关取数失败或超时，请检查主 Chrome 连接和上游页面', 'browser gateway error');
+    fetch = replaceOnce(fetch,
+      '浏览器网关取数失败或超时，请检查主 Chrome 连接和上游页面', isolatedError, 'isolated browser error');
+  }
+  fetch = fetch.replace('正在调用主 Chrome 目标页面的原生取数流程', '正在调用隔离浏览器目标页面的原生取数流程');
   fetch = replaceOnce(fetch,
     'const result = JSON.parse(raw);',
     "const result = JSON.parse(raw);\n      if (result.historyCoverage === 'latest-two') console.warn('上游仅返回最近两条数据：可更新最新日期，无法自动回补历史缺口；已有历史保留。');",

@@ -68,7 +68,22 @@ test('never closes an existing tab if the browser fails to create an owned sourc
     calls.push(args);
     return { targetId: 'user-tab', newTab: false };
   }), /没有创建独立/);
-  assert.equal(calls.length, 1);
+  assert.deepEqual(calls.map(args => args[0]), ['open', 'tabs']);
+});
+
+test('resolves the first newly created tab by its unique owner and closes it', async () => {
+  const fixture = simulate([{ at: 0, points: [28, 29, 30, 31], completed: true }]);
+  const browser = async args => {
+    if (args[0] === 'open') return { loaded: true };
+    if (args[0] === 'tabs') return { tabs: [
+      { id: 'other-tab', current: true, owner: 'someone-else' },
+      { id: 'owned-tab', current: true, owner: 'fresh-owner' },
+    ] };
+    return fixture.browser(args);
+  };
+  browser.owner = 'fresh-owner';
+  assert.equal(JSON.parse(await capture(browser, fixture.options)).historyCoverage, 'history');
+  assert.deepEqual(fixture.calls.at(-1), ['close', 'owned-tab']);
 });
 
 test('survives the new tab navigating between open and the first read', async () => {
@@ -98,6 +113,7 @@ test('repair forces manual fetches and displays upstream coverage without treati
       "' 以下仍展示上次成功抓取的数据，请检查每日刷新任务。';",
   };
   const repaired = repairSources(sources);
+  assert.match(repaired.fetch, /隔离浏览器取数失败或超时/);
   assert.match(repaired.index, /refresh\?force=1/);
   assert.match(repaired.index, /sessionStorage\.getItem\('openrouterRefreshNotice'\)/);
   const reporting = repaired.fetch.slice(repaired.fetch.indexOf('const result = JSON.parse(raw);'));
