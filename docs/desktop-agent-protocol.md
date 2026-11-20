@@ -75,6 +75,7 @@ Windows 首版已具备构建与验证入口；真实桌面验收仍须按下文
 | `no-display` | agent 连不上图形会话（Linux：X server；或 Esc 观察线程没连上） | 桌面 Agent 连不上这台机器的图形界面 |
 | `wayland-session` | Linux 是 Wayland 会话（XWayland 连得上但会假成功，见 §7 Wayland） | 远程屏幕只支持 X11，请换 Xorg 会话 |
 | `interrupted` | 多步注入半路被停（租约被 `release` 收回 / 请求方断开）；Esc 打断回的是 `user-stopped` | 操作被中途停下，可能已执行了一部分 |
+| `clipboard-unavailable` | 老 Agent 不认识剪贴板 op（`unknown op: …`），由服务端收敛 | 桌面 Agent 版本较旧，更新后可用剪贴板同步 |
 
 半路被停的响应带 `outcome: "partial"`、`dispatched: "dispatched" \| "none"`、`retrySafe`
 （只有一步都没发出去才为 true）——发出去一部分的输入**不能**被上层自动重试，否则前半段
@@ -105,6 +106,13 @@ Windows 首版已具备构建与验证入口；真实桌面验收仍须按下文
 | `release` | — | 释放操作租约，并松开 `remote-screen` 仍按住的按钮与修饰键 |
 | `resume` | — | 解除 Esc 急停 |
 | `unlock` | — | 提交已保存的密码解锁（**只能由服务端唤屏路由触发**，见 §5） |
+| `clipboard-read` | — | 读取系统剪贴板文本：`{ ok, text, length, truncated? }`，最多 200000 个 UTF-16 码元。**只允许 `session: "remote-screen"`** |
+| `clipboard-write` | `text`（≤200000 字符） | 覆盖系统剪贴板文本：`{ ok, length }`。同样只允许 `session: "remote-screen"` |
+
+语义：剪贴板是**一次性、用户点按触发**的搬运，不允许轮询或监听。密码 / 验证码
+这类内容不该被静默带走。老 Agent 不认识这两个 op，会回 `unknown op: …`；服务端把它
+收敛成 `clipboard-unavailable`（`native/remote/src/routes.rs`），前端提示更新 Agent，
+而不是把裸字符串丢给用户。
 
 `mods` 只接受 `"shift"` / `"ctrl"` / `"alt"` / `"cmd"`：去重、固定按这个顺序、
 未知项丢掉、非数组当空。对 `click` / `move` / `scroll` / `drag` 是「夹住这一次操作」

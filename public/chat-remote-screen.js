@@ -24,6 +24,7 @@
     'no-display': ['rsErrNoDisplay', '桌面 Agent 连不上这台机器的图形界面（X server）：它需要在已登录的桌面会话里运行'],
     'wayland-session': ['rsErrWayland', '这台 Linux 正在用 Wayland 会话，远程屏幕只支持 X11：注销后在登录界面选「Xorg / X11」会话'],
     interrupted: ['rsErrInterrupted', '操作被中途停下，可能已执行了一部分：先看一眼画面再继续'],
+    'clipboard-unavailable': ['rsErrClipboard', '桌面 Agent 版本较旧，更新 MultiCC Agent 后可用剪贴板同步'],
   };
   const errText = data => {
     // 没装 agent 的平台（Linux 不像 macOS 会随服务端自动装）要说清怎么装，而不只是「未运行」。

@@ -74,6 +74,7 @@ Rust 端的路由与 JSON 形状与迁移前（已删除）的 Node 实现完全
 | `POST /api/remote-screen/input` | 输入，op 白名单 |
 | `POST /api/remote-screen/snapshot` | 冻结一帧 → `{path,url}` |
 | `GET/POST /api/remote-screen/wake` | 唤屏 / 解锁状态与动作 |
+| `GET/POST /api/remote-screen/clipboard` | 剪贴板文本：GET 读远端（`{ok,text}`，超长截断并带 `truncated`），POST 写远端（`{text}`，上限 200000 码元）；老 Agent 回 `clipboard-unavailable` |
 
 仅供 Node 调用的内部路由：
 

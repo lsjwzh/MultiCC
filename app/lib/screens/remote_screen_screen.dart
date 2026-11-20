@@ -8,10 +8,12 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show HapticFeedback;
+import 'package:flutter/services.dart'
+    show Clipboard, ClipboardData, HapticFeedback, SystemChrome, SystemUiMode;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../i18n.dart';
+import '../services/remote_host_actions.dart';
 import '../services/remote_link.dart';
 import '../services/remote_rate_controller.dart';
 import '../services/remote_screen_h264.dart';
@@ -24,6 +26,9 @@ import '../services/remote_screen_source.dart';
 import '../services/remote_touch_controller.dart';
 import '../services/settings_service.dart';
 import '../services/sticky_modifiers.dart';
+import '../widgets/remote_control_pod.dart';
+import '../widgets/remote_key_sheet.dart';
+import '../widgets/remote_rail.dart';
 import '../widgets/remote_wheel_rail.dart';
 
 /// 键盘条的功能键/快捷键：[label, spec]。spec 里 `+` 分段，修饰键映射成
@@ -210,10 +215,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
 
   /// 粘住的修饰键（⇧ ⌘ ⌥ ⌃）：点一下 = 一次性，连点两下 = 锁定。
   final StickyModifiers _sticky = StickyModifiers();
+
   /// 本次「按下+松开」周期里发过按键/按钮：松手时用掉一次性修饰键。
   bool _pointerUsed = false;
+
   /// 键盘条「更多」面板展开中。
-  bool _moreOpen = false;
   /// 连发（退格 / 前向 Delete / 方向键）的计时器。
   Timer? _repeatTimer;
 
@@ -232,9 +238,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
 
   int _lastX = 0;
   int _lastY = 0;
+
   /// 画面是否被摸过：[_lastX]/[_lastY] 的坐标域随 live（源图）与
   /// fallback（[_fallbackArea] 内）不同，没摸过时用画面中心。
   bool _hasPointer = false;
+
   /// fallback 滚轮靠 HTTP：多格脉冲合并成一趟循环，避免并发请求丢格。
   int _scrollPending = 0;
   bool _scrollBusy = false;
@@ -250,44 +258,62 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   /// 当前按在画面上的手指；不足两指时画面不许动（单指只做鼠标）。
   final Set<int> _viewPointers = {};
 
-  /// 触摸手势识别（直接触摸 / 触控板两档），见 RemoteTouchController。
+  /// 触摸手势识别（舞台永远是直接触摸），见 RemoteTouchController。
   late final RemoteTouchController _touch = RemoteTouchController(
-    onPointer: (mask, x, y) {
-      final source = _svc.source;
-      _inputSinceFrame = true;
-      _hasPointer = true;
-      _lastX = x;
-      _lastY = y;
-      if (mask & 7 != 0) _pointerUsed = true; // 真按了键：松手时用掉一次性修饰键
-      // 兼容模式没有 KeyEvent 通道：修饰键只能随每个指针/滚轮请求带过去。
-      final mods = _stickyHttpMods();
-      if (source != null) {
-        source.pointerEvent(mask, x, y);
-      } else {
-        final area = _fallbackArea;
-        if (area == null) return;
-        if (mask == 0 || mask == 1) {
-          _pointerQueue.add(
-            mask,
-            (area.x + x).round(),
-            (area.y + y).round(),
-            mods: mods,
-          );
-        } else if (mask == 4) {
-          unawaited(
-            _pointerQueue.drained.then(
-              (_) => _svc.inputOp({
-                'op': 'click',
-                'x': (area.x + x).round(),
-                'y': (area.y + y).round(),
-                'button': 'right',
-                if (mods.isNotEmpty) 'mods': mods,
-              }),
-            ),
-          );
-        }
-      }
+    onPointer: _emitPointer,
+    onCursor: (s, pressed) => _cursorMark.value = s == null
+        ? null
+        : _CursorMark(s, pressed, arrow: true),
+    onHold: () => HapticFeedback.mediumImpact(),
+    onRightUsed: () {
+      if (mounted) setState(() => _rightOnce = false);
     },
+  );
+
+  /// 指针事件出口：舞台与悬浮操作台共用一套（坐标都是源画面像素）。
+  void _emitPointer(int mask, int x, int y) {
+    final source = _svc.source;
+    _inputSinceFrame = true;
+    _hasPointer = true;
+    _lastX = x;
+    _lastY = y;
+    if (mask & 7 != 0) _pointerUsed = true; // 真按了键：松手时用掉一次性修饰键
+    // 兼容模式没有 KeyEvent 通道：修饰键只能随每个指针/滚轮请求带过去。
+    final mods = _stickyHttpMods();
+    if (source != null) {
+      source.pointerEvent(mask, x, y);
+    } else {
+      final area = _fallbackArea;
+      if (area == null) return;
+      if (mask == 0 || mask == 1) {
+        _pointerQueue.add(
+          mask,
+          (area.x + x).round(),
+          (area.y + y).round(),
+          mods: mods,
+        );
+      } else if (mask == 4) {
+        unawaited(
+          _pointerQueue.drained.then(
+            (_) => _svc.inputOp({
+              'op': 'click',
+              'x': (area.x + x).round(),
+              'y': (area.y + y).round(),
+              'button': 'right',
+              if (mods.isNotEmpty) 'mods': mods,
+            }),
+          ),
+        );
+      }
+    }
+  }
+
+  final ValueNotifier<_CursorMark?> _cursorMark = ValueNotifier(null);
+
+  /// 悬浮操作台（触控板 + 滚轮）。舞台永远走直接触摸，操作台是第二个
+  /// [RemoteTouchController] 实例 —— 两者互不知道对方存在。
+  late final RemoteTouchController _pad = RemoteTouchController(
+    onPointer: _emitPointer,
     onCursor: (s, pressed) =>
         _cursorMark.value = s == null ? null : _CursorMark(s, pressed),
     onHold: () => HapticFeedback.mediumImpact(),
@@ -295,11 +321,32 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       if (mounted) setState(() => _rightOnce = false);
     },
   );
-  final ValueNotifier<_CursorMark?> _cursorMark = ValueNotifier(null);
 
-  /// 触控板模式：一指滑动带虚拟光标走；偏好会记住（只对流畅模式生效）。
-  bool _trackpad = false;
-  static const _trackpadPref = 'remote_screen_trackpad';
+  bool _podVisible = true;
+  RemotePodCorner _podCorner = RemotePodCorner.bottomRight;
+
+  /// 操作台灵敏度：每 1 逻辑像素位移移动多少源像素。
+  double _padGain = 1.0;
+
+  /// 幕布侧栏：展开 / 收起 / 靠哪边 / 当前面板。
+  bool _railOpen = true;
+  bool _railLeft = false;
+  String? _panel;
+  Timer? _railTimer;
+  bool _keyOpen = false;
+
+  /// 放大后的取景器：点在画面上时，手指上方放大 2.4×，用来精确落点。
+  bool _loupe = true;
+
+  /// 状态 HUD：常驻内容只有错误与「画面冻住」；正常读数出现几秒后淡出。
+  bool _hudOn = true;
+  Timer? _hudTimer;
+
+  static const _podPref = 'remote_screen_pod';
+  static const _podGainPref = 'remote_screen_pod_gain';
+  static const _podCornerPref = 'remote_screen_pod_corner';
+  static const _railLeftPref = 'remote_screen_rail_left';
+  static const _loupePref = 'remote_screen_loupe';
 
   /// 最近一次舞台几何（视口 / 内容框偏移 / 内容框尺寸），算可见源画面与钳制视角用。
   ({Size vp, double offX, double offY, double dw, double dh})? _stageGeo;
@@ -341,7 +388,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
         _zoomPct = 100;
       }
       _wasFallback = fallback;
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+        _armHud(); // 换了通道 / 重新连上：读数再露一次，别让状态变化悄无声息
+      }
     });
     _frameSub = _svc.onFrame.listen((_) => _renderFrame());
     _ageTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -350,12 +400,34 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       if (mounted && _frameAgeShown) setState(() {});
     });
     _xform.addListener(_keepViewInBounds);
+    // 幕布形态：进去就吃掉状态栏，退出恢复。参考 iPad 远控 App —— 画面就是页面。
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
+    );
     SharedPreferences.getInstance()
         .then((prefs) {
-          final on = prefs.getBool(_trackpadPref) ?? false;
-          if (mounted && on != _trackpad) setState(() => _trackpad = on);
+          final pod = prefs.getBool(_podPref) ?? true;
+          final gain = prefs.getDouble(_podGainPref) ?? 1.0;
+          final corner = prefs.getString(_podCornerPref);
+          final railLeft = prefs.getBool(_railLeftPref) ?? false;
+          final loupe = prefs.getBool(_loupePref) ?? true;
+          if (!mounted) return;
+          setState(() {
+            _podVisible = pod;
+            _padGain = gain.clamp(0.5, 2.0);
+            _podCorner = switch (corner) {
+              'topLeft' => RemotePodCorner.topLeft,
+              'topRight' => RemotePodCorner.topRight,
+              'bottomLeft' => RemotePodCorner.bottomLeft,
+              _ => RemotePodCorner.bottomRight,
+            };
+            _railLeft = railLeft;
+            _loupe = loupe;
+          });
         })
         .catchError((Object _) {});
+    _armHud();
+    _armRail();
     if (widget.initialControl) {
       _control = true;
       _hadControl = true;
@@ -475,9 +547,14 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     _haltTimer?.cancel();
     _permTimer?.cancel();
     _ageTimer?.cancel();
+    _railTimer?.cancel();
+    _hudTimer?.cancel();
     _stopRepeat();
     _releaseStickyAll(rebuild: false);
     _touch.reset();
+    _pad.reset();
+    // 离开幕布就还回状态栏；否则别的页面会一直顶着没有状态栏的布局。
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     _decoder.dispose();
     _cursorMark.dispose();
     _xform.removeListener(_keepViewInBounds);
@@ -526,11 +603,12 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   void _setControl(bool on) {
     setState(() {
       _control = on;
-      if (!on) _moreOpen = false;
+      if (!on) _panel = null;
     });
     if (on) {
       _hadControl = true;
       _startHaltPoll();
+      _armHud();
     } else {
       _haltTimer?.cancel();
       _haltTimer = null;
@@ -575,6 +653,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       'no-display': 'rsErrNoDisplay',
       'wayland-session': 'rsErrWayland',
       'interrupted': 'rsErrInterrupted',
+      'clipboard-unavailable': 'rsErrClipboard',
     };
     final code = res['error']?.toString();
     setState(() {
@@ -586,24 +665,44 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
 
   // ── 指针（流式 / JPEG 共用手势控制器）──
   // 手势识别全在 RemoteTouchController（纯 Dart，单测覆盖）；这里只做装配。
-  bool get _trackpadActive =>
-      _trackpad && _control && _svc.mode == RemoteScreenMode.live;
+  // 舞台永远 direct：单指点哪打哪。触控板的「相对移动」只属于悬浮操作台。
+  ({Size src, Size area})? _gestureGeometry(double dw, double dh) {
+    final source = _svc.source;
+    final area = _fallbackArea;
+    if (source == null && area == null) return null;
+    final src = source != null
+        ? Size(source.width.toDouble(), source.height.toDouble())
+        : Size(area!.width, area.height);
+    return (src: src, area: Size(dw, dh));
+  }
 
   void _syncTouch(double dw, double dh) {
+    final geo = _gestureGeometry(dw, dh);
+    if (geo == null) return;
+    _touch
+      ..display = geo.area
+      ..source = geo.src
+      ..visible = _visibleSource(geo.src)
+      ..viewScale = _xform.value.getMaxScaleOnAxis()
+      ..mode = RemoteTouchMode.direct
+      ..rightOnce = _rightOnce;
+  }
+
+  /// 操作台：源画面与可见块跟舞台一致，位移增益固定（不按舞台尺度放大）。
+  void _syncPad() {
     final source = _svc.source;
     final area = _fallbackArea;
     if (source == null && area == null) return;
     final src = source != null
         ? Size(source.width.toDouble(), source.height.toDouble())
         : Size(area!.width, area.height);
-    _touch
-      ..display = Size(dw, dh)
+    _pad
+      ..display = const Size(remotePodPad, remotePodPad)
       ..source = src
       ..visible = _visibleSource(src)
-      ..viewScale = _xform.value.getMaxScaleOnAxis()
-      ..mode = _trackpadActive
-          ? RemoteTouchMode.trackpad
-          : RemoteTouchMode.direct
+      ..viewScale = 1
+      ..mode = RemoteTouchMode.trackpad
+      ..motionGain = _padGain
       ..rightOnce = _rightOnce;
   }
 
@@ -628,7 +727,15 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     if (!_control) return;
     _syncTouch(dw, dh);
     _touch.move(e.pointer, e.localPosition, e.position, e.timeStamp);
-    _autoPanDrag(e);
+    final g = _stageGeo;
+    if (g != null && _touch.dragging) {
+      _autoPanToward(
+        MatrixUtils.transformPoint(
+          _xform.value,
+          e.localPosition + Offset(g.offX, g.offY),
+        ),
+      );
+    }
   }
 
   void _onPointerUp(PointerEvent e, double dw, double dh) {
@@ -645,35 +752,21 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     }
   }
 
-  /// 放大后拖拽到舞台边缘：朝那一侧推画面，远端指针能一直走到画面外沿。
+  /// 放大后拖到舞台边缘：朝那一侧推画面，远端指针能一直走到画面外沿。
   /// 边缘带 = 24px 或舞台轴长的 8%（取大），每次移动最多推 16px。
-  void _autoPanDrag(PointerMoveEvent e) {
+  /// [view] 是手指（或触控板虚拟光标）在视口里的位置。
+  void _autoPanToward(Offset view) {
     final g = _stageGeo;
-    if (g == null || !_touch.dragging) return;
+    if (g == null) return;
     final m = _xform.value;
     final s = m.getMaxScaleOnAxis();
     if (s <= 1.01) return;
-    // localPosition 是内容局部坐标（已被 hit-test 逆变换）；加内容框偏移再
-    // 过当前矩阵，才是手指在视口里的位置。触控板拖拽时真正要跟的是虚拟光标
-    // 的位置 —— 手指位置和远端指针已经解耦，只有光标能走到画面边缘。
-    final Offset anchor;
-    final src = _touch.source;
-    if (_touch.mode == RemoteTouchMode.trackpad &&
-        src.width > 0 &&
-        src.height > 0) {
-      anchor = Offset(
-        _touch.cursor.dx / src.width * g.dw + g.offX,
-        _touch.cursor.dy / src.height * g.dh + g.offY,
-      );
-    } else {
-      anchor = e.localPosition + Offset(g.offX, g.offY);
-    }
-    final view = MatrixUtils.transformPoint(m, anchor);
     final bandX = math.max(24.0, g.vp.width * 0.08);
     final bandY = math.max(24.0, g.vp.height * 0.08);
     double push(double v, double len, double band) {
       if (v < band) return (band - v).clamp(0.0, 16.0).toDouble();
-      if (v > len - band) return -(v - (len - band)).clamp(0.0, 16.0).toDouble();
+      if (v > len - band)
+        return -(v - (len - band)).clamp(0.0, 16.0).toDouble();
       return 0;
     }
 
@@ -695,28 +788,338 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     _xformAtStart = _xform.value.clone();
   }
 
-  void _toggleTrackpad() {
-    _touch.reset(); // 切档先把按着的键松开
-    _stopRepeat();
-    _releaseStickyAll(rebuild: false);
-    _cursorMark.value = null;
-    final on = !_trackpad;
-    setState(() => _trackpad = on);
+  // ── 悬浮操作台 ──
+  Offset? _padViewportPoint() {
+    final g = _stageGeo;
+    final src = _pad.source;
+    if (g == null || src.width <= 0 || src.height <= 0) return null;
+    return MatrixUtils.transformPoint(
+      _xform.value,
+      Offset(
+        _pad.cursor.dx / src.width * g.dw + g.offX,
+        _pad.cursor.dy / src.height * g.dh + g.offY,
+      ),
+    );
+  }
+
+  /// 操作台与舞台共用 JPEG 回退的几何（点哪映射到哪块）。
+  void _ensureFallbackArea() {
+    if (_svc.source == null && _svc.fallbackJpeg != null) {
+      _fallbackArea ??=
+          _svc.viewRegion ??
+          ScreenRegion(
+            0,
+            0,
+            _svc.fallbackWidth.toDouble(),
+            _svc.fallbackHeight.toDouble(),
+          );
+    }
+  }
+
+  void _podDown(int pointer, Offset global, Duration t) {
+    if (!_control) return;
+    if (_svc.source == null && _svc.fallbackJpeg == null) return;
+    _ensureFallbackArea();
+    _syncPad();
+    _padLastGlobal = global;
+    _pad.down(pointer, Offset.zero, global, t);
+  }
+
+  void _podMove(int pointer, Offset global, Duration t) {
+    if (!_control) return;
+    _syncPad();
+    _padLastGlobal = global;
+    _pad.move(pointer, Offset.zero, global, t);
+    if (_pad.dragging) {
+      final at = _padViewportPoint();
+      if (at != null) _autoPanToward(at);
+    }
+  }
+
+  void _podUp(int pointer, Duration t) {
+    _syncPad();
+    _pad.up(pointer, Offset.zero, _padLastGlobal, t);
+    if (_pointerUsed) {
+      _pointerUsed = false;
+      _consumeOneShots();
+    }
+  }
+
+  Offset _padLastGlobal = Offset.zero;
+
+  void _setPodCorner(RemotePodCorner corner) {
+    setState(() => _podCorner = corner);
     SharedPreferences.getInstance()
-        .then((prefs) => prefs.setBool(_trackpadPref, on))
+        .then((prefs) => prefs.setString(_podCornerPref, corner.name))
         .catchError((Object _) => false);
+  }
+
+  void _togglePod() {
+    final on = !_podVisible;
+    setState(() => _podVisible = on);
+    if (!on) {
+      _pad.reset();
+      _cursorMark.value = null;
+    }
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setBool(_podPref, on))
+        .catchError((Object _) => false);
+    _toast(on ? t('rsPodOn') : t('rsPodOff'));
+  }
+
+  // ── 幕布：侧栏 / HUD / 面板 ──
+  void _toast(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(
-          duration: const Duration(seconds: 4),
-          content: Text(
-            on
-                ? '触控板模式：单指只动光标 · 轻点单击 · 按住后再拖 = 拖拽 · 双指捏合缩放、同时拖动画面 · 未放大时双指上下滑 = 滚动 · 双指轻点 = 右键 · 画面旁竖条 = 滚轮'
-                : '触摸模式：手指点哪、拖到哪 · 双指捏合缩放、同时拖动画面 · 画面旁竖条 = 滚轮',
-          ),
-        ),
+        SnackBar(duration: const Duration(seconds: 3), content: Text(message)),
       );
+  }
+
+  void _armRail() {
+    _railTimer?.cancel();
+    _railTimer = Timer(const Duration(seconds: 6), () {
+      if (!mounted || _panel != null) return;
+      setState(() => _railOpen = false);
+    });
+  }
+
+  void _armHud() {
+    _hudTimer?.cancel();
+    final wasOff = !_hudOn;
+    if (wasOff) setState(() => _hudOn = true);
+    _hudTimer = Timer(const Duration(seconds: 4), () {
+      if (!mounted) return;
+      if (_statusErr != null || _frameAgeShown) return; // 告警常驻
+      setState(() => _hudOn = false);
+    });
+  }
+
+  List<RemoteRailEntry> _railEntries(List<RemoteHostAction> actions) => [
+    RemoteRailEntry(
+      id: 'back',
+      icon: Icons.keyboard_arrow_left_rounded,
+      label: t('rsRailBack'),
+    ),
+    RemoteRailEntry(
+      id: 'pointer',
+      icon: !_control
+          ? Icons.visibility_outlined
+          : _podVisible
+          ? Icons.mouse_rounded
+          : Icons.mouse_outlined,
+      label: _control ? t('rsRailPointer') : t('rsRailControl'),
+      active: _podVisible && _control,
+    ),
+    if (_control)
+      RemoteRailEntry(
+        id: 'keys',
+        icon: Icons.keyboard_alt_outlined,
+        label: t('rsRailKeys'),
+        active: _keyOpen,
+      ),
+    if (_control && actions.isNotEmpty)
+      RemoteRailEntry(
+        id: 'host',
+        icon: Icons.grid_view_rounded,
+        label: t('rsRailHost'),
+        active: _panel == 'host',
+      ),
+    RemoteRailEntry(
+      id: 'view',
+      icon: Icons.zoom_out_map_rounded,
+      label: t('rsRailView'),
+      active: _panel == 'view',
+    ),
+    if (_control)
+      RemoteRailEntry(
+        id: 'clipboard',
+        icon: Icons.content_paste_rounded,
+        label: t('rsRailClipboard'),
+        active: _panel == 'clipboard',
+      ),
+    RemoteRailEntry(
+      id: 'status',
+      icon: Icons.info_outline_rounded,
+      label: t('rsRailStatus'),
+      active: _panel == 'status',
+      danger: _halted || _statusErr != null,
+    ),
+  ];
+
+  void _onRail(String id, List<RemoteHostAction> actions) {
+    _armRail();
+    switch (id) {
+      case 'back':
+        Navigator.of(context).maybePop();
+        return;
+      case 'pointer':
+        // 只看模式下这一项就是「拿到操作权」；有操作权时才是操作台开关。
+        if (!_control) {
+          _setControl(true);
+          _armHud();
+        } else {
+          _togglePod();
+        }
+        return;
+      case 'keys':
+        unawaited(_openKeyboard());
+        return;
+      default:
+        setState(() {
+          _panel = _panel == id ? null : id;
+          _railOpen = true;
+        });
+    }
+  }
+
+  void _toggleRailSide() {
+    setState(() => _railLeft = !_railLeft);
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setBool(_railLeftPref, _railLeft))
+        .catchError((Object _) => false);
+  }
+
+  void _toggleLoupe() {
+    setState(() => _loupe = !_loupe);
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setBool(_loupePref, _loupe))
+        .catchError((Object _) => false);
+  }
+
+  Future<void> _openKeyboard() async {
+    if (_keyOpen || !_control) return;
+    setState(() {
+      _keyOpen = true;
+      _panel = null;
+    });
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black26,
+        builder: (ctx) {
+          final inset = MediaQuery.viewInsetsOf(ctx).bottom;
+          final height = math.min(
+            360.0,
+            (MediaQuery.sizeOf(ctx).height - inset) * 0.55,
+          );
+          return Padding(
+            padding: EdgeInsets.only(bottom: inset),
+            child: SizedBox(
+              height: height,
+              child: RemoteKeySheet(
+                textController: _textCtrl,
+                onSend: _sendText,
+                sticky: _sticky,
+                onSticky: _tapSticky,
+                onSpec: _pressSpec,
+                onRepeatStart: _startRepeat,
+                onRepeatStop: _stopRepeat,
+                specs: [..._keyBarSpecs, ..._moreKeySpecs],
+                repeatSpecs: _repeatSpecs,
+                remapLabel: _remapLabel,
+                remapSpec: _remapSpec,
+                onClose: () => Navigator.of(ctx).maybePop(),
+              ),
+            ),
+          );
+        },
+      );
+    } finally {
+      if (mounted) setState(() => _keyOpen = false);
+    }
+  }
+
+  /// 按住连发：立即一发，400ms 后每 70ms 一发（退格 / 前向 Delete / 方向键）。
+  void _startRepeat(String spec) {
+    _pressSpec(spec);
+    _stopRepeat();
+    _repeatTimer = Timer(const Duration(milliseconds: 400), () {
+      _repeatTimer = Timer.periodic(
+        const Duration(milliseconds: 70),
+        (_) => _pressSpec(spec),
+      );
+    });
+  }
+
+  // ── 放大 / 框选 ──
+  void _zoomTo(double scale) {
+    final g = _stageGeo;
+    if (g == null) return;
+    if (_svc.region != null) _svc.selectRegion(null);
+    final f = Offset(g.vp.width / 2, g.vp.height / 2);
+    _xform.value = Matrix4.identity()
+      ..translate(f.dx, f.dy)
+      ..scale(scale)
+      ..translate(-f.dx, -f.dy);
+    _onZoomUpdate(g.vp, g.offX, g.offY, g.dw, g.dh);
+  }
+
+  void _resetZoom() {
+    final g = _stageGeo;
+    if (g == null) return;
+    if (_svc.region != null) _svc.selectRegion(null);
+    _xform.value = Matrix4.identity();
+    _onZoomUpdate(g.vp, g.offX, g.offY, g.dw, g.dh);
+  }
+
+  void _toggleBoxSel() {
+    _touch.reset();
+    setState(() {
+      _boxSelOn = !_boxSelOn;
+      _boxRect = null;
+      if (_boxSelOn) _panel = null;
+    });
+  }
+
+  // ── 剪贴板：只在点按时搬运 ──
+  Future<void> _readRemoteClipboard() async {
+    final res = await _svc.readClipboard();
+    if (!mounted) return;
+    if (res['ok'] != true) {
+      _showErr(res);
+      return;
+    }
+    final text = res['text'] as String? ?? '';
+    if (text.isEmpty) {
+      _toast(t('rsClipEmpty'));
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    _toast(
+      res['truncated'] == true
+          ? t('rsClipCopiedTruncated', {'n': text.runes.length.toString()})
+          : t('rsClipCopied', {'n': text.runes.length.toString()}),
+    );
+  }
+
+  Future<void> _sendLocalClipboard({bool paste = false}) async {
+    String text = '';
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      text = data?.text ?? '';
+    } catch (_) {}
+    if (!mounted) return;
+    if (text.isEmpty) {
+      _toast(t('rsClipEmpty'));
+      return;
+    }
+    final res = await _svc.writeClipboard(text);
+    if (!mounted) return;
+    if (res['ok'] != true) {
+      _showErr(res);
+      return;
+    }
+    if (paste) {
+      await _pressSpec(_remapSpec('cmd+v'));
+      if (mounted) _toast(t('rsClipPasted'));
+    } else {
+      _toast(t('rsClipSent'));
+    }
   }
 
   /// 视口里看得见的那块源画面（源像素）。单指不推画面，触控板光标就限制在这里。
@@ -964,111 +1367,421 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   @override
   Widget build(BuildContext context) {
     if (_unsupported) return _unsupportedScaffold();
+    final media = MediaQuery.of(context);
+    final safe = media.padding;
+    final actions = remoteHostActions(_svc.hostModifier);
     return Scaffold(
-      backgroundColor: const Color(0xFF10141c),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF161b26),
-        foregroundColor: const Color(0xFFdce6f1),
-        title: Text('🖥 ${t('rsTitle')}'),
-        actions: [
-          // 兼容模式下留一个手动重试流畅模式的口子（连接失败 8s 后自动降级一次）。
-          if (_svc.mode == RemoteScreenMode.fallback)
-            IconButton(
-              icon: const Icon(Icons.bolt_rounded),
-              tooltip: t('retry'),
-              onPressed: () => _svc.connectLive(),
+      backgroundColor: const Color(0xFF06080c),
+      // 幕布：画面铺满整个 body（含状态栏下方），chrome 全部是浮层。
+      body: Stack(
+        children: [
+          Positioned.fill(child: _stage()),
+          // 安全信息（权限 / 急停）永远整宽置顶，HUD 排在它下面。
+          Positioned(
+            top: safe.top + 6,
+            left: 0,
+            right: 0,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_permGate != null) _permBanner(),
+                if (_halted) _haltBanner(),
+                const SizedBox(height: 6),
+                if (_hudVisible) Center(child: _hud()),
+                if (_boxSelOn)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Center(child: _boxHint()),
+                  ),
+              ],
             ),
-          IconButton(
-            icon: Icon(
-              _control ? Icons.mouse_rounded : Icons.visibility_outlined,
-            ),
-            tooltip: t('rsModeTitle'),
-            color: _control ? const Color(0xFF2ba67a) : null,
-            onPressed: () => _setControl(!_control),
           ),
-          if (_control && _svc.mode == RemoteScreenMode.live)
-            IconButton(
-              icon: Icon(
-                _trackpad ? Icons.mouse_outlined : Icons.touch_app_outlined,
+          // 侧栏：竖屏右侧、可切到左侧（单手习惯），6s 无操作收成 10dp 触条。
+          Positioned.fill(
+            left: _railLeft ? safe.left + 6 : null,
+            right: _railLeft ? null : safe.right + 6,
+            top: safe.top + 56,
+            bottom: safe.bottom + 56,
+            child: Align(
+              alignment: _railLeft
+                  ? Alignment.centerLeft
+                  : Alignment.centerRight,
+              // 短屏（横屏手机）放不下 7 个 44dp 图标：等比缩小，而不是溢出。
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: RemoteRail(
+                  entries: _railEntries(actions),
+                  expanded: _railOpen,
+                  onExpand: () {
+                    setState(() => _railOpen = true);
+                    _armRail();
+                  },
+                  onAction: (id) => _onRail(id, actions),
+                ),
               ),
-              tooltip: _trackpad ? '触控板模式（点按切回触摸）' : '触摸模式（点按切到触控板）',
-              color: _trackpad ? const Color(0xFF2ba67a) : null,
-              onPressed: _toggleTrackpad,
             ),
-          if (_control)
-            IconButton(
-              icon: const Icon(Icons.ads_click),
-              tooltip: t('rsRightClickHint'),
-              color: _rightOnce ? const Color(0xFF2ba67a) : null,
-              onPressed: () => setState(() => _rightOnce = !_rightOnce),
-            ),
-          IconButton(
-            icon: const Icon(Icons.crop_free),
-            tooltip: t('rsBoxZoomTitle'),
-            color: _boxSelOn ? const Color(0xFF2ba67a) : null,
-            onPressed: () {
-              _touch.reset();
-              setState(() {
-                _boxSelOn = !_boxSelOn;
-                _boxRect = null;
-              });
-            },
           ),
+          if (_panel != null) _panelOverlay(media, safe, actions),
+          // 悬浮操作台：非模态，舞台的单指语义不受它影响。
+          if (_control && _podVisible && !_boxSelOn)
+            RemoteControlPod(
+              viewport: media.size,
+              padding: safe,
+              corner: _podCorner,
+              onCorner: _setPodCorner,
+              onPointerDown: _podDown,
+              onPointerMove: _podMove,
+              onPointerUp: _podUp,
+              onNotch: _wheelNotch,
+              padLabel: t('rsPadTitle'),
+              dragLabel: t('rsPadDrag'),
+              upLabel: t('rsWheelUp'),
+              downLabel: t('rsWheelDown'),
+            ),
+          // 修饰键浮条：键盘面板收起后仍然看得见「⌘ 还按着」。
+          if (_control && !_keyOpen && _sticky.anyActive)
+            Positioned(
+              bottom: safe.bottom + 14,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: RemoteStickyStrip(sticky: _sticky, onSticky: _tapSticky),
+              ),
+            ),
         ],
       ),
-      body: SafeArea(
-        child: Column(
+    );
+  }
+
+  bool get _hudVisible => _statusErr != null || _frameAgeShown || _hudOn;
+
+  /// 顶部 HUD：正常读数出现几秒就淡出；错误与「画面冻住」常驻。
+  Widget _hud() {
+    final source = _svc.source;
+    final h264 = source is RemoteScreenH264 ? source : null;
+    if (_svc.mode != RemoteScreenMode.live || h264 == null) {
+      return _hudBody(null, null);
+    }
+    return ValueListenableBuilder<RemoteRateStats>(
+      valueListenable: h264.rateStats,
+      builder: (_, stats, __) => ValueListenableBuilder<RemoteLinkPath>(
+        valueListenable: _svc.linkPath,
+        builder: (_, path, __) => _hudBody(stats, path),
+      ),
+    );
+  }
+
+  Widget _hudBody(RemoteRateStats? net, RemoteLinkPath? path) {
+    final bits = _statusBits(net, path);
+    final err = _statusErr != null;
+    final warn = !err && _frameAgeShown && _inputSinceFrame;
+    return GestureDetector(
+      key: const ValueKey('rs-hud'),
+      onTap: () => setState(() => _panel = 'status'),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 330),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: const Color(0xCC161b26),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: err
+                ? const Color(0x99e07a7a)
+                : warn
+                ? const Color(0x99e0b45a)
+                : const Color(0xFF2a3242),
+          ),
+        ),
+        child: Text(
+          bits.join('  ·  '),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 11.5,
+            color: err
+                ? const Color(0xFFe07a7a)
+                : warn
+                ? const Color(0xFFe0b45a)
+                : const Color(0xFF9fb0c6),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _boxHint() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xCC161b26),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF4da3ff)),
+      ),
+      child: Text(
+        t('rsBoxSelHint'),
+        style: const TextStyle(fontSize: 11.5, color: Color(0xFFdce6f1)),
+      ),
+    );
+  }
+
+  Widget _panelOverlay(
+    MediaQueryData media,
+    EdgeInsets safe,
+    List<RemoteHostAction> actions,
+  ) {
+    return Positioned(
+      top: safe.top + 56,
+      left: _railLeft ? safe.left + 58 : null,
+      right: _railLeft ? null : safe.right + 58,
+      width: math.min(286, media.size.width - 78),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: media.size.height * 0.66),
+        child: Material(
+          key: const ValueKey('rs-panel'),
+          color: const Color(0xF2161b26),
+          elevation: 8,
+          borderRadius: BorderRadius.circular(12),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: _panelContent(actions),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _panelContent(List<RemoteHostAction> actions) {
+    switch (_panel) {
+      case 'host':
+        return _hostPanel(actions);
+      case 'view':
+        return _viewPanel();
+      case 'clipboard':
+        return _clipboardPanel();
+      default:
+        return _statusPanel();
+    }
+  }
+
+  Widget _panelTitle(String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: Color(0xFFdce6f1),
+        fontSize: 13,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+
+  Widget _panelLine(String text, {Color color = const Color(0xFF9fb0c6)}) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 3),
+        child: Text(text, style: TextStyle(fontSize: 12, color: color)),
+      );
+
+  Widget _panelButton(
+    String label,
+    VoidCallback? onTap, {
+    bool primary = false,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: OutlinedButton(
+        onPressed: onTap,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: primary
+              ? const Color(0xFF10141c)
+              : const Color(0xFFdce6f1),
+          backgroundColor: primary
+              ? const Color(0xFF2ba67a)
+              : const Color(0xFF10141c),
+          side: BorderSide(
+            color: primary ? const Color(0xFF2ba67a) : const Color(0xFF2a3242),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          alignment: Alignment.centerLeft,
+        ),
+        child: Text(label, style: const TextStyle(fontSize: 12.5)),
+      ),
+    );
+  }
+
+  List<Widget> _statusPanel() {
+    final source = _svc.source;
+    final w = _svc.mode == RemoteScreenMode.live
+        ? source?.width ?? 0
+        : _svc.fallbackWidth;
+    final h = _svc.mode == RemoteScreenMode.live
+        ? source?.height ?? 0
+        : _svc.fallbackHeight;
+    final wakeHint =
+        _wakeMessage ??
+        (_wakeState['screenLocked'] == true && _wakeState['canWake'] == true
+            ? t('rsWakeLocked')
+            : _wakeState['message'] as String? ?? t('rsWakeChecking'));
+    return [
+      _panelTitle(t('rsPanelStatus')),
+      if (w > 0 && h > 0) _panelLine('$w×$h · $_modeLabel'),
+      if (_svc.mode == RemoteScreenMode.live)
+        _panelLine(
+          _frameAgeShown
+              ? t('rsFrameAge', {'s': '$_frameAge'})
+              : t('rsFps', {'fps': (_fps ?? 0).toStringAsFixed(1)}),
+          color: _frameAgeShown && _inputSinceFrame
+              ? const Color(0xFFe0b45a)
+              : const Color(0xFF9fb0c6),
+        ),
+      if (_statusErr != null)
+        _panelLine(_statusErr!, color: const Color(0xFFe07a7a)),
+      const SizedBox(height: 6),
+      _panelLine(wakeHint),
+      _panelButton(
+        _waking ? t('rsWaking') : t('rsWake'),
+        !_waking && _wakeState['canWake'] == true ? _wakeScreen : null,
+      ),
+      if (_svc.mode == RemoteScreenMode.fallback)
+        _panelButton(t('rsRetryLive'), () => _svc.connectLive()),
+      const Divider(color: Color(0xFF2a3242), height: 16),
+      _panelButton(
+        _control ? t('rsToViewOnly') : t('rsToControl'),
+        () => _setControl(!_control),
+      ),
+    ];
+  }
+
+  List<Widget> _hostPanel(List<RemoteHostAction> actions) {
+    return [
+      _panelTitle(t('rsRailHost')),
+      for (final action in actions)
+        _panelButton(t(action.labelKey), () {
+          setState(() => _panel = null);
+          unawaited(_pressSpec(action.keys));
+        }),
+      _panelLine(t('rsHostHint')),
+    ];
+  }
+
+  List<Widget> _viewPanel() {
+    return [
+      _panelTitle(t('rsRailView')),
+      Row(
+        children: [
+          _zoomChip(t('rsZoomFit'), 1.0),
+          const SizedBox(width: 6),
+          _zoomChip('2×', 2.0),
+          const SizedBox(width: 6),
+          _zoomChip('3×', 3.0),
+        ],
+      ),
+      const SizedBox(height: 6),
+      _panelButton(t('rsBoxZoomTitle'), _toggleBoxSel, primary: _boxSelOn),
+      _switchLine(t('rsLoupe'), _loupe, _toggleLoupe),
+      _switchLine(t('rsPodVisible'), _podVisible, _togglePod),
+      _switchLine(t('rsRailLeft'), _railLeft, _toggleRailSide),
+      const SizedBox(height: 6),
+      _panelLine(t('rsPodGain')),
+      Row(
+        children: [
+          for (final gain in const [0.7, 1.0, 1.4]) ...[
+            _gainChip(gain == 0.7 ? '慢' : (gain == 1.0 ? '标准' : '快'), gain),
+            const SizedBox(width: 6),
+          ],
+        ],
+      ),
+      const SizedBox(height: 4),
+      _panelLine(t('rsZoomHint')),
+    ];
+  }
+
+  Widget _zoomChip(String label, double scale) {
+    final active = (_xform.value.getMaxScaleOnAxis() - scale).abs() < 0.05;
+    return OutlinedButton(
+      onPressed: () => scale <= 1.0 ? _resetZoom() : _zoomTo(scale),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: active
+            ? const Color(0xFF10141c)
+            : const Color(0xFFdce6f1),
+        backgroundColor: active
+            ? const Color(0xFF2ba67a)
+            : const Color(0xFF10141c),
+        side: BorderSide(
+          color: active ? const Color(0xFF2ba67a) : const Color(0xFF2a3242),
+        ),
+        minimumSize: const Size(0, 32),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  Widget _gainChip(String label, double gain) {
+    final active = (_padGain - gain).abs() < 0.01;
+    return OutlinedButton(
+      onPressed: () {
+        setState(() => _padGain = gain);
+        SharedPreferences.getInstance()
+            .then((prefs) => prefs.setDouble(_podGainPref, gain))
+            .catchError((Object _) => false);
+      },
+      style: OutlinedButton.styleFrom(
+        foregroundColor: active
+            ? const Color(0xFF10141c)
+            : const Color(0xFFdce6f1),
+        backgroundColor: active
+            ? const Color(0xFF2ba67a)
+            : const Color(0xFF10141c),
+        side: BorderSide(
+          color: active ? const Color(0xFF2ba67a) : const Color(0xFF2a3242),
+        ),
+        minimumSize: const Size(0, 32),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  Widget _switchLine(String label, bool value, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
           children: [
-            _statusRow(),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
-                children: [
-                  OutlinedButton(
-                    onPressed: !_waking && _wakeState['canWake'] == true
-                        ? _wakeScreen
-                        : null,
-                    child: Text(_waking ? '正在唤起…' : '唤起屏幕'),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _wakeMessage ??
-                          (_wakeState['screenLocked'] == true &&
-                                  _wakeState['canWake'] == true
-                              ? '屏幕已锁定，点击“唤起屏幕”恢复画面。'
-                              : _wakeState['message'] as String? ??
-                                    '正在检查自动解锁状态…'),
-                    ),
-                  ),
-                ],
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  color: Color(0xFFdce6f1),
+                ),
               ),
             ),
-            if (_permGate != null) _permBanner(),
-            if (_halted) _haltBanner(),
-            Expanded(child: _stage()),
-            if (_control) _keyBar(),
+            Switch(value: value, onChanged: (_) => onTap()),
           ],
         ),
       ),
     );
   }
 
-  Widget _statusRow() {
-    // H.264 活流时多一格网络读数（延迟 · 实收/目标 Mbps · 走哪条路）。统计对象
-    // 归会话所有，会话被替换后页面跟着重挂 ValueListenableBuilder。
-    final source = _svc.source;
-    final h264 = source is RemoteScreenH264 ? source : null;
-    if (_svc.mode != RemoteScreenMode.live || h264 == null) {
-      return _statusRowBody(null, null);
-    }
-    return ValueListenableBuilder<RemoteRateStats>(
-      valueListenable: h264.rateStats,
-      builder: (_, stats, __) => ValueListenableBuilder<RemoteLinkPath>(
-        valueListenable: _svc.linkPath,
-        builder: (_, path, __) => _statusRowBody(stats, path),
+  List<Widget> _clipboardPanel() {
+    return [
+      _panelTitle(t('rsRailClipboard')),
+      _panelButton(t('rsClipReadRemote'), _readRemoteClipboard),
+      _panelButton(t('rsClipWriteRemote'), () => _sendLocalClipboard()),
+      _panelButton(
+        t('rsClipWritePaste'),
+        () => _sendLocalClipboard(paste: true),
+        primary: true,
       ),
-    );
+      _panelLine(t('rsClipHint')),
+    ];
   }
 
   /// 「延迟 120ms · 1.8 / 2.0 Mbps · 中继」；RTT 还没回来时省掉延迟一格。
@@ -1097,7 +1810,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     });
   }
 
-  Widget _statusRowBody(RemoteRateStats? net, RemoteLinkPath? path) {
+  /// HUD 与状态面板共用的一行读数。
+  List<String> _statusBits(RemoteRateStats? net, RemoteLinkPath? path) {
     final source = _svc.source;
     final w = _svc.mode == RemoteScreenMode.live
         ? source?.width ?? 0
@@ -1106,12 +1820,12 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
         ? source?.height ?? 0
         : _svc.fallbackHeight;
     final netLabel = _netLabel(net, path);
-    final bits = <String>[
+    return <String>[
       if (w > 0 && h > 0) '$w×$h',
       _modeLabel,
       if (netLabel != null) netLabel,
       if (_boxSelOn) t('rsBoxSelHint'),
-      if (_trackpadActive) '触控板',
+      if (_podVisible && _control) t('rsPadTag'),
       if (_svc.mode == RemoteScreenMode.live && _statusErr == null)
         if (_frameAgeShown)
           t('rsFrameAge', {'s': '$_frameAge'})
@@ -1119,25 +1833,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
           t('rsFps', {'fps': _fps!.toStringAsFixed(1)}),
       if (_statusErr != null) _statusErr!,
     ];
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      color: const Color(0xFF161b26),
-      child: Text(
-        bits.join('  ·  '),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 11.5,
-          color: _statusErr != null
-              ? const Color(0xFFe07a7a)
-              // 发了输入、画面却没跟上：琥珀色，一眼区分「卡住」与「静止」。
-              : _frameAgeShown && _inputSinceFrame
-              ? const Color(0xFFe0b45a)
-              : const Color(0xFF8a9aab),
-        ),
-      ),
-    );
   }
 
   Widget _permBanner() {
@@ -1298,7 +1993,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
                           mark,
                           source.width.toDouble(),
                           source.height.toDouble(),
-                          _trackpadActive,
                         ),
                         size: Size.infinite,
                       ),
@@ -1354,7 +2048,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   Widget _zoomStage(Size vp, double dw, double dh, Widget child) {
     final offX = (vp.width - dw) / 2, offY = (vp.height - dh) / 2;
     _stageGeo = (vp: vp, offX: offX, offY: offY, dw: dw, dh: dh);
-    final pad = _trackpadActive;
     return Stack(
       children: [
         Positioned.fill(
@@ -1365,8 +2058,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
               onPointerCancel: (e) => _viewPointers.remove(e.pointer),
               child: GestureDetector(
                 // 只看模式允许双击缩放；可操作模式的连点留给远端。
-                onDoubleTapDown: _control || pad
-                    ? null // 触控板里连点两下是双击，不是缩放
+                onDoubleTapDown: _control
+                    ? null // 可操作时连点两下是远端双击，不是缩放
                     : (d) => _doubleTapZoom(d, vp, offX, offY, dw, dh),
                 child: InteractiveViewer(
                   transformationController: _xform,
@@ -1386,8 +2079,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
                     // 不足两指（含捏合后剩下的那一指）不动画面；双指在「滚动」远端
                     // 时，InteractiveViewer 看到的微小比例抖动也不许动画面。
                     if (start != null &&
-                        (_viewPointers.length < 2 ||
-                            (pad && _touch.scrolling))) {
+                        (_viewPointers.length < 2 || _touch.scrolling)) {
                       _xform.value = start.clone();
                       return;
                     }
@@ -1439,8 +2131,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
           ),
         // 画面旁的滚轮竖条：opaque Listener 独占自身区域，摸到它就不会
         // 落进 InteractiveViewer / 画面 Listener；位置按未放大几何算，
-        // 捏合缩放时竖条不跳。框选时让位给框。
-        if (_control && !_boxSelOn)
+        // 捏合缩放时竖条不跳。框选时让位给框；操作台自带滚轮，两套不同时出现。
+        if (_control && !_boxSelOn && !_podVisible)
           Positioned.fromRect(
             rect: remoteWheelRailRect(vp, offX, offY),
             child: RemoteWheelRail(
@@ -1450,6 +2142,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
               downLabel: t('rsWheelDown'),
             ),
           ),
+        if (_loupe && _zoomed && !_boxSelOn)
+          _loupeOverlay(vp, offX, offY, dw, dh),
         if (_zoomed || _svc.region != null) _zoomBadge(vp, offX, offY, dw, dh),
       ],
     );
@@ -1590,6 +2284,49 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     _repeatTimer = null;
   }
 
+  /// 放大取景器：双指放大之后，单指落点常常差几个像素，手指本身又把目标挡住了。
+  /// 按住时在手指上方开一个 2.4× 的小窗，看到的就是要点的位置。
+  Widget _loupeOverlay(
+    Size vp,
+    double offX,
+    double offY,
+    double dw,
+    double dh,
+  ) {
+    return ValueListenableBuilder<_CursorMark?>(
+      valueListenable: _cursorMark,
+      builder: (context, mark, _) {
+        final img = _image;
+        final source = _svc.source;
+        if (mark == null || !mark.pressed || img == null || source == null) {
+          return const SizedBox.shrink();
+        }
+        final src = Size(source.width.toDouble(), source.height.toDouble());
+        if (src.width <= 0 || src.height <= 0) {
+          return const SizedBox.shrink();
+        }
+        final content = Offset(
+          mark.pos.dx / src.width * dw + offX,
+          mark.pos.dy / src.height * dh + offY,
+        );
+        final at = MatrixUtils.transformPoint(_xform.value, content);
+        const d = 96.0;
+        final left = (at.dx - d / 2).clamp(2.0, vp.width - d - 2);
+        final top = (at.dy - d - 78).clamp(2.0, vp.height - d - 2);
+        return Positioned(
+          left: left,
+          top: top,
+          child: IgnorePointer(
+            child: CustomPaint(
+              size: const Size(d, d),
+              painter: _LoupePainter(img, mark.pos, src.width, src.height),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   /// 本机主修饰键跟着能力画像走：Linux/Windows 把 ⌘ 显示与发送成 Ctrl。
   String _remapLabel(String label) =>
       _svc.hostModifier == 'ctrl' ? label.replaceAll('⌘', 'Ctrl') : label;
@@ -1600,176 +2337,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
         .split('+')
         .map((part) => part.toLowerCase() == 'cmd' ? 'ctrl' : part)
         .join('+');
-  }
-
-  Widget _keyBar() {
-    return Container(
-      color: const Color(0xFF161b26),
-      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _textCtrl,
-                  style: const TextStyle(
-                    color: Color(0xFFdce6f1),
-                    fontSize: 13,
-                  ),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: t('rsTypePlaceholder'),
-                    hintStyle: const TextStyle(
-                      color: Color(0xFF8a9aab),
-                      fontSize: 12.5,
-                    ),
-                    filled: true,
-                    fillColor: const Color(0xFF10141c),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6),
-                      borderSide: const BorderSide(color: Color(0xFF2a3242)),
-                    ),
-                  ),
-                  onSubmitted: (_) => _sendText(),
-                ),
-              ),
-              const SizedBox(width: 6),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF1267b5),
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  minimumSize: const Size(0, 34),
-                ),
-                onPressed: _sendText,
-                child: Text(
-                  t('rsSend'),
-                  style: const TextStyle(fontSize: 12.5),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                for (final chip in StickyModifiers.definitions)
-                  _modChip(chip),
-                const SizedBox(width: 4),
-                for (final spec in _keyBarSpecs) _specChip(spec),
-                _keyChip(
-                  _moreOpen ? t('rsMoreClose') : t('rsMore'),
-                  () => setState(() => _moreOpen = !_moreOpen),
-                  active: _moreOpen,
-                ),
-              ],
-            ),
-          ),
-          if (_moreOpen) ...[
-            const SizedBox(height: 6),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  for (final spec in _moreKeySpecs) _specChip(spec),
-                ],
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _specChip(List<String> spec) {
-    final label = _remapLabel(spec[0]);
-    final normalized = _remapSpec(spec[1]);
-    if (_repeatSpecs.contains(normalized)) {
-      return _repeatChip(label, normalized);
-    }
-    return _keyChip(label, () => _pressSpec(normalized));
-  }
-
-  /// 修饰键芯片：暗底 = 关；绿字绿边 = 一次性；绿底 = 锁定。
-  Widget _modChip(StickyModifierKey chip) {
-    final state = _sticky.stateOf(chip.id);
-    final lit = state != StickyModifierState.off;
-    const accent = Color(0xFF2ba67a);
-    return Padding(
-      padding: const EdgeInsets.only(right: 4),
-      child: OutlinedButton(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: lit && state == StickyModifierState.locked
-              ? const Color(0xFF10141c)
-              : lit
-              ? accent
-              : const Color(0xFFdce6f1),
-          backgroundColor: state == StickyModifierState.locked
-              ? accent
-              : const Color(0xFF10141c),
-          side: BorderSide(
-            color: lit ? accent : const Color(0xFF2a3242),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          minimumSize: const Size(0, 34),
-        ),
-        onPressed: () => _tapSticky(chip),
-        child: Text(
-          chip.label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: state == StickyModifierState.locked
-                ? FontWeight.w700
-                : FontWeight.w500,
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 按住连发：立即一发，400ms 后每 70ms 一发（退格 / 前向 Delete / 方向键）。
-  Widget _repeatChip(String label, String spec) {
-    return Listener(
-      onPointerDown: (_) {
-        _pressSpec(spec);
-        _stopRepeat();
-        _repeatTimer = Timer(const Duration(milliseconds: 400), () {
-          _repeatTimer = Timer.periodic(
-            const Duration(milliseconds: 70),
-            (_) => _pressSpec(spec),
-          );
-        });
-      },
-      onPointerUp: (_) => _stopRepeat(),
-      onPointerCancel: (_) => _stopRepeat(),
-      // 按住由上面的 Listener 负责，按钮本身的点击只做无障碍占位。
-      child: _keyChip(label, () {}),
-    );
-  }
-
-  Widget _keyChip(String label, VoidCallback onTap, {bool active = false}) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 4),
-      child: OutlinedButton(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: active
-              ? const Color(0xFF10141c)
-              : const Color(0xFFdce6f1),
-          side: BorderSide(
-            color: active ? const Color(0xFF2ba67a) : const Color(0xFF2a3242),
-          ),
-          backgroundColor: active
-              ? const Color(0xFF2ba67a)
-              : const Color(0xFF10141c),
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          minimumSize: const Size(0, 34),
-        ),
-        onPressed: onTap,
-        child: Text(label, style: const TextStyle(fontSize: 12.5)),
-      ),
-    );
   }
 }
 
@@ -1794,27 +2361,31 @@ class _ScreenPainter extends CustomPainter {
       !identical(oldDelegate.image, image);
 }
 
-/// 本地光标 / 落点标记（源画面像素）。
+/// 本地光标 / 落点标记（源画面像素）。[arrow] = 来自悬浮操作台（画箭头），
+/// 否则来自舞台上的直接触摸（画落点圈）。
 class _CursorMark {
-  const _CursorMark(this.pos, this.pressed);
+  const _CursorMark(this.pos, this.pressed, {this.arrow = false});
   final Offset pos;
   final bool pressed;
+  final bool arrow;
 
   @override
   bool operator ==(Object other) =>
-      other is _CursorMark && other.pos == pos && other.pressed == pressed;
+      other is _CursorMark &&
+      other.pos == pos &&
+      other.pressed == pressed &&
+      other.arrow == arrow;
 
   @override
-  int get hashCode => Object.hash(pos, pressed);
+  int get hashCode => Object.hash(pos, pressed, arrow);
 }
 
-/// 触摸模式画一个落点圈；触控板模式画箭头光标。
+/// 触摸模式画一个落点圈；操作台画箭头光标。
 class _CursorPainter extends CustomPainter {
-  _CursorPainter(this.mark, this.srcW, this.srcH, this.trackpad);
+  _CursorPainter(this.mark, this.srcW, this.srcH);
   final _CursorMark? mark;
   final double srcW;
   final double srcH;
-  final bool trackpad;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1825,7 +2396,7 @@ class _CursorPainter extends CustomPainter {
       m.pos.dy / srcH * size.height,
     );
     const accent = Color(0xFF4da3ff);
-    if (trackpad) {
+    if (m.arrow) {
       final path = Path()
         ..moveTo(p.dx, p.dy)
         ..lineTo(p.dx, p.dy + 18)
@@ -1862,6 +2433,70 @@ class _CursorPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_CursorPainter old) =>
-      old.mark != mark || old.trackpad != trackpad;
+  bool shouldRepaint(_CursorPainter old) => old.mark != mark;
+}
+
+/// 放大取景器：把指针附近的源画面按 2.4× 画进一个圆里。
+class _LoupePainter extends CustomPainter {
+  _LoupePainter(this.image, this.at, this.srcW, this.srcH);
+
+  final ui.Image image;
+  final Offset at;
+  final double srcW;
+  final double srcH;
+
+  static const double _zoom = 2.4;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (srcW <= 0 || srcH <= 0) return;
+    final radius = math.min(size.width, size.height) / 2;
+    final center = Offset(size.width / 2, size.height / 2);
+    canvas.save();
+    canvas.clipPath(
+      Path()..addOval(Rect.fromCircle(center: center, radius: radius)),
+    );
+    final span = radius * 2 / _zoom;
+    final src = Rect.fromCenter(center: at, width: span, height: span);
+    // 边缘处让源矩形留在画面里，取景器不出现黑角。
+    final clamped = Rect.fromLTWH(
+      src.left.clamp(0.0, math.max(0.0, srcW - span)),
+      src.top.clamp(0.0, math.max(0.0, srcH - span)),
+      math.min(span, srcW),
+      math.min(span, srcH),
+    );
+    canvas.drawImageRect(
+      image,
+      clamped,
+      Rect.fromCircle(center: center, radius: radius),
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+    canvas.restore();
+    canvas.drawCircle(
+      center,
+      radius - 1,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = const Color(0xCC4da3ff),
+    );
+    // 十字准星：圆心就是将要落下的那个点。
+    final hair = Paint()
+      ..color = const Color(0xCC4da3ff)
+      ..strokeWidth = 1;
+    canvas.drawLine(
+      center - const Offset(9, 0),
+      center + const Offset(9, 0),
+      hair,
+    );
+    canvas.drawLine(
+      center - const Offset(0, 9),
+      center + const Offset(0, 9),
+      hair,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_LoupePainter old) =>
+      !identical(old.image, image) || old.at != at;
 }

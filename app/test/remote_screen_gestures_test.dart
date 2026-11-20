@@ -89,11 +89,10 @@ class _Service extends RemoteScreenService {
 
 Future<_Service> _openLive(
   WidgetTester tester, {
-  bool trackpad = false,
   int width = 400,
   int height = 300,
 }) async {
-  SharedPreferences.setMockInitialValues({'remote_screen_trackpad': trackpad});
+  SharedPreferences.setMockInitialValues({});
   final settings = await SettingsService.getInstance();
   final service = _Service(settings, width: width, height: height);
   await tester.pumpWidget(
@@ -111,6 +110,21 @@ Future<_Service> _openLive(
   );
   await tester.pump();
   return service;
+}
+
+/// 键盘面板是弹层：所有键位 / 修饰键测试都要先把它打开。
+Future<void> openKeys(WidgetTester tester) async {
+  if (find.byKey(const ValueKey('rs-rail-handle')).evaluate().isNotEmpty) {
+    await tester.tap(find.byKey(const ValueKey('rs-rail-handle')));
+    await tester.pump();
+  }
+  await tester.tap(find.byKey(const ValueKey('rs-rail-keys')));
+  await tester.pumpAndSettle();
+}
+
+Future<void> closeKeys(WidgetTester tester) async {
+  await tester.tap(find.byKey(const ValueKey('rs-key-close')));
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -234,30 +248,32 @@ void main() {
     },
   );
 
-  testWidgets(
-    'trackpad swipe at 100% keeps the view centred and moves the cursor',
-    (tester) async {
-      final service = await _openLive(tester, trackpad: true);
-      final stage = find.byType(InteractiveViewer);
-      final transform = tester
-          .widget<InteractiveViewer>(stage)
-          .transformationController!;
-      final g = await tester.startGesture(tester.getCenter(stage));
-      for (var i = 0; i < 5; i++) {
-        await g.moveBy(const Offset(10, 4));
-        await tester.pump(const Duration(milliseconds: 16));
-      }
-      await g.up();
-      await tester.pumpAndSettle();
-      // The content fills the width exactly: the clamp used to throw on -0.0.
-      expect(tester.takeException(), isNull);
-      expect(transform.value, Matrix4.identity());
-      final hovers = service.input.events.where((e) => e[0] == 5 && e[1] == 0);
-      expect(hovers.length, greaterThanOrEqualTo(3));
-      await tester.pumpWidget(const SizedBox());
-      await tester.pump(const Duration(seconds: 1));
-    },
-  );
+  testWidgets('the floating pad moves the cursor without touching the view', (
+    tester,
+  ) async {
+    final service = await _openLive(tester);
+    final stage = find.byType(InteractiveViewer);
+    final transform = tester
+        .widget<InteractiveViewer>(stage)
+        .transformationController!;
+    final pad = find.byKey(const ValueKey('rs-pod-pad'));
+    expect(pad, findsOneWidget);
+    service.input.events.clear();
+    final g = await tester.startGesture(tester.getCenter(pad));
+    for (var i = 0; i < 5; i++) {
+      await g.moveBy(const Offset(10, 4));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await g.up();
+    await tester.pumpAndSettle();
+    // 画面宽度刚好铺满：clamp 曾经在 -0.0 上抛过 ArgumentError。
+    expect(tester.takeException(), isNull);
+    expect(transform.value, Matrix4.identity());
+    final hovers = service.input.events.where((e) => e[0] == 5 && e[1] == 0);
+    expect(hovers.length, greaterThanOrEqualTo(3));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
 
   testWidgets(
     'a view moved outside the gesture callbacks is re-centred at 100%',
@@ -322,58 +338,51 @@ void main() {
     },
   );
 
-  for (final trackpad in [false, true]) {
-    testWidgets(
-      'two fingers on a zoomed view drag it with them (${trackpad ? 'trackpad' : 'touch'})',
-      (tester) async {
-        final service = await _openLive(tester, trackpad: trackpad);
-        final stage = find.byType(InteractiveViewer);
-        final transform = tester
-            .widget<InteractiveViewer>(stage)
-            .transformationController!;
-        transform.value = Matrix4.identity()..scale(2.0);
-        await tester.pump();
-        final before = transform.value.clone();
-        service.input.events.clear();
-        final center = tester.getCenter(stage);
-        final a = await tester.startGesture(
-          center - const Offset(40, 0),
-          pointer: 11,
-        );
-        final b = await tester.startGesture(
-          center + const Offset(40, 0),
-          pointer: 12,
-        );
-        // Small alternating steps, like real touch reports: a 15px first step
-        // would read as a pinch and never reach the scroll decision.
-        for (var i = 0; i < 30; i++) {
-          await a.moveBy(const Offset(-3, 0));
-          await b.moveBy(const Offset(-3, 0));
-          await tester.pump(const Duration(milliseconds: 8));
-        }
-        await a.up();
-        await b.up();
-        await tester.pumpAndSettle();
-        expect(
-          transform.value.getTranslation().x,
-          lessThan(before.getTranslation().x - 50),
-          reason: 'the picture follows two fingers to the left',
-        );
-        expect(transform.value.getMaxScaleOnAxis(), closeTo(2.0, 0.05));
-        final buttons = service.input.events.where(
-          (e) => e[0] == 5 && e[1] != 0,
-        );
-        expect(buttons, isEmpty, reason: 'no wheel, click or drag: $buttons');
-        await tester.pumpWidget(const SizedBox());
-        await tester.pump(const Duration(seconds: 1));
-      },
+  testWidgets('two fingers on a zoomed view drag it with them', (tester) async {
+    final service = await _openLive(tester);
+    final stage = find.byType(InteractiveViewer);
+    final transform = tester
+        .widget<InteractiveViewer>(stage)
+        .transformationController!;
+    transform.value = Matrix4.identity()..scale(2.0);
+    await tester.pump();
+    final before = transform.value.clone();
+    service.input.events.clear();
+    final center = tester.getCenter(stage);
+    final a = await tester.startGesture(
+      center - const Offset(40, 0),
+      pointer: 11,
     );
-  }
+    final b = await tester.startGesture(
+      center + const Offset(40, 0),
+      pointer: 12,
+    );
+    // Small alternating steps, like real touch reports: a 15px first step
+    // would read as a pinch and never reach the scroll decision.
+    for (var i = 0; i < 30; i++) {
+      await a.moveBy(const Offset(-3, 0));
+      await b.moveBy(const Offset(-3, 0));
+      await tester.pump(const Duration(milliseconds: 8));
+    }
+    await a.up();
+    await b.up();
+    await tester.pumpAndSettle();
+    expect(
+      transform.value.getTranslation().x,
+      lessThan(before.getTranslation().x - 50),
+      reason: 'the picture follows two fingers to the left',
+    );
+    expect(transform.value.getMaxScaleOnAxis(), closeTo(2.0, 0.05));
+    final buttons = service.input.events.where((e) => e[0] == 5 && e[1] != 0);
+    expect(buttons, isEmpty, reason: 'no wheel, click or drag: $buttons');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
 
   testWidgets(
-    'zoomed trackpad: one finger moves the cursor to the visible edge, never the view',
+    'zoomed view: the pad cursor stops at the visible edge, the view never moves',
     (tester) async {
-      final service = await _openLive(tester, trackpad: true);
+      final service = await _openLive(tester);
       final stage = find.byType(InteractiveViewer);
       final transform = tester
           .widget<InteractiveViewer>(stage)
@@ -381,7 +390,6 @@ void main() {
       transform.value = Matrix4.identity()..scale(2.0);
       await tester.pump();
       final before = transform.value.clone();
-      // The part of the 400×300 source the viewport shows at this zoom.
       final vp = tester.getSize(stage);
       final fit = vp.width / 400 < vp.height / 300
           ? vp.width / 400
@@ -399,10 +407,11 @@ void main() {
       expect(
         right,
         lessThan(398),
-        reason: 'the zoomed view must hide the right side',
+        reason: 'the zoomed view must hide the right',
       );
       service.input.events.clear();
-      final g = await tester.startGesture(tester.getCenter(stage));
+      final pad = find.byKey(const ValueKey('rs-pod-pad'));
+      final g = await tester.startGesture(tester.getCenter(pad));
       for (var i = 0; i < 12; i++) {
         await g.moveBy(const Offset(30, 0));
         await tester.pump(const Duration(milliseconds: 16));
@@ -417,11 +426,7 @@ void main() {
       final moves = _pointers(service.input);
       expect(moves, isNotEmpty);
       expect(moves.every((p) => p.$1 == 0), isTrue, reason: '$moves');
-      expect(
-        moves.last.$2,
-        closeTo(right, 1),
-        reason: 'stopped at the visible right edge',
-      );
+      expect(moves.last.$2, closeTo(right, 1), reason: 'stopped at the edge');
       expect(
         moves.every(
           (p) => p.$2 >= lo.dx - 1 && p.$2 <= right + 1 && p.$3 <= hi.dy,
@@ -552,10 +557,10 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
-  testWidgets('a zoomed trackpad drag auto-pans along with the virtual cursor', (
+  testWidgets('a zoomed pad drag auto-pans along with the virtual cursor', (
     tester,
   ) async {
-    final service = await _openLive(tester, trackpad: true);
+    final service = await _openLive(tester);
     final stage = find.byType(InteractiveViewer);
     final transform = tester
         .widget<InteractiveViewer>(stage)
@@ -564,7 +569,8 @@ void main() {
     await tester.pump();
     final before = transform.value.clone();
     service.input.events.clear();
-    final drag = await tester.startGesture(tester.getCenter(stage));
+    final pad = find.byKey(const ValueKey('rs-pod-pad'));
+    final drag = await tester.startGesture(tester.getCenter(pad));
     // 按住不动先进入拖拽，再把手一路往右划。
     await tester.pump(const Duration(milliseconds: 400));
     for (var i = 0; i < 30; i++) {
@@ -585,44 +591,46 @@ void main() {
   });
 
   // ── 粘住的修饰键 / 键盘条 ──
-  testWidgets('sticky ⇧ is one-shot over the stream; More sends F1 and ⌘S', (
-    tester,
-  ) async {
-    final service = await _openLive(tester);
-    service.input.events.clear();
-    await tester.tap(find.text('⇧'));
-    await tester.pump();
-    expect(_keys(service.input), [(true, RfbKeysyms.shiftL)]);
+  testWidgets(
+    'sticky ⇧ is one-shot over the stream; the panel sends F1 and ⌘S',
+    (tester) async {
+      final service = await _openLive(tester);
+      service.input.events.clear();
+      await openKeys(tester);
+      await tester.tap(find.text('⇧'));
+      await tester.pump();
+      expect(_keys(service.input), [(true, RfbKeysyms.shiftL)]);
 
-    // 下一次指针按下+松开用掉一次性修饰键。
-    await tester.tap(find.byType(InteractiveViewer));
-    await tester.pump();
-    expect(_keys(service.input).last, (false, RfbKeysyms.shiftL));
+      // 下一次指针按下+松开用掉一次性修饰键。
+      await closeKeys(tester);
+      await tester.tap(find.byType(InteractiveViewer));
+      await tester.pump();
+      expect(_keys(service.input).last, (false, RfbKeysyms.shiftL));
 
-    await tester.ensureVisible(find.text('更多'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('更多'));
-    await tester.pump();
-    expect(find.text('F1'), findsOneWidget);
-    service.input.events.clear();
-    await tester.tap(find.text('F1'));
-    await tester.pump();
-    expect(_keys(service.input), [(true, 0xFFBE), (false, 0xFFBE)]);
+      await openKeys(tester);
+      await tester.ensureVisible(find.text('F1'));
+      await tester.pumpAndSettle();
+      service.input.events.clear();
+      await tester.tap(find.text('F1'));
+      await tester.pump();
+      expect(_keys(service.input), [(true, 0xFFBE), (false, 0xFFBE)]);
 
-    service.input.events.clear();
-    await tester.ensureVisible(find.text('⌘S'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('⌘S'));
-    await tester.pump();
-    expect(_keys(service.input), [
-      (true, RfbKeysyms.cmdL),
-      (true, 0x73),
-      (false, 0x73),
-      (false, RfbKeysyms.cmdL),
-    ]);
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump(const Duration(seconds: 1));
-  });
+      service.input.events.clear();
+      await tester.ensureVisible(find.text('⌘S'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('⌘S'));
+      await tester.pump();
+      expect(_keys(service.input), [
+        (true, RfbKeysyms.cmdL),
+        (true, 0x73),
+        (false, 0x73),
+        (false, RfbKeysyms.cmdL),
+      ]);
+      await closeKeys(tester);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
 
   testWidgets('a host that uses ctrl rewrites the ⌘ chips', (tester) async {
     SharedPreferences.setMockInitialValues({});
@@ -642,6 +650,9 @@ void main() {
       () => Future<void>.delayed(const Duration(milliseconds: 30)),
     );
     await tester.pump();
+    await openKeys(tester);
+    await tester.ensureVisible(find.text('CtrlA'));
+    await tester.pumpAndSettle();
     expect(find.text('⌘A'), findsNothing);
     expect(find.text('CtrlA'), findsOneWidget);
     service.input.events.clear();
@@ -653,55 +664,60 @@ void main() {
       (false, 0x61),
       (false, RfbKeysyms.ctrlL),
     ]);
+    await closeKeys(tester);
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
 
-  testWidgets('compat mode rides a one-shot ⇧ on the HTTP pointer, then drops it', (
-    tester,
-  ) async {
-    SharedPreferences.setMockInitialValues({});
-    final settings = await SettingsService.getInstance();
-    final service = _Service(settings, fallback: true);
-    await tester.pumpWidget(
-      MaterialApp(
-        home: RemoteScreenScreen(
-          settings: settings,
-          service: service,
-          initialControl: true,
+  testWidgets(
+    'compat mode rides a one-shot ⇧ on the HTTP pointer, then drops it',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.getInstance();
+      final service = _Service(settings, fallback: true);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RemoteScreenScreen(
+            settings: settings,
+            service: service,
+            initialControl: true,
+          ),
         ),
-      ),
-    );
-    await tester.pump();
-    final stage = find.byType(InteractiveViewer);
-    expect(stage, findsOneWidget);
-    await tester.tap(find.text('⇧'));
-    await tester.pump();
-    service.requests.clear();
-    await tester.tap(stage);
-    await tester.pump(const Duration(milliseconds: 20));
-    final firstPress = service.requests
-        .where((r) => r['op'] == 'pointer' && r['mask'] == 1)
-        .toList();
-    expect(firstPress, isNotEmpty);
-    expect(firstPress.first['mods'], ['shift']);
+      );
+      await tester.pump();
+      final stage = find.byType(InteractiveViewer);
+      expect(stage, findsOneWidget);
+      await openKeys(tester);
+      await tester.tap(find.text('⇧'));
+      await tester.pump();
+      await closeKeys(tester);
+      service.requests.clear();
+      await tester.tap(stage);
+      await tester.pump(const Duration(milliseconds: 20));
+      final firstPress = service.requests
+          .where((r) => r['op'] == 'pointer' && r['mask'] == 1)
+          .toList();
+      expect(firstPress, isNotEmpty);
+      expect(firstPress.first['mods'], ['shift']);
 
-    service.requests.clear();
-    await tester.tap(stage);
-    await tester.pump(const Duration(milliseconds: 20));
-    final secondPress = service.requests
-        .where((r) => r['op'] == 'pointer' && r['mask'] == 1)
-        .toList();
-    expect(secondPress, isNotEmpty);
-    expect(secondPress.every((r) => !r.containsKey('mods')), isTrue);
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump(const Duration(seconds: 1));
-  });
+      service.requests.clear();
+      await tester.tap(stage);
+      await tester.pump(const Duration(milliseconds: 20));
+      final secondPress = service.requests
+          .where((r) => r['op'] == 'pointer' && r['mask'] == 1)
+          .toList();
+      expect(secondPress, isNotEmpty);
+      expect(secondPress.every((r) => !r.containsKey('mods')), isTrue);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
 
-  testWidgets('a locked ⌘ survives pointer use and keybar chords', (
+  testWidgets('a locked ⌘ survives pointer use and panel chords', (
     tester,
   ) async {
     final service = await _openLive(tester);
+    await openKeys(tester);
     await tester.ensureVisible(find.text('⌘'));
     await tester.pumpAndSettle();
     service.input.events.clear();
@@ -712,12 +728,14 @@ void main() {
     expect(_keys(service.input), [(true, RfbKeysyms.cmdL)]);
 
     // 指针按下+松开不会用掉锁定态。
+    await closeKeys(tester);
     service.input.events.clear();
     await tester.tap(find.byType(InteractiveViewer));
     await tester.pump();
     expect(_keys(service.input), isEmpty);
 
     // 和弦里 ⌘ 已经按着：不能再发一次 down，更不能替它发 up。
+    await openKeys(tester);
     service.input.events.clear();
     await tester.ensureVisible(find.text('⌘C'));
     await tester.pumpAndSettle();
@@ -731,15 +749,17 @@ void main() {
     await tester.tap(find.text('⌘'));
     await tester.pump();
     expect(_keys(service.input), [(false, RfbKeysyms.cmdL)]);
+    await closeKeys(tester);
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
 
   testWidgets('holding ⌫ keeps sending BackSpace', (tester) async {
     final service = await _openLive(tester);
-    service.input.events.clear();
+    await openKeys(tester);
     await tester.ensureVisible(find.text('⌫'));
     await tester.pumpAndSettle();
+    service.input.events.clear();
     final hold = await tester.startGesture(tester.getCenter(find.text('⌫')));
     await tester.pump(const Duration(milliseconds: 30));
     expect(
@@ -757,6 +777,7 @@ void main() {
       service.input,
     ).where((k) => k.$1 && k.$2 == RfbKeysyms.backspace).length;
     expect(presses, greaterThanOrEqualTo(4));
+    await closeKeys(tester);
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
@@ -813,23 +834,19 @@ void main() {
   };
   for (final vp in viewports.entries) {
     for (final src in sources.entries) {
-      for (final trackpad in [false, true]) {
-        for (final zoom in [1.0, 2.0]) {
-          final name =
-              '${vp.key} · ${src.key} · ${trackpad ? 'trackpad' : 'touch'} · ${zoom}x';
-          testWidgets('geometry matrix: $name', (tester) async {
-            tester.view.physicalSize = vp.value.$1 * vp.value.$2;
-            tester.view.devicePixelRatio = vp.value.$2;
-            addTearDown(tester.view.reset);
-            await _geometryCase(
-              tester,
-              srcW: src.value.$1,
-              srcH: src.value.$2,
-              trackpad: trackpad,
-              zoom: zoom,
-            );
-          });
-        }
+      for (final zoom in [1.0, 2.0]) {
+        final name = '${vp.key} · ${src.key} · ${zoom}x';
+        testWidgets('geometry matrix: $name', (tester) async {
+          tester.view.physicalSize = vp.value.$1 * vp.value.$2;
+          tester.view.devicePixelRatio = vp.value.$2;
+          addTearDown(tester.view.reset);
+          await _geometryCase(
+            tester,
+            srcW: src.value.$1,
+            srcH: src.value.$2,
+            zoom: zoom,
+          );
+        });
       }
     }
   }
@@ -851,15 +868,9 @@ Future<void> _geometryCase(
   WidgetTester tester, {
   required int srcW,
   required int srcH,
-  required bool trackpad,
   required double zoom,
 }) async {
-  final service = await _openLive(
-    tester,
-    trackpad: trackpad,
-    width: srcW,
-    height: srcH,
-  );
+  final service = await _openLive(tester, width: srcW, height: srcH);
   final stage = find.byType(InteractiveViewer);
   expect(stage, findsOneWidget, reason: 'the live picture must be on screen');
   final transform = tester
@@ -945,11 +956,9 @@ Future<void> _geometryCase(
   expect((tapped[release].$2, tapped[release].$3), (px, py));
   expect(px, inInclusiveRange(0, srcW - 1));
   expect(py, inInclusiveRange(0, srcH - 1));
-  if (!trackpad) {
-    // Touch mode: the click lands exactly where the finger was.
-    expect(px, closeTo(expectX, 1.01));
-    expect(py, closeTo(expectY, 1.01));
-  }
+  // 舞台永远是直接触摸：落点就是手指位置。
+  expect(px, closeTo(expectX, 1.01));
+  expect(py, closeTo(expectY, 1.01));
   expect(transform.value, m, reason: 'a tap must not move the view');
 
   service.input.events.clear();

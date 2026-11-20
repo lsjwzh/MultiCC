@@ -409,6 +409,102 @@ pub async fn wake_post(State(st): State<AppState>, headers: HeaderMap) -> Respon
     crate::wake::post(&st, &headers).await
 }
 
+/// 剪贴板单次搬运的字符上限（UTF-16 码元，与 `type` 的口径一致）。
+/// 页面只在用户点按时调用，不做后台同步：密码 / 验证码这类内容不该被悄悄带走。
+pub const CLIPBOARD_MAX_UTF16: usize = 200_000;
+
+/// 老 Agent 不认识剪贴板 op，回的是 `unknown op: clipboard-read`。
+fn is_unknown_op(reply: &Value) -> bool {
+    reply
+        .get("error")
+        .and_then(|value| value.as_str())
+        .map(|error| error.starts_with("unknown op"))
+        .unwrap_or(false)
+        && reply.get("reason").is_none()
+}
+
+async fn run_clipboard(st: &AppState, req: Value) -> Value {
+    let reply = st.agent.call(req, Some(Duration::from_millis(8000))).await;
+    if !agent_failed(&reply) {
+        return reply;
+    }
+    let outdated = is_unknown_op(&reply);
+    let mut map = Map::new();
+    map.insert("ok".into(), json!(false));
+    if outdated {
+        map.insert("error".into(), json!("clipboard-unavailable"));
+    } else if let Some(error) = reply
+        .get("reason")
+        .filter(|value| crate::jsval::truthy(Some(value)))
+        .or_else(|| {
+            reply
+                .get("error")
+                .filter(|value| crate::jsval::truthy(Some(value)))
+        })
+    {
+        map.insert("error".into(), error.clone());
+    }
+    map.insert(
+        "message".into(),
+        json!(if outdated {
+            "桌面 Agent 版本较旧，更新 MultiCC Agent 后可用剪贴板同步".to_string()
+        } else {
+            describe(&reply, st.host.profile.install_hint.as_deref())
+        }),
+    );
+    Value::Object(map)
+}
+
+/// 读回来的文本按契约只取前 [CLIPBOARD_MAX_UTF16] 个码元：Agent 可能来自别的
+/// 实现，不能只靠它自己截断。超出部分丢掉而不是报错 —— 用户要的是「能粘上」。
+fn clip_text(reply: &mut Value) {
+    let Value::Object(map) = reply else { return };
+    let Some(Value::String(text)) = map.get("text") else {
+        return;
+    };
+    if text.encode_utf16().count() > CLIPBOARD_MAX_UTF16 {
+        let clipped: String = text.chars().take(CLIPBOARD_MAX_UTF16).collect();
+        map.insert("text".into(), json!(clipped));
+        map.insert("truncated".into(), json!(true));
+    }
+}
+
+/// `GET /api/remote-screen/clipboard` → `{ok:true,text}`（远端剪贴板 → 本机）。
+pub async fn clipboard_get(State(st): State<AppState>) -> Response {
+    if !st.host.profile.supported {
+        return send_error(&st, &st.host.unsupported());
+    }
+    let mut reply = run_clipboard(&st, json!({ "op": "clipboard-read", "session": SESSION })).await;
+    clip_text(&mut reply);
+    json_response(200, reply)
+}
+
+/// `POST /api/remote-screen/clipboard` `{text}`（本机剪贴板 → 远端）。
+pub async fn clipboard_set(State(st): State<AppState>, body: Option<Json<Value>>) -> Response {
+    if !st.host.profile.supported {
+        return send_error(&st, &st.host.unsupported());
+    }
+    let body = body.map(|Json(value)| value).unwrap_or_else(|| json!({}));
+    let text = match body.get("text") {
+        Some(Value::String(text)) => text.clone(),
+        _ => return json_response(400, json!({ "ok": false, "error": "text is required" })),
+    };
+    if text.encode_utf16().count() > CLIPBOARD_MAX_UTF16 {
+        return json_response(
+            400,
+            json!({ "ok": false, "error": format!("text is too long (max {CLIPBOARD_MAX_UTF16} chars)") }),
+        );
+    }
+    json_response(
+        200,
+        run_clipboard(
+            &st,
+            json!({ "op": "clipboard-write", "session": SESSION, "text": text }),
+        )
+        .await,
+    )
+}
+
 pub async fn annotation(State(st): State<AppState>, body: Option<Json<Value>>) -> Response {
     let payload = body.map(|Json(value)| value).unwrap_or_else(|| json!({}));
     json_response(200, handle_annotation(&st, &payload).await)
@@ -495,6 +591,10 @@ pub fn router_with_limit(state: AppState, body_limit: usize) -> Router {
         .route("/api/remote-screen/input", post(input).layer(limit()))
         .route("/api/remote-screen/snapshot", post(snapshot).layer(limit()))
         .route("/api/remote-screen/wake", get(wake_get).post(wake_post))
+        .route(
+            "/api/remote-screen/clipboard",
+            get(clipboard_get).post(clipboard_set),
+        )
         .route("/internal/annotation", post(annotation).layer(limit()))
         .route("/ws/remote-screen", get(ws))
         .layer(middleware::from_fn(json_payload_too_large))
