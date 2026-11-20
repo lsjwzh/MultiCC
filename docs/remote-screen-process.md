@@ -54,13 +54,17 @@ Node 在全站鉴权之后，把 `/api/remote-screen/` 开头的请求原样转�
 
 - 方法、路径和查询串不变；转发 `content-type`。
 - 请求体：Express 已解析过的 JSON 体按 `JSON.stringify(req.body ?? {})` 重新发出。
-- 唤屏（`/api/remote-screen/wake`）额外带 `x-multicc-power-consent: 1|0|error`。
-  这个值由 Node 读电源设置得出：「允许自动解锁」开关 || 电源意图 === `on`。
-  电源设置归 Node 的电源模块管，这里只传一个布尔值。
-  **三态**：Node 读失败（抛异常）时送 `error`，Rust 把它和「没带头」一样当作
-  「状态不可用」（GET/POST 都回 503 `agent-unavailable`）——与迁移前的 JS 一致：
-  那时 `readConsent` 直接抛，整个 `state()` 随之失败。不能折成 `0`，那会被
-  前端显示成「自动解锁未开启」。
+- 唤屏（`/api/remote-screen/wake`）**不再带任何同意头**。「允许自动解锁」的同意值
+  由 `multicc-remote` 自己读（`native/remote/src/power.rs`），Node 这一层不算任何业务值。
+  同意 = `power-settings.json` 的 `autoUnlock` **或** powerd 意图文件 `power-intent` 为 `on`；
+  开关为真时短路，不读意图文件。读的路径：`$MULTICC_AGENT_DIR`（缺省 `~/.multicc/agent`）
+  下的 `power-settings.json`，以及固定的 `/Library/Application Support/multicc/power-intent`。
+  只读不写，设置的写入仍归网页路由。每个请求读一次，不缓存。
+  **三态**：设置文件读不出来（权限错误、坏 JSON、`autoUnlock` 不是布尔）时按
+  「状态不可用」处理，GET/POST 都回 503 `agent-unavailable` —— 与迁移前的 JS 一致：
+  那时 `readConsent` 直接抛，整个 `state()` 随之失败。不能折成「没同意」，那会被
+  前端显示成「自动解锁未开启」。**文件不存在 = 同意**（保住从没拨过开关的老用户）。
+  测试台用 `MULTICC_REMOTE_POWER_CONSENT_FILE` 注入 `1|0|error` 三态，生产不设。
 - 响应的状态码、`content-type`、`cache-control`、`x-screen-*`、`x-region-*` 和响应体原样流回。
   `GET /wake` 的所有分支（含 503 与平台不支持的 200）都带 `Cache-Control: no-store`。
 

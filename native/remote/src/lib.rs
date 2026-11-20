@@ -11,6 +11,7 @@ pub mod host;
 pub mod jsval;
 pub mod p2p;
 pub mod p2p_api;
+pub mod power;
 pub mod region;
 pub mod rfb;
 pub mod routes;

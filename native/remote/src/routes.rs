@@ -22,7 +22,7 @@ use crate::stats::Registry;
 use crate::wake::WakeState;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, Query, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -56,6 +56,9 @@ pub struct AppState {
     /// 直连实现；None = 只走中继（p2p.rs 未接入时的占位）。
     pub p2p: Option<crate::p2p_api::P2pFactory>,
     pub secret: Arc<String>,
+    /// 「允许自动解锁」的两个开关。默认按进程环境推导；测试用 [`AppState::with_power`]
+    /// 指到临时文件，否则会去读开发机真实的电源设置。
+    pub power: Arc<crate::power::Power>,
 }
 
 impl AppState {
@@ -74,7 +77,13 @@ impl AppState {
             stats: Arc::new(Registry::new()),
             p2p: crate::p2p::factory(),
             secret: Arc::new(secret.into()),
+            power: Arc::new(crate::power::Power::from_process()),
         }
+    }
+
+    pub fn with_power(mut self, power: crate::power::Power) -> Self {
+        self.power = Arc::new(power);
+        self
     }
 
     pub fn with_p2p(mut self, p2p: Option<crate::p2p_api::P2pFactory>) -> Self {
@@ -401,12 +410,12 @@ pub async fn snapshot(State(st): State<AppState>, body: Option<Json<Value>>) -> 
     }
 }
 
-pub async fn wake_get(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    crate::wake::get(&st, &headers).await
+pub async fn wake_get(State(st): State<AppState>) -> Response {
+    crate::wake::get(&st).await
 }
 
-pub async fn wake_post(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    crate::wake::post(&st, &headers).await
+pub async fn wake_post(State(st): State<AppState>) -> Response {
+    crate::wake::post(&st).await
 }
 
 /// 剪贴板单次搬运的字符上限（UTF-16 码元，与 `type` 的口径一致）。

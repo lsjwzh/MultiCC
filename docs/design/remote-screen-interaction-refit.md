@@ -400,9 +400,23 @@ mount 一起删除」。现状盘点：
 | 懒启动 + 看护 `multicc-remote`（退避 1/2/4…30s、稳定 60s 清零、stdin EOF 收尾、就绪行解析 10s 超时） | 前门已经在用同一套机制看护 Node，需要抽成「第二个被看护子进程」 |
 | 4 条 HTTP 路由原样转发 + `x-multicc-remote-secret` 注入 + 不可用时的收敛应答 | 前门已有 L7 转发与原生路由骨架（`docs/gateway.md` §9 配方） |
 | `/ws/remote-screen` 逐帧转发 + 背压（64KB/16KB 水位、15ms 轮询）+ 关闭码净化 | 前门已终结 `/ws/chat`、`/ws/machines` 的升级（§64、§65），可复用 |
-| **电源同意头**（`getPowerPreferences().read(true)` 或 `createPowerd().readIntent()`） | **阻塞项**：这两个都只有 Node 实现，前门算不出这个头 |
+| ~~电源同意头~~（`getPowerPreferences().read(true)` 或 `createPowerd().readIntent()`） | **已解除（8a）**：`native/remote/src/power.rs` 直接读两个开关，头与 Node 侧计算已一起删除 |
 
 所以这不是一次提交的事：按仓库自己的配方（搬路由 = 同提交删 Node + 差分逐字节），
-顺序应当是 ①电源同意读取迁 Rust → ②前门接管被看护子进程 → ③4 条 HTTP + 1 条 WS 同
-提交搬走并删 Node + 跑差分 → ④删 `src/remote-screen.js` 与 `server.js` 的 mount。
-半途停下会让远控整条不可用，所以本轮没有动它。
+顺序是 ①电源同意读取迁 Rust（**8a，已做**）→ ②前门接管被看护子进程（8b）→ ③4 条
+HTTP + 1 条 WS 同提交搬走并删 Node + 跑差分（8b/8c）→ ④删 `src/remote-screen.js` 与
+`server.js` 的 mount（8c）。半途停下会让远控整条不可用，所以 8b、8c 必须各自整步落地。
+
+### 18.1 8a 做了什么
+
+- 新增 `native/remote/src/power.rs`：`Power::consent()` 返回 `Allowed / Denied / Unreadable`，
+  规则与迁移前 Node 完全一致（`read(true) || readIntent() === 'on'`，开关为真短路）。
+- `wake.rs` 的 `get/post` 不再收 `HeaderMap`；同意值每个请求算一次，POST 的前后两次读状态
+  共用同一个值，避免中途拨开关让一次请求自相矛盾。
+- `AppState` 多一个 `power` 字段；`with_power` 供测试指到临时文件，否则用例会读开发机真实设置。
+- Node 侧删掉 `deps.powerConsent`、`powerConsentHeader()` 与对 `host-power-services` /
+  `powerd` 的依赖；`tests/test-remote-screen.js` 里那条断言改成「唤屏请求不带同意头」，防止回长。
+- `src/host-power-services.js` 与 `src/powerd.js` **没有删**：前者被 `src/routes/host-power.js`、
+  `src/routes/host-read-host.js`（网页电源设置路由）使用，后者被 `plugins/utils/macos-power.js`
+  （关盖运行的写意图）使用。8a 只迁了「读」，两处的「写」仍归 Node。
+  同样的规则现在存在于两处（Node 的电源模块和 `power.rs`）：改「允许自动解锁」的语义时要两边一起改。
