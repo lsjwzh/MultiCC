@@ -218,7 +218,7 @@ impl Transport for ClientSink {
     }
 }
 
-fn message(payload: &Payload, options: &Options) -> Message {
+pub(crate) fn message(payload: &Payload, options: &Options) -> Message {
     let binary = match options {
         Options::Binary(value) => *value,
         _ => !matches!(payload, Payload::Text(_)),
@@ -233,7 +233,7 @@ fn message(payload: &Payload, options: &Options) -> Message {
     }
 }
 
-fn close_frame(code: u16, reason: &str) -> Message {
+pub(crate) fn close_frame(code: u16, reason: &str) -> Message {
     Message::Close(Some(CloseFrame {
         code: CloseCode::from(code),
         reason: reason.into(),
