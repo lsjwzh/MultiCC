@@ -63,6 +63,50 @@ pub fn is_terminal_task_status(status: &str) -> bool {
     TERMINAL_TASK_STATES.contains(&status)
 }
 
+/// Rebuild the queue dock's reconnect frame from one coherent SQLite read.
+/// Reconnecting never creates a schedule, takes a delivery lease or retries work.
+pub fn chat_queue_snapshot(file: &Path, session: &str) -> Result<crate::js::JsValue> {
+    use crate::js::JsValue as V;
+    let empty = || {
+        V::object(vec![
+            ("state", V::from("idle")),
+            ("freezeReason", V::Null),
+            ("active", V::Null),
+            ("queued", V::Array(Vec::new())),
+        ])
+    };
+    let schedule = if file.try_exists().map_err(err)? {
+        let db = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(err)?;
+        db.busy_timeout(Duration::from_millis(4000)).map_err(err)?;
+        db.execute_batch("BEGIN DEFERRED").map_err(err)?;
+        let schedule = record::get_json(&db, "sessionSchedules", session, &[])?
+            .map(|raw| record::parse(&raw))
+            .transpose()?
+            .filter(crate::js::truthy)
+            .unwrap_or_else(empty);
+        let queue = schedule_admit_live::queue_rows(&db, session, &schedule)?;
+        schedule_admit_live::public_schedule(&db, &schedule, &queue)?
+    } else {
+        empty()
+    };
+    let property = |key| schedule.get(key).cloned().unwrap_or(V::Undefined);
+    let items = property("queued");
+    let count = match &items {
+        V::Array(items) => items.len(),
+        _ => 0,
+    };
+    Ok(V::object(vec![
+        ("type", V::from("session_queue")),
+        ("event", V::from("snapshot")),
+        ("state", property("state")),
+        ("queued", V::Number(count as f64)),
+        ("items", items),
+        ("freezeReason", property("freezeReason")),
+        ("active", property("active")),
+    ]))
+}
+
 fn claim_metadata(connection: &Connection) -> Result<Value> {
     let input = json!({"collection":"outbox","options":{
         "where":{"state":{"$nin":["delivered","dead-letter","cancelled"]}},

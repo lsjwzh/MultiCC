@@ -1,13 +1,12 @@
-use super::{is_role, optional_text, store, value, wire, Session};
+use super::{is_role, optional_text, store, value, wire, Session, HISTORY_PAGE};
 use crate::ws_chat_hub::{Attached, ChatHub};
 use multicc_core::{
     auth_runtime, chat_connect_replay, chat_history_frame,
+    http_gate::encode_uri_component,
     js::{self, JsValue as V},
     quota_guard,
 };
 use serde_json::json;
-
-const HISTORY_PAGE: usize = 5;
 
 pub(super) fn initial_frames(
     hub: &ChatHub,
@@ -15,6 +14,8 @@ pub(super) fn initial_frames(
     session: &Session,
     attached: &Attached,
     archive: bool,
+    shell_history: Option<Vec<V>>,
+    task_shell: bool,
 ) -> Vec<String> {
     let stored = &session.stored;
     let record = &stored.record;
@@ -32,7 +33,7 @@ pub(super) fn initial_frames(
     };
     let mut frames = vec![value(json!({
         "type":"system", "subtype":"init", "cwd":stored.cwd, "session":id, "session_id":id,
-        "cli":cli, "is_streaming":streaming, "taskShell":false, "turnId":turn_id,
+        "cli":cli, "is_streaming":streaming, "taskShell":task_shell, "turnId":turn_id,
         "model":optional_text(record,"model"), "effectiveModel":optional_text(record,"model"),
         "effort":optional_text(record,"effort"), "effectiveEffort":optional_text(record,"effort"),
         "agent":optional_text(record,"agent"), "providerRouteProtocolVersion":1,
@@ -40,16 +41,22 @@ pub(super) fn initial_frames(
         "providerSelection":null, "autoProvider":null, "providerTokenWindows":null,
         "cliStates":{}, "cliAvailability":{}, "pendingCliHandoff":null,
     }))];
-    let mut visible = stored.messages.iter().rev().filter(|row| {
-        archive || !matches!(row.get("id"), Some(V::String(id)) if stored.hidden.contains(id))
-    });
-    let mut page = visible
-        .by_ref()
-        .take(HISTORY_PAGE)
-        .cloned()
-        .collect::<Vec<_>>();
-    page.reverse();
-    if let Some(active) = &session.active {
+    let (mut page, has_more, scoped) = match shell_history {
+        Some(mut history) => {
+            let start = history.len().saturating_sub(HISTORY_PAGE);
+            (history.split_off(start), start > 0, true)
+        }
+        None => {
+            let mut visible = stored.messages.iter().rev().filter(|row| {
+                archive
+                    || !matches!(row.get("id"), Some(V::String(id)) if stored.hidden.contains(id))
+            });
+            let mut page: Vec<_> = visible.by_ref().take(HISTORY_PAGE).cloned().collect();
+            page.reverse();
+            (page, visible.next().is_some(), false)
+        }
+    };
+    if let Some(active) = session.active.as_ref().filter(|_| !scoped) {
         if !active.content.is_empty() || !active.delta.is_empty() || !active.tools.is_empty() {
             let mut message = value(
                 json!({"role":"assistant", "content":format!("{}{}", active.content,active.delta),
@@ -73,13 +80,17 @@ pub(super) fn initial_frames(
             }
         }
     }
-    let fitted = chat_history_frame::fit(&page, visible.next().is_some(), &Default::default());
+    let fitted = chat_history_frame::fit(&page, has_more, &Default::default());
     let facts = chat_connect_replay::Facts {
         replay_messages: fitted.messages.len(),
-        last_message_is_assistant: fitted
-            .messages
-            .last()
-            .is_some_and(|row| is_role(row, "assistant")),
+        // A scoped page currently contains durable rows from multiple
+        // executions. Its final assistant is not proof that this socket has
+        // seen the active session's in-progress tail.
+        last_message_is_assistant: !scoped
+            && fitted
+                .messages
+                .last()
+                .is_some_and(|row| is_role(row, "assistant")),
         is_streaming: streaming,
         buffered_events: attached.replay.len(),
         has_token_usage: !stored.token_usage.is_nullish(),
@@ -117,4 +128,19 @@ pub(super) fn initial_frames(
         .filter_map(|frame| wire(&value(frame))),
     );
     frames
+}
+
+pub(super) fn require_shell_route(session_id: &str) -> V {
+    V::object(vec![
+        ("type", V::from("error")),
+        ("code", V::from("task_shell_route_required")),
+        ("error", V::from("请从任务会话入口发送消息或操作任务。")),
+        (
+            "url",
+            V::from(format!(
+                "/chat.html?session={}",
+                encode_uri_component(session_id)
+            )),
+        ),
+    ])
 }

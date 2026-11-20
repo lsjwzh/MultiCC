@@ -33,3 +33,58 @@
 ```
 
 本批 Rust-only 执行范围是已存在会话记录中的直连 Claude 对话。任务壳、后台任务、保留历史清理、队列调度、定制 provider 和其他 CLI 的功能及完整帧对拍仍依赖兼容路径。Claude 子进程按回合启动，通过持久化的原生会话 ID 续接上下文。兼容模式的 `turn-engine.js`、`sessions.js` 和启动接线仍有生产消费者。
+
+## 任务壳历史与队列快照阶段
+
+后续一批从 `a50fd15a` 开始。独立网关使用任务仓储的只读 SQLite 快照核对任务壳、会话关联和项目归属。它回放有关联的持久历史，应用各源会话的可见性和现有回合归属覆盖。旧记录缺少消息 ID 时，按源会话、记录顺序和内容派生稳定 ID。连接时从调度仓储读出 `session_queue`，沿用 Rust 的队列排序、活跃位投影和提问答案过滤规则。
+
+任务壳投递、收据恢复、实时关联会话历史更新、队列执行及自定义 provider 转发仍由兼容宿主承担。Node 会话与回合模块及启动接线因此仍有调用方。
+
+### 启动与复跑
+
+从仓库根目录构建并在独立数据根启动网关。替换示例中的两个绝对路径。从网关日志读取操作系统分配的回环端口。端到端测试提供会话数据和 Claude 标准输入输出夹具。
+
+```sh
+cargo build --locked --manifest-path native/Cargo.toml -p multicc-gateway
+MULTICC_DATA_DIR=/absolute/isolated-data \
+  native/target/debug/multicc-gateway serve --cwd /absolute/isolated-root \
+  --no-node --ephemeral-loopback
+
+cargo test --locked --manifest-path native/Cargo.toml -p multicc-gateway \
+  --test ws_chat -- --nocapture --test-threads=1
+```
+
+使用当前源码构建原生模块和网关，然后复查原有的 21 个协议场景。对拍工具在同一份隔离状态上先后启动兼容模式和 `--no-node`，比较 8 个新增场景的原始 WebSocket 负载字节、升级状态和关闭结果。新增场景包括非法或缺失壳标识、未关联会话、会话分享、普通输入与心跳、关联历史、归档历史，以及含提问答案的持久队列。
+
+```sh
+MULTICC_RUST_ADDON="$(node -p 'require("./scripts/ensure-source-rust").ensureSourceRust()')" \
+  node --test tests/test-chat-ws-conformance.js
+```
+
+### 已采集的端到端记录
+
+定向网关回归通过 17 项，涵盖连续两轮、持久历史、旧消息 ID、流式重连、子进程中断、部分回复和上游错误。测试使用固定的 shell 夹具输出，真实启动生产网关与子进程。
+
+```text
+监听 127.0.0.1:60194
+ps -A -o pid=,ppid=,comm= （网关及其后代，省略网关二进制路径前缀）
+48984 46977 multicc-gateway
+49060 48984 /bin/sh
+进程树内 Node 进程数 0
+```
+
+### 门禁记录
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo test --locked --manifest-path native/Cargo.toml --workspace -- --test-threads=1` | 2622 项通过，0 失败，0 忽略 |
+| `cargo clippy --locked --manifest-path native/Cargo.toml --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo fmt --manifest-path native/Cargo.toml --all --check` | 基线已有 8 个文件的格式差异。单独检查本批 Rust 文件通过 |
+| `node --test tests/test-chat-ws-conformance.js` | 21 个兼容场景通过，另有 8 个场景的新旧选定帧逐字节一致 |
+| `npm run test:security` | 首次远控用例在冷构建阶段超时。预构建原生产物后复验通过 |
+| `npm run test:state` | 通过 |
+| `npm run test:contracts` | 通过 |
+| `npm run test:governance` | 通过 |
+| `npm run test:core` | 使用发布构建复验通过。修复了临时端口为 65535 时，登录回调夹具生成无效地址的问题 |
+| `npm run test:integration:isolated` | 分段复验通过。发布构建跑通记忆 API 之前的命令，修复启动等待与进程清理后，从记忆 API 续跑的 12 条命令全部通过 |
+| `node --test tests/test-fleet-sharing-routes.js` | 使用发布构建的网关与原生模块复验，20 项通过 |

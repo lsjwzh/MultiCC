@@ -28,10 +28,11 @@ const byName = scenarios => Object.fromEntries(scenarios.map(s => [s.name, s]));
 test('the /ws/chat contract a client observes matches the frozen Node-terminated behaviour', { timeout: 480_000 }, t => {
   const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-chat-ws-conformance-')), 'fresh.json');
   t.after(() => fs.rmSync(path.dirname(out), { recursive: true, force: true }));
-  const run = spawnSync(process.execPath, [HARNESS, '--out', out], {
+  const run = spawnSync(process.execPath, [HARNESS, '--out', out, '--compare-shell-bytes'], {
     cwd: ROOT, env: process.env, encoding: 'utf8', timeout: 450_000,
   });
   assert.equal(run.status, 0, `capture failed:\n${run.stdout}\n${run.stderr}`);
+  assert.match(run.stdout, /任务壳和队列帧逐字节对拍通过，共 8 个场景/);
 
   const golden = JSON.parse(fs.readFileSync(GOLDEN, 'utf8'));
   const fresh = JSON.parse(fs.readFileSync(out, 'utf8'));

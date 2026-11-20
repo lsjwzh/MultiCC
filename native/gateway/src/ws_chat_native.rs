@@ -42,6 +42,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 const QUEUE_CAPACITY: usize = 512;
 const QUEUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const HISTORY_PAGE: usize = 5;
 
 type SessionCell = Arc<OnceCell<Arc<Mutex<Session>>>>;
 
@@ -58,6 +59,12 @@ struct Session {
     stored: Stored,
     native_started: bool,
     active: Option<Active>,
+}
+
+#[derive(Clone, Copy)]
+struct ShellRoute {
+    required: bool,
+    explicit: bool,
 }
 
 struct Active {
@@ -247,25 +254,50 @@ where
             _ => None,
         })
         .unwrap_or_default();
-    if request.shell.is_some() {
-        let detail = if permission.is_empty() {
-            "Task shell history requires the task host"
-        } else {
-            "Shell history is unavailable through a session share"
-        };
-        refuse(&mut socket, error_frame("shell_scope_denied", detail)).await;
-        return;
-    }
+    let shell_route = ShellRoute {
+        explicit: request.shell.is_some(),
+        required: request.shell.is_some()
+            || record.is_some_and(|record| js::truthy_opt(record.get("taskBoundTaskId"))),
+    };
     let kind = record
         .and_then(|record| record.get("kind"))
         .unwrap_or(&V::Undefined);
-    if let Some(error) = chat_ws_control::open_session_error(
+    let open_error = chat_ws_control::open_session_error(
         id,
         record.is_some(),
         facts.session_internal_slot,
         kind,
         None,
-    ) {
+    );
+    let shell_history = if let Some(shell_id) = request.shell {
+        let history = if permission.is_empty() {
+            let root = app.data_root.clone();
+            let id = id.to_owned();
+            let archive = request.archive;
+            tokio::task::spawn_blocking(move || {
+                store::shell_history(&root, &records, &shell_id, &id, archive)
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result)
+        } else {
+            Err("Shell history is unavailable through a session share".into())
+        };
+        match history {
+            Ok(history) => Some(history),
+            Err(error) => {
+                refuse(
+                    &mut socket,
+                    value(json!({"type":"error","code":"shell_scope_denied","error":error})),
+                )
+                .await;
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(error) = open_error {
         refuse(&mut socket, error).await;
         return;
     }
@@ -280,16 +312,40 @@ where
             return;
         }
     };
+    let queue = {
+        let file = app.data_root.join("orchestration.sqlite");
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            multicc_core::orchestration_store::chat_queue_snapshot(&file, &id)
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result)
+    };
     let (mut attached, frames) = {
         let state = session.lock().await;
         let Some(attached) = app.native_chat.hub.attach(id, QUEUE_CAPACITY, QUEUE_BYTES) else {
             return;
         };
-        let frames =
-            frames::initial_frames(&app.native_chat.hub, id, &state, &attached, request.archive);
+        let frames = frames::initial_frames(
+            &app.native_chat.hub,
+            id,
+            &state,
+            &attached,
+            request.archive,
+            shell_history,
+            shell_route.required,
+        );
         (attached, frames)
     };
-    for frame in frames {
+    let queue = match queue {
+        Ok(queue) => wire(&queue),
+        Err(error) => {
+            eprintln!("[multicc-gateway] chat queue snapshot failed: {error}");
+            None
+        }
+    };
+    for frame in frames.into_iter().chain(queue) {
         if !send_message(&mut socket, Message::Text(frame.into())).await {
             return;
         }
@@ -316,12 +372,12 @@ where
             frame = socket.next() => match frame {
                 Some(Ok(Message::Text(text))) => {
                     if let Ok(message) = serde_json::from_str::<Value>(&text) {
-                        input(&app, id, &session, attached.connection.id, &permission, message).await;
+                        input(&app, id, &session, attached.connection.id, &permission, message, shell_route).await;
                     }
                 }
                 Some(Ok(Message::Binary(data))) => {
                     if let Ok(message) = serde_json::from_slice::<Value>(&data) {
-                        input(&app, id, &session, attached.connection.id, &permission, message).await;
+                        input(&app, id, &session, attached.connection.id, &permission, message, shell_route).await;
                     }
                 }
                 Some(Ok(Message::Pong(_))) => unanswered = 0,
@@ -361,6 +417,7 @@ async fn input(
     connection: u64,
     permission: &str,
     message: Value,
+    shell_route: ShellRoute,
 ) {
     let host = &app.native_chat;
     let kind = message["type"].as_str().unwrap_or("");
@@ -373,31 +430,56 @@ async fn input(
         chat_ws_control::Action::Continue => {}
     }
     let prompt = message["text"].as_str().filter(|text| !text.is_empty());
-    if kind == "cancel"
-        || (kind == "user_message" && prompt.is_some_and(chat_ws_control::is_legacy_cancel))
-    {
-        let mut session = session.lock().await;
-        if let Some(cancel) = session.active.as_mut().and_then(|turn| turn.cancel.take()) {
-            let _ = cancel.send(());
+    use chat_ws_control::Command;
+    let command = chat_ws_control::command(
+        kind,
+        permission,
+        shell_route.required,
+        shell_route.explicit,
+        message["taskShell"] == true,
+        prompt.is_some(),
+    );
+    match command {
+        Command::Ignore | Command::Typing => {}
+        Command::Cancel => cancel_active(session).await,
+        Command::ClearHistory | Command::ClearShellHistory => {
+            host.send(
+                connection,
+                error_frame(
+                    "chat_history_action_unavailable",
+                    "Clearing chat history requires the history host",
+                ),
+            );
         }
-        return;
+        Command::RequireShellRoute => {
+            host.send(connection, frames::require_shell_route(id));
+        }
+        Command::RouteShellInput => {
+            host.send(
+                connection,
+                error_frame(
+                    "chat_route_unavailable",
+                    "Task shell delivery is unavailable",
+                ),
+            );
+        }
+        Command::Message => {
+            let prompt = prompt.expect("message command requires a prompt");
+            if chat_ws_control::is_legacy_cancel(prompt) {
+                cancel_active(session).await;
+            } else if let Err((code, message)) =
+                admit(app, id, session, connection, prompt, &message).await
+            {
+                host.send(connection, error_frame(code, &message));
+            }
+        }
     }
-    if kind == "clear_history" {
-        host.send(
-            connection,
-            error_frame(
-                "chat_history_action_unavailable",
-                "Clearing chat history requires the history host",
-            ),
-        );
-        return;
-    }
-    let Some(prompt) = prompt.filter(|_| kind == "user_message") else {
-        return;
-    };
-    let error = admit(app, id, session, connection, prompt, &message).await;
-    if let Err((code, message)) = error {
-        host.send(connection, error_frame(code, &message));
+}
+
+async fn cancel_active(session: &Mutex<Session>) {
+    let mut session = session.lock().await;
+    if let Some(cancel) = session.active.as_mut().and_then(|turn| turn.cancel.take()) {
+        let _ = cancel.send(());
     }
 }
 

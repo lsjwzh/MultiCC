@@ -22,6 +22,8 @@
 // mkdtemp root that is removed on exit.
 
 const { execFileSync, spawn } = require('node:child_process');
+const assert = require('node:assert/strict');
+const { once } = require('node:events');
 const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
@@ -35,6 +37,7 @@ const isolatedHostEnv = require('../../../tests/helpers/isolated-host-env');
 const ROOT = path.join(__dirname, '..', '..', '..');
 const TOKEN = 'capture-chat-ws-conformance-token';
 const outFlag = process.argv.indexOf('--out');
+const compareShellBytes = process.argv.includes('--compare-shell-bytes');
 const OUT = outFlag > 0 && process.argv[outFlag + 1]
   ? path.resolve(process.argv[outFlag + 1])
   : path.join(__dirname, 'chat-ws-conformance-golden.json');
@@ -55,11 +58,11 @@ function freePort() {
   });
 }
 
-async function waitReady(base, deadlineMs = 30000) {
-  const deadline = Date.now() + deadlineMs;
+async function waitReady(base, probe = '/readyz') {
+  const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${base}/readyz`, { signal: AbortSignal.timeout(1000) });
+      const response = await fetch(base + probe, { signal: AbortSignal.timeout(1000) });
       if (response.status === 200) return;
     } catch (_) {}
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -69,19 +72,28 @@ async function waitReady(base, deadlineMs = 30000) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+async function stopGateway(child) {
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  const exited = once(child, 'exit');
+  child.kill('SIGTERM');
+  const deadline = setTimeout(() => child.kill('SIGKILL'), 1500);
+  try { await exited; } finally { clearTimeout(deadline); }
+}
+
 // One connection, observed from the client side. `steps` run in order once the
 // upgrade succeeds; every frame that arrives is recorded in arrival order, with
 // `{ "@": name }` marks interleaved where a step asked for one.
 function observe(url, { headers = {}, steps = [], quietMs = 400, serverCloses = false } = {}) {
   return new Promise((resolve, reject) => {
     const timeline = [];
+    const wire = [];
     const result = { upgrade: null, close: null, closedBy: null };
     let settled = false;
     const finish = () => {
       if (settled) return;
       settled = true;
       clearTimeout(guard);
-      resolve({ result, timeline });
+      resolve({ result, timeline, wire });
     };
     const guard = setTimeout(() => {
       try { ws.terminate(); } catch (_) {}
@@ -94,7 +106,10 @@ function observe(url, { headers = {}, steps = [], quietMs = 400, serverCloses = 
       response.on('end', finish);
     });
     ws.on('message', data => {
-      try { timeline.push(JSON.parse(String(data))); } catch (_) { timeline.push({ raw: String(data) }); }
+      let parsed;
+      try { parsed = JSON.parse(String(data)); } catch (_) { parsed = { raw: String(data) }; }
+      timeline.push(parsed);
+      if (compareShellBytes) wire.push({ type: parsed?.type, bytes: Buffer.from(data) });
     });
     ws.on('error', () => {});
     ws.on('close', (code, reason) => {
@@ -324,9 +339,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const gateway = path.join(path.dirname(addon),
     process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
   let output = '';
-  const child = spawn(gateway, ['serve', '--cwd', ROOT, '--node', process.execPath, 'server.js'], {
-    cwd: ROOT,
-    env: {
+  function startGateway(port, native) {
+    const mode = native ? ['--no-node'] : ['--node', process.execPath, 'server.js'];
+    const env = {
       ...isolatedHostEnv(),
       NODE_ENV: 'test',
       HOST: '127.0.0.1',
@@ -346,11 +361,17 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       CODEX_CMD: path.join(root, 'missing-codex'),
       OPENCODE_CMD: path.join(root, 'missing-opencode'),
       QODER_CMD: path.join(root, 'missing-qoder'),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  child.stdout.on('data', c => { output = (output + c).slice(-30000); });
-  child.stderr.on('data', c => { output = (output + c).slice(-30000); });
+    };
+    const child = spawn(gateway, ['serve', '--cwd', ROOT, ...mode], {
+      cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.on('data', c => { output = (output + c).slice(-30000); });
+    child.stderr.on('data', c => { output = (output + c).slice(-30000); });
+    return child;
+  }
+  const child = startGateway(port, false);
+  let referenceChild;
+  let native;
 
   async function api(method, route, body, extraHeaders = {}) {
     const response = await fetch(base + route, {
@@ -505,10 +526,112 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     await record('reconnect-after-cancel', observe(withToken(cancelled), {
       steps: [{ until: burstDone, label: 'burst' }],
     }));
+
+    if (compareShellBytes) {
+      const shell = await api('POST', '/api/task-shells', { sessionId: idle });
+      assert.ok(shell.id, 'the reference host opened the shell');
+      const scopedSession = await newSession('conformance-shell-history');
+      const linkedSession = await newSession('conformance-linked-history');
+      const transcript = path.join(dataDir, 'chat_history');
+      fs.mkdirSync(path.join(transcript, '.views'), { recursive: true });
+      const stored = [
+        [scopedSession, [
+          { role: 'user', content: 'shell:source', id: 'source-message', ts: 10 },
+          { role: 'assistant', content: 'shell:hidden', id: 'hidden-message', ts: 30 },
+        ]],
+        [linkedSession, [{ role: 'assistant', content: 'shell:linked', id: 'linked-message', ts: 20 }]],
+      ];
+      for (const [id, rows] of stored) {
+        fs.writeFileSync(path.join(transcript, `${id}.json`), rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      }
+      fs.writeFileSync(path.join(transcript, '.views', `${scopedSession}.json`), JSON.stringify({
+        version: 1, hiddenIds: ['hidden-message'],
+      }));
+      const historyShell = await api('POST', '/api/task-shells', { sessionId: scopedSession });
+      const linkedShell = await api('POST', '/api/task-shells', { sessionId: linkedSession });
+      await api('POST', `/api/task-shells/${historyShell.id}/links`, { taskId: linkedShell.currentTaskId });
+      // Only one process may own writes to the test orchestration store.
+      // Seed the same durable rows for both hosts between their launches.
+      await stopGateway(child);
+      const { createOrchestrationSqliteStore } = require('../../../src/orchestration/sqlite-store');
+      const queueStore = createOrchestrationSqliteStore({ file: path.join(dataDir, 'orchestration.sqlite') });
+      try {
+        await queueStore.mutate(draft => {
+          for (const [id, payload] of [
+            ['fixture-work', { type: 'session.work', message: '排队中的工作', options: { clientMsgId: 'fixture-client' } }],
+            ['fixture-answer', { type: 'session.work', workKind: 'answer', requestId: 'fixture-question' }],
+          ]) {
+            draft.outbox[id] = {
+              id, sessionId: scopedSession, sequence: draft.nextOutboxSequence++,
+              state: 'pending', payload, createdAt: 40, updatedAt: 40,
+              availableAt: Date.now() + 3_600_000, attempts: 2, lastError: 'fixture retry\nfixture detail',
+            };
+          }
+        });
+      } finally {
+        await queueStore.close({ exportRollback: false });
+      }
+      const scoped = (id, shellId = shell.id) => `/ws/chat?session=${encodeURIComponent(id)}&shell=${encodeURIComponent(shellId)}`;
+      const historyPath = scoped(scopedSession, historyShell.id);
+      const historyProbe = { steps: [{ until: frame => frame.type === 'chat_history', label: 'scoped history' }] };
+      const cases = [
+        { name: 'invalid shell id', path: scoped(idle, 'invalid/shell'), options: { serverCloses: true } },
+        { name: 'missing shell', path: scoped(idle, 'missing-shell'), options: { serverCloses: true } },
+        { name: 'unlinked execution', path: scoped(other), options: { serverCloses: true } },
+        { name: 'session share', path: scoped(idle) + `&share=${encodeURIComponent(shareToken(viewShare))}`,
+          options: rejected },
+        { name: 'plain input to a scoped session', path: scoped(idle), types: ['session_queue', 'error', 'pong'], options: {
+          steps: [
+            { until: burstDone, label: 'scoped session init' },
+            { send: { type: 'user_message', text: 'DONE_PLAIN' } },
+            { send: { type: 'ping' } },
+            { until: frame => frame.type === 'pong', label: 'pong' },
+          ],
+        } },
+        { name: 'linked transcripts', path: historyPath, types: ['chat_history'], options: historyProbe,
+          messages: ['shell:source', 'shell:linked'] },
+        { name: 'linked archive transcripts', path: historyPath + '&historyScope=archive',
+          types: ['chat_history'], options: historyProbe, messages: ['shell:source', 'shell:linked', 'shell:hidden'] },
+        { name: 'persisted queue excludes question answers', path: historyPath, types: ['session_queue'],
+          options: { steps: [{ until: burstDone, label: 'persisted queue' }] }, queued: ['fixture-work'] },
+      ];
+      async function capture(port) {
+        const observed = [];
+        for (const { name, path, options, types = ['error'], messages, queued } of cases) {
+          const { result, wire, timeline } = await observe(`ws://127.0.0.1:${port}${path}`, options);
+          if (messages) assert.deepEqual(timeline.find(frame => frame.type === 'chat_history')?.messages
+            .map(message => message.content), messages, name);
+          if (queued) assert.deepEqual(timeline.find(frame => frame.type === 'session_queue')?.items
+            .map(item => item.entryId), queued, name);
+          const selected = wire.filter(frame => types.includes(frame.type));
+          assert.deepEqual(selected.map(frame => frame.type), types, name);
+          observed.push({ name, result, frames: selected.map(frame => frame.bytes) });
+        }
+        return observed;
+      }
+      const referencePort = await freePort();
+      referenceChild = startGateway(referencePort, false);
+      await waitReady(`http://127.0.0.1:${referencePort}`);
+      const reference = await capture(referencePort);
+      await stopGateway(referenceChild);
+      const rustPort = await freePort();
+      native = startGateway(rustPort, true);
+      await waitReady(`http://127.0.0.1:${rustPort}`, '/healthz');
+      const rust = await capture(rustPort);
+      for (let index = 0; index < reference.length; index += 1) {
+        const message = `${cases[index].name}: WebSocket bytes`;
+        assert.deepEqual(rust[index].result, reference[index].result, message);
+        for (let frame = 0; frame < reference[index].frames.length; frame += 1) {
+          const actual = rust[index].frames[frame], expected = reference[index].frames[frame];
+          assert.ok(actual.equals(expected), `${message}\nNode: ${expected}\nRust: ${actual}`);
+        }
+      }
+      process.stdout.write(`任务壳和队列帧逐字节对拍通过，共 ${rust.length} 个场景\n`);
+    }
   } finally {
-    try { child.kill('SIGTERM'); } catch (_) {}
-    await sleep(500);
-    try { child.kill('SIGKILL'); } catch (_) {}
+    await stopGateway(child);
+    await stopGateway(referenceChild);
+    await stopGateway(native);
     upstream.close();
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
   }

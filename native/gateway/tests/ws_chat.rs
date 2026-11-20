@@ -866,6 +866,11 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
         r#"{"type":"unattended_state","unattended":null,"apiVersion":"v1"}"#,
     )
     .await;
+    text(
+        &mut socket,
+        r#"{"type":"session_queue","event":"snapshot","state":"idle","queued":0,"items":[],"freezeReason":null,"active":null,"apiVersion":"v1"}"#,
+    )
+    .await;
     native_turn(&mut socket, "first", "首次回复").await;
     native_turn(&mut socket, "second", "沿用上下文").await;
     drop(socket);
@@ -877,6 +882,7 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
     assert_eq!(page["messages"][3]["content"], "沿用上下文");
     native_frame(&mut socket, "background_tasks").await;
     native_frame(&mut socket, "unattended_state").await;
+    native_frame(&mut socket, "session_queue").await;
     send_text(
         &mut socket,
         r#"{"type":"user_message","text":"hold","clientMsgId":"held"}"#,
@@ -901,6 +907,7 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
     assert_eq!(page["messages"][5]["streaming"], true);
     native_frame(&mut socket, "background_tasks").await;
     native_frame(&mut socket, "unattended_state").await;
+    native_frame(&mut socket, "session_queue").await;
     gateway.assert_native_process_tree();
     send_text(
         &mut socket,
@@ -950,4 +957,29 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
     let mut internal = gateway.connect_with("/ws/chat?session=internal", &[]).await;
     text(&mut internal,r#"{"type":"error","error":"Session does not exist.","data":"Session does not exist.\r\n","apiVersion":"v1"}"#).await;
     assert_eq!(next_data(&mut internal).await, Message::Close(None));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_reconnect_keeps_distinct_ids_for_legacy_messages() {
+    async fn replay_legacy_page() -> Value {
+        let gateway = Gateway::start_native();
+        let transcript = gateway.state.join("chat_history");
+        fs::create_dir(&transcript).unwrap();
+        fs::write(
+            transcript.join("native.json"),
+            r#"[{"role":"user","content":"same","ts":12},{"role":"user","content":"same","ts":12}]"#,
+        )
+        .unwrap();
+        let mut socket = gateway.connect_with("/ws/chat?session=native", &[]).await;
+        native_frame(&mut socket, "system").await;
+        native_frame(&mut socket, "chat_history").await
+    }
+    let first = replay_legacy_page().await;
+    let messages = first["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert!(messages[0]["id"].as_str().is_some());
+    assert_ne!(messages[0]["id"], messages[1]["id"]);
+
+    assert_eq!(replay_legacy_page().await, first);
 }
