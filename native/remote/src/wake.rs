@@ -1,8 +1,10 @@
 //! 唤屏 / 解锁路由（移植 src/remote-screen-wake.js）。
 //!
-//! 同意值由 Node 读电源设置后经 `x-multicc-power-consent` 头传进来（电源设置归
-//! Node 的电源模块管，这里只收一个布尔值），再与 Agent 的 `unlockPassword` 组合：
-//! 两个都为真才算「允许自动解锁」。
+//! 同意值由本进程直接读两个电源开关得出（见 [`crate::power`]），再与 Agent 的
+//! `unlockPassword` 组合：两个都为真才算「允许自动解锁」。
+//!
+//! 曾经这个值是 Node 算好、经 `x-multicc-power-consent` 头传进来的 —— 那是远控
+//! 最后一处「Rust 必须靠 Node 才能工作」的依赖；头和 Node 侧的计算已一起删除。
 //!
 //! supported 用 features.wake，不是 profile.supported：唤屏是 macOS 专有的系统动作
 //! （caffeinate -u），Linux 上 supported 是 true 但根本没有这件事可做。判成
@@ -10,14 +12,14 @@
 
 use crate::agent::agent_failed;
 use crate::error::AppResult;
+use crate::power::Consent;
 use crate::routes::{json_response, AppState};
-use axum::http::{header, HeaderMap, HeaderValue};
+use axum::http::{header, HeaderValue};
 use axum::response::Response;
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-pub const CONSENT_HEADER: &str = "x-multicc-power-consent";
 pub const SESSION: &str = "remote-screen";
 
 pub const MESSAGES: &[(&str, &str)] = &[
@@ -65,17 +67,14 @@ pub struct WakeState {
     waking: AtomicBool,
 }
 
-/// 同意值三态：`Some(true)` / `Some(false)` 是 Node 读到的开关；`None` 表示
-/// Node 读失败（头是 "error" 或压根没带）—— 迁移前 readConsent 在那种情况下会抛，
-/// 整个 state() 变 503 agent-unavailable，不能折成「用户没同意」的 200。
-pub fn read_consent(headers: &HeaderMap, status: &Value) -> Option<bool> {
-    let header = headers
-        .get(CONSENT_HEADER)
-        .and_then(|value| value.to_str().ok());
-    match header {
-        Some("1") => Some(status.get("unlockPassword") == Some(&Value::Bool(true))),
-        Some("0") => Some(false),
-        _ => None,
+/// 开关 + Agent 的解锁密码一起判：`None` 表示电源设置读不出来 —— 迁移前
+/// readConsent 在那种情况下会抛，整个 state() 变 503 agent-unavailable，
+/// 不能折成「用户没同意」的 200（那会让用户去改一个本来没问题的开关）。
+pub fn read_consent(consent: Consent, status: &Value) -> Option<bool> {
+    match consent {
+        Consent::Allowed => Some(status.get("unlockPassword") == Some(&Value::Bool(true))),
+        Consent::Denied => Some(false),
+        Consent::Unreadable => None,
     }
 }
 
@@ -100,7 +99,9 @@ struct State5 {
     reason: Option<&'static str>,
 }
 
-async fn read_state(st: &AppState, headers: &HeaderMap) -> AppResult<State5> {
+/// [`Consent`] 由调用方**每个请求算一次**再传下来：一次 POST 会读三次状态
+/// （前、后、以及失败回退），中途用户拨了开关不该让同一个请求自相矛盾。
+async fn read_state(st: &AppState, consent: Consent) -> AppResult<State5> {
     let status = st
         .agent
         .call(
@@ -116,7 +117,7 @@ async fn read_state(st: &AppState, headers: &HeaderMap) -> AppResult<State5> {
     {
         return Err(crate::error::AppError::new(503, "agent-unavailable"));
     }
-    let enabled = read_consent(headers, &status)
+    let enabled = read_consent(consent, &status)
         .ok_or_else(|| crate::error::AppError::new(503, "agent-unavailable"))?;
     let lease_holder = status
         .pointer("/control/leaseHolder")
@@ -155,7 +156,7 @@ async fn read_state(st: &AppState, headers: &HeaderMap) -> AppResult<State5> {
     Ok(State5 { body, reason })
 }
 
-pub async fn get(st: &AppState, headers: &HeaderMap) -> Response {
+pub async fn get(st: &AppState) -> Response {
     if !st.host.profile.features.wake {
         return no_store(json_response(
             200,
@@ -165,7 +166,7 @@ pub async fn get(st: &AppState, headers: &HeaderMap) -> Response {
             }),
         ));
     }
-    match read_state(st, headers).await {
+    match read_state(st, st.power.consent()).await {
         Ok(state) => {
             let message = state.reason.and_then(message_for).unwrap_or("");
             let mut body = state.body;
@@ -176,7 +177,7 @@ pub async fn get(st: &AppState, headers: &HeaderMap) -> Response {
     }
 }
 
-pub async fn post(st: &AppState, headers: &HeaderMap) -> Response {
+pub async fn post(st: &AppState) -> Response {
     if !st.host.profile.features.wake {
         return fail(409, "platform-unsupported");
     }
@@ -184,13 +185,13 @@ pub async fn post(st: &AppState, headers: &HeaderMap) -> Response {
     if st.wake.waking.swap(true, Ordering::SeqCst) {
         return fail(409, "busy");
     }
-    let result = post_inner(st, headers).await;
+    let result = post_inner(st, st.power.consent()).await;
     st.wake.waking.store(false, Ordering::SeqCst);
     result
 }
 
-async fn post_inner(st: &AppState, headers: &HeaderMap) -> Response {
-    let before = match read_state(st, headers).await {
+async fn post_inner(st: &AppState, consent: Consent) -> Response {
+    let before = match read_state(st, consent).await {
         Ok(state) => state,
         Err(_) => return fail(503, "agent-unavailable"),
     };
@@ -223,7 +224,7 @@ async fn post_inner(st: &AppState, headers: &HeaderMap) -> Response {
             return fail(409, &code);
         }
     }
-    let after = match read_state(st, headers).await {
+    let after = match read_state(st, consent).await {
         Ok(state) => state,
         Err(_) => return fail(503, "agent-unavailable"),
     };

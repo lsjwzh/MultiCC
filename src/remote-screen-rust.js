@@ -14,6 +14,11 @@
 //   2. 沿用全站鉴权之后，把 /api/remote-screen/* 的 HTTP 请求原样转过去；
 //   3. 把已鉴权的 /ws/remote-screen 逐条转发，并处理 WS 背压。
 //
+// 这一层**不再计算任何业务值**。唤屏的「允许自动解锁」同意值曾经由这里读电源
+// 设置算好、经 x-multicc-power-consent 头带过去，那是最后一处「Rust 得靠 Node
+// 才能工作」的依赖，也是把远控整条搬上 Rust 前门的前置件（前门是另一个进程，
+// 算不出这个值）。现在那两个开关由 native/remote/src/power.rs 直接读。
+//
 // 为什么这么分：AGENTS.md「后端默认使用 Rust」要求新增/改进的后端逻辑进 Rust，
 // Node 只保留迁移期必要的调用桥接。进程隔离让远控崩溃不再带倒整个服务，也让
 // 截图/编码在 Node 事件循环之外；Rust 进程编不出来时只是远控不可用，服务照常起。
@@ -40,8 +45,6 @@ const { spawn } = require('child_process');
 const WebSocket = require('ws');
 
 const { createPaths } = require('./paths');
-const { getPowerPreferences } = require('./host-power-services');
-const { createPowerd } = require('./powerd');
 
 const SESSION = 'remote-screen';
 // 冻结截图目录：随数据根隔离，由 assist-snapshots 的 7 天清理兜底。
@@ -71,24 +74,6 @@ const deps = {
   restartMaxMs: RESTART_MAX_MS,
   stableResetMs: STABLE_RESET_MS,
   annotationTimeoutMs: ANNOTATION_TIMEOUT_MS,
-  // 「允许自动解锁」开关 || 电源意图 === 'on'。只给唤屏请求带一个布尔值；
-  // 电源设置归 Node 的电源模块管，Rust 不重复读系统状态。
-  // 读失败要如实报 'error' 而不是 '0'：迁移前 readConsent 是直接抛，
-  // state() 随之抛错 → 唤屏接口 503 agent-unavailable；折成 '0' 会变成
-  // 误导性的「自动解锁未开启」200，用户会去改一个本来没问题的开关。
-  powerConsent: () => {
-    // 测试台用文件注入三态（CI 里没有真实电源设置可读）；生产不会设这个变量。
-    const injected = process.env.MULTICC_REMOTE_POWER_CONSENT_FILE;
-    if (injected) {
-      try {
-        const value = fs.readFileSync(injected, 'utf8').trim();
-        return ['0', '1', 'error'].includes(value) ? value : 'error';
-      } catch { return 'error'; }
-    }
-    try {
-      return getPowerPreferences().read(true) || createPowerd().readIntent() === 'on' ? '1' : '0';
-    } catch { return 'error'; }
-  },
   logger: null,
 };
 
@@ -323,11 +308,6 @@ function copyResponseHeaders(source, res) {
   }
 }
 
-function powerConsentHeader() {
-  try { return { 'x-multicc-power-consent': deps.powerConsent() }; }
-  catch { return { 'x-multicc-power-consent': 'error' }; }
-}
-
 function unavailableHttp(req, res, pathname) {
   if (pathname === '/api/remote-screen/capabilities') {
     res.set({ 'Cache-Control': 'no-store' });
@@ -350,7 +330,6 @@ async function forwardHttp(req, res) {
   const body = req.method === 'POST' ? JSON.stringify(req.body ?? {}) : null;
   const headers = {};
   if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
-  if (pathname === '/api/remote-screen/wake') Object.assign(headers, powerConsentHeader());
 
   const outgoing = http.request({
     host: '127.0.0.1',

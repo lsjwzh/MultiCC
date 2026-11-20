@@ -5,7 +5,6 @@
 mod support;
 
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
 use axum::{Json, Router};
 #[cfg(unix)]
 use multicc_remote::agent::{AgentClient, UnixAgentClient};
@@ -36,12 +35,57 @@ fn mac_env(tag: &str) -> MacEnv {
         mac_exec(commands.clone()),
         Some(multicc_remote::agent::host_call(agent.clone())),
     ));
-    let state = AppState::new(dir, host, agent.clone(), "secret").with_p2p(None);
+    let state = AppState::new(dir, host, agent.clone(), "secret")
+        .with_p2p(None)
+        // 不接的话 Power::from_process 会去读开发机真实的 ~/.multicc/agent，
+        // 用例就跟着这台机器的电源设置飘。
+        .with_power(consenting_power(&format!("{tag}-power")));
     MacEnv {
         state,
         agent,
         commands,
     }
+}
+
+/// 钉住「允许自动解锁」的两个开关文件。同意值每个请求重新读，所以同一个 state
+/// 上改一下文件就能换态 —— 顺带证明它没被缓存住。
+///
+/// 三态按迁移前 Node 送的头取名：`"1"` = 开关开着，`"0"` = 两个开关都关，
+/// 其余 = 设置文件读不出来（Node 旧口径的 `"error"`）。
+struct PowerFiles {
+    settings: std::path::PathBuf,
+    intent: std::path::PathBuf,
+}
+
+impl PowerFiles {
+    fn new(tag: &str) -> Self {
+        let dir = temp_dir(tag);
+        let files = Self {
+            settings: dir.join("power-settings.json"),
+            intent: dir.join("power-intent"),
+        };
+        std::fs::write(&files.intent, "off\n").unwrap();
+        files.set("1");
+        files
+    }
+
+    fn set(&self, consent: &str) {
+        let body = match consent {
+            "1" => r#"{"autoUnlock":true}"#,
+            "0" => r#"{"autoUnlock":false}"#,
+            _ => "{ 这不是 JSON",
+        };
+        std::fs::write(&self.settings, body).unwrap();
+    }
+
+    fn power(&self) -> multicc_remote::power::Power {
+        multicc_remote::power::Power::new(&self.settings, &self.intent, None)
+    }
+}
+
+/// 同意 = 开的开关，用完即弃（不需要中途换态时用这个）。
+fn consenting_power(tag: &str) -> multicc_remote::power::Power {
+    PowerFiles::new(tag).power()
 }
 
 fn query(pairs: &[(&str, &str)]) -> Query<HashMap<String, String>> {
@@ -598,13 +642,13 @@ async fn linux_wake_route_collapses_on_features_wake_not_supported() {
     ));
     let state = AppState::new(dir, host, agent, "secret").with_p2p(None);
 
-    let get = body_json(wake::get(&state, &HeaderMap::new()).await).await;
+    let get = body_json(wake::get(&state).await).await;
     assert_eq!(get["canWake"], json!(false));
     let caps = body_json(routes::capabilities(State(state.clone())).await).await;
     assert_eq!(caps["supported"], json!(true));
     assert_eq!(caps["features"]["wake"], json!(false));
     // 唤屏在 Linux 上是 409 + platform-unsupported，且不查询 agent。
-    let post = wake::post(&state, &HeaderMap::new()).await;
+    let post = wake::post(&state).await;
     assert_eq!(post.status(), 409);
 }
 
@@ -748,8 +792,6 @@ async fn capabilities_answer_what_this_machine_can_do_and_non_mac_refuses_cleanl
 async fn wake_is_only_for_auto_unlock_users_and_checks_the_real_unlock() {
     let env = mac_env("wake");
     let dir = env.state.screen.dir.clone();
-    let mut consent = HeaderMap::new();
-    consent.insert(wake::CONSENT_HEADER, "1".parse().unwrap());
 
     #[derive(Clone)]
     struct Flags {
@@ -797,9 +839,11 @@ async fn wake_is_only_for_auto_unlock_users_and_checks_the_real_unlock() {
         mac_exec(Arc::new(std::sync::Mutex::new(Vec::new()))),
         Some(multicc_remote::agent::host_call(agent.clone())),
     ));
-    let state = AppState::new(dir, host, agent.clone(), "secret").with_p2p(None);
+    let state = AppState::new(dir, host, agent.clone(), "secret")
+        .with_p2p(None)
+        .with_power(consenting_power("wake-consent"));
 
-    let get = body_json(wake::get(&state, &consent).await).await;
+    let get = body_json(wake::get(&state).await).await;
     assert_eq!(get["canWake"], json!(false));
     assert_eq!(
         agent
@@ -810,39 +854,39 @@ async fn wake_is_only_for_auto_unlock_users_and_checks_the_real_unlock() {
         0
     );
 
-    let error = body_json(wake::post(&state, &consent).await).await["error"].clone();
+    let error = body_json(wake::post(&state).await).await["error"].clone();
     assert_eq!(error, json!("auto-unlock-disabled"));
 
     flags.lock().unwrap().enabled = true;
     flags.lock().unwrap().permissions = false;
     assert_eq!(
-        body_json(wake::post(&state, &consent).await).await["error"],
+        body_json(wake::post(&state).await).await["error"],
         json!("permissions-required")
     );
 
     flags.lock().unwrap().permissions = true;
     flags.lock().unwrap().halted = true;
     assert_eq!(
-        body_json(wake::post(&state, &consent).await).await["error"],
+        body_json(wake::post(&state).await).await["error"],
         json!("user-stopped")
     );
 
     flags.lock().unwrap().halted = false;
     flags.lock().unwrap().unlock_ok = false;
     assert_eq!(
-        body_json(wake::post(&state, &consent).await).await["error"],
+        body_json(wake::post(&state).await).await["error"],
         json!("password-needs-authorization")
     );
 
     flags.lock().unwrap().unlock_ok = true;
     flags.lock().unwrap().stays_locked = true;
     assert_eq!(
-        body_json(wake::post(&state, &consent).await).await["error"],
+        body_json(wake::post(&state).await).await["error"],
         json!("still-locked")
     );
 
     flags.lock().unwrap().stays_locked = false;
-    let ok = body_json(wake::post(&state, &consent).await).await;
+    let ok = body_json(wake::post(&state).await).await;
     assert_eq!(ok["screenLocked"], json!(false));
     assert_eq!(ok["message"], json!("屏幕已唤起，正在恢复画面。"));
 
@@ -854,10 +898,7 @@ async fn wake_is_only_for_auto_unlock_users_and_checks_the_real_unlock() {
     assert_eq!(unlocks, 3, "只有锁屏时才提交密码（三次 post 都处于锁屏）");
     // 未锁屏时只唤醒，不再提交密码。
     let before = agent.requests().len();
-    assert_eq!(
-        body_json(wake::post(&state, &consent).await).await["ok"],
-        json!(true)
-    );
+    assert_eq!(body_json(wake::post(&state).await).await["ok"], json!(true));
     assert_eq!(
         agent.requests()[before..]
             .iter()
@@ -922,18 +963,17 @@ async fn concurrent_wake_clicks_never_submit_the_password_twice() {
         exec,
         Some(multicc_remote::agent::host_call(agent.clone())),
     ));
-    let state = AppState::new(dir, host, agent.clone(), "secret").with_p2p(None);
-    let mut consent = HeaderMap::new();
-    consent.insert(wake::CONSENT_HEADER, "1".parse().unwrap());
+    let state = AppState::new(dir, host, agent.clone(), "secret")
+        .with_p2p(None)
+        .with_power(consenting_power("wake-busy-consent"));
 
     let first = {
         let state = state.clone();
-        let consent = consent.clone();
-        tokio::spawn(async move { wake::post(&state, &consent).await })
+        tokio::spawn(async move { wake::post(&state).await })
     };
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(
-        body_json(wake::post(&state, &consent).await).await["error"],
+        body_json(wake::post(&state).await).await["error"],
         json!("busy")
     );
     gate.notify_waiters();
@@ -1237,15 +1277,14 @@ async fn wake_get_is_never_cached_and_unknown_consent_is_503() {
         mac_exec(Arc::new(std::sync::Mutex::new(Vec::new()))),
         Some(multicc_remote::agent::host_call(agent.clone())),
     ));
-    let state = AppState::new(temp_dir("wake-cache"), host, agent.clone(), "secret").with_p2p(None);
-    let consent = |value: &'static str| {
-        let mut headers = HeaderMap::new();
-        headers.insert(wake::CONSENT_HEADER, value.parse().unwrap());
-        headers
-    };
+    let switches = PowerFiles::new("wake-cache-switches");
+    let state = AppState::new(temp_dir("wake-cache"), host, agent.clone(), "secret")
+        .with_p2p(None)
+        .with_power(switches.power());
 
     // 同意 = 开：200 且 no-store。
-    let ok = wake::get(&state, &consent("1")).await;
+    switches.set("1");
+    let ok = wake::get(&state).await;
     assert_eq!(ok.status(), 200);
     assert_eq!(ok.headers()["cache-control"], "no-store");
     let body = body_json(ok).await;
@@ -1253,15 +1292,19 @@ async fn wake_get_is_never_cached_and_unknown_consent_is_503() {
     assert_eq!(body["canWake"], json!(true));
 
     // 同意 = 关：仍是 200（这是合法状态），只是不能唤屏；照样不能缓存。
-    let off = wake::get(&state, &consent("0")).await;
+    // 同一个 state 换态：同意值是每个请求读一次的，不许缓存。
+    switches.set("0");
+    let off = wake::get(&state).await;
     assert_eq!(off.headers()["cache-control"], "no-store");
     let body = body_json(off).await;
     assert_eq!(body["autoUnlockEnabled"], json!(false));
     assert_eq!(body["reason"], json!("auto-unlock-disabled"));
 
-    // 读电源设置失败（Node 送 "error"）或没带头：无法判断，等同 JS 的 readConsent 抛错。
-    for headers in [consent("error"), HeaderMap::new()] {
-        let response = wake::get(&state, &headers).await;
+    // 电源设置读不出来：无法判断，等同迁移前 JS 的 readConsent 抛错（503），
+    // 绝不折成「用户没同意」的 200。
+    {
+        switches.set("error");
+        let response = wake::get(&state).await;
         assert_eq!(response.status(), 503);
         assert_eq!(response.headers()["cache-control"], "no-store");
         assert_eq!(
@@ -1269,7 +1312,7 @@ async fn wake_get_is_never_cached_and_unknown_consent_is_503() {
             json!("agent-unavailable")
         );
 
-        let response = wake::post(&state, &headers).await;
+        let response = wake::post(&state).await;
         assert_eq!(response.status(), 503);
         assert_eq!(
             body_json(response).await["error"],
@@ -1279,7 +1322,7 @@ async fn wake_get_is_never_cached_and_unknown_consent_is_503() {
 
     // Agent 状态不可用（不认 status 的回复）：503 也要带 no-store。
     let broken = mac_env("wake-cache-broken");
-    let response = wake::get(&broken.state, &consent("1")).await;
+    let response = wake::get(&broken.state).await;
     assert_eq!(response.status(), 503);
     assert_eq!(response.headers()["cache-control"], "no-store");
 
@@ -1290,9 +1333,10 @@ async fn wake_get_is_never_cached_and_unknown_consent_is_503() {
         panic_exec(),
         None,
     ));
-    let win_state =
-        AppState::new(temp_dir("wake-cache-win"), win_host, win_agent, "secret").with_p2p(None);
-    let response = wake::get(&win_state, &consent("1")).await;
+    let win_state = AppState::new(temp_dir("wake-cache-win"), win_host, win_agent, "secret")
+        .with_p2p(None)
+        .with_power(consenting_power("wake-cache-win-power"));
+    let response = wake::get(&win_state).await;
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["cache-control"], "no-store");
     assert_eq!(

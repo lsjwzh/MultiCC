@@ -102,7 +102,7 @@ pub struct Profile {
 }
 
 /// JS 的 `env.X || fallback`：空串也算没设置。
-fn env_value(env: &HashMap<String, String>, key: &str) -> Option<String> {
+pub(crate) fn env_value(env: &HashMap<String, String>, key: &str) -> Option<String> {
     env.get(key).filter(|v| !v.is_empty()).cloned()
 }
 

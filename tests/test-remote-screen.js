@@ -148,28 +148,19 @@ test('HTTP forwarding keeps status, headers and body, including JPEG bytes and H
   assert.equal(echoed.secret, rs._state().ready.secret);
 });
 
-test('wake requests carry the Node-computed power consent; other routes do not', async t => {
+// 这一层不再算任何业务值：电源同意由 native/remote/src/power.rs 自己读两个开关
+// （power.rs 的单测覆盖三态），所以 Node 不该再往唤屏请求上加任何同意头。
+// 留着这条断言是防回归 —— 那个头是远控搬上 Rust 前门的阻塞项，别再长回来。
+test('wake requests carry no power consent header: Rust reads the switches itself', async t => {
   withFake(t);
   const base = await mountHttp(t);
-  const previous = rs._deps.powerConsent;
-  t.after(() => { rs._deps.powerConsent = previous; });
 
-  rs._deps.powerConsent = () => '1';
   const on = await (await fetch(`${base}/api/remote-screen/wake`)).json();
-  assert.equal(on.consent, '1');
-  rs._deps.powerConsent = () => '0';
+  assert.equal(on.consent, null, 'Node 不再计算同意值，也不加头');
   const off = await (await fetch(`${base}/api/remote-screen/wake`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
-  assert.equal(off.consent, '0');
-  assert.equal(off.method, 'POST');
-
-  // 第三态：读电源设置失败。迁移前那是 readConsent 抛错 → 503 agent-unavailable；
-  // 折成 '0' 会让前端看到「自动解锁未开启」，把用户引去改一个没问题的开关。
-  rs._deps.powerConsent = () => 'error';
-  const failed = await (await fetch(`${base}/api/remote-screen/wake`)).json();
-  assert.equal(failed.consent, 'error');
-  rs._deps.powerConsent = () => { throw new Error('power settings unreadable'); };
-  const threw = await (await fetch(`${base}/api/remote-screen/wake`)).json();
-  assert.equal(threw.consent, 'error', 'deps 抛异常也要落到 error 三态，不能静默变 0');
+  assert.equal(off.consent, null);
+  assert.equal(off.method, 'POST', '其余转发语义不变');
+  assert.equal(rs._deps.powerConsent, undefined, 'deps 里不该再有 powerConsent 这个口子');
 
   await (await fetch(`${base}/api/remote-screen/frame`)).arrayBuffer();
 });
