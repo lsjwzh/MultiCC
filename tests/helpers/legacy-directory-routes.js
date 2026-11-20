@@ -253,6 +253,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
         dsh_terminal: 0, dsh_chat: 0,
         gemini_terminal: 0, gemini_chat: 0,
         grok_terminal: 0, grok_chat: 0,
+        agy_terminal: 0, agy_chat: 0,
         commandcode_terminal: 0, commandcode_chat: 0,
         pi_terminal: 0, pi_chat: 0,
       };

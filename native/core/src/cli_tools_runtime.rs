@@ -87,6 +87,7 @@ fn cmd_env(cli: &str) -> Option<&'static str> {
         "dsh" => Some("DSH_CMD"),
         "gemini" => Some("GEMINI_CMD"),
         "grok" => Some("GROK_CMD"),
+        "agy" => Some("AGY_CMD"),
         "commandcode" => Some("COMMAND_CODE_CMD"),
         "pi" => Some("PI_CMD"),
         _ => None,
@@ -379,6 +380,7 @@ impl Runtime {
                     "DSH_CMD",
                     "GEMINI_CMD",
                     "GROK_CMD",
+                    "AGY_CMD",
                     "COMMAND_CODE_CMD",
                     "PI_CMD",
                 ]

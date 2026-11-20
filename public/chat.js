@@ -429,7 +429,7 @@ function applyCliUi(cli) {
   // so the AI-config picker shows the CLI's real catalog by the next open. No
   // rebuild hook: each CLI's static tiers/fallback stay usable until the fetch
   // lands, and the picker re-reads the cache on every open.
-  const modelRefresh = { opencode: 'refreshOpenCodeModels', qoder: 'refreshQoderModels', claude: 'refreshClaudeModels', 'claude-exp': 'refreshClaudeModels', codebuddy: 'refreshCodebuddyModels', commandcode: 'refreshCommandcodeModels', grok: 'refreshGrokModels' }[next];
+  const modelRefresh = { opencode: 'refreshOpenCodeModels', qoder: 'refreshQoderModels', claude: 'refreshClaudeModels', 'claude-exp': 'refreshClaudeModels', codebuddy: 'refreshCodebuddyModels', commandcode: 'refreshCommandcodeModels', grok: 'refreshGrokModels', agy: 'refreshAgyModels' }[next];
   if (modelRefresh && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig[modelRefresh] === 'function') {
     window.MultiCCChatAiConfig[modelRefresh]();
   }

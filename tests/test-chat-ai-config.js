@@ -732,3 +732,23 @@ test('Pi follows native settings and never offers a stale managed provider model
     ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
   assert.equal(ai.effortShortName('pi', 'off'), 'Off');
 });
+
+
+test('Antigravity exposes only its live ACP models and its own thinking levels', async () => {
+  const modulePath = require.resolve('../public/chat-ai-config');
+  const cache = JSON.stringify({ at: Date.now(), models: [{ model: 'gemini-4-argon', label: 'Argon' }] });
+  globalThis.window = {
+    localStorage: { getItem: key => key === 'multicc.agy.models.v1' ? cache : null },
+    async loadAgyModels() { return [{ model: 'gemini-4-argon', label: 'Argon' }]; },
+  };
+  delete require.cache[modulePath];
+  const localAi = require(modulePath);
+  try {
+    assert.deepEqual(localAi.buildModelChoices('relay', state({ cli: 'agy' })), ['', 'gemini-4-argon', '__custom__']);
+    assert.deepEqual(localAi.effortOptions('agy').map(item => item.value), ['', 'low', 'medium', 'high', 'xhigh']);
+    assert.deepEqual((await localAi.refreshModelsForCli('agy')).map(m => m.model), ['gemini-4-argon']);
+  } finally {
+    delete globalThis.window;
+    delete require.cache[modulePath];
+  }
+});

@@ -22,7 +22,7 @@ const { peekGrokModels } = require('../routes/grok-models');
 // (they can run MultiCC provider lines); their native line is still a valid
 // candidate, exactly like OpenCode's managed + native mix.
 const VENDOR_NATIVE_CLIS = Object.freeze([
-  'qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok',
+  'qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok', 'agy',
 ]);
 const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
 const NATIVE_VENDOR_SUFFIX = '-native:';
