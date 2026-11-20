@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 const { createAutoProviderRouting } = require('../src/chat/auto-provider-routing');
-const { selectionKey } = require('../src/chat/auto-provider-selection-key');
+const { selectionKey } = require('../src/providers/auto-provider-config');
 const { failoverSafety } = require('../src/chat/auto-provider-policy');
 const { decideApiErrorPolicy: evaluateApiError } = require('../src/chat/api-error-policy');
 

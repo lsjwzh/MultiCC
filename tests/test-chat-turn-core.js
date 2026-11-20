@@ -744,11 +744,11 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   assert.ok(authorize < claudeRunner && authorize < codexRunner);
   assert.ok(codexRunner < failureRelease, 'finally must release a failed preparation lease');
   const invocationSource = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'chat', 'provider-invocation.js'), 'utf8');
-  assert.match(invocationSource, /router\.resolveSpawnEnv\(session, selectionOverrides\)/,
+    path.join(__dirname, '..', 'native', 'addon', 'src', 'provider_invocation.rs'), 'utf8');
+  assert.match(invocationSource, /method\(router, c"resolveSpawnEnv", &\[session, overrides\]\)/,
     'every physical attempt must resolve its route instead of reusing captured argv/env');
   assert.match(invocationSource,
-    /routeOverrides = Object\.freeze\(\{ providerId: binding\.providerId, model: selectedModel \}\)/,
+    /let route_overrides = object\([\s\S]*?\(c"providerId", binding\.get\(c"providerId"\)\?\)[\s\S]*?\(c"model", selected\)[\s\S]*?\.freeze\(\)\?/,
     'the child env must rebuild from the same provider and raw selected model, not a qualified wire model');
   assert.match(body, /errorCategory: 'proxy_config', reasonCode: 'proxy_config_failed'/,
     'a proxy materialization failure must terminalize its physical attempt before retry exits');

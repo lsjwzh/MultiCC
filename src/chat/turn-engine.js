@@ -45,7 +45,7 @@ const {
 } = require('./index');
 const { createProviderAttemptRuntime, markHostErrorEnvelope, providerAttemptFields,
   tagProviderAttemptEvent } = require('./provider-attempt-runtime');
-const { createProviderInvocationFactory, providerRetryRouteOptions } = require('./provider-invocation');
+const { createProviderInvocationFactory, providerRetryRouteOptions } = require('../native/runtime').providerInvocation;
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { createAutoRouteNotes } = require('./auto-route-notes');
 const { admissionRootCause, deliverAfterPendingMemory, createQueuedTurnPreparation } = require('./admission-progress');

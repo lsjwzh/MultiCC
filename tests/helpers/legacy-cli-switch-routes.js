@@ -8,7 +8,7 @@
 const crypto = require('node:crypto');
 const { getNative } = require('../../src/native/runtime');
 const { isChatStateBusy } = require('../../src/session/runtime-busy');
-const { selectionKey } = require('../../src/chat/auto-provider-selection-key');
+const { selectionKey } = require('../../src/providers/auto-provider-config');
 const capability = require('../../src/cli/cli-capability');
 const { nativeSessionExists } = require('../../src/cli/native-session-exists');
 const { nativeVendorOf } = require('../../src/providers/native-vendor');

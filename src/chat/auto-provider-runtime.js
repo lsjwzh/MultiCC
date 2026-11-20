@@ -30,7 +30,7 @@ const { createAutoProviderRouting } = require('./auto-provider-routing');
 const { expandCandidates, modelChoices, priceLadder } = require('./auto-provider-pricing');
 const { createRoutingAdmissionPhase } = require('./admission-progress');
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
-const { selectionKey } = require('./auto-provider-selection-key');
+const { selectionKey } = require('../providers/auto-provider-config');
 const { getNative } = require('../native/runtime');
 
 class AutoProviderError extends Error {

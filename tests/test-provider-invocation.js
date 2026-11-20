@@ -11,10 +11,10 @@ const { captureNativeSessionId } = require('../src/chat/native-session-state');
 const {
   createProviderInvocationFactory,
   providerRetryRouteOptions,
-} = require('../src/chat/provider-invocation');
+} = require('../src/native/runtime').providerInvocation;
 const { normalizeTurnRequest, createTurnLifecycle } = require('../src/chat');
 
-function makeHarness() {
+function makeHarness(makeFactory = createProviderInvocationFactory) {
   const calls = [];
   const summaries = {
     'provider-a': { id: 'provider-a', name: 'Provider A', appType: 'claude', apiFormat: 'anthropic', baseUrl: 'https://a.example.test', aliasMap: {} },
@@ -45,13 +45,14 @@ function makeHarness() {
     getProviderSummary(_appType, providerId) { return summaries[providerId] || null; },
   };
   const attempts = createProviderAttemptRuntime({
+    now: () => 10,
     runtimeEpoch: 'epoch-1', nextId: prefix => `${prefix}-${calls.length + 1}`,
   });
-  const factory = createProviderInvocationFactory({
+  const factory = makeFactory({
     providerRouterRuntime: router, providerAttemptRuntime: attempts,
     effectiveSessionModel: session => session.model,
   });
-  return { calls, attempts, factory };
+  return { calls, attempts, factory, router };
 }
 
 function turnInput() {
@@ -574,4 +575,76 @@ test('a managed provider id is passed through to the router unchanged', () => {
   });
   assert.deepEqual(calls.map(call => call.providerId), ['provider-b']);
   assert.equal(prepared.binding.providerId, 'provider-b');
+});
+
+function frozenInvocationFactory() {
+  const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+  const Module = require('node:module');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-provider-invocation.js.txt'), 'utf8');
+  assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '0d687ef19c0b429d594518f0b26368a0c5575eb3b48a37064e5a54bbcc9f72fd');
+  const filename = path.resolve(__dirname, '../src/chat/provider-invocation.js');
+  const legacy = new Module(filename);
+  legacy.filename = filename;
+  legacy.paths = Module._nodeModulePaths(path.dirname(filename));
+  legacy._compile(source, filename);
+  return legacy.exports.createProviderInvocationFactory;
+}
+
+test('Rust preparation matches the frozen owner across CLI, model, bare retry and subagent routes', () => {
+  const frozen = frozenInvocationFactory();
+  for (const cli of ['claude', 'codex', 'opencode']) {
+    const request = normalizeTurnRequest({ sessionId: 'session-1', text: 'hello', cli, hasNativeHistory: false, forceFirst: true });
+    const turn = createTurnLifecycle(request, { turnId: 'turn-1' });
+    for (const bare of [false, true]) for (const subagent of [false, true]) for (const explicit of [false, true]) {
+      const run = makeFactory => {
+        const h = makeHarness(makeFactory);
+        const session = { id: 'session-1', cli, provider: 'provider-a', model: 'sonnet', cliSessionId: 'native-1',
+          ...(subagent ? { subagent: { providerId: 'provider-b', model: 'worker-model' } } : {}) };
+        const provider = { buildInvocation: envelope => ({ cmd: cli, args: ['--model', envelope.spawnOpts.rawModel], payload: envelope.userText }) };
+        const result = h.factory.prepare({ request, turn, attemptNo: 1, session, provider,
+          envelope: { userText: 'hello', spawnOpts: {}, historyHandle: {}, contextLayers: ['history'] },
+          ...(bare ? { bareText: 'continue', firstTurn: true } : {}),
+          ...(explicit ? { providerId: 'provider-b', model: null } : {}), env: {} });
+        return { result, calls: h.calls };
+      };
+      assert.deepEqual(run(createProviderInvocationFactory), run(frozen), JSON.stringify({ cli, bare, subagent, explicit }));
+    }
+  }
+});
+
+test('Rust preparation preserves lazy resolution reads and visits the complete model list', () => {
+  const frozen = frozenInvocationFactory();
+  const { request, turn } = turnInput();
+  const run = makeFactory => {
+    const h = makeHarness(makeFactory), reads = [];
+    const models = ['one', 'two'].map(value => ({ toString() { reads.push(value); return value; } }));
+    h.router.resolveSpawnEnv = () => new Proxy({ qualifiedModel: 'wire', providerModels: models }, {
+      get(target, key, receiver) { reads.push(String(key)); return Reflect.get(target, key, receiver); },
+    });
+    const result = h.factory.prepare({ request, turn, attemptNo: 1,
+      session: { id: 'session-1', cli: 'claude', provider: 'provider-a', model: null },
+      provider: { buildInvocation: () => ({ cmd: 'claude', args: [] }) },
+      envelope: { spawnOpts: {}, historyHandle: {} }, env: {} });
+    return { reads, selected: result.routeOverrides.model, spawnKey: result.attempt.spawnKey };
+  };
+  const oracle = run(frozen);
+  assert.ok(oracle.reads.includes('one') && oracle.reads.includes('two'));
+  assert.deepEqual(run(createProviderInvocationFactory), oracle);
+});
+
+test('Rust preparation cleans up a failed proof once and rethrows the same exception', () => {
+  for (const makeFactory of [frozenInvocationFactory(), createProviderInvocationFactory]) {
+    const fault = new Error('proxy capability failed'), finished = [];
+    const h = makeHarness(options => makeFactory({ ...options, providerAttemptRuntime: {
+      ...options.providerAttemptRuntime,
+      finishAttempt(...args) { finished.push(args); return options.providerAttemptRuntime.finishAttempt(...args); },
+      proxySessionId() { throw fault; },
+    } }));
+    const { request, turn } = turnInput();
+    assert.throws(() => h.factory.prepare({ request, turn, attemptNo: 1,
+      session: { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet' },
+      provider: { buildInvocation: () => ({ args: [] }) }, envelope: { spawnOpts: {}, historyHandle: {} } }), error => error === fault);
+    assert.equal(finished.length, 1);
+    assert.deepEqual(finished[0][1], { outcome: 'failed', errorCategory: 'route_proof', reasonCode: 'route_proof_rejected' });
+  }
 });

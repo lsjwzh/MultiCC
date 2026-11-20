@@ -84,5 +84,22 @@ const taskShellContext = {
   snapshotHistory: (taskId, history, { activeTurnId = null, maxBytes = 12000 } = {}) =>
     reference('snapshot', { taskId, history, activeTurnId, maxBytes }),
 };
+// Compatibility closures keep the existing CLI/SDK callbacks alive. Rust owns
+// preparation and all routing decisions; no Provider policy is reimplemented here.
+const providerInvocation = {
+  createProviderInvocationFactory(options = {}) {
+    const native = getNative();
+    const ports = Object.assign(native.providerInvocationValidate(options), {
+      revision: require('../chat/provider-attempt-runtime').createProviderRevision,
+      policy: require('../chat/model-request-policy').resolveModelRequestPolicy,
+      proof: require('../chat/turn-request').createProviderRouteProof,
+      nativeOpenCodeId: require('../providers/native-opencode').nativeOpenCodeId,
+      nativeVendorOf: require('../providers/native-vendor').nativeVendorOf,
+    });
+    return Object.freeze({ prepare: (input = {}) => native.providerInvocationPrepare(input, ports) });
+  },
+  protocolFor: (cli, summary) => getNative().providerInvocationProtocol(cli, summary),
+  providerRetryRouteOptions: attempt => getNative().providerRetryRouteOptions(attempt),
+};
 module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
-  staticVersionedHtml, decodeRecoveryEvents, taskShellContext };
+  staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation };

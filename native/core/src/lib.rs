@@ -60,6 +60,7 @@ pub mod orchestration_store;
 pub mod outbound_proxy;
 pub mod plugin_routes;
 pub mod provider_attempt_identity;
+pub mod provider_invocation;
 pub mod provider_error;
 pub mod provider_misc;
 pub mod provider_scrub;

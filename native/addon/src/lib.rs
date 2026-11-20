@@ -55,6 +55,7 @@ pub mod orchestration_owner;
 pub mod orchestration_store;
 pub mod provider_attempt_creation;
 pub mod provider_attempt_identity;
+pub mod provider_invocation;
 pub mod provider_attempt_lifecycle;
 pub mod provider_attempt_route;
 pub mod provider_authorization;

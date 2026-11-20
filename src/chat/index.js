@@ -9,7 +9,7 @@ module.exports = {
   ...require('./runtime-store'),
   ...require('./turn-lifecycle'),
   ...require('./provider-attempt-runtime'),
-  ...require('./provider-invocation'),
+  ...require('../native/runtime').providerInvocation,
   ...require('./host-coordinator'),
   ...require('./host-runtime'),
   ...require('./finalize-plan'),
