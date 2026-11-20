@@ -1075,6 +1075,8 @@ function createOrchestrationRuntime({
         return failed;
       }
       deliveryOutcome = { accepted: true, durable: true };
+      const handoff = await sessionScheduler.confirmHandoff(item);
+      if (handoff) return handoff;
       const acknowledged = await acknowledgeDelivery(item);
       if (acknowledged.ok) await sessionScheduler.started(item);
       return acknowledged;

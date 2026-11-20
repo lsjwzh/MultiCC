@@ -29,7 +29,7 @@ fn valid_fact_id(id: &str) -> bool {
         })
 }
 impl TaskStore {
-    fn ensure_no_writer_leases(&self, workspace: &str) -> Result<()> {
+    pub(super) fn ensure_no_writer_leases(&self, workspace: &str) -> Result<()> {
         if workspace.is_empty() {
             return Err("workspace_release_identity_required".into());
         }

@@ -11,6 +11,7 @@ use multicc_core::{
     quota_guard, random_id,
     session_records::{self, SessionDirectory},
     state_file,
+    task_shell::chat::Rejection,
     task_store::TaskStore,
 };
 use sha2::{Digest, Sha256};
@@ -37,6 +38,18 @@ pub fn lookup<'a>(records: &'a [V], session: &str) -> Option<&'a V> {
     records
         .iter()
         .rfind(|row| matches!(row.get("id"), Some(V::String(id)) if id == session))
+}
+
+pub fn update_record(root: &Path, session: &str, apply: impl FnOnce(&mut V)) -> Result<V, String> {
+    let mut all = records(root)?;
+    let record = all
+        .iter_mut()
+        .rfind(|row| matches!(row.get("id"), Some(V::String(id)) if id == session))
+        .ok_or("chat session disappeared before update")?;
+    apply(record);
+    let record = record.clone();
+    durable_state::save(&root.join("sessions.json"), "sessions", &V::Array(all))?;
+    Ok(record)
 }
 
 fn transcript_stem(session: &str) -> Result<(), String> {
@@ -74,17 +87,11 @@ pub fn shell_history(
     session: &str,
     archive: bool,
 ) -> Result<Vec<V>, String> {
-    let same_directory = |id: &str, directory: Option<&serde_json::Value>| {
-        lookup(all, id).is_some_and(|record| {
-            record.get("taskExecutionSlot") != Some(&V::Bool(true))
-                && record.get("dirId").map(js::to_serde).as_ref() == directory
-        })
-    };
     TaskStore::with_chat_scope(
         &root.join("task-shells.sqlite"),
         shell_id,
         session,
-        same_directory,
+        |id, directory| session_in_directory(all, id, directory),
         |store, session_ids| {
             let history_root = root.join("chat_history");
             let mut messages = Vec::new();
@@ -130,6 +137,31 @@ pub fn shell_history(
             }
             Ok(messages)
         },
+    )
+}
+
+fn session_in_directory(all: &[V], id: &str, directory: Option<&serde_json::Value>) -> bool {
+    lookup(all, id).is_some_and(|record| {
+        record.get("taskExecutionSlot") != Some(&V::Bool(true))
+            && record.get("dirId").map(js::to_serde).as_ref() == directory
+    })
+}
+
+pub fn replay_shell_input(
+    root: &Path,
+    shell: Option<&str>,
+    session: &str,
+    shared: bool,
+    message: &V,
+) -> Result<Option<V>, Rejection> {
+    let all = records(root).map_err(|error| Rejection::state("task_shell_failed", error))?;
+    TaskStore::replay_chat_input(
+        &root.join("task-shells.sqlite"),
+        shell,
+        session,
+        shared,
+        |id, directory| session_in_directory(&all, id, directory),
+        message,
     )
 }
 

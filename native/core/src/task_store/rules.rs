@@ -4,13 +4,13 @@ use sha2::{Digest, Sha256};
 fn hash(v: &Value) -> String {
     format!("{:x}", Sha256::digest(v.to_string().as_bytes()))
 }
-fn fail(code: &str, message: &str, status: u16) -> String {
+pub(super) fn fail(code: &str, message: &str, status: u16) -> String {
     format!(
         "TASK_RULE:{}",
         json!({"code":code,"message":message,"status":status})
     )
 }
-fn conflict(code: &str) -> String {
+pub(super) fn conflict(code: &str) -> String {
     fail(code, code, 409)
 }
 fn client(v: &Value) -> bool {
@@ -105,6 +105,14 @@ fn owner_from(t: &Value, link: &Value, records: &Value, task_first: bool) -> Val
     }
 }
 impl TaskStore {
+    pub(super) fn directory_task_count(&self, directory: &Value) -> Result<usize> {
+        Ok(self
+            .rows("task", true)?
+            .iter()
+            .filter(|(_, _, task)| &task["dirId"] == directory)
+            .count())
+    }
+
     fn owner_plan(&mut self, t: &Value, records: &Value, task_first: bool) -> Result<Value> {
         let link = if truth(&t["ownerShellId"]) {
             Value::Null
@@ -193,11 +201,33 @@ impl TaskStore {
         }
         Ok(json!(id))
     }
+
+    pub(super) fn snapshot_role(&mut self, task: &str, facts: &Value) -> Result<Value> {
+        let role = self.current_role(task, facts)?;
+        if self.get("task-role:binding", task)?.is_null() {
+            self.put("task-role:binding", task, &role)?;
+        }
+        self.materialize_role(&role)
+    }
+
+    pub(super) fn verified_role(&self, id: &str, task: &str) -> Result<Value> {
+        let snapshot = self.get("task-role:snapshot", id)?;
+        let value = json!({"taskId":snapshot["taskId"],"version":snapshot["version"],"bindings":snapshot["bindings"]});
+        if (!task.is_empty() && snapshot["taskId"] != task)
+            || snapshot["id"] != format!("role_{}", hash(&value))
+        {
+            return Ok(Value::Null);
+        }
+        Ok(snapshot)
+    }
+
     pub(super) fn rule(&mut self, v: &Value) -> Result<Value> {
         let action = text(&v["action"]);
         let id = text(&v["taskId"]);
         let input = &v["input"];
         match action {
+            "reserveReceipt" => self.reserve_receipt(v),
+            "settleReceipt" => self.settle_receipt(v),
             "ownerPlan" => self.owner_plan(&v["task"], &v["records"], v["taskFirst"] == true),
             "taskAccess" => Ok(task_access(&v["task"], &v["owner"], &v["lifecycle"])),
             // 一次算出整页卡片的权限：读投影只读不写。需要补写任务壳（新建或回填
@@ -216,28 +246,9 @@ impl TaskStore {
                 let result=json!({"taskId":id,"version":previous["version"].as_u64().unwrap_or(0)+1,"bindings":bindings});s.put("task-role:binding",id,&result)?;s.put("task-role:change",&change,&json!({"id":change,"fingerprint":fingerprint,"previous":previous,"result":result,"createdAt":v["now"]}))?;Ok(result)
             })
             }
-            "roleSnapshot" => self.atomic(|s| {
-                let value = s.current_role(id, v)?;
-                if s.get("task-role:binding", id)?.is_null() {
-                    s.put("task-role:binding", id, &value)?;
-                }
-                s.materialize_role(&value)
-            }),
+            "roleSnapshot" => self.atomic(|s| s.snapshot_role(id, v)),
             "roleMaterialize" => self.atomic(|s| s.materialize_role(&v["value"])),
-            "roleVerify" => {
-                let snapshot = self.get("task-role:snapshot", text(&v["id"]))?;
-                let value = json!({"taskId":snapshot["taskId"],"version":snapshot["version"],"bindings":snapshot["bindings"]});
-                Ok(
-                    if snapshot.is_null()
-                        || (!id.is_empty() && snapshot["taskId"] != id)
-                        || snapshot["id"] != format!("role_{}", hash(&value))
-                    {
-                        Value::Null
-                    } else {
-                        snapshot
-                    },
-                )
-            }
+            "roleVerify" => self.verified_role(text(&v["id"]), id),
             "roleInherit" => self.atomic(|s| {
                 let source = s.current_role(text(&v["sourceTaskId"]), v)?;
                 let value =
@@ -252,15 +263,11 @@ impl TaskStore {
                 Ok(value)
             }),
             "directoryCount" | "directoryCapacity" => {
-                let count = self
-                    .rows("task", true)?
-                    .iter()
-                    .filter(|(_, _, t)| t["dirId"] == v["dirId"])
-                    .count();
+                let count = self.directory_task_count(&v["dirId"])?;
                 Ok(if action == "directoryCount" {
                     json!(count)
                 } else {
-                    json!(count >= 1024)
+                    json!(count >= MAX_TASKS_PER_DIRECTORY)
                 })
             }
             "relationList" => {

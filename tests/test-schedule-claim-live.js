@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -161,12 +162,20 @@ test('schedule claim persists through SQLite and rolls back on database write fa
   const store = createOrchestrationSqliteStore({ file, now: () => 100 });
   const db = new Database(file);
   t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
+  const leaseToken = 'fixture-lease';
+  const leaseTokenHash = createHash('sha256').update(leaseToken).digest('hex');
   await store.mutate(draft => {
-    draft.outbox.e = { id: 'e', sessionId: 's', state: 'leased', sequence: 1, attempts: 1, payload: { type: 'session.work' } };
+    draft.outbox.e = { id: 'e', sessionId: 's', state: 'leased', sequence: 1, attempts: 1,
+      leasedUntil: 200, leaseTokenHash, payload: { type: 'session.work', taskId: 'stored-task', message: 'durable message' } };
   });
   const scheduler = createSessionWorkScheduler({ store, now: () => 100 });
-  const item = { id: 'e', sessionId: 's', attempts: 1, payload: { type: 'session.work' } };
+  const item = { id: 'e', sessionId: 's', leaseToken, attempts: 57, payload: { type: 'session.work', taskId: 'stale-task' } };
   const before = await store.snapshot();
+  assert.deepEqual(await scheduler.claim({ ...item, leaseToken: 'outdated' }), { ok: false, code: 'delivery_not_leased' });
+  assert.deepEqual(await scheduler.claim({ ...item, sessionId: 'other' }), { ok: false, code: 'delivery_not_leased' });
+  const expired = createSessionWorkScheduler({ store, now: () => 200 });
+  assert.deepEqual(await expired.claim(item), { ok: false, code: 'delivery_not_leased' });
+  assert.deepEqual(await store.snapshot(), before);
   db.exec("CREATE TRIGGER fail_schedule BEFORE INSERT ON orchestration_session_schedules BEGIN SELECT RAISE(ABORT,'blocked schedule'); END");
   await assert.rejects(scheduler.claim(item), /blocked schedule/);
   assert.deepEqual(await store.snapshot(), before);
@@ -176,4 +185,18 @@ test('schedule claim persists through SQLite and rolls back on database write fa
   const snapshot = await store.snapshot();
   assert.equal(snapshot.sessionSchedules.s.state, 'starting');
   assert.equal(snapshot.sessionSchedules.s.active.deliveryId, 'e');
+  assert.equal(snapshot.sessionSchedules.s.active.taskId, 'stored-task');
+  assert.equal(snapshot.sessionSchedules.s.active.attempt, 1);
+  db.exec("CREATE TRIGGER fail_start BEFORE UPDATE ON orchestration_session_schedules BEGIN SELECT RAISE(ABORT,'blocked start'); END");
+  await assert.rejects(scheduler.confirmHandoff(item), /blocked start/);
+  assert.deepEqual(await store.snapshot(), snapshot, 'delivery acknowledgement rolls back with the start');
+  db.exec('DROP TRIGGER fail_start');
+  const acknowledged = await scheduler.confirmHandoff(item);
+  assert.equal(acknowledged.ok, true);
+  assert.equal(acknowledged.item.leaseTokenHash, undefined);
+  const after = await store.snapshot();
+  assert.equal(after.sessionSchedules.s.state, 'running');
+  assert.equal(after.outbox.e.state, 'delivered');
+  assert.equal(after.outbox.e.payload.message, undefined);
+  assert.deepEqual(after.outbox.e.payload.messageRef, { sessionId: 's', deliveryId: 'e' });
 });

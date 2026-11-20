@@ -11,10 +11,10 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn field(value: &JsValue, name: &str) -> JsValue {
+pub(super) fn field(value: &JsValue, name: &str) -> JsValue {
     value.get(name).cloned().unwrap_or(JsValue::Undefined)
 }
-fn fallback(value: JsValue, otherwise: JsValue) -> JsValue {
+pub(super) fn fallback(value: JsValue, otherwise: JsValue) -> JsValue {
     if truthy(&value) {
         value
     } else {
@@ -28,7 +28,7 @@ fn nullish(value: JsValue) -> JsValue {
         value
     }
 }
-fn put(value: &mut JsValue, key: &str, replacement: JsValue) -> Result<()> {
+pub(super) fn put(value: &mut JsValue, key: &str, replacement: JsValue) -> Result<()> {
     let JsValue::Object(fields) = value else {
         return Err(err("session work object required"));
     };
@@ -75,7 +75,7 @@ fn initialize_missing_state(
     let initial = required_initial_state(input)?;
     session_work_state::initialize_in_transaction(tx, session, &initial)
 }
-fn is(value: &JsValue, text: &str) -> bool {
+pub(super) fn is(value: &JsValue, text: &str) -> bool {
     value == &JsValue::string(text)
 }
 fn is_control(value: &JsValue) -> bool {
@@ -90,7 +90,7 @@ fn is_control(value: &JsValue) -> bool {
     .iter()
     .any(|text| is(value, text))
 }
-fn kind(item: &JsValue) -> JsValue {
+pub(super) fn kind(item: &JsValue) -> JsValue {
     let transfer = field(&field(item, "turnLineage"), "workKind");
     if truthy(&transfer) {
         return transfer;
@@ -159,7 +159,7 @@ fn client_id(item: &JsValue) -> JsValue {
         _ => JsValue::Null,
     }
 }
-fn task_id(item: &JsValue) -> JsValue {
+pub(super) fn task_id(item: &JsValue) -> JsValue {
     let lineage = field(&field(item, "turnLineage"), "taskId");
     if truthy(&lineage) {
         return lineage;
@@ -169,6 +169,37 @@ fn task_id(item: &JsValue) -> JsValue {
         return JsValue::Null;
     }
     fallback(field(&payload, "taskId"), JsValue::Null)
+}
+pub(super) fn initial_schedule(session: &str, at: f64) -> JsValue {
+    crate::js::from_serde(&json!({
+        "sessionId":session,"state":"idle","freezeReason":null,"awaitingRequestId":null,
+        "classifyState":null,"classifyStateAt":null,"priorityEntryId":null,"active":null,
+        "lastDecision":null,"updatedAt":at
+    }))
+}
+
+pub(super) fn related_control(schedule: &JsValue, active: &JsValue, item: &JsValue) -> bool {
+    let work_kind = kind(item);
+    if !is_control(&work_kind) {
+        return false;
+    }
+    let payload = field(item, "payload");
+    let typ = field(&payload, "type");
+    if is(&typ, "session.work") {
+        return true;
+    }
+    let entry = field(&payload, "activeEntryId");
+    let task = field(&payload, "taskId");
+    let active_task = field(active, "taskId");
+    let task_mismatch = !is(&typ, "task.interrupted")
+        && !is(&typ, "dispatch.result")
+        && truthy(&task)
+        && truthy(&active_task)
+        && task != active_task;
+    let request = field(schedule, "awaitingRequestId");
+    let request_mismatch =
+        is(&work_kind, "answer") && truthy(&request) && field(&payload, "requestId") != request;
+    (!truthy(&entry) || entry == field(active, "entryId")) && !task_mismatch && !request_mismatch
 }
 fn rank(item: &JsValue) -> f64 {
     match field(item, "queueOrder") {
@@ -455,11 +486,7 @@ pub(super) fn reorder(store: &mut Store, input: &Value) -> Result<Value> {
     let schedule_missing = prior_schedule.is_none();
     let mut schedule = match prior_schedule {
         Some(raw) => record::parse(&raw)?,
-        None => crate::js::from_serde(
-            &json!({"sessionId":session,"state":"idle","freezeReason":null,
-            "awaitingRequestId":null,"classifyState":null,"classifyStateAt":null,"priorityEntryId":null,
-            "active":null,"lastDecision":null,"updatedAt":ensured_at}),
-        ),
+        None => initial_schedule(session, ensured_at as f64),
     };
     let active = field(&schedule, "active");
     let rejected = if field(&active, "entryId") == JsValue::string(entry)
@@ -826,6 +853,14 @@ fn complete_inner(
         return Ok(json!({"resultJson":json!({"ok":false,"code":code}).to_string()}));
     }
     let completed = field(&schedule, "active");
+    if let Some(delivery) = input["expectedDeliveryId"].as_str() {
+        if !is(&field(&completed, "deliveryId"), delivery)
+            || js_to_number(&field(&completed, "attempt"))
+                != input["expectedAttempt"].as_f64().unwrap_or(f64::NAN)
+        {
+            return Ok(json!({"resultJson":r#"{"ok":false,"code":"active_delivery_mismatch"}"#}));
+        }
+    }
     let task = field(&completed, "taskId");
     if revision >= 9_007_199_254_740_991 {
         return Err(err("schedule revision exhausted"));
@@ -1011,7 +1046,7 @@ fn allowed(item: &JsValue, class: &JsValue) -> bool {
     set.iter().any(|name| is(&k, name))
 }
 
-fn select(
+pub(super) fn select(
     queue: &[JsValue],
     schedule: &JsValue,
     pending: &JsValue,
@@ -1152,29 +1187,7 @@ fn select(
         return Ok(field(item, "id"));
     }
     for item in eligible {
-        let payload = field(item, "payload");
-        if !is_control(&kind(item)) {
-            continue;
-        }
-        let typ = field(&payload, "type");
-        let related = if is(&typ, "session.work") {
-            true
-        } else {
-            let entry = field(&payload, "activeEntryId");
-            let task = field(&payload, "taskId");
-            let task_mismatch = !is(&typ, "task.interrupted")
-                && !is(&typ, "dispatch.result")
-                && truthy(&task)
-                && truthy(&field(&active, "taskId"))
-                && task != field(&active, "taskId");
-            let request_mismatch = is(&kind(item), "answer")
-                && truthy(&field(schedule, "awaitingRequestId"))
-                && field(&payload, "requestId") != field(schedule, "awaitingRequestId");
-            (!truthy(&entry) || entry == field(&active, "entryId"))
-                && !task_mismatch
-                && !request_mismatch
-        };
-        if related && allowed(item, &class) {
+        if related_control(schedule, &active, item) && allowed(item, &class) {
             return Ok(field(item, "id"));
         }
     }
@@ -1286,11 +1299,7 @@ pub(super) fn commit(store: &mut Store, input: &Value) -> Result<Value> {
     };
     let mut schedule = match record::get_json(&tx, "sessionSchedules", &session, &[])? {
         Some(raw) => record::parse(&raw)?,
-        None => crate::js::from_serde(
-            &json!({"sessionId":session,"state":"idle","freezeReason":null,
-            "awaitingRequestId":null,"classifyState":null,"classifyStateAt":null,"priorityEntryId":null,
-            "active":null,"lastDecision":null,"updatedAt":now}),
-        ),
+        None => initial_schedule(&session, now as f64),
     };
     if !matches!(schedule, JsValue::Object(_))
         || field(&schedule, "sessionId") != JsValue::string(&session)

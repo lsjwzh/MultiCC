@@ -4,7 +4,9 @@
 mod auth;
 mod frames;
 mod launch;
+mod provider;
 mod route;
+mod shell;
 mod store;
 
 pub use auth::ConnectionRequest;
@@ -59,16 +61,19 @@ struct Session {
     stored: Stored,
     native_started: bool,
     active: Option<Active>,
+    shell_worker: bool,
 }
 
 #[derive(Clone, Copy)]
-struct ShellRoute {
+struct ShellRoute<'a> {
     required: bool,
-    explicit: bool,
+    id: Option<&'a str>,
 }
 
 struct Active {
     id: String,
+    task: Option<String>,
+    delivery: Option<String>,
     route: route::Route,
     start: Instant,
     cancel: Option<oneshot::Sender<()>>,
@@ -116,6 +121,7 @@ impl Host {
                     stored,
                     native_started,
                     active: None,
+                    shell_worker: false,
                 })))
             })
             .await?;
@@ -134,14 +140,21 @@ impl Host {
         }
     }
 
-    fn route(&self, turn: &str, record: &V) -> Result<route::Route, (&'static str, String)> {
+    fn route(
+        &self,
+        turn: &str,
+        record: &V,
+        provider: Option<&provider::Provider>,
+    ) -> Result<route::Route, (&'static str, String)> {
         if self.epoch.get().is_none() {
             let _ = self.epoch.set(new_id("rt")?);
         }
         let epoch = self.epoch.get().expect("route epoch installed");
         let generation = self.route_generation.fetch_add(1, Ordering::Relaxed) + 1;
         let attempt = new_id("attempt")?;
-        Ok(route::Route::new(epoch, turn, &attempt, generation, record))
+        Ok(route::Route::new(
+            epoch, turn, &attempt, generation, record, provider,
+        ))
     }
 }
 
@@ -255,10 +268,11 @@ where
         })
         .unwrap_or_default();
     let shell_route = ShellRoute {
-        explicit: request.shell.is_some(),
+        id: request.shell.as_deref(),
         required: request.shell.is_some()
             || record.is_some_and(|record| js::truthy_opt(record.get("taskBoundTaskId"))),
     };
+    let bound_task = record.and_then(|record| optional_text(record, "taskBoundTaskId"));
     let kind = record
         .and_then(|record| record.get("kind"))
         .unwrap_or(&V::Undefined);
@@ -269,7 +283,7 @@ where
         kind,
         None,
     );
-    let shell_history = if let Some(shell_id) = request.shell {
+    let shell_history = if let Some(shell_id) = request.shell.clone() {
         let history = if permission.is_empty() {
             let root = app.data_root.clone();
             let id = id.to_owned();
@@ -328,16 +342,21 @@ where
             return;
         };
         let frames = frames::initial_frames(
-            &app.native_chat.hub,
+            &app,
             id,
             &state,
             &attached,
             request.archive,
             shell_history,
             shell_route.required,
-        );
+        )
+        .await;
         (attached, frames)
     };
+    let resume_queue = queue.as_ref().is_ok_and(|frame| {
+        store::text(frame, "state") == "idle"
+            && matches!(frame.get("items"), Some(V::Array(items)) if !items.is_empty())
+    });
     let queue = match queue {
         Ok(queue) => wire(&queue),
         Err(error) => {
@@ -348,6 +367,11 @@ where
     for frame in frames.into_iter().chain(queue) {
         if !send_message(&mut socket, Message::Text(frame.into())).await {
             return;
+        }
+    }
+    if permission.is_empty() && resume_queue {
+        if let Some(task) = bound_task {
+            shell::wake(&app, id, &session, task).await;
         }
     }
     let mut ping =
@@ -371,12 +395,12 @@ where
             }
             frame = socket.next() => match frame {
                 Some(Ok(Message::Text(text))) => {
-                    if let Ok(message) = serde_json::from_str::<Value>(&text) {
+                    if let Ok(message) = js::json_parse(&text) {
                         input(&app, id, &session, attached.connection.id, &permission, message, shell_route).await;
                     }
                 }
                 Some(Ok(Message::Binary(data))) => {
-                    if let Ok(message) = serde_json::from_slice::<Value>(&data) {
+                    if let Some(message) = std::str::from_utf8(&data).ok().and_then(|text| js::json_parse(text).ok()) {
                         input(&app, id, &session, attached.connection.id, &permission, message, shell_route).await;
                     }
                 }
@@ -416,11 +440,12 @@ async fn input(
     session: &Arc<Mutex<Session>>,
     connection: u64,
     permission: &str,
-    message: Value,
-    shell_route: ShellRoute,
+    message: V,
+    shell_route: ShellRoute<'_>,
 ) {
     let host = &app.native_chat;
-    let kind = message["type"].as_str().unwrap_or("");
+    let kind = store::text(&message, "type");
+    let kind = kind.as_str();
     match chat_ws_control::action(kind, permission) {
         chat_ws_control::Action::Pong => {
             host.send(connection, value(json!({"type":"pong"})));
@@ -429,14 +454,14 @@ async fn input(
         chat_ws_control::Action::Ignore => return,
         chat_ws_control::Action::Continue => {}
     }
-    let prompt = message["text"].as_str().filter(|text| !text.is_empty());
+    let prompt = store::optional_text(&message, "text");
     use chat_ws_control::Command;
     let command = chat_ws_control::command(
         kind,
         permission,
-        shell_route.required,
-        shell_route.explicit,
-        message["taskShell"] == true,
+        shell_route.required || message.get("taskShell") == Some(&V::Bool(true)),
+        shell_route.id.is_some(),
+        message.get("taskShell") == Some(&V::Bool(true)),
         prompt.is_some(),
     );
     match command {
@@ -455,20 +480,51 @@ async fn input(
             host.send(connection, frames::require_shell_route(id));
         }
         Command::RouteShellInput => {
-            host.send(
-                connection,
-                error_frame(
-                    "chat_route_unavailable",
-                    "Task shell delivery is unavailable",
-                ),
-            );
+            use multicc_core::task_shell::chat::Rejection;
+            let client_id = property(&message, "clientMsgId");
+            let root = app.data_root.clone();
+            let shell = shell_route.id.map(ToOwned::to_owned);
+            let execution = id.to_owned();
+            let shared = !permission.is_empty();
+            let input_message = message.clone();
+            let replay = tokio::task::spawn_blocking(move || {
+                store::replay_shell_input(&root, shell.as_deref(), &execution, shared, &message)
+            })
+            .await;
+            let frame = match replay {
+                Ok(Ok(Some(frame))) => frame,
+                Ok(Err(error)) => error.frame(client_id),
+                Err(error) => {
+                    Rejection::state("task_shell_failed", error.to_string()).frame(client_id)
+                }
+                Ok(Ok(None)) => shell::submit(app, id, session, shell_route, &input_message).await,
+            };
+            let queued_task = if kind != "cancel"
+                && frame.get("type") == Some(&V::from("task_shell_routed"))
+                && optional_text(&frame, "sessionId").as_deref() == Some(id)
+            {
+                optional_text(&frame, "taskId")
+            } else {
+                None
+            };
+            host.send(connection, frame);
+            if let Some(task) = queued_task {
+                shell::wake(app, id, session, task).await;
+            }
         }
         Command::Message => {
             let prompt = prompt.expect("message command requires a prompt");
-            if chat_ws_control::is_legacy_cancel(prompt) {
+            if chat_ws_control::is_legacy_cancel(&prompt) {
                 cancel_active(session).await;
-            } else if let Err((code, message)) =
-                admit(app, id, session, connection, prompt, &message).await
+            } else if let Err((code, message)) = admit(
+                app,
+                id,
+                session,
+                connection,
+                &prompt,
+                &js::to_serde(&message),
+            )
+            .await
             {
                 host.send(connection, error_frame(code, &message));
             }
@@ -503,7 +559,7 @@ async fn admit(
             return Ok(());
         }
     }
-    if state.active.is_some() {
+    if state.active.is_some() || state.shell_worker {
         return Err((
             "session_busy",
             "A turn is already running for this session".into(),
@@ -517,8 +573,6 @@ async fn admit(
         ));
     }
     if [
-        "provider",
-        "providerSelection",
         "subagent",
         "taskBoundTaskId",
         "experimentalMode",
@@ -543,29 +597,91 @@ async fn admit(
             "Chat message exceeds the input limit".into(),
         ));
     }
+    let launched = prepare_turn(app, id, &mut state, prompt, client_id, None).await?;
+    let app = Arc::clone(app);
+    let prompt = prompt.to_owned();
+    let session = Arc::clone(session);
+    let id = id.to_owned();
+    tokio::spawn(async move {
+        let _ = run_turn(&app, &id, &session, launched, &prompt, None).await;
+    });
+    Ok(())
+}
+
+struct RunningTurn {
+    options: multicc_core::claude_process::StartInput,
+    turn_id: String,
+    attempt_id: String,
+    prompt_uuid: String,
+    cancelled: oneshot::Receiver<()>,
+    provider_proxy: Option<provider::Proxy>,
+}
+
+async fn prepare_turn(
+    app: &App,
+    id: &str,
+    state: &mut Session,
+    prompt: &str,
+    client_id: Option<&str>,
+    delivery: Option<&shell::Delivery>,
+) -> Result<RunningTurn, (&'static str, String)> {
     let (turn_id, message_id, prompt_uuid) = (
         new_id("turn")?,
         new_id("m")?,
         random_id::random_uuid_v4().map_err(|error| ("internal_error", error.to_string()))?,
     );
-    let options = launch::launch_options(app, &state);
-    let route = app.native_chat.route(&turn_id, record)?;
+    let mut options = launch::launch_options(state);
+    let provider = provider::Provider::load(&app.data_root, &state.stored.record)
+        .await
+        .map_err(|error| ("chat_provider_unavailable", error))?;
+    let route = app
+        .native_chat
+        .route(&turn_id, &state.stored.record, provider.as_ref())?;
+    let provider_proxy = match provider {
+        Some(provider) => Some(
+            provider
+                .open(&mut options.launch, id)
+                .await
+                .map_err(|error| ("chat_provider_unavailable", error.to_string()))?,
+        ),
+        None => None,
+    };
     let mut user = value(
         json!({"role":"user", "content":prompt, "ts":auth_runtime::now_ms(), "turnId":turn_id}),
     );
     if let Some(client_id) = client_id {
         quota_guard::set(&mut user, "clientMsgId", V::from(client_id));
     }
+    if let Some(delivery) = delivery {
+        quota_guard::set(&mut user, "taskId", V::from(delivery.task.as_str()));
+        quota_guard::set(&mut user, "deliveryId", V::from(delivery.entry.as_str()));
+        quota_guard::set(&mut user, "taskStart", V::Bool(true));
+        quota_guard::set(&mut user, "taskSource", V::from("task-shell"));
+        quota_guard::set(&mut user, "taskText", V::from(prompt));
+        if let Some(role) = delivery.role_prompt.as_ref() {
+            options.launch.system_prompt_append = Some(role.to_owned());
+        }
+    }
     quota_guard::set(&mut user, "id", V::from(message_id));
     save_row(&mut state.stored, user.clone())
         .await
         .map_err(|message| ("message_not_durable", message))?;
-    let host = Arc::clone(&app.native_chat);
+    if let Some(delivery) = delivery {
+        delivery
+            .handoff()
+            .await
+            .map_err(|message| ("chat_handoff_failed", message))?;
+    }
+    let host = &app.native_chat;
     host.publish(id, metadata(&user), false);
     let (cancel, cancelled) = oneshot::channel();
-    let selected = route.event(id, "selected", "none");
+    let mut selected = route.event(id, "selected", "none");
+    quota_guard::set(&mut selected, "reasonCode", V::from("route_resolved"));
+    let attempt_id = store::text(&route.scope, "routeAttemptId");
     state.active = Some(Active {
         id: turn_id.clone(),
+        task: delivery.map(|delivery| delivery.task.clone()),
+        delivery: delivery.map(|delivery| delivery.entry.clone()),
         route,
         start: Instant::now(),
         cancel: Some(cancel),
@@ -576,29 +692,69 @@ async fn admit(
         error: None,
     });
     host.hub.clear_replay(id);
+    let turn = state.active.as_ref().expect("installed turn");
+    if turn.task.is_some() {
+        host.publish(id, turn.attribute(frames::notify("running", prompt)), false);
+    }
     host.publish(
         id,
-        value(json!({"type":"stream_start","turnId":turn_id})),
+        turn.attribute(value(json!({"type":"stream_start","turnId":turn_id}))),
         false,
     );
-    host.publish(id, selected, false);
-    let prompt = prompt.to_owned();
-    let session = Arc::clone(session);
-    let id = id.to_owned();
-    tokio::spawn(async move {
-        let outcome = chat_turn_host::run(options, &prompt, &prompt_uuid, cancelled, |event| {
-            let (host, session, id, turn_id) = (
-                Arc::clone(&host),
-                Arc::clone(&session),
-                id.clone(),
-                turn_id.clone(),
-            );
-            async move { observe(&host, &id, &session, &turn_id, event).await }
-        })
-        .await;
-        finish(&host, &id, &session, &turn_id, outcome).await;
-    });
-    Ok(())
+    host.publish(id, turn.attribute(selected), false);
+    Ok(RunningTurn {
+        options,
+        turn_id,
+        attempt_id,
+        prompt_uuid,
+        cancelled,
+        provider_proxy,
+    })
+}
+
+async fn run_turn(
+    app: &App,
+    id: &str,
+    session: &Mutex<Session>,
+    launched: RunningTurn,
+    prompt: &str,
+    scheduled: Option<(&shell::Writer, &shell::Delivery)>,
+) -> TurnEnd {
+    let host = &app.native_chat;
+    let turn_id = launched.turn_id.as_str();
+    let attempt_id = launched.attempt_id.as_str();
+    let result = chat_turn_host::run(
+        launched.options,
+        prompt,
+        &launched.prompt_uuid,
+        launched.cancelled,
+        |event| observe(host, id, session, turn_id, event),
+        |pid| async move {
+            if let Some((writer, delivery)) = scheduled {
+                writer.started(pid, turn_id, attempt_id, delivery).await?;
+            }
+            Ok(())
+        },
+    )
+    .await;
+    drop(launched.provider_proxy);
+    let usage_durable = matches!(&result.outcome, chat_turn_host::Outcome::Result(event) if event["usage"].is_object());
+    let phase = finish(app, id, session, &launched.turn_id, result.outcome).await;
+    TurnEnd {
+        id: launched.turn_id,
+        attempt: launched.attempt_id,
+        phase,
+        stopped: result.writer_stopped,
+        usage_durable: usage_durable && phase == "succeeded",
+    }
+}
+
+struct TurnEnd {
+    id: String,
+    attempt: String,
+    phase: &'static str,
+    stopped: bool,
+    usage_durable: bool,
 }
 
 fn new_id(prefix: &str) -> Result<String, (&'static str, String)> {
@@ -648,14 +804,30 @@ fn metadata(row: &V) -> V {
             ("content", property(row, "content")),
             ("ts", property(row, "ts")),
         ];
-        for field in ["clientMsgId", "turnId"] {
+        for field in ["clientMsgId", "turnId", "taskId", "taskShortCode"] {
             if let Some(V::String(text)) = row.get(field) {
                 committed.push((field, V::String(text.truncate_units(160))));
             }
         }
         props.push(("message", V::object(committed)));
     }
+    if let Some(task) = row.get("taskId") {
+        props.push(("taskId", task.clone()));
+    }
     V::object(props)
+}
+
+impl Active {
+    fn attribute(&self, mut frame: V) -> V {
+        if let Some(task) = self.task.as_deref() {
+            quota_guard::set(&mut frame, "taskId", V::from(task));
+        }
+        frame
+    }
+
+    fn attempt_frame(&self, frame: V) -> V {
+        self.attribute(self.route.tag(frame))
+    }
 }
 
 async fn observe(host: &Host, id: &str, session: &Mutex<Session>, turn_id: &str, mut event: Value) {
@@ -717,7 +889,7 @@ async fn observe(host: &Host, id: &str, session: &Mutex<Session>, turn_id: &str,
         Some(_) => {}
         None => return,
     }
-    host.publish(id, turn.route.tag(value(event)), true);
+    host.publish(id, turn.attempt_frame(value(event)), true);
 }
 
 fn append_text(text: &mut String, extra: &str) {
@@ -729,18 +901,19 @@ fn append_text(text: &mut String, extra: &str) {
 }
 
 async fn finish(
-    host: &Host,
+    app: &App,
     id: &str,
     session: &Mutex<Session>,
     turn_id: &str,
     outcome: chat_turn_host::Outcome,
-) {
+) -> &'static str {
     use chat_turn_host::Outcome;
+    let host = &app.native_chat;
     let mut state = session.lock().await;
     if !state.active.as_ref().is_some_and(|turn| turn.id == turn_id) {
-        return;
+        return "failed";
     }
-    let turn = state.active.take().expect("owned turn");
+    let mut turn = state.active.take().expect("owned turn");
     let outcome = if turn.cancel.is_none() {
         Outcome::Cancelled
     } else {
@@ -754,7 +927,7 @@ async fn finish(
         .await
         .unwrap_or(false);
     }
-    let mut content = turn.content;
+    let mut content = std::mem::take(&mut turn.content);
     append_text(&mut content, &turn.delta);
     let fence = if !turn.tools.is_empty() {
         "tool_intent"
@@ -763,6 +936,7 @@ async fn finish(
     } else {
         "none"
     };
+    let mut api_error = V::Null;
     let phase = match outcome {
         Outcome::Result(event)
             if chat_turn_host::completed_result(&event) && turn.error.is_none() =>
@@ -782,9 +956,8 @@ async fn finish(
                 host,
                 id,
                 &mut state,
-                turn_id,
+                &mut turn,
                 content,
-                turn.tools,
                 Some((&cost, &usage)),
             )
             .await
@@ -798,7 +971,7 @@ async fn finish(
                         .count();
                     host.publish(
                         id,
-                        turn.route.tag(V::object(vec![
+                        turn.attempt_frame(V::object(vec![
                             ("type", V::from("result")),
                             ("total_cost_usd", cost),
                             ("usage", usage),
@@ -807,10 +980,11 @@ async fn finish(
                                 V::Number(turn.start.elapsed().as_millis() as f64),
                             ),
                             ("num_turns", V::Number(count as f64)),
+                            ("modelAttribution", turn.route.model_attribution()),
                         ])),
                         false,
                     );
-                    host.publish(id, turn.route.tag(value(event)), false);
+                    host.publish(id, turn.attempt_frame(value(event)), false);
                     "succeeded"
                 }
                 Err(error) => {
@@ -822,6 +996,7 @@ async fn finish(
         Outcome::Result(event) => {
             let detail = turn
                 .error
+                .take()
                 .or_else(|| {
                     event["errors"].as_array().map(|errors| {
                         errors
@@ -834,50 +1009,145 @@ async fn finish(
                 .filter(|error| !error.is_empty())
                 .or_else(|| event["result"].as_str().map(ToOwned::to_owned))
                 .unwrap_or_else(|| "Claude returned a failed result".into());
-            host.publish(
+            if turn.task.is_some() {
+                let safe = api_contract::sanitize(
+                    &V::from(detail.as_str()),
+                    &JsString::from("chat_provider_error"),
+                );
+                host.publish(
+                    id,
+                    turn.attempt_frame(V::object(vec![
+                        ("type", V::from("result")),
+                        (
+                            "subtype",
+                            event["subtype"].as_str().map_or(V::Undefined, V::from),
+                        ),
+                        ("is_error", V::Bool(true)),
+                        ("errors", V::Array(vec![V::String(safe)])),
+                    ])),
+                    false,
+                );
+            }
+            api_error = frames::provider_failure(
+                host,
                 id,
-                turn.route.tag(error_frame("chat_provider_error", &detail)),
-                false,
+                &turn,
+                &detail,
+                event["subtype"].as_str(),
+                fence,
             );
             "failed"
         }
         Outcome::Failed(error) => {
-            host.publish(
-                id,
-                turn.route.tag(error_frame("chat_provider_error", &error)),
-                false,
-            );
+            api_error = frames::provider_failure(host, id, &turn, &error, None, fence);
             "failed"
         }
         Outcome::Cancelled => {
-            if let Err(error) =
-                save_assistant(host, id, &mut state, turn_id, content, turn.tools, None).await
+            if let Err(error) = save_assistant(host, id, &mut state, &mut turn, content, None).await
             {
                 host.publish(id, error_frame("chat_result_not_durable", &error), false);
             }
             "released"
         }
     };
-    host.publish(id, turn.route.event(id, phase, fence), false);
+    if let Some(task) = turn.task.as_deref() {
+        let root = app.data_root.clone();
+        let session_id = id.to_owned();
+        let turn_id = turn_id.to_owned();
+        let task = task.to_owned();
+        let persisted_error = api_error.clone();
+        let auto_route = (phase == "succeeded")
+            .then(|| provider::remembered_route(&state.stored.record, &turn.route))
+            .flatten();
+        let _records = host.records.lock().await;
+        let updated = tokio::task::spawn_blocking(move || {
+            store::update_record(&root, &session_id, |record| {
+                let mut state = record
+                    .get("taskState")
+                    .filter(|state| matches!(state, V::Object(_)))
+                    .cloned()
+                    .unwrap_or_else(|| V::Object(Vec::new()));
+                quota_guard::set(&mut state, "taskId", V::from(task));
+                quota_guard::set(&mut state, "userInputSignalTurnId", V::from(turn_id));
+                quota_guard::set(&mut state, "apiError", persisted_error);
+                if phase == "released" {
+                    quota_guard::set(&mut state, "cancelledAt", V::Number(auth_runtime::now_ms()));
+                    quota_guard::set(&mut state, "cancelReason", V::from("user_cancelled"));
+                } else {
+                    quota_guard::set(&mut state, "cancelledAt", V::Null);
+                    quota_guard::set(&mut state, "cancelReason", V::Null);
+                }
+                quota_guard::set(record, "taskState", state);
+                if let Some(auto_route) = auto_route {
+                    quota_guard::set(record, "autoProviderLastRoute", auto_route);
+                }
+            })
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+        match updated {
+            Ok(record) => {
+                state.stored.record = record;
+                if let Some(frame) = frames::task_state(&state.stored) {
+                    host.publish(id, turn.attribute(frame), false);
+                }
+            }
+            Err(error) => host.publish(
+                id,
+                error_frame("chat_task_state_not_durable", &error),
+                false,
+            ),
+        }
+    }
+    let mut route_event = turn.route.event(id, phase, fence);
+    quota_guard::set(
+        &mut route_event,
+        "errorCategory",
+        api_error.get("category").cloned().unwrap_or(V::Null),
+    );
+    quota_guard::set(&mut route_event, "reasonCode", V::from("finalize"));
+    host.publish(id, turn.attribute(route_event), false);
+    if turn.task.is_some() && phase != "failed" {
+        let goal = state
+            .stored
+            .record
+            .get("taskState")
+            .and_then(|task| optional_text(task, "goal"));
+        host.publish(
+            id,
+            turn.attribute(frames::notify(phase, goal.as_deref().unwrap_or(""))),
+            false,
+        );
+    }
     host.hub.clear_replay(id);
-    host.publish(id, value(json!({"type":"stream_end"})), false);
+    host.publish(
+        id,
+        turn.attribute(value(json!({"type":"stream_end"}))),
+        false,
+    );
+    phase
 }
 
 async fn save_assistant(
     host: &Host,
     id: &str,
     state: &mut Session,
-    turn_id: &str,
+    turn: &mut Active,
     content: String,
-    tools: Vec<Value>,
     result: Option<(&V, &V)>,
 ) -> Result<(), String> {
-    if content.is_empty() && tools.is_empty() {
+    if content.is_empty() && turn.tools.is_empty() && (result.is_none() || turn.delivery.is_none())
+    {
         return Ok(());
     }
     let mut row = value(json!({"role":"assistant","content":content}));
-    if !tools.is_empty() {
-        quota_guard::set(&mut row, "tools", value(json!(tools)));
+    if !turn.tools.is_empty() {
+        quota_guard::set(
+            &mut row,
+            "tools",
+            value(json!(std::mem::take(&mut turn.tools))),
+        );
     }
     if let Some((cost, usage)) = result {
         quota_guard::set(
@@ -890,12 +1160,18 @@ async fn save_assistant(
             },
         );
         quota_guard::set(&mut row, "usage", usage.clone());
+        quota_guard::set(&mut row, "modelAttribution", turn.route.model_attribution());
     } else {
         quota_guard::set(&mut row, "partial", V::Bool(true));
         quota_guard::set(&mut row, "cancelled", V::Bool(true));
     }
     quota_guard::set(&mut row, "ts", V::Number(auth_runtime::now_ms()));
-    quota_guard::set(&mut row, "turnId", V::from(turn_id));
+    quota_guard::set(&mut row, "turnId", V::from(turn.id.as_str()));
+    for (field, value) in [("taskId", &turn.task), ("deliveryId", &turn.delivery)] {
+        if let Some(value) = value {
+            quota_guard::set(&mut row, field, V::from(value.as_str()));
+        }
+    }
     quota_guard::set(
         &mut row,
         "id",

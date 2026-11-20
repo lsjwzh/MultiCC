@@ -268,14 +268,7 @@ function createTaskShellHost(deps) {
     const rt = getRuntime();
     if (shellId) rt.chatScope(shellId, id);
     const shell = shellId ? rt.view(shellId) : open(id);
-    const intent = message.type === 'cancel' ? 'cancel' : message.userInputRequestId ? 'answer' : 'work';
-    const result = await rt.send(shell.id, { text: intent === 'cancel' ? '' : message.text,
-      clientMsgId: message.clientMsgId, taskId: intent === 'work' ? null : rt.owns(id)?.id || shell.currentTaskId, intent,
-      ...(message.unattended && typeof message.unattended === 'object' ? { unattended: message.unattended }
-        : message.goal === true ? { unattended: {} } : {}),
-      ...(message.lang ? { lang: message.lang } : {}),
-      ...(message.inputSource === 'voice' ? { inputSource: 'voice', voiceRaw: message.voiceRaw } : {}),
-      ...(intent !== 'work' ? { turnId: message.turnId, requestId: message.userInputRequestId } : {}) });
+    const result = await rt.sendChatInput(shell.id, message, () => rt.owns(id)?.id || shell.currentTaskId);
     return { ...result, shellId: shell.id, clientMsgId: message.clientMsgId };
   }
   async function sendTaskMessage(id, text, options = {}) {

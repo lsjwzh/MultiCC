@@ -1,10 +1,10 @@
 use super::{optional_text, Session};
 use crate::app::App;
 use multicc_core::{claude_lane::LaunchInput, claude_process::StartInput};
-use serde_json::{Map, Value};
-use std::path::Path;
+use serde_json::{json, Map, Value};
+use std::path::{Path, PathBuf};
 
-pub(super) fn launch_options(app: &App, state: &Session) -> StartInput {
+pub(super) fn launch_options(state: &Session) -> StartInput {
     let record = &state.stored.record;
     let env = std::env::vars()
         .filter(|(key, _)| {
@@ -36,7 +36,7 @@ pub(super) fn launch_options(app: &App, state: &Session) -> StartInput {
         .map(|(key, value)| (key, Value::String(value)))
         .collect::<Map<_, _>>();
     StartInput {
-        binary: claude_binary(&app.package_root),
+        binary: claude_binary(),
         cwd: Some(state.stored.cwd.to_string_lossy().into_owned()),
         launch: LaunchInput {
             session_id: state.stored.native_id.clone(),
@@ -55,35 +55,60 @@ pub(super) fn launch_options(app: &App, state: &Session) -> StartInput {
     }
 }
 
-fn claude_binary(package: &Path) -> String {
+fn claude_binary() -> String {
     if let Ok(command) = std::env::var("MULTICC_CLAUDE_BIN") {
         if !command.trim().is_empty() {
             return command;
         }
     }
-    let os = match std::env::consts::OS {
-        "macos" => "darwin",
-        "windows" => "win32",
-        other => other,
-    };
-    let arch = match std::env::consts::ARCH {
-        "aarch64" => "arm64",
-        "x86_64" => "x64",
-        other => other,
-    };
-    let executable = if cfg!(windows) {
+    if cfg!(windows) {
         "claude.exe"
     } else {
         "claude"
-    };
-    let root = package.join("node_modules/@anthropic-ai");
-    for suffix in ["", "-musl"] {
-        let binary = root
-            .join(format!("claude-agent-sdk-{os}-{arch}{suffix}"))
-            .join(executable);
-        if binary.is_file() {
-            return binary.to_string_lossy().into_owned();
-        }
     }
-    executable.into()
+    .into()
+}
+
+pub(super) async fn init_facts(
+    app: &App,
+    record: &multicc_core::js::JsValue,
+) -> (Option<String>, Value) {
+    let effort = optional_text(record, "effort");
+    let claude = super::store::is_claude(record);
+    let home = app.home_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let effort = if claude {
+            effort
+                .or_else(|| {
+                    ["settings.local.json", "settings.json"]
+                        .iter()
+                        .find_map(|name| {
+                            let raw =
+                                std::fs::read_to_string(home.join(".claude").join(name)).ok()?;
+                            let settings = serde_json::from_str::<Value>(&raw).ok()?;
+                            settings["effort"]
+                                .as_str()
+                                .or_else(|| settings["thinkingEffort"].as_str())
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_ascii_lowercase)
+                        })
+                })
+                .or_else(|| Some("medium".into()))
+        } else {
+            effort
+        };
+        let binary = claude_binary();
+        let path = Path::new(&binary);
+        let available = if path.components().count() > 1 {
+            path.is_file()
+        } else {
+            std::env::var_os("PATH").is_some_and(|paths| {
+                std::env::split_paths(&paths).any(|entry: PathBuf| entry.join(path).is_file())
+            })
+        };
+        (effort, json!({"claude":{"available":available}}))
+    })
+    .await
+    .unwrap_or_default()
 }

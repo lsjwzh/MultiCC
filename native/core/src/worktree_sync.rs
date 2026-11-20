@@ -2,11 +2,12 @@
 //! The caller holds the repository actor lease for the entire operation.
 
 use crate::git_history;
+use fs2::FileExt;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
+    io::{Read, Write},
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -85,6 +86,94 @@ fn git(cwd: &Path, args: &[&str], env: &BTreeMap<String, String>) -> Result<Stri
 
 fn read(cwd: &Path, args: &[&str]) -> Result<String, String> {
     git(cwd, args, &BTreeMap::new()).map(|text| text.trim().to_owned())
+}
+
+/// Called with the durable workspace restore lease held. An interrupted
+/// creation can be reused only after verifying both the branch and repository.
+pub fn materialize_planned(
+    repo: &Path,
+    worktree: &Path,
+    branch: &str,
+    base_ref: &str,
+) -> Result<(String, std::path::PathBuf), String> {
+    let common = |cwd: &Path| -> Result<_, String> {
+        let path = read(cwd, &["rev-parse", "--git-common-dir"])?;
+        fs::canonicalize(cwd.join(path)).map_err(|_| "workspace_repo_unavailable".into())
+    };
+    let repo_common = common(repo)?;
+    if fs::canonicalize(read(repo, &["rev-parse", "--show-toplevel"])?).ok()
+        != Some(repo.to_owned())
+    {
+        return Err("workspace_repo_mismatch".into());
+    }
+    let parent = worktree.parent().ok_or("workspace_path_unresolved")?;
+    fs::create_dir_all(parent).map_err(|_| "workspace_path_unresolved")?;
+    if fs::canonicalize(parent).ok().as_deref() != Some(parent) {
+        return Err("workspace_path_mismatch".into());
+    }
+    exclude_worktree_dir(&repo_common)?;
+    let branch_ref = format!("refs/heads/{branch}");
+    if !worktree
+        .try_exists()
+        .map_err(|_| "workspace_path_unresolved")?
+    {
+        let path = worktree.to_str().ok_or("workspace_path_unresolved")?;
+        let base = read(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{base_ref}^{{commit}}"),
+            ],
+        )?;
+        if read(repo, &["show-ref", "--verify", &branch_ref]).is_ok() {
+            read(repo, &["worktree", "add", "--", path, branch])?;
+        } else {
+            read(repo, &["worktree", "add", "-b", branch, "--", path, &base])?;
+        }
+    }
+    if fs::canonicalize(worktree).ok().as_deref() != Some(worktree)
+        || fs::canonicalize(read(worktree, &["rev-parse", "--show-toplevel"])?)
+            .ok()
+            .as_deref()
+            != Some(worktree)
+        || read(worktree, &["symbolic-ref", "--quiet", "HEAD"])? != branch_ref
+        || common(worktree)? != repo_common
+    {
+        return Err("workspace_identity_conflict".into());
+    }
+    Ok((read(worktree, &["rev-parse", "HEAD"])?, repo_common))
+}
+
+fn exclude_worktree_dir(common_dir: &Path) -> Result<(), String> {
+    let info = common_dir.join("info");
+    let unavailable = |_| "workspace_git_exclude_unavailable".to_owned();
+    fs::create_dir_all(&info).map_err(unavailable)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(info.join("exclude"))
+        .map_err(unavailable)?;
+    FileExt::lock_exclusive(&file).map_err(unavailable)?;
+    let mut existing = Vec::new();
+    file.read_to_end(&mut existing).map_err(unavailable)?;
+    let entry = format!("{}/", crate::docs_memory_routes::WORKTREE_SUBDIR);
+    if !String::from_utf8_lossy(&existing)
+        .lines()
+        .any(|line| line.trim() == entry)
+    {
+        let newline = if existing.is_empty() || existing.ends_with(b"\n") {
+            ""
+        } else {
+            "\n"
+        };
+        file.write_all(format!("{newline}{entry}\n").as_bytes())
+            .map_err(unavailable)?;
+        file.sync_data().map_err(unavailable)?;
+    }
+    Ok(())
 }
 
 fn verify_synced(worktree: &Path, base_oid: &str) -> Result<(), String> {
