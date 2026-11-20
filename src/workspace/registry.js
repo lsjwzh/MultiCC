@@ -23,11 +23,7 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
   const get = (kind, id) => store.get(prefix + kind, id);
   const put = (kind, id, value) => store.set(prefix + kind, id, value);
   // list(kind) 每次都是「整表读 + 逐行 JSON.parse」（见 task-shell/store.js）。这里
-  // 的两张表会被**逐条**问到：容量判定 available() 每张卡片一次，每次都要 lease 全表
-  // 加 record 全表两遍解析。实测一轮 Air 快照调 251 次 = 176ms，占整轮 96%；走行缓存
-  // 后同样 251 次只要 5ms。缓存按 (data_version, 自增写计数) 失效 —— 本进程的写与
-  // 同库第二个连接的提交都算，所以容量判定读到的仍是当下的事实（不变量：acquire
-  // 里先 available() 再写 lease，写让 epoch 变，下一次问必然重读）。
+  // 的两张表用于恢复和快照，复用 Rust 仓储的行版本缓存。
   const list = kind => (store.cachedList ? store.cachedList(prefix + kind) : store.list(prefix + kind));
   function register(input) {
     if (!input.ownerId || !input.dirId || !input.path || !input.branch) throw fail('workspace_identity_missing');
@@ -67,55 +63,25 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
     });
   }
   const leases = () => list('lease').filter(l => ACTIVE.has(l.state));
+  const limits = { executionLimit, residentLimit, restoreLimit };
   function available(workspaceId) {
-    const workspace = get('record', workspaceId);
-    if (!workspace) return 'workspace_not_found';
-    try { store.writerLeaseAssertEmpty(workspaceId); }
-    catch (error) { if (error.code === 'workspace_writer_active') return 'workspace_busy'; throw error; }
-    if (get('lease', workspaceId) && ACTIVE.has(get('lease', workspaceId).state)) return 'workspace_busy';
-    const activeLeases = leases();
-    if (activeLeases.length >= executionLimit) return 'workspace_execution_capacity';
-    if (workspace.residency !== 'resident') {
-      const materializing = activeLeases.filter(l => l.materializing);
-      if (materializing.length >= restoreLimit) return 'workspace_restore_capacity';
-
-      // A resident checkout consumes space in exactly one repository. A busy
-      // project must not prevent an unrelated directory from materializing its
-      // first task, so only the resident budget is directory-scoped. Execution
-      // and restore concurrency remain process-wide resource guards.
-      const residentInDirectory = list('record').filter(w => w.dirId === workspace.dirId
-        && ['resident', 'retained'].includes(w.residency)).length;
-      const materializingInDirectory = materializing.filter(lease => (
-        get('record', lease.workspaceId)?.dirId === workspace.dirId
-      )).length;
-      if (residentInDirectory + materializingInDirectory >= residentLimit) return 'workspace_resident_capacity';
-    }
-    return null;
+    return store.workspaceAvailable({ workspaceId, ...limits });
   }
   function acquire(workspaceId, sessionId, requestId) {
-    if (!requestId) throw fail('workspace_request_required');
-    return store.transaction(() => {
-      const key = hash(sessionId + '\0' + requestId), operation = get('operation', key);
-      if (operation && operation.state !== 'released') throw fail('workspace_launch_unresolved');
-      const code = available(workspaceId); if (code) throw fail(code);
-      const workspace = get('record', workspaceId);
-      const lease = { id: randomUUID(), workspaceId, sessionId, requestId, operationId: key, epoch,
-        state: 'reserved', generation: (operation?.generation || 0) + 1, pid: null,
-        materializing: workspace.residency !== 'resident', acquiredAt: now() };
-      put('lease', workspaceId, lease); put('operation', key, lease);
-      return lease;
-    });
+    try { return store.workspaceAcquire({ workspaceId, sessionId, requestId, epoch, ...limits, now: now() }); }
+    catch (error) {
+      if (error.code?.startsWith('workspace_')) Object.assign(error, { status: 409, backpressure: BACKPRESSURE.has(error.code) });
+      throw error;
+    }
   }
   function transition(lease, state, fields = {}) {
-    return store.transaction(() => {
-      const current = get('lease', lease.workspaceId);
-      if (!current || current.id !== lease.id || current.epoch !== epoch) throw fail('workspace_lease_stale');
-      if (!ACTIVE.has(current.state)) throw fail('workspace_lease_released');
-      if (state === 'released') store.writerLeaseAssertEmpty(lease.workspaceId);
-      const next = { ...current, ...fields, state, updatedAt: now() };
-      put('lease', lease.workspaceId, next); put('operation', next.operationId, next);
-      return next;
-    });
+    try { return store.workspaceTransition({ workspaceId: lease.workspaceId, leaseId: lease.id, epoch, state, fields, now: now() }); }
+    catch (error) {
+      if (error.code === 'workspace_lease_stale' || error.code === 'workspace_lease_released') {
+        Object.assign(error, { status: 409, backpressure: false });
+      }
+      throw error;
+    }
   }
   function resident(lease, observed) {
     return store.transaction(() => {

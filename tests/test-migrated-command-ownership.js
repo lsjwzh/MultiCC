@@ -28,7 +28,7 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
           const value = Reflect.get(instance, key, instance);
           if (typeof value !== 'function') return value;
           return (...args) => {
-            if (key === 'request' || key === 'requestAdmissionAsync') calls.push(`${key}:${args[0]}`);
+            if (['request', 'requestAsync', 'requestAdmissionAsync'].includes(key)) calls.push(`${key}:${args[0]}`);
             return Reflect.apply(value, instance, args);
           };
         },
@@ -95,12 +95,14 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
     state.waits.special = { id: 'special', status: 'pending' };
     state.sessionSchedules.normal = { sessionId: 'normal', active: null, state: 'idle', awaitingRequestId: 'request' };
     state.sessionSchedules.special = { sessionId: 'special', active: null, state: 'idle', awaitingRequestId: 'request' };
+    state.outbox.entry = { ...item(), state: 'leased' };
   });
   const sqliteWaits = createWaitService({ store: sqlite });
   await reaches('waitResolveLive', () => sqliteWaits.resolvePoll('missing', { value: 1 }));
   await reaches('request:waitCancelCheck', () => sqliteWaits.cancel('normal'));
   await reaches('waitCancelLive', () => sqliteWaits.cancel({ [Symbol.toPrimitive]: () => 'special' }));
   const sqliteScheduler = createSessionWorkScheduler({ store: sqlite, now });
+  await reaches('requestAsync:scheduleClaim', () => sqliteScheduler.claim(item()));
   await reaches('request:scheduleSettlePlan', () => sqliteScheduler.settleUserInput('normal', 'request'));
   await reaches('scheduleSettleLive', () => sqliteScheduler.settleUserInput({ [Symbol.toPrimitive]: () => 'special' }, 'request'));
   const sqliteOperations = createOperationService({ store: sqlite });

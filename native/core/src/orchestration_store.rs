@@ -12,6 +12,7 @@ mod record;
 mod schedule_admit;
 mod schedule_admit_live;
 pub mod schedule_background;
+mod schedule_claim;
 pub mod schedule_guard;
 mod schedule_identity;
 mod schedule_metadata;
@@ -1316,6 +1317,8 @@ impl Store {
                 session_work_state::question_transition(connection, input)
             }
             "scheduleAdmit" => schedule_admit::commit(self, input),
+            "scheduleClaim" => schedule_claim::commit(self, input),
+            "scheduleHandoff" => schedule_claim::handoff(self, input),
             "scheduleCompleteTokenExperimental" => {
                 schedule_admit_live::completion_token(self, input)
             }

@@ -10,6 +10,7 @@ mod chat_delivery;
 mod context;
 mod delivery;
 mod rules;
+mod workspace_permit;
 type Result<T> = std::result::Result<T, String>;
 /// v2：引用列 task_ref/receipt_ref（仓储写入时维护）+ 台账独立成类 + 上下文记录分层。
 pub const SCHEMA_VERSION: i64 = 2;
@@ -496,6 +497,32 @@ impl TaskStore {
                 .join(",")
         ))
     }
+    fn refresh_cache(&mut self, kind: &str, shape: &str, key: &str) -> Result<()> {
+        let epoch = self.epoch(&[json!(kind)])?;
+        if self
+            .cache
+            .get(key)
+            .is_some_and(|cached| cached.epoch == epoch)
+        {
+            return Ok(());
+        }
+        let entries = shape == "entries";
+        let rows = self
+            .rows(kind, !entries)?
+            .into_iter()
+            .map(|(_, id, value)| if entries { json!([id, value]) } else { value })
+            .collect::<Vec<_>>();
+        self.sequence += 1;
+        self.cache.insert(
+            key.to_owned(),
+            Cached {
+                epoch,
+                token: self.sequence,
+                rows: json!(rows),
+            },
+        );
+        Ok(())
+    }
     fn begin(&mut self) -> Result<String> {
         self.sequence += 1;
         let frame = format!("task_frame_{}", self.sequence);
@@ -793,6 +820,9 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
             "writerLeaseAnnotatePid" => self.writer_lease_annotate_pid(&v)?,
             "writerLeaseList" => self.writer_lease_list(&v)?,
             "writerLeaseAssertEmpty" => self.writer_lease_assert_empty(&v)?,
+            "workspaceAvailable" => json!(self.workspace_available(&v)?),
+            "workspaceAcquire" => self.workspace_acquire(&v)?,
+            "workspaceTransition" => self.workspace_transition(&v)?,
             "finalizeStoppedDelivery" => self.finalize_stopped_delivery(&v)?,
             "finalizeDelivery" => self.finalize_delivery(&v)?,
             "rule" => self.rule(&v)?,
@@ -842,29 +872,7 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
                 }
                 let shape = text(&v["shape"]);
                 let key = format!("{shape}:{kind}");
-                let epoch = self.epoch(&[json!(kind)])?;
-                if !self.cache.get(&key).is_some_and(|c| c.epoch == epoch) {
-                    let rows = self
-                        .rows(kind, shape != "entries")?
-                        .into_iter()
-                        .map(|(_, id, value)| {
-                            if shape == "entries" {
-                                json!([id, value])
-                            } else {
-                                value
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    self.sequence += 1;
-                    self.cache.insert(
-                        key.clone(),
-                        Cached {
-                            epoch,
-                            token: self.sequence,
-                            rows: json!(rows),
-                        },
-                    );
-                }
+                self.refresh_cache(kind, shape, &key)?;
                 let cached = &self.cache[&key];
                 if v["token"].as_u64() == Some(cached.token) {
                     json!({"token":cached.token})

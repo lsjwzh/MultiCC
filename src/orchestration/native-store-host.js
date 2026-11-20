@@ -780,6 +780,29 @@ function createNativeStore({ file, legacyFile = null, now = Date.now,
         } catch (error) { throw normalize(error); }
       });
     },
+    executeScheduleClaim(item, clock) {
+      return enqueue(async () => {
+        ensureOpen();
+        const result = await requestAsync('scheduleClaim', {
+          sessionId: item.sessionId, entryId: item.id, leaseToken: item.leaseToken,
+          lineageJson: JSON.stringify(item.turnLineage),
+          at: Number(clock()), updatedAt: Number(now()),
+        });
+        knownRevision = result.state.revision;
+        return typeof result.resultJson === 'string' ? JSON.parse(result.resultJson) : result.result;
+      });
+    },
+    executeScheduleHandoff(item, clock) {
+      return enqueue(async () => {
+        ensureOpen();
+        const result = await requestAsync('scheduleHandoff', {
+          sessionId: item.sessionId, entryId: item.id, leaseToken: item.leaseToken,
+          at: Number(clock()), updatedAt: Number(now()),
+        });
+        knownRevision = result.state.revision;
+        return typeof result.resultJson === 'string' ? JSON.parse(result.resultJson) : result.result;
+      });
+    },
     executeScheduleAdmit(input, admittedAt) {
       let requestJson;
       try { requestJson = JSON.stringify(input); }

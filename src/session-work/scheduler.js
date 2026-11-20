@@ -467,8 +467,10 @@ function createSessionWorkScheduler({
 
   async function claim(item) {
     if (ensureSessionWorkState) await ensureSessionWorkState(item.sessionId);
-    const result = await store.mutate(draft => getNative().scheduleClaimLive(
-      draft, item, now, schedule => publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft)));
+    const result = typeof store.executeScheduleClaim === 'function'
+      ? await store.executeScheduleClaim(item, now)
+      : await store.mutate(draft => getNative().scheduleClaimLive(
+        draft, item, now, schedule => publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft)));
     if (result.ok) emit('claimed', {
       sessionId: item.sessionId,
       entryId: item.id,
@@ -480,19 +482,30 @@ function createSessionWorkScheduler({
     return result;
   }
 
+  function emitStarted(item, schedule) {
+    emit('started', {
+      sessionId: item.sessionId,
+      entryId: schedule.active?.entryId,
+      deliveryId: item.id,
+      taskId: schedule.active?.taskId || null,
+      queued: schedule.queued.length,
+      queuedItems: schedule.queued,
+      schedule,
+    });
+  }
+
   async function started(item) {
     const result = await store.mutate(draft => getNative().scheduleLifecycleLive(
       draft, 'started', item, now, schedule => publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft)));
-    if (result.ok && !result.late) emit('started', {
-      sessionId: item.sessionId,
-      entryId: result.schedule.active?.entryId,
-      deliveryId: item.id,
-      taskId: result.schedule.active?.taskId || null,
-      queued: result.schedule.queued.length,
-      queuedItems: result.schedule.queued,
-      schedule: result.schedule,
-    });
+    if (result.ok && !result.late) emitStarted(item, result.schedule);
     return result;
+  }
+
+  async function confirmHandoff(item) {
+    if (item.payload?.type !== 'session.work' || typeof store.executeScheduleHandoff !== 'function') return null;
+    const result = await store.executeScheduleHandoff(item, now);
+    if (result.started) emitStarted(item, result.started);
+    return result.acknowledged;
   }
 
   async function releaseClaim(item, reason = 'prelaunch_deferred') {
@@ -1074,6 +1087,7 @@ function createSessionWorkScheduler({
     admit,
     claim,
     started,
+    confirmHandoff,
     releaseClaim,
     turnEnded,
     freeze,
