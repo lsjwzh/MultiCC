@@ -10,7 +10,7 @@ const { getNative } = require('../native/runtime');
 
 const WS_PING_INTERVAL_MS = 30_000;
 const SESSIONLESS_WS_PATHS = new Set([
-  '/ws/voice', '/ws/tts', '/ws/workspace', '/ws/meta', '/ws/aux', '/ws/remote-screen',
+  '/ws/voice', '/ws/tts', '/ws/workspace', '/ws/meta', '/ws/aux',
 ]);
 
 function mountWsConnectionRouter(wss, deps) {
@@ -24,7 +24,6 @@ function mountWsConnectionRouter(wss, deps) {
     authSecurity, machines,
     voiceAsr,
     ttsService,
-    remoteScreenRfb,
     workspaceRuntime,
     auxQueue,
     auxSessionId,
@@ -254,11 +253,6 @@ function mountWsConnectionRouter(wss, deps) {
     }
     if (urlObj.pathname === '/ws/meta') {
       return workspaceRuntime.attachMeta(ws, urlObj, fields);
-    }
-    if (urlObj.pathname === '/ws/remote-screen') {
-      if (!remoteScreenRfb) { ws.close(1010, 'remote screen unavailable'); return; }
-      if (urlObj.searchParams.get('mode') === 'h264' && remoteScreenRfb.attachH264) return remoteScreenRfb.attachH264(ws, req);
-      return remoteScreenRfb.attachRfb(ws, req);
     }
     if (urlObj.pathname === '/ws/aux') {
       auxQueue.attachClient(ws);

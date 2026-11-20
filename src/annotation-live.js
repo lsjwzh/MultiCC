@@ -17,7 +17,8 @@
 // kind：point/box/arrow = 用户刚画完的标记（a/b 为自然像素坐标）；
 // recapture = 标注器的「重新截」，处理器应重拍并回 refresh=true，没人接手时
 // 标注器改为直接发消息请 agent 重拍。
-// assist/remote-screen/shot-*.png 由内置的 remote-screen 处理器接手（不需配置）。
+// assist/remote-screen/shot-*.png 由 Rust 前门的内置处理器接手（native/gateway 的
+// app::remote_annotation，经 annotation-relay 之前拦截，不查配置、也到不了这里）。
 // 与 /api/secrets 同一 localhost-trusted 信任模型（同源 POST，无 token）。
 
 const fs = require('fs');
@@ -67,13 +68,6 @@ function relayTargets({ sessionId, src }, configPath = CONFIG) {
 // DTO 归一化与错误信封在那里；这里保留真正要跑的东西：内置处理器、配置命中
 // 和带 8s 超时的 HTTP 转发。宿主端口只等它回 { relayed, results }。
 async function relay(payload) {
-  // 内置处理器：「🖥 屏幕」浮层冻结的截图直接由 remote-screen 执行，不查配置。
-  const remoteScreen = require('./remote-screen');
-  if (remoteScreen.isOwnShot(payload.src)) {
-    const result = await remoteScreen.handleAnnotation(payload)
-      .catch(error => ({ ok: false, refresh: false, text: String(error && error.message || error).slice(0, 200) }));
-    return { relayed: 1, results: [result] };
-  }
   const hits = relayTargets(payload);
   if (!hits.length) return { relayed: 0, results: [] };
   // 等处理器回包（有上限）再回复：回包里的 { refresh, text } 让标注器原地换上

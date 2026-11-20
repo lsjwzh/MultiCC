@@ -14,12 +14,16 @@ const fs = require('node:fs');
 const os = require('node:os');
 const net = require('node:net');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 
 process.env.MULTICC_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-h264-cdp-data-'));
-const rs = require('../src/remote-screen-rust');
+const { gatewayBinaryName } = require('../scripts/build-rust-kernels');
+const { ensureSourceRust } = require('../scripts/ensure-source-rust');
+const { waitServerReady } = require('./helpers/wait-server-ready');
 const { installFakeRemote } = require('./helpers/remote-screen-node-harness');
+
+const ROOT = path.join(__dirname, '..');
 
 const REQ_KEY = 0x4b;   // 网页播放端请求关键帧的单字节（线协议，跟 Rust 侧一致）
 
@@ -71,6 +75,46 @@ function msg(type, payload) {
   return Buffer.concat([head, payload]);
 }
 
+// 真前门（--node 带上真 server.js）终结 /ws/remote-screen；MULTICC_REMOTE_BIN 已被
+// installFakeRemote 指向假进程，所以浏览器拿到的就是假 Agent 编的真实 H.264 字节流。
+async function startFrontDoor(t) {
+  const addon = ensureSourceRust({ log: () => {} });
+  const bin = path.join(path.dirname(addon), gatewayBinaryName(process.platform));
+  const probe = net.createServer();
+  await new Promise(r => probe.listen(0, '127.0.0.1', r));
+  const port = probe.address().port;
+  await new Promise(r => probe.close(r));
+  const env = {
+    ...process.env,
+    NODE_ENV: 'test',
+    PORT: String(port),
+    // server.js 起 Node 子进程时靠它找原生模块；不传就会落到别处那份旧 addon，
+    // `getNative().sessionQuestionRequest` 缺失，宿主端口永远不就绪。
+    MULTICC_RUST_ADDON: addon,
+    MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000',
+  };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('MULTICC_GATEWAY_')) delete env[key];
+  }
+  let log = '';
+  const child = spawn(bin,
+    ['serve', '--cwd', ROOT, '--node', process.execPath, '--stdin-lifeline', '--', 'server.js'],
+    { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  child.stdout.on('data', c => { log = (log + c).slice(-4000); });
+  child.stderr.on('data', c => { log = (log + c).slice(-4000); });
+  t.after(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise(r => child.once('exit', r));
+    child.kill('SIGTERM');
+    await Promise.race([exited, new Promise(r => setTimeout(r, 4000))]);
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  });
+  await waitServerReady(`http://127.0.0.1:${port}`, {
+    attempts: 300, child, output: () => log, message: 'front door not ready after 30s',
+  });
+  return { wsUrl: `ws://127.0.0.1:${port}/ws/remote-screen?mode=h264` };
+}
+
 // 只装播放端 + 共享输入层的测试页：640×480 的容器 + chat-remote-screen-h264.js。
 function viewerRoutes() {
   return {
@@ -115,21 +159,15 @@ async function fakeAgentAndRelay(t, WebSocketServer) {
 
   // 假进程一收到 WS 消息就写进这个 socket，反向数据按二进制帧发回。
   const fake = installFakeRemote({ FAKE_REMOTE_PIPE_SOCK: sockPath });
-  t.after(async () => { await rs._resetForTests(); fake.cleanup(); });
+  t.after(() => fake.cleanup());
 
-  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-  await new Promise(r => wss.once('listening', r));
-  wss.on('connection', ws => rs.attachH264(ws, { url: '/ws/remote-screen?mode=h264' }));
-  t.after(() => { for (const c of wss.clients) c.terminate(); wss.close(); });
-  const wsUrl = `ws://127.0.0.1:${wss.address().port}/ws/remote-screen?mode=h264`;
+  const { wsUrl } = await startFrontDoor(t);
   return { wsUrl, received };
 }
 
 if (suite !== 'p2p') test('h264 stream: fake agent → multicc-remote → Node forwarder → Chrome decodes frames and sends RFB input back',
   { skip: !hasFfmpeg || !findChromeBinary() ? 'needs ffmpeg and Chrome' : false, timeout: 60000 }, async t => {
-    let WebSocketServer;
-    try { ({ WebSocketServer } = require('ws')); } catch { t.skip('ws module not installed'); return; }
-    const { wsUrl, received } = await fakeAgentAndRelay(t, WebSocketServer);
+    const { wsUrl, received } = await fakeAgentAndRelay(t);
 
     await withCdpHarness({ routes: viewerRoutes() }, async page => {
       await page.navigate(page.baseUrl + '/');

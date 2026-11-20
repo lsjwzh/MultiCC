@@ -66,7 +66,7 @@ const crypto = require('crypto');
 const bus = require('./src/bus');
 const services = require('./src/services');
 const state = require('./src/state/container');
-const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), remoteScreen = require('./src/remote-screen'), pluginsRoutes = require('./src/routes/plugins');
+const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
 const providers = require('./src/providers/core');
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/codex/model-catalog').startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
@@ -2823,7 +2823,6 @@ mountWsConnectionRouter(wss, { machines, wsHost,
   workspaceRuntime,
   auxQueue,
   auxSessionId: AUX_SESSION_ID,
-  remoteScreenRfb: remoteScreen,
   loadChatHistory,
   viewChatHistory,
   sessions,
@@ -2920,7 +2919,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 
 // Scheduled tasks (定时任务): every rule owns one fixed Air task and enters it through the
 // task-shell receipt protocol, complementing the lower-level per-session triggers.
-cronTasks.mount(app); createDocsMemoryHost({ docs: docsRegistry, memory: memoryBrowser, memo: memoModule.controller, notes: notesStore, directories, resolveTaskTitle: id => taskShellHost.artifactTaskTitle(id), resolveTaskId: id => taskShellHost.artifactTaskId(id), resolveDir: id => directories.get(persistedSessions.get(id)?.dirId)?.path || null }).mount(app); mountSecretsVaultHostRoute(app, { vault: secretsVault }); remoteScreen.mount(app,{logger}); pluginsRoutes.createPluginsRoutes({ pluginsDir: path.join(__dirname, 'plugins'), paths: MULTICC_PATHS, autoRefresh: true, platform: process.platform, arch: process.arch, logger, resident: { port: () => PORT, alert: pushRuntime.notifyHost } }).mount(app); // docs-registry/secrets-vault=管理表/保险箱；plugins=内置+已装插件、插件列表、常驻插件。同行守 3000 行
+cronTasks.mount(app); createDocsMemoryHost({ docs: docsRegistry, memory: memoryBrowser, memo: memoModule.controller, notes: notesStore, directories, resolveTaskTitle: id => taskShellHost.artifactTaskTitle(id), resolveTaskId: id => taskShellHost.artifactTaskId(id), resolveDir: id => directories.get(persistedSessions.get(id)?.dirId)?.path || null }).mount(app); mountSecretsVaultHostRoute(app, { vault: secretsVault }); pluginsRoutes.createPluginsRoutes({ pluginsDir: path.join(__dirname, 'plugins'), paths: MULTICC_PATHS, autoRefresh: true, platform: process.platform, arch: process.arch, logger, resident: { port: () => PORT, alert: pushRuntime.notifyHost } }).mount(app); // docs-registry/secrets-vault=管理表/保险箱；plugins=内置+已装插件、插件列表、常驻插件。同行守 3000 行
 cronTasks.init({
   directories,
   clis: CLIENT_CHAT_CLIS,

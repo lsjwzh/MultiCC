@@ -673,13 +673,9 @@ function mount(app) {
       a: body.a || null,
       b: body.b || null,
     };
-    // 内置处理器：「🖥 屏幕」浮层冻结的截图直接由 remote-screen 执行，不查配置。
-    const remoteScreen = require('../../src/remote-screen');
-    if (remoteScreen.isOwnShot(payload.src)) {
-      return remoteScreen.handleAnnotation(payload)
-        .catch(error => ({ ok: false, refresh: false, text: String(error && error.message || error).slice(0, 200) }))
-        .then(result => res.json({ ok: true, relayed: 1, results: [result] }));
-    }
+    // 内置处理器（「🖥 屏幕」浮层冻结的截图）已由 Rust 前门的 app::remote_annotation
+    // 在到达宿主端口之前拦截；Node 侧的 own-shot 分支随 src/remote-screen.js 一起删除，
+    // 这个冻结 oracle 不再复刻它（差分里那条路径根本走不到这里）。
     const hits = relayTargets(payload);
     if (!hits.length) { res.json({ ok: true, relayed: 0, results: [] }); return; }
     // 等处理器回包（有上限）再回复：回包里的 { refresh, text } 让标注器原地换上
