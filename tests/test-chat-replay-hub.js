@@ -1,6 +1,6 @@
 'use strict';
 
-// The native chat session table behind src/chat/replay-hub.js: replay buffer,
+// The native chat session table behind src/ws/ws-host.js: replay buffer,
 // ordered membership, OPEN-filtered fan-out, the reconnect burst and the
 // lifecycle paths. Everything runs against the real RustWsHost; fake sockets
 // only record what the native send path actually delivered.
@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const { createChatSessions } = require('../src/chat/sessions');
-const { createChatReplayRuntime } = require('../src/chat/replay-hub');
+const { createChatReplayHub, createChatReplayRuntime } = require('../src/ws/ws-host');
 const { createStateOwner } = require('../src/state/owner');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
@@ -34,6 +34,25 @@ test('an event the envelope rejects is not buffered and push never throws', () =
   cyclic.self = cyclic;
   assert.equal(hub.push('s', cyclic), false);
   assert.equal(hub.size('s'), 0);
+});
+
+test('原生写入和广播保留宿主的帧字节与序列化语义', () => {
+  const { hub, host, attach } = createTestChatHub();
+  const { createWsEnvelope } = require('../src/api-contract');
+  const client = attach();
+  hub.join('s', client.id);
+  const event = {
+    type: 'stream_event',
+    apiVersion: 'obsolete',
+    delta: '你好',
+    value: { toJSON() { return '\ud800'; } },
+  };
+  const expected = JSON.stringify(createWsEnvelope(event));
+  assert.equal(hub.push('s', event), true);
+  assert.deepEqual(host.replayFrames('s'), [expected]);
+  assert.deepEqual(hub.events('s'), [JSON.parse(expected)]);
+  assert.equal(hub.broadcast('s', event), 1);
+  assert.deepEqual(client.socket.sent, [expected]);
 });
 
 test('clear empties one session only and an unknown session is a no-op', () => {
@@ -187,7 +206,6 @@ test('removing a chat session from the table forgets its replay state (delete an
 });
 
 test('the hub rejects a host without chat session support', () => {
-  const { createChatReplayHub } = require('../src/chat/replay-hub');
   assert.throws(() => createChatReplayHub({ host: {} }), TypeError);
 });
 

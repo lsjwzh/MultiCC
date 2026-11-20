@@ -72,13 +72,14 @@ function createDirectoryTable(shared) {
 /// reports which shape failed; the message text stays the same for callers that
 /// log or match it.
 function corruptedStateError(file, result) {
+  const detail = result?.detail ? `: ${result.detail}` : '';
   if (result && result.errorKind === 'unreadable') {
-    return new CorruptedStateError(`unreadable state file ${file}`, { file });
+    return new CorruptedStateError(`unreadable state file ${file}${detail}`, { file });
   }
   if (result && result.errorKind === 'envelope') {
     return new CorruptedStateError(`state envelope missing in ${file}`, { file });
   }
-  return new CorruptedStateError(`corrupt JSON in ${file}`, {
+  return new CorruptedStateError(`corrupt JSON in ${file}${detail}`, {
     file,
     raw: (result && result.raw) || '',
   });

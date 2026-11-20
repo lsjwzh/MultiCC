@@ -163,6 +163,80 @@ pub fn apply_file(file: &JournalFile) -> Result<(), String> {
     )
 }
 
+#[derive(Default)]
+pub struct ReplayReport {
+    pub replayed: u32,
+    pub skipped: u32,
+    pub crashed: bool,
+    pub messages: Vec<String>,
+}
+
+/// Replay before loading the live tables. The interruption port is used by
+/// the crash harness to leave a partially applied entry for the next boot.
+pub fn replay_journals(
+    journal_dir: &Path,
+    mut interrupt_after: impl FnMut(usize) -> bool,
+) -> ReplayReport {
+    let mut report = ReplayReport::default();
+    let Ok(entries) = fs::read_dir(journal_dir) else {
+        return report;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_journal_name(&name) {
+            continue;
+        }
+        let full = journal_dir.join(&name);
+        let parsed = match durable_state::read(&full) {
+            Ok(Some(value)) => value,
+            Ok(None) => continue,
+            Err(failure) => {
+                report.skipped += 1;
+                report.messages.push(format!(
+                    "[state-tx] skipping unreadable journal {name}: {}",
+                    failure.code()
+                ));
+                move_aside(&full);
+                continue;
+            }
+        };
+        match replay_entry(&parsed, &mut interrupt_after) {
+            Ok(true) => {
+                report.crashed = true;
+                break;
+            }
+            Ok(false) => {
+                let _ = fs::remove_file(&full);
+                report.replayed += 1;
+                report
+                    .messages
+                    .push(format!("[state-tx] replayed journal {name}"));
+            }
+            Err(error) => {
+                report.skipped += 1;
+                report
+                    .messages
+                    .push(format!("[state-tx] apply failed for {name}: {error}"));
+                move_aside(&full);
+            }
+        }
+    }
+    report
+}
+
+fn replay_entry(
+    parsed: &JsValue,
+    interrupt_after: &mut impl FnMut(usize) -> bool,
+) -> Result<bool, String> {
+    for (index, file) in decode(parsed)?.files.iter().enumerate() {
+        apply_file(file)?;
+        if interrupt_after(index + 1) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Best-effort `broken/<name>.<Date.now()>` move for an unusable journal.
 pub fn move_aside(file: &Path) {
     let Some(parent) = file.parent() else {

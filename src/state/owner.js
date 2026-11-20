@@ -10,7 +10,7 @@
 // both receive this object rather than reaching for each other.
 
 const { getNative } = require('../native/runtime');
-const { loadDirectories } = require('../directory/records');
+const { corruptedStateError, loadDirectories } = require('../directory/records');
 
 function createStateOwner() {
   const native = getNative();
@@ -25,12 +25,16 @@ function createStateOwner() {
   Object.defineProperty(owner, Symbol('host-value-anchor'), { value: anchor });
   const shared = { native: owner, anchor };
   let directoriesFile = null;
+  let sessionsFile = null;
   return {
     native: owner,
     anchor,
     configure(options) {
       if (options && typeof options.directoriesFile === 'string') {
         directoriesFile = options.directoriesFile;
+      }
+      if (options && typeof options.sessionsFile === 'string') {
+        sessionsFile = options.sessionsFile;
       }
       owner.configure(options);
       return this;
@@ -45,6 +49,11 @@ function createStateOwner() {
     /// `CorruptedStateError` StateStore threw at boot.
     loadDirectories() {
       return loadDirectories(shared, directoriesFile);
+    },
+    loadSessions() {
+      const result = owner.loadSessions();
+      if (result.errorKind) throw corruptedStateError(sessionsFile, result);
+      return result;
     },
     /** Boot import: the migration Map's `[id, record]` pairs are read once. */
     initDirectories(entries) {

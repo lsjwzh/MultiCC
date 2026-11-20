@@ -23,7 +23,7 @@ getrandom = "0.3"
 regex = "1.13.1"
 memchr = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "gzip", "brotli", "deflate"] }
-tokio = { version = "1", features = ["net", "time", "rt", "io-util", "sync", "macros"] }
+tokio = { version = "1", features = ["net", "time", "rt", "io-util", "sync", "macros", "process"] }
 futures-util = "0.3"
 bytes = "1"
 unicode-normalization = "0.1.26"

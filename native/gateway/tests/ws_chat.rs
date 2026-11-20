@@ -647,3 +647,307 @@ async fn a_refused_handshake_is_answered_with_the_planners_status_and_body() {
         }
     }
 }
+
+#[cfg(unix)]
+const NATIVE_CLAUDE: &str = r#"#!/bin/sh
+resume=no
+for arg in "$@"; do
+    case "$arg" in --resume=*) resume=yes ;; esac
+done
+while IFS= read -r line; do
+    case "$line" in
+        *'"subtype":"initialize"'*|*'"subtype":"interrupt"'*)
+            case "$line" in *'"subtype":"interrupt"'*) printf 'cancelled\n' >> "$HOME/interrupted" ;; esac
+            id=$(printf '%s\n' "$line" | /usr/bin/sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id"
+            ;;
+        *'"type":"user"'*'"text":"hold"'*)
+            printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"等待取消"}}}'
+            ;;
+        *'"type":"user"'*'"text":"fail"'*)
+            printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["fixture upstream timeout"]}'
+            ;;
+        *'"type":"user"'*)
+            if [ "$resume" = yes ]; then reply='沿用上下文'; else reply='首次回复'; fi
+            printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$reply"
+            printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0,"usage":{}}'
+            ;;
+    esac
+done
+"#;
+
+#[cfg(unix)]
+impl Gateway {
+    fn start_native() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "multicc-ws-chat-native-{}-{nonce}",
+            std::process::id()
+        ));
+        let state = dir.join("state");
+        let work = dir.join("work");
+        let binary = dir.join("claude-fixture");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::write(&binary, NATIVE_CLAUDE).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            state.join("sessions.json"),
+            serde_json::json!([{
+                "id":"native", "kind":"chat", "type":"gateway", "cwd":work, "cli":"claude",
+            }, {
+                "id":"internal", "kind":"chat", "taskExecutionSlot":true, "cli":"claude",
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        let log = fs::File::create(dir.join("gateway.log")).unwrap();
+        let child = Command::new(GATEWAY_BIN)
+            .arg("serve")
+            .arg("--cwd")
+            .arg(&dir)
+            .arg("--no-node")
+            .arg("--ephemeral-loopback")
+            .env_clear()
+            .env("ACCESS_TOKEN", "gateway-chat-fixture-token")
+            .env("PATH", "")
+            .env("HOME", &state)
+            .env("MULTICC_DATA_DIR", &state)
+            .env("MULTICC_CLAUDE_BIN", &binary)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(log))
+            .spawn()
+            .expect("start production gateway");
+        let mut gateway = Gateway {
+            dir,
+            state,
+            port: 0,
+            child,
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let log = gateway.log();
+            if let Some(port) = log.lines().find_map(|line| {
+                line.split("listening on 127.0.0.1:")
+                    .nth(1)?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            }) {
+                gateway.port = port;
+                break;
+            }
+            assert!(
+                gateway.child.try_wait().unwrap().is_none() && Instant::now() < deadline,
+                "{log}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        gateway
+    }
+
+    fn assert_native_process_tree(&self) {
+        let output = Command::new("/bin/ps")
+            .args(["-A", "-o", "pid=,ppid=,comm="])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let output = String::from_utf8_lossy(&output.stdout);
+        let rows: Vec<_> = output
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some((
+                    fields.next()?.parse::<u32>().ok()?,
+                    fields.next()?.parse::<u32>().ok()?,
+                    fields.next()?,
+                ))
+            })
+            .collect();
+        let mut tree = vec![self.child.id()];
+        let mut cursor = 0;
+        while let Some(pid) = tree.get(cursor).copied() {
+            tree.extend(
+                rows.iter()
+                    .filter(|(_, parent, _)| *parent == pid)
+                    .map(|(child, _, _)| *child),
+            );
+            cursor += 1;
+        }
+        assert!(tree.len() >= 2, "provider process was not running");
+        println!(
+            "隔离监听 127.0.0.1:{}，网关 PID {}",
+            self.port,
+            self.child.id()
+        );
+        println!("ps -A -o pid=,ppid=,comm=（网关及其后代）");
+        let mut node_count = 0;
+        for (pid, parent, command) in rows.into_iter().filter(|row| tree.contains(&row.0)) {
+            println!("{pid} {parent} {command}");
+            if matches!(
+                Path::new(command).file_name().unwrap_or_default().to_str(),
+                Some("node" | "nodejs" | "node.exe")
+            ) {
+                node_count += 1;
+            }
+        }
+        println!("进程树内 Node 进程数 {node_count}");
+        assert_eq!(node_count, 0);
+    }
+}
+
+#[cfg(unix)]
+async fn native_frame(socket: &mut Ws, expected_type: &str) -> Value {
+    let Message::Text(text) = next_data(socket).await else {
+        panic!("expected {expected_type} frame")
+    };
+    let frame: Value = serde_json::from_str(&text).expect("chat frame JSON");
+    assert_eq!(frame["type"], expected_type, "frame {text}");
+    assert_eq!(frame["apiVersion"], "v1");
+    frame
+}
+
+#[cfg(unix)]
+async fn native_turn(socket: &mut Ws, prompt: &str, expected: &str) {
+    send_text(
+        socket,
+        &serde_json::json!({"type":"user_message","text":prompt,"clientMsgId":prompt}).to_string(),
+    )
+    .await;
+    let meta = native_frame(socket, "chat_msg_meta").await;
+    assert_eq!(meta["message"]["content"], prompt);
+    assert_eq!(meta["clientMsgId"], prompt);
+    let start = native_frame(socket, "stream_start").await;
+    assert_eq!(meta["message"]["turnId"], start["turnId"]);
+    let route = native_frame(socket, "provider_route_event").await;
+    assert_eq!(route["routePhase"], "selected");
+    assert_eq!(route["turnId"], start["turnId"]);
+    let answer = native_frame(socket, "assistant").await;
+    assert_eq!(answer["message"]["content"][0]["text"], expected);
+    assert_eq!(answer["message"]["textSnapshot"], true);
+    assert_eq!(answer["providerRouteScope"], "attempt");
+    assert_eq!(answer["routeAttemptId"], route["routeAttemptId"]);
+    assert_eq!(
+        native_frame(socket, "chat_msg_meta").await["role"],
+        "assistant"
+    );
+    native_frame(socket, "result").await;
+    assert_eq!(native_frame(socket, "result").await["is_error"], false);
+    assert_eq!(
+        native_frame(socket, "provider_route_event").await["routePhase"],
+        "succeeded"
+    );
+    text(socket, r#"{"type":"stream_end","apiVersion":"v1"}"#).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processes() {
+    let gateway = Gateway::start_native();
+    let path = "/ws/chat?session=native";
+    let mut socket = gateway.connect_with(path, &[]).await;
+    let init = native_frame(&mut socket, "system").await;
+    assert_eq!(init["subtype"], "init");
+    assert_eq!(init["session_id"], "native");
+    assert_eq!(init["is_streaming"], false);
+    text(
+        &mut socket,
+        r#"{"type":"background_tasks","tasks":[],"apiVersion":"v1"}"#,
+    )
+    .await;
+    text(
+        &mut socket,
+        r#"{"type":"unattended_state","unattended":null,"apiVersion":"v1"}"#,
+    )
+    .await;
+    native_turn(&mut socket, "first", "首次回复").await;
+    native_turn(&mut socket, "second", "沿用上下文").await;
+    drop(socket);
+    let mut socket = gateway.connect_with(path, &[]).await;
+    native_frame(&mut socket, "system").await;
+    let page = native_frame(&mut socket, "chat_history").await;
+    assert_eq!(page["messages"].as_array().unwrap().len(), 4);
+    assert_eq!(page["messages"][1]["content"], "首次回复");
+    assert_eq!(page["messages"][3]["content"], "沿用上下文");
+    native_frame(&mut socket, "background_tasks").await;
+    native_frame(&mut socket, "unattended_state").await;
+    send_text(
+        &mut socket,
+        r#"{"type":"user_message","text":"hold","clientMsgId":"held"}"#,
+    )
+    .await;
+    native_frame(&mut socket, "chat_msg_meta").await;
+    let start = native_frame(&mut socket, "stream_start").await;
+    let route = native_frame(&mut socket, "provider_route_event").await;
+    let event = native_frame(&mut socket, "stream_event").await;
+    assert_eq!(event["routeAttemptId"], route["routeAttemptId"]);
+    drop(socket);
+    let mut socket = gateway.connect_with(path, &[]).await;
+    let init = native_frame(&mut socket, "system").await;
+    assert_eq!(init["is_streaming"], true);
+    assert_eq!(init["turnId"], start["turnId"]);
+    assert_eq!(
+        init["providerRoute"]["routeAttemptId"],
+        route["routeAttemptId"]
+    );
+    let page = native_frame(&mut socket, "chat_history").await;
+    assert_eq!(page["messages"][5]["content"], "等待取消");
+    assert_eq!(page["messages"][5]["streaming"], true);
+    native_frame(&mut socket, "background_tasks").await;
+    native_frame(&mut socket, "unattended_state").await;
+    gateway.assert_native_process_tree();
+    send_text(
+        &mut socket,
+        r#"{"type":"cancel","operationId":"cancel-held"}"#,
+    )
+    .await;
+    assert_eq!(
+        native_frame(&mut socket, "chat_msg_meta").await["role"],
+        "assistant"
+    );
+    assert_eq!(
+        native_frame(&mut socket, "provider_route_event").await["routePhase"],
+        "released"
+    );
+    text(&mut socket, r#"{"type":"stream_end","apiVersion":"v1"}"#).await;
+    assert_eq!(
+        fs::read_to_string(gateway.state.join("interrupted")).unwrap(),
+        "cancelled\n"
+    );
+    send_text(&mut socket, r#"{"type":"user_message","text":"fail"}"#).await;
+    native_frame(&mut socket, "chat_msg_meta").await;
+    native_frame(&mut socket, "stream_start").await;
+    let route = native_frame(&mut socket, "provider_route_event").await;
+    let error = native_frame(&mut socket, "error").await;
+    assert_eq!(error["code"], "chat_provider_error");
+    assert_eq!(error["error"], "fixture upstream timeout");
+    assert_eq!(error["routeAttemptId"], route["routeAttemptId"]);
+    assert_eq!(
+        native_frame(&mut socket, "provider_route_event").await["routePhase"],
+        "failed"
+    );
+    text(&mut socket, r#"{"type":"stream_end","apiVersion":"v1"}"#).await;
+    let mut replay = gateway.connect_with(path, &[]).await;
+    assert_eq!(
+        native_frame(&mut replay, "system").await["is_streaming"],
+        false
+    );
+    let history = native_frame(&mut replay, "chat_history").await;
+    let cancelled = &history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["cancelled"] == true)
+        .expect("cancelled entry");
+    assert_eq!(cancelled["content"], "等待取消");
+    assert_eq!(cancelled["partial"], true);
+    let mut internal = gateway.connect_with("/ws/chat?session=internal", &[]).await;
+    text(&mut internal,r#"{"type":"error","error":"Session does not exist.","data":"Session does not exist.\r\n","apiVersion":"v1"}"#).await;
+    assert_eq!(next_data(&mut internal).await, Message::Close(None));
+}

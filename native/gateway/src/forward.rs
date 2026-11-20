@@ -300,13 +300,8 @@ async fn dispatch(
         }
         return crate::ws_machines::handle(app, request).await;
     }
-    // The chat socket is terminated here too. With no Node child there is no
-    // chat engine to hand the socket to, so the refusal is the same immediate
-    // `node_runtime_absent` as for every other Node-dependent request.
+    // The chat upgrade is shared by the native host and the compatibility bridge.
     if crate::ws_chat::claims(request.uri().path()) && is_websocket_upgrade(request.headers()) {
-        if upstream.node_absent() {
-            return forward(upstream, request, None).await;
-        }
         let (peer, local) = upstream.addresses();
         return crate::ws_chat::handle(app, peer, local, request).await;
     }

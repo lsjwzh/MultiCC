@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createHibernationReclaimer } = require('./hibernation-reclaimer');
+const { getNative } = require('../native/runtime');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Idle gate for the periodic sweep. The LRU resident budget (awakeLimit) is
@@ -626,21 +627,25 @@ function createSessionHibernationRuntime(options = {}) {
 }
 
 function resolveSessionCwd(session, {
-  directories,
   dataRoot,
   existsSync = fs.existsSync,
   homeDir = os.homedir,
   moduleDir = __dirname,
 } = {}) {
-  if (!session) return homeDir();
-  if (session.type === 'aux') return session.cwd || moduleDir;
-  if (session.type === 'gateway') return session.cwd || path.join(homeDir(), '.multicc', 'gateway');
-  // Login terminals are gitless by design (they run `codex login` / `claude auth
-  // login`, never a git worktree); their cwd is a dedicated, non-TCC-protected dir.
-  if (session.loginFlow && session.cwd && existsSync(session.cwd)) return session.cwd;
-  if (stateOf(session) === 'awake' && session.worktreePath && existsSync(session.worktreePath)) return session.worktreePath;
-  const safeId = String(session.id || 'unknown').replace(/[^A-Za-z0-9._-]/g, '-');
-  return path.join(dataRoot, 'unavailable-workspaces', safeId);
+  const native = getNative();
+  const kind = typeof session?.type === 'string' ? session.type : '';
+  const directory = native.chatSessionDirectory(!!session, kind, stateOf(session),
+    () => !!(session.loginFlow && session.cwd && existsSync(session.cwd)),
+    () => !!(session.worktreePath && existsSync(session.worktreePath)));
+  switch (directory) {
+    case 'home': return homeDir();
+    case 'aux': return session.cwd || moduleDir;
+    case 'gateway': return session.cwd || path.join(homeDir(), '.multicc', 'gateway');
+    case 'login': return session.cwd;
+    case 'worktree': return session.worktreePath;
+    case 'unavailable': return path.join(dataRoot, 'unavailable-workspaces',
+      native.chatUnavailableWorkspaceStem(session.id || 'unknown'));
+  }
 }
 
 async function initializeSessionWorktrees(options = {}) {

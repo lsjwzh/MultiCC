@@ -1,15 +1,14 @@
-//! Ordered chat replay and connection membership for a future front-door host.
-//!
-//! This hub is not registered on `/ws/chat`: the Node authorization, live
-//! session and event bridges are still required. Callers must admit a session
-//! before using it, send the returned replay before consuming live frames, and
-//! apply the existing replay byte and backpressure limits at the socket.
+//! Ordered chat replay and connection membership for the Rust chat host.
+//! Callers admit a session before attaching and send the replay before
+//! consuming the bounded live queue.
 use std::sync::{Arc, Mutex, Weak};
 
 use hyper::body::Bytes;
 use multicc_core::chat_replay_buffer::Sessions;
 
 use crate::ws_registry::{BroadcastResults, Connection, DispatchError, Frame, Registry};
+
+const MAX_REPLAY_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct ChatHub {
@@ -74,6 +73,7 @@ impl ChatHub {
         let state = sessions.session(session);
         if replay {
             state.push(event.clone());
+            state.limit_replay_bytes(MAX_REPLAY_BYTES, Bytes::len);
         }
         state
             .clients()

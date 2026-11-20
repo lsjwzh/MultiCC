@@ -16,8 +16,8 @@ use crate::{
 use multicc_core::{
     active_turns::{self, ActiveTurnTally, ChatBusyAxes, ProcObservation},
     chat_runtime::{
-        self, Outcome as TurnOutcome, PendingOutcome, Phase, Record as TurnRecord, RouteProofFacts,
-        StartError,
+        self, Entry as RuntimeEntry, Outcome as TurnOutcome, PendingOutcome, Phase,
+        Record as TurnRecord, RouteProofFacts, StartError, Table as RuntimeTable,
     },
     cli_capability::transport_of,
     durable_state,
@@ -215,38 +215,6 @@ impl Table {
     }
 }
 
-/// One preparation lease. `proof` is the frozen provider-route object the
-/// failed/succeeded transition stored; it stays a host value so snapshots return
-/// the same object identity the caller handed over.
-#[derive(Clone)]
-struct RuntimeEntry {
-    record: TurnRecord,
-    proof: Option<Value>,
-}
-
-/// Ordered native table for the per-session turn runtime state. The runtime
-/// store is independent of `chatSessions` membership: a turn can be claimed
-/// before a chat-session object exists, and deleting a chat session does not
-/// erase the last preparation outcome.
-#[derive(Default)]
-struct RuntimeTable {
-    order: Vec<JsString>,
-    map: HashMap<JsString, RuntimeEntry>,
-}
-impl RuntimeTable {
-    fn new() -> Self {
-        Self::default()
-    }
-    fn get(&self, id: &JsString) -> Option<&RuntimeEntry> {
-        self.map.get(id)
-    }
-    fn set(&mut self, id: JsString, entry: RuntimeEntry) {
-        if self.map.insert(id.clone(), entry).is_none() {
-            self.order.push(id);
-        }
-    }
-}
-
 /// Host ports. An absent port is "not configured", never silently replaced.
 #[derive(Clone, Default)]
 struct Ports {
@@ -318,7 +286,7 @@ pub struct RustSessionRecords {
     /// the streaming/CLI/timer owners keep identity and property order.
     chat: RefCell<Table>,
     /// Per-session preparation lease (the frozen `runtime-store.js` state).
-    runtime: RefCell<RuntimeTable>,
+    runtime: RefCell<RuntimeTable<Value>>,
     /// Host clock for turn transitions; the facade supplies `Date.now` or a
     /// deterministic test clock.
     turn_now: RefCell<Option<Value>>,
@@ -887,20 +855,11 @@ impl RustSessionRecords {
 
     // ── Turn runtime store (the frozen `src/chat/runtime-store.js` semantics) ──
     /// `current(sessionId)`: the stored entry, or the not-stored idle default.
-    fn turn_entry(&self, session: &JsString) -> RuntimeEntry {
-        self.runtime
-            .borrow()
-            .get(session)
-            .cloned()
-            .unwrap_or(RuntimeEntry {
-                record: TurnRecord::default_for(session.clone()),
-                proof: None,
-            })
+    fn turn_entry(&self, session: &JsString) -> RuntimeEntry<Value> {
+        self.runtime.borrow().current(session)
     }
     fn turn_store(&self, session: JsString, record: TurnRecord, proof: Option<Value>) {
-        self.runtime
-            .borrow_mut()
-            .set(session, RuntimeEntry { record, proof });
+        self.runtime.borrow_mut().store(session, record, proof);
     }
     /// The injected `now()`; the facade always supplies `Date.now` or a test
     /// clock, so an absent port is a configuration error, never a silent clock.
@@ -1176,7 +1135,7 @@ impl RustSessionRecords {
             table: RefCell::new(Table::new()),
             dirs: RefCell::new(Table::new()),
             chat: RefCell::new(Table::new()),
-            runtime: RefCell::new(RuntimeTable::new()),
+            runtime: RefCell::new(RuntimeTable::default()),
             turn_now: RefCell::new(None),
             values: Values::new(L::new(&env, anchor))?,
             persistence: RefCell::new(Persistence::default()),
@@ -1237,6 +1196,38 @@ impl RustSessionRecords {
         self.values.drain(&env)?;
         let anchor = self.values.anchor(&env)?;
         Ok(self.load_directories_internal(&env, anchor)?.raw())
+    }
+    /// Bootstrap still runs the legacy pair migration before installing the
+    /// session table. Return the decoded payload and backup provenance to it.
+    #[napi]
+    pub fn load_sessions(&self, env: Env) -> Result<sys::napi_value> {
+        self.values.drain(&env)?;
+        let anchor = self.values.anchor(&env)?;
+        let file = self
+            .paths
+            .borrow()
+            .sessions
+            .clone()
+            .ok_or_else(|| napi::Error::from_reason("state owner sessionsFile is required"))?;
+        let result = match durable_state::load_or_recover_report(&file) {
+            Ok(loaded) => V::object(vec![
+                ("present", V::Bool(loaded.value.is_some())),
+                ("data", loaded.value.unwrap_or(V::Undefined)),
+                ("recovered", V::Bool(loaded.recovered_from.is_some())),
+                (
+                    "recoveredFrom",
+                    loaded
+                        .recovered_from
+                        .map_or(V::Null, |path| V::from(path.to_string_lossy().into_owned())),
+                ),
+            ]),
+            Err(failure) => V::object(vec![
+                ("errorKind", V::string(failure.kind())),
+                ("raw", failure.raw_excerpt().map_or(V::Null, V::from)),
+                ("detail", failure.detail().map_or(V::Null, V::from)),
+            ]),
+        };
+        Ok(anchor.from_value(&result)?.raw())
     }
     #[napi]
     pub fn directory_get(&self, env: Env, id: Unknown<'_>) -> Result<sys::napi_value> {
@@ -1415,88 +1406,17 @@ impl RustSessionRecords {
             .journal
             .clone()
             .ok_or_else(|| napi::Error::from_reason("state owner journalDir is required"))?;
-        let mut replayed = 0u32;
-        let mut skipped = 0u32;
-        let mut crashed = false;
-        let mut messages: Vec<String> = Vec::new();
-        let entries = match fs::read_dir(&journal_dir) {
-            Ok(entries) => entries,
-            Err(_) => {
-                let out = object(anchor)?;
-                out.set(c"replayed", anchor.from_value(&V::Number(0.0))?)?;
-                out.set(c"skipped", anchor.from_value(&V::Number(0.0))?)?;
-                out.set(c"crashed", anchor.from_value(&V::Bool(false))?)?;
-                out.set(c"messages", anchor.from_value(&V::Array(vec![]))?)?;
-                return Ok(out.raw());
-            }
-        };
-        for entry in entries {
-            let Ok(entry) = entry else { continue };
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !state_tx::is_journal_name(&name) {
-                continue;
-            }
-            let full = journal_dir.join(&name);
-            let parsed = match durable_state::read(&full) {
-                Ok(Some(value)) => value,
-                Ok(None) => continue,
-                Err(failure) => {
-                    skipped += 1;
-                    messages.push(format!(
-                        "[state-tx] skipping unreadable journal {name}: {}",
-                        failure.code()
-                    ));
-                    state_tx::move_aside(&full);
-                    continue;
-                }
-            };
-            let decoded = match state_tx::decode(&parsed) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    skipped += 1;
-                    messages.push(format!("[state-tx] apply failed for {name}: {error}"));
-                    state_tx::move_aside(&full);
-                    continue;
-                }
-            };
-            let mut failure = None;
-            let mut applied = 0usize;
-            for file in &decoded.files {
-                if let Err(error) = state_tx::apply_file(file) {
-                    failure = Some(error);
-                    break;
-                }
-                applied += 1;
-                if self.replay_crash_after(applied) {
-                    crashed = true;
-                    break;
-                }
-            }
-            if crashed {
-                break;
-            }
-            match failure {
-                Some(error) => {
-                    skipped += 1;
-                    messages.push(format!("[state-tx] apply failed for {name}: {error}"));
-                    state_tx::move_aside(&full);
-                }
-                None => {
-                    let _ = fs::remove_file(&full);
-                    replayed += 1;
-                    messages.push(format!("[state-tx] replayed journal {name}"));
-                }
-            }
-        }
-        let out = object(anchor)?;
-        out.set(c"replayed", anchor.from_value(&V::Number(replayed as f64))?)?;
-        out.set(c"skipped", anchor.from_value(&V::Number(skipped as f64))?)?;
-        out.set(c"crashed", anchor.from_value(&V::Bool(crashed))?)?;
-        let list = anchor.from_value(&V::Array(vec![]))?;
-        for (index, message) in messages.iter().enumerate() {
-            list.set_element(index as u32, anchor.from_value(&V::string(message))?)?;
-        }
-        out.set(c"messages", list)?;
+        let report =
+            state_tx::replay_journals(&journal_dir, |applied| self.replay_crash_after(applied));
+        let out = anchor.from_value(&V::object(vec![
+            ("replayed", V::Number(f64::from(report.replayed))),
+            ("skipped", V::Number(f64::from(report.skipped))),
+            ("crashed", V::Bool(report.crashed)),
+            (
+                "messages",
+                V::Array(report.messages.into_iter().map(V::from).collect()),
+            ),
+        ]))?;
         Ok(out.raw())
     }
     /// Configure host ports and the durable writer. Absent keys are left
@@ -2624,14 +2544,7 @@ impl RustSessionRecords {
     pub fn turn_list(&self, env: Env) -> Result<sys::napi_value> {
         self.values.drain(&env)?;
         let anchor = self.values.anchor(&env)?;
-        let entries: Vec<RuntimeEntry> = {
-            let table = self.runtime.borrow();
-            table
-                .order
-                .iter()
-                .filter_map(|id| table.map.get(id).cloned())
-                .collect()
-        };
+        let entries: Vec<_> = self.runtime.borrow().entries().cloned().collect();
         let list = anchor.from_value(&V::Array(vec![]))?;
         for (index, entry) in entries.iter().enumerate() {
             let state = self.turn_state_value(&env, anchor, &entry.record, entry.proof.as_ref())?;

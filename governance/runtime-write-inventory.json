@@ -37,7 +37,11 @@
       "sources": [
         {
           "file": "src/session/hibernation.js",
-          "anchor": "if (session.type === 'gateway') return session.cwd || path.join(homeDir(), '.multicc', 'gateway');"
+          "anchor": "case 'gateway': return session.cwd || path.join(homeDir(), '.multicc', 'gateway');"
+        },
+        {
+          "file": "native/gateway/src/ws_chat_native/store.rs",
+          "anchor": "home.join(\".multicc/gateway\")"
         }
       ]
     },

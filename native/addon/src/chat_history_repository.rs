@@ -8,11 +8,13 @@ use crate::{
     node_fs_error,
 };
 use multicc_core::{
-    chat_history_index::{HistoryIndex, IndexError},
-    js::{
-        is_js_whitespace_char, json_parse, json_stringify_or_undefined, JsValue as J,
-        JsValue as SemanticValue,
+    chat_history_file::{
+        encode_rows, safe_stem, scan_json_lines, scan_legacy_array, starts_with_array,
+        transcript_path as history_path, visibility_path, visit_json_object, LegacyError,
+        LineError, Row,
     },
+    chat_history_index::{HistoryIndex, IndexError},
+    js::{is_js_whitespace_char, json_parse, JsValue as J, JsValue as SemanticValue},
     state_file,
 };
 use napi::{
@@ -25,7 +27,7 @@ use std::{
     collections::HashMap,
     ffi::CStr,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -55,16 +57,10 @@ fn json<'a>(value: L<'a>, op: &CStr) -> Result<L<'a>> {
 fn safe_name(a: L<'_>) -> Result<L<'_>> {
     let value = if a.truthy()? { a } else { text(a, "")? };
     let value = a.global()?.get(c"String")?.call_plain(&[value])?;
-    let value = method(
-        value,
-        c"replace",
-        &[regexp(a, "[^A-Za-z0-9_-]", "g")?, text(a, "_")?],
-    )?;
-    Ok(if value.truthy()? {
-        value
-    } else {
-        text(a, "_default")?
-    })
+    let string = value
+        .string()?
+        .ok_or_else(|| Error::from_reason("history repository session name is not a string"))?;
+    text(a, &safe_stem(string.as_units().iter().copied()))
 }
 fn corrupt(a: L<'_>, message: &str) -> Result<Error> {
     let error = a
@@ -244,7 +240,7 @@ impl Task for HistoryPhysicalPageJob {
         {
             return Err(Error::from_reason("HISTORY_INDEX_INVALID_RANGE"));
         }
-        let path = probe_path(&self.root, &self.session_id);
+        let path = history_path(&self.root, &self.session_id);
         let mut file =
             File::open(&path).map_err(|error| physical_index_error(IndexError::Io(error)))?;
         let index = {
@@ -293,28 +289,6 @@ impl Task for HistoryPhysicalPageJob {
     fn resolve(&mut self, _: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
     }
-}
-
-fn probe_path(root: &Path, session_id: &str) -> PathBuf {
-    let safe: String = session_id
-        .encode_utf16()
-        .map(|unit| {
-            if matches!(unit, 0x30..=0x39 | 0x41..=0x5a | 0x61..=0x7a)
-                || unit == u16::from(b'_')
-                || unit == u16::from(b'-')
-            {
-                char::from_u32(u32::from(unit)).unwrap_or('_')
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let safe = if session_id.is_empty() {
-        "_default"
-    } else {
-        &safe
-    };
-    root.join(format!("{}.json", safe))
 }
 
 fn probe_error(
@@ -380,37 +354,6 @@ pub struct HistoryAppendResult {
     pub conflict: bool,
     pub bytes: Option<f64>,
     pub ends: Option<Vec<f64>>,
-}
-
-fn safe_stem(session_id: &str) -> String {
-    let safe: String = session_id
-        .encode_utf16()
-        .map(|unit| {
-            if matches!(unit, 0x30..=0x39 | 0x41..=0x5a | 0x61..=0x7a)
-                || unit == u16::from(b'_')
-                || unit == u16::from(b'-')
-            {
-                char::from_u32(u32::from(unit)).unwrap_or('_')
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if session_id.is_empty() {
-        "_default".to_string()
-    } else {
-        safe
-    }
-}
-
-fn history_path(root: &Path, session_id: &str) -> PathBuf {
-    root.join(format!("{}.json", safe_stem(session_id)))
-}
-
-/// `root/.views/<session>.json`, the same file `path_for(session, true)` names.
-fn visibility_path(root: &Path, session_id: &str) -> PathBuf {
-    root.join(".views")
-        .join(format!("{}.json", safe_stem(session_id)))
 }
 
 /// `mkdirSync(dir, { recursive: true, mode: 0o700 })` semantics from the sync
@@ -602,15 +545,7 @@ fn transcript_bytes(
             None,
         ));
     };
-    let mut out = Vec::new();
-    // 每行的绝对（相对本份字节）行尾偏移：增量账本据此定位截断点。
-    let mut ends = Vec::new();
-    for message in &messages {
-        out.extend_from_slice(json_stringify_or_undefined(message).as_bytes());
-        out.push(b'\n');
-        ends.push(out.len() as u64);
-    }
-    Ok((out, ends))
+    Ok(encode_rows(&messages))
 }
 
 pub struct HistoryWriteJob {
@@ -984,162 +919,6 @@ fn probe_transcript(body: &str, delivery_id: &str) -> std::result::Result<bool, 
     Ok(found)
 }
 
-enum LegacyScanError {
-    Io(std::io::Error),
-    Napi(Error),
-    Invalid,
-    TooLarge,
-}
-
-impl From<std::io::Error> for LegacyScanError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-// Identify the first non-JS-whitespace character without reading a giant
-// one-line legacy array into memory. The caller rewinds before parsing.
-fn starts_with_array(reader: &mut BufReader<File>) -> std::io::Result<bool> {
-    let result = (|| loop {
-        let mut first = [0_u8; 1];
-        if reader.read(&mut first)? == 0 {
-            return Ok(false);
-        }
-        let byte = first[0];
-        if byte.is_ascii() {
-            if is_js_whitespace_char(char::from(byte)) {
-                continue;
-            }
-            return Ok(byte == b'[');
-        }
-        let width = match byte {
-            0xc2..=0xdf => 2,
-            0xe0..=0xef => 3,
-            0xf0..=0xf4 => 4,
-            _ => return Ok(false),
-        };
-        let mut encoded = [0_u8; 4];
-        encoded[0] = byte;
-        match reader.read_exact(&mut encoded[1..width]) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
-            Err(error) => return Err(error),
-        }
-        match std::str::from_utf8(&encoded[..width])
-            .ok()
-            .and_then(|s| s.chars().next())
-        {
-            Some(ch) if is_js_whitespace_char(ch) => continue,
-            _ => return Ok(false),
-        }
-    })();
-    reader.seek(SeekFrom::Start(0))?;
-    result
-}
-
-fn legacy_array_scan(
-    reader: &mut BufReader<File>,
-    mut on_value: impl FnMut(&str, &SemanticValue) -> std::result::Result<(), LegacyScanError>,
-) -> std::result::Result<(), LegacyScanError> {
-    use std::io::Bytes;
-    use std::iter::Peekable;
-    fn whitespace(
-        bytes: &mut Peekable<Bytes<&mut BufReader<File>>>,
-    ) -> std::result::Result<(), LegacyScanError> {
-        loop {
-            match bytes.peek() {
-                Some(Ok(b' ' | b'\n' | b'\r' | b'\t')) => {
-                    bytes.next();
-                }
-                Some(Err(_)) => {
-                    return Err(LegacyScanError::Io(bytes.next().unwrap().unwrap_err()))
-                }
-                _ => return Ok(()),
-            }
-        }
-    }
-    fn next(
-        bytes: &mut Peekable<Bytes<&mut BufReader<File>>>,
-    ) -> std::result::Result<u8, LegacyScanError> {
-        bytes
-            .next()
-            .ok_or(LegacyScanError::Invalid)?
-            .map_err(LegacyScanError::Io)
-    }
-    let mut bytes = reader.bytes().peekable();
-    if matches!(bytes.peek(), Some(Ok(0xef)))
-        && (next(&mut bytes)? != 0xef || next(&mut bytes)? != 0xbb || next(&mut bytes)? != 0xbf)
-    {
-        return Err(LegacyScanError::Invalid);
-    }
-    whitespace(&mut bytes)?;
-    if next(&mut bytes)? != b'[' {
-        return Err(LegacyScanError::Invalid);
-    }
-    let mut first = true;
-    loop {
-        whitespace(&mut bytes)?;
-        if matches!(bytes.peek(), Some(Ok(b']'))) {
-            if !first {
-                return Err(LegacyScanError::Invalid);
-            }
-            bytes.next();
-            break;
-        }
-        let mut entry = Vec::new();
-        let mut depth = 0usize;
-        let mut quoted = false;
-        let mut escaped = false;
-        loop {
-            let byte = match bytes.peek() {
-                Some(Ok(byte)) => *byte,
-                Some(Err(_)) => {
-                    return Err(LegacyScanError::Io(bytes.next().unwrap().unwrap_err()))
-                }
-                None => return Err(LegacyScanError::Invalid),
-            };
-            if !quoted && depth == 0 && (byte == b',' || byte == b']') {
-                break;
-            }
-            next(&mut bytes)?;
-            entry.push(byte);
-            if entry.len() as u64 > multicc_core::chat_history_index::MAX_INDEX_RECORD_BYTES {
-                return Err(LegacyScanError::TooLarge);
-            }
-            if quoted {
-                if escaped {
-                    escaped = false;
-                } else if byte == b'\\' {
-                    escaped = true;
-                } else if byte == b'"' {
-                    quoted = false;
-                }
-            } else {
-                match byte {
-                    b'"' => quoted = true,
-                    b'[' | b'{' => depth += 1,
-                    b']' | b'}' if depth > 0 => depth -= 1,
-                    _ => {}
-                }
-            }
-        }
-        let source = String::from_utf8_lossy(&entry);
-        let value = json_parse(&source).map_err(|_| LegacyScanError::Invalid)?;
-        on_value(&source, &value)?;
-        match next(&mut bytes)? {
-            b']' => break,
-            b',' => first = false,
-            _ => return Err(LegacyScanError::Invalid),
-        }
-    }
-    whitespace(&mut bytes)?;
-    match bytes.next() {
-        None => Ok(()),
-        Some(Err(error)) => Err(LegacyScanError::Io(error)),
-        Some(Ok(_)) => Err(LegacyScanError::Invalid),
-    }
-}
-
 // Same napi-boundary error type as `probe_transcript`; see the note there.
 #[allow(clippy::result_large_err)]
 fn probe_legacy_array(
@@ -1147,14 +926,14 @@ fn probe_legacy_array(
     delivery_id: &str,
 ) -> std::result::Result<bool, HistoryProbeError> {
     let mut found = false;
-    match legacy_array_scan(reader, |_, value| {
-        found |= probe_value(value, delivery_id) == Some(true);
-        Ok(())
+    match scan_legacy_array(reader, |_, value| {
+        found |= probe_value(&value, delivery_id) == Some(true);
+        Ok::<(), LegacyError<std::convert::Infallible>>(())
     }) {
         Ok(()) => Ok(found),
-        Err(LegacyScanError::Io(error)) => Err(io_probe(error, "read", None)),
-        Err(LegacyScanError::Napi(_)) => unreachable!("the probe callback does not use N-API"),
-        Err(LegacyScanError::TooLarge) => Err(probe_error(
+        Err(LegacyError::Io(error)) => Err(io_probe(error, "read", None)),
+        Err(LegacyError::Callback(never)) => match never {},
+        Err(LegacyError::TooLarge) => Err(probe_error(
             "Error",
             "[session] legacy history record exceeds the read budget".to_string(),
             "CHAT_HISTORY_RECORD_TOO_LARGE",
@@ -1162,7 +941,7 @@ fn probe_legacy_array(
             None,
             None,
         )),
-        Err(LegacyScanError::Invalid) => {
+        Err(LegacyError::Invalid) => {
             reader
                 .seek(SeekFrom::Start(0))
                 .map_err(|error| io_probe(error, "read", None))?;
@@ -1195,73 +974,33 @@ fn probe_file(file: File, delivery_id: &str) -> std::result::Result<bool, Histor
     if starts_with_array(&mut reader).map_err(|error| io_probe(error, "read", None))? {
         return probe_legacy_array(&mut reader, delivery_id);
     }
-    let mut line = Vec::new();
-    let mut line_number = 0usize;
-    let mut parsed_count = 0usize;
     let mut found = false;
-    let mut started = false;
-    loop {
-        line.clear();
-        let count = (&mut reader)
-            .take(multicc_core::chat_history_index::MAX_INDEX_RECORD_BYTES + 1)
-            .read_until(b'\n', &mut line)
-            .map_err(|error| io_probe(error, "read", None))?;
-        if count == 0 {
-            break;
-        }
-        if count as u64 > multicc_core::chat_history_index::MAX_INDEX_RECORD_BYTES {
-            return Err(probe_error(
-                "Error",
-                "[session] history record exceeds the read budget".to_string(),
-                "CHAT_HISTORY_RECORD_TOO_LARGE",
-                None,
-                None,
-                None,
-            ));
-        }
-        line_number += 1;
-        let complete = line.last() == Some(&b'\n');
-        if complete {
-            line.pop();
-        }
-        let text = String::from_utf8_lossy(&line);
-        let text = if line_number == 1 {
-            text.strip_prefix('\u{feff}').unwrap_or(&text)
-        } else {
-            &text
-        };
-        let first = text.chars().find(|ch| !is_js_whitespace_char(*ch));
-        if !started && first.is_some() {
-            started = true;
-        }
-        if first.is_none() {
-            continue;
-        }
-        let torn = !complete && parsed_count > 0;
-        let value = match json_parse(text) {
-            Ok(value) => value,
-            Err(_) if torn => break,
-            Err(_) => {
-                return Err(corrupt_probe(&format!(
-                    "chat history line {line_number} is not valid JSON"
-                )))
-            }
-        };
-        if !matches!(value, SemanticValue::Object(_)) {
-            if torn {
-                break;
-            }
-            return Err(corrupt_probe(&format!(
-                "chat history line {line_number} is not a message object"
-            )));
-        }
-        parsed_count += 1;
-        found |= probe_value(&value, delivery_id) == Some(true);
+    let result = scan_json_lines(
+        &mut reader,
+        false,
+        Some(multicc_core::chat_history_index::MAX_INDEX_RECORD_BYTES),
+        |line| {
+            Ok::<_, std::convert::Infallible>(visit_json_object(line, |value| {
+                found |= probe_value(&value, delivery_id) == Some(true);
+            }))
+        },
+    );
+    match result {
+        Ok(()) => Ok(found),
+        Err(LineError::Io(error)) => Err(io_probe(error, "read", None)),
+        Err(LineError::Callback(never)) => match never {},
+        Err(LineError::TooLarge) => Err(probe_error(
+            "Error",
+            "[session] history record exceeds the read budget".to_string(),
+            "CHAT_HISTORY_RECORD_TOO_LARGE",
+            None,
+            None,
+            None,
+        )),
+        Err(error) => Err(corrupt_probe(
+            &error.corruption_message().expect("corruption"),
+        )),
     }
-    if !started {
-        return Err(corrupt_probe("chat history file is empty"));
-    }
-    Ok(found)
 }
 
 impl Task for DeliveryProbeJob {
@@ -1269,7 +1008,7 @@ impl Task for DeliveryProbeJob {
     type JsValue = HistoryProbeResult;
 
     fn compute(&mut self) -> Result<HistoryProbeResult> {
-        let path = probe_path(&self.root, &self.session_id);
+        let path = history_path(&self.root, &self.session_id);
         let file = match File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1636,29 +1375,29 @@ impl<'a> Repository<'a> {
         line: &str,
         object_only: bool,
         canonicalize: bool,
-    ) -> Result<u8> {
+    ) -> Result<Row> {
         let mut scope = std::ptr::null_mut();
         napi::check_status!(unsafe { sys::napi_open_handle_scope(self.anchor.env(), &mut scope) })?;
-        let parsed = (|| -> Result<u8> {
+        let parsed = (|| -> Result<Row> {
             let mut value = match self
                 .anchor
                 .catch(|| json(text(self.anchor, line)?, c"parse"))?
             {
                 Some(value) => value,
-                None => return Ok(0),
+                None => return Ok(Row::InvalidJson),
             };
             if object_only
                 && (!value.truthy()?
                     || value.kind()? != sys::ValueType::napi_object
                     || value.is_array()?)
             {
-                return Ok(1);
+                return Ok(Row::InvalidObject);
             }
             if canonicalize {
                 value = json(json(value, c"stringify")?, c"parse")?;
             }
             method(messages, c"push", &[value])?;
-            Ok(2)
+            Ok(Row::Accepted)
         })();
         napi::check_status!(unsafe { sys::napi_close_handle_scope(self.anchor.env(), scope) })?;
         parsed
@@ -1672,23 +1411,21 @@ impl<'a> Repository<'a> {
             .map_err(|error| self.throw_io(error, "read", None, None))?
         {
             let messages = array(self.anchor)?;
-            match legacy_array_scan(&mut reader, |source, _| {
+            match scan_legacy_array(&mut reader, |source, _| {
                 match self
                     .parse_row(messages, source, false, canonicalize)
-                    .map_err(LegacyScanError::Napi)?
+                    .map_err(LegacyError::Callback)?
                 {
-                    2 => Ok(()),
-                    _ => Err(LegacyScanError::Invalid),
+                    Row::Accepted => Ok(()),
+                    _ => Err(LegacyError::Invalid),
                 }
             }) {
                 Ok(()) => return Ok(messages),
-                Err(LegacyScanError::Io(error)) => {
-                    return Err(self.throw_io(error, "read", None, None))
-                }
-                Err(LegacyScanError::Napi(error)) => return Err(error),
+                Err(LegacyError::Io(error)) => return Err(self.throw_io(error, "read", None, None)),
+                Err(LegacyError::Callback(error)) => return Err(error),
                 // Preserve exact JS syntax errors and unusually large legacy
                 // records through the existing full parser; never discard them.
-                Err(LegacyScanError::Invalid | LegacyScanError::TooLarge) => {
+                Err(LegacyError::Invalid | LegacyError::TooLarge) => {
                     reader
                         .seek(SeekFrom::Start(0))
                         .map_err(|error| self.throw_io(error, "read", None, None))?;
@@ -1707,55 +1444,19 @@ impl<'a> Repository<'a> {
             }
         }
         let messages = array(self.anchor)?;
-        let mut line = Vec::new();
-        let mut line_number = 0usize;
-        let mut parsed_count = 0usize;
-        let mut started = false;
-        loop {
-            line.clear();
-            let count = reader
-                .read_until(b'\n', &mut line)
-                .map_err(|error| self.throw_io(error, "read", None, None))?;
-            if count == 0 {
-                break;
-            }
-            line_number += 1;
-            let complete = line.last() == Some(&b'\n');
-            if complete {
-                line.pop();
-            }
-            let line = String::from_utf8_lossy(&line);
-            let line = if line_number == 1 {
-                line.strip_prefix('\u{feff}').unwrap_or(&line)
-            } else {
-                &line
-            };
-            if line.chars().all(is_js_whitespace_char) {
-                continue;
-            }
-            started = true;
-            let torn = !complete && parsed_count > 0;
-            match self.parse_row(messages, line, true, canonicalize)? {
-                2 => parsed_count += 1,
-                _ if torn => break,
-                0 => {
-                    return Err(corrupt(
-                        self.anchor,
-                        &format!("chat history line {line_number} is not valid JSON"),
-                    )?)
-                }
-                _ => {
-                    return Err(corrupt(
-                        self.anchor,
-                        &format!("chat history line {line_number} is not a message object"),
-                    )?)
-                }
-            }
+        match scan_json_lines(&mut reader, allow_empty, None, |line| {
+            self.parse_row(messages, line, true, canonicalize)
+        }) {
+            Ok(()) => Ok(messages),
+            Err(LineError::Io(error)) => Err(self.throw_io(error, "read", None, None)),
+            Err(LineError::Callback(error)) => Err(error),
+            Err(error) => Err(corrupt(
+                self.anchor,
+                &error
+                    .corruption_message()
+                    .expect("unbounded scan corruption"),
+            )?),
         }
-        if !started && !allow_empty {
-            return Err(corrupt(self.anchor, "chat history file is empty")?);
-        }
-        Ok(messages)
     }
     fn read_visibility(&self, session: L<'a>) -> Result<L<'a>> {
         let path = self.path_for(session, true)?;

@@ -1176,26 +1176,8 @@ function createChatTurnEngine(deps) {
       persisted.cliSessionId = crypto.randomUUID();
       savePersistedSessionsBestEffort('runtime.chat-session-id-allocate');
     }
-    if (!cs) {
-      const csCli = persisted.cli || 'claude';
-      const hist = initialHistory || viewChatHistory(sessionName);
-      cs = {
-        clients: replay.clientsOf(sessionName),
-        claudeProc: null,
-        lineBuf: '',
-        cli: csCli,
-        chatTurnCount: hist.filter(m => m.role === 'assistant').length,
-        cwd: cwdForSession(persisted),
-        currentAssistantText: '',
-        currentToolCalls: [],
-        currentCost: null,
-        isStreaming: false,
-        _classifyTimer: null,
-        _classifyTaskId: null,
-        _currentTaskId: taskContextHost.restore(hist),
-      };
-      chatSessions.set(sessionName, cs);
-    }
+    if (!cs) cs = restoreLiveChatSession(sessionName, persisted.cli, cwdForSession(persisted),
+      initialHistory || viewChatHistory(sessionName));
     if (cs && persisted.workspaceState === 'awake' && persisted.worktreePath) cs.cwd = cwdForSession(persisted) || cs.cwd;
 
     cancelClassify(cs);
@@ -2650,6 +2632,17 @@ function createChatTurnEngine(deps) {
     }
   }
 
+  function restoreLiveChatSession(sessionName, cli, cwd, history) {
+    // 现有历史是 V8 对象数组，原生层只接收计数和恢复事实。
+    const assistantTurns = history.filter(message => message.role === 'assistant').length;
+    const state = {
+      clients: replay.clientsOf(sessionName),
+      ...getNative().chatSeedLiveSession(assistantTurns, cli, cwd, taskContextHost.restore(history)),
+    };
+    chatSessions.set(sessionName, state);
+    return state;
+  }
+
   // ── Chat mode: stream-json WebSocket ──
   async function handleChatWs(ws, req, urlObj) {
     const sessionName = urlObj.searchParams.get('session') || '_default';
@@ -2664,21 +2657,12 @@ function createChatTurnEngine(deps) {
       }
     }
     const persisted = persistedSessions.get(sessionName);
-    if (!persisted || isInternalExecutionSlot(persisted)) {
-      sendWs(ws, { type: 'error', code: 'session_not_found', error:
-        `Chat session "${sessionName}" does not exist. Create it via the dashboard first.` });
-      ws.close();
-      return;
-    }
-    if (persisted.kind && persisted.kind !== 'chat') {
-      sendWs(ws, { type: 'error', error:
-        `Session "${sessionName}" is not a chat session (kind=${persisted.kind}).` });
-      ws.close();
-      return;
-    }
-    if (invalidSessions.has(sessionName)) {
-      sendWs(ws, { type: 'error', error:
-        `会话已失效（${invalidSessions.get(sessionName)}），请删除后重建。` });
+    const openError = getNative().chatWsOpenError(
+      sessionName, !!persisted, isInternalExecutionSlot(persisted), persisted?.kind,
+      invalidSessions.has(sessionName) ? String(invalidSessions.get(sessionName)) : null,
+    );
+    if (openError) {
+      sendWs(ws, openError);
       ws.close();
       return;
     }
@@ -2698,23 +2682,7 @@ function createChatTurnEngine(deps) {
         persisted.cliSessionId = crypto.randomUUID();
         savePersistedSessionsBestEffort('websocket.chat-session-id-allocate');
       }
-      const history = viewChatHistory(sessionName);
-      cs = {
-        clients: replay.clientsOf(sessionName),
-        claudeProc: null,   // (kept name for backwards compat in rest of handler; holds any cli child proc)
-        lineBuf: '',
-        cli,
-        chatTurnCount: history.filter(m => m.role === 'assistant').length,
-        cwd,
-        currentAssistantText: '',
-        currentToolCalls: [],
-        currentCost: null,
-        isStreaming: false,
-        _classifyTimer: null,
-        _classifyTaskId: null,
-        _currentTaskId: taskContextHost.restore(history),
-      };
-      chatSessions.set(sessionName, cs);
+      cs = restoreLiveChatSession(sessionName, cli, cwd, viewChatHistory(sessionName));
     }
 
     if (Number.isInteger(ws._multiccConnId)) replay.join(sessionName, ws._multiccConnId);
@@ -2878,54 +2846,52 @@ function createChatTurnEngine(deps) {
       try {
         const msg = JSON.parse(raw.toString());
         // Native policy keeps heartbeat before the share permission gate.
-        const controlAction = getNative().chatWsControlAction(typeof msg.type === 'string' ? msg.type : '',
-          typeof ws._sharePerm === 'string' ? ws._sharePerm : '');
+        const native = getNative();
+        const messageType = typeof msg.type === 'string' ? msg.type : '';
+        const sharePermission = typeof ws._sharePerm === 'string' ? ws._sharePerm : '';
+        const controlAction = native.chatWsControlAction(messageType, sharePermission);
         if (controlAction === 'pong') {
           try { sendWs(ws, { type: 'pong' }); } catch (_) {}
           return;
         }
-        // ── Share-scope gate ──
-        // View is read-only; operate permits user_message/cancel/typing only.
         if (controlAction === 'ignore') return;
-        if ((taskContextHost?.requiresTaskShell?.(sessionName) || taskContextHost?.ownsTaskShell?.(sessionName)) && msg.type !== 'typing') {
-          // The task-shell entry is where this gate sends users, so its own display
-          // controls (clear display / rotate native context) must get through.
-          if (!ws._sharePerm && shellId && msg.type === 'clear_history') {
-            if (msg.preserveHistory === true) await getChatHistoryRuntime().clearHistory(sessionName, msg, cs);
-            else {
-              const cleared = await taskContextHost.clearTaskShellHistory(shellId, sessionName,
-                Math.max(0, parseInt(msg.keep, 10) || 0), { limit: CHAT_HISTORY_PAGE });
-              chatBroadcast(sessionName, { type: 'chat_history_reset', shellId, displayOnly: true, ...cleared });
-            }
-            return;
+        const needsTaskShell = !!(taskContextHost?.requiresTaskShell?.(sessionName)
+          || taskContextHost?.ownsTaskShell?.(sessionName));
+        const command = native.chatWsCommand(messageType, sharePermission, needsTaskShell,
+          !!shellId, msg.taskShell === true, !!msg.text);
+        if (command === 'clearShellHistory') {
+          if (msg.preserveHistory === true) await getChatHistoryRuntime().clearHistory(sessionName, msg, cs);
+          else {
+            const cleared = await taskContextHost.clearTaskShellHistory(shellId, sessionName,
+              Math.max(0, parseInt(msg.keep, 10) || 0), { limit: CHAT_HISTORY_PAGE });
+            chatBroadcast(sessionName, { type: 'chat_history_reset', shellId, displayOnly: true, ...cleared });
           }
-          // Share guests with operate permission send plain user_message/cancel
-          // (no taskShell flag) — route them through the same task-shell input
-          // path instead of bouncing them to the task entry, which they cannot use.
-          const shareOperateInput = ws._sharePerm === 'operate' && ['user_message', 'cancel'].includes(msg.type);
-          if (shareOperateInput || (!ws._sharePerm && msg.taskShell === true && ['user_message', 'cancel'].includes(msg.type))) {
-            try {
-              const result = await taskContextHost.sendTaskShellInput(sessionName, msg, shellId);
-              sendWs(ws, { type: 'task_shell_routed', ...result });
-            } catch (error) {
-              sendWs(ws, { type: 'error', code: error.code || 'task_shell_failed', error: error.message,
-                clientMsgId: msg.clientMsgId, receiptId: error.receiptId,
-                notDelivered: error.notDelivered === true || (!error.receiptId && error.status < 500) });
-            }
-            return;
+          return;
+        }
+        if (command === 'routeShellInput') {
+          try {
+            const result = await taskContextHost.sendTaskShellInput(sessionName, msg, shellId);
+            sendWs(ws, { type: 'task_shell_routed', ...result });
+          } catch (error) {
+            sendWs(ws, { type: 'error', code: error.code || 'task_shell_failed', error: error.message,
+              clientMsgId: msg.clientMsgId, receiptId: error.receiptId,
+              notDelivered: error.notDelivered === true || (!error.receiptId && error.status < 500) });
           }
+          return;
+        }
+        if (command === 'requireShellRoute') {
           sendWs(ws, { type: 'error', code: 'task_shell_route_required', error: '请从任务会话入口发送消息或操作任务。',
             url: `/chat.html?session=${encodeURIComponent(sessionName)}` });
           return;
         }
 
         // Typing signal: user is composing → cancel pending intent classify
-        if (msg.type === 'typing') {
+        if (command === 'typing') {
           cancelClassify(cs);
           return;
         }
 
-        if (msg.type === 'cancel') {
+        if (command === 'cancel') {
           // Web/App stop button. operationId (when the client sends one) makes a
           // reconnect-retry join the same cancel operation instead of starting a
           // second one; without it the in-flight map still dedupes by session.
@@ -2936,19 +2902,19 @@ function createChatTurnEngine(deps) {
           return;
         }
 
-        if (msg.type === 'clear_history') {
+        if (command === 'clearHistory') {
           await getChatHistoryRuntime().clearHistory(sessionName, msg, cs);
           return;
         }
 
-        if (msg.type === 'user_message' && msg.text) {
+        if (command === 'message') {
           // Gateway: a bare 确认/取消 resolves a pending dispatch without running the LLM.
           if (persisted.type === 'gateway' && handleGatewayControl(msg.text, sessionName)) return;
           // Non-browser clients may still send the input-box control as a
           // user_message. Treat it exactly like the cancel transport event so
           // it resets the active scheduler slot to classify E without reaching
           // the model or joining FIFO.
-          if (/^cancel$/i.test(String(msg.text).trim())) {
+          if (native.chatWsIsLegacyCancel(String(msg.text))) {
             await getSessionWorkHost().cancelActiveTurn(sessionName, {
               source: 'manual_cancel',
             });

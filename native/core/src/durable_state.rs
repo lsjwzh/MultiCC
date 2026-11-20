@@ -53,15 +53,15 @@ fn rotate_backups(file: &Path, rotate: usize) {
 /// information the Node `CorruptedStateError` carried (`file`, `raw`).
 #[derive(Clone, Debug)]
 pub enum LoadFailure {
-    Unreadable,
-    Corrupt { raw: String },
+    Unreadable { detail: String },
+    Corrupt { raw: String, detail: String },
     MissingEnvelope,
 }
 
 impl LoadFailure {
     pub fn kind(&self) -> &'static str {
         match self {
-            LoadFailure::Unreadable => "unreadable",
+            LoadFailure::Unreadable { .. } => "unreadable",
             LoadFailure::Corrupt { .. } => "corrupt",
             LoadFailure::MissingEnvelope => "envelope",
         }
@@ -69,13 +69,21 @@ impl LoadFailure {
     /// `raw.slice(0, 200)` for a parse failure.
     pub fn raw_excerpt(&self) -> Option<&str> {
         match self {
-            LoadFailure::Corrupt { raw } => Some(raw),
+            LoadFailure::Corrupt { raw, .. } => Some(raw),
             _ => None,
+        }
+    }
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            LoadFailure::Unreadable { detail } | LoadFailure::Corrupt { detail, .. } => {
+                Some(detail)
+            }
+            LoadFailure::MissingEnvelope => None,
         }
     }
     pub fn code(&self) -> &'static str {
         match self {
-            LoadFailure::Unreadable => "STATE_UNREADABLE: unreadable state file",
+            LoadFailure::Unreadable { .. } => "STATE_UNREADABLE: unreadable state file",
             LoadFailure::Corrupt { .. } => "STATE_CORRUPTED: corrupt state JSON",
             LoadFailure::MissingEnvelope => "STATE_CORRUPTED: state envelope missing",
         }
@@ -95,14 +103,19 @@ pub fn read(file: &Path) -> Result<Option<JsValue>, LoadFailure> {
     let bytes = match fs::read(file) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(LoadFailure::Unreadable),
+        Err(error) => {
+            return Err(LoadFailure::Unreadable {
+                detail: error.to_string(),
+            })
+        }
     };
     let text = String::from_utf8_lossy(&bytes);
     let value = match js::json_parse(&text) {
         Ok(value) => value,
-        Err(_) => {
+        Err(error) => {
             return Err(LoadFailure::Corrupt {
                 raw: text.chars().take(200).collect(),
+                detail: error.to_string(),
             })
         }
     };

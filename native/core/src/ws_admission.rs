@@ -296,7 +296,7 @@ fn required_text(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
 
-fn ticket_from(value: &Value) -> Option<Ticket> {
+pub fn ticket_from(value: &Value) -> Option<Ticket> {
     if !value.is_object() {
         return None;
     }

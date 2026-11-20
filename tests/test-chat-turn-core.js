@@ -1291,8 +1291,10 @@ test('hard turn-control paths terminalize the provider attempt before teardown o
   assert.match(source, /finishProviderAttempt: \(runner, outcome, facts\) =>/,
     'the adapter reducer must close the provider attempt through a host port');
 
-  const clearStart = source.indexOf("if (msg.type === 'clear_history')");
-  const clearEnd = source.indexOf("if (msg.type === 'user_message'", clearStart);
+  const { getNative } = require('../src/native/runtime');
+  assert.equal(getNative().chatWsCommand('clear_history', '', false, false, false, false), 'clearHistory');
+  const clearStart = source.indexOf("if (command === 'clearHistory')");
+  const clearEnd = source.indexOf("if (command === 'message')", clearStart);
   const clearBody = source.slice(clearStart, clearEnd);
   assert.ok(clearStart >= 0 && clearEnd > clearStart);
   assert.match(clearBody, /clearHistory\(sessionName, msg, cs\)/);
@@ -1372,10 +1374,15 @@ test('a turn refreshes a stale chat cwd before spawning the CLI', () => {
   const end = source.indexOf('function runChatTurnStreaming(', start);
   assert.ok(start >= 0 && end > start);
   const body = source.slice(start, end);
-  const created = body.indexOf('chatSessions.set(sessionName, cs)');
+  const created = body.indexOf('if (!cs) cs = restoreLiveChatSession(sessionName');
   const refreshed = body.indexOf("cs.cwd = cwdForSession(persisted)");
   assert.ok(created >= 0 && refreshed > created,
     'the cached cwd must be re-resolved after the chat state exists');
+  const restoreStart = source.indexOf('function restoreLiveChatSession(');
+  const restoreEnd = source.indexOf('async function handleChatWs(', restoreStart);
+  assert.ok(restoreStart >= 0 && restoreEnd > restoreStart);
+  assert.match(source.slice(restoreStart, restoreEnd), /chatSessions\.set\(sessionName, state\);\s*return state;/,
+    'the restore helper must install the same state that the turn refreshes');
   // The CLI-switch path does the same before reusing the chat state.
   const switchSource = fs.readFileSync('src/cli/switch-runtime.js', 'utf8');
   assert.match(switchSource, /chat\.cwd = cwd/);

@@ -24,18 +24,6 @@ function createHarness(t, overrides = {}) {
   fs.writeFileSync(paths.sessionsFile, 'legacy-source');
   const calls = [];
   const logs = [];
-  const stores = {
-    sessions: {
-      loadOrRecover: overrides.loadSessions || (() => ({ present: true, data: [] })),
-      save() {},
-    },
-  };
-  const stateStore = {
-    createStore(spec) {
-      calls.push({ type: 'store', spec });
-      return stores[spec.kind];
-    },
-  };
   const stateOwner = {
     replayJournals() {
       calls.push({ type: 'replay' });
@@ -43,6 +31,11 @@ function createHarness(t, overrides = {}) {
         replayed: 0, skipped: 0, messages: [],
         ...(overrides.replay || {}),
       };
+    },
+    loadSessions() {
+      calls.push({ type: 'loadSessions', file: paths.sessionsFile });
+      if (overrides.loadSessions) return overrides.loadSessions();
+      return { present: true, data: [] };
     },
     loadDirectories() {
       calls.push({ type: 'loadDirectories', file: paths.directoriesFile });
@@ -65,12 +58,11 @@ function createHarness(t, overrides = {}) {
     error: message => logs.push(`error:${message}`),
   };
   return {
-    root, paths, calls, logs, stores, stateStore, stateOwner, chatHistoryRepository, logger,
+    root, paths, calls, logs, stateOwner, chatHistoryRepository, logger,
     run(extra = {}) {
       return bootstrapState({
         fs,
         paths,
-        stateStore,
         stateOwner,
         chatHistoryRepository,
         logger,
@@ -125,16 +117,14 @@ test('bootstrap replays journals, constructs stores and loads the current schema
   });
   const result = harness.run();
 
-  assert.equal(result.sessionsStore, harness.stores.sessions);
   assert.equal(result.state.persistedSessions.get('s1').kind, 'chat');
   assert.equal(result.state.needsSave, false);
   assert.equal(result.state.needsDefaultDirectory, false);
-  assert.deepEqual(harness.calls.slice(0, 3).map(call => call.type),
-    ['store', 'replay', 'loadDirectories'],
-    'journals replay before either file is read, and the native owner loads directories');
-  assert.deepEqual(harness.calls[0].spec, {
-    file: harness.paths.sessionsFile, kind: 'sessions', schemaVersion: 1, legacyIsArray: true,
-  });
+  assert.deepEqual(harness.calls, [
+    { type: 'replay' },
+    { type: 'loadSessions', file: harness.paths.sessionsFile },
+    { type: 'loadDirectories', file: harness.paths.directoriesFile },
+  ], 'journals replay before the native owner loads either file');
   assert.equal(harness.logs.includes('log:journal detail'), true);
   assert.equal(harness.logs.some(line => /1 replayed, 2 skipped/.test(line)), true);
   assert.equal(harness.logs.some(line => /Loaded 1 directories, 1 session/.test(line)), true);

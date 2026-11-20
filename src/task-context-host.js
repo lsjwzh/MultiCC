@@ -3,6 +3,7 @@
 const { scopeHostProviderEvent } = require('./chat/provider-attempt-runtime');
 const { SYSTEM_PREFIX } = require('./session/delivery');
 const unattendedKernel = require('./unattended/kernel');
+const { getNative } = require('./native/runtime');
 
 // "Real user" = a message a human typed. Host-authored deliveries all carry one
 // of the markers below (or the 🔇 system prefix the delivery boundary stamps),
@@ -44,12 +45,9 @@ function createTaskContextHost(options = {}) {
 
   function restore(history) {
     if (!Array.isArray(history)) return null;
-    for (let index = history.length - 1; index >= 0; index -= 1) {
-      const message = history[index];
-      if (message?.taskDetached === true) return null;
-      if (message?.taskId) return message.taskId;
-    }
-    return null;
+    // 历史当前在 V8 中。只传最后一条候选给 Rust，避免逐条跨边界读取。
+    const candidate = history.findLast(message => message?.taskDetached === true || message?.taskId);
+    return getNative().chatRestoreTask(candidate);
   }
 
   function dispatchSpec(opts = {}) {

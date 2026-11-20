@@ -13,6 +13,7 @@ const { EventEmitter } = require('node:events');
 const { createSessionPersistence, PersistenceError } = require('../src/session/persistence');
 const { createTaskStateStore } = require('../src/routes/task-state-store');
 const { createStore, CorruptedStateError } = require('../src/state/store');
+const { createStateOwner } = require('../src/state/owner');
 const { createSessionRecords, recordsOf, appendClassifyHistory, resetTaskState } = require('./helpers/session-records');
 
 function tempRoot(t) {
@@ -86,7 +87,7 @@ test('a legacy bare-array file loads through the boot adapter and saves as the n
   const file = path.join(root, 'sessions.json');
   const legacyData = [{ id: 'old', cwd: '/tmp/x', createdAt: 7 }];
   fs.writeFileSync(file, JSON.stringify(legacyData));
-  const loaded = createStore({ file, kind: 'sessions' }).load();
+  const loaded = createStateOwner().configure({ sessionsFile: file }).loadSessions();
   assert.equal(loaded.present, true);
   assert.deepEqual(loaded.data, legacyData);
   const records = createSessionRecords(new Map(loaded.data.map(record => [record.id, record])));
@@ -110,6 +111,10 @@ test('a corrupt primary recovers from .bak1 and the next save rotates it intact'
   const recovered = store.loadOrRecover();
   assert.equal(recovered.recovered, true);
   assert.deepEqual(recovered.data, [{ id: 'kept' }]);
+  const nativeRecovered = createStateOwner().configure({ sessionsFile: file }).loadSessions();
+  assert.equal(nativeRecovered.recovered, true);
+  assert.equal(nativeRecovered.recoveredFrom, `${file}.bak1`);
+  assert.deepEqual(nativeRecovered.data, recovered.data);
   fs.writeFileSync(file, JSON.stringify({ __multiccSchema: { kind: 'sessions', version: 1, writtenAt: 'x' }, data: recovered.data }));
   const records = createSessionRecords(new Map(recovered.data.map(record => [record.id, record])));
   filePersistence(records, file).mutate('http.save', map => map.get('kept').note = 'restored');
@@ -126,6 +131,10 @@ test('a partially written file with no backup fails closed and never silently st
   fs.writeFileSync(file, '[{"id":"a","label":"trunc');
   const store = createStore({ file, kind: 'sessions' });
   assert.throws(() => store.loadOrRecover(), CorruptedStateError);
+  const owner = createStateOwner().configure({ sessionsFile: file });
+  assert.throws(() => owner.loadSessions(), error => error instanceof CorruptedStateError
+    && error.file === file && error.raw === '[{"id":"a","label":"trunc'
+    && /position \d+/.test(error.message));
   assert.equal(fs.readFileSync(file, 'utf8'), '[{"id":"a","label":"trunc', 'nothing rewrote the damaged file');
 });
 

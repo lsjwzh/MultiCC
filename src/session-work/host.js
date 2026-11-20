@@ -10,6 +10,7 @@ const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
 const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
 const { processAlive } = require('../session/runtime-busy');
+const { getNative } = require('../native/runtime');
 
 // Outbox id of a dispatch result (operation-service completeOperationDraft).
 const DISPATCH_RESULT_ENTRY = /^operation:[^:]+:result(?::\d+)?$/;
@@ -944,7 +945,7 @@ function createSessionWorkHost(deps = {}) {
       }
     }
     state.isStreaming = false;
-    // The replay buffer is native state behind the replay hub (src/chat/replay-hub.js);
+    // The replay buffer is native state behind the WS host (src/ws/ws-host.js);
     // clearing the chat state's retired `streamReplay` array would fork it.
     deps.replay.clear(sessionId);
     // Persisting the partial reply is transcript bookkeeping, not status, and it
@@ -988,13 +989,15 @@ function createSessionWorkHost(deps = {}) {
     // supervisor already handled and silently swallows the continuation.
     const taskStateBeforeCancel = deps.getTaskState(deps.getRecord(sessionId)) || {};
     const activeTurnBeforeCancel = chatStateBeforeCancel?._activeTurn || null;
-    const recoveringTurn = !!activeTurnBeforeCancel || !!activeBeforeCancel
-      || isProcessingLetter(taskStateBeforeCancel.classifyState);
-    let turnId = activeTurnBeforeCancel?.turnId || null;
-    if (!turnId && isProcessingLetter(taskStateBeforeCancel.classifyState)) {
-      turnId = taskStateBeforeCancel.activeTurnId || null;
-    }
-    if (!turnId && recoveringTurn) {
+    const classifyState = taskStateBeforeCancel.classifyState;
+    const identity = getNative().chatCancelTurnIdentity(
+      !!activeTurnBeforeCancel, !!activeTurnBeforeCancel?.turnId, !!activeBeforeCancel,
+      !!taskStateBeforeCancel.activeTurnId, typeof classifyState === 'string' ? classifyState : '',
+    );
+    let turnId = null;
+    if (identity === 'live') turnId = activeTurnBeforeCancel.turnId;
+    if (identity === 'persistedActive') turnId = taskStateBeforeCancel.activeTurnId;
+    if (identity === 'recovery') {
       // Older records (or a turn that died before the start write landed) have
       // no in-flight identity. A recovery cancel is a NEW attempt to resume, so
       // it gets a fresh unique id — never the stale completed-turn id.
