@@ -419,18 +419,48 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // the task-state store's live broadcast must send the SAME frame,
   // because they once drifted and a reopened page lost the last API error (the
   // seed omitted apiError, and api_error_policy events are never replayed).
+  // The builder moved to multicc_core::chat_task_state_frame, so the fields are
+  // pinned there now — on the kernel and on the frozen corpus rather than on a
+  // JavaScript source line, which is what keeps the two producers honest.
   const payload = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'task-state-payload.js'), 'utf8');
-  assert.ok(payload.includes('taskShortCode: taskShortCode(next.taskId)'));
-  assert.ok(payload.includes('...auxVerdictStaleness()'));
-  assert.ok(payload.includes('apiError: next.apiError || null'),
-    'the persisted error envelope is a reopened page`s only way to re-render the bar');
-  assert.ok(payload.includes('cancelledAt: next.cancelledAt || null'),
-    'a user-stopped turn must be distinguishable from an upstream failure');
+  assert.ok(payload.includes('chatTaskStatePayload'),
+    'the payload must come from the one native builder');
+  assert.ok(payload.includes('taskShortCode((task || {}).taskId)'),
+    'the persisted short code is resolved here and passed in as a fact');
+  assert.ok(payload.includes('auxVerdictStaleness()'),
+    'the live Aux health reading is resolved here and passed in as a fact');
+  const kernel = fs.readFileSync(
+    path.join(ROOT, 'native', 'core', 'src', 'chat_task_state_frame.rs'), 'utf8');
+  for (const field of ['taskShortCode', 'apiError', 'cancelledAt', 'cancelReason',
+    'classifyState', 'goalState', 'auxUnhealthy', 'auxUnhealthySince']) {
+    assert.ok(kernel.includes(`"${field}"`), `the kernel must carry ${field} on the wire`);
+  }
+  // The two regressions these fields exist for, asserted as behaviour on the
+  // frozen corpus rather than as text: a persisted error alone still seeds,
+  // and a cancellation reason never outlives its timestamp.
+  const taskStateCorpus = require(
+    '../docs/rust-migration/differential/chat-task-state-frame-corpus.json');
+  const errorOnly = taskStateCorpus.cases.find(entry => entry.sweep === 'gate'
+    && entry.name === 'goal=absent phase=absent apiError=envelope');
+  assert.ok(errorOnly && errorOnly.expected.seeds === true,
+    'a persisted error envelope alone must still seed the frame');
+  assert.ok(errorOnly.expected.seed.apiError,
+    'the seeded frame must carry the error a reopened page re-renders the bar from');
+  const reasonWithoutStamp = taskStateCorpus.cases.find(entry => entry.sweep === 'cancel'
+    && entry.name === 'cancelledAt=absent cancelReason=string');
+  assert.equal(reasonWithoutStamp.expected.payload.cancelReason, null,
+    'a cancel reason with no timestamp must be dropped');
   const seed = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'task-state-seed.js'), 'utf8');
-  assert.ok(seed.includes("require('./task-state-payload')"));
-  assert.ok(seed.includes('task.apiError'), 'a persisted error alone must still seed the frame');
+  assert.ok(seed.includes("require('./task-state-payload')"),
+    'the seed and the live broadcast must resolve the same facts');
+  assert.ok(seed.includes('chatTaskStateShouldSeed'), 'the seed gate must come from the kernel');
   const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert.ok(turnEngine.includes('if (seed) sendWs(ws, seed);'), 'the connect path must send it');
+  // The connect sequence is the kernel's plan now, so the step is what gets
+  // pinned, not an inline `if`.
+  assert.ok(turnEngine.includes("step.op === 'taskStateSeed'"),
+    'the connect path must send the seed when the plan emits it');
+  assert.ok(turnEngine.includes('chatConnectReplayPlan') && !turnEngine.includes('hasTaskStateSeed:'),
+    'the connect plan must schedule seed resolution without eagerly building the frame');
   // The live broadcast is the task-state store's: server.js builds it and
   // keeps no inline copy, so the cancel-flow tests run the production code.
   assert.ok(source.includes("require('./src/routes/task-state-store')"),

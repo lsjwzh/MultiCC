@@ -2068,6 +2068,15 @@
       ]
     },
     {
+      "path": "tests/test-chat-connect-frames-wiring.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-chat-context-controls.js",
       "tier": "flow",
       "lane": "deterministic",
@@ -7272,6 +7281,15 @@
     },
     {
       "path": "tests/test-ws-connection-router.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-ws-envelope-pin.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:security",

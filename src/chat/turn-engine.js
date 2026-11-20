@@ -2789,34 +2789,53 @@ function createChatTurnEngine(deps) {
     const sessionTokenUsage = persisted.cli === 'codex'
       ? summarizeHistoryUsage(viewChatHistory(sessionName))
       : tokenUsage[sessionName] || null;
-    if (replayMessages.length > 0 || sessionTokenUsage) {
-      sendWs(ws, { type: 'chat_history', messages: replayMessages, tokenUsage: sessionTokenUsage, hasMore: page.hasMore });
-      // Seed the aux classify bar with the current task snapshot on connect, so
-      // the goal/phase shows immediately (not only after the next classify).
-      try {
-        const seed = taskStateSeed(getTaskState(persistedSessions.get(sessionName)));
-        if (seed) sendWs(ws, seed);
-      } catch (_) {}
-      // If chat_history already includes the in-progress assistant message
-      // (appended just above), skip the streamReplay so the client doesn't
-      // receive duplicate events that would create a second bubble.
-      if (replayMessages.length > 0) {
-        const lastMsg = replayMessages[replayMessages.length - 1];
-        if (lastMsg.role === 'assistant' && cs.isStreaming && replay.size(sessionName) > 0) {
-          replay.clear(sessionName);
-        }
+    // What a connecting client receives, in order, is decided by
+    // `multicc_core::chat_connect_replay`. Two rules there are load-bearing
+    // and were easy to get wrong while they lived inline here:
+    //
+    //   * The in-progress assistant message may already be inside the history
+    //     page. Replaying the buffered stream events on top of it produces a
+    //     second bubble, so the buffer is DROPPED — by clearing the session's
+    //     buffer, not merely by skipping the send.
+    //   * The burst must bypass the queue's message-count tripwire. Up to 500
+    //     frames through the normal path trips queue_overflow → 1013 → the
+    //     client reconnects → re-floods. `replay.burst` is that path; the byte
+    //     cap and the congestion timer still apply.
+    //
+    // The buffer depth is read once and the kernel models the retired
+    // re-read: nothing between the two reads could change it, because the
+    // only writer is a provider event and this block does not await.
+    const bufferedEvents = replay.size(sessionName);
+    const connectFacts = {
+      replayMessages: replayMessages.length,
+      lastMessageIsAssistant: replayMessages.length > 0
+        && replayMessages[replayMessages.length - 1].role === 'assistant',
+      isStreaming: !!cs.isStreaming,
+      bufferedEvents,
+      hasTokenUsage: !!sessionTokenUsage,
+    };
+    const connectPlan = JSON.parse(getNative().chatConnectReplayPlan(JSON.stringify(connectFacts)));
+    for (const step of connectPlan.steps) {
+      if (step.op === 'chatHistory') {
+        sendWs(ws, {
+          type: 'chat_history', messages: replayMessages,
+          tokenUsage: sessionTokenUsage, hasMore: page.hasMore,
+        });
+        continue;
       }
-    }
-
-    // If a stream is in progress, replay buffered events so reconnected client
-    // catches up. The native burst sends up to 500 buffered frames (the replay
-    // buffer cap) in order — it must bypass the backpressure MESSAGE-count cap,
-    // or the burst trips queue_overflow → 1013 close → the client reconnects →
-    // re-floods → infinite reconnect loop (the bug that hit long streaming
-    // turns). The native send still honours the byte cap + congestion timer, so
-    // a genuinely slow client is still protected.
-    if (cs.isStreaming && replay.size(sessionName) > 0 && Number.isInteger(ws._multiccConnId)) {
-      replay.burst(ws._multiccConnId, sessionName);
+      if (step.op === 'taskStateSeed') {
+        try {
+          const seed = taskStateSeed(getTaskState(persistedSessions.get(sessionName)));
+          if (seed) sendWs(ws, seed);
+        } catch (_) {}
+        continue;
+      }
+      if (step.op === 'clearBuffer') { replay.clear(sessionName); continue; }
+      if (step.op === 'replayBurst') {
+        // The connection id is the caller's own precondition: a socket the
+        // router never registered has no native queue to burst into.
+        if (Number.isInteger(ws._multiccConnId)) replay.burst(ws._multiccConnId, sessionName);
+      }
     }
 
     // On (re)connect, push the authoritative live background-task set so the

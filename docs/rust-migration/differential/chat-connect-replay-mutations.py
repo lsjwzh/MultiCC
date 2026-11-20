@@ -1,41 +1,39 @@
 #!/usr/bin/env python3
-"""Mutate the connect-replay kernel and require the corpus test to fail.
+"""Mutate the connect-replay kernel and require the corpus tests to fail.
 
 Each variant breaks exactly one rule the retired connect path enforced. A
 green differential only means something if every rule is load-bearing.
+
+Run through the shared runner, so a variant that does not compile aborts the
+batch instead of being counted as a detection (see mutation_runner.py). The
+suite covers the pure kernel AND the JSON bridge the turn engine actually
+calls: the first version of this file only mutated the kernel, which left the
+bridge -- the code that finally runs in production -- with no mutation
+coverage at all.
+
+Variants deliberately NOT listed, because the corpus cannot tell them apart:
+
+* Removing the `replay_messages > 0` conjunct of the clear condition.
+  `last_message_is_assistant` can only be true when there is a last message,
+  so the corpus cannot express the combination that would tell the two apart.
+* The non-finite / negative arm of `count`. The turn engine only sends
+  `.length` values, which are never negative or non-finite.
 """
-import os
-from pathlib import Path
-import shutil
-import subprocess
-import sys
-import tempfile
+from mutation_runner import ROOT, Mutator, run_suite
 
-ROOT = Path(__file__).resolve().parents[3]
-SOURCE = ROOT / "native/core/src/chat_connect_replay.rs"
-source = SOURCE.read_text()
-GOLDEN = ROOT / "docs/rust-migration/differential/chat-connect-replay-golden.json"
+KERNEL = "native/core/src/chat_connect_replay.rs"
+source = (ROOT / KERNEL).read_text()
+m = Mutator(source)
 
-variants = [
-    ("baseline", source, True),
-    # NOTE: removing the `replay_messages > 0` conjunct is deliberately NOT a
-    # variant here. `last_message_is_assistant` can only be true when there is
-    # a last message, so the corpus cannot express the combination that would
-    # tell the two apart; claiming it as covered would be false coverage.
-    #
-    # Clearing the buffer without checking that it has anything in it: the
-    # client sees the same frames, but an empty-buffer connect gains a step.
-    ("clears-an-empty-buffer",
-     source.replace("&& facts.buffered_events > 0\n        {", "{", 1), False),
-    # Skipping the burst instead of clearing the session buffer: the client
-    # sees the same frames, but the session keeps a stale buffer.
-    ("skips-instead-of-clearing",
-     source.replace("""    let buffered = if steps.contains(&Step::ClearBuffer) {
+# `skips-instead-of-clearing` needs two coordinated edits, so the second one is
+# applied to the result of the first.
+skip_step_one = m.apply("""    let buffered = if steps.contains(&Step::ClearBuffer) {
         0
     } else {
         facts.buffered_events
-    };""", "    let buffered = facts.buffered_events;", 1)
-     .replace("""pub fn buffer_after(facts: &Facts, steps: &[Step]) -> usize {
+    };""", "    let buffered = facts.buffered_events;", "skips-instead-of-clearing/1")
+skips_instead_of_clearing = Mutator(skip_step_one).apply(
+    """pub fn buffer_after(facts: &Facts, steps: &[Step]) -> usize {
     if steps.contains(&Step::ClearBuffer) {
         0
     } else {
@@ -43,55 +41,83 @@ variants = [
     }
 }""", """pub fn buffer_after(facts: &Facts, _steps: &[Step]) -> usize {
     facts.buffered_events
-}""", 1), False),
+}""", "skips-instead-of-clearing/2")
+
+variants = [
+    ("baseline", source, True),
+
+    # ---- the pure kernel -------------------------------------------------------
+    # Clearing the buffer without checking it has anything in it: the client
+    # sees the same frames, but an empty-buffer connect gains a step.
+    ("clears-an-empty-buffer",
+     m.apply("\n            && facts.buffered_events > 0\n        {", "\n        {",
+             "clears-an-empty-buffer"), False),
+    # Skipping the burst instead of clearing the session buffer: the client
+    # sees the same frames, but the session keeps a stale buffer.
+    ("skips-instead-of-clearing", skips_instead_of_clearing, False),
     # The streaming gate is dropped from the burst: a stale buffer left by a
     # finished turn would be replayed to the new client.
     ("replays-a-finished-turns-buffer",
-     source.replace("if facts.is_streaming && buffered > 0 {", "if buffered > 0 {", 1), False),
-    # The token-usage-only case loses its history frame.
+     m.apply("if facts.is_streaming && buffered > 0 {", "if buffered > 0 {",
+             "replays-a-finished-turns-buffer"), False),
+    # The token-usage-only case loses its history frame (and its seed).
     ("requires-messages-for-the-history-frame",
-     source.replace("if facts.replay_messages > 0 || facts.has_token_usage {",
-                    "if facts.replay_messages > 0 {", 1), False),
+     m.apply("facts.replay_messages > 0 || facts.has_token_usage", "facts.replay_messages > 0",
+             "requires-messages-for-the-history-frame"), False),
+    # A quiet session is sent a history frame it has nothing to put in.
+    ("always-sends-a-history-frame",
+     m.apply("facts.replay_messages > 0 || facts.has_token_usage", "true",
+             "always-sends-a-history-frame"), False),
     # The seed is emitted before the history frame.
     ("reorders-the-seed",
-     source.replace("""        steps.push(Step::ChatHistory);
+     m.apply("""        steps.push(Step::ChatHistory);
         if facts.has_task_state_seed {
             steps.push(Step::TaskStateSeed);
         }""", """        if facts.has_task_state_seed {
             steps.push(Step::TaskStateSeed);
         }
-        steps.push(Step::ChatHistory);""", 1), False),
+        steps.push(Step::ChatHistory);""", "reorders-the-seed"), False),
+    # The clear no longer requires the in-progress assistant message.
+    ("clears-when-the-last-message-is-not-the-assistant",
+     m.apply("\n            && facts.last_message_is_assistant\n", "\n",
+             "clears-when-the-last-message-is-not-the-assistant"), False),
+    # The clear no longer requires an active stream.
+    ("clears-a-finished-turns-buffer",
+     m.apply("\n            && facts.is_streaming\n            && facts.buffered_events > 0",
+             "\n            && facts.buffered_events > 0", "clears-a-finished-turns-buffer"), False),
+
+    # ---- the JSON bridge the turn engine calls ------------------------------------
+    # A key misread: the connect would believe nothing is streaming.
+    ("bridge-reads-is-streaming-from-the-wrong-key",
+     m.apply('is_streaming: value["isStreaming"].as_bool().unwrap_or(false),',
+             'is_streaming: value["streaming"].as_bool().unwrap_or(false),',
+             "bridge-reads-is-streaming-from-the-wrong-key"), False),
+    ("bridge-reads-the-buffer-depth-from-the-wrong-key",
+     m.apply('buffered_events: count(&value["bufferedEvents"]),',
+             'buffered_events: count(&value["buffered"]),',
+             "bridge-reads-the-buffer-depth-from-the-wrong-key"), False),
+    # The burst reports a different frame count than the plan holds.
+    ("bridge-burst-reports-no-frames",
+     m.apply('serde_json::json!({ "op": "replayBurst", "frames": frames })',
+             'serde_json::json!({ "op": "replayBurst", "frames": 0 })',
+             "bridge-burst-reports-no-frames"), False),
+    # A step renamed on the wire: the turn engine would ignore it.
+    ("bridge-renames-the-clear-step",
+     m.apply('Step::ClearBuffer => serde_json::json!({ "op": "clearBuffer" })',
+             'Step::ClearBuffer => serde_json::json!({ "op": "clear" })',
+             "bridge-renames-the-clear-step"), False),
+    # The bridge claims the seed is always consulted.
+    ("bridge-says-the-seed-is-always-consulted",
+     m.apply('"needsTaskStateSeed": needs_task_state_seed(&facts),',
+             '"needsTaskStateSeed": true,', "bridge-says-the-seed-is-always-consulted"), False),
+    ("bridge-ignores-token-usage",
+     m.apply('has_token_usage: value["hasTokenUsage"].as_bool().unwrap_or(false),',
+             'has_token_usage: false,', "bridge-ignores-token-usage"), False),
+    ("bridge-skips-lazy-seed",
+     m.apply('has_task_state_seed: value["hasTaskStateSeed"].as_bool().unwrap_or(true),',
+             'has_task_state_seed: value["hasTaskStateSeed"].as_bool().unwrap_or(false),',
+             "bridge-skips-lazy-seed"), False),
 ]
 
-with tempfile.TemporaryDirectory(prefix="multicc-connect-replay-mutations-") as tmp:
-    tmp = Path(tmp)
-    workspace = tmp / "native"
-    workspace.mkdir()
-    shutil.copytree(ROOT / "native/core", workspace / "core")
-    shutil.copytree(ROOT / "native/cpr", workspace / "cpr")
-    # Other kernels in this crate read their own frozen corpora through
-    # relative include_str! paths, so the copy needs the same docs tree.
-    corpora = tmp / "docs/rust-migration/differential"
-    corpora.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(ROOT / "docs/rust-migration/differential", corpora)
-    (workspace / "Cargo.toml").write_text('[workspace]\nmembers=["core"]\nresolver="2"\n')
-    shutil.copy2(ROOT / "native/Cargo.lock", workspace / "Cargo.lock")
-    env = dict(os.environ, CARGO_TARGET_DIR=str(tmp / "target"))
-    for name, variant, should_pass in variants:
-        if name != "baseline" and variant == source:
-            raise SystemExit(f"{name}: mutation did not apply")
-        # The corpus is read through CARGO_MANIFEST_DIR, which now points at
-        # the copy; keep it pointing at the frozen original.
-        patched = variant.replace(
-            'concat!(\n        env!("CARGO_MANIFEST_DIR"),\n        "/../../docs/rust-migration/differential/chat-connect-replay-golden.json"\n    )',
-            f'"{GOLDEN}"')
-        if patched == variant:
-            raise SystemExit(f"{name}: could not repoint the corpus path")
-        (workspace / "core/src/chat_connect_replay.rs").write_text(patched)
-        run = subprocess.run(
-            ["cargo", "test", "--offline", "--manifest-path", str(workspace / "Cargo.toml"),
-             "-p", "multicc-core", "--lib", "chat_connect_replay"],
-            env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
-        if (run.returncode == 0) != should_pass:
-            raise SystemExit(f"{name}: unexpected result\n{run.stdout[-4000:]}")
-        print(f"{name}: {'passed' if should_pass else 'mutation detected'}", flush=True)
+run_suite(KERNEL, "chat-connect-replay-golden.json", "chat_connect_replay", variants,
+          min_tests=10, tag="chat-connect-replay")
