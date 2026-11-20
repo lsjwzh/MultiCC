@@ -592,7 +592,7 @@ fn directories_list_keeps_the_dto_key_order_and_the_count_fallbacks() {
             "\"pushState\"",
         ],
     );
-    // 24 counters in declaration order; a session with no cli/kind counts as a
+    // 26 counters in declaration order; a session with no cli/kind counts as a
     // claude terminal, exactly like `label()`'s fallbacks.
     assert_eq!(
         entry["counts"],
@@ -607,6 +607,7 @@ fn directories_list_keeps_the_dto_key_order_and_the_count_fallbacks() {
             "dsh_terminal": 0, "dsh_chat": 0,
             "gemini_terminal": 0, "gemini_chat": 0,
             "grok_terminal": 0, "grok_chat": 0,
+            "agy_terminal": 0, "agy_chat": 0,
             "commandcode_terminal": 0, "commandcode_chat": 0,
             "pi_terminal": 0, "pi_chat": 0,
         })
