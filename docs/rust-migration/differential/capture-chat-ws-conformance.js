@@ -72,7 +72,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 // One connection, observed from the client side. `steps` run in order once the
 // upgrade succeeds; every frame that arrives is recorded in arrival order, with
 // `{ "@": name }` marks interleaved where a step asked for one.
-function observe(url, { headers = {}, steps = [], quietMs = 400 } = {}) {
+function observe(url, { headers = {}, steps = [], quietMs = 400, serverCloses = false } = {}) {
   return new Promise((resolve, reject) => {
     const timeline = [];
     const result = { upgrade: null, close: null, closedBy: null };
@@ -120,6 +120,7 @@ function observe(url, { headers = {}, steps = [], quietMs = 400 } = {}) {
             }
           }
         }
+        if (serverCloses) return;
         // A short quiet window lets late frames of the last step land before
         // the observation ends; a server-initiated close ends it sooner.
         await sleep(quietMs);
@@ -143,12 +144,20 @@ const VOLATILE = [
   [/\b(task|tsk|sr|sh|rcpt|msg|op|turn|clm)([-_])[0-9a-f]{8,}\b/g, '<$1$2id>'],
   [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, '<uuid>'],
   [/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, '<iso-time>'],
-  [/\b1[6-9]\d{11}\b/g, '<epoch-ms>'],
 ];
-function stable(frame) {
-  let text = JSON.stringify(frame);
-  for (const [pattern, replacement] of VOLATILE) text = text.replace(pattern, replacement);
-  return JSON.parse(text);
+function stable(value) {
+  if (typeof value === 'number' && /^1[6-9]\d{11}$/.test(String(value))) return '<epoch-ms>';
+  if (typeof value === 'string') {
+    for (const [pattern, replacement] of VOLATILE) value = value.replace(pattern, replacement);
+    return value.replace(/\b1[6-9]\d{11}\b/g, '<epoch-ms>');
+  }
+  if (Array.isArray(value)) return value.map(stable);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      key, key === 'turnElapsedMs' && typeof child === 'number' ? '<duration-ms>' : stable(child),
+    ]));
+  }
+  return value;
 }
 
 function collapse(frames) {
@@ -177,6 +186,51 @@ const INTERLEAVED = new Set(['chat_history_annotation', 'aux_verdict_staleness']
 // frames. Everything else is deliberately not part of the contract.
 const FLOW_ANCHORS = new Set(['stream_start', 'stream_event', 'assistant', 'result', 'stream_end']);
 
+// What the two connect-time frames that carry session state actually say, as
+// opposed to which keys they have. A frame can keep every key and still lose
+// the page's whole transcript (an empty `messages`), drop the tail of it, or
+// stop carrying a field the page renders (the reopened-page API-error bar was
+// once lost exactly that way), and a key-set freeze cannot see any of those.
+//
+// Only emitted when such a frame is present, so scenarios that never produce
+// one keep their frozen shape byte for byte. Volatile ids and timestamps are
+// masked the same way as everywhere else; the short code is random per run, so
+// only its presence and format are frozen.
+function detail(frames) {
+  const out = {};
+  const histories = frames.filter(frame => frame.type === 'chat_history');
+  if (histories.length) {
+    out.chatHistory = histories.map(frame => {
+      const messages = Array.isArray(frame.messages) ? frame.messages : [];
+      const usage = frame.tokenUsage;
+      return {
+        roles: messages.map(message => message.role),
+        hasMore: frame.hasMore,
+        messageKeys: [...new Set(messages.flatMap(message => Object.keys(message)))].sort(),
+        // The text of what was said is stable in this harness (the fake CLI
+        // answers with fixed strings), so it is what proves the right
+        // transcript was replayed rather than merely some transcript.
+        texts: messages.map(message => (typeof message.content === 'string' ? message.content
+          : typeof message.text === 'string' ? message.text : null)),
+        tokenUsage: usage === null || usage === undefined ? usage ?? null
+          : (typeof usage === 'object' ? { keys: Object.keys(usage).sort() } : typeof usage),
+      };
+    });
+  }
+  const states = frames.filter(frame => frame.type === 'task_state');
+  if (states.length) {
+    out.taskState = states.map(frame => {
+      const masked = stable(frame);
+      if (typeof masked.taskShortCode === 'string' && masked.taskShortCode) {
+        masked.taskShortCode = /^#?[A-Z0-9]{3,8}$/.test(masked.taskShortCode)
+          ? '<short-code>' : `<unexpected:${masked.taskShortCode}>`;
+      }
+      return masked;
+    });
+  }
+  return out;
+}
+
 function shape(allFrames, flow = false) {
   const timeline = allFrames.filter(frame => (flow
     ? frame['@'] || FLOW_ANCHORS.has(frame.type) || EXACT_TYPES.has(frame.type)
@@ -186,6 +240,7 @@ function shape(allFrames, flow = false) {
     if (!flow && INTERLEAVED.has(frame.type)) interleaved[frame.type] = (interleaved[frame.type] || 0) + 1;
   }
   const frames = timeline.filter(frame => !frame['@']);
+  const frameDetails = flow ? {} : detail(allFrames);
   const keys = {};
   for (const frame of frames) {
     const type = frame.type || 'unknown';
@@ -196,6 +251,9 @@ function shape(allFrames, flow = false) {
     interleaved: Object.fromEntries(Object.entries(interleaved).sort(([a], [b]) => a.localeCompare(b))),
     keys: Object.fromEntries(Object.entries(keys).sort(([a], [b]) => a.localeCompare(b))),
     exact: frames.filter(frame => EXACT_TYPES.has(frame.type)).map(stable),
+    // A whole turn is surrounded by broadcasts whose count differs between
+    // runs, so a flow scenario freezes only its anchors (see FLOW_ANCHORS).
+    ...(Object.keys(frameDetails).length ? { detail: frameDetails } : {}),
   };
 }
 
@@ -242,8 +300,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (marker.startsWith('HANG')) { delta('hang:partial'); setInterval(() => {}, 1000); return; }
   delta('done:partial');
   emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done:final' }] } });
-  process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
-    result: 'done:final', num_turns: 1, session_id: sessionId }) + '\\n', () => process.exit(0));
+  // The Agent SDK keeps its transport open between turns.
+  emit({ type: 'result', subtype: 'success', is_error: false,
+    result: 'done:final', num_turns: 1, session_id: sessionId });
 });
 `);
   fs.chmodSync(fakeCli, 0o755);
@@ -330,17 +389,18 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 
     const idle = await newSession('conformance-idle');
     const burstDone = frame => frame.type === 'session_queue';
+    const rejected = { headers: EXTERNAL, serverCloses: true };
 
     // ---- Admission: who gets in, and with which close code the rest leave.
     await record('admit-local-no-credentials', observe(url(idle), { steps: [{ until: burstDone, label: 'burst' }] }));
-    await record('deny-external-no-credentials', observe(url(idle), { headers: EXTERNAL }));
+    await record('deny-external-no-credentials', observe(url(idle), rejected));
     await record('admit-external-legacy-token', observe(withToken(idle), { headers: EXTERNAL, steps: [{ until: burstDone, label: 'burst' }] }));
-    await record('deny-external-wrong-token', observe(url(idle, '&token=wrong'), { headers: EXTERNAL }));
+    await record('deny-external-wrong-token', observe(url(idle, '&token=wrong'), rejected));
     await record('admit-external-ticket', observe(url(idle, `&ticket=${encodeURIComponent(await ticketFor('/ws/chat'))}`), { headers: EXTERNAL, steps: [{ until: burstDone, label: 'burst' }] }));
     const reused = await ticketFor('/ws/chat');
     await observe(url(idle, `&ticket=${encodeURIComponent(reused)}`), { headers: EXTERNAL, steps: [{ until: burstDone, label: 'burst' }] });
-    await record('deny-external-ticket-reuse', observe(url(idle, `&ticket=${encodeURIComponent(reused)}`), { headers: EXTERNAL }));
-    await record('deny-external-ticket-other-path', observe(url(idle, `&ticket=${encodeURIComponent(await ticketFor('/ws/meta'))}`), { headers: EXTERNAL }));
+    await record('deny-external-ticket-reuse', observe(url(idle, `&ticket=${encodeURIComponent(reused)}`), rejected));
+    await record('deny-external-ticket-other-path', observe(url(idle, `&ticket=${encodeURIComponent(await ticketFor('/ws/meta'))}`), rejected));
 
     // ---- Share links replace normal auth for exactly their own session.
     const viewShare = (await api('POST', `/api/sessions/${idle}/share`, { access: 'view' }));
@@ -367,7 +427,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         { until: frame => frame.type === 'pong', label: 'pong' },
       ],
     }));
-    await record('deny-share-operate-without-cookie', observe(url(idle, `&share=${encodeURIComponent(shareToken(operateShare))}`), { headers: EXTERNAL }));
+    await record('deny-share-operate-without-cookie', observe(url(idle, `&share=${encodeURIComponent(shareToken(operateShare))}`), rejected));
     await record('share-operate-routes-user-message', observe(url(idle, `&share=${encodeURIComponent(shareToken(operateShare))}`), {
       headers: { ...EXTERNAL, Cookie: shareCookie },
       steps: [
@@ -382,12 +442,12 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         { until: frame => frame.type === 'pong', label: 'pong' },
       ],
     }));
-    await record('deny-share-unknown-token', observe(url(idle, '&share=bogus'), { headers: EXTERNAL }));
-    await record('deny-share-other-session', observe(url(other, `&share=${encodeURIComponent(shareToken(viewShare))}`), { headers: EXTERNAL }));
+    await record('deny-share-unknown-token', observe(url(idle, '&share=bogus'), rejected));
+    await record('deny-share-other-session', observe(url(other, `&share=${encodeURIComponent(shareToken(viewShare))}`), rejected));
 
     // ---- Session resolution after admission.
-    await record('session-missing', observe(withToken('no-such-session')));
-    await record('session-parameter-absent', observe(withToken(null)));
+    await record('session-missing', observe(withToken('no-such-session'), { serverCloses: true }));
+    await record('session-parameter-absent', observe(withToken(null), { serverCloses: true }));
 
     // ---- Client frames on an admitted socket.
     await record('ping-pong', observe(withToken(idle), {
@@ -413,7 +473,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     await record('turn-complete', observe(withToken(turn), {
       steps: [{ until: burstDone, label: 'burst' }, { mark: 'user_message' },
         { send: { type: 'user_message', text: 'DONE_ONE', taskShell: true, clientMsgId: randomUUID() } },
-        { until: frame => frame.type === 'result', label: 'result' }, { sleep: 300 }],
+        { until: frame => frame.type === 'stream_end', label: 'completed stream' }],
     }), { flow: true });
     const cancelled = await newSession('conformance-cancel');
     await record('turn-cancelled', observe(withToken(cancelled), {
@@ -432,12 +492,25 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         { sleep: 800 }],
       quietMs: 800,
     }), { flow: true });
+
+    // ---- Reconnecting to a session that already has history. The connect
+    // burst carries the transcript and the classify seed, which is the slice
+    // the Rust kernels own (chat_history byte budget, task_state seed gate and
+    // payload, the ordered plan). These two sessions have just finished a
+    // turn and a cancelled turn, so a reconnect is exactly the page-refresh
+    // case the incidents behind those rules came from.
+    await record('reconnect-after-turn', observe(withToken(turn), {
+      steps: [{ until: burstDone, label: 'burst' }],
+    }));
+    await record('reconnect-after-cancel', observe(withToken(cancelled), {
+      steps: [{ until: burstDone, label: 'burst' }],
+    }));
   } finally {
     try { child.kill('SIGTERM'); } catch (_) {}
     await sleep(500);
     try { child.kill('SIGKILL'); } catch (_) {}
     upstream.close();
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
   }
 
   const golden = {

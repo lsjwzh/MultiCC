@@ -132,15 +132,14 @@ function pick(value, fields) {
   fs.mkdirSync(historyDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(historyDir, `${sessionId}.json`), JSON.stringify(messages), { mode: 0o600 });
 
-  // A directory-created chat is a task-bound hidden room: it is addressable but
-  // deliberately absent from both fleet lists and from the directory list, so
-  // the legacy-vs-bounded parity assertions below need a session that both
-  // projections actually list. Forking the room yields an ordinary fleet session
-  // with a materialized worktree — the same shape the lists are meant to carry.
-  response = await api('POST', `/api/sessions/${sessionId}/fork`, { label: 'bounded-fork' });
+  // 单独创建一个普通终端用于列表对拍。聊天会话及其 fork 会由任务板归属，
+  // 归属后会从常规列表隐藏，聊天详情和历史仍可按原会话 ID 验证。
+  response = await api('POST', `/api/directories/${directoryId}/sessions`, {
+    cli: 'opencode', kind: 'terminal', label: 'bounded-fleet-session',
+  });
   assert.equal(response.status, 200, JSON.stringify(response.data));
-  const listedId = response.data.sessionId || response.data.id;
-  assert.ok(listedId && listedId !== sessionId, 'fork returns a distinct fleet session id');
+  const listedId = response.data.id;
+  assert.ok(listedId && listedId !== sessionId, 'terminal has a distinct fleet session id');
 
   const legacyList = await api('GET', '/api/sessions');
   const v1List = await api('GET', '/api/v1/sessions');
@@ -148,8 +147,8 @@ function pick(value, fields) {
   assert.equal(v1List.status, 200);
   const legacy = legacyList.data.find(item => item.id === listedId);
   const v1 = v1List.data.sessions.find(item => item.id === listedId);
-  assert.ok(legacy, 'the fork is listed by the legacy fleet projection');
-  assert.ok(v1, 'the fork is listed by the bounded v1 fleet projection');
+  assert.ok(legacy, 'the terminal is listed by the legacy fleet projection');
+  assert.ok(v1, 'the terminal is listed by the bounded v1 fleet projection');
   const common = [
     'id', 'dirId', 'cli', 'kind', 'label', 'model', 'effectiveModel', 'effort',
     'effectiveEffort', 'agent', 'provider', 'subagent', 'autoCommit',

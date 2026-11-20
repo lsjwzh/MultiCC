@@ -16,6 +16,7 @@ pub mod delivery_class;
 pub mod workspace_release;
 
 pub mod background_tasks;
+pub mod chat_connect_frames;
 pub mod chat_context_rotation;
 pub mod chat_events;
 pub mod chat_finalize;

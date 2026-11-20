@@ -1161,6 +1161,341 @@
           "apiVersion": "v1"
         }
       ]
+    },
+    {
+      "name": "reconnect-after-turn",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "chat_history",
+          "count": 1
+        },
+        {
+          "type": "task_state",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "chat_history": [
+          "apiVersion",
+          "hasMore",
+          "messages",
+          "tokenUsage",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "task_state": [
+          "apiError",
+          "apiVersion",
+          "auxUnhealthy",
+          "auxUnhealthySince",
+          "cancelReason",
+          "cancelledAt",
+          "classifyState",
+          "goal",
+          "goalState",
+          "phase",
+          "taskShortCode",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": [],
+      "detail": {
+        "chatHistory": [
+          {
+            "roles": [
+              "user",
+              "assistant"
+            ],
+            "hasMore": false,
+            "messageKeys": [
+              "auxRunId",
+              "clientMsgId",
+              "content",
+              "contextTrace",
+              "cost",
+              "deliveryId",
+              "durationMs",
+              "id",
+              "modelAttribution",
+              "role",
+              "taskId",
+              "taskShortCode",
+              "taskSource",
+              "taskStart",
+              "taskText",
+              "timeline",
+              "ts",
+              "turnId",
+              "turnTimings"
+            ],
+            "texts": [
+              "DONE_ONE",
+              "done:final"
+            ],
+            "tokenUsage": null
+          }
+        ],
+        "taskState": [
+          {
+            "type": "task_state",
+            "goal": "DONE_ONE",
+            "taskShortCode": "<short-code>",
+            "phase": "planning",
+            "classifyState": "D",
+            "goalState": null,
+            "apiError": null,
+            "cancelledAt": null,
+            "cancelReason": null,
+            "auxUnhealthy": true,
+            "auxUnhealthySince": "<epoch-ms>",
+            "apiVersion": "v1"
+          }
+        ]
+      }
+    },
+    {
+      "name": "reconnect-after-cancel",
+      "upgrade": 101,
+      "close": {
+        "code": 1000,
+        "reason": "capture done"
+      },
+      "closedBy": "client",
+      "sequence": [
+        {
+          "type": "system/init",
+          "count": 1
+        },
+        {
+          "type": "chat_history",
+          "count": 1
+        },
+        {
+          "type": "task_state",
+          "count": 1
+        },
+        {
+          "type": "background_tasks",
+          "count": 1
+        },
+        {
+          "type": "unattended_state",
+          "count": 1
+        },
+        {
+          "type": "session_queue",
+          "count": 1
+        }
+      ],
+      "interleaved": {},
+      "keys": {
+        "background_tasks": [
+          "apiVersion",
+          "tasks",
+          "type"
+        ],
+        "chat_history": [
+          "apiVersion",
+          "hasMore",
+          "messages",
+          "tokenUsage",
+          "type"
+        ],
+        "session_queue": [
+          "active",
+          "apiVersion",
+          "event",
+          "freezeReason",
+          "items",
+          "queued",
+          "state",
+          "type"
+        ],
+        "system": [
+          "agent",
+          "apiVersion",
+          "autoProvider",
+          "cli",
+          "cliAvailability",
+          "cliStates",
+          "cwd",
+          "effectiveEffort",
+          "effectiveModel",
+          "effort",
+          "is_streaming",
+          "model",
+          "pendingCliHandoff",
+          "providerId",
+          "providerName",
+          "providerRoute",
+          "providerRouteProtocolVersion",
+          "providerSelection",
+          "providerTokenWindows",
+          "session",
+          "session_id",
+          "subtype",
+          "taskShell",
+          "turnId",
+          "type"
+        ],
+        "task_state": [
+          "apiError",
+          "apiVersion",
+          "auxUnhealthy",
+          "auxUnhealthySince",
+          "cancelReason",
+          "cancelledAt",
+          "classifyState",
+          "goal",
+          "goalState",
+          "phase",
+          "taskShortCode",
+          "type"
+        ],
+        "unattended_state": [
+          "apiVersion",
+          "type",
+          "unattended"
+        ]
+      },
+      "exact": [],
+      "detail": {
+        "chatHistory": [
+          {
+            "roles": [
+              "user"
+            ],
+            "hasMore": false,
+            "messageKeys": [
+              "auxRunId",
+              "clientMsgId",
+              "content",
+              "deliveryId",
+              "id",
+              "role",
+              "taskId",
+              "taskShortCode",
+              "taskSource",
+              "taskStart",
+              "taskText",
+              "ts",
+              "turnId"
+            ],
+            "texts": [
+              "HANG_ONE"
+            ],
+            "tokenUsage": null
+          }
+        ],
+        "taskState": [
+          {
+            "type": "task_state",
+            "goal": "HANG_ONE",
+            "taskShortCode": "<short-code>",
+            "phase": "planning",
+            "classifyState": "E",
+            "goalState": null,
+            "apiError": {
+              "category": "cancel_shutdown",
+              "provider": "claude",
+              "providerId": "<uuid>",
+              "providerName": "Conformance route",
+              "code": "user_cancel",
+              "httpStatus": null,
+              "retryable": false,
+              "safeToRetry": false,
+              "retryAfterMs": null,
+              "phase": "stream",
+              "partialOutput": true,
+              "attempt": 0,
+              "maxAttempts": 0,
+              "action": "fail_fast",
+              "reason": "cancelled_or_shutdown",
+              "retryAt": null,
+              "userAction": "无需操作；如有需要可重新发起",
+              "rootCause": "turn cancelled",
+              "param": null,
+              "turnElapsedMs": "<duration-ms>",
+              "budgetExhaustedBy": null,
+              "at": "<epoch-ms>"
+            },
+            "cancelledAt": "<epoch-ms>",
+            "cancelReason": "user_cancelled",
+            "auxUnhealthy": true,
+            "auxUnhealthySince": "<epoch-ms>",
+            "apiVersion": "v1"
+          }
+        ]
+      }
     }
   ]
 }
