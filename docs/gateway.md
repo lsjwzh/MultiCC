@@ -5200,3 +5200,48 @@ socket 客户端，比对握手状态行、每帧 opcode 与载荷 sha、关闭�
 （`tests/test-chat-ws-conformance.js` 的 19 个场景）。
 
 验证与边界见 `docs/rust-migration/ws-chat-front-door-stage-2026-11-20.md`。
+
+## 66. 远控（🖥 屏幕）HTTP/WS 与标注 own-shot 由前门独占，Node 远控层删除（2026-11-21）
+
+`/api/remote-screen/*`、`/ws/remote-screen[?mode=h264]` 和「🖥 屏幕」浮层冻结截图的
+标注内置处理器现在全部由前门承担，Node 侧的远控层整块退休。
+
+**前门所有。**
+- HTTP：`native/gateway/src/app/remote_screen.rs` 认领 `/api/remote-screen` 前缀
+  （`/api/remote-screen`、`/api/remote-screen/`、`/api/remote-screen/<rest>`），
+  按原方法、路径、查询串转发到 `multicc-remote`，POST 体沿用
+  `JSON.stringify(req.body ?? {})`，响应头白名单与 body 流式回写不变。
+- WS：`native/gateway/src/ws_remote_screen.rs` 终结客户端升级，准入走
+  `multicc_core::ws_admission`（sessionless 路径，只取一次 `plan()`），再桥到
+  `multicc-remote`；`mode=h264` 选 H.264 桥，否则 RFB。
+- 进程：`native/gateway/src/remote_child.rs` 的 `Arc<RemoteChild>` 是全站唯一
+  supervisor，HTTP 与 WS 共用；查找顺序 `MULTICC_REMOTE_BIN` → 前门可执行文件同目录。
+- 标注：`app::remote_annotation` 在 `annotation-relay` 之前拦截 own-shot 端点
+  （`assist/remote-screen/shot-*.png`），不查配置、也不进 Node。
+
+**删除的 Node 内容。**
+- `src/remote-screen.js`（稳定入口）与 `src/remote-screen-rust.js`（609 行，进程托管 +
+  HTTP/WS 转发）整文件删除。
+- `server.js`：`require('./src/remote-screen')`、connection-router 依赖里的
+  `remoteScreenRfb`、`remoteScreen.mount(app,{logger})` 三处接线移除。
+- `src/ws/connection-router.js`：`/ws/remote-screen` 分派分支与 SESSIONLESS 清单条目移除。
+- `src/annotation-live.js`：每次标注都无条件 `require('./remote-screen')` 的 own-shot
+  分支移除——这是唯一一处删漏就会让所有标注抛异常的耦合点。
+
+**测试与台账。**
+- `tests/test-remote-screen.js` 只保留浏览器层（`chat-remote-input.js`、
+  `chat-remote-screen.js`、h264 适配器，VM 驱动），29 条；进程托管与 RFB/H264 转发由
+  `native/gateway/tests/{remote_child,remote_screen,ws_remote_screen,remote_screen_wiring}.rs` 钉住。
+- `tests/test-remote-screen-h264.js`、`tests/test-remote-screen-probe.js` 删除（纯 Node 内部
+  实现用例，覆盖面由 Rust 用例继承）；`package.json` 的 `test:security` 同步移除两处。
+- `tests/helpers/remote-screen-e2e-harness.js` 改为起真前门
+  （`serve --cwd <root> --node <node> --stdin-lifeline -- server.js`），并清掉继承的
+  `MULTICC_GATEWAY_*`；`tests/test-remote-screen-h264-cdp.js` 的 relay 用例同样改起前门，
+  必须显式传 `MULTICC_RUST_ADDON`，否则 Node 子进程落到旧 addon 上反复崩溃。
+- 行数棘轮：`server.js` 从 3,082 行 / 166,127 字节降到 3,080 行 / 166,013 字节。
+
+**验证。** `tests/test-remote-screen.js` 29/29、`tests/test-annotation-live.js` 5/5、
+`tests/test-remote-screen-h264-fixture.js` 3/3、`tests/test-remote-screen-h264-cdp.js`
+relay + p2p 全绿（前置 `cargo test -p multicc-gateway` 的既有红项
+`directory_routes::directories_list_keeps_the_dto_key_order_and_the_count_fallbacks`
+与本批无关：`COUNT_CLIS` 在 11-20 加了 `agy`，Gateway 测试停留在 11-18，main 上同样失败）。

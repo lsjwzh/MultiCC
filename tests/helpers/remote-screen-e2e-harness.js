@@ -36,6 +36,7 @@ const zlib = require('node:zlib');
 const { spawn } = require('node:child_process');
 const { assertTestDir } = require('../../src/paths');
 const { ensureSourceRust } = require('../../scripts/ensure-source-rust');
+const { gatewayBinaryName } = require('../../scripts/build-rust-kernels');
 const { waitServerReady } = require('./wait-server-ready');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -358,28 +359,39 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
     // 首次可能要现编（约 1 分钟），之后按指纹复用缓存；同时把 multicc-remote 放进
     // 模块所在目录。
     const rustAddon = ensureSourceRust({ log: () => {} });
+    // 前门与 multicc-remote 由 ensureSourceRust 一并放进模块目录；远控路由已由它
+    // 独占，裸 server.js 不再挂 /api/remote-screen。
+    const gatewayBin = path.join(path.dirname(rustAddon), gatewayBinaryName(process.platform));
     // 观测口：multicc-remote 自己按 200ms 原子写这个文件（见
     // docs/remote-screen-process.md §5）。
     const statsFile = path.join(root, 'p2p-stats.json');
     const port = await freePort();
     let log = '';
-    const child = spawn(process.execPath, ['server.js'], {
-      cwd: ROOT,
-      env: {
-        ...process.env,
-        NODE_ENV: 'test',
-        PORT: String(port),
-        ACCESS_TOKEN: token,
-        MULTICC_DATA_DIR: dataDir,
-        MULTICC_AGENT_DIR: agentDir,
-        MULTICC_AGENT_AUTO_INSTALL: '0',
-        MULTICC_REMOTE_POWER_CONSENT_FILE: consentFile,
-        ...(p2pStats ? { MULTICC_REMOTE_STATS_FILE: statsFile } : {}),
-        ...(rustAddon ? { MULTICC_RUST_ADDON: rustAddon } : {}),
-        MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const env = {
+      ...process.env,
+      NODE_ENV: 'test',
+      PORT: String(port),
+      ACCESS_TOKEN: token,
+      MULTICC_DATA_DIR: dataDir,
+      MULTICC_AGENT_DIR: agentDir,
+      MULTICC_AGENT_AUTO_INSTALL: '0',
+      MULTICC_REMOTE_POWER_CONSENT_FILE: consentFile,
+      ...(p2pStats ? { MULTICC_REMOTE_STATS_FILE: statsFile } : {}),
+      ...(rustAddon ? { MULTICC_RUST_ADDON: rustAddon } : {}),
+      MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000',
+    };
+    // 继承来的 MULTICC_GATEWAY_* 会让 Node 子进程以为自己在替前门收转发，起不来。
+    for (const key of Object.keys(env)) {
+      if (key.startsWith('MULTICC_GATEWAY_')) delete env[key];
+    }
+    const child = spawn(gatewayBin,
+      ['serve', '--cwd', ROOT, '--node', process.execPath, '--stdin-lifeline', '--', 'server.js'],
+      {
+        cwd: ROOT,
+        env,
+        // stdin 是前门的生命周期线：必须是 pipe 并保持打开，'ignore' 会立刻 EOF 让它退出。
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
     child.stdout.on('data', c => { log = (log + c).slice(-8000); });
     child.stderr.on('data', c => { log = (log + c).slice(-8000); });
     cleanups.push(async () => {

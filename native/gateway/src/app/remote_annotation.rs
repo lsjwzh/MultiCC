@@ -18,9 +18,9 @@
 //! `annotation-relay` answer, so [`multicc_core::event_routes::annotation_relay_body`]
 //! can wrap it unchanged (it reads only `relayed` and `results`).
 //!
-//! **Not wired.** Nothing names this module yet; [`RemoteAnnotation`] owns its
-//! [`Arc<RemoteChild>`] and the resolved screenshot dir, so wiring needs no
-//! `App` field.
+//! Wired from `daemon.rs` into `App::remote_annotation` (a `OnceLock`) and
+//! consulted by `app::event_routes` for `AnnotationLivePost`; [`RemoteAnnotation`]
+//! owns its [`Arc<RemoteChild>`] and the resolved screenshot dir.
 
 use std::net::Ipv4Addr;
 use std::path::{Component, Path, PathBuf};
