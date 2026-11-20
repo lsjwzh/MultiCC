@@ -39,6 +39,34 @@
 
 在 `--no-node` 下，Claude 通过回合专属的回环 MCP 入口发问。普通会话沿用消息 ID 做重发去重，任务壳沿用 SQLite 收据与调度准入事务；回答同时关联请求与回合。HTTP 撤销沿用统一鉴权和执行槽屏蔽。五个旧生产文件已删除。尚由 Node 持有回合的 CLI 与会话继续走兼容宿主，兼容入口委托同一 Rust 仓储。
 
+## 第二批进度
+
+工作树已经接通空壳登记、会话归属、壳视图和游标比较并交换。原生网关在 `--no-node` 下直接处理打开、查看、游标选择和引用追踪 HTTP 接口。兼容宿主调用同一 Rust 仓储。登记和归属在一个事务中写入，归属冲突回滚新壳。
+
+WebSocket 从壳内会话按游标向同壳的已登记执行投递。预约收据时重新检查任务归属、工作区和控制身份，重复提交回放原收据。引用快照的构造、摘要校验和追踪在 Rust 执行，越界会话与损坏快照均被拒绝。
+
+2026-11-20 追加接通以下四条链路。
+
+- 首次物化由 `materializePlannedWorktree` 在 Rust 工作线程执行，Node 仓库 actor 继续提供调用期间的仓库租约。原生网关复用同一个 `worktree_sync::materialize_planned`，核对分支、目录和 Git common dir 后激活写者。
+- 引用的摘要、快照、裁剪、校验、呈现和首次注入使用 Rust 所有者。版本化快照保留原始 UTF-16 语义，损坏摘要拒绝注入。兼容调用通过共享原生适配器访问，实际注入的快照 ID 写入收据。
+- HTTP 普通投递、固定任务投递和收据重试在原生模式使用持久收据、统一调度准入和写者许可。兼容模式的调用分派及投递步骤推进已迁入 Rust，Node 依次执行宿主端口。失败后修复配置并重启可使用原收据重试，接受过的消息重放原结果。语音重试复用持久载荷和指纹。
+- 网关启动时执行 Rust 的恢复准备、版本校验和恢复事务，后台队列可以在没有 WebSocket 客户端连接时继续消费。兼容 JSON 草稿的恢复同样调用 Rust 转移内核，事件的缺省属性还原也由原生适配器执行。
+
+本轮整文件删除如下，物理行按 `splitlines()` 统计。
+
+| 已删除文件 | 原有行数 |
+| --- | --- |
+| `src/task-shell/routes.js` | 48 |
+| `src/routes/task-shell-host.js` | 210 |
+| `src/task-shell/context.js` | 68 |
+| `src/session-work/recovery-transport.js` | 17 |
+
+四个文件合计删除 343 行，包含调用方和桥接改动的 `src/**/*.js` 后端净减 653 行。Rust、回归测试和迁移登记另行计入仓库总增量。
+
+验证包含 `cargo build --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p multicc-gateway --test ws_chat --test task_shell`、`npm run test:task-shells` 与现有 HTTP 差分。网关 WebSocket 31/31、任务壳 HTTP 13/13、npm 任务壳 304/304、任务与工作区 517/517、调度恢复定向 104/104 通过。验收日志和合并记录随本轮收口更新。已完成的 HTTP 对拍为 67/67，副作用序列一致。新增回归覆盖空壳幂等和身份冲突回滚、跨会话投递、引用追踪与损坏摘要、首次物化与真实 Provider 输入、HTTP 重发和修复后重试、控制取消和持久问答、无客户端的启动恢复及再次重启去重。隔离 Claude 执行路径的进程树内 Node 数为 0。
+
+第二批整体仍有任务关系、归属操作、分离、独立继续和定时消费者的接线待退出。`src/task-shell/runtime.js`、`src/task-shell/host.js`、`src/session-work/scheduler.js` 继续承接现有 CLI 回合、进程内会话记录、广播及这些任务操作的兼容接线。保留范围由当前 Node CLI 宿主和尚待迁移的操作决定，后续批次迁走这些调用方后再整文件删除，并移除兼容端口 `/api/__host/task-shell`。本轮零 Node 隔离验收覆盖现有原生 Claude 路径与新增任务壳 HTTP 路径，其他 CLI 的执行适配继续列入第三批。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。
