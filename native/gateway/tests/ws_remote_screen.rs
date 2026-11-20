@@ -615,3 +615,159 @@ async fn backpressure_pauses_the_upstream_then_resumes() {
         .expect("the burst should resume once the client drains");
     assert!(grown > plateau);
 }
+
+fn hex_of(data: &[u8]) -> String {
+    data.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Polls a capture file until it holds at least `count` lines.
+async fn wait_for_lines(
+    path: &std::path::Path,
+    count: usize,
+    limit: Duration,
+) -> Option<Vec<String>> {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            let lines: Vec<String> = text.lines().map(str::to_string).collect();
+            if lines.len() >= count {
+                return Some(lines);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|text| text.lines().map(str::to_string).collect())
+}
+
+/// Frames sent while the child is still starting are queued and flushed in
+/// arrival order once the dial completes. The client's first frames are the
+/// protocol handshake, so a reorder corrupts the whole session.
+#[tokio::test]
+async fn pre_open_frames_flush_in_arrival_order() {
+    let app = app("remote-screen-token");
+    let dir = temp_dir("pre-open-order");
+    let capture = dir.join("capture");
+    let capture_str = capture.to_string_lossy().into_owned();
+    let screen = Arc::new(RemoteScreenWs::new(child(
+        "pre-open-order",
+        &[
+            ("FIXTURE_WS", "echo"),
+            ("FIXTURE_READY_DELAY_MS", "800"),
+            ("FIXTURE_WS_CAPTURE", capture_str.as_str()),
+        ],
+    )));
+    let addr = serve(screen, app, LOCAL).await;
+    let mut ws = connect(addr, "").await;
+
+    let sent: Vec<Vec<u8>> = (0..24u8)
+        .map(|index| vec![index, index.wrapping_add(1), 0xff - index])
+        .collect();
+    for frame in &sent {
+        ws.send(Message::Binary(frame.clone().into()))
+            .await
+            .expect("queue before the upstream opens");
+    }
+
+    // Nothing dropped, nothing reordered on the way up: the child sees them
+    // in exactly the order the client sent them.
+    let lines = wait_for_lines(&capture, sent.len(), Duration::from_secs(8))
+        .await
+        .expect("captured frames");
+    assert_eq!(lines.len(), sent.len());
+    for (index, line) in lines.iter().enumerate() {
+        assert_eq!(
+            line,
+            &format!("2:{}", hex_of(&sent[index])),
+            "upstream frame {index} out of order"
+        );
+    }
+
+    // And the echo proves the downstream order matches too.
+    for (index, frame) in sent.iter().enumerate() {
+        let echoed = next_data(&mut ws, Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|| panic!("frame {index} never came back"));
+        assert_eq!(
+            echoed,
+            Message::Binary(frame.clone().into()),
+            "client frame {index} out of order"
+        );
+    }
+}
+
+/// Golden access units in the wire shape the desktop agent speaks:
+/// `[type][u32 length][payload]` (type 2 = keyframe, 3 = delta). Every byte
+/// must cross the front door unchanged in both directions.
+fn golden_access_units() -> Vec<Vec<u8>> {
+    vec![
+        vec![
+            0x02, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x21, 0xff,
+            0xfe,
+        ],
+        vec![
+            0x03, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x00, 0xff,
+        ],
+        vec![
+            0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x01,
+        ],
+    ]
+}
+
+#[tokio::test]
+async fn h264_access_units_cross_the_bridge_byte_for_byte() {
+    let app = app("remote-screen-token");
+    let dir = temp_dir("h264-bytes");
+    let push = dir.join("push.hex");
+    let capture = dir.join("capture");
+    let golden = golden_access_units();
+    let push_text: String = golden
+        .iter()
+        .map(|unit| format!("{}\n", hex_of(unit)))
+        .collect();
+    std::fs::write(&push, push_text).expect("push file");
+    let push_str = push.to_string_lossy().into_owned();
+    let capture_str = capture.to_string_lossy().into_owned();
+
+    let screen = Arc::new(RemoteScreenWs::new(child(
+        "h264-bytes",
+        &[
+            ("FIXTURE_WS", "echo"),
+            ("FIXTURE_WS_PUSH_FILE", push_str.as_str()),
+            ("FIXTURE_WS_CAPTURE", capture_str.as_str()),
+        ],
+    )));
+    let addr = serve(screen, app, LOCAL).await;
+
+    let mut ws = connect(addr, "?mode=h264").await;
+
+    // Upstream → front door → browser: the pushed frames arrive verbatim.
+    for (index, unit) in golden.iter().enumerate() {
+        let received = next_data(&mut ws, Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|| panic!("pushed frame {index} never arrived"));
+        assert_eq!(
+            received,
+            Message::Binary(unit.clone().into()),
+            "downstream frame {index} changed"
+        );
+    }
+
+    // Browser → front door → upstream: the child captured the same bytes.
+    for unit in &golden {
+        ws.send(Message::Binary(unit.clone().into()))
+            .await
+            .expect("send upstream");
+    }
+    let lines = wait_for_lines(&capture, golden.len(), Duration::from_secs(5))
+        .await
+        .expect("captured frames");
+    for (index, unit) in golden.iter().enumerate() {
+        assert_eq!(
+            lines[index],
+            format!("2:{}", hex_of(unit)),
+            "upstream frame {index} changed"
+        );
+    }
+}

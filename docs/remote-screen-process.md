@@ -143,4 +143,10 @@ Rust 端的路由与 JSON 形状与迁移前（已删除）的 Node 实现完全
   均已删除。
 - **依赖**：`werift` 仅剩测试与基准使用（e2e 里当浏览器端），已从 dependencies 降到
   devDependencies，生产代码不再 require 它。
+- **行为对账**：`native/gateway/tests/remote_annotation_golden.rs` 以
+  `tests/fixtures/remote-annotation-golden.json` 为黄金。该文件是删除前的
+  `src/remote-screen-rust.js`（`30cc801a^`）在 19 类 payload × 6 种上游答复 + 二进制
+  缺失上的实测输出，`__DIR__` 占位由测试替换成本机目录。own-shot 判定、三种失败文案
+  （不是远程屏幕截图 / 远控服务不可用 / 远控服务无响应）或应答透传一旦改动，这条对账
+  就是唯一的等价性证明。
 
