@@ -689,6 +689,40 @@ class RemoteScreenService {
       perms['accessibility'] == true &&
       perms['screenRecording'] == true;
 
+  /// 读远端剪贴板（`{ok,text,truncated?}`）。
+  ///
+  /// 只在用户点按时调用：剪贴板里常有密码 / 验证码，不做后台同步、不轮询。
+  /// 老 Agent 会回 `clipboard-unavailable`（见 docs/desktop-agent-protocol.md）。
+  Future<Map<String, dynamic>> readClipboard() async {
+    try {
+      final res = await _http
+          .get(
+            Uri.parse(_httpUrl('/api/remote-screen/clipboard')),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 12));
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return {'ok': false, 'error': 'network'};
+  }
+
+  /// 把文本写进远端剪贴板。之后要么用户自己按 ⌘V，要么页面再发一次和弦。
+  Future<Map<String, dynamic>> writeClipboard(String text) async {
+    try {
+      final res = await _http
+          .post(
+            Uri.parse(_httpUrl('/api/remote-screen/clipboard')),
+            headers: _headers,
+            body: jsonEncode({'text': text}),
+          )
+          .timeout(const Duration(seconds: 20));
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return {'ok': false, 'error': 'network'};
+  }
+
   /// One guarded input op (click / type / press / status / resume / release).
   Future<Map<String, dynamic>> inputOp(Map<String, dynamic> body) async {
     try {

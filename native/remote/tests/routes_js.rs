@@ -1300,3 +1300,51 @@ async fn wake_get_is_never_cached_and_unknown_consent_is_503() {
         json!("platform-unsupported")
     );
 }
+
+// ── 剪贴板（用户点按才搬运，老 Agent 收敛成 clipboard-unavailable）─────
+#[tokio::test]
+async fn clipboard_round_trip_forwards_the_session_and_clips_oversized_text() {
+    let env = mac_env("clipboard");
+    // 读：Agent 回 200001 个码元，服务端只给前 CLIPBOARD_MAX_UTF16 个。
+    env.agent.set(|req| match req["op"].as_str() {
+        Some("clipboard-read") => json!({ "ok": true, "text": "剪贴板内容".repeat(50_000) }),
+        _ => json!({ "ok": true }),
+    });
+    let read = routes::clipboard_get(State(env.state.clone())).await;
+    assert_eq!(read.status(), 200);
+    let body = body_json(read).await;
+    assert_eq!(body["ok"], json!(true));
+    assert_eq!(body["truncated"], json!(true));
+    let text = body["text"].as_str().unwrap();
+    assert_eq!(text.encode_utf16().count(), routes::CLIPBOARD_MAX_UTF16);
+    assert_eq!(env.agent.requests()[0]["session"], json!("remote-screen"));
+
+    // 写：正文原样转给 Agent，并且带同一个 session。
+    let write = routes::clipboard_set(
+        State(env.state.clone()),
+        json_body(json!({ "text": "hello 远端" })),
+    )
+    .await;
+    assert_eq!(write.status(), 200);
+    assert_eq!(env.agent.requests()[1]["op"], json!("clipboard-write"));
+    assert_eq!(env.agent.requests()[1]["text"], json!("hello 远端"));
+
+    // 超长：400，不打扰 Agent。
+    let long = "x".repeat(routes::CLIPBOARD_MAX_UTF16 + 1);
+    let before = env.agent.requests().len();
+    let rejected = routes::clipboard_set(State(env.state.clone()), json_body(json!({ "text": long })))
+        .await;
+    assert_eq!(rejected.status(), 400);
+    assert_eq!(env.agent.requests().len(), before);
+}
+
+#[tokio::test]
+async fn clipboard_on_an_old_agent_is_a_single_actionable_code() {
+    let env = mac_env("clipboard-old");
+    env.agent
+        .set(|_| json!({ "ok": false, "error": "unknown op: clipboard-read" }));
+    let body = body_json(routes::clipboard_get(State(env.state.clone())).await).await;
+    assert_eq!(body["ok"], json!(false));
+    assert_eq!(body["error"], json!("clipboard-unavailable"));
+    assert!(body["message"].as_str().unwrap().contains("Agent"));
+}

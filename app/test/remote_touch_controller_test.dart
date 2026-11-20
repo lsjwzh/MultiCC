@@ -111,12 +111,13 @@ void main() {
     test('按住左键期间每 3s 重发最后一次样本，松手后停止', () {
       fakeAsync((clock) {
         final events = <String>[];
-        final c = RemoteTouchController(
-            onPointer: (m, x, y) => events.add('$m@$x,$y'),
-            moveInterval: Duration.zero,
-          )
-          ..display = const Size(400, 200)
-          ..source = const Size(800, 400);
+        final c =
+            RemoteTouchController(
+                onPointer: (m, x, y) => events.add('$m@$x,$y'),
+                moveInterval: Duration.zero,
+              )
+              ..display = const Size(400, 200)
+              ..source = const Size(800, 400);
         var t = Duration.zero;
         c.down(1, const Offset(100, 50), const Offset(100, 50), t);
         c.move(
@@ -200,6 +201,15 @@ void main() {
       z.down(1, 10, 10);
       z.move(1, 20, 10);
       expect(z.c.cursor.dx - 400, closeTo(slow / 4, 0.51));
+    });
+
+    test('motionGain 覆盖舞台尺度的增益（悬浮操作台）', () {
+      // 默认 800/400 = 2 倍；操作台只有几十 dp，必须按固定增益走。
+      final r = _Rig(mode: RemoteTouchMode.trackpad)..c.motionGain = 0.5;
+      r.down(1, 10, 10);
+      r.advance(500); // 慢速：加速度约 1
+      r.c.move(1, const Offset(30, 10), const Offset(30, 10), r.now);
+      expect(r.c.cursor.dx - 400, closeTo(10, 1.5));
     });
 
     test('快速划动有加速度', () {

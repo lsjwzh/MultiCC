@@ -79,6 +79,12 @@ class RemoteTouchController {
   /// 视口里看得见的那块源画面（源像素）；`null` = 整个源画面。触控板光标不出这块。
   Rect? visible;
 
+  /// 固定移动增益（源像素 / 逻辑像素）。非 0 时用它，不再按
+  /// `source.width / display.width / viewScale` 换算 —— 那套公式假设「触控面 =
+  /// 画面」，对悬浮操作台（几十 dp 的圆盘）会把位移放大二十倍。
+  /// 0 = 走原公式，画面上的直接操作不受影响。
+  double motionGain = 0;
+
   /// 触控板虚拟光标（源画面像素）；界面可读它画光标。
   Offset cursor = Offset.zero;
 
@@ -338,10 +344,11 @@ class RemoteTouchController {
     final dt = math.max(1, (t - _lastT).inMicroseconds) / 1e6;
     final d = global - _lastGlobal;
     final speed = d.distance / dt;
-    final gain =
-        (source.width / display.width) /
-        math.max(0.1, viewScale) *
-        (1 + math.min(_accelMax, speed / _accelSpeed));
+    final gain = motionGain > 0
+        ? motionGain * (1 + math.min(_accelMax, speed / _accelSpeed))
+        : (source.width / display.width) /
+              math.max(0.1, viewScale) *
+              (1 + math.min(_accelMax, speed / _accelSpeed));
     final next = Offset(cursor.dx + d.dx * gain, cursor.dy + d.dy * gain);
     // 拖拽中不限制在可见块内：远端指针要能一直朝画面边缘走（页面会跟着平移）。
     cursor = _holding ? _clampSource(next) : _keepVisible(next);
@@ -574,8 +581,10 @@ class RemoteTouchController {
 
   /// 只夹在源画面内（拖拽中用）：不许走到画面外，但允许走出当前可见块，
   /// 页面会在靠近边缘时自动平移视角。
-  Offset _clampSource(Offset c) =>
-      Offset(_within(c.dx, 0, source.width - 1), _within(c.dy, 0, source.height - 1));
+  Offset _clampSource(Offset c) => Offset(
+    _within(c.dx, 0, source.width - 1),
+    _within(c.dy, 0, source.height - 1),
+  );
 
   static double _within(double v, double lo, double hi) =>
       v < lo ? lo : (v > hi ? hi : v);

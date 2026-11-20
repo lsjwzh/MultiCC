@@ -56,6 +56,9 @@ import ScreenCaptureKit
 import ImageIO
 
 let VERSION = "3"
+/// 远控剪贴板单次搬运上限（UTF-16 码元）。只在用户点按时同步，不做常驻监听：
+/// 剪贴板里常有密码和验证码，agent 没有理由把它们留在别处。
+let CLIPBOARD_LIMIT = 200_000
 let home = FileManager.default.homeDirectoryForCurrentUser.path
 let agentDir = ProcessInfo.processInfo.environment["MULTICC_AGENT_DIR"] ?? "\(home)/.multicc/agent"
 let sockPath = "\(agentDir)/agent.sock"
@@ -1660,6 +1663,32 @@ func handle(_ req: [String: Any]) -> [String: Any] {
       }
       return dispatched(bgPid == nil ? "hid_events" : "pid_events")
     }
+  case "clipboard-read":
+    // Reserved for the remote screen viewer: the caller already sits behind
+    // MultiCC auth and can see the whole screen, so clipboard is the same
+    // trust boundary. Still one-shot on purpose — no polling, no watching.
+    guard session == "remote-screen" else {
+      return refused("bad-session", "clipboard is reserved for the remote screen viewer", retrySafe: false)
+    }
+    let text = NSPasteboard.general.string(forType: .string) ?? ""
+    let clipped = text.utf16.count > CLIPBOARD_LIMIT
+      ? String(text.prefix(CLIPBOARD_LIMIT)) : text
+    var reply: [String: Any] = ["ok": true, "text": clipped, "length": text.count]
+    if clipped != text { reply["truncated"] = true }
+    return reply
+  case "clipboard-write":
+    guard session == "remote-screen" else {
+      return refused("bad-session", "clipboard is reserved for the remote screen viewer", retrySafe: false)
+    }
+    guard let text = req["text"] as? String else { return ["ok": false, "error": "text is required"] }
+    guard text.utf16.count <= CLIPBOARD_LIMIT else {
+      return ["ok": false, "error": "text is too long (max \(CLIPBOARD_LIMIT) chars)"]
+    }
+    let board = NSPasteboard.general
+    board.clearContents()
+    let written = board.setString(text, forType: .string)
+    return written ? ["ok": true, "length": text.count]
+                   : ["ok": false, "error": "could not write the system clipboard"]
   case "snap":
     // The only caller input is the output file (absolute, .png, no "..") and
     // optionally which backend to use (see Platform tiers).

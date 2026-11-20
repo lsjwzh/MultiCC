@@ -38,6 +38,10 @@ pub const REASONS: &[(&str, &str)] = &[
         "interrupted",
         "操作被中途停下，可能已执行了一部分，先看一眼画面",
     ),
+    (
+        "clipboard-unavailable",
+        "桌面 Agent 版本较旧，更新 MultiCC Agent 后可用剪贴板同步",
+    ),
 ];
 
 pub fn reason_text(code: &str) -> Option<&'static str> {
