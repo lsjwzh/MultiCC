@@ -5,6 +5,9 @@ use crate::js::regex::{ascii_ci, from_unit_view, to_unit_view, BOUNDARY, SPACE};
 use crate::js::{JsString, JsValue as V};
 use regex::Regex;
 use std::sync::OnceLock;
+
+pub const WS_API_VERSION: &str = "v1";
+
 fn get<'a>(v: &'a V, key: &str) -> &'a V {
     v.get(key).unwrap_or(&V::Undefined)
 }
@@ -170,7 +173,7 @@ pub fn ws_envelope(payload: &V, context: &V) -> Option<V> {
         return None;
     }
     let mut envelope = payload.clone();
-    crate::quota_guard::set(&mut envelope, "apiVersion", V::string("v1"));
+    crate::quota_guard::set(&mut envelope, "apiVersion", V::string(WS_API_VERSION));
     let request = get(context, "requestId");
     if crate::js::truthy(request) {
         crate::quota_guard::set(

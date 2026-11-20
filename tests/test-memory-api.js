@@ -57,7 +57,8 @@ async function api(method, route, body) {
 }
 
 async function waitForServer() {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline && server.exitCode === null && server.signalCode === null) {
     try {
       const response = await api('GET', '/api/directories');
       if (response.status === 200) return;
@@ -68,17 +69,18 @@ async function waitForServer() {
 }
 
 async function stopServer() {
-  if (!server || server.exitCode !== null) return;
-  const exited = new Promise(resolve => server.once('exit', resolve));
-  server.kill('SIGTERM');
-  await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 2000))]);
-  if (server.exitCode === null) server.kill('SIGKILL');
+  const child = server;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  child.kill('SIGTERM');
+  const deadline = setTimeout(() => child.kill('SIGKILL'), 5000);
+  try { await exited; } finally { clearTimeout(deadline); }
 }
 
 async function cleanup() {
   await stopServer();
   assertTestDir(tmpRoot);
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 async function startServer() {

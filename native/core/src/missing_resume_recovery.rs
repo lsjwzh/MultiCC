@@ -291,6 +291,10 @@ fn probe_session(session_id: &str, config_dir_input: Option<&Value>) -> Evidence
     Evidence::ProvenAbsent
 }
 
+pub fn has_native_transcript(session_id: &str) -> bool {
+    probe_session(session_id, None) != Evidence::ProvenAbsent
+}
+
 /// A truthy `sessionId` as text; empty/missing/non-truthy means "no id".
 fn session_id_of(input: &Value) -> Option<String> {
     match input.get("sessionId") {

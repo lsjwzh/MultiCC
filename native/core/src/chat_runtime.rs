@@ -8,7 +8,43 @@
 //! addon owner; everything that must not drift from the frozen Node
 //! implementation is decided here and unit-tested without an engine.
 
-use crate::js::JsString;
+use crate::js::{JsString, JsValue};
+use std::collections::HashMap;
+
+/// 初次连接和直接提交回合使用同一份实时会话初值。
+/// 工作目录、当前任务和连接成员由宿主装配。
+pub fn live_session_defaults(assistant_turns: usize) -> JsValue {
+    JsValue::object(vec![
+        ("claudeProc", JsValue::Null),
+        ("lineBuf", JsValue::string("")),
+        ("cli", JsValue::string("claude")),
+        ("chatTurnCount", JsValue::Number(assistant_turns as f64)),
+        ("cwd", JsValue::Undefined),
+        ("currentAssistantText", JsValue::string("")),
+        ("currentToolCalls", JsValue::Array(Vec::new())),
+        ("currentCost", JsValue::Null),
+        ("isStreaming", JsValue::Bool(false)),
+        ("_classifyTimer", JsValue::Null),
+        ("_classifyTaskId", JsValue::Null),
+        ("_currentTaskId", JsValue::Null),
+    ])
+}
+
+pub enum TaskRestore {
+    Detached,
+    Found,
+    Earlier,
+}
+
+pub fn restore_task_step(detached: bool, has_task_id: bool) -> TaskRestore {
+    if detached {
+        TaskRestore::Detached
+    } else if has_task_id {
+        TaskRestore::Found
+    } else {
+        TaskRestore::Earlier
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -87,6 +123,53 @@ impl Record {
 
     pub fn owns_turn(&self, turn_id: &JsString) -> bool {
         self.turn_id.as_ref() == Some(turn_id)
+    }
+}
+
+/// Per-session turn table. The proof may be an opaque VM reference or a
+/// native route record. Its ownership belongs to the runtime embedding it.
+#[derive(Clone)]
+pub struct Entry<Proof> {
+    pub record: Record,
+    pub proof: Option<Proof>,
+}
+
+pub struct Table<Proof> {
+    order: Vec<JsString>,
+    records: HashMap<JsString, Entry<Proof>>,
+}
+
+impl<Proof> Default for Table<Proof> {
+    fn default() -> Self {
+        Self {
+            order: Vec::new(),
+            records: HashMap::new(),
+        }
+    }
+}
+
+impl<Proof> Table<Proof> {
+    pub fn store(&mut self, session: JsString, record: Record, proof: Option<Proof>) {
+        if self
+            .records
+            .insert(session.clone(), Entry { record, proof })
+            .is_none()
+        {
+            self.order.push(session);
+        }
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = &Entry<Proof>> {
+        self.order.iter().map(|id| &self.records[id])
+    }
+}
+
+impl<Proof: Clone> Table<Proof> {
+    pub fn current(&self, session: &JsString) -> Entry<Proof> {
+        self.records.get(session).cloned().unwrap_or_else(|| Entry {
+            record: Record::default_for(session.clone()),
+            proof: None,
+        })
     }
 }
 
@@ -256,6 +339,35 @@ pub fn settle(
 /// `claimProof().claimed`: the record still owns the named turn and is not idle.
 pub fn claim_proof(record: &Record, turn_id: &JsString) -> bool {
     record.owns_turn(turn_id) && record.phase != Phase::Idle
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelTurnIdentity {
+    Live,
+    PersistedActive,
+    Recovery,
+    Idle,
+}
+
+/// A restart may leave an active scheduler entry with no in-memory turn. The
+/// previous completed turn must never be used as the identity of its cancel.
+pub fn cancel_turn_identity(
+    has_live_turn: bool,
+    has_live_turn_id: bool,
+    has_schedule_entry: bool,
+    has_persisted_active_id: bool,
+    classify_state: &str,
+) -> CancelTurnIdentity {
+    let processing = matches!(classify_state, "P" | "C");
+    if has_live_turn_id {
+        CancelTurnIdentity::Live
+    } else if processing && has_persisted_active_id {
+        CancelTurnIdentity::PersistedActive
+    } else if has_live_turn || has_schedule_entry || processing {
+        CancelTurnIdentity::Recovery
+    } else {
+        CancelTurnIdentity::Idle
+    }
 }
 
 /// Facts lifted from the host route-proof object. Values that the Node rule

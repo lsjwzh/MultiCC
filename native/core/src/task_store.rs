@@ -64,6 +64,7 @@ pub struct TaskStore {
     fence_failures: HashSet<String>,
     progress: Option<Progress>,
 }
+
 // 迁移进度写在库旁的 <库>.migration.json（先写临时文件再改名），供启动期的「正在升级」
 // 页面与启动器读取；只有阶段、计数和字节数，不含用户数据。同一阶段内最多 4 次/秒。
 struct Progress {
@@ -133,6 +134,20 @@ fn remove_stale_backups(file: &str, from: i64) -> Result<()> {
     Ok(())
 }
 impl TaskStore {
+    fn with_connection(db: Connection) -> Self {
+        Self {
+            db: Some(db),
+            writes: HashMap::new(),
+            cache: HashMap::new(),
+            sequence: 0,
+            frames: vec![],
+            migration: Value::Null,
+            access: None,
+            fence_failures: HashSet::new(),
+            progress: None,
+        }
+    }
+
     pub fn open(file: &str) -> Result<Self> {
         if file != ":memory:" {
             if let Some(p) = Path::new(file).parent() {
@@ -149,17 +164,7 @@ impl TaskStore {
         }
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS shell_records(kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,task_ref TEXT,receipt_ref TEXT,PRIMARY KEY(kind,id));").map_err(err)?;
         db.set_prepared_statement_cache_capacity(64);
-        let mut store = Self {
-            db: Some(db),
-            writes: HashMap::new(),
-            cache: HashMap::new(),
-            sequence: 0,
-            frames: vec![],
-            migration: Value::Null,
-            access: None,
-            fence_failures: HashSet::new(),
-            progress: None,
-        };
+        let mut store = Self::with_connection(db);
         if version < SCHEMA_VERSION {
             let result = store.migrate(file, version);
             if let Some(mut p) = store.progress.take() {
@@ -193,6 +198,109 @@ impl TaskStore {
             }
         }
         Ok(store)
+    }
+
+    /// Use one read snapshot for the shell, its links and any transcript
+    /// attribution lookups performed by the caller. Neither reading an old
+    /// database nor opening a chat socket runs a task-store migration.
+    pub fn with_chat_scope<T>(
+        file: &Path,
+        shell_id: &str,
+        session_id: &str,
+        session_in_directory: impl Fn(&str, Option<&Value>) -> bool,
+        read: impl FnOnce(&Self, Vec<String>) -> Result<T>,
+    ) -> Result<T> {
+        if shell_id.is_empty()
+            || shell_id.len() > 160
+            || !shell_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+        {
+            return Err("invalid shellId".into());
+        }
+        match file.try_exists() {
+            Ok(true) => {}
+            Ok(false) => return Err("shell_not_found".into()),
+            Err(error) => return Err(err(error)),
+        }
+        let db = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(err)?;
+        db.busy_timeout(Duration::from_millis(5000)).map_err(err)?;
+        db.execute_batch("BEGIN DEFERRED").map_err(err)?;
+        let store = Self::with_connection(db);
+        let shell = store.get("shell", shell_id)?;
+        if shell.is_null() {
+            return Err("shell_not_found".into());
+        }
+        let directory = shell.get("dirId");
+        let mut session_ids = Vec::new();
+        let mut seen = HashSet::new();
+        let mut include = |id: &str| {
+            if !id.is_empty() && session_in_directory(id, directory) && seen.insert(id.to_owned()) {
+                session_ids.push(id.to_owned());
+            }
+        };
+        let source = text(&shell["sourceSessionId"]);
+        include(source);
+        let linked: HashSet<_> = store
+            .rows("link", false)?
+            .into_iter()
+            .filter(|(_, _, link)| link["shellId"] == shell_id)
+            .filter_map(|(_, _, link)| link["taskId"].as_str().map(ToOwned::to_owned))
+            .collect();
+        let mut tasks = Vec::with_capacity(linked.len());
+        let mut statement = store
+            .db()?
+            .prepare_cached("SELECT rowid,body FROM shell_records WHERE kind='task' AND id=?")
+            .map_err(err)?;
+        for id in linked {
+            let task = statement
+                .query_row([&id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .optional()
+                .map_err(err)?;
+            if let Some((row_id, body)) = task {
+                let value = parse(&body)?;
+                if value["id"] == id {
+                    tasks.push((row_id, value));
+                }
+            }
+        }
+        tasks.sort_unstable_by_key(|(row_id, _)| *row_id);
+        for (_, task) in tasks {
+            include(text(&task["sessionId"]));
+        }
+        if !session_ids.iter().any(|id| id == session_id) {
+            return Err("Execution is outside this shell".into());
+        }
+        let mut target = source.to_owned();
+        if let Some(task_id) = shell["currentTaskId"].as_str().filter(|id| !id.is_empty()) {
+            let task = store.get("task", task_id)?;
+            if task.is_null() {
+                return Err("task_not_found".into());
+            }
+            if task.get("dirId") != directory {
+                return Err("Tasks must belong to the same project".into());
+            }
+            if store
+                .get("link", &format!("{shell_id}:{task_id}"))?
+                .is_null()
+            {
+                return Err("task_not_linked".into());
+            }
+            if crate::js::serde::truthy(&task["ready"]) {
+                target = text(&task["sessionId"]).to_owned();
+            }
+        }
+        if !session_in_directory(&target, directory) {
+            return Err("source_session_missing".into());
+        }
+        read(&store, session_ids)
+    }
+
+    pub fn chat_turn_attribution(&self, session_id: &str, turn_id: &str) -> Result<Value> {
+        self.get("turn-attr", &format!("{session_id}:{turn_id}"))
     }
     // v1→v2 一次性迁移：先整库备份（VACUUM INTO，空间不够直接拒绝、不改任何数据），
     // 再在单个事务里补引用列、建索引、搬台账、压缩上下文记录；崩溃即整体回滚，

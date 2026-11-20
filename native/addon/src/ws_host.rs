@@ -19,12 +19,16 @@ use crate::{
     js_live::LiveValue as L,
 };
 use multicc_core::{
+    api_contract::WS_API_VERSION,
     chat_replay_buffer::Sessions,
     js::JsValue as V,
     workspace_sockets::{Heartbeat, HeartbeatTick},
     ws_backpressure::{Effect, Limits, Options, Payload, Transport, Wrapper},
 };
-use napi::{bindgen_prelude::Unknown, check_status, sys, Env, Result};
+use napi::{
+    bindgen_prelude::{FromNapiValue, Unknown},
+    check_status, sys, Env, Result,
+};
 use napi_derive::napi;
 use std::{cell::RefCell, collections::BTreeMap, ffi::CStr, ptr};
 
@@ -42,6 +46,23 @@ fn call_catch<'e>(port: L<'e>, name: &CStr, args: &[L<'e>]) -> Result<()> {
 
 fn number<'e>(anchor: L<'e>, value: f64) -> Result<L<'e>> {
     anchor.from_value(&V::Number(value))
+}
+
+fn chat_event_frame<'e>(event: L<'e>, anchor: L<'e>) -> Result<String> {
+    if event.kind()? != sys::ValueType::napi_object
+        || event.get(c"type")?.kind()? != sys::ValueType::napi_string
+    {
+        return Err(event.type_error("WebSocket envelope requires a string type"));
+    }
+    let fields = event.from_value(&V::Object(vec![(
+        "apiVersion".into(),
+        V::string(WS_API_VERSION),
+    )]))?;
+    let encoded = call(anchor, c"stringifyWithFields", &[event, fields])?;
+    if encoded.kind()? != sys::ValueType::napi_string {
+        return Err(encoded.type_error("WebSocket envelope did not serialize to a string"));
+    }
+    unsafe { String::from_napi_value(encoded.env(), encoded.raw()) }
 }
 
 struct Connection {
@@ -692,6 +713,17 @@ impl RustWsHost {
         self.chat.borrow_mut().session(&session).push(frame);
     }
 
+    #[napi]
+    pub fn replay_push_event(&self, env: Env, session: String, event: Unknown<'_>) -> Result<bool> {
+        let event = L::new(&env, event);
+        let anchor = self.values.anchor(&env)?;
+        let Some(frame) = event.catch(|| chat_event_frame(event, anchor))? else {
+            return Ok(false);
+        };
+        self.replay_push(session, frame);
+        Ok(true)
+    }
+
     /// `cs.streamReplay = []`.
     #[napi]
     pub fn replay_clear(&self, session: String) {
@@ -717,6 +749,24 @@ impl RustWsHost {
             .get(&session)
             .map(|entry| entry.replay().iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    #[napi]
+    pub fn replay_events(&self, env: Env, session: String) -> Result<sys::napi_value> {
+        let frames = self.replay_frames(session);
+        let anchor = self.values.anchor(&env)?;
+        let output = anchor.from_value(&V::Array(Vec::new()))?;
+        let json = anchor.global()?.get(c"JSON")?;
+        let parse = json.get(c"parse")?;
+        let mut index = 0;
+        for frame in frames {
+            let text = anchor.from_value(&V::string(&frame))?;
+            if let Some(event) = anchor.catch(|| parse.call(json, &[text]))? {
+                output.set_element(index, event)?;
+                index += 1;
+            }
+        }
+        Ok(output.raw())
     }
 
     /// `cs.clients.add(ws)`: idempotent, keeps the original position.
@@ -826,6 +876,12 @@ impl RustWsHost {
         }
         self.values.drain(&env)?;
         Ok(attempted)
+    }
+
+    #[napi]
+    pub fn fan_out_event(&self, env: Env, session: String, event: Unknown<'_>) -> Result<u32> {
+        let frame = chat_event_frame(L::new(&env, event), self.values.anchor(&env)?)?;
+        self.fan_out(env, session, frame)
     }
 
     /// The reconnect replay burst: every buffered frame, in order, through the

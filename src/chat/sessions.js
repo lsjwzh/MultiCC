@@ -93,6 +93,6 @@ function createChatSessions(shared) {
 // The replay buffer and client membership live next to the table they follow:
 // `createChatReplayRuntime` builds the native WS host + replay hub and ties
 // the hub's per-session state to this table's forget path.
-const { createChatReplayRuntime } = require('./replay-hub');
+const { createChatReplayRuntime } = require('../ws/ws-host');
 
 module.exports = { ChatSessionMap, createChatSessions, chatSessionsOwner, createChatReplayRuntime };

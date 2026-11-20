@@ -20,6 +20,7 @@ pub mod outbound;
 pub mod proxy_header;
 pub mod ws_chat;
 pub mod ws_chat_hub;
+mod ws_chat_native;
 pub mod ws_handshake;
 pub mod ws_machines;
 pub mod ws_probe;

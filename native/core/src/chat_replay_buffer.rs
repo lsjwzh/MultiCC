@@ -34,6 +34,19 @@ impl<T, C: PartialEq> Session<T, C> {
     pub fn replay(&self) -> &VecDeque<T> {
         &self.replay
     }
+    pub fn limit_replay_bytes(&mut self, max: usize, size: impl Fn(&T) -> usize) {
+        let mut bytes = 0usize;
+        let keep = self
+            .replay
+            .iter()
+            .rev()
+            .take_while(|frame| {
+                bytes = bytes.saturating_add(size(frame));
+                bytes <= max
+            })
+            .count();
+        self.replay.drain(..self.replay.len() - keep);
+    }
     pub fn join(&mut self, client: C) {
         if !self.clients.contains(&client) {
             self.clients.push(client);

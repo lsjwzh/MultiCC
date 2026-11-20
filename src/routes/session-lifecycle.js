@@ -52,7 +52,7 @@ function createSessionLifecycleRuntime(rawDeps) {
     cleanupPushMonitor,
     getSessionGitRuntime,
     // Native /ws/chat replay buffer + live-client membership. The hub owns the
-    // per-session frames and members (src/chat/replay-hub.js); these routes only
+    // per-session frames and members (src/ws/ws-host.js); these routes only
     // clear or drop them.
     replay,
     // Optional: restart-spawn uses it to release the scheduler slot through the

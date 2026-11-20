@@ -1,7 +1,7 @@
 //! The production WebSocket host for `/ws/chat`: the front door terminates the
-//! upgrade and owns the client socket for its whole life. The chat engine is
-//! still the Node child, which sees each client as a virtual socket over the
-//! chat bridge (`chat_bridge.rs`).
+//! upgrade and owns the client socket for its whole life. The Rust-only
+//! runtime uses `ws_chat_native`. The compatibility runtime hands the
+//! upgraded connection to Node over `chat_bridge`.
 //!
 //! What lives here, and what does not:
 //!
@@ -187,11 +187,13 @@ pub async fn handle(
         Ok(builder) => builder,
         Err(refusal) => return *refusal,
     };
-    if !app.chat.connected() {
+    if app.node_enabled && !app.chat.connected() {
         // No Node generation is live: the same answer an HTTP request gets
         // while the child is starting.
         return crate::forward::error_response(StatusCode::SERVICE_UNAVAILABLE);
     }
+    let native_request = (!app.node_enabled)
+        .then(|| crate::ws_chat_native::ConnectionRequest::new(&request, peer.ip()));
     let info = OpenInfo {
         url: request
             .uri()
@@ -205,13 +207,16 @@ pub async fn handle(
         local_port: local.port(),
     };
     let upgrade = hyper::upgrade::on(&mut request);
-    let bridge = Arc::clone(&app.chat);
     tokio::spawn(async move {
         let Ok(upgraded) = upgrade.await else { return };
         let socket =
             WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(config()))
                 .await;
-        let Some(session) = attach(&bridge, info).await else {
+        if let Some(request) = native_request {
+            crate::ws_chat_native::serve(app, request, socket).await;
+            return;
+        }
+        let Some(session) = attach(&app.chat, info).await else {
             // Node went away between the answer and the upgrade.
             return;
         };

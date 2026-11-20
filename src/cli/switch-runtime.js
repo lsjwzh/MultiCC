@@ -166,7 +166,7 @@ function createCliSwitchRuntime(options) {
       try { const cwd = options.cwdForSession(session); if (cwd) chat.cwd = cwd; } catch (_) {}
     }
     // `resetPlan.fields` still carries `streamReplay: []`, but the replay buffer
-    // is native state behind src/chat/replay-hub.js — assigning it would create a
+    // is native state behind src/ws/ws-host.js — assigning it would create a
     // dead property that forks the real buffer. Strip it and clear through the hub.
     const fields = plan.fields && typeof plan.fields === 'object' ? { ...plan.fields } : {};
     delete fields.streamReplay;

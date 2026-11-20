@@ -702,7 +702,6 @@ stateOwner.configure({
 // straight into the native table; the boot session Map is read once and dropped.
 const stateBootstrap = bootstrapState({
   fs,
-  stateStore,
   stateOwner,
   paths: MULTICC_PATHS,
   chatHistoryRepository,
@@ -710,8 +709,8 @@ const stateBootstrap = bootstrapState({
   logger: console,
 });
 const _state = stateBootstrap.state;
-// Boot import adapters: the Node loader parsed and migrated sessions.json and
-// the native owner already holds the directory table. Neither source Map remains
+// Boot import adapters: the native owner decoded sessions.json and already
+// holds the directory table. Neither source Map remains
 // a second live table.
 const persistedSessions = createSessionRecords(_state.persistedSessions, stateOwner);
 // The native load-time normalizer may have renamed `_streamSessionId` to

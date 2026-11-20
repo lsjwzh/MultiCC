@@ -699,7 +699,7 @@ test('core runner covers every selected path and expands declared variants', () 
   // 463 + 1 = 464 entries, 386 deterministic unchanged, 46 + 1 = 47 isolated,
   // 435 + 1 = 436 commands。
   // 2026-11-19 native /ws/chat replay buffer + client registry (RustWsHost owns
-  // both; src/chat/replay-hub.js is only a facade). Two tests, both reviewed:
+  // both through src/ws/ws-host.js). Two tests, both reviewed:
   //  - tests/test-chat-replay-hub.js drives the real native host with fake
   //    sockets (no ports, no network, no real data root) -> core deterministic
   //    under npm:test:security;

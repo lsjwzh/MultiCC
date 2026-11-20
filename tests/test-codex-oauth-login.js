@@ -159,10 +159,11 @@ test('the loopback listener completes from the browser redirect', async () => {
 
 test('a pasted callback is accepted only for this login\'s own address', async () => {
   const listener = await openCallback({ ports: [0], timeoutMs: 5000 });
+  const otherPort = listener.port === 65535 ? 65534 : listener.port + 1;
   const at = (port, query) => `http://127.0.0.1:${port}/auth/callback?${query}`;
   try {
     assert.throws(() => listener.submit(''), /paste the address/);
-    assert.throws(() => listener.submit(at(listener.port + 1, 'code=a&state=st'), { expectedState: 'st' }), /port mismatch/);
+    assert.throws(() => listener.submit(at(otherPort, 'code=a&state=st'), { expectedState: 'st' }), /port mismatch/);
     assert.throws(() => listener.submit('https://evil.example/auth/callback?code=a', { expectedState: 'st' }), /not a loopback callback/);
     assert.throws(() => listener.submit(`http://127.0.0.1:${listener.port}/callback?code=a&state=st`, { expectedState: 'st' }), /not a sign-in callback/);
     assert.throws(() => listener.submit(at(listener.port, 'state=st'), { expectedState: 'st' }), /no code/);

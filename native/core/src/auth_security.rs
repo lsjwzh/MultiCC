@@ -38,6 +38,17 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     outer.finalize().into()
 }
 
+pub fn verify_session_share_cookie(secret: &str, token: &str, cookie: &str) -> bool {
+    if secret.is_empty() || token.is_empty() {
+        return false;
+    }
+    let expected: String = hmac_sha256(secret.as_bytes(), token.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    timing_safe_equal_text(cookie, &expected)
+}
+
 pub fn base64url(bytes: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)

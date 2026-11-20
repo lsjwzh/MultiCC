@@ -57,12 +57,10 @@ function migrateOldSchema(oldRecords, { randomUUID = crypto.randomUUID } = {}) {
 
 function bootstrapState(options) {
   if (!options || typeof options !== 'object') throw new TypeError('[state-bootstrap] options are required');
-  const { stateStore, stateOwner, paths, chatHistoryRepository } = options;
-  if (!stateStore || typeof stateStore.createStore !== 'function') {
-    throw new TypeError('[state-bootstrap] stateStore.createStore is required');
-  }
+  const { stateOwner, paths, chatHistoryRepository } = options;
   if (!stateOwner
     || typeof stateOwner.replayJournals !== 'function'
+    || typeof stateOwner.loadSessions !== 'function'
     || typeof stateOwner.loadDirectories !== 'function'
     || typeof stateOwner.initDirectories !== 'function') {
     throw new TypeError('[state-bootstrap] stateOwner is required');
@@ -76,10 +74,6 @@ function bootstrapState(options) {
   const fs = options.fs || defaultFs;
   const randomUUID = options.randomUUID || crypto.randomUUID;
   const logger = options.logger || console;
-  const sessionsStore = stateStore.createStore({
-    file: paths.sessionsFile, kind: 'sessions', schemaVersion: 1, legacyIsArray: true,
-  });
-
   const replay = stateOwner.replayJournals();
   for (const message of (replay && replay.messages) || []) logger.log(message);
   if (replay.replayed || replay.skipped) {
@@ -89,7 +83,7 @@ function bootstrapState(options) {
   let directoryResult;
   let sessionResult;
   try {
-    sessionResult = sessionsStore.loadOrRecover();
+    sessionResult = stateOwner.loadSessions();
   } catch (error) {
     logger.error(`[multicc] sessions.json unreadable and no backup usable: ${error.message}`);
     throw error;
@@ -151,7 +145,7 @@ function bootstrapState(options) {
     };
   }
 
-  return Object.freeze({ sessionsStore, state });
+  return Object.freeze({ state });
 }
 
 module.exports = {

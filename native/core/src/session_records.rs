@@ -4,6 +4,53 @@
 //! implementation, so they can be unit-tested without an engine.
 use crate::js::JsValue;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionDirectory {
+    Home,
+    Aux,
+    Gateway,
+    Login,
+    Worktree,
+    Unavailable,
+}
+
+/// Decide where an existing session runs. An unavailable worktree must never
+/// silently execute in the base repository or the user's home directory.
+pub fn session_directory<E>(
+    present: bool,
+    session_type: &str,
+    workspace_state: &str,
+    login_cwd_exists: impl FnOnce() -> Result<bool, E>,
+    worktree_exists: impl FnOnce() -> Result<bool, E>,
+) -> Result<SessionDirectory, E> {
+    if !present {
+        return Ok(SessionDirectory::Home);
+    }
+    Ok(match session_type {
+        "aux" => SessionDirectory::Aux,
+        "gateway" => SessionDirectory::Gateway,
+        _ if login_cwd_exists()? => SessionDirectory::Login,
+        _ if !matches!(
+            workspace_state,
+            "planned" | "hibernating" | "hibernated" | "thawing"
+        ) && worktree_exists()? =>
+        {
+            SessionDirectory::Worktree
+        }
+        _ => SessionDirectory::Unavailable,
+    })
+}
+
+pub fn unavailable_workspace_stem(id: &crate::js::JsString) -> String {
+    id.as_units()
+        .iter()
+        .map(|&unit| match u8::try_from(unit) {
+            Ok(byte) if byte.is_ascii_alphanumeric() || b"._-".contains(&byte) => char::from(byte),
+            _ => '-',
+        })
+        .collect()
+}
+
 /// `src/routes/task-state-store.js` `TASK_STATE_DEFAULTS`, in declaration order
 /// (`{ ...DEFAULTS, ...ts }` preserves this order for keys the record omits).
 pub fn task_state_defaults() -> JsValue {
@@ -100,6 +147,29 @@ impl RetryState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_directory_probes_only_eligible_paths() {
+        let missing = || Ok::<_, std::convert::Infallible>(false);
+        let found = || Ok(true);
+        let unexpected = || panic!("unexpected workspace probe");
+        assert_eq!(
+            session_directory(true, "gateway", "awake", unexpected, unexpected).unwrap(),
+            SessionDirectory::Gateway
+        );
+        assert_eq!(
+            session_directory(true, "", "hibernated", missing, unexpected).unwrap(),
+            SessionDirectory::Unavailable
+        );
+        assert_eq!(
+            session_directory(true, "", "planned", found, unexpected).unwrap(),
+            SessionDirectory::Login
+        );
+        assert_eq!(
+            session_directory(true, "", "legacy", missing, found).unwrap(),
+            SessionDirectory::Worktree
+        );
+    }
 
     fn keys(value: &JsValue) -> Vec<String> {
         match value {
