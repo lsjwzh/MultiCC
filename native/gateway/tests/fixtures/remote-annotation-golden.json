@@ -1,0 +1,1264 @@
+{
+  "note": "Recorded answers of the deleted Node module (git 30cc801a^:src/remote-screen-rust.js), driven over these payloads with a fake child answering each mode. __DIR__ is the screenshot directory the consumer substitutes. Result: native/gateway/tests/remote_annotation_golden.rs.",
+  "source": "30cc801a^:src/remote-screen-rust.js",
+  "modes": {
+    "ok": [
+      {
+        "name": "own_absolute",
+        "body": {
+          "src": "__DIR__/shot-12.png",
+          "width": 400,
+          "height": 240,
+          "kind": "point",
+          "a": {
+            "x": 1,
+            "y": 2
+          },
+          "b": null
+        },
+        "own": true,
+        "result": {
+          "ok": true,
+          "refresh": true,
+          "text": "done"
+        }
+      },
+      {
+        "name": "own_dotdot",
+        "body": {
+          "src": "__DIR__/sub/../shot-12.png"
+        },
+        "own": true,
+        "result": {
+          "ok": true,
+          "refresh": true,
+          "text": "done"
+        }
+      },
+      {
+        "name": "own_dot",
+        "body": {
+          "src": "__DIR__/./shot-1.png"
+        },
+        "own": true,
+        "result": {
+          "ok": true,
+          "refresh": true,
+          "text": "done"
+        }
+      },
+      {
+        "name": "own_trailing_slash",
+        "body": {
+          "src": "__DIR__/shot-1.png/"
+        },
+        "own": true,
+        "result": {
+          "ok": true,
+          "refresh": true,
+          "text": "done"
+        }
+      },
+      {
+        "name": "own_array_source",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png"
+          ]
+        },
+        "own": true,
+        "result": {
+          "ok": true,
+          "refresh": true,
+          "text": "done"
+        }
+      },
+      {
+        "name": "own_two_element_array",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png",
+            "x"
+          ]
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "outside_dir",
+        "body": {
+          "src": "__DIR__/../shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "subdir_shot",
+        "body": {
+          "src": "__DIR__/sub/shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "wrong_name",
+        "body": {
+          "src": "__DIR__/other.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bad_digits",
+        "body": {
+          "src": "__DIR__/shot-1a.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "uppercase_ext",
+        "body": {
+          "src": "__DIR__/shot-1.PNG"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_name",
+        "body": {
+          "src": "__DIR__/shot-.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_src",
+        "body": {
+          "src": ""
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "missing_src",
+        "body": {
+          "width": 1
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "null_src",
+        "body": {
+          "src": null
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "numeric_src",
+        "body": {
+          "src": 123
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "boolean_src",
+        "body": {
+          "src": true
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "object_src",
+        "body": {
+          "src": {
+            "a": 1
+          }
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bare_shot_name",
+        "body": {
+          "src": "shot-3.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      }
+    ],
+    "status500": [
+      {
+        "name": "own_absolute",
+        "body": {
+          "src": "__DIR__/shot-12.png",
+          "width": 400,
+          "height": 240,
+          "kind": "point",
+          "a": {
+            "x": 1,
+            "y": 2
+          },
+          "b": null
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_dotdot",
+        "body": {
+          "src": "__DIR__/sub/../shot-12.png"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_dot",
+        "body": {
+          "src": "__DIR__/./shot-1.png"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_trailing_slash",
+        "body": {
+          "src": "__DIR__/shot-1.png/"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_array_source",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png"
+          ]
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_two_element_array",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png",
+            "x"
+          ]
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "outside_dir",
+        "body": {
+          "src": "__DIR__/../shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "subdir_shot",
+        "body": {
+          "src": "__DIR__/sub/shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "wrong_name",
+        "body": {
+          "src": "__DIR__/other.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bad_digits",
+        "body": {
+          "src": "__DIR__/shot-1a.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "uppercase_ext",
+        "body": {
+          "src": "__DIR__/shot-1.PNG"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_name",
+        "body": {
+          "src": "__DIR__/shot-.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_src",
+        "body": {
+          "src": ""
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "missing_src",
+        "body": {
+          "width": 1
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "null_src",
+        "body": {
+          "src": null
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "numeric_src",
+        "body": {
+          "src": 123
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "boolean_src",
+        "body": {
+          "src": true
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "object_src",
+        "body": {
+          "src": {
+            "a": 1
+          }
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bare_shot_name",
+        "body": {
+          "src": "shot-3.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      }
+    ],
+    "notjson": [
+      {
+        "name": "own_absolute",
+        "body": {
+          "src": "__DIR__/shot-12.png",
+          "width": 400,
+          "height": 240,
+          "kind": "point",
+          "a": {
+            "x": 1,
+            "y": 2
+          },
+          "b": null
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_dotdot",
+        "body": {
+          "src": "__DIR__/sub/../shot-12.png"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_dot",
+        "body": {
+          "src": "__DIR__/./shot-1.png"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_trailing_slash",
+        "body": {
+          "src": "__DIR__/shot-1.png/"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_array_source",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png"
+          ]
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_two_element_array",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png",
+            "x"
+          ]
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "outside_dir",
+        "body": {
+          "src": "__DIR__/../shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "subdir_shot",
+        "body": {
+          "src": "__DIR__/sub/shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "wrong_name",
+        "body": {
+          "src": "__DIR__/other.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bad_digits",
+        "body": {
+          "src": "__DIR__/shot-1a.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "uppercase_ext",
+        "body": {
+          "src": "__DIR__/shot-1.PNG"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_name",
+        "body": {
+          "src": "__DIR__/shot-.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_src",
+        "body": {
+          "src": ""
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "missing_src",
+        "body": {
+          "width": 1
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "null_src",
+        "body": {
+          "src": null
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "numeric_src",
+        "body": {
+          "src": 123
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "boolean_src",
+        "body": {
+          "src": true
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "object_src",
+        "body": {
+          "src": {
+            "a": 1
+          }
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bare_shot_name",
+        "body": {
+          "src": "shot-3.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      }
+    ],
+    "array": [
+      {
+        "name": "own_absolute",
+        "body": {
+          "src": "__DIR__/shot-12.png",
+          "width": 400,
+          "height": 240,
+          "kind": "point",
+          "a": {
+            "x": 1,
+            "y": 2
+          },
+          "b": null
+        },
+        "own": true,
+        "result": [
+          {
+            "ok": true
+          }
+        ]
+      },
+      {
+        "name": "own_dotdot",
+        "body": {
+          "src": "__DIR__/sub/../shot-12.png"
+        },
+        "own": true,
+        "result": [
+          {
+            "ok": true
+          }
+        ]
+      },
+      {
+        "name": "own_dot",
+        "body": {
+          "src": "__DIR__/./shot-1.png"
+        },
+        "own": true,
+        "result": [
+          {
+            "ok": true
+          }
+        ]
+      },
+      {
+        "name": "own_trailing_slash",
+        "body": {
+          "src": "__DIR__/shot-1.png/"
+        },
+        "own": true,
+        "result": [
+          {
+            "ok": true
+          }
+        ]
+      },
+      {
+        "name": "own_array_source",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png"
+          ]
+        },
+        "own": true,
+        "result": [
+          {
+            "ok": true
+          }
+        ]
+      },
+      {
+        "name": "own_two_element_array",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png",
+            "x"
+          ]
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "outside_dir",
+        "body": {
+          "src": "__DIR__/../shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "subdir_shot",
+        "body": {
+          "src": "__DIR__/sub/shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "wrong_name",
+        "body": {
+          "src": "__DIR__/other.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bad_digits",
+        "body": {
+          "src": "__DIR__/shot-1a.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "uppercase_ext",
+        "body": {
+          "src": "__DIR__/shot-1.PNG"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_name",
+        "body": {
+          "src": "__DIR__/shot-.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_src",
+        "body": {
+          "src": ""
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "missing_src",
+        "body": {
+          "width": 1
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "null_src",
+        "body": {
+          "src": null
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "numeric_src",
+        "body": {
+          "src": 123
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "boolean_src",
+        "body": {
+          "src": true
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "object_src",
+        "body": {
+          "src": {
+            "a": 1
+          }
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bare_shot_name",
+        "body": {
+          "src": "shot-3.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      }
+    ],
+    "number": [
+      {
+        "name": "own_absolute",
+        "body": {
+          "src": "__DIR__/shot-12.png",
+          "width": 400,
+          "height": 240,
+          "kind": "point",
+          "a": {
+            "x": 1,
+            "y": 2
+          },
+          "b": null
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_dotdot",
+        "body": {
+          "src": "__DIR__/sub/../shot-12.png"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_dot",
+        "body": {
+          "src": "__DIR__/./shot-1.png"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_trailing_slash",
+        "body": {
+          "src": "__DIR__/shot-1.png/"
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_array_source",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png"
+          ]
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      },
+      {
+        "name": "own_two_element_array",
+        "body": {
+          "src": [
+            "__DIR__/shot-1.png",
+            "x"
+          ]
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "outside_dir",
+        "body": {
+          "src": "__DIR__/../shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "subdir_shot",
+        "body": {
+          "src": "__DIR__/sub/shot-1.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "wrong_name",
+        "body": {
+          "src": "__DIR__/other.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bad_digits",
+        "body": {
+          "src": "__DIR__/shot-1a.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "uppercase_ext",
+        "body": {
+          "src": "__DIR__/shot-1.PNG"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_name",
+        "body": {
+          "src": "__DIR__/shot-.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "empty_src",
+        "body": {
+          "src": ""
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "missing_src",
+        "body": {
+          "width": 1
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "null_src",
+        "body": {
+          "src": null
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "numeric_src",
+        "body": {
+          "src": 123
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "boolean_src",
+        "body": {
+          "src": true
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "object_src",
+        "body": {
+          "src": {
+            "a": 1
+          }
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      },
+      {
+        "name": "bare_shot_name",
+        "body": {
+          "src": "shot-3.png"
+        },
+        "own": false,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "不是远程屏幕截图"
+        }
+      }
+    ],
+    "stall": [
+      {
+        "name": "own_absolute",
+        "body": {
+          "src": "__DIR__/shot-12.png",
+          "width": 400,
+          "height": 240,
+          "kind": "point",
+          "a": {
+            "x": 1,
+            "y": 2
+          },
+          "b": null
+        },
+        "own": true,
+        "result": {
+          "ok": false,
+          "refresh": false,
+          "text": "远控服务无响应"
+        }
+      }
+    ]
+  },
+  "unavailable": {
+    "body": {
+      "src": "__DIR__/shot-9.png"
+    },
+    "own": true,
+    "result": {
+      "ok": false,
+      "refresh": false,
+      "text": "远控服务不可用"
+    }
+  }
+}

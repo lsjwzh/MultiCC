@@ -23,6 +23,8 @@
 //! | `FIXTURE_WS_FILE` | append WS events (`open`, `frame:<op>:<len>`, `close:<code>`, `eof`) |
 //! | `FIXTURE_WS_STATS_FILE` | overwritten each burst frame with the frames written so far |
 //! | `FIXTURE_WS_CHUNK` | bytes per burst frame (default 4096) |
+//! | `FIXTURE_WS_PUSH_FILE` | one hex line per binary frame, sent right after the upgrade |
+//! | `FIXTURE_WS_CAPTURE` | append `<opcode>:<hex>` for every inbound WS frame |
 //!
 //! **Never built for release.** This is an example, not a `[[bin]]`: `cargo
 //! build --release -p multicc-gateway` (what scripts/build-rust-kernels.js runs)
@@ -464,6 +466,10 @@ fn ws_serve(mut stream: TcpStream, request: &Request) {
         return;
     }
     ws_event("open");
+    // Deterministic upstream→client frames (h264 byte-level checks): one hex
+    // line per binary frame, sent before the mode switch so every mode sees
+    // them first.
+    ws_push(&mut stream);
     let mode = env_or("FIXTURE_WS", "echo");
     if mode == "drop" {
         // No close frame: the peer sees an abrupt EOF (ws code 1006).
@@ -486,6 +492,7 @@ fn ws_serve(mut stream: TcpStream, request: &Request) {
         match opcode {
             WS_TEXT | WS_BINARY => {
                 ws_event(&format!("frame:{opcode}:{}", payload.len()));
+                ws_capture(opcode, &payload);
                 if let Some(code) = close_after_first {
                     ws_send_close(&mut stream, code, "");
                     return;
@@ -538,6 +545,57 @@ fn ws_event(text: &str) {
     if let Some(path) = std::env::var_os("FIXTURE_WS_FILE") {
         append(&path.to_string_lossy(), &format!("{text}\n"));
     }
+}
+
+/// `FIXTURE_WS_PUSH_FILE`: one hex line per binary frame, written in order
+/// right after the upgrade so the client can compare bytes exactly.
+fn ws_push(stream: &mut TcpStream) {
+    let Some(path) = std::env::var_os("FIXTURE_WS_PUSH_FILE") else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if ws_write(stream, WS_BINARY, &hex_decode(line)).is_err() {
+            return;
+        }
+    }
+    ws_event("pushed");
+}
+
+/// `FIXTURE_WS_CAPTURE`: `<opcode>:<hex>` per inbound frame, in arrival order.
+fn ws_capture(opcode: u8, payload: &[u8]) {
+    if let Some(path) = std::env::var_os("FIXTURE_WS_CAPTURE") {
+        append(
+            &path.to_string_lossy(),
+            &format!("{opcode}:{}\n", hex_encode(payload)),
+        );
+    }
+}
+
+fn hex_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len() * 2);
+    for byte in data {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn hex_decode(line: &str) -> Vec<u8> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        let high = (bytes[index] as char).to_digit(16);
+        let low = (bytes[index + 1] as char).to_digit(16);
+        match (high, low) {
+            (Some(high), Some(low)) => out.push((high * 16 + low) as u8),
+            _ => break,
+        }
+        index += 2;
+    }
+    out
 }
 
 fn ws_send_close(stream: &mut TcpStream, code: u16, reason: &str) {

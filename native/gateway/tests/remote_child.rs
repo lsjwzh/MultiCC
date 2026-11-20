@@ -407,3 +407,125 @@ async fn shutdown_closes_stdin_and_the_child_exits() {
     let error = h.child.ensure().await.expect_err("stopping");
     assert_eq!(error.code, "stopping");
 }
+
+#[cfg(unix)]
+fn process_alive(pid: libc::pid_t) -> bool {
+    // 0 = alive (or an unreaped zombie), ESRCH = gone, EPERM = alive but not
+    // ours. The supervisor reaps its child, so a finished process reports gone.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(unix)]
+fn recorded_pid(path: &std::path::Path) -> Option<libc::pid_t> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// `snapshot().pid` only proves the supervisor forgot the process. The OS
+/// process itself must be gone too: an orphaned `multicc-remote` keeps the
+/// screen frozen on its own and survives a service restart.
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_leaves_no_os_process_behind_and_never_restarts() {
+    let dir = temp_dir("os-shutdown");
+    let pid_file = dir.join("pid");
+    let h = harness_with(
+        "os-shutdown",
+        &[("FIXTURE_PID_FILE", pid_file.to_str().expect("utf8"))],
+        |config| {
+            config.restart_base = Duration::from_millis(100);
+        },
+    );
+    h.child.ensure().await.expect("ready");
+    assert!(wait_until(Duration::from_secs(2), || recorded_pid(&pid_file).is_some()).await);
+    let pid = recorded_pid(&pid_file).expect("pid");
+    assert!(process_alive(pid), "the child should be running");
+
+    h.child.shutdown().await;
+
+    // The process really exited and was reaped, not merely forgotten.
+    assert!(
+        wait_until(Duration::from_secs(3), || !process_alive(pid)).await,
+        "the child process {pid} survived shutdown"
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || h.child.snapshot().pid.is_none()).await,
+        "the supervisor kept a pid after shutdown"
+    );
+    assert!(h.child.snapshot().ready.is_none());
+    // Past the restart base: a shutdown is not a crash, so no replacement.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(h.child.snapshot().attempts, 1);
+    assert_eq!(
+        recorded_pid(&pid_file),
+        Some(pid),
+        "no replacement process may write a pid after shutdown"
+    );
+    // The stopped state refuses new work instead of resurrecting the child.
+    assert_eq!(
+        h.child.ensure().await.expect_err("stopping").code,
+        "stopping"
+    );
+}
+
+/// A real crash (SIGKILL, no lifeline EOF) is still detected: the notice
+/// carries the signal, a restart is scheduled, a demand inside the window is
+/// refused as `restarting`, and exactly one replacement starts with a new pid.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_externally_killed_child_is_detected_and_replaced_once() {
+    let dir = temp_dir("os-kill");
+    let pid_file = dir.join("pid");
+    let h = harness_with(
+        "os-kill",
+        &[("FIXTURE_PID_FILE", pid_file.to_str().expect("utf8"))],
+        |config| {
+            config.restart_base = Duration::from_millis(150);
+            config.restart_max = Duration::from_millis(400);
+        },
+    );
+    let mut exits = h.child.subscribe_exits();
+    h.child.ensure().await.expect("ready");
+    assert!(wait_until(Duration::from_secs(2), || recorded_pid(&pid_file).is_some()).await);
+    let pid = recorded_pid(&pid_file).expect("pid");
+
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0, "kill({pid})");
+
+    let notice = tokio::time::timeout(Duration::from_secs(3), exits.recv())
+        .await
+        .expect("exit notice")
+        .expect("broadcast");
+    assert_eq!(notice.code, None);
+    assert_eq!(notice.signal, Some(libc::SIGKILL));
+    assert!(!notice.stopping, "a kill is not a shutdown");
+    assert!(wait_until(Duration::from_secs(2), || !process_alive(pid)).await);
+    assert!(
+        wait_until(Duration::from_secs(2), || h
+            .child
+            .snapshot()
+            .restart_pending)
+        .await
+    );
+    // delay = min(150, 400) = 150; the stored delay doubles to 300.
+    assert_eq!(h.child.snapshot().backoff_ms, 300);
+
+    // A demand inside the window neither starts nor loses the restart.
+    assert_eq!(
+        h.child.ensure().await.expect_err("window").code,
+        "restarting"
+    );
+    assert!(
+        wait_until(Duration::from_secs(3), || h
+            .child
+            .snapshot()
+            .ready
+            .is_some())
+        .await
+    );
+    assert_eq!(h.child.snapshot().attempts, 2);
+    let replacement = recorded_pid(&pid_file).expect("replacement pid");
+    assert_ne!(replacement, pid);
+    assert!(process_alive(replacement));
+
+    h.child.shutdown().await;
+    assert!(wait_until(Duration::from_secs(3), || !process_alive(replacement)).await);
+}

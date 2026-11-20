@@ -5242,6 +5242,15 @@ socket 客户端，比对握手状态行、每帧 opcode 与载荷 sha、关闭�
 
 **验证。** `tests/test-remote-screen.js` 29/29、`tests/test-annotation-live.js` 5/5、
 `tests/test-remote-screen-h264-fixture.js` 3/3、`tests/test-remote-screen-h264-cdp.js`
-relay + p2p 全绿（前置 `cargo test -p multicc-gateway` 的既有红项
-`directory_routes::directories_list_keeps_the_dto_key_order_and_the_count_fallbacks`
-与本批无关：`COUNT_CLIS` 在 11-20 加了 `agy`，Gateway 测试停留在 11-18，main 上同样失败）。
+relay + p2p 全绿；`cargo test -p multicc-gateway` 56 个测试目标 1036 项全绿，clippy
+`-D warnings` 0 告警。
+
+- **行为对账**：`native/gateway/tests/remote_annotation_golden.rs` 读
+  `tests/fixtures/remote-annotation-golden.json`——该黄金是删除前
+  `30cc801a^:src/remote-screen-rust.js` 在同一语料（19 类 payload × 6 种上游答复 +
+  二进制缺失）上的实测输出，`__DIR__` 占位由测试替换。改 own-shot 判定或三种失败形态
+  必须重跑，Node 侧不再有第二份实现可供对照。
+- **`directory_routes` 既有红已修**：`COUNT_CLIS` 11-20 加了 `agy`（26 计数器），
+  Gateway 测试字面量停在 24；补上 `agy_terminal`/`agy_chat` 后 19/19 转绿，属独立小修。
+- 行数棘轮的 `public/run-config.js` 3388/3377 是 main 既有红（同计数法 `split(/\n/)`
+  在 main 上同为 3388 / 172,766 字节，本批未触碰该文件），在门禁中登记为基线红。

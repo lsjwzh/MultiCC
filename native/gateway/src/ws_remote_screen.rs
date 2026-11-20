@@ -656,3 +656,91 @@ async fn serve<S>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The retired `upstreamPath(req, mode)` set `mode=h264` only when the
+    /// caller asked for h264 and the parameter was absent. `handle` derives
+    /// `mode` from the query, so in production the injection never fires —
+    /// but it is still the documented contract and the h264 caller relies on
+    /// a `mode` reaching the child either way.
+    #[test]
+    fn upstream_path_injects_mode_h264_when_absent() {
+        assert_eq!(upstream_path("", "h264"), "/ws/remote-screen?mode=h264");
+        assert_eq!(
+            upstream_path("extra=1", "h264"),
+            "/ws/remote-screen?extra=1&mode=h264"
+        );
+        // An existing mode is kept, not duplicated, whatever its value.
+        assert_eq!(
+            upstream_path("mode=h264&extra=1", "h264"),
+            "/ws/remote-screen?mode=h264&extra=1"
+        );
+        assert_eq!(
+            upstream_path("mode=rfb", "h264"),
+            "/ws/remote-screen?mode=rfb"
+        );
+        // rfb never injects: the processor picks the RFB bridge without a mode.
+        assert_eq!(upstream_path("", "rfb"), "/ws/remote-screen");
+    }
+
+    #[test]
+    fn upstream_path_strips_this_hops_credentials_and_keeps_the_rest() {
+        assert_eq!(
+            upstream_path("ticket=abc&token=def&mode=h264&extra=1", "h264"),
+            "/ws/remote-screen?mode=h264&extra=1"
+        );
+        // Credential-only queries leave no '?' behind.
+        assert_eq!(
+            upstream_path("ticket=abc&token=def", "rfb"),
+            "/ws/remote-screen"
+        );
+        // Repeated parameters and their order survive (the child may care).
+        assert_eq!(
+            upstream_path("a=1&b=2&a=3", "rfb"),
+            "/ws/remote-screen?a=1&b=2&a=3"
+        );
+        // Values that need encoding are round-tripped by the serializer.
+        assert_eq!(
+            upstream_path("label=a%20b", "rfb"),
+            "/ws/remote-screen?label=a+b"
+        );
+    }
+
+    #[test]
+    fn sendable_close_codes_match_the_js_table() {
+        for code in [
+            1000u16, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014,
+        ] {
+            assert_eq!(sendable_close_code(code), code, "sendable {code}");
+        }
+        // Local-state and reserved codes must be replaced, not forwarded.
+        for code in [0u16, 1005, 1006, 1015, 1016, 2000, 2999, 3000] {
+            let expected = if code == 3000 { 3000 } else { 1011 };
+            assert_eq!(sendable_close_code(code), expected, "replaced {code}");
+        }
+        // The application range 3000–4999 passes through on both ends.
+        assert_eq!(sendable_close_code(3000), 3000);
+        assert_eq!(sendable_close_code(4999), 4999);
+        assert_eq!(sendable_close_code(5000), 1011);
+    }
+
+    #[test]
+    fn clip_reason_stays_inside_a_control_frame() {
+        let long: String = "a".repeat(101);
+        let clipped = clip_reason(&long);
+        assert_eq!(clipped.chars().count(), 100);
+        assert!(clipped.ends_with('…'));
+        // Multibyte: 120 'é' is 240 bytes; the 123-byte cap must fall on a
+        // char boundary, so the result is 61 whole characters.
+        let wide: String = "é".repeat(120);
+        let clipped = clip_reason(&wide);
+        assert!(clipped.len() <= 123);
+        assert_eq!(clipped.chars().count(), 61);
+        // Already short: unchanged, multibyte included.
+        assert_eq!(clip_reason("bye"), "bye");
+        assert_eq!(clip_reason("再见"), "再见");
+    }
+}
