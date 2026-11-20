@@ -59,6 +59,26 @@ let VERSION = "3"
 /// 远控剪贴板单次搬运上限（UTF-16 码元）。只在用户点按时同步，不做常驻监听：
 /// 剪贴板里常有密码和验证码，agent 没有理由把它们留在别处。
 let CLIPBOARD_LIMIT = 200_000
+
+/// Clip to a UTF-16 unit budget. `String.prefix(n)` counts grapheme clusters
+/// (an emoji or a combining sequence is one), which is a different unit from
+/// `utf16.count`: a string of 200k emoji is over the limit by units yet loses
+/// nothing to `prefix`, so the cap silently does not apply. Cutting on cluster
+/// boundaries keeps emoji whole, so the result can be a unit or two short.
+func clipToUtf16(_ text: String, _ max: Int) -> String {
+  if text.utf16.count <= max { return text }
+  var units = 0
+  var cut = text.startIndex
+  var i = text.startIndex
+  while i < text.endIndex {
+    let next = units + String(text[i]).utf16.count
+    if next > max { break }
+    units = next
+    i = text.index(after: i)
+    cut = i
+  }
+  return String(text[..<cut])
+}
 let home = FileManager.default.homeDirectoryForCurrentUser.path
 let agentDir = ProcessInfo.processInfo.environment["MULTICC_AGENT_DIR"] ?? "\(home)/.multicc/agent"
 let sockPath = "\(agentDir)/agent.sock"
@@ -1671,9 +1691,9 @@ func handle(_ req: [String: Any]) -> [String: Any] {
       return refused("bad-session", "clipboard is reserved for the remote screen viewer", retrySafe: false)
     }
     let text = NSPasteboard.general.string(forType: .string) ?? ""
-    let clipped = text.utf16.count > CLIPBOARD_LIMIT
-      ? String(text.prefix(CLIPBOARD_LIMIT)) : text
-    var reply: [String: Any] = ["ok": true, "text": clipped, "length": text.count]
+    let clipped = clipToUtf16(text, CLIPBOARD_LIMIT)
+    // length is in UTF-16 units, the same unit as the limit above.
+    var reply: [String: Any] = ["ok": true, "text": clipped, "length": text.utf16.count]
     if clipped != text { reply["truncated"] = true }
     return reply
   case "clipboard-write":
@@ -1687,7 +1707,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     let board = NSPasteboard.general
     board.clearContents()
     let written = board.setString(text, forType: .string)
-    return written ? ["ok": true, "length": text.count]
+    return written ? ["ok": true, "length": text.utf16.count]
                    : ["ok": false, "error": "could not write the system clipboard"]
   case "snap":
     // The only caller input is the output file (absolute, .png, no "..") and

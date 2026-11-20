@@ -1,8 +1,18 @@
-// 键盘面板：按需弹出的底部 sheet（文字 + 修饰键 + 键位网格）。
+// 键盘面板：按需弹出的底部面板（文字 + 修饰键 + 键位网格）。
 //
-// 常驻键盘条是画面被压缩的主因之一；改成「点侧栏键盘才出来」后，键盘会
-// 自己吃掉下半屏，但那只在真的要打字时发生。收起后如果还有粘住的修饰键，
-// 屏幕底部留一条 32dp 的浮条，保证「⌘ 还按着」这件事一直看得见。
+// 常驻键盘条是画面被压缩的主因之一；改成「点侧栏键盘才出来」后，键盘只在真要
+// 打字时吃掉下半屏。
+//
+// **非模态**是这个面板最重要的属性：远控打字的真实循环是「看屏 → 点远端输入框
+// → 打字 → 再点另一个框」。早期版本用 showModalBottomSheet，遮罩会把画面压暗
+// 并吞掉所有点击（点一下只是关掉面板），等于每切一个输入框都要开关一次面板。
+// 现在面板只占底部那条，上面的画面照常可点，页面把舞台按面板高度等比缩小（而
+// 不是盖住），所以「点哪打哪」的坐标映射自动保持正确。
+//
+// 高度由页面给（[height] 口径见 remote_screen_screen.dart）：默认只有输入行 +
+// 修饰键两行，键位网格要点开才铺；打字时画面只让出必要的那点高度。
+// 收起后如果还有粘住的修饰键，屏幕底部留一条 32dp 的浮条，保证「⌘ 还按着」
+// 这件事一直看得见。
 import 'package:flutter/material.dart';
 
 import '../i18n.dart';
@@ -13,6 +23,12 @@ const Color _kLine = Color(0xFF2a3242);
 const Color _kText = Color(0xFFdce6f1);
 const Color _kMuted = Color(0xFF8a9aab);
 const Color _kAccent = Color(0xFF2ba67a);
+
+/// 面板本体高度（不含系统键盘与底部安全区）。页面按这个值**让出**舞台高度，
+/// 所以它必须和 build 里的行高对得上：上下内边距 8 + 输入行约 40 + 间距 4 +
+/// 修饰键行 38 = 90。留一点余量：宁可面板里空几像素，也不要 RenderFlex 溢出。
+/// 网格展开时多出来的高度全给网格（Expanded 吃掉剩余空间）。
+double remoteKeyPanelHeight({required bool gridOpen}) => gridOpen ? 288 : 100;
 
 class RemoteKeySheet extends StatelessWidget {
   const RemoteKeySheet({
@@ -29,6 +45,9 @@ class RemoteKeySheet extends StatelessWidget {
     required this.remapLabel,
     required this.remapSpec,
     required this.onClose,
+    required this.gridOpen,
+    required this.onToggleGrid,
+    this.onPaste,
     this.bottomInset = 0,
   });
 
@@ -51,7 +70,15 @@ class RemoteKeySheet extends StatelessWidget {
   final String Function(String spec) remapSpec;
   final VoidCallback onClose;
 
-  /// 系统键盘高度（`MediaQuery.viewInsets.bottom`）。
+  /// 键位网格展开中：收起时只留输入行 + 修饰键，画面少让出 170dp。
+  final bool gridOpen;
+  final VoidCallback onToggleGrid;
+
+  /// 「粘贴到远端」：粘贴几乎总发生在打字的上下文里，所以入口放在输入框旁边，
+  /// 而不是只藏在「更多」面板的剪贴板一节里。
+  final VoidCallback? onPaste;
+
+  /// 系统键盘高度 + 底部安全区（由页面算好传进来）。
   final double bottomInset;
 
   @override
@@ -64,94 +91,117 @@ class RemoteKeySheet extends StatelessWidget {
           border: Border(top: BorderSide(color: _kLine)),
           borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
         ),
-        padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: _kLine,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    t('rsKeyPanel'),
-                    style: const TextStyle(
-                      color: _kMuted,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const Spacer(),
-                  TextButton(
-                    key: const ValueKey('rs-key-close'),
-                    onPressed: onClose,
-                    child: Text(
-                      t('rsCollapse'),
-                      style: const TextStyle(fontSize: 12.5),
-                    ),
-                  ),
-                ],
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      key: const ValueKey('rs-key-text'),
-                      controller: textController,
-                      autofocus: true,
-                      style: const TextStyle(color: _kText, fontSize: 13),
-                      decoration: InputDecoration(
-                        isDense: true,
-                        hintText: t('rsTypePlaceholder'),
-                        hintStyle: const TextStyle(
-                          color: _kMuted,
-                          fontSize: 12.5,
-                        ),
-                        filled: true,
-                        fillColor: const Color(0xFF10141c),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(6),
-                          borderSide: const BorderSide(color: _kLine),
-                        ),
+        padding: const EdgeInsets.fromLTRB(10, 4, 10, 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 第一行：打字 + 粘贴 + 发送 + 网格开关 + 收起。标题行被并进来了 ——
+            // 面板每多一行 chrome，画面就少一行，而这里的每一像素都是远端画面。
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('rs-key-text'),
+                    controller: textController,
+                    autofocus: true,
+                    style: const TextStyle(color: _kText, fontSize: 13),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: t('rsTypePlaceholder'),
+                      hintStyle: const TextStyle(
+                        color: _kMuted,
+                        fontSize: 12.5,
                       ),
-                      onSubmitted: (_) => onSend(),
+                      filled: true,
+                      fillColor: const Color(0xFF10141c),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: const BorderSide(color: _kLine),
+                      ),
                     ),
+                    onSubmitted: (_) => onSend(),
                   ),
+                ),
+                if (onPaste != null) ...[
                   const SizedBox(width: 6),
-                  FilledButton(
-                    key: const ValueKey('rs-key-send'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF1267b5),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                  OutlinedButton(
+                    key: const ValueKey('rs-key-paste'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _kText,
+                      side: const BorderSide(color: _kLine),
+                      backgroundColor: const Color(0xFF10141c),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
                       minimumSize: const Size(0, 36),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                    onPressed: onSend,
+                    onPressed: onPaste,
                     child: Text(
-                      t('rsSend'),
+                      t('rsKeyPaste'),
                       style: const TextStyle(fontSize: 12.5),
                     ),
                   ),
                 ],
-              ),
-              const SizedBox(height: 8),
-              SingleChildScrollView(
+                const SizedBox(width: 6),
+                FilledButton(
+                  key: const ValueKey('rs-key-send'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF1267b5),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    minimumSize: const Size(0, 36),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: onSend,
+                  child: Text(
+                    t('rsSend'),
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                ),
+                IconButton(
+                  key: const ValueKey('rs-key-grid'),
+                  onPressed: onToggleGrid,
+                  visualDensity: VisualDensity.compact,
+                  color: gridOpen ? _kAccent : _kMuted,
+                  tooltip: gridOpen ? t('rsKeyGridHide') : t('rsKeyGridShow'),
+                  icon: Icon(
+                    gridOpen
+                        ? Icons.keyboard_arrow_down_rounded
+                        : Icons.keyboard_arrow_up_rounded,
+                    size: 20,
+                  ),
+                ),
+                IconButton(
+                  key: const ValueKey('rs-key-close'),
+                  onPressed: onClose,
+                  visualDensity: VisualDensity.compact,
+                  color: _kMuted,
+                  tooltip: t('rsCollapse'),
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            // 第二行：修饰键 + 常用键位。网格收起时常用键跟着横排一行（旧键盘条
+            // 的位置），真要找 F 键或 Home/End 才点开网格。
+            SizedBox(
+              height: 38,
+              child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
                     for (final chip in StickyModifiers.definitions) _mod(chip),
+                    if (!gridOpen)
+                      for (final spec in specs.take(_inlineKeys))
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4),
+                          child: _specChip(spec),
+                        ),
                   ],
                 ),
               ),
-              const SizedBox(height: 6),
-              Flexible(
+            ),
+            if (gridOpen) ...[
+              const SizedBox(height: 4),
+              Expanded(
                 child: SingleChildScrollView(
                   child: Wrap(
                     spacing: 6,
@@ -161,11 +211,14 @@ class RemoteKeySheet extends StatelessWidget {
                 ),
               ),
             ],
-          ),
+          ],
         ),
       ),
     );
   }
+
+  /// 网格收起时内联显示的键位数量（回车 / 退格 / Tab / Esc / 方向键这一段）。
+  static const int _inlineKeys = 8;
 
   Widget _mod(StickyModifierKey chip) {
     final state = sticky.stateOf(chip.id);

@@ -455,6 +455,24 @@ async fn run_clipboard(st: &AppState, req: Value) -> Value {
     Value::Object(map)
 }
 
+/// 按 UTF-16 码元截断，`None` = 本来就没超限。
+///
+/// 判定用码元、截断却用字符是两套单位：一段 20 万个 emoji（每个 2 个码元 =
+/// 40 万）会被判定超限、却一个字符都切不掉，于是带着 `truncated:true` 原样
+/// 透传 —— 契约上的上限在读路径上等于没有。切点落在字符边界上，所以宁可少
+/// 一个码元，也不切出半个代理对。
+fn clip_to_utf16(text: &str, max: usize) -> Option<String> {
+    let mut units = 0usize;
+    for (idx, ch) in text.char_indices() {
+        let next = units + ch.len_utf16();
+        if next > max {
+            return Some(text[..idx].to_string());
+        }
+        units = next;
+    }
+    None
+}
+
 /// 读回来的文本按契约只取前 [CLIPBOARD_MAX_UTF16] 个码元：Agent 可能来自别的
 /// 实现，不能只靠它自己截断。超出部分丢掉而不是报错 —— 用户要的是「能粘上」。
 fn clip_text(reply: &mut Value) {
@@ -462,8 +480,7 @@ fn clip_text(reply: &mut Value) {
     let Some(Value::String(text)) = map.get("text") else {
         return;
     };
-    if text.encode_utf16().count() > CLIPBOARD_MAX_UTF16 {
-        let clipped: String = text.chars().take(CLIPBOARD_MAX_UTF16).collect();
+    if let Some(clipped) = clip_to_utf16(text, CLIPBOARD_MAX_UTF16) {
         map.insert("text".into(), json!(clipped));
         map.insert("truncated".into(), json!(true));
     }
@@ -608,6 +625,23 @@ pub fn router_with_limit(state: AppState, body_limit: usize) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipping_counts_utf16_units_even_when_characters_are_wider() {
+        // 全 BMP：码元 = 字符，切到正好 max。
+        let bmp = "剪贴板".repeat(10);
+        assert_eq!(clip_to_utf16(&bmp, 30), None);
+        assert_eq!(clip_to_utf16(&bmp, 29).unwrap().encode_utf16().count(), 29);
+        // 星平面：每个 emoji 2 个码元。按字符数截断会一个都切不掉（10 个字符
+        // < max=15），结果是 20 个码元原样透传 —— 上限必须按码元数。
+        let astral = "😀".repeat(10);
+        let clipped = clip_to_utf16(&astral, 15).expect("20 个码元超过 15");
+        assert_eq!(clipped.encode_utf16().count(), 14, "切点落在字符边界上");
+        assert_eq!(clipped.chars().count(), 7);
+        assert!(clipped.chars().all(|c| c == '😀'), "不许切出半个代理对");
+        assert_eq!(clip_to_utf16(&astral, 20), None, "正好等于上限不算超");
+        assert_eq!(clip_to_utf16("", 10), None);
+    }
 
     #[test]
     fn secret_comparison_rejects_length_mismatch_and_any_difference() {

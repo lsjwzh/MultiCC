@@ -4,19 +4,18 @@
 // 画面上的单指永远点哪打哪，需要用触控板时把手指放到这块圆盘上。
 // 它不改变画面手势，也就不存在「我现在到底是触摸还是鼠标」的心智负担。
 //
-// 组件只认指针与滚动回调，不认识远端；坐标一律沿用 [RemoteTouchController]
+// 组件只认指针回调，不认识远端；坐标一律沿用 [RemoteTouchController]
 // 那套（global = 视口坐标，trackpad 只用位移）。
+//
+// 这里原先还贴着一条 34×150 的滚轮胶囊（带箭头和可拖握把）—— 那是桌面滚动条
+// 移植到触屏上的产物，手机上没人用滚动条滚页面。现在舞台与圆盘都支持「双指
+// 平行滑动 = 滚远端」（见 RemoteTouchController._scrollAnchor），胶囊整条删掉，
+// 浮层面积少掉约四成。代价：只能用一根手指的用户失去滚动手势，记在方案 §16。
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show HapticFeedback;
-
-import 'remote_wheel_rail.dart';
 
 const double remotePodPad = 148;
-const double remotePodRailWidth = 34;
-const double remotePodRailHeight = 150;
-const double remotePodGap = 8;
 
 enum RemotePodCorner { topLeft, topRight, bottomLeft, bottomRight }
 
@@ -30,9 +29,6 @@ class RemoteControlPod extends StatefulWidget {
     required this.onPointerDown,
     required this.onPointerMove,
     required this.onPointerUp,
-    required this.onNotch,
-    this.upLabel,
-    this.downLabel,
     this.padLabel,
     this.dragLabel,
     this.idleOpacity = 0.4,
@@ -52,11 +48,6 @@ class RemoteControlPod extends StatefulWidget {
   onPointerMove;
   final void Function(int pointer, Duration timeStamp) onPointerUp;
 
-  /// 滚轮一格，up=true 向上。
-  final void Function(bool up) onNotch;
-
-  final String? upLabel;
-  final String? downLabel;
   final String? padLabel;
   final String? dragLabel;
 
@@ -75,7 +66,7 @@ class _RemoteControlPodState extends State<RemoteControlPod> {
   Timer? _idleTimer;
 
   static const Size _size = Size(
-    remotePodPad + remotePodGap + remotePodRailWidth,
+    remotePodPad,
     remotePodPad + 26, // 顶部拖动把手
   );
 
@@ -188,6 +179,10 @@ class _RemoteControlPodState extends State<RemoteControlPod> {
   }
 
   Widget _pad() {
+    return Semantics(label: widget.padLabel, child: _padSurface());
+  }
+
+  Widget _padSurface() {
     return Listener(
       key: const ValueKey('rs-pod-pad'),
       behavior: HitTestBehavior.opaque,
@@ -239,30 +234,7 @@ class _RemoteControlPodState extends State<RemoteControlPod> {
           height: _size.height,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _grip(),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _pad(),
-                  const SizedBox(width: remotePodGap),
-                  SizedBox(
-                    width: remotePodRailWidth,
-                    height: remotePodRailHeight,
-                    child: RemoteWheelRail(
-                      onNotch: (up) {
-                        HapticFeedback.selectionClick();
-                        _wake();
-                        widget.onNotch(up);
-                      },
-                      semanticLabel: widget.padLabel,
-                      upLabel: widget.upLabel,
-                      downLabel: widget.downLabel,
-                    ),
-                  ),
-                ],
-              ),
-            ],
+            children: [_grip(), _pad()],
           ),
         ),
       ),

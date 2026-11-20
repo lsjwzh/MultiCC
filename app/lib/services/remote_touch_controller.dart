@@ -14,6 +14,9 @@ import 'dart:ui' show Offset, Rect, Size;
 ///    [dragLockDelay]，窗口内再落下继续同一段拖拽），未放大时双指平行滑动 = 滚动，
 ///    双指轻点 = 右键，放大后手指位移按缩放比例变细（精确定位）。
 ///
+/// 未放大时双指平行滑动 = 滚远端（两档都一样，锚点见 [_scrollAnchor]），
+/// 捏合 = 缩放；放大之后双指全部让给画面（缩放 + 平移），因为此时画面有地方可挪。
+///
 /// 单指只做鼠标、从不移动画面；画面的缩放与平移只归双指。触控板光标在没按下时
 /// 被限制在 [visible] 里，不会走到看不见的地方；**拖拽中不再限制**——画面边缘
 /// 靠近时会自动平移（见页面 [_autoPanDrag]），远端指针要能一直朝边缘走。
@@ -411,7 +414,9 @@ class RemoteTouchController {
       if (math.max(dd, dc) < 10) return;
       _tapCandidate = false;
       // 放大后双指只管画面（缩放 + 拖动），没放大时画面无处可挪，平行滑动才是滚轮。
-      if (mode == RemoteTouchMode.direct || viewScale > 1.01 || dd > dc * 0.8) {
+      // 直接触摸档同样适用：手机上「两指一甩滚页面」是肌肉记忆，原先把 direct
+      // 一刀切成捏合，于是舞台上根本没法滚远端，只能跑去摸悬浮操作台。
+      if (viewScale > 1.01 || dd > dc * 0.8) {
         _pinching = true; // 捏合缩放交给 InteractiveViewer
       } else {
         _scrolling = true;
@@ -421,14 +426,25 @@ class RemoteTouchController {
     if (!_scrolling) return;
     _scrollAcc += c.dy - _lastC.dy;
     _lastC = c;
+    final anchor = _scrollAnchor();
     while (_scrollAcc.abs() >= scrollStep) {
       // 手指向下 = 内容向下 = 滚轮上（触屏的「自然」方向）
       final up = _scrollAcc > 0;
       _scrollAcc += up ? -scrollStep : scrollStep;
-      final x = cursor.dx.round(), y = cursor.dy.round();
+      final x = anchor.dx.round(), y = anchor.dy.round();
       onPointer(up ? 0x08 : 0x10, x, y);
       onPointer(0, x, y); // 滚轮是瞬时脉冲，抬回去下一格才算新的沿
     }
+  }
+
+  /// 滚轮落点：触控板滚在虚拟光标处；直接触摸档滚在**两指重心**下面那个东西
+  /// —— 既符合「滚我看着的那块」的直觉，也因为 direct 档根本不维护 [cursor]
+  /// （它停在 (0,0) 或上一次触控板的位置），拿它当锚点会滚错窗口。
+  Offset _scrollAnchor() {
+    if (mode != RemoteTouchMode.direct) return cursor;
+    final pair = _pair();
+    if (pair == null || !_ready) return cursor;
+    return _toSource((pair.$1.local + pair.$2.local) / 2);
   }
 
   void _multiUp(Duration t) {

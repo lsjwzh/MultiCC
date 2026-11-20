@@ -29,7 +29,6 @@ import '../services/sticky_modifiers.dart';
 import '../widgets/remote_control_pod.dart';
 import '../widgets/remote_key_sheet.dart';
 import '../widgets/remote_rail.dart';
-import '../widgets/remote_wheel_rail.dart';
 
 /// 键盘条的功能键/快捷键：[label, spec]。spec 里 `+` 分段，修饰键映射成
 /// RFB keysym，其余段按单字符或命名键解析 —— 与 Web 版 KEYS 表一致。
@@ -292,6 +291,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
           (area.y + y).round(),
           mods: mods,
         );
+      } else if (mask == 0x08 || mask == 0x10) {
+        // 兼容模式没有滚轮通道：双指滚动合并成 HTTP `scroll`，和原先那条
+        // 滚轮竖条走同一条路（_wheelNotch 只读 _lastX/_lastY，上面刚写过）。
+        _wheelNotch(mask == 0x08);
       } else if (mask == 4) {
         unawaited(
           _pointerQueue.drained.then(
@@ -333,7 +336,14 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   bool _railLeft = false;
   String? _panel;
   Timer? _railTimer;
+
+  /// 首次进入时侧栏带文字标签，三秒后自收（见 RemoteRail 文件头）。
+  bool _railLabels = false;
+  Timer? _railLabelTimer;
+
+  /// 键盘面板（非模态）与它的键位网格。
   bool _keyOpen = false;
+  bool _keyGrid = false;
 
   /// 放大后的取景器：点在画面上时，手指上方放大 2.4×，用来精确落点。
   bool _loupe = true;
@@ -347,6 +357,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   static const _podCornerPref = 'remote_screen_pod_corner';
   static const _railLeftPref = 'remote_screen_rail_left';
   static const _loupePref = 'remote_screen_loupe';
+  static const _seenPref = 'remote_screen_seen';
 
   /// 最近一次舞台几何（视口 / 内容框偏移 / 内容框尺寸），算可见源画面与钳制视角用。
   ({Size vp, double offX, double offY, double dw, double dh})? _stageGeo;
@@ -411,7 +422,12 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
           final corner = prefs.getString(_podCornerPref);
           final railLeft = prefs.getBool(_railLeftPref) ?? false;
           final loupe = prefs.getBool(_loupePref) ?? true;
+          final seen = prefs.getBool(_seenPref) ?? false;
           if (!mounted) return;
+          if (!seen) {
+            _startRailLabels();
+            unawaited(prefs.setBool(_seenPref, true));
+          }
           setState(() {
             _podVisible = pod;
             _padGain = gain.clamp(0.5, 2.0);
@@ -427,7 +443,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
         })
         .catchError((Object _) {});
     _armHud();
-    _armRail();
     if (widget.initialControl) {
       _control = true;
       _hadControl = true;
@@ -548,6 +563,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     _permTimer?.cancel();
     _ageTimer?.cancel();
     _railTimer?.cancel();
+    _railLabelTimer?.cancel();
     _hudTimer?.cancel();
     _stopRepeat();
     _releaseStickyAll(rebuild: false);
@@ -707,6 +723,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   }
 
   void _onPointerDown(PointerDownEvent e, double dw, double dh) {
+    _railHideForInput(); // 只看模式也适用：摸画面就让位
     if (!_control) return;
     if (_svc.source == null) {
       if (_svc.fallbackJpeg == null) return;
@@ -739,6 +756,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   }
 
   void _onPointerUp(PointerEvent e, double dw, double dh) {
+    _railReturnSoon();
     _syncTouch(dw, dh);
     if (e is PointerCancelEvent || !_control) {
       _touch.cancel(e.pointer);
@@ -765,8 +783,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     final bandY = math.max(24.0, g.vp.height * 0.08);
     double push(double v, double len, double band) {
       if (v < band) return (band - v).clamp(0.0, 16.0).toDouble();
-      if (v > len - band)
+      if (v > len - band) {
         return -(v - (len - band)).clamp(0.0, 16.0).toDouble();
+      }
       return 0;
     }
 
@@ -877,11 +896,41 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       );
   }
 
-  void _armRail() {
+  // 侧栏显隐是**意图驱动**的，不是计时器驱动的：
+  //   手指落到画面上 → 收起（你开始操作远端了，chrome 让位）；
+  //   抬手之后静止 [_railReturn] → 回来（你停下来了，控件该在手边）。
+  // 这就是所有人都已经会的视频播放器模型。原先那版 6 秒无操作就收，结果是
+  // 「读屏思考时它消失、要用时它不回来」—— 计时器在替用户做决定。
+  // 现在计时器只服务「回来」这一侧：出现比消失便宜得多。
+  static const Duration _railReturn = Duration(milliseconds: 1200);
+
+  void _railHideForInput() {
     _railTimer?.cancel();
-    _railTimer = Timer(const Duration(seconds: 6), () {
-      if (!mounted || _panel != null) return;
-      setState(() => _railOpen = false);
+    if (_panel != null || _keyOpen) return; // 面板开着时栏是它的锚，不收
+    if (_railOpen) setState(() => _railOpen = false);
+    if (_railLabels) {
+      _railLabelTimer?.cancel();
+      setState(() => _railLabels = false);
+    }
+  }
+
+  void _railReturnSoon() {
+    _railTimer?.cancel();
+    if (_railOpen) return;
+    _railTimer = Timer(_railReturn, () {
+      if (!mounted || _railOpen) return;
+      setState(() => _railOpen = true);
+    });
+  }
+
+  void _startRailLabels() {
+    setState(() {
+      _railLabels = true;
+      _railOpen = true;
+    });
+    _railLabelTimer?.cancel();
+    _railLabelTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _railLabels = false);
     });
   }
 
@@ -896,80 +945,61 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     });
   }
 
-  List<RemoteRailEntry> _railEntries(List<RemoteHostAction> actions) => [
+  // 侧栏只放**动作**，而且只放四个：返回 / 指针 / 键盘 / 更多。
+  //
+  // 原先是七项（返回·指针·键盘·宿主·视图·剪贴板·状态）—— 七个等权图标是菜单，
+  // 不是工具栏，而且横屏手机放不下，只能靠 FittedBox 等比缩小到约 36dp，低于
+  // 自己定的 44dp 命中区底线。按真实频次分：键盘高频、指针是开关、返回一次，
+  // 其余四个（视图·剪贴板·宿主·状态）合起来就是一个「工具」面板，收进「更多」。
+  List<RemoteRailEntry> _railEntries() => [
     RemoteRailEntry(
       id: 'back',
       icon: Icons.keyboard_arrow_left_rounded,
       label: t('rsRailBack'),
+      short: t('rsRailShortBack'),
     ),
-    RemoteRailEntry(
-      id: 'pointer',
-      icon: !_control
-          ? Icons.visibility_outlined
-          : _podVisible
-          ? Icons.mouse_rounded
-          : Icons.mouse_outlined,
-      label: _control ? t('rsRailPointer') : t('rsRailControl'),
-      active: _podVisible && _control,
-    ),
+    if (_control)
+      RemoteRailEntry(
+        id: 'pointer',
+        icon: _podVisible ? Icons.mouse_rounded : Icons.mouse_outlined,
+        label: t('rsRailPointer'),
+        short: t('rsRailShortPointer'),
+        active: _podVisible,
+      ),
     if (_control)
       RemoteRailEntry(
         id: 'keys',
         icon: Icons.keyboard_alt_outlined,
         label: t('rsRailKeys'),
+        short: t('rsRailShortKeys'),
         active: _keyOpen,
       ),
-    if (_control && actions.isNotEmpty)
-      RemoteRailEntry(
-        id: 'host',
-        icon: Icons.grid_view_rounded,
-        label: t('rsRailHost'),
-        active: _panel == 'host',
-      ),
     RemoteRailEntry(
-      id: 'view',
-      icon: Icons.zoom_out_map_rounded,
-      label: t('rsRailView'),
-      active: _panel == 'view',
-    ),
-    if (_control)
-      RemoteRailEntry(
-        id: 'clipboard',
-        icon: Icons.content_paste_rounded,
-        label: t('rsRailClipboard'),
-        active: _panel == 'clipboard',
-      ),
-    RemoteRailEntry(
-      id: 'status',
-      icon: Icons.info_outline_rounded,
-      label: t('rsRailStatus'),
-      active: _panel == 'status',
+      id: 'more',
+      icon: Icons.tune_rounded,
+      label: t('rsRailMore'),
+      short: t('rsRailShortMore'),
+      active: _panel != null,
       danger: _halted || _statusErr != null,
     ),
   ];
 
-  void _onRail(String id, List<RemoteHostAction> actions) {
-    _armRail();
+  void _onRail(String id) {
     switch (id) {
       case 'back':
         Navigator.of(context).maybePop();
         return;
       case 'pointer':
-        // 只看模式下这一项就是「拿到操作权」；有操作权时才是操作台开关。
-        if (!_control) {
-          _setControl(true);
-          _armHud();
-        } else {
-          _togglePod();
-        }
+        _togglePod();
         return;
       case 'keys':
-        unawaited(_openKeyboard());
+        _toggleKeyPanel();
         return;
       default:
         setState(() {
           _panel = _panel == id ? null : id;
           _railOpen = true;
+          if (_panel != null) _keyOpen = false; // 两块浮层不同时占着下半屏
         });
     }
   }
@@ -988,50 +1018,30 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
         .catchError((Object _) => false);
   }
 
-  Future<void> _openKeyboard() async {
-    if (_keyOpen || !_control) return;
+  /// 键盘面板开关。**非模态**：开着的时候画面照常可点，页面把舞台按面板高度
+  /// 等比缩小（而不是盖住），所以「点远端输入框 → 打字 → 点下一个框」这个循环
+  /// 不需要反复开关面板，坐标映射也自动保持正确（见 RemoteKeySheet 文件头）。
+  void _toggleKeyPanel() {
+    if (!_control) return;
     setState(() {
-      _keyOpen = true;
-      _panel = null;
+      _keyOpen = !_keyOpen;
+      if (_keyOpen) {
+        _panel = null;
+        _railOpen = true;
+      } else {
+        _keyGrid = false;
+      }
     });
-    try {
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
-        barrierColor: Colors.black26,
-        builder: (ctx) {
-          final inset = MediaQuery.viewInsetsOf(ctx).bottom;
-          final height = math.min(
-            360.0,
-            (MediaQuery.sizeOf(ctx).height - inset) * 0.55,
-          );
-          return Padding(
-            padding: EdgeInsets.only(bottom: inset),
-            child: SizedBox(
-              height: height,
-              child: RemoteKeySheet(
-                textController: _textCtrl,
-                onSend: _sendText,
-                sticky: _sticky,
-                onSticky: _tapSticky,
-                onSpec: _pressSpec,
-                onRepeatStart: _startRepeat,
-                onRepeatStop: _stopRepeat,
-                specs: [..._keyBarSpecs, ..._moreKeySpecs],
-                repeatSpecs: _repeatSpecs,
-                remapLabel: _remapLabel,
-                remapSpec: _remapSpec,
-                onClose: () => Navigator.of(ctx).maybePop(),
-              ),
-            ),
-          );
-        },
-      );
-    } finally {
-      if (mounted) setState(() => _keyOpen = false);
-    }
+    // 收起时把系统键盘一起放下；粘住的修饰键不动，底部浮条会接着显示。
+    if (!_keyOpen) FocusManager.instance.primaryFocus?.unfocus();
   }
+
+  /// 键位网格展开 / 收起：收起时只占输入行 + 修饰键，画面少让出约 170dp。
+  void _toggleKeyGrid() => setState(() => _keyGrid = !_keyGrid);
+
+  /// 面板本体高度（不含系统键盘与安全区）：页面据此缩小舞台，两者加起来正好
+  /// 铺满底部，不留缝也不重叠。口径由组件自己给，避免页面与布局漂开。
+  double get _keyPanelBody => remoteKeyPanelHeight(gridOpen: _keyGrid);
 
   /// 按住连发：立即一发，400ms 后每 70ms 一发（退格 / 前向 Delete / 方向键）。
   void _startRepeat(String spec) {
@@ -1370,12 +1380,28 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     final media = MediaQuery.of(context);
     final safe = media.padding;
     final actions = remoteHostActions(_svc.hostModifier);
+    final ime = media.viewInsets.bottom;
+    // 键盘面板占住的底部高度 = 面板本体 + 系统键盘（没有系统键盘时补底部安全区）。
+    // 舞台按这个高度**让出**而不是被盖住：画面还在、还能点，而且 contain 几何
+    // 重新算一遍，「点哪打哪」的坐标映射自动跟着正确。
+    final keyTaken = _keyOpen
+        ? _keyPanelBody + (ime > 0 ? ime : safe.bottom)
+        : 0.0;
+    final phone = media.size.shortestSide < 600;
     return Scaffold(
       backgroundColor: const Color(0xFF06080c),
+      // 底部占用自己算（面板 + IME），不让 Scaffold 再推一次布局。
+      resizeToAvoidBottomInset: false,
       // 幕布：画面铺满整个 body（含状态栏下方），chrome 全部是浮层。
       body: Stack(
         children: [
-          Positioned.fill(child: _stage()),
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 0,
+            bottom: keyTaken,
+            child: _stage(),
+          ),
           // 安全信息（权限 / 急停）永远整宽置顶，HUD 排在它下面。
           Positioned(
             top: safe.top + 6,
@@ -1396,47 +1422,73 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
               ],
             ),
           ),
-          // 侧栏：竖屏右侧、可切到左侧（单手习惯），6s 无操作收成 10dp 触条。
+          // 侧栏：竖屏右侧、可切到左侧（单手习惯）；摸画面就收、抬手停顿就回。
           Positioned.fill(
             left: _railLeft ? safe.left + 6 : null,
             right: _railLeft ? null : safe.right + 6,
             top: safe.top + 56,
-            bottom: safe.bottom + 56,
+            bottom: safe.bottom + 56 + keyTaken,
             child: Align(
               alignment: _railLeft
                   ? Alignment.centerLeft
                   : Alignment.centerRight,
-              // 短屏（横屏手机）放不下 7 个 44dp 图标：等比缩小，而不是溢出。
+              // 四项 44dp 在任何手机尺寸下都放得下（横屏 iPhone 可用约 260dp，
+              // 内容 184dp）；这层 FittedBox 只是极窄视口下的溢出兜底。
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 child: RemoteRail(
-                  entries: _railEntries(actions),
+                  entries: _railEntries(),
                   expanded: _railOpen,
+                  showLabels: _railLabels,
+                  onLeft: _railLeft,
                   onExpand: () {
+                    _railTimer?.cancel();
                     setState(() => _railOpen = true);
-                    _armRail();
                   },
-                  onAction: (id) => _onRail(id, actions),
+                  onAction: _onRail,
                 ),
               ),
             ),
           ),
-          if (_panel != null) _panelOverlay(media, safe, actions),
+          if (_panel != null) _panelOverlay(media, safe, actions, phone),
           // 悬浮操作台：非模态，舞台的单指语义不受它影响。
           if (_control && _podVisible && !_boxSelOn)
             RemoteControlPod(
               viewport: media.size,
-              padding: safe,
+              // 键盘面板开着时操作台自动停在它上沿，不被压住。
+              padding: safe.copyWith(bottom: safe.bottom + keyTaken),
               corner: _podCorner,
               onCorner: _setPodCorner,
               onPointerDown: _podDown,
               onPointerMove: _podMove,
               onPointerUp: _podUp,
-              onNotch: _wheelNotch,
               padLabel: t('rsPadTitle'),
               dragLabel: t('rsPadDrag'),
-              upLabel: t('rsWheelUp'),
-              downLabel: t('rsWheelDown'),
+            ),
+          if (_keyOpen)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: keyTaken,
+              child: RemoteKeySheet(
+                textController: _textCtrl,
+                onSend: _sendText,
+                sticky: _sticky,
+                onSticky: _tapSticky,
+                onSpec: _pressSpec,
+                onRepeatStart: _startRepeat,
+                onRepeatStop: _stopRepeat,
+                specs: [..._keyBarSpecs, ..._moreKeySpecs],
+                repeatSpecs: _repeatSpecs,
+                remapLabel: _remapLabel,
+                remapSpec: _remapSpec,
+                onClose: _toggleKeyPanel,
+                gridOpen: _keyGrid,
+                onToggleGrid: _toggleKeyGrid,
+                onPaste: () => _sendLocalClipboard(paste: true),
+                bottomInset: ime > 0 ? ime : safe.bottom,
+              ),
             ),
           // 修饰键浮条：键盘面板收起后仍然看得见「⌘ 还按着」。
           if (_control && !_keyOpen && _sticky.anyActive)
@@ -1453,7 +1505,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     );
   }
 
-  bool get _hudVisible => _statusErr != null || _frameAgeShown || _hudOn;
+  // 只看模式下 HUD 常驻：「只看 / 操作」是**状态**，所以开关长在状态上。
+  // 原先这件事挂在侧栏「指针」图标上，一个图标随状态换语义（没操作权时是
+  // 「取操作权」、有操作权时是「操作台开关」）—— 方案的立意正是消灭模式歧义。
+  bool get _hudVisible =>
+      _statusErr != null || _frameAgeShown || _hudOn || !_control;
 
   /// 顶部 HUD：正常读数出现几秒就淡出；错误与「画面冻住」常驻。
   Widget _hud() {
@@ -1477,7 +1533,15 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     final warn = !err && _frameAgeShown && _inputSinceFrame;
     return GestureDetector(
       key: const ValueKey('rs-hud'),
-      onTap: () => setState(() => _panel = 'status'),
+      onTap: _control
+          ? () => setState(() {
+              _panel = 'more';
+              _keyOpen = false;
+            })
+          : () {
+              _setControl(true);
+              _armHud();
+            },
       child: Container(
         constraints: const BoxConstraints(maxWidth: 330),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -1525,48 +1589,102 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     );
   }
 
+  /// 「更多」面板的落点按设备分：
+  ///  · **手机 = 底部 sheet。** 原先锚在右上角（`top: safe.top + 56`），面板里的
+  ///    按钮全落在单手拇指到不了的那块；底部弹出才是手机上的通用习惯，而且和
+  ///    键盘面板同一个方向。带半透明遮罩，点外面收起（sheet 的既有语义）。
+  ///  · **平板 = 贴着侧栏的锚定浮层。** 平板上哪儿都够得到，小卡片不挡画面，
+  ///    所以不加遮罩：再点一次侧栏「更多」或面板右上角的 × 就收。
   Widget _panelOverlay(
     MediaQueryData media,
     EdgeInsets safe,
     List<RemoteHostAction> actions,
+    bool phone,
   ) {
-    return Positioned(
-      top: safe.top + 56,
-      left: _railLeft ? safe.left + 58 : null,
-      right: _railLeft ? null : safe.right + 58,
-      width: math.min(286, media.size.width - 78),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: media.size.height * 0.66),
-        child: Material(
-          key: const ValueKey('rs-panel'),
-          color: const Color(0xF2161b26),
-          elevation: 8,
-          borderRadius: BorderRadius.circular(12),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.min,
-              children: _panelContent(actions),
-            ),
+    Widget card(BorderRadius radius, EdgeInsets padding) => Material(
+      key: const ValueKey('rs-panel'),
+      color: const Color(0xF2161b26),
+      elevation: 8,
+      borderRadius: radius,
+      child: SingleChildScrollView(
+        padding: padding,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: _panelContent(actions),
+        ),
+      ),
+    );
+    if (!phone) {
+      return Positioned(
+        top: safe.top + 56,
+        left: _railLeft ? safe.left + 58 : null,
+        right: _railLeft ? null : safe.right + 58,
+        width: math.min(286, media.size.width - 78),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: media.size.height * 0.66),
+          child: card(
+            BorderRadius.circular(12),
+            const EdgeInsets.fromLTRB(12, 6, 12, 12),
           ),
         ),
+      );
+    }
+    return Positioned.fill(
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              key: const ValueKey('rs-panel-scrim'),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _panel = null),
+              child: const ColoredBox(color: Color(0x59000000)),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: media.size.height * 0.7),
+              child: card(
+                const BorderRadius.vertical(top: Radius.circular(16)),
+                EdgeInsets.fromLTRB(14, 6, 14, 12 + safe.bottom),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  List<Widget> _panelContent(List<RemoteHostAction> actions) {
-    switch (_panel) {
-      case 'host':
-        return _hostPanel(actions);
-      case 'view':
-        return _viewPanel();
-      case 'clipboard':
-        return _clipboardPanel();
-      default:
-        return _statusPanel();
-    }
-  }
+  /// 「更多」面板：视图 / 剪贴板 / 宿主 / 状态 四节按频次排在一个滚动视图里。
+  /// 四个独立入口是照抄结构，用户心里只有一个「工具」对象。
+  List<Widget> _panelContent(List<RemoteHostAction> actions) => [
+    Row(
+      children: [
+        Expanded(child: _panelTitle(t('rsRailMore'))),
+        IconButton(
+          key: const ValueKey('rs-panel-close'),
+          onPressed: () => setState(() => _panel = null),
+          icon: const Icon(Icons.close_rounded, size: 18),
+          color: const Color(0xFF9fb0c6),
+          visualDensity: VisualDensity.compact,
+        ),
+      ],
+    ),
+    ..._viewPanel(),
+    if (_control) ...[
+      const Divider(color: Color(0xFF2a3242), height: 16),
+      ..._clipboardPanel(),
+    ],
+    if (_control && actions.isNotEmpty) ...[
+      const Divider(color: Color(0xFF2a3242), height: 16),
+      ..._hostPanel(actions),
+    ],
+    const Divider(color: Color(0xFF2a3242), height: 16),
+    ..._statusPanel(),
+  ];
 
   Widget _panelTitle(String text) => Padding(
     padding: const EdgeInsets.only(bottom: 6),
@@ -1690,13 +1808,21 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       Row(
         children: [
           for (final gain in const [0.7, 1.0, 1.4]) ...[
-            _gainChip(gain == 0.7 ? '慢' : (gain == 1.0 ? '标准' : '快'), gain),
+            _gainChip(
+              gain == 0.7
+                  ? t('rsGainSlow')
+                  : gain == 1.0
+                  ? t('rsGainNormal')
+                  : t('rsGainFast'),
+              gain,
+            ),
             const SizedBox(width: 6),
           ],
         ],
       ),
       const SizedBox(height: 4),
       _panelLine(t('rsZoomHint')),
+      _panelLine(t('rsScrollHint')),
     ];
   }
 
@@ -1770,16 +1896,21 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     );
   }
 
+  // 剪贴板只留两个动作。原先三个（读回来 / 写过去 / 写过去再粘贴）里，「写过去
+  // 不粘贴」是「写过去再粘贴」的弱版，没人能说清什么时候该用它 —— 收成主按钮的
+  // 长按。用户想的是「把这段贴到那边」和「把那边那段拿回来」，就这两件事。
   List<Widget> _clipboardPanel() {
     return [
       _panelTitle(t('rsRailClipboard')),
-      _panelButton(t('rsClipReadRemote'), _readRemoteClipboard),
-      _panelButton(t('rsClipWriteRemote'), () => _sendLocalClipboard()),
-      _panelButton(
-        t('rsClipWritePaste'),
-        () => _sendLocalClipboard(paste: true),
-        primary: true,
+      GestureDetector(
+        onLongPress: () => _sendLocalClipboard(),
+        child: _panelButton(
+          t('rsClipWritePaste'),
+          () => _sendLocalClipboard(paste: true),
+          primary: true,
+        ),
       ),
+      _panelButton(t('rsClipReadRemote'), _readRemoteClipboard),
       _panelLine(t('rsClipHint')),
     ];
   }
@@ -1821,6 +1952,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
         : _svc.fallbackHeight;
     final netLabel = _netLabel(net, path);
     return <String>[
+      if (!_control) t('rsViewOnlyTap'),
       if (w > 0 && h > 0) '$w×$h',
       _modeLabel,
       if (netLabel != null) netLabel,
@@ -2129,19 +2261,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
               ),
             ),
           ),
-        // 画面旁的滚轮竖条：opaque Listener 独占自身区域，摸到它就不会
-        // 落进 InteractiveViewer / 画面 Listener；位置按未放大几何算，
-        // 捏合缩放时竖条不跳。框选时让位给框；操作台自带滚轮，两套不同时出现。
-        if (_control && !_boxSelOn && !_podVisible)
-          Positioned.fromRect(
-            rect: remoteWheelRailRect(vp, offX, offY),
-            child: RemoteWheelRail(
-              onNotch: _wheelNotch,
-              semanticLabel: t('rsWheelTitle'),
-              upLabel: t('rsWheelUp'),
-              downLabel: t('rsWheelDown'),
-            ),
-          ),
         if (_loupe && _zoomed && !_boxSelOn)
           _loupeOverlay(vp, offX, offY, dw, dh),
         if (_zoomed || _svc.region != null) _zoomBadge(vp, offX, offY, dw, dh),
@@ -2270,7 +2389,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
               border: Border.all(color: const Color(0xFF2a3242)),
             ),
             child: Text(
-              _svc.region != null ? '全屏 · $_zoomPct%' : '$_zoomPct%',
+              _svc.region != null
+                  ? t('rsZoomFull', {'pct': '$_zoomPct'})
+                  : '$_zoomPct%',
               style: const TextStyle(fontSize: 11.5, color: Color(0xFFdce6f1)),
             ),
           ),
@@ -2311,15 +2432,29 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
         );
         final at = MatrixUtils.transformPoint(_xform.value, content);
         const d = 96.0;
+        const lift = 78.0; // 指腹高度：窗口要整个在手指上方
         final left = (at.dx - d / 2).clamp(2.0, vp.width - d - 2);
-        final top = (at.dy - d - 78).clamp(2.0, vp.height - d - 2);
+        // 靠近上缘时翻到手指下方，而不是夹取 —— 夹取会把窗口压到目标自己身上。
+        final above = at.dy - d - lift;
+        final top = above >= 2
+            ? above
+            : (at.dy + 40).clamp(2.0, vp.height - d - 2);
+        // 倍率是**相对**舞台的：固定 2.4 在 iPad 上会失效（画面 3× 时舞台本身
+        // 已经约 2.0 源像素/逻辑像素，取景器只比它清楚不到两成，白挡视线）。
+        final stage = _xform.value.getMaxScaleOnAxis() * (dw / src.width);
         return Positioned(
           left: left,
           top: top,
           child: IgnorePointer(
             child: CustomPaint(
               size: const Size(d, d),
-              painter: _LoupePainter(img, mark.pos, src.width, src.height),
+              painter: _LoupePainter(
+                img,
+                mark.pos,
+                src.width,
+                src.height,
+                math.max(2.4, stage * 2),
+              ),
             ),
           ),
         );
@@ -2438,14 +2573,15 @@ class _CursorPainter extends CustomPainter {
 
 /// 放大取景器：把指针附近的源画面按 2.4× 画进一个圆里。
 class _LoupePainter extends CustomPainter {
-  _LoupePainter(this.image, this.at, this.srcW, this.srcH);
+  _LoupePainter(this.image, this.at, this.srcW, this.srcH, this.zoom);
 
   final ui.Image image;
   final Offset at;
   final double srcW;
   final double srcH;
 
-  static const double _zoom = 2.4;
+  /// 逻辑像素 / 源像素。由页面按当前舞台倍率算（见 `_loupeOverlay`）。
+  final double zoom;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2456,7 +2592,7 @@ class _LoupePainter extends CustomPainter {
     canvas.clipPath(
       Path()..addOval(Rect.fromCircle(center: center, radius: radius)),
     );
-    final span = radius * 2 / _zoom;
+    final span = radius * 2 / zoom;
     final src = Rect.fromCenter(center: at, width: span, height: span);
     // 边缘处让源矩形留在画面里，取景器不出现黑角。
     final clamped = Rect.fromLTWH(
@@ -2498,5 +2634,5 @@ class _LoupePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_LoupePainter old) =>
-      !identical(old.image, image) || old.at != at;
+      !identical(old.image, image) || old.at != at || old.zoom != zoom;
 }
