@@ -308,7 +308,7 @@ test('question owner bridge backfills once and answers a replacement from the sa
   const activeTurn = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'new-task' };
   const legacy = { pendingQuestion: { requestId: 'old', taskId: 'old-task', turnId: 'turn',
     question: 'old', resolved: false }, activeTurn, category: { classifyState: 'W' } };
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   let legacyAvailable = true;
   const owner = createQuestionOwner({ getStore: () => store, initialState: () => {
     if (!legacyAvailable) throw new Error('legacy snapshot unavailable');
@@ -342,7 +342,7 @@ test('question owner bridge moves a question across two Rust-owned sessions', as
     try { await store.close({ exportRollback: false }); }
     finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, now: () => 10, liveTurn: () => null,
     initialState: id => ({ pendingQuestion: id === 'source'
       ? { requestId: 'q', turnId: 'turn', taskId: 'old', question: 'Q', resolved: false } : null,

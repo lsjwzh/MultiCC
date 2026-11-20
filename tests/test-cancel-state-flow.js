@@ -24,7 +24,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
-const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/production-question-host');
+const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/host');
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
 const { createTaskStateStore } = require('../src/routes/task-state-store');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');

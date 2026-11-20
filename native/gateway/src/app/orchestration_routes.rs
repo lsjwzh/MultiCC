@@ -274,6 +274,45 @@ pub async fn handle(
     }
 
     let parts = segments(&ctx.path).unwrap_or_default();
+    if !app.node_enabled && claim(&Method::POST, &ctx.path) == Some(Route::UserInputDismiss) {
+        let id = match decoded(ctx, parts.get(1).copied().unwrap_or("")) {
+            Ok(id) => id,
+            Err(response) => return response,
+        };
+        match crate::ws_chat_native::question_access(app, &id).await {
+            Ok(Some(true)) => return guarded_404(ctx, false),
+            Ok(Some(false)) => {}
+            Ok(None) if matches!(route, Route::UserInputDismiss) => {
+                return express::json(ctx, 404, &json!({"error":"session_not_found"}), &[]);
+            }
+            Ok(None) => {}
+            Err(_) => return unavailable(ctx),
+        }
+        if let Route::Options { allow, .. } = route {
+            return super::options(ctx, allow);
+        }
+        let body = match express::json_body(ctx, body, express::JSON_LIMIT).await {
+            Ok(value) => value,
+            Err(error) => return express::error(ctx, error.status, error.reason),
+        };
+        let Some(request) = body["requestId"]
+            .as_str()
+            .filter(|id| id.encode_utf16().count() <= 160)
+            .map(multicc_core::js::js_trim)
+            .filter(|id| !id.is_empty())
+        else {
+            return express::json(ctx, 400, &json!({"error":"request_id_required"}), &[]);
+        };
+        return match crate::ws_chat_native::dismiss_question(app, &id, request).await {
+            Ok(result) => express::json(
+                ctx,
+                if result["ok"] == true { 200 } else { 409 },
+                &result,
+                &[],
+            ),
+            Err(error) => express::json(ctx, 500, &json!({"error":error}), &[]),
+        };
+    }
     let guard_segment = match route {
         Route::Options { guard_segment, .. } => guard_segment,
         _ => guard_index(&parts),

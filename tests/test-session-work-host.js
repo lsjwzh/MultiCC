@@ -9,7 +9,7 @@ const { createSessionWorkHost } = require('../src/session-work/host');
 const { createShellWorkspaceHost } = require('../src/task-shell/workspace');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
-const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/production-question-host');
+const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/host');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 function fixture(options = {}) {
@@ -251,7 +251,9 @@ test('dismissal uses the ordered question owner and does not classify a replaced
   const calls = [];
   const h = fixture({ userInputSignalHost: {
     async pendingAsync(id) { calls.push(['read', id]); return { requestId: 'old', taskId: 'task' }; },
-    async resolveAsync(id, requestId, options) {
+    async resolveAsync(id, requestId, { readDismissFacts, ...options }) {
+      assert.equal(typeof readDismissFacts, 'function');
+      assert.deepEqual(readDismissFacts().liveness, { state: 'inactive' });
       calls.push(['resolve', id, requestId, options]);
       return { ok: false, code: 'request_id_mismatch' };
     },

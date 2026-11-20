@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { createSessionWorkHost } = require('../src/session-work/host');
-const { createUserInputSignalHost } = require('../src/classify/user-input-host');
+const { createUserInputSignalHost } = require('./helpers/legacy-user-input-signal');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 
 // Load the actual pre-migration host using its original import base. Its
@@ -121,12 +121,12 @@ test('Rust-owned question host keeps creation, replay, classification and moves 
   const writes = [];
   const notifications = [];
   const activeTurn = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'task' };
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123,
     liveTurn: id => id === 'source' ? activeTurn : null,
     initialState: id => ({ pendingQuestion: states[id]?.pendingUserInput || null,
       activeTurn: id === 'source' ? activeTurn : null, category: { ...states[id] } }) });
-  const { createUserInputOwnedHost } = require('../src/classify/user-input-owned-host');
+  const { createUserInputOwnedHost } = require('../src/session-work/host');
   const host = createUserInputOwnedHost({ owner, getState: id => states[id],
     setState: (id, patch) => { writes.push({ id, patch }); states[id] = { ...states[id], ...patch }; },
     onResolved: (...args) => notifications.push(args) });
@@ -161,13 +161,13 @@ test('ordered question creation and answer keep their queue positions across fir
     try { await store.close({ exportRollback: false }); }
     finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   let backfills = 0;
   const liveTurn = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'task' };
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => liveTurn,
     initialState: () => { backfills++; return { pendingQuestion: null, activeTurn: liveTurn, category: null }; } });
   const notifications = [];
-  const { createUserInputOwnedHost } = require('../src/classify/user-input-owned-host');
+  const { createUserInputOwnedHost } = require('../src/session-work/host');
   const host = createUserInputOwnedHost({ owner, getState: () => ({}), setState: () => {},
     onResolved: (...args) => notifications.push(args) });
   let release, started;
@@ -215,7 +215,7 @@ test('queued question creation checks the Rust active turn at execution time', a
   await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
     pendingQuestion: null, activeTurn: active('old'), category: null,
   } });
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123,
     initialState: () => { throw new Error('initialized state must not be recopied'); },
     liveTurn: () => active('old') });
@@ -244,7 +244,7 @@ test('ordered first read backfills once and later reads never copy stale legacy 
   });
   let old = { requestId: 'old', resolved: false };
   let backfills = 0;
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, liveTurn: () => null,
     initialState: () => { backfills++; return { pendingQuestion: old, activeTurn: null, category: null }; } });
   assert.equal((await owner.readAsync('s')).pendingQuestion.requestId, 'old');
@@ -267,7 +267,7 @@ test('ordered move refuses a question replaced while the caller was waiting', as
   await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 'source', initial: {
     pendingQuestion: { requestId: 'old', turnId: 'turn', resolved: false }, activeTurn, category: null,
   } });
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => activeTurn,
     initialState: () => ({ pendingQuestion: null, activeTurn: null, category: null }) });
   const settled = owner.resolveAsync('source', 'old');
@@ -291,11 +291,11 @@ test('owned host admission backfills an old question and later answers its repla
   const record = { id: 's', taskState: { classifyState: 'W', pendingUserInput: {
     requestId: 'old', taskId: 'old-task', turnId: 'turn', question: 'old', resolved: false,
   } } };
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => activeTurn,
     initialState: () => ({ pendingQuestion: record.taskState.pendingUserInput, activeTurn,
       category: { classifyState: record.taskState.classifyState } }) });
-  const { createUserInputOwnedHost } = require('../src/classify/user-input-owned-host');
+  const { createUserInputOwnedHost } = require('../src/session-work/host');
   const ownedHost = createUserInputOwnedHost({ owner, getState: () => record.taskState,
     setState: (_id, patch) => { record.taskState = { ...record.taskState, ...patch }; } });
   const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
@@ -344,11 +344,11 @@ test('host admission rechecks the owned question after initialization and a conc
   const record = { id: 's', taskState: { classifyState: 'W', pendingUserInput: {
     requestId: 'old', turnId: 'turn', taskId: 'task', resolved: true,
   } } };
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => activeTurn,
     initialState: () => ({ pendingQuestion: record.taskState.pendingUserInput, activeTurn,
       category: { classifyState: record.taskState.classifyState } }) });
-  const { createUserInputOwnedHost } = require('../src/classify/user-input-owned-host');
+  const { createUserInputOwnedHost } = require('../src/session-work/host');
   const ownedHost = createUserInputOwnedHost({ owner, getState: () => record.taskState, setState: () => {} });
   const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
   const scheduler = createSessionWorkScheduler({ store, now: () => 123 });

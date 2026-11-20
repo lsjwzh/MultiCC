@@ -3,12 +3,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
-  USER_INPUT_SIGNAL_PROMPT,
-  buildCodexUserInputConstraint,
   buildAdapterUserInputSignal,
   recordAdapterUserInput,
-  createUserInputSignalHost,
-} = require('../src/classify/user-input-host');
+} = require('../src/chat/host-coordinator');
+const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint } = require('../src/chat/host-prompts');
+const { createUserInputSignalHost } = require('./helpers/legacy-user-input-signal');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
 
 function fixture(options = {}) {

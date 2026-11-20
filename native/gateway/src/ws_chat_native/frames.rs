@@ -206,6 +206,7 @@ pub(super) fn notify(phase: &str, goal: &str) -> V {
     let (state, label) = match phase {
         "succeeded" => ("succeeded", "执行成功"),
         "released" => ("cancelled", "已取消"),
+        "waiting" => ("waiting", "等待交互"),
         _ => ("running", "处理中"),
     };
     let message = if goal.is_empty() {

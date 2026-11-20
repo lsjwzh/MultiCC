@@ -1,6 +1,7 @@
 //! Native delivery through the durable scheduler and workspace writer fence.
 use super::{
     error_frame, prepare_turn, provider::Provider, run_turn, store, Session, ShellRoute, TurnEnd,
+    TurnInput,
 };
 use crate::app::App;
 use multicc_core::{
@@ -29,11 +30,12 @@ fn task_store(root: &Path) -> Result<TaskStore, String> {
     TaskStore::open(path.to_str().ok_or("invalid task store path")?)
 }
 
-fn queue_store(root: &Path) -> Result<Store, String> {
+pub(super) fn queue_store(root: &Path) -> Result<Store, String> {
     let path = root.join("orchestration.sqlite");
+    let legacy = root.join("orchestration.json");
     Store::open(
         path.to_str().ok_or("invalid queue store path")?,
-        None,
+        Some(legacy.to_str().ok_or("invalid legacy queue store path")?),
         now(),
         RetentionPolicy::default(),
     )
@@ -134,7 +136,7 @@ pub(super) async fn submit(
 ) -> V {
     let mut state = session.lock().await;
     let intent = chat::intent(message);
-    if !supported(&state) || intent == Intent::Answer {
+    if !supported(&state) {
         return error_frame(
             "chat_route_unavailable",
             "Task shell delivery is unavailable",
@@ -142,12 +144,12 @@ pub(super) async fn submit(
     }
     let id = id.to_owned();
     let shell = route.id.map(ToOwned::to_owned);
-    let active = json!({"busy":state.active.is_some(),
+    let mut active = json!({"busy":state.active.is_some(),
         "turnId":state.active.as_ref().map(|turn| &turn.id),
         "taskId":state.active.as_ref().and_then(|turn| turn.task.as_ref())
     });
     let root = app.data_root.clone();
-    if intent == Intent::Work {
+    if matches!(intent, Intent::Work | Intent::Answer) {
         if let Err(error) = Provider::load(&root, &state.stored.record).await {
             return error_frame("chat_provider_unavailable", &error);
         }
@@ -169,6 +171,14 @@ pub(super) async fn submit(
             &submit_root.join("task_board.json"),
         )?;
         let directory = read_directory(&submit_root, &record)?;
+        if intent == Intent::Answer {
+            let question = super::question::read(&submit_root, &id, &record)?;
+            let current = question.category.get("userInputSignalTurnId");
+            if !multicc_core::js::truthy_opt(current) || current == question.pending.get("turnId") {
+                active["pending"] = js::to_serde(&question.pending);
+                active["turnId"] = active["pending"]["turnId"].clone();
+            }
+        }
         let record = js::to_serde(&record);
         let reserved = tasks.reserve_native_chat_input(
             shell.as_deref(),
@@ -179,10 +189,11 @@ pub(super) async fn submit(
         let receipt = &reserved["receipt"];
         let receipt_id = required(receipt, "id")?;
         let task = required(receipt, "taskId")?;
-        if intent == Intent::Work && receipt["status"] != "accepted" {
+        let mut notification = Value::Null;
+        if intent != Intent::Cancel && receipt["status"] != "accepted" {
             let payload = &receipt["payload"];
             let task_state = &record["taskState"];
-            let request = json!({"sessionId":id,"text":payload["text"],"source":"task-shell",
+            let mut request = json!({"sessionId":id,"text":payload["text"],"source":"task-shell",
                 "idempotencyKey":receipt_id,"hostAdmission":true,"initialState":{
                     "pendingQuestion":task_state["pendingUserInput"],"activeTurn":null,
                     "category":{"classifyState":task_state["classifyState"]}
@@ -192,16 +203,35 @@ pub(super) async fn submit(
                     "originContinue":true,"rolePrompt":reserved["rolePrompt"]
                 }
             });
+            if intent == Intent::Answer {
+                request["options"]["taskStart"] = json!(false);
+                request["options"]["userInputRequestId"] = payload["requestId"].clone();
+                request["options"]["taskShellControl"] =
+                    json!({"intent":"answer","turnId":payload["turnId"]});
+            }
             let admitted = admit_queue(&mut queue_store(&submit_root)?, request.to_string())?;
             if admitted["ok"] != true {
-                return Err(required(&admitted, "code")?.to_owned());
+                let code = required(&admitted, "code")?;
+                if code == "stale_control" {
+                    tasks.settle_receipt(&json!({"receiptId":receipt_id,"error":{"code":code}}))?;
+                    return Err(format!(
+                        "TASK_RULE:{}",
+                        json!({"code":code,"message":"The question is no longer pending"})
+                    ));
+                }
+                return Err(code.to_owned());
             }
+            notification = admitted["notification"].clone();
         }
-        Ok(receipt.clone())
+        Ok((receipt.clone(), notification))
     })
     .await;
     let result = match result {
-        Ok(receipt) => {
+        Ok((receipt, notification)) => {
+            if !notification.is_null() {
+                app.native_chat
+                    .publish(&id, super::value(notification), false);
+            }
             if intent == Intent::Cancel && receipt["status"] != "accepted" {
                 let cancelled = state.active.as_mut().and_then(|turn| turn.cancel.take());
                 if !cancelled.is_some_and(|cancelled| cancelled.send(()).is_ok()) {
@@ -334,7 +364,7 @@ pub(super) async fn wake(app: &Arc<App>, id: &str, session: &Arc<Mutex<Session>>
                 &mut state,
                 &delivery.prompt,
                 Some(&delivery.receipt),
-                Some(&delivery),
+                TurnInput::Shell(&delivery),
             )
             .await;
             drop(state);
@@ -350,7 +380,7 @@ pub(super) async fn wake(app: &Arc<App>, id: &str, session: &Arc<Mutex<Session>>
                     )
                     .await;
                     match writer.stop(end.stopped, Some(&end)).await {
-                        Ok(()) if end.stopped => delivery.complete(end.phase).await,
+                        Ok(()) if end.stopped => delivery.complete(&end).await,
                         Ok(()) => Err("writer_stop_unverified".into()),
                         Err(error) => Err(error),
                     }
@@ -420,6 +450,7 @@ async fn claim(
             token: required(&picked, "leaseToken")?.into(),
             attempt: picked["attempt"].clone(),
             receipt: required(options, "taskShellReceiptId")?.into(),
+            answer: options["userInputRequestId"].is_string(),
             role_prompt: options["rolePrompt"]
                 .as_str()
                 .filter(|text| !text.is_empty())
@@ -439,6 +470,7 @@ pub(super) struct Delivery {
     attempt: Value,
     receipt: String,
     prompt: String,
+    pub answer: bool,
     pub role_prompt: Option<String>,
 }
 
@@ -471,15 +503,15 @@ impl Delivery {
         Ok(())
     }
 
-    async fn complete(&self, phase: &str) -> Result<(), String> {
+    async fn complete(&self, end: &TurnEnd) -> Result<(), String> {
         let result = response(
             self.change(
                 "scheduleCompleteAtomicExperimental",
                 json!({
                     "expectedTaskIdJson":json!(self.task).to_string(),
                     "expectedDeliveryId":self.entry,"expectedAttempt":self.attempt,
-                    "reasonJson":json!(phase).to_string(),"awaitingRequestIdJson":"null",
-                    "classifyStateJson":json!(if phase == "failed" { "E" } else { "D" }).to_string()
+                    "reasonJson":json!(end.phase).to_string(),"awaitingRequestIdJson":json!(end.awaiting).to_string(),
+                    "classifyStateJson":json!(if end.awaiting.is_some() { "W" } else if end.phase == "failed" { "E" } else { "D" }).to_string()
                 }),
             )
             .await?,
@@ -619,7 +651,7 @@ fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("missing {field}"))
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(work)

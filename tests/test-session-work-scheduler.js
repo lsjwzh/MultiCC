@@ -513,7 +513,7 @@ test('a missing Rust question snapshot fails closed inside a scheduler draft', a
     draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
       active: { entryId: 'active', taskId: 'task' } };
   });
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, now: () => 10, liveTurn: () => null,
     initialState: () => ({ pendingQuestion: { requestId: 'q', taskId: 'task' },
       activeTurn: null, category: 'W' }) });

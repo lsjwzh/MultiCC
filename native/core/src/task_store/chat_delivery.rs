@@ -385,9 +385,6 @@ impl TaskStore {
         message: &V,
     ) -> Result<Value> {
         let intent = chat::intent(message);
-        if intent == Intent::Answer {
-            return Err(conflict("chat_route_unavailable"));
-        }
         self.atomic(|store| {
             let shell_id = match shell_query {
                 Some(id) => id.to_owned(),
@@ -446,6 +443,16 @@ impl TaskStore {
                 // A receipt reserved by a different execution owner can carry
                 // an unfinished external launch. Leave it to that owner.
                 return Err(conflict("chat_route_unavailable"));
+            }
+            if intent == Intent::Answer && !existing.is_null() {
+                if existing["fingerprint"] != fingerprint {
+                    return Err(conflict("idempotency_conflict"));
+                }
+                if matches!(existing["status"].as_str(), Some("rejected" | "failed")) {
+                    return Err(conflict("stale_control"));
+                }
+                let role = store.verified_role(text(&existing["roleSnapshotId"]), id)?;
+                return Ok(json!({"receipt":existing,"rolePrompt":role["prompt"]}));
             }
             let claim = store.get("claim", id)?;
             if intent == Intent::Work && !claim["receiptId"].is_null() && claim["receiptId"] != receipt_id {

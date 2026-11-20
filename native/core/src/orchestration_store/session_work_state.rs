@@ -1,7 +1,7 @@
 //! Versioned session-work facts, owned by the orchestration SQLite connection.
 //!
-//! The API is intentionally not connected to the live hosts yet. All facts in
-//! a request are committed together, including updates to multiple sessions.
+//! Question changes and their event facts commit together, including updates
+//! to multiple sessions.
 use super::{corrupt, err, record, Result};
 use crate::js::{js_to_string, truthy, JsValue};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior, TransactionState};
@@ -10,6 +10,43 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 const MAX_VERSION: u64 = 9_007_199_254_740_991;
+
+fn settle(
+    pending: &mut JsValue,
+    category: &mut JsValue,
+    requested: JsValue,
+    at: &JsValue,
+    last_at: &JsValue,
+    dismissed: bool,
+) -> Result<JsValue> {
+    put(pending, "resolved", JsValue::Bool(true))?;
+    put(pending, "resolvedAt", at.clone())?;
+    let task_id = nullish(field(pending, "taskId"));
+    let mut last = JsValue::object(vec![
+        ("requestId", requested.clone()),
+        ("at", last_at.clone()),
+        ("taskId", task_id.clone()),
+    ]);
+    let mut notification = JsValue::object(vec![
+        ("type", JsValue::string("user_input_resolved")),
+        ("requestId", requested),
+        ("taskId", task_id),
+    ]);
+    if dismissed {
+        put(pending, "resolution", JsValue::string("dismissed"))?;
+        put(pending, "resolvedBy", JsValue::string("user"))?;
+        put(&mut last, "resolution", JsValue::string("dismissed"))?;
+        put(
+            &mut notification,
+            "resolution",
+            JsValue::string("dismissed"),
+        )?;
+    }
+    put(category, "lastResolvedUserInput", last)?;
+    put(category, "userInputSignalVersion", JsValue::Number(1.0))?;
+    put(pending, "resolvedNotification", notification.clone())?;
+    Ok(notification)
+}
 
 fn field(object: &JsValue, name: &str) -> JsValue {
     object.get(name).cloned().unwrap_or(JsValue::Undefined)
@@ -435,8 +472,7 @@ pub(super) fn encoded_patch(connection: &mut Connection, input: &Value) -> Resul
     Ok(result)
 }
 
-/// Question lifecycle on the same SQLite owner used by admission. This is not
-/// connected to live hosts until active-turn and classify writers migrate too.
+/// Question lifecycle on the same SQLite owner used by admission.
 pub(super) fn question_transition(connection: &mut Connection, input: &Value) -> Result<Value> {
     let raw = input["requestJson"]
         .as_str()
@@ -839,26 +875,27 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
             "userInputSignalVersion",
             JsValue::Number(1.0),
         )?;
-        notification = JsValue::object(vec![
-            ("type", JsValue::string("user_input_required")),
-            ("requestId", request_id),
-            ("turnId", turn_id),
-            ("taskId", task_id),
-            ("question", field(&signal, "question")),
-            ("reason", reason),
-            ("options", options),
-            ("allowMultiple", field(&pending, "allowMultiple")),
-        ]);
-        if field(&pending, "inputType") == JsValue::string("secret") {
-            put(&mut notification, "inputType", JsValue::string("secret"))?;
-            put(
-                &mut notification,
-                "secretName",
-                field(&pending, "secretName"),
-            )?;
-        }
+        notification = crate::session_question::required_frame(&pending);
         json!({"ok":true,"duplicate":false})
     } else if action == JsValue::string("beginTurn") {
+        let answer = field(&request, "answerRequestId");
+        if truthy(&answer) {
+            let code = if pending.get("requestId") != Some(&answer) {
+                Some("stale_control")
+            } else if !crate::session_question::is_open(&pending) {
+                Some("answer_already_resolved")
+            } else if truthy(&field(&category, "userInputSignalTurnId"))
+                && pending.get("turnId") != category.get("userInputSignalTurnId")
+            {
+                Some("stale_control")
+            } else {
+                None
+            };
+            if let Some(code) = code {
+                return Ok(json!({"result":{"ok":false,"code":code}}));
+            }
+            notification = settle(&mut pending, &mut category, answer, &at, &at, false)?;
+        }
         if let Some(turn) = request.get("activeTurn") {
             if !matches!(turn, JsValue::Object(_) | JsValue::Null) {
                 return Err(err("invalid session work active turn"));
@@ -906,6 +943,25 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
         put(&mut category, "classifyState", JsValue::string("P"))?;
         put(&mut category, "goalState", JsValue::Null)?;
         json!({"ok":true})
+    } else if action == JsValue::string("finishNative") {
+        if field(&field(&active, "_activeTurn"), "turnId") != field(&request, "turnId") {
+            return Ok(json!({"result":{"ok":false,"code":"turn_not_active"}}));
+        }
+        let waiting = crate::session_question::is_open(&pending);
+        let classification = if waiting {
+            "W"
+        } else if field(&request, "succeeded") == JsValue::Bool(true) {
+            "D"
+        } else {
+            "E"
+        };
+        put(
+            &mut category,
+            "classifyState",
+            JsValue::from(classification),
+        )?;
+        encoded.active_turn_json = "null".into();
+        json!({"ok":true,"waiting":waiting})
     } else if action == JsValue::string("resolve") {
         let requested = field(&request, "requestId");
         if !truthy(&pending) || field(&pending, "requestId") != requested {
@@ -917,40 +973,68 @@ pub(super) fn question_transition(connection: &mut Connection, input: &Value) ->
             return Ok(json!({"result":{"ok":true,"duplicate":true}}));
         }
         let dismissed = field(&request, "dismissed") == JsValue::Bool(true);
-        put(&mut pending, "resolved", JsValue::Bool(true))?;
-        put(&mut pending, "resolvedAt", at.clone())?;
-        let task_id = nullish(field(&pending, "taskId"));
+        let native_dismissal = field(&request, "nativeDismissal") == JsValue::Bool(true);
+        let dismiss_facts = field(&request, "dismissFacts");
+        if native_dismissal || matches!(dismiss_facts, JsValue::Object(_)) {
+            let queue = record::get_json(&tx, "sessionSchedules", &id, &[])?
+                .map(|raw| record::parse(&raw))
+                .transpose()?
+                .unwrap_or_else(|| JsValue::Object(Vec::new()));
+            let external: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM orchestration_waits
+                    WHERE session_id=?1 AND status='pending'
+                    AND json_extract(data_json, '$.metadata.kind') IS NOT 'scheduled_message')",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .map_err(err)?;
+            let decision = crate::session_question::dismissal(&JsValue::object(vec![
+                ("pending", pending.clone()),
+                ("requestId", requested.clone()),
+                ("queue", queue),
+                (
+                    "streaming",
+                    if native_dismissal {
+                        field(&request, "streaming")
+                    } else {
+                        field(&dismiss_facts, "streaming")
+                    },
+                ),
+                (
+                    "externalWait",
+                    JsValue::Bool(external || truthy(&field(&dismiss_facts, "externalWait"))),
+                ),
+                ("classifyState", field(&dismiss_facts, "classifyState")),
+                (
+                    "liveness",
+                    if native_dismissal {
+                        JsValue::object(vec![("state", JsValue::from("inactive"))])
+                    } else {
+                        field(&dismiss_facts, "liveness")
+                    },
+                ),
+            ]));
+            if decision.get("ok") != Some(&JsValue::Bool(true)) {
+                return Ok(json!({"result":crate::js::to_serde(&decision)}));
+            }
+        }
         let last_at = match field(&request, "lastResolvedAt") {
             JsValue::Number(value) if value.is_finite() => JsValue::Number(value),
             _ => at.clone(),
         };
-        let mut last = JsValue::object(vec![
-            ("requestId", requested.clone()),
-            ("at", last_at),
-            ("taskId", task_id.clone()),
-        ]);
-        notification = JsValue::object(vec![
-            ("type", JsValue::string("user_input_resolved")),
-            ("requestId", requested),
-            ("taskId", task_id),
-        ]);
-        if dismissed {
-            put(&mut pending, "resolution", JsValue::string("dismissed"))?;
-            put(&mut pending, "resolvedBy", JsValue::string("user"))?;
-            put(&mut last, "resolution", JsValue::string("dismissed"))?;
-            put(
-                &mut notification,
-                "resolution",
-                JsValue::string("dismissed"),
-            )?;
-        }
-        put(&mut category, "lastResolvedUserInput", last)?;
-        put(
+        notification = settle(
+            &mut pending,
             &mut category,
-            "userInputSignalVersion",
-            JsValue::Number(1.0),
+            requested,
+            &at,
+            &last_at,
+            dismissed,
         )?;
-        put(&mut pending, "resolvedNotification", notification.clone())?;
+        if native_dismissal {
+            put(&mut category, "classifyState", JsValue::string("D"))?;
+            encoded.active_turn_json = "null".into();
+        }
         json!({"ok":true,"duplicate":false})
     } else {
         return Err(err("unknown question transition"));
@@ -1174,6 +1258,75 @@ mod tests {
         assert_eq!(
             read(&connection, &json!({"sessionId":"new"})).unwrap()["exists"],
             false
+        );
+    }
+
+    #[test]
+    fn question_storage_failure_keeps_pending_answer_and_version() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init(&connection);
+        let execute = |connection: &mut Connection, command: Value| {
+            question_transition(connection, &json!({"requestJson":command.to_string()}))
+        };
+        let initial = json!({"pendingQuestion":null,"activeTurn":{"_activeTurn":{"turnId":"t"},
+            "isStreaming":true},"category":{"userInputSignalTurnId":"t"}});
+        let ask = json!({"action":"record","sessionId":"s","at":1,"initialState":initial,
+            "signal":{"sessionId":"s","turnId":"t","requestId":"q","question":"Q"}});
+        connection
+            .execute_batch(
+                "CREATE TRIGGER question_failure BEFORE INSERT ON orchestration_session_work_state
+             BEGIN SELECT RAISE(ABORT, 'question fixture write failure'); END;",
+            )
+            .unwrap();
+        let failure = execute(&mut connection, ask.clone()).unwrap_err();
+        assert!(
+            failure.contains("question fixture write failure"),
+            "{failure}"
+        );
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"s"})).unwrap()["exists"],
+            false
+        );
+
+        connection
+            .execute_batch("DROP TRIGGER question_failure")
+            .unwrap();
+        execute(&mut connection, ask).unwrap();
+        let before = read(&connection, &json!({"sessionId":"s"})).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER answer_failure BEFORE UPDATE ON orchestration_session_work_state
+             BEGIN SELECT RAISE(ABORT, 'answer fixture write failure'); END;",
+            )
+            .unwrap();
+        let answer = json!({"action":"beginTurn","sessionId":"s","at":2,"turnId":"next",
+            "originContinue":true,"answerRequestId":"q","activeTurn":{"_activeTurn":{"turnId":"next"},
+            "isStreaming":true}});
+        let failure = execute(&mut connection, answer.clone()).unwrap_err();
+        assert!(
+            failure.contains("answer fixture write failure"),
+            "{failure}"
+        );
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"s"})).unwrap(),
+            before
+        );
+        connection
+            .execute_batch("DROP TRIGGER answer_failure")
+            .unwrap();
+        let committed = execute(&mut connection, answer.clone()).unwrap();
+        assert_eq!(committed["result"]["ok"], true);
+        assert!(committed["notificationJson"]
+            .as_str()
+            .unwrap()
+            .contains("user_input_resolved"));
+        assert_eq!(
+            execute(&mut connection, answer).unwrap()["result"]["code"],
+            "answer_already_resolved"
+        );
+        assert_eq!(
+            read(&connection, &json!({"sessionId":"s"})).unwrap()["version"],
+            2
         );
     }
 

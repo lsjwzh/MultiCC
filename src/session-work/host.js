@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const { runStateForFreezeReason } = require('./scheduler');
 const {
-  isProcessingLetter, isBackgroundLetter, isAbnormalLetter, isTerminalLetter,
+  applyUserInputEvidence, userInputDegraded, isProcessingLetter, isBackgroundLetter, isAbnormalLetter, isTerminalLetter,
 } = require('../classify/vocab');
 const zcodeAuth = require('../cli-adapters/zcode-auth');
 const kimiAuth = require('../cli-adapters/kimi-auth');
@@ -11,6 +11,11 @@ const { redactProviderRouteCapability } = require('../observability');
 const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
 const { processAlive } = require('../session/runtime-busy');
 const { getNative } = require('../native/runtime');
+const { createQuestionOwner } = require('../orchestration/native-store-host');
+
+function questionProtocol(op, input) {
+  return JSON.parse(getNative().sessionQuestionRequest(op, JSON.stringify(input)));
+}
 
 // Outbox id of a dispatch result (operation-service completeOperationDraft).
 const DISPATCH_RESULT_ENTRY = /^operation:[^:]+:result(?::\d+)?$/;
@@ -187,18 +192,9 @@ function createSessionWorkHost(deps = {}) {
       classifyState: 'W', reason: 'user_input_moved_separation',
     });
     const question = moved.question || pending;
-    deps.broadcast(targetId, {
-      type: 'user_input_required',
-      requestId: moved.requestId,
-      turnId: question.turnId || null,
-      taskId: taskId || question.taskId || null,
-      question: question.question,
-      reason: question.reason || '',
-      options: Array.isArray(question.options) ? question.options : [],
-      allowMultiple: question.allowMultiple === true,
-      ...(question.inputType === 'secret' && question.secretName
-        ? { inputType: 'secret', secretName: question.secretName } : {}),
-    });
+    deps.broadcast(targetId, questionProtocol('requiredFrame', {
+      ...question, requestId: moved.requestId, taskId: taskId || question.taskId,
+    }));
     return { ok: true, requestId: moved.requestId, resolution: 'moved' };
   }
 
@@ -209,42 +205,30 @@ function createSessionWorkHost(deps = {}) {
     if (!record) return { ok: false, code: 'session_not_found' };
     if (!requestId) return { ok: false, code: 'request_id_required' };
     const queue = await scheduler()?.status(sessionId);
-    if (!queue) return { ok: false, code: 'scheduler_not_ready' };
-    const pending = await pendingInputAsync(sessionId);
-    if (!pending || pending.requestId !== requestId) {
-      return { ok: false, code: pending ? 'request_id_mismatch' : 'no_pending_request' };
-    }
-    if (pending.resolved === true) return { ok: true, duplicate: true };
+    const pending = queue && await pendingInputAsync(sessionId);
     const cs = deps.getChatSession(sessionId);
     const state = deps.getTaskState(record) || {};
-    // Deliberately not the shared chat-runtime predicate
-    // (src/session/runtime-busy.js): this gates on *this* turn — the one that
-    // asked the question — and it already carries two disqualifiers the shared
-    // predicate knows nothing about (a processing classify letter, a live queue
-    // entry). Widening it here would refuse answers it must accept.
-    if (cs?.isStreaming || isProcessingLetter(state.classifyState)
-        || (queue.active && queue.state !== 'frozen')) {
-      return { ok: false, code: 'turn_still_active' };
-    }
-    if (schedulerRuntime()?.hasPending(sessionId)) return { ok: false, code: 'external_wait_pending' };
-    if (queue.active?.taskId && pending.taskId && queue.active.taskId !== pending.taskId) {
-      return { ok: false, code: 'active_task_mismatch' };
-    }
-    let liveness = deps.getTurnLiveness?.(sessionId);
-    if (liveness?.reason === 'no_chat_runtime' && !queue.active) {
-      liveness = { state: 'inactive', reason: 'unloaded_idle_session' };
-    }
-    if (liveness?.state !== 'inactive') return { ok: false, code: 'turn_still_active' };
+    // Dismissal guards the asking turn using its classification and queue entry.
+    // Widening it here would refuse answers it must accept.
+    const readDismissFacts = () => ({
+      streaming: deps.getChatSession(sessionId)?.isStreaming === true,
+      classifyState: deps.getTaskState(deps.getRecord(sessionId))?.classifyState,
+      externalWait: schedulerRuntime()?.hasPending(sessionId),
+      liveness: deps.getTurnLiveness?.(sessionId),
+    });
+    const decision = questionProtocol('dismissal', { queue, pending, requestId, ...readDismissFacts() });
+    if (!decision.ok || decision.duplicate) return decision;
+    const { taskId, liveness } = decision;
     const resolved = typeof deps.userInputSignalHost?.resolveAsync === 'function'
-      ? await deps.userInputSignalHost.resolveAsync(sessionId, requestId, { dismissed: true })
+      ? await deps.userInputSignalHost.resolveAsync(sessionId, requestId, { dismissed: true, readDismissFacts })
       : await deps.resolveUserInput(sessionId, requestId, { dismissed: true });
-    if (!resolved?.ok) return resolved;
+    if (!resolved?.ok || resolved.duplicate) return resolved;
     deps.dispatchStateAction({
       state: 'D', goal: state.goal || '', phase: state.phase || '',
       evidence: 'user_dismissed_question', requestId,
     }, {
       sessionName: sessionId, sessionId: record.id || sessionId,
-      cs: cs || null, isTerminal: record.kind !== 'chat', taskId: pending.taskId || null,
+      cs: cs || null, isTerminal: record.kind !== 'chat', taskId,
       source: 'user_input_dismiss', liveness,
     });
     const transition = pendingTransitions.get(sessionId);
@@ -252,7 +236,7 @@ function createSessionWorkHost(deps = {}) {
       const result = await transition;
       if (result?.ok === false && result.code !== 'stale_classification') return result;
     }
-    if (pending.taskId) deps.reconcileTaskProjection?.(pending.taskId, {
+    if (taskId) deps.reconcileTaskProjection?.(taskId, {
       classifyState: 'D', reason: 'user_dismissed_question',
     });
     return { ok: true, requestId, resolution: 'dismissed' };
@@ -266,19 +250,14 @@ function createSessionWorkHost(deps = {}) {
     const record = deps.getRecord(sessionId);
     if (!record) return { ok: false, code: 'session_not_found' };
     const queue = await scheduler()?.status(sessionId);
-    if (!queue?.active || queue.state !== 'frozen' || queue.freezeReason !== 'classify_running') {
-      return { ok: false, code: 'not_recovered_turn' };
-    }
     const pending = await pendingInputAsync(sessionId);
-    if (!pending || pending.resolved === true) return { ok: false, code: 'no_pending_request' };
-    const taskId = queue.active.taskId || pending.taskId || null;
-    if (queue.active.taskId && pending.taskId && queue.active.taskId !== pending.taskId) {
-      return { ok: false, code: 'active_task_mismatch' };
-    }
+    const decision = questionProtocol('recovery', { queue, pending });
+    if (!decision.ok) return decision;
+    const { taskId, requestId } = decision;
     const state = deps.getTaskState(record) || {};
     deps.dispatchStateAction({
       state: 'W', goal: state.goal || '', phase: state.phase || '',
-      evidence: 'request_user_input', requestId: pending.requestId,
+      evidence: 'request_user_input', requestId,
     }, {
       sessionName: sessionId, sessionId: record.id || sessionId,
       cs: deps.getChatSession(sessionId) || null, isTerminal: record.kind !== 'chat', taskId,
@@ -292,7 +271,7 @@ function createSessionWorkHost(deps = {}) {
     if (taskId) deps.reconcileTaskProjection?.(taskId, {
       classifyState: 'W', reason: 'recovered_pending_question',
     });
-    return { ok: true, classifyState: 'W', requestId: pending.requestId };
+    return { ok: true, classifyState: 'W', requestId };
   }
 
   async function resolveTask(sessionId, taskId) {
@@ -721,60 +700,29 @@ function createSessionWorkHost(deps = {}) {
   }
 
   function publishRecordedInput(signal, recorded) {
-    if (recorded.ok) {
-      deps.broadcast(signal.sessionId, {
-        type: 'user_input_required',
-        requestId: signal.requestId,
-        turnId: signal.turnId || null,
-        taskId: deps.getChatSession(signal.sessionId)?._currentTaskId || null,
-        question: signal.question,
-        reason: signal.reason || '',
-        options: Array.isArray(signal.options) ? signal.options : [],
-        allowMultiple: signal.allowMultiple === true,
-        ...(signal.inputType === 'secret' && signal.secretName
-          ? { inputType: 'secret', secretName: String(signal.secretName) } : {}),
-      });
-    }
+    if (recorded.ok) deps.broadcast(signal.sessionId, questionProtocol('requiredFrame', {
+      ...signal, taskId: deps.getChatSession(signal.sessionId)?._currentTaskId,
+      options: Array.isArray(signal.options) ? signal.options : [],
+    }));
     return recorded;
   }
-  function recordInput(signal) { return publishRecordedInput(signal, deps.recordUserInput(signal)); }
+  function recordInput(signal) {
+    if (deps.userInputSignalHost?.recordCommitted) {
+      return deps.userInputSignalHost.record(signal, frame => deps.broadcast(signal.sessionId, frame));
+    }
+    return publishRecordedInput(signal, deps.recordUserInput(signal));
+  }
   async function recordInputAsync(signal) {
+    if (deps.userInputSignalHost?.recordCommitted) {
+      return deps.userInputSignalHost.recordAsync(signal, frame => deps.broadcast(signal.sessionId, frame));
+    }
     const record = deps.userInputSignalHost?.recordAsync || deps.recordUserInput;
     return publishRecordedInput(signal, await record(signal));
   }
 
-  function replayQuestion(sessionId, send, pending, lastResolved) {
-    if (pending && pending.resolved !== true) {
-      send({
-        type: 'user_input_required',
-        requestId: pending.requestId,
-        turnId: pending.turnId || null,
-        taskId: pending.taskId || null,
-        question: pending.question,
-        reason: pending.reason || '',
-        options: pending.options || [],
-        allowMultiple: pending.allowMultiple === true,
-        ...(pending.inputType === 'secret' && pending.secretName
-          ? { inputType: 'secret', secretName: String(pending.secretName) } : {}),
-      });
-    } else {
-      // user_input_resolved is fire-and-forget: it only reached sockets online
-      // at answer time. A client that disconnected then (app backgrounded) still
-      // shows the stale card, so resend the settlement on (re)connect. Reading
-      // the resolved pending object itself covers resolutions recorded before
-      // lastResolvedUserInput existed.
-      const last = lastResolved
-        || (pending && pending.resolved === true ? { requestId: pending.requestId, taskId: pending.taskId ?? null } : null);
-      if (last && last.requestId) {
-        send({
-          type: 'user_input_resolved',
-          requestId: last.requestId,
-          taskId: last.taskId ?? null,
-          ...(last.superseded ? { superseded: true } : {}),
-          replay: true,
-        });
-      }
-    }
+  function replayQuestion(send, pending, last) {
+    const frame = questionProtocol('replay', { pending, last });
+    if (frame) send(frame);
   }
   function replayQueue(sessionId, send) {
     Promise.resolve(scheduler()?.status(sessionId)).then(queue => {
@@ -795,13 +743,13 @@ function createSessionWorkHost(deps = {}) {
     const last = typeof deps.userInputSignalHost?.lastResolved === 'function'
       ? deps.userInputSignalHost.lastResolved(sessionId)
       : (deps.getTaskState(deps.getRecord(sessionId)) || {}).lastResolvedUserInput;
-    replayQuestion(sessionId, send, pending, last);
+    replayQuestion(send, pending, last);
     replayQueue(sessionId, send);
   }
   async function replayStateAsync(sessionId, send) {
     if (typeof deps.userInputSignalHost?.snapshotAsync !== 'function') return replayState(sessionId, send);
     const snapshot = await deps.userInputSignalHost.snapshotAsync(sessionId);
-    replayQuestion(sessionId, send, snapshot.pendingQuestion, snapshot.category?.lastResolvedUserInput);
+    replayQuestion(send, snapshot.pendingQuestion, snapshot.category?.lastResolvedUserInput);
     replayQueue(sessionId, send);
   }
 
@@ -1296,4 +1244,117 @@ function createSessionWorkHost(deps = {}) {
   });
 }
 
-module.exports = { createSessionWorkHost };
+// Compatibility transport around the Rust-owned question lifecycle. The
+// caller must provide trusted first-access snapshots and must route all live
+// writers and readers through the same owner before enabling this host.
+function createUserInputOwnedHost({ owner, getState, setState, onResolved = () => {}, log = () => {} } = {}) {
+  if (!owner || ['read', 'record', 'beginTurn', 'resolve', 'move'].some(name => typeof owner[name] !== 'function')) {
+    throw new TypeError('[user-input-signal] Rust question owner is required');
+  }
+  if (typeof getState !== 'function' || typeof setState !== 'function') {
+    throw new TypeError('[user-input-signal] state ports are required');
+  }
+  let readContext = null;
+  function read(sessionId) {
+    const context = readContext;
+    return context?.sessionId === sessionId ? context.snapshot : owner.read(sessionId);
+  }
+  async function withSnapshotAsync(sessionId, fn) {
+    const snapshot = await owner.readAsync(sessionId);
+    const previous = readContext;
+    readContext = { sessionId, snapshot };
+    try { return fn(); }
+    finally { readContext = previous; }
+  }
+  function pending(sessionId) { return read(sessionId).pendingQuestion || null; }
+  function lastResolved(sessionId) { return read(sessionId).category?.lastResolvedUserInput || null; }
+  function turnId(sessionId) { return read(sessionId).category?.userInputSignalTurnId || null; }
+  async function pendingAsync(sessionId) { return (await owner.readAsync(sessionId)).pendingQuestion || null; }
+  async function lastResolvedAsync(sessionId) { return (await owner.readAsync(sessionId)).category?.lastResolvedUserInput || null; }
+  async function turnIdAsync(sessionId) { return (await owner.readAsync(sessionId)).category?.userInputSignalTurnId || null; }
+  async function snapshotAsync(sessionId) { return owner.readAsync(sessionId); }
+  function notify(sessionId, notification) {
+    if (!notification || notification.type !== 'user_input_resolved') return;
+    const { type, requestId, taskId, ...extra } = notification;
+    onResolved(sessionId, requestId, taskId ?? null, Object.keys(extra).length ? extra : undefined);
+  }
+  function recorded(signal, response, notifyRequired) {
+    if (response.result?.ok && !response.result.duplicate) {
+      log(`[multicc/classify] ${signal.sessionId} request_user_input recorded request=${signal.requestId} turn=${signal.turnId}`);
+      if (response.notification) notifyRequired?.(response.notification);
+    }
+    return response.result;
+  }
+  function record(signal = {}, emit) { return recorded(signal, owner.record(signal), emit); }
+  async function recordAsync(signal = {}, emit) { return recorded(signal, await owner.recordAsync(signal), emit); }
+  function begun(sessionId, response) {
+    notify(sessionId, response.notification);
+    // The classification projection remains in the session-record host until
+    // its other writers are migrated; pending-question fields are not written.
+    return setState(sessionId, { classifyState: 'P', goalState: null });
+  }
+  function beginTurn(sessionId, options = {}) { return begun(sessionId, owner.beginTurn(sessionId, options)); }
+  async function beginTurnAsync(sessionId, options = {}) { return begun(sessionId, await owner.beginTurnAsync(sessionId, options)); }
+  function resolved(sessionId, requestId, response) {
+    notify(sessionId, response.notification);
+    if (response.result?.ok && !response.result.duplicate) {
+      log(`[multicc/classify] ${sessionId} request_user_input resolved request=${requestId}`);
+    }
+    return response.result;
+  }
+  function resolve(sessionId, requestId, options = {}) { return resolved(sessionId, requestId, owner.resolve(sessionId, requestId, options)); }
+  async function resolveAsync(sessionId, requestId, options = {}) {
+    return resolved(sessionId, requestId, await owner.resolveAsync(sessionId, requestId, options));
+  }
+  function moved(sourceId, targetId, response) {
+    if (!response.result?.ok) return response.result;
+    notify(sourceId, response.notification);
+    setState(targetId, { classifyState: 'W' });
+    return { ok: true, requestId: response.question?.requestId, question: response.question };
+  }
+  function move(sourceId, targetId, options = {}) { return moved(sourceId, targetId, owner.move(sourceId, targetId, options)); }
+  async function moveAsync(sourceId, targetId, options = {}) {
+    return moved(sourceId, targetId, await owner.moveAsync(sourceId, targetId, options));
+  }
+  function apply(sessionId, result) { return applyUserInputEvidence(result, pending(sessionId)); }
+  function degradedResult(sessionId, currentTask) {
+    const question = pending(sessionId);
+    if (!question || question.resolved === true) return null;
+    const state = getState(sessionId) || {};
+    return userInputDegraded(question, { goal: state.goal, phase: state.phase },
+      { goal: currentTask?.goal, phase: currentTask?.phase });
+  }
+  return Object.freeze({ recordCommitted: true, pending, lastResolved, turnId, pendingAsync, lastResolvedAsync, turnIdAsync, snapshotAsync, withSnapshotAsync, record, beginTurn, resolve, move,
+    recordAsync, beginTurnAsync, resolveAsync, moveAsync, apply, degradedResult });
+}
+
+// Production question composition. The Rust store owns the initialized
+// question snapshot; classification and turn facts still have other writers.
+function createProductionQuestionHost({ getStore, getSession, getState, getRecord = () => null, setState, onResolved, log, now } = {}) {
+  const liveTurn = id => {
+    const session = getSession(id);
+    if (!session) return null;
+    return { _activeTurn: session._activeTurn ? { turnId: session._activeTurn.turnId } : null,
+      isStreaming: session.isStreaming === true, _currentTaskId: session._currentTaskId || null };
+  };
+  const owner = createQuestionOwner({ getStore, liveTurn, ...(now ? { now } : {}), initialState(id) {
+    const { pendingUserInput = null, ...category } = getState(id) || {};
+    const record = getRecord(id);
+    return { pendingQuestion: pendingUserInput, activeTurn: liveTurn(id),
+      category: { ...category, unattended: record?.unattended || null,
+        recoveryRecordType: typeof record?.type === 'string' ? record.type : null } };
+  } });
+  const base = createUserInputOwnedHost({ owner, getState, setState, onResolved, log });
+  const host = Object.freeze({ ...base, activateTurnAsync: id => owner.refreshTurnAsync(id, () => liveTurn(id)),
+    refreshAdmissionFactsAsync: id => owner.refreshUnattendedAsync(id, () => getRecord(id)?.unattended) });
+  return { owner, host };
+}
+
+function createProductionWorkHost(deps, host) {
+  const work = createSessionWorkHost({ ...deps, userInputSignalHost: host,
+    pendingUserInput: host.pending, recordUserInput: host.record,
+    resolveUserInput: host.resolve, moveUserInput: host.move });
+  return Object.freeze({ ...work, recordInput: work.recordInputAsync, replayState: work.replayStateAsync });
+}
+
+module.exports = { createSessionWorkHost, createProductionQuestionHost, createProductionWorkHost, createUserInputOwnedHost, questionProtocol };
