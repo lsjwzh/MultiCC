@@ -4,12 +4,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/theme.dart';
 import 'package:multicc_app/utils/cli_display.dart';
+import 'package:multicc_app/widgets/run_config/run_config_lanes.dart';
 
 // App 侧的 CLI 展示表（app/lib/utils/cli_display.dart）就是 SessionCli.displayName /
 // .color 的唯一来源。三端（服务端 cli-capability.js / Web provider-catalog.js / 这里）
 // 的一致性由 tests/test-cli-display-parity.js 在 node 侧锁；这个文件守 App 自己的两条
 // 规矩：未知 id 不冒充别的产品，以及每个枚举档位都能在这张表里查到。
 void main() {
+  test('Antigravity is available in automatic routing and Gemini is retired', () {
+    expect(kAutoLanes, contains('agy'));
+    expect(kAutoLanes, isNot(contains('gemini')));
+    expect(kLaneProtocols['agy'], containsAll(['anthropic', 'openai_responses']));
+  });
+
   test('every SessionCli tier resolves through the shared display table', () {
     for (final cli in SessionCli.values) {
       if (cli.name == 'claude-exp') {
@@ -109,14 +116,20 @@ void main() {
     expect(kCliDisplays['claude']!.offersIn('terminal'), isTrue);
   });
 
-  test('only the one-shot codex lane is flagged as on its way out', () {
+  test('retired Gemini and the one-shot Codex lane report their replacements', () {
     // 与 Web / 服务端同一条事实（src/cli/cli-capability.js DISPLAY 的 deprecated 列），
     // 由 tests/test-cli-display-parity.js 钉住三端一致。
     expect(cliDeprecated('codex'), isTrue);
     expect(cliReplacedBy('codex'), 'codex-exp');
     expect(cliDeprecated('codex-exp'), isFalse);
     expect(cliReplacedBy('codex-exp'), isNull);
-    for (final id in kCliDisplays.keys.where((id) => id != 'codex')) {
+    expect(cliDeprecated('gemini'), isTrue);
+    expect(cliReplacedBy('gemini'), 'agy');
+    expect(cliOffersIn('gemini', 'chat'), isFalse);
+    expect(cliOffersIn('gemini', 'terminal'), isFalse);
+    expect(cliOffersIn('agy', 'chat'), isTrue);
+    expect(cliOffersIn('agy', 'terminal'), isTrue);
+    for (final id in kCliDisplays.keys.where((id) => id != 'codex' && id != 'gemini')) {
       expect(cliDeprecated(id), isFalse, reason: '$id is not on the way out');
       expect(cliReplacedBy(id), isNull);
     }
@@ -131,7 +144,7 @@ void main() {
         .map((e) => e.key)
         .toList()
       ..sort();
-    expect(providerless, ['codebuddy', 'commandcode', 'gemini', 'pi', 'qoder']);
+    expect(providerless, ['agy', 'codebuddy', 'commandcode', 'gemini', 'pi', 'qoder']);
   });
 
   test('a lane answers its family name, and the family table is the only structure', () {
@@ -198,7 +211,8 @@ void main() {
     expect(cliUpdateOf('zcode')!.auto, isFalse);
     expect(cliUpdateOf('zcode')!.manual, isNotEmpty);
     expect(cliUpdateOf('mystery-cli'), isNull);
-    expect(cliUpdateSpecs().keys.toSet(), kCliFamilies.keys.toSet());
+    expect(cliUpdateOf('gemini'), isNull);
+    expect(cliUpdateSpecs().keys.toSet(), kCliFamilies.keys.where((id) => id != 'gemini').toSet());
     expect(cliIsBundled('claude-exp'), isTrue);
     expect(cliIsBundled('claude'), isTrue);
     expect(cliHasOwnArtifact('claude'), isTrue, reason: 'claude 还有终端制品');

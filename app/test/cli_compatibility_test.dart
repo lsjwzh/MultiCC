@@ -145,7 +145,9 @@ void main() {
       expect(SessionCli.codex.displayName, 'Codex');
       expect(SessionCli.codex.isDeprecatedLane, isTrue);
       expect(SessionCli.codex.replacedByLane, SessionCli.codexExp);
-      for (final cli in SessionCli.values.where((c) => c != SessionCli.codex)) {
+      expect(SessionCli.gemini.isDeprecatedLane, isTrue);
+      expect(SessionCli.gemini.replacedByLane, SessionCli.agy);
+      for (final cli in SessionCli.values.where((c) => c != SessionCli.codex && c != SessionCli.gemini)) {
         expect(cli.isDeprecatedLane, isFalse, reason: '${cli.name} is not on the way out');
         expect(cli.replacedByLane, isNull);
       }

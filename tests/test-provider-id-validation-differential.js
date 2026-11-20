@@ -39,7 +39,7 @@ const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('../src/providers/nativ
 // ── corpus ──────────────────────────────────────────────────────────────────
 const CLIS = [
   'claude', 'codex', 'claude-exp', 'codex-exp', 'opencode', 'zcode',
-  'kimi', 'dsh', 'grok', 'workbuddy', 'qoder', 'gemini', '', null, undefined, 123,
+  'kimi', 'dsh', 'grok', 'workbuddy', 'qoder', 'gemini', 'agy', '', null, undefined, 123,
 ];
 
 const IDS = [
@@ -48,7 +48,7 @@ const IDS = [
   // commandcode/dsh/grok); `claude-native:x` above is deliberately NOT one, so a
   // lane-shaped-but-unknown prefix stays on the store path.
   'qoder-native:qoder', 'qoder-native:x', 'qoder-native:', 'dsh-native:x',
-  'gemini-native:gemini', 'grok-native:grok', 'codebuddy-native:c',
+  'gemini-native:gemini', 'agy-native:agy', 'grok-native:grok', 'codebuddy-native:c',
   'pi-native:p', 'commandcode-native:c',
   'opencode-native:ok-1', 'opencode-native:-bad', `opencode-native:${'x'.repeat(65)}`,
   'a-native:b', 0, 123, true, {},

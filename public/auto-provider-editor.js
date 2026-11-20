@@ -19,7 +19,7 @@
   // cross-CLI, and the session switches lanes when the pool picks a line on
   // another one. Mirrors AUTO_CLIS in src/providers/auto-provider-config.js, so
   // the editor offers exactly the lanes the server accepts.
-  const AUTO_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'dsh', 'grok', 'qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'agy']);
+  const AUTO_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'dsh', 'grok', 'qoder', 'codebuddy', 'pi', 'commandcode', 'agy']);
   const AUTO_CLI_SET = new Set(AUTO_CLIS);
   // When a cross-CLI pool leaves the session's current lane:
   //   failover — only when no line on the current CLI is usable (the default),
@@ -219,7 +219,7 @@
   // Vendor-native lanes: one synthetic line per lane, owned by the vendor CLI
   // (account + catalog). Not in the MultiCC provider store, so the editor
   // synthesizes it the same way the server's lane catalog does.
-  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok', 'agy']);
+  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'pi', 'commandcode', 'dsh', 'grok', 'agy']);
   const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
   function vendorNativeList(cli) {
     const scope = typeof window !== 'undefined' ? window : null;

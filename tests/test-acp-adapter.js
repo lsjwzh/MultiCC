@@ -9,7 +9,6 @@ const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createAcpAdapter } = require('../src/cli-adapters/acp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
-const { createGeminiAdapter } = require('../src/cli-adapters/gemini');
 const { createGrokAdapter } = require('../src/cli-adapters/grok');
 const { createAgyAdapter } = require('../src/cli-adapters/agy');
 const { pickPermissionOption, routerMcpServers } = require('../src/cli-adapters/acp-bridge.cjs');
@@ -285,7 +284,7 @@ test('permission and router MCP helpers', () => {
   ]);
 });
 
-test('opencode defaults to ACP; gemini and grok launch their ACP servers', () => {
+test('opencode defaults to ACP and grok launches its ACP server', () => {
   const opencode = createOpencodeAdapter({ cmd: '/bin/opencode', routerMcpNode: '/n', routerMcpScript: '/r.js', userInputReminder: 'R' });
   const inv = opencode.buildInvocation(envelope({ first: false, sessionId: 'ses_1', model: 'p/m', effort: 'high', agent: 'plan' }));
   assert.equal(inv.cmd, process.execPath);
@@ -297,14 +296,6 @@ test('opencode defaults to ACP; gemini and grok launch their ACP servers', () =>
   assert.equal(opencode.protocol, 'acp');
   assert.equal(opencode.buildTerminalCmd({ model: 'p/m', effort: 'max', agent: 'build', cliSessionId: 'ses_1' }),
     '/bin/opencode --model p/m --variant max --agent build --session ses_1');
-
-  const gemini = createGeminiAdapter({ cmd: 'gemini' });
-  const geminiArgs = gemini.buildInvocation(envelope({ model: 'gemini-2.5-pro', effort: 'high' })).args;
-  assert.deepEqual(geminiArgs.slice(1), [
-    '--agent-bin', 'gemini', '--label', 'Gemini', '--agent-arg', '--experimental-acp', '--agent-arg', '--yolo',
-    '--agent-arg', '-m', '--agent-arg', 'gemini-2.5-pro', '--',
-  ]);
-  assert.match(gemini.buildInvocation(envelope()).payload, /^\[Role prompt\]\nreviewer/);
 
   const grok = createGrokAdapter({ cmd: 'grok' });
   const grokArgs = grok.buildInvocation(envelope({ model: 'grok-4.6', effort: 'high' })).args;
@@ -350,4 +341,14 @@ test('non-success stop reasons surface as errors', () => {
   const [cancelled] = adapter.decodeEvent({ method: 'multicc/turnEnd', params: { sessionId: 's', stopReason: 'cancelled' } });
   assert.equal(cancelled.kind, 'cancelled');
   assert.deepEqual(adapter.decodeEvent({ method: 'multicc/notice', params: { message: 'm' } }), [{ type: 'activity', phase: 'warning', message: 'm' }]);
+});
+
+
+test('retired Gemini records cannot launch an agent or fall back to Claude', () => {
+  const { createCliProviderRegistry } = require('../src/cli-adapters/core');
+  const fallback = { name: 'claude', buildInvocation: () => ({ cmd: 'claude' }), decodeEvent: () => [] };
+  const registry = createCliProviderRegistry([fallback]);
+  assert.equal(registry.get('gemini').name, 'gemini');
+  assert.throws(() => registry.get(' GEMINI ').buildInvocation({}), /Gemini CLI 已停用/);
+  assert.doesNotMatch(registry.get('gemini').buildTerminalCmd(), /gemini --experimental-acp/);
 });
