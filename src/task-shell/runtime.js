@@ -7,6 +7,7 @@ const {
 } = require('./context');
 const { shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
 const { displayMessages, displayTask } = require('../task-display-attribution');
+const { getNative } = require('../native/runtime');
 
 function failure(code, message = code, status = 409) {
   return Object.assign(new Error(message), { code, status });
@@ -132,13 +133,16 @@ function createTaskShellRuntime(ports) {
   function saveShell(id, value) {
     const previous = store.get('shell', id);
     store.set('shell', id, value);
-    if (previous?.currentTaskId === value.currentTaskId || !ports.onStateTargetChanged) return;
-    changedSources.add(value.sourceSessionId);
+    if (previous?.currentTaskId !== value.currentTaskId) publishStateTarget(value.sourceSessionId);
+  }
+  function publishStateTarget(sourceSessionId) {
+    if (!ports.onStateTargetChanged) return;
+    changedSources.add(sourceSessionId);
     // Read again after the synchronous transaction commits (or rolls back).
     // Only a committed cursor is ever published, and repeated writes coalesce.
     queueMicrotask(() => {
-      if (!changedSources.delete(value.sourceSessionId)) return;
-      try { ports.onStateTargetChanged(value.sourceSessionId); }
+      if (!changedSources.delete(sourceSessionId)) return;
+      try { ports.onStateTargetChanged(sourceSessionId); }
       catch (error) { console.warn('[task-shell] state projection failed', cleanError(error)); }
     });
   }
@@ -473,18 +477,6 @@ function createTaskShellRuntime(ports) {
     if (intent === 'answer' && !result.requestId) throw failure('invalid_control', 'Answer requires requestId', 400);
     return result;
   }
-  function checkControl(payload, state) {
-    if (!state || payload.turnId !== state.turnId) throw failure('stale_control', 'The task has moved to another turn');
-    if (payload.intent === 'answer' && (!state.pending || state.pending.resolved || state.pending.requestId !== payload.requestId
-      || state.pending.taskId !== payload.taskId)) throw failure('stale_control', 'The question is no longer pending');
-    if (payload.intent === 'steer' && state.pending && !state.pending.resolved) throw failure('answer_required');
-  }
-  // A reservation whose receipt never landed (rejected/failed) does not hold
-  // the question; this also heals reservations leaked before release existed.
-  function answerReserved(key) {
-    const held = store.get('answer', key);
-    return !!held && !['rejected', 'failed'].includes(store.get('receipt', held.receiptId)?.status);
-  }
   async function reserve(s, payload, receiptId, fingerprint, delivery = {}) {
     if (s.standalone && payload.newTask) throw failure('standalone_task_identity_locked');
     const selectedTaskId = payload.newTask ? null : payload.taskId || s.currentTaskId || s.defaultTaskId || null;
@@ -492,10 +484,6 @@ function createTaskShellRuntime(ports) {
     if (target) assertWritable(target.id);
     const observedClaim = target ? store.get('claim', target.id)?.receiptId : null;
     const state = target ? await getExecution(target.sessionId) : null;
-    if (payload.intent !== 'work') {
-      if (payload.intent === 'answer' && answerReserved(`${target.id}:${payload.requestId}`)) throw failure('answer_already_reserved');
-      checkControl(payload, state);
-    }
     const references = [...new Set([...payload.contextTaskIds, ...payload.dependsOn])];
     const contexts = new Map();
     for (const id of references) {
@@ -513,72 +501,25 @@ function createTaskShellRuntime(ports) {
       if (!getRecord(s.sourceSessionId)) throw failure('source_session_missing');
       await ensureTaskSlot(s.dirId, [s.currentTaskId, s.defaultTaskId]);
     }
-    return store.transaction(() => {
-      const existing = store.get('receipt', receiptId);
-      if (target) assertWritable(target.id);
-      if (existing) {
-        if (existing.fingerprint !== fingerprint) throw failure('idempotency_conflict');
-        return existing;
-      }
-      const currentShell = shell(s.id);
-      if (payload.intent === 'work' && !delivery.taskIdentityLocked && (
-        (payload.expectedCursorVersion != null && payload.expectedCursorVersion !== (currentShell.cursorVersion || 0))
-        || (!payload.newTask && payload.taskId && payload.taskId !== currentShell.currentTaskId)
-        || (!payload.newTask && !payload.taskId && selectedTaskId !== (currentShell.currentTaskId || currentShell.defaultTaskId || null))
-      )) throw failure('stale_shell_cursor', 'The current task changed; refresh before sending');
-      if (target && taskActions.ownerOf(target)?.id !== s.id) throw failure('task_owner_mismatch', 'Open the owning conversation or fork this task');
-      const claim = target && store.get('claim', target.id);
-      const last = claim && store.get('receipt', claim.receiptId);
-      const busy = target && (state?.busy !== false || claim?.receiptId !== observedClaim
-        || (last && last.status !== 'accepted'));
-      if (target && payload.intent === 'work' && references.length) throw failure('context_requires_new_task', 'Start a new task to import versioned context');
-      let task = target;
-      if (!task) {
-        if (directoryAtCapacity(store, s.dirId)) throw failure('task_shell_task_limit', `Task limit reached (${MAX_TASKS_PER_DIRECTORY} tasks/project)`, 429);
-        const snapshotIds = [];
-        for (const value of contexts.values()) { store.set('snapshot', value.hash, value); snapshotIds.push(value.hash); }
-        const id = `tsk_${randomUUID().replace(/-/g, '')}`;
-        const source = getRecord(s.sourceSessionId);
-        if (!source) throw failure('source_session_missing');
-        task = { id, dirId: s.dirId, sessionId: `task-${id.slice(4)}`, ownerShellId: s.id, taskFirst: ports.taskFirst === true, parentTaskId: null,
-          title: payload.text.slice(0, 120), snapshotIds, ready: false, createdAt: Date.now(),
-          runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent'].filter(k => source[k] !== undefined).map(k => [k, source[k]])) };
-        store.set('task', id, task);
-      }
-      if (payload.intent === 'answer') {
-        const key = `${task.id}:${payload.requestId}`;
-        if (answerReserved(key)) throw failure('answer_already_reserved');
-        store.set('answer', key, { receiptId });
-      }
-      const originReceipt = payload.intent !== 'work' && store.get('delivery:run', payload.turnId)?.binding?.receiptId;
-      const originRole = originReceipt && store.get('receipt', originReceipt)?.roleSnapshotId;
-      // A question moved by task separation still points at the source run.
-      // Preserve a question-time role only when it belongs to this same task;
-      // otherwise freeze the target task's inherited/current role below.
-      const controlRole = roles.isSnapshotFor(task.id, originRole) ? originRole : null;
-      const queuedRole = roles.isSnapshotFor(task.id, last?.roleSnapshotId) ? last.roleSnapshotId : null;
-      const receipt = { id: receiptId, shellId: s.id, taskId: task.id, fingerprint, payload,
-        roleSnapshotId: payload.intent === 'work' ? roles.snapshot(task.id) : controlRole || queuedRole || roles.snapshot(task.id),
-        taskIdentityLocked: delivery.taskIdentityLocked === true,
-        ...(delivery.supervisorAnswer === true ? { supervisorAnswer: true } : {}),
-        taskMetadata: delivery.taskMetadata || null,
-        dispatch: delivery.dispatch || null,
-        cursorVersion: payload.intent === 'work' ? (currentShell.cursorVersion || 0) + 1 : currentShell.cursorVersion || 0,
-        status: 'reserved', decision: target ? payload.intent === 'work' ? (busy ? 'queued' : 'continue') : payload.intent : 'new',
-        contextSavings: payload.intent === 'work' ? {
-          estimatedTokens: savingsFor(s, task.id), contextRefilled: false,
-        } : null,
-        createdAt: Date.now() };
-      store.set('receipt', receiptId, receipt);
-      if (payload.intent === 'work') {
-        currentShell.cursorVersion = receipt.cursorVersion;
-        currentShell.cursorReceiptId = receipt.id;
-        saveShell(s.id, currentShell);
-      }
-      if (payload.intent === 'work') store.set('claim', task.id, { receiptId });
-      store.set('link', `${s.id}:${task.id}`, { shellId: s.id, taskId: task.id });
-      return receipt;
+    if (target) assertWritable(target.id);
+    const source = !target && getRecord(s.sourceSessionId);
+    const pending = state?.pending;
+    const { created, receipt } = store.rule({ action: 'reserveReceipt', shellId: s.id,
+      sourceSessionId: s.sourceSessionId, dirId: s.dirId,
+      payloadJson: JSON.stringify(payload), receiptId, fingerprint,
+      targetId: selectedTaskId, targetSessionId: target?.sessionId, observedClaim,
+      state: state && { busy: state.busy, turnId: state.turnId,
+        pending: pending && { resolved: pending.resolved, requestId: pending.requestId, taskId: pending.taskId } },
+      expectedCursorSet: payload.expectedCursorVersion != null,
+      snapshotBodies: [...contexts.values()].map(value => JSON.stringify(value)), taskFirst: ports.taskFirst === true,
+      sourceRuntime: source ? runtimeFrom(source) : null,
+      record: target ? { rolePrompt: getRecord(target.sessionId)?.rolePrompt } : null,
+      directory: { rolePrompt: ports.getDirectory?.(s.dirId)?.rolePrompt },
+      estimatedTokens: payload.intent === 'work' && !store.get('receipt', receiptId) ? savingsFor(s, target?.id) : null,
+      delivery: { taskIdentityLocked: delivery.taskIdentityLocked, supervisorAnswer: delivery.supervisorAnswer,
+        taskMetadata: delivery.taskMetadata || null, dispatch: delivery.dispatch || null },
     });
+    return created ? { ...receipt, payload } : receipt;
   }
   async function deliver(receipt) {
     if (receipt.status === 'accepted') {
@@ -607,7 +548,7 @@ function createTaskShellRuntime(ports) {
       if (p.intent === 'cancel') {
         // An ambiguous cancel cannot kill a newer turn after a retry/restart.
         const state = await getExecution(task.sessionId);
-        checkControl(p, state);
+        if (!state || p.turnId !== state.turnId) throw failure('stale_control', 'The task has moved to another turn');
         result = await cancel(task.sessionId, p.turnId);
       } else if (receipt.dispatch) {
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
@@ -634,31 +575,21 @@ function createTaskShellRuntime(ports) {
         });
       }
       if (!result?.ok) throw failure(result?.code || 'delivery_failed', result?.error || result?.code || 'delivery_failed');
-      receipt = { ...receipt, ...store.get('receipt', receipt.id) };
-      receipt.status = 'accepted'; receipt.error = null;
-      receipt.result = { ...(receipt.dispatch ? result : {}), ok: true, taskId: task.id, sessionId: task.sessionId, receiptId: receipt.id, decision: receipt.decision };
-      store.set('receipt', receipt.id, receipt);
-      if (receipt.payload.intent === 'work') store.transaction(() => {
-        const owner = shell(receipt.shellId);
-        if (owner.cursorReceiptId !== receipt.id || (owner.cursorVersion || 0) !== receipt.cursorVersion) return;
-        owner.currentTaskId = task.id;
-        owner.defaultTaskId = task.id;
-        owner.cursorReceiptId = receipt.id;
-        saveShell(owner.id, owner);
-      });
-      return receipt.result;
+      const settled = store.rule({ action: 'settleReceipt', receiptId: receipt.id, sessionId: task.sessionId,
+        dispatchResult: receipt.dispatch ? result : undefined });
+      if (settled.stateSource) publishStateTarget(settled.stateSource);
+      return settled.result;
     } catch (error) {
-      receipt = { ...receipt, ...store.get('receipt', receipt.id) };
-      const notDelivered = error.code === 'stale_control';
-      receipt.status = notDelivered ? 'rejected' : 'failed'; receipt.error = cleanError(error);
-      store.set('receipt', receipt.id, receipt);
-      // The reservation only guards against a second delivered answer. One that
-      // never landed must not lock the question against every later attempt.
-      if (receipt.payload.intent === 'answer') {
-        const key = `${task.id}:${receipt.payload.requestId}`;
-        if (store.get('answer', key)?.receiptId === receipt.id) store.remove('answer', key);
+      const cleaned = cleanError(error);
+      const deliveryError = Object.assign(failure(cleaned.code, cleaned.message, error.status || error.statusCode || 500),
+        { receiptId: receipt.id, taskId: task.id, notDelivered: error.code === 'stale_control' });
+      try {
+        const settled = store.rule({ action: 'settleReceipt', receiptId: receipt.id, error: cleaned });
+        if (settled?.result) return settled.result;
+      } catch (storageError) {
+        deliveryError.cause = storageError;
       }
-      throw Object.assign(failure(receipt.error.code, receipt.error.message, error.status || error.statusCode || 500), { receiptId: receipt.id, taskId: task.id, notDelivered });
+      throw deliveryError;
     } finally { if (needsCapacity) launching.delete(task.id); }
   }
   async function sendInput(shellId, raw, delivery = {}) {
@@ -667,6 +598,15 @@ function createTaskShellRuntime(ports) {
     const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`;
     const fingerprint = hash(delivery.dispatch ? [payload, delivery.dispatch]
       : delivery.supervisorAnswer === true ? [payload, { supervisorAnswer: true }] : payload);
+    return deliverInput(s, payload, id, fingerprint, delivery);
+  }
+  async function sendChatInput(shellId, message, controlTask) {
+    const s = shell(shellId);
+    const normalized = getNative().chatTaskShellInput(s.id, message, controlTask);
+    if (!normalized.ok) throw failure(normalized.code, normalized.message, 400);
+    return deliverInput(s, normalized.payload, normalized.id, normalized.fingerprint, {});
+  }
+  async function deliverInput(s, payload, id, fingerprint, delivery) {
     let receipt = store.get('receipt', id);
     if (receipt && receipt.fingerprint !== fingerprint) throw failure('idempotency_conflict');
     if (flights.has(id)) return flights.get(id);
@@ -938,7 +878,7 @@ function createTaskShellRuntime(ports) {
     taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link'),
       relations: store.list('relation') }),
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
-    ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
+    ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, sendChatInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
     resolveTask, selectTarget, sendExplicit, dispatchFromSession, relocateTask, independent, relations,
   };

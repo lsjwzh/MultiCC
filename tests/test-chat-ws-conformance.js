@@ -32,7 +32,7 @@ test('the /ws/chat contract a client observes matches the frozen Node-terminated
     cwd: ROOT, env: process.env, encoding: 'utf8', timeout: 450_000,
   });
   assert.equal(run.status, 0, `capture failed:\n${run.stdout}\n${run.stderr}`);
-  assert.match(run.stdout, /任务壳和队列帧逐字节对拍通过，共 8 个场景/);
+  assert.match(run.stdout, /任务壳和队列帧逐字节对拍通过，共 13 个场景/);
 
   const golden = JSON.parse(fs.readFileSync(GOLDEN, 'utf8'));
   const fresh = JSON.parse(fs.readFileSync(out, 'utf8'));

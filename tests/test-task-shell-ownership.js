@@ -165,8 +165,32 @@ test('stale browser focus and stale cursor version cannot reserve work', async t
   const count = f.store.list('receipt').length;
   await assert.rejects(f.runtime.send(f.a.id, input('stale', { taskId: owner.id })), { code: 'stale_shell_cursor' });
   await assert.rejects(f.runtime.send(f.a.id, input('old-version', { expectedCursorVersion: version })), { code: 'stale_shell_cursor' });
+  await assert.rejects(f.runtime.send(f.a.id, input('invalid-version', { expectedCursorVersion: 'invalid' })), { code: 'stale_shell_cursor' });
   assert.equal(f.store.list('receipt').length, count);
   assert.equal(f.runtime.view(f.a.id).currentTaskId, 'tsk_next');
+});
+
+test('reservation rechecks the cursor after reading execution state asynchronously', async t => {
+  let unlock, started;
+  const entered = new Promise(resolve => { started = resolve; });
+  const gate = new Promise(resolve => { unlock = resolve; });
+  const f = fixture(t, {
+    unifiedAdmission: true,
+    async getExecution(id) {
+      if (id === 'a') { started(); await gate; }
+      return { busy: false };
+    },
+  });
+  const original = f.runtime.adopt(f.a.id, 'a');
+  const pending = f.runtime.send(f.a.id, input('old-target'));
+  await entered;
+  let next;
+  try { next = await f.runtime.send(f.a.id, input('new-target', { newTask: true })); }
+  finally { unlock(); }
+  await assert.rejects(pending, { code: 'stale_shell_cursor' });
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, next.taskId);
+  assert.equal(f.store.get('claim', original.id), null);
+  assert.deepEqual(f.store.list('receipt').map(row => row.id), [next.receiptId]);
 });
 
 test('board reads do not move the cursor; all execution controls reject conversation tasks', async t => {

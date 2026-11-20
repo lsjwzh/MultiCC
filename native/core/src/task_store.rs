@@ -6,12 +6,14 @@ use std::{
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+mod chat_delivery;
 mod context;
 mod delivery;
 mod rules;
 type Result<T> = std::result::Result<T, String>;
 /// v2：引用列 task_ref/receipt_ref（仓储写入时维护）+ 台账独立成类 + 上下文记录分层。
 pub const SCHEMA_VERSION: i64 = 2;
+const MAX_TASKS_PER_DIRECTORY: usize = 1024;
 fn items(v: &Value) -> &[Value] {
     v.as_array().map(Vec::as_slice).unwrap_or(&[])
 }
@@ -210,6 +212,24 @@ impl TaskStore {
         session_in_directory: impl Fn(&str, Option<&Value>) -> bool,
         read: impl FnOnce(&Self, Vec<String>) -> Result<T>,
     ) -> Result<T> {
+        Self::validate_chat_shell_id(shell_id)?;
+        let store = Self::open_chat_reader(file)?.ok_or("shell_not_found")?;
+        let session_ids = store.chat_scope(shell_id, session_id, session_in_directory)?;
+        read(&store, session_ids)
+    }
+
+    fn open_chat_reader(file: &Path) -> Result<Option<Self>> {
+        if !file.try_exists().map_err(err)? {
+            return Ok(None);
+        }
+        let db = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(err)?;
+        db.busy_timeout(Duration::from_millis(5000)).map_err(err)?;
+        db.execute_batch("BEGIN DEFERRED").map_err(err)?;
+        Ok(Some(Self::with_connection(db)))
+    }
+
+    fn validate_chat_shell_id(shell_id: &str) -> Result<()> {
         if shell_id.is_empty()
             || shell_id.len() > 160
             || !shell_id
@@ -218,17 +238,17 @@ impl TaskStore {
         {
             return Err("invalid shellId".into());
         }
-        match file.try_exists() {
-            Ok(true) => {}
-            Ok(false) => return Err("shell_not_found".into()),
-            Err(error) => return Err(err(error)),
-        }
-        let db = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(err)?;
-        db.busy_timeout(Duration::from_millis(5000)).map_err(err)?;
-        db.execute_batch("BEGIN DEFERRED").map_err(err)?;
-        let store = Self::with_connection(db);
-        let shell = store.get("shell", shell_id)?;
+        Ok(())
+    }
+
+    fn chat_scope(
+        &self,
+        shell_id: &str,
+        session_id: &str,
+        session_in_directory: impl Fn(&str, Option<&Value>) -> bool,
+    ) -> Result<Vec<String>> {
+        Self::validate_chat_shell_id(shell_id)?;
+        let shell = self.get("shell", shell_id)?;
         if shell.is_null() {
             return Err("shell_not_found".into());
         }
@@ -242,14 +262,14 @@ impl TaskStore {
         };
         let source = text(&shell["sourceSessionId"]);
         include(source);
-        let linked: HashSet<_> = store
+        let linked: HashSet<_> = self
             .rows("link", false)?
             .into_iter()
             .filter(|(_, _, link)| link["shellId"] == shell_id)
             .filter_map(|(_, _, link)| link["taskId"].as_str().map(ToOwned::to_owned))
             .collect();
         let mut tasks = Vec::with_capacity(linked.len());
-        let mut statement = store
+        let mut statement = self
             .db()?
             .prepare_cached("SELECT rowid,body FROM shell_records WHERE kind='task' AND id=?")
             .map_err(err)?;
@@ -276,14 +296,14 @@ impl TaskStore {
         }
         let mut target = source.to_owned();
         if let Some(task_id) = shell["currentTaskId"].as_str().filter(|id| !id.is_empty()) {
-            let task = store.get("task", task_id)?;
+            let task = self.get("task", task_id)?;
             if task.is_null() {
                 return Err("task_not_found".into());
             }
             if task.get("dirId") != directory {
                 return Err("Tasks must belong to the same project".into());
             }
-            if store
+            if self
                 .get("link", &format!("{shell_id}:{task_id}"))?
                 .is_null()
             {
@@ -296,7 +316,7 @@ impl TaskStore {
         if !session_in_directory(&target, directory) {
             return Err("source_session_missing".into());
         }
-        read(&store, session_ids)
+        Ok(session_ids)
     }
 
     pub fn chat_turn_attribution(&self, session_id: &str, turn_id: &str) -> Result<Value> {

@@ -3,6 +3,7 @@ use multicc_core::chat_runtime::{self, CancelTurnIdentity, TaskRestore};
 use multicc_core::chat_ws_control::{self, Action, Command};
 use multicc_core::js::JsValue;
 use multicc_core::session_records::{self, SessionDirectory};
+use multicc_core::task_shell::chat as shell_chat;
 use napi::bindgen_prelude::Function;
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
@@ -47,6 +48,39 @@ pub fn chat_ws_command(
 #[napi]
 pub fn chat_ws_is_legacy_cancel(text: String) -> bool {
     chat_ws_control::is_legacy_cancel(&text)
+}
+
+#[napi]
+pub fn chat_task_shell_input(
+    env: Env,
+    shell_id: String,
+    input: Unknown<'_>,
+    control_task: Function<(), Option<String>>,
+) -> Result<sys::napi_value> {
+    let live = LiveValue::new(&env, input);
+    let input = unsafe { js_bridge::read_value(env.raw(), live.raw(), 0, &mut Vec::new())? };
+    let task = if shell_chat::intent(&input) == shell_chat::Intent::Work {
+        None
+    } else {
+        control_task.call(())?
+    };
+    let result = match shell_chat::normalize(&input, task.as_deref()) {
+        Ok(payload) => {
+            let (id, fingerprint) = shell_chat::receipt_identity(&shell_id, &payload);
+            JsValue::object(vec![
+                ("ok", JsValue::Bool(true)),
+                ("payload", payload),
+                ("id", JsValue::from(id)),
+                ("fingerprint", JsValue::from(fingerprint)),
+            ])
+        }
+        Err(error) => JsValue::object(vec![
+            ("ok", JsValue::Bool(false)),
+            ("code", JsValue::from(error.code)),
+            ("message", JsValue::from(error.message)),
+        ]),
+    };
+    Ok(live.from_value(&result)?.raw())
 }
 
 #[napi]

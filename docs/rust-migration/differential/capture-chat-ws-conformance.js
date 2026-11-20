@@ -29,7 +29,7 @@ const http = require('node:http');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../../../src/paths');
 const isolatedHostEnv = require('../../../tests/helpers/isolated-host-env');
@@ -491,12 +491,14 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 
     // ---- A whole turn and a cancelled turn, as the client sees them.
     const turn = await newSession('conformance-turn');
+    const completedInput = { type: 'user_message', text: 'DONE_ONE', taskShell: true, clientMsgId: randomUUID() };
     await record('turn-complete', observe(withToken(turn), {
       steps: [{ until: burstDone, label: 'burst' }, { mark: 'user_message' },
-        { send: { type: 'user_message', text: 'DONE_ONE', taskShell: true, clientMsgId: randomUUID() } },
+        { send: completedInput },
         { until: frame => frame.type === 'stream_end', label: 'completed stream' }],
     }), { flow: true });
     const cancelled = await newSession('conformance-cancel');
+    let cancelledInput;
     await record('turn-cancelled', observe(withToken(cancelled), {
       steps: [{ until: burstDone, label: 'burst' }, { mark: 'user_message' },
         { send: { type: 'user_message', text: 'HANG_ONE', taskShell: true, clientMsgId: randomUUID() } },
@@ -506,8 +508,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         // come from the stream_start frame the engine just broadcast.
         { compute: timeline => {
           const started = timeline.find(frame => frame.type === 'stream_start');
-          return { type: 'cancel', taskShell: true, intent: 'cancel', text: '', taskId: started.taskId,
+          cancelledInput = { type: 'cancel', taskShell: true, intent: 'cancel', text: '', taskId: started.taskId,
             turnId: started.turnId, clientMsgId: randomUUID() };
+          return cancelledInput;
         } },
         { until: frame => frame.type === 'stream_end' || frame.type === 'error', label: 'cancel outcome' },
         { sleep: 800 }],
@@ -549,10 +552,27 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       }));
       const historyShell = await api('POST', '/api/task-shells', { sessionId: scopedSession });
       const linkedShell = await api('POST', '/api/task-shells', { sessionId: linkedSession });
+      const completedShell = await api('POST', '/api/task-shells', { sessionId: turn });
+      const cancelledShell = await api('POST', '/api/task-shells', { sessionId: cancelled });
       await api('POST', `/api/task-shells/${historyShell.id}/links`, { taskId: linkedShell.currentTaskId });
       // Only one process may own writes to the test orchestration store.
       // Seed the same durable rows for both hosts between their launches.
       await stopGateway(child);
+      const { createTaskShellStore } = require('../../../src/task-shell/store');
+      const taskStore = createTaskShellStore(path.join(dataDir, 'task-shells.sqlite'));
+      try {
+        const legacyHash = payload => createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+        const receiptId = `sr_${legacyHash([completedShell.id, completedInput.clientMsgId]).slice(0, 40)}`;
+        const expectedPayload = {
+          clientMsgId: completedInput.clientMsgId, intent: 'work', text: completedInput.text, taskId: null,
+          newTask: false, contextTaskIds: [], dependsOn: [], turnId: null, requestId: null,
+        };
+        const durable = taskStore.get('receipt', receiptId);
+        assert.equal(durable.status, 'accepted');
+        assert.equal(durable.fingerprint, legacyHash(expectedPayload), 'retired Node receipt fingerprint');
+      } finally {
+        taskStore.close();
+      }
       const { createOrchestrationSqliteStore } = require('../../../src/orchestration/sqlite-store');
       const queueStore = createOrchestrationSqliteStore({ file: path.join(dataDir, 'orchestration.sqlite') });
       try {
@@ -574,6 +594,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       const scoped = (id, shellId = shell.id) => `/ws/chat?session=${encodeURIComponent(id)}&shell=${encodeURIComponent(shellId)}`;
       const historyPath = scoped(scopedSession, historyShell.id);
       const historyProbe = { steps: [{ until: frame => frame.type === 'chat_history', label: 'scoped history' }] };
+      const exchange = (send, response) => ({ steps: [
+        { until: burstDone, label: 'burst' }, { send },
+        { until: frame => frame.type === response, label: response },
+      ] });
       const cases = [
         { name: 'invalid shell id', path: scoped(idle, 'invalid/shell'), options: { serverCloses: true } },
         { name: 'missing shell', path: scoped(idle, 'missing-shell'), options: { serverCloses: true } },
@@ -594,15 +618,27 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
           types: ['chat_history'], options: historyProbe, messages: ['shell:source', 'shell:linked', 'shell:hidden'] },
         { name: 'persisted queue excludes question answers', path: historyPath, types: ['session_queue'],
           options: { steps: [{ until: burstDone, label: 'persisted queue' }] }, queued: ['fixture-work'] },
+        { name: 'accepted receipt replay', path: scoped(turn, completedShell.id), types: ['task_shell_routed'],
+          options: exchange(completedInput, 'task_shell_routed'), forbidTurn: true },
+        { name: 'accepted cancel receipt replay', path: scoped(cancelled, cancelledShell.id),
+          types: ['task_shell_routed'], options: exchange(cancelledInput, 'task_shell_routed'), forbidTurn: true },
+        { name: 'receipt fingerprint conflict', path: scoped(turn, completedShell.id),
+          options: exchange({ ...completedInput, text: 'DONE_DIFFERENT' }, 'error'), forbidTurn: true },
+        { name: 'invalid delivery client id', path: scoped(idle),
+          options: exchange({ ...completedInput, clientMsgId: 'invalid/client' }, 'error'), forbidTurn: true },
+        { name: 'missing turn on shell cancel', path: scoped(idle),
+          options: exchange({ type: 'cancel', taskShell: true, clientMsgId: 'cancel-without-turn' }, 'error'),
+          forbidTurn: true },
       ];
       async function capture(port) {
         const observed = [];
-        for (const { name, path, options, types = ['error'], messages, queued } of cases) {
+        for (const { name, path, options, types = ['error'], messages, queued, forbidTurn } of cases) {
           const { result, wire, timeline } = await observe(`ws://127.0.0.1:${port}${path}`, options);
           if (messages) assert.deepEqual(timeline.find(frame => frame.type === 'chat_history')?.messages
             .map(message => message.content), messages, name);
           if (queued) assert.deepEqual(timeline.find(frame => frame.type === 'session_queue')?.items
             .map(item => item.entryId), queued, name);
+          if (forbidTurn) assert.equal(timeline.some(frame => frame.type === 'stream_start'), false, name);
           const selected = wire.filter(frame => types.includes(frame.type));
           assert.deepEqual(selected.map(frame => frame.type), types, name);
           observed.push({ name, result, frames: selected.map(frame => frame.bytes) });

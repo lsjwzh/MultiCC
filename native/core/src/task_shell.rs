@@ -17,6 +17,8 @@
 //! V8-compatible `js_json_stringify`, so a value that round-trips through this
 //! kernel keeps the exact key order and number spelling Node produced.
 
+pub mod chat;
+
 use std::sync::OnceLock;
 
 use regex::Regex;

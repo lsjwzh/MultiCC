@@ -88,3 +88,50 @@ ps -A -o pid=,ppid=,comm= （网关及其后代，省略网关二进制路径前
 | `npm run test:core` | 使用发布构建复验通过。修复了临时端口为 65535 时，登录回调夹具生成无效地址的问题 |
 | `npm run test:integration:isolated` | 分段复验通过。发布构建跑通记忆 API 之前的命令，修复启动等待与进程清理后，从记忆 API 续跑的 12 条命令全部通过 |
 | `node --test tests/test-fleet-sharing-routes.js` | 使用发布构建的网关与原生模块复验，20 项通过 |
+
+## 任务壳输入与收据重放阶段
+
+基线为 `010dd344`。Rust 网关与 Node 兼容入口使用同一套 Rust 输入规则，负责校验 WebSocket 输入、确定控制身份并生成收据键与请求指纹。兼容入口通过 N-API 提供会话和控制事实，首次投递、收据保留和工作区调度继续走现有宿主。
+
+独立网关使用只读 SQLite 快照核对发起会话、任务壳、收据指纹和已接收结果。重试同一条工作或取消消息会返回原结果。相同消息 ID 对应的另一份内容返回幂等冲突。会话分享只重放属于地址中会话的收据。新任务投递还需接通持久领取、工作区所有权与完成回执。现有任务壳运行时和 Node 启动依赖仍承载这些操作。
+
+### 门禁记录
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo build --locked --manifest-path native/Cargo.toml -p multicc-addon -p multicc-gateway` | 通过 |
+| `node --test tests/test-chat-ws-conformance.js tests/test-task-shells.js tests/test-task-context-host.js tests/test-scheduler-admit-rust-required.js tests/test-schedule-admit.js tests/test-session-work-scheduler.js tests/test-schedule-claim-live.js` | 133 项通过。既有 21 个金样通过，13 个场景的选定帧逐字节一致，并用旧版 Node 公式独立核对落盘收据 |
+| `cargo clippy --locked --manifest-path native/Cargo.toml --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo test --locked --manifest-path native/Cargo.toml -p multicc-gateway --test ws_chat -- --nocapture --test-threads=1` | 17 项通过 |
+| `npm run test:governance` | 通过 |
+| `cargo fmt --manifest-path native/Cargo.toml --all --check` | 基线的 8 个文件仍有格式差异，检查未通过 |
+
+按前述启动方式运行独立网关时，定向回归的直连 Claude 夹具复跑了多轮、历史、重连、取消和错误帧。记录来自取消前仍运行的网关和模型夹具进程。
+
+```text
+监听 127.0.0.1:59644
+ps -A -o pid=,ppid=,comm= （网关及其后代，省略网关二进制路径前缀）
+75138 74977 multicc-gateway
+75147 75138 /bin/sh
+进程树内 Node 进程数 0
+```
+
+## 任务壳收据写入阶段
+
+本阶段在 `09bd540a` 上复验。Node 兼容入口读取执行状态、任务生命周期、默认角色和引用历史，Rust 在同一 SQLite 写事务中校验游标、任务归属、幂等键和问答占位，同时保存任务、收据、关联及游标版本。数据库中已有的不可变历史快照继续使用原始 JSON 字节。
+
+宿主返回投递结果后，Rust 将接收回执与游标推进一起提交。失败或过期的回答与其问答占位一起清理。晚到的回执保留自身结果，并按游标版本判断是否仍可切换当前任务。
+
+独立网关仍只会重放已接收的任务壳收据。首次执行还需要接入调度仓储的准入、领取、写者许可和完成回执。队列执行及自定义 provider 仍由兼容宿主运行。
+
+本阶段重建 `multicc-addon` 和 `multicc-gateway` 后，任务壳、角色、关联历史、分离和调度定向回归通过 196 项。新增游标用例在读取执行状态期间切换当前任务，验证旧请求不会写入收据或占用任务。WebSocket 复验通过 21 个协议金样和 13 个场景的选定帧字节对拍。严格 Clippy、治理门禁和 17 项网关回归均通过。全仓格式检查仍退出 1，所列 8 个文件与 `main` 逐字节相同，本阶段修改的 Rust 文件通过单独格式检查。
+
+本轮直连 Claude 夹具覆盖多轮、历史重放、重连、取消和上游错误。取消前的隔离监听和进程树记录如下。首次任务壳执行与自定义 provider 尚待隔离复验。
+
+```text
+监听 127.0.0.1:51924
+ps -A -o pid=,ppid=,comm= （网关及其后代，省略网关路径前缀）
+2522 2078 multicc-gateway
+2531 2522 /bin/sh
+进程树内 Node 进程数 0
+```

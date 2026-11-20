@@ -62,9 +62,9 @@ struct Session {
 }
 
 #[derive(Clone, Copy)]
-struct ShellRoute {
+struct ShellRoute<'a> {
     required: bool,
-    explicit: bool,
+    id: Option<&'a str>,
 }
 
 struct Active {
@@ -255,7 +255,7 @@ where
         })
         .unwrap_or_default();
     let shell_route = ShellRoute {
-        explicit: request.shell.is_some(),
+        id: request.shell.as_deref(),
         required: request.shell.is_some()
             || record.is_some_and(|record| js::truthy_opt(record.get("taskBoundTaskId"))),
     };
@@ -269,7 +269,7 @@ where
         kind,
         None,
     );
-    let shell_history = if let Some(shell_id) = request.shell {
+    let shell_history = if let Some(shell_id) = request.shell.clone() {
         let history = if permission.is_empty() {
             let root = app.data_root.clone();
             let id = id.to_owned();
@@ -371,12 +371,12 @@ where
             }
             frame = socket.next() => match frame {
                 Some(Ok(Message::Text(text))) => {
-                    if let Ok(message) = serde_json::from_str::<Value>(&text) {
+                    if let Ok(message) = js::json_parse(&text) {
                         input(&app, id, &session, attached.connection.id, &permission, message, shell_route).await;
                     }
                 }
                 Some(Ok(Message::Binary(data))) => {
-                    if let Ok(message) = serde_json::from_slice::<Value>(&data) {
+                    if let Some(message) = std::str::from_utf8(&data).ok().and_then(|text| js::json_parse(text).ok()) {
                         input(&app, id, &session, attached.connection.id, &permission, message, shell_route).await;
                     }
                 }
@@ -416,11 +416,12 @@ async fn input(
     session: &Arc<Mutex<Session>>,
     connection: u64,
     permission: &str,
-    message: Value,
-    shell_route: ShellRoute,
+    message: V,
+    shell_route: ShellRoute<'_>,
 ) {
     let host = &app.native_chat;
-    let kind = message["type"].as_str().unwrap_or("");
+    let kind = store::text(&message, "type");
+    let kind = kind.as_str();
     match chat_ws_control::action(kind, permission) {
         chat_ws_control::Action::Pong => {
             host.send(connection, value(json!({"type":"pong"})));
@@ -429,14 +430,14 @@ async fn input(
         chat_ws_control::Action::Ignore => return,
         chat_ws_control::Action::Continue => {}
     }
-    let prompt = message["text"].as_str().filter(|text| !text.is_empty());
+    let prompt = store::optional_text(&message, "text");
     use chat_ws_control::Command;
     let command = chat_ws_control::command(
         kind,
         permission,
-        shell_route.required,
-        shell_route.explicit,
-        message["taskShell"] == true,
+        shell_route.required || message.get("taskShell") == Some(&V::Bool(true)),
+        shell_route.id.is_some(),
+        message.get("taskShell") == Some(&V::Bool(true)),
         prompt.is_some(),
     );
     match command {
@@ -455,20 +456,42 @@ async fn input(
             host.send(connection, frames::require_shell_route(id));
         }
         Command::RouteShellInput => {
-            host.send(
-                connection,
-                error_frame(
+            use multicc_core::task_shell::chat::Rejection;
+            let client_id = property(&message, "clientMsgId");
+            let root = app.data_root.clone();
+            let shell = shell_route.id.map(ToOwned::to_owned);
+            let id = id.to_owned();
+            let shared = !permission.is_empty();
+            let replay = tokio::task::spawn_blocking(move || {
+                store::replay_shell_input(&root, shell.as_deref(), &id, shared, &message)
+            })
+            .await;
+            let frame = match replay {
+                Ok(Ok(Some(frame))) => frame,
+                Ok(Err(error)) => error.frame(client_id),
+                Err(error) => {
+                    Rejection::state("task_shell_failed", error.to_string()).frame(client_id)
+                }
+                Ok(Ok(None)) => error_frame(
                     "chat_route_unavailable",
                     "Task shell delivery is unavailable",
                 ),
-            );
+            };
+            host.send(connection, frame);
         }
         Command::Message => {
             let prompt = prompt.expect("message command requires a prompt");
-            if chat_ws_control::is_legacy_cancel(prompt) {
+            if chat_ws_control::is_legacy_cancel(&prompt) {
                 cancel_active(session).await;
-            } else if let Err((code, message)) =
-                admit(app, id, session, connection, prompt, &message).await
+            } else if let Err((code, message)) = admit(
+                app,
+                id,
+                session,
+                connection,
+                &prompt,
+                &js::to_serde(&message),
+            )
+            .await
             {
                 host.send(connection, error_frame(code, &message));
             }
