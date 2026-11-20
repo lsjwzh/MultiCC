@@ -177,6 +177,60 @@ void main() {
       expect(r.events, isEmpty);
     });
 
+    test('双指平行滑动 = 滚远端，锚点是两指重心（不是触控板那个虚拟光标）', () {
+      // 手机上滚页面的肌肉记忆是两指一甩。这一档原先被一刀切成捏合，于是
+      // 舞台上根本没法滚，只能跑去摸悬浮操作台。
+      final r = _Rig();
+      r.down(1, 100, 50);
+      r.down(2, 140, 50);
+      r.events.clear();
+      for (var y = 60; y <= 140; y += 10) {
+        r.move(1, 100, y.toDouble());
+        r.move(2, 140, y.toDouble());
+      }
+      expect(r.c.scrolling, isTrue);
+      final notches = r.events.where((e) => e.startsWith('8@')).toList();
+      expect(notches, isNotEmpty);
+      expect(r.events.where((e) => e.startsWith('16@')), isEmpty);
+      // 重心 x = (100+140)/2 = 120 → 源 240；y 跟着手指走，一定不是
+      // cursor 的 (0,0)：direct 档从不维护 cursor，拿它当锚点会滚错窗口。
+      for (final notch in notches) {
+        expect(notch.split('@')[1].split(',')[0], '240');
+      }
+      expect(r.c.cursor, Offset.zero);
+      r.up(1, 100, 140);
+      r.up(2, 140, 140);
+      // 滚动不算点击，也不算右键
+      expect(r.events.where((e) => e.startsWith('1@')), isEmpty);
+      expect(r.events.where((e) => e.startsWith('4@')), isEmpty);
+    });
+
+    test('放大之后双指全部让给画面：不再发滚轮', () {
+      final r = _Rig()..c.viewScale = 2;
+      r.down(1, 100, 50);
+      r.down(2, 140, 50);
+      r.events.clear();
+      for (var y = 60; y <= 140; y += 10) {
+        r.move(1, 100, y.toDouble());
+        r.move(2, 140, y.toDouble());
+      }
+      expect(r.c.scrolling, isFalse);
+      expect(r.events, isEmpty);
+    });
+
+    test('双指捏合不滚动（交给缩放）', () {
+      final r = _Rig();
+      r.down(1, 100, 100);
+      r.down(2, 140, 100);
+      r.events.clear();
+      for (var d = 1; d <= 6; d++) {
+        r.move(1, 100 - d * 8.0, 100);
+        r.move(2, 140 + d * 8.0, 100);
+      }
+      expect(r.c.scrolling, isFalse);
+      expect(r.events, isEmpty);
+    });
+
     test('系统打断（cancel）时松开已按下的左键', () {
       final r = _Rig();
       r.down(1, 100, 50);

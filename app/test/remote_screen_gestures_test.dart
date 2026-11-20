@@ -92,7 +92,7 @@ Future<_Service> _openLive(
   int width = 400,
   int height = 300,
 }) async {
-  SharedPreferences.setMockInitialValues({});
+  SharedPreferences.setMockInitialValues({'remote_screen_seen': true});
   final settings = await SettingsService.getInstance();
   final service = _Service(settings, width: width, height: height);
   await tester.pumpWidget(
@@ -112,13 +112,16 @@ Future<_Service> _openLive(
   return service;
 }
 
-/// 键盘面板是弹层：所有键位 / 修饰键测试都要先把它打开。
+/// 键盘面板是浮层：所有键位 / 修饰键测试都要先把它打开。面板默认只铺常用键，
+/// 完整键位网格要再点一次「更多键」—— 键位用例按全表断言，所以这里一并展开。
 Future<void> openKeys(WidgetTester tester) async {
   if (find.byKey(const ValueKey('rs-rail-handle')).evaluate().isNotEmpty) {
     await tester.tap(find.byKey(const ValueKey('rs-rail-handle')));
     await tester.pump();
   }
   await tester.tap(find.byKey(const ValueKey('rs-rail-keys')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const ValueKey('rs-key-grid')));
   await tester.pumpAndSettle();
 }
 
@@ -134,7 +137,7 @@ void main() {
   testWidgets(
     'JPEG crop drag sends logical input continuously before finger lift',
     (tester) async {
-      SharedPreferences.setMockInitialValues({});
+      SharedPreferences.setMockInitialValues({'remote_screen_seen': true});
       final settings = await SettingsService.getInstance();
       final service = _Service(settings, fallback: true);
       await tester.pumpWidget(
@@ -170,7 +173,7 @@ void main() {
   testWidgets(
     'single-finger remote drag keeps zoom fixed; pinch takes over until all fingers lift',
     (tester) async {
-      SharedPreferences.setMockInitialValues({});
+      SharedPreferences.setMockInitialValues({'remote_screen_seen': true});
       final settings = await SettingsService.getInstance();
       final service = _Service(settings);
       await tester.pumpWidget(
@@ -633,7 +636,7 @@ void main() {
   );
 
   testWidgets('a host that uses ctrl rewrites the ⌘ chips', (tester) async {
-    SharedPreferences.setMockInitialValues({});
+    SharedPreferences.setMockInitialValues({'remote_screen_seen': true});
     final settings = await SettingsService.getInstance();
     final service = _Service(settings)..hostModifier = 'ctrl';
     await tester.pumpWidget(
@@ -672,7 +675,7 @@ void main() {
   testWidgets(
     'compat mode rides a one-shot ⇧ on the HTTP pointer, then drops it',
     (tester) async {
-      SharedPreferences.setMockInitialValues({});
+      SharedPreferences.setMockInitialValues({'remote_screen_seen': true});
       final settings = await SettingsService.getInstance();
       final service = _Service(settings, fallback: true);
       await tester.pumpWidget(

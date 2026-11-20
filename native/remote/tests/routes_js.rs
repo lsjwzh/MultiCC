@@ -1332,10 +1332,33 @@ async fn clipboard_round_trip_forwards_the_session_and_clips_oversized_text() {
     // 超长：400，不打扰 Agent。
     let long = "x".repeat(routes::CLIPBOARD_MAX_UTF16 + 1);
     let before = env.agent.requests().len();
-    let rejected = routes::clipboard_set(State(env.state.clone()), json_body(json!({ "text": long })))
-        .await;
+    let rejected =
+        routes::clipboard_set(State(env.state.clone()), json_body(json!({ "text": long }))).await;
     assert_eq!(rejected.status(), 400);
     assert_eq!(env.agent.requests().len(), before);
+}
+
+/// 星平面文本：Agent（或别的实现）回来的码元数超限时，服务端必须真的切掉。
+/// 曾经判定用码元、截断用字符，于是 emoji 这类两码元字符一个都切不掉，
+/// 带着 truncated:true 原样透传。
+#[tokio::test]
+async fn clipboard_clips_astral_text_by_utf16_units_not_characters() {
+    let env = mac_env("clipboard-astral");
+    // 150001 个 emoji = 300002 个码元，但只有 150001 个字符（< 200000）。
+    env.agent.set(|req| match req["op"].as_str() {
+        Some("clipboard-read") => json!({ "ok": true, "text": "😀".repeat(150_001) }),
+        _ => json!({ "ok": true }),
+    });
+    let body = body_json(routes::clipboard_get(State(env.state.clone())).await).await;
+    assert_eq!(body["ok"], json!(true));
+    assert_eq!(body["truncated"], json!(true));
+    let text = body["text"].as_str().unwrap();
+    assert!(
+        text.encode_utf16().count() <= routes::CLIPBOARD_MAX_UTF16,
+        "切完还有 {} 个码元",
+        text.encode_utf16().count()
+    );
+    assert!(text.chars().all(|c| c == '😀'), "不许切出半个代理对");
 }
 
 #[tokio::test]
