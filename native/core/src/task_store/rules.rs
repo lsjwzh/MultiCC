@@ -228,6 +228,7 @@ impl TaskStore {
         match action {
             "reserveReceipt" => self.reserve_receipt(v),
             "settleReceipt" => self.settle_receipt(v),
+            "deliveryStep" => self.delivery_step(v),
             "ownerPlan" => self.owner_plan(&v["task"], &v["records"], v["taskFirst"] == true),
             "taskAccess" => Ok(task_access(&v["task"], &v["owner"], &v["lifecycle"])),
             // 一次算出整页卡片的权限：读投影只读不写。需要补写任务壳（新建或回填

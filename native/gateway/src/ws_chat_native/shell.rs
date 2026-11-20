@@ -21,11 +21,11 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-fn now() -> i64 {
+pub(super) fn now() -> i64 {
     auth_runtime::now_ms() as i64
 }
 
-fn task_store(root: &Path) -> Result<TaskStore, String> {
+pub(super) fn task_store(root: &Path) -> Result<TaskStore, String> {
     let path = root.join("task-shells.sqlite");
     TaskStore::open(path.to_str().ok_or("invalid task store path")?)
 }
@@ -41,6 +41,72 @@ pub(super) fn queue_store(root: &Path) -> Result<Store, String> {
     )
 }
 
+pub(super) fn registry(root: &Path, request: &Value) -> Result<Value, String> {
+    let all = store::records(root)?;
+    let mut tasks = task_store(root)?;
+    let shell_id = request["shellId"].as_str().unwrap_or_default();
+    match request["op"].as_str() {
+        Some("open") => {
+            let id = request["sessionId"].as_str().unwrap_or_default();
+            let record = store::lookup(&all, id).cloned().unwrap_or(V::Null);
+            if record == V::Null
+                || store::text(&record, "kind") != "chat"
+                || ["aux", "gateway"].contains(&store::text(&record, "type").as_str())
+                || js::truthy_opt(record.get("taskExecutionSlot"))
+                || js::truthy_opt(record.get("experimentalMode"))
+            {
+                // Let the shared owner preserve the validation error order.
+                return tasks.open_chat_shell(
+                    &json!({"sessionId":id,"record":js::to_serde(&record),"taskFirst":true}),
+                );
+            }
+            let board = multicc_core::task_domain::repository::read_board_snapshot(
+                &root.join("task_board.json"),
+            )?;
+            let pending = super::question::read(root, id, &record)?.pending;
+            let last = store::session_messages(root, id)?
+                .into_iter()
+                .rev()
+                .find(|row| {
+                    let task = store::text(row, "taskId");
+                    !task.is_empty()
+                        && !js::truthy_opt(row.get("inherited"))
+                        && !board["deletedTaskIds"]
+                            .as_array()
+                            .is_some_and(|deleted| deleted.iter().any(|id| id == &task))
+                })
+                .map_or(Value::Null, |row| js::to_serde(&row));
+            tasks.open_chat_shell(
+                &json!({"sessionId":id,"record":js::to_serde(&record),"taskFirst":true,
+                "indexed":board["tasks"],"pending":js::to_serde(&pending),"last":last}),
+            )
+        }
+        Some("view") => {
+            let shell = tasks.shell_record(shell_id)?;
+            let source = shell["sourceSessionId"]
+                .as_str()
+                .and_then(|id| store::lookup(&all, id))
+                .map_or(Value::Null, js::to_serde);
+            tasks.shell_view(shell_id, &source)
+        }
+        Some("select-target") => {
+            let board = multicc_core::task_domain::repository::read_board_snapshot(&root.join("task_board.json"))?;
+            let shell = tasks.shell_record(shell_id)?;
+            let source = shell["sourceSessionId"].as_str().and_then(|id| store::lookup(&all, id))
+                .map_or(Value::Null, js::to_serde);
+            let task = request["taskId"].as_str().unwrap_or_default();
+            tasks.select_chat_shell_target(&json!({"shellId":shell_id,"taskId":request["taskId"],
+                "expectedCursorVersion":request["expectedCursorVersion"],"record":source,
+                "indexed":board["tasks"][task],"deleted":board["deletedTaskIds"].as_array().is_some_and(|ids| ids.iter().any(|id| id == task))
+            }))
+        }
+        Some("context") => tasks.shell_context_trace(&json!({
+            "sessionId":request["sessionId"], "receiptId":request["traceId"], "includeMessages":request["includeMessages"]
+        })),
+        _ => Err("invalid task-shell registry operation".into()),
+    }
+}
+
 fn response(value: Value) -> Result<Value, String> {
     match value["resultJson"].as_str() {
         Some(raw) => multicc_core::json_lenient::from_str(raw).map_err(|error| error.to_string()),
@@ -48,7 +114,7 @@ fn response(value: Value) -> Result<Value, String> {
     }
 }
 
-fn supported(state: &Session) -> bool {
+pub(super) fn supported(state: &Session) -> bool {
     let record = &state.stored.record;
     store::is_claude(record)
         && store::text(record, "kind") == "chat"
@@ -69,7 +135,12 @@ fn supported(state: &Session) -> bool {
         && !store::text(record, "worktreePath").is_empty()
 }
 
-fn workspace_request(root: &Path, id: &str, record: &V, cwd: &Path) -> Result<Value, String> {
+pub(super) fn workspace_request(
+    root: &Path,
+    id: &str,
+    record: &V,
+    cwd: &Path,
+) -> Result<Value, String> {
     let declared = PathBuf::from(store::text(record, "worktreePath"));
     if store::text(record, "workspaceState") == "planned" {
         if js::truthy_opt(record.get("workspaceOwnerSessionId"))
@@ -114,7 +185,7 @@ fn optional_base_commit(record: &V) -> Result<Option<String>, String> {
     Ok(commit)
 }
 
-fn read_directory(root: &Path, record: &V) -> Result<Value, String> {
+pub(super) fn read_directory(root: &Path, record: &V) -> Result<Value, String> {
     Ok(
         durable_state::load_or_recover(&root.join("directories.json"))?
             .and_then(|all| match all {
@@ -127,12 +198,33 @@ fn read_directory(root: &Path, record: &V) -> Result<Value, String> {
     )
 }
 
+pub(super) async fn linked_target(
+    root: &Path,
+    shell: &str,
+    id: &str,
+    intent: Intent,
+) -> Result<(String, String), String> {
+    let (root, shell, id) = (root.to_owned(), shell.to_owned(), id.to_owned());
+    blocking(move || {
+        let all = store::records(&root)?;
+        TaskStore::linked_chat_target(
+            &root.join("task-shells.sqlite"),
+            &shell,
+            &id,
+            |id, directory| store::session_in_directory(&all, id, directory),
+            intent,
+        )
+    })
+    .await
+}
+
 pub(super) async fn submit(
     app: &App,
     id: &str,
     session: &Mutex<Session>,
     route: ShellRoute<'_>,
     message: &V,
+    control_task: Option<&str>,
 ) -> V {
     let mut state = session.lock().await;
     let intent = chat::intent(message);
@@ -144,6 +236,7 @@ pub(super) async fn submit(
     }
     let id = id.to_owned();
     let shell = route.id.map(ToOwned::to_owned);
+    let control_task = control_task.map(ToOwned::to_owned);
     let mut active = json!({"busy":state.active.is_some(),
         "turnId":state.active.as_ref().map(|turn| &turn.id),
         "taskId":state.active.as_ref().and_then(|turn| turn.task.as_ref())
@@ -183,46 +276,11 @@ pub(super) async fn submit(
         let reserved = tasks.reserve_native_chat_input(
             shell.as_deref(),
             &id,
-            &json!({"record":record,"directory":directory,"board":board,"state":active}),
+            &json!({"record":record,"directory":directory,"board":board,"state":active,"controlTaskId":control_task}),
             &message,
         )?;
         let receipt = &reserved["receipt"];
-        let receipt_id = required(receipt, "id")?;
-        let task = required(receipt, "taskId")?;
-        let mut notification = Value::Null;
-        if intent != Intent::Cancel && receipt["status"] != "accepted" {
-            let payload = &receipt["payload"];
-            let task_state = &record["taskState"];
-            let mut request = json!({"sessionId":id,"text":payload["text"],"source":"task-shell",
-                "idempotencyKey":receipt_id,"hostAdmission":true,"initialState":{
-                    "pendingQuestion":task_state["pendingUserInput"],"activeTurn":null,
-                    "category":{"classifyState":task_state["classifyState"]}
-                },
-                "options":{"taskId":task,"taskSource":"task-shell","taskStart":true,
-                    "taskShellReceiptId":receipt_id,"clientMsgId":receipt_id,"nativeShellWork":true,
-                    "originContinue":true,"rolePrompt":reserved["rolePrompt"]
-                }
-            });
-            if intent == Intent::Answer {
-                request["options"]["taskStart"] = json!(false);
-                request["options"]["userInputRequestId"] = payload["requestId"].clone();
-                request["options"]["taskShellControl"] =
-                    json!({"intent":"answer","turnId":payload["turnId"]});
-            }
-            let admitted = admit_queue(&mut queue_store(&submit_root)?, request.to_string())?;
-            if admitted["ok"] != true {
-                let code = required(&admitted, "code")?;
-                if code == "stale_control" {
-                    tasks.settle_receipt(&json!({"receiptId":receipt_id,"error":{"code":code}}))?;
-                    return Err(format!(
-                        "TASK_RULE:{}",
-                        json!({"code":code,"message":"The question is no longer pending"})
-                    ));
-                }
-                return Err(code.to_owned());
-            }
-            notification = admitted["notification"].clone();
-        }
+        let notification = admit_receipt(&submit_root, &id, &record, receipt)?;
         Ok((receipt.clone(), notification))
     })
     .await;
@@ -259,26 +317,22 @@ pub(super) async fn submit(
         }
         Err(error) => Err(error),
     };
-    match result {
-        Ok(frame) => frame,
-        Err(error) => {
-            let fault = error
-                .strip_prefix("TASK_RULE:")
-                .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
-            let code = fault.as_ref().and_then(|error| error["code"].as_str());
-            if let Some(code) = code {
-                let detail = fault
-                    .as_ref()
-                    .and_then(|error| error["message"].as_str())
-                    .unwrap_or(code);
-                return error_frame(code, detail);
-            }
-            error_frame("task_shell_failed", &error)
-        }
-    }
+    result.unwrap_or_else(|error| delivery_error(&error))
 }
 
-fn admit_queue(queue: &mut Store, request: String) -> Result<Value, String> {
+pub(super) fn delivery_error(error: &str) -> V {
+    let fault = error
+        .strip_prefix("TASK_RULE:")
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+    if let Some(fault) = fault {
+        if let Some(code) = fault["code"].as_str() {
+            return error_frame(code, fault["message"].as_str().unwrap_or(code));
+        }
+    }
+    error_frame("task_shell_failed", error)
+}
+
+pub(super) fn admit_queue(queue: &mut Store, request: String) -> Result<Value, String> {
     let mut input = json!({"requestJson":request});
     for retry in 0..=4 {
         input["expectedRevision"] =
@@ -290,6 +344,46 @@ fn admit_queue(queue: &mut Store, request: String) -> Result<Value, String> {
         }
     }
     unreachable!("the last admission returns its result")
+}
+
+pub(super) fn admit_receipt(
+    root: &Path,
+    session: &str,
+    record: &Value,
+    receipt: &Value,
+) -> Result<Value, String> {
+    if receipt["status"] == "accepted" || receipt["payload"]["intent"] == "cancel" {
+        return Ok(Value::Null);
+    }
+    let receipt_id = required(receipt, "id")?;
+    let task_id = required(receipt, "taskId")?;
+    let payload = &receipt["payload"];
+    let mut tasks = task_store(root)?;
+    let role = tasks.delivery_role_prompt(receipt)?;
+    let mut request = json!({"sessionId":session,"text":payload["text"],"source":"task-shell",
+        "idempotencyKey":receipt_id,"hostAdmission":true,"initialState":{
+            "pendingQuestion":record["taskState"]["pendingUserInput"],"activeTurn":null,
+            "category":{"classifyState":record["taskState"]["classifyState"]}},
+        "options":{"taskId":task_id,"taskSource":"task-shell","taskStart":payload["intent"] == "work",
+            "taskShellReceiptId":receipt_id,"clientMsgId":receipt_id,"nativeShellWork":true,
+            "originContinue":true,"rolePrompt":role}});
+    if payload["intent"] != "work" {
+        request["options"]["taskShellControl"] =
+            json!({"intent":payload["intent"],"turnId":payload["turnId"]});
+    }
+    if payload["intent"] == "answer" {
+        request["options"]["userInputRequestId"] = payload["requestId"].clone();
+    }
+    let admitted = admit_queue(&mut queue_store(root)?, request.to_string())?;
+    if admitted["ok"] != true {
+        let code = required(&admitted, "code")?;
+        tasks.settle_receipt(&json!({"receiptId":receipt_id,"error":{"code":code}}))?;
+        return Err(format!(
+            "TASK_RULE:{}",
+            json!({"code":code,"message":if code == "stale_control" { "The question is no longer pending" } else { code },"status":409})
+        ));
+    }
+    Ok(admitted["notification"].clone())
 }
 
 pub(super) async fn wake(app: &Arc<App>, id: &str, session: &Arc<Mutex<Session>>, task: String) {
@@ -475,6 +569,29 @@ pub(super) struct Delivery {
 }
 
 impl Delivery {
+    pub async fn reference_seed(&self, first: bool) -> Result<String, String> {
+        if !first {
+            return Ok(String::new());
+        }
+        let (root, task, session) = (self.root.clone(), self.task.clone(), self.id.clone());
+        let receipt_id = self.receipt.clone();
+        blocking(move || {
+            let history = store::session_messages(&root, &session)?;
+            let mut tasks = task_store(&root)?;
+            let seed = tasks.shell_context_seed(&task, true, "", &history)?;
+            let record = tasks.delivery_record("task", &task)?;
+            let mut receipt = tasks.delivery_record("receipt", &receipt_id)?;
+            receipt["contextSeedSnapshotIds"] =
+                record.get("snapshotIds").cloned().unwrap_or(json!([]));
+            tasks.run(
+                &json!({"op":"set","kind":"receipt","id":receipt_id,"body":receipt.to_string()})
+                    .to_string(),
+            )?;
+            Ok(seed)
+        })
+        .await
+    }
+
     async fn change(&self, op: &'static str, mut input: Value) -> Result<Value, String> {
         let root = self.root.clone();
         let at = now();

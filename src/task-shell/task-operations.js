@@ -1,6 +1,6 @@
 'use strict';
 
-const { hash } = require('./context');
+const { hash } = require('../native/runtime').taskShellContext;
 
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
 const MAX_TURNS_PER_OPERATION = 50;

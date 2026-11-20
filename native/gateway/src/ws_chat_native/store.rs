@@ -80,6 +80,14 @@ fn read_messages(path: &Path, session: &str) -> Result<Vec<V>, String> {
     Ok(messages)
 }
 
+pub(super) fn session_messages(root: &Path, id: &str) -> Result<Vec<V>, String> {
+    transcript_stem(id)?;
+    read_messages(
+        &chat_history_file::transcript_path(&root.join("chat_history"), id),
+        id,
+    )
+}
+
 pub fn shell_history(
     root: &Path,
     all: &[V],
@@ -140,7 +148,11 @@ pub fn shell_history(
     )
 }
 
-fn session_in_directory(all: &[V], id: &str, directory: Option<&serde_json::Value>) -> bool {
+pub(super) fn session_in_directory(
+    all: &[V],
+    id: &str,
+    directory: Option<&serde_json::Value>,
+) -> bool {
     lookup(all, id).is_some_and(|record| {
         record.get("taskExecutionSlot") != Some(&V::Bool(true))
             && record.get("dirId").map(js::to_serde).as_ref() == directory

@@ -797,8 +797,10 @@ impl Gateway {
     }
 
     fn restart_native(&mut self) {
-        self.child.kill().unwrap();
-        self.child.wait().unwrap();
+        if self.child.try_wait().unwrap().is_none() {
+            self.child.kill().unwrap();
+            self.child.wait().unwrap();
+        }
         let mut next = Self::launch_native(self.dir.clone(), self.state.clone(), "");
         std::mem::swap(self, &mut next);
         // Drop the old process handle without removing the reused state.
@@ -904,6 +906,544 @@ impl Gateway {
         println!("进程树内 Node 进程数 {node_count}");
         assert_eq!(node_count, 0);
     }
+}
+
+#[cfg(unix)]
+fn native_shell_request(gateway: &Gateway, method: &str, path: &str, body: Value) -> (u16, Value) {
+    let body = if body.is_null() {
+        String::new()
+    } else {
+        body.to_string()
+    };
+    let reply = gateway.raw(&format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer gateway-chat-fixture-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    ));
+    let (head, body) = reply.split_once("\r\n\r\n").expect("HTTP response");
+    let status = head
+        .split_ascii_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    (status, serde_json::from_str(body).expect(&reply))
+}
+
+#[cfg(unix)]
+fn shell_fixture_row(gateway: &Gateway, kind: &str, id: &str, row: Value) {
+    let ledger = gateway.state.join("task-shells.sqlite");
+    let mut store = multicc_core::task_store::TaskStore::open(ledger.to_str().unwrap()).unwrap();
+    store
+        .run(
+            &serde_json::json!({"op":"set","kind":kind,"id":id,"body":row.to_string()}).to_string(),
+        )
+        .unwrap();
+}
+
+#[cfg(unix)]
+fn add_native_record(gateway: &Gateway, record: Value) {
+    let file = gateway.state.join("sessions.json");
+    let mut records: Vec<Value> =
+        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    records.push(record);
+    fs::write(file, serde_json::to_string(&records).unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_shell_registration_is_idempotent_and_rolls_back_an_identity_conflict() {
+    let gateway = Gateway::start_native();
+    add_native_record(
+        &gateway,
+        serde_json::json!({"id":"empty","kind":"chat","dirId":"fixture-dir","cli":"claude","label":"Empty"}),
+    );
+    add_native_record(
+        &gateway,
+        serde_json::json!({"id":"conflict","kind":"chat","dirId":"fixture-dir","cli":"claude","taskBoundTaskId":"tsk_bound"}),
+    );
+    let post = |id: &str| {
+        native_shell_request(
+            &gateway,
+            "POST",
+            "/api/task-shells",
+            serde_json::json!({"sessionId":id}),
+        )
+    };
+    let (status, first) = post("empty");
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["currentTaskId"], first["defaultTaskId"]);
+    assert_eq!(first["tasks"][0]["sessionId"], "empty");
+    assert_eq!(first["receipts"], serde_json::json!([]));
+    assert_eq!(post("empty"), (200, first.clone()));
+    let path = format!("/api/task-shells/{}", first["id"].as_str().unwrap());
+    assert_eq!(
+        native_shell_request(&gateway, "GET", &path, Value::Null),
+        (200, first)
+    );
+
+    let (status, rejected) = post("conflict");
+    assert_eq!(status, 409, "{rejected}");
+    assert_eq!(rejected["code"], "task_identity_mismatch");
+    let id = multicc_core::task_shell::chat::source_shell_id("conflict");
+    let (status, absent) = native_shell_request(
+        &gateway,
+        "GET",
+        &format!("/api/task-shells/{id}"),
+        Value::Null,
+    );
+    assert_eq!(status, 404, "{absent}");
+    assert_eq!(absent["code"], "shell_not_found");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_shell_routes_from_another_session_and_replays_the_target_receipt() {
+    let gateway = Gateway::start_native();
+    let work = gateway.dir.join("other-worktree");
+    fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    add_native_record(
+        &gateway,
+        serde_json::json!({"id":"other","kind":"chat","dirId":"fixture-dir","cli":"claude",
+        "taskBoundTaskId":"tsk_other","workspaceState":"awake","worktreePath":work,"branch":"multicc/other"}),
+    );
+    for (kind, id, row) in [
+        (
+            "shell",
+            "shell-bound",
+            serde_json::json!({"id":"shell-bound","sourceSessionId":"bound","dirId":"fixture-dir",
+            "currentTaskId":"tsk_other","defaultTaskId":"tsk_other","standalone":false,"cursorVersion":1}),
+        ),
+        (
+            "task",
+            "tsk_other",
+            serde_json::json!({"id":"tsk_other","sessionId":"other","ownerShellId":"shell-bound",
+            "ready":true,"taskFirst":true,"dirId":"fixture-dir","title":"Other"}),
+        ),
+        (
+            "link",
+            "shell-bound:tsk_other",
+            serde_json::json!({"shellId":"shell-bound","taskId":"tsk_other"}),
+        ),
+        (
+            "workspace:record",
+            "ws_other",
+            serde_json::json!({"id":"ws_other","dirId":"fixture-dir","path":work,
+            "branch":"multicc/other","residency":"resident"}),
+        ),
+        (
+            "workspace:binding",
+            "other",
+            serde_json::json!({"sessionId":"other","workspaceId":"ws_other"}),
+        ),
+    ] {
+        shell_fixture_row(&gateway, kind, id, row);
+    }
+    let select = |task, version| {
+        native_shell_request(
+            &gateway,
+            "POST",
+            "/api/task-shells/shell-bound/select-target",
+            serde_json::json!({"taskId":task,"expectedCursorVersion":version}),
+        )
+    };
+    let (status, stale) = select("tsk_bound", 0);
+    assert_eq!(status, 409, "{stale}");
+    assert_eq!(stale["code"], "stale_shell_cursor");
+    assert_eq!(select("tsk_other", 1).1["changed"], false);
+    let mut source = gateway
+        .connect_with("/ws/chat?session=bound&shell=shell-bound", &[])
+        .await;
+    let mut target = gateway
+        .connect_with("/ws/chat?session=other&shell=shell-bound", &[])
+        .await;
+    until(&mut source, "session_queue").await;
+    until(&mut target, "session_queue").await;
+    let send =
+        r#"{"type":"user_message","taskShell":true,"clientMsgId":"cross-1","text":"across"}"#;
+    send_text(&mut source, send).await;
+    let receipt = until(&mut source, "task_shell_routed").await;
+    assert_eq!(receipt["taskId"], "tsk_other");
+    assert_eq!(receipt["sessionId"], "other");
+    assert_eq!(
+        until(&mut target, "chat_msg_meta").await["message"]["content"],
+        "across"
+    );
+    until(&mut target, "stream_end").await;
+    until(&mut target, "session_queue").await;
+    send_text(&mut source, send).await;
+    assert_eq!(until(&mut source, "task_shell_routed").await, receipt);
+    assert!(!gateway.state.join("chat_history/bound.json").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_scope_reports_verified_reference_and_refuses_wrong_owner_or_corrupt_data() {
+    use multicc_core::{js, task_shell::reference};
+    let gateway = Gateway::start_native();
+    let history = [
+        js::from_serde(
+            &serde_json::json!({"id":"u","role":"user","content":"source question","turnId":"t"}),
+        ),
+        js::from_serde(
+            &serde_json::json!({"id":"a","role":"assistant","content":"verified source reply","turnId":"t"}),
+        ),
+    ];
+    let mut snapshot = js::to_serde(&reference::snapshot(
+        &js::JsValue::from("tsk_source"),
+        &history,
+        None,
+        12_000,
+    ));
+    let hash = snapshot["hash"].as_str().unwrap().to_owned();
+    shell_fixture_row(&gateway, "snapshot", &hash, snapshot.clone());
+    shell_fixture_row(
+        &gateway,
+        "receipt",
+        "sr_trace",
+        serde_json::json!({"id":"sr_trace",
+        "taskId":"tsk_bound","shellId":"shell-bound","contextSeedSnapshotIds":[hash]}),
+    );
+    let fetch = |id| {
+        native_shell_request(
+            &gateway,
+            "GET",
+            &format!("/api/sessions/{id}/context?traceId=sr_trace&includeMessages=1"),
+            Value::Null,
+        )
+    };
+    let (status, report) = fetch("bound");
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["sources"][0]["taskId"], "tsk_source");
+    assert_eq!(report["sources"][0]["messageCount"], 2);
+    assert_eq!(fetch("native").0, 404);
+    snapshot["messages"][1]["content"] = serde_json::json!("tampered");
+    snapshot["hash"] = serde_json::json!("bad-digest");
+    shell_fixture_row(&gateway, "snapshot", "bad-digest", snapshot);
+    shell_fixture_row(
+        &gateway,
+        "receipt",
+        "sr_trace",
+        serde_json::json!({"id":"sr_trace",
+        "taskId":"tsk_bound","shellId":"shell-bound","contextSeedSnapshotIds":["bad-digest"]}),
+    );
+    let (status, refusal) = fetch("bound");
+    assert_eq!(status, 409, "{refusal}");
+    assert_eq!(refusal["code"], "snapshot_unverified");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_http_delivery_retries_and_conflicts_share_the_chat_receipt() {
+    let gateway = Gateway::start_native();
+    let mut socket = gateway
+        .connect_with("/ws/chat?session=bound&shell=shell-bound", &[])
+        .await;
+    until(&mut socket, "session_queue").await;
+    let post = |body| {
+        native_shell_request(
+            &gateway,
+            "POST",
+            "/api/task-shells/shell-bound/messages",
+            body,
+        )
+    };
+    let body = serde_json::json!({"clientMsgId":"http-1","text":"hold"});
+    let (status, first) = post(body.clone());
+    assert_eq!(status, 200, "{first}");
+    let turn = until(&mut socket, "stream_start").await["turnId"].clone();
+    until(&mut socket, "stream_event").await;
+    gateway.assert_native_process_tree();
+    assert_eq!(post(body), (200, first.clone()));
+    let retry = format!(
+        "/api/task-shells/shell-bound/receipts/{}/retry",
+        first["receiptId"].as_str().unwrap()
+    );
+    assert_eq!(
+        native_shell_request(&gateway, "POST", &retry, serde_json::json!({})),
+        (200, first)
+    );
+    let (status, conflict) = post(serde_json::json!({"clientMsgId":"http-1","text":"changed"}));
+    assert_eq!(status, 409, "{conflict}");
+    assert_eq!(conflict["code"], "idempotency_conflict");
+    let (status, stale) = post(
+        serde_json::json!({"clientMsgId":"http-cancel","intent":"cancel","text":"","taskId":"tsk_bound","turnId":"wrong"}),
+    );
+    assert_eq!(status, 409, "{stale}");
+    assert_eq!(stale["code"], "stale_control");
+    let (status, cancelled) = post(
+        serde_json::json!({"clientMsgId":"http-cancel-ok","intent":"cancel","text":"","taskId":"tsk_bound","turnId":turn}),
+    );
+    assert_eq!(status, 200, "{cancelled}");
+    until(&mut socket, "stream_end").await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_http_failed_receipt_retries_after_repair_and_restart() {
+    let mut gateway = Gateway::start_native();
+    let records = gateway.state.join("sessions.json");
+    let mut rows: Value = serde_json::from_slice(&fs::read(&records).unwrap()).unwrap();
+    let bound = rows
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["id"] == "bound")
+        .unwrap();
+    bound["cli"] = Value::from("codex");
+    fs::write(&records, rows.to_string()).unwrap();
+    let (status, rejected) = native_shell_request(
+        &gateway,
+        "POST",
+        "/api/task-shells/shell-bound/messages",
+        serde_json::json!({"clientMsgId":"retry-repair","text":"after repair"}),
+    );
+    assert_eq!(status, 409, "{rejected}");
+    assert_eq!(rejected["code"], "chat_route_unavailable");
+    let receipt = rejected["receiptId"].as_str().unwrap();
+    let tasks = multicc_core::task_store::TaskStore::open(
+        gateway.state.join("task-shells.sqlite").to_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        tasks.delivery_record("receipt", receipt).unwrap()["status"],
+        "failed"
+    );
+    drop(tasks);
+    let mut rows: Value = serde_json::from_slice(&fs::read(&records).unwrap()).unwrap();
+    let bound = rows
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["id"] == "bound")
+        .unwrap();
+    bound["cli"] = Value::from("claude");
+    fs::write(&records, rows.to_string()).unwrap();
+    gateway.restart_native();
+    let mut socket = gateway
+        .connect_with("/ws/chat?session=bound&shell=shell-bound", &[])
+        .await;
+    until(&mut socket, "session_queue").await;
+    let retry = format!("/api/task-shells/shell-bound/receipts/{receipt}/retry");
+    let (status, accepted) = native_shell_request(&gateway, "POST", &retry, serde_json::json!({}));
+    assert_eq!(status, 200, "{accepted}");
+    assert_eq!(accepted["receiptId"], receipt);
+    until(&mut socket, "stream_end").await;
+    until(&mut socket, "session_queue").await;
+    assert_eq!(
+        native_shell_request(&gateway, "POST", &retry, serde_json::json!({})),
+        (200, accepted)
+    );
+    let mut replay = gateway
+        .connect_with("/ws/chat?session=bound&shell=shell-bound", &[])
+        .await;
+    let history = until(&mut replay, "chat_history").await;
+    assert_eq!(
+        history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["content"] == "after repair")
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_http_new_task_materializes_and_injects_verified_reference() {
+    use multicc_core::{js, task_shell::reference};
+    let gateway = Gateway::start_native_with_path("/usr/bin:/bin");
+    let repo = gateway.dir.join("http-project");
+    fs::create_dir(&repo).unwrap();
+    let repo = repo.canonicalize().unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        let output = Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::write(
+        gateway.state.join("directories.json"),
+        serde_json::json!([{"id":"fixture-dir","path":repo,"baseBranch":"main"}]).to_string(),
+    )
+    .unwrap();
+    shell_fixture_row(
+        &gateway,
+        "shell",
+        "shell-bound",
+        serde_json::json!({"id":"shell-bound","sourceSessionId":"bound","dirId":"fixture-dir","currentTaskId":"tsk_bound","defaultTaskId":"tsk_bound","standalone":false,"cursorVersion":0}),
+    );
+    let history = vec![
+        js::from_serde(
+            &serde_json::json!({"id":"ref-u","role":"user","content":"reference question","taskId":"tsk_bound","turnId":"ref-t"}),
+        ),
+        js::from_serde(
+            &serde_json::json!({"id":"ref-a","role":"assistant","content":"verified imported context","taskId":"tsk_bound","turnId":"ref-t"}),
+        ),
+    ];
+    fs::create_dir_all(gateway.state.join("chat_history")).unwrap();
+    fs::write(
+        gateway.state.join("chat_history/bound.json"),
+        history
+            .iter()
+            .map(js::json_stringify_or_undefined)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let expected = reference::snapshot(&js::JsValue::from("tsk_bound"), &history, None, 12_000);
+    let fixture = fs::read_to_string(gateway.dir.join("claude-fixture")).unwrap();
+    fs::write(gateway.dir.join("claude-fixture"),fixture.replace("        *'\"type\":\"user\"'*)","        *'\"type\":\"user\"'*)\n            printf '%s\\n' \"$line\" >> \"$HOME/provider-input\"" )).unwrap();
+    let (status, result) = native_shell_request(
+        &gateway,
+        "POST",
+        "/api/task-shells/shell-bound/messages",
+        serde_json::json!({"clientMsgId":"new-http","text":"new task","newTask":true,"contextTaskIds":["tsk_bound"]}),
+    );
+    assert_eq!(status, 200, "{result}");
+    let id = result["sessionId"].as_str().unwrap();
+    let target = repo.join(".multicc-worktrees").join(id);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let input = loop {
+        if let Ok(text) = fs::read_to_string(gateway.state.join("provider-input")) {
+            break text;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{}",
+            fs::read_to_string(gateway.dir.join("gateway.log")).unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(target.is_dir());
+    assert!(input.contains("verified imported context"), "{input}");
+    assert!(input.contains(
+        expected
+            .get("hash")
+            .and_then(|v| if let js::JsValue::String(s) = v {
+                Some(s.to_string_lossy())
+            } else {
+                None
+            })
+            .unwrap()
+            .as_str()
+    ));
+    let output = Command::new("git")
+        .current_dir(&target)
+        .args(["branch", "--show-current"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        format!("multicc/{id}")
+    );
+    let (status, trace) = native_shell_request(
+        &gateway,
+        "GET",
+        &format!(
+            "/api/sessions/{id}/context?traceId={}",
+            result["receiptId"].as_str().unwrap()
+        ),
+        Value::Null,
+    );
+    assert_eq!(status, 200, "{trace}");
+    assert_eq!(trace["sources"][0]["taskId"], "tsk_bound");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_restart_drains_durable_pending_work_without_a_connected_client() {
+    use multicc_core::{orchestration_retention::RetentionPolicy, orchestration_store::Store};
+    let mut gateway = Gateway::start_native();
+    gateway.child.kill().unwrap();
+    gateway.child.wait().unwrap();
+    let file = gateway.state.join("orchestration.sqlite");
+    let mut queue = Store::open(
+        file.to_str().unwrap(),
+        None,
+        100,
+        RetentionPolicy::default(),
+    )
+    .unwrap();
+    let request = serde_json::json!({"sessionId":"bound","text":"background recovery","source":"task-shell",
+        "idempotencyKey":"restart-receipt","hostAdmission":true,"initialState":{
+            "pendingQuestion":null,"activeTurn":null,"category":{"classifyState":"D","recoveryRecordType":null}},
+        "options":{"taskId":"tsk_bound","taskSource":"task-shell","taskStart":true,"taskShellReceiptId":"restart-receipt",
+            "clientMsgId":"restart-receipt","nativeShellWork":true,"originContinue":true}});
+    let result = queue
+        .request(
+            "scheduleAdmit",
+            &serde_json::json!({"expectedRevision":0,"requestJson":request.to_string(),"now":100}),
+        )
+        .unwrap();
+    let result: Value = serde_json::from_str(result["resultJson"].as_str().unwrap()).unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    drop(queue);
+    assert_eq!(
+        multicc_core::orchestration_store::chat_queue_snapshot(&file, "bound")
+            .unwrap()
+            .get("queued"),
+        Some(&multicc_core::js::JsValue::Number(1.0))
+    );
+    shell_fixture_row(
+        &gateway,
+        "receipt",
+        "restart-receipt",
+        serde_json::json!({"id":"restart-receipt","taskId":"tsk_bound",
+        "shellId":"shell-bound","status":"accepted","nativeAdmission":true,"result":{"ok":true,"sessionId":"bound","taskId":"tsk_bound","receiptId":"restart-receipt","decision":"continue"},"payload":{"intent":"work","text":"background recovery"}}),
+    );
+    gateway.restart_native();
+    let history = gateway.state.join("chat_history/bound.json");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let transcript = loop {
+        if let Ok(text) = fs::read_to_string(&history) {
+            if text.contains("首次回复") {
+                break text;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{}\nqueue={:?}\nadmission={result}\nhistory={:?}",
+            fs::read_to_string(gateway.dir.join("gateway.log")).unwrap(),
+            multicc_core::orchestration_store::chat_queue_snapshot(&file, "bound"),
+            fs::read_to_string(&history)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(transcript.matches("background recovery").count(), 2);
+    // Wait for the committed queue release, then prove another restart is inert.
+    loop {
+        let queue = multicc_core::orchestration_store::chat_queue_snapshot(&file, "bound").unwrap();
+        if queue.get("state") == Some(&multicc_core::js::JsValue::from("idle")) {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    gateway.restart_native();
+    assert_eq!(fs::read_to_string(&history).unwrap(), transcript);
 }
 
 #[cfg(unix)]

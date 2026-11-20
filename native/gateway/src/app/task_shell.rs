@@ -17,10 +17,9 @@
 //!
 //! Path matching, parameter decoding, query/body extraction and the Express
 //! OPTIONS answer live here; the DTO/error rules live in
-//! `multicc_core::task_shell`. Node keeps what Rust cannot see behind one host
-//! port, `POST /api/__host/task-shell` (src/routes/task-shell-host.js): the
-//! SQLite task store, the records Map, WebSocket clients, chat history and the
-//! runtime that produces these DTOs.
+//! `multicc_core::task_shell`. Native registration, context and deliveries use
+//! the Rust task and scheduler owners. Compatibility callbacks for live Node
+//! CLI sessions use `POST /api/__host/task-shell` in `src/task-shell/host.js`.
 //!
 //! Every write handler awaits one or more host round trips that mutate the
 //! durable task store, so [`App::task_shell_write`] serializes them the way the
@@ -44,7 +43,7 @@ use crate::app::express::{self, RequestCtx};
 use crate::app::App;
 use crate::host_port;
 
-/// The host port the Node child serves (`src/routes/task-shell-host.js`).
+/// The compatibility port mounted by `src/task-shell/host.js`.
 const HOST_PATH: &str = "/api/__host/task-shell";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -487,15 +486,54 @@ fn error_facts(answer: &Value) -> ErrorFacts {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Backend<'a> {
+    app: &'a Arc<App>,
+    port: u16,
+}
+
 /// One host round trip. `Ok` is the runtime value; `Err` is the refusal the
 /// front door must send (a rendered error envelope, or the 503 when the child
 /// is gone).
 async fn call(
     ctx: &RequestCtx,
-    host_port_num: u16,
+    backend: Backend<'_>,
     payload: Value,
 ) -> Result<Value, Response<Body>> {
-    match host_port::call(host_port_num, HOST_PATH, &payload).await {
+    if !backend.app.node_enabled
+        && matches!(
+            payload["op"].as_str(),
+            Some(
+                "open"
+                    | "view"
+                    | "context"
+                    | "select-target"
+                    | "shell-message"
+                    | "receipt-retry"
+                    | "task-message"
+            )
+        )
+    {
+        let result = if matches!(
+            payload["op"].as_str(),
+            Some("shell-message" | "receipt-retry" | "task-message")
+        ) {
+            crate::ws_chat_native::shell_delivery(backend.app, payload).await
+        } else {
+            crate::ws_chat_native::shell_registry(backend.app, payload).await
+        };
+        return result.map_err(|error| {
+            let answer = error
+                .strip_prefix("TASK_RULE:")
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .unwrap_or_else(
+                    || json!({"code":"task_shell_failed","message":error,"status":500}),
+                );
+            let (status, body) = error_body(&error_facts(&json!({"error":answer})));
+            express::json(ctx, status, &body, &[])
+        });
+    }
+    match host_port::call(backend.port, HOST_PATH, &payload).await {
         Ok(answer) => {
             if answer.get("ok") == Some(&Value::Bool(true)) {
                 Ok(answer.get("value").cloned().unwrap_or(Value::Null))
@@ -583,10 +621,19 @@ pub async fn handle(
     } else {
         None
     };
-    answer(ctx, route, body, host_port_num).await
+    answer(
+        ctx,
+        route,
+        body,
+        Backend {
+            app,
+            port: host_port_num,
+        },
+    )
+    .await
 }
 
-async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Response<Body> {
+async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: Backend<'_>) -> Response<Body> {
     let parts = segments(&ctx.path).unwrap_or_default();
     match route {
         Route::Options => {

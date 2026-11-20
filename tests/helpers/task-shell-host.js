@@ -15,8 +15,8 @@
 // The front-door status/DTO contract is covered by
 // native/gateway/tests/task_shell.rs and docs/rust-migration/differential/task-shell.js.
 const assert = require('node:assert/strict');
-const { mountTaskShellHostRoute, HOST_PATH } = require('../../src/routes/task-shell-host');
-const { createArtifactsMemo } = require('../../src/task-shell/routes');
+const { mountTaskShellHostRoute, HOST_PATH } = require('../../src/task-shell/host');
+const { createArtifactsMemo } = require('../../src/task-shell/artifacts');
 
 function fakeApp() {
   const routes = new Map();

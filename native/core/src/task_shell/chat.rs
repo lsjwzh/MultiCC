@@ -162,6 +162,112 @@ fn digest(value: &V) -> String {
     )
 }
 
+pub fn normalize_http(raw: &V, internal_dispatch: bool) -> Result<V, Rejection> {
+    let client_id = identifier(property(raw, "clientMsgId"), "clientMsgId")?;
+    let intent = raw
+        .get("intent")
+        .filter(|value| js::truthy(value))
+        .cloned()
+        .unwrap_or(V::from("work"));
+    if !["work", "steer", "answer", "cancel"]
+        .iter()
+        .any(|name| intent == V::from(*name))
+    {
+        return Err(Rejection::new("invalid_intent", "invalid_intent"));
+    }
+    let V::String(text) = property(raw, "text") else {
+        return Err(Rejection::new("invalid_text", "invalid_text"));
+    };
+    if text.len() > if internal_dispatch { 270_000 } else { 32_000 }
+        || (intent != V::from("cancel") && text.trim().is_empty())
+    {
+        return Err(Rejection::new("invalid_text", "invalid_text"));
+    }
+    let list = |field: &str| -> Result<V, Rejection> {
+        let value = property(raw, field);
+        if value.is_nullish() {
+            return Ok(V::Array(vec![]));
+        }
+        let V::Array(values) = value else {
+            return Err(Rejection::new("invalid_input", format!("invalid {field}")));
+        };
+        if values.len() > 3 {
+            return Err(Rejection::new("invalid_input", format!("invalid {field}")));
+        }
+        let mut ids = values
+            .into_iter()
+            .map(|id| identifier(id, field))
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.sort_by(|a, b| {
+            js::js_to_string(a)
+                .as_units()
+                .cmp(js::js_to_string(b).as_units())
+        });
+        ids.dedup();
+        Ok(V::Array(ids))
+    };
+    let task = optional_identifier(property(raw, "taskId"), "taskId")?;
+    let turn = optional_identifier(property(raw, "turnId"), "turnId")?;
+    let request = optional_identifier(property(raw, "requestId"), "requestId")?;
+    let new_task = raw.get("newTask") == Some(&V::Bool(true));
+    let contexts = list("contextTaskIds")?;
+    let dependencies = list("dependsOn")?;
+    let mut fields = vec![
+        ("clientMsgId", client_id),
+        ("intent", intent.clone()),
+        ("text", V::String(text.trim())),
+        ("taskId", task.clone()),
+        ("newTask", V::Bool(new_task)),
+    ];
+    if let Some(value) = raw
+        .get("expectedCursorVersion")
+        .filter(|value| !value.is_nullish())
+    {
+        fields.push(("expectedCursorVersion", V::Number(js::js_to_number(value))));
+    }
+    fields.extend([
+        ("contextTaskIds", contexts.clone()),
+        ("dependsOn", dependencies.clone()),
+        ("turnId", turn.clone()),
+        ("requestId", request.clone()),
+    ]);
+    if let Some(value @ (V::Object(_) | V::Array(_))) = raw.get("unattended") {
+        fields.push(("unattended", value.clone()));
+    } else if raw.get("goal") == Some(&V::Bool(true)) {
+        fields.push(("unattended", V::Object(vec![])));
+    }
+    if let Some(lang @ V::String(_)) = raw
+        .get("lang")
+        .filter(|value| **value == V::from("zh") || **value == V::from("en"))
+    {
+        fields.push(("lang", lang.clone()));
+    }
+    if raw.get("inputSource") == Some(&V::from("voice")) {
+        let voice = match raw.get("voiceRaw") {
+            Some(V::String(text)) => V::String(text.trim().truncate_units(4000)),
+            _ => V::from(""),
+        };
+        fields.push(("voice", V::object(vec![("raw", voice)])));
+    }
+    let references = matches!(&contexts,V::Array(rows) if !rows.is_empty())
+        || matches!(&dependencies,V::Array(rows) if !rows.is_empty());
+    if intent != V::from("work")
+        && (new_task || task.is_nullish() || turn.is_nullish() || references)
+    {
+        return Err(Rejection::new(
+            "invalid_control",
+            "Controls require the original task and turn",
+        ));
+    }
+    if intent == V::from("answer") && request.is_nullish() {
+        return Err(Rejection::new(
+            "invalid_control",
+            "Answer requires requestId",
+        ));
+    }
+    Ok(V::object(fields))
+}
+
 pub fn source_shell_id(session: &str) -> String {
     format!("sh_{}", &digest(&V::from(session))[..24])
 }

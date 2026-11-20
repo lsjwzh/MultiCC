@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { hash } = require('../task-shell/context');
+const { hash } = require('../native/runtime').taskShellContext;
 const { relevance, minRelevance } = require('../context/selection');
 const { scanMemoryContent } = require('../memory-store');
 const { BUILTIN_RULES, DOCS_REGISTRY_RULE, SECRET_VAULT_RULE, SHARED_FILES_RULE } = require('./builtin-rules');

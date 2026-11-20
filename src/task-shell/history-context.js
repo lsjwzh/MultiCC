@@ -1,6 +1,6 @@
 'use strict';
 
-const { hash } = require('./context');
+const { hash } = require('../native/runtime').taskShellContext;
 
 // Canonical history stays on the execution that produced it. Task ownership is
 // an annotation, so a task's evidence can span several execution transcripts.

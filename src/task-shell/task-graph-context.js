@@ -12,7 +12,7 @@
 // detail 版本同时返回 sources（引用了哪些任务/哪份记忆、注入了哪一行），
 // 落进 receipt 后由 contextTrace 呈现在「引用来源」面板。
 
-const { estimateTokens, hash } = require('./context');
+const { estimateTokens, hash } = require('../native/runtime').taskShellContext;
 const { relevance, selectContext } = require('../context/selection');
 const { getNative } = require('../native/runtime');
 

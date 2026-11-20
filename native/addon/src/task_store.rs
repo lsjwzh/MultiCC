@@ -1,6 +1,7 @@
 use crate::guard::guard;
+use crate::js_live::LiveValue;
 use multicc_core::task_store::TaskStore;
-use napi::Result;
+use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 use std::sync::{Mutex, MutexGuard};
 // 持锁区 panic 毒化后取回内部状态，并回滚可能遗留的事务。
@@ -56,4 +57,27 @@ pub fn migrate_task_store(file: String) -> Result<String> {
             .run(r#"{"op":"migration"}"#)
             .map_err(napi::Error::from_reason)
     })
+}
+
+#[napi]
+pub fn task_shell_reference(op: String, raw: String) -> Result<String> {
+    multicc_core::task_shell::reference::request(&op, &raw).map_err(napi::Error::from_reason)
+}
+
+#[napi]
+pub fn task_shell_input(
+    env: Env,
+    raw: Unknown<'_>,
+    internal_dispatch: bool,
+) -> Result<sys::napi_value> {
+    let live = LiveValue::new(&env, raw);
+    let input = unsafe { crate::js_bridge::read_value(env.raw(), live.raw(), 0, &mut Vec::new())? };
+    let payload = multicc_core::task_shell::chat::normalize_http(&input, internal_dispatch)
+        .map_err(|error| {
+            napi::Error::from_reason(format!(
+                "TASK_RULE:{}",
+                serde_json::json!({"code":error.code,"message":error.message,"status":400})
+            ))
+        })?;
+    unsafe { crate::js_bridge::write_value(env.raw(), &payload) }
 }

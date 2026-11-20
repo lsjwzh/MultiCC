@@ -1,6 +1,6 @@
 'use strict';
 const { directoryAtCapacity } = require('./capacity');
-const { hash } = require('./context');
+const { hash } = require('../native/runtime').taskShellContext;
 const { handoffSnapshot } = require('./history-context');
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
 const safeErrorCode = error => /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(String(error?.code || ''))

@@ -1,5 +1,5 @@
 'use strict';
-const { hash, snapshotHistory, verifySnapshot, renderLazyContextPrompt } = require('./context');
+const { hash, snapshotHistory, verifySnapshot, renderLazyContextPrompt } = require('../native/runtime').taskShellContext;
 const { selectContext } = require('../context/selection');
 const { boundedSnapshot, boundedHandoff } = require('./context-snapshot');
 

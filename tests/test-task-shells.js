@@ -8,7 +8,7 @@ const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
 const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/task-shell/capacity');
-const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/task-shell/context');
+const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/native/runtime').taskShellContext;
 const { createTaskShellHost } = require('../src/task-shell/host');
 const { displayMessages, displayTask } = require('../src/task-display-attribution');
 
@@ -642,6 +642,25 @@ test('voice marker and send-time language reach delivery options; junk values ar
   assert.equal(seen[0].lang, 'en');
   assert.equal(seen[1].voice, undefined);
   assert.equal(seen[1].lang, undefined);
+});
+
+test('failed voice delivery retries the persisted payload and fingerprint', async t => {
+  const seen = [];
+  let reject = true;
+  const f = fixture(t, { send: async (_id, _text, options) => {
+    seen.push(options);
+    return reject ? { ok: false, code: 'temporary_failure' } : { ok: true };
+  } });
+  await assert.rejects(f.runtime.send(f.a.id, input('voice-retry', null, {
+    inputSource: 'voice', voiceRaw: '  重试这条语音  ', lang: 'zh',
+  })), { code: 'temporary_failure' });
+  const receipt = f.store.list('receipt')[0];
+  reject = false;
+  const result = await f.runtime.retry(f.a.id, receipt.id);
+  assert.equal(result.receiptId, receipt.id);
+  assert.equal(f.store.get('receipt', receipt.id).fingerprint, receipt.fingerprint);
+  assert.deepEqual(seen.map(options => options.voice), [{ raw: '重试这条语音' }, { raw: '重试这条语音' }]);
+  assert.deepEqual(seen.map(options => options.lang), ['zh', 'zh']);
 });
 
 test('P3: admission is refused with a reason while the task switches execution', async t => {

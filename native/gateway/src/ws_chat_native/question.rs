@@ -28,6 +28,7 @@ pub(super) struct Snapshot {
     pub version: u64,
     pub pending: V,
     pub category: V,
+    pub active: V,
 }
 
 fn initial(record: &V) -> V {
@@ -66,6 +67,7 @@ pub(super) fn read(root: &Path, id: &str, record: &V) -> Result<Snapshot, String
     let saved = orchestration_store::chat_question_snapshot(&file, id)?;
     let Some(saved) = saved else {
         return Ok(Snapshot {
+            active: V::Null,
             version: 0,
             pending: record
                 .get("taskState")
@@ -82,6 +84,7 @@ pub(super) fn read(root: &Path, id: &str, record: &V) -> Result<Snapshot, String
         js::json_parse(raw).map_err(|error| error.to_string())
     };
     Ok(Snapshot {
+        active: parse("activeTurnJson")?,
         version: saved["version"]
             .as_u64()
             .ok_or("invalid session question version")?,

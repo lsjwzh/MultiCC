@@ -156,6 +156,12 @@ pub async fn serve(options: ServeOptions) -> i32 {
             return 1;
         }
     }
+    if !options.node_enabled() {
+        if let Err(error) = crate::ws_chat_native::recover_shell_queue(&app).await {
+            log(&format!("cannot recover native task queue: {error}"));
+            return 1;
+        }
+    }
     let router = native_routes(Arc::clone(&app));
     // `--no-node`: no child is ever constructed, polled or restarted. The
     // supervisor is `None` and each connection gets a fail-closed upstream.

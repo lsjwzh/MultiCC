@@ -8,6 +8,7 @@ mod provider;
 mod question;
 mod route;
 mod shell;
+mod shell_http;
 mod store;
 
 pub use auth::ConnectionRequest;
@@ -130,6 +131,14 @@ impl Host {
     }
 
     fn publish(&self, id: &str, frame: V, replay: bool) {
+        if frame.get("type") == Some(&V::from("error")) {
+            let code = store::text(&frame, "code");
+            let detail = api_contract::sanitize(
+                frame.get("error").unwrap_or(&V::Null),
+                &JsString::from(code.as_str()),
+            );
+            eprintln!("[multicc-gateway] native chat failed ({id}): {code}: {detail}");
+        }
         if let Some(wire) = wire(&frame) {
             self.hub.publish(id, Bytes::from(wire), replay);
         }
@@ -522,19 +531,23 @@ async fn input(
                 Err(error) => {
                     Rejection::state("task_shell_failed", error.to_string()).frame(client_id)
                 }
-                Ok(Ok(None)) => shell::submit(app, id, session, shell_route, &input_message).await,
+                Ok(Ok(None)) => {
+                    submit_from_shell(app, id, session, shell_route, &input_message, shared).await
+                }
             };
-            let queued_task = if kind != "cancel"
-                && frame.get("type") == Some(&V::from("task_shell_routed"))
-                && optional_text(&frame, "sessionId").as_deref() == Some(id)
-            {
-                optional_text(&frame, "taskId")
-            } else {
-                None
-            };
+            let queued =
+                if kind != "cancel" && frame.get("type") == Some(&V::from("task_shell_routed")) {
+                    optional_text(&frame, "sessionId").zip(optional_text(&frame, "taskId"))
+                } else {
+                    None
+                };
             host.send(connection, frame);
-            if let Some(task) = queued_task {
-                shell::wake(app, id, session, task).await;
+            if let Some((execution, task)) = queued {
+                if execution == id {
+                    shell::wake(app, id, session, task).await;
+                } else if let Ok(target) = host.session(app, &execution).await {
+                    shell::wake(app, &execution, &target, task).await;
+                }
             }
         }
         Command::Message => {
@@ -555,6 +568,92 @@ async fn input(
             }
         }
     }
+}
+
+async fn submit_from_shell(
+    app: &Arc<App>,
+    addressed: &str,
+    session: &Arc<Mutex<Session>>,
+    route: ShellRoute<'_>,
+    message: &V,
+    shared: bool,
+) -> V {
+    let Some(shell_id) = route.id.filter(|_| !shared) else {
+        return shell::submit(app, addressed, session, route, message, None).await;
+    };
+    let intent = multicc_core::task_shell::chat::intent(message);
+    let (task, target) =
+        match shell::linked_target(&app.data_root, shell_id, addressed, intent).await {
+            Ok(found) => found,
+            Err(error) => return shell::delivery_error(&error),
+        };
+    let target_session = if target == addressed {
+        Arc::clone(session)
+    } else {
+        match app.native_chat.session(app, &target).await {
+            Ok(session) => session,
+            Err(error) => return shell::delivery_error(&error),
+        }
+    };
+    shell::submit(app, &target, &target_session, route, message, Some(&task)).await
+}
+
+pub(crate) async fn shell_registry(app: &App, request: Value) -> Result<Value, String> {
+    let root = app.data_root.clone();
+    shell::blocking(move || shell::registry(&root, &request)).await
+}
+
+pub(crate) async fn shell_delivery(app: &Arc<App>, request: Value) -> Result<Value, String> {
+    shell_http::deliver(app, request).await
+}
+
+pub(crate) async fn recover_shell_queue(app: &Arc<App>) -> Result<(), String> {
+    let root = app.data_root.clone();
+    let candidates = shell::blocking(move || {
+        if !root.join("orchestration.sqlite").try_exists().map_err(|error|error.to_string())?
+            && !root.join("orchestration.json").try_exists().map_err(|error|error.to_string())? {
+            return Ok(Vec::new());
+        }
+        let all = store::records(&root)?;
+        let mut queue = shell::queue_store(&root)?;
+        let mut prepared = queue.request("scheduleRecoverOwnedPrepareExperimental",&json!({"entries":[]}))?;
+        let mut entries = Vec::new();
+        for id in prepared["sessions"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            let record = store::lookup(&all,id).unwrap_or(&V::Null);
+            let mut snapshot = question::read(&root,id,record)?;
+            quota_guard::set(&mut snapshot.category,"recoveryRecordType",record.get("type").cloned().unwrap_or(V::Null));
+            entries.push(json!({"sessionId":id,"initial":{
+                "pendingQuestionJson":js::json_stringify_or_undefined(&snapshot.pending),
+                "activeTurnJson":js::json_stringify_or_undefined(&snapshot.active),
+                "categoryJson":js::json_stringify_or_undefined(&snapshot.category)}}));
+        }
+        if !entries.is_empty() { prepared = queue.request("scheduleRecoverOwnedPrepareExperimental",&json!({"entries":entries}))?; }
+        if prepared["sessions"].as_array().is_some_and(|ids| !ids.is_empty()) {
+            return Err(format!("schedule recovery backfill refused: {}",prepared["sessions"]));
+        }
+        let at = shell::now();
+        queue.request("scheduleRecoverOwnedCommitExperimental",&json!({
+            "expectedRevision":prepared["state"]["revision"],"expectedDataVersion":prepared["dataVersion"],
+            "at":at,"updatedAt":at,"facts":prepared["facts"]}))?;
+        let tasks = shell::task_store(&root)?;
+        let mut candidates = Vec::new();
+        for record in &all {
+            let id = store::text(record,"id");
+            if !store::is_claude(record) || record.get("taskExecutionSlot") == Some(&V::Bool(true)) { continue; }
+            let task = tasks.chat_task_for_session(&id)?;
+            let Some(task_id) = task["id"].as_str() else { continue; };
+            let frame = multicc_core::orchestration_store::chat_queue_snapshot(&root.join("orchestration.sqlite"),&id)?;
+            if matches!(frame.get("items"),Some(V::Array(items)) if !items.is_empty()) {
+                candidates.push((id,task_id.to_owned()));
+            }
+        }
+        Ok(candidates)
+    }).await?;
+    for (id, task) in candidates {
+        let session = app.native_chat.session(app, &id).await?;
+        shell::wake(app, &id, &session, task).await;
+    }
+    Ok(())
 }
 
 pub(crate) async fn question_access(app: &App, id: &str) -> Result<Option<bool>, String> {
@@ -713,6 +812,7 @@ async fn admit(
 
 struct RunningTurn {
     options: multicc_core::claude_process::StartInput,
+    reference_seed: String,
     turn_id: String,
     attempt_id: String,
     prompt_uuid: String,
@@ -773,6 +873,13 @@ async fn prepare_turn(
         random_id::random_uuid_v4().map_err(|error| ("internal_error", error.to_string()))?,
     );
     let mut options = launch::launch_options(state);
+    let reference_seed = match delivery {
+        Some(delivery) => delivery
+            .reference_seed(!options.launch.resume)
+            .await
+            .map_err(|error| ("task_shell_context_unavailable", error))?,
+        None => String::new(),
+    };
     let provider = provider::Provider::load(&app.data_root, &state.stored.record)
         .await
         .map_err(|error| ("chat_provider_unavailable", error))?;
@@ -872,6 +979,7 @@ async fn prepare_turn(
     host.publish(id, turn.attribute(selected), false);
     Ok(RunningTurn {
         options,
+        reference_seed,
         turn_id,
         attempt_id,
         prompt_uuid,
@@ -893,11 +1001,16 @@ async fn run_turn(
     let attempt_id = launched.attempt_id.as_str();
     let question_tool =
         question::open(&mut launched.options.launch, app, session, id, turn_id).await;
+    let provider_prompt = if launched.reference_seed.is_empty() {
+        std::borrow::Cow::Borrowed(prompt)
+    } else {
+        std::borrow::Cow::Owned(format!("{}{prompt}", launched.reference_seed))
+    };
     let result = match question_tool {
         Ok(_tool) => {
             chat_turn_host::run(
                 launched.options,
-                prompt,
+                &provider_prompt,
                 &launched.prompt_uuid,
                 launched.cancelled,
                 |event| observe(host, id, session, turn_id, event),

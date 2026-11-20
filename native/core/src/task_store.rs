@@ -9,6 +9,8 @@ use std::{
 mod chat_delivery;
 mod context;
 mod delivery;
+mod delivery_flow;
+mod registry;
 mod rules;
 mod workspace_permit;
 type Result<T> = std::result::Result<T, String>;
@@ -806,6 +808,43 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
         self.cache.clear();
         self.access = None;
     }
+    fn receipts_for_shell(&mut self, id: &str, limit: i64) -> Result<Vec<Value>> {
+        if id.is_empty() {
+            return Ok(Vec::new());
+        }
+        let meta = self.get("receipt-index-meta", "v1")?;
+        if meta.is_null() || self.receipt_watermark()? > meta["watermark"].as_i64().unwrap_or(0) {
+            self.atomic(|s| s.build_receipts())?;
+        }
+        let mut items = self.receipt_items(id)?;
+        items.sort_by_key(|v| v["rowid"].as_i64().unwrap_or(0));
+        let start = if limit > 0 {
+            items.len().saturating_sub(limit as usize)
+        } else {
+            0
+        };
+        let mut out = vec![];
+        let mut stale = false;
+        for item in &items[start..] {
+            let row = self.get("receipt", text(&item["id"]))?;
+            if row.is_null() {
+                stale = true;
+            } else {
+                out.push(row);
+            }
+        }
+        if stale {
+            let mut alive = vec![];
+            for item in items {
+                if self.body("receipt", text(&item["id"]))?.is_some() {
+                    alive.push(item);
+                }
+            }
+            self.write_receipt_items(id, alive)?;
+        }
+        Ok(out)
+    }
+
     pub fn run(&mut self, input: &str) -> Result<String> {
         let v = parse(input)?;
         let op = text(&v["op"]);
@@ -855,6 +894,16 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
             }
             "contextCommitted" => self.context_committed(text(&v["taskId"]), id)?,
             "contextTrace" => self.context_trace(id, v["includeMessages"] == true)?,
+            "shellContextTrace" => self.shell_context_trace(&v)?,
+            "shellContextSeed" => {
+                let history = crate::js::json_parse(text(&v["historyJson"])).map_err(err)?;
+                let crate::js::JsValue::Array(history) = history else {
+                    return Err("task reference history must be an array".into());
+                };
+                let fallback = text(&v["fallback"]);
+                let seed = self.shell_context_seed(id, v["first"] == true, fallback, &history)?;
+                json!(seed + &crate::task_shell::reference::lazy_context_prompt(id))
+            }
             "migration" => self.migration.clone(),
             "epoch" => json!(self.epoch(v["kinds"].as_array().ok_or("invalid_task_store_kinds")?)?),
             "cached" => {
@@ -907,45 +956,13 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
                 }
             }
             "linkByTask" => self.link_by_task(id)?,
+            "registerChatShell" => self.register_chat_shell(&v)?,
+            "adoptChatShell" => self.adopt_chat_shell(&v)?,
+            "openChatShell" => self.open_chat_shell(&v)?,
+            "shellView" => self.shell_view(id, &v["record"])?,
+            "selectChatShellTarget" => self.select_chat_shell_target(&v)?,
             "receiptsForShell" => {
-                if id.is_empty() {
-                    json!([])
-                } else {
-                    let meta = self.get("receipt-index-meta", "v1")?;
-                    if meta.is_null()
-                        || self.receipt_watermark()? > meta["watermark"].as_i64().unwrap_or(0)
-                    {
-                        self.atomic(|s| s.build_receipts())?;
-                    }
-                    let mut items = self.receipt_items(id)?;
-                    items.sort_by_key(|v| v["rowid"].as_i64().unwrap_or(0));
-                    let limit = v["limit"].as_i64().unwrap_or(100);
-                    let start = if limit > 0 {
-                        items.len().saturating_sub(limit as usize)
-                    } else {
-                        0
-                    };
-                    let mut out = vec![];
-                    let mut stale = false;
-                    for item in &items[start..] {
-                        let row = self.get("receipt", text(&item["id"]))?;
-                        if row.is_null() {
-                            stale = true;
-                        } else {
-                            out.push(row);
-                        }
-                    }
-                    if stale {
-                        let mut alive = vec![];
-                        for item in items {
-                            if self.body("receipt", text(&item["id"]))?.is_some() {
-                                alive.push(item);
-                            }
-                        }
-                        self.write_receipt_items(id, alive)?;
-                    }
-                    json!(out)
-                }
+                json!(self.receipts_for_shell(id, v["limit"].as_i64().unwrap_or(100))?)
             }
             "begin" => json!(self.begin()?),
             "commit" | "rollback" => {

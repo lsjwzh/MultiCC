@@ -101,6 +101,50 @@ fn retained_entry(content: &Value, e: &Value) -> Value {
 }
 type Resolved = Option<(String, Value)>;
 impl TaskStore {
+    fn verified_reference(&self, id: &str) -> Result<Option<crate::js::JsValue>> {
+        use crate::{js, task_shell::reference};
+        let Some(raw) = self.body("snapshot", id)? else {
+            return Ok(None);
+        };
+        let snapshot = js::json_parse(&raw).map_err(err)?;
+        if !reference::verify(&snapshot, &js::JsValue::from(id)) {
+            return Err(super::rules::conflict("snapshot_unverified"));
+        }
+        Ok(Some(snapshot))
+    }
+
+    pub fn shell_context_seed(
+        &self,
+        task_id: &str,
+        first: bool,
+        fallback: &str,
+        history: &[crate::js::JsValue],
+    ) -> Result<String> {
+        use crate::{js, task_shell::reference};
+        let task = self.get("task", task_id)?;
+        if task.is_null() {
+            return Err(super::rules::conflict("task_shell_state_unavailable"));
+        }
+        let mut snapshots = Vec::new();
+        if first && !js::serde::truthy(&task["adopted"]) {
+            for id in items(&task["snapshotIds"]) {
+                let snapshot = self
+                    .verified_reference(text(id))?
+                    .ok_or_else(|| super::rules::conflict("snapshot_unverified"))?;
+                snapshots.push(snapshot);
+            }
+            let own = reference::snapshot(&js::JsValue::from(task_id), history, None, 12_000);
+            if matches!(own.get("messages"), Some(js::JsValue::Array(rows)) if !rows.is_empty()) {
+                snapshots.push(own);
+            }
+        }
+        Ok(if fallback.is_empty() {
+            reference::render(&js::JsValue::Array(snapshots))
+        } else {
+            fallback.to_owned()
+        })
+    }
+
     fn catalog_source(&self, task: &str, key: &str) -> Result<Value> {
         Ok(self.get("context-source", &catalog_id(task, key))?["source"].clone())
     }
@@ -335,6 +379,129 @@ impl TaskStore {
         })
     }
     // 引用来源面板的数据。完整计划（进行中）与 v2 紧凑计划给出同一形状。
+    pub fn shell_context_trace(&self, facts: &Value) -> Result<Value> {
+        use super::{registry::identifier, rules::fail};
+        use crate::{js, task_shell::reference};
+
+        let session = text(&facts["sessionId"]);
+        identifier(session, "sessionId")?;
+        let owner = self.chat_task_for_session(session)?;
+        if owner.is_null() {
+            return Err(fail(
+                "task_shell_context_unavailable",
+                "This session is not owned by a task shell",
+                404,
+            ));
+        }
+        let receipt_id = text(&facts["receiptId"]);
+        identifier(receipt_id, "receiptId")?;
+        let receipt = self.get("receipt", receipt_id)?;
+        if receipt.is_null() || receipt["taskId"] != owner["id"] {
+            return Err(fail("receipt_not_found", "receipt_not_found", 404));
+        }
+        let summary = facts["summary"] == true;
+        let include = facts["includeMessages"] == true && !summary;
+        let current_id = receipt["attributedTaskId"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| text(&receipt["taskId"]));
+        let current = self.get("task", current_id)?;
+        let current = if current.is_null() { &owner } else { &current };
+        let plan = self.context_trace(receipt_id, include)?;
+        let mut sources = items(&plan["sources"]).to_vec();
+        let mut seen = std::collections::HashSet::new();
+        for (mode, ids) in [
+            ("imported", &receipt["contextSeedSnapshotIds"]),
+            ("refilled", &receipt["contextRefillSnapshotIds"]),
+        ] {
+            for id in items(ids).iter().filter_map(Value::as_str) {
+                if !seen.insert((mode.to_owned(), id.to_owned())) {
+                    continue;
+                }
+                let Some(wire) = self.verified_reference(id)? else {
+                    continue;
+                };
+                let snapshot = js::to_serde(&wire);
+                let task = text(&snapshot["taskId"]);
+                let source = self.get("task", task)?;
+                let tokens = reference::estimate(&js::JsString::from(reference::render(
+                    &js::JsValue::Array(vec![wire]),
+                )));
+                let mut entry = json!({"taskId":task,"taskName":source["title"].as_str().filter(|title| !title.is_empty()).unwrap_or(task),
+                    "mode":mode,"messageCount":items(&snapshot["messages"]).len(),
+                    "omittedExchanges":snapshot.get("omittedExchanges").filter(|value| js::serde::truthy(value)).cloned().unwrap_or(json!(0)),
+                    "estimatedTokens":tokens});
+                if include {
+                    entry["messages"] = snapshot["messages"].clone();
+                }
+                sources.push(entry);
+            }
+        }
+        for source in items(&receipt["graphContextSources"]) {
+            let Some(task) = source["taskId"].as_str().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            let kind = if js::serde::truthy(&source["kind"]) {
+                js::serde::js_string(&source["kind"])
+            } else {
+                "task".into()
+            };
+            let mode = format!("graph:{kind}");
+            if !seen.insert((mode.clone(), task.to_owned())) {
+                continue;
+            }
+            let name = if js::serde::truthy(&source["taskName"]) {
+                js::serde::js_string(&source["taskName"])
+            } else {
+                task.into()
+            };
+            let mut entry = json!({"taskId":task,"taskName":name,"mode":mode});
+            for key in ["id", "version"] {
+                if let Some(value) = source.get(key) {
+                    entry[key] = value.clone()
+                }
+            }
+            entry["truncated"] = json!(source["truncated"] == true);
+            if let Some(reason) = source.get("reason") {
+                entry["reason"] = reason.clone()
+            }
+            entry["messageCount"] = json!(0);
+            let estimate = js::serde::js_to_number(&source["estimatedTokens"]);
+            entry["estimatedTokens"] = json!(if estimate.is_nan() { 0.0 } else { estimate });
+            if include && source["excerpt"].is_string() {
+                entry["excerpt"] = source["excerpt"].clone()
+            }
+            sources.push(entry);
+        }
+        let current_id = text(&current["id"]);
+        let mut output = json!({"version":1,"traceId":receipt["id"],"currentTask":{
+            "taskId":current_id,"taskName":current["title"].as_str().filter(|title| !title.is_empty()).unwrap_or(current_id),"mode":"native"
+        }});
+        if !summary {
+            output["sources"] = json!(sources);
+        }
+        output["managedOnly"] = json!(true);
+        if summary {
+            output["summary"] = json!(true);
+            output["count"] = json!(1 + sources.len());
+        }
+        if !plan.is_null() {
+            output["budget"] = plan["budget"].clone();
+            output["contextStatus"] = plan["status"].clone();
+            if !summary {
+                for key in ["retained", "omitted", "diagnostics", "omittedCounts"] {
+                    if let Some(value) = plan.get(key) {
+                        output[key] = value.clone()
+                    }
+                }
+                if plan["detailExpired"] == true {
+                    output["detailExpired"] = json!(true);
+                }
+            }
+        }
+        Ok(output)
+    }
+
     pub(super) fn context_trace(&self, receipt_id: &str, include: bool) -> Result<Value> {
         let receipt = self.get("receipt", receipt_id)?;
         let plan = &receipt["contextPlan"];

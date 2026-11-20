@@ -383,7 +383,7 @@ fn classification(schedule: &JsValue) -> JsValue {
 /// Produces one transition without reading the clock, database or host. The
 /// caller must commit all sessions together and validate the observed snapshot.
 #[allow(dead_code)]
-pub(super) fn transition(
+pub fn transition(
     session: &str,
     schedule: Option<JsValue>,
     observed: &JsValue,

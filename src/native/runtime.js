@@ -73,5 +73,16 @@ function runNative(operation) {
 function staticVersionedHtml(file, publicDir) {
   return getNative().staticVersionedHtml(file, publicDir) ?? null;
 }
+function decodeRecoveryEvents(raw) { return getNative().decodeSchedulerRecoveryEvents(raw); }
+const reference = (op, value) => JSON.parse(getNative().taskShellReference(op, JSON.stringify(value)));
+const taskShellContext = {
+  hash: value => reference('hash', value),
+  estimateTokens: value => reference('estimate', String(value ?? '')),
+  renderSnapshots: snapshots => reference('render', snapshots),
+  renderLazyContextPrompt: taskId => reference('lazy-prompt', taskId),
+  verifySnapshot: (snapshot, id) => reference('verify', { snapshot, id }),
+  snapshotHistory: (taskId, history, { activeTurnId = null, maxBytes = 12000 } = {}) =>
+    reference('snapshot', { taskId, history, activeTurnId, maxBytes }),
+};
 module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
-  staticVersionedHtml };
+  staticVersionedHtml, decodeRecoveryEvents, taskShellContext };

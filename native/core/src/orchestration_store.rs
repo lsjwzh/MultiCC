@@ -17,6 +17,7 @@ pub mod schedule_guard;
 mod schedule_identity;
 mod schedule_metadata;
 mod schedule_recover;
+pub use schedule_recover::transition as recover_schedule_transition;
 mod schedule_settle;
 mod schema;
 mod session_work_state;
