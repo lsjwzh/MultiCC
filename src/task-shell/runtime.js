@@ -3,8 +3,8 @@ const { MAX_TASKS_PER_DIRECTORY, directoryAtCapacity } = require('./capacity');
 
 const { randomUUID } = require('node:crypto');
 const {
-  estimateTokens, snapshotHistory, renderSnapshots, verifySnapshot, hash,
-} = require('./context');
+  estimateTokens, snapshotHistory, renderSnapshots, hash,
+} = require('../native/runtime').taskShellContext;
 const { shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
 const { displayMessages, displayTask } = require('../task-display-attribution');
 const { getNative } = require('../native/runtime');
@@ -174,68 +174,8 @@ function createTaskShellRuntime(ports) {
     }
     return snapshots;
   }
-  function traceSnapshot(snapshot, mode, includeMessages) {
-    if (!verifySnapshot(snapshot, snapshot?.hash)) throw failure('snapshot_unverified');
-    const source = store.get('task', snapshot.taskId);
-    return {
-      taskId: snapshot.taskId,
-      taskName: source?.title || snapshot.taskId,
-      mode,
-      messageCount: snapshot.messages.length,
-      omittedExchanges: snapshot.omittedExchanges || 0,
-      estimatedTokens: estimateTokens(renderSnapshots([snapshot])),
-      ...(includeMessages ? { messages: snapshot.messages } : {}),
-    };
-  }
-  // summary=true 是落进聊天记录的那份：只留数量与预算，明细由面板按需走这个接口拉。
   function contextTrace(sessionId, receiptId, { includeMessages = false, summary = false } = {}) {
-    const owner = owns(identifier(sessionId, 'sessionId'));
-    if (!owner) throw failure('task_shell_context_unavailable', 'This session is not owned by a task shell', 404);
-    const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
-    if (!receipt || receipt.taskId !== owner.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
-    const current = store.get('task', receipt.attributedTaskId || receipt.taskId) || owner;
-    const plan = store.contextTrace(receiptId, includeMessages && !summary);
-    const sources = plan?.sources || [];
-    const seen = new Set();
-    for (const [mode, ids] of [
-      ['imported', receipt.contextSeedSnapshotIds],
-      ['refilled', receipt.contextRefillSnapshotIds],
-    ]) {
-      for (const id of (Array.isArray(ids) ? ids : [])) {
-        const snapshot = store.get('snapshot', id);
-        if (!snapshot || seen.has(`${mode}:${id}`)) continue;
-        seen.add(`${mode}:${id}`);
-        sources.push(traceSnapshot(snapshot, mode, includeMessages));
-      }
-    }
-    // P3 图谱上下文的引用来源：receipt 记录了注入时引用的任务与记忆节选。
-    // 摘要态不带 excerpt（面板点开「查看引用内容」时才随 detail 返回）。
-    for (const source of (Array.isArray(receipt.graphContextSources) ? receipt.graphContextSources : [])) {
-      if (!source || typeof source.taskId !== 'string' || !source.taskId) continue;
-      const mode = `graph:${source.kind || 'task'}`;
-      const dedupe = `${mode}:${source.taskId}`;
-      if (seen.has(dedupe)) continue;
-      seen.add(dedupe);
-      sources.push({
-        taskId: source.taskId,
-        taskName: String(source.taskName || source.taskId),
-        mode, id: source.id, version: source.version, truncated: source.truncated === true, reason: source.reason,
-        messageCount: 0,
-        estimatedTokens: Number(source.estimatedTokens) || 0,
-        ...(includeMessages && typeof source.excerpt === 'string' ? { excerpt: source.excerpt } : {}),
-      });
-    }
-    const head = { version: 1, traceId: receipt.id,
-      currentTask: { taskId: current.id, taskName: current.title || current.id, mode: 'native' } };
-    if (summary) return { ...head, managedOnly: true, summary: true, count: 1 + sources.length,
-      ...(plan ? { budget: plan.budget, contextStatus: plan.status } : {}) };
-    return {
-      ...head,
-      sources,
-      managedOnly: true,
-      ...(plan ? { budget: plan.budget, contextStatus: plan.status, retained: plan.retained, omitted: plan.omitted, diagnostics: plan.diagnostics,
-        ...(plan.omittedCounts ? { omittedCounts: plan.omittedCounts } : {}), ...(plan.detailExpired ? { detailExpired: true } : {}) } : {}),
-    };
+    return store.shellContextTrace({ sessionId, receiptId, includeMessages, summary });
   }
   function savingsFor(s, taskId) {
     return estimateTokens(renderSnapshots(contextSnapshots(s, taskId)));
@@ -284,61 +224,42 @@ function createTaskShellRuntime(ports) {
   }
   function open(sessionId) {
     identifier(sessionId, 'sessionId');
-    const source = getRecord(sessionId);
-    if (!source || source.kind !== 'chat' || source.taskExecutionSlot || source.experimentalMode
-      || ['aux', 'gateway'].includes(source.type) || (source.type === 'commander' && !ports.taskFirst)) throw failure('unsupported_source', 'Use an ordinary chat', 400);
+    const record = getRecord(sessionId);
     const existing = existingShell(sessionId);
-    if (existing) return existing;
-    const id = `sh_${hash(sessionId).slice(0, 24)}`;
-    const value = { id, sourceSessionId: sessionId, dirId: source.dirId, currentTaskId: null, cursorVersion: 0, standalone: !!source.taskBoundTaskId && !source.workspaceOwnerSessionId, createdAt: Date.now() };
-    saveShell(id, value); return value;
+    const opened = store.registerChatShell({ sessionId, record, taskFirst: ports.taskFirst === true });
+    if (!existing) publishStateTarget(opened.sourceSessionId);
+    return opened;
   }
   function link(shellId, taskId) {
     const s = shell(shellId); const task = taskFor(s, taskId, false);
     store.set('link', `${s.id}:${task.id}`, { shellId: s.id, taskId: task.id });
     return task;
   }
-  // Attach an existing execution without changing its native ID, worktree or
-  // transcript. New work still goes through the same receipt protocol.
+  function adoptionFacts(sessionId) {
+    const record = getRecord(sessionId);
+    if (!record) return { sessionId, record, taskFirst: ports.taskFirst === true };
+    const owned = owns(sessionId);
+    const pending = !owned?.id && !record?.taskBoundTaskId
+      ? (ports.pendingUserInput ? ports.pendingUserInput(sessionId) : record?.taskState?.pendingUserInput) : null;
+    const last = [...getHistory(sessionId)].reverse()
+      .find(message => message.taskId && !message.inherited && !ports.isDeletedTask?.(message.taskId));
+    const candidates = [owned?.id, record?.taskBoundTaskId, pending?.taskId,
+      record?.taskState?.userInputSignalTaskId, last?.taskId, `tsk_${hash(['adopt', sessionId]).slice(0, 32)}`];
+    const indexed = Object.fromEntries([...new Set(candidates.filter(Boolean))].map(id => [id, indexedTask(id)]));
+    return { sessionId, record, pending, indexed, taskFirst: ports.taskFirst === true,
+      last: last && { taskId: last.taskId, taskName: last.taskName, content: last.content?.slice?.(0, 120) } };
+  }
   function adopt(shellId, sessionId) {
-    const s = shell(shellId), record = getRecord(sessionId);
-    if (!record || record.dirId !== s.dirId || record.kind !== 'chat'
-      || record.taskExecutionSlot || ['aux', 'gateway'].includes(record.type) || (record.type === 'commander' && !ports.taskFirst)) throw failure('unsupported_source');
-    return store.transaction(() => {
-      let task = owns(sessionId);
-      const history = getHistory(sessionId);
-      const last = [...history].reverse().find(message => message.taskId && !message.inherited && !ports.isDeletedTask?.(message.taskId));
-      // Transcript annotations are evidence, not an ownership transfer. Older
-      // transcript forks copied taskId verbatim; consult the task's owner before
-      // using that hint to adopt a session with no explicit live task binding.
-      const historicalTask = last && (store.get('task', last.taskId) || indexedTask(last.taskId));
-      const historicalSessionId = historicalTask?.sessionId || historicalTask?.chatSessionId;
-      const historyTaskId = !historicalSessionId || historicalSessionId === sessionId ? last?.taskId : null;
-      const pending = !task?.id && !record.taskBoundTaskId
-        ? (ports.pendingUserInput ? ports.pendingUserInput(sessionId) : record.taskState?.pendingUserInput) : null;
-      const id = task?.id || record.taskBoundTaskId || (pending && !pending.resolved ? pending.taskId : null)
-        || record.taskState?.userInputSignalTaskId || historyTaskId
-        || `tsk_${hash(['adopt', sessionId]).slice(0, 32)}`;
-      const indexed = indexedTask(id);
-      const title = indexed?.title || (historyTaskId && last?.taskName) || record.label || last?.content?.slice?.(0, 120) || sessionId;
-      if (!task) {
-        if (store.get('task', id)) throw failure('task_identity_mismatch');
-        task = { id, dirId: s.dirId, sessionId, title, ownerShellId: s.id, taskFirst: ports.taskFirst === true,
-          parentTaskId: null, snapshotIds: [], ready: true, adopted: true, createdAt: Date.now(),
-          runtime: runtimeFrom(record) };
-        store.set('task', id, task);
-      } else if (title && task.title !== title) {
-        task.title = title;
-        store.set('task', task.id, task);
-      }
-      link(s.id, task.id);
-      if (!s.currentTaskId) {
-        s.currentTaskId = task.id;
-        s.defaultTaskId = task.id;
-        saveShell(s.id, s);
-      }
-      return task;
-    });
+    const previous = shell(shellId);
+    const task = store.adoptChatShell({ ...adoptionFacts(sessionId), shellId });
+    if (!previous.currentTaskId) publishStateTarget(previous.sourceSessionId);
+    return task;
+  }
+  function openForSession(sessionId) {
+    const previous = existingShell(sessionId);
+    const opened = store.openChatShell(adoptionFacts(sessionId));
+    if (previous?.currentTaskId !== opened.currentTaskId) publishStateTarget(opened.sourceSessionId);
+    return opened;
   }
   function locateOrCreate(shellId, identity = {}) {
     const s = shell(shellId);
@@ -420,23 +341,10 @@ function createTaskShellRuntime(ports) {
     return { ok: true };
   }
   function view(shellId) {
-    const s = shell(shellId);
-    if (!s.currentTaskId && s.defaultTaskId) {
-      s.currentTaskId = s.defaultTaskId;
-      saveShell(s.id, s);
-    }
-    // 只读这个壳自己的收据（索引见 store.js 的 receipt-shell）：收据表是任务壳
-    // 最大的一张（线上约 31MB），整表 list() 再按 shellId 过滤，等于为了 100 行
-    // 解析所有人的行，单次 /api/task-shells/:id 要 0.35s。
-    const receipts = store.receiptsForShell(s.id, 100);
-    const latestWork = [...receipts].reverse().find(receipt => receipt.payload.intent === 'work' && receipt.status === 'accepted');
-    return { ...s, enabled: true, tasks: linkedTasks(s),
-      availableTasks: store.cachedList('task').filter(t => t.dirId === s.dirId).map(t => ({ id: t.id, title: t.title })),
-      tokenSavings: latestWork?.contextSavings || null,
-      receipts: receipts.map(r => ({
-        id: r.id, clientMsgId: r.payload.clientMsgId, taskId: r.taskId, intent: r.payload.intent,
-        status: r.status, error: r.error || null, contextSavings: r.contextSavings || null,
-      })) };
+    const previous = store.get('shell', identifier(shellId, 'shellId'));
+    const viewed = store.shellView(shellId, previous ? getRecord(previous.sourceSessionId) : null);
+    if (previous?.currentTaskId !== viewed.currentTaskId) publishStateTarget(viewed.sourceSessionId);
+    return viewed;
   }
   async function detail(shellId, taskId) {
     const task = taskFor(shell(shellId), taskId);
@@ -449,33 +357,12 @@ function createTaskShellRuntime(ports) {
       snapshots: task.snapshotIds.map(id => store.get('snapshot', id)) };
   }
   function normalize(raw = {}, internalDispatch = false) {
-    const clientMsgId = identifier(raw.clientMsgId, 'clientMsgId');
-    const intent = raw.intent || 'work';
-    if (!['work', 'steer', 'answer', 'cancel'].includes(intent)) throw failure('invalid_intent', 'invalid_intent', 400);
-    if (typeof raw.text !== 'string' || (intent !== 'cancel' && !raw.text.trim()) || raw.text.length > (internalDispatch ? 270000 : 32000)) throw failure('invalid_text', 'invalid_text', 400);
-    const list = field => {
-      if (raw[field] == null) return [];
-      if (!Array.isArray(raw[field]) || raw[field].length > 3) throw failure('invalid_input', `invalid ${field}`, 400);
-      return [...new Set(raw[field].map(v => identifier(v, field)))].sort();
-    };
-    const result = { clientMsgId, intent, text: raw.text.trim(), taskId: raw.taskId == null ? null : identifier(raw.taskId, 'taskId'),
-      newTask: raw.newTask === true,
-      ...(raw.expectedCursorVersion == null ? {} : { expectedCursorVersion: Number(raw.expectedCursorVersion) }),
-      contextTaskIds: list('contextTaskIds'), dependsOn: list('dependsOn'),
-      turnId: raw.turnId == null ? null : identifier(raw.turnId, 'turnId'),
-      requestId: raw.requestId == null ? null : identifier(raw.requestId, 'requestId') };
-    // Unattended mode replaces Goal mode. First-message arming only; the
-    // legacy `goal:true` + `goalLimits` shape only signals unattended mode
-    // (`maxRounds` / `goalLimits` are ignored, never persisted).
-    if (raw.unattended && typeof raw.unattended === 'object') result.unattended = raw.unattended;
-    else if (raw.goal === true) result.unattended = {};
-    // Per-message presentation hints carried to composeMessage: the send-time
-    // UI language and the voice-dictation marker with its raw ASR transcript.
-    if (raw.lang === 'zh' || raw.lang === 'en') result.lang = raw.lang;
-    if (raw.inputSource === 'voice') result.voice = { raw: typeof raw.voiceRaw === 'string' ? raw.voiceRaw.trim().slice(0, 4000) : '' };
-    if (intent !== 'work' && (result.newTask || !result.taskId || !result.turnId || result.contextTaskIds.length || result.dependsOn.length)) throw failure('invalid_control', 'Controls require the original task and turn', 400);
-    if (intent === 'answer' && !result.requestId) throw failure('invalid_control', 'Answer requires requestId', 400);
-    return result;
+    try { return getNative().taskShellInput(raw, internalDispatch); }
+    catch (error) {
+      if (!error.message.startsWith('TASK_RULE:')) throw error;
+      const detail = JSON.parse(error.message.slice(10));
+      throw failure(detail.code, detail.message, detail.status);
+    }
   }
   async function reserve(s, payload, receiptId, fingerprint, delivery = {}) {
     if (s.standalone && payload.newTask) throw failure('standalone_task_identity_locked');
@@ -522,64 +409,26 @@ function createTaskShellRuntime(ports) {
     return created ? { ...receipt, payload } : receipt;
   }
   async function deliver(receipt) {
-    if (receipt.status === 'accepted') {
-      // Re-read the durable operation through its idempotent admission: cached
-      // queue/status from the original receipt may be days out of date.
-      if (receipt.dispatch) return { ...receipt.result, ...await dispatchReceipt(receipt), duplicate: true };
-      return receipt.result;
-    }
-    const task = store.get('task', receipt.taskId);
-    if (!task.ownerShellId) { task.ownerShellId = taskActions.ownerOf(task)?.id || receipt.shellId; store.set('task', task.id, task); }
-    const needsCapacity = receipt.payload.intent === 'work';
+    const task = store.get('task', receipt.taskId) || { id: receipt.taskId };
+    const needsCapacity = receipt.payload.intent === 'work' && receipt.status !== 'accepted';
+    const effects = { capacity: checkCapacity, createExecution, indexTask, getExecution, cancel, send,
+      prepareExecution: (...args) => ports.prepareExecution(...args),
+      dispatch: (id, text, options) => { assertWritable(options.taskId); return ports.dispatch(id, text, options); } };
     if (needsCapacity) launching.add(task.id);
     try {
-      if (needsCapacity && !ports.unifiedAdmission) await checkCapacity(task);
-      if (!task.ready) {
-        const created = await createExecution(task, task.runtime);
-        if (!created?.ok) throw failure(created?.code || 'execution_create_failed', created?.error || 'execution_create_failed', 500);
-        task.ready = true; task.baseline = created.baseline;
-        store.set('task', task.id, task);
+      let phase = 'begin', value;
+      for (;;) {
+        const next = store.rule({ action: 'deliveryStep', receiptId: receipt.id, phase, value,
+          unifiedAdmission: ports.unifiedAdmission === true, prepareExecution: typeof ports.prepareExecution === 'function' });
+        if (next.done) {
+          if (next.stateSource) publishStateTarget(next.stateSource);
+          return next.result;
+        }
+        value = await effects[next.effect](...next.args);
+        phase = next.phase;
       }
-      if (ports.prepareExecution) await ports.prepareExecution(task, taskActions.ownerOf(task));
-      const indexed = await indexTask(task);
-      if (!indexed?.ok) throw failure('task_index_failed', indexed?.error || 'task_index_failed', 500);
-      let result;
-      const p = receipt.payload;
-      if (p.intent === 'cancel') {
-        // An ambiguous cancel cannot kill a newer turn after a retry/restart.
-        const state = await getExecution(task.sessionId);
-        if (!state || p.turnId !== state.turnId) throw failure('stale_control', 'The task has moved to another turn');
-        result = await cancel(task.sessionId, p.turnId);
-      } else if (receipt.dispatch) {
-        receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
-        result = await dispatchReceipt(receipt);
-      } else {
-        const metadata = receipt.taskMetadata || {};
-        // 路由评估在队列消费时完成，不阻塞消息可靠入队的回执。
-        receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
-        result = await send(task.sessionId, p.text, {
-          taskId: task.id, taskStart: receipt.taskIdentityLocked ? metadata.taskStart !== false : true,
-          taskText: receipt.taskIdentityLocked ? (metadata.taskStart === false ? null : metadata.taskText || p.text) : p.intent === 'work' ? p.text : task.title,
-          taskSource: 'task-shell',
-          clientMsgId: receipt.id, idempotencyKey: receipt.id, taskShellReceiptId: receipt.id,
-          receivedAt: receipt.createdAt,
-          ...(p.unattended ? { unattended: p.unattended } : {}),
-          ...(p.lang ? { lang: p.lang } : {}), ...(p.voice ? { voice: p.voice } : {}),
-          ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
-          taskContextSeed: '',
-          taskShellAutoClassify: p.intent === 'work' && p.newTask !== true && !receipt.taskIdentityLocked && !taskActions.ownerOf(task)?.standalone,
-          ...(p.intent === 'answer' ? { userInputRequestId: p.requestId } : {}),
-          ...(p.intent === 'answer' && receipt.supervisorAnswer === true
-            ? { unattendedSystem: true, unattendedRecovery: true, system: true } : {}),
-          ...(p.intent === 'steer' || ['continue', 'queued'].includes(receipt.decision) ? { originContinue: true } : {}),
-        });
-      }
-      if (!result?.ok) throw failure(result?.code || 'delivery_failed', result?.error || result?.code || 'delivery_failed');
-      const settled = store.rule({ action: 'settleReceipt', receiptId: receipt.id, sessionId: task.sessionId,
-        dispatchResult: receipt.dispatch ? result : undefined });
-      if (settled.stateSource) publishStateTarget(settled.stateSource);
-      return settled.result;
     } catch (error) {
+      if (receipt.status === 'accepted') throw error;
       const cleaned = cleanError(error);
       const deliveryError = Object.assign(failure(cleaned.code, cleaned.message, error.status || error.statusCode || 500),
         { receiptId: receipt.id, taskId: task.id, notDelivered: error.code === 'stale_control' });
@@ -616,15 +465,6 @@ function createTaskShellRuntime(ports) {
     })();
     flights.set(id, operation);
     try { return await operation; } finally { flights.delete(id); }
-  }
-  function dispatchReceipt(receipt) {
-    const task = store.get('task', receipt.taskId);
-    assertWritable(task.id);
-    return ports.dispatch(task.sessionId, receipt.payload.text, {
-      ...receipt.dispatch, taskId: task.id, taskStart: false, taskSource: 'task-shell',
-      clientMsgId: receipt.id, idempotencyKey: receipt.dispatch.idempotencyKey || receipt.id,
-      taskShellReceiptId: receipt.id, receivedAt: receipt.createdAt,
-    });
   }
   function dispatchFromSession(sessionId, text, options = {}) {
     if (typeof ports.dispatch !== 'function') throw failure('dispatch_unavailable');
@@ -759,7 +599,7 @@ function createTaskShellRuntime(ports) {
     const s = shell(shellId);
     const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
     if (!receipt || receipt.shellId !== s.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
-    return sendInput(s.id, receipt.payload, { taskIdentityLocked: receipt.taskIdentityLocked,
+    return deliverInput(s, receipt.payload, receipt.id, receipt.fingerprint, { taskIdentityLocked: receipt.taskIdentityLocked,
       taskMetadata: receipt.taskMetadata, dispatch: receipt.dispatch,
       supervisorAnswer: receipt.supervisorAnswer === true });
   }
@@ -788,25 +628,10 @@ function createTaskShellRuntime(ports) {
   function selectTarget(shellId, { taskId, expectedCursorVersion } = {}) {
     const s = shell(shellId);
     const id = identifier(taskId, 'taskId');
-    if (s.standalone && s.currentTaskId && id !== s.currentTaskId) throw failure('standalone_task_identity_locked');
-    if (!store.get('link', `${s.id}:${id}`)) throw failure('task_not_linked', 'This task is not part of the conversation', 403);
-    const task = store.get('task', id);
-    if (!task || task.dirId !== s.dirId) throw failure('task_not_found', 'Task not found', 404);
-    const indexed = indexedTask(id);
-    if (ports.isDeletedTask?.(id)) throw failure('task_deleted');
-    if (indexed?.deleting) throw failure('task_deleting');
-    if (indexed?.status === 'archived') throw failure('task_archived');
-    if (expectedCursorVersion != null && Number(expectedCursorVersion) !== (s.cursorVersion || 0)) {
-      throw failure('stale_shell_cursor', 'The current task changed; refresh before choosing another one');
-    }
-    if (s.currentTaskId === id) return { ok: true, taskId: id, cursorVersion: s.cursorVersion || 0, changed: false };
-    return store.transaction(() => {
-      s.currentTaskId = id;
-      s.cursorVersion = (s.cursorVersion || 0) + 1;
-      s.cursorReceiptId = null;
-      saveShell(s.id, s);
-      return { ok: true, taskId: id, cursorVersion: s.cursorVersion, changed: true };
-    });
+    const result = store.selectChatShellTarget({ shellId, taskId: id, expectedCursorVersion,
+      indexed: indexedTask(id), deleted: ports.isDeletedTask?.(id) === true });
+    if (result.changed) publishStateTarget(s.sourceSessionId);
+    return result;
   }
   function guardAdmission(sessionId, text, options = {}) {
     const task = owns(sessionId);
@@ -878,7 +703,7 @@ function createTaskShellRuntime(ports) {
     taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link'),
       relations: store.list('relation') }),
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
-    ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, sendChatInput, retry, owns,
+    ...taskActions, purgeTasks, stateTarget, stateSources, open, openForSession, adopt, link, remove, view, detail, chatScope, send: sendInput, sendChatInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
     resolveTask, selectTarget, sendExplicit, dispatchFromSession, relocateTask, independent, relations,
   };

@@ -310,6 +310,7 @@ async function gitWorktreeCommitAll(worktreePath, message, opts = {}) {
 }
 
 async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
+  if (opts.planned) return gitMaterializePlannedWorktree(dirPath, sessionId, baseBranch);
   const worktreePath = path.join(dirPath, WORKTREE_SUBDIR, sessionId);
   const branch = `multicc/${sessionId}`;
   return defaultRepoActor.run(dirPath, 'worktree-add', async ({ execGit, progress }) => {
@@ -348,6 +349,12 @@ async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
       : ['worktree', 'add', worktreePath, '-b', branch, baseBranch]);
     return restored({ ok: true, worktreePath, branch, existing: false });
   }, { ...opts, sessionId });
+}
+
+async function gitMaterializePlannedWorktree(dirPath, sessionId, source) {
+  return defaultRepoActor.run(dirPath, 'worktree-add', async () =>
+    JSON.parse(await require('../native/runtime').getNative().materializePlannedWorktree(dirPath, sessionId, source)),
+  { sessionId });
 }
 
 function worktreeBlocks(raw) {

@@ -64,7 +64,7 @@ This is the default startup profile, not complete feature coverage. Plugins, con
 | src/routes/share-machines-host.js:239 | POST | "/api/__host/share-machines" |  | <anonymous> |
 | src/routes/system-host.js:70 | POST | "/api/__host/system" |  | <anonymous> |
 | src/routes/host-read-host.js:138 | POST | "/api/__host/host-read" |  | <anonymous> |
-| src/routes/task-shell-host.js:194 | POST | "/api/__host/task-shell" |  | <anonymous> |
+| src/task-shell/host.js:528 | POST | "/api/__host/task-shell" |  | <anonymous> |
 | src/routes/task-routes-host.js:232 | POST | "/api/__host/task-routes" |  | <anonymous> |
 | src/routes/model-catalogs-host.js:141 | POST | "/api/__host/model-catalogs" |  | <anonymous> |
 | src/routes/provider-relay-host.js:9 | POST | "/api/__host/provider-relay" |  | <anonymous> |

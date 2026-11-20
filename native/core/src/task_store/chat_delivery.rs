@@ -53,6 +53,95 @@ fn check_control(payload: &Value, state: &Value) -> Result<()> {
 }
 
 impl TaskStore {
+    pub fn delivery_record(&self, kind: &str, id: &str) -> Result<Value> {
+        self.get(kind, id)
+    }
+
+    pub fn delivery_role_prompt(&self, receipt: &Value) -> Result<Value> {
+        Ok(
+            self.verified_role(text(&receipt["roleSnapshotId"]), text(&receipt["taskId"]))?
+                ["prompt"]
+                .clone(),
+        )
+    }
+
+    pub fn reserve_http_chat_input(&mut self, facts: &Value, raw: &V) -> Result<Value> {
+        let payload = chat::normalize_http(raw, false)
+            .map_err(|error| fail(error.code, &error.message, 400))?;
+        let payload_facts = js::to_serde(&payload);
+        let shell_id = text(&facts["shellId"]);
+        let (id, fingerprint) = chat::receipt_identity(shell_id, &payload);
+        self.atomic(|store| {
+            let shell = store.shell_record(shell_id)?;
+            let previous = store.get("receipt", &id)?;
+            if !previous.is_null() {
+                if previous["shellId"] != shell_id || previous["fingerprint"] != fingerprint {
+                    return Err(conflict("idempotency_conflict"));
+                }
+                if previous["nativeAdmission"] != true {
+                    return Err(conflict("chat_route_unavailable"));
+                }
+                return Ok(
+                    json!({"receipt":previous,"task":store.get("task",text(&previous["taskId"]))?}),
+                );
+            }
+            let target = if payload_facts["newTask"] == true {
+                ""
+            } else if !text(&payload_facts["taskId"]).is_empty() {
+                text(&payload_facts["taskId"])
+            } else {
+                selected_task(&shell)
+            };
+            let task = store.get("task", target)?;
+            if !target.is_empty() {
+                let board = &facts["board"];
+                if items(&board["deletedTaskIds"])
+                    .iter()
+                    .any(|id| id == target)
+                {
+                    return Err(conflict("task_deleted"));
+                }
+                if js::serde::truthy(&board["tasks"][target]["deleting"]) {
+                    return Err(conflict("task_deleting"));
+                }
+                if board["tasks"][target]["status"] == "archived" || task["status"] == "archived" {
+                    return Err(conflict("task_archived"));
+                }
+            }
+            let mut request = facts.clone();
+            request["sourceSessionId"] = shell["sourceSessionId"].clone();
+            request["dirId"] = shell["dirId"].clone();
+            request["targetId"] = json!(target);
+            request["targetSessionId"] = task["sessionId"].clone();
+            request["observedClaim"] = store.get("claim", target)?["receiptId"].clone();
+            request["expectedCursorSet"] =
+                json!(payload_facts.get("expectedCursorVersion").is_some());
+            request["receiptId"] = json!(id);
+            request["fingerprint"] = json!(fingerprint);
+            request["nativeAdmission"] = json!(true);
+            request["taskFirst"] = json!(true);
+            let reserved = store.reserve_receipt_in_tx(&request, &payload_facts, payload)?;
+            let receipt = &reserved["receipt"];
+            Ok(json!({"receipt":receipt,"task":store.get("task",text(&receipt["taskId"]))?}))
+        })
+    }
+
+    pub fn activate_chat_execution(&mut self, task_id: &str, record: &Value) -> Result<Value> {
+        self.atomic(|store| {
+            let mut task = store.get("task", task_id)?;
+            if task.is_null()
+                || task["sessionId"] != record["id"]
+                || task["dirId"] != record["dirId"]
+                || record["taskBoundTaskId"] != task_id
+            {
+                return Err(conflict("execution_identity_conflict"));
+            }
+            task["ready"] = json!(true);
+            store.put("task", task_id, &task)?;
+            Ok(task)
+        })
+    }
+
     pub(super) fn reserve_receipt(&mut self, facts: &Value) -> Result<Value> {
         // Keep the original payload's UTF-16 strings, including a voice
         // transcript truncated at a surrogate, in the stored receipt.
@@ -319,7 +408,7 @@ impl TaskStore {
                         store.remove("answer", &key)?;
                     }
                 }
-                store.set("receipt", id, &receipt.to_string())?;
+                store.put_delivery_receipt(id, &receipt)?;
                 return Ok(Value::Null);
             }
 
@@ -336,7 +425,7 @@ impl TaskStore {
             receipt["status"] = json!("accepted");
             receipt["error"] = Value::Null;
             receipt["result"] = result.clone();
-            store.set("receipt", id, &receipt.to_string())?;
+            store.put_delivery_receipt(id, &receipt)?;
             let mut source = Value::Null;
             if receipt["payload"]["intent"] == "work" {
                 let shell_id = text(&receipt["shellId"]);
@@ -360,7 +449,7 @@ impl TaskStore {
         })
     }
 
-    fn chat_task_for_session(&self, session: &str) -> Result<Value> {
+    pub fn chat_task_for_session(&self, session: &str) -> Result<Value> {
         let indexed = self.get("task-session", session)?;
         if let Some(task_id) = indexed["taskId"].as_str() {
             let task = self.get("task", task_id)?;
@@ -373,6 +462,45 @@ impl TaskStore {
             .into_iter()
             .find_map(|(_, _, task)| (task["sessionId"] == session).then_some(task))
             .unwrap_or(Value::Null))
+    }
+
+    /// Resolve a shell cursor from the same scoped rows used for reconnect.
+    /// Reservation revalidates the target and control identity before writing.
+    pub fn linked_chat_target(
+        file: &Path,
+        shell_id: &str,
+        addressed: &str,
+        scoped_directory: impl Fn(&str, Option<&Value>) -> bool,
+        intent: Intent,
+    ) -> Result<(String, String)> {
+        let store = Self::open_chat_reader(file)?.ok_or_else(|| conflict("shell_not_found"))?;
+        store.chat_scope(shell_id, addressed, &scoped_directory)?;
+        let shell = store.get("shell", shell_id)?;
+        let addressed_task = if intent == Intent::Work {
+            Value::Null
+        } else {
+            store.chat_task_for_session(addressed)?
+        };
+        let task_id = text(&addressed_task["id"]);
+        let target = if !task_id.is_empty()
+            && !store
+                .get("link", &format!("{shell_id}:{task_id}"))?
+                .is_null()
+        {
+            addressed_task
+        } else {
+            store.get("task", selected_task(&shell))?
+        };
+        let task_id = text(&target["id"]);
+        let session = text(&target["sessionId"]);
+        if task_id.is_empty()
+            || target["ready"] != true
+            || target.get("dirId") != shell.get("dirId")
+            || !scoped_directory(session, shell.get("dirId"))
+        {
+            return Err(conflict("chat_route_unavailable"));
+        }
+        Ok((task_id.into(), session.into()))
     }
 
     /// Admit only an execution that already owns the addressed task, and bind
@@ -399,7 +527,13 @@ impl TaskStore {
             };
             Self::validate_chat_shell_id(&shell_id)?;
             let shell = store.get("shell", &shell_id)?;
-            let task = store.get("task", selected_task(&shell))?;
+            let control = text(&facts["controlTaskId"]);
+            let target_id = if intent != Intent::Work && !control.is_empty() {
+                control
+            } else {
+                selected_task(&shell)
+            };
+            let task = store.get("task", target_id)?;
             let id = text(&task["id"]);
             if id.is_empty()
                 || task["ready"] != true

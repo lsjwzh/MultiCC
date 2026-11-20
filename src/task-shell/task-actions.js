@@ -1,6 +1,6 @@
 'use strict';
 
-const { hash } = require('./context');
+const { hash } = require('../native/runtime').taskShellContext;
 const { historySnapshot, shellRecords } = require('./history-context');
 const { displayMessages, displayTask } = require('../task-display-attribution');
 const { directoryAtCapacity } = require('./capacity');

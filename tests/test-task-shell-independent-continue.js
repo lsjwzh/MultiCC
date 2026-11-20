@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createIndependentContinuation } = require('../src/task-shell/independent-continue');
-const { hash } = require('../src/task-shell/context');
+const { hash } = require('../src/native/runtime').taskShellContext;
 
 function fakeStore(seed = {}) {
   const data = new Map();

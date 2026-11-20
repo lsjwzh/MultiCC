@@ -1,6 +1,6 @@
 'use strict';
 
-const { hash } = require('./context');
+const { hash } = require('../native/runtime').taskShellContext;
 const { planAttributionAction } = require('../task-routing/attribution-mode');
 
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });

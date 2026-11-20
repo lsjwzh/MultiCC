@@ -1,6 +1,6 @@
 'use strict';
 
-const { hash } = require('./context');
+const { hash } = require('../native/runtime').taskShellContext;
 const { projectShellMessages } = require('./chat-history');
 
 // The index is a metadata-only directory of a shell's conversation: which

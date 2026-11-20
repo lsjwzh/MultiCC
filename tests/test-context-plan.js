@@ -5,7 +5,7 @@ const fs = require('node:fs'), path = require('node:path');
 const { fixture } = require('./helpers/task-shell');
 const { createFolderMemoryService } = require('../src/memory/folder-service');
 const { readMemoryFolder } = require('../src/memory-store');
-const { estimateTokens } = require('../src/task-shell/context');
+const { estimateTokens } = require('../src/native/runtime').taskShellContext;
 const { selectContext } = require('../src/context/selection');
 const { prepareManagedContext, contextSent, contextCompleted } = require('../src/chat/managed-context');
 
@@ -258,7 +258,7 @@ test('separation injects only the imported exchange but explicit reads reach the
 test('oversized imported history remains parseable, verifiable and expandable with honest truncation', () => {
   const { historySnapshot } = require('../src/task-shell/history-context');
   const { boundedSnapshot } = require('../src/task-shell/context-snapshot');
-  const { verifySnapshot } = require('../src/task-shell/context');
+  const { verifySnapshot } = require('../src/native/runtime').taskShellContext;
   const original = historySnapshot('task', [
     { id: 'u', role: 'user', content: '需求'.repeat(9000), contextMessageId: 's:u' },
     { id: 'a', role: 'assistant', content: '证据'.repeat(9000), partial: true, contextMessageId: 's:a' },

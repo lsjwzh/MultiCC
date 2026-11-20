@@ -3,10 +3,8 @@
 const {
   turnOutcomeForClassify, runStateForClassify, CLASSIFY_STATES,
   isProcessingLetter, isWaitForUserLetter, isTerminalLetter, isAbnormalLetter,
-  isOutcomeLetter,
 } = require('../classify/vocab');
-const { getNative } = require('../native/runtime');
-const { decodeRecoveryEvents } = require('./recovery-transport');
+const { getNative, decodeRecoveryEvents } = require('../native/runtime');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
@@ -174,20 +172,6 @@ function classifyStateForSchedule(schedule) {
   return 'D';
 }
 
-// The letter of a freeze → the freezeReason that records it. A lookup, not a
-// decision: the two directions of this map must stay exact inverses of
-// FREEZE_REASON_CLASSIFY (the W/B/E entries above), and a letter missing here
-// (D, and the retired C) means "still being driven" → classify_running.
-const FREEZE_REASON_BY_CLASSIFY = Object.freeze({
-  W: 'classify_waiting',
-  B: 'classify_background',
-  E: 'classify_error',
-});
-
-function freezeReasonForClassify(classifyState) {
-  return FREEZE_REASON_BY_CLASSIFY[classifyState] || 'classify_running';
-}
-
 function classifyStateForReason(reason) {
   const key = String(reason || '');
   return Object.prototype.hasOwnProperty.call(FREEZE_REASON_CLASSIFY, key)
@@ -351,13 +335,6 @@ function createSessionWorkScheduler({
     try { onEvent(event); } catch (_) {}
     try { log(`[session-scheduler] ${type} ${JSON.stringify(publicFields)}`); } catch (_) {}
     return event;
-  }
-
-  function ensure(draft, sessionId, at = Number(now())) {
-    if (!draft.sessionSchedules[sessionId]) {
-      draft.sessionSchedules[sessionId] = newSchedule(sessionId, at);
-    }
-    return draft.sessionSchedules[sessionId];
   }
 
   function queueForDraft(draft, sessionId) {
@@ -852,198 +829,6 @@ function createSessionWorkScheduler({
     });
   }
 
-  // Legacy in-draft recovery for stores without the synchronous Rust command
-  // bridge (test doubles and the frozen worker-race harness). The production
-  // SQLite store takes the owner path, which observes and commits inside one
-  // queue turn; this fallback keeps the old observable behaviour — including
-  // its await-before-observe race — for stores that cannot offer that.
-  function legacyRecover(stateForSession) {
-    return store.mutate(draft => {
-      const at = Number(now());
-      const changes = [];
-      const sessionIds = new Set([
-        ...Object.keys(draft.sessionSchedules),
-        ...(typeof draft.select === 'function'
-          ? draft.select('outbox', { where: { state: ['pending', 'leased'] } })
-          : Object.values(draft.outbox))
-          .filter(item => item.state === 'pending' || item.state === 'leased')
-          .map(item => item.sessionId),
-      ]);
-      for (const sessionId of sessionIds) {
-        let schedule = draft.sessionSchedules[sessionId];
-        const recoveredState = stateForSession(sessionId) || {};
-        const recoveredClassify = CLASSIFY_STATES.has(recoveredState.classifyState)
-          ? recoveredState.classifyState
-          : null;
-        if (!schedule) {
-          schedule = ensure(draft, sessionId, at);
-          schedule.classifyState = recoveredClassify;
-          // Recovery cannot reconstruct the original verdict wall-clock; keep
-          // the recovery time only as diagnostic metadata.
-          schedule.classifyStateAt = at;
-          // A pending outbox item is not evidence of an active task. This is
-          // especially important now that the public FIFO includes callbacks:
-          // a lone task.interrupted notification must remain deliverable.
-          // Rebuild a legacy active pointer only from an explicit non-D
-          // classify fact.
-          // Rebuild a legacy active pointer only from an explicit non-outcome
-          // classify fact: a parked or mid-turn verdict still owns the slot, a
-          // finished one (D/E) does not.
-          if (recoveredClassify && !isOutcomeLetter(recoveredClassify)) {
-            schedule.active = {
-              entryId: `legacy-active:${sessionId}`,
-              deliveryId: null,
-              taskId: recoveredState.taskId || null,
-              originDispatchId: recoveredState.originDispatchId || null,
-              source: 'legacy',
-              workKind: 'task',
-              admittedAt: recoveredState.startedAt || at,
-              startedAt: recoveredState.startedAt || null,
-              attempt: 0,
-              legacy: true,
-            };
-            schedule.state = recoveredClassify ? 'frozen' : 'assessing';
-            schedule.freezeReason = recoveredClassify
-              ? freezeReasonForClassify(recoveredClassify) : null;
-            schedule.updatedAt = at;
-            changes.push({
-              type: 'frozen',
-              sessionId,
-              reason: schedule.freezeReason,
-            });
-          }
-          continue;
-        }
-        if (recoveredClassify) {
-          schedule.classifyState = recoveredClassify;
-          schedule.classifyStateAt = at;
-        }
-        const classifyState = classifyStateForSchedule(schedule);
-        if (!schedule.active) {
-          schedule.state = 'idle';
-          schedule.freezeReason = null;
-          schedule.awaitingRequestId = null;
-          schedule.updatedAt = at;
-          continue;
-        }
-        const activeDelivery = schedule.active.deliveryId
-          ? draft.outbox[schedule.active.deliveryId]
-          : null;
-        const deliveryNeedsAck = activeDelivery
-          && (activeDelivery.state === 'pending' || activeDelivery.state === 'leased');
-        if (isAbnormalLetter(classifyState)) {
-          const completed = clone(schedule.active);
-          schedule.active = null;
-          schedule.state = 'idle';
-          schedule.freezeReason = null;
-          schedule.awaitingRequestId = null;
-          schedule.lastDecision = {
-            action: completed.supersededByEntryId ? 'superseded' : 'complete',
-            reason: completed.supersededByEntryId
-              ? 'superseded_by_immediate_insert' : 'recovered-classify-E',
-            entryId: completed.entryId,
-            taskId: completed.taskId || null,
-            originDispatchId: completed.originDispatchId || null,
-            supersededByEntryId: completed.supersededByEntryId || null,
-            at,
-          };
-          schedule.updatedAt = at;
-          changes.push({
-            type: 'completed',
-            sessionId,
-            entryId: completed.entryId,
-            taskId: completed.taskId || null,
-            classifyState: 'E',
-            turnOutcome: 'failed',
-            queued: queueForDraft(draft, sessionId).length,
-            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
-          });
-          continue;
-        }
-        if (isTerminalLetter(classifyState)) {
-          if (!recoveredSuccessProven(schedule, recoveredState)) {
-            schedule.classifyState = 'P';
-            schedule.state = 'assessing';
-            schedule.freezeReason = null;
-            schedule.updatedAt = at;
-            changes.push({
-              type: 'assessing',
-              sessionId,
-              entryId: schedule.active.entryId,
-              taskId: schedule.active.taskId || null,
-              queued: queueForDraft(draft, sessionId).length,
-              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
-            });
-            continue;
-          }
-          if (deliveryNeedsAck) {
-            schedule.state = 'frozen';
-            schedule.freezeReason = 'delivery_recovery';
-            schedule.updatedAt = at;
-            changes.push({
-              type: 'frozen',
-              sessionId,
-              entryId: schedule.active.entryId,
-              taskId: schedule.active.taskId || null,
-              reason: schedule.freezeReason,
-              queued: queueForDraft(draft, sessionId).length,
-              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
-            });
-            continue;
-          }
-          const completed = clone(schedule.active);
-          schedule.active = null;
-          schedule.state = 'idle';
-          schedule.freezeReason = null;
-          schedule.awaitingRequestId = null;
-          schedule.lastDecision = {
-            action: completed.supersededByEntryId ? 'superseded' : 'complete',
-            reason: completed.supersededByEntryId
-              ? 'superseded_by_immediate_insert' : 'recovered-classify-D',
-            entryId: completed.entryId,
-            taskId: completed.taskId || null,
-            originDispatchId: completed.originDispatchId || null,
-            supersededByEntryId: completed.supersededByEntryId || null,
-            at,
-          };
-          schedule.updatedAt = at;
-          changes.push({
-            type: 'completed',
-            sessionId,
-            entryId: completed.entryId,
-            taskId: completed.taskId || null,
-            classifyState: 'D',
-            turnOutcome: 'succeeded',
-            queued: queueForDraft(draft, sessionId).length,
-            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
-          });
-          continue;
-        }
-        if (CLASSIFY_STATES.has(classifyState)) {
-          schedule.state = 'frozen';
-          schedule.freezeReason = freezeReasonForClassify(classifyState);
-          schedule.updatedAt = at;
-          changes.push({
-            type: 'frozen',
-            sessionId,
-            entryId: schedule.active.entryId,
-            taskId: schedule.active.taskId || null,
-            reason: schedule.freezeReason,
-            queued: queueForDraft(draft, sessionId).length,
-            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
-          });
-          continue;
-        }
-        // Process liveness is not a FIFO semantic. An unknown legacy state must
-        // wait for classify instead of inventing a running/frozen decision.
-        schedule.state = 'assessing';
-        schedule.freezeReason = null;
-        schedule.updatedAt = at;
-      }
-      return changes;
-    });
-  }
-
   async function recover({
     stateForSession = () => null,
   } = {}) {
@@ -1064,7 +849,8 @@ function createSessionWorkScheduler({
       });
       events = decodeRecoveryEvents(committed.resultJson);
     } else {
-      events = await legacyRecover(stateForSession);
+      events = await store.mutate(draft => getNative().scheduleRecoverLive(
+        draft, stateForSession, now, queueForDraft, publicSchedule));
     }
     const summaries = new Map((await queueSummaries(events.map(event => event.sessionId)))
       .map(summary => [summary.sessionId, summary]));

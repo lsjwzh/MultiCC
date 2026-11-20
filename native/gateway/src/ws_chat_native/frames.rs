@@ -231,6 +231,10 @@ pub(super) fn provider_failure(
         return V::Null;
     }
     let safe = super::property(&fallback, "error");
+    eprintln!(
+        "[multicc-gateway] native provider failed ({id}): {}",
+        js::js_to_string(&safe).to_string_lossy()
+    );
     let now = auth_runtime::now_ms();
     let raw = value(json!({"message":js::to_serde(&safe),"code":code}));
     let cli = super::property(&turn.route.scope, "cli");

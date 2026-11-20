@@ -215,7 +215,7 @@ function createWorkspaceAdmission(deps) {
       if (!ready.ok) throw directoryNotReady(id, dir, ready.reason);
       // gitWorktreeAdd resumes the same branch/path after an interrupted create;
       // it never rotates a fixed slot or overwrites another task's directory.
-      const result = await deps.addWorktree(dir.path, source.id, source.workspaceBaseCommit || dir.baseBranch);
+      const result = await deps.addWorktree(dir.path, source.id, source.workspaceBaseCommit || dir.baseBranch, { planned: true });
       deps.persistence.mutate('workspace.materialize', records => {
         const current = records.get(source.id);
         Object.assign(current, result, { workspaceState: 'awake', workspaceId: lease.workspaceId });

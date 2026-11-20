@@ -16,13 +16,24 @@ function createTaskShellStore(file) {
   // 打开时做过 v1→v2 迁移就报一次结果（只有计数、耗时与备份路径，不含用户数据）。
   const migration = run({ op: 'migration' });
   if (migration?.stats?.rows) console.info('[multicc] 任务仓储已升级到 v2', migration);
-  function rule(command) {
-    try { return run({ ...command, op: 'rule' }); }
+  function commandWithRules(input) {
+    try { return run(input); }
     catch (error) {
       if (!error.message.startsWith('TASK_RULE:')) throw error;
       const { code, message, status } = JSON.parse(error.message.slice(10));
       throw Object.assign(new Error(message), { code, status });
     }
+  }
+  function shellProjection(input) {
+    const view = commandWithRules(input);
+    // The host also consumes the view before JSON serialization, where older
+    // receipts still have own properties whose values are undefined.
+    view.receipts = view.receipts.map(row => Object.assign({
+      id: undefined, clientMsgId: undefined, taskId: undefined, intent: undefined,
+      status: undefined, error: null, contextSavings: null,
+    }, row));
+    view.availableTasks = view.availableTasks.map(row => Object.assign({ id: undefined, title: undefined }, row));
+    return view;
   }
   const mirrors = new Map();
   function cached(shape, kind) {
@@ -33,7 +44,12 @@ function createTaskShellStore(file) {
   }
   return {
     backend: 'rust',
-    rule,
+    rule: command => commandWithRules({ ...command, op: 'rule' }),
+    registerChatShell: facts => commandWithRules({ ...facts, op: 'registerChatShell' }),
+    adoptChatShell: facts => commandWithRules({ ...facts, op: 'adoptChatShell' }),
+    openChatShell: facts => shellProjection({ ...facts, op: 'openChatShell' }),
+    selectChatShellTarget: facts => commandWithRules({ ...facts, op: 'selectChatShellTarget' }),
+    shellView: (id, record) => shellProjection({ op: 'shellView', id, record }),
     // Migration bridge: persist the stopped turn and its writer barrier in
     // one native transaction. The admission host still owns liveness checks.
     finalizeStoppedDelivery: input => run({ ...input, op: 'finalizeStoppedDelivery' }),
@@ -56,6 +72,10 @@ function createTaskShellStore(file) {
     purgeTaskRefs: (kinds, ids) => run({ op: 'purgeTaskRefs', kinds, ids }),
     // 上下文记录：提交后压缩并整理窗口；读取引用来源面板的数据。
     contextCommitted: (taskId, receiptId) => run({ op: 'contextCommitted', taskId, id: receiptId }),
+    shellContextTrace: facts => commandWithRules({ ...facts, op: 'shellContextTrace' }),
+    shellContextSeed: (id, first, fallback, history) => commandWithRules({
+      op: 'shellContextSeed', id, first, fallback, historyJson: JSON.stringify(history),
+    }),
     contextTrace: (receiptId, includeMessages = false) => run({ op: 'contextTrace', id: receiptId, includeMessages }),
     cachedList: kind => cached('rows', kind).rows.slice(),
     cachedEntries: kind => cached('entries', kind).rows.slice(),

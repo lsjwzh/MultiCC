@@ -49,7 +49,7 @@
 // (tests/helpers/legacy-task-shell-routes.js) over the scripted world in
 // tests/helpers/task-shell-scripted-world.js. The Rust front door calls its
 // host port (/api/__host/task-shell); the stub Node child here mounts the real
-// src/task-shell/routes.js composition over the same world, so both sides read
+// task-shell host port over the same world, so both sides read
 // one set of facts and the comparison covers the split itself: path matching,
 // parameter decoding, pagination, DTO field order and the error envelope stay
 // in Rust while the runtime/recording facts stay in Node.
@@ -337,14 +337,14 @@ const REPO = ${JSON.stringify(repo)};
 const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
 const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
-connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));
 process.stdin.on('error', () => process.exit(0));
 process.stdin.resume();
 
 const express = require(require.resolve('express', { paths: [REPO] }));
 const world = require(path.join(REPO, 'tests/helpers/task-shell-scripted-world'));
-const { mountTaskShellRoutes } = require(path.join(REPO, 'src/task-shell/routes'));
+const { mountTaskShellHostRoute } = require(path.join(REPO, 'src/task-shell/host'));
+const { createArtifactsMemo } = require(path.join(REPO, 'src/task-shell/artifacts'));
 
 const worldPath = process.env.STUB_WORLD;
 const effectsPath = process.env.STUB_EFFECTS;
@@ -366,7 +366,10 @@ app.post('/api/__host/task-shell', (req, res, next) => {
   });
   next();
 });
-mountTaskShellRoutes(app, world.bindDeps(() => active));
+const deps = world.bindDeps(() => active);
+mountTaskShellHostRoute(app, {
+  ...deps, artifacts: createArtifactsMemo(deps.artifacts, { memoMs: deps.artifactsMemoMs }),
+});
 
 const server = http.createServer(app);
 const listener = net.createServer({ pauseOnConnect: true }, socket => {
@@ -387,7 +390,9 @@ const listener = net.createServer({ pauseOnConnect: true }, socket => {
   socket.on('data', onData);
   socket.resume();
 });
-listener.listen(Number(process.env.MULTICC_GATEWAY_INTERNAL_PORT), '127.0.0.1');
+listener.listen(Number(process.env.MULTICC_GATEWAY_INTERNAL_PORT), '127.0.0.1', () => {
+  connectAuthControl(globalThis.__gatewayAuthSecurity);
+});
 `;
 }
 

@@ -8,7 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { addonPath, getNative } = require('../src/native/runtime');
-const { decodeRecoveryEvents } = require('../src/session-work/recovery-transport');
+const { decodeRecoveryEvents } = require('../src/native/runtime');
 
 function ownerBinary() {
   return process.env.MULTICC_TEST_ORCHESTRATION_OWNER || path.join(path.dirname(addonPath()),

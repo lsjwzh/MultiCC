@@ -18,6 +18,7 @@
 //! kernel keeps the exact key order and number spelling Node produced.
 
 pub mod chat;
+pub mod reference;
 
 use std::sync::OnceLock;
 

@@ -5,11 +5,9 @@ const { randomUUID } = require('node:crypto');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const { createTaskShellStore } = require('./store');
-const { createTaskShellRuntime, failure } = require('./runtime');
-const {
-  renderLazyContextPrompt, snapshotHistory, renderSnapshots, verifySnapshot,
-} = require('./context');
-const { mountTaskShellRoutes } = require('./routes');
+const { createTaskShellRuntime, failure, cleanError } = require('./runtime');
+const { getNative } = require('../native/runtime');
+const { createArtifactsMemo, collectTaskArtifacts, artifactFileExists } = require('./artifacts');
 const { clearShellHistory, shellHistoryPage, watchShellHistory } = require('./chat-history');
 const { createAttributionSettingsFromEnv } = require('./attribution-settings');
 const { isTerminalLetter } = require('../classify/vocab');
@@ -218,16 +216,8 @@ function createTaskShellHost(deps) {
     const task = owns(sessionId);
     if (!task) return fallback;
     if (task.unavailable) throw failure('task_shell_state_unavailable');
-    const snapshots = isFirstTurn && !task.adopted ? task.snapshotIds.map(id => {
-      const value = store.get('snapshot', id);
-      if (!verifySnapshot(value, id)) throw failure('snapshot_unverified');
-      return value;
-    }) : [];
-    if (isFirstTurn && !task.adopted) {
-      const own = snapshotHistory(task.id, deps.loadHistory(sessionId));
-      if (own.messages.length) snapshots.push(own);
-    }
-    return `${fallback || renderSnapshots(snapshots)}${renderLazyContextPrompt(task.id)}`;
+    const history = isFirstTurn && !task.adopted ? deps.loadHistory(sessionId) : [];
+    return store.shellContextSeed(task.id, Boolean(isFirstTurn), fallback || '', history);
   }
   function owns(id) { return getRuntime().owns(id) || (candidate(id) ? { unavailable: true } : null); }
   function accepts(id) {
@@ -238,9 +228,7 @@ function createTaskShellHost(deps) {
   function open(id) {
     const owner = owns(id);
     if (owner?.unavailable) throw failure('task_shell_state_unavailable');
-    const rt = getRuntime(), shell = rt.open(id);
-    rt.adopt(shell.id, id);
-    return rt.view(shell.id);
+    return getRuntime().openForSession(id);
   }
   async function sendFromSession(id, text, options = {}) {
     const shell = open(id), rt = getRuntime();
@@ -410,17 +398,15 @@ function createTaskShellHost(deps) {
   }
   return {
     mountRoutes: app => {
-      mountTaskShellRoutes(app, { getRuntime, open,
+      mountTaskShellHostRoute(app, { getRuntime, open,
         taskEntry: (id, options) => getRuntime().bindPlannedTask(id, options),
         taskIndex: (id, options) => taskIndex(id, options),
         taskOperations: () => taskOperations(),
     attributionDecisions: () => attributionDecisions(),
         relations: () => getRuntime().relations,
         independent: () => getRuntime().independent,
-        artifacts: async id => {
-          const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
-          return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
-        },
+        artifacts: createArtifactsMemo(async id =>
+          collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists)),
         history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
           deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) });
       // 独立继续的等待队列由服务端推进：重启后恢复，不依赖页面开着。
@@ -533,4 +519,35 @@ function createTaskShellHost(deps) {
   };
 }
 
-module.exports = { createTaskShellHost };
+const HOST_PATH = '/api/__host/task-shell';
+
+function mountTaskShellHostRoute(app, options = {}) {
+  if (!app || typeof app.post !== 'function') throw new TypeError('[task-shell-host] Express-compatible app is required');
+  if (typeof options.getRuntime !== 'function') throw new TypeError('[task-shell-host] dependency missing: getRuntime');
+  const isLocal = options.isLocal || require('../request-locality').isLocalRequest;
+  app.post(HOST_PATH, (req, res) => {
+    if (!isLocal(req)) return res.status(404).json({ error: 'not found' });
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    return Promise.resolve().then(async () => {
+      const call = (phase, entry) => getNative().taskShellHostCall(options, body, phase, entry);
+      let result = call(0, null);
+      if (result.taskMessage) {
+        await result.value;
+        const entry = await call(1, null).value;
+        result = call(2, entry);
+      }
+      if (!result.known) return res.status(400).json({ error: 'unknown host operation' });
+      const value = await result.value;
+      return res.json({ ok: true, value: value === undefined ? null : value });
+    }).catch(error => {
+      const detail = cleanError(error), refusal = { code: detail.code, message: detail.message };
+      if (error?.status !== undefined) refusal.status = error.status;
+      if (Array.isArray(error?.conflicts)) refusal.conflicts = error.conflicts;
+      if (error?.detail && typeof error.detail === 'object') refusal.detail = error.detail;
+      if (error?.receiptId) Object.assign(refusal, { receiptId: error.receiptId, taskId: error.taskId, notDelivered: error.notDelivered === true });
+      return res.json({ ok: false, error: refusal });
+    });
+  });
+}
+
+module.exports = { createTaskShellHost, mountTaskShellHostRoute, HOST_PATH };

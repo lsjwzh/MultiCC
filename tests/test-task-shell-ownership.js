@@ -9,7 +9,7 @@ const { fixture } = require('./helpers/task-shell');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
 const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 const { createShellWorkspaceHost, sharedWorkspace } = require('../src/task-shell/workspace');
-const { verifySnapshot } = require('../src/task-shell/context');
+const { verifySnapshot } = require('../src/native/runtime').taskShellContext;
 const { createTaskShellHost } = require('../src/task-shell/host');
 
 test('host passes the supervisor answer origin into its durable task-shell receipt', async t => {
