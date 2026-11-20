@@ -1069,6 +1069,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         await CodebuddyModelsService(settings: settings).load();
       } else if (cli == SessionCli.commandcode) {
         await CommandCodeModelsService(settings: settings).load();
+      } else if (cli == SessionCli.agy) {
+        await AgyModelsService(settings: settings).load();
       } else if (cli == SessionCli.grok) {
         await GrokModelsService(settings: settings).load();
       } else {
@@ -1460,6 +1462,12 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       const Text('CLI', style: TextStyle(color: AppColors.faint, fontSize: 12)),
       const SizedBox(height: 6),
       _cliGrid(shown),
+      if (_cli == SessionCli.gemini) ...[
+        const SizedBox(height: 8),
+        const Text('Gemini CLI 已停用，请切换至 Antigravity；原对话会保留，切换后开始新的原生会话。',
+          key: ValueKey('run-gemini-retired-note'),
+          style: TextStyle(color: Color(0xFFa85a25), fontSize: 12)),
+      ],
       if (hidden.isNotEmpty) _unavailableToggle(hidden.length),
       if (_showUnavailable) _cliGrid(hidden),
       // 自持账号的车道没有 MultiCC 线路池：不画线路下拉，模型/强度照旧（模型候选

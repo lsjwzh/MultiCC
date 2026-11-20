@@ -371,17 +371,20 @@ pub const CLIS: &[Family] = &[
         colour: Some("#4285f4"),
         mark: Some("G"),
         providerless: true,
-        update: npm("@google/gemini-cli", "npm install -g @google/gemini-cli"),
+        update: None,
         lanes: Some(&[
             (
                 "chat",
                 &[Lane {
                     id: "gemini",
                     engine: Some("gemini acp"),
+                    offered: false,
+                    deprecated: true,
+                    replaced_by: Some("agy"),
                     ..LANE
                 }],
             ),
-            ("terminal", &[Lane { id: "gemini", ..LANE }]),
+            ("terminal", &[Lane { id: "gemini", offered: false, deprecated: true, replaced_by: Some("agy"), ..LANE }]),
         ]),
     },
     Family {

@@ -638,8 +638,10 @@ test('the update unit is the family, on all three platforms', () => {
   // 二进制、同一条安装脚本；claude 的 chat 车道根本没有自己的制品。所以升级规格挂在家族上，
   // 按任一车道 id 问都答同一份。
   const specs = CAP.updateSpecs();
-  assert.deepEqual(Object.keys(specs).sort(), [...families].sort(), 'every family must say what upgrading it means');
-  for (const familyId of families) {
+  assert.deepEqual(Object.keys(specs).sort(), [...families].filter(id => id !== 'gemini').sort(), 'retired Gemini has no update action');
+  assert.equal(CAP.updateOf('gemini'), null);
+  assert.equal(CATALOG.cliUpdateOf('gemini'), null);
+  for (const familyId of families.filter(id => id !== 'gemini')) {
     const spec = CAP.updateOf(familyId);
     const web = CATALOG.cliUpdateOf(familyId);
     assert.equal(web.package, spec.package, `${familyId}: web update package`);

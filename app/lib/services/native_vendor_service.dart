@@ -12,7 +12,6 @@ import 'qoder_models_service.dart';
 const List<String> vendorNativeClis = <String>[
   'qoder',
   'codebuddy',
-  'gemini',
   'agy',
   'pi',
   'commandcode',
@@ -23,7 +22,6 @@ const List<String> vendorNativeClis = <String>[
 const Set<String> _vendorNativeSet = {
   'qoder',
   'codebuddy',
-  'gemini',
   'agy',
   'pi',
   'commandcode',
@@ -36,7 +34,6 @@ const Set<String> _vendorNativeSet = {
 const Set<String> vendorOnlyClis = {
   'qoder',
   'codebuddy',
-  'gemini',
   'agy',
   'pi',
   'commandcode',
@@ -62,7 +59,6 @@ List<String> vendorNativeModelOptions(String cli) {
   final options = switch (cli) {
     'qoder' => QoderModelsService.options(),
     'codebuddy' => CodebuddyModelsService.options(),
-    'gemini' => kGeminiModelOptions,
     'agy' => AgyModelsService.options(),
     'dsh' => kDshModelOptions,
     'grok' => GrokModelsService.options(),

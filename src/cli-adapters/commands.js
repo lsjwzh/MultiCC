@@ -378,7 +378,6 @@ function resolveCliCommands(options = {}) {
     kimi: resolveKimi(context),
     codebuddy: resolveCodebuddy(context),
     dsh: resolveDsh(context),
-    gemini: resolveNpmGlobal(context, 'gemini', 'GEMINI_CMD'),
     commandcode: resolveNpmGlobal(context, 'command-code', 'COMMAND_CODE_CMD'),
     grok: resolveNpmGlobal(context, 'grok', 'GROK_CMD'),
     agy: resolveAgy(context),

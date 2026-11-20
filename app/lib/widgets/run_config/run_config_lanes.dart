@@ -21,7 +21,7 @@ const Map<String, List<String>> kLaneProtocols = <String, List<String>>{
   // 自持目录的车道：协议是描述性的（目录里两种都有），实际只跑自己的原生线路。
   'qoder': ['anthropic', 'openai_responses'],
   'codebuddy': ['anthropic', 'openai_responses'],
-  'gemini': ['anthropic', 'openai_responses'],
+  'agy': ['anthropic', 'openai_responses'],
   'pi': ['anthropic', 'openai_responses'],
   'commandcode': ['anthropic', 'openai_responses'],
   // dsh/grok 有托管池：协议按服务端池子算。
@@ -41,7 +41,7 @@ const List<String> kAutoLanes = <String>[
   'grok',
   'qoder',
   'codebuddy',
-  'gemini',
+  'agy',
   'pi',
   'commandcode',
 ];

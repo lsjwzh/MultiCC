@@ -110,6 +110,17 @@ async function cleanup() {
     cli: 'opencode', kind: 'chat', effort: 'high', agent: 'build',
   });
 
+  for (const [route, body] of [
+    [`/api/directories/${dirId}/sessions`, { cli: 'gemini', kind: 'terminal' }],
+    [`/api/sessions/${session.id}/switch-cli`, { cli: 'gemini' }],
+  ]) {
+    const result = await fetch(BASE + route, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(body),
+    });
+    if (result.status !== 400) throw new Error(`retired Gemini accepted by ${route}: ${result.status}`);
+  }
+
   browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
@@ -127,6 +138,10 @@ async function cleanup() {
   await clickElement(page, '#cli-btn');
   await page.waitForFunction(() => [...document.querySelectorAll('option')].some(option => option.value === 'zcode'),
     { polling: 100 });
+  const cliOptions = await page.evaluate(() => [...document.querySelectorAll('option')].map(item => item.value));
+  if (!cliOptions.includes('agy') || cliOptions.includes('gemini')) {
+    throw new Error(`unexpected Antigravity/Gemini choices: ${JSON.stringify(cliOptions)}`);
+  }
   const zcodeOption = await page.evaluate(() => {
     const option = [...document.querySelectorAll('option')].find(item => item.value === 'zcode');
     return { disabled: option?.disabled, text: option?.textContent || '' };

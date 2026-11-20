@@ -22,7 +22,7 @@ const { peekGrokModels } = require('../routes/grok-models');
 // (they can run MultiCC provider lines); their native line is still a valid
 // candidate, exactly like OpenCode's managed + native mix.
 const VENDOR_NATIVE_CLIS = Object.freeze([
-  'qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok', 'agy',
+  'qoder', 'codebuddy', 'pi', 'commandcode', 'dsh', 'grok', 'agy',
 ]);
 const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
 const NATIVE_VENDOR_SUFFIX = '-native:';
@@ -33,7 +33,6 @@ const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,118}[A-Za-z0-9._/-]$/;
 // (public/chat-ai-config.js). Pi has no catalog; its line runs the CLI default
 // or a user-typed model id.
 const DSH_MODELS = Object.freeze(['deepseek-v4-flash', 'deepseek-v4-pro']);
-const GEMINI_MODELS = Object.freeze(['gemini-2.5-pro', 'gemini-2.5-flash']);
 
 function nativeVendorLineId(cli) {
   return `${cli}-native:${cli}`;
@@ -66,7 +65,7 @@ function modelIds(entries) {
 }
 
 // Synchronous vendor catalog for a lane. Routes answer with their warm cache or
-// bundled snapshot; dsh/gemini are static; pi has none.
+// bundled snapshot; dsh is static and pi has none.
 function nativeVendorModels(cli) {
   try {
     if (cli === 'commandcode') return modelIds(peekCommandcodeModels());
@@ -75,7 +74,6 @@ function nativeVendorModels(cli) {
     if (cli === 'grok') return modelIds(peekGrokModels());
   } catch (_) { /* a cold route must not break a turn */ }
   if (cli === 'dsh') return [...DSH_MODELS];
-  if (cli === 'gemini') return [...GEMINI_MODELS];
   return [];
 }
 
@@ -97,7 +95,6 @@ function syntheticVendorProvider(cli, modelOptions = nativeVendorModels(cli)) {
 
 module.exports = {
   DSH_MODELS,
-  GEMINI_MODELS,
   MODEL_ID,
   NATIVE_VENDOR_ID,
   NATIVE_VENDOR_SUFFIX,

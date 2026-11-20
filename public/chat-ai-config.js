@@ -448,7 +448,7 @@
   // Auto Provider editor shows one synthetic line per lane (`<cli>-native:<cli>`)
   // and stores the vendor model id as the wire model. Mirrors
   // src/providers/native-vendor.js. OpenCode keeps its multi-provider form.
-  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok', 'agy']);
+  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'pi', 'commandcode', 'dsh', 'grok', 'agy']);
   const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
   function vendorNativeName(cli) {
     const catalog = (root && root.MultiCCProviderCatalog)

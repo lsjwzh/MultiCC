@@ -214,8 +214,7 @@
       colour: '#4285f4',
       mark: 'G',
       providerless: true,
-      update: { package: '@google/gemini-cli', command: 'npm install -g @google/gemini-cli' },
-      lanes: { chat: [{ id: 'gemini', engine: 'gemini acp' }], terminal: [{ id: 'gemini' }] },
+      lanes: { chat: [{ id: 'gemini', engine: 'gemini acp', offered: false, deprecated: true, replacedBy: 'agy' }], terminal: [{ id: 'gemini', offered: false, deprecated: true, replacedBy: 'agy' }] },
     },
     pi: {
       name: 'Pi',

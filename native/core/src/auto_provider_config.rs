@@ -79,7 +79,7 @@ const VAULT_NAME_PATTERN: &str = r"^[A-Za-z0-9_.-]{1,64}$";
 const DEFAULT_ROUTING_TIMEOUT_MS: i64 = 2_500;
 const MIN_ROUTING_TIMEOUT_MS: i64 = 250;
 const MAX_ROUTING_TIMEOUT_MS: i64 = 10_000;
-const AUTO_CLIS: [&str; 15] = [
+const AUTO_CLIS: [&str; 14] = [
     "claude",
     "claude-exp",
     "codex",
@@ -91,7 +91,6 @@ const AUTO_CLIS: [&str; 15] = [
     "grok",
     "qoder",
     "codebuddy",
-    "gemini",
     "agy",
     "pi",
     "commandcode",
@@ -2076,7 +2075,7 @@ mod tests {
             "nativeOpenCodeIdPattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
             "nativeOpenCodeIdIgnoreCase": true,
             "nativeVendorSuffix": "-native:",
-            "vendorNativeClis": ["qoder", "codebuddy", "gemini", "pi", "commandcode", "dsh", "grok"],
+            "vendorNativeClis": ["qoder", "codebuddy", "gemini", "agy", "pi", "commandcode", "dsh", "grok"],
             "nativeVendorIdPattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
             "nativeVendorIdIgnoreCase": true,
             "nativeVendorModelPattern": "^[A-Za-z0-9][A-Za-z0-9._:\\/-]{0,118}[A-Za-z0-9._/-]$",
@@ -2129,7 +2128,7 @@ mod tests {
                 "candidates": [
                     { "providerId": "codebuddy-native:codebuddy", "cli": "codebuddy", "model": "auto" },
                     { "providerId": "qoder-native:qoder", "cli": "qoder", "model": "auto" },
-                    { "providerId": "gemini-native:gemini", "cli": "gemini", "model": "auto" },
+                    { "providerId": "agy-native:agy", "cli": "agy", "model": "auto" },
                     { "providerId": "pi-native:pi", "cli": "pi", "model": "auto" },
                     { "providerId": "dsh-native:dsh", "cli": "dsh", "model": "auto" },
                 ],
@@ -2161,7 +2160,7 @@ mod tests {
             "candidates": [
                 { "providerId": "codebuddy-native:codebuddy", "cli": "codebuddy", "model": "auto" },
                 { "providerId": "qoder-native:qoder", "cli": "qoder", "model": "auto" },
-                { "providerId": "gemini-native:gemini", "cli": "gemini", "model": "auto", "enabled": false },
+                { "providerId": "agy-native:agy", "cli": "agy", "model": "auto", "enabled": false },
             ],
         });
         let request = json!({ "facts": facts, "input": input });

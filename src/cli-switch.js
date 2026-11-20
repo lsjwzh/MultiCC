@@ -11,7 +11,7 @@
 
 const { getNative } = require('./native/runtime');
 const { repairZcodeSessionState } = require('./cli-adapters/zcode-session');
-const { isResidentSession, providerlessClis } = require('./cli/cli-capability');
+const { isResidentSession, providerlessClis, isDeprecated } = require('./cli/cli-capability');
 const { nativeVendorOf } = require('./providers/native-vendor');
 const { nativeOpenCodeId } = require('./providers/native-opencode');
 
@@ -71,7 +71,7 @@ function activeState(session, now, cli) {
 }
 
 function ensureCliStates(session, now = Date.now()) {
-  if (!session || session.kind !== 'chat' || !supportedCli(session.cli || 'claude')) return false;
+  if (!session || session.kind !== 'chat' || (!supportedCli(session.cli || 'claude') && !isDeprecated(session.cli))) return false;
   const repaired = repairZcodeSessionState(session);
   const before = JSON.stringify(session.cliStates || null);
   if (!session.cliStates || typeof session.cliStates !== 'object' || Array.isArray(session.cliStates)) {
@@ -87,7 +87,7 @@ function ensureCliStates(session, now = Date.now()) {
 }
 
 function rememberActiveCliState(session, now = Date.now()) {
-  if (!session || session.kind !== 'chat' || !supportedCli(session.cli || 'claude')) return null;
+  if (!session || session.kind !== 'chat' || (!supportedCli(session.cli || 'claude') && !isDeprecated(session.cli))) return null;
   ensureCliStates(session, now);
   const cli = session.cli || 'claude';
   const state = { ...(session.cliStates[cli] || {}), ...activeState(session, now, cli) };

@@ -27,7 +27,7 @@ function test(name, fn) {
 console.log('\nCross-CLI state tests');
 
 test('supported CLI set covers every chat adapter', () => {
-  assert.deepStrictEqual(SUPPORTED_CHAT_CLIS, ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok', 'agy', 'commandcode', 'pi']);
+  assert.deepStrictEqual(SUPPORTED_CHAT_CLIS, ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'grok', 'agy', 'commandcode', 'pi']);
 });
 
 test('legacy active fields migrate into the current CLI state', () => {
@@ -489,3 +489,20 @@ test('switching to Pi preserves its native context and strips stale provider bin
 });
 
 console.log(`\n${passed} passed`);
+
+
+test('retired Gemini history remains identifiable and can switch to Antigravity', () => {
+  const session = { kind: 'chat', cli: 'gemini', cliSessionId: 'old-gemini-id', model: 'old-model' };
+  assert.strictEqual(ensureCliStates(session, 100), true);
+  assert.strictEqual(session.cliStates.gemini.cliSessionId, 'old-gemini-id');
+  const result = activateCliState(session, 'agy', { now: 200 });
+  assert.strictEqual(result.fromCli, 'gemini');
+  assert.strictEqual(session.cli, 'agy');
+  assert.strictEqual(session.cliSessionId, null);
+  assert.strictEqual(session.cliStates.gemini.cliSessionId, 'old-gemini-id');
+  assert.throws(() => activateCliState(session, 'gemini'), /unsupported cli/);
+  const unloaded = { kind: 'chat', cli: 'gemini', cliSessionId: 'preserve-me' };
+  activateCliState(unloaded, 'agy', { now: 300 });
+  assert.strictEqual(unloaded.cliStates.gemini.cliSessionId, 'preserve-me');
+  assert.strictEqual(unloaded.cliSessionId, null);
+});

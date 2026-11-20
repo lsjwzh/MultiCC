@@ -215,7 +215,7 @@ test('the Node surface is only the provider/subagent host ports', () => {
 
 test('native provider line checks keep lane rules and observable coercion order', () => {
   const { runtime } = createHarness();
-  for (const cli of ['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']) {
+  for (const cli of ['qoder', 'codebuddy', 'agy', 'pi', 'commandcode', 'dsh', 'grok']) {
     assert.deepEqual(runtime.validProviderId(cli, `${cli}-native:anything`), { ok: true, value: `${cli}-native:anything` });
     assert.deepEqual(runtime.validProviderId('claude', `${cli}-native:anything`), { ok: false });
   }

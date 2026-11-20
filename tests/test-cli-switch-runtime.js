@@ -245,6 +245,19 @@ test('handoff summary exposes bounded status without checkpoint transcript', () 
   assert.equal(JSON.stringify(summary).includes('transcript'), false);
 });
 
+test('retired Gemini session switches to agy with a history handoff and no native-id reuse', async () => {
+  const session = { id: 's1', dirId: 'd1', kind: 'chat', cli: 'gemini', cliSessionId: 'gemini-old', model: 'gemini-old-model' };
+  const harness = createHarness({ session, chat: false, availability: { agy: { available: true } } });
+  const result = await harness.invoke({ body: { cli: 'agy' } });
+  assert.equal(result.statusCode, 200);
+  assert.equal(session.cli, 'agy');
+  assert.equal(session.cliSessionId, null);
+  assert.equal(session.cliStates.gemini.cliSessionId, 'gemini-old');
+  assert.equal(session.pendingCliHandoff.fromCli, 'gemini');
+  assert.equal(session.pendingCliHandoff.toCli, 'agy');
+  assert.match(JSON.stringify(session.pendingCliHandoff.checkpoint), /history:s1/);
+});
+
 test('defaults are CLI-specific and provider defaults are resolved lazily', () => {
   const { runtime } = createHarness();
   assert.deepEqual(runtime.cliSwitchDefaults('codex'), {
@@ -262,7 +275,7 @@ test('defaults are CLI-specific and provider defaults are resolved lazily', () =
 // accepted through SUPPORTED_CHAT_CLIS, and the marketing name "workbuddy" is
 // NOT a valid wire key. gemini / grok are the same shape of vendor-auth CLI and
 // are pinned here too, so a new CLI cannot be added to the roster alone.
-test('switching to vendor-auth CLIs (codebuddy / dsh / gemini / grok) passes the supported whitelist', async () => {
+test('switching to active vendor-auth CLIs succeeds and retired Gemini is rejected', async () => {
   const { invoke, session } = createHarness({
     availability: {
       claude: { available: true },
@@ -286,9 +299,8 @@ test('switching to vendor-auth CLIs (codebuddy / dsh / gemini / grok) passes the
   assert.equal(res2.body.cli, 'dsh');
   assert.equal(session.cli, 'dsh');
   const resGemini = await invoke({ body: { cli: 'gemini' } });
-  assert.equal(resGemini.statusCode, 200);
-  assert.equal(resGemini.body.cli, 'gemini');
-  assert.equal(session.cli, 'gemini');
+  assert.equal(resGemini.statusCode, 400);
+  assert.equal(session.cli, 'dsh');
   const resGrok = await invoke({ body: { cli: 'grok' } });
   assert.equal(resGrok.statusCode, 200);
   assert.equal(resGrok.body.cli, 'grok');
@@ -697,7 +709,7 @@ test('install-specs returns the static official command table', async () => {
     kimi: { auto: true, command: 'npm install -g @moonshot-ai/kimi-code', display: 'npm install -g @moonshot-ai/kimi-code' },
     codebuddy: { auto: true, command: 'npm install -g @tencent-ai/codebuddy-code', display: 'npm install -g @tencent-ai/codebuddy-code' },
     dsh: { auto: true, command: 'npm install -g @deepseek-ai/dsh', display: 'npm install -g @deepseek-ai/dsh' },
-    gemini: { auto: true, command: 'npm install -g @google/gemini-cli', display: 'npm install -g @google/gemini-cli' },
+    agy: { auto: false, manual: 'Install and sign in to the official Antigravity CLI (agy).' },
     grok: { auto: true, command: 'npm install -g @xai-official/grok', display: 'npm install -g @xai-official/grok' },
     commandcode: { auto: true, command: 'npm install -g command-code', display: 'npm install -g command-code' },
     pi: { auto: true, command: 'npm install -g @earendil-works/pi-coding-agent', display: 'npm install -g @earendil-works/pi-coding-agent' },

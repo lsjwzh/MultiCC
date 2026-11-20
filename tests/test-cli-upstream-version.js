@@ -250,7 +250,7 @@ test('only CLIs that ship as an npm package have a comparable source', () => {
   assert.equal(upstream.npmPackageFor('claude'), '@anthropic-ai/claude-code');
   assert.equal(upstream.npmPackageFor('codex'), '@openai/codex');
   assert.equal(upstream.npmPackageFor('codebuddy'), '@tencent-ai/codebuddy-code');
-  assert.equal(upstream.npmPackageFor('gemini'), '@google/gemini-cli');
+  assert.equal(upstream.npmPackageFor('gemini'), null);
   assert.equal(upstream.npmPackageFor('grok'), '@xai-official/grok');
   // 键是**家族**(= 升级目标): 升级的单位是 CLI 制品, 而车道只是它的使用场景。
   // 所以车道 id 一个包名都不该有 —— 尤其是 claude-exp: Agent SDK 是 multicc 自己的
