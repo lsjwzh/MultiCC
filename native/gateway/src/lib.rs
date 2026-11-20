@@ -18,6 +18,7 @@ pub mod forward;
 pub mod host_port;
 pub mod outbound;
 pub mod proxy_header;
+pub mod remote_child;
 pub mod ws_chat;
 pub mod ws_chat_hub;
 mod ws_chat_native;
