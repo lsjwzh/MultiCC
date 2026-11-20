@@ -519,7 +519,7 @@ test('derivatives are a family fact, so a second surface cannot invent one', () 
   // 两类：claude / codex（claude 的 chat 与 terminal 共用 id，codex 的 chat 只留常驻
   // codex-exp、一次性 codex 只在 terminal），以及 ACP 三家（chat 走桥 `xxx acp`，
   // terminal 跑原生 `xxx`）。
-  const DERIVED = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'commandcode', 'pi'];
+  const DERIVED = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'commandcode', 'pi', 'agy'];
   for (const familyId of families) {
     if (DERIVED.includes(familyId)) continue;
     assert.equal(CAP.CLIS[familyId].lanes, undefined, `${familyId} declares lanes it does not need`);

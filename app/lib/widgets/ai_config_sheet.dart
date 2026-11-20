@@ -40,6 +40,10 @@ Future<void> _warmModelCatalog(
     try {
       await CommandCodeModelsService(settings: settings).load();
     } catch (_) {}
+  } else if (cli == SessionCli.agy) {
+    try {
+      await AgyModelsService(settings: settings).load();
+    } catch (_) {}
   } else if (cli == SessionCli.grok) {
     try {
       await GrokModelsService(settings: settings).load();

@@ -541,6 +541,7 @@ enum SessionCli {
   dsh,
   gemini,
   grok,
+  agy,
   commandcode,
   pi,
 }
@@ -576,6 +577,8 @@ SessionCli? tryParseCli(String? s) {
       return SessionCli.pi;
     case 'grok':
       return SessionCli.grok;
+    case 'agy':
+      return SessionCli.agy;
     default:
       return null;
   }
@@ -600,6 +603,7 @@ extension SessionCliX on SessionCli {
     SessionCli.dsh => 'dsh',
     SessionCli.gemini => 'gemini',
     SessionCli.grok => 'grok',
+    SessionCli.agy => 'agy',
     SessionCli.commandcode => 'commandcode',
     SessionCli.pi => 'pi',
     SessionCli.claude => 'claude',
@@ -668,6 +672,7 @@ extension SessionCliX on SessionCli {
     SessionCli.dsh => '',
     SessionCli.gemini => '',
     SessionCli.grok => '',
+    SessionCli.agy => 'Thinking Level',
     SessionCli.commandcode => '',
     SessionCli.pi => 'Thinking Level',
   };
@@ -684,6 +689,7 @@ extension SessionCliX on SessionCli {
     SessionCli.dsh => '',
     SessionCli.gemini => '',
     SessionCli.grok => '',
+    SessionCli.agy => '',
     SessionCli.commandcode => '',
     SessionCli.pi => '',
   };
@@ -743,6 +749,7 @@ extension SessionCliX on SessionCli {
     SessionCli.dsh => const [],
     SessionCli.gemini => const [],
     SessionCli.grok => const [],
+    SessionCli.agy => const ['', 'low', 'medium', 'high', 'xhigh'],
     SessionCli.commandcode => const [],
     SessionCli.pi => const ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
   };

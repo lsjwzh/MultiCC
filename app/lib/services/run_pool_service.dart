@@ -50,6 +50,8 @@ class RunPoolService {
                 await QoderModelsService(settings: settings).load();
               } else if (cli == SessionCli.codebuddy) {
                 await CodebuddyModelsService(settings: settings).load();
+              } else if (cli == SessionCli.agy) {
+                await AgyModelsService(settings: settings).load();
               } else if (cli == SessionCli.grok) {
                 await GrokModelsService(settings: settings).load();
               } else if (cli.isClaudeFamily) {

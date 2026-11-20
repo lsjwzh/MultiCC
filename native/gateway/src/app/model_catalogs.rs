@@ -21,7 +21,10 @@
 //! were already asynchronous, so two concurrent refreshes could both spawn. This
 //! module keeps no lock: the host side owns its own single-flight state.
 
+use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
 
 use axum::body::Body;
 use axum::http::{Method, Response};
@@ -46,6 +49,7 @@ pub enum Catalog {
     Grok,
     Commandcode,
     Codebuddy,
+    Agy,
 }
 
 impl Catalog {
@@ -56,6 +60,7 @@ impl Catalog {
             Catalog::Grok => "grok",
             Catalog::Commandcode => "commandcode",
             Catalog::Codebuddy => "codebuddy",
+            Catalog::Agy => "agy",
         }
     }
 
@@ -67,6 +72,7 @@ impl Catalog {
             Catalog::Grok => "grok models unavailable",
             Catalog::Commandcode => "commandcode models unavailable",
             Catalog::Codebuddy => "codebuddy models unavailable",
+            Catalog::Agy => "Antigravity models unavailable",
         }
     }
 }
@@ -132,6 +138,7 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         "grok/models" => Catalog::Grok,
         "commandcode/models" => Catalog::Commandcode,
         "codebuddy/models" => Catalog::Codebuddy,
+        "agy/models" => Catalog::Agy,
         _ => {
             return match (rest.to_ascii_lowercase().as_str(), method.as_str()) {
                 ("codex/models", "GET" | "HEAD") => Some(Route::CodexModelsGet),
@@ -214,6 +221,23 @@ fn js_length_nonzero(value: Option<&Value>) -> bool {
 
 /// `GET|HEAD /api/{opencode,qoder,grok,commandcode,codebuddy}/models`.
 pub async fn catalog(catalog: Catalog, ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
+    if catalog == Catalog::Agy {
+        let result = tokio::time::timeout(Duration::from_secs(20), agy_models()).await;
+        return match result {
+            Ok(Ok(models)) => express::json(
+                ctx,
+                200,
+                &json!({"models": models, "source": "cli", "cached": false}),
+                &[],
+            ),
+            _ => express::json(
+                ctx,
+                503,
+                &json!({"error": catalog.unavailable(), "models": []}),
+                &[],
+            ),
+        };
+    }
     // opencode's retired handler used `String(...) === '1'`; the others accept
     // `1` and `true` case-insensitively.
     let raw = query_text(ctx, "refresh");
@@ -258,6 +282,102 @@ pub async fn catalog(catalog: Catalog, ctx: &RequestCtx, host_port_num: u16) -> 
         &json!({ "models": models, "source": source, "cached": cached }),
         &[],
     )
+}
+
+// `agy` supplies the logical model choices in ACP configOptions. Unlike a
+// hard-coded catalog, these are scoped to the signed-in account. The child is
+// killed on timeout/drop, and stderr is never copied into the HTTP response.
+fn agy_model_options(session: &Value) -> Vec<Value> {
+    let Some(options) = session.get("configOptions").and_then(Value::as_array) else {
+        return vec![];
+    };
+    let Some(model) = options
+        .iter()
+        .find(|item| item["id"] == "model" || item["category"] == "model")
+    else {
+        return vec![];
+    };
+    model
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = item.get("value")?.as_str()?.trim();
+            if id.is_empty() || id.len() > 100 {
+                return None;
+            }
+            let label = item.get("name").and_then(Value::as_str).unwrap_or(id);
+            Some(json!({"model": id, "label": label}))
+        })
+        .collect()
+}
+
+async fn agy_models() -> Result<Vec<Value>, ()> {
+    let executable = std::env::var_os("AGY_CMD")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            let binary = if cfg!(windows) { "agy.exe" } else { "agy" };
+            let local = std::env::var_os("HOME").map(|home| {
+                std::path::PathBuf::from(home)
+                    .join(".local")
+                    .join("bin")
+                    .join(binary)
+            });
+            local
+                .filter(|path| path.is_file())
+                .map(|path| path.into_os_string())
+                .unwrap_or_else(|| binary.into())
+        });
+    let mut child = Command::new(executable)
+        .arg("acp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| ())?;
+    let mut stdin = child.stdin.take().ok_or(())?;
+    let mut stdout = BufReader::new(child.stdout.take().ok_or(())?).lines();
+    for (id, method, params) in [
+        (
+            1,
+            "initialize",
+            json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"multicc-models","version":"1.0.0"}}),
+        ),
+        (
+            2,
+            "session/new",
+            json!({"cwd":std::env::current_dir().map_err(|_| ())?,"mcpServers":[]}),
+        ),
+    ] {
+        let request = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+        stdin
+            .write_all(format!("{}\n", request).as_bytes())
+            .await
+            .map_err(|_| ())?;
+        loop {
+            let line = stdout.next_line().await.map_err(|_| ())?.ok_or(())?;
+            if line.len() > 4_000_000 {
+                return Err(());
+            }
+            let message: Value = serde_json::from_str(&line).map_err(|_| ())?;
+            if message.get("id").and_then(Value::as_i64) != Some(id) {
+                continue;
+            }
+            let result = message.get("result").ok_or(())?;
+            if id == 2 {
+                let models = agy_model_options(result);
+                return if models.is_empty() {
+                    Err(())
+                } else {
+                    Ok(models)
+                };
+            }
+            break;
+        }
+    }
+    Err(())
 }
 
 /// `GET|HEAD /api/providers/:id/models`.
@@ -457,4 +577,32 @@ pub async fn codex(
         &Value::Object(result),
         &[("Cache-Control", "no-store")],
     )
+}
+
+#[cfg(test)]
+mod agy_tests {
+    use super::*;
+
+    #[test]
+    fn account_model_options_are_logical_and_empty_is_unavailable() {
+        let session = json!({"configOptions": [
+            {"id": "thought_level", "options": [{"value":"high"}]},
+            {"category": "model", "options": [
+                {"value":"gemini-4-argon", "name":"Gemini 4 Argon"},
+                {"value":"claude-sonnet"}, {"value":""}, {}
+            ]}
+        ]});
+        assert_eq!(
+            agy_model_options(&session),
+            vec![
+                json!({"model":"gemini-4-argon", "label":"Gemini 4 Argon"}),
+                json!({"model":"claude-sonnet", "label":"claude-sonnet"}),
+            ]
+        );
+        assert!(agy_model_options(&json!({})).is_empty());
+        assert_eq!(
+            claim(&Method::GET, "/api/agy/models"),
+            Some(Route::CatalogGet(Catalog::Agy))
+        );
+    }
 }

@@ -356,6 +356,16 @@ function resolveNpmGlobal(context, binary, envName) {
   return findExecutableOnPath(binary, context) || (isWindows ? `${binary}.cmd` : binary);
 }
 
+function resolveAgy(context) {
+  const { env, homeDir, isWindows } = context;
+  if (env.AGY_CMD) return env.AGY_CMD;
+  const name = isWindows ? 'agy.exe' : 'agy';
+  return firstRunnable([
+    path.join(homeDir, '.local', 'bin', name),
+    ...(!isWindows ? ['/opt/homebrew/bin/agy', '/usr/local/bin/agy'] : []),
+  ], context) || findExecutableOnPath('agy', context) || name;
+}
+
 function resolveCliCommands(options = {}) {
   const context = createContext(options);
   return {
@@ -371,6 +381,7 @@ function resolveCliCommands(options = {}) {
     gemini: resolveNpmGlobal(context, 'gemini', 'GEMINI_CMD'),
     commandcode: resolveNpmGlobal(context, 'command-code', 'COMMAND_CODE_CMD'),
     grok: resolveNpmGlobal(context, 'grok', 'GROK_CMD'),
+    agy: resolveAgy(context),
     pi: resolveNpmGlobal(context, 'pi', 'PI_CMD'),
   };
 }

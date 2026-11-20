@@ -233,6 +233,11 @@
       update: { package: 'command-code', command: 'npm install -g command-code' },
       lanes: { chat: [{ id: 'commandcode', engine: 'command-code -p --output-format json' }], terminal: [{ id: 'commandcode', engine: 'command-code' }] },
     },
+    agy: {
+      name: 'Antigravity', colour: '#6d5dfc', mark: 'A', providerless: true,
+      update: { manual: 'Install and sign in to the official Antigravity CLI (agy).' },
+      lanes: { chat: [{ id: 'agy', engine: 'agy acp' }], terminal: [{ id: 'agy' }] },
+    },
     grok: {
       name: 'Grok',
       colour: '#8c8f96',

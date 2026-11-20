@@ -315,7 +315,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   static bool _isLiveModelCli(SessionCli cli) =>
       cli == SessionCli.codebuddy ||
       cli == SessionCli.commandcode ||
-      cli == SessionCli.grok;
+      cli == SessionCli.grok ||
+      cli == SessionCli.agy;
 
   String _modelGroupOf(String key) =>
       _pickedCli == SessionCli.commandcode
@@ -327,6 +328,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     SessionCli.codebuddy => CodebuddyModelsService.cached.length,
     SessionCli.commandcode => CommandCodeModelsService.cached.length,
     SessionCli.grok => GrokModelsService.cached.length,
+    SessionCli.agy => AgyModelsService.cached.length,
     _ => 0,
   };
 
@@ -338,6 +340,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
         await CommandCodeModelsService(settings: widget.settings).load();
       case SessionCli.grok:
         await GrokModelsService(settings: widget.settings).load();
+      case SessionCli.agy:
+        await AgyModelsService(settings: widget.settings).load();
       default:
         break;
     }
@@ -416,6 +420,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       return CodebuddyModelsService.options();
     }
     if (_pickedCli == SessionCli.pi) return const [MapEntry('', '默认（跟随 Pi 配置）')];
+    if (_pickedCli == SessionCli.agy) return AgyModelsService.options();
     if (_pickedCli == SessionCli.dsh) return kDshModelOptions;
     if (_pickedCli == SessionCli.gemini) return kGeminiModelOptions;
     if (_pickedCli == SessionCli.commandcode) {
@@ -1100,6 +1105,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                         ? 'DeepSeek 模型 ID'
                         : _pickedCli == SessionCli.gemini
                         ? 'Gemini 模型 ID'
+                        : _pickedCli == SessionCli.agy
+                        ? 'Antigravity 模型 ID'
                         : _pickedCli == SessionCli.grok
                         ? 'Grok 模型 ID'
                         : _pickedCli == SessionCli.pi

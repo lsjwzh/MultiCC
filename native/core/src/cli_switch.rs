@@ -23,7 +23,7 @@ use crate::js::{coerce, js_trim, json_parse, json_stringify, JsString, JsValue};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
-pub const SUPPORTED_CHAT_CLIS: [&str; 14] = [
+pub const SUPPORTED_CHAT_CLIS: [&str; 15] = [
     "claude",
     "claude-exp",
     "codex",
@@ -36,6 +36,7 @@ pub const SUPPORTED_CHAT_CLIS: [&str; 14] = [
     "dsh",
     "gemini",
     "grok",
+    "agy",
     "commandcode",
     "pi",
 ];
@@ -1392,7 +1393,7 @@ mod tests {
     #[test]
     fn catalogue_lists_every_supported_cli() {
         let catalog: Value = serde_json::from_str(&catalog().unwrap()).unwrap();
-        assert_eq!(catalog["supportedChatClis"].as_array().unwrap().len(), 14);
-        assert_eq!(catalog["supportedChatClis"][13], "pi");
+        assert_eq!(catalog["supportedChatClis"].as_array().unwrap().len(), 15);
+        assert_eq!(catalog["supportedChatClis"][14], "pi");
     }
 }

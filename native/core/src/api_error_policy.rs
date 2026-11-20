@@ -47,7 +47,7 @@ pub const API_ERROR_SIGNATURES: [&str; 6] = [
     "The system is busy",
 ];
 
-const TRUSTED_TEXT_SOURCES: [&str; 20] = [
+const TRUSTED_TEXT_SOURCES: [&str; 21] = [
     "anthropic_event",
     "claude_result",
     "claude-exp_event",
@@ -66,6 +66,7 @@ const TRUSTED_TEXT_SOURCES: [&str; 20] = [
     "dsh_event",
     "gemini_event",
     "grok_event",
+    "agy_event",
     "commandcode_event",
     "pi_event",
     "process_stderr",
@@ -942,6 +943,7 @@ fn envelope_source(provider: &Option<JsValue>) -> &'static str {
         "dsh" => "dsh_event",
         "gemini" => "gemini_event",
         "grok" => "grok_event",
+        "agy" => "agy_event",
         "commandcode" => "commandcode_event",
         "pi" => "pi_event",
         _ => "claude_result",

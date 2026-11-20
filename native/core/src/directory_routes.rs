@@ -174,8 +174,8 @@ pub fn browse_entries(dirents: &[Value], order: &[usize], prefix: &str) -> Vec<V
     out
 }
 
-/// The 24 per-`(cli, kind)` counters, in the order `listAnnotated` declares.
-pub const COUNT_CLIS: [&str; 12] = [
+/// The 26 per-`(cli, kind)` counters, in the order `listAnnotated` declares.
+pub const COUNT_CLIS: [&str; 13] = [
     "claude",
     "codex",
     "opencode",
@@ -186,6 +186,7 @@ pub const COUNT_CLIS: [&str; 12] = [
     "dsh",
     "gemini",
     "grok",
+    "agy",
     "commandcode",
     "pi",
 ];
@@ -548,10 +549,10 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys.len(), 24);
+        assert_eq!(keys.len(), 26);
         assert_eq!(keys[0], "claude_terminal");
         assert_eq!(keys[1], "claude_chat");
-        assert_eq!(keys[23], "pi_chat");
+        assert_eq!(keys[25], "pi_chat");
     }
 
     #[test]

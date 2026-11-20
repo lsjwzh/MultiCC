@@ -231,6 +231,7 @@ function createSessionPolicy(options) {
     }
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
     if (cli === 'pi') return PI_THINKING_LEVELS.has(effort);
+    if (cli === 'agy') return ['low', 'medium', 'high', 'xhigh'].includes(effort);
     if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh'
       || cli === 'gemini' || cli === 'grok' || cli === 'commandcode') return false;
     if (cli === 'qoder') return QODER_REASONING_LEVELS.has(effort);
@@ -311,6 +312,10 @@ function createSessionPolicy(options) {
     if (!session) return null;
     const cli = session.cli || 'claude';
     if (cli === 'codex' || cli === 'codex-exp') return codexReasoningLevel(session) || codexDefaultReasoningLevel();
+    if (cli === 'agy') {
+      const effort = normalizeEffort(session.effort);
+      return ['low', 'medium', 'high', 'xhigh'].includes(effort) ? effort : null;
+    }
     if (cli === 'pi') {
       const effort = normalizeEffort(session.effort);
       return effort && PI_THINKING_LEVELS.has(effort) ? effort : null;

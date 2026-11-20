@@ -204,6 +204,7 @@ pub const SUPPORTED_CLIS: &[&str] = &[
     "dsh",
     "gemini",
     "grok",
+    "agy",
     "commandcode",
     "pi",
 ];

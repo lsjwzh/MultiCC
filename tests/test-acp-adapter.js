@@ -11,6 +11,7 @@ const { createAcpAdapter } = require('../src/cli-adapters/acp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createGeminiAdapter } = require('../src/cli-adapters/gemini');
 const { createGrokAdapter } = require('../src/cli-adapters/grok');
+const { createAgyAdapter } = require('../src/cli-adapters/agy');
 const { pickPermissionOption, routerMcpServers } = require('../src/cli-adapters/acp-bridge.cjs');
 
 const BRIDGE = path.join(__dirname, '..', 'src', 'cli-adapters', 'acp-bridge.cjs');
@@ -310,6 +311,21 @@ test('opencode defaults to ACP; gemini and grok launch their ACP servers', () =>
   const agentArgv = grokArgs.filter((_, index) => grokArgs[index - 1] === '--agent-arg');
   assert.deepEqual(agentArgv, ['agent', '--no-leader', '--always-approve', '-m', 'grok-4.6', '--reasoning-effort', 'high', 'stdio']);
   assert.ok(!grokArgs.includes('--model') && !grokArgs.includes('--effort'));
+});
+
+test('Antigravity uses ACP session resume and model configuration', () => {
+  const adapter = createAgyAdapter({ cmd: '/bin/agy', routerMcpNode: '/node', routerMcpScript: '/router' });
+  const inv = adapter.buildInvocation(envelope({ first: false, sessionId: 'session-1', model: 'gemini-4-argon', effort: 'low' }));
+  assert.deepEqual(inv.args.slice(1), [
+    '--agent-bin', '/bin/agy', '--label', 'Antigravity', '--agent-arg', 'acp',
+    '--agent-arg', '--dangerously-skip-permissions', '--session-id', 'session-1',
+    '--model', 'gemini-4-argon', '--effort', 'low', '--router-mcp', '/node', '/router', '--',
+  ]);
+  assert.equal(inv.payload, 'hello');
+  assert.equal(adapter.buildTerminalCmd({ model: 'gemini-4-argon', cliSessionId: 'session-1' }),
+    "'/bin/agy' --model 'gemini-4-argon' --conversation 'session-1'");
+  assert.equal(adapter.buildTerminalCmd({ cliSessionId: "abc'; touch /tmp/no; '" }),
+    "'/bin/agy' --conversation 'abc'\"'\"'; touch /tmp/no; '\"'\"''");
 });
 
 test('tool cards wait for real input and are announced once', () => {

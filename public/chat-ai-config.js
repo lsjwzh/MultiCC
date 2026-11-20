@@ -147,6 +147,10 @@
     if (isCodexCli(cli)) return CODEX_REASONING_OPTIONS;
     if (cli === 'opencode') return OPENCODE_VARIANT_OPTIONS;
     if (cli === 'pi') return PI_THINKING_OPTIONS;
+    if (cli === 'agy') return [
+      { value: '', label: 'Default', desc: 'Follow Antigravity settings' },
+      ...['low', 'medium', 'high', 'xhigh'].map(value => ({ value, label: value })),
+    ];
     if (cli === 'qoder') return QODER_REASONING_OPTIONS;
     if (cli === 'codebuddy') return CODEBUDDY_REASONING_OPTIONS;
     if (isClaudeCli(cli)) return EFFORT_OPTIONS;
@@ -156,7 +160,7 @@
   function effortLabel(cli) {
     if (isCodexCli(cli)) return 'Reasoning Level';
     if (cli === 'opencode') return 'Variant';
-    if (cli === 'pi') return 'Thinking Level';
+    if (cli === 'pi' || cli === 'agy') return 'Thinking Level';
     if (cli === 'qoder' || cli === 'codebuddy') return 'Reasoning Effort';
     return 'Effort';
   }
@@ -308,6 +312,10 @@
   function buildModelChoices(providerId, state) {
     nudgeModelCatalog(state);
     if (state && state.cli === 'pi') return ['', '__custom__'];
+    if (state && state.cli === 'agy') {
+      const cached = readModelCacheSync('multicc.agy.models.v1', 60 * 60 * 1000);
+      return ['', ...cached.map(m => m.model), '__custom__'];
+    }
     const tiers = providerAliasTiers(providerId, state);
     if (tiers.length) return [...tiers.map(([tier]) => tier), '__custom__'];
     const options = providerModelOptions(providerId, state);
@@ -440,7 +448,7 @@
   // Auto Provider editor shows one synthetic line per lane (`<cli>-native:<cli>`)
   // and stores the vendor model id as the wire model. Mirrors
   // src/providers/native-vendor.js. OpenCode keeps its multi-provider form.
-  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']);
+  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok', 'agy']);
   const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
   function vendorNativeName(cli) {
     const catalog = (root && root.MultiCCProviderCatalog)
@@ -475,6 +483,7 @@
         const cached = readCodebuddyModelsSync();
         return (cached.length ? cached.map(m => m.model) : CODEBUDDY_MODEL_OPTIONS).filter(Boolean);
       }
+      if (cli === 'agy') return readModelCacheSync('multicc.agy.models.v1', 60 * 60 * 1000).map(m => m.model);
       if (cli === 'grok') {
         const cached = readModelCacheSync('multicc.grok.models.v1', 60 * 60 * 1000);
         return (cached.length ? cached.map(m => m.model) : GROK_MODEL_OPTIONS).filter(Boolean);
@@ -688,7 +697,7 @@
   // a static or provider-catalog list with nothing to re-read. Keep this as the
   // single roster; run-config.js reads it off this module.
   const REFRESHABLE_MODEL_CLIS = Object.freeze(new Set([
-    'opencode', 'qoder', 'codebuddy', 'commandcode', 'grok',
+    'opencode', 'qoder', 'codebuddy', 'commandcode', 'grok', 'agy',
     'claude', 'claude-exp', 'codex', 'codex-exp',
   ]));
 
@@ -794,6 +803,7 @@
   }
   const refreshCommandcodeModels = liveCatalogRefresher('loadCommandcodeModels', 'multicc.commandcode.models.v1');
   const refreshGrokModels = liveCatalogRefresher('loadGrokModels', 'multicc.grok.models.v1');
+  const refreshAgyModels = liveCatalogRefresher('loadAgyModels', 'multicc.agy.models.v1');
 
   // Codex's catalog is per account: force asks the server to re-check the CLI
   // version / one-day cache for the provider the picker currently has selected.
@@ -825,6 +835,7 @@
     codebuddy: refreshCodebuddyModels,
     commandcode: refreshCommandcodeModels,
     grok: refreshGrokModels,
+    agy: refreshAgyModels,
     claude: refreshClaudeModels,
     'claude-exp': refreshClaudeModels,
     codex: refreshCodexModels,
@@ -912,6 +923,7 @@
       if (state && state.cli === 'qoder') return localized(state, 'aiConfigDefaultFollowQoder', '默认（跟随 Qoder CN 设置）');
       if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
       if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
+      if (state && state.cli === 'agy') return '默认（跟随 Antigravity 配置）';
       if (state && state.cli === 'pi') return localized(state, 'aiConfigDefaultFollowPi', '默认（跟随 Pi 配置）');
       if (state && state.cli === 'gemini') return localized(state, 'aiConfigDefaultFollowGemini', '默认（跟随 Gemini 配置）');
       if (state && state.cli === 'commandcode') return '默认（DeepSeek Flash）';
@@ -1253,6 +1265,7 @@
     refreshCodebuddyModels,
     refreshCommandcodeModels,
     refreshGrokModels,
+    refreshAgyModels,
     modelChoiceGroup,
     refreshClaudeModels,
     routingKeyApi,

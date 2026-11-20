@@ -265,6 +265,7 @@
   }
   const commandcodeCatalog = createLiveCatalog('multicc.commandcode.models.v1', '/api/commandcode/models');
   const grokCatalog = createLiveCatalog('multicc.grok.models.v1', '/api/grok/models');
+  const agyCatalog = createLiveCatalog('multicc.agy.models.v1', '/api/agy/models');
 
   // ── Codex account model list ───────────────────────────────────────────
   // 服务端按账号持久缓存一天，并检查 CLI 升级；浏览器只镜像结果，
@@ -461,6 +462,7 @@
   window.loadCodebuddyModels = loadCodebuddyModels;
   window.loadCommandcodeModels = commandcodeCatalog.load;
   window.loadGrokModels = grokCatalog.load;
+  window.loadAgyModels = agyCatalog.load;
   window.readCodebuddyModelsSync = readCodebuddyModelsSync;
   window.loadCodexModels = loadCodexModels;
   window.watchCodexModels = watchCodexModels;

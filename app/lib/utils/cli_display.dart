@@ -246,6 +246,12 @@ const Map<String, CliFamily> kCliFamilies = <String, CliFamily>{
         'chat': <CliLane>[CliLane('commandcode', engine: 'command-code -p --output-format json')],
         'terminal': <CliLane>[CliLane('commandcode', engine: 'command-code')],
       }),
+  'agy': CliFamily('Antigravity', AppColors.agy, mark: 'A', providerless: true,
+      update: CliUpdate(manual: 'Install and sign in to the official Antigravity CLI (agy).'),
+      lanes: <String, List<CliLane>>{
+        'chat': <CliLane>[CliLane('agy', engine: 'agy acp')],
+        'terminal': <CliLane>[CliLane('agy')],
+      }),
   'grok': CliFamily('Grok', AppColors.grok, mark: 'R',
       update: CliUpdate(package: '@xai-official/grok', command: 'npm install -g @xai-official/grok'),
       lanes: <String, List<CliLane>>{

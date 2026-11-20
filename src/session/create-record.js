@@ -41,7 +41,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     // the lane owns its account, so the concrete fallback stays null. Keep the
     // prefix list local: src/session must not require the provider context.
     const nativeLine = primary
-      && /^(?:qoder|codebuddy|gemini|pi|commandcode|dsh|grok)-native:/.test(String(primary.providerId || ''));
+      && /^(?:qoder|codebuddy|gemini|pi|commandcode|dsh|grok|agy)-native:/.test(String(primary.providerId || ''));
     providerId = (nativeLine ? null : primary?.providerId)
       || providerDefaults[defaultPool] || null;
   } else {

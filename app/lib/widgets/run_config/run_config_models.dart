@@ -27,6 +27,7 @@ List<String> runModelChoices(
   List<Map<String, dynamic>> providers,
 ) {
   if (cli == SessionCli.pi) return const [''];
+  if (cli == SessionCli.agy) return AgyModelsService.options().map((option) => option.key).toList();
   if (cli == SessionCli.qoder) {
     return QoderModelsService.options().map((option) => option.key).toList();
   }
