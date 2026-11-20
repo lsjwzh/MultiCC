@@ -63,7 +63,9 @@ WebSocket 从壳内会话按游标向同壳的已登记执行投递。预约收�
 
 四个文件合计删除 343 行，包含调用方和桥接改动的 `src/**/*.js` 后端净减 653 行。Rust、回归测试和迁移登记另行计入仓库总增量。
 
-验证包含 `cargo build --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p multicc-gateway --test ws_chat --test task_shell`、`npm run test:task-shells` 与现有 HTTP 差分。网关 WebSocket 31/31、任务壳 HTTP 13/13、npm 任务壳 304/304、任务与工作区 517/517、调度恢复定向 104/104 通过。验收日志和合并记录随本轮收口更新。已完成的 HTTP 对拍为 67/67，副作用序列一致。新增回归覆盖空壳幂等和身份冲突回滚、跨会话投递、引用追踪与损坏摘要、首次物化与真实 Provider 输入、HTTP 重发和修复后重试、控制取消和持久问答、无客户端的启动恢复及再次重启去重。隔离 Claude 执行路径的进程树内 Node 数为 0。
+验证包含 `cargo build --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p multicc-gateway --test ws_chat --test task_shell`、`npm run test:task-shells` 与现有 HTTP 差分。网关 WebSocket 31/31、任务壳 HTTP 13/13、npm 任务壳 304/304、任务与工作区 517/517、调度、问答、投递及访问控制定向 260/260 通过。已完成的 HTTP 对拍为 67/67，副作用序列一致。新增回归覆盖空壳幂等和身份冲突回滚、跨会话投递、引用追踪与损坏摘要、首次物化与真实 Provider 输入、HTTP 重发和修复后重试、控制取消和持久问答、无客户端的启动恢复及再次重启去重。隔离 Claude 执行路径的进程树内 Node 数为 0。
+
+补测保留语音在 4000 个 UTF-16 单元处截断 emoji 的行为。原始载荷在收据状态更新和重试投递之间保持不变，指纹沿用首次持久值；旧库通用读取仍保持原有宽松解码口径。两个断言共同通过，未放宽孤立代理项的迁移断言。原始红证、最终日志、产物校验及合并收据保存在主仓 `data/rust-migration/2026-11-20/task-shell-batch2-343455fc/`，其中 `receipt.json` 记录最终提交、基线、合并和每条验收命令的退出码。
 
 第二批整体仍有任务关系、归属操作、分离、独立继续和定时消费者的接线待退出。`src/task-shell/runtime.js`、`src/task-shell/host.js`、`src/session-work/scheduler.js` 继续承接现有 CLI 回合、进程内会话记录、广播及这些任务操作的兼容接线。保留范围由当前 Node CLI 宿主和尚待迁移的操作决定，后续批次迁走这些调用方后再整文件删除，并移除兼容端口 `/api/__host/task-shell`。本轮零 Node 隔离验收覆盖现有原生 Claude 路径与新增任务壳 HTTP 路径，其他 CLI 的执行适配继续列入第三批。
 
