@@ -174,6 +174,48 @@ fn safe_url(raw: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+/// 第三方 Anthropic 兼容端点不认 mcp_tool_use / mcp_tool_result 内容块（反序列化 422），
+/// 把历史消息里的这两种块改写成标准 tool_use / tool_result。返回是否有改动；
+/// 无这两种块时不碰 body，调用方因此能保持原始字节转发。
+fn normalize_mcp_blocks(body: &mut Value) -> bool {
+    let mut changed = false;
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    for message in messages {
+        let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for block in blocks {
+            let Some(obj) = block.as_object_mut() else {
+                continue;
+            };
+            match obj.get("type").and_then(Value::as_str) {
+                Some("mcp_tool_use") => {
+                    let server = obj.remove("server_name");
+                    if let (Some(server), Some(name)) = (
+                        server.as_ref().and_then(Value::as_str),
+                        obj.get("name").and_then(Value::as_str),
+                    ) {
+                        if !name.starts_with("mcp__") && !server.is_empty() {
+                            let full = format!("mcp__{server}__{name}");
+                            obj.insert("name".into(), full.into());
+                        }
+                    }
+                    obj.insert("type".into(), "tool_use".into());
+                    changed = true;
+                }
+                Some("mcp_tool_result") => {
+                    obj.insert("type".into(), "tool_result".into());
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    changed
+}
+
 pub fn prepare(input: Value) -> Result<Value, String> {
     let mut route: Route =
         serde_json::from_value(input["route"].clone()).map_err(|_| "代理路由无效".to_owned())?;
@@ -303,6 +345,13 @@ pub fn prepare(input: Value) -> Result<Value, String> {
             wire = body.to_string();
         }
         let mut parsed = safe_url(&base)?;
+        let anthropic_host = official
+            || parsed
+                .host_str()
+                .is_some_and(|h| h == "anthropic.com" || h.ends_with(".anthropic.com"));
+        if !anthropic_host && normalize_mcp_blocks(&mut body) {
+            wire = body.to_string();
+        }
         let path = format!("{}{}", parsed.path().trim_end_matches('/'), route.api_path);
         parsed.set_path(&path);
         parsed.set_query(route.query.strip_prefix('?'));

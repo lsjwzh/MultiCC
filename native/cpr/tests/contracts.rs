@@ -177,3 +177,39 @@ fn limit_headers_are_parsed_without_credentials() {
     )
     .is_none());
 }
+
+fn mcp_body() -> String {
+    json!({"model":"wire","messages":[
+        {"role":"assistant","content":[{"type":"mcp_tool_use","id":"t1","name":"read","server_name":"fs","input":{"a":1}}]},
+        {"role":"user","content":[{"type":"mcp_tool_result","tool_use_id":"t1","content":"ok","is_error":false}]}
+    ]})
+    .to_string()
+}
+
+#[test]
+fn mcp_blocks_become_standard_tool_blocks_for_third_party_upstreams() {
+    let p = plan::prepare(claude_input(&mcp_body())).unwrap();
+    let body: Value = serde_json::from_str(p["plan"]["body"].as_str().unwrap()).unwrap();
+    let use_block = &body["messages"][0]["content"][0];
+    assert_eq!(use_block["type"], "tool_use");
+    assert_eq!(use_block["id"], "t1");
+    assert_eq!(use_block["name"], "mcp__fs__read");
+    assert!(use_block.get("server_name").is_none());
+    let result = &body["messages"][1]["content"][0];
+    assert_eq!(result["type"], "tool_result");
+    assert_eq!(result["tool_use_id"], "t1");
+    assert_eq!(
+        p["plan"]["headers"]["content-length"],
+        p["plan"]["body"].as_str().unwrap().len().to_string()
+    );
+}
+
+#[test]
+fn mcp_blocks_are_kept_for_anthropic_hosts() {
+    let raw = mcp_body();
+    let mut input = claude_input(&raw);
+    input["provider"]["settingsConfig"]["env"]["ANTHROPIC_BASE_URL"] =
+        json!("https://api.anthropic.com");
+    let p = plan::prepare(input).unwrap();
+    assert_eq!(p["plan"]["body"], raw);
+}
