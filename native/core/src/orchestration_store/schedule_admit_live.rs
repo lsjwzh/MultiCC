@@ -853,6 +853,14 @@ fn complete_inner(
         return Ok(json!({"resultJson":json!({"ok":false,"code":code}).to_string()}));
     }
     let completed = field(&schedule, "active");
+    if let Some(delivery) = input["expectedDeliveryId"].as_str() {
+        if !is(&field(&completed, "deliveryId"), delivery)
+            || js_to_number(&field(&completed, "attempt"))
+                != input["expectedAttempt"].as_f64().unwrap_or(f64::NAN)
+        {
+            return Ok(json!({"resultJson":r#"{"ok":false,"code":"active_delivery_mismatch"}"#}));
+        }
+    }
     let task = field(&completed, "taskId");
     if revision >= 9_007_199_254_740_991 {
         return Err(err("schedule revision exhausted"));
@@ -1038,7 +1046,7 @@ fn allowed(item: &JsValue, class: &JsValue) -> bool {
     set.iter().any(|name| is(&k, name))
 }
 
-fn select(
+pub(super) fn select(
     queue: &[JsValue],
     schedule: &JsValue,
     pending: &JsValue,

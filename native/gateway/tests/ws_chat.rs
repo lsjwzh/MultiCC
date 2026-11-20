@@ -667,6 +667,21 @@ while IFS= read -r line; do
         *'"type":"user"'*'"text":"fail"'*)
             printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["fixture upstream timeout"]}'
             ;;
+        *'"type":"user"'*'"text":"provider-test"'*)
+            case "$ANTHROPIC_AUTH_TOKEN:$ANTHROPIC_API_KEY" in
+                proxy-route_*:)
+                    response=$(/usr/bin/curl --noproxy '*' --silent --show-error --max-time 5 \
+                        -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+                        -H 'Content-Type: application/json' \
+                        -d '{"model":"sonnet","messages":[]}' "$ANTHROPIC_BASE_URL/v1/messages") ;;
+                *) response='invalid child credentials' ;;
+            esac
+            case "$response" in
+                '{"echo":"[REDACTED_PROVIDER_ROUTE]","text":"中文"}')
+                    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"自定义线路","usage":{}}' ;;
+                *) printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["provider fixture response did not match"]}' ;;
+            esac
+            ;;
         *'"type":"user"'*)
             if [ "$resume" = yes ]; then reply='沿用上下文'; else reply='首次回复'; fi
             printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$reply"
@@ -679,6 +694,10 @@ done
 #[cfg(unix)]
 impl Gateway {
     fn start_native() -> Self {
+        Self::start_native_with_path("")
+    }
+
+    fn start_native_with_path(path: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -690,9 +709,12 @@ impl Gateway {
         ));
         let state = dir.join("state");
         let work = dir.join("work");
+        let shell_work = dir.join("shell-work");
         let binary = dir.join("claude-fixture");
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&shell_work).unwrap();
+        let shell_work = shell_work.canonicalize().unwrap();
         fs::write(&binary, NATIVE_CLAUDE).unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(
@@ -701,12 +723,58 @@ impl Gateway {
                 "id":"native", "kind":"chat", "type":"gateway", "cwd":work, "cli":"claude",
             }, {
                 "id":"internal", "kind":"chat", "taskExecutionSlot":true, "cli":"claude",
+            }, {
+                "id":"bound", "kind":"chat", "cli":"claude", "dirId":"fixture-dir", "taskBoundTaskId":"tsk_bound",
+                "worktreePath":shell_work, "branch":"multicc/bound", "workspaceState":"awake"
             }])
             .to_string(),
         )
         .unwrap();
+        let ledger = state.join("task-shells.sqlite");
+        let mut tasks =
+            multicc_core::task_store::TaskStore::open(ledger.to_str().unwrap()).unwrap();
+        for (kind, id, row) in [
+            (
+                "shell",
+                "shell-bound",
+                serde_json::json!({"id":"shell-bound","sourceSessionId":"bound",
+             "dirId":"fixture-dir","currentTaskId":"tsk_bound","defaultTaskId":"tsk_bound","standalone":true,"cursorVersion":0}),
+            ),
+            (
+                "task",
+                "tsk_bound",
+                serde_json::json!({"id":"tsk_bound","sessionId":"bound","ownerShellId":"shell-bound",
+             "dirId":"fixture-dir","title":"bound task","ready":true,"taskFirst":true}),
+            ),
+            (
+                "link",
+                "shell-bound:tsk_bound",
+                serde_json::json!({"shellId":"shell-bound","taskId":"tsk_bound"}),
+            ),
+            (
+                "workspace:record",
+                "ws_bound",
+                serde_json::json!({"id":"ws_bound","dirId":"fixture-dir",
+             "path":shell_work,"branch":"multicc/bound","residency":"resident"}),
+            ),
+            (
+                "workspace:binding",
+                "bound",
+                serde_json::json!({"sessionId":"bound","workspaceId":"ws_bound"}),
+            ),
+        ] {
+            tasks
+                .run(
+                    &serde_json::json!({"op":"set","kind":kind,"id":id,"body":row.to_string()})
+                        .to_string(),
+                )
+                .unwrap();
+        }
+        drop(tasks);
         let log = fs::File::create(dir.join("gateway.log")).unwrap();
-        let child = Command::new(GATEWAY_BIN)
+        let executable =
+            std::env::var_os("MULTICC_WS_CHAT_PROOF_GATEWAY").unwrap_or_else(|| GATEWAY_BIN.into());
+        let child = Command::new(executable)
             .arg("serve")
             .arg("--cwd")
             .arg(&dir)
@@ -714,7 +782,7 @@ impl Gateway {
             .arg("--ephemeral-loopback")
             .env_clear()
             .env("ACCESS_TOKEN", "gateway-chat-fixture-token")
-            .env("PATH", "")
+            .env("PATH", path)
             .env("HOME", &state)
             .env("MULTICC_DATA_DIR", &state)
             .env("MULTICC_CLAUDE_BIN", &binary)
@@ -957,6 +1025,339 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
     let mut internal = gateway.connect_with("/ws/chat?session=internal", &[]).await;
     text(&mut internal,r#"{"type":"error","error":"Session does not exist.","data":"Session does not exist.\r\n","apiVersion":"v1"}"#).await;
     assert_eq!(next_data(&mut internal).await, Message::Close(None));
+}
+
+#[cfg(unix)]
+async fn until(socket: &mut Ws, expected: &str) -> Value {
+    for _ in 0..64 {
+        let Message::Text(frame) = next_data(socket).await else {
+            panic!("expected {expected}");
+        };
+        let value: Value = serde_json::from_str(&frame).unwrap();
+        if value["type"] == expected {
+            return value;
+        }
+        assert_ne!(value["type"], "error", "{value}");
+    }
+    panic!("expected {expected}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_task_shell_claims_new_work_and_releases_writer_before_the_next_turn() {
+    let gateway = Gateway::start_native();
+    let path = "/ws/chat?session=bound&shell=shell-bound";
+    let mut socket = gateway.connect_with(path, &[]).await;
+    until(&mut socket, "session_queue").await;
+
+    let hold = r#"{"type":"user_message","taskShell":true,"clientMsgId":"bound-1","text":"hold"}"#;
+    send_text(&mut socket, hold).await;
+    let routed = until(&mut socket, "task_shell_routed").await;
+    assert_eq!(routed["decision"], "continue");
+    assert_eq!(routed["taskId"], "tsk_bound");
+    let turn = until(&mut socket, "stream_start").await["turnId"].clone();
+    until(&mut socket, "stream_event").await;
+    gateway.assert_native_process_tree();
+
+    send_text(
+        &mut socket,
+        r#"{"type":"user_message","taskShell":true,"clientMsgId":"bound-2","text":"second"}"#,
+    )
+    .await;
+    assert_eq!(
+        until(&mut socket, "task_shell_routed").await["decision"],
+        "queued"
+    );
+    drop(socket);
+    let mut socket = gateway.connect_with(path, &[]).await;
+    assert_eq!(until(&mut socket, "system").await["turnId"], turn);
+    until(&mut socket, "session_queue").await;
+
+    let cancel = serde_json::json!({"type":"cancel","taskShell":true,"clientMsgId":"bound-cancel","turnId":turn}).to_string();
+    send_text(&mut socket, &cancel).await;
+    assert_eq!(
+        until(&mut socket, "task_shell_routed").await["decision"],
+        "cancel"
+    );
+    let resumed = until(&mut socket, "stream_start").await;
+    assert_ne!(resumed["turnId"], turn);
+    until(&mut socket, "result").await;
+    until(&mut socket, "stream_end").await;
+    until(&mut socket, "session_queue").await;
+
+    send_text(&mut socket, hold).await;
+    assert_eq!(until(&mut socket, "task_shell_routed").await, routed);
+    // An idempotent replay must never launch a second copy of the old prompt.
+    send_text(&mut socket, r#"{"type":"ping"}"#).await;
+    assert_eq!(native_frame(&mut socket, "pong").await["type"], "pong");
+    drop(socket);
+    let mut socket = gateway.connect_with(path, &[]).await;
+    let history = until(&mut socket, "chat_history").await;
+    let messages = history["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.iter().filter(|row| row["role"] == "user").count(),
+        2
+    );
+    assert!(messages.iter().any(|row| row["cancelled"] == true));
+    assert!(messages.iter().any(|row| row["content"] == "首次回复"));
+    for row in messages {
+        assert_eq!(row["taskId"], "tsk_bound");
+        assert!(row["deliveryId"].is_string());
+    }
+    let mut tasks = multicc_core::task_store::TaskStore::open(
+        gateway.state.join("task-shells.sqlite").to_str().unwrap(),
+    )
+    .unwrap();
+    tasks
+        .writer_lease_assert_empty(&serde_json::json!({"workspaceId":"ws_bound"}))
+        .unwrap();
+    let lease = tasks
+        .run(r#"{"op":"get","kind":"workspace:lease","id":"ws_bound"}"#)
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&lease).unwrap()["state"],
+        "released"
+    );
+    for (id, expected) in [(&turn, "cancelled"), (&resumed["turnId"], "succeeded")] {
+        let request = serde_json::json!({"op":"get","kind":"task-first:run-result","id":id});
+        let result: Value =
+            serde_json::from_str(&tasks.run(&request.to_string()).unwrap()).unwrap();
+        assert_eq!(result["taskId"], "tsk_bound");
+        assert_eq!(result["outcome"], expected);
+        assert_eq!(result["evidencePersisted"], true);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_task_shell_routes_configured_provider_without_child_credentials() {
+    use axum::{body::Body, http::HeaderMap, routing::post, Router};
+    const KEY: &str = "fixture-unshared-api-key";
+    let app = Router::new().route(
+        "/fixture/v1/messages",
+        post(|headers: HeaderMap, body: String| async move {
+            assert_eq!(headers["x-api-key"], KEY);
+            assert!(!headers.contains_key("authorization"));
+            assert_eq!(
+                serde_json::from_str::<Value>(&body).unwrap()["model"],
+                "fixture-model"
+            );
+            let chunks = [
+                &b"{\"echo\":\"fixture-unshared-"[..],
+                &b"api-key\",\"text\":\"\xe4"[..],
+                &b"\xb8\xad\xe6\x96\x87\"}"[..],
+            ];
+            let frames = futures_util::stream::iter(chunks.map(|bytes| {
+                Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(bytes))
+            }));
+            (
+                [("content-type", "application/json")],
+                Body::from_stream(frames),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let gateway = Gateway::start_native();
+    let sessions_path = gateway.state.join("sessions.json");
+    let mut sessions: Value = serde_json::from_slice(&fs::read(&sessions_path).unwrap()).unwrap();
+    let bound = sessions
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["id"] == "bound")
+        .unwrap();
+    bound["provider"] = Value::from("provider-fixture");
+    fs::write(sessions_path, sessions.to_string()).unwrap();
+    fs::write(
+        gateway.state.join("providers.json"),
+        serde_json::json!([{
+            "id":"provider-fixture","name":"隔离线路","appType":"claude","settingsConfig":{"env":{
+                "ANTHROPIC_BASE_URL":format!("http://{endpoint}/fixture"),"ANTHROPIC_API_KEY":KEY,
+                "ANTHROPIC_DEFAULT_SONNET_MODEL":"fixture-model"
+            }}
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let mut socket = gateway
+        .connect_with("/ws/chat?session=bound&shell=shell-bound", &[])
+        .await;
+    until(&mut socket, "session_queue").await;
+    send_text(&mut socket, r#"{"type":"user_message","taskShell":true,"clientMsgId":"provider-1","text":"provider-test"}"#).await;
+    native_frame(&mut socket, "task_shell_routed").await;
+    native_frame(&mut socket, "chat_msg_meta").await;
+    let running = native_frame(&mut socket, "notify").await;
+    assert_eq!(running["state"], "running");
+    assert_eq!(running["taskId"], "tsk_bound");
+    let start = native_frame(&mut socket, "stream_start").await;
+    let selected = native_frame(&mut socket, "provider_route_event").await;
+    assert_eq!(selected["providerId"], "provider-fixture");
+    assert_eq!(selected["providerName"], "隔离线路");
+    assert_eq!(selected["model"], "fixture-model");
+    assert_eq!(selected["turnId"], start["turnId"]);
+    let result = until(&mut socket, "result").await;
+    assert_eq!(result["providerId"], "provider-fixture");
+    until(&mut socket, "stream_end").await;
+    until(&mut socket, "session_queue").await;
+    let history = fs::read_to_string(gateway.state.join("chat_history/bound.json")).unwrap();
+    assert!(history.contains("自定义线路"));
+    assert!(!history.contains(KEY));
+    upstream.abort();
+    assert!(upstream.await.unwrap_err().is_cancelled());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_planned_task_materializes_before_using_the_selected_provider() {
+    use axum::{http::HeaderMap, routing::post, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const KEY: &str = "fixture-unshared-api-key";
+    let calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let respond = std::sync::Arc::new(tokio::sync::Notify::new());
+    let handler_calls = calls.clone();
+    let handler_entered = entered.clone();
+    let handler_respond = respond.clone();
+    let upstream_app = Router::new().route(
+        "/fixture/v1/messages",
+        post(move |headers: HeaderMap, body: String| {
+            let handler_calls = handler_calls.clone();
+            let entered = handler_entered.clone();
+            let respond = handler_respond.clone();
+            async move {
+                assert_eq!(headers["x-api-key"], KEY);
+                assert_eq!(
+                    serde_json::from_str::<Value>(&body).unwrap()["model"],
+                    "selected-model"
+                );
+                handler_calls.fetch_add(1, Ordering::Relaxed);
+                entered.notify_one();
+                respond.notified().await;
+                r#"{"echo":"fixture-unshared-api-key","text":"中文"}"#
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(async move { axum::serve(listener, upstream_app).await.unwrap() });
+    let gateway = Gateway::start_native_with_path("/usr/bin:/bin");
+    let repo = gateway.dir.join("project");
+    fs::create_dir(&repo).unwrap();
+    let repo = repo.canonicalize().unwrap();
+    let git = |cwd: &Path, args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    git(&repo, &["init", "-b", "main"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Rust Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+    );
+    let expected_head = git(&repo, &["rev-parse", "HEAD"]);
+    let worktree = repo.join(".multicc-worktrees/bound");
+    let ledger = gateway.state.join("task-shells.sqlite");
+    let mut tasks = multicc_core::task_store::TaskStore::open(ledger.to_str().unwrap()).unwrap();
+    tasks
+        .run(r#"{"op":"remove","kind":"workspace:binding","id":"bound"}"#)
+        .unwrap();
+    tasks
+        .run(r#"{"op":"remove","kind":"workspace:record","id":"ws_bound"}"#)
+        .unwrap();
+    drop(tasks);
+    let sessions_path = gateway.state.join("sessions.json");
+    let mut sessions: Value = serde_json::from_slice(&fs::read(&sessions_path).unwrap()).unwrap();
+    let bound = sessions
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["id"] == "bound")
+        .unwrap();
+    bound["workspaceState"] = Value::from("planned");
+    bound["worktreePath"] = serde_json::json!(worktree);
+    bound["provider"] = Value::from("unselected");
+    bound["providerSelection"] = serde_json::json!({"version":1,"mode":"auto","protocol":"anthropic",
+        "sticky":true,"candidates":[{"providerId":"unselected","priority":20},{"providerId":"selected","priority":10}]});
+    fs::write(&sessions_path, sessions.to_string()).unwrap();
+    fs::write(
+        gateway.state.join("directories.json"),
+        serde_json::json!([
+        {"id":"fixture-dir","path":repo,"baseBranch":"main"}])
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(gateway.state.join("providers.json"), serde_json::json!([
+        {"id":"selected","name":"Chosen","appType":"claude","settingsConfig":{"env":{
+            "ANTHROPIC_BASE_URL":format!("http://{endpoint}/fixture"),"ANTHROPIC_API_KEY":KEY,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL":"selected-model"
+        }}},
+        {"id":"unselected","name":"Manual fallback","appType":"claude","settingsConfig":{"env":{
+            "ANTHROPIC_BASE_URL":format!("http://{endpoint}/wrong"),"ANTHROPIC_API_KEY":"wrong-key",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL":"unselected-model"
+        }}}
+    ]).to_string()).unwrap();
+    let path = "/ws/chat?session=bound&shell=shell-bound";
+    let mut socket = gateway.connect_with(path, &[]).await;
+    let init = native_frame(&mut socket, "system").await;
+    assert_eq!(init["providerSelection"]["mode"], "auto");
+    until(&mut socket, "session_queue").await;
+    assert!(!worktree.exists());
+    send_text(&mut socket, r#"{"type":"user_message","taskShell":true,"clientMsgId":"planned-1","text":"provider-test"}"#).await;
+    until(&mut socket, "task_shell_routed").await;
+    let start = until(&mut socket, "stream_start").await;
+    assert_eq!(start["taskId"], "tsk_bound");
+    assert_eq!(git(&worktree, &["rev-parse", "HEAD"]), expected_head);
+    assert_eq!(
+        git(&worktree, &["branch", "--show-current"]),
+        "multicc/bound"
+    );
+    assert!(git(&repo, &["status", "--porcelain", "--untracked-files=all"]).is_empty());
+    let route = until(&mut socket, "provider_route_event").await;
+    assert_eq!(route["providerId"], "selected");
+    assert_eq!(route["model"], "selected-model");
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    gateway.assert_native_process_tree();
+    respond.notify_one();
+    assert_eq!(until(&mut socket, "result").await["providerId"], "selected");
+    until(&mut socket, "stream_end").await;
+    until(&mut socket, "session_queue").await;
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    let mut socket = gateway.connect_with(path, &[]).await;
+    assert_eq!(
+        until(&mut socket, "system").await["cwd"],
+        serde_json::json!(worktree)
+    );
+    let page = until(&mut socket, "chat_history").await;
+    assert!(page.to_string().contains("自定义线路"));
+    assert!(!page.to_string().contains(KEY));
+    upstream.abort();
+    assert!(upstream.await.unwrap_err().is_cancelled());
 }
 
 #[cfg(unix)]

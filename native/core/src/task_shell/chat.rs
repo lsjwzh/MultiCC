@@ -170,3 +170,23 @@ pub fn receipt_identity(shell: &str, input: &V) -> (String, String) {
     let key = V::Array(vec![V::from(shell), property(input, "clientMsgId")]);
     (format!("sr_{}", &digest(&key)[..40]), digest(input))
 }
+
+pub fn routed_frame(
+    shell: &str,
+    receipt: &str,
+    task: &str,
+    session: &str,
+    decision: &str,
+    client_id: V,
+) -> V {
+    V::object(vec![
+        ("type", V::from("task_shell_routed")),
+        ("ok", V::Bool(true)),
+        ("taskId", V::from(task)),
+        ("sessionId", V::from(session)),
+        ("receiptId", V::from(receipt)),
+        ("decision", V::from(decision)),
+        ("shellId", V::from(shell)),
+        ("clientMsgId", client_id),
+    ])
+}

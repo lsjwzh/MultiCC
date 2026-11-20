@@ -1318,6 +1318,8 @@ impl Store {
             }
             "scheduleAdmit" => schedule_admit::commit(self, input),
             "scheduleClaim" => schedule_claim::commit(self, input),
+            "scheduleClaimChat" => schedule_claim::claim_chat(self, input),
+            "scheduleReleaseChat" => schedule_claim::release_chat(self, input),
             "scheduleHandoff" => schedule_claim::handoff(self, input),
             "scheduleCompleteTokenExperimental" => {
                 schedule_admit_live::completion_token(self, input)

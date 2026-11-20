@@ -178,6 +178,43 @@ fn locked(file: &Path) -> Result<fs::File, String> {
         .map_err(|_| "TASK_BOARD_STORAGE: busy".to_string())?;
     Ok(lock)
 }
+
+fn snapshot(primary: &ReadState, secondary: &ReadState) -> (Value, bool) {
+    match (primary, secondary) {
+        (ReadState::Parsed(p), ReadState::Parsed(s))
+            if num(&s["schemaVersion"]) == 2.0
+                && (num(&p["schemaVersion"]) < 2.0
+                    || num(&s["revision"]) > num(&p["revision"])) =>
+        {
+            (s.clone(), true)
+        }
+        (ReadState::Parsed(p), _) => (p.clone(), false),
+        (_, ReadState::Parsed(s)) if num(&s["schemaVersion"]) == 2.0 => (s.clone(), true),
+        _ => (Value::Null, false),
+    }
+}
+
+/// Read the newest coherent task-board copy without repairing or migrating it.
+pub fn read_board_snapshot(file: &Path) -> Result<Value, String> {
+    let _lock = locked(file)?;
+    let primary = read(file);
+    let secondary = read(&sibling(file, ".planning-v2.json"));
+    if let ReadState::Parsed(value) = &primary {
+        if num(&value["schemaVersion"]) > 2.0 {
+            return Err("TASK_BOARD_SCHEMA_UNSUPPORTED".into());
+        }
+    }
+    let (value, _) = snapshot(&primary, &secondary);
+    if !value.is_object()
+        && !matches!(
+            (&primary, &secondary),
+            (ReadState::Missing, ReadState::Missing)
+        )
+    {
+        return Err("TASK_BOARD_STORAGE: no valid snapshot".into());
+    }
+    Ok(value)
+}
 pub fn run(v: &Value) -> Result<Value, String> {
     let file = Path::new(text(&v["file"]));
     if text(&v["action"]) == "save" {
@@ -210,23 +247,7 @@ pub fn run(v: &Value) -> Result<Value, String> {
             if matches!(&secondary, ReadState::Corrupt) {
                 quarantined.push(quarantine(&recovery)?.to_string_lossy().into_owned());
             }
-            let mut restored = false;
-            let raw = match (&primary, &secondary) {
-                (ReadState::Parsed(p), ReadState::Parsed(s))
-                    if num(&s["schemaVersion"]) == 2.0
-                        && (num(&p["schemaVersion"]) < 2.0
-                            || num(&s["revision"]) > num(&p["revision"])) =>
-                {
-                    restored = true;
-                    s.clone()
-                }
-                (ReadState::Parsed(p), _) => p.clone(),
-                (_, ReadState::Parsed(s)) if num(&s["schemaVersion"]) == 2.0 => {
-                    restored = true;
-                    s.clone()
-                }
-                _ => Value::Null,
-            };
+            let (raw, restored) = snapshot(&primary, &secondary);
             if num(&raw["schemaVersion"]) > 2.0 {
                 return Err(format!(
                     "TASK_BOARD_SCHEMA_UNSUPPORTED:{}",

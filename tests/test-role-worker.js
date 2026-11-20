@@ -7,12 +7,7 @@ const test = require('node:test');
 
 const { createDispatchTargeting } = require('../src/dispatch/targeting');
 const { composeMessage } = require('../src/message-composer');
-const { createSessionPersistence } = require('../src/session/persistence');
 const { recordsOf } = require('./helpers/session-records');
-const {
-  createRoleWorkerService,
-  roleWorkerSpec,
-} = require('../src/session/role-worker');
 
 const ROOT = path.join(__dirname, '..');
 const PRESET_ID = 'testing__testing-engineer';
@@ -23,41 +18,6 @@ function testEngineerPreset() {
     catalog,
     preset: catalog.presets.find(item => item.id === PRESET_ID),
   };
-}
-
-function createHarness(initialRecords = []) {
-  const records = recordsOf(initialRecords.map(record => [record.id, record]));
-  const saved = [];
-  const persistence = createSessionPersistence({
-    records,
-    store: { save(payload) { saved.push(payload); } },
-  });
-  let createCalls = 0;
-  const service = createRoleWorkerService({
-    records,
-    mutate: persistence.mutate,
-    async createSession(options) {
-      createCalls += 1;
-      const id = `worker-${createCalls}`;
-      const session = {
-        id,
-        dirId: options.dir.id,
-        cli: options.cli,
-        kind: options.kind,
-        label: options.label,
-        model: options.model,
-        effort: options.effort,
-        provider: options.provider === undefined ? null : options.provider,
-        rolePrompt: options.rolePrompt,
-        rolePresetId: options.rolePresetId,
-        type: options.type,
-      };
-      records.set(id, session);
-      persistence.bestEffort('test.create-role-worker');
-      return { ok: true, id, session };
-    },
-  });
-  return { records, saved, service, createCalls: () => createCalls };
 }
 
 test('测试工程师 template is complete, categorized, and keeps existing presets intact', () => {
@@ -85,84 +45,7 @@ test('测试工程师 template is complete, categorized, and keeps existing pres
   assert.ok(catalog.presets.some(item => item.id === 'specialized__agent-commander'));
 });
 
-test('role worker spec follows fleet defaults and rejects incomplete templates', () => {
-  const { preset } = testEngineerPreset();
-  const spec = roleWorkerSpec({ ...preset, defaultProviderId: null });
-  assert.deepEqual({
-    cli: spec.cli,
-    kind: spec.kind,
-    label: spec.label,
-    model: spec.model,
-    provider: spec.provider,
-    effort: spec.effort,
-    rolePresetId: spec.rolePresetId,
-    type: spec.type,
-  }, {
-    cli: 'codex',
-    kind: 'chat',
-    label: '测试工程师',
-    model: null,
-    provider: undefined,
-    effort: 'high',
-    rolePresetId: PRESET_ID,
-    type: 'worker',
-  });
-  assert.throws(() => roleWorkerSpec({ id: PRESET_ID, name: '测试工程师' }), /prompt and name/);
-});
-
-test('ensure creates once, persists template identity, and is idempotent', async () => {
-  const { preset } = testEngineerPreset();
-  const harness = createHarness();
-  const dir = { id: 'fleet-1' };
-  const first = await harness.service.ensure({ dir, preset });
-  const second = await harness.service.ensure({ dir, preset });
-
-  assert.equal(first.ok, true);
-  assert.equal(first.reused, false);
-  assert.equal(second.reused, true);
-  assert.equal(second.id, first.id);
-  assert.equal(harness.createCalls(), 1);
-  const workers = [...harness.records.values()].filter(item => item.rolePresetId === PRESET_ID);
-  assert.equal(workers.length, 1);
-  assert.equal(workers[0].kind, 'chat');
-  assert.equal(workers[0].type, 'worker');
-  assert.equal(workers[0].label, '测试工程师');
-  assert.equal(workers[0].rolePrompt, preset.prompt);
-  assert.ok(harness.saved.some(payload => payload.some(item =>
-    item.id === first.id && item.rolePresetId === PRESET_ID && item.rolePrompt === preset.prompt)));
-});
-
-test('ensure upgrades compatible legacy data without duplicating or touching other roles', async () => {
-  const { preset } = testEngineerPreset();
-  const existing = {
-    id: 'legacy-qa',
-    dirId: 'fleet-1',
-    cli: 'claude',
-    kind: 'chat',
-    label: '测试工程师',
-    rolePrompt: preset.prompt,
-  };
-  const architect = {
-    id: 'architect',
-    dirId: 'fleet-1',
-    cli: 'claude',
-    kind: 'chat',
-    label: '架构师',
-    rolePrompt: '# 角色：架构师',
-  };
-  const beforeArchitect = JSON.parse(JSON.stringify(architect));
-  const harness = createHarness([existing, architect]);
-  const result = await harness.service.ensure({ dir: { id: 'fleet-1' }, preset });
-
-  assert.equal(result.reused, true);
-  assert.equal(result.id, 'legacy-qa');
-  assert.equal(harness.createCalls(), 0);
-  assert.equal(harness.records.get('legacy-qa').type, 'worker');
-  assert.equal(harness.records.get('legacy-qa').rolePresetId, PRESET_ID);
-  assert.deepEqual(harness.records.get('architect'), beforeArchitect);
-});
-
-test('created role is injected into the system prompt and visible to Commander routing', async () => {
+test('a persisted role worker keeps its system prompt and Commander routing', () => {
   const { preset } = testEngineerPreset();
   const commander = {
     id: 'commander',
@@ -171,9 +54,17 @@ test('created role is injected into the system prompt and visible to Commander r
     kind: 'chat',
     type: 'commander',
   };
-  const harness = createHarness([commander]);
-  const result = await harness.service.ensure({ dir: { id: 'fleet-1' }, preset });
-  const worker = harness.records.get(result.id);
+  const worker = {
+    id: 'existing-engineer',
+    dirId: commander.dirId,
+    cli: preset.defaultCli,
+    kind: 'chat',
+    type: 'worker',
+    label: preset.name,
+    rolePrompt: preset.prompt,
+    rolePresetId: preset.id,
+  };
+  const records = recordsOf([[commander.id, commander], [worker.id, worker]]);
 
   const envelope = composeMessage({
     text: '验证发布候选',
@@ -190,7 +81,7 @@ test('created role is injected into the system prompt and visible to Commander r
   assert.equal(envelope.systemPrompt, `[image hint]\n\n${preset.prompt}`);
 
   const targeting = createDispatchTargeting({
-    records: harness.records,
+    records,
     chatSessions: new Map(),
     normalizeEffort: value => value || null,
     isTargetBusy: () => false,

@@ -189,6 +189,9 @@ impl TaskStore {
             "id":receipt_id,"shellId":shell_id,"taskId":task_id,"fingerprint":facts["fingerprint"],
             "payload":null,"roleSnapshotId":role,"taskIdentityLocked":locked
         });
+        if facts["nativeAdmission"] == true {
+            receipt["nativeAdmission"] = Value::Bool(true);
+        }
         if delivery["supervisorAnswer"] == true {
             receipt["supervisorAnswer"] = Value::Bool(true);
         }
@@ -294,7 +297,7 @@ impl TaskStore {
         self.snapshot_role(task, facts)
     }
 
-    pub(super) fn settle_receipt(&mut self, facts: &Value) -> Result<Value> {
+    pub fn settle_receipt(&mut self, facts: &Value) -> Result<Value> {
         self.atomic(|store| {
             let id = text(&facts["receiptId"]);
             let mut receipt = store.get("receipt", id)?;
@@ -370,6 +373,98 @@ impl TaskStore {
             .into_iter()
             .find_map(|(_, _, task)| (task["sessionId"] == session).then_some(task))
             .unwrap_or(Value::Null))
+    }
+
+    /// Admit only an execution that already owns the addressed task, and bind
+    /// the receipt to that task before the scheduler sees the first input.
+    pub fn reserve_native_chat_input(
+        &mut self,
+        shell_query: Option<&str>,
+        session: &str,
+        facts: &Value,
+        message: &V,
+    ) -> Result<Value> {
+        let intent = chat::intent(message);
+        if intent == Intent::Answer {
+            return Err(conflict("chat_route_unavailable"));
+        }
+        self.atomic(|store| {
+            let shell_id = match shell_query {
+                Some(id) => id.to_owned(),
+                None => {
+                    let task = store.chat_task_for_session(session)?;
+                    if !js::serde::truthy(&task["adopted"]) && !text(&task["ownerShellId"]).is_empty() {
+                        text(&task["ownerShellId"]).to_owned()
+                    } else {
+                        chat::source_shell_id(session)
+                    }
+                }
+            };
+            Self::validate_chat_shell_id(&shell_id)?;
+            let shell = store.get("shell", &shell_id)?;
+            let task = store.get("task", selected_task(&shell))?;
+            let id = text(&task["id"]);
+            if id.is_empty()
+                || task["ready"] != true
+                || task["sessionId"] != session
+                || shell["dirId"].is_null()
+                || facts["record"]["dirId"] != shell["dirId"]
+                || js::serde::truthy(&shell["archivedAt"])
+            {
+                return Err(conflict("chat_route_unavailable"));
+            }
+            let payload = chat::normalize(message, Some(id))
+                .map_err(|e| fail(e.code, &e.message, 400))?;
+            let payload_facts = js::to_serde(&payload);
+            if payload_facts["newTask"] == true && !js::serde::truthy(&shell["standalone"]) {
+                return Err(conflict("chat_route_unavailable"));
+            }
+            if !payload_facts["unattended"].is_null()
+                || !items(&payload_facts["contextTaskIds"]).is_empty()
+                || !items(&payload_facts["dependsOn"]).is_empty()
+            {
+                return Err(conflict("chat_route_unavailable"));
+            }
+            if intent == Intent::Cancel && facts["state"]["taskId"] != id {
+                return Err(fail("stale_control", "The task has moved to another turn", 409));
+            }
+            let indexed = &facts["board"]["tasks"][id];
+            if items(&facts["board"]["deletedTaskIds"]).iter().any(|removed| removed == id) {
+                return Err(conflict("task_deleted"));
+            }
+            if js::serde::truthy(&indexed["deleting"]) {
+                return Err(conflict("task_deleting"));
+            }
+            if indexed["status"] == "archived" || task["status"] == "archived" {
+                return Err(conflict("task_archived"));
+            }
+            let (receipt_id, fingerprint) = chat::receipt_identity(&shell_id, &payload);
+            let existing = store.get("receipt", &receipt_id)?;
+            if !existing.is_null()
+                && (existing["taskId"] != id || existing["nativeAdmission"] != true)
+            {
+                // A receipt reserved by a different execution owner can carry
+                // an unfinished external launch. Leave it to that owner.
+                return Err(conflict("chat_route_unavailable"));
+            }
+            let claim = store.get("claim", id)?;
+            if intent == Intent::Work && !claim["receiptId"].is_null() && claim["receiptId"] != receipt_id {
+                let previous = store.get("receipt", text(&claim["receiptId"]))?;
+                if !previous.is_null() && previous["status"] != "accepted" && previous["nativeAdmission"] != true {
+                    return Err(conflict("chat_route_unavailable"));
+                }
+            }
+            let reservation = json!({
+                "shellId":shell_id,"sourceSessionId":shell["sourceSessionId"],"dirId":shell["dirId"],
+                "targetId":id,"targetSessionId":session,"receiptId":receipt_id,"fingerprint":fingerprint,
+                "observedClaim":claim["receiptId"],"state":facts["state"],"record":facts["record"],
+                "directory":facts["directory"],"estimatedTokens":0,"nativeAdmission":true
+            });
+            let reserved = store.reserve_receipt_in_tx(&reservation, &payload_facts, payload)?;
+            let receipt = &reserved["receipt"];
+            let role = store.verified_role(text(&receipt["roleSnapshotId"]), id)?;
+            Ok(json!({"receipt":receipt,"rolePrompt":role["prompt"]}))
+        })
     }
 
     pub fn replay_chat_input(
@@ -453,18 +548,13 @@ impl TaskStore {
                 "Task receipt no longer belongs to this chat scope",
             ));
         }
-        Ok(Some(V::object(vec![
-            ("type", V::from("task_shell_routed")),
-            ("ok", V::Bool(true)),
-            ("taskId", V::from(task_id)),
-            ("sessionId", V::from(target)),
-            ("receiptId", V::from(receipt_id)),
-            ("decision", V::from(decision)),
-            ("shellId", V::from(shell_id)),
-            (
-                "clientMsgId",
-                input.get("clientMsgId").cloned().unwrap_or(V::Undefined),
-            ),
-        ])))
+        Ok(Some(chat::routed_frame(
+            &shell_id,
+            &receipt_id,
+            task_id,
+            target,
+            decision,
+            input.get("clientMsgId").cloned().unwrap_or(V::Undefined),
+        )))
     }
 }

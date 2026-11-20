@@ -7,6 +7,8 @@
 //
 //   node docs/rust-migration/differential/capture-chat-ws-conformance.js
 //   node docs/rust-migration/differential/capture-chat-ws-conformance.js --out /tmp/fresh.json
+//   node docs/rust-migration/differential/capture-chat-ws-conformance.js --out /tmp/fresh.json \
+//     --compare-turn-bytes /tmp/raw-turns.json [--audit-turn-differences]
 //
 // What it freezes is what a browser or the app can observe, not internals:
 // the upgrade status, every data frame (type, key set and, for the small
@@ -38,6 +40,9 @@ const ROOT = path.join(__dirname, '..', '..', '..');
 const TOKEN = 'capture-chat-ws-conformance-token';
 const outFlag = process.argv.indexOf('--out');
 const compareShellBytes = process.argv.includes('--compare-shell-bytes');
+const auditTurnDifferences = process.argv.includes('--audit-turn-differences');
+const turnBytesFlag = process.argv.indexOf('--compare-turn-bytes');
+const turnBytesFile = turnBytesFlag > 0 && process.argv[turnBytesFlag + 1];
 const OUT = outFlag > 0 && process.argv[outFlag + 1]
   ? path.resolve(process.argv[outFlag + 1])
   : path.join(__dirname, 'chat-ws-conformance-golden.json');
@@ -109,7 +114,7 @@ function observe(url, { headers = {}, steps = [], quietMs = 400, serverCloses = 
       let parsed;
       try { parsed = JSON.parse(String(data)); } catch (_) { parsed = { raw: String(data) }; }
       timeline.push(parsed);
-      if (compareShellBytes) wire.push({ type: parsed?.type, bytes: Buffer.from(data) });
+      if (compareShellBytes || turnBytesFile) wire.push({ type: parsed?.type, bytes: Buffer.from(data) });
     });
     ws.on('error', () => {});
     ws.on('close', (code, reason) => {
@@ -246,6 +251,138 @@ function detail(frames) {
   return out;
 }
 
+function turnFrames(capture) {
+  return capture.frames.map(bytes => JSON.parse(Buffer.from(bytes, 'base64').toString('utf8')));
+}
+
+function turnFrameKey(frame) {
+  return [frame.type, frame.subtype || frame.event && typeof frame.event === 'string' && frame.event
+    || frame.routePhase || frame.state].filter(Boolean).join('/');
+}
+
+// Keep byte evidence (including order) and list field differences separately.
+// Occurrences with the same event label are paired in their original order.
+function turnFieldDifferences(reference, native) {
+  const collect = capture => {
+    const events = new Map();
+    for (const frame of turnFrames(capture)) {
+      const key = turnFrameKey(frame);
+      if (!events.has(key)) events.set(key, []);
+      events.get(key).push(frame);
+    }
+    return events;
+  };
+  const node = collect(reference);
+  const rust = collect(native);
+  return [...new Set([...node.keys(), ...rust.keys()])].flatMap(event => {
+    const a = node.get(event) || [];
+    const b = rust.get(event) || [];
+    const fields = new Set();
+    let reordered = false;
+    for (let index = 0; index < Math.min(a.length, b.length); index++) {
+      const left = a[index], right = b[index];
+      const common = frame => Object.keys(frame).filter(key => Object.hasOwn(left, key) && Object.hasOwn(right, key));
+      if (JSON.stringify(common(left)) !== JSON.stringify(common(right))) reordered = true;
+      for (const name of new Set([...Object.keys(left), ...Object.keys(right)])) {
+        if (JSON.stringify(left[name]) !== JSON.stringify(right[name])) fields.add(name);
+      }
+    }
+    return a.length !== b.length || fields.size || reordered
+      ? [{ event, node: a.length, rust: b.length, fields: [...fields], reordered }]
+      : [];
+  });
+}
+
+function verifyAuditedTurns({node, rust}, comparison) {
+  const routeIds = ['runtimeEpoch', 'turnId', 'decisionId', 'routeAttemptId', 'providerRevision'];
+  const permitted = new Map([
+    ['system/init', ['turnId', 'providerTokenWindows', 'cliStates', 'cliAvailability']],
+    ['chat_history', ['messages']],
+    ['task_state', ['goal', 'phase', 'taskShortCode', 'classifyState', 'goalState', 'apiError',
+      'cancelledAt', 'cancelReason', 'auxUnhealthy', 'auxUnhealthySince', 'taskId']],
+    ['session_queue/snapshot', []],
+    ['session_queue/queued', []], ['session_queue/claimed', []], ['session_queue/started', []],
+    ['session_queue/assessing', []], ['session_queue/completed', []],
+    ['chat_msg_meta', ['id', 'ts', 'message']],
+    ['notify/running', ['message']],
+    ['notify/succeeded', ['classifyState', 'goalState', 'taskShortCode', 'taskGoal', 'voiceMessage']],
+    ['notify/error', []], ['notify/cancelled', []],
+    ['stream_start', ['turnId']],
+    ['provider_route_event/selected', [...routeIds, 'ts']],
+    ['provider_route_event/succeeded', [...routeIds, 'ts']],
+    ['provider_route_event/failed', [...routeIds, 'ts', 'reasonCode', 'errorCategory']],
+    ['provider_route_event/released', []],
+    ['stream_event', routeIds], ['assistant', routeIds],
+    ['chat_history_annotation', []], ['provider_token_stats', []], ['aux_verdict_staleness', []],
+    ['result', [...routeIds, 'durationMs', 'contextTrace', 'timeline']],
+    ['result/success', routeIds], ['result/error_during_execution', routeIds],
+    ['api_error_policy/retry_wait', []],
+    ['api_error_policy/failed', [...routeIds, 'providerRouteScope', 'routeGeneration', 'attemptNo', 'turnElapsedMs', 'at']],
+    ['system/warning', ['message']],
+    ['task_shell_routed', ['receiptId']],
+  ]);
+  const countDifferences = new Set([
+    'task_state', 'session_queue/snapshot', 'session_queue/queued', 'session_queue/claimed',
+    'session_queue/started', 'session_queue/assessing', 'session_queue/completed', 'notify/running',
+    'notify/error', 'notify/cancelled', 'provider_route_event/selected', 'provider_route_event/failed',
+    'provider_route_event/released', 'chat_msg_meta', 'chat_history_annotation', 'provider_token_stats',
+    'aux_verdict_staleness', 'result', 'result/error_during_execution', 'api_error_policy/retry_wait',
+    'api_error_policy/failed', 'system/warning',
+  ]);
+  for (const scenario of comparison) for (const difference of scenario.fields || []) {
+    const fields = permitted.get(difference.event);
+    const label = `${scenario.name}, ${difference.event}`;
+    assert.ok(fields, `unreviewed event ${label}`);
+    for (const field of difference.fields) assert.ok(fields.includes(field), `unreviewed field ${label}.${field}`);
+    if (difference.node !== difference.rust) assert.ok(countDifferences.has(difference.event), `unreviewed count ${label}`);
+    if (difference.reordered) assert.equal(difference.event, 'api_error_policy/failed', `unreviewed key order ${label}`);
+  }
+  const fixedInit = ['cwd', 'session', 'session_id', 'cli', 'is_streaming', 'taskShell',
+    'model', 'effectiveModel', 'effort', 'effectiveEffort', 'agent', 'providerRouteProtocolVersion',
+    'providerRoute', 'providerId', 'providerName', 'providerSelection', 'apiVersion'];
+  for (let index = 0; index < node.length; index++) {
+    const legacy = turnFrames(node[index]);
+    const frames = turnFrames(rust[index]);
+    const of = (all, type) => all.filter(frame => frame.type === type);
+    for (const field of fixedInit) assert.deepEqual(frames[0][field], legacy[0][field], field);
+    assert.deepEqual(rust[index].close, node[index].close);
+    assert.equal(rust[index].upgrade, node[index].upgrade);
+    if (index === 0) assert.equal(rust[index].frames[1], node[index].frames[1], 'seeded history bytes');
+    if (index === 2) {
+      const contents = all => of(all, 'chat_history')[0].messages.map(({ role, content, taskId }) => ({ role, content, taskId }));
+      assert.deepEqual(contents(frames), contents(legacy));
+      continue;
+    }
+    const match = predicate => frames.find(predicate);
+    const started = of(frames, 'stream_start');
+    assert.equal(started.length, 1);
+    const {taskId, turnId} = started[0];
+    assert.ok(taskId && turnId);
+    const receipt = of(frames, 'task_shell_routed')[0];
+    assert.deepEqual(receipt, of(legacy, 'task_shell_routed')[0]);
+    assert.equal(receipt.taskId, taskId);
+    assert.equal(of(frames, 'stream_end').length, 1);
+    assert.equal(of(frames, 'stream_end')[0].taskId, taskId);
+    const selected = match(frame => frame.routePhase === 'selected');
+    assert.equal(selected.turnId, turnId);
+    assert.equal(selected.taskId, taskId);
+    assert.equal(selected.providerId, frames[0].providerId);
+    assert.equal(selected.model, frames[0].effectiveModel);
+    assert.ok(match(frame => frame.type === 'notify' && frame.state === 'running'));
+    if (index < 2) {
+      assert.equal(match(frame => frame.type === 'result' && frame.subtype === 'success').result, 'done:final');
+      assert.equal(match(frame => frame.routePhase === 'succeeded').taskId, taskId);
+    } else if (index === 3) {
+      assert.equal(of(frames, 'task_shell_routed')[1].decision, 'cancel');
+      assert.equal(match(frame => frame.routePhase === 'released').turnId, turnId);
+    } else {
+      assert.match(match(frame => frame.type === 'api_error_policy').message, /fixture upstream failure/);
+      assert.match(match(frame => frame.type === 'system' && frame.subtype === 'warning').message, /fixture upstream failure/);
+      assert.equal(match(frame => frame.routePhase === 'failed').turnId, turnId);
+    }
+  }
+}
+
 function shape(allFrames, flow = false) {
   const timeline = allFrames.filter(frame => (flow
     ? frame['@'] || FLOW_ANCHORS.has(frame.type) || EXACT_TYPES.has(frame.type)
@@ -313,6 +450,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const marker = (text.match(/(?:HANG|DONE)_[A-Z0-9_]+/g) || []).pop();
   if (!marker) return;
   if (marker.startsWith('HANG')) { delta('hang:partial'); setInterval(() => {}, 1000); return; }
+  if (marker === 'DONE_ERROR') {
+    emit({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['fixture upstream failure'] });
+    return;
+  }
   delta('done:partial');
   emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done:final' }] } });
   // The Agent SDK keeps its transport open between turns.
@@ -339,7 +480,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const gateway = path.join(path.dirname(addon),
     process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
   let output = '';
-  function startGateway(port, native) {
+  function startGateway(port, native, stateDir = dataDir) {
     const mode = native ? ['--no-node'] : ['--node', process.execPath, 'server.js'];
     const env = {
       ...isolatedHostEnv(),
@@ -349,8 +490,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       ACCESS_TOKEN: TOKEN,
       MULTICC_ALLOW_LEGACY_WS_TOKEN: '1',
       MULTICC_ALLOW_REMOTE: '0',
-      MULTICC_DATA_DIR: dataDir,
-      MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'),
+      MULTICC_DATA_DIR: stateDir,
+      MULTICC_MEMORY_ROOT: path.join(stateDir, 'memories'),
       MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100',
       MULTICC_TASK_SHELLS: '1',
       HOME: home,
@@ -530,7 +671,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       steps: [{ until: burstDone, label: 'burst' }],
     }));
 
-    if (compareShellBytes) {
+    if (compareShellBytes || turnBytesFile) {
       const shell = await api('POST', '/api/task-shells', { sessionId: idle });
       assert.ok(shell.id, 'the reference host opened the shell');
       const scopedSession = await newSession('conformance-shell-history');
@@ -592,6 +733,69 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         await queueStore.close({ exportRollback: false });
       }
       const scoped = (id, shellId = shell.id) => `/ws/chat?session=${encodeURIComponent(id)}&shell=${encodeURIComponent(shellId)}`;
+      if (turnBytesFile) {
+        const captures = {};
+        for (const mode of ['node', 'rust']) {
+          const state = path.join(root, mode);
+          fs.cpSync(dataDir, state, { recursive: true });
+          const port = await freePort();
+          const gateway = startGateway(port, mode === 'rust', state);
+          const endpoint = `ws://127.0.0.1:${port}${scoped(turn, completedShell.id)}`;
+          const init = { until: burstDone, label: 'connect snapshot' };
+          const finished = {
+            until: (frame, index, frames) => frame.type === 'stream_end'
+              || (frame.type === 'error' && !frames.slice(0, index).some(f => f.type === 'stream_start')),
+            label: 'turn end',
+          };
+          const settled = {
+            until: (frame, index, frames) => frame.type === 'session_queue'
+              && (mode === 'rust' ? frame.event === 'snapshot' && frame.state === 'idle' : frame.event === 'completed')
+              && frames.slice(0, index).some(f => f.type === 'stream_end'),
+            label: 'durable queue completion after stream_end',
+          };
+          const send = (text, id) => ({ send: { type: 'user_message', taskShell: true, text, clientMsgId: id } });
+          const probe = async (name, steps) => {
+            const result = await observe(endpoint, { steps: [init, ...steps] });
+            return { name, ...result.result, frames: result.wire.map(({bytes}) => bytes.toString('base64')) };
+          };
+          try {
+            await waitReady(`http://127.0.0.1:${port}`, mode === 'rust' ? '/healthz' : '/readyz');
+            captures[mode] = [
+              await probe('first new input', [send('DONE_FRESH_ONE', 'capture-first'), finished, settled]),
+              await probe('second turn', [send('DONE_FRESH_TWO', 'capture-second'), finished, settled]),
+              await probe('history after reconnect', []),
+              await probe('cancel', [send('HANG_FRESH', 'capture-hold'), {
+                until: frame => frame.type === 'stream_event' || frame.type === 'error', label: 'cancel target',
+              }, { compute: frames => {
+                const active = frames.find(frame => frame.type === 'stream_start');
+                return active ? { type: 'cancel', taskShell: true, intent: 'cancel', clientMsgId: 'capture-cancel',
+                  taskId: active.taskId, turnId: active.turnId } : { type: 'ping' };
+              } }, finished, settled, {
+                until: frame => frame.type === 'task_shell_routed' && frame.decision === 'cancel',
+                label: 'cancel receipt',
+              }]),
+              await probe('upstream error', [send('DONE_ERROR', 'capture-error'), finished, settled]),
+            ];
+          } finally {
+            await stopGateway(gateway);
+          }
+        }
+        const comparison = captures.node.map((reference, index) => {
+          const native = captures.rust[index];
+          if (JSON.stringify(reference) === JSON.stringify(native)) return { name: reference.name, equal: true };
+          const frame = Array.from({ length: Math.max(reference.frames.length, native.frames.length) }, (_, i) => i)
+            .find(i => reference.frames[i] !== native.frames[i]);
+          const type = bytes => bytes ? JSON.parse(Buffer.from(bytes, 'base64').toString()).type : null;
+          return { name: reference.name, equal: false, frame,
+            referenceCount: reference.frames.length, nativeCount: native.frames.length,
+            referenceType: type(reference.frames[frame]), nativeType: type(native.frames[frame]),
+            fields: turnFieldDifferences(reference, native) };
+        });
+        fs.writeFileSync(turnBytesFile, `${JSON.stringify({ comparison, captures }, null, 2)}\n`);
+        for (const {fields, ...result} of comparison) process.stdout.write(`${JSON.stringify(result)}\n`);
+        if (auditTurnDifferences) verifyAuditedTurns(captures, comparison);
+        else assert.ok(comparison.every(result => result.equal), '完整回合原始帧不一致，已保存两侧捕获');
+      }
       const historyPath = scoped(scopedSession, historyShell.id);
       const historyProbe = { steps: [{ until: frame => frame.type === 'chat_history', label: 'scoped history' }] };
       const exchange = (send, response) => ({ steps: [

@@ -40,6 +40,18 @@ pub fn lookup<'a>(records: &'a [V], session: &str) -> Option<&'a V> {
         .rfind(|row| matches!(row.get("id"), Some(V::String(id)) if id == session))
 }
 
+pub fn update_record(root: &Path, session: &str, apply: impl FnOnce(&mut V)) -> Result<V, String> {
+    let mut all = records(root)?;
+    let record = all
+        .iter_mut()
+        .rfind(|row| matches!(row.get("id"), Some(V::String(id)) if id == session))
+        .ok_or("chat session disappeared before update")?;
+    apply(record);
+    let record = record.clone();
+    durable_state::save(&root.join("sessions.json"), "sessions", &V::Array(all))?;
+    Ok(record)
+}
+
 fn transcript_stem(session: &str) -> Result<(), String> {
     if chat_history_file::safe_stem(session.encode_utf16()) != session {
         return Err("invalid chat session id".into());

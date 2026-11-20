@@ -41,8 +41,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -p "$tmp/cwd" "$tmp/home" "$tmp/path"
-# The front door derives its package root from <cwd>/server.js; nothing runs it.
-: > "$tmp/cwd/server.js"
+# The runtime root is empty, with neither a Node entrypoint nor npm packages.
 : > "$tmp/stdout"
 : > "$tmp/stderr"
 

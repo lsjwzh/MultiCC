@@ -22,19 +22,27 @@ pub enum Outcome {
     Failed(String),
 }
 
+pub struct RunResult {
+    pub outcome: Outcome,
+    pub writer_stopped: bool,
+}
+
 /// Each turn has its own stdout stream. Late frames can only reach this
 /// invocation, even after a cancellation and immediate retry by the client.
 /// The Claude session id and resume flag carry context across process exits.
-pub async fn run<F, Fut>(
+pub async fn run<F, Fut, Started, StartFuture>(
     options: StartInput,
     text: &str,
     user_uuid: &str,
     mut cancel: oneshot::Receiver<()>,
     mut emit: F,
-) -> Outcome
+    started: Started,
+) -> RunResult
 where
     F: FnMut(Value) -> Fut,
     Fut: Future<Output = ()>,
+    Started: FnOnce(i32) -> StartFuture,
+    StartFuture: Future<Output = Result<(), String>>,
 {
     let secrets = normalize_secrets(
         [
@@ -67,21 +75,28 @@ where
         }
     });
     let startup = async {
-        process.start_native(options).await?;
-        process.send_user(prompt.to_string()).await
+        process
+            .start_native(options)
+            .await
+            .map_err(|error| error.to_string())?;
+        started(process.pid()).await?;
+        process
+            .send_user(prompt.to_string())
+            .await
+            .map_err(|error| error.to_string())
     };
     let started = tokio::select! {
         biased;
         _ = &mut cancel => {
             stop(&process, &mut events, true).await;
-            return Outcome::Cancelled;
+            return stopped(&process, Outcome::Cancelled);
         }
         result = startup => result,
     };
     if let Err(error) = started {
         let detail = with_stderr(error.to_string(), &process.stderr_tail(), &secrets);
         stop(&process, &mut events, false).await;
-        return Outcome::Failed(detail);
+        return stopped(&process, Outcome::Failed(detail));
     }
     let result = loop {
         tokio::select! {
@@ -118,7 +133,24 @@ where
         }
     };
     stop(&process, &mut events, matches!(result, Outcome::Cancelled)).await;
-    result
+    stopped(&process, result)
+}
+
+fn stopped(process: &ClaudeProcess, outcome: Outcome) -> RunResult {
+    let writer_stopped = !process.alive();
+    #[cfg(unix)]
+    let writer_stopped = if writer_stopped && process.pid() > 0 {
+        // The child is a group leader. The writer is still live if a
+        // descendant survives it, or if the OS cannot prove the group gone.
+        let running = unsafe { libc::kill(-process.pid(), 0) } == 0;
+        !running && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    } else {
+        writer_stopped
+    };
+    RunResult {
+        outcome,
+        writer_stopped,
+    }
 }
 
 fn main_result(event: &Value) -> bool {

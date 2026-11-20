@@ -4,22 +4,51 @@ use multicc_core::{
     provider_attempt_identity, quota_guard,
 };
 
-use super::{optional_text, property};
+use super::{optional_text, property, provider::Provider};
 
 pub(super) struct Route {
     pub scope: V,
     pub model: V,
+    pub provider_name: V,
 }
 
 impl Route {
-    pub fn new(epoch: &str, turn: &str, attempt: &str, generation: u64, record: &V) -> Self {
+    pub fn model_attribution(&self) -> V {
+        V::object(vec![
+            ("cli", property(&self.scope, "cli")),
+            ("providerId", property(&self.scope, "providerId")),
+            ("providerName", self.provider_name.clone()),
+            ("model", self.model.clone()),
+        ])
+    }
+
+    pub fn new(
+        epoch: &str,
+        turn: &str,
+        attempt: &str,
+        generation: u64,
+        record: &V,
+        provider: Option<&Provider>,
+    ) -> Self {
         let cli = super::store::cli(record);
-        let model = optional_text(record, "model").map_or(V::Null, V::from);
-        let revision =
-            provider_attempt_identity::provider_revision(&JsString::from_rust_str(&format!(
-                "{cli}:anthropic:claude-official:{}",
-                optional_text(record, "model").unwrap_or_default(),
-            )));
+        let (provider_id, provider_name, model, revision) = match provider {
+            Some(provider) => (
+                provider.id.as_str(),
+                provider.name.as_str(),
+                provider.model.clone(),
+                provider.revision.clone(),
+            ),
+            None => {
+                let model = optional_text(record, "model");
+                let revision = provider_attempt_identity::provider_revision(
+                    &JsString::from_rust_str(&format!(
+                        "{cli}:anthropic:claude-official:{}",
+                        model.as_deref().unwrap_or_default(),
+                    )),
+                );
+                ("claude-official", "Claude", model, revision)
+            }
+        };
         let scope = V::object(vec![
             ("providerRouteProtocolVersion", V::Number(1.0)),
             ("providerRouteScope", V::from("attempt")),
@@ -30,10 +59,14 @@ impl Route {
             ("routeAttemptId", V::from(attempt)),
             ("routeGeneration", V::Number(generation as f64)),
             ("attemptNo", V::Number(1.0)),
-            ("providerId", V::from("claude-official")),
+            ("providerId", V::from(provider_id)),
             ("providerRevision", V::from(revision)),
         ]);
-        Self { scope, model }
+        Self {
+            scope,
+            model: model.map_or(V::Null, V::from),
+            provider_name: V::from(provider_name),
+        }
     }
 
     pub fn tag(&self, mut frame: V) -> V {
@@ -61,7 +94,7 @@ impl Route {
             ("routeGeneration", field("routeGeneration")),
             ("attemptNo", field("attemptNo")),
             ("providerId", field("providerId")),
-            ("providerName", V::from("Claude")),
+            ("providerName", self.provider_name.clone()),
             ("protocol", V::from("anthropic")),
             ("model", self.model.clone()),
             ("providerRevision", field("providerRevision")),
