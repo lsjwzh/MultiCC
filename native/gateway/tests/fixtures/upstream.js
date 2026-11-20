@@ -76,6 +76,7 @@ if (!fixtureToken) {
   try { fixtureToken = /^ACCESS_TOKEN=(.*)$/m.exec(fs.readFileSync('.env', 'utf8'))?.[1] || ''; } catch {}
 }
 let revision = 0;
+let fixtureTicketSpent = false;
 let fixtureShutdown = false;
 // Set once the scripted Node child has been asked to refresh the Codex catalog;
 // the next codex-state answer can then report the post-refresh snapshot.
@@ -106,6 +107,15 @@ function controlConnect() {
       if (phase === 0) { nonce = value; send(sign(`child:${nonce}`)); phase = 1; }
       else if (phase === 1) { if (value !== sign(`parent:${nonce}`)) return socket.destroy(); phase = 2; }
       else if (value.op === 'snapshot') send({ kind: 'snapshot', secret: fixtureToken, shutting_down: fixtureShutdown, revision });
+      // The one ticket this fixture will redeem: for `/ws/remote-screen` only,
+      // and only once, like the real runtime's path-bound one-use tickets. It
+      // lets a `--node` test prove the front door redeems over the control
+      // channel instead of skipping redemption when it owns no local runtime.
+      else if (value.op === 'consume_ticket' && value.ticket === 'fixture-ticket'
+        && value.path === '/ws/remote-screen' && !fixtureTicketSpent) {
+        fixtureTicketSpent = true;
+        send({ kind: 'redeemed', path: value.path, expires_at: Date.now() + 60000, metadata: {} });
+      }
       else send({ kind: 'invalid' });
     }
   });

@@ -300,6 +300,27 @@ async fn dispatch(
         }
         return crate::ws_machines::handle(app, request).await;
     }
+    // `/ws/remote-screen`: the exact path the retired `remote-screen-rust.js`
+    // attached to. Like the machines bridge, only a real upgrade is claimed; a
+    // plain GET on the path still falls through to Express/Node.
+    if crate::ws_remote_screen::RemoteScreenWs::claims(request.uri().path())
+        && is_websocket_upgrade(request.headers())
+    {
+        // §8.1: with no Node child and no locally owned authentication runtime
+        // there is nobody who can redeem the ticket, so keep the immediate
+        // `node_runtime_absent` answer instead of a 101 followed by a close.
+        if upstream.node_absent() && !app.auth.has_local() {
+            return forward(upstream, request, None).await;
+        }
+        let Some(screen) = app.remote_ws.get().cloned() else {
+            // Unreachable in production: `daemon::serve` installs the bridge
+            // before the router exists. Fail closed rather than fall back to
+            // Node — the child is the front door's own.
+            return remote_screen_unavailable();
+        };
+        let (peer, _local) = upstream.addresses();
+        return screen.handle(app, peer.ip(), request).await;
+    }
     // The chat upgrade is shared by the native host and the compatibility bridge.
     if crate::ws_chat::claims(request.uri().path()) && is_websocket_upgrade(request.headers()) {
         let (peer, local) = upstream.addresses();
@@ -437,6 +458,19 @@ fn node_runtime_absent() -> Response<Body> {
         .header("connection", "close")
         .body(Body::from(NODE_ABSENT_BODY))
         .expect("static node-absent response")
+}
+
+/// Fail-closed answer for a `/ws/remote-screen` upgrade when the daemon did not
+/// install the bridge. This is unreachable in production (`daemon::serve` sets
+/// it before the router exists); it never falls back to Node, because the
+/// `multicc-remote` child is the front door's own.
+fn remote_screen_unavailable() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("content-type", "application/json")
+        .header("connection", "close")
+        .body(Body::from(r#"{"ok":false,"error":"remote-unavailable"}"#))
+        .expect("static remote-screen unavailable response")
 }
 
 /// §6: the synthetic answer when Node cannot be reached (503) or accepted the

@@ -203,6 +203,11 @@ pub enum Route {
     FilesOptions,
     Upload,
     UploadOptions,
+    /// `/api/remote-screen` and everything below it. Node mounted it with
+    /// `app.use`, so the whole prefix is one handler for every method (a
+    /// non-GET/HEAD/POST method, OPTIONS included, is the handler's own 405,
+    /// not Express's automatic answer).
+    RemoteScreen,
     TurnLedger(turn_ledger::Route),
     TurnLedgerOptions(turn_ledger::Route),
     Providers(providers::Route),
@@ -354,6 +359,14 @@ pub fn claim_uri(method: &Method, uri: &axum::http::Uri) -> Option<Route> {
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
     if method == Method::OPTIONS && options_allow(path).is_some() {
         return Some(Route::AutoOptions);
+    }
+    // `/api/remote-screen`: one `app.use` mount in Node, so every method under
+    // the prefix belongs to its handler. It is not in `OPTIONS_SOURCES`
+    // (`app.use` produced no automatic OPTIONS) and its prefix is disjoint from
+    // every cluster below, so claiming it first can neither shadow another
+    // route nor be shadowed by one.
+    if remote_screen::claims(path) {
+        return Some(Route::RemoteScreen);
     }
     // The server-core literals `/healthz`, `/readyz`, `/metrics` and
     // `/api/repo-operations/:operationId`. None overlaps another cluster, so
@@ -596,6 +609,17 @@ pub struct App {
     pub services: std::sync::OnceLock<Arc<services::Runtime>>,
     pub external_workspaces:
         std::sync::OnceLock<Arc<multicc_core::workspace_sharing::external::Runtime>>,
+    /// The front door's own `multicc-remote` supervisor. HTTP forwarding, the
+    /// WS bridge and the annotation relay all share this one `Arc`: the process
+    /// contract has a single owner of the child's stdin lifeline, so a
+    /// per-surface supervisor would spawn a second child and split the loopback
+    /// port/secret. `RemoteChild::new` does not spawn — the child starts on the
+    /// first `ensure()`. Installed by `daemon::serve` for both `--node` and
+    /// `--no-node` (the child is the front door's, not Node's).
+    pub remote_child: std::sync::OnceLock<Arc<crate::remote_child::RemoteChild>>,
+    pub remote_screen: std::sync::OnceLock<Arc<remote_screen::RemoteScreen>>,
+    pub remote_ws: std::sync::OnceLock<Arc<crate::ws_remote_screen::RemoteScreenWs>>,
+    pub remote_annotation: std::sync::OnceLock<Arc<remote_annotation::RemoteAnnotation>>,
     pub auth: Arc<crate::auth_control::Bridge>,
     pub source_workspaces: Arc<crate::auth_control::Bridge>,
     /// The private stream that hands `/ws/chat` client sockets to the chat
@@ -775,6 +799,10 @@ impl App {
             data_root,
             services: std::sync::OnceLock::new(),
             external_workspaces: std::sync::OnceLock::new(),
+            remote_child: std::sync::OnceLock::new(),
+            remote_screen: std::sync::OnceLock::new(),
+            remote_ws: std::sync::OnceLock::new(),
+            remote_annotation: std::sync::OnceLock::new(),
             auth: Arc::new(crate::auth_control::Bridge::default()),
             source_workspaces: Arc::new(crate::auth_control::Bridge::default()),
             chat: Arc::new(crate::chat_bridge::ChatBridge::default()),
@@ -1094,6 +1122,15 @@ pub async fn handle(
     }
     if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
         return refusal;
+    }
+    // `/api/remote-screen`: the handler reads the raw body itself (it runs
+    // `express.json` inside, before its method check), so it runs in front of
+    // the global parser exactly like `Route::Upload`.
+    if let Route::RemoteScreen = route {
+        let Some(screen) = app.remote_screen.get() else {
+            return express::error(&ctx, 503, "remote screen unavailable");
+        };
+        return screen.handle(&ctx, body).await;
     }
     // multer owns the raw multipart body: the upload route runs in front of the
     // global `express.json` (it applies that step itself for JSON bodies, which
@@ -1587,6 +1624,29 @@ mod tests {
         );
         assert_eq!(claim(&Method::GET, "/api/upload"), None);
         assert_eq!(claim(&Method::HEAD, "/api/upload"), None);
+        // `/api/remote-screen` is one `app.use` mount: the bare path and
+        // everything below it, for every method (OPTIONS is the handler's own
+        // 405, not an automatic answer, so it is not in the OPTIONS union).
+        assert_eq!(
+            claim(&Method::GET, "/api/remote-screen"),
+            Some(Route::RemoteScreen)
+        );
+        assert_eq!(
+            claim(&Method::POST, "/api/remote-screen/capabilities"),
+            Some(Route::RemoteScreen)
+        );
+        assert_eq!(
+            claim(&Method::DELETE, "/api/remote-screen/frame/1"),
+            Some(Route::RemoteScreen)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/remote-screen"),
+            Some(Route::RemoteScreen)
+        );
+        assert_eq!(options_allow("/api/remote-screen"), None);
+        assert_eq!(claim(&Method::GET, "/api/remote-screenx"), None);
+        assert_eq!(claim(&Method::GET, "/API/REMOTE-SCREEN"), None);
+        assert_eq!(claim(&Method::GET, "/api"), None);
         for (path, mixed, get) in [
             (
                 "/api/server-info",

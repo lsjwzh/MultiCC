@@ -162,6 +162,33 @@ pub async fn serve(options: ServeOptions) -> i32 {
             return 1;
         }
     }
+    // One supervisor for the front door's own `multicc-remote` child. The HTTP
+    // forwarder, the WS bridge and the annotation relay all share this `Arc`:
+    // the process contract has exactly one owner of the child's stdin lifeline,
+    // so a per-surface supervisor would spawn a second child and split the
+    // loopback port/secret. `RemoteChild::new` does not spawn — the child starts
+    // on the first `ensure()` — so constructing it here costs nothing until a
+    // remote-screen request arrives, and `--no-node` gets it too because the
+    // child belongs to the front door, not to Node.
+    let remote_dir =
+        crate::remote_child::remote_screen_dir(&app.data_root, &app.package_root, &app.home_dir);
+    let remote_child = Arc::new(crate::remote_child::RemoteChild::new(
+        crate::remote_child::Config::new(remote_dir.clone()),
+    ));
+    let _ = app.remote_child.set(Arc::clone(&remote_child));
+    let _ = app
+        .remote_screen
+        .set(Arc::new(crate::app::remote_screen::RemoteScreen::new(
+            Arc::clone(&remote_child),
+        )));
+    let _ = app
+        .remote_ws
+        .set(Arc::new(crate::ws_remote_screen::RemoteScreenWs::new(
+            Arc::clone(&remote_child),
+        )));
+    let _ = app.remote_annotation.set(Arc::new(
+        crate::app::remote_annotation::RemoteAnnotation::new(remote_child, remote_dir),
+    ));
     let router = native_routes(Arc::clone(&app));
     // `--no-node`: no child is ever constructed, polled or restarted. The
     // supervisor is `None` and each connection gets a fail-closed upstream.
@@ -295,6 +322,15 @@ pub async fn serve(options: ServeOptions) -> i32 {
         if exit_code.is_some() {
             break;
         }
+    }
+    // Drain the front door's own remote child after Node has already been asked
+    // to stop and reaped, so the two children's stop order is unchanged: closing
+    // its stdin is the lifeline the process contract watches
+    // (docs/remote-screen-process.md §1), so it exits with the front door
+    // instead of lingering as an orphan. `--no-node` reaches here too, having no
+    // Node to wait for.
+    if let Some(remote) = app.remote_child.get() {
+        remote.shutdown().await;
     }
     exit_code.unwrap_or(0)
 }

@@ -467,10 +467,16 @@ pub async fn handle(
     } else {
         None
     };
-    answer(ctx, route, body, host).await
+    answer(app, ctx, route, body, host).await
 }
 
-async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Response<Body> {
+async fn answer(
+    app: &Arc<App>,
+    ctx: &RequestCtx,
+    route: Route,
+    body: &Value,
+    host: u16,
+) -> Response<Body> {
     let parts = segments(&ctx.path).unwrap_or_default();
     match route {
         Route::Options {
@@ -525,6 +531,16 @@ async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Resp
         Route::AnnotationLivePost => {
             let request = request_value(body);
             let normalized = annotation_payload(&request);
+            // The remote screen's own screenshot is relayed straight to the
+            // `multicc-remote` child (the retired `handleAnnotation`), before
+            // the Node host and its webhook configuration see the request. A
+            // miss (any other `src`) keeps the original path to Node, where the
+            // relay config and webhook targets still live.
+            if let Some(annotation) = app.remote_annotation.get() {
+                if let Some(relay) = annotation.try_relay(&normalized).await {
+                    return ok(ctx, annotation_relay_body(&relay));
+                }
+            }
             match call(
                 ctx,
                 host,
