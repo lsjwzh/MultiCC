@@ -646,20 +646,22 @@ test('voice marker and send-time language reach delivery options; junk values ar
 
 test('failed voice delivery retries the persisted payload and fingerprint', async t => {
   const seen = [];
+  const voiceRaw = '重'.repeat(3999) + '😀';
   let reject = true;
   const f = fixture(t, { send: async (_id, _text, options) => {
     seen.push(options);
     return reject ? { ok: false, code: 'temporary_failure' } : { ok: true };
   } });
   await assert.rejects(f.runtime.send(f.a.id, input('voice-retry', null, {
-    inputSource: 'voice', voiceRaw: '  重试这条语音  ', lang: 'zh',
+    inputSource: 'voice', voiceRaw, lang: 'zh',
   })), { code: 'temporary_failure' });
+  assert.equal(seen[0].voice.raw.charCodeAt(3999), 0xd83d);
   const receipt = f.store.list('receipt')[0];
   reject = false;
   const result = await f.runtime.retry(f.a.id, receipt.id);
   assert.equal(result.receiptId, receipt.id);
   assert.equal(f.store.get('receipt', receipt.id).fingerprint, receipt.fingerprint);
-  assert.deepEqual(seen.map(options => options.voice), [{ raw: '重试这条语音' }, { raw: '重试这条语音' }]);
+  assert.deepEqual(seen.map(options => options.voice), [{ raw: voiceRaw.slice(0, 4000) }, { raw: voiceRaw.slice(0, 4000) }]);
   assert.deepEqual(seen.map(options => options.lang), ['zh', 'zh']);
 });
 

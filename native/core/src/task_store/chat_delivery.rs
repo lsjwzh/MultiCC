@@ -408,7 +408,7 @@ impl TaskStore {
                         store.remove("answer", &key)?;
                     }
                 }
-                store.set("receipt", id, &receipt.to_string())?;
+                store.put_delivery_receipt(id, &receipt)?;
                 return Ok(Value::Null);
             }
 
@@ -425,7 +425,7 @@ impl TaskStore {
             receipt["status"] = json!("accepted");
             receipt["error"] = Value::Null;
             receipt["result"] = result.clone();
-            store.set("receipt", id, &receipt.to_string())?;
+            store.put_delivery_receipt(id, &receipt)?;
             let mut source = Value::Null;
             if receipt["payload"]["intent"] == "work" {
                 let shell_id = text(&receipt["shellId"]);

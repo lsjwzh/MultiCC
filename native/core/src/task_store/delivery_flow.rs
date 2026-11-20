@@ -12,6 +12,71 @@ fn effect(name: &str, phase: &str, args: Value) -> Value {
 }
 
 impl TaskStore {
+    pub(super) fn put_delivery_receipt(&mut self, id: &str, receipt: &Value) -> Result<()> {
+        let mut wire = crate::js::from_serde(receipt);
+        if let Some(raw) = self.body("receipt", id)? {
+            let previous = crate::js::json_parse(&raw).map_err(super::err)?;
+            if let Some(payload) = previous.get("payload") {
+                crate::quota_guard::set(&mut wire, "payload", payload.clone());
+            }
+        }
+        self.set(
+            "receipt",
+            id,
+            &crate::js::json_stringify_or_undefined(&wire),
+        )
+    }
+
+    pub(super) fn delivery_step_wire(&mut self, input: &Value) -> Result<String> {
+        use crate::{
+            js::{self, JsValue as V},
+            quota_guard,
+        };
+        let result = self.delivery_step(input)?;
+        let mut wire = js::from_serde(&result);
+        if matches!(result["effect"].as_str(), Some("send" | "dispatch")) {
+            let raw = self
+                .body("receipt", text(&input["receiptId"]))?
+                .ok_or("receipt_not_found")?;
+            let receipt = js::json_parse(&raw).map_err(super::err)?;
+            let payload = receipt.get("payload").ok_or("receipt_payload_missing")?;
+            let V::Object(fields) = &mut wire else {
+                return Err("delivery_arguments_missing".into());
+            };
+            let Some((_, V::Array(args))) = fields.iter_mut().find(|(key, _)| key == "args") else {
+                return Err("delivery_arguments_missing".into());
+            };
+            args[1] = payload.get("text").cloned().unwrap_or(V::Undefined);
+            if result["effect"] == "send" {
+                let options = &mut args[2];
+                for key in ["voice", "lang", "unattended"] {
+                    if let Some(value) = payload.get(key) {
+                        quota_guard::set(options, key, value.clone());
+                    }
+                }
+                let metadata = receipt.get("taskMetadata").unwrap_or(&V::Null);
+                let task_text = if js::truthy_opt(receipt.get("taskIdentityLocked")) {
+                    if metadata.get("taskStart") == Some(&V::Bool(false)) {
+                        V::Null
+                    } else {
+                        metadata
+                            .get("taskText")
+                            .filter(|value| js::truthy(value))
+                            .or_else(|| payload.get("text"))
+                            .cloned()
+                            .unwrap_or(V::Undefined)
+                    }
+                } else if payload.get("intent") == Some(&V::from("work")) {
+                    payload.get("text").cloned().unwrap_or(V::Undefined)
+                } else {
+                    options.get("taskText").cloned().unwrap_or(V::Undefined)
+                };
+                quota_guard::set(options, "taskText", task_text);
+            }
+        }
+        Ok(crate::js::json_stringify_or_undefined(&wire))
+    }
+
     pub(super) fn delivery_step(&mut self, input: &Value) -> Result<Value> {
         self.atomic(|store| store.advance_delivery(input))
     }
@@ -126,7 +191,7 @@ impl TaskStore {
                 ));
             }
             receipt["status"] = json!("delivering");
-            self.put("receipt", id, &receipt)?;
+            self.put_delivery_receipt(id, &receipt)?;
             if truthy(&receipt["dispatch"]) {
                 return self.delivery_dispatch(&receipt, &task, "after-delivery");
             }

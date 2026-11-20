@@ -850,6 +850,9 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
         let op = text(&v["op"]);
         let kind = text(&v["kind"]);
         let id = text(&v["id"]);
+        if op == "rule" && v["action"] == "deliveryStep" {
+            return self.delivery_step_wire(&v);
+        }
         let out = match op {
             "writerFenceActivity" => self.writer_fence_activity(&v)?,
             "writerFenceSnapshot" => self.writer_fence_snapshot(&v)?,
