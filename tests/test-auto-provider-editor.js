@@ -509,6 +509,28 @@ test('saving under an existing name rewrites that preset instead of minting a se
   assert.equal(second.$('preset-select').value, originalId, '保存后仍停在这份预设上');
 });
 
+test('rewriting a preset keeps the sub-agent route this editor does not edit', () => {
+  // run-config 的预设面板会在同一条目上写 `subagent`；这个编辑器只认线路池，
+  // 没有子任务控件，所以重建条目时必须把它原样带回来。否则用户点一次「更新
+  // 预设」或同名保存，任务配好的子任务线路就静默回到「随主」。
+  const route = { providerId: 'deepseek-flash', model: 'opus' };
+  const pool = { protocol: 'anthropic', maxAttempts: 2, sticky: true,
+    candidates: [{ providerId: 'managed-a', priority: 1 }, { providerId: 'managed-b', priority: 2 }] };
+  const seeded = [{ id: 'p-keep', name: '日常', recent: false, ...pool,
+    candidates: pool.candidates.map(candidate => ({ ...candidate, model: null })),
+    subagent: route }];
+
+  const byId = editor.rememberPreset(seeded, { ...pool }, { id: 'p-keep', name: '日常', now: 1 });
+  assert.deepEqual(byId[0].subagent, route, '按 id 原地更新要保住子任务线路');
+
+  const byName = editor.rememberPreset(seeded, { ...pool }, { name: '日常', now: 2 });
+  assert.deepEqual(byName[0].subagent, route, '同名保存沿用原条目，也要保住');
+
+  const unnamed = editor.rememberPreset(seeded, { ...pool }, { name: '新池', now: 3 });
+  assert.equal('subagent' in unnamed.find(item => item.name === '新池'), false,
+    '全新的一份预设不会被别的条目的子任务线路污染');
+});
+
 test('an applied preset is stamped onto the pool handed to the host', () => {
   const store = memoryPresetStore();
   const first = mountEditor({ presetStore: store });

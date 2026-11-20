@@ -2914,11 +2914,21 @@
       if (preset.tiering === PRICE_TIERING || preset.tiering === DEFAULT_TIERING) tiering = preset.tiering;
       if (preset.maxAttempts) maxAttempts = Number(preset.maxAttempts);
       if (preset.sticky != null) sticky = preset.sticky !== false;
-      // 预设里的子任务设置（老预设没有这一段 = 跟随主线路）。
-      subagentSeed = preset.subagent && preset.subagent.model ? preset.subagent : null;
-      // 套用预设是用户明确的一次选择：之后切 CLI 别再拿家族默认盖掉它。
-      subagentTouched = true;
-      subagentSeedAuto = false;
+      // 预设里的子任务设置。有这一段就是这套池子的显式选择；没有（老预设）
+      // 不能退化成「随主」——预设只描述线路池，套用它不该顺手废掉任务的子任务
+      // 线路（尤其是家族全局默认那份）。保留草稿现有的线路；草稿本来就没有时
+      // 按住这一族的全局默认补上，并保持「跟随全局」的标记。
+      const presetSubagent = preset.subagent && preset.subagent.model ? preset.subagent : null;
+      if (presetSubagent) {
+        subagentSeed = presetSubagent;
+        // 套用预设是用户明确的一次选择：之后切 CLI 别再拿家族默认盖掉它。
+        subagentTouched = true;
+        subagentSeedAuto = false;
+      } else if (!subagentSeed) {
+        const family = subagentFamily(subCli());
+        subagentSeed = (family && subDefaults[family]) || null;
+        subagentSeedAuto = !!subagentSeed;
+      }
       subagentSeedFamily = subagentFamily(subCli());
       activePresetId = id;
       renderAuto();

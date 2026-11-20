@@ -674,6 +674,13 @@
       savedAt: now,
     };
     const current = normalizePresets(list);
+    // 这个编辑器只写线路池，没有子任务控件：重建条目时必须把原来那条的
+    // `subagent` 原样带回，否则「更新预设」或同名保存会静默丢掉任务配好的
+    // 子任务线路（run-config 的预设面板会在同一条目上写它）。
+    const replaced = id ? current.find(item => item.id === id) : null;
+    const previous = replaced || current.find(item => item.name && !item.recent
+      && item.name === entry.name);
+    if (previous && previous.subagent) entry.subagent = previous.subagent;
     if (recent) {
       // 同一份池子已经有具名预设或最近记录：只把它顶到最前，不再多存一条。
       const existing = current.find(item => presetSignature(item) === signature);

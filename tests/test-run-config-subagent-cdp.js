@@ -610,6 +610,34 @@ test('auto mode keeps the same section, and presets still carry the sub-agent ro
   });
 });
 
+test('an older preset with no sub-agent field no longer wipes the route back to 随主', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-subagent-cdp'), locale: 'zh-CN' }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"'));
+    // 老预设只存了线路池，没有 subagent 那一段。
+    const presetId = await page.evaluate(`(()=>{const list=[{id:'p-old',name:'老预设',recent:false,protocol:'anthropic',pick:'order',tiering:'price',maxAttempts:2,sticky:true,savedAt:1,candidates:[{providerId:'p-main',model:'claude-opus',priority:1},{providerId:'p-cheap',model:'claude-haiku',priority:2}]}];localStorage.setItem('multicc.autoProvider.presets.v1',JSON.stringify(list));return 'p-old'})()`);
+    await openDraft(page);
+    // 打开时草稿跟着家族默认（p-cheap / claude-haiku）。
+    assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'p-cheap'`));
+    await page.evaluate(`window.confirm = () => true`);
+    await page.evaluate(`(()=>{const s=document.querySelector(${JSON.stringify(inDialog('.rc-preset'))});s.value=${JSON.stringify(presetId)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    // 套用预设后子任务线路仍在（跟随全局默认），不能被清成随主。
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value`), 'p-cheap',
+      '预设没带子任务段时保留原线路，而不是退回随主');
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-model'))}).value`), 'claude-haiku');
+    assert.equal((await text(page, '.rc-sub-state')).trim(), '跟随全局默认');
+
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] form').requestSubmit()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open]') === null`));
+    const saved = await page.evaluate('window.__saved');
+    assert.deepEqual(saved[0].subagent, { providerId: 'p-cheap', model: 'claude-haiku' },
+      '保存时仍带着子任务线路，服务端才会写进 CLAUDE_CODE_SUBAGENT_MODEL');
+    assert.equal(saved[0].subagentInherited, true);
+  });
+});
+
 test('mobile width keeps the guide and section inside the viewport', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-subagent-cdp'), locale: 'zh-CN' }, async page => {
